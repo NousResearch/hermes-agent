@@ -810,6 +810,7 @@ class GatewayNotificationsMixin:
         notify_path = _hermes_home / ".restart_notify.json"
         if not notify_path.exists():
             return None
+        should_unlink = True
         try:
             data = json.loads(notify_path.read_text(encoding="utf-8-sig"))
             platform_str = data.get("platform")
@@ -823,8 +824,9 @@ class GatewayNotificationsMixin:
             transport = resolve_delivery_transport(
                 platform, self.config, self._adapters_for_profile(self._marker_profile(data)))
             if transport is None:
-                logger.debug("Restart notification skipped: no live transport for %s", platform_str)
-                return None
+                logger.debug("Restart notification postponed: no live transport for %s (will replay on reconnect)", platform_str)
+                should_unlink = False
+                return False
             platform_cfg = self.config.platforms.get(platform)
             if platform_cfg is not None and not platform_cfg.gateway_restart_notification:
                 logger.info(
@@ -854,7 +856,8 @@ class GatewayNotificationsMixin:
             logger.warning("Restart notification failed: %s", e)
             return None
         finally:
-            notify_path.unlink(missing_ok=True)
+            if should_unlink:
+                notify_path.unlink(missing_ok=True)
 
     def _home_channel_transports(self):
         """Yield ``(platform, platform_cfg, home, transport)`` for every home channel with a live transport."""

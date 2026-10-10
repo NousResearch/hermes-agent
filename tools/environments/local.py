@@ -770,6 +770,15 @@ _hermes_repo_root_aliases: tuple[Path, ...] = _build_hermes_repo_root_aliases(
 _in_venv: bool = (getattr(sys, "base_prefix", sys.prefix) != sys.prefix
                   or hasattr(sys, "real_prefix"))  # real_prefix: virtualenv<20
 _hermes_site_packages: list[Path] | None = None  # lazily cached by local_pythonpath
+# Preserve PM-owned dependency paths from this process's startup home even if
+# the selected generation advances. User PYTHONPATH entries are not provenance.
+from pm.environments import installs_root as _dependency_installs_root
+from tools.environments.local_pythonpath import _capture_startup_site_packages
+
+_startup_dependency_installs_root = _dependency_installs_root()
+_startup_pythonpath_site_packages = _capture_startup_site_packages(
+    os.environ.get("PYTHONPATH", ""), _startup_dependency_installs_root
+)
 
 
 # --- Login-shell init files ---

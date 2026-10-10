@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import os
 import shutil
+import sys
 from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
@@ -130,7 +131,13 @@ def _generate_pyproject(plugin_dirs: list[Path] | Mapping[Path, Path], root: Pat
 
         document = tomllib.loads(core_text)
         _core_release_quarantine(document, source / "uv.lock")
-        document.setdefault("tool", {}).setdefault("uv", {})["workspace"] = {"members": sorted(members)}
+        settings = document.setdefault("tool", {}).setdefault("uv", {})
+        settings["workspace"] = {"members": sorted(members)}
+        # Generations are local runtime environments, not distributable locks.
+        # Re-resolving every platform here lets an unrelated wheel-only extra
+        # reject a plugin on a host where the entire selected graph is supported.
+        # Intersect, rather than replace, core's Python/platform restrictions.
+        settings["environments"] = _runtime_environments(settings.get("environments"), sys.platform)
         text = tomli_w.dumps(document)
     else:
         # Byte-identical to core: a member-less generation syncs frozen against core's own lock.
@@ -138,6 +145,13 @@ def _generate_pyproject(plugin_dirs: list[Path] | Mapping[Path, Path], root: Pat
     target = root / "pyproject.toml"
     _copy_core_inputs(source, root)
     target.write_text(text, encoding="utf-8")
+
+
+def _runtime_environments(environments: list[str] | None, host_platform: str) -> list[str]:
+    """Intersect a universal project's environments with this runtime host."""
+    host = f"sys_platform == {host_platform!r}"
+    return ([f"({marker}) and ({host})" for marker in environments]
+            if environments is not None else [host])
 
 
 def _core_release_quarantine(document: dict, core_lock: Path) -> None:

@@ -187,6 +187,36 @@ class TestChatCompletionsBasic:
         assert result[0]["name"] == "sylvain"
         assert msgs[1]["name"] == "execute_code"
 
+    def test_convert_messages_reencodes_deep_gemini_tool_json_without_mutating_history(self, transport):
+        value = {"leaf": 1}
+        for _ in range(32):
+            value = {"nested": value}
+        content = "Result: " + __import__("json").dumps(value)
+        messages = [{"role": "tool", "tool_call_id": "call", "content": content}]
+
+        result = transport.convert_messages(messages, model="google/gemini-2.5-flash")
+
+        assert messages[0]["content"] == content
+        assert result[0]["content"].startswith("Result: ")
+        assert '\"nested\":' in result[0]["content"]
+
+
+    def test_convert_messages_reencodes_deep_gemini_tool_json_after_invalid_prefix(self, transport):
+        value = {"leaf": 1}
+        for _ in range(32):
+            value = {"nested": value}
+        payload = json.dumps(value)
+        content = "Progress {not-json}; Result: " + payload + " (done)"
+        messages = [{"role": "tool", "tool_call_id": "call", "content": content}]
+
+        result = transport.convert_messages(messages, model="google/gemini-2.5-flash")
+
+        assert result[0]["content"].startswith("Progress {not-json}; Result: ")
+        assert result[0]["content"].endswith(" (done)")
+        assert '\"nested\":' in result[0]["content"]
+        assert messages[0]["content"] == content
+
+
     def test_convert_messages_no_copy_without_timestamp(self, transport):
         """A timestamp-free message list needs no sanitize pass and is
         returned by identity (preserves the deepcopy-on-demand contract)."""

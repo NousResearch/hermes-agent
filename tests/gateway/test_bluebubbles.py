@@ -583,3 +583,98 @@ class TestBlueBubblesGateBeforeDownload:
         assert response.status == 200
         assert download.await_count == downloads
         assert len(handled) == handled_count
+
+
+class _RecordingTypingClient:
+    """Fake httpx client that records the private-API chat calls the adapter makes."""
+
+    def __init__(self):
+        self.calls = []
+
+    async def post(self, url, **kwargs):
+        self.calls.append(("post", url.split("?")[0]))
+
+    async def delete(self, url, **kwargs):
+        self.calls.append(("delete", url.split("?")[0]))
+
+
+def _typing_adapter(monkeypatch, server_version):
+    from gateway.platforms.bluebubbles import _parse_server_version
+
+    adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+    adapter._private_api_enabled = True
+    adapter._helper_connected = True
+    adapter._server_version = _parse_server_version(server_version)
+    adapter.client = _RecordingTypingClient()
+    return adapter
+
+
+class TestBlueBubblesStopTyping:
+    """BlueBubbles Server <= 1.9.9 routes DELETE /chat/:guid/typing to startTyping
+    (BlueBubblesApp/bluebubbles-server#768), so a stop call re-lights the indicator (#31534)."""
+
+    CHAT = "iMessage;-;+15550100"
+    TYPING_URL = "http://localhost:1234/api/v1/chat/iMessage%3B-%3B%2B15550100/typing"
+
+    @pytest.mark.parametrize("raw, parsed", [
+        ("1.9.9", (1, 9, 9)),
+        ("1.10.0-beta.1", (1, 10, 0)),
+        ("v2.0.1", (2, 0, 1)),
+        ("", None),
+        (None, None),
+        ("unknown", None),
+    ])
+    def test_parse_server_version(self, raw, parsed):
+        from gateway.platforms.bluebubbles import _parse_server_version
+
+        assert _parse_server_version(raw) == parsed
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("server_version", ["1.9.9", "1.9.8", None])
+    async def test_stop_typing_never_hits_the_inverted_endpoint(self, monkeypatch, server_version):
+        adapter = _typing_adapter(monkeypatch, server_version)
+
+        await adapter.send_typing(self.CHAT)
+        await adapter.stop_typing(self.CHAT)
+
+        assert adapter.client.calls == [("post", self.TYPING_URL)]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("server_version", ["1.9.10", "1.10.0", "2.0.0"])
+    async def test_stop_typing_uses_delete_on_fixed_servers(self, monkeypatch, server_version):
+        adapter = _typing_adapter(monkeypatch, server_version)
+
+        await adapter.stop_typing(self.CHAT)
+
+        assert adapter.client.calls == [("delete", self.TYPING_URL)]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("response", ["the answer", None])
+    async def test_turn_end_does_not_restart_typing_on_affected_servers(self, monkeypatch, response):
+        """Full turn through the base lifecycle, with a delivered reply and with a silent/empty
+        one: every stop the lifecycle issues must leave the indicator alone on 1.9.9."""
+        from gateway.platforms.event import MessageEvent, MessageType
+        from gateway.session import SessionSource
+
+        adapter = _typing_adapter(monkeypatch, "1.9.9")
+        delivered = []
+
+        async def fake_send_final_text(event, session_key, text, *args, **kwargs):
+            delivered.append(text)
+
+        async def handler(event):
+            await asyncio.sleep(0.05)  # let the keep-typing loop tick
+            return response
+
+        adapter.set_message_handler(handler)
+        adapter._send_final_text = fake_send_final_text
+        event = MessageEvent(
+            text="hi", message_id="msg-1", message_type=MessageType.TEXT,
+            source=SessionSource(platform=Platform.BLUEBUBBLES, chat_id=self.CHAT, user_id="+15550100"),
+        )
+
+        await adapter._process_message_background(event, f"agent:main:bluebubbles:dm:{self.CHAT}")
+
+        assert ("post", self.TYPING_URL) in adapter.client.calls
+        assert ("delete", self.TYPING_URL) not in adapter.client.calls
+        assert delivered == ([response] if response else [])

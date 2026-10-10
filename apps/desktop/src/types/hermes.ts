@@ -1376,6 +1376,8 @@ export interface ComputerUseStatus {
 }
 
 export interface SessionSearchResult {
+  /** Whether the matched session is archived. Older gateways may omit it. */
+  archived?: boolean
   /** Recency of the matched conversation, straight from the sessions row —
    *  present on hits backed by a rich row (the search endpoint fills it).
    *  Used to order unloaded hits honestly; falls back to session_started. */

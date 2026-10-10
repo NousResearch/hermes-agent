@@ -24,6 +24,25 @@ def test_probe_config_health_flags_null_sections():
     assert "model" not in msg
 
 
+def test_probe_config_health_exempts_schema_nullable_scalars():
+    """A root whose schema default is None is a nullable scalar, not an empty section."""
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+    from tui_gateway.server import _probe_config_health
+
+    nullable = sorted(k for k, v in DEFAULT_CONFIG.items() if v is None)
+    sections = sorted(k for k, v in DEFAULT_CONFIG.items() if isinstance(v, dict))
+    assert nullable, "schema should declare at least one nullable scalar root"
+    assert sections, "schema should declare at least one mapping section"
+
+    assert _probe_config_health({k: None for k in nullable}) == ""
+
+    section = sections[0]
+    msg = _probe_config_health({**{k: None for k in nullable}, section: None})
+    assert section in msg
+    for key in nullable:
+        assert key not in msg
+
+
 def test_apply_model_switch_does_not_leak_process_env():
     """Core fix for cross-session contamination: an in-session /model switch
     must mutate only the target session (record a per-session override + switch

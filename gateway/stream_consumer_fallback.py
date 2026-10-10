@@ -143,6 +143,7 @@ class StreamFallbackMixin:
             sent_any_chunk = True
             last_successful_chunk = chunk
             last_message_id = result.message_id or last_message_id
+            self._track_preview_ids_from_result(result)
             self._notify_new_message()
 
         # Best-effort delete of the frozen partial — ONLY when the FULL final was

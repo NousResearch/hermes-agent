@@ -25,7 +25,8 @@ def _make_adapter(monkeypatch):
     adapter.handle_message = AsyncMock()
     adapter._client = None
     adapter._resolve_room_identity = AsyncMock(return_value=SimpleNamespace(
-        display_name="Group Room", room_topic=None, server_name="example.org", chat_type="group"))
+        display_name="Group Room", room_topic=None, server_name="example.org", chat_type="group",
+        members_digest=None))
     adapter._is_dm_room = AsyncMock(return_value=False)
     adapter._download_and_cache_media = AsyncMock(return_value="/tmp/cached.png")
     return adapter

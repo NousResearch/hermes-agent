@@ -1796,6 +1796,57 @@ class TestLifecycleGuardDataArgumentExemption:
         check_gateway_lifecycle(prompt, str(script))
 
 
+class TestLifecycleGuardCdAwareResolution:
+    """A relative script run after ``cd`` executes from the new directory, so the
+    guard must resolve it there. ``cd <dir> && ./proj`` used to resolve ``./proj``
+    against the original cwd (the directory ``<dir>`` itself), so a launcher that
+    restarts the gateway went unscanned."""
+
+    def _scan(self, command, **kwargs):
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+        return contains_gateway_lifecycle_command_or_referenced_script(
+            command, **kwargs
+        )
+
+    @staticmethod
+    def _script(path, body):
+        path.write_text("#!/bin/sh\n" + body + "\n", encoding="utf-8")
+        path.chmod(0o755)
+        return path
+
+    def test_cd_then_launcher_that_restarts_is_blocked(self, tmp_path):
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        self._script(proj / "proj", "hermes gateway restart")
+        assert self._scan(f"cd {proj} && ./proj", cwd=str(tmp_path)) is True
+
+    def test_cd_then_benign_launcher_is_not_blocked(self, tmp_path):
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        self._script(proj / "proj", "echo stats")
+        self._script(proj / "stats", "echo stats")
+        assert self._scan(f"cd {proj} && ./proj stats", cwd=str(tmp_path)) is False
+        assert self._scan(f"cd {proj} && ./stats", cwd=str(tmp_path)) is False
+
+    def test_cd_then_shell_run_script_is_blocked(self, tmp_path):
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        self._script(proj / "restart.sh", "launchctl kickstart -k gui/501/ai.hermes.gateway")
+        assert self._scan("cd proj && bash ./restart.sh", cwd=str(tmp_path)) is True
+        assert self._scan("cd proj; . ./restart.sh", cwd=str(tmp_path)) is True
+
+    def test_relative_cd_hops_chain(self, tmp_path):
+        (tmp_path / "a" / "b").mkdir(parents=True)
+        self._script(tmp_path / "a" / "b" / "x.sh", "hermes gateway restart")
+        assert self._scan("cd a && cd b && ./x.sh", cwd=str(tmp_path)) is True
+
+    def test_untrackable_cd_still_scans_absolute_refs(self, tmp_path):
+        bad = self._script(tmp_path / "y.sh", "hermes gateway restart")
+        assert self._scan(f"cd - && bash {bad}", cwd=str(tmp_path)) is True
+
+
 class TestLifecycleGuardNeverRaises:
     """The guard must return a verdict for every input — binary referenced
     paths, NUL bytes, non-UTF-8, /dev/* nodes, directories, missing files —

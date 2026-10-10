@@ -1,7 +1,8 @@
 """Resolve promoted source releases, never infer publication from a Git tag."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from typing import Literal
 from html.parser import HTMLParser
 import json
 import logging
@@ -10,11 +11,12 @@ import subprocess
 import urllib.error
 import urllib.request
 
-from hermes_cli.update_channel import STABLE_TAG_RE, is_canary_tag
+from hermes_cli.update_channel import CHANNEL_MAIN, STABLE_TAG_RE, is_canary_tag
 
 logger = logging.getLogger(__name__)
 _PUBLIC_BASE = "https://hermes-assets.nousresearch.com"
 OFFICIAL_REPOSITORY = "NousResearch/hermes-agent"
+OFFICIAL_HTTPS_URL = f"https://github.com/{OFFICIAL_REPOSITORY}.git"
 _GITHUB_ORIGIN = re.compile(
     r"^(?:https://github\.com/|git@github\.com:|ssh://git@github\.com/)"
     r"([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+?)(?:\.git)?/?$", re.IGNORECASE,
@@ -22,20 +24,31 @@ _GITHUB_ORIGIN = re.compile(
 _SHA = re.compile(r"[0-9a-f]{40}")
 
 
+def _origin_url(git_cmd, cwd) -> str:
+    from hermes_cli._subprocess_compat import windows_hide_flags
+    from hermes_cli.source_check import source_git_env
+
+    result = subprocess.run(
+        [*git_cmd, "config", "--get", "remote.origin.url"], cwd=cwd, capture_output=True, text=True,
+        encoding="utf-8", errors="replace", timeout=10, stdin=subprocess.DEVNULL, env=source_git_env(),
+        creationflags=windows_hide_flags())
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
 def source_repository(git_cmd=None, cwd=None) -> str:
     """GitHub forks own their releases; other origins must mirror official tags."""
-    if git_cmd is not None:
-        from hermes_cli.source_check import source_git_env
+    match = _GITHUB_ORIGIN.fullmatch(_origin_url(git_cmd, cwd)) if git_cmd is not None else None
+    return match[1] if match else OFFICIAL_REPOSITORY
 
-        result = subprocess.run(
-            [*git_cmd, "config", "--get", "remote.origin.url"], cwd=cwd,
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
-            stdin=subprocess.DEVNULL, env=source_git_env(),
-        )
-        match = _GITHUB_ORIGIN.fullmatch(result.stdout.strip())
-        if result.returncode == 0 and match:
-            return match[1]
-    return OFFICIAL_REPOSITORY
+
+def official_https_remote(origin_url: str, repository: str | None) -> str | None:
+    """The public HTTPS URL to read instead of an SSH origin of the official repository
+    (no SSH key, agent or FIDO touch needed); ``None`` for every other origin, forks included."""
+    match = _GITHUB_ORIGIN.fullmatch(origin_url or "")
+    if (match and repository and match[1].lower() == OFFICIAL_REPOSITORY.lower() == repository.lower()
+            and origin_url.lower().startswith(("git@", "ssh://"))):
+        return OFFICIAL_HTTPS_URL
+    return None
 
 
 @dataclass(frozen=True)
@@ -55,6 +68,8 @@ class SourceTarget:
         return self.requested_channel != self.channel
 
     ahead: bool = False
+    # Why an unchosen stable default follows main instead: "diverged" or "unknown".
+    main_fallback: Literal["diverged", "unknown"] | None = None
 
     @property
     def label(self) -> str:
@@ -78,46 +93,66 @@ def _resolve_channel(name: str, repository: str):
 
 
 def resolve_source_target(channel: str, git_cmd=None, cwd=None, *, repository=None,
-                          forward_only: bool = False) -> SourceTarget:
+                          forward_only: bool = False, fetch=None) -> SourceTarget:
     """Resolve every subscription, including default labels, through R2.
 
-    ``forward_only`` (an unchosen default subscription) pins a checkout that already
-    contains the release to its own HEAD, so the update is a no-op instead of a downgrade.
+    ``forward_only`` (an unchosen default subscription) moves a checkout to the release only
+    when HEAD is proven behind it. A HEAD that already contains the release is pinned to
+    itself (a no-op, never a downgrade); a diverged HEAD, or one whose relation nothing can
+    establish, keeps following main as it did before stable was the default, instead of
+    being detached onto the release. ``fetch(sha) -> bool`` (apply only) brings a release
+    commit the checkout lacks so the relation is decided locally, not by the GitHub API.
     """
     target = _resolve_source_target(channel, git_cmd, cwd, repository=repository)
     if forward_only and target.commit and git_cmd is not None and cwd is not None:
-        head = _head_containing(git_cmd, cwd, target.commit, target.repository)
-        if head is not None and head != target.commit:
-            from dataclasses import replace
-
+        head, relation = _head_relation(git_cmd, cwd, target.commit, target.repository, fetch=fetch)
+        if relation == "contains" and head != target.commit:
             return replace(target, commit=head, ahead=True)
+        if relation in ("diverged", None):
+            return replace(target, commit=None, branch=CHANNEL_MAIN, version=None, build_id=None,
+                           main_fallback=relation or "unknown")
     return target
 
 
-def _head_containing(git_cmd, cwd, commit: str, repository: str) -> str | None:
-    """HEAD's sha unless HEAD is PROVEN not to contain ``commit``, then None.
+# GitHub compare status of HEAD relative to the release.
+_GITHUB_RELATION = {"ahead": "contains", "identical": "contains", "behind": "behind", "diverged": "diverged"}
 
-    An unchosen default must never move a checkout backward on a guess, so an
-    unknown relation (shallow history, GitHub unreachable) keeps HEAD.
+
+def _head_relation(git_cmd, cwd, commit: str, repository: str, *, fetch=None) -> tuple[str | None, str | None]:
+    """``(HEAD sha, relation)``: relation is ``"contains"`` (HEAD is or descends from ``commit``),
+    ``"behind"`` (HEAD is an ancestor of it), ``"diverged"``, or ``None`` when unknown.
+
+    Only full history is local proof: a shallow boundary turns ``--is-ancestor`` into a guess
+    (and ``== "false"`` keeps an unreadable answer on the guess side). In a full or blobless
+    clone every commit HEAD reaches is local, so a missing ``commit`` proves HEAD lacks it:
+    ``fetch`` brings it to decide behind/diverged locally, else GitHub says which.
     """
+    from hermes_cli._subprocess_compat import windows_hide_flags
     from hermes_cli.source_check import _github_compare, source_git_env
 
     def run(*args):
         return subprocess.run(
             [*git_cmd, *args], cwd=cwd, capture_output=True, text=True, encoding="utf-8",
-            errors="replace", timeout=10, stdin=subprocess.DEVNULL, env=source_git_env())
+            errors="replace", timeout=10, stdin=subprocess.DEVNULL, env=source_git_env(),
+            creationflags=windows_hide_flags())
+
+    def local(*args):
+        return run(*args).returncode == 0
 
     head = run("rev-parse", "HEAD").stdout.strip()
     if not _SHA.fullmatch(head):
-        return None
-    ancestry = run("merge-base", "--is-ancestor", commit, head).returncode
-    if ancestry == 0:
-        return head
-    # A shallow boundary makes exit 1 a guess; full history makes it proof.
-    if ancestry == 1 and run("rev-parse", "--is-shallow-repository").stdout.strip() == "false":
-        return None
+        return None, None
+    if local("merge-base", "--is-ancestor", commit, head):
+        return head, "contains"
+    full = run("rev-parse", "--is-shallow-repository").stdout.strip() == "false"
+    if full and (local("cat-file", "-e", f"{commit}^{{commit}}") or (fetch is not None and fetch(commit))):
+        # Exit 1 is "not an ancestor"; any other failure proves nothing.
+        ancestry = run("merge-base", "--is-ancestor", head, commit).returncode
+        return head, {0: "behind", 1: "diverged"}.get(ancestry)
     status = (_github_compare(commit, head, repository) or {}).get("status")
-    return None if status in ("behind", "diverged") else head
+    relation = _GITHUB_RELATION.get(status)
+    # Full history already proved HEAD lacks the release; GitHub cannot overrule that.
+    return head, None if full and relation == "contains" else relation
 
 
 def _resolve_source_target(channel: str, git_cmd=None, cwd=None, *, repository=None) -> SourceTarget:
@@ -334,7 +369,7 @@ def resolve_source_release(channel: str, git_cmd=None, cwd=None, *, repository=N
 
             ref = f"refs/tags/{tag}"
             result = subprocess.run(
-                [*git_cmd, "ls-remote", "--tags", "origin", ref, ref + "^{}"],
+                [*git_cmd, "ls-remote", "--tags", official_https_remote(_origin_url(git_cmd, cwd), repository) or "origin", ref, ref + "^{}"],
                 cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace",
                 check=True, timeout=60, stdin=subprocess.DEVNULL,
                 env=source_git_env(),

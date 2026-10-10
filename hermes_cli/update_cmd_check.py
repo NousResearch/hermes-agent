@@ -81,6 +81,7 @@ def channel_compare_branch(selected_channel: str, git_cmd: list[str], root: Path
         print(f"✗ Could not resolve the {selected_channel} source channel: {exc}")
         sys.exit(1)
     if not target.commit:
+        _note_main_fallback(target)
         return target.branch
     if target.retired:
         print(f"→ {selected_channel} retired; source destination: {target.channel}")
@@ -197,6 +198,35 @@ def report_rev_list_verdict(git_cmd: list[str], root: Path, compare_branch: str)
     print(f"  Run '{recommended_update_command()}' to install.")
 
 
+def _note_main_fallback(target) -> None:
+    """An unchosen stable default that cannot move this checkout forward onto the release."""
+    if target.main_fallback == "diverged":
+        why = "This checkout has history the stable release does not"
+    elif target.main_fallback:
+        why = "Could not confirm this checkout is behind the stable release"
+    else:
+        return
+    print(f"→ {why}; following {target.branch} as before"
+          " (`hermes update --set-channel stable` lands on the release)")
+
+
+def _fetch_commit(git_cmd, root: Path):
+    """``fetch(sha) -> bool`` for the apply path: bring a release commit the checkout lacks.
+
+    An official SSH origin is read over public HTTPS, as the release tag check is, so this
+    adds no SSH prompt or key touch; the update's own fetch of that sha is then local.
+    """
+    from hermes_cli.gitlock import fetch_with_partial_clone_recovery
+    from hermes_cli.source_releases import _origin_url, official_https_remote, source_repository
+
+    def fetch(sha: str) -> bool:
+        remote = official_https_remote(_origin_url(git_cmd, root), source_repository(git_cmd, root)) or "origin"
+        return fetch_with_partial_clone_recovery(
+            lambda gc, a: _uc()._git_run(gc, a, root, network=True), git_cmd,
+            ["fetch", "--no-tags", remote, sha], root).returncode == 0
+    return fetch
+
+
 def select_apply_target(args, branch: str, request: dict, *, git_cmd, stop) -> tuple:
     """Resolve the update's target before any tree write: ``(target_ref, release_sha,
     target_is_head, repository)``; records branch/expected_sha/retirement on ``request``.
@@ -222,7 +252,8 @@ def select_apply_target(args, branch: str, request: dict, *, git_cmd, stop) -> t
     try:
         with retrying_reads():
             target = resolve_source_target(selected, git_cmd, root,
-                                           forward_only=rides_default_channel(original, selected, root))
+                                           forward_only=rides_default_channel(original, selected, root),
+                                           fetch=_fetch_commit(git_cmd, root) if git_cmd else None)
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         print(f"✗ Could not resolve the {selected} source channel: {exc}. No update was applied.")
         stop()
@@ -237,5 +268,6 @@ def select_apply_target(args, branch: str, request: dict, *, git_cmd, stop) -> t
         request["expected_sha"] = target.commit
         return target.commit, target.commit, target.ahead, target.repository
     assert target.branch is not None  # a SourceTarget without a commit names its branch
+    _note_main_fallback(target)
     request["branch"] = target.branch
     return f"origin/{target.branch}", None, False, target.repository

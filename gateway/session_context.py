@@ -144,6 +144,39 @@ def set_session_vars(
     return tokens
 
 
+@contextmanager
+def scoped_followup_route(source: Any, session_key: str, message_id: str | None) -> Iterator[None]:
+    """Bind a queued message's routing identity while its recursive turn runs.
+
+    The outer message handler still owns the full session context and clears it when the
+    chain ends. Only route fields change here; session id and delivery capabilities stay put.
+    """
+    def field(name: str) -> Any:
+        return getattr(source, name, None)
+
+    route = (
+        (_SESSION_PLATFORM, source.platform.value),
+        (_SESSION_CHAT_ID, source.chat_id or ""),
+        (_SESSION_CHAT_TYPE, str(field("chat_type") or "")),
+        (_SESSION_CHAT_NAME, field("chat_name") or ""),
+        (_SESSION_THREAD_ID, str(field("thread_id") or "")),
+        (_SESSION_USER_ID, str(field("user_id") or "")),
+        (_SESSION_USER_ID_ALT, str(field("user_id_alt") or "")),
+        (_SESSION_USER_NAME, str(field("user_name") or "")),
+        (_SESSION_SCOPE_ID, str(field("scope_id") or "")),
+        (_SESSION_PARENT_CHAT_ID, str(field("parent_chat_id") or "")),
+        (_SESSION_KEY, session_key or ""),
+        (_SESSION_MESSAGE_ID, message_id or ""),
+        (_SESSION_PROFILE, field("profile") or ""),
+    )
+    tokens = [(var, var.set(value)) for var, value in route]
+    try:
+        yield
+    finally:
+        for var, token in reversed(tokens):
+            var.reset(token)
+
+
 def clear_session_vars(tokens: list) -> None:
     """Mark session context variables as explicitly cleared (``""``, not ``_UNSET``), so
     ``get_session_env`` returns empty instead of stale ``os.environ`` values.  Async-delivery

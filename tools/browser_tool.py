@@ -1130,8 +1130,11 @@ def _camofox_eval(expression: str, task_id: Optional[str] = None) -> str:
         _gateway_backend = False
     if _gateway_backend:
         # Gateway backends deny every raw /tabs call — evaluate must ride MCP.
+        # postprocess=True applies the shared eval tail (post-eval private-URL recheck
+        # + forced redaction) that the REST path gets — review P1-3.
         from tools.browser_mcp_transport import mcp_evaluate
-        return mcp_evaluate(expression, timeout_secs=_get_command_timeout())
+        return mcp_evaluate(expression, timeout_secs=_get_command_timeout(),
+                            task_id=task_id, postprocess=True)
     from tools.browser_camofox import _ensure_tab, _post
     try:
         tab_info = _ensure_tab(task_id or "default")

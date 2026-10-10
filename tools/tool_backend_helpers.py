@@ -231,14 +231,15 @@ def browser_mcp_backend_url() -> str | None:
 
 
 def browser_mcp_backend_key() -> str | None:
-    """Auth key for the generic browser-MCP backend (``browser.mcp_api_key``), or None."""
+    """Auth key for the generic browser-MCP backend — env/secret-store ONLY.
+
+    Credentials never live in ordinary config: the browser lane resolves its key from
+    the secret scope (BROWSER_MCP_API_KEY). A config ``browser.mcp_api_key`` value is
+    deliberately IGNORED (PR #135861 review P2) — config is not a credential store.
+    """
     try:
         from agent.secret_scope import get_secret
-        key = (get_secret("BROWSER_MCP_API_KEY", "") or "").strip()
-        if key:
-            return key
-        raw = _raw_section("browser") or {}
-        return str(raw.get("mcp_api_key") or "").strip() or None
+        return (get_secret("BROWSER_MCP_API_KEY", "") or "").strip() or None
     except Exception:
         return None
 

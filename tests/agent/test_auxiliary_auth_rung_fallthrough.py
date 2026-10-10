@@ -37,7 +37,7 @@ import threading
 from typing import Optional
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 import agent.auxiliary_client as aux
 
@@ -58,18 +58,23 @@ def _auth_error():
 
 def _credit_error():
     return _ApiError(
-        "Error code: 404 - Model '%s' requires available credits. "
-        "Your account balance is too low to use paid models." % AUX_MODEL,
+        f"Error code: 404 - Model '{AUX_MODEL}' requires available credits. "
+        "Your account balance is too low to use paid models.",
         status_code=404,
     )
 
 
 class _FakeClient:
     api_key = "sk-test"
-    base_url = "https://%s/v1" % NOUS_HOST
+    base_url = f"https://{NOUS_HOST}/v1"
 
 
-def _ladder(base_info=("https://%s/v1" % NOUS_HOST), resolved_provider="nous"):
+class _ExplicitProviderClient:
+    api_key = "stale-key"
+    base_url = "https://vertex.example/v1"
+
+
+def _ladder(base_info=(f"https://{NOUS_HOST}/v1"), resolved_provider="nous"):
     return aux._aux_recovery_ladder(
         _auth_error(),
         client=_FakeClient(),
@@ -116,7 +121,7 @@ def test_post_refresh_retry_owns_the_ladder_outcome(
     if rung == "nous":
         monkeypatch.setattr(aux, "_refresh_nous_auxiliary_client",
                             lambda **kwargs: (_FakeClient(), AUX_MODEL))
-        expected_step, expected_base = "call", ("https://%s/v1" % NOUS_HOST)
+        expected_step, expected_base = "call", (f"https://{NOUS_HOST}/v1")
     else:
         monkeypatch.setattr(aux, "_auth_refresh_provider_for_route",
                             lambda *a, **kw: "codex")
@@ -146,14 +151,107 @@ def test_post_refresh_retry_owns_the_ladder_outcome(
         result = aux._drive_ladder(ladder, perform)
     except _ApiError as exc:
         pytest.fail(
-            "the ladder let %r escape instead of falling through to the configured "
-            "fallback chain (steps performed: %s)" % (exc, performed)
+            f"the ladder let {exc!r} escape instead of falling through to the configured "
+            f"fallback chain (steps performed: {performed})"
         )
 
     assert performed == [expected_step], "the post-refresh retry is the only request"
     assert hermetic, "the configured fallback chain must be consulted"
     assert "requires available credits" in str(hermetic[0])
     assert result == "chain-response"
+
+
+@pytest.mark.parametrize("spare_survives", [True, False])
+def test_explicit_provider_auth_uses_its_configured_task_fallback(monkeypatch, spare_survives):
+    """An explicit route may leave a 401 only through its own configured chain — including the
+    re-walk after a chain entry is quarantined mid-request; an exhausted chain raises the primary
+    error instead of spilling onto discovery / the main model."""
+    dead_client, fallback_client = _ExplicitProviderClient(), _FakeClient()
+    chain = [("fallback_chain[0](custom:dead)", dead_client)]
+    if spare_survives:
+        chain.append(("fallback_chain[1](custom:backup)", fallback_client))
+    monkeypatch.setattr(
+        aux,
+        "_get_auxiliary_task_config",
+        lambda task: {"fallback_chain": [{"provider": "custom:dead"}, {"provider": "custom:backup"}]},
+    )
+    monkeypatch.setattr(aux, "_auth_refresh_provider_for_route", lambda *args, **kwargs: "vertex")
+    monkeypatch.setattr(aux, "_refresh_provider_credentials", lambda *args, **kwargs: False)
+    monkeypatch.setattr(aux, "_recoverable_pool_provider", lambda *args, **kwargs: None)
+    for name in ("_try_payment_fallback", "_try_main_fallback_chain", "_try_main_agent_model_fallback"):
+        monkeypatch.setattr(aux, name, lambda *a, _n=name, **k: pytest.fail(f"{_n} must stay gated for explicit auth"))
+
+    def configured_chain(*args, **kwargs):
+        if not chain:
+            return None, None, ""
+        label, client = chain.pop(0)
+        return client, FALLBACK_MODEL, label
+
+    monkeypatch.setattr(aux, "_try_configured_fallback_chain", configured_chain)
+    ladder = aux._aux_recovery_ladder(
+        _auth_error(),
+        client=_ExplicitProviderClient(),
+        kwargs={"model": AUX_MODEL},
+        task="compression",
+        async_mode=False,
+        base_info="https://vertex.example/v1",
+        resolved_provider="vertex",
+        resolved_model=AUX_MODEL,
+        resolved_base_url=None,
+        resolved_api_key=None,
+        resolved_api_mode=None,
+        final_model=AUX_MODEL,
+        max_tokens=None,
+        main_runtime=None,
+        route_info={},
+    )
+
+    def perform(step):
+        assert step.kind == "fallback"
+        if step.args[0] is dead_client:
+            return None  # quarantined mid-request → the ladder re-walks the chain
+        assert step.args == (fallback_client, FALLBACK_MODEL, "fallback_chain[1](custom:backup)")
+        return "fallback-response"
+
+    if spare_survives:
+        assert aux._drive_ladder(ladder, perform) == "fallback-response"
+    else:
+        with pytest.raises(_ApiError, match="Unauthorized"):
+            aux._drive_ladder(ladder, perform)
+    assert not chain
+
+
+def test_explicit_provider_auth_never_uses_an_unconfigured_fallback(monkeypatch):
+    """A 401 without a task chain preserves the explicit-provider boundary."""
+    monkeypatch.setattr(aux, "_get_auxiliary_task_config", lambda task: {})
+    monkeypatch.setattr(aux, "_auth_refresh_provider_for_route", lambda *args, **kwargs: "vertex")
+    monkeypatch.setattr(aux, "_refresh_provider_credentials", lambda *args, **kwargs: False)
+    monkeypatch.setattr(aux, "_recoverable_pool_provider", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        aux,
+        "_try_main_agent_model_fallback",
+        lambda *args, **kwargs: pytest.fail("explicit auth must not use the main-agent fallback"),
+    )
+    ladder = aux._aux_recovery_ladder(
+        _auth_error(),
+        client=_ExplicitProviderClient(),
+        kwargs={"model": AUX_MODEL},
+        task="compression",
+        async_mode=False,
+        base_info="https://vertex.example/v1",
+        resolved_provider="vertex",
+        resolved_model=AUX_MODEL,
+        resolved_base_url=None,
+        resolved_api_key=None,
+        resolved_api_mode=None,
+        final_model=AUX_MODEL,
+        max_tokens=None,
+        main_runtime=None,
+        route_info={},
+    )
+
+    with pytest.raises(_ApiError, match="Unauthorized"):
+        aux._drive_ladder(ladder, lambda step: pytest.fail("no fallback request expected"))
 
 
 @pytest.fixture
@@ -175,7 +273,7 @@ def nous_ladder_endpoint(monkeypatch):
         return resolve_address(host, *args, **kwargs)
 
     monkeypatch.setattr(socket, "getaddrinfo", local_nous_address)
-    monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost,%s" % NOUS_HOST)
+    monkeypatch.setenv("NO_PROXY", f"127.0.0.1,localhost,{NOUS_HOST}")
 
     class Handler(BaseHTTPRequestHandler):
         def _send(self, status, payload):
@@ -200,8 +298,8 @@ def nous_ladder_endpoint(monkeypatch):
                     self._send(401, {"error": {"message": "Unauthorized", "type": "authentication_error"}})
                     return
                 self._send(404, {"error": {
-                    "message": "Model '%s' requires available credits. Your account "
-                               "balance is too low to use paid models." % AUX_MODEL,
+                    "message": f"Model '{AUX_MODEL}' requires available credits. Your account "
+                               "balance is too low to use paid models.",
                     "type": "invalid_request_error",
                     "code": "insufficient_credits",
                 }})
@@ -228,7 +326,7 @@ def nous_ladder_endpoint(monkeypatch):
     )
     thread.start()
     try:
-        yield "http://%s:%d" % (NOUS_HOST, server.server_port), requests
+        yield f'http://{NOUS_HOST}:{server.server_port:d}', requests
     finally:
         aux.shutdown_cached_clients()
         server.shutdown()
@@ -240,7 +338,7 @@ def test_auth_refresh_retry_failure_reaches_the_configured_chain_over_http(
         tmp_path, monkeypatch, nous_ladder_endpoint):
     """End to end: the configured chain must serve the retry the refresh could not."""
     host_url, requests = nous_ladder_endpoint
-    local_url = "http://127.0.0.1:%s" % host_url.rsplit(":", 1)[1]
+    local_url = "http://127.0.0.1:{}".format(host_url.rsplit(":", 1)[1])
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("AUX_FB_KEY", "fallback-test-key")
     config = {
@@ -278,8 +376,7 @@ def test_auth_refresh_retry_failure_reaches_the_configured_chain_over_http(
         body.get("model") for path, body in requests if path == "/v1/chat/completions"
     ]
     assert seen == [AUX_MODEL, AUX_MODEL, FALLBACK_MODEL], (
-        "401, then the refreshed retry fails on credits, then the configured chain: %r"
-        % (seen,)
+        f"401, then the refreshed retry fails on credits, then the configured chain: {seen!r}"
     )
 
 
@@ -291,7 +388,6 @@ def test_exhausted_ladder_raises_the_narrowed_error(monkeypatch, hermetic):
     def _no_chain(first_err, route):
         hermetic.append(first_err)
         yield from ()
-        return None
 
     monkeypatch.setattr(aux, "_ladder_provider_fallback", _no_chain)
     failure = _credit_error()
@@ -303,5 +399,5 @@ def test_exhausted_ladder_raises_the_narrowed_error(monkeypatch, hermetic):
         aux._drive_ladder(_ladder(), perform)
 
     assert raised.value is failure, (
-        "the ladder must surface the actionable retry failure, got %r" % (raised.value,))
+        f"the ladder must surface the actionable retry failure, got {raised.value!r}")
     assert hermetic == [failure]

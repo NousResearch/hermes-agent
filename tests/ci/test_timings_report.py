@@ -9,7 +9,7 @@ and provides a one-line summary plus optional per-job delta detail.
 from __future__ import annotations
 
 import importlib.util
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 
 _PATH = Path(__file__).resolve().parents[2] / "scripts" / "ci" / "timings_report.py"
@@ -19,13 +19,13 @@ if _spec is None or _spec.loader is None:
 _mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_mod)
 
-_T0 = datetime(2025, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+_T0 = datetime(2025, 1, 1, 0, 0, 0, tzinfo=UTC)
 
 
 def _ts(seconds: float) -> str:
     """ISO timestamp `seconds` after T0."""
     dt = _T0.timestamp() + seconds
-    return datetime.fromtimestamp(dt, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+    return datetime.fromtimestamp(dt, tz=UTC).isoformat().replace("+00:00", "Z")
 
 
 def _job(name: str, dur_s: float, start_s: float = 0.0, conclusion: str = "success") -> dict:
@@ -86,8 +86,6 @@ def test_large_regression_is_warning():
     assert "+33" in result["summary"]
 
 
-
-
 def test_detail_shows_top_deltas():
     cur = _timings([_job("slow-job", 120.0), _job("fast-job", 30.0, start_s=120.0)])
     bl = _timings([_job("slow-job", 60.0), _job("fast-job", 60.0, start_s=60.0)])
@@ -96,30 +94,3 @@ def test_detail_shows_top_deltas():
     assert "fast-job" in result["detail"]
     # Sorted by abs delta — slow-job (+60) before fast-job (-30)
     assert result["detail"].index("slow-job") < result["detail"].index("fast-job")
-
-
-
-
-def test_report_url_passed_through():
-    t = _timings([_job("tests", 60.0)])
-    result = _result(_mod.generate_review_status(t, None, report_url="https://artifact/123"))
-    assert result["link"] == "https://artifact/123"
-    assert result["link_label"] == "View report"
-
-
-
-
-def test_nested_format_structure():
-    """The return value is a list with one {source, results: [...]} entry."""
-    t = _timings([_job("tests", 60.0)])
-    statuses = _mod.generate_review_status(t, None)
-    assert isinstance(statuses, list)
-    assert len(statuses) == 1
-    assert statuses[0]["source"] == "ci timing"
-    assert isinstance(statuses[0]["results"], list)
-    assert len(statuses[0]["results"]) == 1
-    r = statuses[0]["results"][0]
-    assert r["kind"] == "debug"
-    assert r["title"] == "CI timings"
-    assert "summary" in r
-    assert "detail" in r

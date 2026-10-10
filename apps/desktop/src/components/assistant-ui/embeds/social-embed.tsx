@@ -1,131 +1,118 @@
 'use client'
 
-import { useEffect, useRef } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
-import { escapeHtml } from './escape-html'
-import type { EmbedDescriptor } from './providers/types'
+import { EMBED_DEFAULT_H } from './embed-size'
+import type { EmbedDescriptor, EmbedProvider } from './providers/types'
 import { useIsDark } from './use-is-dark'
 
-// The provider embed scripts need a REAL origin to run (they touch
-// cookies/storage/postMessage), so — exactly like react-social-media-embed — we
-// render the official blockquote in this document and let the script swap it for
-// a correctly-sized iframe. A sandboxed srcDoc iframe gives a null origin and
-// the scripts silently bail (white / 2px). The container is height:auto, so it
-// grows to whatever the provider renders. No measuring, no forced height.
-type EmbedWindow = Window &
-  typeof globalThis & {
-    instgrm?: { Embeds?: { process?: () => void } }
-    twttr?: { widgets?: { load?: (el?: HTMLElement) => void } }
-  }
+// X and Instagram render in the provider's own cross-origin iframe, like every
+// other embed. Their widget scripts (widgets.js / embed.js) must never run in
+// this document: it is the privileged app window, and any script here can call
+// the preload bridge (window.hermesDesktop: terminal, files, backend API). The
+// sandbox keeps only what the embed pages need (scripts, and their own
+// origin's cookies and storage) and drops top navigation, popups (main's
+// window-open policy denies them anyway), forms and modals. The frame is
+// cross-origin, so allow-same-origin gives it nothing of ours, and Electron
+// injects no preload into subframes.
+const SOCIAL_FRAME_SANDBOX = 'allow-scripts allow-same-origin'
 
-const SCRIPT: Record<string, { id: string; src: string }> = {
-  instagram: { id: 'hermes-ig-embed', src: 'https://www.instagram.com/embed.js' },
-  tiktok: { id: 'hermes-tt-embed', src: 'https://www.tiktok.com/embed.js' },
-  twitter: { id: 'hermes-tw-embed', src: 'https://platform.twitter.com/widgets.js' }
+const FRAME_ORIGIN: Partial<Record<EmbedProvider, string>> = {
+  instagram: 'https://www.instagram.com',
+  twitter: 'https://platform.twitter.com'
 }
 
-const PROCESS_DELAYS_MS = [0, 300, 800, 1600, 3000]
+function socialFrameSrc(descriptor: EmbedDescriptor, theme: 'dark' | 'light'): string {
+  if (descriptor.renderer !== 'tweet') {
+    return descriptor.embedUrl
+  }
 
-function markup(descriptor: EmbedDescriptor, theme: 'dark' | 'light'): string {
-  const url = escapeHtml(descriptor.sourceUrl)
+  const url = new URL('https://platform.twitter.com/embed/Tweet.html')
 
-  switch (descriptor.provider) {
-    case 'instagram':
-      return `<blockquote class="instagram-media" data-instgrm-permalink="${url}" data-instgrm-version="14" style="margin:0;width:100%;min-width:0;max-width:100%"></blockquote>`
-    case 'tiktok': {
-      const id = escapeHtml(descriptor.id.replace(/^tiktok:/, ''))
+  url.searchParams.set('id', descriptor.tweetId)
+  url.searchParams.set('theme', theme)
+  url.searchParams.set('dnt', 'true')
 
-      return `<blockquote class="tiktok-embed" cite="${url}" data-video-id="${id}" style="margin:0;max-width:100%"><section></section></blockquote>`
+  return url.toString()
+}
+
+interface EmbedMessage {
+  details?: { height?: unknown }
+  type?: unknown
+  'twttr.embed'?: { method?: unknown; params?: { height?: unknown }[] }
+}
+
+// Both embed pages post their rendered height to the parent, the messages their
+// own widget scripts listen for: X sends {"twttr.embed": {method:
+// "twttr.private.resize", params: [{height}]}}, Instagram the JSON string
+// {"type": "MEASURE", "details": {height}}. Only that number is read.
+function reportedHeight(data: unknown): number | null {
+  let message = data
+
+  if (typeof message === 'string') {
+    try {
+      message = JSON.parse(message)
+    } catch {
+      return null
     }
-
-    case 'twitter':
-      // data-chrome="transparent" drops the card background so the themed page
-      // shows through instead of a white box.
-      return `<blockquote class="twitter-tweet" data-dnt="true" data-theme="${theme}" data-chrome="transparent"><a href="${url}"></a></blockquote>`
-
-    default:
-      return ''
-  }
-}
-
-function loadScript(provider: string): Promise<void> {
-  const { id, src } = SCRIPT[provider]
-
-  // TikTok exposes no re-process API; its script rescans the document each time
-  // it runs, so we re-inject it. The others are loaded once and reused.
-  if (provider === 'tiktok') {
-    document.getElementById(id)?.remove()
-  } else if (document.getElementById(id)) {
-    return Promise.resolve()
   }
 
-  return new Promise(resolve => {
-    const script = document.createElement('script')
-
-    script.async = true
-    script.id = id
-    script.onload = () => resolve()
-    script.onerror = () => resolve()
-    script.src = src
-    document.body.appendChild(script)
-  })
-}
-
-function processEmbed(provider: string, container: HTMLElement): void {
-  const win = window as EmbedWindow
-
-  if (provider === 'instagram') {
-    win.instgrm?.Embeds?.process?.()
-  } else if (provider === 'twitter') {
-    win.twttr?.widgets?.load?.(container)
+  if (!message || typeof message !== 'object') {
+    return null
   }
-  // TikTok auto-scans on (re)injection — no manual process call.
+
+  const { details, type, 'twttr.embed': tweet } = message as EmbedMessage
+
+  const height =
+    tweet?.method === 'twttr.private.resize'
+      ? tweet.params?.[0]?.height
+      : type === 'MEASURE'
+        ? details?.height
+        : undefined
+
+  return typeof height === 'number' && Number.isFinite(height) && height > 0 ? Math.ceil(height) : null
 }
 
 export default function SocialEmbedRenderer({ descriptor }: { descriptor: EmbedDescriptor }) {
   const isDark = useIsDark()
-  const ref = useRef<HTMLDivElement | null>(null)
+  const ref = useRef<HTMLIFrameElement | null>(null)
+  const [height, setHeight] = useState(descriptor.height ?? EMBED_DEFAULT_H)
+  const src = useMemo(() => socialFrameSrc(descriptor, isDark ? 'dark' : 'light'), [descriptor, isDark])
 
   useEffect(() => {
-    const container = ref.current
-
-    if (!container) {
-      return
-    }
-
-    let cancelled = false
-    const timers: number[] = []
-
-    container.innerHTML = markup(descriptor, isDark ? 'dark' : 'light')
-
-    void loadScript(descriptor.provider).then(() => {
-      // The script renders asynchronously; nudge a few times so the embed
-      // settles whether the script was cached or freshly fetched.
-      for (const delay of PROCESS_DELAYS_MS) {
-        timers.push(window.setTimeout(() => !cancelled && processEmbed(descriptor.provider, container), delay))
-      }
-    })
-
-    return () => {
-      cancelled = true
-
-      for (const timer of timers) {
-        clearTimeout(timer)
+    const onMessage = (event: MessageEvent) => {
+      if (event.source !== ref.current?.contentWindow || event.origin !== FRAME_ORIGIN[descriptor.provider]) {
+        return
       }
 
-      container.innerHTML = ''
+      const next = reportedHeight(event.data)
+
+      if (next) {
+        setHeight(next)
+      }
     }
-  }, [descriptor, isDark])
+
+    window.addEventListener('message', onMessage)
+
+    return () => window.removeEventListener('message', onMessage)
+  }, [descriptor.provider])
 
   // The white corner/box on tweets is a color-scheme MISMATCH: when the iframe's
   // resolved scheme differs from ours, the browser paints an opaque (white)
-  // Canvas behind it. Twitter's embed resolves to `light`, so we force the iframe
-  // to `light` to match — no mismatch, no Canvas — and data-chrome=transparent
-  // then lets the dark page show through. (Confirmed: mkdocs-material #6889.)
+  // Canvas behind it. The embed pages resolve to `light`, so the iframe is
+  // forced to `light` to match; theme=dark still gives the dark tweet card.
   return (
-    <div
-      className="w-full [&_.instagram-media]:!min-w-0 [&_iframe]:!m-0 [&_iframe]:!max-w-full [&_iframe]:[color-scheme:light]"
+    <iframe
+      allowFullScreen
+      className="block w-full border-0 bg-transparent"
+      loading="lazy"
       ref={ref}
+      referrerPolicy="strict-origin-when-cross-origin"
+      sandbox={SOCIAL_FRAME_SANDBOX}
+      scrolling="no"
+      src={src}
+      style={{ colorScheme: 'light', height }}
+      title={`${descriptor.label} embed`}
     />
   )
 }

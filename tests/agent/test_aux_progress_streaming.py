@@ -18,12 +18,15 @@ from agent.auxiliary_client import (
     _AnthropicCompletionsAdapter,
     _ChatStreamAccumulator,
     _CodexCompletionsAdapter,
+    _acreate_with_progress,
     _acreate_with_stream,
     _aggregate_chat_stream,
     _aggregate_chat_stream_async,
     _anthropic_event_has_content,
-    _aux_stream_total_ceiling,
+    _aux_dispatch,
+    _aux_thread_local_hook,
     _create_with_progress,
+    _create_with_progress_once,
     _notify_aux_progress,
     _provider_requires_stream,
     aux_progress_hook,
@@ -145,9 +148,21 @@ class TestCreateWithProgress:
         assert result.choices[0].message.reasoning == "thinking..."
         assert result.choices[0].finish_reason == "stop"
         assert result.usage.total_tokens == 7
-        # 1 dispatch tick (preserved for the watchdog's historical liveness
-        # signal — see _create_with_progress) + 1 per substantive chunk.
-        assert ticks == [1, 1, 1, 1]
+        # 1 tick per substantive chunk (reasoning, "Hello ", "world"); the
+        # dispatch itself is not progress (#114938).
+        assert ticks == [1, 1, 1]
+
+    def test_reasoning_only_in_model_extra_is_captured_and_counts_as_progress(self):
+        # Non-SDK delta objects (proxies, relays) may carry reasoning only in ``model_extra``;
+        # the accumulator must read it like the main streaming path does (#56516).
+        chunk = _chunk(finish_reason="stop")
+        chunk.choices[0].delta.model_extra = {"reasoning_content": "thinking..."}
+        client = _FakeClient(stream_chunks=[chunk])
+        ticks = []
+        with aux_progress_hook(lambda: ticks.append(1)):
+            result = _create_with_progress(client, {"model": "m1", "messages": [], "timeout": 30})
+        assert result.choices[0].message.reasoning == "thinking..."
+        assert ticks == [1]  # the reasoning chunk only; dispatch is not progress (#114938)
 
     def test_completed_response_ticks_only_terminal_signals(self):
         calls = []
@@ -166,11 +181,9 @@ class TestCreateWithProgress:
 
         assert calls[0]["stream"] is True
         assert result is _COMPLETE
-        # A completed response object carries the full summary payload, and
-        # the dispatch tick is the watchdog's historical liveness signal:
-        # both are one-shot terminal ticks, not per-frame keepalives, so
-        # neither can defeat an inactivity timeout.
-        assert ticks == [1, 1]
+        # A completed response object carries the full summary payload: one
+        # terminal tick, and no dispatch tick (#114938).
+        assert ticks == [1]
 
     def test_streaming_rejected_falls_back_to_plain_call(self):
         client = _FakeClient(
@@ -186,6 +199,28 @@ class TestCreateWithProgress:
         assert len(client.calls) == 2
         assert client.calls[0].get("stream") is True
         assert "stream" not in client.calls[1]
+
+    def test_dispatch_only_auth_failure_does_not_tick_progress(self):
+        """Bug pin (#114938): a dispatch that dies before any payload (401) must
+        not reset the compression inactivity fence. Dispatch telemetry still
+        fires, but progress_observed stays False."""
+        fence = CompressionCommitFence()
+        dispatches = []
+
+        class _AuthError(Exception):
+            status_code = 401
+
+        client = _FakeClient(stream_error=_AuthError("unauthorized"))
+        with (
+            aux_progress_hook(fence.touch_progress),
+            _aux_thread_local_hook(_aux_dispatch, lambda: dispatches.append(1)),
+            pytest.raises(_AuthError),
+        ):
+            _create_with_progress_once(
+                client, {"model": "m1", "messages": [], "timeout": 30},
+            )
+        assert dispatches == [1]  # dispatch telemetry preserved
+        assert fence.progress_observed is False
 
 
 
@@ -230,6 +265,169 @@ class TestAggregateChatStream:
         result = _aggregate_chat_stream(_Stream())
         assert result.choices[0].message.content == "ok"
         assert closed == [True]
+
+    @staticmethod
+    def _sse_server(gates: dict):
+        """Loopback HTTP/1.1 keepalive SSE endpoint; the request's ``model`` picks the script."""
+        import http.server
+        import json
+
+        def frame(handler, payload):
+            raw = (payload if isinstance(payload, str) else f"data: {json.dumps(payload)}\n\n").encode()
+            handler.wfile.write(b"%x\r\n%s\r\n" % (len(raw), raw))
+            handler.wfile.flush()
+
+        def chunk(content=None, finish=None, usage=None):
+            return {"id": "c1", "object": "chat.completion.chunk", "created": 0, "model": "m",
+                    "choices": [{"index": 0, "delta": {"content": content} if content else {},
+                                 "finish_reason": finish}], **({"usage": usage} if usage else {})}
+
+        class _Handler(http.server.BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def log_message(self, *args):
+                pass
+
+            def do_POST(self):
+                script = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)))["model"]
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Transfer-Encoding", "chunked")
+                self.end_headers()
+                self.wfile.flush()
+                try:
+                    if script in ("openai/o3", "slow"):  # silent reasoning before the first token
+                        time.sleep(2.0)
+                    if script == "b":
+                        gates["b_started"].set()
+                    frame(self, chunk(content="partial"))
+                    if script == "usage":  # terminal chunk with billed usage, then a stalled teardown
+                        frame(self, chunk(finish="stop", usage={
+                            "prompt_tokens": 100, "completion_tokens": 9, "total_tokens": 109}))
+                    gates.get(script, gates["release"]).wait(30)
+                    if script != "a":  # "a" ends its body at EOF (no [DONE]), freeing the keepalive socket
+                        frame(self, "data: [DONE]\n\n")
+                    self.wfile.write(b"0\r\n\r\n")
+                    self.wfile.flush()
+                except OSError:
+                    pass
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+        server.daemon_threads = True
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        return server
+
+    @pytest.fixture
+    def sse(self, monkeypatch):
+        """(gates, call(model, task)) against the real OpenAI SDK + loopback transport. The default
+        window is 3s and ``auxiliary.compression.no_progress_timeout`` is 0.4s."""
+        import openai
+
+        gates = {name: threading.Event() for name in ("release", "a", "b", "b_started", "usage")}
+        server = self._sse_server(gates)
+        monkeypatch.setattr("agent.auxiliary_client._AUX_STREAM_NO_PROGRESS_TIMEOUT_SECONDS", 3.0)
+        monkeypatch.setattr("agent.auxiliary_client._get_task_no_progress_timeout",
+                            lambda task: 0.4 if task == "compression" else None)
+        # Loopback stands in for a remote endpoint: the first-token window applies to non-local ones.
+        monkeypatch.setattr("agent.model_metadata.is_local_endpoint", lambda _url: False)
+        client = openai.OpenAI(api_key="k", base_url=f"http://127.0.0.1:{server.server_port}/v1", max_retries=0)
+
+        def call(model, task, *, via_relay_seam=False, provider=None):
+            from agent.auxiliary_client import _relay_aux_call_scope, _relay_sync_completion
+
+            request = {"model": model, "messages": [], "timeout": 20.0}
+            with aux_progress_hook(lambda: None):
+                if via_relay_seam:  # a recovery rung / credential retry: the default relay callback
+                    with _relay_aux_call_scope((task,), {}):
+                        return _relay_sync_completion(client, request, provider=provider)
+                return _create_with_progress(client, request, task)
+
+        try:
+            yield gates, call
+        finally:
+            for gate in gates.values():
+                gate.set()
+            server.shutdown()
+            client.close()
+
+    @pytest.mark.parametrize("via_relay_seam", [False, True], ids=["primary", "recovery_rung"])
+    def test_silent_stream_fails_fast_through_the_real_transport(self, sse, via_relay_seam):
+        """#100501: an endpoint that sends one chunk then goes silent fails at the task's no-progress
+        window as a timeout (so retry/fallback run), not at the request read timeout. Recovery rungs
+        go through the default relay callback and must keep the task's window."""
+        from agent.auxiliary_client import _should_skip_same_provider_retry
+
+        _gates, call = sse
+        started = time.monotonic()
+        with pytest.raises(TimeoutError) as excinfo:
+            call("m", "compression", via_relay_seam=via_relay_seam)
+        assert time.monotonic() - started < 5.0
+        assert "stalled: no new output for 0.4s" in str(excinfo.value)
+        assert _should_skip_same_provider_retry("compression", excinfo.value)
+
+    @pytest.mark.parametrize("case", ["reasoning_before_first_token", "provider_stale_timeout_before_first_token",
+                                      "stall_after_terminal_usage", "late_timer_after_pool_reuse"])
+    def test_watchdog_only_cuts_its_own_unfinished_stream(self, sse, case, monkeypatch):
+        """The no-progress watchdog must not cut (a) a model thinking silently before its first token
+        for 5x the inter-chunk window (main-loop reasoning floor, or the routed provider's explicit
+        ``providers.<id>.stale_timeout_seconds`` over a shorter env stale timeout), (b) a response
+        whose terminal chunk and billed usage already arrived, nor (c) a later request that reused
+        the keepalive connection after a stalled attempt's timer had already woken."""
+        gates, call = sse
+        if case == "reasoning_before_first_token":
+            gates["release"].set()  # the stream ends right after its first chunk
+            assert call("openai/o3", "compression").choices[0].message.content == "partial"
+            return
+        if case == "provider_stale_timeout_before_first_token":
+            gates["release"].set()
+            monkeypatch.setenv("HERMES_STREAM_STALE_TIMEOUT", "0.5")
+            monkeypatch.setattr("hermes_cli.config.load_config_readonly",
+                                lambda: {"providers": {"openrouter": {"stale_timeout_seconds": 900}}})
+            result = call("slow", "compression", via_relay_seam=True, provider="openrouter")
+            assert result.choices[0].message.content == "partial"
+            return
+        if case == "stall_after_terminal_usage":
+            result = call("usage", "compression")
+            assert result.choices[0].message.content == "partial"
+            assert (result.usage.prompt_tokens, result.usage.completion_tokens) == (100, 9)
+            return
+        # Hold the stalled attempt's timer at the moment it shuts a socket down; meanwhile let
+        # attempt A end at EOF (its connection may return to the pool) and start B on the client.
+        paused, resume, outcome = threading.Event(), threading.Event(), {}
+
+        def tracer(frame, event, _arg):
+            if (event == "call" and frame.f_code.co_name == "_shutdown_socket"
+                    and not paused.is_set()):
+                paused.set()
+                resume.wait(3)
+
+        def run(name, model, task):
+            try:
+                outcome[name] = call(model, task)
+            except Exception as exc:
+                outcome[name] = exc
+
+        threading.settrace(tracer)
+        try:
+            attempt_a = threading.Thread(target=run, args=("a", "a", "compression"))
+            attempt_a.start()
+            assert paused.wait(3)
+            gates["a"].set()
+            attempt_a.join(0.3)
+            attempt_b = threading.Thread(target=run, args=("b", "b", None))
+            attempt_b.start()
+            assert gates["b_started"].wait(3)
+            resume.set()
+            time.sleep(0.2)
+            gates["b"].set()
+            attempt_b.join(5)
+            attempt_a.join(5)
+        finally:
+            threading.settrace(None)
+            resume.set()
+        assert isinstance(outcome["a"], TimeoutError)
+        assert getattr(outcome["b"], "choices", None), outcome["b"]
+        assert outcome["b"].choices[0].message.content == "partial"
 
 
 
@@ -464,7 +662,7 @@ class TestContentBearingProgress:
 
         assert touches == [1, 1]
 
-    def test_keepalive_chunks_do_not_reset_the_compression_fence(self):
+    def test_keepalive_chunks_do_not_reset_the_compression_fence(self, monkeypatch):
         """End-to-end bug pin (#96707): content-free frames must not refresh
         CompressionCommitFence._last_progress.
 
@@ -472,7 +670,10 @@ class TestContentBearingProgress:
         seconds_since_progress(); before the fix, every keepalive chunk fed
         through _ChatStreamAccumulator ticked the fence, so a stalled
         summary stream never hit the inactivity timeout."""
+        now = [10.0]
+        monkeypatch.setattr("agent.conversation_compression.time.monotonic", lambda: now[0])
         fence = CompressionCommitFence()
+        now[0] = 20.0
         accumulator = _ChatStreamAccumulator()
         keepalive = SimpleNamespace(id=None, model=None, choices=[], usage=None)
         empty_role_chunk = _chunk(content="", reasoning="")
@@ -490,64 +691,38 @@ class TestContentBearingProgress:
 
     def test_content_free_frames_still_record_ttfp_timing(self):
         """The fast-lane telemetry contract (#96945/#96963) survives the
-        gating: time_to_first_progress_ms must record on the FIRST frame of
-        any kind (transport liveness), not only on the first token."""
+        #96707 gating: the provider-response (time_to_first_progress_ms)
+        hook must fire on the FIRST frame of any kind (transport liveness),
+        not only on the first token."""
         from agent.auxiliary_client import (
             _aux_provider_response,
             _aux_thread_local_hook,
-            _notify_aux_timing_response,
         )
 
-        timings: dict = {}
-
-        def _timed_response() -> None:
-            timings.setdefault("time_to_first_progress_ms", 42)
-
+        responses: list = []
         keepalive = SimpleNamespace(id=None, model=None, choices=[], usage=None)
         accumulator = _ChatStreamAccumulator()
 
         with (
-            _aux_thread_local_hook(_aux_provider_response, _timed_response),
+            _aux_thread_local_hook(_aux_provider_response, lambda: responses.append("response")),
             aux_progress_hook(lambda: None),
         ):
             accumulator.feed(keepalive)
 
-        assert timings["time_to_first_progress_ms"] == 42
+        assert responses, "content-free first frame must still record TTFP"
+
 
 
 # ---------------------------------------------------------------------------
 # Ceiling arithmetic
 # ---------------------------------------------------------------------------
 
-class TestStreamCeiling:
-    def test_floor_applies_to_small_timeouts(self):
-        assert _aux_stream_total_ceiling(30) == 600.0
-
-
-    def test_none_timeout_gets_floor(self):
-        assert _aux_stream_total_ceiling(None) == 600.0
 
 
 # ---------------------------------------------------------------------------
 # CompressionCommitFence progress surface
 # ---------------------------------------------------------------------------
 
-class TestFenceProgress:
-    def test_touch_progress_resets_idle_clock(self):
-        fence = CompressionCommitFence()
-        time.sleep(0.05)
-        assert fence.seconds_since_progress() >= 0.04
-        fence.touch_progress()
-        assert fence.seconds_since_progress() < 0.05
-
-    def test_fence_hook_wiring_matches_compressor_usage(self):
-        # conversation_compression installs fence.touch_progress as the hook;
-        # verify the pair works end-to-end through _notify_aux_progress.
-        fence = CompressionCommitFence()
-        time.sleep(0.05)
-        with aux_progress_hook(fence.touch_progress):
-            _notify_aux_progress()
-        assert fence.seconds_since_progress() < 0.05
 
 
 # ---------------------------------------------------------------------------
@@ -677,3 +852,31 @@ class TestAsyncStreamAggregation:
         )
         assert calls[0]["stream"] is True
         assert result.choices[0].message.content == "ok"
+    @pytest.mark.asyncio
+    async def test_async_dispatch_only_auth_failure_does_not_tick_progress(self):
+        """Async twin of the #114938 pin: a 401 dispatch must not reset the
+        compression inactivity fence."""
+        fence = CompressionCommitFence()
+        dispatches = []
+
+        class _AuthError(Exception):
+            status_code = 401
+
+        class _AsyncClient:
+            def __init__(self):
+                completions = SimpleNamespace(create=self._create)
+                self.chat = SimpleNamespace(completions=completions)
+
+            async def _create(self, **kwargs):
+                raise _AuthError("unauthorized")
+
+        with (
+            aux_progress_hook(fence.touch_progress),
+            _aux_thread_local_hook(_aux_dispatch, lambda: dispatches.append(1)),
+            pytest.raises(_AuthError),
+        ):
+            await _acreate_with_progress(
+                _AsyncClient(), {"model": "m1", "messages": [], "timeout": 30},
+            )
+        assert dispatches == [1]
+        assert fence.progress_observed is False

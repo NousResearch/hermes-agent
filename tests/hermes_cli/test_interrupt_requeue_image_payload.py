@@ -24,6 +24,7 @@ class _Stub(CLIChatTurnMixin):
 
 def _interrupted_turn(payload):
     turn = MagicMock()
+    turn.mute_notification_reply = False
     turn.result = {"interrupted": True, "interrupt_message": payload, "final_response": ""}
     turn.use_streaming_tts = False
     return turn

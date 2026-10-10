@@ -43,7 +43,7 @@ class StreamJsonEmitter:
         self._tool_started: dict[str, float] = {}
         self._emit({"type": "system", "subtype": "init", "model": model, "session_id": session_id})
 
-    def attach(self, agent) -> "StreamJsonEmitter":
+    def attach(self, agent) -> StreamJsonEmitter:
         """Route the agent's streaming/tool callbacks into this emitter (``init`` was already written at
         construction, before credentials/agent init, so a failed start still yields init + result)."""
         agent.stream_delta_callback = self.on_text_delta

@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Hermes",
-  "version": "0.21.1",
+  "version": "0.0.0",
   "identifier": "com.nousresearch.hermes.setup",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -48,7 +48,8 @@
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",
-      "icons/icon.ico"
+      "icons/icon.ico",
+      "icons/icon.icon"
     ],
     "windows": {
       "webviewInstallMode": {

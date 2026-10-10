@@ -18,8 +18,10 @@ from pathlib import PurePosixPath
 
 from hermes_cli.local_runtime.context_policy import (
     FLOOR, RUNTIME_OVERHEAD_BYTES, TARGET_WINDOW, LaunchPlan, plan_launch)
-from hermes_cli.local_runtime.estimator import HardwareBudget, LayerKind, ModelProfile, PhysicsRefusal
+from hermes_cli.local_runtime.estimator import (
+    HardwareBudget, LayerKind, ModelProfile, PhysicsRefusal, as_loaded)
 from hermes_cli.local_runtime.gguf import model_id_from_stem
+from hermes_platform.host.products import is_nvidia_n1x_pci_id
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +38,8 @@ class AssetFile:
     path: str                   # repo-relative (may include a subdir)
     size_bytes: int
     local: str | None = None
+    repo: str | None = None     # HF repo when it is not the entry's own (a companion published elsewhere)
+    revision: str = "main"      # commit whose bytes size_bytes and the entry's pricing describe
 
     @property
     def local_name(self) -> str:
@@ -50,6 +54,9 @@ class QuantVariant:
     quant: str                  # e.g. "UD-Q4_K_M"
     files: tuple                # AssetFile, first = the load target
     validated: bool = False     # proven end-to-end on real hardware
+    # Bytes of tensors the engine reads from the file on demand instead of loading (see
+    # gguf._LAZY_READ_TENSORS), taken from the build's tensor table at authoring time.
+    lazy_bytes: int = 0
 
     @property
     def model_id(self) -> str:
@@ -61,9 +68,10 @@ class QuantVariant:
 
     @property
     def weights_bytes(self) -> int:
-        """Pre-download weights estimate: GGUF bytes ≈ tensor bytes + a <2% header — slightly
-        conservative until profile_from_gguf reads the real table."""
-        return self.size_bytes
+        """Pre-download estimate of the weights the engine loads: GGUF bytes ≈ tensor bytes + a <2%
+        header, less the tensors it reads from disk on demand — slightly conservative until
+        profile_from_gguf reads the real table."""
+        return self.size_bytes - self.lazy_bytes
 
 
 @dataclass(frozen=True)
@@ -90,8 +98,14 @@ class CatalogEntry:
     # Vocab size prices the GPU logits buffers (ubatch x vocab x fp32, doubled under MTP backend
     # sampling) — a multi-GiB term at large vocabs that a weights-only fit would miss.
     n_vocab: int = 0
-    mmproj: "AssetFile | None" = None    # vision projector, downloads with model
-    draft: "AssetFile | None" = None     # spec-decode draft model (e.g. DSpark)
+    # GGUF general.architecture; prices architecture-specific buffers (estimator._WINDOW_COMPUTE_BYTES)
+    # before the file is on disk.
+    architecture: str = ""
+    mmproj: AssetFile | None = None    # vision projector, downloads with model
+    draft: AssetFile | None = None     # spec-decode draft model (e.g. DSpark)
+    # MTP head shipped as its own file (the model carries none): the engine loads it as the
+    # draft for MTP spec decode. Downloads with the model.
+    mtp_head: AssetFile | None = None
     sampling: dict = field(default_factory=dict)  # INI long-form launch defaults
     # Oldest llama.cpp release tag that can load this model (day-0 architectures need the release
     # where their support landed). Empty means any installed engine.
@@ -106,6 +120,16 @@ class CatalogEntry:
     # recommendation.
     decode_fraction: float = 1.0
 
+    @property
+    def mtp_capable(self) -> bool:
+        """MTP spec decode runs, from heads built into the model or shipped beside it."""
+        return self.mtp or self.mtp_head is not None
+
+    @property
+    def companion_bytes(self) -> int:
+        """Companion files the engine loads beside the weights (vision projector, MTP head)."""
+        return sum(a.size_bytes for a in (self.mmproj, self.mtp_head) if a is not None)
+
     def profile(self, variant: QuantVariant) -> ModelProfile:
         layers = ([(LayerKind.FULL, self.per_layer_f16)] * self.full_layers
                   + [(LayerKind.SWA, self.per_layer_f16)] * self.swa_layers
@@ -113,17 +137,17 @@ class CatalogEntry:
         return ModelProfile(
             name=variant.model_id, weights_bytes=variant.weights_bytes, embd_table_bytes=0,
             n_ctx_train=self.n_ctx_train, layers=layers, swa_window=self.swa_window, moe=self.moe,
-            n_vocab=self.n_vocab, kv_scale=1.2 if self.mtp else 1.0)
+            architecture=self.architecture, n_vocab=self.n_vocab,
+            kv_scale=1.2 if self.mtp_capable else 1.0, lazy_bytes=variant.lazy_bytes)
 
     def launch_plan(self, variant: QuantVariant, budget: HardwareBudget) -> LaunchPlan:
         # Optional external drafts may use spare memory after download, never reduce this grant.
-        return plan_launch(self.profile(variant), budget, mtp_capable=self.mtp,
-                           fixed_overhead=RUNTIME_OVERHEAD_BYTES
-                           + (self.mmproj.size_bytes if self.mmproj else 0))
+        return plan_launch(as_loaded(self.profile(variant), budget), budget, mtp_capable=self.mtp_capable,
+                           fixed_overhead=RUNTIME_OVERHEAD_BYTES + self.companion_bytes)
 
     def download_files(self, variant: QuantVariant) -> tuple:
         """Everything a download job fetches for this variant, in order."""
-        extras = tuple(a for a in (self.mmproj, self.draft) if a is not None)
+        extras = tuple(a for a in (self.mmproj, self.draft, self.mtp_head) if a is not None)
         return tuple(variant.files) + extras
 
     def download_bytes(self, variant: QuantVariant) -> int:
@@ -175,10 +199,45 @@ _HOST_BANDWIDTH_GB_S = 80.0         # spilled weights stream over host DRAM
 # compress floor, which marks unusable, not unpleasant.
 PLEASANT_FLOOR_TOK_S = 20.0
 
+# Shipped short-context reference rates, not benchmarks run during recommendation.
+# Windows N1X / b10964 CUDA: MTP2 measured 21.76–21.96 tok/s over four 512-token
+# prose probes; a four-slot smoke measured 21.89. At 32K input the reference was
+# 18.82 tok/s: this is a baseline estimate, not a context-independent guarantee.
+# Unmatched hardware, backend, quant or draft depth retains the bandwidth estimate.
+_MEASURED_DECODE_TOK_S = {
+    ("win32", "cuda", "NVIDIA RTX Spark N1X",
+     "qwen3.8-27b", "UD-Q4_K_M", 2): 21.9,
+}
+
+
+# Defaults the maker of a recognized product chose for it, keyed like the measured rates. The
+# derived rule still decides when the chosen entry is ineligible or cannot run resident, and every
+# other entry that fits stays available. The RTX Spark ships the 27B: Flash Next fits 128 GB, but
+# Windows backs GPU memory with commit outside the carve-out, so it loads only with the carve-out
+# lowered.
+_PRODUCT_DEFAULTS = {
+    ("win32", "cuda", "NVIDIA RTX Spark N1X"): "qwen3.8-27b",
+}
+
+
+def _hardware_key(budget: HardwareBudget, backend: str) -> tuple[str, str, str]:
+    """(platform, backend, reference GPU name) for the shipped tables; the name is empty when the
+    GPU is not recognized."""
+    # Drivers may append a parenthesized description to the stable device name.
+    gpu_name = budget.gpu_name.partition(" (")[0]
+    # Resolve PCI identity to the existing reference key; names only backfill missing IDs.
+    if budget.gpu_pci_id is not None:
+        gpu_name = "NVIDIA RTX Spark N1X" if is_nvidia_n1x_pci_id(budget.gpu_pci_id) else ""
+    effective_backend = "cuda" if backend == "auto" and gpu_name else backend
+    return (budget.platform, effective_backend, gpu_name)
+
 
 def predicted_decode_tok_s(entry: CatalogEntry, variant: QuantVariant, budget: HardwareBudget, *,
-                           spilled: bool = False) -> float:
-    """Memory-bound decode prediction for ordering and floor-gating."""
+                           spilled: bool = False, backend: str = "auto") -> float:
+    """Shipped measured baseline where matched, otherwise the memory-bound estimate."""
+    key = (*_hardware_key(budget, backend), entry.id, variant.quant, entry.mtp_draft_depth)
+    if budget.uma and entry.mtp and not spilled and (measured := _MEASURED_DECODE_TOK_S.get(key)) is not None:
+        return measured
     bandwidth = (_HOST_BANDWIDTH_GB_S if spilled
                  else _UMA_BANDWIDTH_GB_S if budget.uma
                  else _DISCRETE_BANDWIDTH_GB_S)
@@ -187,15 +246,16 @@ def predicted_decode_tok_s(entry: CatalogEntry, variant: QuantVariant, budget: H
 
 
 def recommended_entry(budget: HardwareBudget,
-                      entries: "tuple[CatalogEntry, ...] | None" = None
-                      ) -> "tuple[CatalogEntry, str] | None":
+                      entries: tuple[CatalogEntry, ...] | None = None, *, backend: str = "auto"
+                      ) -> tuple[CatalogEntry, str] | None:
     """The catalog's default pick for THIS machine, with its reason key.
 
     Callers pass pre-filtered entries when some are ineligible for reasons the catalog can't know
-    (engine too old). Reasons: best-quality-resident (quality won among resident entries clearing
-    the pleasant floor); speed-gated-quality (same, but the floor eliminated a HIGHER quality
-    candidate); fastest-resident (nothing resident clears the floor). Returns None when no
-    eligible entry runs resident; spilled models remain available for explicit selection.
+    (engine too old). Reasons: product-default (the product's maker chose this entry and it runs
+    resident); best-quality-resident (quality won among resident entries clearing the pleasant
+    floor); speed-gated-quality (same, but the floor eliminated a HIGHER quality candidate).
+    Returns None when no eligible entry runs resident at the pleasant floor; slower and spilled
+    models remain available for explicit selection.
     """
     pool = CATALOG if entries is None else entries
     fitting = [(e, c) for e in pool if (c := select_variant(e, budget)) is not None]
@@ -203,17 +263,19 @@ def recommended_entry(budget: HardwareBudget,
         return None
 
     def speed(t, spilled=False):
-        return predicted_decode_tok_s(t[0], t[1].variant, budget, spilled=spilled)
+        return predicted_decode_tok_s(t[0], t[1].variant, budget, spilled=spilled, backend=backend)
 
     resident = [(e, c) for e, c in fitting if c.zero_spill]
+    product_default = _PRODUCT_DEFAULTS.get(_hardware_key(budget, backend))
+    for entry, _ in resident:
+        if entry.id == product_default:
+            return (entry, "product-default")
     pleasant = [t for t in resident if speed(t) >= PLEASANT_FLOOR_TOK_S]
     if pleasant:
         pick = max(pleasant, key=lambda t: (t[0].quality, -t[1].variant.size_bytes))[0]
         floor_gated = any(e.quality > pick.quality for e, _ in resident)
         return (pick, "speed-gated-quality" if floor_gated else "best-quality-resident")
-    if resident:
-        return (max(resident, key=speed)[0], "fastest-resident")
-    # A spilled model may be usable, but it is not a recommendation. Keep it
+    # A slow or spilled model may be usable, but it is not a recommendation. Keep it
     # discoverable through Browse so the user can opt in with the degradation visible.
     return None
 
@@ -228,16 +290,17 @@ def recommended_entry(budget: HardwareBudget,
 
 _CATALOG_URL = ("https://raw.githubusercontent.com/NousResearch/hermes-agent"
                 "/main/hermes_cli/local_runtime/catalog.json")
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2  # bump when an older app would read a newer catalog but launch its entries wrongly
 _REFRESH_TTL_S = 6 * 3600
 _refresh_lock = threading.Lock()
 _last_refresh_attempt = 0.0
 
 
-def _asset_from(d: "dict | None") -> "AssetFile | None":
+def _asset_from(d: dict | None) -> AssetFile | None:
     if not d:
         return None
-    return AssetFile(path=d["path"], size_bytes=int(d["size_bytes"]), local=d.get("local"))
+    return AssetFile(path=d["path"], size_bytes=int(d["size_bytes"]), local=d.get("local"),
+                     repo=d.get("repo"), revision=d.get("revision", "main"))
 
 
 # Scalar CatalogEntry fields parsed from JSON: key -> (coerce, default); None default = required.
@@ -247,11 +310,11 @@ _SCALAR_FIELDS = {
     "swa_layers": (int, 0), "swa_window": (int, 0),
     "moe": (bool, False), "mtp": (bool, False), "mtp_draft_depth": (int, 3),
     "n_vocab": (int, 0), "sampling": (dict, {}), "min_engine": (str, ""),
-    "quality": (int, 0), "decode_fraction": (float, 1.0),
+    "quality": (int, 0), "decode_fraction": (float, 1.0), "architecture": (str, ""),
 }
 
 
-def _load_catalog(doc: dict) -> "tuple[CatalogEntry, ...]":
+def _load_catalog(doc: dict) -> tuple[CatalogEntry, ...]:
     """Parse a catalog document. Unknown fields are ignored (newer catalogs stay readable by older
     apps); a major schema bump is the signal that they wouldn't be, and the caller skips it."""
     if int(doc.get("schema_version", 0)) != _SCHEMA_VERSION:
@@ -260,7 +323,8 @@ def _load_catalog(doc: dict) -> "tuple[CatalogEntry, ...]":
     entries = []
     for m in doc["models"]:
         variants = tuple(QuantVariant(quant=v["quant"], validated=bool(v.get("validated")),
-                                      files=tuple(_asset_from(f) for f in v["files"]))
+                                      files=tuple(_asset_from(f) for f in v["files"]),
+                                      lazy_bytes=int(v.get("lazy_bytes", 0)))
                          for v in m["variants"])
         scalars = {k: coerce(m[k] if default is None else m.get(k, default))
                    for k, (coerce, default) in _SCALAR_FIELDS.items()}
@@ -268,18 +332,19 @@ def _load_catalog(doc: dict) -> "tuple[CatalogEntry, ...]":
             id=m["id"], display_name=m["display_name"],
             description=m["description"], repo=m["repo"], variants=variants,
             mmproj=_asset_from(m.get("mmproj")), draft=_asset_from(m.get("draft")),
+            mtp_head=_asset_from(m.get("mtp_head")),
             **scalars))
     return tuple(entries)
 
 
-def _packaged_catalog() -> "tuple[CatalogEntry, ...]":
+def _packaged_catalog() -> tuple[CatalogEntry, ...]:
     from importlib.resources import files
 
-    raw = files("hermes_cli.local_runtime").joinpath("catalog.json").read_text(encoding="utf-8")
+    raw = files("hermes_cli.local_runtime").joinpath("catalog.json").read_text(encoding="utf-8-sig")
     return _load_catalog(json.loads(raw))
 
 
-CATALOG: "tuple[CatalogEntry, ...]" = _packaged_catalog()
+CATALOG: tuple[CatalogEntry, ...] = _packaged_catalog()
 
 
 def refresh_catalog(force: bool = False) -> bool:
@@ -297,7 +362,7 @@ def refresh_catalog(force: bool = False) -> bool:
         req = urllib.request.Request(_CATALOG_URL, headers={"User-Agent": "hermes-local-runtime"})
         with urllib.request.urlopen(req, timeout=10) as r:
             fetched = _load_catalog(json.load(r))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.debug("catalog refresh skipped: %s", exc)
         return False
     if fetched != CATALOG:
@@ -318,7 +383,7 @@ def catalog_by_id() -> dict[str, CatalogEntry]:
     return {entry.id: entry for entry in CATALOG}
 
 
-def find_entry_for_model(model_id: str) -> "tuple[CatalogEntry, QuantVariant] | None":
+def find_entry_for_model(model_id: str) -> tuple[CatalogEntry, QuantVariant] | None:
     """Locate the entry + variant that owns a staged model id."""
     for entry in CATALOG:
         for variant in entry.variants:
@@ -327,25 +392,6 @@ def find_entry_for_model(model_id: str) -> "tuple[CatalogEntry, QuantVariant] | 
     return None
 
 
-def entry_for_model(model_id: str) -> "CatalogEntry | None":
+def entry_for_model(model_id: str) -> CatalogEntry | None:
     hit = find_entry_for_model(model_id)
     return hit[0] if hit is not None else None
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import re  # noqa: F401,E402
-
-def find_variant(entry_id: str, model_id: str) -> QuantVariant | None:
-    entry = catalog_by_id().get(entry_id)
-    if entry is None:
-        return None
-    return next((v for v in entry.variants if v.model_id == model_id), None)
-
-def recommended_id(budget: HardwareBudget,
-                   entries: "tuple[CatalogEntry, ...] | None" = None) -> str | None:
-    picked = recommended_entry(budget, entries)
-    return picked[0].id if picked is not None else None
-# ---- END PLUGIN-COMPAT ----

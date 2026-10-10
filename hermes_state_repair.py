@@ -249,7 +249,7 @@ def _repair_backup_headroom_bytes(total_bytes: int) -> int:
     return max(_REPAIR_BACKUP_MIN_FREE_BYTES, int(total_bytes * _REPAIR_BACKUP_FREE_FRACTION))
 
 
-def _disk_budget(db_path: Path, refusal: str) -> "Tuple[Optional[str], int, int, int]":
+def _disk_budget(db_path: Path, refusal: str) -> tuple[Optional[str], int, int, int]:
     """``(error, bundle_bytes, free_bytes, headroom_bytes)`` for *db_path*'s volume (main file plus every PRESENT
     sidecar); *error* is set (and the sizes zero) on stat()/disk_usage() failure. Fails CLOSED: the nearly-full
     volume these guards exist for is exactly where they are most likely to fail."""
@@ -319,7 +319,7 @@ def _repair_ledger_path(db_path: Path) -> Path:
     return db_path.with_name(db_path.name + ".repair-attempts.json")
 
 
-def _db_fingerprint(db_path: Path) -> "Optional[str]":
+def _db_fingerprint(db_path: Path) -> Optional[str]:
     """Cheap identity for a damaged DB file: size + a bounded content sample.
 
     EXCLUDES mtime: a malformed-schema DB still accepts writes, so live writers, checkpoints and the
@@ -340,7 +340,7 @@ def _db_fingerprint(db_path: Path) -> "Optional[str]":
     return _read_offline(db_path, "fingerprint", _sample)
 
 
-def _backup_content_identity(db_path: Path) -> "Optional[str]":
+def _backup_content_identity(db_path: Path) -> Optional[str]:
     """Recovery-image identity for forensic-backup dedupe: whole file + sidecars.
 
     A DIFFERENT relation from :func:`_db_fingerprint` (never conflate them): the fingerprint answers "same
@@ -366,7 +366,7 @@ def _backup_content_identity(db_path: Path) -> "Optional[str]":
     return _read_offline(db_path, "backup-identity", _digest)
 
 
-def _read_repair_ledger(db_path: Path) -> "Dict[str, Any]":
+def _read_repair_ledger(db_path: Path) -> dict[str, Any]:
     with contextlib.suppress(OSError, ValueError):
         raw = json.loads(_repair_ledger_path(db_path).read_text(encoding="utf-8"))
         return raw if isinstance(raw, dict) else {}
@@ -405,7 +405,7 @@ def _persistent_repair_exhausted_error(db_path: Path) -> str:
             f"Delete {_repair_ledger_path(db_path).name} to force another automatic attempt.")
 
 
-def _record_repair_outcome(db_path: Path, *, repaired: bool, fingerprint: "Optional[str]" = None) -> None:
+def _record_repair_outcome(db_path: Path, *, repaired: bool, fingerprint: Optional[str] = None) -> None:
     """Update the persistent attempt ledger after a repair pass. Never raises.
 
     Keys on the post-attempt fingerprint (what the NEXT exhaustion probe sees). If a live connection makes it
@@ -432,7 +432,7 @@ def _record_repair_outcome(db_path: Path, *, repaired: bool, fingerprint: "Optio
         logger.warning("Could not update state.db repair ledger: %s", exc)
 
 
-def _existing_malformed_backups(db_path: Path) -> "List[Path]":
+def _existing_malformed_backups(db_path: Path) -> list[Path]:
     """Timestamped forensic backups of *db_path*, newest first."""
     prefix = f"{db_path.name}.malformed-backup-"
     try:
@@ -461,7 +461,7 @@ def _publish_backup_bundle(db_path: Path, staging: Path, backup_path: Path) -> N
     main = (db_path, staging, backup_path)
     sidecars = [(sidecar, staging.with_name(staging.name + suffix), backup_path.with_name(backup_path.name + suffix))
                 for suffix, sidecar in zip(_DB_SIDECAR_SUFFIXES, _sidecars(db_path)) if sidecar.exists()]
-    published: "List[Path]" = []
+    published: list[Path] = []
     try:
         for src, staged, _dst in (main, *sidecars):
             shutil.copy2(src, staged)
@@ -475,7 +475,7 @@ def _publish_backup_bundle(db_path: Path, staging: Path, backup_path: Path) -> N
         raise
 
 
-def _backup_db_file(db_path: Path) -> "Tuple[Optional[Path], Optional[str]]":
+def _backup_db_file(db_path: Path) -> tuple[Optional[Path], Optional[str]]:
     """Raw-copy a (possibly malformed) DB plus sidecars to a timestamped backup.
 
     Raw bytes on purpose: the DB won't open cleanly, so preserve them exactly for forensics. Returns ``(backup_path,
@@ -580,8 +580,16 @@ def _connect_repair_durable(db_path: Path, *, timeout: float = 5.0) -> sqlite3.C
     no ``checkpoint_fullfsync`` — on Darwin an interrupted ``REINDEX``/``VACUUM``/``writable_schema`` rewrite leaves
     half-written b-tree pages. Autocommit (``isolation_level=None``): DDL and ``VACUUM`` are illegal inside an
     implicit transaction. Barriers are best-effort: on a malformed schema even ``PRAGMA synchronous=FULL`` raises,
-    so whole-file rewrites call :func:`_reapply_durability_barriers` once the schema parses again."""
-    conn = sqlite3.connect(str(db_path), timeout=timeout, isolation_level=None)
+    so whole-file rewrites call :func:`_reapply_durability_barriers` once the schema parses again.
+
+    Tracked (:func:`hermes_cli.sqlite_safe_read.connect_tracked`) because repair connections hold the
+    strongest locks in the process (``locking_mode=EXCLUSIVE``, ``BEGIN IMMEDIATE``); an untracked fd let
+    the byte-level probes ``open()``/``close()`` the live file, which cancels every POSIX advisory lock this
+    process holds on it (sqlite.org/howtocorrupt §2.2) and lets an external writer commit mid-repair (#63386).
+    """
+    from hermes_cli.sqlite_safe_read import connect_tracked
+
+    conn = connect_tracked(db_path, tracking_path=db_path, timeout=timeout, isolation_level=None)
     _reapply_durability_barriers(conn)
     return conn
 
@@ -835,7 +843,7 @@ def _live_writer_holds_db(db_path: Path) -> bool:
     return _state_holders.live_writer_holds_db(db_path, connect_repair_durable=_connect_repair_durable)
 
 
-def _repair_skip(report: Dict[str, Any], verb: str, error: str, exc: Optional[BaseException] = None) -> Dict[str, Any]:
+def _repair_skip(report: dict[str, Any], verb: str, error: str, exc: Optional[BaseException] = None) -> dict[str, Any]:
     """Record *error* on *report* and log it as ``state.db repair <verb>``. An
     *exc* proving deterministic corruption consumes the persistent repair budget
     (private ``_repair_attempted`` marker, popped by the caller)."""
@@ -846,7 +854,7 @@ def _repair_skip(report: Dict[str, Any], verb: str, error: str, exc: Optional[Ba
     return report
 
 
-def repair_state_db_schema(db_path: Path, *, backup: bool = True) -> Dict[str, Any]:
+def repair_state_db_schema(db_path: Path, *, backup: bool = True) -> dict[str, Any]:
     """Repair a state.db whose ``sqlite_master`` is malformed or whose FTS indexes reject writes.
 
     Two corruption classes: malformed schema / "duplicate object definition" (even ``PRAGMA`` fails), and FTS
@@ -859,7 +867,7 @@ def repair_state_db_schema(db_path: Path, *, backup: bool = True) -> Dict[str, A
 
     See #50502.
     """
-    report: Dict[str, Any] = {"repaired": False, "strategy": None, "backup_path": None, "error": None}
+    report: dict[str, Any] = {"repaired": False, "strategy": None, "backup_path": None, "error": None}
     # Startup-watchdog lease: repair is I/O-bound (near-zero CPU), which the watchdog's CPU fallback would
     # misread as a parked deadlock. One lease (clamped to _MAX_LEASE_S=900) beats per-chunk renewal complexity.
     report_startup_progress(900.0, phase="state_db_repair")
@@ -964,8 +972,8 @@ def _restore_journal_mode_after_repair(db_path: Path, before_mode: Optional[str]
 
 
 def _repair_state_db_schema_locked(
-    db_path: Path, *, backup: bool, report: Dict[str, Any], journal_mode_before: Optional[str] = None,
-) -> Dict[str, Any]:
+    db_path: Path, *, backup: bool, report: dict[str, Any], journal_mode_before: Optional[str] = None,
+) -> dict[str, Any]:
     """Repair strategies for :func:`repair_state_db_schema`; caller holds the cross-process repair lock.
 
     Strategies run on a SCRATCH COPY, copied back through SQLite's transactional backup API only once proven to open
@@ -1044,7 +1052,7 @@ def _repair_state_db_schema_locked(
 def _unlink_db_triple(path: Path) -> Optional[str]:
     """Remove *path* and every SQLite sidecar; return any cleanup failure."""
     from hermes_state import _IS_WINDOWS
-    failures: List[str] = []
+    failures: list[str] = []
     for victim in (path, *_sidecars(path)):
         for attempt in range(10):
             try:
@@ -1130,7 +1138,7 @@ _REPAIR_STRATEGIES = (
 )
 
 
-def _run_repair_strategies(db_path: Path, report: Dict[str, Any]) -> Dict[str, Any]:
+def _run_repair_strategies(db_path: Path, report: dict[str, Any]) -> dict[str, Any]:
     """Escalating repair attempts, applied to *db_path* IN PLACE — only ever a scratch copy nothing else holds open,
     never the user's database. The "could not recover" log lives in the caller so it names the user's database."""
 

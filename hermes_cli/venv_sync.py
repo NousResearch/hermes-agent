@@ -594,6 +594,15 @@ def relaunch_command(
 
     An old venv may use a different Python ABI. Do not add the new generation
     to that interpreter, and do not depend on its obsolete editable finder.
+
+    ``-I`` also drops the caller's ``PYTHONPATH`` while this command re-executes
+    the caller's own snippet from the top: a third-party import placed ahead of
+    the agent import runs before ``hermes_bootstrap`` activates the runtime, so
+    the relaunched process must carry the committed generation's dependency
+    path itself (``activation_environment`` pairs the project root with exactly
+    that path for the children it spawns). The path is activated with
+    ``site.addsitedir`` so the generation's ``.pth`` files (uv's editable
+    members) take effect, not just the bare directory entry.
     """
     # Preserve interpreter options, not application flags with the same names.
     options: list[str] = []
@@ -607,7 +616,23 @@ def relaunch_command(
         if option in ("-W", "-X") and index < len(original):
             options.append(original[index])
             index += 1
-    prefix = f"import sys, runpy; sys.path.insert(0, {str(root)!r}); sys.argv = {argv!r}; "
+    from pm.environments import committed_venv, site_packages
+
+    prefix = f"import sys, site, runpy; sys.path.insert(0, {str(root)!r}); sys.argv = {argv!r}; "
+    try:
+        environment = committed_venv(root)
+    except Exception:
+        # Corrupt or inconsistent dependency facts (unreadable facts.json, a
+        # deleted generation) must not become a launch blocker here: keep the
+        # pre-fix root-only prefix and let the child's own bootstrap report the
+        # runtime it cannot resolve.
+        environment = None
+    if environment is not None:
+        # addsitedir, not sys.path.append: uv activates its editable members
+        # with .pth files, which a bare append never processes (pm/environments
+        # makes the same choice for the children it spawns). Added last, the
+        # checkout still stays ahead of its installed dependencies.
+        prefix += f"site.addsitedir({str(site_packages(environment))!r}); "
     if argv[0] == "-c":
         body = f"exec({original[index + 1]!r})"
     elif module and module != "__main__":

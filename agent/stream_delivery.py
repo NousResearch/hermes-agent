@@ -113,6 +113,8 @@ class StreamDeliveryMixin:
     def _interim_content_was_streamed(self, content: str) -> bool:
         # Prefix match, not equality: the final may be streamed text plus a trailing delta. The
         # reverse (streamed longer) is NOT matched — it could suppress a needed resend.
+        if getattr(self, "_topic_segmentation_enabled", False):
+            return False  # buffered text was never previewed on a callback
         visible, streamed = self._interim_visible_and_streamed(content)
         return bool(visible and streamed) and visible.startswith(streamed)
 

@@ -234,6 +234,20 @@ class _Trunc(TruncationVerdict):
         the ``(failure_reason, retryable)`` verdict for the UI descriptor.
         """
         agent = self.agent
+        if getattr(agent, "_topic_segmentation_enabled", False):
+            # Terminal partials never reached the classifier/selection seam.
+            # A fragment is not a deliverable answer, even when a fallback
+            # would otherwise return it directly instead of finalizing.
+            from agent.turn_finalizer import _quarantine_failed_topic_turn, _topic_failure_fields
+            reason = _quarantine_failed_topic_turn(agent, self.messages, logger)
+            if cleanup:
+                agent._cleanup_task_resources(self.effective_task_id)
+            result = {
+                "final_response": None, "messages": self.messages,
+                "api_calls": self.api_call_count, "completed": False,
+                "failed": True, "partial": False, **_topic_failure_fields(reason),
+            }
+            return self.done("return", result)
         if cleanup:
             agent._cleanup_task_resources(self.effective_task_id)
         agent._persist_session(self.messages, self.conversation_history)

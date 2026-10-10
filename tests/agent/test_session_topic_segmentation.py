@@ -352,6 +352,10 @@ def test_sqlite_finalizer_rejects_failed_topic_switch_and_reopen(tmp_path: Path,
     original_create = agent.client.chat.completions.create.return_value
     def create_with_delta(**kwargs):
         agent._fire_stream_delta(candidate)
+        # A mid-turn persistence call must not save an unclassified interim
+        # assistant row even if the later exact-id retraction is unavailable.
+        agent._session_messages.append({"role": "assistant", "content": "unclassified interim"})
+        agent._flush_messages_to_session_db(agent._session_messages)
         return original_create
     agent.client.chat.completions.create.side_effect = create_with_delta
     hook_events = []
@@ -389,6 +393,7 @@ def test_sqlite_finalizer_rejects_failed_topic_switch_and_reopen(tmp_path: Path,
     try:
         durable = reopened.get_messages_as_conversation(session_id)
         assert all(row.get("content") != candidate for row in durable)
+        assert all(row.get("content") != "unclassified interim" for row in durable)
         if not retraction_fails:
             assert durable == []
             active = reopened.get_active_topic(session_id)
@@ -410,10 +415,12 @@ def test_retract_topic_turn_messages_checks_exact_session_ids(db: SessionDB):
     assert [row["content"] for row in db.get_messages_as_conversation("other")] == ["foreign"]
     assert kept != removable != foreign
 
-def test_sqlite_selected_topic_publishes_only_after_transition_and_transform(tmp_path: Path):
+@pytest.mark.parametrize("post_fails", [False, True])
+def test_sqlite_selected_topic_publishes_only_after_transition_and_transform(tmp_path: Path, post_fails: bool):
     from run_agent import AIAgent
 
     store = SessionDB(tmp_path / "state.db")
+    observer = SessionDB(tmp_path / "state.db")
     candidate = "Raw response.\nTOPIC: cooking"
     transformed = "Edited response.\nTOPIC: cooking"
     with (
@@ -430,7 +437,11 @@ def test_sqlite_selected_topic_publishes_only_after_transition_and_transform(tmp
         message=SimpleNamespace(content=candidate, tool_calls=None), finish_reason="stop")],
         model="oracle/model", usage=None)
     events = []
-    agent.stream_delta_callback = lambda text: events.append(("stream", text))
+    def stream_callback(text):
+        # A callback is publication: inspect the separate SQLite reader at that instant.
+        assert [row["content"] for row in observer.get_messages_as_conversation("selected-success")][-1] == transformed
+        events.append(("stream", text))
+    agent.stream_delta_callback = stream_callback
     def create(**kwargs):
         agent._fire_stream_delta(candidate)
         assert events == []
@@ -451,16 +462,107 @@ def test_sqlite_selected_topic_publishes_only_after_transition_and_transform(tmp
             assert events[0][0] == "activated"
             events.append(("transform", kwargs["response_text"]))
             return [transformed]
+        if name == "post_llm_call":
+            assert events[-1] == ("stream", transformed)
+            assert [row["content"] for row in observer.get_messages_as_conversation("selected-success")][-1] == transformed
+            events.append(("post", kwargs["assistant_response"]))
+            if post_fails:
+                raise RuntimeError("sensitive-post-hook-fault")
         return []
     with (patch.object(store, "activate_topic_for_messages", side_effect=activate),
-          patch("agent.turn_finalizer._invoke_hook_safely", side_effect=hooks)):
+          patch("hermes_cli.lifecycle.invoke_hook", side_effect=hooks)):
         result = agent.run_conversation("Make ramen")
-    assert result["completed"] is True
+    assert result["completed"] is True and result["failed"] is False
+    assert "sensitive-post-hook-fault" not in repr(result)
+    assert result["response_transformed"] is True
     assert result["final_response"] == transformed
-    assert events[:2] == [("activated", store.get_active_topic("selected-success")["id"]), ("transform", candidate)]
-    assert events[-1] == ("stream", transformed)
+    assert events == [("activated", store.get_active_topic("selected-success")["id"]),
+                      ("transform", candidate), ("stream", transformed), ("post", transformed)]
     assert [row["content"] for row in store.get_messages_as_conversation("selected-success")][-1] == transformed
+    observer.close()
     store.close()
+    reopened = SessionDB(tmp_path / "state.db")
+    try:
+        assert [row["content"] for row in reopened.get_messages_as_conversation("selected-success")][-1] == transformed
+    finally:
+        reopened.close()
+
+
+def test_sqlite_selected_topic_append_failure_does_not_publish(tmp_path: Path):
+    """Selection alone cannot publish an answer the second DB connection cannot read."""
+    from run_agent import AIAgent
+
+    path = tmp_path / "state.db"
+    store, observer = SessionDB(path), SessionDB(path)
+    session_id = "selected-append-failure"
+    candidate = "Secret final answer.\nTOPIC: cooking"
+    with (
+        patch("model_tools.get_tool_definitions", return_value=[]),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("hermes_cli.config.load_config_readonly", return_value={"session": {"topic_segmentation": {"enabled": True}}}),
+        patch("agent.process_bootstrap.OpenAI"),
+    ):
+        agent = AIAgent(api_key="test-key-1234567890", base_url="http://127.0.0.1/offline",
+                        model="oracle/model", quiet_mode=True, skip_context_files=True,
+                        skip_memory=True, session_id=session_id, session_db=store)
+    agent.client = MagicMock()
+    agent.client.chat.completions.create.return_value = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content=candidate, tool_calls=None), finish_reason="stop")],
+        model="oracle/model", usage=None,
+    )
+    agent._cached_system_prompt = "You are helpful."
+    agent.compression_enabled = False
+    agent.save_trajectories = False
+    agent.skip_background_review = True
+    streams, hooks, selections = [], [], []
+    agent.stream_delta_callback = streams.append
+    original_activate = store.activate_topic_for_messages
+    original_append = store.append_messages_batch
+
+    def activate(*args, **kwargs):
+        selected = original_activate(*args, **kwargs)
+        selections.append(selected["id"])
+        return selected
+
+    def append(*args, **kwargs):
+        if any(row.get("role") == "assistant" for row in kwargs["messages"]):
+            assert selections, "failure must occur after durable topic selection"
+            assert [row["content"] for row in observer.get_messages_as_conversation(session_id)] == ["Make ramen"]
+            raise sqlite3.OperationalError("sensitive-append-failure")
+        return original_append(*args, **kwargs)
+
+    try:
+        with (
+            patch.object(store, "activate_topic_for_messages", side_effect=activate),
+            patch.object(store, "append_messages_batch", side_effect=append),
+            patch("agent.turn_finalizer._invoke_hook_safely", side_effect=lambda name, *a, **kw: hooks.append(name) or []),
+        ):
+            result = agent.run_conversation("Make ramen")
+        assert len(selections) == 1
+        assert result["failed"] is True and result["completed"] is False
+        assert result["turn_exit_reason"] == "session_persistence_failed"
+        assert result["failure_reason"].startswith("session_persistence_failed:")
+        assert result.get("error")
+        assert candidate not in repr(result)
+        assert "sensitive-append-failure" not in repr(result)
+        assert result["messages"][0]["role"] == "user"
+        assert result["messages"][0]["content"] == "Make ramen"
+        assert all(row["content"] != candidate for row in result["messages"])
+        assert result["messages"][0]["_db_persisted"] is True
+        assert type(result["messages"][0]["_row_id"]) is int
+        assert streams == []
+        assert "post_llm_call" not in hooks
+        # Selection commits the accepted question; failed answer append leaves it pending.
+        assert [row["content"] for row in observer.get_messages_as_conversation(session_id)] == ["Make ramen"]
+        assert observer.get_active_topic(session_id)["id"] == selections[0]
+    finally:
+        observer.close()
+        store.close()
+    reopened = SessionDB(path)
+    try:
+        assert [row["content"] for row in reopened.get_messages_as_conversation(session_id)] == ["Make ramen"]
+    finally:
+        reopened.close()
 
 
 def test_indeterminate_retraction_blocks_reused_enabled_agent_only(db: SessionDB):
@@ -471,3 +573,56 @@ def test_indeterminate_retraction_blocks_reused_enabled_agent_only(db: SessionDB
         prepare_topic_turn(agent, messages, 0, "new turn")
     agent._topic_segmentation_enabled = False
     assert prepare_topic_turn(agent, messages, 0, "new turn")[0] is messages
+
+
+def test_suppressed_tool_stream_cannot_bypass_selected_topic_fence():
+    from agent.chat_completion_helpers import _StreamingCall
+
+    delivered = []
+    fake_agent = SimpleNamespace(
+        _topic_segmentation_enabled=True,
+        stream_delta_callback=delivered.append,
+        _record_streamed_assistant_text=delivered.append,
+    )
+    stream = SimpleNamespace(agent=fake_agent, _quiet=lambda callback: callback())
+    _StreamingCall._route_suppressed_text(stream, "raw candidate")
+    assert delivered == []
+    fake_agent._topic_segmentation_enabled = False
+    _StreamingCall._route_suppressed_text(stream, "ordinary progress")
+    assert delivered == ["ordinary progress", "ordinary progress"]
+
+
+def test_buffered_topic_stream_is_not_counted_as_preview():
+    from agent.stream_delivery import StreamDeliveryMixin
+
+    stream = object.__new__(StreamDeliveryMixin)
+    stream._topic_segmentation_enabled = True
+    stream._streamed_assistant_text_parts = ["unpublished"]
+    stream._strip_think_blocks = lambda text: text
+    assert stream._interim_content_was_streamed("unpublished") is False
+    stream._topic_segmentation_enabled = False
+    assert stream._interim_content_was_streamed("unpublished") is True
+
+
+def test_selected_topic_terminal_partial_never_returns_candidate(db: SessionDB):
+    from agent.turn_truncation import _Trunc
+
+    topic = db.ensure_session_topic("session", "existing")
+    row_id = db.append_message("session", role="user", content="question", topic_id=topic["id"])
+    messages = [{"role": "user", "content": "question", "_row_id": row_id,
+                 "_db_persisted": True, "_topic_id": topic["id"]},
+                {"role": "assistant", "content": "unfinished secret"}]
+    agent = _agent(db)
+    agent._persist_user_message_idx = 0
+    agent._cleanup_task_resources = lambda *args: None
+    truncated = _Trunc(
+        messages=messages, length_continue_retries=0, truncated_response_parts=[],
+        truncated_tool_call_retries=0, retry_count=0, compression_attempts=0,
+        agent=agent, response=None, finish_reason="length", conversation_history=[],
+        api_call_count=1, effective_task_id="test", current_turn_user_idx=0,
+    )
+    with patch.object(db, "retract_topic_turn_messages", side_effect=RuntimeError("offline")):
+        verdict = truncated.end_turn("unfinished secret")
+    assert verdict.result["final_response"] is None
+    assert verdict.result["failure_reason"] == "topic_segmentation_retraction_indeterminate"
+    assert all(row["content"] != "unfinished secret" for row in db.get_messages_as_conversation("session"))

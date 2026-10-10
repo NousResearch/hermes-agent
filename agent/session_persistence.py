@@ -267,7 +267,8 @@ def _db_flush_collect(agent, messages: List[Dict], conversation_history: Optiona
         # (or its tool/interim chain) in a store that a new process can reopen.
         if (getattr(agent, "_topic_segmentation_enabled", False)
                 and not getattr(agent, "_topic_turn_publication_allowed", False)
-                and (not isinstance(ov_idx, int) or msg_idx != ov_idx)):
+                and (not isinstance(ov_idx, int) or msg_idx != ov_idx or
+                     not isinstance(msg, dict) or msg.get("role") != "user")):
             continue
         # Append-only flush: a mid-turn persist of scaffolding would commit a synthetic turn the end-of-turn
         # drop cannot un-write. Skip regardless of position.

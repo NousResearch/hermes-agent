@@ -292,7 +292,7 @@ def process_turn_topic(agent: Any, messages: list[dict[str, Any]], final_respons
         active = next((topic for topic in topics if topic.get("state") == "active"), None)
         target = match_existing_topic(title, topics) if title else active
         if target is None and not title:
-            return
+            raise TopicSegmentationRuntimeError()
         turn_rows = [row for row in messages[start:] if isinstance(row, dict)]
         row_ids = [
             row["_row_id"]

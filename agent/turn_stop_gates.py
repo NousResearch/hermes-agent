@@ -142,7 +142,10 @@ def apply_stop_gates(
         return verdict
 
     _attempt = getattr(agent, "_pre_verify_nudges", 0)
-    _verify_nudge2 = _pre_verify_nudge(agent, final_response, _attempt)
+    # pre_verify receives the raw candidate: unlike an internal nudge it is a
+    # plugin publication sink, so defer it entirely on selected-topic turns.
+    _verify_nudge2 = (None if getattr(agent, "_topic_segmentation_enabled", False)
+                     else _pre_verify_nudge(agent, final_response, _attempt))
     if _verify_nudge2:
         agent._pre_verify_nudges = _attempt + 1
         final_msg["finish_reason"] = "verify_hook_continue"

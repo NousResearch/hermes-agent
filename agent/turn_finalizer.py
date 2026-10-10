@@ -577,6 +577,39 @@ def _topic_failure_fields(reason: str) -> dict:
     return {}
 
 
+def _publish_selected_topic_answer(
+    agent, messages, final_response, interrupted, failed, completed, turn_exit_reason,
+):
+    """Selected answers publish only after their assistant row has a durable id."""
+    if not getattr(agent, "_topic_segmentation_enabled", False):
+        return final_response, failed, completed, turn_exit_reason, True
+    if not final_response or interrupted or failed:
+        return final_response, failed, completed, turn_exit_reason, False
+    # _persist_session returns None and the SQLite flush swallows append errors
+    # into False. Selection alone is not proof of an accepted answer.
+    tail = messages[-1] if messages else None
+    if (
+        isinstance(tail, dict) and tail.get("role") == "assistant"
+        and tail.get(_DB_PERSISTED_MARKER) is True
+        and type(tail.get("_row_id")) is int and tail["_row_id"] > 0
+    ):
+        agent._deliver_to_stream_callbacks(final_response)
+        return final_response, failed, completed, turn_exit_reason, True
+    # The accepted user row was flushed before the provider call and retagged
+    # by selection. Keep it pending; discard the unpublished answer from the
+    # reused agent's live transcript as well as the returned result.
+    if getattr(agent, "_last_persistence_error_cause", None) is None:
+        agent._last_persistence_error_cause = "unknown"
+    start = getattr(agent, "_persist_user_message_idx", None)
+    if isinstance(start, int) and 0 <= start < len(messages):
+        del messages[start + 1:]
+    agent._db_flush_scan_prefix = None
+    agent._topic_turn_publication_allowed = False
+    agent._response_was_previewed = False
+    agent._reused_response_text = None
+    return None, True, False, "session_persistence_failed", False
+
+
 def finalize_turn(
     agent, *, final_response, api_call_count, interrupted, failed, messages, conversation_history,
     effective_task_id, turn_id, user_message, original_user_message, _should_review_memory,
@@ -700,13 +733,11 @@ def finalize_turn(
         if not interrupted and not failed:
             _micro_compact_after_turn(agent, messages, final_response, logger, effective_task_id)
         agent._persist_session(messages, conversation_history)
-        if selected_topic and final_response and not interrupted and not failed:
-            # Deliver only the post-transform answer after its selected write.
-            tail = messages[-1] if messages else {}
-            if tail.get(_DB_PERSISTED_MARKER):
-                agent._deliver_to_stream_callbacks(final_response)
 
     _guarded_cleanup("persist_session", _persist_step, _cleanup_errors, logger)
+    final_response, failed, completed, _turn_exit_reason, post_hook_allowed = _publish_selected_topic_answer(
+        agent, messages, final_response, interrupted, failed, completed, _turn_exit_reason,
+    )
 
     from hermes_cli.observability.shared_metrics_harness import finish_turn
     finish_turn(agent, _turn_exit_reason, final_response, interrupted=interrupted, failed=failed)
@@ -734,7 +765,7 @@ def finalize_turn(
     _platform = getattr(agent, "platform", None) or ""
     _response_transformed = False
     _pre_transform_response = None
-    if final_response and not interrupted:
+    if final_response and not interrupted and post_hook_allowed:
         final_response, _response_transformed, _pre_transform_response = _apply_output_hooks(
             agent, final_response, logger, platform=_platform, effective_task_id=effective_task_id,
             turn_id=turn_id, original_user_message=original_user_message, messages=messages,

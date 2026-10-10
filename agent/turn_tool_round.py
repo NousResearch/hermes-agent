@@ -156,7 +156,7 @@ def run_tool_round(
 
     # Flush open streaming boxes before tools so early content doesn't wrap tool feed
     # lines. Display callback only — TTS (_stream_callback) must NOT receive None (EOS).
-    if agent.stream_delta_callback:
+    if agent.stream_delta_callback and not getattr(agent, "_topic_segmentation_enabled", False):
         with suppress(Exception):
             agent.stream_delta_callback(None)
 
@@ -181,7 +181,7 @@ def run_tool_round(
         append_message(messages, {"role": "assistant", "content": final_response})
         # Emit the halt so it isn't mistaken for a crash; the stream callback is still
         # alive, so SSE/TUI clients see the explanation.
-        if final_response:
+        if final_response and not getattr(agent, "_topic_segmentation_enabled", False):
             agent._safe_print(f"\n{final_response}\n")
             if agent.stream_delta_callback:
                 with suppress(Exception):

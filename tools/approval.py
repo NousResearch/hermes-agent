@@ -720,14 +720,20 @@ _EXECUTE_CODE_GATE = _GateSpec(
     ),
     smart_log="Smart approval: auto-approved execute_code for session {session_key}",
 )
-# Plugin-escalated tool calls / protected writes: no transport, no breaker,
-# no user_approved marker (parity with the historical gate).
+# Plugin-escalated tool calls / protected writes: no breaker, no user_approved
+# marker, but a selected approval transport applies like every other gate — an
+# operator routing approvals to a push device must not miss plugin-required
+# ones (#133946).
 _ACTION_GATE = _GateSpec(
-    noun="action", transport=False, user_approved=False, redact_cli=False, pending_keys=False,
+    noun="action", transport=True, user_approved=False, redact_cli=False, pending_keys=False,
     notify_failed="BLOCKED: Failed to send approval request to user. Do NOT retry.",
     gateway_refused="BLOCKED: Action {reason}.{reason_addendum}" + _STOP_ACTION
                     + "{timeout_addendum}",
-    transport_denied="",
+    transport_denied=(
+        "BLOCKED: User denied this action through the selected approval "
+        "transport. The user has NOT consented to this action. Do NOT retry or "
+        "attempt the same outcome through another route."
+    ),
     cli_timeout="BLOCKED: Action timed out without user response." + _STOP_ACTION
                 + " Silence is not consent.",
     cli_denied=(

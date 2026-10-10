@@ -6,6 +6,7 @@ not what should be persisted in conversation history.
 
 from __future__ import annotations
 
+import re
 import unicodedata
 from typing import Any, Optional
 
@@ -35,6 +36,11 @@ MACHINERY_DISPLAY_KINDS = frozenset({INTERNAL_NOTIFICATION_DISPLAY_KIND})
 
 # Longer than any marker could plausibly be, even with stray punctuation.
 _MARKER_LENGTH_CAP = 64
+
+# A heading ("No reply:") introduces the lines under it and a list item ("- Silent") belongs to a
+# list, so in a multi-line response neither is the sentinel; edge de-punctuation would otherwise
+# reduce them to a bare marker and suppress the whole report.
+_STRUCTURAL_LINE = re.compile(r"[:\uff1a]\s*$|^\s*(?:[-\u2022]|\d+[.)])\s")
 
 
 def _canonical_silence_candidate(text: str) -> str:
@@ -88,11 +94,12 @@ def is_autonomous_silence_response(response: Any) -> bool:
     if not stripped:
         return False
     lines = [ln for ln in stripped.splitlines() if ln.strip()]
+    edge_lines = [ln for ln in (lines[0], lines[-1]) if not _STRUCTURAL_LINE.search(ln)]
     # Bracketed form only for the prefix rule, so a bare "Silent retry succeeded" is NOT swallowed.
     # Same de-punctuating forms as the interactive rule, so ``【静默】`` / ``静默。`` cannot
     # be suppressed in chat yet delivered by cron.
     return stripped.upper().startswith(_BRACKETED_SILENCE_MARKERS) or any(
-        is_intentional_silence_response(c) for c in (stripped, lines[0], lines[-1])
+        is_intentional_silence_response(c) for c in (stripped, *edge_lines)
     )
 
 

@@ -259,6 +259,34 @@ from pathlib import Path as _Path
 sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 
 
+def _discord_flood_marker(wait: Optional[float]) -> str:
+    """Canonical ``flood_control:<seconds>`` marker for a Discord rate-limit refusal.
+
+    Discord states its wait in a header (``Retry-After`` / ``X-RateLimit-Reset-After``), not in the body,
+    so the refusal's own wording carries no number. Appending the canonical marker keeps the diagnostic
+    shape while letting the delivery ledger read the server's actual wait instead of its generic default
+    (``flood_wait_seconds`` / ``_CANONICAL_FLOOD_RE``). Placed before the body so a size-capped body
+    cannot push it past the truncation point.
+    """
+    if wait is None:
+        return ""
+    # Lazy: the ledger never imports platform code, but the convention for platform -> ledger reads is a
+    # late-bound import, so a plugin can never participate in an import cycle.
+    from gateway.delivery_ledger import FLOOD_ERROR_PREFIX
+    return f" {FLOOD_ERROR_PREFIX}{wait}"
+
+
+def _discord_rate_limit_error(error_prefix: str, status: int, body: str, headers: Any) -> dict:
+    """Failure envelope for a Discord 429: the canonical marker plus the (size-capped) body text."""
+    wait = parse_retry_after_seconds(headers)
+    if wait is None:
+        try:
+            wait = parse_retry_after_seconds(headers.get("X-RateLimit-Reset-After"))
+        except Exception:
+            wait = None
+    return send_error(f"{error_prefix} ({status}){_discord_flood_marker(wait)}: {body}")
+
+
 def _is_discord_transport_error(exc: BaseException) -> bool:
     """True for connection-shaped send failures (dead/dropping WS) that never reached Discord, so
     the delivery ledger can replay them; timeouts excluded (a timed-out send may have landed).
@@ -3372,6 +3400,15 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
             if _is_discord_transport_error(e):
                 # Connection-shaped failure: runtime-retryable marker so the reconnect sweep can replay it.
                 result = SendResult(success=False, error="send_path_degraded", retryable=True)
+            elif self._is_discord_rate_limit(e):
+                # A 429 refused the request without accepting it, so a replay is safe. Carry the server's
+                # wait on the typed result (so _send_with_retry backs off to it rather than its own
+                # schedule) and the canonical marker in the error string (so the delivery ledger's deadline
+                # uses the server's number instead of the generic default when the wait exceeds the inline
+                # cap and the failure is handed to the ledger).
+                wait = self._extract_discord_retry_after(e)
+                result = SendResult(success=False, error=str(e) + _discord_flood_marker(wait),
+                                    retryable=True, retry_after=wait, error_kind="rate_limited")
             else:
                 result = SendResult(success=False, error=str(e))
             return await self._record_response_async(reply_to, result, content, bool(metadata and metadata.get("notify")), metadata)
@@ -7120,9 +7157,18 @@ def _standalone_warn_missing_media(media_path: str) -> str:
 
 async def _standalone_response_json_or_error(resp: Any, error_prefix: str):
     """``(data, None)`` for a 200/201 JSON response, else ``(None, {"error": ...})``
-    with the (size-capped) body text appended to ``error_prefix``."""
+    with the (size-capped) body text appended to ``error_prefix``.
+
+    A 429 is the one rejection whose wait is not in the body: Discord states it in the headers, so the
+    envelope carries the canonical ``flood_control:<seconds>`` marker the delivery ledger can read. A
+    standalone failure is not retried by the send path, so the marker is what makes the row replayable
+    at the server's deadline instead of the ledger's generic default.
+    """
     if resp.status not in {200, 201}:
         body = await _standalone_read_text_limited(resp, _DISCORD_STANDALONE_ERROR_BODY_LIMIT_BYTES)
+        if resp.status == 429:
+            return None, _discord_rate_limit_error(error_prefix, resp.status, body,
+                                                    getattr(resp, "headers", None))
         return None, send_error(f"{error_prefix} ({resp.status}): {body}")
     return await _standalone_read_json_limited(resp, _DISCORD_STANDALONE_JSON_BODY_LIMIT_BYTES), None
 

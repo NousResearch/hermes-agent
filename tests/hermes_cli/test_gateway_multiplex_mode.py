@@ -182,10 +182,65 @@ def test_guard_refusal_is_recorded_in_runtime_status_and_cleared_on_default(tmp_
     from gateway import status as gw_status
     from hermes_cli.gateway_multiplex_mode import MultiplexDecision, record_multiplex_decision
     monkeypatch.setattr(gw_status, "_get_runtime_status_path", lambda: tmp_path / "gateway_state.json")
+    monkeypatch.setattr(gw_status, "owns_gateway_runtime_lock", lambda: True)  # the serving gateway records
     record_multiplex_decision(MultiplexDecision(False, "guard", "profile(s) 'coder' still run their own gateway"))
     assert "coder" in gw_status.read_runtime_status(tmp_path / "gateway_state.json")["multiplex_standalone_reason"]
     record_multiplex_decision(MultiplexDecision(True, "default", "unset; default applies"))
     assert gw_status.read_runtime_status(tmp_path / "gateway_state.json")["multiplex_standalone_reason"] is None
+
+
+@pytest.mark.spawns_gateway_lookalike  # a stub that records a decision and takes the lock; reaped below
+def test_pre_lock_decision_never_publishes_a_rival_gateway_owner(tmp_path):
+    """The multiplex decision is made while the config loads, before the runtime-lock claim. Writing
+    it then published that launch's pid in gateway_state.json, and a launch racing it read that pid as
+    a live gateway and refused, so neither served (the cron e2e's "A gateway already owns this host").
+    A real `hermes gateway run`-shaped child records its decision without the lock; the rival must
+    still see no owner, and the decision lands only once that child holds the lock."""
+    import subprocess
+    import sys
+    import textwrap
+
+    home = tmp_path / "home"
+    home.mkdir()
+    entry = tmp_path / "bin" / "hermes"  # the argv a gateway identity check accepts
+    entry.parent.mkdir()
+    entry.write_text(textwrap.dedent("""
+        import sys
+        from gateway import status
+        from hermes_cli.gateway_multiplex_mode import MultiplexDecision, record_multiplex_decision
+        record_multiplex_decision(MultiplexDecision(False, "guard", "profile 'coder' runs its own gateway"))
+        print("decided", flush=True)
+        sys.stdin.readline()
+        assert status.acquire_gateway_runtime_lock()
+        from hermes_cli.gateway_multiplex_mode import publish_pending_multiplex_decision
+        publish_pending_multiplex_decision()
+        print("claimed", flush=True)
+        sys.stdin.readline()
+    """), encoding="utf-8")
+    env = {**os.environ, "HERMES_HOME": str(home), "PYTHONPATH": str(Path(__file__).resolve().parents[2])}
+    child = subprocess.Popen([sys.executable, str(entry), "gateway", "run"], env=env, text=True,
+                             stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+    probe = textwrap.dedent("""
+        import json
+        from gateway import status
+        record = status.read_runtime_status() or {}
+        print(json.dumps([status.get_running_pid(), record.get("multiplex_standalone_reason")]))
+    """)
+
+    def rival() -> list:
+        out = subprocess.run([sys.executable, "-c", probe], env=env, text=True, capture_output=True, timeout=60)
+        assert out.returncode == 0, out.stderr
+        return json.loads(out.stdout)
+    try:
+        assert child.stdout.readline().strip() == "decided"
+        assert rival() == [None, None]  # nothing claims to own the home before the lock does
+        child.stdin.write("\n")
+        child.stdin.flush()
+        assert child.stdout.readline().strip() == "claimed"
+        assert rival() == [child.pid, "profile 'coder' runs its own gateway"]
+    finally:
+        child.kill()
+        child.wait(timeout=30)
 
 
 def test_recorded_standalone_warning_lines_suppressed_for_dead_or_stale_record(tmp_path, monkeypatch):

@@ -230,6 +230,8 @@ def _start_gateway_claim_pid_file(force: bool = False) -> bool:
         return False
     atexit.register(remove_pid_file)
     atexit.register(release_gateway_runtime_lock)
+    from hermes_cli.gateway_multiplex_mode import publish_pending_multiplex_decision
+    publish_pending_multiplex_decision()
     _claim_host_gateway_role(force=force)
     return True
 

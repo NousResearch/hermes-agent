@@ -759,9 +759,12 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
                         result = name
                         break
                 except Exception as exc:
-                    # A connect timeout condemns the host: skip the remaining legs.
+                    # A connect timeout condemns the host; a read timeout only ends this
+                    # fingerprinting attempt. Neither should repeat across the waterfall.
                     if _is_connect_timeout(exc):
                         _note_endpoint_blackholed(server_url)
+                        raise
+                    if isinstance(exc, httpx.ReadTimeout):
                         raise
     except Exception:
         pass

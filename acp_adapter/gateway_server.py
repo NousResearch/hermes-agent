@@ -122,8 +122,9 @@ class GatewayACPAgent(acp.Agent):
         self._permissions = {}
         self._admissions = {}
         self._submitting = set()
-        # (session, content fingerprint) -> input_id of a submit whose ack never arrived. The
-        # editor's retry of that prompt reuses it, so the authority returns the same admission.
+        # Session -> (content fingerprint, input_id) of a submit whose ack never arrived. The
+        # editor's retry (that session's next prompt, same content) reuses it, so the authority
+        # returns the same admission.
         self._unacked = {}
         # Admissions whose message.complete the pump is projecting right now.
         self._settling = set()
@@ -444,7 +445,10 @@ class GatewayACPAgent(acp.Agent):
         if attachments:
             submit['attachments'] = attachments
         retry_key = await asyncio.to_thread(_submit_fingerprint, session_id, text, attachments)
-        input_id = self._unacked.pop(retry_key, None) or uuid.uuid4().hex
+        # Only this session's very next prompt may be the editor's retry of an un-acked submit; any
+        # prompt retires the retained identity, so a deliberately repeated prompt later is new work.
+        retained = self._unacked.pop(session_id, None)
+        input_id = retained[1] if retained is not None and retained[0] == retry_key else uuid.uuid4().hex
         self._submitting.add(session_id)
         try:
             receipt = await client.rpc("prompt.submit", session_id=session_id, input_id=input_id, **submit)
@@ -452,8 +456,8 @@ class GatewayACPAgent(acp.Agent):
             from hermes_cli.gateway_client import GatewayRPCError
             if not isinstance(exc, GatewayRPCError):
                 # Transport loss, timeout or cancel before the ack: the owner may hold this admission.
-                # Keep its identity for the editor's retry of the same prompt (latest 64 kept).
-                self._unacked[retry_key] = input_id
+                # Keep its identity for the editor's retry of the same prompt (latest 64 sessions).
+                self._unacked[session_id] = (retry_key, input_id)
                 while len(self._unacked) > 64:
                     self._unacked.pop(next(iter(self._unacked)))
             self._pending_cancels.discard(session_id)

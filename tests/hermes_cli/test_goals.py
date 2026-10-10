@@ -177,6 +177,45 @@ class TestJudgeParseFailureAutoPause:
         assert transport_failed is True
 
 
+    def test_auto_pause_after_three_consecutive_empty_responses(self, hermes_home):
+        """An empty final answer re-prompts (bounded) instead of stalling; three in a row pause
+        with a named reason; any real response resets the streak. Inspired by Codex #44320."""
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager, DEFAULT_MAX_CONSECUTIVE_EMPTY_TURNS
+
+        assert DEFAULT_MAX_CONSECUTIVE_EMPTY_TURNS == 3
+        mgr = GoalManager(session_id="empty-turn-sid-1", default_max_turns=20)
+        mgr.set("do a thing")
+
+        with patch.object(goals, "_call_goal_judge_llm") as judge_llm:
+            d1 = mgr.evaluate_after_turn("")
+            d2 = mgr.evaluate_after_turn("   \n")
+            assert d1["should_continue"] is True and d2["should_continue"] is True
+            assert d2["continuation_prompt"]
+            assert mgr.state.consecutive_empty_turns == 2
+            judge_llm.assert_not_called()   # nothing to judge, no aux spend
+
+            d3 = mgr.evaluate_after_turn("")
+            assert d3["should_continue"] is False
+            assert d3["status"] == "paused"
+            assert "empty response" in d3["message"]
+            assert "empty responses 3 turns in a row" in mgr.state.paused_reason
+            # Pause survives a reload and /goal resume re-arms the streak.
+            assert GoalManager(session_id="empty-turn-sid-1").state.consecutive_empty_turns == 3
+            mgr.resume()
+            assert mgr.state.consecutive_empty_turns == 0
+
+        # A real response between empties resets the streak: no pause at the third empty.
+        mgr2 = GoalManager(session_id="empty-turn-sid-2", default_max_turns=20)
+        mgr2.set("do a thing")
+        with patch.object(goals, "judge_goal", return_value=("continue", "keep going", False, None, False)):
+            mgr2.evaluate_after_turn("")
+            mgr2.evaluate_after_turn("")
+            mgr2.evaluate_after_turn("made progress")
+            assert mgr2.state.consecutive_empty_turns == 0
+            d = mgr2.evaluate_after_turn("")
+            assert d["status"] == "active" and d["should_continue"] is True
+
     def test_auto_pause_after_three_consecutive_parse_failures(self, hermes_home):
         """N=3 consecutive parse failures → auto-pause with config pointer."""
         from hermes_cli import goals

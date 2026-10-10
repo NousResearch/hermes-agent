@@ -75,6 +75,13 @@ export function tokensPerSecondLabel(usage: UsageStats): string {
   return typeof tps === 'number' && Number.isFinite(tps) && tps > 0 ? `${Math.round(tps)} t/s` : ''
 }
 
+/** `$0.12` for a reported session cost; '' before the backend has a price. */
+export function sessionCostLabel(usage: UsageStats): string {
+  const cost = usage.cost_usd
+
+  return typeof cost === 'number' && Number.isFinite(cost) ? `$${cost.toFixed(2)}` : ''
+}
+
 export function LiveDuration({ since }: { since: number | null | undefined }) {
   const [now, setNow] = useState(() => Date.now())
 

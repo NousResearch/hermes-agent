@@ -81,7 +81,7 @@ async def _completion_seam(adapter, agent_result, response):
         session_id = "s1"
 
     return await runner._hmwa_deliver_turn_response(
-        event, source, _Entry(), _SESSION_KEY, None, agent_result, [], response, None, False,
+        event, source, _Entry(), _SESSION_KEY, None, agent_result, [], response, None, False, [],
     )
 
 

@@ -1,0 +1,6 @@
+{
+  "placements": [
+    {"workload_id": "api", "zone": "zone-a", "kw": 4, "monthly_cost": 5000},
+    {"workload_id": "api", "zone": "zone-b", "kw": 4, "monthly_cost": 5000}
+  ]
+}

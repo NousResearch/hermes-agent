@@ -2147,6 +2147,8 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int = None) -> int:
         failure_limit = DEFAULT_FAILURE_LIMIT
     promoted = 0
     with write_txn(conn):
+        from hermes_cli.kanban_quota import recover_waits
+        recover_waits(conn)
         todo_rows = conn.execute(
             "SELECT id, status, consecutive_failures, max_retries "
             "FROM tasks WHERE status IN ('todo', 'blocked')"
@@ -2225,6 +2227,9 @@ def _claim_and_open_run(
 ) -> Optional[int]:
     """CAS ``source_status -> running``, open a run row, emit ``claimed``; None
     when the CAS lost. Caller holds the txn."""
+    from hermes_cli.kanban_quota import guard_claim
+    if not guard_claim(conn, task_id, source_status):
+        return None
     cur = conn.execute(
         f"""
         UPDATE tasks
@@ -2258,6 +2263,9 @@ def _claim_and_open_run(
         ),
     )
     run_id = run_cur.lastrowid
+    from hermes_cli.kanban_quota import route
+    route_row = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
+    conn.execute("UPDATE task_runs SET metadata=? WHERE id=?", (_json_or_null({"quota_route": route(route_row)}), run_id))
     conn.execute("UPDATE tasks SET current_run_id = ? WHERE id = ?", (run_id, task_id))
     _append_event(
         conn, task_id, "claimed",
@@ -3682,6 +3690,8 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         )
         if cur.rowcount != 1:
             return False
+        from hermes_cli.kanban_quota import clear_wait
+        clear_wait(conn, task_id)
         _append_event(
             conn, task_id, "unblocked",
             (

@@ -1,4 +1,4 @@
-"""A rate-limited implementer run must stay a neutral, once-billed requeue — and must not strand the
+"""A transient rate-limited run must spend one retry, be billed once, and preserve the
 card's later review handoff (#119070).
 
 Real processes end to end: every tick is a real ``hermes kanban dispatch`` process, every worker a
@@ -10,7 +10,7 @@ review lane preloads that skill into the worker it spawns, so only a reviewer's 
 Flow under test (``HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS=0``, ``agent.api_max_retries: 1``):
 
 1. tick: implementer spawned; the provider answers HTTP 429; the worker exits 75.
-2. tick: the dead worker is reaped as ``rate_limited`` (no failure tick) and respawned; the retry
+2. tick: the worker is reaped as ``rate_limited`` (one failure); after the retry deadline the retry
    calls ``kanban_request_review`` -> the card moves to ``review``.
 3. tick: the review lane must spawn the reviewer, which approves (``kanban_complete``) -> ``done``.
 
@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import json
 import sys
+import sqlite3
+import time
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -151,6 +153,17 @@ def drive(board: Board, tid: str, model: TwoRoleModel, max_ticks: int = MAX_TICK
     ticks: list[dict] = []
     for n in range(1, max_ticks + 1):
         model.tick = n
+        # Advance only this fixture's persisted retry deadline rather than sleep through
+        # real backoff between child processes. The clock-controlled SQLite suite checks
+        # the delay and cap; this E2E checks worker->dispatcher->review propagation.
+        with sqlite3.connect(board.db_path) as conn:
+            row = conn.execute("SELECT id, metadata FROM task_runs WHERE task_id=? "
+                               "AND outcome='rate_limited' ORDER BY id DESC LIMIT 1", (tid,)).fetchone()
+            if row:
+                meta = json.loads(row[1] or '{}')
+                if 'retry_at' in meta:
+                    meta['retry_at'] = time.time() - 1
+                    conn.execute('UPDATE task_runs SET metadata=? WHERE id=?', (json.dumps(meta), row[0]))
         res = board.dispatch()
         spawned = [s["task_id"] for s in res.get("spawned", [])]
         if tid in spawned:
@@ -189,28 +202,28 @@ def rate_limited_flow(tmp_path_factory: pytest.TempPathFactory) -> Flow:
 # tests -------------------------------------------------------------------------------------------
 
 
-def test_rate_limited_attempt_is_billed_once_and_requeued_without_a_failure(rate_limited_flow: Flow) -> None:
+def test_rate_limited_attempt_is_billed_once_and_spends_one_retry(rate_limited_flow: Flow) -> None:
     f = rate_limited_flow
     b, tid, diag = f.board, f.tid, f.diag()
     runs = b.runs(tid)
     assert len(runs) >= 2, diag
-    # Billing contract of the 429 attempt: booked neutral, never counted against the breaker.
+    # The 429 attempt consumes one retry, with a distinct provider-limit outcome.
     assert runs[0]["outcome"] == "rate_limited", diag
     assert runs[1]["outcome"] == "review_requested", diag
     rl_events = b.events(tid, "rate_limited")
     assert len(rl_events) == 1 and rl_events[0]["payload"]["exit_code"] == RATE_LIMIT_EXIT_CODE, diag
     assert rl_events[0]["run_id"] == runs[0]["id"], diag
-    assert all(t["consecutive_failures"] == 0 for t in f.ticks), diag
+    assert max(t["consecutive_failures"] for t in f.ticks) == 1, diag
     assert b.task(tid)["consecutive_failures"] == 0, diag
     for kind in ("crashed", "gave_up", "blocked", "protocol_violation"):
         assert not b.events(tid, kind), f"{kind} event on a rate-limited card\n{diag}"
-    # Cooldown is 0: the reap and the respawn happen on the SAME tick right after the 429 worker died.
-    assert [t["spawned"] for t in f.ticks[:2]] == [1, 1], diag
+    # First reap persists the deadline; the following tick advances that deadline.
+    assert f.ticks[0]["spawned"] == 1, diag
     # Provider-side billing: the 429 attempt is ONE request (api_max_retries: 1, no retry loop and
     # no fallback re-send); the retry opens with the handoff call and at most one closing turn.
     impl = f.model.by_role("impl")
     assert [(a.tick, a.requests, a.answers) for a in impl[:1]] == [(1, 1, ["Error"])], diag
-    assert [a.tick for a in impl] == [1, 2] and one_terminal_turn(impl[1], "kanban_request_review"), diag
+    assert len(impl) == 2 and one_terminal_turn(impl[1], "kanban_request_review"), diag
     assert len(runs) - 2 == len(f.model.by_role("review")), diag
 
 
@@ -246,6 +259,47 @@ def test_rate_limited_then_review_handoff_reaches_the_reviewer(rate_limited_flow
     # Once fixed, the whole contract must hold, not just "something spawned".
     assert f.run_outcomes() == ["rate_limited", "review_requested", "completed"], diag
     # The reviewer starts on the tick right after the handoff (cooldown 0), billed one tool turn.
-    assert [a.tick for a in reviewers] == [3] and one_terminal_turn(reviewers[0], "kanban_complete"), diag
+    assert len(reviewers) == 1 and one_terminal_turn(reviewers[0], "kanban_complete"), diag
     assert "blocker_auth" not in guarded, diag
     assert not b.events(tid, "gave_up") and b.task(tid)["consecutive_failures"] == 0, diag
+
+
+def test_real_worker_hard_quota_survives_restart_and_334_ticks(tmp_path):
+    """Real provider HTTP -> agent result -> worker exit -> restarted dispatcher -> durable claims."""
+    import subprocess
+    calls = []
+    def refuse(record):
+        calls.append(record)
+        return Error(status=403, message='insufficient credits')
+    with FakeLLMServer(refuse) as server:
+        board = Board(tmp_path, server.base_url)
+        tid = board.create('hard quota circuit')
+        try:
+            first = board.dispatch()
+            assert [item['task_id'] for item in first['spawned']] == [tid]
+            board.wait_worker_exit(tid, int(board.task(tid)['worker_pid']))
+            board.dispatch()  # a new dispatcher process observes the worker's durable evidence
+            assert board.task(tid)['status'] == 'blocked', board.diag(tid)
+            assert json.loads(board.runs(tid)[0]['metadata'])['provider_failure']['hard_quota']
+            script = '''
+import contextlib, json, time
+from unittest.mock import patch
+from hermes_cli import kanban_db as kb, kanban_db_connect as kbc, kanban_db_dispatch as dispatch
+clock = [time.time()]
+launches = []
+with contextlib.closing(kbc.connect()) as conn, patch('time.time', lambda: clock[0]):
+    for _ in range(334):
+        dispatch.dispatch_once(conn, spawn_fn=lambda task, _: launches.append(task.id), max_in_progress=100)
+        clock[0] += 361
+    print(json.dumps({'launches': launches, 'circuits': conn.execute('SELECT count(*) FROM provider_circuits').fetchone()[0]}))
+'''
+            for _ in range(2):  # fresh Python process, fresh SQLite connection, no shared cooldown dictionary
+                proc = subprocess.run([sys.executable, '-c', script], cwd=tmp_path, env=board.env(),
+                                      capture_output=True, text=True, timeout=60)
+                assert proc.returncode == 0, proc.stderr
+                assert json.loads(proc.stdout.strip().splitlines()[-1]) == {'launches': [], 'circuits': 1}
+            assert len(calls) == 1
+            assert len(board.runs(tid)) == 1
+            assert len(board.events(tid, 'gave_up')) == 1
+        finally:
+            board.kill_workers()

@@ -727,7 +727,8 @@ def connect(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> s
             # Idempotent; runs under _INIT_LOCK so same-process dispatcher
             # threads can't race the ALTER TABLE pass with stale PRAGMA snapshots.
             if resolved not in _INITIALIZED_PATHS:
-                conn.executescript(_kb.SCHEMA_SQL)
+                from hermes_cli.kanban_quota import SCHEMA as quota_schema
+                conn.executescript(_kb.SCHEMA_SQL + quota_schema)
                 _migrate_add_optional_columns(conn)
                 _INITIALIZED_PATHS.add(resolved)
 

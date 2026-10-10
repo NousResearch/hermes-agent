@@ -321,67 +321,26 @@ def _exited_status(code: int) -> int:
 
 
 
-def test_rate_limit_exit_requeues_without_counting_failure(
-    kanban_home, monkeypatch,
-):
-    """A rate-limit sentinel exit releases the task to ``ready`` and leaves
-    ``consecutive_failures`` untouched — the breaker must never trip on a
-    transient throttle, even across many quota-wall hits."""
-    import hermes_cli.kanban_db as _kb
-    from hermes_cli import kanban_db_dispatch as _kbd
-
-    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+def test_rate_limit_exit_consumes_finite_failure_budget(kanban_home, monkeypatch):
+    monkeypatch.setattr(kb, "_pid_alive", lambda _pid: False)
     monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
-
+    clock = [5_000_000]
+    monkeypatch.setattr(kb.time, "time", lambda: clock[0])
     with kbc.connect() as conn:
-        host = _kb._claimer_id().split(":", 1)[0]
         tid = kb.create_task(conn, title="rl", assignee="a")
-
-        # Simulate FAR more quota-wall hits than DEFAULT_FAILURE_LIMIT (2).
-        # If any of these counted as a failure the task would be blocked.
-        for i in range(6):
+        for i in range(2):
+            assert kb.claim_task(conn, tid) is not None
             pid = 70000 + i
-            # Claim to open a real run (so detect_crashed_workers can close
-            # it with a rate_limited outcome), then point the claim at this
-            # host + a dead pid so the crash path acts on it.
-            kb.claim_task(conn, tid, claimer=f"{host}:w{i}")
-            conn.execute(
-                "UPDATE tasks SET worker_pid=?, consecutive_failures=? "
-                "WHERE id=?",
-                (pid, 0, tid),
-            )
+            conn.execute("UPDATE tasks SET worker_pid=? WHERE id=?", (pid, tid))
             conn.commit()
-            _kbd._record_worker_exit(
-                pid, _exited_status(_kb.KANBAN_RATE_LIMIT_EXIT_CODE)
-            )
-
-            crashed = kbd.detect_crashed_workers(conn)
-            # Rate-limited requeues are NOT crashes.
-            assert tid not in crashed
-            rl = getattr(_kbd.detect_crashed_workers, "_last_rate_limited", [])
-            assert tid in rl
-
+            kbd._record_worker_exit(pid, _exited_status(kb.KANBAN_RATE_LIMIT_EXIT_CODE))
+            assert tid not in kbd.detect_crashed_workers(conn)
             task = kb.get_task(conn, tid)
-            assert task.status == "ready", (
-                f"hit {i}: should requeue ready, got {task.status}"
-            )
-            assert task.consecutive_failures == 0, (
-                f"hit {i}: rate-limit must not count a failure, "
-                f"got {task.consecutive_failures}"
-            )
-
-        # Last failure error stamped so the respawn guard recognizes the
-        # quota wall.
-        assert task.last_failure_error and "rate-limited" in task.last_failure_error
-
-        # A ``rate_limited`` run outcome was recorded (not ``crashed``).
-        outcomes = [
-            r["outcome"] for r in conn.execute(
-                "SELECT outcome FROM task_runs WHERE task_id=?", (tid,),
-            ).fetchall()
-        ]
-        assert "rate_limited" in outcomes
-        assert "crashed" not in outcomes
+            assert task.consecutive_failures == i + 1
+            assert task.status == ("ready" if i == 0 else "blocked")
+            clock[0] += 400
+        assert kb.recompute_ready(conn) == 0
+        assert kb.claim_task(conn, tid) is None
 
 
 @pytest.mark.parametrize("lane", ["ready", "review"])
@@ -448,8 +407,8 @@ def test_respawn_guard_defers_rate_limited_within_cooldown(
         run_id = kb.get_task(conn, tid).current_run_id
         conn.execute(
             "UPDATE task_runs SET outcome='rate_limited', status='rate_limited', "
-            "ended_at=? WHERE id=?",
-            (now, run_id),
+            "ended_at=?, metadata=? WHERE id=?",
+            (now, json.dumps({"retry_at": now + 300}), run_id),
         )
         conn.execute(
             "UPDATE tasks SET status='ready', current_run_id=NULL, "

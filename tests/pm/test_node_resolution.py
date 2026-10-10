@@ -322,6 +322,19 @@ def test_adapter_availability_never_provisions_missing_node(tmp_path, monkeypatc
     assert not (tmp_path / "missing-tools").exists()
 
 
+def test_whatsapp_availability_does_not_spawn_discovered_node(monkeypatch):
+    from plugins.platforms.whatsapp import adapter as whatsapp
+
+    monkeypatch.setattr(whatsapp, "find_node_executable", lambda _name: "/managed/node")
+    monkeypatch.setattr(
+        whatsapp.subprocess,
+        "run",
+        lambda *_args, **_kwargs: pytest.fail("availability discovery must not spawn node"),
+    )
+
+    assert whatsapp.check_whatsapp_requirements() is True
+
+
 @pytest.mark.platforms("posix")
 def test_dashboard_pairing_prepares_npm_before_node_lookup(npm_probe, tmp_path, monkeypatch):
     from gateway.platforms import whatsapp_common

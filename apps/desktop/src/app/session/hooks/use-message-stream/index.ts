@@ -959,10 +959,19 @@ export function useMessageStream({
               Number.isSafeInteger(finalRowId) &&
               finalRowId > 0
 
+            const committedRowHasFinalText = Boolean(
+              finalText &&
+                existingText === finalText &&
+                existing.interim !== true &&
+                existing.pending !== true &&
+                (existing.rowId !== undefined || existing.durableComplete === true || existing.persistedTurn)
+            )
+
             if (
               existing.pending ||
               failureRepeatsErrorCard ||
               settlesPersistedRow ||
+              committedRowHasFinalText ||
               (!interimBoundaryPending && finalText && existingText === finalText)
             ) {
               nextMessages = settleAt(index)

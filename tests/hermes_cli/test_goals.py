@@ -38,6 +38,48 @@ def hermes_home(tmp_path, monkeypatch):
 
 
 class TestParseJudgeResponse:
+    @pytest.mark.parametrize("payload", [
+        {}, {"done": None}, {"done": {}}, {"done": {"value": False}},
+        {"done": []}, {"done": [False]}, {"done": 0}, {"done": 1},
+        {"done": 2}, {"done": -1}, {"done": 0.0}, {"done": 1.5},
+    ])
+    def test_invalid_legacy_done_cannot_complete_or_park(self, payload, hermes_home):
+        from hermes_cli import goals
+
+        raw = json.dumps({**payload, "wait_for_seconds": 60})
+        verdict, _, parse_failed, wait = goals._parse_judge_response(raw)
+        assert (verdict, parse_failed, wait) == ("continue", True, None)
+
+        mgr = goals.GoalManager(session_id="invalid-legacy-done")
+        mgr.set("ship it")
+        with patch("agent.auxiliary_client.call_llm", return_value=MagicMock(
+            choices=[MagicMock(message=MagicMock(content=raw))],
+        )):
+            decision = mgr.evaluate_after_turn("work remains")
+        assert decision["should_continue"] is True
+        assert mgr.state is not None
+        assert mgr.state.status == "active"
+        assert mgr.state.consecutive_parse_failures == 1
+        assert mgr.is_waiting() is False
+
+    @pytest.mark.parametrize("payload, verdict, wait", [
+        ({"done": True}, "done", None),
+        ({"done": False}, "continue", None),
+        *[({"done": value}, "done", None) for value in ("true", "yes", "1", "done", " TRUE ")],
+        *[({"done": value}, "continue", None) for value in ("false", "no", "0", "", "unknown")],
+        ({"verdict": "done", "done": False}, "done", None),
+        ({"verdict": "continue", "done": True}, "continue", None),
+        ({"verdict": "blocked", "done": [False]}, "blocked", None),
+        ({"verdict": " WAIT ", "done": {}, "wait_for_seconds": 60}, "wait", {"seconds": 60}),
+    ])
+    def test_legacy_compatibility_and_explicit_verdict_precedence(self, payload, verdict, wait):
+        from hermes_cli.goals import _parse_judge_response
+
+        reason = "judge explanation"
+        assert _parse_judge_response(json.dumps({**payload, "reason": reason})) == (
+            verdict, reason, False, wait,
+        )
+
     def test_clean_json_done(self):
         from hermes_cli.goals import _parse_judge_response
 

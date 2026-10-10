@@ -262,25 +262,43 @@ def _default_exclude(args):
     return None if getattr(args, "source", None) else ["tool"]
 
 
+def _list_in_workspace(db, needle, want, query):
+    """First ``want`` sessions (every one when negative) whose workspace key — git repo root, else
+    cwd — contains ``needle`` or has it as its basename. The match runs on the projected rows, so
+    filtering one LIMIT-ed page would miss every match older than the newest ``want`` sessions.
+
+    Each attempt is ONE query from the newest session (one read snapshot: a session archived,
+    deleted or created meanwhile cannot shift a match out of view, as OFFSET paging would):
+    first a recent window, then — only when that window holds too few matches — every session.
+    Compact rows: the listing never renders stored system prompts."""
+    from hermes_state_sessions import workspace_key
+
+    def _in_workspace(s) -> bool:
+        key = (workspace_key(s) or "").lower()
+        return bool(key) and (needle in key or needle == os.path.basename(key.rstrip("/\\")))
+
+    for window in ((max(200, want), -1) if want >= 0 else (-1,)):
+        rows = db.list_sessions_rich(**query, limit=window, compact_rows=True)
+        matched = [s for s in rows if _in_workspace(s)]
+        if window < 0 or len(rows) < window or len(matched) >= want:
+            break
+    return matched if want < 0 else matched[:want]
+
+
 def _cmd_list(db, args):
     from hermes_state_sessions import workspace_key as _ws_key
     # LIMIT lives in the query, so probe one row past the cap: it is the only way to know the
     # page was cut without a second COUNT query (``--limit 0`` is ``LIMIT 0``: no rows, no probe).
     limit = args.limit
-    sessions = db.list_sessions_rich(
-        source=args.source, exclude_sources=_default_exclude(args), limit=limit + 1 if limit > 0 else limit,
-    )
-    truncated = limit > 0 and len(sessions) > limit
-    sessions = sessions[:limit] if truncated else sessions
-
-    # Workspace filter: workspace key (git repo root, else cwd) — path substring or exact basename.
+    want = limit + 1 if limit > 0 else limit
+    query = {"source": args.source, "exclude_sources": _default_exclude(args)}
     _ws_filter = (getattr(args, "workspace", None) or "").strip()
     if _ws_filter:
-        _needle = _ws_filter.lower()
-        keyed = ((s, (_ws_key(s) or "").lower()) for s in sessions)
-        sessions = [
-            s for s, key in keyed if key and (_needle in key or _needle == os.path.basename(key.rstrip("/\\")))
-        ]
+        sessions = _list_in_workspace(db, _ws_filter.lower(), want, query)
+    else:
+        sessions = db.list_sessions_rich(**query, limit=want)
+    truncated = limit > 0 and len(sessions) > limit
+    sessions = sessions[:limit] if truncated else sessions
     if not sessions:
         print("No sessions found.")
         return

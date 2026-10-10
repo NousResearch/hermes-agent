@@ -37,6 +37,7 @@ def _client(tmp_path, monkeypatch) -> TestClient:
 def test_month_route_reports_this_months_tokens_and_unpriced_sessions(tmp_path, monkeypatch):
     (row,) = _client(tmp_path, monkeypatch).get("/api/analytics/month").json()["providers"]
     assert (row["provider"], row["tokens"], row["unpriced_sessions"], row["budget"]) == ("xiaomi", 1200, 1, None)
+    assert row["balance"] is None  # xiaomi token plans have no balance API
 
 
 def test_setting_a_budget_persists_it_and_keeps_other_settings(tmp_path, monkeypatch):

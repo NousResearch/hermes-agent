@@ -14,6 +14,7 @@ import hermes_yaml as yaml
 from fastapi import APIRouter, HTTPException, Query
 
 from hermes_cli.config import _deep_merge, get_config_path, read_raw_config, require_readable_config_before_write
+from hermes_cli.usage_balance import attach_balances
 from hermes_cli.usage_budget import month_usage_rows, month_window, read_budgets, summarize_month
 from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_routers._common import corrupt_store_as_status
@@ -169,13 +170,15 @@ def _get_usage_month(profile: Optional[str] = None) -> dict:
     finally:
         db.close()
     with _profile_scope(profile):
-        budgets = read_budgets(load_config())
-    return summarize_month(rows, budgets, now)
+        month = summarize_month(rows, read_budgets(load_config()), now)
+        attach_balances(month["providers"])
+    return month
 
 
 @router.get("/api/analytics/month")
 async def get_usage_month(profile: Optional[str] = None):
-    """This calendar month's usage per billing provider, with each ``usage.budgets`` limit evaluated."""
+    """This calendar month's usage per billing provider, each ``usage.budgets`` limit evaluated, and the
+    money left where the provider reports it (``hermes_cli/usage_balance.py``)."""
     with corrupt_store_as_status(_session_db_path_for_profile(profile)):
         return await asyncio.to_thread(_get_usage_month, profile)
 

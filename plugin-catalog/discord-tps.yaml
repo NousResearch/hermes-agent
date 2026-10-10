@@ -3,7 +3,7 @@ repo: https://github.com/tuancookiez-hub/hermes-discord-tokenpersec
 sha: 056fcd331d9be03c287f293854b715b17b637203
 subdir: discord-tps
 version: "1.0.3"
-requires_hermes: ">=0.21"
+requires_hermes: ">=0.21.4"
 description: "Show live tokens-per-second and the active model on your Discord bot's presence. Disclosure — Replaces the Discord bot's public presence with the live tok/s figure and the model name of the most recent API call in this gateway (any platform or chat), visible to anyone who can see the bot; updates at most every interval seconds (minimum 10) over the gateway's existing Discord connection. Reads no credentials and makes no network calls of its own."
 maintainer: tuancookiez-hub
 tier: community

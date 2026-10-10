@@ -49,6 +49,17 @@ def test_catalog_keys_match_english(lang: str):
 
 
 @pytest.mark.parametrize("lang", list(i18n.SUPPORTED_LANGUAGES))
+def test_queue_refusal_uses_the_requested_bundled_language(lang: str):
+    key = "gateway.queue.full"
+    rendered = i18n.t(key, lang=lang)
+    bundled = _flatten(_load_raw(lang)).get(key)
+    english = i18n.t(key, lang="en")
+    assert {"message": rendered, "distinct_translation": rendered != english} == {
+        "message": bundled, "distinct_translation": lang != "en",
+    }
+
+
+@pytest.mark.parametrize("lang", list(i18n.SUPPORTED_LANGUAGES))
 def test_catalog_placeholders_match_english(lang: str):
     """Every translated value must use the same {placeholder} tokens as English.
 

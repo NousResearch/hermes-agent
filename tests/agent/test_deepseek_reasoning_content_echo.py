@@ -72,11 +72,11 @@ def _build_sdk_message(reasoning_content=_ATTR_ABSENT, **extra):
 
 
 class TestNeedsDeepSeekToolReasoning:
-    """_needs_deepseek_tool_reasoning() recognises all three detection signals."""
+    """_needs_thinking_reasoning_pad() recognises the DeepSeek signals through the shared rule table."""
 
     def test_provider_deepseek(self) -> None:
         agent = _make_agent(provider="deepseek", model="deepseek-v4-flash")
-        assert agent._needs_deepseek_tool_reasoning() is True
+        assert agent._needs_thinking_reasoning_pad() is True
 
 
 
@@ -239,7 +239,7 @@ class TestBuildAssistantMessagePadsStrictProviders:
 
 
 class TestNeedsKimiToolReasoning:
-    """The extracted _needs_kimi_tool_reasoning() helper keeps Kimi behavior intact."""
+    """The Kimi signals survive the table-driven _needs_thinking_reasoning_pad()."""
 
     @pytest.mark.parametrize(
         "provider,base_url",
@@ -253,7 +253,21 @@ class TestNeedsKimiToolReasoning:
     )
     def test_kimi_signals(self, provider: str, base_url: str) -> None:
         agent = _make_agent(provider=provider, model="kimi-k2", base_url=base_url)
-        assert agent._needs_kimi_tool_reasoning() is True
+        assert agent._needs_thinking_reasoning_pad() is True
+
+
+class TestNeedsIfmToolReasoning:
+    """IFM's hosted K2 API requires the echo too (host-driven, one table row)."""
+
+    def test_ifm_host(self) -> None:
+        agent = _make_agent(provider="custom", model="IFM/K2-Horizon-375B-A23B",
+                            base_url="https://api.ifm.ai/v1")
+        assert agent._needs_thinking_reasoning_pad() is True
+
+    def test_same_weights_elsewhere_are_not_padded(self) -> None:
+        agent = _make_agent(provider="custom", model="IFM/K2-Horizon-375B-A23B",
+                            base_url="https://api.k2think.ai/v1")
+        assert agent._needs_thinking_reasoning_pad() is False
 
 
 

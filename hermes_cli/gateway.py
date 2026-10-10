@@ -2324,6 +2324,7 @@ def user_systemd_unit_dir() -> Path:
     user's session, so the unit dir follows the account home like ``get_launchd_plist_path()`` does.
     """
     from hermes_constants import get_real_home
+
     config_home = os.environ.get("XDG_CONFIG_HOME", "").strip()
     base = Path(config_home) if config_home else Path(get_real_home()) / ".config"
     return base / "systemd" / "user"

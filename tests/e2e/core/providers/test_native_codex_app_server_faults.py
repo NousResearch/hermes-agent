@@ -26,8 +26,6 @@ pytestmark = [
 
 # Red on current main for a tracked, open bug: key -> (the bug's own failure-message pattern, reason).
 KNOWN: dict[str, tuple[str, str]] = {
-    "q_approval": (r"^approval parked \d+\.\ds on a prompt nobody can answer in -q",
-                   "#121296 approval in `chat -q` waits the full approvals.timeout instead of single_query_mode"),
     "permissions": (r"^PermissionsRequestApprovalResponse without `permissions`: .*'violation': 'missing field `permissions`'",
                     "#121297 reply to item/permissions/requestApproval omits required `permissions`"),
     # The poll itself raises the symptom; anchor on its own subject so no other wait can match.

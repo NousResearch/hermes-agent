@@ -41,6 +41,18 @@ class ProcessingOutcome(Enum):
     CANCELLED = "cancelled"
 
 
+@dataclass(frozen=True)
+class TurnContextUpdate:
+    """What ``BasePlatformAdapter.prepare_turn_context`` reports for one turn.
+
+    ``note`` is prepended to the user message. ``channel_state`` is saved with the user transcript
+    row, so the change is acknowledged only when the turn that reported it is saved. It is ``None``
+    when the adapter could not read the chat state, and the saved state then stays unchanged.
+    """
+    note: Optional[str]
+    channel_state: Optional[Dict[str, Any]]
+
+
 @dataclass
 class MessageEvent:
     """Incoming message from a platform — the normalized shape all adapters produce."""
@@ -101,6 +113,14 @@ class MessageEvent:
     # knows the message was meant for someone else); None means unknown and keeps the visible
     # fallback, like True.
     reply_expected: Optional[bool] = None
+    # Snapshot from ``BasePlatformAdapter.prepare_turn_context``. The user transcript row saves it,
+    # and the saved snapshot is the baseline for the adapter's next comparison.
+    channel_state: Optional[Dict[str, Any]] = None
+    # Whether the quoted author passed the adapter's authorisation check; None when the adapter
+    # did not check. The reply pointer identifies the author only when this is set.
+    reply_to_author_authorized: Optional[bool] = None
+    # IDs of other events represented in this turn.
+    merged_message_ids: List[str] = field(default_factory=list)
 
     # Process-local admission receipt, never routing metadata or execution acknowledgement.
     _gateway_accepted: bool = field(default=False, init=False, repr=False, compare=False)
@@ -112,6 +132,11 @@ class MessageEvent:
         if self.reply_expected is not True and other.reply_expected is not False:
             self.reply_expected = other.reply_expected
 
+    def absorb_message_ids(self, other: "MessageEvent") -> None:
+        self.merged_message_ids.extend(
+            message_id for message_id in (other.message_id, *other.merged_message_ids) if message_id
+        )
+
     def _command_text(self) -> str:
         """Return the message text with leading Desktop attachment refs stripped.
 
@@ -121,6 +146,27 @@ class MessageEvent:
         when the payload is prefixed with one or more media refs.
         """
         return _ATTACHMENT_REF_RE.sub("", (self.text or "").lstrip()).lstrip()
+
+    def _replies_to_message(self) -> bool:
+        return bool(self.reply_to_message_id or self.reply_to_text)
+
+    def _reply_context(self) -> tuple:
+        return (self.reply_to_message_id, self.reply_to_text, self.reply_to_author_id,
+                self.reply_to_author_name, bool(self.reply_to_is_own_message), self.reply_to_author_authorized)
+
+    def reply_context_conflicts(self, other: "MessageEvent") -> bool:
+        """True when both events reply to a message and their reply contexts differ. A merged
+        event has room for only one reply context."""
+        return (self._replies_to_message() and other._replies_to_message()
+                and self._reply_context() != other._reply_context())
+
+    def absorb_reply_context(self, other: "MessageEvent") -> None:
+        """One turn now answers *other* too: take its reply context if this event has none."""
+        if self._replies_to_message() or not other._replies_to_message():
+            return
+        (self.reply_to_message_id, self.reply_to_text, self.reply_to_author_id,
+         self.reply_to_author_name, self.reply_to_is_own_message,
+         self.reply_to_author_authorized) = other._reply_context()
 
     def is_command(self) -> bool:
         """Check if this is a command message (e.g., /new, /reset)."""

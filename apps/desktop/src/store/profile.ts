@@ -22,6 +22,7 @@ import {
   activeGatewayProfileKey,
   ensureGatewayForAgent,
   ensureGatewayForProfile,
+  isActivePrimary,
   openGatewayForAgent,
   openGatewayForProfile,
   openSecondaryCount
@@ -996,8 +997,11 @@ export function selectProfile(name: string): void {
   // the selection for the next Desktop launch through the persistence-only
   // IPC instead (#79886). Registry-source picks name ANOTHER source's
   // profiles, so only a primary-backend activation updates the startup
-  // preference.
-  const onPrimary = activeGatewayConnectionId() == null
+  // preference. "On the primary" is the active-key check: a registry-backed
+  // local primary publishes a non-null connection id, so gating on a null
+  // id silently dropped every startup-preference update on registry
+  // setups (#135990).
+  const onPrimary = isActivePrimary()
 
   const shouldRememberStartupProfile = onPrimary ? isLocalDesktopProfile(target) : Promise.resolve(false)
 

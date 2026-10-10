@@ -14,6 +14,7 @@ const ensureGatewayForProfile = vi.fn(async (_profile: string) => undefined)
 const ensureGatewayForAgent = vi.fn(async (_connectionId: null | string, _profile: string) => true)
 const openGatewayForProfile = vi.fn(async (_profile: string) => undefined)
 const activeGatewayConnectionId = vi.fn<() => null | string>(() => null)
+const isActivePrimary = vi.fn<() => boolean>(() => true)
 const $gateway = atom<unknown>({ id: 'live-socket' })
 const resetStarmapGraph = vi.fn()
 
@@ -24,6 +25,7 @@ vi.mock('@/store/gateway', () => ({
   activeGatewayProfileKey: () => ensureGatewayForProfile.mock.lastCall?.[0] ?? $activeGatewayProfile.get(),
   ensureGatewayForAgent,
   ensureGatewayForProfile,
+  isActivePrimary,
   openGatewayForProfile
 }))
 vi.mock('@/hermes', () => ({
@@ -40,6 +42,8 @@ beforeEach(() => {
   ensureGatewayForAgent.mockClear()
   activeGatewayConnectionId.mockReset()
   activeGatewayConnectionId.mockReturnValue(null)
+  isActivePrimary.mockReset()
+  isActivePrimary.mockReturnValue(true)
   $gateway.set({ id: 'live-socket' })
   $activeGatewayProfile.set('default')
   // resolveConnectionForAgent is best-effort; without a bridge it resolves
@@ -50,6 +54,7 @@ beforeEach(() => {
 describe('selectProfile', () => {
   it('activates the pick on the live registry source, not the primary', async () => {
     activeGatewayConnectionId.mockReturnValue('mini')
+    isActivePrimary.mockReturnValue(false)
 
     selectProfile('researcher')
 
@@ -164,11 +169,25 @@ describe('selectProfile startup preference (#79886)', () => {
 
   it('does not replace the startup preference for a registry-source pick', async () => {
     activeGatewayConnectionId.mockReturnValue('mini')
+    isActivePrimary.mockReturnValue(false)
 
     selectProfile('researcher')
 
     await vi.waitFor(() => expect(ensureGatewayForAgent).toHaveBeenCalledWith('mini', 'researcher'))
     expect(rememberProfile).not.toHaveBeenCalled()
+  })
+
+  // A registry-backed local primary publishes a non-null connection id, so the
+  // old null-id gate silently dropped every startup-preference update on v2
+  // registry setups (#135990).
+  it('remembers a pick made on a registry-backed local primary (non-null connection id)', async () => {
+    activeGatewayConnectionId.mockReturnValue('local')
+    isActivePrimary.mockReturnValue(true)
+
+    selectProfile('tilly')
+
+    await vi.waitFor(() => expect(rememberProfile).toHaveBeenCalledWith('tilly'))
+    expect(ensureGatewayForProfile).toHaveBeenCalledWith('tilly')
   })
 
   it('remembers an already-active local profile after returning from All Profiles', async () => {

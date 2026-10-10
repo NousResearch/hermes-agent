@@ -305,8 +305,8 @@ class TestRouteSwitchBarrier:
         """update_session_model / update_session_billing_route bypass the
         queue, so they must flush it first: a still-queued first delta
         carries the pre-switch route, and applying it after the switch
-        UPDATE trips first_accounted_route (api_call_count == 0 + route
-        mismatch) and resurrects the old model/provider on the row."""
+        UPDATE trips latest_accounted_route (route mismatch) and
+        resurrects the old model/provider on the row."""
         db.create_session("s-sw", "test")
         # First delta of the session, queued but not yet applied (writer
         # not started — same state as a backlogged writer).

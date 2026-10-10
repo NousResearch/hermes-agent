@@ -531,6 +531,15 @@ class CLISessionMixin:
         # into the next session (#48055, #23131).
         self._pending_one_turn_model_restore = None
         self.service_tier = _parse_service_tier_config(CLI_CONFIG["agent"].get("service_tier", ""))
+        # Rotate the live agent onto the NEW session id BEFORE the config-default model reset:
+        # the reset's switch_model persists the billing route, and with the agent still on the
+        # outgoing session that write stamped the config-default route onto a row whose
+        # accounted usage ran elsewhere — frozen there because the usage-based reconciliation
+        # only ran while api_call_count == 0. The new session row does not exist yet, so the
+        # route write is a no-op there and create_session records the real route.
+        if self.agent:
+            self.agent.session_id = self.session_id
+            self.agent.session_start = self.session_start
         _reset_model_to_config_default(self, silent)
         # After the model reset: the effort belongs to the model the fresh session lands on (a /reasoning
         # session override is dropped, the default model's per-model override is kept).
@@ -538,8 +547,6 @@ class CLISessionMixin:
         _sync_process_session_id(self.session_id)
 
         if self.agent:
-            self.agent.session_id = self.session_id
-            self.agent.session_start = self.session_start
             self.agent.reasoning_config = self.reasoning_config
             self.agent.reset_session_state()
             if hasattr(self.agent, "_last_flushed_db_idx"):

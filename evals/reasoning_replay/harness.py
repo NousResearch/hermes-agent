@@ -170,7 +170,7 @@ class Client:
                     status, raw, hdrs = r.status, r.read().decode("utf-8", "replace"), r.headers
             except urllib.error.HTTPError as e:
                 status, raw, hdrs = e.code, e.read().decode("utf-8", "replace"), e.headers
-            except Exception as e:  # network/timeouts are recorded as status 0
+            except (urllib.error.URLError, OSError, ValueError) as e:  # network/timeouts -> status 0
                 status, raw, hdrs = 0, json.dumps({"error": f"{type(e).__name__}: {e}"}), {}
             try:
                 j = json.loads(raw)
@@ -739,6 +739,81 @@ def price_table(catalog: list) -> dict:
 CONSUMED, OPAQUE_MIN = 0.5, 8
 
 
+def _latest_opaque(recs: list) -> tuple[list, dict]:
+    """Opaque cells only compare within one turn-1 capture: keep the newest run per (lane, position)."""
+    latest: dict = {}
+    for r in recs:
+        if r.get("step") == "opaque" and r.get("status") == 200:
+            k = (r.get("lane"), r.get("position"))
+            latest[k] = max(latest.get(k, ""), r.get("run_id", ""))
+    kept = [r for r in recs if r.get("step") != "opaque" or (r.get("lane"), r.get("position")) not in latest
+            or r.get("run_id", "") == latest[(r.get("lane"), r.get("position"))]]
+    per_lane: dict = {}
+    for (ln, _pos), rid in latest.items():
+        per_lane[ln] = max(per_lane.get(ln, ""), rid)
+    return kept, per_lane
+
+
+def _baselines(lr: list, base_variant: str) -> dict:
+    """Min prompt_tokens of the baseline per probe wording (Gemini 400s a stripped signature in-loop,
+    so its dummy-signature cell stands in)."""
+    for bv in (base_variant, "dummy_signature"):
+        bases: dict = {}
+        for r in lr:
+            if r["variant"] == bv and r["status"] == 200 and r.get("prompt_tokens") is not None:
+                pk = r.get("probe", "std")
+                bases[pk] = min(bases.get(pk, 1 << 30), r["prompt_tokens"])
+        if bases:
+            return bases
+    return {}
+
+
+def _fill_cell(row: dict, step: str, position: str, r: dict, base) -> None:
+    v = r["variant"]
+    cell = row[step].setdefault(position, {})
+    if r["status"] != 200:
+        cell.setdefault(v, f"{r['status']}")
+        row["errors"][f"{step}:{position}:{v}"] = f"{r['status']} {r['error'][:200]}"
+    elif base is not None and r.get("prompt_tokens") is not None:
+        cell[v] = r["prompt_tokens"] - base
+    else:
+        cell.setdefault(v, "nobase")
+    if step == "text" and r["status"] == 200:
+        row["canary"].setdefault(position, {})[v] = (
+            "Y" if r["canary_in_answer"] else ("r" if r["canary_in_reasoning"] else "n"))
+
+
+def _fill_position(row: dict, recs: list, lane: str, step: str, position: str) -> None:
+    lr = [r for r in recs if r.get("step") == step and r.get("position") == position and r.get("lane") == lane]
+    base_variant = "none" if step == "text" else "stripped"
+    bases = _baselines(lr, base_variant)
+    if "alt" in {r.get("probe", "std") for r in lr if r["status"] == 200}:
+        lr = [r for r in lr if r.get("probe", "std") == "alt"]  # refused std wording is superseded
+    for r in lr:
+        if r["variant"] == base_variant and step == "text":
+            if r["status"] != 200:
+                row["errors"][f"{step}:{position}:baseline"] = f"{r['status']} {r['error'][:200]}"
+            continue
+        _fill_cell(row, step, position, r, bases.get(r.get("probe", "std")))
+
+
+def _lane_row(route: str, model: str, lane: str, recs: list, latest_lane: dict, trace_tokens: float) -> dict:
+    row = {"route": route, "model": model, "lane": lane, "text": {}, "opaque": {}, "errors": {}, "canary": {},
+           "id_prefixes": sorted({r.get("id_prefix") for r in recs if r.get("lane") == lane}),
+           "calls": sum(1 for r in recs if r.get("lane") == lane)}
+    for step in ("text", "opaque"):
+        for position in POSITIONS:
+            _fill_position(row, recs, lane, step, position)
+    t1 = [r for r in recs if r.get("step") == "opaque_turn1" and r.get("lane") in (lane, "-")]
+    t1 = [r for r in t1 if r.get("run_id", "") == latest_lane.get(lane)] or t1
+    if t1:
+        row["turn1"] = {k: t1[-1].get(k) for k in ("status", "carriers", "detail_formats", "signed_details",
+                                                   "extra_content", "reasoning_chars", "reasoning_sample",
+                                                   "reasoning_tokens", "has_tool_call", "error", "lane")}
+    row["verdict"] = verdict(row, trace_tokens)
+    return row
+
+
 def summarize(out: Path) -> list:
     calls = read_calls(out)
     want_direct: set = set()
@@ -747,83 +822,24 @@ def summarize(out: Path) -> list:
         for line in runs.read_text(encoding="utf-8-sig").splitlines():
             want_direct |= set(json.loads(line).get("want_direct") or [])
     meta = {(c["route"], c["model"]): c for c in calls if c.get("step") == "meta"}
-    trace_tok = {}
-    rows = {}
+    rows: dict = {}
     for c in calls:
-        if c.get("step") not in ("text", "opaque", "opaque_turn1", "params"):
-            continue
-        rows.setdefault((c["route"], c["model"]), []).append(c)
+        if c.get("step") in ("text", "opaque", "opaque_turn1", "params"):
+            rows.setdefault((c["route"], c["model"]), []).append(c)
     table = []
     for (route, model), recs in sorted(rows.items()):
         lanes = sorted({r.get("lane") for r in recs if r.get("lane")}) or ["-"]
-        # opaque cells are only comparable within one turn-1 capture: keep the newest run per lane
-        latest: dict = {}
-        for r in recs:
-            if r.get("step") == "opaque" and r.get("status") == 200:
-                k = (r.get("lane"), r.get("position"))
-                latest[k] = max(latest.get(k, ""), r.get("run_id", ""))
-        recs = [r for r in recs if r.get("step") != "opaque" or (r.get("lane"), r.get("position")) not in latest
-                or r.get("run_id", "") == latest[(r.get("lane"), r.get("position"))]]
-        latest_lane = {}
-        for (ln, _pos), rid in latest.items():
-            latest_lane[ln] = max(latest_lane.get(ln, ""), rid)
-        tchars = (meta.get((route, model)) or {}).get("trace_chars") or 1800
-        trace_tok[(route, model)] = tchars / 4
+        recs, latest_lane = _latest_opaque(recs)
+        trace_tokens = ((meta.get((route, model)) or {}).get("trace_chars") or 1800) / 4
         for lane in lanes:
-            row = {"route": route, "model": model, "lane": lane, "text": {}, "opaque": {}, "errors": {},
-                   "canary": {}, "id_prefixes": sorted({r.get("id_prefix") for r in recs if r.get("lane") == lane}),
-                   "calls": sum(1 for r in recs if r.get("lane") == lane)}
-            for step in ("text", "opaque"):
-                for position in POSITIONS:
-                    lr = [r for r in recs if r.get("step") == step and r.get("position") == position
-                          and r.get("lane") == lane]
-                    base_variant = "none" if step == "text" else "stripped"
-                    bases: dict = {}
-                    for bv in (base_variant, "dummy_signature"):  # Gemini 400s a stripped signature in-loop
-                        for r in lr:
-                            if r["variant"] == bv and r["status"] == 200 and r.get("prompt_tokens") is not None:
-                                pk = r.get("probe", "std")
-                                bases[pk] = min(bases.get(pk, 1 << 30), r["prompt_tokens"])
-                        if bases:
-                            break
-                    # a probe whose baseline was refused (403) is superseded by the alt-probe cells
-                    probes_used = {r.get("probe", "std") for r in lr if r["status"] == 200}
-                    if "alt" in probes_used:
-                        lr = [r for r in lr if r.get("probe", "std") == "alt"]
-                    for r in lr:
-                        v = r["variant"]
-                        b = bases.get(r.get("probe", "std"))
-                        if v == base_variant and step == "text":
-                            if r["status"] != 200:
-                                row["errors"][f"{step}:{position}:baseline"] = f"{r['status']} {r['error'][:200]}"
-                            continue
-                        cell = row[step].setdefault(position, {})
-                        if r["status"] != 200:
-                            cell.setdefault(v, f"{r['status']}")
-                            row["errors"][f"{step}:{position}:{v}"] = f"{r['status']} {r['error'][:200]}"
-                        elif b is not None and r.get("prompt_tokens") is not None:
-                            cell[v] = r["prompt_tokens"] - b
-                        else:
-                            cell.setdefault(v, "nobase")
-                        if step == "text" and r["status"] == 200:
-                            row["canary"].setdefault(position, {})[v] = (
-                                "Y" if r["canary_in_answer"] else ("r" if r["canary_in_reasoning"] else "n"))
-            # rejected-on-every-lane errors have lane '-' semantics; fold non-200 rows from any lane
-            t1 = [r for r in recs if r.get("step") == "opaque_turn1" and r.get("lane") in (lane, "-")]
-            t1 = [r for r in t1 if r.get("run_id", "") == latest_lane.get(lane)] or t1
-            if t1:
-                r = t1[-1]
-                row["turn1"] = {k: r.get(k) for k in ("status", "carriers", "detail_formats", "signed_details",
-                                                      "extra_content", "reasoning_chars", "reasoning_sample",
-                                                      "reasoning_tokens", "has_tool_call", "error", "lane")}
-            row["verdict"] = verdict(row, trace_tok[(route, model)])
+            row = _lane_row(route, model, lane, recs, latest_lane, trace_tokens)
             if row["text"] or row["opaque"] or row.get("turn1"):
                 table.append(row)
         if route == "nous" and model in want_direct and "direct" not in lanes:
             table.append({"route": route, "model": model, "lane": "direct", "text": {}, "opaque": {}, "canary": {},
-                          "errors": {"lane": f"direct lane not reached in {sum(1 for r in recs)} calls (all gen-)"},
+                          "errors": {"lane": f"direct lane not reached in {len(recs)} calls (all gen-)"},
                           "verdict": "direct-lane-not-reached", "id_prefixes": [], "calls": 0})
-    # calls that never got a 200 baseline (params discovery failed) get an error row
+    # ids whose baseline never succeeded (404, quota, invalid argument) still get a row
     for (route, model), recs in rows.items():
         if not any(t["route"] == route and t["model"] == model for t in table):
             last = recs[-1]
@@ -947,7 +963,7 @@ def main() -> None:
     if not catalog:
         try:
             catalog = nous_catalog()  # used only as a price table for vendor ids
-        except Exception:
+        except (urllib.error.URLError, OSError, ValueError, KeyError):
             catalog = []
     models = [x for x in a.models.split(",") if x]
     if a.models.startswith("portal"):

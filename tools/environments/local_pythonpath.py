@@ -127,10 +127,40 @@ def _strip_hermes_owned_pythonpath_and_runtime_markers(env: dict) -> None:
         env.pop(_marker, None)
 
 
+def _hermes_environment_roots() -> tuple[Path, ...]:
+    """The install's dependency-environment state dir: every generation PM has committed, not
+    just the selected one.
+
+    A backend that has been running since before an environment switch still carries the
+    *superseded* generation's site-packages in ``os.environ``; ``pm.environments_adopt`` only
+    rewrites it when the process successfully adopts the new generation, and otherwise only a
+    restart loads it. ``_get_hermes_site_packages`` answers with the *current* selection, so
+    the stale twin is not recognized and leaks into children. Anything under this directory is
+    Hermes-owned by provenance, whichever generation it belongs to.
+    """
+    from pm.environments import install_state_dir
+
+    # Same root spelling ``_validated_runtime_venv`` uses to locate ``runtime_facts_path``.
+    root = Path(__file__).resolve().parents[2]
+    try:
+        return ((install_state_dir(root) / "environments").resolve(),)
+    except OSError:
+        return ()
+
+
+def _is_under(path: Path, root: Path) -> bool:
+    try:
+        return path.resolve().is_relative_to(root)
+    except OSError:
+        return False
+
+
 def _strip_hermes_owned_pythonpath(env: dict) -> None:
-    """Remove Hermes-owned PYTHONPATH entries: only exact matches of the repo root
-    (any launcher spelling) and runtime site-packages — never descendants, which are
-    user paths. Empty components (= cwd) and everything else are preserved.
+    """Remove Hermes-owned PYTHONPATH entries: exact matches of the repo root (any launcher
+    spelling), runtime site-packages, and any dependency-environment generation under this
+    install's state dir — a *superseded* generation is still Hermes-owned. Still never a
+    descendant of the repo root or of site-packages, which are user paths. Empty components
+    (= cwd) and everything else are preserved.
 
     Everything else -- user libs, Nix plugin paths, a pythonX.Y/site-packages entry meant for a DIFFERENT
     child version -- is preserved byte-for-byte: ownership is decided by path provenance, never by a
@@ -140,8 +170,13 @@ def _strip_hermes_owned_pythonpath(env: dict) -> None:
     if not pp:
         return
     owned_paths = [*_get_hermes_site_packages(env), *_state()._hermes_repo_root_aliases]
+    owned_roots = _hermes_environment_roots()
     entries = pp.split(os.pathsep)
-    stripped = [e for e in entries if e and any(_same_path(Path(e), p) for p in owned_paths)]
+    stripped = [
+        e for e in entries
+        if e and (any(_same_path(Path(e), p) for p in owned_paths)
+                  or any(_is_under(Path(e), r) for r in owned_roots))
+    ]
     kept = [e for e in entries if e not in stripped]
     if kept:
         env["PYTHONPATH"] = os.pathsep.join(kept)

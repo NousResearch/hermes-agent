@@ -252,6 +252,64 @@ def _agent_home(agent: Any) -> Optional[Path]:
         return None
 
 
+def _multiple_profiles_deployed() -> bool:
+    """True when real profile dirs exist under the profiles root: with only the default
+    profile, ambient resolution cannot pick a wrong home (ambient == the only home)."""
+    try:
+        from hermes_constants import get_default_hermes_root
+
+        root = get_default_hermes_root() / "profiles"
+        return any(p.is_dir() for p in root.iterdir() if not p.name.startswith("."))
+    except OSError:
+        return False
+
+
+def _session_profile_disagrees(agent: Any, home: Path) -> bool:
+    """True when the persisted session row's ``profile_name`` (stamped at row creation —
+    ground truth on a shared/multiplexed session DB) disagrees with *home*'s profile: the
+    db was handed to an agent of another profile (#136321 path A). A fresh session builds
+    its prompt before its row exists (#45499), and NULL/mocks are no signal — those keep
+    the db-derived-home semantics #50233 established."""
+    db = getattr(agent, "_session_db", None)
+    session_id = getattr(agent, "session_id", None)
+    if db is None or not session_id:
+        return False
+    try:
+        with db._read_ctx() as conn:
+            row = conn.execute(
+                "SELECT profile_name FROM sessions WHERE id = ?", (session_id,)
+            ).fetchone()
+    except Exception:  # health: allow BLE001 -- stand-in DBs without _read_ctx and any read failure are no signal: fail open
+        return False
+    row_profile = row[0] if row else None
+    if not isinstance(row_profile, str) or not row_profile:
+        return False
+    return _profile_name_for_home(home) != row_profile
+
+
+def _agent_soul_md(agent: Any, ctx_len: Optional[int]) -> Optional[str]:
+    """SOUL.md from the agent's OWN home, fail-closed when that home cannot be trusted
+    (#136321): an unresolvable home (no override, no session db) in a multi-profile
+    deployment, or a db-derived home that disagrees with the session row's profile, falls
+    back to the built-in default identity instead of ambient — a missing identity is
+    recoverable, a WRONG identity loops for hours."""
+    home = _agent_home(agent)
+    if home is None:
+        if _multiple_profiles_deployed():
+            logger.warning(
+                "SOUL.md skipped: agent home unresolvable (no HERMES_HOME override, no session db) in a "
+                "multi-profile deployment — refusing ambient launch-home identity (#136321)"
+            )
+            return None
+    elif _session_profile_disagrees(agent, home):
+        logger.warning(
+            "SOUL.md skipped: session row profile disagrees with the home derived from the session db — "
+            "the db belongs to another profile (#136321)"
+        )
+        return None
+    return _pb.load_soul_md(ctx_len, home_override=home)
+
+
 def _agent_skills_dir(agent: Any) -> Optional[Path]:
     """The agent's own ``<home>/skills`` dir, or None to use ambient home."""
     home = _agent_home(agent)
@@ -546,7 +604,7 @@ def _identity_parts(agent: Any, ctx_len: Optional[int]) -> tuple[list[str], bool
     instructions, scoped to the agent's OWN home) or the default identity.
     Returns ``(parts, soul_loaded)``."""
     wants_soul = agent.load_soul_identity or not agent.skip_context_files
-    _soul_content = _pb.load_soul_md(ctx_len, home_override=_agent_home(agent)) if wants_soul else None
+    _soul_content = _agent_soul_md(agent, ctx_len) if wants_soul else None
     return ([_soul_content], True) if _soul_content else ([DEFAULT_AGENT_IDENTITY], False)
 
 

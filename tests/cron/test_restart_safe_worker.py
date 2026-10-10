@@ -1367,3 +1367,43 @@ def test_restart_wait_counts_exclude_only_scoped_workers(tmp_path, monkeypatch):
     keys = {scheduler._inflight_key(job_id) for job_id in jobs}
     assert not keys & scheduler._scope_isolated_job_ids
     assert not keys & set(scheduler._running_worker_pids)
+
+
+def test_worker_env_pins_committed_site_packages(tmp_path, monkeypatch):
+    """The external worker env carries the committed dependency site-packages.
+
+    Regression guard for #124279 (and the #127016/#126609/#129235 class): the
+    shared sanitizer strips Hermes-owned PYTHONPATH entries, so without the
+    pin the worker spawned on a dependency-less interpreter dies with
+    ``ModuleNotFoundError`` before its ownership acknowledgement.
+    """
+    import os
+
+    import cron.scheduler_worker_env as worker_env
+
+    repo_root = tmp_path / "checkout"
+    repo_root.mkdir()
+    site_packages = tmp_path / "installs" / "abc" / "env" / "site-packages"
+    site_packages.mkdir(parents=True)
+
+    monkeypatch.setattr(
+        worker_env, "_committed_dependency_site_packages", lambda root: site_packages
+    )
+    env = worker_env.pin_hermes_tree_on_pythonpath({"PYTHONPATH": "/kept/entry"}, repo_root)
+    parts = env["PYTHONPATH"].split(os.pathsep)
+    assert parts[0] == str(repo_root)
+    assert parts[1] == str(site_packages)
+    assert "/kept/entry" in parts[2:]
+
+
+def test_worker_env_pins_tree_only_without_committed_env(tmp_path, monkeypatch):
+    """No committed generation: pin the tree only, invent nothing (#124279)."""
+    import cron.scheduler_worker_env as worker_env
+
+    repo_root = tmp_path / "checkout"
+    repo_root.mkdir()
+    monkeypatch.setattr(
+        worker_env, "_committed_dependency_site_packages", lambda root: None
+    )
+    env = worker_env.pin_hermes_tree_on_pythonpath({}, repo_root)
+    assert env["PYTHONPATH"].split(os.pathsep)[0] == str(repo_root)

@@ -107,7 +107,7 @@ def _branch_live(rid, params: dict, session: dict, *, omit_messages: bool = Fals
                             cwd=None if _is_remote_launch_cwd(session) else _session_cwd(session),
                             profile_name=profile_name_for_home(home) or _current_profile_name(),
                             model=_session_default_route(session)[0], copy_fields=_BRANCH_COPY_FIELDS,
-                            title_source="user" if params.get("name") else "derived",
+                            title_source="user" if params.get("name") else "branch",
                             user_id=_session_auth_user_id(session))
         except Exception as e:
             return _err(rid, 5008, f"branch failed: {e}")

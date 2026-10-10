@@ -29,7 +29,8 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, TypeVar
 
 from hermes_state_common import (
     TITLE_SOURCE_DERIVED as _TITLE_SOURCE_DERIVED, TITLE_SOURCE_LLM as _TITLE_SOURCE_LLM,
-    TITLE_SOURCE_USER as _TITLE_SOURCE_USER,
+    TITLE_SOURCE_USER as _TITLE_SOURCE_USER, TITLE_SOURCE_BRANCH as _TITLE_SOURCE_BRANCH,
+    TITLE_SOURCE_BRANCH_FALLBACK as _TITLE_SOURCE_BRANCH_FALLBACK,
     escape_like as _escape_like, _placeholders,
     stat_db_file_identity as _stat_db_file_identity,
 )
@@ -1600,7 +1601,12 @@ class SessionDB(
     TITLE_SOURCE_DERIVED = _TITLE_SOURCE_DERIVED
     TITLE_SOURCE_LLM = _TITLE_SOURCE_LLM
     TITLE_SOURCE_USER = _TITLE_SOURCE_USER
-    _TITLE_SOURCE_RANK = {TITLE_SOURCE_DERIVED: 0, TITLE_SOURCE_LLM: 1, TITLE_SOURCE_USER: 2}
+    TITLE_SOURCE_BRANCH = _TITLE_SOURCE_BRANCH
+    TITLE_SOURCE_BRANCH_FALLBACK = _TITLE_SOURCE_BRANCH_FALLBACK
+    _TITLE_SOURCE_RANK = {
+        TITLE_SOURCE_BRANCH: -1, TITLE_SOURCE_BRANCH_FALLBACK: 0,
+        TITLE_SOURCE_DERIVED: 0, TITLE_SOURCE_LLM: 1, TITLE_SOURCE_USER: 2,
+    }
 
     # Bot Mode's canonical chat is resolved by exact-title lookup: the title IS the identity,
     # so _set_session_title refuses renames of a hidden row holding it.

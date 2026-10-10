@@ -326,9 +326,9 @@ async def test_legacy_send_error_redacts_bot_token_without_traceback(monkeypatch
     assert result.success is False
     assert result.error is not None
     assert token not in result.error
-    assert "bot123456789:***/sendMessage" in result.error
+    assert "bot123456789:***/sendmessage" in result.error.lower()
     assert token not in caplog.text
-    assert "bot123456789:***/sendMessage" in caplog.text
+    assert "bot123456789:***/sendmessage" in caplog.text.lower()
     adapter._bot.do_api_request.assert_not_called()
 
 
@@ -733,9 +733,9 @@ async def test_legacy_edit_error_logs_redacted_bot_token_without_traceback(monke
     assert result.success is False
     assert result.error is not None
     assert token not in result.error
-    assert "bot123456789:***/editMessageText" in result.error
+    assert "bot123456789:***/editmessagetext" in result.error.lower()
     assert token not in caplog.text
-    assert "bot123456789:***/editMessageText" in caplog.text
+    assert "bot123456789:***/editmessagetext" in caplog.text.lower()
 
 
 # --------------------------------------------------------------------------

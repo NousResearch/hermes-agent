@@ -81,7 +81,8 @@ def _first_hint_file(directory: Path):
             content = target.read_text(encoding="utf-8-sig").strip()
         except (OSError, UnicodeDecodeError):
             continue
-        return candidate, content
+        if content:
+            return candidate, content
     return None
 
 

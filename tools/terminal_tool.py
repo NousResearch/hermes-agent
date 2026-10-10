@@ -1560,6 +1560,14 @@ TERMINAL_SCHEMA = {
 
 
 def _handle_terminal(args, **kw):
+    from tools.delivery_policy import current_delivery_policy, validate_delivery_terminal_command
+    policy = current_delivery_policy()
+    if policy is not None:
+        if policy.role in {"reviewer", "merger", "closure_controller"} and args.get("background", False):
+            return tool_error(f"{policy.role} terminal policy forbids background processes")
+        if reason := validate_delivery_terminal_command(str(args.get("command") or ""), policy):
+            return tool_error(reason)
+
     from agent.terminal_approval_batch import validate_prepared_terminal
     validate_prepared_terminal(args)
     # Models sometimes send execute_code's ``code`` here; name the stray

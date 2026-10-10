@@ -24,7 +24,8 @@ generation/refresh, command dispatch); topical siblings re-exported by the facad
 `gateway_launchd.py` (macOS LaunchAgent backend), `gateway_setup_wizard.py`
 (`hermes gateway setup`: `_PLATFORMS` registry, status table, per-platform prompts, service offer),
 `gateway_windows*.py`, `gateway_supervised_restart.py`, `gateway_migrate*.py`, `gateway_multiplex_*.py`,
-`gateway_enroll.py`, `gateway_command_errors.py`. Sibling bodies read facade names through `_gw()`
+`gateway_enroll.py`, `gateway_command_errors.py`, `gateway_restart_identity.py` (host-vs-profile verdict for
+a detached respawn; pins `--profile default` so it never follows the sticky `active_profile`). Sibling bodies read facade names through `_gw()`
 (late binding on `hermes_cli.gateway`), so monkeypatch on the facade; mutable state such as
 `_resolved_launchd_domain` stays a facade global.
 `process_command()` resolves the canonical name via `resolve_command()` then dispatches through

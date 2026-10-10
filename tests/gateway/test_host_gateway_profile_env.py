@@ -178,7 +178,7 @@ class TestSettledHostRecordDecidesRestart:
         self, tmp_path, monkeypatch,
     ):
         """The updater sits on the named profile's home; the host record proves hostness."""
-        from hermes_cli.gateway import _restart_argv_is_host_gateway
+        from hermes_cli.gateway_restart_identity import restart_argv_is_host_gateway
 
         _default_home, worker_home = _two_homes(tmp_path)
         self._publish_live_host_record(
@@ -186,7 +186,7 @@ class TestSettledHostRecordDecidesRestart:
         )
         _inherit_worker_env(monkeypatch, worker_home)
 
-        assert _restart_argv_is_host_gateway(
+        assert restart_argv_is_host_gateway(
             ["python", "-m", "hermes_cli.main", "gateway", "run"]
         ), "a live host multiplexer's selector-less argv must replay as the host"
 
@@ -194,14 +194,14 @@ class TestSettledHostRecordDecidesRestart:
         self, tmp_path, monkeypatch,
     ):
         """No live host record + a named-profile home => the argv is that profile's."""
-        from hermes_cli.gateway import _restart_argv_is_host_gateway
+        from hermes_cli.gateway_restart_identity import restart_argv_is_host_gateway
 
         _default_home, worker_home = _two_homes(tmp_path)
         (worker_home / "config.yaml").write_text("gateway: {}\n", encoding="utf-8")
         _inherit_worker_env(monkeypatch, worker_home)
         monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "empty-locks"))
 
-        assert not _restart_argv_is_host_gateway(
+        assert not restart_argv_is_host_gateway(
             ["python", "-m", "hermes_cli.main", "gateway", "run"]
         ), "without settled proof a named-home process must not mint host authority"
 

@@ -136,6 +136,153 @@ def validate_deferred_call_args(name: str, args: dict[str, Any]) -> Optional[str
         return None
 
 
+# The only prefix either repair accepts in front of the single arguments object: the
+# opened array/entry, optionally carrying the entry's own "name" key first. Anything
+# else ahead of "arguments" (prose, another key, an injected instruction) means the
+# string is not one of the observed mangles, so it is never repaired.
+_REPAIR_PREFIX_RE = re.compile(r'^\s*\[?\s*\{\s*(?:"name"\s*:\s*"([^"]*)"\s*,\s*)?"arguments"\s*:\s*\{')
+# Family-A tail: after the balanced arguments object only the entry/array closers
+# (either may be missing) may follow.
+_FAMILY_A_TAIL_RE = re.compile(r'^\s*\}?\s*\]?\s*$')
+# Family-D tail: after the balanced arguments object the string may
+# only contain orphaned closers, the relocated "name" key, and the (never-closed)
+# entry/array braces:  `] , "name": "TOOL" } ]`  (variants: trailing ']' missing,
+# stray '"' before the comma).
+_FAMILY_D_TAIL_RE = re.compile(r'^\s*\]?\s*"?\s*,\s*"name"\s*:\s*"([^"]+)"\s*\}\s*\]?\s*$')
+# Tool names are tool_call identifiers: mcp__server__tool, snake_case, dotted,
+# colon-namespaced. Anything outside this charset in a mangled payload is a
+# model artifact, not a tool name — never repair on it.
+_REPAIR_NAME_RE = re.compile(r"^[A-Za-z0-9_.:\-]+$")
+
+
+def _balanced_args_span(raw: str) -> Optional[tuple[int, int]]:
+    """(start, end_exclusive) of the balanced {...} following the single 'arguments'
+    key, or None. The key must sit right after the anchored entry prefix
+    (``_REPAIR_PREFIX_RE``). String-state aware: braces inside JSON strings are
+    skipped, so a balanced slice here is the actual arguments object."""
+    if raw.count('"arguments"') != 1:
+        return None  # multi-entry batch or key echoed in content: not recoverable with certainty
+    m = _REPAIR_PREFIX_RE.match(raw)
+    if not m:
+        return None
+    start = m.end() - 1
+    depth, in_str, esc = 0, False, False
+    for i in range(start, len(raw)):
+        ch = raw[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return (start, i + 1)
+    return None
+
+
+def _prefix_name(raw: str) -> Optional[str]:
+    """The entry's own "name" written ahead of "arguments", if any (prefix already anchored)."""
+    m = _REPAIR_PREFIX_RE.match(raw)
+    return m.group(1).strip() if m and m.group(1) is not None else None
+
+
+def _parse_args_slice(raw: str, span: tuple[int, int]) -> Optional[dict[str, Any]]:
+    try:
+        args = json.loads(raw[span[0]:span[1]])
+    except json.JSONDecodeError:
+        return None
+    return args if isinstance(args, dict) else None
+
+
+def _repairable_name(name: str) -> bool:
+    return bool(name) and bool(_REPAIR_NAME_RE.match(name)) and name not in BRIDGE_TOOL_NAMES
+
+
+def _try_reconstruct_single_call(
+    raw_calls: str, outer_args: dict[str, Any]
+) -> Optional[list[dict[str, Any]]]:
+    """One-shot reconstruction of the observed glm-5.3-flash mangle (family A):
+    'calls' string-encoded with the entry object left unclosed and 'name' promoted
+    to a sibling of 'calls' in the outer arguments. Accepted ONLY when the call is
+    recoverable with certainty: an exact, charset-valid outer sibling 'name'; the
+    string is exactly ``[{`` + optional ``"name": "<same name>",`` + one balanced,
+    strictly-parseable 'arguments' object + optional closers — nothing else before
+    or after. A name inside the string that differs from the sibling, or any other
+    content around the arguments object, means the args may have been written for
+    another tool. Any doubt -> None (caller emits the specific unparseable error;
+    the model retries as a native array)."""
+    name = str(outer_args.get("name") or "").strip()
+    if not _repairable_name(name):
+        return None
+    span = _balanced_args_span(raw_calls)
+    if span is None:
+        return None
+    in_string_name = _prefix_name(raw_calls)
+    if in_string_name is not None and in_string_name != name:
+        return None
+    if not _FAMILY_A_TAIL_RE.match(raw_calls[span[1]:]):
+        return None
+    args = _parse_args_slice(raw_calls, span)
+    if args is None:
+        return None
+    logger.warning(
+        "normalize_tool_call_entries: reconstructed string-encoded 'calls' for %s "
+        "(glm dangling-entry mangle family A); repaired to single native call",
+        name)
+    return [{"name": name, "arguments": args}]
+
+
+def _try_reconstruct_family_d(
+    raw_calls: str, outer_args: dict[str, Any]
+) -> Optional[list[dict[str, Any]]]:
+    """One-shot reconstruction of the evolved glm-5.3-flash mangle (family D):
+    'calls' string-encoded with the entry object left unclosed after its (balanced,
+    strictly-parseable) 'arguments' object, and 'name' relocated INSIDE the string
+    ahead of orphaned closers — ``[{"arguments": {ARGS}] , "name": "TOOL" } ]``.
+    Accepted ONLY when: the string opens with the anchored entry prefix, exactly
+    one '"arguments"' occurrence, the args object is balanced and strictly parses
+    to a dict, the remainder of the string fully matches the family-D tail
+    (nothing else allowed), the recovered name is non-empty, charset-valid and not
+    a bridge tool (a recovered name of 'tool_call' means the model mangled the tool
+    name itself — untrustworthy), and neither an outer sibling 'name' nor a name in
+    the prefix contradicts it. Never re-serializes model JSON: the native entry is
+    rebuilt from the parsed args. Any doubt -> None."""
+    span = _balanced_args_span(raw_calls)
+    if span is None:
+        return None
+    m = _FAMILY_D_TAIL_RE.match(raw_calls[span[1]:])
+    if not m:
+        return None
+    name = m.group(1).strip()
+    if not _repairable_name(name):
+        return None
+    in_string_name = _prefix_name(raw_calls)
+    if in_string_name is not None and in_string_name != name:
+        return None
+    sibling = outer_args.get("name")
+    if isinstance(sibling, str) and sibling.strip() and sibling.strip() != name:
+        return None
+    args = _parse_args_slice(raw_calls, span)
+    if args is None:
+        return None
+    for key, value in outer_args.items():
+        if key not in ("calls", "name") and key not in args:
+            args[key] = value
+    logger.warning(
+        "normalize_tool_call_entries: reconstructed string-encoded 'calls' for %s "
+        "(glm unclosed-entry mangle family D); repaired to single native call",
+        name)
+    return [{"name": name, "arguments": args}]
+
+
 def normalize_tool_call_entries(args: dict[str, Any]) -> tuple[list[dict[str, Any]], Optional[str]]:
     """Normalize ``tool_call`` arguments into a ``calls[]`` list of entries.
 
@@ -157,7 +304,24 @@ def normalize_tool_call_entries(args: dict[str, Any]) -> tuple[list[dict[str, An
         try:
             raw_calls = json.loads(raw_calls)
         except json.JSONDecodeError as e:
-            return [], f"tool_call 'calls' is not valid JSON: {e}"
+            # Narrow one-shot repairs for the two observed glm-5.3-flash mangles
+            # (family A, family D). No broad auto-repair of arbitrary malformed
+            # JSON — any doubt fails closed to the re-emit-native error. A string
+            # that does not parse is a DIFFERENT failure from an empty/non-array
+            # 'calls': say so specifically, or the model retries the same bytes.
+            repaired = _try_reconstruct_single_call(raw_calls, args)
+            if repaired is None:
+                repaired = _try_reconstruct_family_d(raw_calls, args)
+            if repaired is None:
+                return [], (
+                    "tool_call 'calls' was emitted as a JSON-encoded string and that string "
+                    f"is not valid JSON: {e.msg} at char {e.pos} of {len(raw_calls)}. Re-emit "
+                    "'calls' as a native JSON array (not a string), with every entry closed "
+                    'before the next begins: [{"name": "…", "arguments": {"…": …}}, …]. '
+                    "For large payloads, drop optional params or split the call rather than "
+                    "string-encoding the array."
+                )
+            raw_calls = repaired
     if isinstance(raw_calls, dict):
         raw_calls = [raw_calls]
     if not isinstance(raw_calls, list) or not raw_calls:

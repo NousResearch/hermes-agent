@@ -1,0 +1,29 @@
+name: hermes-guide
+repo: https://github.com/iap/hermes-guide
+sha: 4830c4d0a7eb452cbce4b3009614f3e98fb3eb47
+description: >-
+  Read-only diagnostics for Hermes configuration: /hermes-doctor in-session and
+  hermes guide in a terminal. Seven read-only health checks (config, mcp, skills,
+  commands, hooks, plugins, memories) plus 20 troubleshooting skills for what the
+  built-in doctor doesn't cover. Complements — never replaces — hermes doctor.
+  Disclosure — reads config.yaml, SKILL.md frontmatter, plugin manifests, and
+  memory stores read-only; runs hermes config path and hermes hooks doctor
+  (argument list, no shell); in opt-in proactive mode, additionally queries this
+  repo's git remote for newer release tags via git ls-remote (read-only; no
+  local writes); never writes to config or the filesystem.
+maintainer: iap
+tier: community
+category: tools
+requires_hermes: ">=0.21"
+version: "0.7.0"
+platforms: []
+capabilities:
+  provides_tools:
+    - /hermes-doctor (slash command)
+    - hermes guide (CLI subcommand)
+  provides_hooks:
+    - on_session_start (opt-in proactive mode)
+    - on_session_end (opt-in proactive mode)
+  provides_middleware: []
+  requires_env: []
+docs_url: https://github.com/iap/hermes-guide#readme

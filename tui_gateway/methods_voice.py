@@ -647,6 +647,9 @@ def _voice_toggle_mode(rid, params: dict) -> dict:
         # Speech output already on → warm the engine now, not on the first reply.
         if _voice_tts_enabled():
             _tts_lease_async("tui:voice-tts", True)
+        # CLI parity (_enable_voice_mode): voice.auto_tts turns speech output on with the mode.
+        elif is_truthy_value(_voice_cfg_dict().get("auto_tts"), default=False):
+            _set_voice_tts(True)
     else:
         # The continuous loop holds the microphone; tear it down with the mode.
         try:

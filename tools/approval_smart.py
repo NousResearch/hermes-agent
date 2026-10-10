@@ -71,6 +71,25 @@ def _get_smart_policy() -> str:
     return policy.strip() if isinstance(policy, str) else ""
 
 
+def _verdict_from_answer(answer: str) -> str | None:
+    """Read the verdict from a guardian answer that may have reasoned first.
+
+    The prompt demands exactly one word, but some models answer with a short
+    justification paragraph and the verdict on the last line (#135146). Take
+    the last non-empty line, strip emphasis markup and trailing punctuation,
+    and accept it only if it is exactly APPROVE or DENY — a verdict word that
+    appears only mid-prose stays unrecognized, so verdict-shaped text quoted
+    from the command cannot ride in.
+    """
+    last_line = ""
+    for line in reversed(answer.splitlines()):
+        if line.strip():
+            last_line = line.strip()
+            break
+    normalized = last_line.strip("*_`~ \"'").rstrip("!.,;:?!").strip("*_`~ \"'")
+    return _VERDICTS.get(normalized)
+
+
 def _smart_approve(command: str, description: str) -> str:
     """Ask the auxiliary LLM; return 'approve', 'deny', or 'escalate' (uncertain/failed).
 
@@ -122,7 +141,18 @@ def _smart_approve(command: str, description: str) -> str:
             logger.warning("Smart approvals: guardian returned an empty answer "
                            "(finish_reason=%s), escalating", finish_reason)
             return "escalate"
-        return _VERDICTS.get(answer, "escalate")
+        verdict = _verdict_from_answer(answer)
+        if verdict is None:
+            # WARNING, not DEBUG: the guardian answered but no verdict came through, and
+            # without this line the logs cannot tell an unrecognized verbose answer apart
+            # from a genuine ESCALATE (#135146).
+            logger.warning(
+                "Smart approvals: guardian answer carried no recognizable verdict "
+                "(answer=%r), escalating",
+                answer[:120],
+            )
+            return "escalate"
+        return verdict
     except Exception as e:
         # WARNING, not DEBUG: a failed/blocked guardian call is a real event
         # the operator needs to see (the hang was invisible at DEBUG).

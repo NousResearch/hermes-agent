@@ -42,15 +42,23 @@ def _parse_iso(value) -> Optional[datetime]:
 
 
 # Auto-continue freshness window (1 hour) after the ``resume_pending`` mark; ``gateway/run.py``
-# bridges config.yaml ``agent.gateway_auto_continue_freshness`` into the env var at startup.
+# bridges the launch profile setting into the env var at startup; routed scopes read their own config.
 _AUTO_CONTINUE_FRESHNESS_SECS_DEFAULT = 60 * 60
 
 
 def auto_continue_freshness_window() -> float:
     """Resume-scheduler freshness window; stale automation never discards the transcript."""
-    raw = os.environ.get("HERMES_AUTO_CONTINUE_FRESHNESS")
+    from hermes_constants import get_hermes_home_override
+
+    if get_hermes_home_override() is not None:
+        from hermes_cli.config_effective import load_user_config_effective
+
+        agent = load_user_config_effective().get("agent")
+        raw = agent.get("gateway_auto_continue_freshness") if isinstance(agent, dict) else None
+    else:
+        raw = os.environ.get("HERMES_AUTO_CONTINUE_FRESHNESS")
     try:
-        return float(raw) if raw else float(_AUTO_CONTINUE_FRESHNESS_SECS_DEFAULT)
+        return float(raw) if raw is not None and raw != "" else float(_AUTO_CONTINUE_FRESHNESS_SECS_DEFAULT)
     except (TypeError, ValueError):
         return float(_AUTO_CONTINUE_FRESHNESS_SECS_DEFAULT)
 

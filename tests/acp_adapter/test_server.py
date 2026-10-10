@@ -44,10 +44,13 @@ def agent(mock_manager):
 
 
 @pytest.mark.asyncio
-async def test_new_session_exposes_edit_approvals_as_modes_not_config_options(agent):
+async def test_new_session_exposes_edit_approvals_as_modes_and_config_options(agent):
     resp = await agent.new_session(cwd="/tmp")
 
-    assert resp.config_options is None
+    # Edit-approval stays a legacy mode (Claude/Codex-style); configOptions now also
+    # carry model + reasoning-effort selects for clients that render them (Air, #136084).
+    assert resp.config_options is not None
+    assert {opt.id for opt in resp.config_options} >= {"model", "reasoning_effort"}
     assert isinstance(resp.modes, SessionModeState)
     assert resp.modes.current_mode_id == "default"
     assert [mode.id for mode in resp.modes.available_modes] == [
@@ -58,7 +61,7 @@ async def test_new_session_exposes_edit_approvals_as_modes_not_config_options(ag
 
 
 @pytest.mark.asyncio
-async def test_set_config_option_persists_edit_approval_policy_without_advertising_config(agent):
+async def test_set_config_option_persists_edit_approval_policy_and_returns_options(agent):
     resp = await agent.new_session(cwd="/tmp")
     update = await agent.set_config_option(
         "edit_approval_policy",
@@ -68,7 +71,8 @@ async def test_set_config_option_persists_edit_approval_policy_without_advertisi
     state = agent.session_manager.get_session(resp.session_id)
 
     assert isinstance(update, SetSessionConfigOptionResponse)
-    assert update.config_options == []
+    # The response echoes the full current option set, not an empty list (#136084).
+    assert {opt.id for opt in update.config_options} >= {"model", "reasoning_effort"}
     assert getattr(state, "mode", None) == "accept_edits"
 
 
@@ -205,7 +209,10 @@ class TestSessionOps:
             "openai-codex:gpt-5.4",
             "openai-codex:gpt-5.4-mini",
         ]
-        picker_context.with_overrides.assert_called_once_with(
+        # configOptions reuse the same inventory (built once per response field, #136084).
+        model_option = next(opt for opt in resp.config_options if opt.id == "model")
+        assert model_option.current_value == "openai-codex:gpt-5.4"
+        picker_context.with_overrides.assert_called_with(
             current_provider="openai-codex",
             current_model="gpt-5.4",
             current_base_url="https://api.openai.com/v1",
@@ -345,7 +352,7 @@ class TestSessionConfiguration:
         )
 
         assert mode_result == {}
-        assert config_result["configOptions"] == []
+        assert {opt["id"] for opt in config_result["configOptions"]} >= {"model", "reasoning_effort"}
 
 
 

@@ -479,12 +479,13 @@ def drop_shadowed_checkpoints(
     return rewritten
 
 
-def _prune_stale_reasoning_replay(messages: list[dict[str, Any]]) -> int:
+def _prune_stale_reasoning_replay(messages: list[dict[str, Any]], *, keep_prior_turns: bool = False) -> int:
     """Strip stale ``codex_reasoning_items`` from assistant turns older than the active one.
     Boundary is the last USER message (a turn spans several assistant rows): the Responses API replays a
     turn's bridging reasoning items together, so cutting at the last ASSISTANT would strip mid-chain.
     Only the NEWEST ``type: "compaction"`` checkpoint survives (``drop_shadowed_checkpoints``): a shadowed
     one was still copied into the compacted transcript and every child session built from it (#102374).
+    ``keep_prior_turns`` (``route_reads_prior_turn_reasoning``) applies only that checkpoint rule.
     Filter items, never pop the key on the carrier. In place; returns pruned message count."""
     # Active turn = everything after the last real user message; synthetic
     # continuation rows and tool results never mark a turn boundary.
@@ -496,7 +497,7 @@ def _prune_stale_reasoning_replay(messages: list[dict[str, Any]]) -> int:
     pruned = set()
     for key in _STALE_REPLAY_PRUNE_KEYS:
         pruned.update(drop_shadowed_checkpoints(messages, key, before=last_user_idx))
-        for i in range(last_user_idx):
+        for i in range(0 if keep_prior_turns else last_user_idx):
             msg = messages[i]
             if not isinstance(msg, dict) or msg.get("role") != "assistant":
                 continue
@@ -1291,8 +1292,7 @@ _REPLAY_BUDGET_KEYS = "reasoning", "reasoning_content", "codex_reasoning_items",
 _ALWAYS_REPLAYED_BUDGET_KEYS = "codex_reasoning_items", "codex_message_items"
 _NEWEST_TURN_ONLY_BUDGET_KEYS = "reasoning", "reasoning_content"
 
-# Safe to strip from stale assistant turns: only the current turn's replay needs
-# them, and the compaction boundary already invalidated the prompt-cache prefix.
+# Stripped from stale turns only on routes that ignore earlier-turn reasoning; cache prefix already broken.
 _STALE_REPLAY_PRUNE_KEYS = "codex_reasoning_items",
 
 
@@ -5527,9 +5527,9 @@ Write only the summary body. Do not include any preamble or prefix."""
 
         # Invariant (#57491): no compacted message leaves compress() with a persistence marker.
         _strip_persistence_markers(compressed)
-        # Prior-turn codex_reasoning_items are re-billed dead weight (#71058); the cache prefix is
-        # already broken here.
-        _pruned_replay = _prune_stale_reasoning_replay(compressed)
+        # Prior-turn codex_reasoning_items: dead weight on current_turn routes (#71058), continuity elsewhere.
+        from agent.codex_responses_adapter import route_reads_prior_turn_reasoning as _reads_prior
+        _pruned_replay = _prune_stale_reasoning_replay(compressed, keep_prior_turns=_reads_prior(self))
         if _pruned_replay and not self.quiet_mode:
             logger.info("Pruned stale replay items from %d assistant message(s) during compaction", _pruned_replay)
         self._record_compression_effect(n_messages, compressed, pre_estimate, pruned_count, _pruned_replay)

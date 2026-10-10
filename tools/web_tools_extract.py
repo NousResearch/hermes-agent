@@ -183,16 +183,18 @@ async def _dispatch_extract(provider, fetch_urls: list[str], format: Optional[st
     # Cache each successful fetch under the REQUESTED url it reports as its own — never by list
     # position: providers omit failed URLs or return successes out of request order, and a positional
     # write filed one page's text under another URL's key for the whole TTL. ``metadata.sourceURL``
-    # counts because Keenable/Firecrawl put the requested URL there when ``url`` is the redirect target.
+    # (``source_url`` in the typed SDK) takes precedence over the post-redirect ``url``.
     # An entry naming no requested URL is served but not cached (a miss re-fetches; a mis-key poisons).
     requested = set(fetch_urls)
     for fetched in results:
         meta = fetched.get("metadata")
-        source = meta.get("sourceURL") if isinstance(meta, dict) else None
-        url = next((u for u in (fetched.get("url"), source) if u in requested), None)
+        sources = (meta.get("sourceURL"), meta.get("source_url")) if isinstance(meta, dict) else ()
+        url = next((u for u in (*sources, fetched.get("url")) if u in requested), None)
         _content = fetched.get("raw_content", "") or fetched.get("content", "")
-        if url and _content and not fetched.get("error"):
-            extract_cache_put(url, _content, fetched.get("title", ""), format=format, provider=provider.name)
+        final_url = fetched.get("url")
+        if url and isinstance(final_url, str) and _content and not fetched.get("error"):
+            extract_cache_put(url, _content, fetched.get("title", ""), format=format,
+                              provider=provider.name, final_url=final_url)
     return results
 
 
@@ -201,10 +203,12 @@ async def _extract_safe_urls(provider, safe_urls: list[str], format: Optional[st
 
     The disk cache (tools/web_result_cache.py) sits AFTER the secret-URL gate, SSRF gate, and provider
     resolution, and is gated per-URL on the website policy — a hit skips only the vendor call, never a
-    control; policy-blocked URLs are cache misses. Keys include provider and format, so switching either
-    within the TTL never serves the other's content."""
+    control; requested policy-blocked URLs are cache misses. Hits also re-check their recorded final URL
+    against SSRF and website policy before serving content. Keys include provider and format, so switching
+    either within the TTL never serves the other's content."""
     from tools.web_result_cache import extract_cache_get
     from tools.website_policy import check_website_access as _check_site
+    from tools.url_safety import async_is_safe_url
     cached_results, fetch_urls, fetch_positions = {}, [], []
     for position, url in enumerate(safe_urls):
         try:
@@ -213,7 +217,23 @@ async def _extract_safe_urls(provider, safe_urls: list[str], format: Optional[st
             _policy_block = None
         hit = extract_cache_get(url, format=format, provider=provider.name) if _policy_block is None else None
         if hit is not None:
-            cached_results[position] = hit
+            final_url = hit["url"]
+            if not await async_is_safe_url(final_url):
+                cached_results[position] = {**_result_entry(final_url, "Blocked: URL targets a private or internal network address"),
+                                           "metadata": {"sourceURL": url}}
+                continue
+            try:
+                final_blocked = _check_site(final_url)
+            except Exception:  # noqa: BLE001 — retain the existing policy error contract
+                final_blocked = None
+            if final_blocked is not None:
+                cached_results[position] = {
+                    **_result_entry(final_url, final_blocked.get("message") or "Blocked by website policy"),
+                    "blocked_by_policy": {k: final_blocked.get(k) for k in ("host", "rule", "source")},
+                    "metadata": {"sourceURL": url},
+                }
+            else:
+                cached_results[position] = hit
         else:
             fetch_urls.append(url)
             fetch_positions.append(position)

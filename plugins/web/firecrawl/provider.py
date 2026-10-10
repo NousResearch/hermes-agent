@@ -272,6 +272,7 @@ def _error_entry(url: str, error: str, *, title: str = "", raw: bool = False, bl
 
 _SCRAPE_TIMEOUT_MSG = "Scrape timed out after 60s — page may be too large or unresponsive. Try browser_navigate instead."
 _UNSAFE_REDIRECT_MSG = "Blocked: URL targets a private or internal network address"
+_MISSING_FINAL_URL_MSG = "Firecrawl did not report a valid final URL"
 
 
 async def _scrape_one(url: str, formats: list[str], format: Optional[str]) -> dict[str, Any]:
@@ -304,13 +305,22 @@ async def _scrape_one(url: str, formats: list[str], format: Optional[str]) -> di
         # SDK may return a typed object for metadata (raw __dict__ here, unlike _to_plain_object).
         if not isinstance(metadata, dict):
             metadata = metadata.model_dump() if hasattr(metadata, "model_dump") else getattr(metadata, "__dict__", {})
-        title, final_url = metadata.get("title", ""), metadata.get("sourceURL", url)
-        if not is_safe_url(final_url):
+        # Firecrawl's sourceURL (source_url in the SDK) is the requested URL;
+        # metadata.url is the selected engine's final, post-redirect URL.
+        metadata = dict(metadata)
+        title, final_url = metadata.get("title", ""), metadata.get("url")
+        if not isinstance(final_url, str) or not final_url.strip():
+            return _error_entry(url, _MISSING_FINAL_URL_MSG, raw=True)
+        final_url = final_url.strip()
+        metadata.update(sourceURL=url, url=final_url)
+        if not await asyncio.to_thread(is_safe_url, final_url):
             logger.info("Blocked redirected web_extract for unsafe final URL: %s", final_url)
-            return _error_entry(final_url, _UNSAFE_REDIRECT_MSG, title=title, raw=True)
+            return {**_error_entry(final_url, _UNSAFE_REDIRECT_MSG, title=title, raw=True),
+                    "metadata": {"sourceURL": url}}
         if final_blocked := check_website_access(final_url):
             logger.info("Blocked redirected web_extract for %s by rule %s", final_blocked["host"], final_blocked["rule"])
-            return _error_entry(final_url, final_blocked["message"], title=title, raw=True, blocked=final_blocked)
+            return {**_error_entry(final_url, final_blocked["message"], title=title, raw=True, blocked=final_blocked),
+                    "metadata": {"sourceURL": url}}
         markdown, html = payload.get("markdown"), payload.get("html")
         content = markdown if format == "markdown" or (format is None and markdown) else html or markdown or ""
         return {"url": final_url, "title": title, "content": content, "raw_content": content, "metadata": metadata}

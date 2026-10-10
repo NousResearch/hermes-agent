@@ -199,6 +199,25 @@ def _use_gateway(browser_cfg: dict) -> bool:
     return str(browser_cfg.get("cloud_provider") or "").strip().lower() == NOUS_MANAGED_PROVIDER
 
 
+def _is_managed_browser_use(provider: Any) -> bool:
+    """True when a resolved ``browser-use`` provider is backed by the managed Nous Tool Gateway
+    rather than a direct ``BROWSER_USE_API_KEY`` config.
+
+    Autodetect hands back a managed provider on installs that never configured a cloud browser
+    (the gateway token needs no API key), and that provider reports the same ``name`` as the
+    direct-API one. The direct-API shortcut below then skipped session resolution for a provider
+    that CAN provide one, leaving BU_CDP_* unset so the harness fell back to hunting the user's
+    profile dirs — ``chrome-not-running`` on a host with no ~/.config/chromium."""
+    resolver = getattr(provider, "_get_config_or_none", None)
+    if not callable(resolver):
+        return False
+    try:
+        config = resolver(refresh_token=False)
+    except Exception:
+        return False
+    return bool(isinstance(config, dict) and config.get("managed_mode"))
+
+
 def get_browser_backend() -> str:
     """Configured browser backend key ("" = unset → default). YAML 1.1 parses an
     unquoted ``off`` as False — that must mean BACKEND_DISABLED, not "unset"."""
@@ -460,7 +479,8 @@ def _resolve_backend_cdp(env: dict, task_id: Optional[str], session_name: str = 
     # from the picker, or the pre-picker use_gateway: true) DO resolve through the provider: the gateway
     # provisions the browser server-side and returns its CDP URL.
     provider_key = str(getattr(provider, "name", "") or "").strip().lower()
-    if provider_key == _BACKEND_KEY and not _use_gateway(_read_browser_cfg()):
+    if (provider_key == _BACKEND_KEY and not _use_gateway(_read_browser_cfg())
+            and not _is_managed_browser_use(provider)):
         env[_PRIVATE_BROWSER_SENTINEL] = "1"  # named BU cloud browsers are exclusive to their daemon
         return None
 

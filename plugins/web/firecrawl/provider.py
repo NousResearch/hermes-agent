@@ -239,6 +239,18 @@ def _normalize_result_list(values: Any) -> list[dict[str, Any]]:
     return [p for p in map(_to_plain_object, values) if isinstance(p, dict)] if isinstance(values, list) else []
 
 
+_NO_RESPONSE_MSG = "Firecrawl unreachable (no HTTP response; the API may be restarting or down)"
+
+
+def _describe_error(exc: Exception) -> str:
+    """Readable text for an SDK failure. With no HTTP response (connection refused, API restarting)
+    the SDK's error handler dereferences ``response.status_code`` on None and raises an
+    AttributeError that names neither Firecrawl nor the real cause."""
+    if isinstance(exc, AttributeError) and "'NoneType' object has no attribute 'status_code'" in str(exc):
+        return _NO_RESPONSE_MSG
+    return str(exc)
+
+
 def _extract_web_search_results(response: Any) -> list[dict[str, Any]]:
     """Search results across SDK/direct/gateway response shapes."""
     plain = _to_plain_object(response)
@@ -316,7 +328,7 @@ async def _scrape_one(url: str, formats: list[str], format: Optional[str]) -> di
         return {"url": final_url, "title": title, "content": content, "raw_content": content, "metadata": metadata}
     except Exception as scrape_err:
         logger.debug("Firecrawl scrape failed for %s: %s", url, scrape_err)
-        return _error_entry(url, str(scrape_err), raw=True)
+        return _error_entry(url, _describe_error(scrape_err), raw=True)
 
 
 class FirecrawlWebSearchProvider(BaseWebSearchProvider):
@@ -346,7 +358,7 @@ class FirecrawlWebSearchProvider(BaseWebSearchProvider):
             return search_ok(web_results)
         except Exception as exc:
             logger.warning("Firecrawl search error: %s", exc)
-            return search_fail(f"Firecrawl search failed: {exc}")
+            return search_fail(f"Firecrawl search failed: {_describe_error(exc)}")
 
     async def extract(self, urls: list[str], **kwargs: Any) -> list[dict[str, Any]]:
         """Per-URL scrape; failures become items with an ``error`` field.

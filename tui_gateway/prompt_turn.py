@@ -337,7 +337,7 @@ def _turn_outcome(result: Any, error_surface: dict | None = None) -> tuple[Any, 
     # step) rather than the bare provider body.  An empty successful turn still renders as empty.
     if (not raw) and result.get("error") and (result.get("failed") or result.get("partial")):
         raw = turn_error_text(result.get("error"), error_surface)
-    elif (not raw) and status == "error" and not result.get("error"):
+    elif status == "error" and not result.get("error") and not str(raw or "").strip():
         # Descriptor-only failure (advisory restart-limit exit, ``failed`` without an error
         # string): the slot still gets the plain account + next step instead of an empty
         # frame the client would paint as a successful empty turn (#135958).

@@ -10,6 +10,8 @@ that produced no answer — clearing the inflight snapshot a reconnect would hav
 import contextlib
 from types import SimpleNamespace
 
+import pytest
+
 import tui_gateway.server as srv
 
 
@@ -119,6 +121,42 @@ def test_complete_turn_payload_retains_inflight_failure(monkeypatch):
     assert len(receipts) == 1
     assert receipts[0]["status"] == "failed"
     assert receipts[0]["error"] == payload["error"]
+
+
+@pytest.mark.parametrize("text", ["", " ", "\n\t", " \n\t "])
+def test_blank_failure_has_visible_recovery_copy(monkeypatch, text):
+    result = {**_restart_exhausted_result(), "final_response": text}
+    receipts = []
+    payload, st, session = _payload(monkeypatch, result, receipts.append)
+
+    assert payload["status"] == "error"
+    assert payload["text"].strip()
+    assert payload["error"].strip()
+    assert st.error_retained is True
+    assert session["inflight_turn"]["error_surface"]["code"] == "loop_error"
+    assert len(receipts) == 1
+    assert receipts[0]["status"] == "failed"
+    assert receipts[0]["text"].strip()
+    assert receipts[0]["error"].strip()
+
+
+@pytest.mark.parametrize("partial", [False, True])
+def test_explicit_failure_preserves_visible_text_contract(monkeypatch, partial):
+    result = {
+        "final_response": "Visible failure explanation or partial answer",
+        "completed": False,
+        "failed": True,
+        "partial": partial,
+    }
+    receipts = []
+    payload, st, session = _payload(monkeypatch, result, receipts.append)
+
+    assert payload["status"] == "error"
+    assert payload["text"] == result["final_response"]
+    assert st.error_retained is True
+    assert receipts[0]["status"] == "failed"
+    assert bool(payload.get("partial")) is partial
+    assert session["inflight_turn"]["assistant"] == (result["final_response"] if partial else "")
 
 
 def test_complete_turn_payload_successful_turn_still_clears_inflight(monkeypatch):

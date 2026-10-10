@@ -103,7 +103,7 @@ def _sanitize_pasted_input(value: str) -> str:
     return _BRACKETED_PASTE_PATTERN.sub("", value) if isinstance(value, str) and value else value
 
 
-def prompt(question: str, default: str = None, password: bool = False) -> str:
+def prompt(question: str, default: str | None = None, password: bool = False) -> str:
     """Prompt for input with optional default."""
     display = color(f"{question} [{default}]: " if default else f"{question}: ", Colors.YELLOW)
     try:
@@ -311,7 +311,7 @@ def prompt_yes_no(question: str, default: bool = True) -> bool:
         print_error("Please enter 'y' or 'n'")
 
 
-def prompt_checklist(title: str, items: list, pre_selected: list = None) -> list:
+def prompt_checklist(title: str, items: list, pre_selected: list | None = None) -> list:
     """Multi-select checklist; returns the sorted indices of selected items. ``pre_selected``
     start checked; Space toggles, Enter confirms, cancel keeps the pre-selection."""
     from hermes_cli.curses_ui import curses_checklist
@@ -517,8 +517,10 @@ _SEND_CONSENT_EXPLAINER = (
     "(it contains no personal information and is reset by deleting",
     "the shared-metrics directory). Only packages whose entire",
     "collection period falls inside a recorded consent window are",
-    "ever sent — data from before you opt in, or from any gap",
-    "while sending was off, stays on this machine. Sending can be", "turned off again at any time.",
+    "ever sent. Apart from the fresh-install note (noted on this",
+    "machine and counted only once you opt in), data from before",
+    "you opt in, or from any gap while sending was off, stays on",
+    "this machine. Sending can be turned off again at any time.",
 )
 
 
@@ -526,8 +528,12 @@ def setup_telemetry(config: dict):
     """Configure the local shared-metrics subscriber and optional sending."""
     print_header("Shared Metrics")
     _info("Shared metrics contain only bounded counters: activity, session length,",
-          "outcomes, error classes, model routes and token totals, built-in tool, command",
-          "and catalog names, bucketed setup counts, update results and timing, crashes,",
+          "outcomes, error classes (with a fixed-list reason when a memory write or",
+          "context compression is refused, fails or is skipped), model routes and",
+          "token totals, built-in tool, command and catalog names, bucketed setup",
+          "counts, update and install results and timing (with a fixed-list reason",
+          "and the stage when one fails; a fresh install is noted on this machine and",
+          "counted only once you opt in), crashes,",
           "startup and reply speed, messaging-platform health, how Hermes gets used",
           "(agent accuracy and efficiency, active time per surface, which features and",
           "settings are used or switched off, provider setup outcomes), and coarse",
@@ -535,23 +541,21 @@ def setup_telemetry(config: dict):
           "local model server yes/no). Never prompts, files, paths, setting values or",
           "error text.",
           "Collection is local. Sending them to Nous is a separate opt-in.")
+    # The answer is written to config.yaml here, not by the caller's later save: that save strips
+    # values equal to the defaults, so a "no" would vanish and every surface would ask again.
+    from hermes_cli.observability.shared_metrics_consent import save_consent
+
     shared_metrics = _sub_dict(_sub_dict(config, "telemetry"), "shared_metrics")
-    current = shared_metrics.get("enabled") is True
-    shared_metrics["enabled"] = prompt_yes_no("Enable local shared metrics?", default=current)
-    if not shared_metrics["enabled"]:
+    if not prompt_yes_no("Enable local shared metrics?", default=shared_metrics.get("enabled") is True):
         print_info("Local shared metrics disabled.")
-        # Sending cannot outlive collection (send=true would log an error every run, never send).
+        # Sending cannot outlive collection; turning collection off withdraws send consent too.
         if shared_metrics.get("send") is True:
-            shared_metrics["send"] = False
             print_info("Sending shared metrics disabled as well.")
-        # Turning collection off withdraws send consent too. Recorded unconditionally: the send
-        # key may already be false while the consent window is still open, and it must close.
-        _record_send_consent_change(enabled=False)
+        save_consent(False, False, config)
         return
     print_success("Local shared metrics enabled.")
     _info(*_SEND_CONSENT_EXPLAINER)
-    shared_metrics["send"] = prompt_yes_no("Send shared metrics to Nous?", default=shared_metrics.get("send") is True)
-    _record_send_consent_change(enabled=shared_metrics["send"])
+    save_consent(True, prompt_yes_no("Send shared metrics to Nous?", default=shared_metrics.get("send") is True), config)
     if shared_metrics["send"]:
         print_success("Sending shared metrics enabled.")
     else:
@@ -575,12 +579,12 @@ def _record_send_consent_change(*, enabled: bool) -> None:
 # Extracted sections, re-exported so callers and test patches keep resolving through
 # hermes_cli.setup. They import this module lazily inside bodies, so this is cycle-free.
 
-from hermes_cli.setup_tts import setup_tts  # noqa: E402
-from hermes_cli.setup_terminal import setup_terminal_backend  # noqa: E402
-from hermes_cli.setup_platforms import setup_gateway  # noqa: E402
-from hermes_cli.setup_summary import _print_setup_summary  # noqa: E402,F401
-from hermes_cli.setup_migration import _offer_openclaw_migration, _skip_configured_section  # noqa: E402
-from hermes_cli.setup_quick import _run_portal_one_shot, _run_quick_setup  # noqa: E402
+from hermes_cli.setup_tts import setup_tts
+from hermes_cli.setup_terminal import setup_terminal_backend
+from hermes_cli.setup_platforms import setup_gateway
+from hermes_cli.setup_summary import _print_setup_summary
+from hermes_cli.setup_migration import _offer_openclaw_migration, _skip_configured_section
+from hermes_cli.setup_quick import _run_portal_one_shot, _run_quick_setup
 
 
 # ── Main Wizard Orchestrator ──
@@ -752,8 +756,11 @@ def _run_setup_wizard_impl(args):
 
 
 def _record_setup_completed(config: dict) -> None:
-    """Count a wizard run that finished. Runs after every section (shared-metrics consent
-    included) so a user who opted in during this run is counted; the API checks enablement."""
+    """Count a wizard run that finished. Every setup flow ends here, so the one-time
+    shared-metrics offer runs first: a user who opts in now is counted; the API checks enablement."""
+    from hermes_cli.observability.shared_metrics_consent import offer_consent_if_undecided
+
+    offer_consent_if_undecided(config)
     from hermes_cli.observability.shared_metrics_events import record_setup_completed
     model = config.get("model")
     record_setup_completed(surface="cli", provider=model.get("provider") if isinstance(model, dict) else None)

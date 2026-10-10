@@ -79,7 +79,7 @@ class TestCodingSelection:
     def test_auto_is_prompt_only(self, tmp_path):
         # Default posture must never override the user's configured toolsets —
         # off-by-default toolsets are already off, and explicit opt-ins
-        # (image-gen, spotify, …) survive entering a code workspace.
+        # (image-gen, homeassistant, …) survive entering a code workspace.
         _git_init(tmp_path)
         cfg = {"agent": {"coding_context": "auto"}}
         assert cc.coding_selection(platform="cli", cwd=tmp_path, config=cfg) is None

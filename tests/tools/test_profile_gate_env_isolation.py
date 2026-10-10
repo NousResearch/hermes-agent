@@ -23,7 +23,7 @@ _GATES = {
     "DISCORD_ALLOW_BOTS": "all", "TELEGRAM_GROUP_ALLOWED_CHATS": "-100", "SLACK_ALLOWED_CHANNELS": "C1",
     "WHATSAPP_GROUP_ALLOW_FROM": "+1555", "GATEWAY_ALLOW_ALL_USERS": "true",
 }
-_PROBE = "import json,os;print(json.dumps({k:os.environ.get(k) for k in %r}))" % sorted(_GATES)
+_PROBE = f"import json,os;print(json.dumps({{k:os.environ.get(k) for k in {sorted(_GATES)!r}}}))"
 
 
 def _seen_by_child(env: dict) -> set[str]:

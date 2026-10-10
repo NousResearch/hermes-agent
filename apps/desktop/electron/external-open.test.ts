@@ -105,7 +105,13 @@ test('opens bare local paths through openLocalPath instead of rejecting them', a
   // Every shape `new URL()` cannot express as a web/file URL: a Windows drive
   // letter parses as the bogus `c:` scheme, POSIX/UNC/`~` make the parser
   // throw. All previously landed in the "Invalid external URL" reject.
-  for (const raw of ['C:\\Users\\x\\a.md', 'C:/Work/report.html', '/tmp/report.pdf', '~/logs/desktop.log', '\\\\server\\share\\a.md']) {
+  for (const raw of [
+    'C:\\Users\\x\\a.md',
+    'C:/Work/report.html',
+    '/tmp/report.pdf',
+    '~/logs/desktop.log',
+    '\\\\server\\share\\a.md'
+  ]) {
     const result = await openExternalUrl(raw, deps)
 
     assert.deepEqual(result, { ok: true }, `expected ${raw} to open as a local path`)
@@ -130,7 +136,9 @@ test('resolves invalid, with the path logged, when openLocalPath cannot resolve 
   const result = await openExternalUrl('C:\\Users\\x\\a.md', deps)
 
   assert.deepEqual(result, { ok: false, reason: 'invalid' })
-  assert.ok(calls.logged.some(line => line.includes('openPath resolve rejected') && line.includes('C:\\Users\\x\\a.md')))
+  assert.ok(
+    calls.logged.some(line => line.includes('openPath resolve rejected') && line.includes('C:\\Users\\x\\a.md'))
+  )
   assert.equal(calls.notified.length, 0)
 })
 

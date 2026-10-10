@@ -54,8 +54,13 @@ class SourceTarget:
     def retired(self) -> bool:
         return self.requested_channel != self.channel
 
+    ahead: bool = False
+
     @property
     def label(self) -> str:
+        if self.ahead:
+            return (f"{self.channel} v{self.version}; this checkout is newer and waits for the next release"
+                    " (`hermes update --set-channel main` follows every commit)")
         return f"{self.channel} v{self.version} ({self.commit[:12]})" if self.commit else self.channel
 
 
@@ -72,12 +77,56 @@ def _resolve_channel(name: str, repository: str):
     return ChannelReader(_PUBLIC_BASE, repository=repository).resolve(name)
 
 
-def resolve_source_target(channel: str, git_cmd=None, cwd=None, *, repository=None) -> SourceTarget:
-    """Resolve every subscription, including default labels, through R2."""
+def resolve_source_target(channel: str, git_cmd=None, cwd=None, *, repository=None,
+                          forward_only: bool = False) -> SourceTarget:
+    """Resolve every subscription, including default labels, through R2.
+
+    ``forward_only`` (an unchosen default subscription) pins a checkout that already
+    contains the release to its own HEAD, so the update is a no-op instead of a downgrade.
+    """
+    target = _resolve_source_target(channel, git_cmd, cwd, repository=repository)
+    if forward_only and target.commit and git_cmd is not None and cwd is not None:
+        head = _head_containing(git_cmd, cwd, target.commit, target.repository)
+        if head is not None and head != target.commit:
+            from dataclasses import replace
+
+            return replace(target, commit=head, ahead=True)
+    return target
+
+
+def _head_containing(git_cmd, cwd, commit: str, repository: str) -> str | None:
+    """HEAD's sha unless HEAD is PROVEN not to contain ``commit``, then None.
+
+    An unchosen default must never move a checkout backward on a guess, so an
+    unknown relation (shallow history, GitHub unreachable) keeps HEAD.
+    """
+    from hermes_cli.source_check import _github_compare, source_git_env
+
+    def run(*args):
+        return subprocess.run(
+            [*git_cmd, *args], cwd=cwd, capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=10, stdin=subprocess.DEVNULL, env=source_git_env())
+
+    head = run("rev-parse", "HEAD").stdout.strip()
+    if not _SHA.fullmatch(head):
+        return None
+    ancestry = run("merge-base", "--is-ancestor", commit, head).returncode
+    if ancestry == 0:
+        return head
+    # A shallow boundary makes exit 1 a guess; full history makes it proof.
+    if ancestry == 1 and run("rev-parse", "--is-shallow-repository").stdout.strip() == "false":
+        return None
+    status = (_github_compare(commit, head, repository) or {}).get("status")
+    return None if status in ("behind", "diverged") else head
+
+
+def _resolve_source_target(channel: str, git_cmd=None, cwd=None, *, repository=None) -> SourceTarget:
     from hermes_cli.release_channels import ChannelNotFound, validate_name
 
     validate_name(channel)
     repository = repository or source_repository(git_cmd, cwd)
+    if channel == "stable":
+        return _resolve_stable(repository, git_cmd, cwd)
     try:
         resolved = _resolve_channel(channel, repository)
     except ChannelNotFound:
@@ -108,6 +157,17 @@ def resolve_source_target(channel: str, git_cmd=None, cwd=None, *, repository=No
         _refuse_retirement_downgrade(request, terminal, git_cmd, cwd)
     return SourceTarget(channel, destination, repository, commit=commit,
                         version=request["sourceVersion"], build_id=request["buildId"])
+
+
+def _resolve_stable(repository: str, git_cmd=None, cwd=None) -> SourceTarget:
+    """Stable IS the repository's latest published GitHub release: the tag a release
+    publishes (non-draft, non-prerelease, strict vX.Y.Z), verified against origin.
+    No R2 record or pointer is consulted; publishing the release is the only promotion.
+    """
+    tag, commit = resolve_source_release("stable", git_cmd, cwd, repository=repository, pointer=False)
+    if commit is None:
+        raise ValueError("No published stable release could be verified")
+    return SourceTarget("stable", "stable", repository, commit=commit, version=str(tag).removeprefix("v"))
 
 
 def _refuse_retirement_downgrade(request: dict, terminal: dict, git_cmd, cwd) -> None:
@@ -240,11 +300,13 @@ def _release_pointer(channel: str) -> tuple[str | None, str | None]:
     return page.tags[0], None
 
 
-def resolve_source_release(channel: str, git_cmd=None, cwd=None, *, repository=None) -> tuple[str | None, str | None]:
-    """Read historical stable/canary release metadata (not channel discovery).
+def resolve_source_release(channel: str, git_cmd=None, cwd=None, *, repository=None,
+                           pointer: bool = True) -> tuple[str | None, str | None]:
+    """Read published stable/canary release metadata (not channel discovery).
 
-    Runtime check/apply use ``resolve_source_target`` and never fall back here.
-    Channel pointers outrank GitHub's release listing. A malformed pointer,
+    The source updater's ``stable`` reads it with ``pointer=False``: GitHub's latest
+    published release only. With ``pointer`` the R2 channel pointers outrank GitHub's
+    release listing. A malformed pointer,
     draft, or tag/commit mismatch is not permission to select a different build.
     ``git_cmd`` resolves the selected tag on origin; ZIP callers omit it and
     resolve the same tag through GitHub's commit endpoint.
@@ -255,7 +317,7 @@ def resolve_source_release(channel: str, git_cmd=None, cwd=None, *, repository=N
         repository = repository or source_repository(git_cmd, cwd)
         base = f"https://api.github.com/repos/{repository}"
         tag, pinned_sha = (_release_pointer(channel)
-                           if repository.lower() == OFFICIAL_REPOSITORY.lower() else (None, None))
+                           if pointer and repository.lower() == OFFICIAL_REPOSITORY.lower() else (None, None))
         if tag is None:
             release = _published_fallback(channel, base)
             tag = release["tag_name"]

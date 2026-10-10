@@ -16,7 +16,7 @@ import sys
 import pytest
 
 from pm.store import current_target
-from tests.pm._fixtures import make_tar, served  # noqa: F401 -- shared HTTP fixture
+from tests.pm._fixtures import make_tar, served
 
 
 pytestmark = pytest.mark.platforms("posix")

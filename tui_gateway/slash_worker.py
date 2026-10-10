@@ -23,12 +23,13 @@ import os
 import sys
 import threading
 import time
+from typing import TYPE_CHECKING
 
-import cli as cli_mod
-from cli import HermesCLI
 from tui_gateway._env import env_float
 from tui_gateway._stdin_recovery import handle_spurious_eof
-from rich.console import Console
+
+if TYPE_CHECKING:
+    from cli import HermesCLI
 
 # Env-overridable so the integration test can drive sub-second timing.
 _WATCHDOG_POLL_S = max(0.05, env_float("HERMES_SLASH_WATCHDOG_POLL_S", 2.0))
@@ -40,6 +41,21 @@ logger = logging.getLogger(__name__)
 def _is_orphaned(original_ppid, getppid=os.getppid) -> bool:
     """Return whether this worker no longer has its original POSIX parent."""
     return getppid() != original_ppid
+
+
+def _watchdog_parent(parent_pid: int, *, is_windows: bool, getppid=os.getppid) -> int:
+    """Return the PID the parent-death watchdog should treat as our parent.
+
+    The gateway passes its PID at spawn so a fast exit cannot make this child
+    mistake a subreaper for its original parent before the watchdog starts.
+    The watchdog compares the kernel's live PPID against it, so a reused PID
+    can never pass for the parent. Windows never reparents, and a venv
+    python.exe redirector makes the launcher (not the gateway) our direct
+    parent there, so keep the observed PPID or the worker would exit at once.
+    """
+    if is_windows or not parent_pid:
+        return getppid()
+    return parent_pid
 
 
 def _prepare_slash_worker_runtime() -> None:
@@ -66,8 +82,7 @@ def _start_parent_death_watchdog(original_ppid) -> None:
 
 def _slash_base(command: str) -> str:
     cmd = (command or "").strip()
-    if cmd.startswith("/"):
-        cmd = cmd[1:]
+    cmd = cmd.removeprefix("/")
     return (cmd.split(maxsplit=1)[0] if cmd else "").lower()
 
 
@@ -97,7 +112,18 @@ def _refuse_skill_slash(command: str) -> None:
         raise SkillSlashRefused(base)
 
 
-def _run(cli: HermesCLI, command: str) -> str:
+def _run(cli: "HermesCLI", command: str) -> str:
+    """Run one command; return its captured, ANSI-stripped output.
+
+    A command like /prompt or /blueprint parks the composed text on the one-shot
+    ``_pending_agent_seed`` for the interactive REPL loop (cli.py) — but this
+    worker has no REPL, so the seed is harvested here onto ``cli._harvested_seed``
+    and routed back to the gateway, which sends it as the next turn (#107800).
+    """
+    import cli as cli_mod
+    from rich.console import Console
+
+    cli._harvested_seed = ""  # one-shot: a fresh run never re-sends a stale seed
     cmd = (command or "").strip()
     if not cmd:
         return ""
@@ -118,7 +144,9 @@ def _run(cli: HermesCLI, command: str) -> str:
     # Desktop chat bubbles render plain text, not ANSI. A command that emits Rich color (e.g. /journey
     # under the gateway's inherited COLORTERM) would leak raw escapes; strip at this single choke point.
     from tools.ansi_strip import strip_ansi
-    return strip_ansi(buf.getvalue().rstrip())
+    output = strip_ansi(buf.getvalue().rstrip())
+    cli._harvested_seed, cli._pending_agent_seed = getattr(cli, "_pending_agent_seed", None) or "", None
+    return output
 
 
 def _sw_log(reason: str) -> None:
@@ -135,13 +163,18 @@ def main():
     p.add_argument("--session-key", required=True)
     p.add_argument("--model", default="")
     p.add_argument("--provider", default="")
+    p.add_argument("--parent-pid", type=int, default=0)
     args = p.parse_args()
     os.environ["HERMES_SESSION_KEY"] = args.session_key
     os.environ["HERMES_INTERACTIVE"] = "1"
-    # Start before the (hundreds-of-ms) HermesCLI build — that window is itself an orphan risk if the
-    # gateway dies mid-spawn.
-    _start_parent_death_watchdog(os.getppid())
+    _start_parent_death_watchdog(_watchdog_parent(args.parent_pid, is_windows=sys.platform == "win32"))
+    # Keep the heavyweight CLI import behind the watchdog (importing it at module
+    # load left a reparenting window before main() could snapshot PPID), but ahead
+    # of MCP discovery: importing cli loads ~/.hermes/.env and sets HERMES_QUIET,
+    # which MCP ``${VAR}`` interpolation in the runtime prep depends on.
+    from cli import HermesCLI
     _prepare_slash_worker_runtime()
+
     with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
         # --provider pins the CLI to the parent agent's resolved provider (a MoA session's virtual
         # "moa" provider included). Without it HermesCLI re-resolves from config and dispatches the
@@ -167,7 +200,8 @@ def main():
         try:
             req = json.loads(line)
             rid = req.get("id")
-            _reply(id=rid, ok=True, output=_run(cli, req.get("command", "")))
+            output = _run(cli, req.get("command", ""))
+            _reply(id=rid, ok=True, output=output, seed=getattr(cli, "_harvested_seed", "") or "")
         except Exception as e:
             _reply(id=rid, ok=False, error=str(e))
         finally:

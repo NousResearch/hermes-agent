@@ -78,6 +78,7 @@ from gateway.platforms.base import (
 from gateway.platforms.base import transcode_to_ogg_opus
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.platforms.helpers import ThreadParticipationTracker
+from plugins.platforms.matrix.adapter_sync import _is_permanent_matrix_auth_error
 from plugins.platforms.matrix.voice_mention import ParkedVoices, VoiceGate, has_voice_marker, is_voice_event
 
 logger = logging.getLogger(__name__)
@@ -206,36 +207,6 @@ def _strip_reply_fallback(body: str) -> str:
                 continue
         stripped.append(line)
     return "\n".join(stripped) if stripped else body
-
-
-# Auth errcodes that genuinely require re-authentication (never retried).
-_MATRIX_PERMANENT_ERRCODES = frozenset({
-    "m_unknown_token",
-    "m_missing_token",
-    "m_forbidden",
-})
-
-
-def _is_permanent_matrix_auth_error(exc: BaseException) -> bool:
-    """Return True only for genuine auth failures that must stop the sync loop.
-
-    A transient homeserver outage surfaces as a 5xx whose body may be an HTML
-    error page (Umbrel's app-proxy returns one). Naive substring checks like
-    ``"403" in str(exc)`` false-positive on digits embedded in that HTML (an SVG
-    path coordinate such as ``1403.2`` contains ``403``) or in the ``since`` token
-    echoed by a timeout message, which stopped the sync loop permanently on a
-    passing blip. mautrix raises ``MatrixRequestError`` with ``errcode`` and
-    ``http_status`` for every non-2xx, so classify on those alone; anything
-    without a structured auth signal (timeouts, dropped connections, 5xx) is
-    retried. Deliberately not ``.status``/``.status_code``/``.code``: those
-    belong to unrelated exception shapes (aiohttp responses, OS errno) and can
-    misclassify on a coincidental integer.
-    """
-    errcode = getattr(exc, "errcode", None)
-    if isinstance(errcode, str) and errcode.strip().lower() in _MATRIX_PERMANENT_ERRCODES:
-        return True
-    status = getattr(exc, "http_status", None)
-    return isinstance(status, int) and status in (401, 403)
 
 
 def _split_reply_fallback(body: str) -> tuple[str, str]:
@@ -413,6 +384,7 @@ def _resolve_max_message_length(config) -> int:
 from hermes_constants import get_hermes_dir as _get_hermes_dir
 
 _STARTUP_GRACE_SECONDS = 5  # ignore messages older than this many seconds before startup
+_NO_GRACE_SKIPS = (0, 0.0, float("inf"))  # (count, oldest age, newest age) of startup-grace drops
 
 _OUTBOUND_MENTION_RE = re.compile(r"(?<![\w/])(@[0-9A-Za-z._=/-]+:[0-9A-Za-z.-]+(?::\d+)?)")
 
@@ -840,6 +812,9 @@ class MatrixAdapter(BasePlatformAdapter):
         self._invite_join_tasks: dict[str, asyncio.Task] = {}
         self._closing = False
         self._startup_ts: float = 0.0
+        # Startup-grace drops: reported after the initial sync, and once more for late-decrypted E2EE backlog.
+        self._grace_skips: tuple[int, float, float] = _NO_GRACE_SKIPS
+        self._grace_backlog_open = False  # E2EE only: decrypted backlog may still be dropped
         self._reset_clock_skew_detector()
         self._last_sync_ts: float = 0.0
         self._dm_rooms: dict[str, bool] = {}
@@ -1300,6 +1275,8 @@ class MatrixAdapter(BasePlatformAdapter):
             if isinstance(sync_data, dict):
                 self._joined_rooms.clear()
                 await self._absorb_sync(client, sync_data, initial=True)
+                self._log_grace_skips("initial sync")
+                self._grace_backlog_open = bool(self._encryption)
             else:
                 logger.warning("Matrix: initial sync returned unexpected type %s", type(sync_data).__name__)
         except Exception as exc:
@@ -1339,6 +1316,7 @@ class MatrixAdapter(BasePlatformAdapter):
         client.add_event_handler(EventType.REACTION, self._on_reaction, wait_sync=True)
         client.add_event_handler(IntEvt.INVITE, self._on_invite, wait_sync=True)
         self._startup_ts = time.time()
+        self._grace_skips = _NO_GRACE_SKIPS  # disconnect() above flushed any open window; count only this connect
         self._reset_clock_skew_detector()  # a reconnect after an NTP fix starts clean
         self._closing = False
         await self._connect_initial_sync(client)
@@ -1354,6 +1332,7 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def disconnect(self) -> None:
         self._closing = True
+        self._flush_grace_backlog()
         if self._sync_task and not self._sync_task.done():
             self._sync_task.cancel()
             try:
@@ -1862,6 +1841,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 sync_data = await asyncio.wait_for(client.sync(since=next_batch, timeout=30000), timeout=45.0)
                 if isinstance(sync_data, dict):
                     next_batch = await self._absorb_sync(client, sync_data) or next_batch
+                    self._flush_grace_backlog()  # quiet room: most startup decrypts are done (a slow one may undercount)
                     await asyncio.sleep(0)  # let fresh invite joins start before the next sync
             except asyncio.CancelledError:
                 return
@@ -1977,6 +1957,21 @@ class MatrixAdapter(BasePlatformAdapter):
             logger.debug("Matrix: could not resolve room identity for allowlist check in %s: %s", room_id, exc)
             return False
 
+    def _log_grace_skips(self, phase: str) -> None:
+        """One WARNING for the startup-grace drops counted since the last summary, then reset the count."""
+        skipped, oldest, newest = self._grace_skips
+        if skipped:
+            logger.warning("Matrix: %s skipped %d message(s) older than startup (oldest %ds, newest %ds "
+                           "before); any sent while the gateway was offline were not delivered",
+                           phase, skipped, oldest, newest)
+        self._grace_skips = _NO_GRACE_SKIPS
+
+    def _flush_grace_backlog(self) -> None:
+        """Report E2EE backlog drops still pending since the initial-sync summary (at most once per connect)."""
+        if self._grace_backlog_open:
+            self._grace_backlog_open = False
+            self._log_grace_skips("decrypted backlog")
+
     def _reset_clock_skew_detector(self) -> None:
         """State for _note_late_grace_drop: consecutive-drop count, their skew, and the once-only warning."""
         # Clock-skew detection: count grace-check drops that happen well after startup (i.e. not
@@ -2039,8 +2034,12 @@ class MatrixAdapter(BasePlatformAdapter):
         # Startup grace: ignore old messages replayed by the initial sync.
         event_ts = _matrix_event_timestamp_seconds(event)
         if event_ts and event_ts < self._startup_ts - _STARTUP_GRACE_SECONDS:
+            skipped, oldest, newest = self._grace_skips
+            age = self._startup_ts - event_ts
+            self._grace_skips = (skipped + 1, max(oldest, age), min(newest, age))
             self._note_late_grace_drop(event_ts)
             return
+        self._flush_grace_backlog()  # first live message closes the E2EE backlog window (a slow decrypt may undercount)
         content = getattr(event, "content", None)
         if content is None:
             return

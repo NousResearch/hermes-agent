@@ -2095,10 +2095,11 @@ class TestMessageRouting:
 
 
     @pytest.mark.asyncio
-    async def test_channel_mention_strips_bot_id(self, adapter):
+    @pytest.mark.parametrize("mention", ["<@U_BOT>", "<@U_BOT|hermes>"])
+    async def test_channel_mention_strips_bot_id(self, adapter, mention):
         """When mentioned in a channel, the bot mention should be stripped."""
         event = {
-            "text": "<@U_BOT> what's the weather?",
+            "text": f"{mention} what's the weather?",
             "user": "U_USER",
             "channel": "C123",
             "channel_type": "channel",
@@ -2107,7 +2108,7 @@ class TestMessageRouting:
         await adapter._handle_slack_message(event)
         msg_event = adapter.handle_message.call_args[0][0]
         assert msg_event.text == "what's the weather?"
-        assert "<@U_BOT>" not in msg_event.text
+        assert "<@U_BOT" not in msg_event.text
 
     @pytest.mark.asyncio
     async def test_allow_bots_mentions_ignores_bot_user_without_current_mention(
@@ -2142,7 +2143,6 @@ class TestMessageRouting:
         await adapter._handle_slack_message(event)
 
         adapter.handle_message.assert_not_called()
-
 
     @pytest.mark.asyncio
     async def test_message_edit_with_new_mention_processed(self, adapter):
@@ -2899,8 +2899,8 @@ class TestThreadReplyHandling:
         assert msg_event.text == "run"
         # Cold-start context carries the parent so the agent sees the ask.
         assert "check this and ask me for run" in msg_event.channel_context
-        # Thread remembered so later replies skip the parent fetch.
-        assert "123.000" in adapter_with_session_store._mentioned_threads
+        # Thread remembered per workspace so later replies skip the parent fetch.
+        assert ("T_TEAM", "123.000") in adapter_with_session_store._mentioned_threads
 
     @pytest.mark.asyncio
     async def test_top_level_mention_registers_thread_for_replies(

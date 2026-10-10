@@ -927,6 +927,14 @@ class TestMaxIterationsSummaryReplay:
             out = handle_max_iterations(agent, messages, 5)
 
         assert out == "SUMMARY"
+        from agent.context_compressor import MAX_ITERATIONS_SUMMARY_REQUEST
+        from agent.session_persistence import _db_flush_row
+
+        nudge = next(m for m in messages if m.get("content") == MAX_ITERATIONS_SUMMARY_REQUEST)
+        assert nudge["display_kind"] == "hidden"
+        assert _db_flush_row(agent, nudge, False)["display_kind"] == "hidden"
+        assert all("display_kind" not in m for m in captured["messages"])
+
         sent_users = [
             m for m in captured["messages"] if m.get("role") == "user"
         ]

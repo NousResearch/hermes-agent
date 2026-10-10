@@ -1,7 +1,7 @@
 # Browser Toggle — one titlebar button that opens and hides the built-in browser.
 name: browser-toggle
 repo: https://github.com/jcperdomoybarra/web-browser-button-plugin
-sha: 41b7a3c8a8abf471f68e0dd0e5a76e37025459a6
+sha: b0b88856fa246296647e8697b80bf4bc2e723540
 description: "One titlebar button, next to HUD mode, that opens and hides the built-in browser: the same action as Ctrl+Shift+L. Label follows the active UI language. Front-end only: no agent calls, no network, no API keys."
 maintainer: jcperdomoybarra
 tier: community

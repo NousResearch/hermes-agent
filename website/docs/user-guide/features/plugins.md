@@ -125,6 +125,7 @@ Every `ctx.*` API below is available inside a plugin's `register(ctx)` function.
 | Register a terminal execution backend (cloud sandbox) | `ctx.register_terminal_environment_provider(provider)` — see [Terminal Environment Plugins](../../developer-guide/terminal-environment-plugin.md) |
 | Register a computer-use driver | `ctx.register_computer_use_provider(provider)` — selected by `computer_use.backend`; see [Computer-use backend plugins](../../developer-guide/plugins/index.md#computer-use-backend-plugins) |
 | Route human approval prompts | `ctx.register_approval_transport(name, present_fn)` — see [Approval transports](#approval-transports) |
+| Run supervised async background work | `ctx.spawn_task(coro, name=...)` — schedules on the host runtime loop; unload/reload cancels it and uncaught exceptions are logged |
 | Register a memory backend | Subclass `MemoryProvider` in `plugins/memory/<name>/__init__.py` — see [Memory Provider Plugins](../../developer-guide/memory-provider-plugin.md) (uses a separate discovery system) |
 | Run a host-owned LLM call | `ctx.llm.complete(...)` / `ctx.llm.complete_structured(...)` — borrow the user's active model + auth for a one-shot completion with optional JSON schema validation. See [Plugin LLM Access](../../developer-guide/plugin-llm-access.md) |
 | Call an MCP tool (capability-gated) | `ctx.call_mcp(server, tool, arguments, timeout=30)` — see [Calling MCP servers from plugins](#calling-mcp-servers-from-plugins) |
@@ -205,6 +206,11 @@ plugins:
   # are clamped.
   load_timeout_seconds: 10
 ```
+
+`register(ctx)` is deadline-bounded on a loader thread. `ctx.spawn_task(...)` safely hands a
+coroutine back to the gateway or other async host loop rather than running it on that thread.
+Synchronous discovery commands do not own a runtime loop: a plugin that requests background work
+there is reported as not loaded with a clear error, and Hermes closes the unscheduled coroutine.
 
 Three ways to flip state:
 

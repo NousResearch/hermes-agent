@@ -13,6 +13,7 @@ state, bounded by _HUMAN_WAIT_MAX_SESSIONS.
 """
 
 import contextlib
+import math
 import threading
 import time
 
@@ -28,11 +29,12 @@ import time
 # session's batch deadline. State is process-global like the rest of this module's approval state; entries
 # are bounded by _HUMAN_WAIT_MAX_SESSIONS.
 class _HumanWaitState:
-    __slots__ = ("completed_seconds", "pending", "window_started")
+    __slots__ = ("pending", "window_started", "window_ceiling", "completed_seconds")
 
     def __init__(self) -> None:
         self.pending = 0
         self.window_started: float | None = None
+        self.window_ceiling: float | None = None
         self.completed_seconds = 0.0
 
 
@@ -45,19 +47,26 @@ _HUMAN_WAIT_MAX_SESSIONS = 256
 HUMAN_WAIT_MARGIN_S = 60.0
 
 
-def human_wait_ceiling() -> float:
-    """Max seconds a single window may contribute: approvals.timeout + margin.
-    Every legitimate human wait self-terminates at ``approvals.timeout`` (the CLI
-    prompt join and the gateway poll loop both enforce it), so a window that
-    overstays this ceiling is itself wedged and must not keep extending a batch
-    deadline. Also the bound on the authorization gate's serialization-lock
+def human_wait_ceiling(timeout_seconds: float | None = None) -> float:
+    """Max seconds a single window may contribute: its host-owned timeout + margin.
+    Every legitimate human wait self-terminates at its host-owned timeout, so a
+    window that overstays this ceiling is itself wedged and must not keep extending
+    a batch deadline. Also the bound on the authorization gate's serialization-lock
     acquire in agent/tool_executor.py, so the two cannot drift. Never call while
-    holding ``_human_wait_lock`` — it reads the config cache.
-    ``_get_approval_timeout`` caps at ``agent.deadline.MAX_SAFE_TIMEOUT_S`` so the
-    value is always safe for ``Lock.acquire(timeout=...)`` / ``Thread.join(timeout=...)``."""
+    holding ``_human_wait_lock`` — the fallback reads the config cache.
+    """
     from tools import approval_context
     from agent.deadline import MAX_SAFE_TIMEOUT_S
-    return min(MAX_SAFE_TIMEOUT_S, float(approval_context._get_approval_timeout()) + HUMAN_WAIT_MARGIN_S)
+    fallback = float(approval_context._get_approval_timeout())
+    if not math.isfinite(fallback) or fallback <= 0:
+        fallback = min(300.0, MAX_SAFE_TIMEOUT_S)
+    try:
+        timeout = fallback if timeout_seconds is None else float(timeout_seconds)
+    except (TypeError, ValueError, OverflowError):
+        timeout = fallback
+    if not math.isfinite(timeout) or timeout <= 0:
+        timeout = fallback
+    return min(MAX_SAFE_TIMEOUT_S, timeout + HUMAN_WAIT_MARGIN_S)
 
 
 def _clamped_window_seconds(started: float, now: float, ceiling: float) -> float:
@@ -106,39 +115,45 @@ def activity_heartbeat(label: str):
 
 
 @contextlib.contextmanager
-def human_wait_window(session_key: str | None = None):
+def human_wait_window(session_key: str | None = None, *, timeout_seconds: float | None = None):
     """Mark the enclosed block as time spent blocked on a human prompt. Wrap ONLY
     code that is genuinely parked waiting for a user's answer (the CLI approval
     prompt, the gateway approval poll loop). The concurrent tool batch deadline
     excludes this time; wrapping anything else re-creates the hang where
     arbitrary wedged code pushes the deadline out forever. Overlapping windows
     for the same session coalesce (pending counter), so two serialized approval
-    prompts don't double-count the same wall clock.
+    prompts don't double-count the same wall clock. ``timeout_seconds`` is supplied
+    only by a selected host-owned transport; built-in prompts retain the ordinary
+    approval timeout.
 
     See #79719.
     """
     key = _resolve_key(session_key)
+    ceiling = human_wait_ceiling(timeout_seconds)
     now = time.monotonic()
     with _human_wait_lock:
         state = _human_wait_state(key)
         if state.pending == 0:
             state.window_started = now
+            state.window_ceiling = ceiling
+        else:
+            state.window_ceiling = max(state.window_ceiling or 0.0, ceiling)
         state.pending += 1
     try:
         yield
     finally:
         now = time.monotonic()
-        # Clamp the accrual too: a window that overstayed the ceiling was wedged —
-        # record at most the ceiling, not the whole overstay.
-        ceiling = human_wait_ceiling()
         with _human_wait_lock:
             state = _human_wait_states.get(key)
             if state is not None:
                 state.pending -= 1
                 if state.pending == 0:
                     if state.window_started is not None:
-                        state.completed_seconds += _clamped_window_seconds(state.window_started, now, ceiling)
+                        state.completed_seconds += _clamped_window_seconds(
+                            state.window_started, now, state.window_ceiling or ceiling
+                        )
                     state.window_started = None
+                    state.window_ceiling = None
 
 
 def human_wait_seconds(session_key: str | None = None) -> float:
@@ -158,13 +173,23 @@ def human_wait_seconds(session_key: str | None = None) -> float:
     """
     key = _resolve_key(session_key)
     now = time.monotonic()
-    # Resolve the clamp outside the lock: it reads the config cache, which must never nest under _human_wait_lock.
-    ceiling = human_wait_ceiling()
     with _human_wait_lock:
         state = _human_wait_states.get(key)
         if state is None:
             return 0.0
         total = state.completed_seconds
         if state.window_started is not None:
-            total += _clamped_window_seconds(state.window_started, now, ceiling)
+            total += _clamped_window_seconds(
+                state.window_started, now, state.window_ceiling or 0.0
+            )
         return total
+
+
+def human_wait_deadline(session_key: str | None = None) -> float | None:
+    """Absolute deadline of the active host-owned human wait, including its safety margin."""
+    key = _resolve_key(session_key)
+    with _human_wait_lock:
+        state = _human_wait_states.get(key)
+        if state is None or state.window_started is None or state.window_ceiling is None:
+            return None
+        return state.window_started + state.window_ceiling

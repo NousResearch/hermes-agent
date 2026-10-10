@@ -523,8 +523,29 @@ class _ConcurrentToolAuthorizationGate:
         except Exception:
             return 0.0
 
+    def _active_human_wait_deadline(self) -> float | None:
+        try:
+            from tools.approval_human_wait import human_wait_deadline
+
+            return human_wait_deadline(self._session_key)
+        except Exception:
+            return None
+
+    def _acquire_serialization_lock(self) -> bool:
+        """Acquire by the ordinary bound, extending only for an active host-owned human wait."""
+        deadline = time.monotonic() + self._lock_timeout
+        while True:
+            active_deadline = self._active_human_wait_deadline()
+            if active_deadline is not None:
+                deadline = max(deadline, active_deadline)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            if self._serialization_lock.acquire(timeout=min(1.0, remaining)):
+                return True
+
     def run(self, callback):
-        if not self._serialization_lock.acquire(timeout=self._lock_timeout):
+        if not self._acquire_serialization_lock():
             # Deterministic failure (bad command, non-MCP URL, 401/403): every retry hits the same wall.
             # Park immediately instead of burning the retry ladder and spamming N identical warnings
             # (#65673). Auth failures park here too rather than returning. Returning ends the run task, and

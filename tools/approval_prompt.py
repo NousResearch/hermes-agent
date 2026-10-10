@@ -242,7 +242,7 @@ def _present_with_selected_transport(*, command: str, description: str, pattern_
     _ctx._fire_approval_hook("pre_approval_request", **hook_kwargs)
     from tools.human_input_hooks import human_input_request
     with human_input_request("approval", prompt=request.command, session_key=session_key) as human, \
-            human_wait_window(session_key):
+            human_wait_window(session_key, timeout_seconds=timeout_seconds):
         result = invoke_approval_transport(
             registered.present, request, timeout_seconds=timeout_seconds,
             on_poll=activity_heartbeat("waiting for plugin approval transport"),

@@ -9,6 +9,7 @@ a patch on ``hermes_cli.plugins.<name>`` reaches ctx methods as it did when the 
 from __future__ import annotations
 
 import asyncio
+import threading
 from functools import cached_property
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Mapping, Optional
@@ -44,10 +45,19 @@ class PluginContext(PluginCapabilityCtxMixin):
         # still be running register(), and nothing it registers from then on may reach a registry.
         self._load_abandoned = False
         self._staged: list[PluginRegistration] = []  # this load's staged registrations, published if it succeeds
+        # Bound by run_with_load_deadline() on its caller before register() is offloaded. Direct
+        # contexts may still use the loop running on their own thread.
+        self._task_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._task_lifecycle_lock = threading.Lock()
+
+    def _bind_task_loop(self, loop: Optional[asyncio.AbstractEventLoop]) -> None:
+        """Bind background work to the host loop that owns this load attempt."""
+        self._task_loop = loop
 
     def _abandon_load(self) -> None:
         """Mark this load as timed out; every later ``register_*``/``subscribe``/``on_unload`` is ignored."""
-        self._load_abandoned = True
+        with self._task_lifecycle_lock:
+            self._load_abandoned = True
 
     @property
     def plugin_id(self) -> str:
@@ -229,15 +239,69 @@ class PluginContext(PluginCapabilityCtxMixin):
         _facade().logger.debug("Plugin %s registered on_unload callback", self.manifest.name)
         return handle
 
-    def spawn_task(self, coro, *, name: Optional[str] = None) -> asyncio.Task:
-        """Spawn a supervised asyncio task; unload/force reload cancels it. Needs a running loop."""
-        if not _facade().asyncio.iscoroutine(coro):
+    def spawn_task(self, coro, *, name: Optional[str] = None) -> Any:
+        """Spawn host-loop-owned work from register() or runtime code.
+
+        The default loader calls register() on a deadline worker, so scheduling crosses threads.
+        Unload/force reload cancels the returned Task/Future and failures are logged. Synchronous
+        discovery has no lifecycle loop and rejects the request after closing the coroutine.
+        """
+        aio = _facade().asyncio
+        if not aio.iscoroutine(coro):
             raise TypeError("spawn_task expects a coroutine")
-        loop = _facade().asyncio.get_running_loop()
-        task_name = name or f"plugin:{self.plugin_id}:task"
-        task = loop.create_task(coro, name=task_name)
-        handle = self._track("background_task", task_name, lambda: task.done() or task.cancel())
-        task.add_done_callback(lambda _t: handle.dispose())
+        with self._task_lifecycle_lock:
+            if self._load_abandoned:
+                coro.close()
+                raise RuntimeError("cannot spawn a background task after the plugin load was abandoned")
+            loop = self._task_loop
+            if loop is None:
+                try:
+                    loop = aio.get_running_loop()
+                except RuntimeError:
+                    coro.close()
+                    raise RuntimeError(
+                        "ctx.spawn_task requires a running host asyncio loop; "
+                        "synchronous plugin discovery cannot supervise background tasks"
+                    ) from None
+            if loop.is_closed() or not loop.is_running():
+                coro.close()
+                raise RuntimeError("ctx.spawn_task cannot use a stopped host asyncio loop")
+            task_name = name or f"plugin:{self.plugin_id}:task"
+            try:
+                current_loop = aio.get_running_loop()
+            except RuntimeError:
+                current_loop = None
+            try:
+                if loop is current_loop:
+                    task = loop.create_task(coro, name=task_name)
+                else:
+                    task = aio.run_coroutine_threadsafe(coro, loop)
+            except RuntimeError as exc:
+                coro.close()
+                raise RuntimeError(f"ctx.spawn_task could not schedule on the host asyncio loop: {exc}") from None
+
+            def _cancel_task() -> None:
+                if not task.done():
+                    task.cancel()
+
+            try:
+                handle = self._track("background_task", task_name, _cancel_task)
+            except BaseException:
+                task.cancel()
+                raise
+
+        def _task_done(completed) -> None:
+            try:
+                if not completed.cancelled() and (exc := completed.exception()) is not None:
+                    _facade().logger.error(
+                        "Plugin %s background task %s failed: %s",
+                        self.manifest.name, task_name, exc,
+                        exc_info=(type(exc), exc, exc.__traceback__),
+                    )
+            finally:
+                handle.dispose()
+
+        task.add_done_callback(_task_done)
         _facade().logger.debug("Plugin %s spawned supervised task: %s", self.manifest.name, task_name)
         return task
 

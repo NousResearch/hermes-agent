@@ -2,13 +2,14 @@
 
 Lazy OpenAI SDK import (``_OpenAIProxy`` keeps ``isinstance`` and
 ``patch("agent.process_bootstrap.OpenAI")`` working), crash-resistant stdio
-(``_SafeWriter``), env-only HTTP proxy resolution, and the httpcore backend that
-runs sync httpx connects through the process-wide Happy Eyeballs racer
-(``hermes_bootstrap``).
+(``_SafeWriter``), env-only HTTP proxy resolution, and the httpcore backends that
+run sync httpx connects through the process-wide Happy Eyeballs racer
+(``hermes_bootstrap``) and put TCP keepalive on provider sockets.
 """
 
 from __future__ import annotations
 
+import os
 import socket
 import sys
 import threading
@@ -33,6 +34,104 @@ _SHARED_TRANSPORTS_MAX = 32
 # the socket-abort walker in agent_runtime_helpers uses it to find only the
 # owning client's in-flight connections on a shared pool.
 HERMES_TRANSPORT_OWNER_EXT = "hermes_transport_owner"
+
+# TCP keepalive on provider sockets: first probe after this many idle seconds
+# (HERMES_TCP_KEEPALIVE_SECONDS, 0 disables), then every interval; the socket
+# fails after that many unanswered probes.
+_TCP_KEEPALIVE_IDLE_DEFAULT = 30
+_TCP_KEEPALIVE_INTERVAL_SECONDS = 10
+_TCP_KEEPALIVE_PROBES = 3
+
+
+def _tcp_keepalive_idle_seconds() -> int:
+    raw = os.environ.get("HERMES_TCP_KEEPALIVE_SECONDS", "").strip()
+    try:
+        return max(int(float(raw)), 0) if raw else _TCP_KEEPALIVE_IDLE_DEFAULT
+    except ValueError:
+        return _TCP_KEEPALIVE_IDLE_DEFAULT
+
+
+def enable_tcp_keepalive(sock) -> bool:
+    """Best-effort TCP keepalive so a silently dead provider connection fails its read.
+
+    A VPN/tunnel restart or a network switch can leave a streaming socket ESTABLISHED with
+    nothing ever arriving again: the new tunnel has no state for the flow, and a client that
+    is only reading never sends a packet that would draw a reset. The request then waited for
+    the provider-silence watchdogs (240 s for chat streams, up to 300 s for high-effort Codex)
+    before reconnecting. Behind HTTPS_PROXY/ALL_PROXY the socket that gets the probes is the
+    client <-> proxy one, which is the leg that dies when the tunnel to the proxy drops.
+    Keepalive probes are answered by any live peer, so a
+    healthy connection that is silent while the model thinks is unaffected; a dead one errors
+    within idle + interval * probes seconds and the normal stream retry reconnects. Options
+    the platform lacks or rejects are skipped. Returns whether SO_KEEPALIVE was set."""
+    idle = _tcp_keepalive_idle_seconds()
+    if idle <= 0:
+        return False
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+    except (OSError, AttributeError):
+        return False
+    # Linux/Windows call the idle time TCP_KEEPIDLE; macOS calls it TCP_KEEPALIVE.
+    idle_option = getattr(socket, "TCP_KEEPIDLE", None)
+    if idle_option is None:
+        idle_option = getattr(socket, "TCP_KEEPALIVE", None)
+    for option, value in ((idle_option, idle),
+                          (getattr(socket, "TCP_KEEPINTVL", None), _TCP_KEEPALIVE_INTERVAL_SECONDS),
+                          (getattr(socket, "TCP_KEEPCNT", None), _TCP_KEEPALIVE_PROBES)):
+        if option is not None:
+            try:
+                sock.setsockopt(socket.IPPROTO_TCP, option, value)
+            except OSError:
+                pass
+    return True
+
+
+def _with_tcp_keepalive(stream):
+    """Enable keepalive on an httpcore network stream's socket; never fails the connect."""
+    try:
+        sock = stream.get_extra_info("socket")
+        if sock is not None:
+            enable_tcp_keepalive(sock)
+    except Exception:
+        pass
+    return stream
+
+
+_KEEPALIVE_SYNC_BACKEND_CLS = None
+
+
+def _keepalive_sync_backend():
+    """httpcore's default sync backend plus TCP keepalive on every connected socket.
+
+    Built on first use so importing this module does not import httpcore."""
+    global _KEEPALIVE_SYNC_BACKEND_CLS
+    if _KEEPALIVE_SYNC_BACKEND_CLS is None:
+        from httpcore import SyncBackend
+
+        class _KeepaliveSyncBackend(SyncBackend):
+            def connect_tcp(self, *args, **kwargs):
+                return _with_tcp_keepalive(super().connect_tcp(*args, **kwargs))
+
+        _KEEPALIVE_SYNC_BACKEND_CLS = _KeepaliveSyncBackend
+    return _KEEPALIVE_SYNC_BACKEND_CLS()
+
+
+_KEEPALIVE_ASYNC_BACKEND_CLS = None
+
+
+def _keepalive_async_backend():
+    """httpcore's default async backend (``AutoBackend``: anyio, with its native Happy
+    Eyeballs, or trio) plus TCP keepalive on every connected socket. Built on first use."""
+    global _KEEPALIVE_ASYNC_BACKEND_CLS
+    if _KEEPALIVE_ASYNC_BACKEND_CLS is None:
+        from httpcore._backends.auto import AutoBackend
+
+        class _KeepaliveAsyncBackend(AutoBackend):
+            async def connect_tcp(self, *args, **kwargs):
+                return _with_tcp_keepalive(await super().connect_tcp(*args, **kwargs))
+
+        _KEEPALIVE_ASYNC_BACKEND_CLS = _KeepaliveAsyncBackend
+    return _KEEPALIVE_ASYNC_BACKEND_CLS()
 
 
 class _HappyEyeballsSyncBackend:
@@ -59,7 +158,7 @@ class _HappyEyeballsSyncBackend:
             raise ConnectTimeout(str(exc)) from exc
         except OSError as exc:
             raise ConnectError(str(exc)) from exc
-        return SyncStream(sock)
+        return _with_tcp_keepalive(SyncStream(sock))
 
     def connect_unix_socket(self, *args, **kwargs):
         return self._default_backend().connect_unix_socket(*args, **kwargs)
@@ -82,6 +181,26 @@ def _enable_happy_eyeballs(transport, skip_pool_types: tuple = ()) -> None:
     pool = getattr(transport, "_pool", None)
     if pool is not None and hasattr(pool, "_network_backend") and not (skip_pool_types and isinstance(pool, skip_pool_types)):
         pool._network_backend = _HappyEyeballsSyncBackend()
+
+
+def _enable_keepalive_backend(transport, *, async_mode: bool = False) -> None:
+    """Install the keepalive backend on one transport: direct pools and proxy pools alike
+    (``HTTPProxy``/``SOCKSProxy`` take the same ``_network_backend``, which then opens the
+    client <-> proxy socket). Same private-attribute guard as ``_enable_happy_eyeballs``; the
+    racing backend already sets keepalive."""
+    pool = getattr(transport, "_pool", None)
+    if pool is not None and hasattr(pool, "_network_backend"):
+        try:
+            pool._network_backend = _keepalive_async_backend() if async_mode else _keepalive_sync_backend()
+        except Exception:
+            pass  # an incompatible httpcore keeps its default backend
+
+
+def _enable_keepalive_on_client(client, *, async_mode: bool = False) -> None:
+    """Install the keepalive backend on every transport of a ready-built (proxy) httpx client."""
+    for transport in (getattr(client, "_transport", None), *getattr(client, "_mounts", {}).values()):
+        if transport is not None:
+            _enable_keepalive_backend(transport, async_mode=async_mode)
 
 
 def enable_happy_eyeballs_on_client(client) -> None:
@@ -278,7 +397,8 @@ def build_keepalive_http_client(base_url: str = "", *, async_mode: bool = False,
     with the same (verify, proxy, happy-eyeballs) identity mount the SAME underlying
     ``HTTPTransport`` through a ``_SharedTransport`` view, so N delegated children share one
     connection pool + SSL context. Async clients are never shared: an httpcore async pool is
-    bound to the event loop that first used it. Proxy-backed clients keep httpx's own transport.
+    bound to the event loop that first used it. Proxy-backed clients keep httpx's own transport,
+    with the keepalive backend installed on its proxy pool.
 
     See #12952, #54049.
     See #10933.
@@ -305,6 +425,8 @@ def build_keepalive_http_client(base_url: str = "", *, async_mode: bool = False,
                 # Async transports race natively (anyio happy_eyeballs_delay=0.25).
                 if happy_eyeballs:
                     _enable_happy_eyeballs(transport)
+                else:
+                    _enable_keepalive_backend(transport, async_mode=async_mode)
                 return transport
 
             if async_mode:
@@ -319,7 +441,10 @@ def build_keepalive_http_client(base_url: str = "", *, async_mode: bool = False,
                 # Default transport = the https view; otherwise httpx builds a third, never-used
                 # direct transport (pool + SSL context) per client.
                 return client_cls(limits=limits, timeout=timeout, transport=mounts["https://"], mounts=mounts)
-        return client_cls(limits=limits, timeout=timeout, proxy=proxy, mounts=mounts or None, verify=verify)
+        client = client_cls(limits=limits, timeout=timeout, proxy=proxy, mounts=mounts or None, verify=verify)
+        # Proxied: the client <-> proxy socket is the one a dropped tunnel leaves silently dead.
+        _enable_keepalive_on_client(client, async_mode=async_mode)
+        return client
     except Exception:
         return None
 

@@ -1216,6 +1216,11 @@ def create_task(
     model_override, provider_override = _validate_model_override(model_override, provider_override)
     reasoning_effort = normalize_reasoning_effort(reasoning_effort)
     assignee = _canonical_assignee(assignee)
+    # File-time rejection for a reserved, unspawnable assignee. A card filed to
+    # `hermes`/`root`/... dies spawn_failed -> gave_up with no worker ever
+    # started; refusing here is where the caller can still pick another name.
+    from hermes_cli.kanban_assignee_gate import require_spawnable_assignee
+    require_spawnable_assignee(assignee, surface="kanban create")
     if not title or not title.strip():
         raise ValueError("title is required")
     if initial_status not in VALID_INITIAL_STATUSES:
@@ -1480,6 +1485,11 @@ def list_tasks(
 def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) -> bool:
     """Assign/reassign; raises RuntimeError while the task is running under a claim."""
     profile = _canonical_assignee(profile)
+    # Reassigning INTO a reserved, unspawnable lane re-strands the card; refuse
+    # here too, not only at create (the "reassign to a real profile" cure must
+    # not itself point at a name that cannot spawn).
+    from hermes_cli.kanban_assignee_gate import require_spawnable_assignee
+    require_spawnable_assignee(profile, surface="kanban assign")
     with write_txn(conn):
         row = conn.execute(
             "SELECT status, claim_lock, assignee FROM tasks WHERE id = ?", (task_id,)
@@ -3342,6 +3352,12 @@ def request_review(
                         "malformed); pass reviewer= explicitly",
                     )
             reviewer = _canonical_assignee(reviewer)
+            # A reviewer is stamped onto the row as its assignee, so this is a
+            # fifth assignee write path: reassigning into a reserved,
+            # unspawnable lane re-creates the dead letter the file-time gate
+            # exists to prevent (`--reviewer hermes` after a clean create).
+            from hermes_cli.kanban_assignee_gate import require_spawnable_assignee
+            require_spawnable_assignee(reviewer, surface="kanban request-review")
             # The actor is the run that did the work. ``assignee`` is the actor
             # only while a worker holds the card; on a never-claimed card it is
             # whoever the operator assigned -- possibly the reviewer itself,
@@ -3762,6 +3778,8 @@ def specify_triage_task(
     if title is not None and not title.strip():
         raise ValueError("title cannot be blank")
     assignee = _canonical_assignee(assignee)
+    from hermes_cli.kanban_assignee_gate import require_spawnable_assignee
+    require_spawnable_assignee(assignee, surface="kanban specify")
     with write_txn(conn):
         existing = conn.execute(
             "SELECT title, body, assignee FROM tasks WHERE id = ? AND status = 'triage'",

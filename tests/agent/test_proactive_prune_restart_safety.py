@@ -106,6 +106,30 @@ def test_gateway_eviction_reload_keeps_prune_and_durable_runway(tmp_path: Path) 
     assert second_count == 0
     assert len(db.get_messages(session_id, include_inactive=True)) == archived_before
 
+@pytest.mark.parametrize("include_row_ids", [True, False], ids=["row-ids", "resumed-without-row-ids"])
+def test_prune_leaves_one_recallable_copy_of_unchanged_history(tmp_path: Path, include_row_ids: bool) -> None:
+    """The prune rewrites only old tool results and inserts the whole transcript as fresh rows.
+
+    Unchanged originals are superseded duplicates and must leave recall; only the rewritten tool
+    results stay recallable as compacted history (the compaction tail had the same bug, #86366).
+    """
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "PRUNE_RECALL_ONCE"
+    db.create_session(session_id, source="telegram")
+    db.append_messages_batch(session_id, _history())
+    agent = _build_agent(db, session_id)
+    _configure_pruning(agent)
+    before = db.get_messages_as_conversation(session_id, include_row_ids=include_row_ids)
+    pruned, count = agent.context_compressor.prune_tool_results_only(before, current_tokens=120_000)
+    assert count >= 1
+
+    assert len(db.search_messages("start")) == 1
+    archived = [row for row in db.get_messages(session_id, include_inactive=True) if not row["active"]]
+    assert len(archived) == len(before)
+    recallable = sorted(row["content"][0] for row in archived if row["compacted"])
+    assert recallable == ["A", "B", "C"]
+    assert sum(new["content"] != old["content"] for old, new in zip(before, pruned)) == 3
+
 def test_fresh_agent_rearms_after_durable_history_regrowth_once(tmp_path: Path) -> None:
     db = SessionDB(db_path=tmp_path / "state.db")
     session_id = "PRUNE_DURABLE_REGROWTH"

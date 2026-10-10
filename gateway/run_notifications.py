@@ -1317,14 +1317,13 @@ class GatewayNotificationsMixin:
             parent_session_id = str(evt.get("parent_session_id") or "").strip()
             if parent_session_id:
                 metadata["gateway_session_id"] = parent_session_id
-            # The queued event's ``message_id`` is the message that STARTED the process, and the
-            # persisted origin carries the same stale id. A synthetic completion is not a reply to
-            # it: by delivery time the user has often continued elsewhere, and an event anchored
-            # there makes the finished job's reply quote that old message on every reply-anchoring
-            # platform (#52694: a background completion visibly replying to a stale Discord DM
-            # message). Routing is unaffected — topic lanes carry thread_id and the anchor-less
-            # synthetic-send branches are covered (#87051); the original id rides metadata for
-            # debugging only.
+            from tools.async_delegation import internal_event_persistence
+            internal_display_kind, internal_metadata = internal_event_persistence(evt)
+            if internal_display_kind is not None and internal_metadata is not None:
+                metadata.update(internal_metadata)
+                metadata["display_kind"] = internal_display_kind
+            # The trigger id is stale, not a reply anchor (#52694). Keep it only for debugging;
+            # topic routing still uses thread_id and the anchor-less send paths (#87051).
             trigger_message_id = str(evt.get("message_id") or "").strip() or None
             if trigger_message_id:
                 metadata["original_trigger_message_id"] = trigger_message_id

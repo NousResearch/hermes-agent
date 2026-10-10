@@ -26,7 +26,7 @@ from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter, ProcessingOutcome
 from gateway.platforms.event import MessageEvent
 from gateway.response_filters import (
-    display_kind_for_event, is_machinery_display_kind, reply_expected_metadata, silence_allowed,
+    display_kind_for_event, internal_event_projection, is_machinery_display_kind, reply_expected_metadata, silence_allowed,
 )
 from gateway.warning_notifications import diagnostic_metadata, diagnostic_turn_muted, diagnostic_wake_muted
 from gateway.session import (
@@ -1800,10 +1800,8 @@ class GatewayTurnMixin:
     @staticmethod
     def _hmwa_user_transcript_entry(event, prepared, ts):
         """Transcript row for the inbound user turn (clean text + event time when captured)."""
-        # Transient failure (429/timeout/5xx): persist the user message so the next message can load a
-        # transcript that reflects what was said. The caller pairs it with a stable assistant safety
-        # boundary rather than the provider error text. Hidden-reasoning-only incomplete turns follow the
-        # same persistence rule so peer-agent channels don't ingest provider details. (#7100, #51628)
+        # Failed/incomplete turns keep the input and a stable assistant boundary, never provider
+        # error details that peer-agent channels could ingest (#7100, #51628).
         _user_entry = {
             "role": "user",
             "content": (
@@ -1816,6 +1814,8 @@ class GatewayTurnMixin:
             _user_entry["display_kind"] = prepared.persist_user_display_kind
         if prepared.persistence_owner:
             _user_entry["display_metadata"] = {"gateway_input_owner": prepared.persistence_owner}
+        if metadata := internal_event_projection(event)[1]:
+            _user_entry.setdefault("display_metadata", {}).update(metadata)
         if getattr(event, "message_id", None):
             _user_entry["message_id"] = str(event.message_id)
         return _user_entry
@@ -2206,8 +2206,8 @@ class GatewayTurnMixin:
                 persist_user_display_kind=prepared.persist_user_display_kind,
                 reply_expected=event.reply_expected,
                 persist_user_display_metadata={
-                    "gateway_input_owner": prepared.persistence_owner,
-                    **reply_expected_metadata(event.reply_expected), **diagnostic_metadata(event)},
+                    "gateway_input_owner": prepared.persistence_owner, **reply_expected_metadata(event.reply_expected),
+                    **(internal_event_projection(event)[1] or {}), **diagnostic_metadata(event)},
                 message_type=event.message_type,
                 scheduled_heartbeat=bool(getattr(event, "_heartbeat_session_id", None)),
             )

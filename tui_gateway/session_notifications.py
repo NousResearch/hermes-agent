@@ -506,13 +506,17 @@ def _notif_dispatch_event(sid: str, session: dict, evt: dict, text: str) -> None
     evt_type = evt.get("type")
     kwargs: dict = {}
     if evt_type == "async_delegation":
-        kwargs = {"display_kind": "async_delegation_complete", "display_metadata": _async_delegation_display_metadata(evt)}
+        from tools.async_delegation import internal_event_persistence
+        display_kind, _display_metadata = internal_event_persistence(evt)
+        kwargs = {"display_kind": display_kind or "async_delegation_complete",
+                  "display_metadata": _async_delegation_display_metadata(evt)}
     elif evt_type == "heartbeat":
         # Model-facing scaffolding: the process row on the status stack already says it is running,
         # so the wake never paints as a user bubble (Desktop, TUI and the transcript preview all
         # honour ``hidden``). Only what the agent says about the new output is visible.
         from tools.process_registry_notifications import HEARTBEAT_DISPLAY_KIND
         kwargs = {"display_kind": HEARTBEAT_DISPLAY_KIND}
+
     from agent.notification_presentation import diagnostic_process_event
     if diagnostic_process_event(evt):
         kwargs.setdefault("display_metadata", {})["notification_category"] = "diagnostic"
@@ -810,10 +814,13 @@ def _async_delegation_display_metadata(evt: dict) -> dict:
     completed_count = sum(1 for r in results if r.get("status") in {"completed", "success"})
     failed_count = sum(1 for r in results if r.get("status") in {"failed", "error"})
     duration = evt.get("total_duration_seconds") or evt.get("duration_seconds")
+    from tools.async_delegation import internal_event_persistence
+    _display_kind, internal_metadata = internal_event_persistence(evt)
     return {"display_text": async_delegation_display_text(evt),
             "delegation_id": str(evt.get("delegation_id") or ""), "task_count": task_count,
             "completed_count": completed_count or task_count - failed_count, "failed_count": failed_count,
-            **({"duration_seconds": duration} if isinstance(duration, (int, float)) else {})}
+            **({"duration_seconds": duration} if isinstance(duration, (int, float)) else {}),
+            **(internal_metadata or {})}
 
 
 _desktop_ui_wired = False

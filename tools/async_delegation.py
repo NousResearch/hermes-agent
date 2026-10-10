@@ -298,6 +298,7 @@ def recover_abandoned_delegations() -> int:
                 **({"results": recovered_results} if recovered_results else {}),
                 "dispatched_at": dispatched_at, "completed_at": now,
                 **{k: task[k] for k in _ROUTING_KEYS if task.get(k)}}
+            event.update(_internal_event_envelope(delegation_id))
             result = {"status": "unknown", "summary": None, "error": event["error"], **diagnostics,
                       **({"results": recovered_results} if recovered_results else {})}
             conn.execute("""UPDATE async_delegations SET state='unknown', completed_at=?,
@@ -351,6 +352,8 @@ def _replay_pending(conn, rows, target_queue, now: float) -> int:
             continue
         evt = json.loads(payload)
         if isinstance(evt, dict):
+            # Pre-schema rows gain identity only on replay; the durable payload stays unchanged.
+            evt.update(_internal_event_envelope(delegation_id))
             evt["restored"] = True
         target_queue.put(evt)
         with _orphan_lock:
@@ -670,7 +673,52 @@ def has_live_for_session(session_key: str = "", origin_ui_session_id: str = "", 
 
 
 def _new_delegation_id() -> str:
-    return f"deleg_{uuid.uuid4().hex[:8]}"
+    return f"deleg_{uuid.uuid4().hex}"
+
+
+def _internal_event_envelope(delegation_id: Any) -> Dict[str, Any]:
+    """Stable, presentation-neutral identity for one terminal delegation event."""
+    if not isinstance(delegation_id, str) or not delegation_id.strip():
+        raise ValueError("delegation_id is required for an internal event envelope")
+    delegation_key = delegation_id
+    return {
+        "event_schema": "hermes.internal_event.v1",
+        "event_id": f"async_delegation:{delegation_key}:terminal",
+        "event_kind": "workflow.async_delegation.terminal",
+        "workflow_id": f"delegation:{delegation_key}",
+        "display_kind": "internal_event",
+        "user_originated": False,
+        "terminal": True,
+    }
+
+
+def internal_event_persistence(
+    event: Any, *, trusted_internal: bool = False,
+) -> tuple[Optional[str], Optional[Dict[str, Any]]]:
+    """Validate a terminal delegation envelope and return transcript sidecars.
+
+    ``trusted_internal`` remains keyword-compatible with the original projection
+    API but deliberately does not relax validation: old untagged events retain
+    their legacy presentation, while restored durable events are upgraded by
+    :func:`restore_undelivered_completions` before reaching a transport.
+    """
+    if not isinstance(event, dict) or event.get("task_failure_notice"):
+        return None, None
+    delegation_id = event.get("delegation_id")
+    if not isinstance(delegation_id, str) or not delegation_id.strip():
+        return None, None
+    expected = _internal_event_envelope(delegation_id)
+    if any(type(event.get(key)) is not type(value) or event.get(key) != value for key, value in expected.items()):
+        return None, None
+    return expected["display_kind"], {
+        "event_schema": expected["event_schema"],
+        "event_id": expected["event_id"],
+        "event_kind": expected["event_kind"],
+        "workflow_id": expected["workflow_id"],
+        "delegation_id": delegation_id,
+        "user_originated": expected["user_originated"],
+        "terminal": expected["terminal"],
+    }
 
 
 def _prune_completed_locked() -> None:
@@ -933,6 +981,7 @@ def _push_completion_event(record: dict[str, Any], result: dict[str, Any], statu
         **({} if is_batch else {"exit_reason": result.get("exit_reason")}),
         **{k: record[k] for k in _ROUTING_KEYS if record.get(k)},
         **{k: result[k] for k in _STALL_META_KEYS if k in result}}
+    evt.update(_internal_event_envelope(record.get("delegation_id")))
     try:
         _persist_completion(evt, result)
     except Exception as exc:

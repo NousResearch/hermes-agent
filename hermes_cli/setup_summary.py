@@ -32,6 +32,7 @@ _BROWSER_MISSING_HINTS = {
 _BROWSER_MISSING_DEFAULT = "npm install -g agent-browser, set CAMOFOX_URL, or configure Browser Use or Browserbase"
 _WEB_MISSING = ("EXA_API_KEY, PARALLEL_API_KEY, FIRECRAWL_API_KEY/FIRECRAWL_API_URL, TAVILY_API_KEY, "
                 "PERPLEXITY_API_KEY, KEENABLE_API_KEY, or SEARXNG_URL")
+_NOUS_GATEWAY_MISSING = "Nous Tool Gateway access, or run 'hermes tools' to change the provider"
 
 _DONE_BANNER = (
     "┌─────────────────────────────────────────────────────────┐",
@@ -106,19 +107,35 @@ def _managed_or_provider_row(feature, name: str, managed_label: str, missing_hin
     return (name, False, missing_hint)
 
 
+def _nous_selection_row(feats, key: str, name: str, managed_label: str, missing_hint: str = _NOUS_GATEWAY_MISSING):
+    """Row for a tool whose stored selection is ``nous``, else None. That selection pins the tool to the
+    Tool Gateway: the runtime ignores vendor keys, BYO plugin providers and local defaults under it and
+    reports a down gateway through selection_error, so the row reads the feature state alone."""
+    if feats.selected.get(key) != "nous":
+        return None
+    return _managed_or_provider_row(feats.features[key], name, managed_label, missing_hint)
+
+
 def _web_row(config, feats):
     # Web tools (Exa, Parallel, Firecrawl, Tavily, or Keenable)
+    if row := _nous_selection_row(feats, "web", "Web Search & Extract", "Nous subscription"):
+        return row
     return _managed_or_provider_row(feats.web, "Web Search & Extract", "Nous subscription", _WEB_MISSING)
 
 
 def _browser_row(config, feats):
     # Browser tools (local Chromium, Camofox, Browserbase, Browser Use, or Firecrawl)
+    if row := _nous_selection_row(feats, "browser", "Browser Automation", "Nous Browser Use",
+                                  f"npm install -g agent-browser and {_NOUS_GATEWAY_MISSING}"):
+        return row
     hint = _BROWSER_MISSING_HINTS.get(feats.browser.current_provider, _BROWSER_MISSING_DEFAULT)
     return _managed_or_provider_row(feats.browser, "Browser Automation", "Nous Browser Use", hint)
 
 
 def _image_gen_row(config, feats):
     # FAL (direct or via Nous), or any plugin-registered provider (OpenAI, etc.)
+    if row := _nous_selection_row(feats, "image_gen", "Image Generation", "Nous subscription"):
+        return row
     if feats.image_gen.managed_by_nous:
         return ("Image Generation (Nous subscription)", True, None)
     if feats.image_gen.available:
@@ -133,6 +150,9 @@ def _image_gen_row(config, feats):
 def _video_gen_row(config, feats):
     # Opt-in via `hermes tools` → Video Generation. Only show the row when a plugin reports
     # available so we don't badger users who don't care about video gen with a "missing" line.
+    # A stored nous selection is that opt-in, so it always gets a row.
+    if row := _nous_selection_row(feats, "video_gen", "Video Generation", "FAL via Nous subscription"):
+        return row
     if feats.video_gen.managed_by_nous:
         return ("Video Generation (FAL via Nous subscription)", True, None)
     backend = _first_available_plugin_provider("video_gen_registry")
@@ -141,6 +161,8 @@ def _video_gen_row(config, feats):
 
 def _tts_row(config, feats):
     # Configured provider, gated on its key (or local install)
+    if row := _nous_selection_row(feats, "tts", "Text-to-Speech", "OpenAI via Nous subscription"):
+        return row
     if feats.tts.managed_by_nous:
         return ("Text-to-Speech (OpenAI via Nous subscription)", True, None)
     provider = _setup.cfg_get(config, "tts", "provider", default="edge")
@@ -148,6 +170,8 @@ def _tts_row(config, feats):
 
 
 def _stt_row(config, feats):
+    if row := _nous_selection_row(feats, "stt", "Speech-to-Text", "OpenAI via Nous subscription"):
+        return row
     stt_feature = feats.features.get("stt")
     if stt_feature is not None and stt_feature.managed_by_nous:
         return ("Speech-to-Text (OpenAI via Nous subscription)", True, None)

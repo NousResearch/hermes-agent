@@ -937,10 +937,12 @@ def main(
         python batch_runner.py --list_distributions
     """
     if list_distributions:
-        from toolset_distributions import print_distribution_info
+        # Local import: the module-level ``list_distributions`` function is shadowed by this
+        # parameter inside main(), so calling the bare name here would raise TypeError.
+        from toolset_distributions import list_distributions as available_distributions, print_distribution_info
         print("📊 Available Toolset Distributions")
         print("=" * 70)
-        all_dists = list_distributions()
+        all_dists = available_distributions()
         for dist_name in sorted(all_dists.keys()):
             print_distribution_info(dist_name)
 

@@ -433,9 +433,12 @@ class SessionPortabilityMixin:
     @staticmethod
     def _import_int_or_none(value: Any, field: str) -> Optional[int]:
         try:
-            return None if value is None else int(value)
-        except (TypeError, ValueError) as exc:
+            result = None if value is None else int(value)
+        except (TypeError, ValueError, OverflowError) as exc:
             raise ValueError(f"{field} must be an integer") from exc
+        if result is not None and not -(2**63) <= result < 2**63:
+            raise ValueError(f"{field} must fit a signed 64-bit integer")
+        return result
 
     @staticmethod
     def _import_non_finite_path(value: Any, path: str) -> Optional[str]:
@@ -492,12 +495,14 @@ class SessionPortabilityMixin:
         except (TypeError, ValueError) as exc:
             raise ValueError(f"{field} must be JSON serializable") from exc
 
-    @staticmethod
-    def _coerce_or(value: Any, cast, default):
+    @classmethod
+    def _coerce_or(cls, value: Any, cast, default):
         """``cast(value)``; *default* for None or an unparsable value."""
         try:
-            return default if value is None else cast(value)
-        except (TypeError, ValueError):
+            if value is None:
+                return default
+            return cls._import_int_or_none(value, "value") if cast is int else cast(value)
+        except (TypeError, ValueError, OverflowError):
             return default
 
     # SQLite binds Python ints only inside the signed 64-bit range; anything wider

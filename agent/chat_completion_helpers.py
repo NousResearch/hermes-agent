@@ -1914,11 +1914,17 @@ def _rebind_fallback_credential_pool(agent, fb_provider: str, fb_model: str) -> 
 
 
 def _log_fallback_activated(agent, reason, old_model, old_provider, fb_model, fb_provider) -> None:
-    """A billing switch is a WARNING naming the profile, both models and the remedy: the gateway
-    persists the turn as a transient failure otherwise, and nothing in the log says the paid
-    model was refused for credits or how to fix it (#115702). Other reasons stay INFO."""
+    """A provider switch is a WARNING naming both models and the reason. A billing switch
+    also names the profile and the remedy: the gateway persists the turn as a transient
+    failure otherwise, and nothing in the log says the paid model was refused for credits
+    or how to fix it (#115702). Non-billing reasons used to stay INFO, which made them
+    invisible wherever logging.level is WARNING — the file handler is set to that level,
+    so the line never reached disk."""
     if reason != FailoverReason.billing:
-        logger.info("Fallback activated: %s → %s (%s)", old_model, fb_model, fb_provider)
+        logger.warning(
+            "Fallback activated: %s (%s) → %s (%s) reason=%s",
+            old_model, old_provider, fb_model, fb_provider, _fallback_reason_text(reason),
+        )
         return
     from hermes_constants import get_hermes_home, profile_name_for_home
     profile = profile_name_for_home(get_hermes_home()) or "default"

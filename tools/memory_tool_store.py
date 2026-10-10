@@ -472,7 +472,16 @@ class MemoryStore:
     def _batch(self, target: str, operations: list[dict[str, Any]], *, commit: bool) -> dict[str, Any]:
         if not operations:
             return _error("operations list is empty.", "invalid_args")
-        ops = [op or {} for op in operations]
+        # Defense at the store boundary: the tool entry point already rejects a
+        # non-object entry, but the staged-approval replay (apply_memory_pending)
+        # reaches apply_batch directly. The "op or {}" idiom only guards falsy
+        # values, so a bare (truthy) string reaches .get() and raises; validate
+        # the element type here and write nothing.
+        if not all(isinstance(op, dict) for op in operations):
+            return _error(
+                "operations entries must be {action, content?, old_text?} objects "
+                "(got a non-object entry; send one object per operation).", "invalid_args")
+        ops = operations
         # Scan every add/replace content BEFORE touching disk -- one poisoned op rejects the batch.
         for i, op in enumerate(ops):
             scan_error = op.get("action") in {"add", "replace"} and op.get("content") and _scan_memory_content(op["content"])

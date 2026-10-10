@@ -339,6 +339,52 @@ def test_repin_keeps_a_wholly_ignored_data_dir_in_a_git_checkout(world):
     assert (target / "data" / "db" / "index.db").read_text() == "user data"
 
 
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("via", ["url", "catalog"])
+def test_update_of_a_plugin_holding_a_fifo_completes_and_keeps_user_data(world, tmp_path, via):
+    """A plugin's runtime FIFO (``data/events.fifo``) must not stop its update: opening one to hash or
+    copy it blocks until a writer shows up. The update lands, user data stays, the FIFO is not carried."""
+    import threading
+
+    if via == "catalog":
+        repo, name = world["repo"], "cat-plugin"
+        target = cat.install_catalog_entry(pc_cat.get_live_catalog_entry(name), force=False)[0]
+    else:
+        repo, name = tmp_path / "fifo-repo", "fifo-plugin"
+        target = _install_url(repo, name, {})
+    assert (target / ".git").exists()
+    (target / "data").mkdir()
+    (target / "data" / "state.db").write_text("user data")
+    fifo = target / "data" / "events.fifo"
+    os.mkfifo(fifo)
+
+    (repo / "__init__.py").write_text("def register(ctx):\n    pass  # fifo-v2\n")
+    world["state"]["pin"] = _commit(repo, "fifo-v2")
+
+    results = []
+    worker = threading.Thread(target=lambda: results.append(pc.dashboard_update_user_plugin(name)), daemon=True)
+    worker.start()
+    worker.join(30)
+    if worker.is_alive():
+        while worker.is_alive() and os.path.lexists(fifo):
+            try:  # pair each blocked reader so the thread can exit
+                os.close(os.open(fifo, os.O_WRONLY | os.O_NONBLOCK))
+            except OSError:
+                pass
+            worker.join(0.2)
+        pytest.fail("plugin update blocked opening the FIFO")
+
+    assert results[0]["ok"] is True, results[0]
+    assert "# fifo-v2" in (target / "__init__.py").read_text()
+    assert (target / "data" / "state.db").read_text() == "user data"
+    assert not os.path.lexists(target / "data" / "events.fifo")
+
+    # An endpoint the plugin removed after the copy listed the directory is skipped like a live one.
+    from hermes_cli.plugins_transaction import _not_plugin_files
+
+    assert _not_plugin_files(str(target / "data"), ["events.fifo", "state.db"]) == {"events.fifo"}
+
+
 def test_kill_list_covers_update_enable_and_load_of_an_installed_plugin(world, tmp_path, monkeypatch):
     """A URL install whose name lands on the kill list AFTER install must stop pulling, cannot be enabled
     and is refused at load; an install made with --allow-removed keeps working."""

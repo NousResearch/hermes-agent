@@ -218,6 +218,62 @@ class TestResponsesItemImageAccounting:
         assert est >= (len(item["output"]) // 4) * 0.9
 
 
+class TestOrderedBlocksCarrierAccounting:
+    """Direct provider replies that interleave thinking with tool_use carry an ordered replay
+    carrier (``anthropic_content_blocks`` / ``bedrock_content_blocks``): a copy of blocks already
+    counted under ``content``/``tool_calls``/``reasoning_details``. The outbound strip
+    (``_STRIP_MSG_KEYS``) drops both before send, so the rough estimator must not price them a
+    second time (#125761)."""
+
+    @pytest.mark.parametrize("carrier_shape", ["anthropic", "bedrock"])
+    def test_ordered_blocks_carrier_does_not_double_count(self, carrier_shape):
+        thinking = "plan: search the docs first, then answer with the exact quote " * 30
+        signature = "EqoBCkgIBRABGAIiQKg" * 60
+        base = {
+            "role": "assistant",
+            "content": "Answer with the exact quote.",
+            "tool_calls": [
+                {"id": "toolu_1", "type": "function",
+                 "function": {"name": "web_search", "arguments": '{"query": "docs quote"}'}}
+            ],
+            "reasoning": thinking,
+            "reasoning_details": [
+                {"type": "thinking", "thinking": thinking, "signature": signature}
+            ],
+        }
+        if carrier_shape == "anthropic":
+            carrier_key = "anthropic_content_blocks"
+            carrier_blocks = [
+                {"type": "thinking", "thinking": thinking, "signature": signature},
+                {"type": "text", "text": base["content"]},
+                {"type": "tool_use", "id": "toolu_1", "name": "web_search",
+                 "input": {"query": "docs quote"}},
+            ]
+        else:
+            carrier_key = "bedrock_content_blocks"
+            carrier_blocks = [
+                {"reasoningContent": {"reasoningText": {"text": thinking, "signature": signature}}},
+                {"text": base["content"]},
+                {"toolUse": {"toolUseId": "toolu_1", "name": "web_search",
+                             "input": {"query": "docs quote"}}},
+            ]
+        with_carrier = dict(base, **{carrier_key: carrier_blocks})
+
+        assert (estimate_messages_tokens_rough([with_carrier])
+                == estimate_messages_tokens_rough([base]))
+
+    def test_carrier_drop_keeps_thinking_priced_once(self):
+        """Dropping the carrier must not lose the thinking itself: it still rides the
+        ``reasoning`` field (no ``reasoning_content`` promotion on this row), so a reply
+        with thinking prices well above the same reply without it."""
+        thinking = "consider the retrieval options and their token costs " * 40
+        with_reasoning = {"role": "assistant", "content": "ok", "reasoning": thinking}
+        without_reasoning = {"role": "assistant", "content": "ok"}
+
+        assert (estimate_messages_tokens_rough([with_reasoning])
+                > estimate_messages_tokens_rough([without_reasoning]) * 5)
+
+
 class TestEstimateRequestTokensRough:
 
     def test_tools_cache_is_bounded(self):

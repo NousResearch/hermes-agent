@@ -145,6 +145,9 @@ class MCPServerRunMixin:
                     # Clear the rapid-drop budget (#62212).
                     self._mark_session_proven()
         finally:
+            # Retire the pointer before asynchronous waiter cleanup can suspend;
+            # a late tools/list_changed must not start on the closing transport.
+            self.session = None
             await self._cancel_waiters(*waiters)
         if self._shutdown_event.is_set():
             self._fail_inflight_calls("shutdown")

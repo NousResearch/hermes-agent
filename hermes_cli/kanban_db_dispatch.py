@@ -432,9 +432,21 @@ def _poll_worker_exit(pid: int, started_at: Optional[int] = None) -> bool:
 
 def _sigkill(kill, pid: int) -> bool:
     """Best-effort SIGKILL; True when the signal was delivered."""
+    return _send_worker_signal(kill, pid, getattr(signal, "SIGKILL", signal.SIGTERM))
+
+
+def _send_worker_signal(kill, pid: int, signum: int) -> bool:
+    """Signal a wrapped worker's own process group, falling back to its pid."""
+    if hasattr(os, "killpg") and hasattr(os, "getpgid"):
+        try:
+            # Legacy workers need not lead a group; never signal a shared group.
+            if os.getpgid(int(pid)) == int(pid):
+                kill(-int(pid), signum)
+                return True
+        except (ProcessLookupError, OSError):
+            pass
     try:
-        # signal.SIGKILL doesn't exist on Windows; SIGTERM maps to TerminateProcess.
-        kill(int(pid), getattr(signal, "SIGKILL", signal.SIGTERM))
+        kill(int(pid), signum)
         return True
     except (ProcessLookupError, OSError):
         return False
@@ -480,14 +492,10 @@ def _terminate_reclaimed_worker(
         return info
 
     info["termination_attempted"] = True
-    try:
-        kill(int(pid), signal.SIGTERM)
-    except ProcessLookupError:
+    if not _send_worker_signal(kill, pid, signal.SIGTERM):
         # Already gone = successful termination. Leaving terminated=False would
         # make the reclaim guard misread a dead worker as alive and defer forever.
-        info["terminated"] = True
-        return info
-    except OSError:
+        info["terminated"] = not _worker_alive(pid, started_at)
         return info
 
     if _poll_worker_exit(pid, started_at):
@@ -693,8 +701,7 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
         killed = False
         kill = _kill_fn(signal_fn)
         if kill is not None and not (_kb._pid_alive(pid) and _pid_recycled(pid, started_at)):
-            with contextlib.suppress(ProcessLookupError, OSError):
-                kill(pid, signal.SIGTERM)
+            _send_worker_signal(kill, pid, signal.SIGTERM)
             # Short polling wait — no time.sleep on the write txn.
             _poll_worker_exit(pid, started_at)
             if _worker_alive(pid, started_at):
@@ -2482,9 +2489,14 @@ def _rotate_worker_log(
             src = _rotated_log_path(log_path, generation)
             if not src.exists():
                 continue
+            dst = _rotated_log_path(log_path, generation + 1)
             with contextlib.suppress(OSError):
-                src.rename(_rotated_log_path(log_path, generation + 1))
-        log_path.rename(_rotated_log_path(log_path, 1))
+                src.rename(dst)
+                dst.chmod(0o600)
+        first = _rotated_log_path(log_path, 1)
+        log_path.rename(first)
+        with contextlib.suppress(OSError):
+            first.chmod(0o600)
     except OSError:
         pass
 
@@ -2508,7 +2520,7 @@ def _propagate_module_import_root(cmd: list[str], env: dict[str, str]) -> None:
     then owns dependency activation as usual. A resolved shim path owns its
     imports and is left alone. Same pin cron's external worker uses (#112729).
     """
-    if cmd[1:3] != ["-m", "hermes_cli.main"]:
+    if cmd[1:3] not in (["-m", "hermes_cli.main"], ["-m", "hermes_cli.kanban_worker_log"]):
         return
     from cron.scheduler_worker_env import pin_hermes_tree_on_pythonpath
 
@@ -2777,19 +2789,6 @@ def _worker_argv(task: Task, profile_arg: str, hermes_home: Optional[str]) -> li
     return cmd
 
 
-def _open_worker_log(task: Task, board: Optional[str]):
-    """Append-mode per-task log (a re-run on unblock appends, never overwrites),
-    rotated first. Anchored at the board root (not the shared kanban root) so
-    `hermes kanban log` reads its own file and boards sharing task ids don't
-    collide."""
-    log_dir = _kb.worker_logs_dir(board=board)
-    log_dir.mkdir(parents=True, exist_ok=True)
-    log_path = log_dir / f"{task.id}.log"
-    rotate_bytes, backup_count = worker_log_rotation_config()
-    _rotate_worker_log(log_path, rotate_bytes, backup_count)
-    return open(log_path, "ab")
-
-
 def _restart_safe_worker_argv(task: Task, command: list[str]) -> list[str]:
     """Wrap a systemd-hosted dispatcher's worker in the shared restart-safe scope.
 
@@ -2890,17 +2889,7 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     # Tag the session `kanban` so session-browsing surfaces filter it out by
     # source instead of rendering one sidebar row per attempt.
     env["HERMES_SESSION_SOURCE"] = "kanban"
-    # TERMINAL_CWD takes precedence over process cwd in file_tools and
-    # build_context_files_prompt; without it relative writes land in the gateway
-    # user's home and workers load the gateway's AGENTS.md. file_tools rejects
-    # relative / sentinel values, so only set a real absolute directory.
-    # Pin TERMINAL_CWD to the task's workspace so the worker's file tools and context-file loader anchor on
-    # the workspace, not whatever cwd the dispatching gateway happened to export. The worker subprocess is
-    # already launched with cwd=workspace, but TERMINAL_CWD takes precedence over the process cwd in both
-    # file_tools._resolve_base_dir (#41312 — relative write_file paths were landing in the gateway user's
-    # home) and build_context_files_prompt (#34619 — workers loaded the dispatching gateway's AGENTS.md
-    # instead of the task's). Setting it to the workspace fixes both: the workspace is where the task's work
-    # actually happens.
+    # File tools and context loading must resolve against the task, not the dispatcher's cwd.
     if workspace and os.path.isabs(workspace) and os.path.isdir(workspace):
         env["TERMINAL_CWD"] = workspace
     if task.branch_name:
@@ -2941,32 +2930,43 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     # The module argv must carry the import context that made it resolvable:
     # the shim's in-process path injection is invisible to the bare child.
     _propagate_module_import_root(cmd, env)
+    log_dir = _kb.worker_logs_dir(board=board)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / f"{task.id}.log"
+    rotate_bytes, backup_count = worker_log_rotation_config()
+    _rotate_worker_log(log_path, rotate_bytes, backup_count)
+    wrapped_cmd = [
+        sys.executable,
+        "-m",
+        "hermes_cli.kanban_worker_log",
+        str(log_path),
+        "--",
+        *cmd,
+    ]
+    _propagate_module_import_root(wrapped_cmd, env)
     # A worker spawned by a managed systemd gateway must leave the gateway's
     # cgroup before startup; otherwise restarting the service kills the worker
     # that is performing the handoff.
-    cmd = _restart_safe_worker_argv(task, cmd)
+    wrapped_cmd = _restart_safe_worker_argv(task, wrapped_cmd)
     from tools.process_registry import systemd_user_bus_env
     env = systemd_user_bus_env(env)
-    log_f = _open_worker_log(task, board)
     try:
         proc = subprocess.Popen(
-            cmd,
+            wrapped_cmd,
             cwd=workspace if os.path.isdir(workspace) else None,
             stdin=subprocess.DEVNULL,
-            stdout=log_f,
+            stdout=subprocess.DEVNULL,
             stderr=subprocess.STDOUT,
             env=env,
             start_new_session=True,
             creationflags=subprocess.CREATE_NO_WINDOW if _kb._IS_WINDOWS else 0,
         )
     except FileNotFoundError:
-        log_f.close()
         raise RuntimeError(
             "`hermes` executable not found on PATH. "
             "Install Hermes Agent or activate its venv before running the kanban dispatcher."
         )
-    # Intentionally NOT closing log_f: the child keeps writing after return;
-    # the OS-level FD stays open in the child until it exits.
+
     if _kb._IS_WINDOWS:
         _live_worker_procs[proc.pid] = proc
     return proc.pid

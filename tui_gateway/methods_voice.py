@@ -69,7 +69,11 @@ def _tts_lease_async(lease: str, active: bool) -> None:
             (acquire_tts_lease if active else release_tts_lease)(lease)
         except Exception as e:
             logger.debug("voice: tts lease %s active=%s failed: %s", lease, active, e)
-    threading.Thread(target=_run, name=f"tts-lease-{lease}", daemon=True).start()
+    from contextvars import copy_context
+
+    threading.Thread(
+        target=copy_context().run, args=(_run,), name=f"tts-lease-{lease}", daemon=True
+    ).start()
 
 
 def _running_sessions() -> list:
@@ -104,9 +108,13 @@ def _tts_stream_begin() -> Optional[queue.Queue]:
     except Exception:
         return None
     _tts_stream_stop()
+    from contextvars import copy_context
+
     text_queue: queue.Queue = queue.Queue()
     stop, done = threading.Event(), threading.Event()
-    threading.Thread(target=stream_tts_to_speaker, args=(text_queue, stop, done), daemon=True).start()
+    threading.Thread(
+        target=copy_context().run, args=(stream_tts_to_speaker, text_queue, stop, done), daemon=True
+    ).start()
     global _tts_stream_state
     with _tts_stream_lock:
         _tts_stream_state = {"stop": stop, "done": done}

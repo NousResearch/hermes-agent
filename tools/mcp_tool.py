@@ -23,7 +23,7 @@ from typing import Any, Callable, Dict, List, Optional, Set
 
 logger = logging.getLogger(__name__)
 
-from tools.mcp_tool_common import _DEFAULT_TOOL_TIMEOUT, mcp_field
+from tools.mcp_tool_common import _DEFAULT_TOOL_TIMEOUT, _ttl_hint_was_sent, mcp_field
 from tools.mcp_tool_config import _get_mcp_stderr_log, _npx_cached_bin
 from tools.mcp_tool_sampling import ElicitationHandler, SamplingHandler
 from tools.mcp_tool_transport import MCPServerTransportMixin
@@ -289,7 +289,9 @@ async def _paginate_full_list(list_method, items_attr: str, server_name: str,
         if cache_meta_out is not None and not items:
             for key, snake, camel in (("ttl_ms", "ttl_ms", "ttlMs"), ("cache_scope", "cache_scope", "cacheScope")):
                 hint = mcp_field(result, snake, camel)
-                if hint is not None:
+                # A defaulted ttl_ms reads as a real "do not serve from cache" hint;
+                # only record it when the field actually arrived on the wire.
+                if hint is not None and (key != "ttl_ms" or _ttl_hint_was_sent(result)):
                     cache_meta_out[key] = hint
         items.extend(getattr(result, items_attr, None) or [])
         cursor = mcp_field(result, "next_cursor", "nextCursor")

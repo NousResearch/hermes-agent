@@ -38,6 +38,35 @@ def mcp_field(obj, snake: str, camel: str, default=None):
     return default if value is _MISSING else value
 
 
+def _ttl_hint_was_sent(result) -> bool:
+    """True when the server actually put a ``ttlMs`` on the wire.
+
+    ``ListToolsResult.ttl_ms`` defaults to ``0``, so by value alone a server
+    that sent no SEP-2549 hint is indistinguishable from one that sent
+    ``ttlMs: 0`` — and the two mean opposite things. No hint leaves the cached
+    manifest usable until something else invalidates it; an explicit ``0``
+    says do not serve this from cache (the SDK floors a negative ``ttlMs`` to
+    ``0`` before validation, so ``0`` is also where "already stale" lands).
+
+    Reading the default as a real TTL expired every hint-less entry the
+    instant it was written — ``(now - written_at) * 1000 >= 0`` always holds —
+    so a server marked ``lazy`` was re-spawned and re-probed on every startup
+    despite a fingerprint-matching manifest on disk. The ``written_at`` stamp
+    also defeated the byte-identical write-through skip in
+    :func:`mcp_schema_cache.write_cache_entry`, so every registration rewrote
+    the whole cache file.
+
+    Pydantic records which fields arrived, so ask it instead of guessing from
+    the value. A result that tracks no set fields at all — an older SDK model
+    that predates ``ttlMs`` — cannot have carried a defaulted one either, so
+    trusting the value there is both safe and what this code did before.
+    """
+    fields_set = getattr(result, "model_fields_set", None)
+    if fields_set is None:
+        return True
+    return "ttl_ms" in fields_set or "ttlMs" in fields_set
+
+
 _DEFAULT_TOOL_TIMEOUT = 300      # seconds for tool calls
 
 

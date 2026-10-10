@@ -198,8 +198,11 @@ test "${PYTHONPATH-}" = "$prior_pythonpath" || exit 96
         return [line for line in calls.read_text().splitlines() if line.split()[0] == name]
 
     def app_syncs():
+        # --no-default-groups marks the PM runtime stage's own sync; the app
+        # environment selects with --extra instead.
         return [line for line in operations("sync")
-                if "--frozen --all-packages" in line and "--group dev" not in line]
+                if "--frozen --all-packages" in line and "--group dev" not in line
+                and "--no-default-groups" not in line]
 
     cold = activate()
     first = selection()

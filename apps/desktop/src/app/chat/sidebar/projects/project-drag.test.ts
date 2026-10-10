@@ -123,7 +123,11 @@ describe('resolveProjectSlot', () => {
 
     const rows = IDS.map((id, index) => {
       const shifted =
-        index > activeIndex && index <= slotIndex ? index - 1 : index < activeIndex && index >= slotIndex ? index + 1 : index
+        index > activeIndex && index <= slotIndex
+          ? index - 1
+          : index < activeIndex && index >= slotIndex
+            ? index + 1
+            : index
 
       return row(id, index, shifted * STEP, ROW_H)
     })
@@ -209,12 +213,7 @@ describe('resolveProjectSlot', () => {
 })
 
 describe('the projects list policy', () => {
-  const projects = () => [
-    project('dev'),
-    project('align', { parentId: 'dev' }),
-    project('other'),
-    project('tail')
-  ]
+  const projects = () => [project('dev'), project('align', { parentId: 'dev' }), project('other'), project('tail')]
 
   const policy = () =>
     createProjectNestResolver({

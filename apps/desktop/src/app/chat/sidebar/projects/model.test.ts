@@ -135,13 +135,7 @@ describe('nestProjectsByParent', () => {
       child('router', 'dev')
     ]
 
-    expect(ids(nestProjectsByParent(projects))).toEqual([
-      NO_PROJECT_ID,
-      'dev',
-      'align',
-      'router',
-      'other'
-    ])
+    expect(ids(nestProjectsByParent(projects))).toEqual([NO_PROJECT_ID, 'dev', 'align', 'router', 'other'])
   })
 
   it('nests a chain parent-first', () => {
@@ -212,14 +206,12 @@ describe('projectSubtreeSessionIds', () => {
 describe('visibleProjectRows', () => {
   const child = (id: string, parentId: string): SidebarProjectTree => ({ ...makeProject(id, 0), parentId })
 
-  const projects = [
-    makeProject('dev', 0),
-    child('align', 'dev'),
-    child('leaf', 'align'),
-    makeProject('other', 0)
-  ]
+  const projects = [makeProject('dev', 0), child('align', 'dev'), child('leaf', 'align'), makeProject('other', 0)]
 
-  const open = (...ids: string[]) => (id: string) => ids.includes(id)
+  const open =
+    (...ids: string[]) =>
+    (id: string) =>
+      ids.includes(id)
 
   it('hides everything under a collapsed project, however deep', () => {
     expect(visibleProjectRows(projects, open('dev', 'align', 'other')).map(p => p.id)).toEqual([

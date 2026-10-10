@@ -3,7 +3,12 @@ import { useCallback } from 'react'
 
 import type { SessionInfo } from '@/hermes'
 import { flattenSessionsWithBranches } from '@/lib/session-branch-tree'
-import { groupEntriesByRecency, hideCollapsedGroupRows, type SidebarListRow, toSessionRows } from '@/lib/session-date-groups'
+import {
+  groupEntriesByRecency,
+  hideCollapsedGroupRows,
+  type SidebarListRow,
+  toSessionRows
+} from '@/lib/session-date-groups'
 
 import { orderRowsWithinGroups } from './order'
 

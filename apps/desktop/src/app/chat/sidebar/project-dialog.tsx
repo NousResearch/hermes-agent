@@ -212,9 +212,7 @@ export function ProjectDialog() {
         </DialogHeader>
 
         {mode === 'create' && state?.parentName && (
-          <p className="text-[0.6875rem] font-medium text-(--ui-text-tertiary)">
-            {p.subprojectOf(state.parentName)}
-          </p>
+          <p className="text-[0.6875rem] font-medium text-(--ui-text-tertiary)">{p.subprojectOf(state.parentName)}</p>
         )}
 
         {mode !== 'add-folder' && (

@@ -290,7 +290,7 @@ describe('entered project: the projects nested inside it', () => {
     )
   }
 
-  it('draws the whole subtree under it, below the project\'s own sessions', () => {
+  it("draws the whole subtree under it, below the project's own sessions", () => {
     const { container } = renderEntered('p_parent')
 
     // Both levels, parent-first: a project nested under another is drawn under it, not one drill-in away.

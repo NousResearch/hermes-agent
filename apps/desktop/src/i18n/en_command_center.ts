@@ -1,6 +1,24 @@
 import type { Translations } from './types'
 
 export const enCommandCenter: Translations['commandCenter'] = {
+  thisMonth: 'This month',
+  monthProgress: (day: number, days: number) => `Day ${day} of ${days}`,
+  tokensUsed: (tokens: string) => `${tokens} tokens`,
+  spentKnown: (amount: string) => `${amount} spent (known prices)`,
+  unpricedSessions: (count: number) =>
+    count === 1 ? '1 session without a known price' : `${count} sessions without a known price`,
+  budgetOf: (used: string, limit: string) => `${used} of ${limit}`,
+  projected: (percent: number) => `On pace for ${percent}% by month end`,
+  runsOutOn: (date: string) => `Runs out around ${date}`,
+  setBudget: 'Set budget',
+  budgetTokens: 'Tokens',
+  budgetUsd: 'US$',
+  saveBudget: 'Save',
+  savingBudget: (seconds: number) => `Saving… ${seconds}s`,
+  clearBudget: 'Remove budget',
+  budgetSaveFailed: (error: string) => `Couldn't save the budget: ${error}`,
+  loadingMonth: (seconds: number) => `Loading this month… ${seconds}s`,
+  noUsageThisMonth: 'No usage recorded this month yet.',
   close: 'Close command center',
   paletteTitle: 'Command palette',
   back: 'Back',

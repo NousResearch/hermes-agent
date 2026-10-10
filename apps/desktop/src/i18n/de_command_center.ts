@@ -1,6 +1,24 @@
 import type { TranslationOverrides } from './define-locale'
 
 export const deCommandCenter = {
+  thisMonth: 'Dieser Monat',
+  monthProgress: (day: number, days: number) => `Tag ${day} von ${days}`,
+  tokensUsed: (tokens: string) => `${tokens} Tokens`,
+  spentKnown: (amount: string) => `${amount} ausgegeben (bekannte Preise)`,
+  unpricedSessions: (count: number) =>
+    count === 1 ? '1 Sitzung ohne bekannten Preis' : `${count} Sitzungen ohne bekannten Preis`,
+  budgetOf: (used: string, limit: string) => `${used} von ${limit}`,
+  projected: (percent: number) => `Hochgerechnet ${percent} % zum Monatsende`,
+  runsOutOn: (date: string) => `Aufgebraucht um den ${date}`,
+  setBudget: 'Budget festlegen',
+  budgetTokens: 'Tokens',
+  budgetUsd: 'US$',
+  saveBudget: 'Speichern',
+  savingBudget: (seconds: number) => `Wird gespeichert… ${seconds}s`,
+  clearBudget: 'Budget entfernen',
+  budgetSaveFailed: (error: string) => `Budget konnte nicht gespeichert werden: ${error}`,
+  loadingMonth: (seconds: number) => `Dieser Monat wird geladen… ${seconds}s`,
+  noUsageThisMonth: 'Diesen Monat noch keine Nutzung erfasst.',
   close: 'Command Center schließen',
   paletteTitle: 'Befehlspalette',
   back: 'Zurück',

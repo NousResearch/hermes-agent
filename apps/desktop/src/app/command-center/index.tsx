@@ -44,6 +44,7 @@ import { OverlayMain, OverlayNav, OverlaySplitLayout } from '../overlays/overlay
 import { OverlayView } from '../overlays/overlay-view'
 
 import { MaintenancePanel } from './maintenance'
+import { UsageMonthSection } from './usage-month'
 
 export type CommandCenterSection = 'maintenance' | 'sessions' | 'system' | 'usage'
 
@@ -641,6 +642,8 @@ function UsagePanel({ error, loading, onRefresh, period, usage }: UsagePanelProp
           {error}
         </span>
       )}
+
+      <UsageMonthSection />
 
       <div className="grid grid-cols-2 gap-x-4 gap-y-4 py-2 sm:grid-cols-3">
         <UsageStat label={cc.statSessions} value={compactNumber(totals.total_sessions)} />

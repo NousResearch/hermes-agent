@@ -2,34 +2,15 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { ruAuxTasks } from './ru_aux_tasks'
+import { ruCommandCenter } from './ru_command_center'
 import { ruModelMenu } from './ru_model_menu'
 import { ruNotices } from './ru_notices'
 import { ruOnboarding } from './ru_onboarding'
 import { ruPluginSettings } from './ru_plugins'
+import { RU_NOUN, RU_PLURAL } from './ru_plural'
 import { ruProjects } from './ru_projects'
 import { ruSharedMetrics } from './ru_shared_metrics'
 import { ruUpdateChannel } from './ru_update_channel'
-
-// RU_PLURAL: (count, one, few, many) — русские формы сущ. падежа
-// RU_NOUN: (count, one, few, many) — формы род. множественного
-// count может быть number или string (часть подписей en.ts передаёт строки)
-const ruNum = (count: number | string) => (typeof count === 'string' ? Number(count) || 0 : count)
-
-const RU_PLURAL = (count: number | string, one: string, few: string, many: string) => {
-  const c = ruNum(count)
-  const n = Math.abs(c) % 10
-  const nn = Math.abs(c) % 100
-
-  return n === 1 && nn !== 11 ? one : n >= 2 && n <= 4 && (nn < 12 || nn > 14) ? few : many
-}
-
-const RU_NOUN = (count: number | string, one: string, few: string, many: string) => {
-  const c = ruNum(count)
-  const n = Math.abs(c) % 10
-  const nn = Math.abs(c) % 100
-
-  return n === 1 && nn !== 11 ? one : n >= 2 && n <= 4 && (nn < 12 || nn > 14) ? few : many
-}
 
 export const ruOverrides = {
   sharedMetrics: ruSharedMetrics,
@@ -1780,194 +1761,7 @@ export const ruOverrides = {
     durationMinutes: (minutes, seconds) => `${minutes}м ${seconds}с`,
     tokens: value => `${value} ток`
   },
-  commandCenter: {
-    close: 'Закрыть командный центр',
-    paletteTitle: 'Палитра команд',
-    back: 'Назад',
-    searchPlaceholder: 'Поиск сеансов, представлений и действий',
-    goTo: 'Перейти',
-    goToSession: 'Перейти к сеансу',
-    branches: 'Ветви',
-    projects: 'Проекты',
-    openFolder: 'Открыть папку как проект…',
-    openFolderAt: path => `Открыть папку как проект — ${path}`,
-    newSessionInProject: project => `Новый сеанс в ${project}`,
-    commands: 'Команды',
-    startInBranch: branch => `Новый диалог в ${branch}`,
-    commandCenter: 'Командный центр',
-    appearance: 'Внешний вид',
-    settings: 'Настройки',
-    changeTheme: 'Сменить тему',
-    changeColorMode: 'Сменить цветовой режим…',
-    pets: {
-      title: 'Питомцы',
-      placeholder: 'Поиск питомцев…',
-      loading: 'Загрузка галереи petdex…',
-      error: 'Не удалось подключиться к галерее petdex.',
-      staleBackend: 'Перезапустите Hermes, чтобы использовать питомцев — бэкенд старше этой функции.',
-      empty: 'Совпадающих питомцев нет.',
-      turnOff: 'Отключить',
-      turnOn: 'Включить',
-      installed: 'Установлен',
-      generatedTag: 'Сгенерирован',
-      adoptFailed: 'Не удалось усыновить этого питомца.',
-      toggleFailed: enabled => `Не удалось ${enabled ? 'включить' : 'отключить'} питомца.`,
-      noneAvailable: 'Питомцев пока нет — выберите ниже для установки.'
-    },
-    generatePet: {
-      title: 'Сгенерировать питомца',
-      placeholder: 'Опишите питомца для генерации…',
-      promptHint: 'Введите описание и нажмите Enter, чтобы получить четыре варианта облика.',
-      readyHint: 'Нажмите Enter, чтобы получить четыре варианта облика по вашему описанию.',
-      generate: 'Сгенерировать',
-      generating: 'Генерация…',
-      retry: 'Повторить',
-      hatch: 'Вылупить',
-      spawning: 'Создаём…',
-      hatching: 'Вылупливаем вашего питомца…',
-      hatchingSub: 'Оживляем его…',
-      hatched: 'Он вылупился!',
-      hatchRow: (_state, done, total) => `Рисуем кадр ${done} из ${total}…`,
-      hatchComposing: 'Собираем по частям…',
-      hatchSaving: 'Почти готово…',
-      namePlaceholder: 'Имя для вашего питомца',
-      staleBackend: 'Обновите Hermes, чтобы генерировать питомцев.',
-      backgroundHint: 'Можно закрыть — Hermes уведомит, когда будет готово.',
-      slowProviderHint: 'Это может занять несколько минут',
-      remix: 'Ремикс',
-      remixConfirmTitle: 'Сделать ремикс из этого облика?',
-      remixConfirmBody:
-        'Будет сгенерирован новый набор вариантов с этим как отправной точкой. Это может занять несколько минут.',
-      genericError: 'Генерация не удалась — попробуйте снова или выберите подсказку.',
-      referenceImageTooLarge: 'Изображение-референс слишком большое. Используйте меньше 16 МБ.',
-      referenceImageInvalid: 'Не удалось прочитать это изображение-референс. Попробуйте PNG, JPG, WebP или GIF.',
-      adopt: 'Усыновить',
-      startOver: 'Начать заново'
-    },
-    installTheme: {
-      title: 'Установить тему…',
-      pageTitle: 'Установка темы',
-      placeholder: 'Поиск в VS Code Marketplace...',
-      loading: 'Поиск в Marketplace...',
-      error: 'Не удалось подключиться к Marketplace.',
-      empty: 'Совпадающих тем нет.',
-      install: 'Установить',
-      installing: 'Установка...',
-      installed: 'Установлена',
-      installs: count => `${count} ${RU_NOUN(count, 'установка', 'установки', 'установок')}`
-    },
-    settingsFields: 'Поля настроек',
-    mcpServers: 'MCP-серверы',
-    archivedChats: 'Архивные чаты',
-    sections: { maintenance: 'Обслуживание', sessions: 'Сеансы', system: 'Система', usage: 'Использование' },
-    nav: {
-      newChat: { title: 'Новый сеанс', detail: 'Начать новый сеанс' },
-      settings: { title: 'Настройки', detail: 'Настройка Hermes desktop' },
-      capabilities: { title: 'Возможности', detail: 'Навыки, инструменты и MCP-серверы' },
-      messaging: { title: 'Сообщения', detail: 'Настройка Telegram, Slack, Discord и других' },
-      artifacts: { title: 'Артефакты', detail: 'Просмотр сгенерированных результатов' }
-    },
-    sectionEntries: {
-      sessions: { title: 'Панель сеансов', detail: 'Поиск, закрепление и управление сеансами' },
-      system: { title: 'Системная панель', detail: 'Статус шлюза, журналы, перезапуск/обновление' },
-      usage: { title: 'Панель использования', detail: 'Токены, стоимость и активность навыков' }
-    },
-    providerNavigate: 'Перейти',
-    providerSessions: 'Сеансы',
-    refresh: 'Обновить',
-    refreshing: 'Обновление...',
-    noResults: 'Совпадающие результаты не найдены.',
-    pinSession: 'Закрепить сеанс',
-    unpinSession: 'Открепить сеанс',
-    exportSession: 'Экспортировать сеанс',
-    deleteSession: 'Удалить сеанс',
-    noSessions: 'Сеансов пока нет.',
-    gatewayRunning: 'Шлюз сообщений работает',
-    gatewayStopped: 'Шлюз сообщений остановлен',
-    hermesActiveSessions: (version, count) => `Hermes ${version} · Активные сеансы: ${count}`,
-    restartGateway: 'Перезапустить шлюз',
-    openBrowser: 'Переключить браузер',
-    toggleBrowser: 'Переключить браузер',
-    gatewayRestartFailed: 'Не удалось перезапустить шлюз.',
-    sharedGatewayRestartTitle: 'Перезапустить общий шлюз?',
-    sharedGatewayRestartDescription: bots => `Все боты на этом устройстве переподключатся: ${bots}`,
-    sharedGatewayRestartConfirm: 'Перезапустить все',
-    sharedGatewayRestarted: count => `Общий шлюз перезапущен (ботов: ${count})`,
-    updateHermes: 'Обновить Hermes',
-    reloadWindow: 'Перезагрузить окно',
-    actionRunning: 'выполняется',
-    actionDone: 'готово',
-    actionFailed: 'ошибка',
-    actionStartedWaiting: 'Действие запущено, ожидание статуса...',
-    loadingStatus: 'Загрузка статуса...',
-    recentLogs: 'Последние записи журнала',
-    noLogs: 'Журналы ещё не загружены.',
-    days: count => `${count}д`,
-    statSessions: 'Сеансы',
-    statApiCalls: 'Вызовы API',
-    statTokens: 'Токены вход/выход',
-    statCost: 'Оценка стоимости',
-    actualCost: cost => `фактически ${cost}`,
-    loadingUsage: 'Загрузка использования...',
-    noUsage: period => `Нет использования за последние ${period} ${RU_NOUN(period, 'день', 'дня', 'дней')}.`,
-    retry: 'Повторить',
-    dailyTokens: 'Токены за день',
-    input: 'вход',
-    output: 'выход',
-    noDailyActivity: 'Ежедневной активности нет.',
-    topModels: 'Топ моделей',
-    noModelUsage: 'Использование моделей пока отсутствует.',
-    topSkills: 'Топ навыков',
-    noSkillActivity: 'Активности навыков пока нет.',
-    actions: count => `${count} ${RU_NOUN(count, 'действие', 'действия', 'действий')}`,
-    logFile: 'Файл журнала',
-    logLevel: 'Уровень',
-    logSearchPlaceholder: 'Поиск по строкам журнала...',
-    maintenance: {
-      runOps: 'Диагностика',
-      doctor: 'Запустить doctor',
-      doctorDesc: 'Проверка здоровья установки, конфигурации и провайдеров',
-      securityAudit: 'Аудит безопасности',
-      securityAuditDesc: 'Сканирование конфигурации и навыков на предмет рискованных настроек',
-      backup: 'Создать резервную копию',
-      backupDesc: 'Сжатие конфигурации, памяти, навыков и сеансов в zip',
-      debugShare: 'Поделиться отладкой',
-      debugShareDesc: 'Загрузка анонимизированного отчёта + журналов, получение ссылок (автоудаление через 6 ч)',
-      debugShareRunning: 'Загрузка отладочного отчёта...',
-      debugShareLinks: 'Ссылки для шаринга',
-      debugShareFailed: 'Ошибка шаринга отладки',
-      copyLink: 'Скопировать ссылку',
-      linkCopied: 'Ссылка скопирована',
-      curator: 'Курир навыков',
-      curatorDesc: 'Фоновый обзор, архивирующий устаревшие навыки, созданные агентом',
-      curatorPaused: 'Приостановлен',
-      curatorActive: 'Активен',
-      curatorDisabled: 'Отключён',
-      curatorLastRun: when => `Последний запуск ${when}`,
-      curatorNeverRan: 'Никогда не запускался',
-      pause: 'Приостановить',
-      resume: 'Продолжить',
-      runNow: 'Запустить сейчас',
-      memoryData: 'Данные памяти',
-      memoryDataDesc: 'Встроенные файлы памяти, внедряемые в каждый сеанс',
-      memoryProvider: name => `Активный провайдер: ${name}`,
-      builtinMemory: 'встроенный',
-      memoryFile: 'Память агента (MEMORY.md)',
-      userFile: 'Профиль пользователя (USER.md)',
-      bytes: size => size,
-      empty: 'пусто',
-      resetMemory: 'Сбросить память',
-      resetUser: 'Сбросить профиль',
-      resetAll: 'Сбросить оба',
-      resetConfirm: target => `Удалить ${target}? Это действие необратимо.`,
-      resetDone: files => `Удалено: ${files}.`,
-      resetFailed: 'Не удалось сбросить память',
-      actionStarted: name => `${name} запущен — следим за журналом...`,
-      actionFailed: name => `Не удалось запустить ${name}`,
-      running: 'Выполняется...',
-      viewLog: 'Журнал действия'
-    }
-  },
+  commandCenter: ruCommandCenter,
   messaging: {
     search: 'Поиск в сообщениях...',
     statusFilter: {

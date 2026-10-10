@@ -2,6 +2,23 @@ import type { TranslationOverrides } from './define-locale'
 
 export const arCommandCenter = {
   commandCenter: {
+    thisMonth: 'هذا الشهر',
+    monthProgress: (day: number, days: number) => `اليوم ${day} من ${days}`,
+    tokensUsed: (tokens: string) => `${tokens} رمز`,
+    spentKnown: (amount: string) => `تم إنفاق ${amount} (أسعار معروفة)`,
+    unpricedSessions: (count: number) => `${count} جلسة بلا سعر معروف`,
+    budgetOf: (used: string, limit: string) => `${used} من ${limit}`,
+    projected: (percent: number) => `بهذا المعدل: ${percent}% بنهاية الشهر`,
+    runsOutOn: (date: string) => `ينفد حوالي ${date}`,
+    setBudget: 'تحديد ميزانية',
+    budgetTokens: 'الرموز',
+    budgetUsd: 'دولار أمريكي',
+    saveBudget: 'حفظ',
+    savingBudget: (seconds: number) => `جارٍ الحفظ… ${seconds} ث`,
+    clearBudget: 'إزالة الميزانية',
+    budgetSaveFailed: (error: string) => `تعذّر حفظ الميزانية: ${error}`,
+    loadingMonth: (seconds: number) => `جارٍ تحميل هذا الشهر… ${seconds} ث`,
+    noUsageThisMonth: 'لا يوجد استخدام مسجّل هذا الشهر بعد.',
     close: 'إغلاق',
     paletteTitle: 'لوحة الأوامر',
     back: 'رجوع',

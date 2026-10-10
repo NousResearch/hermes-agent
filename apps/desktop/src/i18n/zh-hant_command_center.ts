@@ -2,6 +2,23 @@ import type { TranslationOverrides } from './define-locale'
 
 export const zhHantCommandCenter = {
   commandCenter: {
+    thisMonth: '本月',
+    monthProgress: (day: number, days: number) => `第 ${day} 天／共 ${days} 天`,
+    tokensUsed: (tokens: string) => `${tokens} token`,
+    spentKnown: (amount: string) => `已花費 ${amount}（已知價格）`,
+    unpricedSessions: (count: number) => `${count} 個工作階段價格未知`,
+    budgetOf: (used: string, limit: string) => `${used} / ${limit}`,
+    projected: (percent: number) => `依目前速度，月底將達 ${percent}%`,
+    runsOutOn: (date: string) => `預計 ${date} 前後用完`,
+    setBudget: '設定預算',
+    budgetTokens: 'Token',
+    budgetUsd: '美元',
+    saveBudget: '儲存',
+    savingBudget: (seconds: number) => `正在儲存… ${seconds} 秒`,
+    clearBudget: '移除預算',
+    budgetSaveFailed: (error: string) => `無法儲存預算：${error}`,
+    loadingMonth: (seconds: number) => `正在載入本月資料… ${seconds} 秒`,
+    noUsageThisMonth: '本月尚無用量記錄。',
     close: '關閉命令中心',
     paletteTitle: '命令面板',
     back: '返回',

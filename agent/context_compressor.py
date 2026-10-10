@@ -33,7 +33,7 @@ from agent.auxiliary_client import (
 from agent.context_engine import ContextEngine, sanitize_memory_context
 from agent.context_compressor_prellm import PreLlmSkipMixin
 from agent.context_compressor_summary import SummaryDispatchMixin
-from agent.context_compressor_telemetry import CompressionTelemetryMixin, _safe_int
+from agent.context_compressor_telemetry import CompressionTelemetryMixin
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.micro_compaction import MicroCompactionMixin
 from agent.prompt_builder import STEER_DISPLAY_KIND
@@ -3026,11 +3026,11 @@ class ContextCompressor(
             return False, self._compression_block_reason() or "blocked"
         return True, None
 
-    def _compression_block_reason(self) -> str | None:
-        """Block reason: ``"cooldown:<s>"``, ``"structural_backoff:<s>"``, ``"ineffective"``, or None."""
-        for label, until in (
-            ("cooldown", self._summary_failure_cooldown_until), ("structural_backoff", self._structural_no_op_backoff_until),
-        ):
+    def _compression_block_reason(self, *, ignore_cooldown: bool = False) -> str | None:
+        """Block reason: ``"cooldown:<s>"``, ``"structural_backoff:<s>"``, ``"ineffective"``, or None (a cooldown the
+        gate's ``ignore_cooldown`` bypassed is never the reason)."""
+        cooldown_until = 0.0 if ignore_cooldown else self._summary_failure_cooldown_until
+        for label, until in (("cooldown", cooldown_until), ("structural_backoff", self._structural_no_op_backoff_until)):
             remaining = until - time.monotonic()
             if remaining > 0:
                 return f"{label}:{remaining:.0f}"

@@ -266,15 +266,42 @@ def test_precise_automatic_triggers_keep_the_coarse_shared_metric_bucket(trigger
 def test_blocked_record_never_carries_the_cooldown_seconds(caplog):
     from agent.conversation_compression_telemetry import _emit_blocked_attempt_telemetry
 
-    compressor = SimpleNamespace(_compression_block_reason=lambda: "structural_backoff:917")
-    agent = SimpleNamespace(context_compressor=compressor, session_id="s", _compression_attempt_id="a")
+    agent = SimpleNamespace(context_compressor=None, session_id="s", _compression_attempt_id="a")
 
     with caplog.at_level(logging.INFO, logger="agent.conversation_compression"):
-        _emit_blocked_attempt_telemetry(agent, time.monotonic(), None)
+        _emit_blocked_attempt_telemetry(agent, time.monotonic(), None, None, "structural_backoff:917")
 
     [record] = _attempt_records(caplog)
     assert record["failure_class"] == "blocked:structural_backoff"
     assert "917" not in json.dumps(record)
+
+
+@pytest.mark.parametrize(
+    ("backoff", "tripped", "label", "transient"),
+    [(True, False, "blocked:structural_backoff", True), (False, True, "blocked:ineffective", False)],
+)
+def test_overflow_block_names_the_guard_that_blocked_not_the_bypassed_cooldown(
+    caplog, backoff, tripped, label, transient,
+):
+    """Overflow recovery bypasses the summary cooldown, so with a cooldown also active the record and the
+    transient-block signal must reflect the guard that actually blocked (#97488: ``ineffective`` never defers)."""
+    compressor = _compressor()
+    agent = _Agent(compressor)
+    compressor._summary_failure_cooldown_until = time.monotonic() + 600
+    compressor._structural_no_op_backoff_until = time.monotonic() + 600 if backoff else 0.0
+    compressor._ineffective_compression_count = 2 if tripped else 0
+
+    with patch.object(type(compressor), "_refresh_durable_guards"), \
+            caplog.at_level(logging.INFO, logger="agent.conversation_compression"):
+        returned, _ = compress_context(
+            agent, (messages := _messages()), "system prompt", approx_tokens=80_000, trigger="overflow",
+            bypass_cooldown=True,
+        )
+
+    assert returned is messages
+    [record] = _attempt_records(caplog)
+    assert record["failure_class"] == label
+    assert bool(getattr(agent, "_compression_blocked_transient", None)) is transient
 
 
 def _abort_on_stale_snapshot(agent):
@@ -453,4 +480,4 @@ def test_engine_that_returns_an_empty_transcript_logs_one_aborted_record(caplog,
     [record] = _attempt_records(caplog)
     assert (record["commit_status"], record["failure_class"]) == ("aborted", "empty_transcript")
     assert (record["trigger_source"], record["method"]) == ("pre_api", "none")
-    assert [(row["outcome"], row["failure_class"]) for row in shared_metric_rows] == [("failed", "other")]
+    assert [(row["outcome"], row["failure_class"]) for row in shared_metric_rows] == [("failed", "empty_transcript")]

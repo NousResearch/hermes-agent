@@ -375,7 +375,6 @@ class SlashCommandCompleter(Completer):
             return self._file_cache
         files: list[str] = []
         for cmd in (
-            ["rg", "--files", "--sortr=modified", cwd],
             ["rg", "--files", cwd],
             ["fd", "--type", "f", "--base-directory", cwd]):
             if not shutil.which(cmd[0]):
@@ -398,7 +397,7 @@ class SlashCommandCompleter(Completer):
         return files
 
     def _fuzzy_file_completions(self, word: str, query: str, limit: int = 20):
-        """Fuzzy file completions for bare @query (no query = recently modified files)."""
+        """Fuzzy file completions for bare @query (no query = project walk order)."""
         files = self._get_project_files()
         if query:
             scored = sorted(

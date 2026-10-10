@@ -396,12 +396,14 @@ async def _check_error_registration(monkeypatch, adapter, app):
 
 async def _check_error_cancel_before_entry(monkeypatch, adapter, app, delivered):
     scheduled, effects = [], []
+    completed = asyncio.Event()
     create = app._Application__create_task
 
     def cancel_on_schedule(coroutine, *args, **kwargs):
         task = create(coroutine, *args, **kwargs)
         if kwargs.get("is_error_handler"):
             scheduled.append((task, coroutine))
+            task.add_done_callback(lambda _: completed.set())
             task.cancel()
         return task
 
@@ -416,6 +418,7 @@ async def _check_error_cancel_before_entry(monkeypatch, adapter, app, delivered)
         assert "111:10" in adapter._inflight_update_ids
         await app.process_update(update(app.bot))
         await app.stop()
+        await asyncio.wait_for(completed.wait(), 2)
     assert len(scheduled) == 1 and not effects
     assert not adapter._inflight_update_ids and not adapter._seen_update_ids
     # The cancelled PTB task never awaited the callback coroutine: it must be closed too.
@@ -823,13 +826,20 @@ async def test_connect_builds_concurrent_update_processor(monkeypatch):
 
     chat = SimpleNamespace(effective_chat=SimpleNamespace(id=1))
     tasks = []
+    callbacks = []
     for name in "ABC":
-        tasks.append(asyncio.create_task(processor.process_update(chat, handler(name))))
+        callback = handler(name)
+        callbacks.append(callback)
+        tasks.append(asyncio.create_task(processor.process_update(chat, callback)))
         await asyncio.sleep(0.01)
     tasks[1].cancel()
     await asyncio.sleep(0.01)
     gate.set()
-    results = await asyncio.gather(*tasks, return_exceptions=True)
+    try:
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+    finally:
+        for callback in callbacks:
+            callback.close()
     assert results[0] is None and results[2] is None
     assert order == ["start A", "end A", "start C", "end C"]  # C waits for A even after B is cancelled
 

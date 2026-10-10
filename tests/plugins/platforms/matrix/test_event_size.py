@@ -47,11 +47,11 @@ async def test_sends_and_budget_sized_edits_fit_one_event():
     adapter = _make_adapter()
     sent, edits = [], []
 
-    async def send_room_message(chat_id, content):
+    async def send_room_message(chat_id, content, *, finalize=False):
         sent.append(content)
         return "$sent"
 
-    async def send_content_event(chat_id, content):
+    async def send_content_event(chat_id, content, *, finalize=False):
         edits.append(content)
         return SendResult(success=True, message_id="$edit")
 

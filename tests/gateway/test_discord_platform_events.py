@@ -69,8 +69,6 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
-# Import Thread from the mocked module, not discord directly, so isinstance
-# checks in the adapter match the class our fixtures instantiate.
 _DiscordThread = sys.modules["discord"].Thread
 
 from plugins.platforms.discord.adapter import DiscordAdapter
@@ -88,7 +86,7 @@ def _adapter() -> DiscordAdapter:
 
 def _channel(chan_id=555, thread=False):
     if thread:
-        chan = _DiscordThread()
+        chan = object.__new__(_DiscordThread)
         chan.id = chan_id
         return chan
     return SimpleNamespace(id=chan_id)
@@ -114,7 +112,7 @@ def _message(
 
 
 def _thread_obj(*, thread_id=321, name="my thread", owner_id=777, parent_id=555):
-    t = _DiscordThread()
+    t = object.__new__(_DiscordThread)
     t.id = thread_id
     t.name = name
     t.owner_id = owner_id

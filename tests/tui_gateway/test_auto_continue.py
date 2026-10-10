@@ -140,7 +140,7 @@ def _patch_local_interrupt(monkeypatch, session):
     monkeypatch.setattr(server, "_sess_nowait", lambda params, rid: (session, None))
     monkeypatch.setattr(server, "_sess", lambda params, rid: (session, None))
     monkeypatch.setattr(server, "_session_uses_compute_host", lambda current: False)
-    monkeypatch.setattr(server, "_clear_pending", lambda sid=None: None)
+    monkeypatch.setattr(server, "_clear_pending", lambda sid=None, **_kwargs: None)
 
 
 def test_interrupt_ack_retires_marker_before_run_thread_exits(monkeypatch, marker_home):
@@ -198,7 +198,7 @@ def test_interrupt_racing_marker_write_cannot_leave_recovery_state(
 
     monkeypatch.setattr(server, "record_turn_start", write_after_stop)
 
-    server._run_prompt_submit("request-race", "runtime-race", session, "race me")
+    server._run_prompt_submit("request-race", "runtime-race", session, "race me", turn_claim=server._claim_session_turn(session))
 
     assert interrupted == [True]
     assert read_turn_marker(marker_home, "session-key") is None
@@ -220,7 +220,7 @@ def test_concluded_turn_clears_marker(emits, turn_env, marker_home):
     )
     session = _session(agent=agent, running=True)
 
-    server._run_prompt_submit("rid", "sid", session, "do the thing")
+    server._run_prompt_submit("rid", "sid", session, "do the thing", turn_claim=server._claim_session_turn(session))
 
     # Written before the turn ran (this is what survives a process death) …
     assert seen_mid_turn and seen_mid_turn[0] is not None
@@ -242,7 +242,7 @@ def test_handled_failure_still_clears_marker(emits, turn_env, marker_home):
     )
     session = _session(agent=agent, running=True)
 
-    server._run_prompt_submit("rid", "sid", session, "do the thing")
+    server._run_prompt_submit("rid", "sid", session, "do the thing", turn_claim=server._claim_session_turn(session))
 
     assert read_turn_marker(marker_home, "session-key") is None
 
@@ -268,7 +268,7 @@ def test_hosted_terminal_receipt_commits_before_marker_retire(
         "sid",
         session,
         "do the thing",
-        terminal_callback=_terminal,
+        terminal_callback=_terminal, turn_claim=server._claim_session_turn(session),
     )
 
     assert observed[0][0]["status"] == "settled"
@@ -295,7 +295,7 @@ def test_hosted_terminal_receipt_failure_keeps_crash_marker(
         "sid",
         session,
         "do the thing",
-        terminal_callback=_terminal,
+        terminal_callback=_terminal, turn_claim=server._claim_session_turn(session),
     )
 
     assert read_turn_marker(marker_home, "session-key") is not None
@@ -323,7 +323,7 @@ def test_continuation_turn_records_attempt_and_original_prompt(
         _auto_continue_prompt="the original prompt",
     )
 
-    server._run_prompt_submit("rid", "sid", session, server._auto_continue_note("the original prompt"))
+    server._run_prompt_submit("rid", "sid", session, server._auto_continue_note("the original prompt"), turn_claim=server._claim_session_turn(session))
 
     assert [(m["attempts"], m["prompt"]) for m in seen] == [(2, "the original prompt")]
     # Consumed, so the NEXT user turn starts from a clean slate.
@@ -352,9 +352,10 @@ def test_older_agent_still_gets_the_post_turn_stamp(emits, turn_env, marker_home
     )
     note = server._auto_continue_note("the original prompt")
 
+    session = _session(agent=agent, running=True)
     server._run_prompt_submit(
-        "rid", "sid", _session(agent=agent, running=True), note,
-        display_kind="auto_continue",
+        "rid", "sid", session, note,
+        display_kind="auto_continue", turn_claim=server._claim_session_turn(session),
     )
 
     assert stamped == [("session-key", "auto_continue")]

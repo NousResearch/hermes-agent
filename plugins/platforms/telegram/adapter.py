@@ -380,14 +380,41 @@ def _escape_mdv2(text: str) -> str:
 
 
 def _strip_mdv2(text: str) -> str:
-    """Strip MarkdownV2 escapes and formatting markers for the plain-text fallback."""
-    cleaned = re.sub(r'\\([_*\[\]()~`>#\+\-=|{}.!\\])', r'\1', text)  # escape backslashes
-    cleaned = re.sub(r'\*\*([^*]+)\*\*', r'\1', cleaned)  # **bold** BEFORE MarkdownV2 *bold*
-    cleaned = re.sub(r'\*([^*]+)\*', r'\1', cleaned)
-    cleaned = re.sub(r'(?<!\w)_([^_]+)_(?!\w)', r'\1', cleaned)  # italic; word-bounded so snake_case survives
-    cleaned = re.sub(r'~([^~]+)~', r'\1', cleaned)  # strikethrough
-    cleaned = re.sub(r'\|\|([^|]+)\|\|', r'\1', cleaned)  # spoiler
-    return cleaned
+    """Plain-text fallback for a failed MarkdownV2 parse.
+
+    Escapes every MarkdownV2-reserved char that is OUTSIDE a code span/fence (so the
+    message PARSES and Telegram renders it as clean plain text), while preserving
+    fenced/inline code blocks verbatim (inside ``<pre>`` only ``\\`` and ``\\` `` are
+    special, and the producer already escaped those). Never strips to raw text: the
+    old behavior (unescape + remove ``**``/``_`` markers) left literal markdown glyphs
+    on screen — the "raw formatting chars, nothing rendered" symptom.
+    """
+    out: list[str] = []
+    i, n = 0, len(text)
+    while i < n:
+        # Fenced block: ``` ... ``` (opener at line start or after newline).
+        if text.startswith("```", i) and (i == 0 or text[i - 1] == "\n"):
+            end = text.find("```", i + 3)
+            if end != -1:
+                close = text.find("\n", end + 3)
+                close = close if close != -1 else n
+                out.append(text[i:close])
+                i = close
+                continue
+        # Inline code: `...` (no newline inside; not already escaped).
+        if text[i] == "`" and (i == 0 or text[i - 1] != "\\"):
+            j = text.find("`", i + 1)
+            if j != -1 and "\n" not in text[i:j + 1]:
+                out.append(text[i:j + 1])
+                i = j + 1
+                continue
+        ch = text[i]
+        if ch in "_*[]()~`>#+-=|{}." and (i == 0 or text[i - 1] != "\\"):
+            out.append("\\" + ch)
+        else:
+            out.append(ch)
+        i += 1
+    return "".join(out)
 
 
 _CHUNK_INDICATOR_ON_FENCE_RE = re.compile(r'(?m)^``` (?P<indicator>(?:\\)?\(\d+/\d+(?:\\)?\))$')

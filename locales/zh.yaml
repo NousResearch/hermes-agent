@@ -822,6 +822,7 @@ gateway:
     thinking_prefix: "💬 {text}"
     tool_head: "{emoji} {tool}"
     tool_verbose: "{emoji} {tool}({keys})\n{args}"
+    tool_verbose_fenced: "{emoji} {tool}({keys})\n```\n{args}\n```"
     tool_preview: "{emoji} {tool}：\"{preview}\""
     tool_pending: "{emoji} {tool}..."
     task_status_running: "运行中"

@@ -403,16 +403,55 @@ class TestFormatMessageComplex:
 
 
 class TestStripMdv2:
-    def test_removes_escape_backslashes(self):
-        assert _strip_mdv2(r"hello\.world\!") == "hello.world!"
+    """The MarkdownV2 parse-failure fallback.
 
+    NEW contract: it must produce text that (a) always PARSES as MarkdownV2 (escaping
+    reserved chars outside code) and (b) preserves content + code blocks instead of
+    shredding them to raw markdown. Regression for the "raw markdown chars visible,
+    nothing rendered" symptom caused by the old unescape-and-strip behavior.
+    """
 
-    def test_removes_both_bold_and_italic(self):
-        result = _strip_mdv2("*bold* and _italic_")
-        assert result == "bold and italic"
+    def test_escapes_reserved_chars_so_parse_succeeds(self):
+        # Old behavior unescaped to raw text (still unparseable); new behavior
+        # escapes reserved chars so Telegram accepts it and renders plain text.
+        out = _strip_mdv2("This is a test: (parentheses) and = equals.")
+        # Parses as MarkdownV2 (reserved chars escaped), no raw glyphs.
+        assert r"\(" in out and r"\)" in out
+        assert r"\=" in out
+        assert out != "This is a test: (parentheses) and = equals."
 
-    def test_preserves_snake_case(self):
-        assert _strip_mdv2("my_variable_name") == "my_variable_name"
+    def test_lone_backtick_no_longer_breaks_code_entity(self):
+        # A lone `` ` `` previously survived raw -> Telegram "can't find end of code
+        # entity" -> plain-text dump with a stray backtick. Now it is escaped.
+        out = _strip_mdv2("backtick ` and nothing else.")
+        assert "\\`" in out
+        assert out.count("`") == 1  # escaped form, not a code opener
+
+    def test_unclosed_italic_escaped(self):
+        out = _strip_mdv2("*unclosed italic and more")
+        assert r"\*" in out
+
+    def test_preserves_fenced_code_block(self):
+        out = _strip_mdv2("Header:\n```\ncode `tick` *star*\n```\nend.")
+        # fence stays a real fence; content inside intact
+        assert "```\ncode" in out
+        assert "```\nend\\." in out or out.endswith("```")
+        assert "`tick`" in out and "*star*" in out
+
+    def test_preserves_inline_code(self):
+        out = _strip_mdv2("use `code` and nothing else")
+        assert "`code`" in out
+
+    def test_snake_case_escaped_for_parse_safety(self):
+        # A bare ``_`` can pair with a later ``_`` -> unintended italic. The fallback
+        # escapes reserved chars OUTSIDE code; the old strip-left-them-raw behavior
+        # was the "raw markdown visible" bug.
+        assert _strip_mdv2("my_variable_name") == r"my\_variable\_name"
+
+    def test_escaped_input_stays_escaped(self):
+        # Already-escaped content is left as-is (no double-escape, no unescape).
+        out = _strip_mdv2(r"hello\.world\!")
+        assert out == r"hello\.world\!"
 
 
 

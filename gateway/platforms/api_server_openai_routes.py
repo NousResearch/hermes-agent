@@ -25,6 +25,12 @@ except ImportError:  # pragma: no cover - mirrors api_server's optional import
 # Logger parity with the origin module (moved log records keep their name).
 logger = logging.getLogger("gateway.platforms.api_server")
 
+async def _write_sse_content(response, sse_frame, chunk, text: str) -> None:
+    """Write one chat-completion content delta; nothing for empty text (held back or resolved away)."""
+    if text:
+        await response.write(sse_frame(chunk({"content": text})))
+
+
 async def _iter_stream_items(stream_q, agent_task, response):
     """Yield agent stream items until EOS, writing SSE keepalives while idle.
 
@@ -246,6 +252,13 @@ class _ResponsesStream:
         self._batch_buf: list[str] = []
         self._batch_timer: Optional[asyncio.Task] = None
         self._batch_lock = asyncio.Lock()
+        # Buffers raw text deltas so a MEDIA:<path> tag split across chunk
+        # boundaries -- or across two separate flush_batch() calls -- still
+        # resolves to an inline data URL instead of leaking as literal text.
+        # final_text_parts accumulates whatever this releases, so the
+        # reconstructed final_response_text is resolved too, not just the
+        # individual SSE delta events. See StreamingMediaTagResolver's docstring.
+        self._media_resolver = self._api.StreamingMediaTagResolver()
 
     async def write_event(self, event_type: str, data: dict[str, Any]) -> None:
         if "sequence_number" not in data:
@@ -313,11 +326,26 @@ class _ResponsesStream:
 
     async def emit_text_delta(self, delta_text: str) -> None:
         await self.close_reasoning_item()
+        safe_text = self._media_resolver.feed(delta_text)
+        if not safe_text:
+            return
         await self._open_message_item()
-        self.final_text_parts.append(delta_text)
+        self.final_text_parts.append(safe_text)
         await self.write_event("response.output_text.delta", {
             "type": "response.output_text.delta", "item_id": self.message_item_id,
-            "output_index": self.message_output_index, "content_index": 0, "delta": delta_text,
+            "output_index": self.message_output_index, "content_index": 0, "delta": safe_text,
+            "logprobs": []})
+
+    async def flush_text_delta_resolver(self) -> None:
+        """Emit whatever the MEDIA-tag resolver is still holding back (stream end)."""
+        remainder = self._media_resolver.flush()
+        if not remainder:
+            return
+        await self._open_message_item()
+        self.final_text_parts.append(remainder)
+        await self.write_event("response.output_text.delta", {
+            "type": "response.output_text.delta", "item_id": self.message_item_id,
+            "output_index": self.message_output_index, "content_index": 0, "delta": remainder,
             "logprobs": []})
 
     async def emit_reasoning_delta(self, delta_text: str) -> None:
@@ -485,9 +513,13 @@ class _ResponsesStream:
             if agent_final and not self.final_text_parts:
                 await self.emit_text_delta(agent_final)
             if agent_final and not self.final_response_text:
-                self.final_response_text = agent_final
+                self.final_response_text = self._api._resolve_media_to_data_urls(agent_final)
             if isinstance(result, dict) and result.get("error") and not self.final_response_text:
                 self.agent_error = self._api._redact_api_error_text(result["error"])
+            # Release any holdback from the fallback emit_text_delta call
+            # above (defense-in-depth; a complete final_response fed in one
+            # shot should resolve immediately, but this guarantees it).
+            await self.flush_text_delta_resolver()
         except Exception as e:
             logger.error("Error running agent for streaming responses: %s", e, exc_info=True)
             self.agent_error = self._api._redact_api_error_text(e)
@@ -890,7 +922,8 @@ class OpenAICompatRoutesMixin:
         """Stream ``chat.completion.chunk`` frames from the agent's delta queue. On client
         disconnect the agent is interrupted (stops LLM calls), then its task wrapper cancelled."""
         from gateway.platforms.api_server import (
-            _abandon_agent_task, _chat_usage_payload, _resolve_media_to_data_urls, _sse_frame)
+            _abandon_agent_task, _chat_usage_payload, _resolve_media_to_data_urls, _sse_frame,
+            StreamingMediaTagResolver)
         response = await self._prepare_sse_response(request, session_id, gateway_session_key)
 
         def _chunk(delta: dict[str, Any], finish_reason=None, **extra) -> dict[str, Any]:
@@ -898,6 +931,8 @@ class OpenAICompatRoutesMixin:
                     "model": model,
                     "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}], **extra}
         content_sent = False
+        # Holds raw deltas back so a MEDIA:<path> tag split across chunks still resolves.
+        media_resolver = StreamingMediaTagResolver()
         try:
             await response.write(_sse_frame(_chunk({"role": "assistant"})))
             async for delta in _iter_stream_items(stream_q, agent_task, response):
@@ -919,7 +954,9 @@ class OpenAICompatRoutesMixin:
                 else:
                     if delta:
                         content_sent = True
-                    await response.write(_sse_frame(_chunk({"content": delta})))
+                    await _write_sse_content(response, _sse_frame, _chunk, media_resolver.feed(delta))
+            # Stream over: release whatever the MEDIA-tag resolver still holds back.
+            await _write_sse_content(response, _sse_frame, _chunk, media_resolver.flush())
             # The agent can fail after the queue drains (task raises / result flagged failed or
             # partial): surface a non-"stop" finish_reason like the non-streaming path.
             usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
@@ -1002,6 +1039,10 @@ class OpenAICompatRoutesMixin:
                     break
                 await st.dispatch(item)
             await st.flush_batch()
+            # Release anything the MEDIA-tag resolver is still holding back
+            # (a tag that completed right at the tail, or plain text it was
+            # conservatively waiting on) now that no more deltas are coming.
+            await st.flush_text_delta_resolver()
             await st.collect_result(agent_task)
             await st.close_message_item()
             if st.agent_error:
@@ -1303,7 +1344,7 @@ class OpenAICompatRoutesMixin:
     def _extract_output_items(result: dict[str, Any], start_index: int = 0) -> list[dict[str, Any]]:
         """Output items from ``result["messages"][start_index:]``: ``function_call`` per assistant
         tool_call, ``function_call_output`` per tool message, then the final ``message``."""
-        from gateway.platforms.api_server import _redact_api_error_text
+        from gateway.platforms.api_server import _redact_api_error_text, _resolve_media_to_data_urls
         items: list[dict[str, Any]] = []
         messages = result.get("messages", [])
         if start_index > 0:
@@ -1330,7 +1371,7 @@ class OpenAICompatRoutesMixin:
                     "id": f"fco_{uuid.uuid4().hex[:24]}", "type": "function_call_output",
                     "status": "completed", "call_id": msg.get("tool_call_id", ""),
                     "output": msg.get("content", "")})
-        final = result.get("final_response", "") or _redact_api_error_text(
+        final = _resolve_media_to_data_urls(result.get("final_response", "")) or _redact_api_error_text(
             result.get("error", "(No response generated)"))
         items.append(_message_item(final))
         return items

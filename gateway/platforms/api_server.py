@@ -140,9 +140,8 @@ from gateway.platforms import api_server_room_grants as _room_grants
 from gateway.platforms import api_server_runs as _api_runs
 from gateway.platforms.api_server_openai_routes import OpenAICompatRoutesMixin
 from gateway.platforms.api_server_memory_sessions import ApiServerMemorySessions
-from gateway.platforms.base import (
-    MEDIA_TAG_CLEANUP_RE, BasePlatformAdapter, SendResult, _terminal_sentinel_start, is_network_accessible,
-    validate_media_delivery_path)
+from gateway.platforms.base import BasePlatformAdapter, SendResult, is_network_accessible
+from gateway.platforms.api_server_media import StreamingMediaTagResolver, _resolve_media_to_data_urls
 from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
 from agent.i18n import t
 from agent.redact import redact_sensitive_text
@@ -853,48 +852,6 @@ if AIOHTTP_AVAILABLE:
         return response
 else:
     cors_middleware = body_limit_middleware = security_headers_middleware = None  # type: ignore
-
-_MEDIA_MIME = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif",
-               ".webp": "image/webp", ".bmp": "image/bmp"}
-_MEDIA_IMG_EXT = set(_MEDIA_MIME)
-_MEDIA_DATA_URL_MAX_BYTES = 5 * 1024 * 1024  # skip images larger than 5MB
-
-
-def _resolve_media_to_data_urls(text: str) -> str:
-    """Replace ``MEDIA:<path>`` tags with inline base64 data URLs (remote frontends can't read
-    server paths); non-image/unreadable paths stay untouched. Security: the shared
-    ``MEDIA_TAG_CLEANUP_RE`` anchor + ``validate_media_delivery_path`` denylist — a bare-token
-    match would let a traversal path in the reply exfiltrate any readable image."""
-    if not text or "MEDIA:" not in text:
-        return text
-    import base64
-
-    def _to_data_url(path_str: str) -> Optional[str]:
-        # validate_media_delivery_path() strips wrapping quotes/trailing punctuation itself.
-        safe_path = validate_media_delivery_path(path_str)
-        p = Path(safe_path) if safe_path else None
-        suffix = p.suffix.lower() if p else ""
-        if suffix not in _MEDIA_IMG_EXT:
-            return None
-        try:
-            if p.stat().st_size > _MEDIA_DATA_URL_MAX_BYTES:
-                return None
-            b64 = base64.b64encode(p.read_bytes()).decode()
-        except OSError:
-            return None
-        return f"![image](data:{_MEDIA_MIME[suffix]};base64,{b64})"
-
-    def _repl(m: re.Match[str]) -> str:
-        return _to_data_url(m.group("path")) or m.group(0)
-    try:
-        # A leaked terminal <|eos|> glued to the last tag is not a path terminator (#111046):
-        # scan without it, and drop it (control token, never content) only when a tag resolved.
-        sentinel_start = _terminal_sentinel_start(text)
-        scan = text[:sentinel_start] if sentinel_start >= 0 else text
-        resolved = MEDIA_TAG_CLEANUP_RE.sub(_repl, scan)
-        return text if resolved == scan else resolved
-    except Exception:
-        return text
 
 
 def _redact_api_error_text(value: Any, *, limit: int | None = None) -> str:
@@ -3640,9 +3597,31 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         self._set_run_status(
             run_id, "queued", session_id=session_id, model=ctx["body"].get("model", self._model_name))
 
+        # Buffers raw deltas so a MEDIA:<path> tag split across chunk
+        # boundaries still resolves to an inline data URL instead of leaking
+        # as literal text to a client rendering deltas live -- the eventual
+        # "assistant.completed" event below already carries the fully
+        # resolved text, but a client that renders each delta as it arrives
+        # (the common UX pattern this event stream exists for) would
+        # otherwise see the raw tag flash by first. See
+        # StreamingMediaTagResolver's docstring.
+        _delta_media_resolver = StreamingMediaTagResolver()
+
         def _delta(delta: str) -> None:
             if delta:
-                events.enqueue("assistant.delta", {"message_id": message_id, "delta": delta})
+                safe_text = _delta_media_resolver.feed(delta)
+                if safe_text:
+                    events.enqueue("assistant.delta", {"message_id": message_id, "delta": safe_text})
+
+        def _flush_delta_media_resolver() -> None:
+            """Emit whatever the MEDIA-tag resolver is still holding back.
+
+            Idempotent -- ``flush()`` clears its own buffer, so a second call
+            on an already-flushed path is a no-op returning "".
+            """
+            remainder = _delta_media_resolver.flush()
+            if remainder:
+                events.enqueue("assistant.delta", {"message_id": message_id, "delta": remainder})
 
         def _tool_progress(event_type: str, tool_name: str | None = None, preview: str | None = None, args=None, **kwargs) -> None:
             if event_type == "reasoning.available":
@@ -3677,6 +3656,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     tool_progress_callback=_tool_progress, interim_assistant_callback=_commentary,
                     active_run_id=run_id, approval_notify_callback=approval_notify,
                     approval_session_key=run_id, **ctx["run_kwargs"])
+                # Release any MEDIA-tag holdback before the terminal event.
+                # feed() retains all text from the last "MEDIA:" onward, so
+                # failing without flushing silently swallows text this stream
+                # used to deliver (raw, but delivered).
+                _flush_delta_media_resolver()
                 is_dict = isinstance(result, dict)
                 final_response = _resolve_media_to_data_urls(result.get("final_response", "") if is_dict else "")
                 effective_session_id = result.get("session_id", session_id) if is_dict else session_id
@@ -3709,6 +3693,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 self._active_run_agents.pop(run_id, None)
                 self._run_approval_sessions.pop(run_id, None)
                 self._release_run_owner_if_forgotten(run_id)
+                # Safety net for any terminal path that reaches neither the
+                # success flush nor the except above -- notably cancellation.
+                # Must precede the close sentinel. Idempotent, so this is a
+                # no-op on paths that already flushed.
+                _flush_delta_media_resolver()
                 await queue.put(_event_payload("done", {}))
                 await queue.put(None)
 

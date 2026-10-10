@@ -500,13 +500,67 @@ def _recover_stale_codex_reasoning(
     return True
 
 
+# AgentRouter's route is a load balancer over heterogeneous upstreams: an unchanged, complete
+# thinking replay is accepted by some and rejected by others, so recovery is a bounded retry
+# budget (with a pause between attempts) rather than a request rewrite.
+_AGENTROUTER_THINKING_MAX_ATTEMPTS = 3
+_AGENTROUTER_THINKING_BACKOFF_SECONDS = 1.5
+_AGENTROUTER_THINKING_SLICE_SECONDS = 0.25  # the pause is sliced so an interrupt lands promptly
+
+
 def _recover_format_errors(
     agent: Any, api_error: Exception, classified: Any, _retry: TurnRetryState,
     messages: list[dict[str, Any]], api_messages: Any,
 ) -> bool:
     """One-shot format-recovery strips: thinking-signature → invalid-encrypted-content
-    replay disable → native-compaction reject → llama.cpp grammar strip. Returns True when
-    the request was repaired and should be retried."""
+    replay disable → native-compaction reject → llama.cpp grammar strip; plus AgentRouter's
+    intermittent thinking-replay 400, which is retried unchanged a bounded number of times.
+    Returns True when the request was repaired and should be retried."""
+    # AgentRouter reports an Anthropic-style missing-thinking 400 on its OpenAI Chat Completions
+    # route even when every prior assistant tool turn already carries the reasoning the model
+    # returned (verified on the wire: the same byte-identical payload both 400s and succeeds
+    # within minutes, so the rejection is per-upstream, not per-request). Rewriting the replay as
+    # Anthropic thinking blocks is invalid OpenAI wire format (422), so retry the request
+    # unchanged, pausing between attempts so the retry can land on another upstream.
+    error_text = str(api_error).lower()
+    if (
+        classified.reason == FailoverReason.format_error
+        and getattr(api_error, "status_code", None) == 400
+        and _retry.agentrouter_thinking_retry_attempts < _AGENTROUTER_THINKING_MAX_ATTEMPTS
+        and getattr(agent, "api_mode", None) == "chat_completions"
+        and base_url_host_matches(getattr(agent, "base_url", "") or "", "agentrouter.org")
+        and "content[].thinking" in error_text
+        and "must be passed back" in error_text
+        and isinstance(api_messages, list)
+    ):
+        # Every assistant tool turn must carry reasoning the model actually returned. The
+        # single-space pad this codebase writes when no reasoning was captured
+        # (``apply_reasoning_content_policy``) is not reasoning, and a genuinely incomplete
+        # replay is deterministic: retrying it cannot help, so let the normal path handle it.
+        tool_turns = [m for m in api_messages if isinstance(m, dict)
+                      and m.get("role") == "assistant" and m.get("tool_calls")]
+        if tool_turns and all(
+            isinstance(m.get("reasoning_content"), str) and m["reasoning_content"].strip()
+            for m in tool_turns
+        ):
+            _retry.agentrouter_thinking_retry_attempts += 1
+            attempt = _retry.agentrouter_thinking_retry_attempts
+            _vlines(agent, "⚠️  AgentRouter rejected a complete thinking replay; retrying the same "
+                           f"request unchanged (attempt {attempt}/{_AGENTROUTER_THINKING_MAX_ATTEMPTS})...")
+            logger.warning(
+                "%sAgentRouter thinking-replay 400: retrying the unchanged request (attempt %d/%d)",
+                getattr(agent, "log_prefix", "") or "", attempt, _AGENTROUTER_THINKING_MAX_ATTEMPTS,
+            )
+            # Sliced so Esc / a steering correction is not held for the whole pause. The
+            # turn-loop helper (``interruptible_backoff_sleep``) needs args this phase does not
+            # have; a fixed slice count is the honest equivalent and cannot spin.
+            slices = int(_AGENTROUTER_THINKING_BACKOFF_SECONDS / _AGENTROUTER_THINKING_SLICE_SECONDS)
+            for _ in range(slices):
+                if getattr(agent, "_interrupt_requested", False):
+                    break
+                time.sleep(_AGENTROUTER_THINKING_SLICE_SECONDS)
+            return True
+
     # Upstream mutation can invalidate a thinking signature. Native Anthropic has multiple replay
     # carriers and preserved historical blocks, so suppress the rejected opaque blocks across all
     # carriers and persist that suppression. Other transports keep their established one-request

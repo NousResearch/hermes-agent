@@ -38,6 +38,9 @@ class TurnRetryState:
     reasoning_mandatory_retry_attempted: bool = False
     oauth_1m_beta_retry_attempted: bool = False
     llama_cpp_grammar_retry_attempted: bool = False
+    # AgentRouter's thinking-replay 400 is intermittent per upstream, so this budget is a
+    # counter (bounded retries of the unchanged request), not a one-shot guard.
+    agentrouter_thinking_retry_attempts: int = 0
 
     # Transport / rate-limit recovery
     primary_recovery_attempted: bool = False

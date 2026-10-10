@@ -12839,6 +12839,9 @@ function runPrimaryRecoverySpawn(code: number | null, signal: string | null) {
 
     if (latched) {
       rememberLog(`[supervisor] respawn refused: boot failure latched: ${firstLine(latched.message)}`)
+      // The exit was announced as `recovering`; this recovery is over, so
+      // hand the renderer its terminal "backend stopped" surface.
+      sendBackendExit({ code, signal, error: latched.message })
 
       return
     }
@@ -12879,7 +12882,10 @@ function scheduleUnexpectedPrimaryRecovery({
   }
 
   rememberLog('[supervisor] backend exit left no primary owner and no start in flight; respawning')
-  sendBackendExit({ code, signal, ...(error ? { error } : {}) })
+  // `recovering`: the renderer must not offer "Restart Hermes" for this exit —
+  // that recycles (SIGTERMs) the replacement spawned just below. Giving up
+  // (crash loop, latched boot failure) sends a terminal exit without it.
+  sendBackendExit({ code, signal, recovering: true, ...(error ? { error } : {}) })
   runPrimaryRecoverySpawn(code, signal)
 
   return true

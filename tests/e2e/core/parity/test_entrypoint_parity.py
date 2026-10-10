@@ -108,8 +108,7 @@ def _run_row(entrypoint: str, root: Path) -> Row:
         cells["mcp_tree_spawned"] = bool(pids.get("server")) and bool(pids.get("grandchild"))
         survivors = wait_no_orphans(ph, timeout=30.0)
         cells["zero_mcp_orphans"] = not survivors
-        # Report-only: non-MCP descendants still alive (timing-dependent, e.g. a
-        # picker-prewarm `gh auth token` orphaned by a fast host exit).
+        # Report-only: non-MCP descendants still alive (timing-dependent).
         row.other_survivors = describe_pids(wait_no_orphans(ph, timeout=10.0, mcp_only=False))
         row.cells = cells
         stderr_tail = str(result.extra.get("stderr_tail", ""))

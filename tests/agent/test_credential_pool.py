@@ -1386,14 +1386,14 @@ def test_load_pool_does_not_seed_claude_code_when_anthropic_not_configured(tmp_p
     assert pool.entries() == []
 
 
-def test_load_pool_seeds_copilot_via_gh_auth_token(tmp_path, monkeypatch):
-    """Copilot credentials from `gh auth token` should be seeded into the pool."""
+def test_load_pool_seeds_copilot_via_explicit_env_token(tmp_path, monkeypatch):
+    """Explicit Copilot env credentials should be seeded into the pool."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(tmp_path, {"version": 1, "credential_pool": {}})
 
     monkeypatch.setattr(
         "hermes_cli.copilot_auth.resolve_copilot_token",
-        lambda: ("gho_fake_token_abc123", "gh auth token"),
+        lambda: ("gho_fake_token_abc123", "COPILOT_GITHUB_TOKEN"),
     )
 
     from agent.credential_pool import load_pool
@@ -1402,9 +1402,25 @@ def test_load_pool_seeds_copilot_via_gh_auth_token(tmp_path, monkeypatch):
     assert pool.has_credentials()
     entries = pool.entries()
     assert len(entries) == 1
-    assert entries[0].source == "gh_cli"
+    assert entries[0].source == "env:COPILOT_GITHUB_TOKEN"
     assert entries[0].access_token == "gho_fake_token_abc123"
     assert entries[0].base_url == "https://api.githubcopilot.com"
+
+
+def test_load_pool_keeps_explicit_gh_token_as_env_source(tmp_path, monkeypatch):
+    """GH_TOKEN is explicit env config, not the old gh CLI fallback (#25246)."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1, "credential_pool": {}})
+
+    monkeypatch.setattr(
+        "hermes_cli.copilot_auth.resolve_copilot_token",
+        lambda: ("gho_fake_token_abc123", "GH_TOKEN"),
+    )
+
+    from agent.credential_pool import load_pool
+    pool = load_pool("copilot")
+
+    assert pool.entries()[0].source == "env:GH_TOKEN"
 
 
 def test_load_pool_skips_exchange_for_suppressed_copilot(tmp_path, monkeypatch):
@@ -1414,7 +1430,7 @@ def test_load_pool_skips_exchange_for_suppressed_copilot(tmp_path, monkeypatch):
     ``get_copilot_api_token`` (which retries 3x with backoff, ~13s worst
     case), so every pool load — model picker open, /model, agent startup —
     burned the full exchange dead time for a source the user had already
-    removed with ``hermes auth remove copilot gh_cli``.  The gate must run
+    removed with ``hermes auth remove``.  The gate must run
     BEFORE the network call.
     """
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
@@ -1423,13 +1439,13 @@ def test_load_pool_skips_exchange_for_suppressed_copilot(tmp_path, monkeypatch):
         {
             "version": 1,
             "credential_pool": {},
-            "suppressed_sources": {"copilot": ["gh_cli"]},
+            "suppressed_sources": {"copilot": ["env:COPILOT_GITHUB_TOKEN"]},
         },
     )
 
     monkeypatch.setattr(
         "hermes_cli.copilot_auth.resolve_copilot_token",
-        lambda: ("gho_fake_token_abc123", "gh auth token"),
+        lambda: ("gho_fake_token_abc123", "COPILOT_GITHUB_TOKEN"),
     )
 
     exchange_called = False
@@ -1526,8 +1542,7 @@ def test_load_pool_gh_cli_suppression_does_not_block_env_tokens(tmp_path, monkey
 
 
 def test_load_pool_skips_resolve_when_all_copilot_sources_suppressed(tmp_path, monkeypatch):
-    """With every copilot source suppressed, resolve_copilot_token (which
-    shells out to ``gh auth token``) must not run at all."""
+    """With every copilot source suppressed, resolve_copilot_token must not run at all."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     from hermes_cli.copilot_auth import COPILOT_ENV_VARS
     _write_auth_store(
@@ -1575,7 +1590,7 @@ def test_load_pool_copilot_exchange_only_when_selected_and_warns_once(tmp_path, 
         return [r for r in caplog.records if "Copilot token exchange degraded to RAW token" in r.message]
 
     with caplog.at_level(logging.WARNING, logger="agent.credential_pool"):
-        # Main provider is deepseek; copilot is merely discovered via `gh auth token`.
+        # Main provider is deepseek; copilot is merely discovered (ambient credential).
         (tmp_path / "hermes" / "config.yaml").write_text("model:\n  provider: deepseek\n  default: deepseek-chat\n", encoding="utf-8")
         pool = load_pool("copilot")
         load_pool("copilot")

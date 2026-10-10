@@ -3542,7 +3542,7 @@ def _finish_reload(rid, params: dict, *, coalesced: bool) -> dict:
     """Shared tail for both reload paths: honor ``always`` (persist the confirm opt-out) and return the ok payload."""
     if bool(params.get("always", False)):
         try:
-            from cli import save_config_value
+            from hermes_cli.config_values import save_config_value
             save_config_value("approvals.mcp_reload_confirm", False)
         except Exception as _exc:
             logger.warning("Failed to persist mcp_reload_confirm=false: %s", _exc)

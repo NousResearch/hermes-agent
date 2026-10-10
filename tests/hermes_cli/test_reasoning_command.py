@@ -72,7 +72,7 @@ class TestHandleReasoningCommand(unittest.TestCase):
         from hermes_cli.cli_commands_mixin import CLICommandsMixin
 
         stub = self._make_cli(reasoning_config={"enabled": True, "effort": "medium"})
-        with patch("cli.save_config_value") as save_config, patch("cli._cprint"):
+        with patch("hermes_cli.config_values.save_config_value") as save_config, patch("cli._cprint"):
             CLICommandsMixin._handle_reasoning_command(stub, "/reasoning high")
 
         save_config.assert_not_called()

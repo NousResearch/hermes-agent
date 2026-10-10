@@ -51,7 +51,7 @@ def test_cli_commit_applies_effort_after_the_agent_swap(monkeypatch):
     monkeypatch.setattr(mixin, "_print_switch_summary", lambda *_a, **_k: None)
     monkeypatch.setattr(cli_mod.HermesCLI, "_persist_model_switch_to_session", lambda *_a: None)
     saved = {}
-    monkeypatch.setattr(cli_mod, "save_config_value", lambda k, v: saved.setdefault(k, v) or True)
+    monkeypatch.setattr("hermes_cli.config_values.save_config_value", lambda k, v: saved.setdefault(k, v) or True)
 
     result = ModelSwitchResult(success=True, new_model="new", target_provider="nous")
     mixin._commit_model_switch(cli, result, persist_global=False, reasoning_effort="high")

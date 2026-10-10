@@ -865,7 +865,7 @@ def _(rid, params: dict) -> dict:
     if not raw:
         return _err(rid, 4015, "path required")
     try:
-        from cli import (
+        from hermes_cli.attachment_paths import (
             _IMAGE_EXTENSIONS, _detect_file_drop, _resolve_attachment_path, _split_path_input)
         if dropped := _detect_file_drop(raw):
             image_path, remainder = dropped["path"], dropped["remainder"]
@@ -1017,7 +1017,7 @@ def _(rid, params: dict) -> dict:
     if err:
         return err
     try:
-        from cli import _detect_file_drop
+        from hermes_cli.attachment_paths import _detect_file_drop
         dropped = _detect_file_drop(str(params.get("text", "") or ""))
         if not dropped:
             return _ok(rid, {"matched": False})
@@ -1241,7 +1241,7 @@ def _pdf_attach_source(rid, params, td_path, raw_path, raw_b64):
         pdf_path.write_bytes(pdf_bytes)
         return pdf_path, str(params.get("filename", "") or "uploaded.pdf"), None
     try:
-        from cli import _resolve_attachment_path
+        from hermes_cli.attachment_paths import _resolve_attachment_path
         resolved = _resolve_attachment_path(raw_path)
     except Exception:
         resolved = None

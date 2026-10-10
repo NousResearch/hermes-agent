@@ -62,7 +62,7 @@ class TestBusyCommandPersistence:
         """Each supported /busy mode is saved and applied."""
         runner = _make_runner(busy_mode=initial_mode)
         runner._busy_text_mode = "interrupt"
-        monkeypatch.setattr("cli.save_config_value", lambda k, v: True)
+        monkeypatch.setattr("hermes_cli.config_values.save_config_value", lambda k, v: True)
         # The handler re-derives _busy_text_mode from the saved config;
         # emulate the write that the mocked save_config_value skipped.
         monkeypatch.setattr(
@@ -87,7 +87,7 @@ class TestBusyCommandPersistence:
         """When save_config_value returns False, mode is unchanged."""
         runner = _make_runner(busy_mode="steer")
         monkeypatch.setattr(
-            "cli.save_config_value", lambda k, v: False
+            "hermes_cli.config_values.save_config_value", lambda k, v: False
         )
         event = _make_event("/busy queue")
         result = await runner._handle_busy_command(event)

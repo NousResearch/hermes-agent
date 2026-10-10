@@ -10,9 +10,11 @@ Applies on top of the root `AGENTS.md`. Long-form: `website/docs/developer-guide
 (run-loop phases: input dispatch, startup, signals, shutdown), `cli_init_mixin.py` (the `__init__`
 phases), ... Module-level helpers live in topical siblings that `cli.py` re-exports:
 `cli_config_load.py` (defaults + YAML merge, env mirroring), `cli_render.py` (ANSI/skin colours,
-light mode, markdown, `_cprint`, panel wrap), `cli_terminal_input.py` (file drops, paste/Enter-key
+light mode, markdown, `_cprint`, panel wrap), `cli_terminal_input.py` (paste/Enter-key
 sequences, CPR guards), `cli_shutdown.py` (exit watchdog, cleanup steps, one-shot finalize),
 `cli_single_query.py` (`-q` runner, exit codes, kanban loops), `cli_auto_maintenance.py` (state-db/checkpoint maintenance).
+Shared attachment helpers are in `attachment_paths.py`; scalar config writes use
+`config_values.py::save_config_value`. CLI and served callers import those defining modules.
 Moved bodies late-bind cli-level names via `from cli import ...` at call time, so patch seams on the
 `cli` facade still intercept them; mutable module state (`_cleanup_done`, `_OUTPUT_HISTORY`,
 `_LIGHT_MODE_CACHE`, ...) and every `global`-writing function stay in `cli.py`. **Rich** renders banner/panels; **prompt_toolkit**
@@ -57,7 +59,7 @@ relevant `cli_*_mixin.py` (picked up by convention) or an explicit `_SLASH_DISPA
 gateway, `_handle_mycommand_command(self, event)` on the matching `gateway/slash_commands_*.py`
 mixin and list it in `_IDLE_COMMANDS` (or `_PLAIN_COMMANDS` if it must work mid-run) in
 `gateway/run_busy.py` — handlers resolve by name via `_command_handler_table`; (4) persistent
-settings via `save_config_value()` in `cli.py`. **Adding an alias** = add to `aliases`; every
+settings via `config_values.py::save_config_value()`. **Adding an alias** = add to `aliases`; every
 surface updates automatically. Commands that mutate system-prompt state default to deferred
 invalidation with `--now` opt-in (root invariant).
 

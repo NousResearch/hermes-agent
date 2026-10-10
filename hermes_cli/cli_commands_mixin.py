@@ -1,6 +1,6 @@
 """Slash-command handlers for the interactive CLI (``HermesCLI`` inherits ``CLICommandsMixin``).
 
-cli.py-internal symbols (``_cprint``/``_ACCENT``/``save_config_value``…) are imported LAZILY inside
+cli.py-internal symbols (``_cprint``/``_ACCENT``…) are imported LAZILY inside
 the helpers/handlers via ``from cli import ...`` — cli.py imports this module (cycle otherwise).
 """
 

@@ -70,7 +70,7 @@ def test_gate_on_choice_always_persists_and_returns_always():
     with patch(
         "cli.load_cli_config",
         return_value={"approvals": {"destructive_slash_confirm": True}},
-    ), patch("cli.save_config_value", _fake_save):
+    ), patch("hermes_cli.config_values.save_config_value", _fake_save):
         result = _bound(HermesCLI._confirm_destructive_slash, self_)(
             "clear", "detail",
         )

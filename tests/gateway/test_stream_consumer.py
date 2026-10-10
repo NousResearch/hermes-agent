@@ -969,8 +969,15 @@ class TestFilterAndAccumulate:
         """<think> mentioned mid-line in prose should NOT trigger filtering."""
         c = _make_consumer()
         c._filter_and_accumulate("The <think> tag is used for reasoning")
+        c._flush_think_buffer()
         assert "<think>" in c._accumulated
         assert "used for reasoning" in c._accumulated
+
+    def test_split_close_after_midline_open_is_hidden(self):
+        c = _make_consumer()
+        c._filter_and_accumulate("hello <think>SECRET</thi")
+        c._filter_and_accumulate("nk> world")
+        assert c._accumulated == "hello  world"
 
 
     def test_think_with_only_whitespace_before(self):

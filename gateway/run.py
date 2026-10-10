@@ -2112,6 +2112,9 @@ _cfg: dict = {}
 if _config_path.exists():
     try:
         _cfg = _load_bridge_config(_config_path)
+        from gateway.churn import configure_gateway_churn_from_config
+
+        configure_gateway_churn_from_config(_cfg)
         _bridge_config_to_env(_cfg)
     except Exception as _bridge_err:
         # stderr, not logger: the module logger is not initialized yet at import time.
@@ -5503,7 +5506,8 @@ def _refresh_host_gateway_record(runner) -> None:
         logger.debug("host gateway record refresh failed", exc_info=True)
 
 
-async def _host_attach_or_none(replace: bool, force: bool = False) -> Optional[bool]:
+async def _host_attach_or_none(replace: bool, force: bool = False,
+                               replaced_pids: Optional[list[int]] = None) -> Optional[bool]:
     """Attach / rescan / refuse against the ONE host gateway; ``None`` = start normally.
 
     Returns ``True`` when this invocation is satisfied by the running host process (exit 0, nothing
@@ -5536,6 +5540,8 @@ async def _host_attach_or_none(replace: bool, force: bool = False) -> Optional[b
         # decide() only targets an owner that serves this profile or has not published its served set.
         if not await _start_gateway_replace_existing_instance(decision.owner.pid, True):
             return False
+        if replaced_pids is not None:
+            replaced_pids.append(decision.owner.pid)
     return None
 
 
@@ -5780,16 +5786,21 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
 
     # Multiplex-only: the ONE host gateway decides first. Attach to it, make it serve this profile,
     # replace it (--replace) or refuse — before anything below binds a port or claims a PID file.
-    _host_decision = await _host_attach_or_none(replace, force)
+    replaced_pid: int | None = None
+    replaced_pids: list[int] = []
+    _host_decision = await _host_attach_or_none(replace, force, replaced_pids)
     if _host_decision is not None:
         return _host_decision
+    if replaced_pids:
+        replaced_pid = replaced_pids[-1]
 
     # Duplicate-instance guard scoped to HERMES_HOME (the host record is absent or unusable here).
     from gateway.status import get_running_pid
     existing_pid = get_running_pid()
-    if (existing_pid is not None and existing_pid != os.getpid()
-            and not await _start_gateway_replace_existing_instance(existing_pid, replace)):
-        return False
+    if existing_pid is not None and existing_pid != os.getpid():
+        if not await _start_gateway_replace_existing_instance(existing_pid, replace):
+            return False
+        replaced_pid = existing_pid
 
     _start_gateway_configure_logging(verbosity)
 
@@ -5918,6 +5929,24 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             return _resolve_gateway_exit_verdict(runner, _signal_initiated_shutdown[0])
         finally:
             _shutdown_gateway_health_export(runner)
+
+    # The gateway owns its PID/lock and its adapters completed startup: this is
+    # the lifecycle boundary where a start or takeover became real. Best-effort
+    # recording must never make the gateway unavailable, but a configured write
+    # failure is loud in gateway logs so deployment drift is not a silent skip.
+    if os.environ.get("HERMES_GATEWAY_CHURN_PATH", "").strip():
+        try:
+            from gateway.churn import append_gateway_churn_event
+
+            recorded = append_gateway_churn_event(
+                "replace" if replaced_pid is not None else "start",
+                pid_old=replaced_pid,
+                pid_new=os.getpid(),
+            )
+            if not recorded:
+                logger.warning("Configured gateway churn event could not be recorded")
+        except Exception as e:
+            logger.warning("Configured gateway churn hook failed: %s", e)
 
     cron_stop, cron_provider, cron_thread, housekeeping_thread = (
         _start_gateway_start_cron_and_housekeeping(runner))

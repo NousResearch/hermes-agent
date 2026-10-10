@@ -12,6 +12,7 @@ import signal
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Optional
+from tools.path_identity import denotes_same_file
 
 logger = logging.getLogger("tools.terminal_tool")
 
@@ -247,7 +248,7 @@ def finalize_foreground_result(
     # flag so an interrupted command can't echo another session's cwd).
     changed_cwd = None
     with _quiet("cwd comparison"):
-        if observed_cwd and command_cwd and os.path.realpath(str(observed_cwd)) != os.path.realpath(str(command_cwd)):
+        if observed_cwd and command_cwd and not denotes_same_file(str(observed_cwd), str(command_cwd)):
             changed_cwd = str(observed_cwd)
     # rc=130 is an interrupt only with the executor's marker — a command can
     # legitimately `exit 130` itself. An interrupted approved run keeps the

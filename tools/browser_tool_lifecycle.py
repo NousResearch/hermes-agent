@@ -256,7 +256,8 @@ def _verify_reapable_browser_daemon(daemon_pid: int, socket_dir: str,
     if not bound:
         try:
             env_dir = (proc.environ() or {}).get("AGENT_BROWSER_SOCKET_DIR", "")
-            bound = bool(env_dir) and os.path.normpath(env_dir) == os.path.normpath(socket_dir)
+            from tools.path_identity import denotes_same_file
+            bound = denotes_same_file(env_dir, socket_dir)
         except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
             bound = False  # environ() can be denied even same-user; cmdline already failed — fail closed
     if not bound:

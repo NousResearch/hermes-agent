@@ -11,6 +11,7 @@ import platform
 import subprocess
 import sys
 from typing import Dict
+from tools.path_identity import denotes_same_file
 
 # Logger name kept as the origin module's so existing log expectations hold.
 logger = logging.getLogger("tools.code_execution_tool")
@@ -246,9 +247,9 @@ def _uses_hermes_python_environment(python_path: str) -> bool:
     """Whether *python_path* belongs to Hermes's active Python environment. Short-circuits when
     it IS the running interpreter (by path or realpath — covers ``uv run`` venvs) so no probe
     runs on the default strict path and a flaky probe can never drop the hermes root."""
-    if python_path == sys.executable or os.path.realpath(python_path) == os.path.realpath(sys.executable):
+    if denotes_same_file(python_path, sys.executable):
         return True
-    return _python_environment_prefix(python_path) == os.path.realpath(sys.prefix)
+    return denotes_same_file(_python_environment_prefix(python_path), sys.prefix)
 
 
 def _resolve_child_python(mode: str) -> str:

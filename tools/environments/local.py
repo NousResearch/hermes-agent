@@ -220,6 +220,111 @@ def _apply_profile_home(env: dict) -> None:
     apply_subprocess_home_env(env)
 
 
+def _served_profile_home(name: str) -> str:
+    """The profile-scoped home a served profile id owns (``<root>/profiles/<name>``), or ``""``.
+
+    Syntactic on purpose, NOT a liveness lookup: the id came from the gateway's own served set,
+    and a child-env factory must not depend on the profile's files being readable at spawn time.
+    The default root itself is not a scoped home, so ``default`` (and anything that cannot be a
+    plain profile id) resolves to ``""`` and publishes nothing.
+    """
+    if not name or name == "default" or name in (".", "..") or "/" in name or "\\" in name:
+        return ""
+    try:
+        from hermes_cli.profiles import _get_default_hermes_home, profile_root_for_env_home
+        root = profile_root_for_env_home(os.environ.get("HERMES_HOME", ""), _get_default_hermes_home())
+        return str(Path(root) / "profiles" / name)
+    except Exception:
+        return ""
+
+
+def _export_served_profile_env(env: dict) -> None:
+    """Publish the identity this turn is acting as — ``HERMES_PROFILE`` AND the profile-scoped
+    ``HERMES_HOME`` it names — as a COHERENT PAIR.
+
+    Why: a child that has to *name* the profile it acts for — ``hermes kanban comment``
+    (author), ``hermes peer dm`` (``X-Hermes-Sender-Profile``), a repo script — reads
+    ``HERMES_PROFILE`` (see ``hermes_cli.profiles.current_profile_name``), and a child
+    process has NO bound home override: the parent's exported ``HERMES_HOME`` is its only
+    clue, so a served profile's child inherited the gateway's launch env and attributed its
+    work to ``default``. The parent can see what the child cannot — the identity bound for
+    the turn. Sources, in authority order:
+
+    1. the bound home override (:func:`_profile_runtime_scope` in the gateway): the profile
+       this process is acting FOR, and the same authority ``current_profile_name`` uses
+       in-process.
+    2. the bound session profile: a spawn surface that bound a session but no home. The
+       ContextVar wins over its ``os.environ`` mirror (cross-session leak guard).
+
+    The pair is written TOGETHER, and only when the home is profile-scoped, because a
+    ``HERMES_PROFILE`` on its own can be silently contradicted: a child booting as ``hermes``
+    re-homes from the sticky ``active_profile`` unless ``HERMES_HOME`` already names a profile dir
+    (``hermes_cli.main._apply_profile_override``). A pin whose home stays the launch root would
+    leave the child reading one profile's config/credentials while attributing its work to
+    another — the very disagreement :func:`_align_pin_with_target_home` drops on the explicit-home
+    surfaces. So an identity with no scoped home to pin (``default``, ``custom``, an unresolvable
+    id) publishes NOTHING and the inherited value is left untouched, which keeps the kanban
+    dispatcher's ``HERMES_PROFILE`` pin on the workers it spawns. A caller that hands the child an
+    explicit OTHER profile's home re-aligns this pin afterwards
+    (:func:`_align_pin_with_target_home`).
+    """
+    profile = ""
+    home = ""
+    try:
+        from hermes_constants import get_hermes_home_override
+        override = get_hermes_home_override()
+        if override:
+            # Syntactic, like :func:`_served_profile_home`: the bound home names the profile's own
+            # directory, so its spelling IS the identity. Deliberately not ``get_active_profile_name``
+            # — that resolves against the DEFAULT root, so a managed or temporary root reads
+            # "custom" and the pair silently goes unpublished.
+            home = str(override)
+            scoped = Path(home)
+            profile = scoped.name if scoped.parent.name == "profiles" else ""
+    except Exception:
+        profile, home = "", ""
+    if not profile:
+        try:
+            from gateway.session_context import get_session_env
+            name = (get_session_env("HERMES_SESSION_PROFILE", "") or "").strip()
+            if name:
+                profile = name
+                home = _served_profile_home(name)
+        except Exception:
+            profile, home = "", ""
+    if not profile or Path(home).parent.name != "profiles":
+        # No coherent pair to publish: a bare pin could be overridden by the child's own
+        # sticky re-home (see the docstring).
+        return
+    env["HERMES_HOME"] = home
+    env["HERMES_PROFILE"] = profile
+
+
+def _align_pin_with_target_home(env: dict, target_home: str) -> None:
+    """Drop a ``HERMES_PROFILE`` pin naming a profile other than the one *target_home* owns.
+
+    :func:`served_profile_child_env` hands the child an EXPLICIT home (``hermes -p X``, a
+    routed profile's gateway service, the host gateway on the default root). The child has no
+    bound override, so ``current_profile_name`` reads an env pin BEFORE that home: an identity
+    exported for the spawning session would label a process that acts under another profile.
+    Removal only, so the contract stays "never SETS ``HERMES_PROFILE``" — the child resolves
+    its own home.
+    """
+    pinned = (env.get("HERMES_PROFILE") or "").strip()
+    if not pinned:
+        return
+    try:
+        from hermes_constants import profile_name_for_home
+        target_name = (profile_name_for_home(target_home) or "").strip()
+    except Exception:
+        # FAIL CLOSED: the pin can outrank the home, so when the target's owner cannot be
+        # resolved we cannot prove they agree — drop the pin. The child acts under the home
+        # it is handed, so the home is the authority, never the unverifiable pin.
+        target_name = ""
+    if target_name != pinned:
+        env.pop("HERMES_PROFILE", None)
+
+
 def _inject_session_context_env(env: dict) -> None:
     """Bridge gateway session ContextVars (HERMES_SESSION_*) into a child env.
     Cross-session leak guard: the vars' last-writer-wins ``os.environ`` mirror may
@@ -279,6 +384,7 @@ def _finalize_child_env(env: dict) -> dict:
     Kanban scrub. Returns the (possibly new) dict."""
     _apply_profile_home(env)
     _inject_session_context_env(env)
+    _export_served_profile_env(env)
     _strip_hermes_owned_pythonpath_and_runtime_markers(env)
     _apply_windows_msys_bash_env_defaults(env)
     from agent.delegation_context import delegated_child_subprocess_env
@@ -377,6 +483,11 @@ def build_subprocess_env(
         return _sanitize_subprocess_env(env, dict(extra) if extra else None)
     if inherit_profile_home:
         _apply_profile_home(env)
+    # The identity export fires on BOTH branches — the scrubbed path reaches it through
+    # _finalize_child_env, and this one publishes the same name+home pair so a no-scrub child
+    # (hermes_cli/pty_bridge.py, the secret managers) names the profile it acts for instead of
+    # the launch default. `extra` stays last, so a caller's explicit override still wins.
+    _export_served_profile_env(env)
     if extra:
         env.update(extra)
     from agent.delegation_context import delegated_child_subprocess_env
@@ -409,6 +520,9 @@ def served_profile_child_env(
     target = str(target_home or get_hermes_home_override() or "")
     if target:
         env["HERMES_HOME"] = target
+        # The child acts under THIS home: an identity exported for the spawning session must
+        # not outrank it (a child has no bound override, so current_profile_name reads the pin first).
+        _align_pin_with_target_home(env, target)
         apply_scratch_tmp_env(env)  # TMPDIR follows the served home, like HOME does
         if _is_routed_home(target):
             strip_launch_profile_env(env, target)

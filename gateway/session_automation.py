@@ -217,4 +217,5 @@ async def admit_automation(authority, adapter, event, identity):
     return await tracked_write(authority, partial(
         admit_session_input, authority.db, epoch=authority.epoch, principal_id='automation:' + entry.session_key,
         session_id=ref.session_id, request_id=identity, payload=deepcopy(payload),
-        _authorize_write=authority._admission_gate()), then=partial(authority._admitted, ref, event), ordered=True)
+        _authorize_write=authority._admission_gate()), then=partial(authority._admitted, ref, event), ordered=True,
+        after=partial(authority._schedule_admitted, ref))

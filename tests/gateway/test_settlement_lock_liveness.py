@@ -11,7 +11,7 @@ import time
 import pytest
 
 from gateway.session_contract import Principal, Submission
-from tests.gateway.test_session_authority_cancel_settlement import ACTOR, REF, _authority
+from tests.gateway.test_session_authority_cancel_settlement import ACTOR, REF, _authority, _submit
 
 _HOLD_S = 1.5
 VIEWER = Principal('human', 'owned', frozenset({'session:read', 'session:submit'}), 'viewer')
@@ -211,3 +211,40 @@ async def test_input_admitted_while_an_idle_claim_is_in_flight_still_runs(tmp_pa
         admitted.set()
         await asyncio.wait_for(authority.sessions['s'].task, 10)
         assert ran == ['late']
+
+
+@pytest.mark.asyncio
+async def test_admission_schedules_its_drain_in_the_admitting_callers_step(tmp_path, monkeypatch):
+    """The ledger write runs off-loop, but the drain is scheduled only once the caller holds its
+    receipt (the step in which messaging registers its delivery waiter), as it was when admission
+    was synchronous: a drain started inside the write task could claim, run or pause the input
+    before its waiter exists (a lost pause notice), and claim beside another drain's remote
+    authorization await. A caller cancelled mid-commit still leaves its committed input a drain."""
+    db, authority = _authority(tmp_path, monkeypatch)
+    order = []
+
+    async def drain():
+        order.append('drain')
+
+    def schedule(ref):
+        order.append('schedule')
+        asyncio.get_running_loop().create_task(drain())
+    monkeypatch.setattr(authority, '_schedule', schedule)
+    with db:
+        receipt = await _submit(authority, 'first')
+        order.append('caller')  # where messaging registers its delivery waiter
+        await asyncio.sleep(0)
+        assert order == ['schedule', 'caller', 'drain'] and receipt.status == 'queued'
+
+        from gateway.session_runtime_workers import mutation_tasks
+        order.clear()
+        task = asyncio.ensure_future(_submit(authority, 'cancelled-mid-commit'))
+        while not mutation_tasks(authority):
+            await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        while mutation_tasks(authority):
+            await asyncio.sleep(0.01)
+        await asyncio.sleep(0)
+        assert order == ['schedule', 'drain']

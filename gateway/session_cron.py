@@ -144,7 +144,8 @@ async def operation(authority, name, params, actor=None):
         receipt = await tracked_write(authority, partial(
             admit_session_input, authority.db, epoch=authority.epoch, principal_id=actor.subject,
             session_id=ref.session_id, request_id=request_id, payload={'text': params['extra_prompt'] or ''},
-            _authorize_write=authority._admission_gate()), then=partial(authority._admitted, ref, None), ordered=True)
+            _authorize_write=authority._admission_gate()), then=partial(authority._admitted, ref, None), ordered=True,
+            after=partial(authority._schedule_admitted, ref))
         return {'session_id': ref.session_id, 'admission_id': receipt.admission_id}
     if set(params) != {'session_id', 'admission_id'} or name not in {'status', 'cancel'}:
         raise RuntimeStoreError('invalid_params')

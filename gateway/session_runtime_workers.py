@@ -53,7 +53,7 @@ def track_mutation(authority, operation):
     return task
 
 
-async def tracked_write(authority, write, then=None, *, ordered=False):
+async def tracked_write(authority, write, then=None, *, ordered=False, after=None):
     """Run a synchronous ledger write (``write()``) in a worker thread, off the owner loop.
 
     A held SQLite writer (``_WRITE_PATIENCE_S``) must not freeze every session, timer, socket,
@@ -61,7 +61,13 @@ async def tracked_write(authority, write, then=None, *, ordered=False):
     coroutine: publication, scheduling, the claim's execution stamp) are one task tracked like ``track_mutation``, so
     retirement joins it, and shielded, so a cancelled caller cannot separate a commit from it.
     ``ordered`` writes (admissions) commit in call order, as they did on the loop: worker threads
-    alone would let a later input take an earlier FIFO position."""
+    alone would let a later input take an earlier FIFO position.
+
+    ``after(result)`` (an admission's drain scheduling) runs in the CALLER's own step once the
+    write returns, as it did when admission was synchronous: the caller registers its delivery
+    waiter before any drain it scheduled can claim, settle or pause that admission. A caller
+    cancelled while the commit is in flight hands ``after`` to the commit's completion instead,
+    so a committed row is never stranded without a drain."""
     order = getattr(authority, '_ordered_writes', None)
     if ordered and order is None:
         order = authority._ordered_writes = asyncio.Lock()
@@ -76,7 +82,19 @@ async def tracked_write(authority, write, then=None, *, ordered=False):
             return result
         followed = then(result)
         return await followed if asyncio.iscoroutine(followed) else followed
-    return await asyncio.shield(track_mutation(authority, run()))
+    task = track_mutation(authority, run())
+    if after is None:
+        return await asyncio.shield(task)
+    try:
+        result = await asyncio.shield(task)
+    except asyncio.CancelledError:
+        def late(done):
+            if not done.cancelled() and done.exception() is None:
+                after(done.result())
+        task.add_done_callback(late)
+        raise
+    after(result)
+    return result
 
 
 def start_turn_worker(runner, worker, agent_holder, run_sync):

@@ -315,7 +315,8 @@ class SessionAuthority:
         return await tracked_write(self, partial(
             self._admit_native_write, principal_id='messaging:' + identity, session_id=ref.session_id,
             request_id=request_id, payload=payload, authorize=self._admission_gate()),
-            then=partial(self._admitted, ref, event), ordered=True)
+            then=partial(self._admitted, ref, event), ordered=True,
+            after=partial(self._schedule_admitted, ref))
 
     def _admit_native_write(self, *, principal_id, session_id, request_id, payload, authorize):
         # Off the loop and in admission order: the redelivery reconcile reads the ledger it decides
@@ -330,8 +331,11 @@ class SessionAuthority:
         if event is not None:
             event._gateway_accepted = True
         self._publish_pending(ref)
-        self._schedule(ref)
         return self._receipt(row)
+
+    def _schedule_admitted(self, ref, _receipt=None):
+        # tracked_write's ``after``: in the admitting caller's own step (see tracked_write).
+        self._schedule(ref)
 
     async def recover_native_sessions(self, bindings):
         """Bind only server-observed native routes; unknown work stays paused."""
@@ -424,7 +428,8 @@ class SessionAuthority:
                 self._release_refused_capture(request, payload)
                 raise
         from gateway.session_runtime_workers import tracked_write
-        return await tracked_write(self, admit, then=partial(self._admitted, request.ref, None), ordered=True)
+        return await tracked_write(self, admit, then=partial(self._admitted, request.ref, None), ordered=True,
+                                   after=partial(self._schedule_admitted, request.ref))
 
     def _release_refused_capture(self, request, payload):
         """A refused submission's captured bytes have no owner unless another admission holds the

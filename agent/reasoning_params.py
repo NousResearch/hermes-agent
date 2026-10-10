@@ -156,7 +156,7 @@ class ReasoningParamsMixin:
 
     def _needs_thinking_reasoning_pad(self) -> bool:
         """True when the provider enforces ``reasoning_content`` echo-back on tool-call replays (DeepSeek, Kimi,
-        MiMo thinking all 400 without it). Cached per (provider, model, base_url), invalidated by
+        MiMo thinking all 400 without it; Ollama Cloud feeds it to the template). Cached per (provider, model, base_url), invalidated by
         ``switch_model()`` / ``_try_activate_fallback()`` — called ~16× per turn.
 
         DeepSeek v4 thinking and Kimi / Moonshot thinking both reject replays of assistant tool-call
@@ -207,7 +207,7 @@ class ReasoningParamsMixin:
         return matches_reasoning_echo_family("mimo", (self.provider or "").lower(), self.model, self.base_url)
 
     def _needs_ollama_tool_reasoning(self) -> bool:
-        """True for Ollama Cloud (provider, host, or a local ``:cloud`` model)."""
+        """True for Ollama Cloud (provider, host, or a local ``:cloud``/``-cloud`` tag)."""
         return matches_reasoning_echo_family("ollama", (self.provider or "").lower(), self.model, self.base_url)
 
     _copy_reasoning_content_for_api = _forward("agent.agent_runtime_helpers", "copy_reasoning_content_for_api")

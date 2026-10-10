@@ -166,6 +166,8 @@ class TestReasoningEchoFamily:
         ("ollama-cloud", "kimi-k3", "https://x", "ollama"),
         ("custom", "kimi-k3", "https://ollama.com/v1", "ollama"),
         ("custom", "kimi-k3:cloud", "http://127.0.0.1:11434/v1", "ollama"),
+        ("custom", "gpt-oss:120b-cloud", "http://127.0.0.1:11434/v1", "ollama"),
+        ("gmi", "gmi-cloud", "https://x", None),
         ("custom", "qwen3:8b", "http://127.0.0.1:11434/v1", None),
         ("openai", "gpt-5", "https://api.openai.com/v1", None),
         ("mistral", "mistral-large", "https://api.mistral.ai/v1", None),

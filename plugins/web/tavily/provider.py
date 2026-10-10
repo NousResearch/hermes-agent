@@ -12,9 +12,11 @@ import logging
 from typing import Any, Dict, List, Optional
 
 import httpx
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from agent.web_acquisition_errors import WebCredentialsMissingError, WebInvalidResponseError, http_failure
 
 from plugins.web._common import (
-    SEARCH_LIMIT_CAP, BaseWebSearchProvider, document, extract_fail, http_status_detail, provider_env, run_extract,
+    SEARCH_LIMIT_CAP, BaseWebSearchProvider, document, extract_fail, provider_env, run_extract,
     run_search, search_fail, search_ok, setup_schema, title_hit, use_keyless,
 )
 
@@ -23,6 +25,18 @@ logger = logging.getLogger(__name__)
 _CLIENT_NAME = "hermes-agent"
 
 _SEARCH_PAYLOAD = {"include_raw_content": False, "include_images": False}
+
+
+class _TavilySearchHit(BaseModel):
+    model_config = ConfigDict(extra="ignore", strict=True)
+    url: str = Field(min_length=1)
+    title: str = ""
+    content: str = ""
+
+
+class _TavilySearchResponse(BaseModel):
+    model_config = ConfigDict(extra="ignore", strict=True)
+    results: list[_TavilySearchHit]
 
 
 def _tavily_headers(api_key: str) -> dict[str, str]:
@@ -37,8 +51,8 @@ def _tavily_headers(api_key: str) -> dict[str, str]:
 def _tavily_request(endpoint: str, payload: dict[str, Any], *, api_key: Optional[str] = None) -> dict[str, Any]:
     """POST to Tavily and return parsed JSON. ``api_key=None`` reads ``TAVILY_API_KEY``;
     pass ``""`` to force the keyless header even when a key exists
-    (``web.provider_tier.tavily: free``). Non-2xx raises ValueError with the body so
-    Tavily's rate-limit/upgrade text reaches the model."""
+    (``web.provider_tier.tavily: free``). Non-2xx responses raise an acquisition
+    error with status and retry-delay facts."""
     if api_key is None:
         api_key = provider_env("TAVILY_API_KEY")
     base_url = provider_env("TAVILY_BASE_URL") or "https://api.tavily.com"
@@ -46,25 +60,55 @@ def _tavily_request(endpoint: str, payload: dict[str, Any], *, api_key: Optional
     logger.info("Tavily %s request to %s", endpoint, url)
     response = httpx.post(url, json=payload, timeout=60, headers=_tavily_headers(api_key))
     if response.status_code >= 400:
-        raise ValueError(http_status_detail(response))
+        raise http_failure(response.status_code, response.headers)
     return response.json()
 
 
 def _normalize_tavily_search_results(response: dict[str, Any]) -> dict[str, Any]:
+    try:
+        parsed = _TavilySearchResponse.model_validate(response)
+    except ValidationError as exc:
+        raise WebInvalidResponseError(cause=exc) from exc
     return search_ok([
-        title_hit(r.get("title", ""), r.get("url", ""), r.get("content", ""), i + 1)
-        for i, r in enumerate(response.get("results", []))
+        title_hit(r.title, r.url, r.content, i + 1)
+        for i, r in enumerate(parsed.results)
     ])
 
 
+class _TavilyDocument(BaseModel):
+    model_config = ConfigDict(extra="ignore", strict=True)
+    url: str = Field(min_length=1)
+    title: str | None = None
+    raw_content: str | None = None
+    content: str | None = None
+
+
+class _TavilyFailedDocument(BaseModel):
+    model_config = ConfigDict(extra="ignore", strict=True)
+    url: str = Field(min_length=1)
+    error: str = "extraction failed"
+
+
+class _TavilyExtractResponse(BaseModel):
+    model_config = ConfigDict(extra="ignore", strict=True)
+    results: list[_TavilyDocument]
+    failed_results: list[_TavilyFailedDocument] = Field(default_factory=list)
+    failed_urls: list[str] = Field(default_factory=list)
+
+
 def _normalize_tavily_documents(response: dict[str, Any]) -> list[dict[str, Any]]:
-    """Map ``/extract`` to documents without attributing missing URLs to a request."""
+    """Validate ``/extract`` before converting content and per-page diagnostics."""
+    try:
+        parsed = _TavilyExtractResponse.model_validate(response)
+    except ValidationError as exc:
+        raise WebInvalidResponseError(cause=exc) from exc
     documents = [
-        document(r.get("url", ""), r.get("title", ""), r.get("raw_content", "") or r.get("content", ""))
-        for r in response.get("results", [])
+        document(row.url, row.title or "", row.raw_content or row.content or "",
+                 coverage="full" if row.raw_content is not None else "unknown")
+        for row in parsed.results
     ]
-    documents += [_failed_document(f.get("url", ""), f.get("error", "extraction failed")) for f in response.get("failed_results", [])]
-    documents += [_failed_document(str(u), "extraction failed") for u in response.get("failed_urls", [])]
+    documents += [_failed_document(row.url, row.error) for row in parsed.failed_results]
+    documents += [_failed_document(url, "extraction failed") for url in parsed.failed_urls]
     return documents
 
 
@@ -99,7 +143,7 @@ class TavilyWebSearchProvider(BaseWebSearchProvider):
         def _body() -> dict[str, Any]:
             key, missing, prefix = _auth("search")
             if missing:
-                return search_fail(missing)
+                return search_fail(missing, failure=WebCredentialsMissingError("TAVILY_API_KEY"))
             logger.info("Tavily %ssearch: '%s' (limit=%d)", prefix, query, limit)
             payload = {"query": query, "max_results": min(limit, SEARCH_LIMIT_CAP), **_SEARCH_PAYLOAD}
             return _normalize_tavily_search_results(_tavily_request("search", payload, api_key=key))
@@ -110,7 +154,7 @@ class TavilyWebSearchProvider(BaseWebSearchProvider):
         def _body() -> list[dict[str, Any]]:
             key, missing, prefix = _auth("extract")
             if missing:
-                return extract_fail(urls, missing)
+                return extract_fail(urls, missing, failure=WebCredentialsMissingError("TAVILY_API_KEY"))
             logger.info("Tavily %sextract: %d URL(s)", prefix, len(urls))
             raw = _tavily_request("extract", {"urls": urls, "include_images": False}, api_key=key)
             return _normalize_tavily_documents(raw)

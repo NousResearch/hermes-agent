@@ -7,11 +7,12 @@ Config: ``web.provider_tier.keenable: free|paid`` pins the tier (unset = auto).
 from __future__ import annotations
 
 import logging
+from agent.web_acquisition_errors import acquisition_error, http_failure
 from typing import Any, Dict, List
 
 from plugins.web._common import (
     SEARCH_LIMIT_CAP, BaseWebSearchProvider, document, http_status_detail, keyless_extract, keyless_search,
-    keyless_variant_schema, page_error, provider_env, run_extract, run_search, search_fail, search_ok, use_keyless, web_hit,
+    keyless_variant_schema, page_error, provider_env, run_extract, run_search, search_fail, search_ok, search_result_rows, use_keyless, web_hit,
 )
 
 logger = logging.getLogger(__name__)
@@ -49,10 +50,10 @@ class KeenableWebSearchProvider(BaseWebSearchProvider):
                 headers=_keenable_headers(api_key), timeout=30,
             )
             if response.status_code >= 400:
-                return search_fail(f"Keenable search failed: {http_status_detail(response)}")
+                return search_fail(f"Keenable search failed: {http_status_detail(response)}", failure=http_failure(response.status_code, response.headers))
             return search_ok([
                 web_hit(r.get("url") or "", r.get("title") or "", r.get("snippet") or r.get("description") or "", i + 1)
-                for i, r in enumerate(response.json().get("results") or [])
+                for i, r in enumerate(search_result_rows(response.json()))
             ])
 
         return run_search("Keenable", logger, _body, verbatim_value_error=False)
@@ -61,7 +62,7 @@ class KeenableWebSearchProvider(BaseWebSearchProvider):
         def _body() -> list[dict[str, Any]]:
             api_key = provider_env("KEENABLE_API_KEY")
             if use_keyless("keenable", api_key):
-                return keyless_extract("Keenable", "keenable", urls, logger)
+                return keyless_extract("Keenable", "keenable", urls, logger, **kwargs)
             import requests
             logger.info("Keenable extract: %d URL(s)", len(urls))
             results: list[dict[str, Any]] = []
@@ -69,11 +70,11 @@ class KeenableWebSearchProvider(BaseWebSearchProvider):
                 try:
                     response = requests.get(f"{_KEENABLE_API_URL}/v1/fetch", params={"url": url}, headers=_keenable_headers(api_key), timeout=30)
                     if response.status_code >= 400:
-                        raise ValueError(http_status_detail(response))
+                        raise http_failure(response.status_code, response.headers)
                     data = response.json()
-                    results.append(document(data.get("url") or url, data.get("title") or "", data.get("content") or "", source_url=url))
-                except Exception as exc:
-                    results.append(page_error(url, f"Keenable extract failed: {exc}"))
+                    results.append(document(data.get("url") or url, data.get("title") or "", data.get("content") or "", source_url=url, coverage="full"))
+                except Exception as exc:  # noqa: BLE001 — per-URL error entry
+                    results.append(page_error(url, f"Keenable extract failed: {exc}", failure=acquisition_error(exc)))
             return results
 
         return run_extract("Keenable", logger, urls, _body, verbatim_value_error=False)

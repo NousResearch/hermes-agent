@@ -12,6 +12,7 @@ import json
 import os
 import asyncio
 import pytest
+import httpx
 from unittest.mock import patch, MagicMock
 
 from tests.tools.conftest import register_all_web_providers
@@ -71,19 +72,21 @@ class TestTavilyRequest:
                 assert payload["query"] == "hello"
                 assert "api.tavily.com/search" in mock_post.call_args.args[0]
 
-    def test_http_error_surfaces_response_body(self):
-        """Non-2xx responses raise ValueError with Tavily's response body."""
-        mock_response = MagicMock()
-        mock_response.status_code = 429
-        mock_response.text = "Rate limit hit. Sign up for a free API key at https://app.tavily.com"
-        mock_response.json.return_value = {}
+    def test_http_error_preserves_status_and_retry_delay(self):
+        from agent.web_acquisition_errors import WebRateLimitedError
+
+        mock_response = httpx.Response(429, headers={"retry-after": "5"}, text="Rate limit hit")
 
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("TAVILY_API_KEY", None)
             with patch("plugins.web.tavily.provider.httpx.post", return_value=mock_response):
                 from plugins.web.tavily.provider import _tavily_request
-                with pytest.raises(ValueError, match="Rate limit hit"):
+                with pytest.raises(WebRateLimitedError) as raised:
                     _tavily_request("search", {"query": "test"})
+        assert raised.value.to_failure() == {
+            "kind": "rate-limited", "retry": "transient", "scope": "provider",
+            "status": 429, "retry_after_ms": 5000,
+        }
 
 
 # ─── _normalize_tavily_search_results ─────────────────────────────────────────
@@ -110,13 +113,14 @@ class TestNormalizeTavilySearchResults:
         assert web[1]["position"] == 2
 
 
-    def test_missing_fields(self):
+    def test_missing_url_is_invalid(self):
+        from agent.web_acquisition_errors import WebInvalidResponseError
         from plugins.web.tavily.provider import _normalize_tavily_search_results
-        result = _normalize_tavily_search_results({"results": [{}]})
-        web = result["data"]["web"]
-        assert web[0]["title"] == ""
-        assert web[0]["url"] == ""
-        assert web[0]["description"] == ""
+        with pytest.raises(WebInvalidResponseError) as raised:
+            _normalize_tavily_search_results({"results": [{}]})
+        assert raised.value.to_failure() == {
+            "kind": "invalid-response", "retry": "never", "scope": "provider",
+        }
 
 
 # ─── _normalize_tavily_documents ──────────────────────────────────────────────
@@ -145,14 +149,22 @@ class TestNormalizeTavilyDocuments:
     def test_missing_result_url_is_not_attributed_to_requested_url(self):
         from plugins.web.tavily.provider import _normalize_tavily_documents
         raw = {"results": [{"content": "data"}]}
-        docs = _normalize_tavily_documents(raw)
-        assert docs[0]["url"] == ""
+        from agent.web_acquisition_errors import WebInvalidResponseError
+        with pytest.raises(WebInvalidResponseError):
+            _normalize_tavily_documents(raw)
 
 
 class TestWebExtractCacheAttribution:
     """Only cache content under the URL reported by the extract provider."""
 
-    def test_partial_result_caches_under_its_own_requested_url(self):
+    @pytest.fixture(autouse=True)
+    def safe_urls(self, monkeypatch):
+        async def safe(url):
+            return True
+        monkeypatch.setattr("tools.web_tools.async_is_safe_url", safe)
+        monkeypatch.setattr("tools.website_policy.check_website_access", lambda url: None)
+
+    def test_unattributable_batch_is_not_cached(self):
         from tools import web_tools_extract as wte
 
         class _PartialProvider:
@@ -168,9 +180,7 @@ class TestWebExtractCacheAttribution:
         with patch("tools.web_result_cache.extract_cache_put") as cache_put:
             asyncio.run(wte._dispatch_extract(_PartialProvider(), urls, None))
 
-        cache_put.assert_called_once_with(
-            "https://example.com/second", "second page", "Second", format=None, provider="tavily"
-        )
+        cache_put.assert_not_called()
 
     def test_redirected_page_caches_under_requested_source_url(self):
         """Keenable/Firecrawl report the post-redirect address in ``url`` and the requested URL in
@@ -191,7 +201,8 @@ class TestWebExtractCacheAttribution:
             asyncio.run(wte._dispatch_extract(_RedirectProvider(), urls, None))
 
         cache_put.assert_called_once_with(
-            "https://example.com/old", "moved page", "Moved", format=None, provider="keenable"
+            "https://example.com/old", "moved page", "Moved", format=None, provider="keenable",
+            max_chars=None, resolved_url="https://www.example.com/moved", coverage="unknown", served_provider="keenable"
         )
 
 

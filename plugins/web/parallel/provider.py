@@ -11,6 +11,7 @@ import logging
 import os
 from typing import Any, Dict, List
 
+from agent.web_acquisition_errors import WebAcquisitionError, WebConnectionError, WebInvalidResponseError, WebTimeoutError
 from plugins.web._common import (
     SEARCH_LIMIT_CAP, BaseWebSearchProvider, cached_sdk_client, document, keyless_extract, keyless_search,
     keyless_variant_schema, page_error, provider_env, run_extract_async, run_search, search_ok, use_keyless, web_hit,
@@ -21,10 +22,24 @@ logger = logging.getLogger(__name__)
 _MISSING_KEY = "PARALLEL_API_KEY environment variable not set. Get your API key at https://parallel.ai"
 
 
+def _parallel_failure(error: BaseException) -> WebAcquisitionError | None:
+    try:
+        from parallel import APIConnectionError, APIResponseValidationError, APITimeoutError
+    except ImportError:
+        return None
+    if isinstance(error, APITimeoutError):
+        return WebTimeoutError()
+    if isinstance(error, APIConnectionError):
+        return WebConnectionError()
+    if isinstance(error, APIResponseValidationError):
+        return WebInvalidResponseError()
+    return None
+
+
 def _client(slot: str, cls_name: str) -> Any:
     def _factory(api_key: str) -> Any:
         import parallel  # deliberately lazy
-        return getattr(parallel, cls_name)(api_key=api_key)
+        return getattr(parallel, cls_name)(api_key=api_key, _strict_response_validation=True)
 
     # Mirrors the lazy-deps pattern used by the legacy implementation.
     # Swallows benign ImportError from the pm helper itself; if the
@@ -75,22 +90,22 @@ class ParallelWebSearchProvider(BaseWebSearchProvider):
                 for i, r in enumerate(response.results or [])
             ])
 
-        return run_search("Parallel", logger, _body, sdk=True)
+        return run_search("Parallel", logger, _body, sdk=True, classify=_parallel_failure)
 
     async def extract(self, urls: list[str], **kwargs: Any) -> list[dict[str, Any]]:
         async def _body() -> list[dict[str, Any]]:
             if use_keyless("parallel", provider_env("PARALLEL_API_KEY")):
                 # Keyless ring is blocking HTTP — hop off the event loop.
-                return await asyncio.to_thread(keyless_extract, "Parallel", "parallel", urls, logger)
+                return await asyncio.to_thread(keyless_extract, "Parallel", "parallel", urls, logger, **kwargs)
             logger.info("Parallel extract: %d URL(s)", len(urls))
             response = await _get_async_client().beta.extract(urls=urls, full_content=True)
-            results = [document(r.url or "", r.title or "", r.full_content or "\n\n".join(r.excerpts or [])) for r in response.results or []]
+            results = [document(r.url or "", r.title or "", r.full_content or "\n\n".join(r.excerpts or []), coverage="full" if r.full_content else "partial") for r in response.results or []]
             return results + [
                 {**page_error(e.url or "", e.content or e.error_type or "extraction failed"), "metadata": {"sourceURL": e.url or ""}}
                 for e in response.errors or []
             ]
 
-        return await run_extract_async("Parallel", logger, urls, _body, sdk=True)
+        return await run_extract_async("Parallel", logger, urls, _body, sdk=True, classify=_parallel_failure)
 
     def get_setup_schema(self) -> dict[str, Any]:
         return keyless_variant_schema(

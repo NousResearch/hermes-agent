@@ -109,7 +109,7 @@ def test_only_managed_search_may_use_billed_fallback(
         assert result["success"] == bool(expected_paths and expected_paths[-1] == "/v2/search")
         if result["success"]:
             assert result["data"]["fallback_from"] == "managed_primary"
-            assert "local test outage" in result["data"]["backend_error"]
+            assert result["data"]["backend_failure"] == {"kind": "unavailable", "retry": "transient", "scope": "provider", "status": 503}
             assert web_tools._get_extract_backend() == selection.get("extract_backend", "firecrawl")
     for path, headers, body in local_gateway:
         if path != "/v2/search":
@@ -151,3 +151,27 @@ def test_unentitled_managed_search_gets_fast_search_but_no_billed_fallback(monke
     # The fixture 503s the Perplexity route; an entitled caller would then be served by /v2/search.
     assert json.loads(web_tools.web_search_tool("local fixture", limit=3))["success"] is False
     assert [(path, body.get("search_type")) for path, _, body in local_gateway] == [("/perplexity/search", "fast")]
+
+
+@pytest.mark.parametrize(
+    ("selection", "expected"),
+    [
+        ({"backend": "nous", "extract_backend": "firecrawl"}, {"search": True, "extract": False}),
+        ({"backend": "firecrawl", "extract_backend": "nous"}, {"search": False, "extract": True}),
+    ],
+)
+def test_firecrawl_rescue_matches_each_capability_route(monkeypatch, tmp_path, selection, expected):
+    from hermes_cli.config import atomic_config_write
+    from plugins.web.firecrawl.provider import FirecrawlWebSearchProvider
+    from tools import web_tools_rescue
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("FIRECRAWL_API_KEY", raising=False)
+    monkeypatch.delenv("FIRECRAWL_API_URL", raising=False)
+    monkeypatch.setattr("plugins.web.firecrawl.provider._is_tool_gateway_ready", lambda: False)
+    atomic_config_write(tmp_path / "config.yaml", {"web": {**selection, "keyless_rescue": True}})
+    provider = FirecrawlWebSearchProvider()
+    assert {
+        capability: web_tools_rescue._rescue_eligible(provider, capability)
+        for capability in ("search", "extract")
+    } == expected

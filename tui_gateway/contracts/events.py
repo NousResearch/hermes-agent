@@ -604,10 +604,12 @@ event("message.reaction", MessageReactionPayload, doc="The agent reacted to a me
 
 
 class TerminalOutputPayload(Payload):
-    """``session_notifications`` process_registry.on_output."""
+    """``session_notifications`` process_registry.on_output. ``pty``: the process runs under a
+    pseudo-terminal, so the viewer must honour a bare LF (cursor down, keep column)."""
 
     process_id: str
     chunk: str
+    pty: bool = False
 
 
 class TerminalClosePayload(Payload):

@@ -835,7 +835,8 @@ def _wire_desktop_sinks() -> None:
             return next((sid for sid, s in _sessions.items() if str(s.get("session_key") or "") == session_key), "")
     if getattr(process_registry, "on_output", None) is None:
         process_registry.on_output = lambda session, chunk: _emit(
-            "agent.terminal.output", _owner_sid(session), {"process_id": session.id, "chunk": chunk})
+            "agent.terminal.output", _owner_sid(session),
+            {"process_id": session.id, "chunk": chunk, "pty": session.is_pty})
     if getattr(process_registry, "on_close", None) is None:
         process_registry.on_close = lambda session, pid: _emit("terminal.close", _owner_sid(session), {"process_id": pid})
     if not _desktop_ui_wired:

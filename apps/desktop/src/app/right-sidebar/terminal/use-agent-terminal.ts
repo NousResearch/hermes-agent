@@ -12,6 +12,7 @@ import { registerAgentTerminalWriter } from './agent-terminal-stream'
 import { makeTerminalReader, registerTerminalReader } from './buffer'
 import { mirrorSelection, terminalClipboardIntent } from './clipboard'
 import { terminalLinkHandler, terminalWebLinksAddon } from './links'
+import { lineDisciplineWriter, terminalLineOptions } from './pty-output'
 import { isMacPlatform, resolveSurfaceColor, terminalTheme } from './selection'
 import { registerTerminalContextMenu } from './terminal-context-menu'
 import { prepareTerminalFontFamily } from './terminal-font'
@@ -67,7 +68,9 @@ export function useAgentTerminal({ active, id, procId }: { active: boolean; id: 
     const term = new Terminal({
       allowProposedApi: true,
       allowTransparency: false,
-      convertEol: true,
+      // Pipe discipline until the backend says the process is a PTY; the writer
+      // below switches it per chunk (see pty-output.ts).
+      ...terminalLineOptions(false),
       cursorBlink: false,
       disableStdin: true,
       fontFamily: latestFontFamilyRef.current,
@@ -173,7 +176,7 @@ export function useAgentTerminal({ active, id, procId }: { active: boolean; id: 
       observer.observe(host)
 
       // Stream live output straight into the terminal (replays backlog on attach).
-      unregister = registerAgentTerminalWriter(procId, chunk => term.write(chunk))
+      unregister = registerAgentTerminalWriter(procId, lineDisciplineWriter(term, false))
       unregisterReader = registerTerminalReader(id, makeTerminalReader(term))
     }
 

@@ -608,6 +608,13 @@ class ProcessSession:
     _reader_selectable: bool = field(default=False, repr=False)
     _pty: Any = field(default=None, repr=False)  # ptyprocess handle (use_pty=True)
 
+    @property
+    def is_pty(self) -> bool:
+        """True when the process runs under a pseudo-terminal (``use_pty`` spawn that did not fall
+        back to pipes). A PTY emits terminal line discipline (CR LF, bare LF = cursor down), which a
+        viewer must render differently from pipe output (bare LF = new line)."""
+        return self._pty is not None
+
     def __post_init__(self):
         # A session built without an explicit owner is owned by its own task, so ownership checks compare
         # ``owner_task_id`` alone instead of repeating an ``or task_id`` fallback at every call site.
@@ -2448,6 +2455,8 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
                 entry["notify_on_complete"] = True
             if s.persist_on_release:
                 entry["persist_on_release"] = True
+            if s.is_pty:
+                entry["pty"] = True
             if s.exited:
                 entry["exit_code"] = s.exit_code
                 entry["exited_at"] = s.exited_at

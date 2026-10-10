@@ -3686,6 +3686,7 @@ export interface ProcessEntry {
   exited_at?: number | null
   completion_reason?: string | null
   detached?: boolean | null
+  pty?: boolean | null
   [key: string]: unknown
 }
 export interface ProcessKillParams {
@@ -4920,10 +4921,11 @@ export interface MessageReactionPayload {
   reactions: MessageReaction[]
   role: string
 }
-/** ``session_notifications`` process_registry.on_output. */
+/** ``session_notifications`` process_registry.on_output. ``pty``: the process runs under a pseudo-terminal, so the viewer must honour a bare LF (cursor down, keep column). */
 export interface TerminalOutputPayload {
   process_id: string
   chunk: string
+  pty?: boolean
 }
 export interface TerminalClosePayload {
   process_id: string

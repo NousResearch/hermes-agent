@@ -26,7 +26,7 @@ def _patch_pipeline(monkeypatch, *, success=True, output="out", final="final res
         return (success, output, fr, error)
 
     def fake_save(jid, out):
-        calls.append(("save", jid))
+        calls.append(("save", jid, out))
         return f"/tmp/{jid}.txt"
 
     def fake_deliver(job, content, adapters=None, loop=None, **kwargs):
@@ -80,22 +80,26 @@ def test_run_one_job_agent_declared_failure_uses_failure_bookkeeping(monkeypatch
     assert calls[-1] == ("mark", "declared-failure", False)
 
 
-def test_run_one_job_agent_declared_failure_points_to_saved_evidence(monkeypatch):
-    """Agent-declared failure remains a failure without publishing arbitrary evidence."""
+@pytest.mark.parametrize("evidence", [
+    "The export subagent timed out after 30 minutes waiting on the database.",
+    "HTTP 401: the report service needs its account renewed.",
+])
+def test_run_one_job_agent_declared_failure_preserves_its_diagnosis(monkeypatch, evidence):
+    """An intentional agent diagnosis is not reclassified as a provider failure."""
     delivered = []
-    evidence = "The export subagent timed out after 30 minutes waiting on the database."
-    calls = _patch_pipeline(monkeypatch, final=f"[CRON_FAILURE]\n{evidence}")
+    original = f"[CRON_FAILURE]\n{evidence}"
+    calls = _patch_pipeline(monkeypatch, final=original, output=original)
     monkeypatch.setattr(
         s, "_deliver_result", lambda job, content, **kw: delivered.append(content))
 
     s.run_one_job({"id": "verbatim", "name": "nightly export", "deliver": "telegram"})
 
     assert len(delivered) == 1
-    assert evidence.rstrip(".") not in delivered[0]
-    assert "Execution failed." in delivered[0]
+    assert evidence in delivered[0]
     assert "hermes cron runs verbatim" in delivered[0]
-    assert any(call[0] == "save" for call in calls)
-    assert "model service" not in delivered[0]
+    assert ("save", "verbatim", original) in calls
+    assert calls[-1] == ("mark", "verbatim", False)
+    assert "model service" not in delivered[0] and "auth add" not in delivered[0]
 
 
 def test_run_one_job_marker_mentioned_in_report_stays_successful(monkeypatch):

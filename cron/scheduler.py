@@ -2924,12 +2924,11 @@ def _compose_run_delivery(
         if incident_acked:
             deliver_content = ""
         elif agent_declared:
-            # The agent already diagnosed the failure in prose; the summarizer's substring
-            # heuristics would re-diagnose it ("timed out" -> blame the model service, "401" ->
-            # "sign in again") and attach the wrong remediation. Deliver the evidence as-is.
-            from cron.scheduler_failure_copy import generic_failure_notice
-            deliver_content = generic_failure_notice(
-                job.get("name") or job["id"], job["id"], err.strip().rstrip("."),
+            # Preserve the intentional diagnosis; ordinary outbound redaction still applies.
+            from hermes_constants import profile_cli_selector
+            deliver_content = (
+                f"⚠️ Cron '{job.get('name') or job['id']}' failed\n{err.strip()}\n"
+                f"Details: `hermes {profile_cli_selector()}cron runs {job['id']}`."
             ) + _failure_streak_nudge(job)
         else:
             from cron.quota_hold import hold_notice

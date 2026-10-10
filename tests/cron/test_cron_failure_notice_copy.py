@@ -163,6 +163,8 @@ def test_monitor_failure_notice_never_publishes_script_diagnostics(monkeypatch, 
     scripts = tmp_path / "scripts"
     scripts.mkdir()
     diagnostics = (
+        "The export subagent timed out after 30 minutes waiting on the database.",
+        "HTTP 401: the report service needs its account renewed.",
         "HTTP 401: token=FixtureOpaqueSecret123456789ABC",
         "safe operation failed " + "x" * 140 + " token=FixtureBoundaryCredential123456789ABC",
         "HTTP 401: https://fixture-user:fixture-password@example.invalid/?token=fixture-query-secret",
@@ -173,9 +175,10 @@ def test_monitor_failure_notice_never_publishes_script_diagnostics(monkeypatch, 
             f"import sys\nprint({diagnostic!r}, file=sys.stderr)\nsys.exit(1)\n")
         early, _, _ = scheduler._apply_monitor_gate(job, JOB["id"], JOB["name"], None)
         assert early is not None and early[0] is False
-        assert "HTTP 401" in early[3] or "safe operation failed" in early[3]
+        assert diagnostic.split(":")[0] in early[3]
         msg = _summarize_cron_failure_for_delivery(job, early[3])
         assert msg.splitlines()[1] == "Execution failed (exit code 1).", msg
         assert "HTTP 401" not in msg and "safe operation failed" not in msg
+        assert "export subagent" not in msg
         assert "Fixture" not in msg and "fixture-" not in msg and "token=" not in msg
         assert "Details: `hermes cron runs ab12cd34`." in msg

@@ -13,6 +13,7 @@ from typing import Any, Callable, Collection, Dict, List, Optional, Tuple
 
 from agent.skill_commands import describe_skill_invocation
 from hermes_state_errors import is_malformed_db_error
+from hermes_state_messages import DISPLAY_VISIBLE_SQL
 from hermes_state_common import (
     FTS_CJK_STALE_KEY, FTS_SQL, FTS_STALE_KEY, FTS_STORAGE_VERSION, FTS_TOOL_CONTENT_PREFIX_CHARS,
     FTS_TRIGRAM_EXCLUDED_SOURCES, FTS_TRIGRAM_SQL,
@@ -196,6 +197,26 @@ class SessionSearchMixin:
     _SEARCH_MESSAGE_RESULT_FIELDS = (
         "id", "session_id", "role", "snippet", "timestamp", "tool_name", "source", "model", "session_started", "context"
     )
+
+    def iter_latest_conversation_messages(self, session_id: str):
+        """Decoded active user/assistant candidates in bounded newest-first pages.
+
+        Keyset paging avoids copying a transcript on every roster poll; no arbitrary
+        row cap can hide a conversation behind a long run of synthetic notices.
+        """
+        before = None
+        while True:
+            cursor_clause = " AND id < ?" if before is not None else ""
+            params = (session_id, before) if before is not None else (session_id,)
+            rows = self._read_all(
+                "SELECT * FROM messages WHERE session_id = ? AND active = 1"
+                " AND role IN ('user', 'assistant')" + DISPLAY_VISIBLE_SQL + cursor_clause
+                + " ORDER BY id DESC LIMIT 64", params)
+            if not rows:
+                return
+            for row in rows:
+                yield self._row_to_message_dict(row, warn_context="conversation preview", summary_flag=True)
+            before = rows[-1]["id"]
 
     @classmethod
     def _search_message_fields(cls, fields: Optional[Collection[str]]) -> Optional[tuple[str, ...]]:

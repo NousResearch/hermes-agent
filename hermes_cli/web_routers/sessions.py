@@ -664,30 +664,13 @@ def _project_for_display(messages: list, *, home=None, inline_images: bool = Tru
     every retry (``refusing truncation without fallback``). Hide them the same way the
     Desktop collapses other display-only rows; typed notices stay for the timeline.
     """
-    from agent.compaction_display import project_compaction_message_for_display
-    from agent.context_compressor import is_compaction_summary_message
-    from agent.conversation_compression import _extract_steer_text_from_message
+    from agent.message_display import project_message_for_display, render_message_content
     from agent.history_commentary import project_history_commentary
-    from agent.prompt_builder import STEER_DISPLAY_KIND
     from agent.turn_failure_copy import untyped_failed_turn_display_kind
-
-    # inline_images=False (#116511): render content through the gateway's ``_coerce_message_text``
-    # projection so a data-URI image part becomes ``[image]`` — the same branch session.resume's
-    # ``inline_images=false`` uses, kilobytes instead of re-transmitting every stored attachment.
-    coerce = None
-    if not inline_images:
-        from tui_gateway.session_history import _coerce_message_text
-
-        def coerce(message: dict) -> dict:
-            if message.get("content") is not None:
-                return {**message, "content": _coerce_message_text(message["content"], image_urls=False)}
-            return message
 
     projected_messages = []
     for message in messages:
         message = _with_tool_call_labels(message)
-        if coerce is not None:
-            message = coerce(message)
         # Same read-side typing as session.resume (tui_gateway/session_history.py).
         failed_turn = not message.get("display_kind") and untyped_failed_turn_display_kind(
             message.get("role"), message.get("content"))
@@ -698,24 +681,22 @@ def _project_for_display(messages: list, *, home=None, inline_images: bool = Tru
             projected["display_kind"] = "hidden"
             projected_messages.append(projected)
             continue
-        # Mid-turn steer: the user's own words, not the model-facing marker (same as session.resume).
-        if message.get("role") == "user" and message.get("display_kind") == STEER_DISPLAY_KIND and (
-                steer_text := _extract_steer_text_from_message(message)):
-            message = {**message, "display_content": steer_text}
-        if not is_compaction_summary_message(message):
-            projected_messages.append(message)
-            continue
-        display_view = project_compaction_message_for_display(message)
+        display = project_message_for_display(message)
         projected = message.copy()
-        if display_view is None:
-            if not projected.get("display_kind"):
-                projected["display_kind"] = "hidden"
+        if not inline_images and message.get("content") is not None:
+            projected["content"] = render_message_content(message["content"], image_urls=False)
+        if not display.visible:
+            projected["display_kind"] = "hidden"
         else:
-            # Keep the physical content for inspection/export compatibility;
-            # Desktop consumes this display-only projection. A legacy hidden
-            # wrapper must not hide a successfully recovered live ask.
-            projected["display_content"] = display_view.get("content")
-            projected.pop("display_kind", None)
+            content = display.content
+            if not inline_images and content is not None:
+                content = render_message_content(content, image_urls=False)
+            if content != projected.get("content"):
+                projected["display_content"] = content
+            if display.kind:
+                projected["display_kind"] = display.kind
+            elif message.get("_compressed_summary"):
+                projected.pop("display_kind", None)
         projected_messages.append(projected)
     return project_history_commentary(projected_messages, home=home)
 

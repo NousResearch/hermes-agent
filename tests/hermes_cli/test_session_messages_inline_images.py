@@ -4,7 +4,7 @@ The REST pages carry ``content`` verbatim (a parts list with inline ``data:image
 Desktop's ``extractEmbeddedImages`` can pull them out of the text. A client that reads over
 a network had no way to ask for less: the measured conversation was 26.33 MiB per page read.
 ``inline_images=false`` (default ``true``) routes the content through the same
-``_coerce_message_text(image_urls=False)`` projection ``session.resume`` uses, rendering
+``render_message_content(image_urls=False)`` projection ``session.resume`` uses, rendering
 ``[image]`` in place of the data URI.
 """
 

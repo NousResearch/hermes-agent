@@ -6,7 +6,6 @@ from __future__ import annotations
 import re
 
 from .method_ctx import bind_module
-from agent.prompt_builder import STEER_DISPLAY_KIND
 
 # Discord routing note (gateway/run_inbound.py::discord_triggering_note) persisted as user
 # ``content`` by gateways before the authored-text fix; presentation-only heal for those rows.
@@ -71,60 +70,13 @@ def _build_persist_user_message(user_text: str, image_paths: list[str], run_mess
     return [{"type": "text", "text": persist_text}, *image_parts]
 
 
-_HISTORY_TEXT_KINDS = frozenset({"text", "input_text", "output_text"})
-_HISTORY_IMAGE_KINDS = frozenset({"image_url", "input_image", "image"})
-_HISTORY_AUDIO_KINDS = frozenset({"input_audio", "audio"})
-
-
-def _history_part_image_url(part: dict) -> str:
-    """The URL carried by an image part (``image_url`` dict or str), else ""."""
-    image_url = part.get("image_url")
-    if isinstance(image_url, dict):
-        image_url = image_url.get("url")
-    return image_url if isinstance(image_url, str) else ""
-
-
-def _history_dict_text(content: dict, *, image_urls: bool) -> str:
-    """Placeholder/text rendering of one structured content dict."""
-    kind = content.get("type")
-    if kind in _HISTORY_TEXT_KINDS:
-        return str(content.get("text") or content.get("content") or "")
-    if kind in _HISTORY_IMAGE_KINDS:
-        return (_history_part_image_url(content) if image_urls else "") or "[image]"
-    if kind in _HISTORY_AUDIO_KINDS:
-        return "[audio]"
-    if kind:
-        return f"[{kind}]"
-    if "text" in content:
-        return str(content.get("text") or "")
-    return "[structured content]"
-
-
 def _content_display_text(content: Any) -> str:
+    from agent.message_display import render_message_content
+
     if isinstance(content, list):
         return "\n".join(t for t in (_content_display_text(part).strip() for part in content) if t)
     if isinstance(content, dict):
-        return _history_dict_text(content, image_urls=False)
-    return "" if content is None else str(content)
-
-
-def _coerce_message_text(content: Any, *, image_urls: bool = True) -> str:
-    """Render ``message['content']`` (str, parts list, or one structured dict) as a plain string. Image parts
-    keep their URL inline so the desktop's ``extractEmbeddedImages`` and the resume payload agree with the
-    cached message (else the inline image flashed, then vanished); other shapes become a placeholder.
-    ``image_urls=False`` renders ``[image]`` instead — the ``inline_images=false`` read (#116511): a remote
-    client reads a transcript in kilobytes instead of re-transmitting every stored attachment."""
-    if isinstance(content, list):
-        chunks: list[str] = []
-        for part in content:
-            if isinstance(part, str) or (isinstance(part, dict) and isinstance(part.get("text"), str)):
-                chunks.append(part if isinstance(part, str) else part["text"])
-            elif isinstance(part, dict) and part.get("type"):
-                rendered = _history_dict_text(part, image_urls=image_urls)
-                chunks.append(rendered if part["type"] in _HISTORY_TEXT_KINDS else f"\n{rendered}")
-        return "".join(chunks)
-    if isinstance(content, dict):
-        return _history_dict_text(content, image_urls=image_urls)
+        return render_message_content(content, image_urls=False)
     return "" if content is None else str(content)
 
 
@@ -156,6 +108,7 @@ def _user_image_display_text(content: Any) -> str | None:
         return None
     text = text_part["text"]
     from agent.context_references import format_reference_value
+    from agent.message_display import content_image_url
     if "\n\n[Image attached at: " in text:
         caption, hints = text.split("\n\n[Image attached at: ", 1)
         if not caption or caption == "What do you see in this image?":
@@ -199,7 +152,7 @@ def _user_image_display_text(content: Any) -> str | None:
     for path, part in zip(paths, image_parts):
         if not Path(path).is_absolute() or not isinstance(part, dict) or part.get("type") != "image_url":
             return None
-        match = _IMAGE_DATA_RE.fullmatch(_history_part_image_url(part))
+        match = _IMAGE_DATA_RE.fullmatch(content_image_url(part))
         if not match or len(match[1]) > ((_FS_DATA_URL_MAX_BYTES + 2) // 3) * 4:
             return None
         try:
@@ -212,8 +165,10 @@ def _user_image_display_text(content: Any) -> str | None:
 
 
 def _history_text_only_part(part: dict) -> bool:
+    from agent.message_display import TEXT_CONTENT_KINDS
+
     kind = part.get("type")
-    return kind in _HISTORY_TEXT_KINDS or (kind is None and isinstance(part.get("text"), str))
+    return kind in TEXT_CONTENT_KINDS or (kind is None and isinstance(part.get("text"), str))
 
 
 def _is_text_only_busy_payload(content: Any) -> bool:
@@ -286,28 +241,34 @@ def _history_to_messages(history: list[dict], *, profile_home=None, image_urls: 
     """``image_urls=False`` is the ``inline_images=false`` projection (#116511): image parts render ``[image]``
     so a remote client's history read stays kilobytes instead of re-transmitting every stored attachment."""
     from agent.history_commentary import project_history_commentary
+    from agent.message_display import project_message_for_display, render_message_content
 
     messages = []
     tool_call_args = {}
     for m in history:
         if not isinstance(m, dict):
             continue
-        m = project_compaction_message_for_display(m)
-        if m is None:
+        display = project_message_for_display(m)
+        if not display.visible:
             continue
+        m = dict(display.message)
         role = m.get("role")
-        # display_kind="hidden": model-facing scaffolding the "[System:" sniff does not catch.
-        if role not in _HISTORY_ROLES or m.get("display_kind") == "hidden":
+        if role not in _HISTORY_ROLES:
             continue
-        content_text = _user_image_display_text(m.get("content")) if role == "user" else None
+        content_text = _user_image_display_text(display.content) if role == "user" else None
         if content_text is None:
-            content_text = _coerce_message_text(m.get("content"), image_urls=image_urls)
-        if _is_display_hidden_marker(role, content_text):
+            content_text = render_message_content(display.content, image_urls=image_urls)
+        if not display.kind and _is_display_hidden_marker(role, content_text):
             continue
-        if role == "user":
+        if role == "user" and not display.kind:
             # A setup handoff's first message carries the first-task skill after what the user sees.
             from agent.first_task_prompt import visible_text
-            content_text = visible_text(_DISCORD_TRIGGERING_NOTE_RE.sub(r"\1", content_text))
+            cleaned = visible_text(_DISCORD_TRIGGERING_NOTE_RE.sub(r"\1", content_text))
+            if cleaned != content_text and not display.kind:
+                display = project_message_for_display({**m, "content": cleaned})
+                content_text = render_message_content(display.content, image_urls=image_urls)
+            else:
+                content_text = cleaned
         if role == "assistant" and m.get("tool_calls"):
             for tc in m["tool_calls"]:
                 fn, tc_id = tc.get("function", {}), tc.get("id", "")
@@ -317,10 +278,6 @@ def _history_to_messages(history: list[dict], *, profile_home=None, image_urls: 
                     except (json.JSONDecodeError, TypeError):
                         args = {}
                     tool_call_args[tc_id] = (fn["name"], args)
-        if role == "user" and m.get("display_kind") == STEER_DISPLAY_KIND:
-            # Mid-turn /steer: show the user's own words, not the model-facing marker wrapper.
-            from agent.conversation_compression import _extract_steer_text_from_message
-            content_text = _extract_steer_text_from_message(m) or content_text
         if role == "tool":
             tc_name, tc_args = tool_call_args.get(m.get("tool_call_id") or "", (None, None))
             name = tc_name or m.get("tool_name") or "tool"
@@ -348,14 +305,10 @@ def _history_to_messages(history: list[dict], *, profile_home=None, image_urls: 
         # Durable row identity (_rows_to_conversation); reactions etc. address persisted messages by it.
         if m.get("_row_id") is not None:
             msg["row_id"] = m["_row_id"]
-        # A user turn shows its skill invocation, never the expanded body (rewind re-sends by ordinal).
-        invocation = _skill_scaffold_projection(content_text) if role == "user" else ""
-        if invocation:
-            msg.update(text=invocation, display_kind="skill_invocation")
         if role == "assistant":
             msg.update((key, m[key]) for key in _HISTORY_ASSISTANT_DETAIL_KEYS if m.get(key) is not None)
         # Display-only timeline metadata (model switches, delegation events).
-        display_kind = m.get("display_kind") or _legacy_display_kind(role, content_text)
+        display_kind = display.kind or _legacy_display_kind(role, content_text)
         if display_kind:
             msg["display_kind"] = display_kind
         if m.get("display_metadata"):

@@ -8,10 +8,10 @@ description: "Hermes 内置工具权威参考，按工具集分组"
 
 本页记录 Hermes 的内置工具，按工具集分组。可用性因平台、凭据和已启用的工具集而异。
 
-**当前注册表快速统计：** 约 71 个工具 —— 10 个浏览器工具（核心）+ 2 个 CDP 门控浏览器工具、4 个文件工具、4 个 Home Assistant 工具、2 个终端工具、2 个 Web 工具、5 个 Feishu 工具、7 个 Spotify 工具（由内置 `spotify` 插件注册）、5 个 Yuanbao 工具、9 个 kanban 工具（在 kanban 调度器生成 agent 时注册）、2 个 Discord 工具，以及若干独立工具（`memory`、`clarify`、`delegate_task`、`execute_code`、`cronjob`、`session_search`、`skill_view`/`skill_manage`/`skills_list`、`text_to_speech`、`image_generate`、`video_generate`、`vision_analyze`、`video_analyze`、`send_message`、`todo`、`computer_use`、`process`）。
+**当前注册表快速统计：** 约 71 个工具 —— 10 个浏览器工具（核心）+ 2 个 CDP 门控浏览器工具、4 个文件工具、2 个终端工具、2 个 Web 工具、5 个 Feishu 工具、5 个 Yuanbao 工具、9 个 kanban 工具（在 kanban 调度器生成 agent 时注册）、2 个 Discord 工具，以及若干独立工具（`memory`、`clarify`、`delegate_task`、`execute_code`、`cronjob`、`session_search`、`skill_view`/`skill_manage`/`skills_list`、`text_to_speech`、`image_generate`、`video_generate`、`vision_analyze`、`video_analyze`、`send_message`、`todo`、`computer_use`、`process`）。
 
 :::tip MCP 工具
-除内置工具外，Hermes 还可从 MCP 服务器动态加载工具。MCP 工具以 `mcp_<server>_` 为前缀（例如，`github` MCP 服务器的 `mcp_github_create_issue`）。配置方法见 [MCP 集成](/user-guide/features/mcp)。
+除内置工具外，Hermes 还可从 MCP 服务器动态加载工具。MCP 工具以 `mcp_<server>_` 为前缀（例如，`github` MCP 服务器的 `mcp_github_create_issue`）。配置方法见 [MCP 集成](../user-guide/features/mcp.md)。
 :::
 
 ## `browser` 工具集
@@ -90,15 +90,6 @@ description: "Hermes 内置工具权威参考，按工具集分组"
 | `search_files` | 搜索文件内容或按名称查找文件。用于替代终端中的 `grep`/`rg`/`find`/`ls`。基于 Ripgrep，比 shell 等效命令更快。内容搜索（`target='content'`）：在文件内进行正则搜索。输出模式：带行号的完整匹配… | — |
 | `write_file` | 将内容写入文件，完全替换现有内容。用于替代终端中的 `echo`/`cat heredoc`。自动创建父目录。**覆盖整个文件** —— 精准编辑请使用 `patch`。 | — |
 
-## `homeassistant` 工具集
-
-| 工具 | 描述 | 所需环境 |
-|------|------|----------|
-| `ha_call_service` | 调用 Home Assistant 服务以控制设备。使用 `ha_list_services` 发现各域的可用服务及其参数。 | — |
-| `ha_get_state` | 获取单个 Home Assistant 实体的详细状态，包括所有属性（亮度、颜色、温度设定值、传感器读数等）。 | — |
-| `ha_list_entities` | 列出 Home Assistant 实体。可按域（light、switch、climate、sensor、binary_sensor、cover、fan 等）或区域名称（客厅、厨房、卧室等）过滤。 | — |
-| `ha_list_services` | 列出用于设备控制的可用 Home Assistant 服务（动作）。显示每种设备类型可执行的操作及其接受的参数。用于发现如何控制通过 `ha_list_entities` 找到的设备。 | — |
-
 ## `computer_use` 工具集
 
 | 工具 | 描述 | 所需环境 |
@@ -106,7 +97,11 @@ description: "Hermes 内置工具权威参考，按工具集分组"
 | `computer_use` | 通过 cua-driver 在后台控制 macOS 桌面——截图（SOM / vision / AX）、点击 / 拖拽 / 滚动 / 输入 / 按键 / 等待、`list_apps`、`focus_app`。**不会**抢占用户的光标或键盘焦点。适用于任何支持工具的模型。仅限 macOS。 | `cua-driver` 在 `$PATH` 中（通过 `hermes tools` 安装）。 |
 
 :::note
-**Honcho 工具**（`honcho_profile`、`honcho_search`、`honcho_context`、`honcho_reasoning`、`honcho_conclude`）不再是内置工具。它们通过 `plugins/memory/honcho/` 的 Honcho 记忆提供者插件提供。安装和使用方法见 [Memory Providers](../user-guide/features/memory-providers.md)。
+**Honcho 工具**（`honcho_profile`、`honcho_search`、`honcho_context`、`honcho_reasoning`、`honcho_conclude`）不再是内置工具。它们由插件目录中的 Honcho 记忆提供者插件提供（`hermes plugins install honcho`）。安装和使用方法见 [Memory Providers](../user-guide/features/memory-providers.md)。
+
+**Home Assistant 工具**（`ha_list_entities`、`ha_get_state`、`ha_list_services`、`ha_call_service`，工具集 `homeassistant`）不再是内置工具。它们由插件目录中的 `homeassistant` 插件提供（`hermes plugins install homeassistant`）。详见 [Home Assistant](../user-guide/messaging/homeassistant.md)。
+
+**Spotify 工具**（`spotify_playback`、`spotify_devices`、`spotify_queue`、`spotify_search`、`spotify_playlists`、`spotify_albums`、`spotify_library`，工具集 `spotify`）不再是内置工具。它们由插件目录中的 `spotify` 插件提供（`hermes plugins install spotify`，然后运行 `hermes spotify login`）。详见 [Spotify](../user-guide/features/spotify.md)。
 :::
 
 ## `image_gen` 工具集
@@ -117,7 +112,7 @@ description: "Hermes 内置工具权威参考，按工具集分组"
 
 ## `kanban` 工具集
 
-在以下情况下注册：(a) agent 由 kanban 调度器生成（设置了 `HERMES_KANBAN_TASK` 环境变量），或 (b) 在显式启用 `kanban` 工具集的 profile 中运行。任务范围的 worker 使用生命周期工具处理其分配的任务；编排器 profile 还额外获得 `kanban_list` 和 `kanban_unblock` 等看板路由工具。完整工作流见 [Kanban 多 Agent](/user-guide/features/kanban)。
+在以下情况下注册：(a) agent 由 kanban 调度器生成（设置了 `HERMES_KANBAN_TASK` 环境变量），或 (b) 在显式启用 `kanban` 工具集的 profile 中运行。任务范围的 worker 使用生命周期工具处理其分配的任务；编排器 profile 还额外获得 `kanban_list` 和 `kanban_unblock` 等看板路由工具。完整工作流见 [Kanban 多 Agent](../user-guide/features/kanban.md)。
 
 | 工具 | 描述 | 所需环境 |
 |------|------|----------|
@@ -193,7 +188,7 @@ description: "Hermes 内置工具权威参考，按工具集分组"
 - **xAI Grok-Imagine** —— 文本生成视频和图片生成视频（SuperGrok OAuth 或 `XAI_API_KEY`）。
 - **FAL.ai** —— Veo 3.1、Pixverse v6、Kling O3（需要 `FAL_KEY`）。
 
-单个 `video_generate` 工具涵盖两种模态——传入 `image_url` 可为静态图片制作动画，省略则从文本生成。活跃后端自动路由到正确的端点。工具描述在会话启动时重建，以反映活跃后端的实际能力（模态、宽高比、分辨率、时长范围、最大参考图片数、音频支持）。后端开发见 [视频生成提供者插件](/developer-guide/video-gen-provider-plugin)。
+单个 `video_generate` 工具涵盖两种模态——传入 `image_url` 可为静态图片制作动画，省略则从文本生成。活跃后端自动路由到正确的端点。工具描述在会话启动时重建，以反映活跃后端的实际能力（模态、宽高比、分辨率、时长范围、最大参考图片数、音频支持）。后端开发见 [视频生成提供者插件](../developer-guide/video-gen-provider-plugin.md)。
 
 | 工具 | 描述 | 所需环境 |
 |------|------|----------|
@@ -204,7 +199,7 @@ description: "Hermes 内置工具权威参考，按工具集分组"
 | 工具 | 描述 | 所需环境 |
 |------|------|----------|
 | `web_search` | 在网络上搜索信息。默认返回最多 5 条结果，包含标题、URL 和描述。接受可选的 `limit`（1-100，默认 5）。查询直接传递给配置的后端，因此当后端支持时，`site:domain`、`filetype:pdf`、`intitle:word`、`-term`、`"exact phrase"` 等运算符可能有效。 | EXA_API_KEY 或 PARALLEL_API_KEY 或 FIRECRAWL_API_KEY 或 TAVILY_API_KEY |
-| `web_extract` | 从网页 URL 提取内容。以 Markdown 格式返回页面内容。也支持 PDF URL——直接传入 PDF 链接即可转换为 Markdown 文本。5000 字符以下的页面返回完整 Markdown；更大的页面由 LLM 摘要处理。 | EXA_API_KEY 或 PARALLEL_API_KEY 或 FIRECRAWL_API_KEY 或 TAVILY_API_KEY |
+| `web_extract` | 从网页 URL 提取内容。以 Markdown 格式返回页面内容。也支持 PDF URL——直接传入 PDF 链接即可转换为 Markdown 文本。预算内（默认 15000 字符）的页面完整返回；更大的页面截断为头+尾窗口，完整文本存储在磁盘上供 `read_file` 分页读取（无 LLM 摘要）。 | EXA_API_KEY 或 PARALLEL_API_KEY 或 FIRECRAWL_API_KEY 或 TAVILY_API_KEY |
 
 ## `x_search` 工具集
 
@@ -233,20 +228,6 @@ description: "Hermes 内置工具权威参考，按工具集分组"
 | 工具 | 描述 | 所需环境 |
 |------|------|----------|
 | `discord_admin` | 通过 REST API 管理 Discord 服务器：列出 guild/频道/角色，创建/编辑/删除频道，管理角色授予、禁言、踢出和封禁。 | `DISCORD_BOT_TOKEN` + bot 权限 |
-
-## `spotify` 工具集
-
-由内置 `spotify` 插件注册。需要 OAuth token——运行一次 `hermes spotify setup` 进行授权。
-
-| 工具 | 描述 | 所需环境 |
-|------|------|----------|
-| `spotify_playback` | 控制 Spotify 播放、查看当前播放状态或获取最近播放的曲目。 | Spotify OAuth |
-| `spotify_devices` | 列出 Spotify Connect 设备或将播放转移到其他设备。 | Spotify OAuth |
-| `spotify_queue` | 查看用户的 Spotify 队列或向其添加项目。 | Spotify OAuth |
-| `spotify_search` | 在 Spotify 目录中搜索曲目、专辑、艺术家、播放列表、节目或单集。 | Spotify OAuth |
-| `spotify_playlists` | 列出、查看、创建、更新和修改 Spotify 播放列表。 | Spotify OAuth |
-| `spotify_albums` | 获取 Spotify 专辑元数据或专辑曲目。 | Spotify OAuth |
-| `spotify_library` | 列出、保存或移除用户已保存的 Spotify 曲目或专辑。 | Spotify OAuth |
 
 ## `hermes-yuanbao` 工具集
 

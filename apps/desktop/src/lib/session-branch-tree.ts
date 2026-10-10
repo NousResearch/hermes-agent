@@ -17,11 +17,78 @@ export interface FlattenSessionsOptions {
 
 const recency = (session: SessionInfo): number => session.last_active || session.started_at || 0
 
+/**
+ * Parent id to nest under, or undefined for a top-level sibling.
+ *
+ * `/new` and idle/daily rotation keep `parent_session_id` for durable lineage
+ * but stamp `_reset_from`. Those are new conversations, not nested forks.
+ * Genuine `/branch` writes `_branched_from`. Optimistic desktop branch rows
+ * (and legacy forks minted before the marker) only have `parent_session_id`.
+ */
+export function forkParentId(session: SessionInfo): string | undefined {
+  if (session._reset_from?.trim()) {
+    return undefined
+  }
+
+  const branchedFrom = session._branched_from?.trim()
+
+  if (branchedFrom) {
+    return branchedFrom
+  }
+
+  return session.parent_session_id?.trim() || undefined
+}
+
+// Profile-qualified compression lineage, same key as mergeSessionPage (store/session.ts). The
+// backend's `_lineage_root_id` follows compression edges only; /branch and /new children get
+// their own root, so rows sharing a key are one conversation, never a fork.
+const lineageKey = (session: SessionInfo): string =>
+  `${(session.profile ?? '').trim() || 'default'}::${session._lineage_root_id?.trim() || session.id}`
+
+/**
+ * One row per compression lineage. A stale tip can outlive its rotation in the store (#82290);
+ * keep the row nothing in its lineage continues from, then the freshest by mergeSessionPage's
+ * recency rule (first in input on a tie).
+ */
+function collapseCompressionLineages(sessions: readonly SessionInfo[]): readonly SessionInfo[] {
+  const groups = new Map<string, SessionInfo[]>()
+
+  for (const session of sessions) {
+    const key = lineageKey(session)
+    const group = groups.get(key)
+
+    if (group) {
+      group.push(session)
+    } else {
+      groups.set(key, [session])
+    }
+  }
+
+  if (groups.size === sessions.length) {
+    return sessions
+  }
+
+  const winners = new Set<SessionInfo>()
+
+  for (const group of groups.values()) {
+    const continuedIds = new Set(group.map(session => session.parent_session_id?.trim()))
+
+    const score = (session: SessionInfo) =>
+      continuedIds.has(session.id) ? -Infinity : Math.max(session.last_active || 0, session.started_at || 0)
+
+    winners.add(group.reduce((best, session) => (score(session) > score(best) ? session : best)))
+  }
+
+  return sessions.filter(session => winners.has(session))
+}
+
 /** Flat list with branch/fork sessions nested visually under their parent. */
 export function flattenSessionsWithBranches(
-  sessions: readonly SessionInfo[],
+  input: readonly SessionInfo[],
   options: FlattenSessionsOptions = {}
 ): SidebarSessionEntry[] {
+  const sessions = collapseCompressionLineages(input)
+
   if (sessions.length < 2) {
     return sessions.map(session => ({ session }))
   }
@@ -37,11 +104,22 @@ export function flattenSessionsWithBranches(
     }
   }
 
+  // A collapsed stale tip still names its conversation: its /branch children nest under the survivor.
+  const survivorByLineage = new Map(sessions.map(session => [lineageKey(session), session]))
+
+  for (const session of input) {
+    const survivor = survivorByLineage.get(lineageKey(session))
+
+    if (survivor && !byVisibleId.has(session.id)) {
+      byVisibleId.set(session.id, survivor)
+    }
+  }
+
   const childrenByParent = new Map<string, SessionInfo[]>()
   const nestedIds = new Set<string>()
 
   for (const session of sessions) {
-    const parentId = session.parent_session_id?.trim()
+    const parentId = forkParentId(session)
 
     if (!parentId) {
       continue
@@ -49,7 +127,8 @@ export function flattenSessionsWithBranches(
 
     const parent = byVisibleId.get(parentId)
 
-    if (!parent || parent.id === session.id) {
+    // Compression ancestry is not a branch: never nest a row under its own lineage.
+    if (!parent || lineageKey(parent) === lineageKey(session)) {
       continue
     }
 
@@ -90,7 +169,7 @@ export function flattenSessionsWithBranches(
 
   // Depth-first so a branch-of-a-branch still renders under its own parent. The
   // `seen` set guards against pathological parent cycles, and the trailing sweep
-  // emits anything the walk somehow missed — nothing in the input is ever dropped.
+  // emits anything the walk somehow missed — nothing past the lineage collapse is dropped.
   const out: SidebarSessionEntry[] = []
   const seen = new Set<string>()
 

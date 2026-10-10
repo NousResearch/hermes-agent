@@ -41,7 +41,7 @@ HAR recording works differently in each case (see How to Run).
 ## Prerequisites
 
 - Playwright + a browser binary (capture step only):
-  - `pip install playwright` then `playwright install chromium`
+  - `pip install playwright` then `playwright install chromium --no-shell`
   - (If a system Playwright already has browsers under `~/.cache/ms-playwright`, reuse it.)
 - `requests` or `httpx` for the replay step (stdlib `urllib` also works).
 - No API keys. Any keys/tokens the client needs are the ones the HAR captured.
@@ -153,9 +153,9 @@ for p in r.json()["pages"]:
 End-to-end proof against a live site with no API key:
 
 ```bash
-python3 scripts/har_capture.py "https://en.wikipedia.org/wiki/Main_Page" /tmp/wiki.har \
+python3 scripts/har_capture.py "https://en.wikipedia.org/wiki/Main_Page" ~/.hermes/cache/scratch/wiki.har \
   --action "fill:input[name=search]:dune messiah" --action "sleep:3" --wait 2
-python3 scripts/har_to_client.py /tmp/wiki.har --host wikipedia.org --max-body 200
+python3 scripts/har_to_client.py ~/.hermes/cache/scratch/wiki.har --host wikipedia.org --max-body 200
 ```
 
 Expect the derivation to print `GET https://en.wikipedia.org/w/rest.php/v1/search/title`

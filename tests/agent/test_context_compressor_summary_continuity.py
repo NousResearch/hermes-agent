@@ -21,6 +21,11 @@ def _compressor(protect_first_n: int = 1) -> ContextCompressor:
             protect_first_n=protect_first_n,
             protect_last_n=1,
             quiet_mode=True,
+            # Pinned: these tests assert the stored summary ENDS with the raw
+            # LLM text. Lean mode (the default since the tail-default flip)
+            # appends the verbatim-user-quote appendix after it by design;
+            # the continuity contract under test is mode-independent.
+            tail_mode="legacy",
         )
 
 
@@ -442,13 +447,48 @@ def test_empty_post_handoff_window_noops_without_summary_call():
     # genuinely present in the returned (unchanged) transcript.
     assert compressor._previous_summary == old_summary
     assert compressor.compression_count == 0
-    # Mirrors the sibling no-compressible-window guard (#40803): the shape
-    # cannot shrink, so it counts as an ineffective strike (routed through
-    # the durable write-through helper) to arm the anti-thrash breaker.
-    assert compressor._ineffective_compression_count == 1
+    # Mirrors the sibling no-compressible-window guard, but as a structural
+    # no-op (#93022): the window holds nothing eligible to compress, so the
+    # compressor defers retries transiently instead of arming the permanent
+    # anti-thrash breaker.
+    assert compressor._ineffective_compression_count == 0
+    assert compressor._structural_no_op_backoff_until > 0.0
     assert compressor._last_compression_savings_pct == 0.0
     assert compressor._last_summary_dropped_count == 0
     assert compressor._last_summary_fallback_used is False
     assert compressor._last_compress_aborted is False
     telemetry = compressor._last_compression_telemetry or {}
     assert telemetry.get("failure_class") == "empty_post_handoff_window"
+
+
+def _turns(tag: str, n: int = 6):
+    return [
+        {"role": "user" if i % 2 == 0 else "assistant", "content": f"{tag} turn {i}"}
+        for i in range(n)
+    ]
+
+
+def test_fallback_handoff_anchors_reach_the_next_summarizer():
+    """A deterministic fallback replaces the older handoff in the transcript, and the next compaction drops
+    handoff rows from its window as already folded. The next summarizer must therefore see the fallback's
+    anchors, not only the stale in-memory summary from before the fallback."""
+    compressor = _compressor()
+    with patch("agent.context_compressor.call_llm", return_value=_response("FIRST healthy summary")):
+        messages = compressor.compress(_messages_with_handoff("seed summary"))
+    assert (compressor._previous_summary or "").endswith("FIRST healthy summary")
+
+    messages = messages + [
+        {"role": "user", "content": "FALLBACK-ANCHOR-ASK please fix the parser"},
+        {"role": "assistant", "content": "looking at it"},
+    ] + _turns("filler")
+    with patch.object(compressor, "_generate_summary", lambda *a, **k: None):
+        messages = compressor.compress(messages)
+    assert compressor._last_summary_fallback_used is True
+    assert any("FALLBACK-ANCHOR-ASK" in str(m.get("content")) for m in messages)
+
+    messages = messages + _turns("later")
+    with patch("agent.context_compressor.call_llm", return_value=_response("THIRD summary")) as mock_call:
+        compressor.compress(messages)
+
+    prompt = mock_call.call_args.kwargs["messages"][0]["content"]
+    assert "FALLBACK-ANCHOR-ASK" in prompt

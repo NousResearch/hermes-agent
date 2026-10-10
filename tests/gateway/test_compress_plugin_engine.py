@@ -22,7 +22,7 @@ import pytest
 
 from agent.context_engine import ContextEngine
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent
 from gateway.session import SessionEntry, SessionSource, build_session_key
 
 
@@ -38,18 +38,18 @@ class _FakePluginEngine(ContextEngine):
     def name(self) -> str:
         return "fake-plugin"
 
-    def update_from_response(self, usage: Dict[str, Any]) -> None:
+    def update_from_response(self, usage: dict[str, Any]) -> None:
         return None
 
-    def should_compress(self, prompt_tokens: int = None) -> bool:
+    def should_compress(self, prompt_tokens: int | None = None) -> bool:
         return False
 
     def compress(
         self,
-        messages: List[Dict[str, Any]],
-        current_tokens: int = None,
-        focus_topic: str = None,
-    ) -> List[Dict[str, Any]]:
+        messages: list[dict[str, Any]],
+        current_tokens: int | None = None,
+        focus_topic: str | None = None,
+    ) -> list[dict[str, Any]]:
         # Pretend we dropped a middle turn.
         self.compression_count += 1
         if len(messages) >= 3:

@@ -17,6 +17,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import projects_db as pdb
 
 
@@ -112,7 +113,7 @@ def test_task_on_scoped_board_inherits_project(client, project):
     assert r.status_code == 200, r.text
     task_id = r.json()["task"]["id"]
 
-    conn = kb.connect(board="widget")
+    conn = kbc.connect(board="widget")
     try:
         assert kb.get_task(conn, task_id).project_id == project["id"]
     finally:

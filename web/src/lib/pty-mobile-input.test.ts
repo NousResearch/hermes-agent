@@ -70,6 +70,26 @@ describe("normalizePtyMobileInput", () => {
   });
 });
 
+describe("normalizePtyMobileInput with a stale tracked line", () => {
+  it("emits deletes sized to the stale tracker unless the tracker was reset", () => {
+    // #106403: the tracked line survives a dashboard tab switch while the
+    // TUI composer moves on. A re-emitted word inside the replacement
+    // window is then rewritten against the stale snapshot — the DELETE
+    // count is the tracker's length, not the composer's, so the composer
+    // ends up with repeated characters ("hel" + 3×DEL + "hello" over a
+    // composer holding "hello" leaves "hehello"). Clearing the tracker on
+    // deactivation makes the same input pass through untouched.
+    const stale = normalizePtyMobileInput("hello", "hel", true);
+    expect(stale.normalized).toBe(true);
+    expect(stale.data).toBe("\x7f".repeat("hel".length) + "hello");
+
+    const reset = normalizePtyMobileInput("hello", "", true);
+    expect(reset.normalized).toBe(false);
+    expect(reset.data).toBe("hello");
+    expect(reset.nextLine).toBe("hello");
+  });
+});
+
 describe("updatePtyInputLine", () => {
   it("tracks printable text, delete, and submit", () => {
     expect(updatePtyInputLine("", "abc")).toBe("abc");

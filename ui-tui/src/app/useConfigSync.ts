@@ -4,6 +4,8 @@ import { useEffect, useRef } from 'react'
 import { resolveDetailsMode, resolveSections } from '../domain/details.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { ConfigFullResponse, ConfigMtimeResponse, ReloadMcpResponse } from '../gatewayTypes.js'
+import { syncTuiLocale } from '../i18n/loader.js'
+import { t } from '../i18n/runtime.js'
 import { DEFAULT_VOICE_RECORD_KEY, type ParsedVoiceRecordKey, parseVoiceRecordKey } from '../lib/platform.js'
 import { asRpcResult } from '../lib/rpc.js'
 
@@ -27,6 +29,20 @@ const STATUSBAR_ALIAS: Record<string, StatusBarMode> = {
 
 export const normalizeStatusBar = (raw: unknown): StatusBarMode =>
   raw === false ? 'off' : typeof raw === 'string' ? (STATUSBAR_ALIAS[raw.trim().toLowerCase()] ?? 'top') : 'top'
+
+// `display.status_bar.fields` — the SAME key the classic CLI bar honors
+// (PR #98250). A non-empty list filters status-rule segments; missing/empty/
+// malformed = null (user hasn't customized → show the default set). Unknown
+// names pass through harmlessly — the renderer only tests membership.
+export const normalizeStatusBarFields = (raw: unknown): null | ReadonlySet<string> => {
+  if (!Array.isArray(raw) || raw.length === 0) {
+    return null
+  }
+
+  const cleaned = raw.map(v => String(v).trim().toLowerCase()).filter(Boolean)
+
+  return cleaned.length ? new Set(cleaned) : null
+}
 
 const BUSY_MODES = new Set<BusyInputMode>(['interrupt', 'queue', 'steer'])
 
@@ -239,10 +255,17 @@ const _pasteCollapseCharsFromConfig = (cfg: ConfigFullResponse | null): number =
 export async function hydrateFullConfig(
   gw: GatewayClient,
   setBell: (v: boolean) => void,
-  setVoiceRecordKey?: (v: ParsedVoiceRecordKey) => void
+  setVoiceRecordKey?: (v: ParsedVoiceRecordKey) => void,
+  setBellOnPrompt?: (v: boolean) => void
 ): Promise<ConfigFullResponse | null> {
   const cfg = await quietRpc<ConfigFullResponse>(gw, 'config.get', { key: 'full' })
-  applyDisplay(cfg, setBell, setVoiceRecordKey)
+  applyDisplay(cfg, setBell, setVoiceRecordKey, setBellOnPrompt)
+
+  // Same fail-safe as the voice key: a null config (transient RPC failure)
+  // keeps the last language rather than snapping back to English.
+  if (cfg) {
+    void syncTuiLocale(gw, cfg.config?.display?.language)
+  }
 
   return cfg
 }
@@ -250,12 +273,15 @@ export async function hydrateFullConfig(
 export const applyDisplay = (
   cfg: ConfigFullResponse | null,
   setBell: (v: boolean) => void,
-  setVoiceRecordKey?: (v: ParsedVoiceRecordKey) => void
+  setVoiceRecordKey?: (v: ParsedVoiceRecordKey) => void,
+  setBellOnPrompt?: (v: boolean) => void
 ) => {
   const d = cfg?.config?.display ?? {}
   const approvals = cfg?.config?.approvals
 
   setBell(!!d.bell_on_complete)
+
+  setBellOnPrompt?.(!!d.bell_on_prompt)
 
   applyConfiguredTuiTheme(d.tui_theme)
 
@@ -289,6 +315,7 @@ export const applyDisplay = (
     sections: resolveSections(d.sections),
     showReasoning: !!d.show_reasoning,
     statusBar: normalizeStatusBar(d.tui_statusbar),
+    statusBarFields: normalizeStatusBarFields(d.status_bar?.fields),
     streaming: d.streaming !== false,
     // The SAME key that stamps [HH:MM] on classic-CLI labels (#41531) —
     // no separate TUI knob.
@@ -299,6 +326,7 @@ export const applyDisplay = (
 export function useConfigSync({
   gw,
   setBellOnComplete,
+  setBellOnPrompt,
   setVoiceEnabled,
   setVoiceRecordKey,
   sid
@@ -324,8 +352,8 @@ export function useConfigSync({
       // mcp_rev) look like an MCP change and fire a needless reload.mcp.
       mcpRevRef.current.accepted = String(r?.mcp_rev ?? '')
     })
-    void hydrateFullConfig(gw, setBellOnComplete, setVoiceRecordKey)
-  }, [gw, setBellOnComplete, setVoiceEnabled, setVoiceRecordKey, sid])
+    void hydrateFullConfig(gw, setBellOnComplete, setVoiceRecordKey, setBellOnPrompt)
+  }, [gw, setBellOnComplete, setBellOnPrompt, setVoiceEnabled, setVoiceRecordKey, sid])
 
   useEffect(() => {
     if (!sid) {
@@ -354,7 +382,7 @@ export function useConfigSync({
         // server confirms the revision was loaded.
         if (nextMcpRev) {
           void syncMcpReload(gw, sid, nextMcpRev, mcpRevRef.current, () =>
-            turnController.pushActivity('MCP reloaded after config change')
+            turnController.pushActivity(t('status.mcpReloaded'))
           )
         }
 
@@ -368,21 +396,22 @@ export function useConfigSync({
         // reload-on-any-change there (no ack tracking possible).
         if (!nextMcpRev) {
           quietRpc<ReloadMcpResponse>(gw, 'reload.mcp', { session_id: sid, confirm: true }).then(
-            r => r && turnController.pushActivity('MCP reloaded after config change')
+            r => r && turnController.pushActivity(t('status.mcpReloaded'))
           )
         }
 
-        void hydrateFullConfig(gw, setBellOnComplete, setVoiceRecordKey)
+        void hydrateFullConfig(gw, setBellOnComplete, setVoiceRecordKey, setBellOnPrompt)
       })
     }, MTIME_POLL_MS)
 
     return () => clearInterval(id)
-  }, [gw, setBellOnComplete, setVoiceRecordKey, sid])
+  }, [gw, setBellOnComplete, setBellOnPrompt, setVoiceRecordKey, sid])
 }
 
 export interface UseConfigSyncOptions {
   gw: GatewayClient
   setBellOnComplete: (v: boolean) => void
+  setBellOnPrompt?: (v: boolean) => void
   setVoiceEnabled: (v: boolean) => void
   setVoiceRecordKey?: (v: ParsedVoiceRecordKey) => void
   sid: null | string

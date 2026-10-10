@@ -271,12 +271,12 @@ messaging = [
 ] # aiohttp 3.14.3: prior CVEs + GHSA-cq5v-8q36-5273/GHSA-mfx4-hv73-q22v/GHSA-mq44-7p77-q5h7
 cron = [] # croniter is now a core dependency; this extra kept for back-compat
 slack = ["slack-bolt==1.30.0", "slack-sdk==3.44.1", "aiohttp==3.14.3"]
-# Matrix gateway deps. E2EE support (`mautrix[encryption]`) pulls
-# python-olm, whose vendored libolm cannot build on Windows or modern macOS.
-# The base mautrix package is pure Python and supports unencrypted rooms on
-# every platform, so keep the common adapter dependencies cross-platform.
+# Preserve the existing Linux E2EE install path. python-olm (via encryption)
+# cannot build on Windows or modern macOS, so those targets get base mautrix
+# for unencrypted rooms. Common adapter dependencies stay cross-platform.
 matrix = [
-  "mautrix==0.21.1",
+  "mautrix[encryption]==0.21.1; sys_platform == 'linux'",
+  "mautrix==0.21.1; sys_platform != 'linux'",
   "aiosqlite==0.22.1",
   "asyncpg==0.31.0",
   "aiohttp-socks==0.11.0",

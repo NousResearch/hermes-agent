@@ -152,6 +152,7 @@ plugins/platforms/                  # plugin-packaged adapters (one dir each)
 ├── slack/adapter.py        # Slack Socket Mode
 ├── whatsapp/adapter.py     # WhatsApp Business Cloud API
 ├── matrix/adapter.py       # Matrix via mautrix (optional E2EE)
+├── matrix/rendering.py     # Outbound HTML sanitisation and TeX helpers
 ├── mattermost/adapter.py   # Mattermost WebSocket API
 ├── email/adapter.py        # Email via IMAP/SMTP
 ├── sms/adapter.py          # SMS via Twilio

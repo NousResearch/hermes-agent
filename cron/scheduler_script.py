@@ -1,4 +1,4 @@
-"""Cron pre-run script execution: timeouts, Windows venv bootstrap, process-tree termination,
+"""Cron pre-run script execution: timeouts, interpreter selection, process-tree termination,
 and the claim-heartbeat thread that keeps a long script's run claim alive.
 
 Split out of ``cron.scheduler``. Import names from this module directly (``cron.scheduler`` only
@@ -104,17 +104,6 @@ def _get_session_db_timeout() -> float:
     return 10.0 if resolved is None else resolved
 
 
-def _read_windows_pyvenv_cfg(venv_dir: Path) -> dict[str, str]:
-    try:
-        lines = (venv_dir / "pyvenv.cfg").read_text(encoding="utf-8-sig").splitlines()
-    except OSError:
-        return {}
-    return {
-        key.strip().lower(): value.strip()
-        for key, value in (raw.split("=", 1) for raw in lines if "=" in raw)
-    }
-
-
 # Mirrors ``python script.py``: sys.path[0] is the script's directory (none under -P), a real
 # ``__main__`` module that outlives the body (atexit/threads can still pickle its classes; a
 # runpy temp module is swapped out when the body returns), plus the live checkout next.
@@ -165,14 +154,22 @@ def _posix_cron_script_argv(script: Path) -> tuple[list[str], dict[str, str]]:
 
 def _windows_cron_python_invocation(python_exe: str) -> tuple[str, dict[str, str]]:
     """Hidden, output-capable Python invocation for Windows cron scripts. ``pythonw.exe`` loses
-    captured output; uv venv launchers can re-exec the base console python and flash a window
-    even with CREATE_NO_WINDOW, so run the base python directly with venv paths overlaid in env."""
+    captured output, so the sibling console ``python.exe`` is substituted when present. Otherwise
+    the handed interpreter runs as-is: the runner spawns with ``windows_hide_flags()`` — plain
+    ``CREATE_NO_WINDOW``, never ``DETACHED_PROCESS`` — and under that flag the uv venv redirector
+    (``venv\\Scripts\\python.exe``) re-execs the base interpreter *windowless*, inheriting the
+    shim's hidden console. Probed on Windows 11 for #129104: the child reports no console at all
+    and zero new ``ConsoleWindowClass`` windows under plain ``CREATE_NO_WINDOW``; the historical
+    flash required ``DETACHED_PROCESS`` in the bundle, which makes Win32 ignore
+    ``CREATE_NO_WINDOW`` — the same A/B result the gateway relies on
+    (``hermes_cli/gateway_windows.py::_resolve_detached_python``). The pre-#129104 detour to the
+    base interpreter with a ``VIRTUAL_ENV``/``PYTHONPATH`` overlay defended against that
+    non-repro and is gone, so a venv script runs on its own interpreter and ``.pth`` files are
+    processed by the venv's own ``site`` initialization again."""
     if sys.platform != "win32":
         return python_exe, {}
 
     interpreter = _sched.Path(python_exe)
-    venv_dir = interpreter.parent.parent
-    env_overlay: dict[str, str] = {}
 
     if interpreter.name.lower() == "pythonw.exe":
         sibling = interpreter.with_name("python.exe")
@@ -194,22 +191,7 @@ def _windows_cron_python_invocation(python_exe: str) -> tuple[str, dict[str, str
             return str(managed_python), {"PYTHONPATH": os.pathsep.join(
                 [str(repo), str(dependency_site(environment))])}
 
-    cfg = _read_windows_pyvenv_cfg(venv_dir)
-    home = cfg.get("home", "")
-    site_packages = venv_dir / "Lib" / "site-packages"
-    if "uv" in cfg and home:
-        base_python = _sched.Path(home) / "python.exe"
-        if base_python.exists() and site_packages.exists():
-            interpreter = base_python
-            env_overlay["VIRTUAL_ENV"] = str(venv_dir)
-            pythonpath_entries = [
-                str(_sched.Path(__file__).resolve().parents[1]), str(site_packages)]
-            existing_pythonpath = os.environ.get("PYTHONPATH", "")
-            if existing_pythonpath:
-                pythonpath_entries.append(existing_pythonpath)
-            env_overlay["PYTHONPATH"] = os.pathsep.join(pythonpath_entries)
-
-    return str(interpreter), env_overlay
+    return str(interpreter), {}
 
 
 def _terminate_cron_script_process(proc: subprocess.Popen) -> None:
@@ -291,33 +273,6 @@ def _drain_script_pipes(proc: subprocess.Popen) -> None:
                 stream.close()
     with contextlib.suppress(subprocess.TimeoutExpired):
         proc.wait(timeout=5.0)
-
-
-def _windows_cron_bootstrap_argv(
-    python_exe: str, env_overlay: dict[str, str], script_path: str) -> list[str]:
-    """Bootstrap a cron script under the base interpreter with ``.pth`` support. Overlay mode puts
-    the venv on ``PYTHONPATH``, but ``.pth`` files are only processed by ``site.addsitedir()``, so
-    editable installs would be invisible; bootstrap via addsitedir + ``runpy.run_path`` (keeps
-    ``__file__``/``sys.path[0]`` semantics). Plain invocation if the venv is unresolvable."""
-    site_packages = next((Path(item) for item in env_overlay.get("PYTHONPATH", "").split(os.pathsep)
-                          if Path(item).name == "site-packages"),
-                         _sched.Path(env_overlay.get("VIRTUAL_ENV", "")) / "Lib" / "site-packages")
-    if not site_packages.is_dir():
-        # Warn: silent fallback would make "editable installs invisible" undiagnosable.
-        logger.warning(
-            "Windows cron script: venv site-packages %s not found; running "
-            "without .pth processing (editable installs may be unimportable)",
-            site_packages)
-        return [python_exe, script_path]
-    bootstrap = (
-        "import os, runpy, site, sys;"
-        f"site.addsitedir({str(site_packages)!r});"
-        "script = sys.argv[1];"
-        "sys.argv = [script] + sys.argv[2:];"
-        "sys.path.insert(0, os.path.dirname(os.path.abspath(script)));"
-        "runpy.run_path(script, run_name='__main__')"
-    )
-    return [python_exe, "-c", bootstrap, script_path]
 
 
 def _resolve_script_path(script_path: str) -> tuple[Optional[Path], Optional[str]]:
@@ -424,8 +379,6 @@ def _script_argv(
         argv, env_overlay = _posix_cron_script_argv(path)
         return argv, env_overlay, None
     python_exe, env_overlay = _windows_cron_python_invocation(sys.executable)
-    if env_overlay:
-        return _windows_cron_bootstrap_argv(python_exe, env_overlay, str(path)), env_overlay, None
     return [python_exe, str(path)], env_overlay, None
 
 

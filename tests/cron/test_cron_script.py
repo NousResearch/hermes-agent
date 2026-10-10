@@ -192,10 +192,12 @@ class TestRunJobScript:
         assert output == "ABSENT"
 
     @pytest.mark.platforms("windows")
-    def test_windows_uv_venv_python_script_bypasses_launcher(self, cron_env, tmp_path, monkeypatch):
-        # Windows-only: the fake ``sys.platform`` could not reproduce the
-        # ``Scripts/python.exe`` launcher layout or the CREATE_NO_WINDOW
-        # creationflags this branch exists for.
+    def test_windows_uv_venv_script_runs_on_the_venv_interpreter(self, cron_env, tmp_path, monkeypatch):
+        """#129104: under the runner's spawn flags (windows_hide_flags() - plain
+        CREATE_NO_WINDOW, never DETACHED_PROCESS) the uv venv redirector re-execs the
+        base interpreter windowless, so the venv's own Scripts/python.exe is the right
+        interpreter: no base-python detour, no VIRTUAL_ENV/PYTHONPATH overlay, plain
+        ``python script.py`` argv (the venv's site initialization processes .pth files)."""
         from cron import scheduler as sched_mod
         from cron import scheduler_script as sched_script
         from cron.scheduler_script import _run_job_script
@@ -205,10 +207,8 @@ class TestRunJobScript:
 
         venv = tmp_path / "venv"
         venv_scripts = venv / "Scripts"
-        site_packages = venv / "Lib" / "site-packages"
         base = tmp_path / "base"
         venv_scripts.mkdir(parents=True)
-        site_packages.mkdir(parents=True)
         base.mkdir()
         venv_python = venv_scripts / "python.exe"
         base_python = base / "python.exe"
@@ -233,105 +233,25 @@ class TestRunJobScript:
             def wait(self, timeout=None):
                 return self.returncode
 
-        fake_run = FakeProc
-
         monkeypatch.setattr(sched_mod.sys, "executable", str(venv_python))
         monkeypatch.setattr(sched_script, "windows_hide_flags", lambda: 0x08000000)
-        monkeypatch.setattr(sched_mod.subprocess, "Popen", fake_run)
+        monkeypatch.setattr(sched_mod.subprocess, "Popen", FakeProc)
 
         success, output = _run_job_script("probe.py")
 
         assert success is True
         assert output == "ok"
-        # Overlay mode bootstraps with site.addsitedir() so .pth files
-        # (editable installs) are processed — plain PYTHONPATH cannot do that.
-        assert captured["argv"][0] == str(base_python)
-        assert captured["argv"][1] == "-c"
-        assert "site.addsitedir" in captured["argv"][2]
-        m = re.search(r"site\.addsitedir\('([^']*)'\)", captured["argv"][2])
-        assert m is not None
-        assert Path(m.group(1)) == site_packages
-        assert captured["argv"][3] == str(script.resolve())
-        # The script runner always adds CREATE_NEW_PROCESS_GROUP on win32 so a
-        # cancel can taskkill the whole tree; on POSIX the getattr default is
-        # 0 and the flag set is exactly windows_hide_flags().
+        # The venv redirector runs untouched - no base-interpreter swap.
+        assert captured["argv"] == [str(venv_python), str(script.resolve())]
+        # Same spawn flags as before: CREATE_NO_WINDOW (from windows_hide_flags)
+        # plus CREATE_NEW_PROCESS_GROUP, added by the runner on win32 so a cancel
+        # can taskkill the whole tree.
         expected_flags = sched_script.windows_hide_flags() | getattr(
             sched_mod.subprocess, "CREATE_NEW_PROCESS_GROUP", 0
         )
         assert captured["kwargs"]["creationflags"] == expected_flags
-        env = captured["kwargs"]["env"]
-        assert env["VIRTUAL_ENV"] == str(venv)
-        assert str(site_packages) in env["PYTHONPATH"]
-
-    def test_bootstrap_argv_makes_pth_editable_installs_importable(self, cron_env, tmp_path):
-        """The bootstrap must process .pth files — the whole reason the
-        overlay mode exists is that PYTHONPATH alone cannot (editable
-        installs would raise ModuleNotFoundError in cron scripts)."""
-
-        from cron.scheduler_script import _windows_cron_bootstrap_argv
-
-        venv = tmp_path / "venv"
-        site_packages = venv / "Lib" / "site-packages"
-        site_packages.mkdir(parents=True)
-        # Simulate `pip install -e`: a .pth file pointing at a source dir.
-        editable_src = tmp_path / "editable_pkg"
-        editable_src.mkdir()
-        (editable_src / "mypkg.py").write_text("VALUE = 42\n", encoding="utf-8")
-        (site_packages / "editable.pth").write_text(
-            str(editable_src) + "\n", encoding="utf-8"
-        )
-
-        script = cron_env / "scripts" / "probe.py"
-        script.write_text("import mypkg; print(mypkg.VALUE)\n", encoding="utf-8")
-
-        argv = _windows_cron_bootstrap_argv(
-            sys.executable, {"VIRTUAL_ENV": str(venv)}, str(script)
-        )
-        # Run the bootstrap with the current interpreter (stands in for the
-        # base python.exe on Windows; the semantics are interpreter-agnostic).
-        result = subprocess.run(argv, capture_output=True, text=True)
-        assert result.returncode == 0, result.stderr
-        assert result.stdout.strip() == "42"
-
-    def test_bootstrap_keeps_script_directory_on_sys_path(self, cron_env, tmp_path):
-        """`python script.py` puts the script's directory on sys.path, so a
-        script may import a sibling module. The bootstrap must preserve that
-        (runpy.run_path alone does not add it)."""
-
-        from cron.scheduler_script import _windows_cron_bootstrap_argv
-
-        venv = tmp_path / "venv"
-        site_packages = venv / "Lib" / "site-packages"
-        site_packages.mkdir(parents=True)
-
-        (cron_env / "scripts" / "sibling_helper.py").write_text(
-            "GREETING = 'sibling ok'\n", encoding="utf-8"
-        )
-        script = cron_env / "scripts" / "probe.py"
-        script.write_text(
-            "import sibling_helper; print(sibling_helper.GREETING)\n",
-            encoding="utf-8",
-        )
-
-        argv = _windows_cron_bootstrap_argv(
-            sys.executable, {"VIRTUAL_ENV": str(venv)}, str(script)
-        )
-        result = subprocess.run(argv, capture_output=True, text=True)
-        assert result.returncode == 0, result.stderr
-        assert result.stdout.strip() == "sibling ok"
-
-    def test_bootstrap_argv_falls_back_without_site_packages(self, cron_env, tmp_path):
-        """Unresolvable venv layout must not break the run — fall back to a
-        plain invocation (pre-existing PYTHONPATH behaviour)."""
-        from cron.scheduler_script import _windows_cron_bootstrap_argv
-
-        script = cron_env / "scripts" / "probe.py"
-        script.write_text('print("ok")\n', encoding="utf-8")
-
-        argv = _windows_cron_bootstrap_argv(
-            sys.executable, {"VIRTUAL_ENV": str(tmp_path / "missing")}, str(script)
-        )
-        assert argv == [sys.executable, str(script)]
+        assert "VIRTUAL_ENV" not in captured["kwargs"]["env"]
+        assert "PYTHONPATH" not in captured["kwargs"]["env"]
 
     @pytest.mark.platforms("posix")
     def test_posix_managed_store_script_runs_on_venv_with_live_checkout(

@@ -1,12 +1,14 @@
 """RelayAdapter capability-advertisement tests (relay Phase 1, Task 1.1)."""
 
 import asyncio
+from typing import Any
 
 import pytest
 
 from gateway.config import Platform, PlatformConfig
 from gateway.relay.adapter import RelayAdapter
 from gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
+from gateway.relay.transport import InboundHandler, PassthroughHandler
 
 
 def make_desc(**kw) -> CapabilityDescriptor:
@@ -52,21 +54,54 @@ def test_len_fn_utf16_counts_code_units():
 
 
 class _CaptureTransport:
-    """Minimal RelayTransport stand-in that records the outbound action."""
+    """Recording transport for outbound routing tests."""
 
-    def __init__(self):
-        self.sent = None
-        self.sent_platform = None
-        # No concrete fronted identities ⇒ fronts_platform is a no-op here.
-        self._identities = []
+    def __init__(self) -> None:
+        self.sent: dict[str, Any] | None = None
+        self.sent_platform: str | None = None
+        self._identities: list[tuple[str, str]] = []
+        self._h: InboundHandler | None = None
 
     def set_inbound_handler(self, h):
         self._h = h
+    async def connect(self) -> bool:
+        raise AssertionError("Unexpected transport.connect call")
 
-    async def send_outbound(self, action, *, platform=None):
+    async def disconnect(self) -> None:
+        raise AssertionError("Unexpected transport.disconnect call")
+
+    async def handshake(self) -> CapabilityDescriptor:
+        raise AssertionError("Unexpected transport.handshake call")
+
+    def set_inbound_handler(self, handler: InboundHandler) -> None:
+        self._h = handler
+
+    def set_passthrough_handler(self, handler: PassthroughHandler) -> None:
+        raise AssertionError("Unexpected transport.set_passthrough_handler call")
+
+    async def send_outbound(
+        self, action: dict[str, Any], *, platform: str | None = None
+    ) -> dict[str, Any]:
         self.sent = action
         self.sent_platform = platform
         return {"success": True, "message_id": "m1"}
+
+    async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
+        raise AssertionError("Unexpected transport.get_chat_info call")
+
+    async def send_interrupt(
+        self, session_key: str, reason: str | None = None
+    ) -> None:
+        raise AssertionError("Unexpected transport.send_interrupt call")
+
+    async def go_idle(self, timeout_s: float = 10.0) -> bool:
+        raise AssertionError("Unexpected transport.go_idle call")
+
+    async def send_follow_up(
+        self, action: dict[str, Any], *, platform: str | None = None
+    ) -> dict[str, Any]:
+        raise AssertionError("Unexpected transport.send_follow_up call")
+
 
 
 def _make_event(chat_id="chan-1", scope_id="scope-9"):
@@ -131,6 +166,7 @@ async def test_send_reattaches_dm_user_id_from_inbound_scope():
 
     await a.send("dm-1", "the reply")
 
+    assert isinstance(t.sent, dict)
     assert t.sent["metadata"].get("user_id") == "user-42"
     # A DM carries no scope_id — only the author discriminator.
     assert "scope_id" not in t.sent["metadata"]
@@ -153,6 +189,7 @@ async def test_scoped_reply_reattaches_both_scope_id_and_user_id():
         )
     )
     await a.send("chan-1", "hi")
+    assert isinstance(t.sent, dict)
     assert t.sent["metadata"].get("scope_id") == "scope-9"
     assert t.sent["metadata"].get("user_id") == "user-42"
 

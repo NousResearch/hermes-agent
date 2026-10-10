@@ -154,6 +154,21 @@ describe('applyDisplay', () => {
 
     expect($uiState.get().sections).toEqual({ activity: 'hidden' })
   })
+
+  it('hides the transcript scrollbar only on an explicit false', () => {
+    const setBell = vi.fn()
+
+    // Absent key keeps the default (bar drawn) — asserted first so the
+    // test cannot pass vacuously.
+    applyDisplay({ config: { display: {} } }, setBell)
+    expect($uiState.get().scrollbar).toBe(true)
+
+    applyDisplay({ config: { display: { scrollbar: false } } }, setBell)
+    expect($uiState.get().scrollbar).toBe(false)
+
+    applyDisplay({ config: { display: { scrollbar: true } } }, setBell)
+    expect($uiState.get().scrollbar).toBe(true)
+  })
 })
 
 describe('normalizeStatusBar', () => {

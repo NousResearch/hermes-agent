@@ -283,6 +283,42 @@ class TestCamofoxVisionConfig:
         assert mock_llm.call_args.kwargs["temperature"] == 1.0
         assert mock_llm.call_args.kwargs["timeout"] == 45.0
 
+    @patch("tools.browser_camofox.requests.post")
+    @patch("tools.browser_camofox._get_raw")
+    def test_screenshot_lands_in_the_shared_cache_dir_and_prunes_it(self, mock_get_raw, mock_post, monkeypatch):
+        """The Camofox file sits in the dir every other reader resolves (browser_vision, the
+        gateway prune, sandbox mounts), and an old file there is pruned as browser_vision does."""
+        import os
+        import time
+        from pathlib import Path
+        from hermes_constants import get_hermes_dir
+        from tools import browser_tool
+        from tools.credential_files import get_cache_directory_mounts
+
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        monkeypatch.setattr(browser_tool, "_last_screenshot_cleanup_by_dir", {})
+        shared = get_hermes_dir("cache/screenshots", "browser_screenshots")
+        shared.mkdir(parents=True, exist_ok=True)
+        stale = shared / "browser_screenshot_stale.png"
+        stale.write_bytes(b"old")
+        os.utime(stale, (time.time() - 3 * 86400,) * 2)
+        mounted = {m["host_path"] for m in get_cache_directory_mounts()}
+
+        mock_post.return_value = _mock_response(json_data={"tabId": "tab12", "url": "https://x.com"})
+        camofox_navigate("https://x.com", task_id="t12")
+        mock_get_raw.return_value = _mock_response()
+        llm = MagicMock()
+        llm.choices = [MagicMock()]
+        llm.choices[0].message.content = "ok"
+        with patch("agent.auxiliary_client.call_llm", return_value=llm):
+            result = json.loads(camofox_vision("what?", task_id="t12"))
+
+        path = Path(result["screenshot_path"])
+        assert path.is_file() and path.parent == shared
+        assert str(path.parent) in mounted
+        assert get_hermes_dir("cache/screenshots", "browser_screenshots") == shared
+        assert not stale.exists()
+
 
 
 # ---------------------------------------------------------------------------

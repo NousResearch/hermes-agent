@@ -81,6 +81,7 @@ gateway:
     running_processes: "**Çalışan arka plan süreçleri:** {count}"
     async_jobs: "**Gateway asenkron işleri:** {count}"
     background_delegations: "**Arka plan delegasyonları:** {count}"
+    plugin_status: "**Eklenti durumu:** {count}"
     none: "Aktif ajan veya çalışan görev yok."
     state_starting: "başlatılıyor"
     state_running: "çalışıyor"

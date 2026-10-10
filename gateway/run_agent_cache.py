@@ -4,6 +4,7 @@ for GatewayRunner (MRO mixin). ``gateway.run`` internals are imported lazily ins
 
 from __future__ import annotations
 
+import dataclasses
 import importlib
 import logging
 import threading
@@ -14,7 +15,8 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from agent.interrupt_compat import _accepts_keyword
 from gateway.config import Platform
-from gateway.session import SessionSource, build_session_context_prompt
+from gateway.run_inbound_turn_context import reports_turn_context
+from gateway.session import SessionSource, build_session_context_prompt, with_chat_metadata_from
 from gateway.session_prompt_pin import PROMPT_PIN_VERSION, sanitize_prompt_pin
 from gateway.run_shutdown import _log_suppressed
 from hermes_cli.config import DEFAULT_CONFIG, cfg_get
@@ -702,6 +704,16 @@ class GatewayAgentCacheMixin:
         except Exception:
             # Durability protects cache continuity; a store outage must not block the user turn.
             logger.debug("Failed to persist prompt pin for %s", session_key, exc_info=True)
+
+    def _prompt_session_context(self: "GatewayRunner", context, session_entry):
+        """*context* for the session-context prompt. When the receiving adapter reports chat changes
+        through ``prepare_turn_context``, the prompt keeps the names and topic from the session
+        origin, so a rename does not rewrite the system prompt. Tools read *context* itself and see
+        the current names."""
+        origin = session_entry.origin if session_entry else None
+        if origin is None or not reports_turn_context(self._intake_adapter_for(context.source)):
+            return context
+        return dataclasses.replace(context, source=with_chat_metadata_from(context.source, origin))
 
     def _pinned_session_context_prompt(
         self, context, redact_pii: bool, session_key: Optional[str], *, internal: bool = False,

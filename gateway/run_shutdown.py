@@ -1006,9 +1006,13 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
     ) -> bool:
         """``adapter.send`` whose failure is debug-logged as ``fmt % (platform, chat, error)`` — ``fail_fmt``
         for success=False, ``raise_fmt`` (default ``fail_fmt``) for a raise; True only on a delivered send.
-        Every shutdown notice races live turns, so it always carries the interim marker (#98432)."""
-        from gateway.run import _interim_metadata
-        kw["metadata"] = _interim_metadata(kw.get("metadata"))
+        Every shutdown notice races live turns, so it always carries the interim marker (#98432). It is a
+        status notice, not an answer to a turn, so it is also marked as non-conversational."""
+        from gateway.run import _interim_metadata, _non_conversational_metadata
+
+        kw["metadata"] = _interim_metadata(
+            _non_conversational_metadata(kw.get("metadata"), platform=platform_str)
+        )
         try:
             result = await adapter.send(chat_id, msg, **kw)
         except Exception as e:

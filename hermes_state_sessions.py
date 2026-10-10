@@ -20,7 +20,7 @@ from hermes_state_common import (
     _LISTABLE_CHILD_SQL, _RECOVERABLE_END_REASONS,
     _RECOVERABLE_END_REASONS_SQL, _RESET_CHILD_SQL, _RESET_END_REASONS, _legacy_reset_child_sql, _non_continuation_child_sql,
     _shape_preview, _sql_preview_raw, QUEUED_PROMPT_METADATA_KEY,
-    _sql_in_window, _sql_json_extract, _sql_session_last_active, _sql_session_last_active_by_id,
+    _sql_in_window, _sql_json_extract, _sql_session_last_active, _sql_session_last_active_by_id, _tool_fork_sql,
     escape_like as _escape_like, _SQL_IN_CHUNK, _id_chunks, _placeholders as _session_ids_placeholders,
 )
 from hermes_state_compression import _CHAIN_CAP
@@ -1211,7 +1211,7 @@ class SessionSessionsMixin:
                 COALESCE(child.model_config, '{{}}'), '$._branched_from'
             ) IS NULL
             AND {_delegate_from_json('child.model_config')} IS NULL
-            AND COALESCE(child.source, '') != 'tool'
+            AND NOT {_tool_fork_sql('child.')}
         """
 
         query = f"""
@@ -1402,7 +1402,7 @@ class SessionSessionsMixin:
                       AND {_sql_json_extract('child.model_config', '$._branched_from')} IS NULL
                       AND {_sql_json_extract('child.model_config', '$._delegate_from')} IS NULL
                       AND NOT ({_RESET_CHILD_SQL.format(a='child')})
-                      AND COALESCE(child.source, '') != 'tool'
+                      AND NOT {_tool_fork_sql('child.')}
                 ),
                 chain_max AS (
                     SELECT

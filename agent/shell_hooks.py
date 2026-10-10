@@ -212,6 +212,9 @@ def _parse_hooks_block(hooks_cfg: Any) -> list[ShellHookSpec]:
     """Normalise ``hooks:`` into specs; malformed entries warn-and-skip, never raise."""
     from hermes_cli.plugins import SHELL_UNSUPPORTED_HOOKS, VALID_HOOKS
     if not isinstance(hooks_cfg, dict):
+        if hooks_cfg is not None:
+            logger.warning("hooks: must be a mapping of event name to a list of hook definitions; got %s",
+                           type(hooks_cfg).__name__)
         return []
     specs: list[ShellHookSpec] = []
     for event_name, entries in hooks_cfg.items():

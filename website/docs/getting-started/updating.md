@@ -30,9 +30,26 @@ For a managed source installation:
 hermes update
 ```
 
-The default source channel tracks `main`. Configured stable and canary channels
-track their published release commits. The update prepares dependencies through
-PM and reports configuration changes and process-restart results.
+A source checkout of the official repository tracks the **stable** channel: the
+latest published `vX.Y.Z` GitHub release (never a draft, prerelease or canary tag),
+checked out at its exact commit. `hermes update` and the Desktop update button move
+only from one release to the next, never commit by commit. Forks and mirrors keep
+tracking their `main` branch. The update prepares dependencies through PM and
+reports configuration changes and process-restart results.
+
+```bash
+hermes update --set-channel main     # follow every commit on main instead
+hermes update --set-channel stable   # back to releases only
+hermes update --channel main         # one run against main; nothing is saved
+```
+
+The choice is stored per install under `update.installs` in `config.yaml`. An
+install that never chose a channel only moves forward: a checkout already newer
+than the latest release (for example one that tracked `main` before this default)
+stays where it is until a newer release ships. Running `--set-channel stable`
+pins the checkout to the exact release commit, even when that is older.
+Windows Store, MSIX and bundled desktop installs are unaffected; their channel
+is baked into the package (see below).
 
 ### Bundled desktop updates
 
@@ -75,46 +92,6 @@ lock. Desktop post-update notices are scoped to the application, so launching
 canary cannot consume stable's pending notice. The `hermes://` URL scheme remains
 shared; the application that most recently registered it handles links.
 
-### Source channels and install identity
-
-```bash
-hermes update --install-id
-hermes update --set-channel stable
-hermes update --channel stable --check
-# Or track published canary commits in this source installation:
-hermes update --set-channel canary
-hermes update
-```
-
-`--install-id` prints the installation identity and path. `--set-channel`
-changes only that installation's configuration, then exits without applying an
-update. `--channel` is a one-run override. An explicit `--branch` takes precedence
-for a source checkout.
-
-Channel names are registered in the release archive on Cloudflare R2, not in a
-fixed list shipped with Hermes. The `main` record selects source-branch delivery;
-published-build channels select an exact Git commit. Custom preview channels use
-the same source commands, for example `hermes update --set-channel pm-preview`.
-The publisher must have created that channel before an update can resolve it.
-An unavailable or invalid record reports an error rather than falling back to
-`main` or another release. Switching a source channel does not install a desktop
-package.
-Per-install subscriptions live under `update.installs` in configuration, so one
-checkout's choice does not change another installation's channel. The source-built
-desktop uses that same selection for checks and update handoffs; it does not
-replace a selected release channel with its default branch.
-
-For branch-tracking source installs, the desktop keeps the current named branch
-unless an explicit desktop branch override exists. A detached checkout uses the
-default branch. Older checkouts without source-channel probing predate release
-channels, so the desktop updates them from `main` over git; that update brings in
-the probing.
-
-Packaged desktop feed channels derive from their build tag and package owner.
-Changing a source channel is not an MSIX or Store channel switch. Canary builds
-can advance stored data formats; switching back is not a schema rollback.
-Back up data before changing release channels.
-
 :::tip
 `hermes update` automatically detects new configuration options and prompts you to add them. If you skipped that prompt, you can manually run `hermes config check` to see missing options, then `hermes config migrate` to interactively add them.
 :::
@@ -134,13 +111,27 @@ This suppresses both cached update notices and passive update-check network requ
 For an admitted source checkout, `hermes update` runs these phases:
 
 1. **Pre-update snapshot** — Hermes saves selected state files for every profile in that profile's `state-snapshots/` directory. These include pairing data, cron jobs, `config.yaml`, `.env`, and `auth.json`. Automatic quick snapshots skip individual files larger than 1 GiB. `updates.pre_update_backup` selects `quick`, `full`, or `off`. Full archives use the [backup exclusions](../reference/faq.md#hermes-backup-vs-hermes-profile-export). Recovery uses [Snapshots and rollback](../user-guide/checkpoints-and-rollback.md). Quick snapshots recover state files, not application code. The snapshot is best-effort: if it fails, the update prints a `⚠ Pre-update snapshot FAILED` warning and continues, and the receipt records `pre_update_backup` as a failed step (a deliberate `off`/`--no-backup` lands in the receipt's skips with its reason instead).
-2. **Code update** — applies the configured source branch or stable release tag and updates submodules.
+2. **Code update** — applies the configured source branch or stable release tag and updates submodules. On Linux and macOS every gateway running from this install is paused immediately before the first change to the checkout (see [Gateway downtime during an update](#gateway-downtime-during-an-update)); an update that has nothing to apply, or that fails before it changes the checkout, stops nothing.
 3. **Post-pull syntax validation + auto-rollback** — after the pull, Hermes compiles the nine critical files every `hermes` invocation imports at startup. If any fails to parse (e.g. an orphan merge-conflict marker, an accidentally truncated file), Hermes rolls the install back so your shell stays bootable: it resets the checkout to the commit it ran before the pull (`git reset --hard <pre-pull-sha>`), or, when the update switched away from a detached checkout or a parked feature branch, returns there with `git checkout --detach <sha>` / `git checkout <branch>` (a branch it cannot check out again is restored detached at the same commit). Re-run `hermes update` once the upstream fix lands.
 4. **Dependency preparation** — PM provisions required tools and prepares a complete Python environment from the new lock, existing extras, and enabled plugin requirements. It validates that environment before publishing its selection. A plugin never fails the update. A plugin that no longer fits the new core is added to `plugins.disabled` in every profile that enables it (a memory provider has `memory.provider` cleared). That covers a `requires-python` that excludes Hermes's Python, a `manifest_version` newer than this Hermes supports, and dependencies that the resolver proves can't resolve alongside core and earlier plugins in config order, or that fail their own build. A download or network failure gets one retry and is disabled if it fails again. The update prints `⚠ Disabled plugin '<name>' in <home>: <reason>`, records it in the receipt's warnings, and continues. Re-enable it with `hermes plugins enable <name>` once the plugin ships a compatible release, or once the network is back. A `requires_hermes` range the running version misses never disables a plugin, because a source checkout without release tags can read as an older release. That plugin sits out instead (`⚠ Left plugin '<name>' … out of this update`), stays enabled, and rejoins once Hermes reports a version it accepts. A secondary profile whose config cannot be read sits out the same way until the config is fixed. Only a core that cannot build on its own fails this step.
 5. **Config migration** — detects new config options added since your version and prompts you to set them
-6. **Desktop rebuild (stage-and-swap)** — if the Hermes Desktop app was built from this checkout, it is rebuilt so the GUI matches the new code. The rebuild packs into a temporary staging directory next to `apps/desktop/release/`, verifies the staged app, and only then renames it over the previous build (on Windows a real-time scanner briefly holding `release/win-unpacked` is ridden out with a few short retries). A rebuild that fails at any point — corrupt Electron download, missing dependency, disk full — leaves the previous app untouched and launchable; the update fails at that step, and `hermes desktop --build-only --force-build` or the next `hermes update` retries the rebuild. On macOS the rebuilt bundle is then copied (with `ditto`, signature intact) over a stale `/Applications/Hermes.app` or `~/Applications/Hermes.app`, so the copy Finder and the Dock launch matches the backend; an installed copy that is currently running is left alone and the update tells you to quit it and run `hermes update` again. If a copy an earlier update installed has since been removed (including dragged to the Trash), the update rebuilds it if needed, puts it back and says so, so Finder, the Dock and Spotlight find Hermes again; `hermes uninstall` removes the app for good. On Windows, when the update finishes from inside the Desktop app it would rebuild (the app completing an interrupted update at launch), the rebuild is skipped with a notice instead: Windows locks a running app's files, and stopping the app would end the update with it. The rest of the update completes; quit Hermes Desktop and run `hermes desktop` from a terminal, or use **Update now** in **Settings → About**, to rebuild and reopen it.
-7. **Gateway auto-restart**: running gateways are refreshed after the update completes. Service-managed gateways (systemd on Linux, launchd on macOS) restart through the service manager. Manual gateways are relaunched when Hermes can map their PID to a profile. Manually launched `hermes serve` / `hermes dashboard` backends are different: the updater leaves them running and asks their owner to restart them. See [Manual backend restart reminders](#manual-backend-restart-reminders). Backends owned by a running Desktop app remain the app's responsibility.
+6. **Desktop rebuild (stage-and-swap)** — if the Hermes Desktop app was built from this checkout, it is rebuilt so the GUI matches the new code. The rebuild packs into a temporary staging directory next to `apps/desktop/release/`, verifies the staged app, and only then renames it over the previous build (on Windows a real-time scanner briefly holding `release/win-unpacked` is ridden out with a few short retries). A rebuild that fails at any point — corrupt Electron download, missing dependency, disk full — leaves the previous app untouched and launchable; the update prints a `⚠` line, still finishes the remaining steps (config migration, gateway restart) and exits 0 with a `build` follow-up in its receipt, and the next launch, `hermes update` or `hermes desktop --build-only --force-build` retries the rebuild. On macOS the rebuilt bundle is then copied (with `ditto`, signature intact) over a stale `/Applications/Hermes.app` or `~/Applications/Hermes.app`, so the copy Finder and the Dock launch matches the backend; an installed copy that is currently running is left alone and the update tells you to quit it and run `hermes update` again. If a copy an earlier update installed has since been removed (including dragged to the Trash), the update rebuilds it if needed, puts it back and says so, so Finder, the Dock and Spotlight find Hermes again; `hermes uninstall` removes the app for good. On Windows, when the update finishes from inside the Desktop app it would rebuild (the app completing an interrupted update at launch), the rebuild is skipped with a notice instead: Windows locks a running app's files, and stopping the app would end the update with it. The rest of the update completes; quit Hermes Desktop and run `hermes desktop` from a terminal, or use **Update now** in **Settings → About**, to rebuild and reopen it.
+7. **Gateway auto-restart**: on Linux and macOS, gateways paused for the update are started again as soon as the dependencies are prepared and the launchers refreshed, before the product builds; on Windows they restart after the builds. Any other running gateway is refreshed after the update completes. Service-managed gateways (systemd on Linux, launchd on macOS) restart through the service manager. Manual gateways are relaunched when Hermes can map their PID to a profile. Manually launched `hermes serve` / `hermes dashboard` backends are different: the updater leaves them running and asks their owner to restart them. See [Manual backend restart reminders](#manual-backend-restart-reminders). Backends owned by a running Desktop app remain the app's responsibility.
 8. **Multiplex migration (multi-profile installs)** — once the fleet is verified on the new code, an install with two or more profiles that still run **one gateway per profile** is folded into a single multiplexed default gateway when nothing blocks it (same as `hermes gateway migrate --multiplex --yes`); if a blocker exists (a bot token shared by two profiles, a secondary profile binding a port with no `/p/<profile>/` ingress) the update prints the blockers with their fixes and changes nothing. Single-profile installs are never touched. See [Migrating from per-profile gateways](../user-guide/multi-profile-gateways.md#migrating-from-per-profile-gateways).
+
+### Gateway downtime during an update
+
+On Linux and macOS, `hermes update` stops every gateway running from this install right before it first changes the checkout, and starts exactly that set again on the new code once the dependencies are prepared (before the web UI, TUI and Desktop builds, which can take minutes). Your bots are offline for that window: typically the git update plus the dependency sync. Before this, a gateway kept running old code while git rewrote the files under it, and any module it imported lazily in that window came from the new code.
+
+- The update prints one line naming what it paused (`⏸ Paused for the update: hermes-gateway.service`) and one when it is back (`▶ Restarted paused gateway(s): …`).
+- systemd units and launchd agents are stopped and started through systemd/launchd, so the service manager cannot restart them on old code mid-update. A gateway you started by hand (`hermes gateway run`) is drained and then started again in the background from the same command line and Hermes home; its output goes to `logs/gateway-update-resume.log` in that home instead of your terminal.
+- `/update` from chat survives the pause: when the update runs inside the gateway's own systemd unit, it first moves itself into a scope of its own. A prompt asked while the gateways are paused takes its default immediately, because no gateway can relay it.
+- The paused set is recorded in the Hermes home before the first stop. If the update is killed, the next `hermes` command (or `hermes update`) starts exactly those gateways again. A failed update that never changed the checkout restarts them on the old code. If the dependency sync fails after the checkout moved, they restart once a launch has synced the dependencies.
+- A gateway the updater cannot stop through its supervisor (an s6 or custom systemd unit, `--external-supervisor`, a launchd job that started this update) is left running and refreshed after the update, as before.
+- `--no-gateway-restart` stops nothing; you manage the gateways.
+- The pause never blocks an update. If it cannot list, record or stop the gateways, it restarts anything it stopped, says so, and the update continues the way it did before the pause existed: gateways run through the swap and are restarted afterwards.
+
+Windows already paused its gateways before the update (they lock files the dependency sync replaces) and restarts them once the update completes, after the builds.
 
 ### Why the gateway restart can take a while
 
@@ -207,10 +198,58 @@ git -C $repo rev-list --objects --missing=print --all | Where-Object { $_.Starts
 git -C $repo rev-list --objects --missing=error --all | Out-Null; $LASTEXITCODE   # 0 = complete
 ```
 
+### `.git` keeps growing in a partial clone
+
+The installer's checkout is a blobless partial clone: every commit and directory listing is local,
+and git downloads file contents on demand, each on-demand download written as its own small pack.
+Installers from late September 2026 made treeless (`--filter=tree:0`) clones instead. git asks for
+a missing tree without saying which ones it already has, so a treeless checkout downloaded complete
+directory snapshots again on every checkout and path-filtered history walk. `hermes update`
+converts such a checkout once, as its first step after pulling the new code and before the
+dependency work: one `git fetch --refetch --filter=blob:none` brings every commit and tree (about
+120 MB), and later updates stop re-downloading them. Re-running the installer over such a checkout
+converts it the same way. If that fetch fails, the update prints a warning, carries on, and retries
+the conversion next time.
+
+A Hermes Desktop built before the conversion existed runs path-filtered history walks every few
+minutes, so on a treeless checkout it could fill a disk with pack files (one report reached 434 GB)
+and keep going after a failed update. To recover when that already happened:
+
+1. Quit Hermes Desktop, then end any leftover `git rev-list`, `git maintenance` or
+   `git commit-graph` processes; quitting the app does not stop them.
+2. If the disk is completely full, delete the abandoned transfer files to get room back:
+   `rm -f "$repo"/.git/objects/pack/tmp_pack_*` (Windows: delete `tmp_pack_*` in
+   `.git\objects\pack`). Each update also removes them on its own once no git process is running.
+3. Run `hermes update`. It converts the checkout first, then cleans the pack pile down over this
+   and later updates as described below.
+
+If `hermes update` itself cannot start, the conversion by hand is:
+
+```bash
+git -C "$repo" fetch --refetch --filter=blob:none origin
+git -C "$repo" config remote.origin.partialclonefilter blob:none
+``` `hermes update` and `hermes update --check`
+set `maintenance.commit-graph.enabled`, `gc.writeCommitGraph` and `fetch.writeCommitGraph` to
+`false` in that checkout, because a commit-graph write over commits the graph has not seen yet
+downloads every one of their trees. Leave those settings alone, and leave `gc.auto` at its
+default so git's own automatic gc can still fold packs.
+
+Each `hermes update` also spends at most 60 seconds cleaning those packs up, picking up where the
+previous update stopped. It deletes packs whose every object is also stored in another pack, then
+merges the smallest remaining packs while there are more than 50. Nothing stored locally is ever
+lost, and nothing depends on GitHub still serving it. Packs that a killed `git fetch` left pinned
+with a `.keep` file are included; git's own repack never touches those. To fold
+everything at once by hand instead (with Hermes closed; on a large checkout this is a full repack
+that can run for many minutes):
+
+```bash
+git -C "$repo" -c gc.writeCommitGraph=false gc --auto
+```
+
 ### Updating against a non-default branch: `--branch`
 
-On the default source channel, `hermes update` tracks `origin/main`. Use
-`--branch NAME` for a one-run branch override:
+`--branch NAME` is a one-run override that updates against a branch tip
+instead of the selected channel:
 
 ```bash
 hermes update --branch release-candidate
@@ -266,7 +305,8 @@ You can pass `--keep-stash` to a terminal `hermes update` too if you want the sa
 
 ### Preview-only: `hermes update --check`
 
-`hermes update --check` compares the checkout with its source-channel target
+`hermes update --check` compares the checkout with the selected channel's
+target (the latest stable release by default, `origin/main` on the main channel)
 without applying code, installing dependencies, or restarting gateways. The
 comparison can fetch Git metadata; it is not a promise of zero filesystem writes.
 Package-owned installs report their external update method.
@@ -279,9 +319,9 @@ The same inventory is embedded in every real update's receipt (`~/.hermes/logs/u
 
 ### Update receipts and the fleet version check
 
-Every `hermes update` run writes a machine-readable receipt to `~/.hermes/logs/update_receipts/` (last 20 kept, `latest.json` always points at the most recent): the pre-update fleet plan, each step taken, anything skipped and why, the gateway restart outcome, and the final fleet version matrix. The SQLite runtime repair is one of those steps (`sqlite_runtime_repair`): a failed repair records the actual reason (for example the `uv sync` error) and the SQLite version pair, a deferred or not-applicable repair lands in the skips with its reason. After the restart phase the updater compares each live gateway's running code against the freshly updated checkout and prints a per-profile matrix — a gateway still serving pre-update code is reported loudly with the exact restart command, and the update exits non-zero so automation never treats a mixed-version fleet as healthy. Both `--plan` and the fleet check ask each running gateway directly over its local control socket (`gateway.sock` in the profile's data directory, a named pipe on Windows) when available, so version and supervisor information comes from the gateway itself; gateways from older versions are still discovered through their state files as before.
+Every `hermes update` run writes a machine-readable receipt to `~/.hermes/logs/update_receipts/` (last 20 kept, `latest.json` always points at the most recent): the pre-update fleet plan, each step taken, anything skipped and why, the gateway restart outcome, and the final fleet version matrix. The SQLite runtime repair is one of those steps (`sqlite_runtime_repair`): a failed repair records the actual reason (for example the `uv sync` error) and the SQLite version pair, a deferred or not-applicable repair lands in the skips with its reason. After the restart phase the updater compares each live gateway's running code against the freshly updated checkout and prints a per-profile matrix — a gateway still serving pre-update code is reported loudly with the exact restart command and recorded as a `gateway_restart` follow-up in the receipt; the code is already in place, so the update still exits 0, and every later command warns until the fleet serves the new code, so a mixed-version fleet is never silently healthy. Both `--plan` and the fleet check ask each running gateway directly over its local control socket (`gateway.sock` in the profile's data directory, a named pipe on Windows) when available, so version and supervisor information comes from the gateway itself; gateways from older versions are still discovered through their state files as before.
 
-A multiplexed default gateway is one process serving several profiles, so it appears once in the matrix and vouches for every profile in its `served_profiles` record. The same coverage clears the "A previous `hermes update` pulled new code but did not restart running gateways" hint: once that gateway (or, after a manual `git pull`, every gateway an update restarted) runs the current code, `hermes gateway restart` is enough — the hint no longer waits for the next `hermes update` to write a fresh receipt. The same is true of the restart obligation left by an update that died before recording which gateways it owed (or by an older updater that never recorded them): once every live gateway runs the current checkout, the obligation is retired and the hint stops. On a host that runs no gateway at all (the Desktop app alone), it is retired once no profile has a gateway that went away without a clean stop and every running backend is restarted by its own supervisor or has its own reminder. That obligation is recorded once per HOST, in the cross-profile rendezvous directory (`$HERMES_GATEWAY_LOCK_DIR`, else `$XDG_STATE_HOME/hermes/gateway-locks`) as `host-update-restart.json`, so every profile's CLI sees the same one: `hermes -p coder update` and `hermes -p writer update` restart the shared multiplexed gateway once between them, not once each. An obligation left behind by an older per-profile updater (`fleet_restart_pending` in one profile's Hermes home) is still read and cleared. An update whose pre-update plan found no gateway at all owes nothing and leaves no breadcrumb. A backend supervised by Desktop, systemd or launchd is restarted by its supervisor and never blocks this settlement; only a manual backend whose reminder could not be saved keeps the obligation open.
+A multiplexed default gateway is one process serving several profiles, so it appears once in the matrix and vouches for every profile in its `served_profiles` record. The same coverage clears the "A previous `hermes update` pulled new code but did not restart running gateways" hint: once that gateway (or, after a manual `git pull`, every gateway an update restarted) runs the current code, `hermes gateway restart` is enough — the hint no longer waits for the next `hermes update` to write a fresh receipt. The same is true of the restart obligation left by an update that died before recording which gateways it owed (or by an older updater that never recorded them): once every live gateway runs the current checkout, the obligation is retired and the hint stops. On a host that runs no gateway at all (the Desktop app alone), it is retired once no profile has a gateway that went away without a clean stop and every running backend is restarted by its own supervisor or has its own reminder. That obligation is recorded once per HOST, in the cross-profile rendezvous directory (`$HERMES_GATEWAY_LOCK_DIR`, else `$XDG_STATE_HOME/hermes/gateway-locks`) as `host-update-restart-<install key>.json` (one per installation, so a second Hermes checkout for the same user keeps its own; an older release's unkeyed `host-update-restart.json` is honoured and cleared only by an installation that has no record of its own, so another checkout still on that release keeps its debt), so every profile's CLI sees the same one: `hermes -p coder update` and `hermes -p writer update` restart the shared multiplexed gateway once between them, not once each. An obligation left behind by an older per-profile updater (`fleet_restart_pending` in one profile's Hermes home) is still read and cleared. An update whose pre-update plan found no gateway at all owes nothing and leaves no breadcrumb. A backend supervised by Desktop, systemd or launchd is restarted by its supervisor and never blocks this settlement; only a manual backend whose reminder could not be saved keeps the obligation open.
 
 ### Manual backend restart reminders
 
@@ -299,7 +339,8 @@ An update launched *by* the gateway (a cron job, the Desktop updater, any automa
 child of the gateway process) cannot survive its own fleet restart: the gateway drains on
 `SIGUSR1` and systemd's `KillMode=mixed` then kills everything left in the cgroup, updater
 included. `hermes update --no-gateway-restart` runs the full pipeline (pull, dependencies,
-Node workspaces, web UI, maintenance) and skips only the restart and fleet verification. The
+Node workspaces, web UI, maintenance) and skips only the restart and fleet verification; on Linux
+and macOS it also skips the pause before the checkout changes, so nothing is stopped. The
 pending-restart marker is kept, so the next CLI start warns and the next normal `hermes update`
 (or `hermes gateway restart`) catches the fleet up. Pair it with a separate restart step, for
 example a timer 10–15 minutes after the update job. The receipt records the deferral; a stale
@@ -307,7 +348,7 @@ fleet caused only by the deferral does not make the update `partial`.
 
 ### Interrupted gateway restarts
 
-If an earlier update pulled code but did not finish restarting the fleet, the next `hermes update` retries even when the checkout is already current. An empty process scan does not prove recovery: failed systemd units and installed launchd jobs may have no live PID. If discovery or restart fails, or a requested service cannot be verified active, the marker stays pending and the update exits nonzero. Recover the affected services with the printed commands and retry.
+If an earlier update pulled code but did not finish restarting the fleet, the next `hermes update` retries even when the checkout is already current. An empty process scan does not prove recovery: failed systemd units and installed launchd jobs may have no live PID. If discovery or restart fails, or a requested service cannot be verified active, the marker stays pending: the update still exits 0 (the new code is in place), prints a `⚠` line and a `gateway_restart` follow-up in its receipt, every CLI start warns about the owed restart, and the next `hermes update` retries it. Recover the affected services with the printed commands, or rerun `hermes update`.
 
 A failed historical receipt alone does not prove that gateways are still stale. Startup and gateway-status warnings, as well as update catch-up, check for a live successor on the current checkout for every gateway profile recorded in that receipt. A manual gateway restart can settle receipt-only advice without rewriting the historical outcome. Manual backend obligations must first transfer to their separate reminders.
 
@@ -385,9 +426,18 @@ If `git status --short` shows unexpected changes after `hermes update`, stop and
 tail -f ~/.hermes/logs/update.log
 ```
 
-- `Ctrl-C` (SIGINT) and system shutdown (SIGTERM) are still honored — those are deliberate cancellations, not accidents.
+- `Ctrl-C` (SIGINT) and system shutdown (SIGTERM) are still honored — those are deliberate cancellations, not accidents. A `Ctrl-C` after the new code is in place exits 130 and says so: the remaining steps (dependencies, builds, gateway restart) are owed, and the next launch or `hermes update` finishes them.
 
 You no longer need to wrap `hermes update` in `screen` or `tmux` to survive a terminal drop.
+
+### When an update or launch refuses instead of guessing
+
+A few situations stop with a message rather than carry on, because carrying on could leave a half-updated checkout or a gateway running old code:
+
+- **Another launch is repairing an interrupted update.** When an update was killed while git moved the checkout, the next `hermes` launch puts the checkout back first. Launches that start together (a restarting gateway or Desktop backend next to your CLI) take turns. A launch that waits more than 10 seconds for another one's repair exits with status 1: `hermes: another Hermes launch is finishing an interrupted 'hermes update'; launch again in a moment.` Launch again once the other one finishes. A backend started by Hermes Desktop at that moment shows up as a failed start; reopening it is enough.
+- **Windows git failure → ZIP fallback.** On Windows, a git error during `hermes update` falls back to downloading the release ZIP only when git has not touched the checkout yet: same commit and branch as when the update started, no stash taken, no tree move begun. Once git has stashed, switched branch or started moving files, the update reports the git error and exits 1 instead, because the ZIP overlay would bury that state. Re-run `hermes update` after fixing the git problem.
+- **Desktop builds need a writable `.git`.** Building Hermes Desktop from a checkout with `hermes desktop` takes the same checkout lock as `hermes update` (which needs it too), kept in the checkout's git directory. If that directory is not writable for your user (for example a checkout owned by another account), the build refuses with `.../.git/hermes-update.lock is not writable` instead of building alongside a possible update. Fix the ownership or permissions of `.git`. On macOS/Linux, a lock file left read-only by a `sudo hermes update` is still usable.
+- **Restart record not writable.** `hermes update` records the owed gateway restart before it moves the checkout, in the host state directory (`$HERMES_GATEWAY_LOCK_DIR`, else `$XDG_STATE_HOME/hermes/gateway-locks`). If that directory cannot be written, the record goes into the current profile's Hermes home instead. Only that profile reads it, so the update goes ahead only on an install with no other profile. If other profiles exist, or the profile list cannot be read, the update refuses before moving anything. Make the state directory writable and run it again.
 
 ### Checking your current version
 

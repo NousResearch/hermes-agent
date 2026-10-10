@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 
 from hermes_cli.release_channels import (
     ChannelError, build_prefix, canonical_json, validate_identity,
@@ -104,7 +104,7 @@ def canary_windows_version(tag: str) -> str:
     stamp = canary_timestamp(tag)
     if stamp is None:
         raise ChannelError("Invalid canary release identity")
-    instant = datetime.strptime(stamp, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+    instant = datetime.strptime(stamp, "%Y%m%dT%H%M%SZ").replace(tzinfo=UTC)
     return f"{instant.year % 100}.{int(f'{instant.month:02d}{instant.day:02d}')}.{instant.hour}.{int(f'{instant.minute:02d}{instant.second:02d}')}"
 
 

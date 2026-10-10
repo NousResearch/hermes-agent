@@ -30,25 +30,23 @@ def _critical_module_import_failures(
         # probe only checks importability, so it inherits the updater's own argv contract.
         "sys.argv = ['hermes', 'update']\n"
         "failures = []\n"
-        "for name in %r:\n"
+        f"for name in {_UPDATE_CRITICAL_MODULES!r}:\n"
         "    try:\n"
         "        importlib.import_module(name)\n"
         "    except ModuleNotFoundError as exc:\n"
         # A missing *third-party* module means deps aren't installed, not a skewed checkout;
         # only our own packages count. Roots come from hermes_constants so the user hint can't drift.
         "        missing = (getattr(exc, 'name', '') or '').split('.')[0]\n"
-        "        if missing in %r or missing.startswith('hermes_') or %r:\n"
+        f"        if missing in {tuple(sorted(FIRST_PARTY_MODULE_ROOTS))!r} or missing.startswith('hermes_') or {report_runtime_errors!r}:\n"
         "            failures.append((name, type(exc).__name__, str(exc)))\n"
         "    except ImportError as exc:\n"
         "        failures.append((name, type(exc).__name__, str(exc)))\n"
         "    except Exception as exc:\n"
-        "        if %r:\n"
+        f"        if {report_runtime_errors!r}:\n"
         "            failures.append((name, type(exc).__name__, str(exc)))\n"
         "    except BaseException as exc:\n"
         "        failures.append((name, type(exc).__name__, str(exc)))\n"
-        "sys.stdout.write('\\n%s' + json.dumps(failures))\n"
-        % (_UPDATE_CRITICAL_MODULES, tuple(sorted(FIRST_PARTY_MODULE_ROOTS)), report_runtime_errors,
-           report_runtime_errors, marker))
+        f"sys.stdout.write('\\n{marker}' + json.dumps(failures))\n")
     try:
         result = subprocess.run(
             runtime_command(Path(root), code=probe), cwd=str(root), capture_output=True, text=True,

@@ -88,7 +88,7 @@ class FakeTokenServer:
         self._httpd = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
         self._thread = threading.Thread(target=self._httpd.serve_forever, daemon=True)
 
-    def __enter__(self) -> "FakeTokenServer":
+    def __enter__(self) -> FakeTokenServer:
         self._thread.start()
         return self
 
@@ -107,10 +107,10 @@ class FakeTokenServer:
         server = self
 
         class Handler(BaseHTTPRequestHandler):
-            def log_message(self, *_a: object) -> None:  # noqa: D401 - silence per-request logging
+            def log_message(self, *_a: object) -> None:
                 pass
 
-            def do_POST(self) -> None:  # noqa: N802
+            def do_POST(self) -> None:
                 raw = self.rfile.read(int(self.headers.get("Content-Length") or 0)).decode()
                 form = {k: v[0] for k, v in parse_qs(raw).items()}
                 server.posts.append(form)

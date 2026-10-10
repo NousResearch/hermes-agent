@@ -9,6 +9,7 @@ import subprocess
 import sys
 
 import pytest
+from datetime import UTC
 
 
 @pytest.mark.platforms("posix")
@@ -100,7 +101,7 @@ def test_pm_cli_verifies_tls_with_platform_trust(tmp_path, monkeypatch):
     shutil.copy2(source / "hermes_constants.py", repo / "hermes_constants.py")
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "PM test CA")])
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     cert = (x509.CertificateBuilder().subject_name(subject).issuer_name(subject)
             .public_key(key.public_key()).serial_number(x509.random_serial_number())
             .not_valid_before(now - timedelta(days=1)).not_valid_after(now + timedelta(days=1))
@@ -185,3 +186,96 @@ def test_importing_launch_does_not_patch_ssl_context():
         cwd=repo_root(), capture_output=True, text=True, timeout=30, check=False,
     )
     assert child.returncode == 0, child.stderr
+
+
+
+def test_cold_downloader_trusts_a_stored_intermediate_without_its_root(tmp_path):
+    """Windows can cache an intermediate (Let's Encrypt "Root YR") without its
+    root; Python < 3.13 then refused every GitHub asset before PM existed."""
+    from datetime import datetime, timedelta, timezone
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from ipaddress import ip_address
+    import hashlib
+    import ssl
+    import threading
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import NameOID
+
+    now = datetime.now(UTC)
+
+    def issue(name, signer=None):
+        key = ec.generate_private_key(ec.SECP256R1())
+        subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, name)])
+        signer_key, signer_name = signer or (key, subject)
+        builder = (x509.CertificateBuilder().subject_name(subject).issuer_name(signer_name)
+                   .public_key(key.public_key()).serial_number(x509.random_serial_number())
+                   .not_valid_before(now - timedelta(days=1)).not_valid_after(now + timedelta(days=1))
+                   .add_extension(x509.BasicConstraints(ca=name != "leaf", path_length=None), critical=True))
+        if name == "leaf":
+            builder = builder.add_extension(
+                x509.SubjectAlternativeName([x509.IPAddress(ip_address("127.0.0.1"))]), critical=False)
+        return key, subject, builder.sign(signer_key, hashes.SHA256())
+
+    root_key, root_name, _ = issue("absent root")
+    middle_key, middle_name, middle = issue("stored intermediate", (root_key, root_name))
+    leaf_key, _, leaf = issue("leaf", (middle_key, middle_name))
+    pem = lambda cert: cert.public_bytes(serialization.Encoding.PEM)
+    stores = {"stored": pem(middle), "unrelated": pem(issue("unrelated CA")[2])}
+    for name, body in stores.items():
+        (tmp_path / f"{name}.pem").write_bytes(body)
+    (tmp_path / "chain.pem").write_bytes(pem(leaf) + pem(middle))
+    (tmp_path / "leaf.key").write_bytes(leaf_key.private_bytes(
+        serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
+    payload = b"pinned tool"
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(tmp_path / "chain.pem", tmp_path / "leaf.key")
+    server.socket = context.wrap_socket(server.socket, server_side=True)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    # The cold update parent is the legacy venv's 3.11/3.12: drop the default
+    # verify flags 3.13 added, on any host Python.
+    driver = """
+import ssl, sys
+from pathlib import Path
+legacy = ssl.create_default_context
+def create(*args, **kwargs):
+    context = legacy(*args, **kwargs)
+    context.verify_flags &= ~(ssl.VERIFY_X509_PARTIAL_CHAIN | ssl.VERIFY_X509_STRICT)
+    return context
+ssl.create_default_context = ssl._create_default_https_context = create
+sys.path.insert(0, sys.argv[1])
+from pm.downloader import Download, Source
+dest = Path(sys.argv[3])
+Download([Source(sys.argv[2], dest, sys.argv[4])], partials_dir=dest.parent / "partials").run()
+"""
+    (tmp_path / "no-cert-dir").mkdir()
+    env = {key: value for key, value in os.environ.items() if not key.startswith(("PYTHON", "SSL_"))}
+    env.update(SSL_CERT_DIR=str(tmp_path / "no-cert-dir"), NO_PROXY="127.0.0.1")
+    results = {}
+    try:
+        for name in stores:
+            dest = tmp_path / name / "tool"
+            results[name] = subprocess.run(
+                [sys.executable, "-I", "-S", "-c", driver, str(Path(__file__).resolve().parents[2]),
+                 f"https://127.0.0.1:{server.server_port}/tool", str(dest),
+                 hashlib.sha256(payload).hexdigest()],
+                env={**env, "SSL_CERT_FILE": str(tmp_path / f"{name}.pem")},
+                capture_output=True, text=True, timeout=60)
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert results["stored"].returncode == 0, results["stored"].stderr
+    assert (tmp_path / "stored" / "tool").read_bytes() == payload
+    assert "CERTIFICATE_VERIFY_FAILED" in results["unrelated"].stderr
+    assert not (tmp_path / "unrelated" / "tool").exists()

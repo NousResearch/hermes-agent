@@ -17,8 +17,8 @@ from typing import TYPE_CHECKING, Any, Optional
 from gateway.platforms.event import MessageEvent, MessageType
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
-    from gateway.run import GatewayRunner  # noqa: F401
-    from gateway.run_turn_runner import TurnRunner  # noqa: F401
+    from gateway.run import GatewayRunner
+    from gateway.run_turn_runner import TurnRunner
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
@@ -56,7 +56,7 @@ class GatewayGoalsMixin:
         except Exception as exc:
             logger.warning("%s: session DB warm-up failed: %s", label, exc)
 
-    async def _session_entry_for_manager(self, event: "MessageEvent", label: str):
+    async def _session_entry_for_manager(self, event: MessageEvent, label: str):
         """Session entry for a /goal or /heartbeat manager, or None when lookup fails. Warms the
         SessionDB cache first (a cold cache drops the first write while the reply claims it was
         set). Internal events never touch activity (idle/daily reset clock)."""
@@ -70,7 +70,7 @@ class GatewayGoalsMixin:
             return None
         return session_entry if getattr(session_entry, "session_id", None) else None
 
-    async def _manager_for_event(self, event: "MessageEvent", kind: str, load):
+    async def _manager_for_event(self, event: MessageEvent, kind: str, load):
         """``(manager, session_entry)`` for *kind* ("goal"/"heartbeat"), or ``(None, None)``.
         ``load()`` imports the manager class and returns a ``session_id -> manager`` factory."""
         try:
@@ -83,7 +83,7 @@ class GatewayGoalsMixin:
             return None, None
         return factory(session_entry.session_id), session_entry
 
-    async def _get_goal_manager_for_event(self, event: "MessageEvent"):
+    async def _get_goal_manager_for_event(self, event: MessageEvent):
         """Return ``(GoalManager, session_entry)`` for this event, or ``(None, None)``."""
         def _load():
             from hermes_cli.goals import GoalManager
@@ -91,7 +91,7 @@ class GatewayGoalsMixin:
             return lambda sid: GoalManager(session_id=sid, default_max_turns=max_turns)
         return await self._manager_for_event(event, "goal", _load)
 
-    async def _get_heartbeat_manager_for_event(self, event: "MessageEvent"):
+    async def _get_heartbeat_manager_for_event(self, event: MessageEvent):
         """Return ``(HeartbeatManager, session_entry)`` for this event, or ``(None, None)``."""
         def _load():
             from hermes_cli.heartbeat import HeartbeatManager

@@ -313,8 +313,8 @@ def _install_sidecar() -> int:
     def _run(verb: str) -> subprocess.CompletedProcess:
         # stdout streams to the terminal; stderr is captured so the failure reason can be
         # persisted for check_requirements() to surface later.
-        proc = subprocess.run(  # noqa: S603
-            [npm, verb], cwd=str(_sidecar_dir()), check=False, stderr=subprocess.PIPE, text=True, env=env)
+        proc = subprocess.run(
+            [npm, verb], stdin=subprocess.DEVNULL, cwd=str(_sidecar_dir()), check=False, stderr=subprocess.PIPE, text=True, env=env)
         if proc.stderr:
             print(proc.stderr, end="", file=sys.stderr)
         return proc

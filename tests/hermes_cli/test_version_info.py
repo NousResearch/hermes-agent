@@ -1,10 +1,14 @@
 import json
+import os
 from pathlib import Path
 import subprocess
+
+import pytest
 
 from hermes_cli.version_info import (
     VersionInfo,
     _derived_version,
+    _git_version_info,
     _packaging_base_version,
     _reset_version_info_cache,
     _resolve_stamp_file,
@@ -305,7 +309,7 @@ def test_version_file_rejects_the_committed_placeholder(tmp_path, monkeypatch):
 
 def test_installed_metadata_rejects_the_committed_placeholder(monkeypatch):
     """Upstream main carries 0.0.0 as a build placeholder, not an identity."""
-    import importlib.metadata as metadata
+    from importlib import metadata
 
     monkeypatch.setattr(metadata, "version", lambda _name: "0.0.0")
     assert _packaging_base_version() is None
@@ -395,3 +399,25 @@ def test_old_updater_version_stub_reads_the_same_stamp_as_version_info(tmp_path)
     unstamped = tmp_path / "unstamped"
     unstamped.mkdir()
     assert read(unstamped)[0] == "0.0.0"
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="the blocking untracked scan uses a FIFO")
+def test_a_timed_out_status_probe_never_strands_index_lock(tmp_path):
+    """The update opens its receipt with this probe; killed by its 3 s timeout while refreshing
+    the index, it used to leave .git/index.lock for the same run's merge to die on (#132089)."""
+    def git(*args):
+        subprocess.run(["git", "-c", "user.email=t@example.invalid", "-c", "user.name=t", *args],
+                       cwd=tmp_path, check=True, capture_output=True)
+
+    git("init", "-q")
+    (tmp_path / "a.txt").write_text("a", encoding="utf-8")
+    git("add", "a.txt")
+    git("commit", "-qm", "a")
+    (tmp_path / "junk").mkdir()
+    os.mkfifo(tmp_path / "junk" / ".gitignore")  # the untracked scan blocks reading it
+    (tmp_path / "junk" / "x").touch()
+    (tmp_path / "a.txt").touch()  # stat-dirty: a locking status would refresh the index
+
+    _git_version_info(tmp_path, include_untracked=True)
+
+    assert not (tmp_path / ".git" / "index.lock").exists()

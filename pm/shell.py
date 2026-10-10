@@ -10,7 +10,7 @@ Resolution order:
      structurally guarantees it in a bundle; no hunt.
   2. Windows: explicit override, Program Files, per-user and PortableGit,
      then PATH —
-     minus C:\Windows\System32\bash.exe (the WSL launcher stub, first on PATH
+     minus C:\\Windows\\System32\bash.exe (the WSL launcher stub, first on PATH
      on most machines; #116818) and WindowsApps\bash.exe (an MSIX alias that
      only spawns inside its package). See windows_bash_candidates().
   3. Provisioned PATH: shutil.which("bash") — the store dirs are on the

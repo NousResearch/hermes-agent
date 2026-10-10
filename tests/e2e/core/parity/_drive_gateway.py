@@ -58,7 +58,7 @@ def _append_env(ph: ParityHome, values: dict[str, str]) -> None:
 
 def _spawn(ph: ParityHome, argv: list[str], log_name: str, extra_env: dict[str, str] | None = None):
     log_path = ph.root / log_name
-    log = open(log_path, "wb")  # noqa: SIM115 - closed by _stop
+    log = open(log_path, "wb")
     proc = subprocess.Popen(
         argv, cwd=ph.project, env=ph.env(extra_env), stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE, stderr=log, text=True, bufsize=1,
@@ -68,7 +68,7 @@ def _spawn(ph: ParityHome, argv: list[str], log_name: str, extra_env: dict[str, 
     return proc
 
 
-def _stdout_pump(proc: subprocess.Popen) -> "queue.Queue[str | None]":
+def _stdout_pump(proc: subprocess.Popen) -> queue.Queue[str | None]:
     lines: queue.Queue[str | None] = queue.Queue()
 
     def pump() -> None:

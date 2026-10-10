@@ -143,15 +143,15 @@ class TestJobObjectMechanismLive:
         # updater/watcher exiting while its job tears down.
         return (
             "import subprocess, sys, pathlib\n"
-            "sys.path.insert(0, r'%s')\n"
+            f"sys.path.insert(0, r'{_REPO_ROOT!s}')\n"
             "from hermes_cli._subprocess_compat import (\n"
             "    windows_detach_flags, windows_detach_flags_without_breakaway)\n"
-            "flags = %s()\n"
-            "p = subprocess.Popen([sys.executable, '-c', %r],\n"
+            f"flags = {flags_helper}()\n"
+            f"p = subprocess.Popen([sys.executable, '-c', {_SLEEPER!r}],\n"
             "    creationflags=flags, stdin=subprocess.DEVNULL,\n"
             "    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
-            "pathlib.Path(r'%s').write_text(str(p.pid), encoding='utf-8')\n"
-        ) % (str(_REPO_ROOT), flags_helper, _SLEEPER, pid_file)
+            f"pathlib.Path(r'{pid_file}').write_text(str(p.pid), encoding='utf-8')\n"
+        )
 
     def _run_in_job(self, tmp_path: Path, flags_helper: str) -> int:
         pid_file = tmp_path / f"{flags_helper}.pid"
@@ -243,7 +243,7 @@ class TestWatcherRespawnLive:
         old = subprocess.Popen([sys.executable, "-c", "pass"])
         old.wait(timeout=30)
 
-        import hermes_cli.gateway as gateway
+        from hermes_cli import gateway
 
         assert gateway._spawn_gateway_restart_watcher(
             old.pid, [sys.executable, "-c", stub]
@@ -284,7 +284,7 @@ class TestResumeVerificationLive:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
         (tmp_path / "home").mkdir(parents=True, exist_ok=True)
 
-        import hermes_cli.gateway as gateway
+        from hermes_cli import gateway
         import hermes_cli.main as hm
         from hermes_cli.update_cmd import _resume_windows_gateways_after_update
 

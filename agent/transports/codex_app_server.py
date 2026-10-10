@@ -219,10 +219,10 @@ class CodexAppServerClient:
         for _rid, pending in pending_items:
             pending.put_nowait(synthetic)
 
-    def __enter__(self) -> "CodexAppServerClient":
+    def __enter__(self) -> CodexAppServerClient:
         return self
 
-    def __exit__(self, *exc: Any) -> None:
+    def __exit__(self, *exc: object) -> None:
         self.close()
 
     def request(self, method: str, params: Optional[dict] = None, timeout: float = 30.0) -> dict:

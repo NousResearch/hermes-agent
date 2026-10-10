@@ -225,7 +225,11 @@ def _git_version_info(repo_dir: Path, *, include_untracked: bool = False) -> Ver
         # -uno: skip the untracked-file scan. This runs on the startup-banner
         # path, and a full working-tree walk costs real time on large or cold
         # checkouts. Same semantics as write_install_stamp.py.
-        status_command = ["git", "status", "--porcelain"]
+        # The 3 s timeout kills a slow status (a partial clone lazily fetching a tree, a cold or
+        # scanned disk), and a status killed while refreshing the index strands .git/index.lock:
+        # the update's own merge then dies on "File exists" (#132089). A read-only probe takes
+        # no optional lock.
+        status_command = ["git", "--no-optional-locks", "status", "--porcelain"]
         if not include_untracked:
             status_command.append("-uno")
         dirty_result = subprocess.run(
@@ -274,9 +278,7 @@ def _release_version(raw: str | None) -> str | None:
     an instruction to the build lane, not an identity to display. Also rejects
     anything that is not a final stable release (canary tags, pre-releases).
     """
-    value = (raw or "").strip()
-    if value.startswith("v"):
-        value = value[1:]
+    value = (raw or "").strip().removeprefix("v")
     if not value:
         return None
     if all(part.isdigit() and int(part) == 0 for part in value.split(".")):

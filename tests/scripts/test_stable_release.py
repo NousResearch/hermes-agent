@@ -6,12 +6,12 @@ import os
 import subprocess
 import sys
 import zipfile
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from pathlib import Path
 
 import pytest
 
-from tests.scripts.test_release_r2 import r2_server  # noqa: F401
+from tests.scripts.test_release_r2 import r2_server
 from scripts.releases.draft_warning import (
     WARNING_CLOSE, WARNING_OPEN, strip_draft_warning,
 )
@@ -30,7 +30,7 @@ def candidates(tag, commit, digest, archive=None):
     manifest itself names; the payload `tag` stays plain vX.Y.Z."""
     packages = []
     second = 100 + int(tag.rsplit('.', 1)[1])
-    release_epoch = int((datetime(2026, 8, 29, 1, 0, tzinfo=timezone.utc)
+    release_epoch = int((datetime(2026, 8, 29, 1, 0, tzinfo=UTC)
                          + timedelta(seconds=second)).timestamp())
     native_version = f"2026.5761.{second}.0"
     ref = archive or tag
@@ -292,8 +292,8 @@ def https_origin(tmp_path, monkeypatch):
     name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "localhost")])
     cert = (x509.CertificateBuilder().subject_name(name).issuer_name(name)
             .public_key(key.public_key()).serial_number(x509.random_serial_number())
-            .not_valid_before(datetime.datetime(2020, 1, 1, tzinfo=datetime.timezone.utc))
-            .not_valid_after(datetime.datetime(2099, 1, 1, tzinfo=datetime.timezone.utc))
+            .not_valid_before(datetime.datetime(2020, 1, 1, tzinfo=datetime.UTC))
+            .not_valid_after(datetime.datetime(2099, 1, 1, tzinfo=datetime.UTC))
             .add_extension(x509.SubjectAlternativeName([
                 x509.DNSName("localhost"), x509.IPAddress(ipaddress.ip_address("127.0.0.1")),
             ]), critical=False).sign(key, hashes.SHA256()))
@@ -935,6 +935,38 @@ def test_transitions_from_the_bundle_receipt_emit_two_windows_rows(tmp_path, r2_
     windows = json.loads(emitted["windows"])
     assert [row["arch"] for row in windows["include"]] == ["x64", "arm64"]
     assert macos["include"] == []
+
+
+def test_missing_baseline_plans_no_upgrade_arm_but_a_missing_supplied_one_blocks(
+        tmp_path, r2_server, https_origin, monkeypatch):
+    from scripts.releases import stable
+
+    url, digest = _staged_receipt(tmp_path, r2_server, https_origin, monkeypatch, "darwin-arm64")
+    env = {**_transitions_env(tmp_path, https_origin.base, "darwin-arm64", url, digest),
+           "BASELINE_MANIFEST_URL": ""}
+    stable.main(["transitions"], env)
+    emitted = dict(line.split("=", 1)
+                   for line in (tmp_path / "output").read_text(encoding="utf-8").splitlines())
+    assert emitted["baseline"] == "none"
+    assert json.loads(emitted["macos"]) == json.loads(emitted["windows"]) == {"include": []}
+    env["BASELINE_MANIFEST_URL"] = f"{https_origin.base}/baseline.json"
+    with pytest.raises(ValueError, match="supplied baseline-manifest does not exist"):
+        stable.main(["transitions"], env)
+
+
+def test_gate_excuses_an_upgrade_arm_only_for_its_planners_no_baseline_output():
+    from scripts.releases.stable import PACKAGED_BY, require_gate
+
+    required = [*PACKAGED_BY, *PACKAGED_BY.values()]
+    needs = {name: {"result": "skipped"} for name in PACKAGED_BY}
+    needs.update({name: {"result": "success", "outputs": {"baseline": "none"}}
+                  for name in PACKAGED_BY.values()})
+    require_gate(needs, required, skip_bundles=False, skip_tests=False)
+    for packaged, planner in PACKAGED_BY.items():
+        for planned in ({"result": "success", "outputs": {"baseline": "published"}},
+                        {"result": "success"}, {"result": "failure", "outputs": {"baseline": "none"}}):
+            with pytest.raises(ValueError, match=packaged):
+                require_gate({**needs, planner: planned}, required, skip_bundles=False, skip_tests=False)
 
 
 def test_candidate_manifest_needs_every_call_and_stages_the_archive_manifest(

@@ -42,7 +42,7 @@ DEADLINE = 120.0
 REPO_ROOT = Path(__file__).resolve().parents[4]
 
 # Per-platform send/edit semantics (what the real service enforces, not what Hermes believes).
-PROFILES: Dict[str, Dict[str, Any]] = {
+PROFILES: dict[str, dict[str, Any]] = {
     "telegram": {"max_len": 4096, "edits": True, "threads": False},
     "discord": {"max_len": 2000, "edits": True, "threads": True},
     "slack": {"max_len": 3900, "edits": True, "threads": True},
@@ -75,7 +75,7 @@ def _append_jsonl(path: Path, record: dict) -> None:
         os.close(fd)
 
 
-def read_jsonl(path: Path) -> List[dict]:
+def read_jsonl(path: Path) -> list[dict]:
     if not path.exists():
         return []
     out = []
@@ -110,8 +110,8 @@ class FakePlatformServer:
 
     def __init__(self, journal: Path) -> None:
         self._lock = threading.Lock()
-        self.messages: Dict[str, PlatformMessage] = {}
-        self.order: List[str] = []
+        self.messages: dict[str, PlatformMessage] = {}
+        self.order: list[str] = []
         self.journal = journal
         for rec in read_jsonl(journal):
             self._apply(rec)
@@ -161,7 +161,7 @@ class FakePlatformServer:
             self._commit({"kind": "delete", "message_id": message_id})
             return True
 
-    def visible(self, platform: Optional[str] = None, chat_id: Optional[str] = None) -> List[PlatformMessage]:
+    def visible(self, platform: Optional[str] = None, chat_id: Optional[str] = None) -> list[PlatformMessage]:
         with self._lock:
             return [m for m in (self.messages[i] for i in self.order)
                     if not m.deleted and (platform is None or m.platform == platform)
@@ -218,7 +218,7 @@ def _adapter_class():
 
         splits_long_messages = True
 
-        def __init__(self, config, *, name: str, profile: str, world: "ChildWorld"):
+        def __init__(self, config, *, name: str, profile: str, world: ChildWorld):
             super().__init__(config, Platform(name))
             self.pname = name
             self.world = world
@@ -239,7 +239,7 @@ def _adapter_class():
             self._running = False
             self._mark_disconnected()
 
-        async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
+        async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
             return {"name": f"chat-{chat_id}", "type": "dm", "chat_id": chat_id}
 
         async def send_typing(self, chat_id: str, metadata=None) -> None:
@@ -271,7 +271,7 @@ def _adapter_class():
                 await asyncio.Event().wait()  # parked until the process is killed
             raise AssertionError(f"unknown fault kind {fault.kind}")
 
-        def _thread(self, metadata: Optional[Dict[str, Any]]) -> Optional[str]:
+        def _thread(self, metadata: Optional[dict[str, Any]]) -> Optional[str]:
             if not self.profile["threads"] or not metadata:
                 return None
             tid = metadata.get("thread_id")
@@ -279,14 +279,14 @@ def _adapter_class():
 
         # outbound
         async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None,
-                       metadata: Optional[Dict[str, Any]] = None) -> SendResult:
+                       metadata: Optional[dict[str, Any]] = None) -> SendResult:
             content = content or ""
             thread_id = self._thread(metadata)
             self.world.record_op({"platform": self.pname, "op": "send", "chat_id": str(chat_id),
                                   "thread_id": thread_id, "content": content,
                                   "interim": bool((metadata or {}).get("_interim_send"))})
             chunks = self.truncate_message(content, self.MAX_MESSAGE_LENGTH) if content else [""]
-            posted: List[str] = []
+            posted: list[str] = []
 
             def accept() -> None:
                 for chunk in chunks:
@@ -352,7 +352,7 @@ class ChildWorld:
         self.spool = spool
         self.server = FakePlatformServer(spool / "platform.jsonl")
         self._lock = threading.Lock()
-        self.faults: List[Fault] = []
+        self.faults: list[Fault] = []
 
     def take_fault(self, platform: str, op: str, content: str, chat_id: Optional[str] = None) -> Optional[Fault]:
         with self._lock:
@@ -465,7 +465,7 @@ def _serve(spool: Path) -> None:  # pragma: no cover - runs in the child process
     async def main() -> None:
         nonlocal runner
         parent = int(os.environ.get("C12_PARENT_PID") or os.getppid())
-        watchdog = asyncio.ensure_future(orphan_watchdog(parent))  # noqa: F841 - lives with the loop
+        watchdog = asyncio.ensure_future(orphan_watchdog(parent))
         runner = GatewayRunner(config)
         ok = await runner.start()
         if not ok:
@@ -488,7 +488,7 @@ _KEEP_ENV = ("PATH", "LANG", "LC_ALL", "TMPDIR", "PYTHONPATH", "VIRTUAL_ENV", "S
 class GatewayProcess:
     """A real gateway in a child process on ``home``; RPC + SIGKILL + restart on the same state."""
 
-    def __init__(self, root: Path, *, platforms: Dict[str, str], llm_base_url: str,
+    def __init__(self, root: Path, *, platforms: dict[str, str], llm_base_url: str,
                  extra_config: str = "", ledger_backoff=(0.5, 1.0)) -> None:
         from tests.fakes.fake_llm_provider import write_hermes_home
 
@@ -504,7 +504,7 @@ class GatewayProcess:
         self.sock: Optional[socket.socket] = None
         self._rfile = None
         self.boots = 0
-        self.pids: List[int] = []
+        self.pids: list[int] = []
 
     @property
     def db_path(self) -> Path:
@@ -514,7 +514,7 @@ class GatewayProcess:
     def log(self) -> Path:
         return self.spool / f"child-{self.boots}.log"
 
-    def env(self) -> Dict[str, str]:
+    def env(self) -> dict[str, str]:
         env = {k: os.environ[k] for k in _KEEP_ENV if k in os.environ}
         env.update({
             "HOME": str(self.home), "HERMES_HOME": str(self.hermes_home),
@@ -523,13 +523,13 @@ class GatewayProcess:
             "HERMES_STATE_DB_GUARD_BYPASS": "1",
             "HERMES_GATEWAY_LOCK_DIR": str(self.root / "gateway-locks"),
             "TZ": "UTC", "PYTHONHASHSEED": "0", "PYTHONUNBUFFERED": "1", "C12_PARENT_PID": str(os.getpid()),
-            "HERMES_DISABLE_LAZY_INSTALLS": "1", "TIRITH_ENABLED": "false",
+            "HERMES_DISABLE_LAZY_INSTALLS": "1",
             "AWS_EC2_METADATA_DISABLED": "true", "HERMES_HONCHO_HOST": "hermes",
             "PYTHONPATH": f"{REPO_ROOT}{os.pathsep}{os.environ.get('PYTHONPATH', '')}".rstrip(os.pathsep),
         })
         return env
 
-    def start(self) -> "GatewayProcess":
+    def start(self) -> GatewayProcess:
         assert self.proc is None
         self.boots += 1
         ready_before = len(read_jsonl(self.spool / "ready.jsonl"))
@@ -565,11 +565,11 @@ class GatewayProcess:
     def fault(self, **fault: Any) -> None:
         self.rpc("fault", fault=fault)
 
-    def idle(self, chats: Optional[List[str]]) -> bool:
+    def idle(self, chats: Optional[list[str]]) -> bool:
         r = self.rpc("busy", chats=chats)
         return not r["busy"] and not r["running"]
 
-    def wait_idle(self, chats: Optional[List[str]], what: str, timeout: float = DEADLINE, settle: int = 3) -> None:
+    def wait_idle(self, chats: Optional[list[str]], what: str, timeout: float = DEADLINE, settle: int = 3) -> None:
         """Idle for ``settle`` consecutive polls (a queued drain task can hop between checks)."""
         streak = [0]
 
@@ -579,7 +579,7 @@ class GatewayProcess:
 
         wait_until(check, what, timeout=timeout, proc=self.proc, log=self.log)
 
-    def holds(self) -> List[dict]:
+    def holds(self) -> list[dict]:
         return read_jsonl(self.spool / "holds.jsonl")
 
     def kill9(self) -> None:
@@ -618,7 +618,7 @@ class GatewayProcess:
     def platform_view(self) -> FakePlatformServer:
         return FakePlatformServer(self.spool / "platform.jsonl")
 
-    def ops(self) -> List[dict]:
+    def ops(self) -> list[dict]:
         return read_jsonl(self.spool / "ops.jsonl")
 
 
@@ -641,7 +641,7 @@ def norm(text: str) -> str:
     return "".join((text or "").split())
 
 
-def join_chunks(parts: List[str]) -> str:
+def join_chunks(parts: list[str]) -> str:
     """Re-join a reply rendered across several messages.
 
     The stream consumer's fallback continuation deliberately re-sends the broken word when the last
@@ -672,10 +672,10 @@ class Copy:
     text: str
     marked: bool
     complete: bool
-    message_ids: List[str]
+    message_ids: list[str]
 
 
-def visible_copies(msgs: List[PlatformMessage], aid: str) -> List[Copy]:
+def visible_copies(msgs: list[PlatformMessage], aid: str) -> list[Copy]:
     """Every visible rendition of answer ``aid``: starts at a message carrying its header and spans
     split chunks until the footer. A copy without a footer is incomplete (truncated/stale preview)."""
     markers = recovery_markers()
@@ -686,7 +686,7 @@ def visible_copies(msgs: List[PlatformMessage], aid: str) -> List[Copy]:
             if text.startswith(mk):
                 text, marked = text[len(mk):], True
         cleaned.append((m.message_id, _CHUNK_INDICATOR.sub("", text), marked))
-    copies: List[Copy] = []
+    copies: list[Copy] = []
     h, f = header(aid), footer(aid)
     for i, (mid, text, marked) in enumerate(cleaned):
         start = text.index(h) if h in text else None
@@ -718,7 +718,7 @@ def visible_copies(msgs: List[PlatformMessage], aid: str) -> List[Copy]:
     return copies
 
 
-def persisted_answers(db_path: Path, aid: str) -> List[str]:
+def persisted_answers(db_path: Path, aid: str) -> list[str]:
     import sqlite3
 
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=30)
@@ -731,7 +731,7 @@ def persisted_answers(db_path: Path, aid: str) -> List[str]:
     return [r[0] for r in rows]
 
 
-def persisted_user_rows(db_path: Path, token: str) -> List[str]:
+def persisted_user_rows(db_path: Path, token: str) -> list[str]:
     import sqlite3
 
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=30)

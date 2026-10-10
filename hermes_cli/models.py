@@ -1502,14 +1502,14 @@ def _api_key_provider_live(normalized: str, force_refresh: bool) -> Optional[lis
 
 
 def _stepfun_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]]:
-    """Step Plan live list merged with the curated catalog (the ``_anthropic_catalog`` pattern).
+    """Live ``/models`` merged with the curated catalog, for every StepFun id (the
+    ``_anthropic_catalog`` pattern).
 
-    The StepFun inference endpoint is the Step Plan API, whose ``/models`` returns a subset of
-    the full catalog: it omits models served by the Standard API (e.g. ``step-3.7-flash``),
-    so a healthy live response would shadow curated-only models from every picker surface
-    (#41147). Live rows first, then curated-only additions — and when the probe declines
-    (no credentials / failure) ``None`` falls through to the generic profile path, whose
-    ``merge_profile_catalog`` already serves the curated floor as a placeholder.
+    The ``-plan`` ids call the Step Plan API, whose ``/models`` omits models the Standard API
+    serves (e.g. ``step-3.7-flash``), so a healthy live response would shadow curated-only models
+    from every picker surface (#41147); the standard ids list the wider set, where this is a
+    no-op. Live rows first, then curated-only additions; a declined probe returns ``None`` for the
+    generic profile path, whose ``merge_profile_catalog`` serves the curated floor as a placeholder.
     """
     live = _api_key_provider_live(normalized, force_refresh)
     if not live:
@@ -1629,6 +1629,9 @@ _PROVIDER_CATALOG_FETCHERS: dict[str, Any] = {
     "copilot-acp": _copilot_catalog,
     "nous": _nous_catalog,
     "stepfun": _stepfun_catalog,
+    "stepfun-cn": _stepfun_catalog,
+    "stepfun-plan": _stepfun_catalog,
+    "stepfun-plan-cn": _stepfun_catalog,
     "gmi": _api_key_provider_live,
     "anthropic": _anthropic_catalog,
     "ai-gateway": lambda normalized, force_refresh: _fetch_ai_gateway_models() or None,

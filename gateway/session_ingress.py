@@ -26,12 +26,63 @@ async def admit_message(authority, event):
     # Only the delivery waiter is process-local; execution reads the committed snapshot.
     authority.native_waiters.add(receipt.admission_id)
     waiter = authority.waiters.setdefault(receipt.admission_id, asyncio.get_running_loop().create_future())
+    adopters = _marker_adopters(authority)
+    if getattr(event, '_turn_marker_handoff', False):
+        # The adapter lifecycle that sends this reply releases the turn's crash marker only once
+        # the reply is in the delivery ledger; the drain hands its marker to this event.
+        adopters[receipt.admission_id] = event
     if accepted is not None and not accepted.done():
         accepted.set_result(None)
     try:
         return await asyncio.shield(waiter)
     except RuntimeStoreError as exc:
         return pause_notice(authority, receipt.ref, exc.reason)
+    finally:
+        if adopters.get(receipt.admission_id) is event:
+            del adopters[receipt.admission_id]
+
+
+def _marker_adopters(authority):
+    adopters = getattr(authority, 'marker_adopters', None)
+    if adopters is None:
+        adopters = authority.marker_adopters = {}
+    return adopters
+
+
+_MARKER_FIELDS = ('_gateway_active_turn_session_key', '_gateway_active_turn_token')
+
+
+async def _hand_over_turn_marker(authority, admission_id, event):
+    """The executed turn's durable active-turn marker outlives the handler, as the in-process
+    turn's does on main, and is released only once its reply is in the delivery ledger (or nothing
+    is owed). A kill between the terminal commit and that ledger write then leaves a marked turn
+    whose persisted reply the next unclean boot ledgers and sends once, without new inference,
+    instead of a settled answer nobody owes. The waiting adapter lifecycle adopts it; a recovered
+    no-waiter reply keeps it until ``deliver_settled``; any other turn releases it here."""
+    adopter = _marker_adopters(authority).get(admission_id)
+    if adopter is not None:
+        for name in _MARKER_FIELDS:
+            if hasattr(event, name):
+                setattr(adopter, name, getattr(event, name))
+                delattr(event, name)
+        return
+    if admission_id in authority.pending_deliveries:
+        # Released by ``deliver_settled``, also when settlement failed and dropped the delivery.
+        _held_markers(authority)[admission_id] = event
+        return
+    await _release_turn_marker(authority, event)
+
+
+def _held_markers(authority):
+    held = getattr(authority, 'held_turn_markers', None)
+    if held is None:
+        held = authority.held_turn_markers = {}
+    return held
+
+
+async def _release_turn_marker(authority, event):
+    if getattr(event, '_gateway_active_turn_token', None):
+        await authority.runner._clear_durable_active_turn(event)
 
 
 def pause_notice(authority, ref, reason):
@@ -107,6 +158,9 @@ async def execute_admission(authority, ref, row):
     captured = {}
     result_token = execution_result.set(captured)
     token = executing_admission.set(True)
+    # This drain, not the handler's unwind, releases the turn's crash marker (see below).
+    event._turn_marker_handoff = True
+    handed = False
     try:
         with scope:
             if is_api:
@@ -144,8 +198,12 @@ async def execute_admission(authority, ref, row):
                     # leaves an externally answered admission started -> unknown.
                     authority.pending_deliveries[row['admission_id']] = (
                         adapter, event, live.route, response, home)
+            handed = True
+            await _hand_over_turn_marker(authority, row['admission_id'], event)
             return response
     finally:
+        if not handed:
+            await _release_turn_marker(authority, event)
         executing_admission.reset(token)
         execution_result.reset(result_token)
         api_execution.reset(api_token)
@@ -168,8 +226,12 @@ def _execution_scope(authority, home):
 async def deliver_settled(authority, admission_id):
     """Send a recovered no-waiter turn's reply after its terminal outcome committed. A send
     failure cannot rewrite that outcome; it is logged, and inference never runs again."""
+    held = _held_markers(authority).pop(admission_id, None)
     delivery = authority.pending_deliveries.get(admission_id)
     if delivery is None:
+        if held is not None:
+            # Fenced unknown: no answer is owed, so no later boot may deliver one either.
+            await _release_turn_marker(authority, held)
         return
     adapter, event, session_key, response, home = delivery
     try:
@@ -180,6 +242,8 @@ async def deliver_settled(authority, admission_id):
     finally:
         # Held until the send returns: an empty map means every settled reply was handed over.
         authority.pending_deliveries.pop(admission_id, None)
+        # The ledgered send already released the marker; an empty or failed send owes no more.
+        await _release_turn_marker(authority, event)
 
 
 async def deliver_response(adapter, event, session_key, response):

@@ -126,6 +126,27 @@ async def initialize_gateway_runtime(runner):
     # Publish this boot's verdict (an empty map clears a previous run's parked set).
     _record_parked_profiles(parked_profile_map(runner))
     runner.session_ticket_store = TicketStore(instance_id, registry.profile_ids())
+    release_unknown_turn_markers(runner)
+
+
+def release_unknown_turn_markers(runner):
+    """Before the unclean-start pass reads crash-left turn markers: a marked turn whose canonical
+    admission recovered ``unknown`` (the owner died before its terminal commit) owes no reply, so
+    its marker is cleared rather than ledgered as a delivery the FIFO never committed. A terminal
+    admission keeps its marker: its persisted reply is ledgered and sent once, never re-run."""
+    from gateway.session_authorities import owner_scope
+    store = getattr(runner, 'session_store', None)
+    if store is None:
+        return
+    for authority in _authorities(runner):
+        with owner_scope(authority):
+            unknown = {row['target_session_id'] for row in authority.db._read_all(
+                "SELECT DISTINCT target_session_id FROM session_admissions WHERE status='unknown'")}
+            if not unknown:
+                continue
+            for entry in store.list_sessions():
+                if entry.active_turn_token and authority.logical_owner(entry.session_id) in unknown:
+                    store.clear_turn_active(entry.session_key, entry.active_turn_token)
 
 
 def _publish_served_set(runner):

@@ -60,7 +60,12 @@ class _HttpsRedirectHandler(urllib.request.HTTPRedirectHandler):
         # started on loopback may stay there: an https origin bouncing to a local
         # listener would hand an unpinned model file to whatever is bound there.
         loopback = req.full_url.startswith(_LOOPBACK) and newurl.startswith(_LOOPBACK)
-        if not (newurl.startswith("https://") or loopback):
+        # An origin that is already plain http stays in the clear wherever it
+        # redirects; https never downgrades. Only a source that opted in (the
+        # user's own npm registry) starts a download on plain http at all.
+        started_plain_http = (req.full_url.startswith("http://")
+                              and not req.full_url.startswith(_LOOPBACK))
+        if not (newurl.startswith("https://") or loopback or started_plain_http):
             raise DownloadError(f"refusing redirect to non-https url: {newurl}")
         # urllib preserves our User-Agent and range headers. Do not re-add
         # arbitrary headers after its redirect policy has processed them.
@@ -147,6 +152,9 @@ class Source:
     dest: Path
     sha256: str = ""  # "" = no integrity check (model catalog policy)
     fallbacks: tuple[str, ...] = ()
+    #: The user's own registry (their npm mirror) served this URL, so its plain-http
+    #: intranet origin is usable: the lock's SHA256 still verifies the bytes (#123132).
+    allow_plain_http: bool = False
 
 
 _Ranges = list[tuple[int, int]]
@@ -264,7 +272,8 @@ class Download:
         partials_dir: Optional[Path] = None,
         pause_event: Optional[threading.Event] = None,
     ):
-        self.sources = [Source(s.url, Path(s.dest), s.sha256, tuple(s.fallbacks)) for s in sources]
+        self.sources = [Source(s.url, Path(s.dest), s.sha256, tuple(s.fallbacks),
+                               s.allow_plain_http) for s in sources]
         self.resume = resume
         self.connections = max(1, int(connections))
         if partials_dir:
@@ -289,9 +298,15 @@ class Download:
         for source in self.sources:
             if source.fallbacks and not re.fullmatch(r"[a-f0-9]{64}", source.sha256):
                 raise ValueError("mirror fallback requires a full lowercase SHA256")
-            for url in (source.url, *source.fallbacks):
-                if not (url.startswith("https://") or url.startswith(_LOOPBACK)):
-                    raise ValueError(f"refusing non-https url: {url}")
+            for index, url in enumerate((source.url, *source.fallbacks)):
+                if url.startswith("https://") or url.startswith(_LOOPBACK):
+                    continue
+                # A closed network's npm mirror is plain http (#123132). Only the URL
+                # the user configured is exempt: a fallback is PM's own choice, and
+                # the pinned SHA256 still verifies whatever this origin serves.
+                if index == 0 and source.allow_plain_http and url.startswith("http://"):
+                    continue
+                raise ValueError(f"refusing non-https url: {url}")
 
         # Probe the whole plan before reporting a denominator. A missing
         # Content-Length keeps the bar indeterminate until that file ends.
@@ -348,7 +363,8 @@ class Download:
         urls = tuple(dict.fromkeys((source.url, *source.fallbacks)))
         for index, url in enumerate(urls):
             self._check_pause()
-            candidate = Source(url, source.dest, source.sha256, urls[index + 1:])
+            candidate = Source(url, source.dest, source.sha256, urls[index + 1:],
+                               source.allow_plain_http)
             try:
                 return candidate, operation(candidate)
             except DownloadTransportError as exc:

@@ -331,3 +331,127 @@ def test_a_facts_file_without_published_entries_hides_nothing(tmp_path):
     workspace._copy_core_inputs(core, destination)
 
     assert (destination / "agent/chromium-1208/kept.txt").read_text(encoding="utf-8") == "KEPT\n"
+
+
+def _terminfo_case_pair_source(core):
+    """A package root carrying the bundled CPython's case-only terminfo pairs (see #135910).
+
+    ``X``/``x`` hold different entries (the directory-level pair a folding volume
+    cannot hold side by side), while ``Eterm``/``eterm`` fold onto the same name
+    once their directories are merged (the file-level pair).  ``Kterm``/``kterm``
+    are the same-bytes variant of that file-level pair, so a merged copy can tell
+    a true duplicate apart from a fold that changes what a name resolves to.
+    """
+    terminfo = core / "tools" / "python-3" / "share" / "terminfo"
+    for entry, text in {
+        "X/X-hpterm": "hp entry\n",
+        "x/xterm-256color": "x11 entry\n",
+        "E/Eterm": "x11 entry\n",
+        "e/eterm": "gnu entry\n",
+        "K/Kterm": "k entry\n",
+        "k/kterm": "k entry\n",
+    }.items():
+        path = terminfo / entry
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    (core / "pyproject.toml").write_text(
+        '[project]\nname="core"\nversion="1"\nrequires-python=">=3.11"\n'
+        '[tool.setuptools.packages.find]\ninclude=["tools"]\n',
+        encoding="utf-8",
+    )
+    return core
+
+
+def _skip_when_source_volume_folds_case(tmp_path):
+    """The X/x fixture needs a case-sensitive source volume to exist at all.
+
+    The real-world shape of #135910 is exactly that split: a case-sensitive
+    source (the Linux container's tool store) copied onto a case-folding
+    destination (a macOS bind mount), so on a case-folding host the fixture
+    itself cannot be built.
+    """
+    if workspace._destination_folds_case(tmp_path):
+        pytest.skip("this host folds filename case, so the X/x source pair cannot exist here")
+
+
+def test_copy_core_inputs_merges_casefold_directory_pairs_on_a_folding_volume(tmp_path, monkeypatch):
+    """A folding destination merges terminfo's x/ into X/: xterm-256color survives too."""
+    _skip_when_source_volume_folds_case(tmp_path)
+    core = _terminfo_case_pair_source(tmp_path / "core")
+    destination = tmp_path / "stage"
+    monkeypatch.setattr(workspace, "_destination_folds_case", lambda _: True)
+
+    workspace._copy_core_inputs(core, destination)
+
+    kept = destination / "tools/python-3/share/terminfo"
+    assert sorted(p.name for p in kept.iterdir()) == ["E", "K", "X"], \
+        "each folded pair shares the sorted-first spelling"
+    assert (kept / "X" / "X-hpterm").read_text(encoding="utf-8") == "hp entry\n"
+    assert (kept / "X" / "xterm-256color").read_text(encoding="utf-8") == "x11 entry\n", \
+        "the merged lowercase tree is not lost"
+
+
+def test_copy_core_inputs_drops_a_file_that_folds_onto_a_copied_entry(tmp_path, monkeypatch, caplog):
+    """Eterm/eterm fold onto one name inside the merged directory and differ in content:
+    the sorted-first spelling survives, never overwritten, and the drop is reported as
+    lossy with the resolution spelled out (eterm lookups resolve to Eterm's bytes)."""
+    _skip_when_source_volume_folds_case(tmp_path)
+    core = _terminfo_case_pair_source(tmp_path / "core")
+    destination = tmp_path / "stage"
+    monkeypatch.setattr(workspace, "_destination_folds_case", lambda _: True)
+
+    with caplog.at_level("WARNING", logger="pm.workspace"):
+        workspace._copy_core_inputs(core, destination)
+
+    merged = destination / "tools/python-3/share/terminfo/E"
+    assert sorted(p.name for p in merged.iterdir()) == ["Eterm"]
+    assert (merged / "Eterm").read_text(encoding="utf-8") == "x11 entry\n"
+    lossy = [r for r in caplog.records if "lossy" in r.message]
+    assert lossy and "eterm -> Eterm" in lossy[0].message, \
+        "the differing-content drop names what resolves to the survivor's bytes"
+
+
+def test_copy_core_inputs_reports_matching_folds_as_true_duplicates(tmp_path, monkeypatch, caplog):
+    """Kterm/kterm differ only in spelling, not bytes: the drop is a true duplicate and
+    is reported at info level — the capability-change warning stays for differing pairs."""
+    _skip_when_source_volume_folds_case(tmp_path)
+    core = _terminfo_case_pair_source(tmp_path / "core")
+    destination = tmp_path / "stage"
+    monkeypatch.setattr(workspace, "_destination_folds_case", lambda _: True)
+
+    with caplog.at_level("INFO", logger="pm.workspace"):
+        workspace._copy_core_inputs(core, destination)
+
+    merged = destination / "tools/python-3/share/terminfo/K"
+    assert sorted(p.name for p in merged.iterdir()) == ["Kterm"]
+    assert (merged / "Kterm").read_text(encoding="utf-8") == "k entry\n"
+    assert any("match the surviving bytes" in r.message for r in caplog.records), \
+        "an identical fold is dropped as a duplicate, not as a capability change"
+    assert not [r for r in caplog.records if r.levelname == "WARNING" and "kterm" in r.message]
+
+
+def test_copy_core_inputs_keeps_both_spellings_when_the_destination_folds_nothing(tmp_path, monkeypatch):
+    """A case-sensitive destination keeps both spellings: nothing is merged or dropped there."""
+    _skip_when_source_volume_folds_case(tmp_path)
+    core = _terminfo_case_pair_source(tmp_path / "core")
+    destination = tmp_path / "stage"
+    monkeypatch.setattr(workspace, "_destination_folds_case", lambda _: False)
+
+    workspace._copy_core_inputs(core, destination)
+
+    kept = destination / "tools/python-3/share/terminfo"
+    assert sorted(p.name for p in kept.iterdir()) == ["E", "K", "X", "e", "k", "x"]
+    assert (kept / "X" / "X-hpterm").read_text(encoding="utf-8") == "hp entry\n"
+    assert (kept / "x" / "xterm-256color").read_text(encoding="utf-8") == "x11 entry\n"
+    assert (kept / "E" / "Eterm").read_text(encoding="utf-8") == "x11 entry\n"
+    assert (kept / "e" / "eterm").read_text(encoding="utf-8") == "gnu entry\n"
+
+
+def test_destination_folds_case_answers_without_leaving_a_trace(tmp_path):
+    """The probe cleans up after itself and reports a boolean for any volume."""
+    before = sorted(p.name for p in tmp_path.iterdir())
+
+    result = workspace._destination_folds_case(tmp_path)
+
+    assert isinstance(result, bool)
+    assert sorted(p.name for p in tmp_path.iterdir()) == before

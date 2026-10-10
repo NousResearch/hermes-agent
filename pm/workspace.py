@@ -6,10 +6,13 @@ failure propagates without changing plugin configuration or the live venv.
 
 from __future__ import annotations
 
+import filecmp
 import hashlib
 import json
+import logging
 import os
 import shutil
+import uuid
 from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
@@ -21,7 +24,89 @@ from pm import paths
 from pm.package import InstallError
 from pm.plugin_declarations import read_python_declaration, manifest_version_error
 
+logger = logging.getLogger(__name__)
+
 _MEMBER_EXCLUDE = frozenset({".git", ".venv", "venv", "node_modules", "__pycache__"})
+
+
+def _destination_folds_case(destination: Path) -> bool:
+    """Probe whether the destination volume treats names differing only in case as one.
+
+    Docker Desktop bind mounts of a macOS/APFS host and Windows/NTFS do, and the
+    bundled CPython ships ``share/terminfo`` directory pairs that differ only by
+    case (``A``/``a``, ``E``/``e``, ...): the second ``mkdir`` of such a pair
+    then aborts the whole snapshot copy with ``FileExistsError`` (Errno 17).
+    """
+    token = uuid.uuid4().hex
+    probe = destination / token
+    try:
+        probe.mkdir(parents=True)
+    except OSError:
+        return False
+    try:
+        return probe.with_name(token.upper()).exists()
+    finally:
+        shutil.rmtree(probe, ignore_errors=True)
+
+
+def _copytree_fold_aware(source: Path, destination: Path, keep) -> None:
+    """Copy a package tree onto a case-folding destination.
+
+    A directory whose name folds onto an already-copied sibling (terminfo's ``X``/``x``)
+    can never exist beside it, yet the two trees hold different entries: the later
+    spelling is merged into the surviving directory instead of skipped, so directory
+    pairs stay lossless.  A file that folds onto an existing name cannot be kept beside
+    it — the volume holds exactly one of the pair — so this copy is explicitly **not
+    lossless** for that name: the sorted-first spelling wins, and when the two files
+    differ in content (terminfo's ``Eterm``/``eterm`), lookups of the dropped spelling
+    resolve to the survivor's bytes.  The drop is logged per pair, split by whether the
+    contents matched, and that keeps the generation copy from dying mid-flight on Errno 17.
+    """
+    destination.mkdir(parents=True, exist_ok=True)
+    # The destination may already hold the surviving spelling (a merge): those entries
+    # join the sorted competition so a later file still loses to a copied one.
+    taken = {name.casefold(): name for name in os.listdir(destination)}
+    to_copy: list[str] = []
+    to_merge: list[tuple[Path, Path]] = []
+    identical: list[str] = []
+    differing: list[tuple[str, str]] = []
+    for name in sorted(p.name for p in source.iterdir() if keep(source, p.name)):
+        survivor = taken.get(name.casefold())
+        if survivor is None:
+            taken[name.casefold()] = name
+            to_copy.append(name)
+            continue
+        entry = source / name
+        slot = destination / survivor
+        if entry.is_dir() and not entry.is_symlink() and (slot.is_dir() or (source / survivor).is_dir()):
+            to_merge.append((entry, slot))
+            continue
+        # The survivor's bytes sit either beside the drop (same directory) or in the
+        # already-copied merge target; compare against whichever exists to decide
+        # whether dropping this name is a true duplicate or a capability change.
+        reference = next((p for p in (source / survivor, slot) if p.is_file()), None)
+        if reference is not None and filecmp.cmp(entry, reference, shallow=False):
+            identical.append(name)
+        else:
+            differing.append((name, survivor))
+    if identical:
+        logger.info("pm: dropping case-folded file duplicates that match the surviving bytes: %s",
+                    ", ".join(identical))
+    if differing:
+        logger.warning(
+            "pm: snapshot copy is lossy for case-folded files that differ in content; "
+            "sorted-first wins, so lookups resolve to its bytes: %s",
+            ", ".join(f"{later} -> {survivor}" for later, survivor in differing))
+    for name in to_copy:
+        entry = source / name
+        if entry.is_dir():
+            _copytree_fold_aware(entry, destination / name, keep)
+        else:
+            shutil.copy2(entry, destination / name)
+    for later, survivor_dst in to_merge:
+        logger.info("pm: merging case-folded directory %s into %s", later.name, survivor_dst.name)
+        _copytree_fold_aware(later, survivor_dst, keep)
+    shutil.copystat(source, destination, follow_symlinks=False)
 
 
 def _member_ignored(directory, names):
@@ -112,17 +197,33 @@ def _copy_core_inputs(source: Path, destination: Path) -> None:
     # A root dist/ is build output, but below a package root it is shipped: the managed
     # environment runs from this snapshot and serves bundled plugins' dashboard/dist/.
     nested_excluded = excluded - {"dist"}
+    # On a case-folding volume the bundled terminfo's A/a-style directory pairs abort
+    # copytree with Errno 17, and skipping the later spelling would lose its distinct
+    # entries (xterm lives in x/): a fold-aware copy merges the pair instead.
+    folds_case = _destination_folds_case(destination)
+    published_by_dir: dict[Path, frozenset[str]] = {}
+    def published(directory):
+        # keep() asks per name, so memo the facts.json read once per directory.
+        key = Path(directory)
+        if key not in published_by_dir:
+            published_by_dir[key] = _published_store_entries(key)
+        return published_by_dir[key]
+    def keep(directory, name):
+        return not (name in nested_excluded or name.startswith(".")
+                    or name in published(Path(directory)) or name.endswith(".egg-info")
+                    or (Path(directory) / name).is_symlink())
     def ignore(directory, names):
-        published = _published_store_entries(Path(directory))
-        return [name for name in names if name in nested_excluded or name.startswith(".")
-                or name in published or name.endswith(".egg-info") or (Path(directory) / name).is_symlink()]
+        return [name for name in names if not keep(directory, name)]
 
     for entry in source.iterdir():
         if (entry.is_dir() and not entry.is_symlink() and entry.name not in excluded
                 and not entry.name.startswith(".") and entry.resolve() != destination.resolve()
                 and any(fnmatch.fnmatchcase(entry.name, pattern) for pattern in package_roots)):
             target = destination / entry.name
-            shutil.copytree(entry, target, ignore=ignore)
+            if folds_case:
+                _copytree_fold_aware(entry, target, keep)
+            else:
+                shutil.copytree(entry, target, ignore=ignore)
     for name in files:
         entry = source / name
         if not entry.is_file() or entry.is_symlink():

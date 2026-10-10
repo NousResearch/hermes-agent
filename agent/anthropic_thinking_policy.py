@@ -8,7 +8,7 @@ one place so message conversion and context accounting cannot diverge.
 Unknown or future Claude ids default to keep: replaying a block the API
 strips costs nothing, while stripping on a model that keeps it rewrites the
 cached prefix on every call. Only the known last-turn-only generations
-(Haiku, Claude 3, Opus < 4.5, Sonnet < 4.6) strip. Non-Claude ids never keep.
+(Claude 3, Haiku < 5, Opus < 4.5, Sonnet < 4.6) strip. Non-Claude ids never keep.
 """
 
 from __future__ import annotations
@@ -28,10 +28,10 @@ from agent.anthropic_endpoints import (
 _CLAUDE_VERSION_RE = re.compile(
     # Semantic minors are short version components. Snapshot dates such as
     # claude-opus-4-20250514 must remain 4.0 rather than becoming 4.20250514.
-    r"claude[-_.](opus|sonnet|fable|mythos)[-_.](\d+)(?:[-_.](\d{1,2})(?=$|[-_.]))?",
+    r"claude[-_.](opus|sonnet|haiku|fable|mythos)[-_.](\d+)(?:[-_.](\d{1,2})(?=$|[-_.]))?",
     re.IGNORECASE,
 )
-_LAST_TURN_ONLY_RE = re.compile(r"haiku|claude[-_.]?3(?!\d)", re.IGNORECASE)
+_LAST_TURN_ONLY_RE = re.compile(r"claude[-_.]?3(?!\d)", re.IGNORECASE)
 
 
 def _claude_family_version(model: Any) -> tuple[str, tuple[int, int]] | None:

@@ -193,7 +193,8 @@ _PRESERVED = [
     ("claude-fable-5-1", True), ("claude-mythos-5", True), ("claude-mythos-preview", True),
     # Future ids keep by default; known last-turn-only generations and non-Claude ids do not.
     ("claude-fable-5-2", True), ("claude-mythos-6", True), ("claude-newfamily-7", True),
-    ("claude-haiku-5", False), ("claude-3-7-sonnet-20250219", False), ("claude-sonnet-4", False),
+    ("claude-haiku-5-5", True), ("claude-3-5-haiku-20241022", False), ("claude-haiku-4-5-20251001", False),
+    ("claude-3-7-sonnet-20250219", False), ("claude-sonnet-4", False),
     ("hermes-4-405b", False),
 ]
 # case -> (model, route, number of growing thinking blocks that must reach the wire)

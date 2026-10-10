@@ -265,10 +265,12 @@ function UpdateActions({ target, u, view }: UpdateActionsProps): ReactElement | 
  */
 export function UpdateStatusCard({
   showReleaseNotes = true,
-  target
+  target,
+  version
 }: {
   showReleaseNotes?: boolean
   target: UpdateTarget
+  version: DesktopVersionInfo | null
 }): ReactElement {
   const { t } = useI18n()
   const u = t.updates
@@ -279,6 +281,10 @@ export function UpdateStatusCard({
   const [justChecked, setJustChecked] = useState<boolean>(false)
 
   const view = deriveUpdateStatus({ apply, checking, status, target, u })
+
+  if (target === 'client' && version?.bundleSwapPending) {
+    return <></>
+  }
 
   const handleCheck = async (): Promise<void> => {
     setJustChecked(false)

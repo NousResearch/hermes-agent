@@ -5,8 +5,9 @@ import type { DesktopUpdateStatus, DesktopVersionInfo } from '@/global'
 import { I18nProvider, type Locale, TRANSLATIONS, type Translations } from '@/i18n'
 import { en } from '@/i18n/en'
 import type { UpdateApplyState } from '@/store/updates'
+import { $backendUpdateApply, $backendUpdateStatus, $updateApply, $updateStatus } from '@/store/updates'
 
-import { deriveUpdateStatus, VersionHero } from './update-status'
+import { deriveUpdateStatus, UpdateStatusCard, VersionHero } from './update-status'
 
 // VersionHero is the shared About/overlay hero. Its module imports the real
 // updates store graph; mock it shallowly — these tests exercise the hero's
@@ -103,6 +104,37 @@ describe('deriveUpdateStatus', () => {
     expect(view.tone).toBe('idle')
     expect(view.updateAvailable).toBe(false)
     expect(view.line).toBe(en.updates.latestBody)
+  })
+
+  it('hides the client status card while a bundle restart is pending', () => {
+    $updateApply.set(IDLE_APPLY)
+    $updateStatus.set({ supported: true, error: 'check-failed', message: 'ECONNREFUSED' })
+    const version = { appVersion: '0.19.0', bundleSwapPending: false } as DesktopVersionInfo
+    const { rerender, unmount } = render(<UpdateStatusCard target="client" version={version} />)
+
+    expect(screen.getByText(en.updates.cantReach)).toBeTruthy()
+    rerender(<UpdateStatusCard target="client" version={{ ...version, bundleSwapPending: true }} />)
+    expect(screen.queryByText(en.updates.cantReach)).toBeNull()
+    expect(screen.queryByText('ECONNREFUSED', { exact: false })).toBeNull()
+    expect(screen.queryByRole('button')).toBeNull()
+    rerender(<UpdateStatusCard target="client" version={version} />)
+    expect(screen.getByText(en.updates.cantReach)).toBeTruthy()
+    expect(screen.getByRole('button', { name: en.updates.checkNow })).toBeTruthy()
+    unmount()
+    $updateStatus.set(null)
+  })
+
+  it('keeps the independent backend status visible during a client restart', () => {
+    $backendUpdateApply.set(IDLE_APPLY)
+    $backendUpdateStatus.set({ supported: true, error: 'backend-check-failed' })
+
+    const { unmount } = render(
+      <UpdateStatusCard target="backend" version={{ appVersion: '0.19.0', bundleSwapPending: true } as DesktopVersionInfo} />
+    )
+
+    expect(screen.getByText(en.updates.cantReach)).toBeTruthy()
+    unmount()
+    $backendUpdateStatus.set(null)
   })
 
   it('backend target says the backend is current, not "you"', () => {

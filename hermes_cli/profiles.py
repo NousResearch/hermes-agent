@@ -2366,6 +2366,11 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
         from hermes_cli.setup_profile import release_setup_copy, setup_marker_state
         release_setup_copy(final_source, setup_state=setup_marker_state(final_source))
         shutil.move(str(final_source), str(profile_dir))
+
+    # Match create_profile: imported profiles must get an s6 gateway slot so
+    # `hermes -p <name> gateway start` works after import (#69163).
+    _maybe_register_gateway_service(canon)
+
     return profile_dir
 
 

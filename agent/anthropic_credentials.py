@@ -61,10 +61,10 @@ def _first_env(*names: str) -> str:
 
 
 def _is_oauth_token(key: str) -> bool:
-    """True for Anthropic OAuth/setup tokens (sk-ant-*, eyJ JWTs, cc-); False for sk-ant-api* Console keys."""
-    if not key or key.startswith("sk-ant-api"):
-        return False
-    return key.startswith(("sk-ant-", "eyJ", "cc-"))
+    """Recognize OAuth/setup tokens positively; other Anthropic key families use x-api-key."""
+    # Console also issues sk-ant-usr/admin keys. A broad sk-ant- test sends valid
+    # API keys as Bearer and can misleadingly return a billing error.
+    return bool(key) and key.startswith(("sk-ant-oat", "eyJ", "cc-"))
 
 
 def anthropic_route_is_oauth(base_url: Any, credential: Any, *, provider: Optional[str] = None) -> bool:

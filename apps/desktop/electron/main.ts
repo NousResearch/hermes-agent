@@ -116,7 +116,8 @@ import {
   BROWSER_WINDOW_MIN_HEIGHT,
   BROWSER_WINDOW_MIN_WIDTH,
   BROWSER_WINDOW_WIDTH,
-  buildBrowserWindowUrl
+  buildBrowserWindowUrl,
+  installPreviewGuestWindowOpenHandler
 } from './browser-windows'
 import { createBundleSkewChecker } from './bundle-skew'
 import {
@@ -13576,6 +13577,12 @@ function wireCommonWindowHandlers(win, { zoom = true }: { zoom?: boolean } = {})
     } catch {
       // A destroyed frame is gone; nothing to restore.
     }
+  })
+  // A <webview> has its own WebContents, so the host handler above does not
+  // cover `target="_blank"` or `window.open()` from an embedded preview page.
+  // Install the same system-browser policy as soon as each guest attaches.
+  win.webContents.on('did-attach-webview', (_event, guestContents) => {
+    installPreviewGuestWindowOpenHandler(guestContents, openExternalUrl)
   })
   win.webContents.on('will-navigate', (event, url) => {
     if ((DEV_SERVER && url.startsWith(DEV_SERVER)) || (!DEV_SERVER && url.startsWith('file:'))) {

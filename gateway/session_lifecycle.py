@@ -55,6 +55,15 @@ def auto_continue_freshness_window() -> float:
         return float(_AUTO_CONTINUE_FRESHNESS_SECS_DEFAULT)
 
 
+def _is_live_turn_marker(entry: "SessionEntry", epoch_now: float, max_age_seconds: int) -> bool:
+    """A turn marker the dead process left on a non-suspended session, recent enough to resume."""
+    started_at = entry.active_turn_started_at
+    if not entry.active_turn_token or started_at is None or entry.suspended:
+        return False
+    # Epoch arithmetic: a pre-upgrade naive marker reads as local time, an aware one exactly.
+    return max_age_seconds <= 0 or epoch_now - started_at.timestamp() <= max_age_seconds
+
+
 class SessionLifecycleMixin:
     """SessionStore explicit boundaries and crash-recovery markers."""
 
@@ -161,6 +170,14 @@ class SessionLifecycleMixin:
             self._set_turn_marker_locked(session_key, entry, None, None)
         return True
 
+    def live_turn_marker_keys(self, max_age_seconds: int = 60 * 60) -> set[str]:
+        """Keys whose crash-left turn marker :meth:`recover_interrupted_turns` would re-arm."""
+        epoch_now = time.time()
+        with self._lock:
+            self._ensure_loaded_locked()
+            return {key for key, entry in self._entries.items()
+                    if _is_live_turn_marker(entry, epoch_now, max_age_seconds)}
+
     def recover_interrupted_turns(self, max_age_seconds: int = 60 * 60) -> int:
         """Promote crash-left turn markers into ``resume_pending`` (unclean startup only).
         Old/invalid markers are cleared without resuming; suspended sessions are never re-armed.
@@ -172,12 +189,7 @@ class SessionLifecycleMixin:
             nonlocal promoted
             if not entry.active_turn_token:
                 return False
-            started_at = entry.active_turn_started_at
-            # Epoch arithmetic: a pre-upgrade naive marker reads as local time, an aware one exactly.
-            marker_is_stale = started_at is None or (
-                max_age_seconds > 0 and epoch_now - started_at.timestamp() > max_age_seconds
-            )
-            if not marker_is_stale and not entry.suspended:
+            if _is_live_turn_marker(entry, epoch_now, max_age_seconds):
                 if entry.resume_pending:
                     # A drain-timeout marker is more specific; keep it.
                     if entry.last_resume_marked_at is None:

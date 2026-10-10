@@ -33,12 +33,24 @@ hermes_sync() {
 # hermes_bootstrap_python REPO: print the interpreter that can run pm before
 # any dependency is importable. It only emits the environment; it installs nothing.
 hermes_bootstrap_python() {
-    local repo="$1" store candidate
+    local repo="$1" store candidate home_root
     for candidate in "$repo/.venv/bin/python" "$repo/.venv/Scripts/python.exe" \
                      "$repo/venv/bin/python" "$repo/venv/Scripts/python.exe"; do
         [ -x "$candidate" ] && { printf '%s\n' "$candidate"; return 0; }
     done
-    for store in "${HERMES_RUNTIME_DIR:-}" "$repo/../tools" "${HERMES_HOME:-$HOME/.hermes}/tools"; do
+    # Mirror pm.environments.store_root -> hermes_constants.get_default_hermes_root:
+    # the store belongs to the ROOT, and a profile home (<root>/profiles/<name>)
+    # has none of its own. Probing only $HERMES_HOME/tools misses the store that
+    # setup just filled whenever activation runs under a profile.
+    home_root="${HERMES_HOME:-$HOME/.hermes}"
+    home_root="${home_root%/}"
+    case "$home_root" in
+        */profiles/?*) case "${home_root##*/profiles/}" in
+                           */*) : ;;
+                           *) home_root="${home_root%/profiles/*}" ;;
+                       esac ;;
+    esac
+    for store in "${HERMES_RUNTIME_DIR:-}" "$repo/../tools" "$home_root/tools"; do
         [ -n "$store" ] || continue
         for candidate in "$store"/python-*/bin/python3 "$store"/python-*/python.exe \
                          "$store"/python-*/bin/python "$store"/python-*/bin/python.exe; do
@@ -56,7 +68,10 @@ hermes_compose_env() {
         echo "no bootstrap Python found; run setup-hermes.sh" >&2
         return 1
     }
-    script="$(PYTHONHOME= PYTHONPATH="$repo" "$python" -m pm.environments --format "$dialect")" &&
+    # -P: `python -m` puts the CWD ahead of PYTHONPATH, so composing from inside
+    # another checkout (run_tests.sh <this-checkout>/... from a different tree)
+    # would import THAT checkout's pm and describe its install, not this one.
+    script="$(PYTHONHOME= PYTHONPATH="$repo" "$python" -P -m pm.environments --format "$dialect")" &&
         [ -n "$script" ] || {
         echo "could not read pm env (run ./setup-hermes.sh first)" >&2
         return 1

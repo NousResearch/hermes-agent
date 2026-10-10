@@ -96,9 +96,17 @@ def is_autonomous_silence_response(response: Any) -> bool:
     )
 
 
-def is_intentional_silence_agent_result(agent_result: dict | None, response: Any) -> bool:
-    """Silence markers suppress delivery only for successful agent turns."""
-    return isinstance(agent_result, dict) and not agent_result.get("failed") and is_intentional_silence_response(response)
+def is_intentional_silence_agent_result(
+        agent_result: dict | None, response: Any, display_kind: Any = None) -> bool:
+    """Silence markers suppress delivery for successful agent turns — and for FAILED turns
+    on a machinery display kind (#126581): an interrupted machinery turn whose response is a
+    bare marker must not deliver the literal ``NO_REPLY`` (154 such deliveries observed). A
+    human turn keeps the strict successful-only rule, so the #120051 warning path is intact."""
+    if not isinstance(agent_result, dict) or not is_intentional_silence_response(response):
+        return False
+    if not agent_result.get("failed"):
+        return True
+    return display_kind is not None and is_machinery_display_kind(display_kind)
 
 
 def display_kind_for_event(event: Any) -> str | None:

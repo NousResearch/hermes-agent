@@ -23,7 +23,10 @@ def test_resumed_chunks_clear_wait_without_erasing_local_load(monkeypatch, local
     loading = "Loading local model weights"
     monkeypatch.setattr(h, "_managed_local_load_notice",
                         lambda *args: loading if now[0] >= 1060.6 else None)
-    monkeypatch.setattr(h.time, "time", lambda: now[0])
+    # The monitor's clock is monotonic (elapsed-duration baselines), so the fake clock
+    # has to drive `monotonic`. `h.time` is the shared `time` module object the monitor
+    # reads too, so one patch covers both.
+    monkeypatch.setattr(h.time, "monotonic", lambda: now[0])
 
     if heartbeat_race:
         heartbeat = call._heartbeat

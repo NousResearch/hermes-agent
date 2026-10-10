@@ -1194,12 +1194,19 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
             agent._fire_stream_delta(text)
 
     def _on_event(event: Any) -> None:  # TTFB/activity touch — once per SSE event.
-        now = time.time()
+        # TWO clocks, deliberately. The watchdog baselines are elapsed-duration origins
+        # (a wall-clock step made a healthy stream look stalled and got it killed), while
+        # _last_api_first_chunk_at is an ABSOLUTE epoch that turn_response_intake
+        # differences against started_at to compute TTFB — a monotonic value there would
+        # silently produce a garbage latency number. The log line stays wall clock so it
+        # reads as a timestamp.
+        now = time.monotonic()
+        now_wall = time.time()
         # Lifecycle frames can precede text, so the first accepted parsed event is the Responses
         # equivalent of Chat Completions' first chunk. Preserve the per-attempt reset; the ``_fenced``
         # wrapper around this callback already keeps a retired worker from overwriting a newer request.
         if getattr(agent, "_last_api_first_chunk_at", None) is None:
-            agent._last_api_first_chunk_at = now
+            agent._last_api_first_chunk_at = now_wall
         has_progress = _codex_event_has_content(event)
         first_event = first_progress = False
         if watchdog_state is not None:
@@ -1213,7 +1220,7 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                         watchdog_state.retry_started_ts = None
         if first_event:
             logger.info("Codex stream first parsed event at %.3f (attempt=%s/%s, model=%s)",
-                now, attempt + 1, max_stream_retries + 1, model)
+                now_wall, attempt + 1, max_stream_retries + 1, model)
         if first_progress:
             logger.info("Codex stream first substantive progress at %.3f (attempt=%s/%s, model=%s)",
                 now, attempt + 1, max_stream_retries + 1, model)
@@ -1350,11 +1357,14 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
             # One origin for the whole physical attempt: lifecycle frames may change
             # diagnostics, but cannot restart the first-progress budget.
             with watchdog_state.lock:
-                watchdog_state.retry_started_ts = time.time()
+                # Monotonic: the first-progress budget differences this against later
+                # events. Logged as wall clock — a monotonic origin would print as a
+                # meaningless small number in an operator-facing line.
+                watchdog_state.retry_started_ts = time.monotonic()
                 watchdog_state.last_event_ts = None
                 watchdog_state.last_progress_ts = None
                 logger.info("Codex physical stream retry at %.3f (attempt=%s/%s, model=%s)",
-                    watchdog_state.retry_started_ts, attempt + 1, max_stream_retries + 1, model)
+                    time.time(), attempt + 1, max_stream_retries + 1, model)
         intercepted_events: list = []
         writer_token["value"] = writer_token["raw_stream"] = event_stream = None
         writer_token["superseded_logged"] = False

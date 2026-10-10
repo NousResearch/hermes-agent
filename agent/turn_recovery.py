@@ -1399,9 +1399,12 @@ def interruptible_backoff_sleep(
     On interrupt with ``_retry`` given and a redirect pending: preserve the redirect, arm
     ``_retry.restart_with_redirected_messages`` and return ``None`` (caller rebuilds the
     turn). Otherwise return the ``interrupted`` result dict. ``None`` when the wait completed."""
-    sleep_end = time.time() + wait_time
+    # Monotonic: this is "sleep N seconds", not a calendar deadline. With a wall-clock
+    # end an NTP step backward extended the backoff arbitrarily (the loop is bounded only
+    # by the clock), and a forward step cut the wait short.
+    sleep_end = time.monotonic() + wait_time
     _touch_counter = 0
-    while time.time() < sleep_end:
+    while time.monotonic() < sleep_end:
         if agent._interrupt_requested:
             if _retry is not None and agent.clear_interrupt(preserve_redirect=True):
                 _retry.restart_with_redirected_messages = True
@@ -1413,7 +1416,7 @@ def interruptible_backoff_sleep(
         time.sleep(0.2)
         _touch_counter += 1
         if _touch_counter % 150 == 0:  # 150 × 0.2s = 30s
-            agent._touch_activity(f"{activity_label}, {int(sleep_end - time.time())}s remaining")
+            agent._touch_activity(f"{activity_label}, {int(sleep_end - time.monotonic())}s remaining")
     # A long wait can outlive a short-lived credential (the free tier's JWT lives 15 minutes), and
     # the per-iteration pre-expiry adoption does not run between retries.
     agent._adopt_nous_key_before_expiry()

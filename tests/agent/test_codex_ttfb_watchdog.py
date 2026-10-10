@@ -494,7 +494,7 @@ def test_moa_heartbeat_survives_infinite_stale_timeout(monkeypatch):
     )
 
     now = [1000.0]
-    monkeypatch.setattr(h.time, "time", lambda: now[0])
+    monkeypatch.setattr(h.time, "monotonic", lambda: now[0])
 
     class HeartbeatThread:
         """Keep the synthetic worker alive through the first silence notice."""
@@ -548,7 +548,7 @@ def test_wait_notice_formatting_error_does_not_abort_request(monkeypatch):
     )
 
     now = [1000.0]
-    monkeypatch.setattr(h.time, "time", lambda: now[0])
+    monkeypatch.setattr(h.time, "monotonic", lambda: now[0])
 
     class HeartbeatThread:
         def __init__(self, *, target, daemon):
@@ -679,3 +679,72 @@ def test_explicit_ttfb_max_seconds_still_caps(tmp_path, monkeypatch):
     wd = h._resolve_nonstream_watchdogs(agent, {"model": "gpt-5.5", "input": huge_input})
 
     assert wd.ttfb_timeout == 90.0, f"explicit cap ignored: {wd.ttfb_timeout}"
+
+
+def test_wall_clock_step_does_not_stale_kill_a_healthy_nonstream_request(monkeypatch):
+    """The non-stream stale timer is an elapsed-duration measurement, so it must not read
+    the wall clock.
+
+    An NTP step, a VM snapshot restore or a laptop resume lands directly in
+    ``time.time() - call_start``: forward reads as an hour of silence and cancels a live
+    request (cancelled socket, then a spurious retry), backward reads as a fresh start and
+    disables the stale timer for the rest of the turn. The watchdog baselines in
+    ``chat_completion_nonstream`` (which anchor the TTFB/idle/progress kills) have the same
+    exposure.
+    """
+    from agent import chat_completion_helpers as h
+
+    response = SimpleNamespace(ok=True)
+    agent = SimpleNamespace(
+        platform="desktop",
+        api_mode="chat_completions",
+        provider="moa",
+        _consecutive_stale_streams=0,
+        _interrupt_requested=False,
+        # 30s of real budget: the monotonic clock below only spends ~6s, while a wall
+        # clock sitting an hour ahead reads as 3606s and trips it.
+        _compute_non_stream_stale_timeout=lambda _kwargs: 30.0,
+        _touch_activity=lambda _message: None,
+        _emit_wait_notice=lambda _message: None,
+    )
+
+    now = [1000.0]
+    monkeypatch.setattr(h.time, "monotonic", lambda: now[0])
+
+    # A STEP, not a constant offset: the baseline (call_start) is read before the first
+    # poll and every comparison read happens after it. An offset that is present at both
+    # ends cancels out of `later - earlier` and would not reproduce anything.
+    def _stepped_wall_clock():
+        stepped = 3600.0 if now[0] > 1000.0 else 0.0
+        return 500_000.0 + stepped + (now[0] - 1000.0)
+
+    monkeypatch.setattr(h.time, "time", _stepped_wall_clock)
+
+    class HeartbeatThread:
+        def __init__(self, *, target, daemon):
+            self._polls = 0
+            self._target = target
+
+        def start(self):
+            pass
+
+        def join(self, timeout=None):
+            now[0] = round(now[0] + timeout, 1)
+
+        def is_alive(self):
+            self._polls += 1
+            if self._polls >= 20:
+                self._target()
+                return False
+            return True
+
+    monkeypatch.setattr(h.threading, "Thread", HeartbeatThread)
+    monkeypatch.setattr(
+        h,
+        "_dispatch_nonstreaming_api_request",
+        lambda *_args, **_kwargs: response,
+    )
+
+    result = h.interruptible_api_call(agent, {"model": "openai-xai-wide"})
+
+    assert result is response, "a healthy request was stale-killed by a wall-clock step"

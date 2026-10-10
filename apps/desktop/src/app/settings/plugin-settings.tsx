@@ -22,11 +22,14 @@ import {
   resolvePluginSettingsTarget,
   SETTINGS_PLUGINS_AREA
 } from '@/contrib/settings-pages'
+import { type ProfileScope, profileScopeKey } from '@/hermes'
 import { useI18n } from '@/i18n'
 import type { IconComponent } from '@/lib/icons'
 import {
   $agentPluginBusy,
   $agentPlugins,
+  $agentPluginsErrorOwner,
+  $agentPluginsOwner,
   $agentPluginsProfile,
   $agentPluginsStatus,
   isDesktopRelevantPlugin,
@@ -34,7 +37,12 @@ import {
   saveAgentPluginSettings
 } from '@/store/agent-plugins'
 import { notify, notifyError } from '@/store/notifications'
-import { $settingsRequestProfile, setSettingsScope } from '@/store/settings-scope'
+import {
+  $settingsOwner,
+  $settingsRequestProfile,
+  $settingsScopeProfile,
+  setSettingsScope
+} from '@/store/settings-scope'
 
 import { desktopPackageName } from '../capabilities/plugins/plugin-packages'
 import type { OverlayNavLink } from '../overlays/overlay-split-layout'
@@ -89,16 +97,34 @@ export const PAGE_SCOPED_PARAMS = [
  *  agent-plugin store key it (`null` = the backend's launch profile). */
 const ownerKey = (scope: string | undefined): null | string => scope ?? null
 
+const settingsPluginOwnerKey = (owner: ProfileScope, scopeKey: string): string | undefined =>
+  owner ? `${profileScopeKey(owner)}::settings:${scopeKey}` : undefined
+
+function useSettingsPluginOwner() {
+  const profile = ownerKey(useStore($settingsRequestProfile))
+  const scope = useStore($settingsOwner)
+  const scopeKey = useStore($settingsScopeProfile)
+
+  return { identity: settingsPluginOwnerKey(scope, scopeKey), profile, scope }
+}
+
 /** The agent plugin rows loaded for `owner`, or none while the shared list
  *  still holds another profile's rows (a switch in flight, or Capabilities
  *  loaded a different profile). */
-function useOwnedAgentPlugins(owner: null | string) {
+function useOwnedAgentPlugins(owner: null | string | undefined) {
   const rows = useStore($agentPlugins)
-  const loadedFor = useStore($agentPluginsProfile)
+  const loadedFor = useStore($agentPluginsOwner)
+  const errorFor = useStore($agentPluginsErrorOwner)
   const status = useStore($agentPluginsStatus)
   const owned = loadedFor === owner
 
-  return { owned, rows: owned ? rows : [], settled: status === 'error' || (status === 'ready' && owned), status }
+  return {
+    errorFor,
+    owned,
+    rows: owned ? rows : [],
+    settled: (status === 'error' && errorFor === owner) || (status === 'ready' && owned),
+    status
+  }
 }
 
 /** Settings ▸ Plugins routing: `?tab=plugins&plugin=<entry key | plugin id>
@@ -110,7 +136,8 @@ export function usePluginSettingsRoute(active: boolean) {
   const navigate = useNavigate()
   const { hash, pathname, search } = useLocation()
   const entries = usePluginSettingsEntries()
-  const { settled } = useOwnedAgentPlugins(ownerKey(useStore($settingsRequestProfile)))
+  const { identity } = useSettingsPluginOwner()
+  const { settled } = useOwnedAgentPlugins(identity)
   const params = new URLSearchParams(search)
   const route = pluginSettingsRouteFrom(params)
   const handoff = active ? params.get(PLUGIN_SETTINGS_PROFILE_PARAM) : null
@@ -171,21 +198,23 @@ export function usePluginSettingsEntries(): PluginSettingsEntry[] {
   const { requestGateway } = useGatewayRequest()
   const contributions = useContributions(SETTINGS_PLUGINS_AREA)
   const records = useStore($pluginRecords)
-  const owner = ownerKey(useStore($settingsRequestProfile))
-  const { owned, rows, status } = useOwnedAgentPlugins(owner)
+  const owner = useSettingsPluginOwner()
+  const { errorFor, owned, rows, status } = useOwnedAgentPlugins(owner.identity)
 
   // Cheap backend disk scan; the same loader Capabilities ▸ Plugins uses.
   useEffect(() => {
-    void loadAgentPlugins(requestGateway, owner)
-  }, [requestGateway, owner])
+    if (owner.identity) {
+      void loadAgentPlugins(requestGateway, owner.profile, owner.identity)
+    }
+  }, [requestGateway, owner.identity, owner.profile])
 
   // The list is shared: if another surface replaced it with a different
   // profile's rows, fetch this scope's again rather than show none.
   useEffect(() => {
-    if (status === 'ready' && !owned) {
-      void loadAgentPlugins(requestGateway, owner)
+    if ((status === 'ready' && !owned) || (status === 'error' && errorFor !== owner.identity)) {
+      void loadAgentPlugins(requestGateway, owner.profile, owner.identity)
     }
-  }, [owned, owner, requestGateway, status])
+  }, [errorFor, owned, owner.identity, owner.profile, requestGateway, status])
 
   const configTitle = t.settings.pluginPages.agentSettings
 
@@ -338,11 +367,17 @@ function PluginSettingsLoading() {
  *  (profile, plugin) so a scope switch remounts it (the draft goes with the
  *  old profile), it renders only rows loaded for that profile, and its save
  *  writes that profile or nothing. */
-function PluginSchemaSettingsPage({ agentKey, owner }: { agentKey: string; owner: null | string }) {
+function PluginSchemaSettingsPage({
+  agentKey,
+  owner
+}: {
+  agentKey: string
+  owner: { identity: string; profile: null | string; scope: ProfileScope }
+}) {
   const { t } = useI18n()
   const p = t.skills.plugins
   const { requestGateway } = useGatewayRequest()
-  const { rows } = useOwnedAgentPlugins(owner)
+  const { rows } = useOwnedAgentPlugins(owner.identity)
   const row = rows.find(candidate => candidate.key === agentKey)
   const busy = useStore($agentPluginBusy) === agentKey
 
@@ -362,19 +397,60 @@ function PluginSchemaSettingsPage({ agentKey, owner }: { agentKey: string; owner
           // Belt and braces: the key remount already discards a draft when
           // the scope moves, but a submit must never write a profile other
           // than the one these values were loaded from.
-          if (ownerKey($settingsRequestProfile.get()) !== owner || $agentPluginsProfile.get() !== owner) {
+          const isCurrent = () =>
+            settingsPluginOwnerKey($settingsOwner.get(), $settingsScopeProfile.get()) === owner.identity &&
+            ownerKey($settingsRequestProfile.get()) === owner.profile
+
+          if (
+            !isCurrent() ||
+            $agentPluginsOwner.get() !== owner.identity ||
+            $agentPluginsProfile.get() !== owner.profile
+          ) {
             notifyError(null, p.settingsForm.saveFailed(row.name))
 
             return false
           }
 
-          const ok = await saveAgentPluginSettings(requestGateway, {
+          const requestOwned = async <T,>(
+            method: string,
+            params?: Record<string, unknown>,
+            timeoutMs?: number,
+            signal?: AbortSignal
+          ): Promise<T> => {
+            if (!isCurrent()) {
+              throw new Error('Settings owner changed before the plugin update was sent.')
+            }
+
+            const result = await requestGateway<T>(method, params, timeoutMs, signal)
+
+            if (!isCurrent()) {
+              throw new Error('Settings owner changed while the plugin update was in flight.')
+            }
+
+            return result
+          }
+
+          const ok = await saveAgentPluginSettings(requestOwned, {
             failMessage: p.settingsForm.saveFailed(row.name),
             key: agentKey,
-            profile: owner,
+            ownerIdentity: owner.identity,
+            profile: owner.profile,
             secrets: changes.secrets,
+            shouldReportError: isCurrent,
             values: changes.values,
-            writeSecret: (env, value) => setEnvVar(env, value, owner ?? undefined)
+            writeSecret: async (env, value) => {
+              if (!isCurrent()) {
+                throw new Error('Settings owner changed before the plugin secret was sent.')
+              }
+
+              const result = await setEnvVar(env, value, owner.scope)
+
+              if (!isCurrent()) {
+                throw new Error('Settings owner changed while the plugin secret was in flight.')
+              }
+
+              return result
+            }
           })
 
           if (ok) {
@@ -407,7 +483,7 @@ export function PluginSettingsPane({
   pending?: boolean
   target: null | PluginSettingsTarget
 }) {
-  const owner = ownerKey(useStore($settingsRequestProfile))
+  const owner = useSettingsPluginOwner()
 
   if (!target) {
     return pending ? (
@@ -419,11 +495,15 @@ export function PluginSettingsPane({
 
   const node = target.child ?? target.entry
 
-  if (node.agentKey) {
+  if (node.agentKey && owner.identity) {
     // Keyed by (profile, plugin): a scope switch remounts the form, so a
     // draft never outlives the profile it was typed against.
     return (
-      <PluginSchemaSettingsPage agentKey={node.agentKey} key={JSON.stringify([owner, node.agentKey])} owner={owner} />
+      <PluginSchemaSettingsPage
+        agentKey={node.agentKey}
+        key={JSON.stringify([owner.identity, node.agentKey])}
+        owner={{ identity: owner.identity, profile: owner.profile, scope: owner.scope }}
+      />
     )
   }
 

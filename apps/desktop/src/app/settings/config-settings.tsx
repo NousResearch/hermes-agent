@@ -7,7 +7,7 @@ import { useSearchParams } from 'react-router'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { SegmentedControl } from '@/components/ui/segmented-control'
-import { getElevenLabsVoices, getHermesConfigSchema, saveHermesConfig } from '@/hermes'
+import { getElevenLabsVoices, getHermesConfigSchema, profileScopeKey, saveHermesConfig } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { isSubmitEnter } from '@/lib/ime'
@@ -26,13 +26,11 @@ import { $disableF12, setDisableF12 } from '@/store/disable-f12'
 import { $alwaysExternalLinks, setAlwaysExternalLinks } from '@/store/external-links'
 import { $keepAwakeMode, type KeepAwakeMode, setKeepAwakeMode } from '@/store/keep-awake'
 import { notify, notifyError } from '@/store/notifications'
-import { normalizeProfileKey } from '@/store/profile'
 import { repoDiscoveryPolicyFromConfig, repoDiscoveryPolicySignature, scanAndRecordRepos } from '@/store/projects'
-import { $settingsRequestProfile } from '@/store/settings-scope'
+import { $settingsOwner, $settingsScopeOverride } from '@/store/settings-scope'
 import type { ConfigFieldSchema, HermesConfigRecord } from '@/types/hermes'
 
 import { hermesConfigCacheWriter, useHermesConfigRecord } from '../hooks/use-config-record'
-import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
 import { PanelEmpty } from '../overlays/panel'
 
 import { ConfigField } from './config-field'
@@ -52,7 +50,7 @@ import { MemoryConnect } from './memory/connect'
 import { ProviderConfigPanel } from './memory/provider-config-panel'
 import { ModelSettings, ModelSettingsSkeleton } from './model-settings'
 import { PoolLimitsSetting } from './pool-limits-setting'
-import { EmptyState, ListRow, SettingsContent, SettingsSkeleton, ToggleRow } from './primitives'
+import { EmptyState, ListRow, ListRowSkeleton, SettingsContent, SettingsSkeleton, ToggleRow } from './primitives'
 import { SettingsProfileScope } from './profile-scope'
 import { QuickEntrySettings } from './quick-entry-settings'
 import { SETTING_IDS, settingElementId } from './settings-manifest'
@@ -66,17 +64,37 @@ export function ConfigSettings({
   onMainModelChanged,
   importInputRef
 }: ConfigSettingsProps) {
-  // Shared "Applies to" scope (null → the app's active profile). Remount the
-  // inner page per scope so every draft/seed/autosave ref resets wholesale
-  // when the target profile changes — the same guarantee useOnProfileSwitch
-  // provides for app-wide switches, without hand-clearing each piece.
-  const scopeProfile = useStore($settingsRequestProfile)
+  // One concrete owner for drafts, requests and cache rows, including same-name hosts.
+  const scopeProfile = useStore($settingsOwner)
+
+  if (!scopeProfile) {
+    // A non-foreground owner is null while Electron acquires its exact
+    // connection and after an acquisition failure. Keep the scope selector
+    // mounted in both cases so the user can switch back to a working owner;
+    // failures already surface a retry notification from settings-scope.
+    return (
+      <SettingsContent>
+        <SettingsProfileScope className="mb-5" />
+        {activeSectionId === 'model' ? (
+          <div className="mb-6">
+            <ModelSettingsSkeleton subpage={subpage} />
+          </div>
+        ) : (
+          <div className="grid gap-1">
+            {Array.from({ length: 6 }, (_, row) => (
+              <ListRowSkeleton key={row} />
+            ))}
+          </div>
+        )}
+      </SettingsContent>
+    )
+  }
 
   return (
     <ConfigSettingsInner
       activeSectionId={activeSectionId}
       importInputRef={importInputRef}
-      key={scopeProfile ?? '__active__'}
+      key={profileScopeKey(scopeProfile)}
       onConfigSaved={onConfigSaved}
       onMainModelChanged={onMainModelChanged}
       scopeProfile={scopeProfile}
@@ -101,7 +119,7 @@ function ConfigSettingsInner({
   onMainModelChanged,
   importInputRef,
   scopeProfile
-}: ConfigSettingsProps & { scopeProfile: string | undefined }) {
+}: ConfigSettingsProps & { scopeProfile: NonNullable<ReturnType<typeof $settingsOwner.get>> }) {
   const { t } = useI18n()
   const c = t.settings.config
   const keepAwakeMode = useStore($keepAwakeMode)
@@ -135,10 +153,7 @@ function ConfigSettingsInner({
     isError: schemaFailed,
     refetch: refetchSchema
   } = useQuery({
-    // Base key when following the active profile (matches every pre-existing
-    // consumer); suffixed only for an explicit scope override.
-    queryKey:
-      scopeProfile == null ? ['hermes-config-schema'] : ['hermes-config-schema', normalizeProfileKey(scopeProfile)],
+    queryKey: ['hermes-config-schema', profileScopeKey(scopeProfile)],
     queryFn: () => getHermesConfigSchema(scopeProfile),
     staleTime: 5 * 60 * 1000
   })
@@ -173,19 +188,16 @@ function ConfigSettingsInner({
     }
   }, [loadedConfig])
 
-  // A profile switch invalidates (but doesn't clear) the shared config query, so
-  // the local draft would otherwise keep profile A's data and autosave it into
-  // B. Drop the seed + draft (re-seeds from B's refetch) and zero saveVersion so
-  // the pending debounced autosave is cancelled by its effect cleanup.
-  useOnProfileSwitch(() => {
-    configSeeded.current = false
-    configBaselineRef.current = null
-    savedDiscoverySignatureRef.current = undefined
-    setConfig(null)
-    saveVersionRef.current = 0
-    setSaveVersion(0)
-    saveQueueRef.current = Promise.resolve()
-  })
+  const mounted = useRef(true)
+  // eslint-disable-next-line no-restricted-syntax -- mount lifetime, not an atom mirror
+  useEffect(() => {
+    mounted.current = true
+
+    return () => {
+      mounted.current = false
+    }
+  }, [])
+  const isCurrentOwner = () => mounted.current && $settingsOwner.get() === scopeProfile
 
   useEffect(() => {
     let cancelled = false
@@ -225,6 +237,10 @@ function ConfigSettingsInner({
       // baseline advance — each save's diff is computed once its predecessor
       // has fully resolved.
       saveQueueRef.current = saveQueueRef.current.then(async () => {
+        if (!isCurrentOwner()) {
+          return
+        }
+
         try {
           const patch = diffConfig(configBaselineRef.current ?? {}, snapshot)
           const result = await saveHermesConfig(patch, writeScope ?? scopeProfile)
@@ -246,10 +262,10 @@ function ConfigSettingsInner({
 
           recordSettingsSaved(patch, schema ?? {}, typeof savedScope === 'string' ? savedScope : savedScope?.profile)
 
-          if (saveVersionRef.current === v) {
+          if (isCurrentOwner() && saveVersionRef.current === v) {
             // The repo-discovery scan reads the ACTIVE profile's workspace
             // policy; skip it when this page is editing another profile.
-            if (scopeProfile == null) {
+            if ($settingsScopeOverride.get() == null) {
               const discoverySignature = repoDiscoveryPolicySignature(repoDiscoveryPolicyFromConfig(snapshot))
 
               if (savedDiscoverySignatureRef.current !== discoverySignature) {
@@ -258,10 +274,12 @@ function ConfigSettingsInner({
               }
             }
 
-            onConfigSaved?.()
+            if (isCurrentOwner()) {
+              onConfigSaved?.()
+            }
           }
         } catch (err) {
-          if (saveVersionRef.current === v) {
+          if (isCurrentOwner() && saveVersionRef.current === v) {
             notifyError(err, c.autosaveFailed)
           }
         }
@@ -286,7 +304,7 @@ function ConfigSettingsInner({
     // transition before applying it. Every other edit passes through untouched.
     if (config && clearsEnabledToolsets(config, next)) {
       void confirm({ destructive: true, title: c.toolsetsWipeConfirm }).then(ok => {
-        if (ok) {
+        if (ok && isCurrentOwner()) {
           applyConfig(next)
         }
       })
@@ -368,6 +386,10 @@ function ConfigSettingsInner({
     const reader = new FileReader()
 
     reader.onload = () => {
+      if (!isCurrentOwner()) {
+        return
+      }
+
       try {
         updateConfig(JSON.parse(String(reader.result)))
         notify({ kind: 'success', title: c.imported, message: t.common.saving })
@@ -387,7 +409,15 @@ function ConfigSettingsInner({
       <SettingsProfileScope className="mb-5" />
       {activeSectionId === 'model' && (
         <div className={showModelSettings ? 'mb-6' : undefined}>
-          <ModelSettings onMainModelChanged={onMainModelChanged} scopeProfile={scopeProfile} subpage={subpage} />
+          <ModelSettings
+            onMainModelChanged={(provider, model) => {
+              if (isCurrentOwner() && $settingsScopeOverride.get() == null) {
+                onMainModelChanged?.(provider, model)
+              }
+            }}
+            scopeProfile={scopeProfile}
+            subpage={subpage}
+          />
         </div>
       )}
       {children}
@@ -520,6 +550,7 @@ function ConfigSettingsInner({
                 optionLabels={key === 'tts.elevenlabs.voice_id' ? elevenLabsVoiceLabels : undefined}
                 schema={field}
                 schemaKey={key}
+                scope={scopeProfile}
                 value={getNested(config, key)}
               />
               {key === 'memory.provider' && isExternalMemoryProvider(getNested(config, key)) ? (

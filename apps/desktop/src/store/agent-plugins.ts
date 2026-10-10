@@ -98,11 +98,17 @@ export type GatewayRequest = <T>(method: string, params?: Record<string, unknown
 export const $agentPlugins = atom<AgentPluginRow[]>([])
 export const $agentPluginsStatus = atom<AgentPluginsStatus>('idle')
 export const $agentPluginsError = atom<string | null>(null)
+/** Exact owner whose list load failed; prevents one gateway's error from
+ * settling another gateway's Settings route. */
+export const $agentPluginsErrorOwner = atom<null | string | undefined>(undefined)
 /** The profile `$agentPlugins` was loaded for (`null` = the backend's launch
  *  profile; `undefined` = nothing loaded yet). Surfaces that write a row's
  *  settings must check it: the list is shared, and a scope switch keeps the
  *  previous profile's rows on screen until the new list lands. */
 export const $agentPluginsProfile = atom<null | string | undefined>(undefined)
+/** Exact caller-owned route whose rows are currently stored. Settings uses a
+ * connection-qualified key; legacy callers default to the profile key. */
+export const $agentPluginsOwner = atom<null | string | undefined>(undefined)
 /** Best available address of the row whose toggle RPC is in flight. */
 export const $agentPluginBusy = atom<string | null>(null)
 
@@ -128,7 +134,7 @@ export const isDesktopRelevantPlugin = (row: AgentPluginRow): boolean => {
 }
 
 let inflight: Promise<void> | null = null
-let inflightProfile: string | null = null
+let inflightOwner: string | null = null
 // Bumped per load so a slow response from a previous profile scope can't
 // overwrite the newer scope's list (async results can land out of order).
 let loadGeneration = 0
@@ -143,16 +149,20 @@ const withProfile = (params: Record<string, unknown>, profile?: string | null) =
  *  backend); concurrent callers for the SAME profile share one in-flight
  *  request — a different profile starts fresh so a scope switch can't get a
  *  stale list. */
-export function loadAgentPlugins(request: GatewayRequest, profile?: string | null): Promise<void> {
+export function loadAgentPlugins(
+  request: GatewayRequest,
+  profile?: string | null,
+  ownerIdentity: string | null = profile ?? null
+): Promise<void> {
   const scope = profile ?? null
 
-  if (inflight && inflightProfile === scope) {
+  if (inflight && inflightOwner === ownerIdentity) {
     return inflight
   }
 
   const generation = ++loadGeneration
 
-  inflightProfile = scope
+  inflightOwner = ownerIdentity
   inflight = (async () => {
     if ($agentPluginsStatus.get() !== 'ready') {
       $agentPluginsStatus.set('loading')
@@ -170,19 +180,22 @@ export function loadAgentPlugins(request: GatewayRequest, profile?: string | nul
 
       $agentPlugins.set((result?.plugins ?? []).map(normalizeAgentPluginRow))
       $agentPluginsProfile.set(scope)
+      $agentPluginsOwner.set(ownerIdentity)
       $agentPluginsStatus.set('ready')
       $agentPluginsError.set(null)
+      $agentPluginsErrorOwner.set(undefined)
     } catch (e) {
       if (generation !== loadGeneration) {
         return
       }
 
       $agentPluginsError.set(e instanceof Error ? e.message : String(e))
+      $agentPluginsErrorOwner.set(ownerIdentity)
       $agentPluginsStatus.set('error')
     } finally {
       if (generation === loadGeneration) {
         inflight = null
-        inflightProfile = null
+        inflightOwner = null
       }
     }
   })()
@@ -456,6 +469,11 @@ export interface SaveAgentPluginSettingsOptions {
   writeSecret: (env: string, value: string) => Promise<unknown>
   failMessage: string
   profile?: string | null
+  /** Exact shared-list owner. When present, settlements cannot repaint a
+   * replacement gateway that happens to expose the same profile name. */
+  ownerIdentity?: string | null
+  /** Suppress an error settlement after the caller's UI owner changed. */
+  shouldReportError?: () => boolean
 }
 
 /** Persist a plugin's manifest-declared settings: values through
@@ -491,19 +509,23 @@ export async function saveAgentPluginSettings(
     // The shared list may belong to another profile by now (a scope switch
     // mid-save): only a list loaded for the profile this save targeted takes
     // its refreshed row, and a refetch would hijack the other profile's view.
-    const ownsList = $agentPluginsProfile.get() === (opts.profile ?? null)
+    const ownsList =
+      $agentPluginsProfile.get() === (opts.profile ?? null) &&
+      (opts.ownerIdentity === undefined || $agentPluginsOwner.get() === opts.ownerIdentity)
 
     if (ownsList && result?.plugin) {
       const refreshed = result.plugin
 
       $agentPlugins.set($agentPlugins.get().map(row => (row.key === opts.key ? { ...row, ...refreshed } : row)))
     } else if (ownsList) {
-      await loadAgentPlugins(request, opts.profile)
+      await loadAgentPlugins(request, opts.profile, opts.ownerIdentity ?? opts.profile ?? null)
     }
 
     return true
   } catch (e) {
-    notifyError(e, opts.failMessage)
+    if (opts.shouldReportError?.() !== false) {
+      notifyError(e, opts.failMessage)
+    }
 
     return false
   } finally {

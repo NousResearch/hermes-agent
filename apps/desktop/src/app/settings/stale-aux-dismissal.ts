@@ -1,3 +1,4 @@
+import type { ProfileScope } from '@/api/client'
 import type { StaleAuxAssignment } from '@/hermes'
 import { getApiRequestProfile, profileScopeKey } from '@/hermes'
 import { readKey, writeKey } from '@/lib/storage'
@@ -13,10 +14,41 @@ import { readKey, writeKey } from '@/lib/storage'
 // never lost.
 const DISMISSED_STALE_AUX_KEY_BASE = 'hermes.desktop.staleAuxDismissal.v1'
 
-function dismissalKey(profile: null | string | undefined): string {
-  const scope = profile ?? getApiRequestProfile() ?? undefined
+function descriptorKey(owner: NonNullable<Extract<ProfileScope, object>['connectionOwner']>): string {
+  const identity = JSON.stringify([
+    owner.mode ?? '',
+    String(owner.baseUrl ?? '').replace(/\/+$/, ''),
+    owner.authMode ?? '',
+    owner.remoteKind ?? '',
+    owner.remoteHost ?? '',
+    owner.remoteIdentity ?? ''
+  ])
 
-  return `${DISMISSED_STALE_AUX_KEY_BASE}.profile.${encodeURIComponent(profileScopeKey(scope))}`
+  let hash = 0xcbf29ce484222325n
+
+  for (const character of identity) {
+    hash ^= BigInt(character.codePointAt(0)!)
+    hash = BigInt.asUintN(64, hash * 0x100000001b3n)
+  }
+
+  return hash.toString(36)
+}
+
+function dismissalKey(scope: ProfileScope): string {
+  const resolvedScope = scope ?? getApiRequestProfile() ?? undefined
+
+  if (resolvedScope && typeof resolvedScope === 'object') {
+    const owner = resolvedScope.connectionOwner ?? resolvedScope.legacyConnection
+
+    if (owner) {
+      const connectionId = resolvedScope.connectionId || 'legacy'
+      const profile = (resolvedScope.profile ?? '').trim() || 'default'
+
+      return `${DISMISSED_STALE_AUX_KEY_BASE}.profile.${encodeURIComponent(`${connectionId}:${descriptorKey(owner)}::${profile}`)}`
+    }
+  }
+
+  return `${DISMISSED_STALE_AUX_KEY_BASE}.profile.${encodeURIComponent(profileScopeKey(resolvedScope))}`
 }
 
 // Trailing-slash-insensitive so `http://x/v1` and `http://x/v1/` (the same
@@ -36,14 +68,14 @@ export function staleAuxFingerprint(mainProvider: string, slots: readonly StaleA
   return `${mainProvider.trim().toLowerCase()}#${pins}`
 }
 
-export function readStaleAuxDismissal(profile: null | string | undefined): null | string {
-  return readKey(dismissalKey(profile))
+export function readStaleAuxDismissal(scope: ProfileScope): null | string {
+  return readKey(dismissalKey(scope))
 }
 
 export function dismissStaleAux(
-  profile: null | string | undefined,
+  scope: ProfileScope,
   mainProvider: string,
   slots: readonly StaleAuxAssignment[]
 ) {
-  writeKey(dismissalKey(profile), staleAuxFingerprint(mainProvider, slots))
+  writeKey(dismissalKey(scope), staleAuxFingerprint(mainProvider, slots))
 }

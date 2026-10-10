@@ -9,6 +9,7 @@ import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Switch } from '@/components/ui/switch'
+import type { RecycleBackendScope } from '@/global'
 import {
   getAuxiliaryModels,
   getGlobalModelInfo,
@@ -26,6 +27,7 @@ import type {
   MoaConfigResponse,
   MoaModelSlot,
   ModelAssignmentRequest,
+  ProfileScope,
   StaleAuxAssignment
 } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -39,6 +41,7 @@ import { $customModels, withCustomModels } from '@/store/custom-models'
 import { setMainModelAssignment } from '@/store/model-assignment'
 import { notify, notifyError, readableError } from '@/store/notifications'
 import { startManualLocalEndpoint, startManualOnboarding, startManualProviderOAuth } from '@/store/onboarding'
+import { $settingsScopeOverride } from '@/store/settings-scope'
 
 import { hermesConfigCacheWriter, invalidateHermesConfig, useHermesConfigRecord } from '../hooks/use-config-record'
 import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
@@ -56,6 +59,26 @@ import { getNested, setNested } from './helpers'
 import { ModelSelect, withActive } from './model-select'
 import { ListRow, ListRowSkeleton, Pill, SectionHeading, SectionHeadingSkeleton } from './primitives'
 import { dismissStaleAux, readStaleAuxDismissal, staleAuxFingerprint } from './stale-aux-dismissal'
+
+function exactRecycleScope(scope: ProfileScope): RecycleBackendScope | undefined {
+  if (!scope || typeof scope !== 'object') {
+    return scope
+  }
+
+  const profile = scope.profile?.trim()
+
+  if (scope.connectionId === null && scope.legacyConnection) {
+    return { connectionId: null, legacyConnection: scope.legacyConnection, ...(profile ? { profile } : {}) }
+  }
+
+  const connectionId = scope.connectionId?.trim()
+
+  if (connectionId && scope.connectionOwner) {
+    return { connectionId, connectionOwner: scope.connectionOwner, ...(profile ? { profile } : {}) }
+  }
+
+  throw new Error('Restart requires an exact connection and profile.')
+}
 
 // Skeleton mirror of the Model settings DOM so the page keeps its shape while
 // the provider/model catalog loads, instead of collapsing to a centered
@@ -289,11 +312,8 @@ interface ModelSettingsProps {
   subpage?: string
   /** Notified after the main model is applied, so live UI stores can sync. */
   onMainModelChanged?: (provider: string, model: string) => void
-  /** Shared settings "Applies to" scope: a concrete profile to edit instead of
-   *  the app's active one, or undefined to follow the active profile (default).
-   *  Request-shaped on purpose — the API helpers treat `null` as "deliberately
-   *  target the primary/default backend", so this prop never carries null. */
-  scopeProfile?: string
+  /** ConfigSettings supplies a frozen connection/profile pin for this mount. */
+  scopeProfile?: ProfileScope
 }
 
 export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: ModelSettingsProps) {
@@ -440,13 +460,22 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
     [m.loadFailed, scopeProfile, setCaughtError]
   )
 
+  // eslint-disable-next-line no-restricted-syntax -- invalidate async work on unmount, not an atom mirror
   useEffect(() => {
     void refresh()
+
+    return () => {
+      profileEpoch.current += 1
+    }
   }, [refresh])
 
   // A profile switch swaps the backend under the mounted panel — reload for the
   // new profile (bumping the epoch first so any in-flight A request is discarded).
   useOnProfileSwitch(() => {
+    if (scopeProfile && typeof scopeProfile === 'object') {
+      return
+    }
+
     profileEpoch.current += 1
     // The panel stays mounted across profile switches, so clear the previous
     // profile's draft selection before loading the new profile's source of
@@ -709,6 +738,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
         return
       }
 
+      const epoch = profileEpoch.current
       const prev = config
       const next = setNested(config, key, value)
       setConfig(next)
@@ -716,8 +746,10 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
       try {
         await saveHermesConfig(setNested({}, key, value), writeScope ?? scopeProfile)
       } catch (err) {
-        setConfig(prev)
-        notifyError(err, m.defaultsFailed)
+        if (profileEpoch.current === epoch) {
+          setConfig(prev)
+          notifyError(err, m.defaultsFailed)
+        }
       }
     },
     [config, m.defaultsFailed, scopeProfile, setConfig, writeScope]
@@ -813,7 +845,8 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
           provider: selectedProvider,
           ...(selectedProviderRow?.api_url ? { base_url: selectedProviderRow.api_url } : {})
         },
-        scopeProfile
+        scopeProfile,
+        { isCurrent: () => profileEpoch.current === epoch }
       )
 
       if (profileEpoch.current !== epoch) {
@@ -828,15 +861,19 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
 
       // Live UI stores mirror the ACTIVE profile's model; a scoped apply
       // changed a different profile and must not repaint them.
-      if (scopeProfile == null) {
+      if ($settingsScopeOverride.get() == null) {
         onMainModelChanged?.(provider, model)
       }
 
       await refresh()
     } catch (err) {
-      setCaughtError(err, m.loadFailed)
+      if (profileEpoch.current === epoch) {
+        setCaughtError(err, m.loadFailed)
+      }
     } finally {
-      setApplying(false)
+      if (profileEpoch.current === epoch) {
+        setApplying(false)
+      }
     }
   }, [
     m,
@@ -960,7 +997,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
     setSkewRestart(false)
 
     try {
-      await window.hermesDesktop?.recycleBackend?.(scopeProfile)
+      await window.hermesDesktop?.recycleBackend?.(exactRecycleScope(scopeProfile))
       await refresh({ replaceSelection: true })
     } catch (err) {
       setCaughtError(err, m.restartFailed)

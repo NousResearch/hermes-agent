@@ -1,5 +1,6 @@
 import { atom, computed } from 'nanostores'
 
+import type { ProfileScope } from '@/api/client'
 import { listAllProfileSessions } from '@/api/sessions'
 import type { SessionInfo } from '@/types/hermes'
 
@@ -26,14 +27,26 @@ const ARCHIVED_FETCH_PAGE_SIZE = 200
  * the loop — the server returns one only past the end (or when profiles
  * changed under us mid-pagination), never mid-list.
  */
-export async function listEveryArchivedSession(): Promise<SessionInfo[]> {
+export async function listEveryArchivedSession(scope?: ProfileScope): Promise<SessionInfo[]> {
   const sessions: SessionInfo[] = []
   const seen = new Set<string>()
 
   let offset = 0
 
   while (true) {
-    const page = await listAllProfileSessions(ARCHIVED_FETCH_PAGE_SIZE, 0, 'only', 'recent', 'all', {}, offset)
+    const page =
+      scope === undefined
+        ? await listAllProfileSessions(ARCHIVED_FETCH_PAGE_SIZE, 0, 'only', 'recent', 'all', {}, offset)
+        : await listAllProfileSessions(
+            ARCHIVED_FETCH_PAGE_SIZE,
+            0,
+            'only',
+            'recent',
+            'all',
+            {},
+            offset,
+            scope
+          )
 
     for (const session of page.sessions) {
       if (!seen.has(session.id)) {

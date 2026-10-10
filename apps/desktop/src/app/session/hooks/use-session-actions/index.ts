@@ -1898,7 +1898,8 @@ export function useSessionActions({
                     persistedMessages,
                     cachedWithoutEarlyClarify ?? previousMessages,
                     persisted.messages,
-                    liveProjection
+                    liveProjection,
+                    activatedLivenessState.messages
                   )
 
                   // `null` does not depend on `previous`; retrying the live-turn
@@ -2296,11 +2297,22 @@ export function useSessionActions({
         const currentRuntimeMessages =
           sessionStateByRuntimeIdRef.current.get(resumed.session_id)?.messages ?? resumeRuntimeBaselineMessages
 
-        const preferredWithRuntimeChanges = overlayConcurrentMessageChanges(
-          preferredMessages,
-          resumeRuntimeBaselineMessages,
-          currentRuntimeMessages
-        )
+        // Like warm activation, consume the latest runtime prefix against the
+        // persisted turn before an id-only overlay can resurrect folded tools.
+        const currentLiveTurn =
+          prefetchMatchesResumedSession && prefetchedTranscriptMessages && prefetchedResult
+            ? reconcilePersistedLiveTurn(
+                prefetchedTranscriptMessages,
+                currentRuntimeMessages,
+                prefetchedResult.messages,
+                resumed,
+                resumeRuntimeBaselineMessages
+              )
+            : null
+
+        const preferredWithRuntimeChanges =
+          currentLiveTurn ??
+          overlayConcurrentMessageChanges(preferredMessages, resumeRuntimeBaselineMessages, currentRuntimeMessages)
 
         // #70449: same stale-snapshot guard as the warm path — a turn that
         // started while the resume RPC was in flight has already marked the

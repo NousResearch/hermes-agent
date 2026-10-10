@@ -4238,7 +4238,7 @@
     },
     {
       "name": "tools.configure",
-      "summary": "Persist a toolset / MCP enable-disable change and rebuild the session agent so it takes effect now.",
+      "summary": "Persist a toolset / MCP enable-disable change and rebuild the session agent when the effective selection changes.",
       "params": [
         {
           "name": "params",
@@ -37077,7 +37077,7 @@
       },
       "ToolsConfigureParams": {
         "additionalProperties": false,
-        "description": "``names`` are toolset keys or ``server:tool`` MCP targets; with ``session_id`` the live session's\nprofile is authoritative and its agent is rebuilt.",
+        "description": "``names`` are toolset keys or ``server:tool`` MCP targets; with ``session_id`` the live session's\nprofile is authoritative. Its agent is rebuilt when the effective selection changes.",
         "properties": {
           "action": {
             "$ref": "#/components/schemas/ToolsAction"
@@ -37123,6 +37123,7 @@
       },
       "ToolsConfigureResult": {
         "additionalProperties": false,
+        "description": "``unknown`` lists names that match no toolset. ``rejected`` maps each toolset that exists but is\nnot available on the ``cli`` platform to the error that ``hermes tools enable|disable`` prints for\nit. The handler applies neither kind, and ``changed`` includes neither.",
         "properties": {
           "changed": {
             "items": {
@@ -37156,6 +37157,13 @@
             "title": "Missing Servers",
             "type": "array"
           },
+          "rejected": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Rejected",
+            "type": "object"
+          },
           "reset": {
             "title": "Reset",
             "type": "boolean"
@@ -37172,6 +37180,7 @@
           "changed",
           "enabled_toolsets",
           "missing_servers",
+          "rejected",
           "reset",
           "unknown"
         ],

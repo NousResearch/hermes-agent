@@ -112,8 +112,9 @@ def _personality_completions(sub_text: str, sub_lower: str):
 
 @_quiet
 def _tools_completions(sub_text: str, sub_lower: str):
-    """/tools — subcommand, then toolset / MCP-server names for enable|disable. Toolsets are
-    offered only when the subcommand would change their state; MCP server prefixes always."""
+    """/tools: subcommand, then toolset / MCP-server names for enable|disable. Toolsets are
+    offered only when the CLI's /tools accepts them and the subcommand would change their state;
+    MCP server prefixes always."""
     completed, partial = _split_args(sub_text)
     if not completed:
         yield from _prefix_completions(((s, None) for s in ("list", "disable", "enable")), partial)
@@ -125,6 +126,7 @@ def _tools_completions(sub_text: str, sub_lower: str):
     from hermes_cli.config import load_config_readonly
     from hermes_cli.tools_config import (
         CONFIGURABLE_TOOLSETS, _get_platform_tools, _get_plugin_toolset_keys)
+    from hermes_cli.tools_config_mcp import toolset_rejections
     # Readonly loader: per keystroke and never mutates, so skip load_config()'s deepcopy.
     # Read-only path: the completer only inspects the config (toolset enable state + MCP server names) — it
     # never mutates it. Use the readonly loader so the per-keystroke completion doesn't pay the defensive
@@ -136,7 +138,8 @@ def _tools_completions(sub_text: str, sub_lower: str):
     want_enabled = subcommand != "enable"
     rows = [(k, label) for k, label, _d in CONFIGURABLE_TOOLSETS]
     rows += [(k, "plugin toolset") for k in sorted(_get_plugin_toolset_keys())]
-    rows = [(k, m) for k, m in rows if (k in enabled) == want_enabled]
+    rejected = toolset_rejections([k for k, _m in rows], "cli")
+    rows = [(k, m) for k, m in rows if k not in rejected and (k in enabled) == want_enabled]
     if isinstance(mcp_servers, dict):
         rows += [(f"{srv}:", f"MCP server '{srv}'") for srv in sorted(mcp_servers)]
     yield from _prefix_completions(

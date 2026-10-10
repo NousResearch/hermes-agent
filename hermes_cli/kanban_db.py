@@ -2069,6 +2069,14 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int | None = None) 
 
     1. The most recent block event was a worker-initiated ``kanban_block`` — those stay blocked until an
     explicit ``kanban_unblock`` (#28712).
+
+    Promotion also clears ``last_failure_error`` — a dependency promotion is a
+    fresh start, like ``unblock_task``. The rate-limited requeue stamps a
+    quota-flavored ``last_failure_error`` "without counting a failure"; once a
+    later run ends with a different outcome, that stale text still matches
+    ``_RESPAWN_BLOCKER_RE`` and parks the card behind ``blocker_auth``
+    forever (#126190). ``consecutive_failures`` is still preserved: the breaker
+    must keep accumulating across cycles.
     """
     if failure_limit is None:
         failure_limit = DEFAULT_FAILURE_LIMIT
@@ -2104,12 +2112,13 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int | None = None) 
                     if failures >= effective_limit:
                         continue
                     conn.execute(
-                        "UPDATE tasks SET status = ? "
+                        "UPDATE tasks SET status = ?, last_failure_error = NULL "
                         "WHERE id = ? AND status = 'blocked'", (resume_status, task_id),
                     )
                 else:
                     conn.execute(
-                        "UPDATE tasks SET status = ? WHERE id = ? AND status = 'todo'",
+                        "UPDATE tasks SET status = ?, last_failure_error = NULL "
+                        "WHERE id = ? AND status = 'todo'",
                         (resume_status, task_id),
                     )
                 _append_event(

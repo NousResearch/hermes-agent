@@ -64,7 +64,7 @@ class _HealthyLibproc:
 
     def proc_pidfdinfo(self, pid, fd, flavor, record, size):
         blob = bytearray(_DARWIN_FD_RECORD_SIZE)
-        struct.pack_into("<I", blob, _DARWIN_FD_DEV_OFFSET, self._identity[0])
+        struct.pack_into("<Q", blob, _DARWIN_FD_DEV_OFFSET, self._identity[0])
         struct.pack_into("<Q", blob, _DARWIN_FD_INO_OFFSET, self._identity[1])
         encoded = self._target.encode("utf-8")
         blob[_DARWIN_FD_PATH_OFFSET:_DARWIN_FD_PATH_OFFSET + len(encoded)] = encoded

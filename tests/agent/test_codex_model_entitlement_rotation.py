@@ -7,6 +7,7 @@ single-credential handling from #106475 takes over.
 import json
 import time
 import types
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -17,6 +18,7 @@ from agent.error_classifier import FailoverReason, classify_api_error
 MODEL = "gpt-5.3-codex"
 OTHER_MODEL = "gpt-5.3-codex-mini"
 TOKENS = ("tok-account-a", "tok-account-b")
+ZEN_MODEL = "claude-opus-5"
 
 
 class _Err(Exception):
@@ -100,3 +102,60 @@ def test_all_entries_rejecting_falls_back_to_session_marker(pool):
     ) is None
     assert _mark_entitlement_rejected_model(agent, _entitlement_400()) is True
     assert _is_entitlement_rejected(agent, "openai-codex", MODEL)
+
+
+def _zen_pool(tmp_path, monkeypatch):
+    root = tmp_path / "zen-root"
+    root.mkdir()
+    (tmp_path / "zenfakehome").mkdir()
+    monkeypatch.setenv("HOME", str(tmp_path / "zenfakehome"))
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.delenv("OPENCODE_ZEN_API_KEY", raising=False)
+    import hermes_constants
+    hermes_constants._default_hermes_root_memo = None  # type: ignore[attr-defined]
+    (root / "auth.json").write_text(json.dumps({"credential_pool": {"opencode-zen": [
+        {"id": f"cred-zen-{i}", "label": f"zen-{i}", "auth_type": "oauth", "priority": i, "source": "manual",
+         "access_token": tok, "refresh_token": f"rt-{i}", "expires_at_ms": 4_000_000_000_000}
+        for i, tok in enumerate(("zen-key-a", "zen-key-b"))
+    ]}}))
+    from agent.credential_pool import load_pool
+    return load_pool("opencode-zen")
+
+
+def test_zen_model_access_403_benches_only_that_model(tmp_path, monkeypatch):
+    """Regression for #124021: Zen relays an upstream model gate as 403 'Upstream request
+    failed: Model access is disabled' (error type ``api_error``) — the MODEL was rejected,
+    not the credential. A working key must never be marked auth-failed."""
+    zen_pool = _zen_pool(tmp_path, monkeypatch)
+
+    err = _Err(403, {"type": "error", "error": {
+        "type": "api_error", "message": "Upstream request failed: Model access is disabled"}})
+    verdict = classify_api_error(err, provider="opencode-zen", model=ZEN_MODEL)
+    assert verdict.reason == FailoverReason.model_entitlement
+
+    # Drive the production recovery entry point: the verdict must reach the model-scoped
+    # bench, not the credential-wide auth-failed marking.
+    assert zen_pool.select(model=ZEN_MODEL).id == "cred-zen-0"
+    agent = types.SimpleNamespace(
+        provider="opencode-zen", model=ZEN_MODEL, base_url="https://opencode.ai/zen",
+        api_key="zen-key-a", _credential_pool=zen_pool, _credential_pool_entry_id="cred-zen-0",
+        _swap_credential=MagicMock(return_value=True),
+    )
+    assert recover_with_credential_pool(
+        agent, status_code=403, has_retried_429=False, classified_reason=verdict.reason,
+    ) == (True, False)
+    agent._swap_credential.assert_called_once()
+    first = zen_pool.entries()[0]
+    assert first.last_status is None  # the key stays working: no auth-failed marking
+    assert set(first.model_cooldowns) == {ZEN_MODEL}
+
+
+def test_zen_credential_403_without_model_gate_stays_auth(tmp_path, monkeypatch):
+    """A real credential refusal keeps the auth verdict (and its re-auth guidance)."""
+    zen_pool = _zen_pool(tmp_path, monkeypatch)
+
+    err = _Err(403, {"type": "error", "error": {
+        "type": "authentication_error", "message": "invalid api key"}})
+    verdict = classify_api_error(err, provider="opencode-zen", model=ZEN_MODEL)
+    assert verdict.reason != FailoverReason.model_entitlement
+    assert zen_pool.entries()[0].last_status is None

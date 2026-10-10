@@ -998,6 +998,37 @@ def _strip_edge_self_mentions(text: str, mentions: Sequence[FeishuMentionRef]) -
             return remaining
 
 
+def _feishu_ws_loop_exception_handler(
+    loop: "asyncio.AbstractEventLoop", context: Dict[str, Any]
+) -> None:
+    """Worker-loop safety net for the Lark receive task (issue #67358).
+
+    The SDK's ``_receive_message_loop`` task lives on this thread-local
+    worker loop, so a normal close (1000) or transient disconnect surfaces
+    here rather than on the gateway loop. Reuse the gateway's transient
+    classifier so classification stays consistent, and only swallow the
+    close/reconnect path — genuine bugs fall through to the default handler.
+    """
+    exc = context.get("exception")
+    is_transient = False
+    if exc is not None:
+        try:
+            from gateway.run import _is_transient_network_error
+
+            is_transient = _is_transient_network_error(exc)
+        except Exception:
+            is_transient = False
+    if exc is not None and is_transient:
+        logger.warning(
+            "[Feishu] Swallowed transient WS error on worker loop: %s: %s",
+            type(exc).__name__,
+            exc,
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
+        return
+    loop.default_exception_handler(context)
+
+
 # --- Multiplex isolation for the lark_oapi WebSocket client ---
 #
 # ``lark_oapi.ws.client`` keeps the asyncio loop in a *module-level global* (``loop``), and
@@ -1080,7 +1111,7 @@ def _install_lark_ws_isolation(ws_client_module: Any) -> None:
                 on_link_up()
             try:
                 await original_receive_loop(self)
-            except Exception:
+            except Exception as exc:
                 # ``Client.start()`` parks in ``run_until_complete(_select())``, which only returns
                 # when this worker loop stops, and the receive loop runs as a bare ``create_task``
                 # whose exception nobody retrieves — so every unrecoverable exit (reconnect ladder
@@ -1091,8 +1122,32 @@ def _install_lark_ws_isolation(ws_client_module: Any) -> None:
                 # A *normal* return means the SDK's own ladder already reconnected (it scheduled a
                 # fresh receive loop) and must NOT stop the loop. Deliberate disconnects nil
                 # ``_ws_client`` first, so the supervisor exits without restarting.
+                # A Feishu/Lark normal close is transient (#67358): still stop so the supervisor
+                # rebuilds, but do not report it as a fatal receive-loop death. Other exceptions
+                # stay on the error path.
                 adapter = getattr(_ws_isolation_state, "adapter", None)
-                if adapter is None or getattr(adapter, "_running", True):
+                running = adapter is None or getattr(adapter, "_running", True)
+                # Only a normal Feishu/Lark close — not ConnectError/TimedOut and not
+                # bare ConnectionClosed (policy/auth/abnormal codes).
+                transient_close = False
+                cur: BaseException | None = exc
+                seen: set[int] = set()
+                while cur is not None and len(seen) < 12:
+                    if id(cur) in seen:
+                        break
+                    seen.add(id(cur))
+                    if type(cur).__name__ in {"ConnectionClosedOK", "ConnectionClosedException"}:
+                        transient_close = True
+                        break
+                    cur = cur.__cause__ or cur.__context__
+                if running and transient_close:
+                    logger.warning(
+                        "[Feishu] lark WS closed transiently (%s: %s); stopping the worker "
+                        "loop so the supervisor can rebuild",
+                        type(exc).__name__,
+                        exc,
+                    )
+                elif running:
                     logger.exception(
                         "[Feishu] lark WS receive loop died; stopping the worker "
                         "loop so the supervisor can rebuild"
@@ -1113,6 +1168,8 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     adapter._ws_thread_loop = loop
+    # Unretrieved receive-task exceptions land on this worker loop, not the gateway loop (#67358).
+    loop.set_exception_handler(_feishu_ws_loop_exception_handler)
     original_configure = getattr(ws_client, "_configure", None)
 
     def _apply_runtime_ws_overrides() -> None:
@@ -1164,8 +1221,16 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
     _apply_runtime_ws_overrides()
     try:
         ws_client.start()
-    except Exception:
-        pass
+    except Exception as exc:
+        # Log unexpected start() exits (pre-change this was bare pass).
+        # Loop-level task exceptions are handled by
+        # _feishu_ws_loop_exception_handler; this path is observability only.
+        logger.warning(
+            "[Feishu] WebSocket client exited: %s: %s",
+            type(exc).__name__,
+            exc,
+            exc_info=True,
+        )
     finally:
         _ws_isolation_state.loop = None
         _ws_isolation_state.connect_kwargs = None

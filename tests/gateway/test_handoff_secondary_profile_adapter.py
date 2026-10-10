@@ -344,8 +344,14 @@ async def test_satellite_handoff_resolves_route_target_across_config_shapes(
 
 @pytest.mark.asyncio
 async def test_satellite_without_a_concrete_route_fails_closed(monkeypatch, tmp_path):
-    """A satellite with only a destination-less route has no home to hand off to: fail closed."""
+    """A satellite with only a destination-less route must fail — even if it has a configured home.
+
+    The satellite's own home channel is not a delivery grant: delivering there when no route
+    authorises a concrete chat sends the CLI history to a stale/unauthorised target (the
+    retained-home case).
+    """
     sat_home = _write_satellite_home(tmp_path, {"telegram": {"enabled": True}})
+    monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "2222")   # a configured home, unauthorised
 
     token = set_hermes_home_override(str(sat_home))
     try:
@@ -353,7 +359,28 @@ async def test_satellite_without_a_concrete_route_fails_closed(monkeypatch, tmp_
         runner.config.profile_routes = [
             ProfileRoute(name="telegram-fallback", platform="telegram", profile="butler"),
         ]
-        with pytest.raises(RuntimeError, match="no home channel configured"):
+        with pytest.raises(RuntimeError, match="no unambiguous route destination"):
+            await runner._process_handoff(
+                {"id": "cli-session", "title": "work", "handoff_platform": "telegram"},
+                profile_name="butler",
+            )
+    finally:
+        reset_hermes_home_override(token)
+
+
+@pytest.mark.asyncio
+async def test_satellite_user_only_route_is_not_a_destination(monkeypatch, tmp_path):
+    """``user_id`` is the inbound SENDER, not a chat — a user-only route grants no destination."""
+    sat_home = _write_satellite_home(tmp_path, {"telegram": {"enabled": True}})
+
+    token = set_hermes_home_override(str(sat_home))
+    try:
+        runner, _ = _satellite_runner(monkeypatch)
+        runner.config.profile_routes = [
+            ProfileRoute(name="telegram-owner", platform="telegram", profile="butler",
+                         user_id="6719571041", bot_profile=None),
+        ]
+        with pytest.raises(RuntimeError, match="no unambiguous route destination"):
             await runner._process_handoff(
                 {"id": "cli-session", "title": "work", "handoff_platform": "telegram"},
                 profile_name="butler",
@@ -393,39 +420,36 @@ async def test_secondary_profile_keeps_its_own_home_with_real_resolver(monkeypat
 
 
 @pytest.mark.asyncio
-async def test_satellite_route_picker_prefers_a_guild_free_route(monkeypatch, tmp_path):
-    """Routes arrive most-specific-first, so a guild route sorts ahead of a DM one — but a handoff
-    carries no guild context, so the context-free route must win."""
+async def test_satellite_with_several_concrete_routes_fails_closed(monkeypatch, tmp_path):
+    """Several concrete routes for the same profile+platform are ambiguous: fail, don't guess.
+
+    Routes select a profile for inbound messages; they do not define a home, so when more than one
+    names a chat the destination would depend on route order — the handoff must refuse instead.
+    """
     sat_home = _write_satellite_home(tmp_path, {"telegram": {"enabled": True}})
 
     token = set_hermes_home_override(str(sat_home))
     try:
         runner, _ = _satellite_runner(monkeypatch)
         runner.config.profile_routes = [
-            # guild-scoped (guild_id + chat_id) sorts ahead of the plain DM route
             ProfileRoute(name="butler-guild", platform="telegram", profile="butler",
                          guild_id="g123", chat_id="999", bot_profile=None),
             ProfileRoute(name="butler-dm", platform="telegram", profile="butler",
                          chat_id="6719571041", bot_profile=None),
         ]
-        runner._profile_failed_platforms = {}
-        primary = runner.adapters[Platform.TELEGRAM]
-
-        await runner._process_handoff(
-            {"id": "cli-session", "title": "work", "handoff_platform": "telegram"},
-            profile_name="butler",
-        )
-
-        assert primary.create_handoff_thread.await_args.args[0] == "6719571041", (
-            "a context-free (DM) route must win over a guild-scoped one the handoff cannot validate"
-        )
+        with pytest.raises(RuntimeError, match="no unambiguous route destination"):
+            await runner._process_handoff(
+                {"id": "cli-session", "title": "work", "handoff_platform": "telegram"},
+                profile_name="butler",
+            )
     finally:
         reset_hermes_home_override(token)
 
 
 @pytest.mark.asyncio
-async def test_satellite_route_picker_falls_back_to_a_guild_route(monkeypatch, tmp_path):
-    """When a guild-scoped route is the ONLY destination (e.g. a Discord channel), it is used."""
+async def test_satellite_route_picker_uses_the_sole_concrete_route(monkeypatch, tmp_path):
+    """A guild-scoped route is the destination when it is the only concrete one (e.g. a Discord
+    channel route, which always carries a guild)."""
     sat_home = _write_satellite_home(tmp_path, {"telegram": {"enabled": True}})
 
     token = set_hermes_home_override(str(sat_home))

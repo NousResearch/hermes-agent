@@ -1723,25 +1723,23 @@ class GatewayStartupMixin:
     def _handoff_satellite_route_home(
         self, profile_name: Optional[str], platform: Platform
     ) -> Optional["HomeChannel"]:
-        """The home channel a shared-bot satellite's handoff delivers to: the concrete
-        ``profile_routes`` target that authorizes this profile on this platform.
+        """The destination a shared-bot satellite's handoff may deliver to, derived from its
+        ``profile_routes``.
 
-        A satellite's own config often carries no home channel (its platform block may be absent or
-        disabled once its credential is removed), and the route — not the primary's home — is its
-        delivery grant, so it is matched by exact platform+profile and must name a concrete chat. A
-        route with no destination (a catch-all such as ``telegram-fallback``) never qualifies, so the
-        first entry is never assumed to be the home.
+        Routes select a profile for INBOUND messages; they do not define a home, so this only
+        resolves when they name exactly ONE concrete chat for this platform+profile — the sole
+        destination they authorise. Zero (nothing grants a destination) and several (the home would
+        depend on route order) both return ``None`` and the caller fails closed rather than guesses.
+        A guild-scoped route is fine when it is the only one (a Discord channel route always carries
+        a guild); it is never preferred over another by heuristic.
 
-        Routes arrive most-specific-first, so a guild-scoped route (``guild_id`` + ``chat_id``) sorts
-        ahead of a plain DM one. A handoff carries no guild context to authorise a guild-scoped route,
-        so a context-free route (no ``guild_id``) is preferred when both exist; a guild-scoped route
-        is used only when it is the sole destination (e.g. Discord, where a channel route always
-        carries a guild). Returns ``None`` when no such route exists; the caller then keeps its
-        fail-closed home resolution."""
+        ``chat_id`` is required: ``user_id`` is the inbound message's SENDER (see the routing guide),
+        not a chat, and is never a destination. A destination-less catch-all (``telegram-fallback``)
+        does not qualify."""
         if not profile_name:
             return None
         platform_value = getattr(platform, "value", str(platform))
-        candidates = []
+        concrete = []
         for route in (getattr(self.config, "profile_routes", None) or []):
             if not getattr(route, "enabled", True):
                 continue
@@ -1749,17 +1747,14 @@ class GatewayStartupMixin:
                 continue
             if str(getattr(route, "platform", "")).lower() != platform_value:
                 continue
-            if not (getattr(route, "chat_id", None) or getattr(route, "user_id", None)):
+            if not getattr(route, "chat_id", None):
                 continue
-            candidates.append(route)
-        if not candidates:
+            concrete.append(route)
+        if len(concrete) != 1:
             return None
-        route = next(
-            (r for r in candidates if not getattr(r, "guild_id", None)), candidates[0],
-        )
-        chat_id = getattr(route, "chat_id", None) or getattr(route, "user_id", None)
+        route = concrete[0]
         return HomeChannel(
-            platform=platform, chat_id=str(chat_id),
+            platform=platform, chat_id=str(route.chat_id),
             name=getattr(route, "name", None) or "Home",
             thread_id=str(route.thread_id) if getattr(route, "thread_id", None) else None,
         )
@@ -1798,9 +1793,15 @@ class GatewayStartupMixin:
             raise RuntimeError(f"platform '{platform_name}' is not active in this gateway")
         home = handoff_config.get_home_channel(platform)
         if satellite:
-            route_home = self._handoff_satellite_route_home(profile_name, platform)
-            if route_home is not None:
-                home = route_home
+            # A satellite may deliver only to a chat its routes authorise, and only when they name
+            # exactly one — its own configured home is NOT a delivery grant, so it is never a
+            # fallback here (a stale/unauthorised home would deliver the handoff to the wrong chat).
+            home = self._handoff_satellite_route_home(profile_name, platform)
+            if not home or not home.chat_id:
+                raise RuntimeError(
+                    f"profile '{profile_name}' has no unambiguous route destination for "
+                    f"{platform_name}; a handoff needs exactly one concrete profile_routes chat"
+                )
         if not home or not home.chat_id:
             raise RuntimeError(
                 f"no home channel configured for {platform_name}; run /sethome on the desired chat first"

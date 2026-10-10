@@ -56,6 +56,20 @@ _permanent_approved: set = set()
 # Routed multiplex profiles: one permanent allowlist per profile home (see ``_permanent_set``).
 _permanent_approved_by_home: dict[str, set] = {}
 
+
+def _profile_session_key(session_key: str) -> str:
+    """Owner key for profile-local approval authority; unscoped callers keep the legacy key.
+
+    A multiplexed process may serve two profiles whose independent state databases contain the
+    same raw session id. Session grants and YOLO are authority, so they must follow the active
+    profile home exactly like the computer-use backend they govern.
+    """
+    from hermes_constants import get_hermes_home_override, hermes_home_key
+
+    key = str(session_key or "")
+    return key if get_hermes_home_override() is None else f"{key}@{hermes_home_key()}"
+
+
 # --- Consecutive-denial circuit breaker for smart approvals ---------------------------------------------------------
 # Each retry of a smart-denied command burns another guardian LLM call. After ``approvals.denial_breaker_threshold``
 # consecutive guardian DENY verdicts in one session (default 3; 0 disables) the deny message escalates to a hard-stop
@@ -244,13 +258,13 @@ def get_pending_gateway_approval(session_key: str) -> dict | None:
 def submit_pending(session_key: str, approval: dict):
     """Store a pending approval request for a session."""
     with _lock:
-        _pending[session_key] = approval
+        _pending[_profile_session_key(session_key)] = approval
 
 
 def approve_session(session_key: str, pattern_key: str):
     """Approve a pattern for this session only."""
     with _lock:
-        _session_approved.setdefault(session_key, set()).add(pattern_key)
+        _session_approved.setdefault(_profile_session_key(session_key), set()).add(pattern_key)
 
 
 def _release_permission_mode_dependents(session_key: str) -> None:
@@ -269,7 +283,7 @@ def _set_session_yolo(session_key: str, enabled: bool) -> None:
     if not session_key:
         return
     with _lock:
-        (_session_yolo.add if enabled else _session_yolo.discard)(session_key)
+        (_session_yolo.add if enabled else _session_yolo.discard)(_profile_session_key(session_key))
     _release_permission_mode_dependents(session_key)
 
 
@@ -287,10 +301,11 @@ def clear_session(session_key: str) -> None:
     """Remove all approval and yolo state for a given session."""
     if not session_key:
         return
+    state_key = _profile_session_key(session_key)
     with _lock:
-        _session_approved.pop(session_key, None)
-        _session_yolo.discard(session_key)
-        _pending.pop(session_key, None)
+        _session_approved.pop(state_key, None)
+        _session_yolo.discard(state_key)
+        _pending.pop(state_key, None)
         for entry in _gateway_queues.pop(session_key, []):
             # Cancel blocked waits now so the old run unwinds instead of idling until timeout;
             # the prompt was withdrawn, nobody denied it.
@@ -312,7 +327,7 @@ def is_session_yolo_enabled(session_key: str) -> bool:
     if not session_key:
         return False
     with _lock:
-        return session_key in _session_yolo
+        return _profile_session_key(session_key) in _session_yolo
 
 
 def is_current_session_yolo_enabled() -> bool:
@@ -353,7 +368,7 @@ def is_approved(session_key: str, pattern_key: str) -> bool:
     regex-derived key so existing command_allowlist entries survive key migrations."""
     aliases = _approval_key_aliases(pattern_key)
     with _lock:
-        approved = _permanent_set() | _session_approved.get(session_key, set())
+        approved = _permanent_set() | _session_approved.get(_profile_session_key(session_key), set())
     return any(alias in approved for alias in aliases)
 
 

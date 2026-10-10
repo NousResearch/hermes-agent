@@ -59,7 +59,10 @@ def _cmd_memory_reset(args):
 
 def cmd_memory(args):
     sub = getattr(args, "memory_command", None)
-    if sub == "off":
+    if sub in ("show", "forget"):
+        from hermes_cli.memory_entries_cli import cmd_memory_forget, cmd_memory_show
+        (cmd_memory_show if sub == "show" else cmd_memory_forget)(args)
+    elif sub == "off":
         _cmd_memory_off()
     elif sub == "reset":
         _cmd_memory_reset(args)

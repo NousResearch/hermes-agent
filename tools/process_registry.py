@@ -1591,13 +1591,24 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
         with self._lock:
             was_running = session.id in self._running
             if was_running:
+                if session._finish_claimed:
+                    return False
                 session._finish_claimed = True
                 session.exited_at = time.time()
                 # Keep the session tracked until its result is durable. A finite
                 # parent must not observe completion and exit during this write.
+        if was_running:
+            try:
+                # Keep the session tracked until its result is durable, but never
+                # hold the registry lock across synchronous filesystem I/O.
                 save_completed_result(session)
+            except BaseException:
+                with self._lock:
+                    session._finish_claimed = False
+                raise
+            with self._lock:
                 self._running.pop(session.id)
-            self._finished[session.id] = session
+                self._finished[session.id] = session
         # Release the retained Popen/PTY handles now: otherwise every
         # finished-but-unpruned session keeps its stdout pipe (or PTY master)
         # FD open until FINISHED_TTL_SECONDS elapses, and heavy background

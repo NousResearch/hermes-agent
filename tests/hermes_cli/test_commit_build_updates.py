@@ -40,6 +40,31 @@ def test_commit_build_refuses_without_gui_advice(commit_build, git_present):
     assert refusal.update_command == ""
 
 
+def test_root_cannot_update_user_owned_install(tmp_path, monkeypatch):
+    from hermes_cli.update_contract import ROOT_UPDATE_MESSAGE
+
+    class UserStat:
+        st_uid = 1000
+
+    monkeypatch.setattr("hermes_cli.update_contract.os.geteuid", lambda: 0)
+    monkeypatch.setattr(type(tmp_path), "stat", lambda self: UserStat())
+    refusal = evaluate_update_admission(tmp_path)
+
+    assert refusal is not None
+    assert refusal.code == "root-owned-install"
+    assert refusal.message == ROOT_UPDATE_MESSAGE
+
+
+def test_root_can_update_root_owned_install(tmp_path, monkeypatch):
+    class RootStat:
+        st_uid = 0
+
+    monkeypatch.setattr("hermes_cli.update_contract.os.geteuid", lambda: 0)
+    monkeypatch.setattr(type(tmp_path), "stat", lambda self: RootStat())
+
+    assert evaluate_update_admission(tmp_path) is None
+
+
 @pytest.mark.parametrize("passive", [False, True])
 def test_commit_build_never_checks_upstream_or_reuses_source_cache(commit_build, monkeypatch, passive):
     from hermes_cli import banner, source_check

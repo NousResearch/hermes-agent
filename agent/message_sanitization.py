@@ -466,7 +466,8 @@ __all__ = [
     "close_interrupted_tool_sequence", "coalesce_tool_call_id", "coerce_tool_name",
     "deterministic_call_id", "matches_reasoning_echo_family", "needs_reasoning_echo",
     "normalize_provider_tool_call_ids", "reapply_reasoning_echo", "reasoning_echo_family",
-    "reasoning_replay_route", "record_reasoning_field_rejection", "route_reasoning_carriers",
+    "reasoning_replay_route", "record_reasoning_field_rejection", "rejected_reasoning_carriers",
+    "route_reasoning_carriers",
     "sanitize_outbound_kwargs", "stale_thinking_reaches_wire", "strip_images_for_rejecting_model",
     "tool_call_id_variants", "tool_result_id_variants", "uniquify_tool_call_ids",
 ]
@@ -946,6 +947,27 @@ def reasoning_route_key(agent: Any) -> tuple[str, str, str]:
     )
 
 
+_REJECTION_MODEL_CONFIG_KEY = "reasoning_rejected_carriers"
+
+
+def rejected_reasoning_carriers(agent: Any) -> frozenset:
+    """Reasoning keys the active (provider, host, model) rejected in this session.
+
+    Persisted in the session's ``model_config`` so a resumed process (``--resume``, a gateway
+    restart) never re-learns a rejection with another 400. Loaded once per ``session_id``.
+    """
+    routes = agent.__dict__.setdefault("_reasoning_rejecting_routes", {})
+    session_id = getattr(agent, "session_id", None)
+    if session_id and getattr(agent, "_reasoning_rejections_loaded_for", None) != session_id:
+        agent._reasoning_rejections_loaded_for = session_id
+        getter = getattr(getattr(agent, "_session_db", None), "get_session_model_config_value", None)
+        stored = getter(session_id, _REJECTION_MODEL_CONFIG_KEY, []) if callable(getter) else []
+        for entry in stored if isinstance(stored, list) else ():
+            if isinstance(entry, list) and len(entry) == 4 and isinstance(entry[3], list):
+                routes.setdefault(tuple(entry[:3]), set()).update(k for k in entry[3] if k in _ALL_CARRIERS)
+    return frozenset(routes.get(reasoning_route_key(agent), ()))
+
+
 def record_reasoning_field_rejection(agent: Any, error_body: Any, sent_messages: Any) -> frozenset:
     """Remember the reasoning keys this route rejected; returns the NEW ones (empty = no retry).
 
@@ -956,9 +978,14 @@ def record_reasoning_field_rejection(agent: Any, error_body: Any, sent_messages:
     fields = rejected_reasoning_fields(error_body, sent_messages)
     if not fields:
         return frozenset()
-    known = agent._reasoning_rejecting_routes.setdefault(reasoning_route_key(agent), set())
-    new = fields - known
-    known.update(new)
+    new = fields - rejected_reasoning_carriers(agent)
+    if not new:
+        return frozenset()
+    routes = agent._reasoning_rejecting_routes
+    routes.setdefault(reasoning_route_key(agent), set()).update(new)
+    patcher = getattr(getattr(agent, "_session_db", None), "patch_session_model_config", None)
+    if callable(patcher) and getattr(agent, "session_id", None) and not getattr(agent, "_persist_disabled", False):
+        patcher(agent.session_id, {_REJECTION_MODEL_CONFIG_KEY: [[*key, sorted(v)] for key, v in sorted(routes.items())]})
     return frozenset(new)
 
 

@@ -306,6 +306,21 @@ def _wait_for_oneshot_background_completions(cli) -> None:
         )
 
 
+def _wait_for_oneshot_background_review(cli) -> None:
+    """Bounded join of the turn's in-flight background review (daemon thread) before exit.
+
+    Without it a one-shot run (every Kanban worker) exits while the review fork is still in
+    its provider call and interpreter exit kills it silently: no memory/skill writes, no
+    "Background review complete" line. Bound: ``auxiliary.background_review.exit_wait_s``.
+    """
+    from cli import _oneshot_agent_and_session
+    from agent.background_review import wait_for_background_review
+
+    agent, _session_id = _oneshot_agent_and_session(cli)
+    if agent is not None:
+        wait_for_background_review(agent)
+
+
 def _finalize_single_query(cli) -> None:
     """Settle the session, then release its lease, then linger as a bystander.
 
@@ -333,7 +348,9 @@ def _finalize_single_query(cli) -> None:
        had ended (#118826 / #122770).
     3. **Process-only work, lease-free** — the bounded linger for
        notify_on_complete children (pipe drain, the boundary the one-shot path
-       itself declares "NOT part of the spawner's delivery", #113608) and
+       itself declares "NOT part of the spawner's delivery", #113608), the
+       bounded join of the in-flight background review (its fork never writes
+       session rows, but interpreter exit would kill it mid-request), and
        resource teardown. ``_run_cleanup``'s memory-shutdown call is idempotent
        (``_memory_provider_shutdown``), so its post-release repeat is a no-op;
        neither it nor the linger touches session rows.
@@ -343,7 +360,7 @@ def _finalize_single_query(cli) -> None:
     process's stale ``cli_close`` end-stamp, because phase 1 has already run it.
     """
     import cli as cli_module
-    from cli import _flush_one_shot_session_store, _notify_single_query_session_finalize, _run_cleanup, _shutdown_agent_memory_provider, _wait_for_oneshot_background_completions
+    from cli import _flush_one_shot_session_store, _notify_single_query_session_finalize, _run_cleanup, _shutdown_agent_memory_provider, _wait_for_oneshot_background_completions, _wait_for_oneshot_background_review
     try:
         try:
             _flush_one_shot_session_store(cli)
@@ -364,4 +381,10 @@ def _finalize_single_query(cli) -> None:
         _wait_for_oneshot_background_completions(cli)
     except Exception:
         logger.debug("one-shot background completion wait failed", exc_info=True)
+    try:
+        # Lease-free: the review fork is persistence-isolated (no session DB, skip_memory), but
+        # it still uses the MCP/aux clients that _run_cleanup tears down.
+        _wait_for_oneshot_background_review(cli)
+    except Exception:
+        logger.debug("one-shot background review wait failed", exc_info=True)
     _run_cleanup(notify_session_finalize=False)

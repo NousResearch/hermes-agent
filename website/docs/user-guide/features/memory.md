@@ -495,6 +495,27 @@ never goes idle. Explicit `/refine` always runs immediately. The queue is
 in-memory: reviews still pending when the app exits are dropped, same as an
 in-flight fork would have been.
 
+### One-shot runs wait for the review (`exit_wait_s`)
+
+A one-shot run (`hermes chat -q` / `-Q`, and every Kanban worker) ends right
+after its single turn, while the review fork is typically still in its first
+provider call. Before exiting, the process waits up to `exit_wait_s` seconds
+for an in-flight review to finish, after the session is settled and its lease
+released (the review fork writes no session rows) and before MCP/auxiliary
+clients are torn down. Interactive sessions,
+the gateway and the desktop never wait; the review keeps running in the
+background there.
+
+```yaml
+auxiliary:
+  background_review:
+    exit_wait_s: 120   # default; <= 0 exits immediately and drops the review
+```
+
+A review still running at the deadline is abandoned with a warning in
+`agent.log`. Reviews that are queued for idle time (see `defer` above) are not
+waited for.
+
 ## Controlling skill writes (`skills.write_approval`)
 
 Skills use the same on/off gate, but the review UX differs because a

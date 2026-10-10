@@ -242,6 +242,46 @@ def load_background_review_settings() -> tuple[bool, dict[str, Any]]:
         return True, {}
 
 
+_EXIT_WAIT_DEFAULT_S = 120.0
+
+
+def background_review_exit_wait_s(task_cfg: Optional[dict[str, Any]]) -> float:
+    """``auxiliary.background_review.exit_wait_s`` (default 120; ``<= 0`` = do not wait)."""
+    try:
+        return float((task_cfg or {}).get("exit_wait_s", _EXIT_WAIT_DEFAULT_S))
+    except (TypeError, ValueError):
+        return _EXIT_WAIT_DEFAULT_S
+
+
+def wait_for_background_review(agent: Any, timeout_s: Optional[float] = None) -> str:
+    """Bounded join of the agent's in-flight review before a one-shot process exits.
+
+    The review runs on a daemon thread so a live session never blocks on it, but a one-shot
+    run (``hermes chat -q``/``-Q``, every Kanban worker) exits right after its single turn and
+    interpreter exit kills the daemon mid-request: the review neither writes nor logs. Joining
+    the thread (not ``request_done``) also covers the post-request summary and completion log.
+    Returns ``"none"``, ``"disabled"``, ``"done"`` or ``"timeout"``.
+    """
+    thread = getattr(agent, "_background_review_thread", None)
+    if thread is None or not thread.is_alive():
+        return "none"
+    if timeout_s is None:
+        _enabled, task_cfg = load_background_review_settings()
+        timeout_s = background_review_exit_wait_s(task_cfg)
+    if timeout_s <= 0:
+        logger.info("One-shot exit: not waiting for in-flight background review (exit_wait_s<=0)")
+        return "disabled"
+    logger.info("One-shot exit: waiting up to %.0fs for in-flight background review", timeout_s)
+    thread.join(timeout_s)
+    if thread.is_alive():
+        logger.warning(
+            "One-shot exit: background review still running after %.0fs; exiting without it "
+            "(raise auxiliary.background_review.exit_wait_s to allow longer)", timeout_s,
+        )
+        return "timeout"
+    return "done"
+
+
 def _resolve_review_runtime(agent: Any, task_cfg: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     """Resolve provider/model/credentials for the review fork. Default (auto / unset / same as
     parent): the parent's live runtime with ``routed=False`` (codex_app_server -> codex_responses

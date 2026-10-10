@@ -69,6 +69,7 @@ from hermes_cli.cli_shutdown import (
     _stop_cli_wake_word,
     _sync_process_session_id,
     _wait_for_oneshot_background_completions,
+    _wait_for_oneshot_background_review,
 )
 from hermes_cli.cli_auto_maintenance import (
     _run_checkpoint_auto_maintenance,

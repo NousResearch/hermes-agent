@@ -2874,9 +2874,10 @@ class MatrixAdapter(BasePlatformAdapter):
     def _build_text_message_content(self, text: str, msgtype: str = "m.text") -> dict[str, Any]:
         """Build Matrix text content with HTML and outbound mention metadata."""
         msg_content: dict[str, Any] = {"msgtype": msgtype, "body": text}
-        mention_user_ids = self._extract_outbound_mentions(text)
-        if mention_user_ids:
-            msg_content["m.mentions"] = {"user_ids": mention_user_ids}
+        # Always write the block (MSC3952), empty when nobody is mentioned: the legacy keyword push rules
+        # apply only to events without one, so a name in the prose neither notifies that user nor wakes a
+        # bot that reads the block as the whole truth.
+        msg_content["m.mentions"] = {"user_ids": self._extract_outbound_mentions(text)}
         if self._allow_room_mentions and self._has_outbound_room_mention(text):
             msg_content.setdefault("m.mentions", {})["room"] = True
         html = self._markdown_to_html(self._inject_outbound_mention_links(text))

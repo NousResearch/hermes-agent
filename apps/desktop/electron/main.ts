@@ -219,6 +219,13 @@ import {
   isAttachedBackendTokenDrifted,
   resolveServedDashboardToken
 } from './dashboard-token'
+import {
+  ATTACHED_LIVENESS_FAILURE_THRESHOLD,
+  ATTACHED_LIVENESS_POLL_MS,
+  ATTACHED_LIVENESS_PROBE_TIMEOUT_MS,
+  classifyAttachedProbeError,
+  createAttachedLivenessTracker
+} from './attached-backend-liveness'
 import { resolveDashboardWebDist } from './dashboard-web-dist'
 import { resolveDesktopHermesHome, resolveDesktopUserData } from './data-paths'
 import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
@@ -6421,7 +6428,11 @@ async function waitForHermes(
   signal?: AbortSignal,
   authMode?: string | null,
   headers: Record<string, string> = {},
-  { alreadyBound = false }: { alreadyBound?: boolean } = {}
+  {
+    alreadyBound = false,
+    timeoutMs,
+    healthProbeTimeoutMs
+  }: { alreadyBound?: boolean; timeoutMs?: number; healthProbeTimeoutMs?: number } = {}
 ): Promise<void> {
   const { probeHealth, probeIsCredentialed } = await buildReadinessHealthProbe(baseUrl, authMode, token)
 
@@ -6434,7 +6445,9 @@ async function waitForHermes(
       : fetchJson,
     probeHealth: (url, options = {}) => probeHealth(url, requestOptionsWithHeaders(options, headers)),
     probeIsCredentialed,
-    alreadyBound
+    alreadyBound,
+    ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+    ...(healthProbeTimeoutMs !== undefined ? { healthProbeTimeoutMs } : {})
   })
 }
 
@@ -12611,11 +12624,22 @@ async function prepareProfileRenameRequest(request) {
 // ── Attach-first: one backend per HOST (multiplex-only) ───────────────────
 // Escape hatch: a dedicated, private backend for this app instead of the host's.
 const ISOLATED_BACKEND = process.env.HERMES_DESKTOP_ISOLATED_BACKEND === '1'
-const ATTACHED_LIVENESS_POLL_MS = 15_000
 let attachedBackendMonitor: NodeJS.Timeout | null = null
+let attachedProbeInFlight = false
+// Epoch fencing for the single-flight guard above: every monitor start and
+// every stop mints a fresh generation. A probe captures its tick's generation
+// and may only release the guard or tear down the slot while it is still
+// current, so a superseded monitor's late completion can neither release the
+// new monitor's guard nor invalidate the new connection.
+let attachedMonitorGeneration = 0
 let hostSpawnReservation: SpawnReservation | null = null
 
 function stopAttachedBackendMonitor() {
+  // Supersede any pending probe WITHOUT releasing its ownership: clearing the
+  // interval does not cancel the in-flight readiness op, and that op still
+  // owns the guard until it settles (its completion is fenced by generation).
+  attachedMonitorGeneration += 1
+
   if (attachedBackendMonitor) {
     clearInterval(attachedBackendMonitor)
     attachedBackendMonitor = null
@@ -12634,6 +12658,22 @@ function stopAttachedBackendMonitor() {
  * public route) while serving a brand-new session token, so also re-read the
  * served token on every tick and treat drift the same as "gone" (#121988).
  *
+ * Transient slowness (a 5s health timeout under SQLite load, Defender stalls)
+ * must not tear down a live backend: that invalidate() supersedes every
+ * in-flight API caller and thrashes recovery (#130962). The tick is
+ * single-flight, bounded well under the poll interval, PID-gated, and needs
+ * consecutive transient failures before it declares the backend gone. A
+ * pending start also defers the teardown so the monitor never supersedes the
+ * recovery it just scheduled.
+ *
+ * Replacement while a probe is pending mints a fresh epoch (see
+ * attachedMonitorGeneration): the superseded probe keeps its ownership until
+ * it settles, but its completion is fenced — it releases the guard and may
+ * declare the backend gone only while its own generation is still current.
+ * The new epoch starts with a free guard even though the old op is still
+ * settling, and the old op's late arrival can never double-start the new
+ * monitor nor tear down its slot.
+ *
  * This teardown is unexpected, not intentional (nobody asked for a re-home),
  * so it must clear the slot via `backendConnectionState.invalidate()` directly
  * rather than `invalidatePrimaryConnection()`: the latter also sets
@@ -12643,21 +12683,116 @@ function stopAttachedBackendMonitor() {
  */
 function startAttachedBackendMonitor(attached: AttachedBackend) {
   stopAttachedBackendMonitor()
+  attachedMonitorGeneration += 1
+  const generation = attachedMonitorGeneration
+  // Fresh slot for the new epoch. A superseded probe may still be settling in
+  // the background; it is fenced by `generation` and cannot touch this guard.
+  attachedProbeInFlight = false
+
+  const liveness = createAttachedLivenessTracker(ATTACHED_LIVENESS_FAILURE_THRESHOLD)
+
+  const declareGone = (reason: string, probeGeneration: number) => {
+    // Fence superseded completions: only the live epoch may tear down this
+    // slot. A stale probe settling after replacement must not invalidate the
+    // new connection nor schedule recovery for it.
+    if (probeGeneration !== attachedMonitorGeneration) {
+      return
+    }
+
+    // A start is already racing to replace this backend (a previous tick's
+    // recovery, or a user-driven re-home): let it land instead of bumping the
+    // generation again and superseding its pending callers.
+    if (backendConnectionState.getPendingPromise() !== null || primaryStartsInFlight > 0) {
+      rememberLog(
+        `[attach] attached backend on ${attached.baseUrl} probe failed (${reason}); start in flight, keeping slot`
+      )
+      return
+    }
+
+    stopAttachedBackendMonitor()
+    rememberLog(
+      `[attach] attached backend on ${attached.baseUrl} (pid ${attached.pid}) is gone (${reason}); recovering`
+    )
+    backendConnectionState.invalidate()
+    scheduleUnexpectedPrimaryRecovery({ error: 'The Hermes backend this app attached to exited.', ready: true })
+  }
 
   attachedBackendMonitor = setInterval(() => {
-    void waitForHermes(attached.baseUrl, attached.token, undefined, 'token', {})
-      .then(() => resolveServedDashboardToken(attached.baseUrl, attached.token).catch(() => attached.token))
-      .then(servedToken => {
-        if (isAttachedBackendTokenDrifted({ servedToken, adoptedToken: attached.token })) {
-          throw new Error('attached backend is serving a different session token')
+    if (attachedProbeInFlight) {
+      return
+    }
+
+    attachedProbeInFlight = true
+    const tickGeneration = generation
+
+    void (async () => {
+      try {
+        let pidAlive = true
+
+        try {
+          pidAlive = isPidAliveWindows(attached.pid)
+        } catch {
+          pidAlive = true
         }
-      })
-      .catch(() => {
-        stopAttachedBackendMonitor()
-        rememberLog(`[attach] attached backend on ${attached.baseUrl} (pid ${attached.pid}) is gone; recovering`)
-        backendConnectionState.invalidate()
-        scheduleUnexpectedPrimaryRecovery({ error: 'The Hermes backend this app attached to exited.', ready: true })
-      })
+
+        if (!pidAlive) {
+          liveness.noteHardFailure()
+          declareGone('pid gone', tickGeneration)
+          return
+        }
+
+        await waitForHermes(
+          attached.baseUrl,
+          attached.token,
+          undefined,
+          'token',
+          {},
+          {
+            alreadyBound: true,
+            timeoutMs: ATTACHED_LIVENESS_PROBE_TIMEOUT_MS
+          }
+        )
+        const servedToken = await resolveServedDashboardToken(attached.baseUrl, attached.token).catch(
+          () => attached.token
+        )
+
+        if (isAttachedBackendTokenDrifted({ servedToken, adoptedToken: attached.token })) {
+          liveness.noteHardFailure()
+          declareGone('token drifted', tickGeneration)
+          return
+        }
+
+        liveness.noteSuccess()
+      } catch (error) {
+        const kind = classifyAttachedProbeError(error)
+
+        if (kind === 'hard') {
+          liveness.noteHardFailure()
+          declareGone(error instanceof Error ? error.message : String(error), tickGeneration)
+          return
+        }
+
+        const exhausted = liveness.noteTransientFailure()
+
+        if (exhausted) {
+          declareGone(error instanceof Error ? error.message : String(error), tickGeneration)
+        } else {
+          rememberLog(
+            `[attach] attached backend on ${attached.baseUrl} transient probe failure ` +
+              `(${liveness.consecutiveTransientFailures}/${ATTACHED_LIVENESS_FAILURE_THRESHOLD}): ` +
+              `${error instanceof Error ? error.message : String(error)}; keeping attached backend`
+          )
+        }
+      } finally {
+        // Only the owning epoch releases the guard. A superseded probe
+        // settling after replacement must leave the new monitor's guard alone,
+        // or the new monitor's next tick would double-start while its first
+        // probe is still pending.
+        if (tickGeneration === attachedMonitorGeneration) {
+          attachedProbeInFlight = false
+        }
+      }
+    })()
   }, ATTACHED_LIVENESS_POLL_MS)
 
   attachedBackendMonitor.unref?.()
@@ -13091,6 +13226,11 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
 
       setWslBridgeProfileState(primaryProfile, true)
       startAttachedBackendMonitor(attached)
+      // A successful (re-)attach re-arms the supervisor for the next death,
+      // mirroring the spawned path below. Without this, the first recovery
+      // consumes the latch and every later attach death is silently dropped.
+      primaryExitRecovery.reset()
+      backendStartFailure = null
 
       updateBootProgress({
         phase: 'backend.ready',

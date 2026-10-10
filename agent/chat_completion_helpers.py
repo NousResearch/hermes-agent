@@ -34,7 +34,7 @@ from agent.errors import EmptyStreamError
 from agent.chat_completion_stream_monitor import StreamingWaitMonitor
 from agent.transports.chat_completions import is_router_timeout_shim, router_timeout_shim_may_follow
 from agent.fast_mode import effective_request_overrides
-from agent.turn_context import substitute_api_content
+from agent.turn_context import replay_historical_content
 from agent.gemini_native_adapter import is_native_gemini_base_url
 # Remote endpoints must never be fingerprinted: the probe waterfall is only valid for local/LM-Studio/Ollama
 # boxes. Non-Ollama remotes (sglang, vLLM, OpenAI-compat) expose Ollama-compat endpoints that can
@@ -2151,9 +2151,12 @@ def _iteration_summary_api_messages(agent, messages: list) -> list:
         # MoA: agent.model is the virtual preset; use the real aggregator so Gemini keeps thought_signature.
         agg_slot = getattr(getattr(agent, "client", None), "last_aggregator_slot", None)
         sanitize_model = (agg_slot or {}).get("model") or sanitize_model
+    # Shared copy policy: transcript-only source metadata (timestamp, message_id,
+    # platform_message_id, _source_message_id) never reaches a provider request.
+    from agent.agent_runtime_helpers import copy_message_for_api
     api_messages = []
     for msg in messages:
-        api_msg = msg.copy()
+        api_msg = copy_message_for_api(msg)
         agent._copy_reasoning_content_for_api(msg, api_msg)
         for key in _SUMMARY_FOREIGN_MESSAGE_KEYS:
             api_msg.pop(key, None)
@@ -2162,8 +2165,12 @@ def _iteration_summary_api_messages(agent, messages: list) -> list:
         # "contains item with unknown key name"); it stays on user/assistant.
         if api_msg.get("role") == "tool":
             api_msg.pop("name", None)
-        # api_content holds the exact bytes the main loop sent; substituting (not popping)
-        # keeps the summary's prefix identical instead of re-prefilling the largest context.
+        # ONE historical replay policy (turn_context.replay_historical_content, shared with
+        # build_api_messages): api_content holds the exact bytes the main loop sent, so replaying it
+        # (not just popping) keeps the summary's prefix identical instead of re-prefilling the
+        # largest context — except a source-identified (queued-prompt) boundary row, which replays
+        # its SOURCE text on EVERY request shape (stale plugin/onboarding glue never re-enters).
+        replay_historical_content(msg, api_msg, api_msg.pop("api_content", None))
         # Strict OpenAI-compatible gateways (Fireworks-backed OpenCode Go, Mistral, Moonshot/Kimi) reject
         # any message key outside the Chat Completions schema. The main loop drops these via
         # ChatCompletionsTransport.convert_messages(), but the summary path hand-builds messages and calls
@@ -2171,7 +2178,6 @@ def _iteration_summary_api_messages(agent, messages: list) -> list:
         # tool_name (SQLite FTS bookkeeping), the codex_* reasoning carriers, timestamp (preserved on
         # gateway user replay entries for the stale-confirmation expiry check — #47868 rejection class), and
         # every Hermes-internal underscore-prefixed scaffolding key.
-        substitute_api_content(api_msg)
         if needs_sanitize:
             agent._sanitize_tool_calls_for_strict_api(api_msg, model=sanitize_model)
         api_messages.append(api_msg)

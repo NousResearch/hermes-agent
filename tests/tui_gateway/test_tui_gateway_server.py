@@ -393,11 +393,19 @@ def test_prompt_submit_fails_open_inline_when_compute_host_dispatch_breaks(monke
     monkeypatch.setattr(server, "_wait_agent", lambda _session, _rid: None)
     # The deferred inline-fallback thread now waits via the patient variant.
     monkeypatch.setattr(server, "_wait_agent_for_prompt", lambda _session, _rid, _sid: None)
-    monkeypatch.setattr(
-        server,
-        "_run_prompt_submit",
-        lambda rid, sid, _session, text, **_kwargs: inline_calls.append((rid, sid, text)),
-    )
+    def _run_inline(
+        rid,
+        sid,
+        _session,
+        text,
+        *,
+        submitted_at=None,
+        message_id=None,
+        **_kwargs,
+    ):
+        inline_calls.append((rid, sid, text, submitted_at, message_id))
+
+    monkeypatch.setattr(server, "_run_prompt_submit", _run_inline)
     monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
 
     try:
@@ -405,7 +413,12 @@ def test_prompt_submit_fails_open_inline_when_compute_host_dispatch_breaks(monke
             {
                 "id": "fallback-turn",
                 "method": "prompt.submit",
-                "params": {"session_id": "iso-fallback", "text": "hello"},
+                "params": {
+                    "session_id": "iso-fallback",
+                    "text": "hello",
+                    "submitted_at": 123.5,
+                    "message_id": "fallback-message",
+                },
             }
         )
     finally:
@@ -416,7 +429,9 @@ def test_prompt_submit_fails_open_inline_when_compute_host_dispatch_breaks(monke
         "id": "fallback-turn",
         "result": {"status": "streaming"},
     }
-    assert inline_calls == [("fallback-turn", "iso-fallback", "hello")]
+    assert inline_calls == [
+        ("fallback-turn", "iso-fallback", "hello", 123.5, "fallback-message")
+    ]
     assert session.get("_compute_host_active") is not True
 
 
@@ -20021,7 +20036,11 @@ def test_close_sessions_for_transport_closes_flagged_repoints_rest(monkeypatch):
     transport = object()  # the disconnecting transport
     server._sessions.clear()
     server._sessions["a"] = {"transport": transport, "close_on_disconnect": True}
-    server._sessions["b"] = {"transport": transport, "close_on_disconnect": False}
+    server._sessions["b"] = {
+        "transport": transport,
+        "close_on_disconnect": False,
+        "history_lock": threading.Lock(),
+    }
     try:
         server._close_sessions_for_transport(transport, end_reason="ws_disconnect")
         assert seen == [("a", "ws_disconnect")]  # only the flagged one closed
@@ -22942,7 +22961,15 @@ def test_prompt_submit_rebind_map_clears_active_row_hidden_by_sequence_repair(
         )
         assert response.get("error") is None, response
         row_id_map = response["result"]["survivor_row_id_map"]
+        # A physical row hidden by the user;user repair is not a survivor: the
+        # bounded map classifies physical active IDs before repair and clears
+        # the hidden one to None.
         assert row_id_map[str(physical_ids[1])] is None
+        # Rows dropped by the truncation clear to None so the client drops
+        # its cached stamp instead of keeping a stale one.
+        assert row_id_map[str(physical_ids[3])] is None
+        assert row_id_map[str(physical_ids[4])] is None
+        # A requested id that never existed stays out of the map entirely.
         assert "999999" not in row_id_map
     finally:
         server._sessions.pop(sid, None)

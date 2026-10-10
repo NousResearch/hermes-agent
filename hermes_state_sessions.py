@@ -535,10 +535,18 @@ class SessionSessionsMixin:
 
     @staticmethod
     def _retire_undrained_queue_rows_conn(conn, session_id: str) -> int:
-        """The still-marked == never-drained accept-row UPDATE (#125577), on a caller's connection."""
+        """The still-marked == never-drained accept-row UPDATE (#125577), on a caller's connection.
+
+        Source-identified rows (``platform_message_id`` present) are EXCLUDED: their stable client
+        identity IS their turn boundary (#63298) and the client dropped its local copy when it
+        accepted the ``queued`` ack, so the row is the ONLY durable copy of a prompt whose turn may
+        never have run — retiring it would delete the message. The never-fold guards keep it its
+        own boundary (no glue into the previous turn), and retry dedup
+        (``has_platform_message_id``) reads the same row."""
         return conn.execute(
             "UPDATE messages SET active = 0 "
             "WHERE session_id = ? AND role = 'user' AND active = 1 "
+            "AND platform_message_id IS NULL "
             f"AND COALESCE({_sql_json_extract('display_metadata', '$.' + QUEUED_PROMPT_METADATA_KEY)}, 0) = 1",
             (session_id,),
         ).rowcount

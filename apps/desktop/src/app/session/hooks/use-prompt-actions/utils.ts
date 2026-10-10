@@ -735,6 +735,7 @@ export interface SubmitTextOptions {
    *  `auxiliary.voice_chat` (the session model when that slot is on auto). */
   voiceTurn?: boolean
   fromQueue?: boolean
+  messageId?: string
   /** Called once with the EXACT session identity the backend accepted the
    *  prompt into — the live runtime id after any stale-runtime recovery, plus
    *  the durable stored id when the caller knows it. A caller that must prove
@@ -749,4 +750,5 @@ export interface SubmitTextOptions {
   /** Stable stored session id for optimistic/cache updates and stale-runtime
    *  recovery. Distinct from the runtime session id minted by the gateway. */
   storedSessionId?: string | null
+  submittedAt?: number
 }

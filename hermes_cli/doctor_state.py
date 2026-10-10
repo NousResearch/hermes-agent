@@ -235,6 +235,21 @@ _UNPRUNED_CACHE_WARN_BYTES = 1 << 30
 _PRUNED_CACHE_DIRS = frozenset({"scratch", "terminal"})
 
 
+def _managed_cache_dirs() -> set[Path]:
+    """Return cache directories owned by Hermes subsystems rather than tasks.
+
+    Do not call the PM cache accessor here: it may seed a bundled cache as a
+    side effect. Doctor should inspect state, not initialize package storage.
+    """
+    from hermes_constants import get_default_hermes_root
+    from pm.paths import partials_root
+
+    return {
+        get_default_hermes_root() / "cache" / "uv",
+        partials_root(),
+    }
+
+
 def unpruned_cache_hogs(hermes_home: Path, min_bytes: int = _UNPRUNED_CACHE_WARN_BYTES) -> list[tuple[str, int]]:
     """``(name, bytes)`` for ``cache/`` entries outside the pruned dirs that exceed *min_bytes*.
 
@@ -244,8 +259,13 @@ def unpruned_cache_hogs(hermes_home: Path, min_bytes: int = _UNPRUNED_CACHE_WARN
 
     cache = hermes_home / "cache"
     hogs: list[tuple[str, int]] = []
+    managed_dirs = {path.resolve() for path in _managed_cache_dirs()}
     try:
-        entries = [e for e in cache.iterdir() if e.is_dir() and not e.is_symlink() and e.name not in _PRUNED_CACHE_DIRS]
+        entries = [
+            e for e in cache.iterdir()
+            if e.is_dir() and not e.is_symlink() and e.name not in _PRUNED_CACHE_DIRS
+            and e.resolve() not in managed_dirs
+        ]
     except OSError:
         return hogs
     for entry in entries:

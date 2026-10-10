@@ -241,3 +241,129 @@ def test_a_per_task_home_linking_back_keeps_the_shared_launcher(tmp_path, monkey
     relaunch = venv_sync.prepare_launch(root, ["chat"])
     assert {path: _launchers._launcher_python(Path(path)) for path in published} == {path: python for path in published}
     assert relaunch is None
+
+
+def test_a_per_task_home_republish_keeps_the_owner_published_shared_launcher(tmp_path, monkeypatch):
+    """A per-task home re-running the publication keeps the shared launcher the owner published:
+    byte-identical, still spelling the owner store's interpreter, returned as the existing
+    checkout path -- and the launcher outlives the task home's deletion (#136094)."""
+    import os
+    import shutil
+
+    from hermes_cli import _launchers
+
+    default = tmp_path / ".hermes"
+    root = _checkout(tmp_path, monkeypatch)
+    entry = default / "tools" / "python-owner"
+    python = entry / ("python.exe" if os.name == "nt" else "bin/python3")
+    python.parent.mkdir(parents=True)
+    python.touch()
+    (default / "tools" / "facts.json").write_text(json.dumps(
+        {"schema": 1, "packages": {"python": {"version": "fixture", "entry": entry.name}}}), encoding="utf-8")
+    _state(default, root)
+    _home(monkeypatch, default)
+    local = root / ".hermes" / "bin"
+    published = list(_launchers.ensure_install_launchers(root, local))
+    assert published
+    bytes_before = {path: Path(path).read_bytes() for path in published}
+
+    task = _home(monkeypatch, tmp_path / "task")
+    for name in ("tools", "installs"):
+        os.symlink(default / name, task / name, target_is_directory=True)
+
+    # Keeping is a short-circuit, not a re-mint that happens to spell the same
+    # file: the publish path must not re-enter the mint gate for a kept one.
+    monkeypatch.setattr(_launchers, "stage_launcher",
+                        lambda *args, **kwargs: pytest.fail("a kept launcher re-entered mint"))
+    kept = list(_launchers.ensure_install_launchers(root, local))
+    assert all(path in kept for path in published), "the existing shared launchers were not returned"
+    assert all(not str(path).startswith(str(task)) for path in kept), "a shared launcher moved into the task home"
+    assert {path: Path(path).read_bytes() for path in published} == bytes_before
+    assert {path: _launchers._launcher_python(path) for path in published} == {path: python for path in published}
+
+    shutil.rmtree(task)  # the task home dies; the shared launcher must not die with it
+    for path in published:
+        embedded = _launchers._launcher_python(path)
+        assert embedded == python and embedded.exists()
+        assert not str(embedded).startswith(str(task))
+        assert Path(path).read_bytes() == bytes_before[path]
+
+
+def test_a_per_task_home_first_publication_mints_the_owner_store_spelling(tmp_path, monkeypatch):
+    """The first publication under a per-task home mints the shared launcher. The mint must spell
+    the interpreter through the owner store it links back to, never through the task home that
+    will be deleted (#136094)."""
+    import os
+
+    from hermes_cli import _launchers
+
+    default = tmp_path / ".hermes"
+    root = _checkout(tmp_path, monkeypatch)
+    entry = default / "tools" / "python-owner"
+    python = entry / ("python.exe" if os.name == "nt" else "bin/python3")
+    python.parent.mkdir(parents=True)
+    python.touch()
+    (default / "tools" / "facts.json").write_text(json.dumps(
+        {"schema": 1, "packages": {"python": {"version": "fixture", "entry": entry.name}}}), encoding="utf-8")
+    _state(default, root)
+
+    task = _home(monkeypatch, tmp_path / "task")
+    for name in ("tools", "installs"):
+        os.symlink(default / name, task / name, target_is_directory=True)
+
+    local = root / ".hermes" / "bin"
+    before = {path: path.stat().st_mtime_ns for path in sorted(local.glob("*"))}
+    minted = list(_launchers.ensure_install_launchers(root, local))
+    assert minted
+    assert {path: _launchers._launcher_python(path) for path in minted} == {path: python for path in minted}
+    assert python.exists()
+    for path in minted:
+        raw = Path(path).read_bytes()
+        assert len(raw) > 0
+        assert str(task).encode() not in raw, "the launcher embeds the per-task spelling"
+    assert all(Path(path).parent == local for path in minted)
+    after = {path: path.stat().st_mtime_ns for path in sorted(local.glob("*"))}
+    assert after != before, "the shared launchers were not newly created by this publication"
+
+
+def test_a_shared_launcher_with_a_dead_interpreter_is_reminted_on_the_owner_spelling(tmp_path, monkeypatch):
+    """The keep semantics is bounded by the embedded interpreter being alive: a launcher whose
+    interpreter points at a deleted path is reminted, and the remint spells the owner store's
+    interpreter, not the per-task spelling (#136094)."""
+    import os
+
+    from hermes_cli import _launchers
+
+    default = tmp_path / ".hermes"
+    root = _checkout(tmp_path, monkeypatch)
+    entry = default / "tools" / "python-owner"
+    python = entry / ("python.exe" if os.name == "nt" else "bin/python3")
+    python.parent.mkdir(parents=True)
+    python.touch()
+    (default / "tools" / "facts.json").write_text(json.dumps(
+        {"schema": 1, "packages": {"python": {"version": "fixture", "entry": entry.name}}}), encoding="utf-8")
+    _state(default, root)
+    _home(monkeypatch, default)
+    local = root / ".hermes" / "bin"
+    published = list(_launchers.ensure_install_launchers(root, local))
+    assert published
+
+    task = _home(monkeypatch, tmp_path / "task")
+    for name in ("tools", "installs"):
+        os.symlink(default / name, task / name, target_is_directory=True)
+
+    dead = python.with_name(python.name + "-gone")  # spelled like the store, but no such file
+    dead_bytes = {}
+    for path in published:
+        raw = Path(path).read_bytes()
+        sabotaged = raw.replace(str(python).encode(), str(dead).encode())
+        assert sabotaged != raw
+        Path(path).write_bytes(sabotaged)
+        dead_bytes[path] = sabotaged
+
+    reminted = list(_launchers.ensure_install_launchers(root, local))
+    assert all(path in reminted for path in published)
+    assert {path: _launchers._launcher_python(path) for path in published} == {path: python for path in published}
+    assert python.exists()
+    for path in published:
+        assert Path(path).read_bytes() != dead_bytes[path]

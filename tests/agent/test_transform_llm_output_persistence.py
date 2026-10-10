@@ -99,3 +99,18 @@ def test_recovery_path_tail_row_carries_transformed_text(db_agent, monkeypatch):
     assert messages[-1]["role"] == "assistant"
     assert messages[-1]["content"] == "REWRITTEN:RECOVERED TEXT"
     assert calls.count("transform_llm_output") == 1
+
+
+def test_repeated_transform_call_reuses_transformed_response(db_agent, monkeypatch):
+    from agent.turn_finalizer import apply_llm_output_transform
+
+    agent, _db = db_agent
+    calls = []
+    monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", _rewriting_hook(calls))
+
+    first = apply_llm_output_transform(agent, "RAW", turn_id="turn-1")
+    second = apply_llm_output_transform(agent, "RAW", turn_id="turn-1")
+
+    assert first == ("REWRITTEN:RAW", True, "RAW")
+    assert second == first
+    assert calls.count("transform_llm_output") == 1

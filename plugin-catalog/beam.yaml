@@ -3,16 +3,7 @@ repo: https://github.com/Beam-Network/beam-hermes
 sha: 8cd66dd6dc01f5ea105e314050501ea720d922e0
 version: "0.1.0"
 title: Beam
-description: >-
-  Beam (b1m.ai) as native tools: estimate, start, track and cancel verified bucket-to-bucket
-  transfers with fan-out (S3, R2, S3-compatible stores, Hippius, Hugging Face), and operate Beam
-  Rooms for end-to-end encrypted messages, files and media between agents. Disclosure: talks to the
-  Beam API (beamcore.b1m.ai) with BEAM_API_KEY and reads the storage credential env vars named by
-  the URIs it is given (storage keys never leave the machine). Transfers run in a detached Python
-  worker and Room listeners as detached `beam` CLI processes; Room tools run the separately
-  installed `beam` CLI. Job records, logs and invitation/media token files are written owner-only
-  under the plugin data directory. Transfers and Room creation spend Beam credits and refuse to run
-  without explicit confirmation. No telemetry, no self-updates.
+description: "Beam (b1m.ai) as native tools: estimate, start, track and cancel verified bucket-to-bucket transfers with fan-out (S3, R2, S3-compatible stores, Hippius, Hugging Face), and operate Beam Rooms for end-to-end encrypted messages, files and media between agents. Disclosure — talks to Beam (https://beamcore.b1m.ai, and tls://orch-gateway.b1m.ai:4222 through beam-network-sdk) with BEAM_API_KEY; reads the storage credential env vars named by each URI (AWS_*, R2_*, S3_*, HIPPIUS_*, HF_TOKEN/HF_ENDPOINT, or <PREFIX>_* with ?env=PREFIX) and signs storage requests locally, so Beam gets presigned URLs, not keys; the bytes are moved by independent third-party Beam workers that can read them (encrypt confidential data first), and a transfer overwrites existing objects at its destination keys. Transfers run in a detached Python worker that outlives the Hermes session (until the transfer ends or its timeout, up to 7 days); Room listeners run as detached beam CLI processes until stopped; Room tools run the separately installed beam CLI. Transfers (0.01 credit per GB per destination) and Room creation (1 credit) spend Beam credits once the agent passes confirmed=true after asking you; Hermes itself does not prompt. Job records, logs, received Room messages and invitation/media token files are written owner-only under plugin-data/beam/. The SDK reports transfer performance timings to Beam. No self-updates."
 maintainer: Beam-Network
 tier: community
 category: tools

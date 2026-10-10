@@ -214,6 +214,36 @@ export function backendScopePrefix(connectionId: string): string {
   return `conn:${String(connectionId).trim()}::`
 }
 
+/**
+ * Whether `value` has the composite backend scope key shape (`conn:<id>::<profile>`).
+ * Colons are invalid in profile names (DESKTOP_PROFILE_NAME_RE), so this shape
+ * can never be a legitimate profile: seeing it in a profile-name slot is always
+ * a boundary leak (#107828).
+ */
+export function isBackendScopeKey(value: unknown): boolean {
+  return /^conn:.+?::.+$/.test(String(value ?? '').trim())
+}
+
+/**
+ * Denormalize a scope-shaped `profile` argument back into its explicit
+ * (connectionId, profile) pair (#107828). A caller that passes a pool scope
+ * key where a profile name belongs used to mint nonsense identities — a
+ * forced-local spawn for profile "conn:local::default" that can only fail with
+ * `Profile "conn:local::default" no longer exists`, or a garbage double
+ * composite (`conn:ssh1::conn:local::default`) on the registry SSH path.
+ * The scope key carries the complete identity, so the parsed pair replaces
+ * BOTH dial arguments. Returns null for ordinary profile names.
+ */
+export function denormalizeScopeProfileArg(profile: unknown): null | { connectionId: string; profile: string } {
+  const raw = String(profile ?? '').trim()
+
+  if (!isBackendScopeKey(raw)) {
+    return null
+  }
+
+  return parseBackendScopeKey(raw)
+}
+
 export interface RegistryLocalRoute {
   /** Reuse the legacy v1 ensureBackend path — it already resolves to the
    * app's own local runtime, so single-source behavior stays byte-identical. */
@@ -557,7 +587,14 @@ export function resolveRegistryLocalRoute(
     // force-locals. A profile that exists locally still force-locals so
     // "This device" does not dial the remote.
     if (concrete && profileKey !== 'default' && opts.localProfileExists === false) {
-      return { delegate: false, poolKey, refuse: `Profile "${profileKey}" no longer exists.` }
+      // Remote-only on this connection: the profile was never deleted here —
+      // it lives on the remote source. "no longer exists" misattributed the
+      // cause and read as a data-loss bug (#107828).
+      return {
+        delegate: false,
+        poolKey,
+        refuse: `Profile "${profileKey}" exists only on the remote connection and cannot start on this device.`
+      }
     }
 
     return { delegate: false, poolKey }

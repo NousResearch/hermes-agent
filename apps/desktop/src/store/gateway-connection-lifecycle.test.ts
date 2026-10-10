@@ -660,6 +660,43 @@ describe('reconnect fail-stop on a removed connection', () => {
     expect(getConnection.mock.calls.length).toBe(callsAfterFailStop)
   })
 
+  it('fail-stops when the profile is remote-only on this device (#107828)', async () => {
+    // The forced-local guard on main now refuses a remote-only profile with
+    // "exists only on the remote connection" — a permanent condition for a
+    // LOCAL forced spawn, same class as the deletion guard. The reconnect
+    // ladder must dispose the entry instead of re-requesting the scope on
+    // every backoff tick (~2/min in the report's log).
+    let connectionCalls = 0
+
+    const getConnection = vi.fn(async () => {
+      connectionCalls += 1
+
+      if (connectionCalls <= 3) {
+        return descriptorFor('legacy-local', 'inbox')
+      }
+
+      throw new Error('Profile "inbox" exists only on the remote connection and cannot start on this device.')
+    })
+
+    installDesktop({ getConnection })
+
+    await openGatewayForProfile('inbox')
+    await ensureGatewayForProfile('inbox')
+    expect(gatewayMocks.instances).toHaveLength(1)
+    connectionCalls = 99
+
+    const socket = gatewayMocks.instances[0] as unknown as { connectionState: string }
+    socket.connectionState = 'closed'
+
+    // Drive the reconnect: the remote-only refusal must dispose + evict.
+    const result = await ensureActiveGatewayOpen()
+
+    expect(result).toBeNull()
+    const callsAfterFailStop = getConnection.mock.calls.length
+    await ensureActiveGatewayOpen()
+    expect(getConnection.mock.calls.length).toBe(callsAfterFailStop)
+  })
+
   it('fail-stops on the mid-delete guard rejection too', async () => {
     let connectionCalls = 0
 

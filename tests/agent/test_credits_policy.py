@@ -109,7 +109,7 @@ class TestWarn90RecoveryReCross:
         evaluate_credits_notices(state_with_fraction(0.10), latch)
         evaluate_credits_notices(state_with_fraction(0.95), latch)
         # Recovery: uf drops back below ALL bands → usage notice clears entirely
-        to_show, to_clear = evaluate_credits_notices(state_with_fraction(0.10), latch)
+        _to_show, to_clear = evaluate_credits_notices(state_with_fraction(0.10), latch)
         assert "credits.usage" in to_clear
         assert "credits.usage" not in latch["active"]
 
@@ -119,7 +119,7 @@ class TestWarn90RecoveryReCross:
         evaluate_credits_notices(state_with_fraction(0.95), latch)
         evaluate_credits_notices(state_with_fraction(0.10), latch)  # recovery
         # Re-cross: uf >= 0.9 again — should fire again because the band is clearable
-        to_show, to_clear = evaluate_credits_notices(state_with_fraction(0.95), latch)
+        to_show, _to_clear = evaluate_credits_notices(state_with_fraction(0.95), latch)
         keys = [n.key for n in to_show]
         assert "credits.usage" in keys
 
@@ -183,7 +183,7 @@ class TestGrantSpent:
         crossing to >= 1.0 with top-up remaining announces once."""
         latch = fresh_latch()
         evaluate_credits_notices(state_with_fraction(0.75), latch)
-        to_show, to_clear = evaluate_credits_notices(self._grant_state(), latch)
+        to_show, _to_clear = evaluate_credits_notices(self._grant_state(), latch)
         assert "credits.grant_spent" in [n.key for n in to_show]
 
     def test_grant_spent_no_refire(self):
@@ -213,7 +213,7 @@ class TestGrantSpent:
         )
         assert s.used_fraction is not None and s.used_fraction < 1.0
         evaluate_credits_notices(s, latch)
-        to_show, to_clear = evaluate_credits_notices(self._grant_state(), latch)
+        to_show, _to_clear = evaluate_credits_notices(self._grant_state(), latch)
         assert all(n.key != "credits.grant_spent" for n in to_show)
 
 
@@ -225,7 +225,7 @@ class TestDepleted:
     def test_depleted_fires_level_error_kind_sticky(self):
         latch = fresh_latch()
         s = CreditsState(paid_access=False)
-        to_show, to_clear = evaluate_credits_notices(s, latch)
+        to_show, _to_clear = evaluate_credits_notices(s, latch)
         depleted_notices = [n for n in to_show if n.key == "credits.depleted"]
         assert len(depleted_notices) == 1
         n = depleted_notices[0]
@@ -251,7 +251,7 @@ class TestDepleted:
         evaluate_credits_notices(CreditsState(paid_access=False), latch)
         evaluate_credits_notices(CreditsState(paid_access=True), latch)
         # Goes depleted again
-        to_show, to_clear = evaluate_credits_notices(CreditsState(paid_access=False), latch)
+        to_show, _to_clear = evaluate_credits_notices(CreditsState(paid_access=False), latch)
         keys = [n.key for n in to_show]
         assert "credits.depleted" in keys
 
@@ -379,7 +379,7 @@ class TestDenominatorNone:
         assert "credits.usage" in latch["active"]
         # Now uf becomes None (denominator changed to "none")
         s_none = state_with_fraction(None)
-        to_show, to_clear = evaluate_credits_notices(s_none, latch)
+        _to_show, to_clear = evaluate_credits_notices(s_none, latch)
         assert "credits.usage" in to_clear
         assert "credits.usage" not in latch["active"]
 

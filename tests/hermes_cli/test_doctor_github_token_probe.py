@@ -27,7 +27,7 @@ def github_stand_in(monkeypatch):
     class Handler(BaseHTTPRequestHandler):
         status = 401
 
-        def do_GET(self):  # noqa: N802 - http.server API
+        def do_GET(self):
             auth = self.headers.get("Authorization") or ""
             seen.append({"path": self.path, "authorization": auth})
             status = self.status
@@ -42,7 +42,7 @@ def github_stand_in(monkeypatch):
             self.end_headers()
             self.wfile.write(body)
 
-        def log_message(self, format, *args):  # noqa: A002 - http.server API; quiet
+        def log_message(self, format, *args):
             pass
 
     srv = HTTPServer(("127.0.0.1", 0), Handler)

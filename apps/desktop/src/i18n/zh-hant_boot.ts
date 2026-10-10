@@ -62,7 +62,14 @@ export const zhHantBoot = {
     message: reason => `軟體繪圖已啟用 — 偵測到遠端顯示（${reason}）。為防止畫面閃爍，已停用 GPU 加速。`
   },
   butterbar: {
-    goTo: (index, total) => `顯示第 ${index} 則通知，共 ${total} 則`
+    goTo: (index, total) => `顯示第 ${index} 則通知，共 ${total} 則`,
+    legal: {
+      before: '使用 Hermes Agent 即表示受我們的',
+      terms: '服務條款',
+      between: '和',
+      privacy: '隱私權政策',
+      after: '約束。'
+    }
   },
 
   updates: {
@@ -184,11 +191,6 @@ export const zhHantBoot = {
       'Hermes 執行環境已更新,但桌面應用程式本身仍是舊建置——在應用程式更新之前,新的介面功能(如 Bot Mode)不會顯示。請執行下方的更新以重新建置應用程式。如果此警告仍未消除,請從最新的桌面安裝程式重新安裝。',
     bundleOutOfSyncAction: '取得安裝程式',
     checkingShort: '檢查中…'
-  },
-
-  guidedGreeting: {
-    line: '來了，進來吧。我是 Hermes。給我兩分鐘，把這裡按你的習慣整理一下，然後我們找件你真正想做的事來做。\n\n先說，我該怎麼稱呼你？',
-    nameSuggestion: (name: string) => `（如果你願意，我也可以直接叫你 ${name}。）`
   },
 
   install: {
@@ -316,8 +318,6 @@ export const zhHantBoot = {
     copyAuthCode: '複製授權碼並貼到下方。',
     pasteAuthCode: '貼上授權碼',
     reopenAuthPage: '重新開啟授權頁面',
-    autoBrowser: provider => `已在瀏覽器中開啟 ${provider}。請在那裡授權 Hermes，連線會自動完成，無需複製或貼上。`,
-    reopenSignInPage: '重新開啟登入頁面',
     waitingAuthorize: '等待您授權...',
     externalPending: provider => `${provider} 透過自己的 CLI 登入。請在終端機執行此指令，然後回來選擇「我已登入」：`,
     signedIn: '我已登入',
@@ -331,9 +331,12 @@ export const zhHantBoot = {
     price: (input, output) => `${input} 輸入 / ${output} 輸出 每 Mtok`,
     change: '變更',
     startChatting: '開始',
-    docs: provider => `${provider} 文件`
+    docs: provider => `${provider} 文件`,
+    setupSlowTitle: '設定花費的時間比平常久。',
+    setupSlowBody: 'Hermes 仍在背景中啟動。',
+    continueWithoutSetup: '略過設定並繼續'
   }
 } satisfies Pick<
   TranslationOverrides,
-  'boot' | 'remoteDisplayBanner' | 'butterbar' | 'updates' | 'guidedGreeting' | 'install' | 'onboarding'
+  'boot' | 'remoteDisplayBanner' | 'butterbar' | 'updates' | 'install' | 'onboarding'
 >

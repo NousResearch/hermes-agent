@@ -97,6 +97,9 @@ def _source_channels_resolve_locally(request, monkeypatch):
         return ChannelResolution(record, record, None)
 
     monkeypatch.setattr(source_releases, "_resolve_channel", resolve)
+    # stable reads GitHub releases directly; keep it off the network the same way.
+    monkeypatch.setattr(source_releases, "_resolve_stable", lambda repository, *_: source_releases.SourceTarget(
+        "stable", "stable", repository, branch="stable"))
 
 
 @pytest.fixture(autouse=True)

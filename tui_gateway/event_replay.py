@@ -38,7 +38,7 @@ _replay_lock = threading.Lock()
 # sid -> deque of (seq, frozen params JSON bytes without the server-owned seq, retained bytes).
 # Bytes detach the replay ring from the live event object: later caller mutation cannot grow or
 # rewrite an already-accounted cache entry.
-_replay_buffers: "OrderedDict[str, deque]" = OrderedDict()
+_replay_buffers: OrderedDict[str, deque] = OrderedDict()
 _replay_buffer_bytes: dict[str, int] = {}
 _replay_evicted_through: dict[str, int] = {}
 _replay_total_bytes = 0

@@ -1,11 +1,12 @@
 import { isPreviewableTarget, toolPreviewOutcome } from '@/components/assistant-ui/tool/fallback-model'
-import { reportFirstBuildToolComplete } from '@/components/onboarding-chat/first-build'
-import { toolCallOwnerMessageId } from '@/lib/chat-messages'
+import { finishGuidedOnboarding } from '@/components/onboarding-chat/intro'
+import { type GatewayEventPayload, toolCallOwnerMessageId } from '@/lib/chat-messages'
 import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
 import { refreshBackgroundProcesses } from '@/store/composer-status'
 import { flashPetActivity, setPetActivity } from '@/store/pet'
 import { recordPreviewArtifact, reofferPreviewArtifact } from '@/store/preview-status'
 import { $sessionStates, storedSessionIdForRuntimeId } from '@/store/session-states'
+import { isStartChatCallerWatched, markLiveStartChat, readStartChatResult } from '@/store/start-chat'
 import { isTerminalSubagentCompletion, pruneDelegateFallbackSubagents, upsertSubagent } from '@/store/subagents'
 import { reportMcpToolResult } from '@/store/suggestion-providers/repair'
 import { invalidateSkillSuggestionIndex } from '@/store/suggestion-providers/skill'
@@ -16,6 +17,45 @@ import { notifyWorkspaceChanged, toolChangedPath, toolMayMutateFiles } from '@/s
 import { SUBAGENT_EVENT_TYPES, toTodoPayload } from '../utils'
 
 import type { GatewayEventContext } from './types'
+
+function recordToolPreview(ctx: GatewayEventContext, sessionId: string, cwd: string, pendingProduction: boolean): void {
+  const { event, payload, occurredAt } = ctx
+
+  if (!payload?.name || payload.result === undefined || event.seq === undefined) {
+    return
+  }
+
+  const { previewTarget, status } = toolPreviewOutcome({
+    type: 'tool-call',
+    toolName: payload.name,
+    args: payload.args ?? {},
+    result: payload.result,
+    toolResultMetadata: payload,
+    completedAt: occurredAt
+  })
+
+  if (status === 'success' && previewTarget && isPreviewableTarget(previewTarget)) {
+    const record = pendingProduction ? reofferPreviewArtifact : recordPreviewArtifact
+    record(sessionId, previewTarget, cwd, storedSessionIdForRuntimeId(sessionId) ?? sessionId)
+  }
+}
+
+function reportStartChatHandoff(payload: GatewayEventPayload | undefined, sessionId: string): void {
+  const outcome = readStartChatResult(payload?.result)
+
+  if (payload?.name !== 'start_chat' || outcome?.status !== 'started') {
+    return
+  }
+
+  const callerId = storedSessionIdForRuntimeId(sessionId) ?? sessionId
+
+  if (isStartChatCallerWatched(callerId)) {
+    markLiveStartChat(callerId, payload.tool_id || payload.tool_call_id || payload.id || '')
+  }
+
+  // From the setup chat, the handoff completes the guided first run (no-op elsewhere).
+  finishGuidedOnboarding(sessionId, outcome.sessionId)
+}
 
 /** tool.generating / tool.start / tool.complete / subagent.*. */
 export function handleToolEvent(ctx: GatewayEventContext): boolean {
@@ -80,25 +120,13 @@ export function handleToolEvent(ctx: GatewayEventContext): boolean {
 
       upsertToolCall(sessionId, toTodoPayload(payload) ?? payload, 'complete', event.type, occurredAt)
 
-      if (!sessionInterrupted(sessionId) && payload?.name && payload.result !== undefined && event.seq !== undefined) {
-        const { previewTarget, status } = toolPreviewOutcome({
-          type: 'tool-call',
-          toolName: payload.name,
-          args: payload.args ?? {},
-          result: payload.result,
-          toolResultMetadata: payload,
-          completedAt: occurredAt
-        })
-
-        if (status === 'success' && previewTarget && isPreviewableTarget(previewTarget)) {
-          const record = pendingProduction ? reofferPreviewArtifact : recordPreviewArtifact
-          record(sessionId, previewTarget, state?.cwd ?? '', storedSessionIdForRuntimeId(sessionId) ?? sessionId)
-        }
+      if (!sessionInterrupted(sessionId)) {
+        recordToolPreview(ctx, sessionId, state?.cwd ?? '', pendingProduction)
       }
 
-      // Onboarding's first build paces its check-ins off real work done
-      // (no-op in every other session).
-      reportFirstBuildToolComplete(sessionId)
+      if (!event.replayed) {
+        reportStartChatHandoff(payload, sessionId)
+      }
 
       if (isActiveEvent) {
         setPetActivity({ toolRunning: false })

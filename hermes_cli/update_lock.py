@@ -47,6 +47,9 @@ CREATE_TIME_TOLERANCE_SECONDS = 2.0
 # Our own creation time re-probed by the same clock: only the marker's 3-decimal rounding differs,
 # while two processes are at least one scheduler tick (10 ms) apart.
 _OWN_CREATE_TIME_EPSILON = 0.005
+# macOS shells read a creation time from `ps -o lstart` and write it as whole seconds (`ct:N.000`),
+# truncated. A whole-second claim inside the second we started in is still our incarnation.
+_WHOLE_SECOND_CT = 1.0
 
 # A claim published by create-then-write (filesystems without hard links) is briefly empty; an
 # empty marker this young is a claim in flight, not a dead one (contract A3).
@@ -295,7 +298,11 @@ def _incarnation(pid: int, recorded: float | None, w: _World) -> bool | None:
     if pid == w.pid:  # we are alive by definition: only the incarnation is in question
         if w.ct is None:
             return recorded is None
-        return recorded is not None and abs(w.ct - recorded) <= _OWN_CREATE_TIME_EPSILON
+        if recorded is None:
+            return False
+        if abs(w.ct - recorded) <= _OWN_CREATE_TIME_EPSILON:
+            return True
+        return recorded.is_integer() and 0 <= w.ct - recorded < _WHOLE_SECOND_CT
     if not w.alive(pid):
         return False
     actual = None if recorded is None else w.ct_of(pid)
@@ -1568,7 +1575,7 @@ class UpdateLock:
             self.acquired = self._claimed = False
             self._drop_checkout()
 
-    def __enter__(self) -> "UpdateLock":
+    def __enter__(self) -> UpdateLock:
         self.acquire()
         return self
 

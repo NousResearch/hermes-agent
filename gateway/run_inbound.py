@@ -1356,7 +1356,12 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
         from hermes_cli.observability.shared_metrics_gateway import start_reply_clock
         start_reply_clock(source, internal=is_internal)
         self._persist_active_agents()
-        _run_generation = self._begin_session_run_generation(_quick_key)
+        _run_generation = self._reserve_ordinary_session_run_generation(_quick_key, source)
+        if _run_generation is None:
+            self._release_running_agent_state(_quick_key)
+            self._release_turn_lease(_quick_key, self._current_session_run_generation(_quick_key))
+            return t("gateway.busy.another_turn_running")
+        _claim_state.persistent.run_generation = _run_generation
 
         try:
             if not is_internal:  # fail-open plugin consume, inside the claimed slot (#129958)
@@ -1401,27 +1406,6 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
             # Turn lease is keyed by (routing key, run generation) so this unwind can only free
             # the lease its own turn acquired, never a newer turn's.
             self._release_turn_lease(_quick_key, _run_generation)
-
-    def _restore_pending_one_turn_model_override(self, session_key: str, run_generation: int | None = None) -> None:
-        """Restore the per-session model override captured by ``/model --once`` or ``/moa``.
-
-        With ``run_generation`` (the turn finalizer) the restore happens only while that generation
-        is still current; a stop/reset/eviction has already settled the snapshot itself (see
-        ``_invalidate_session_run_generation``), so the displaced finalizer finds nothing to do.
-        Without it (the settlement paths) the restore is unconditional."""
-        if not session_key:
-            return
-        try:
-            _otr_state = self._peek_session_state(session_key)
-            if _otr_state is None or not _otr_state.conversation.one_turn_restore:
-                return
-            if run_generation is not None and not self._is_session_run_current(session_key, run_generation):
-                return
-            snapshot = _otr_state.conversation.one_turn_restore
-            _otr_state.conversation.one_turn_restore = None
-            self._restore_session_model_override(session_key, snapshot)
-        except Exception:
-            logger.debug("Failed to restore one-turn model override", exc_info=True)
 
     def _prefix_inbound_sender_context(self, event: MessageEvent, source: SessionSource, message_text: str) -> str:
         """Attribute the sender in shared multi-user sessions and prepend history-backfill channel context."""

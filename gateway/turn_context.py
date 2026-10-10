@@ -48,6 +48,7 @@ class TurnContext:
     session_id: Optional[str] = None
     session_key: Optional[str] = None
     run_generation: Optional[int] = None
+    chat_execution_reservation: Optional[tuple[str, str, int]] = None
     internal_plugin_execution_id: Optional[str] = None
     # Set by the loop-side promotion task before the executor may launch.
     execution_launch_gate: Any = None

@@ -15,6 +15,7 @@ import threading
 from concurrent.futures import Future, ThreadPoolExecutor, wait
 from functools import partial
 from typing import Any, Callable, Dict, List, Optional
+from uuid import uuid4
 
 from agent.redact import redact_for_egress
 
@@ -527,18 +528,24 @@ class MemoryManager:
 
         result_box: dict[str, Any] = {}
 
-        def _run() -> None:
+        from agent.chat_execution_context import bind_concurrent_tool_resource, concurrent_tool_resource_for_submit
+
+        def _run(resource) -> None:
             try:
-                result_box["value"] = provider.prefetch(query, session_id=session_id) or ""
+                with bind_concurrent_tool_resource(resource) as admitted:
+                    if not admitted:
+                        raise RuntimeError("Memory prefetch resource admission refused")
+                    result_box["value"] = provider.prefetch(query, session_id=session_id) or ""
             except Exception as exc:  # pragma: no cover - re-raised by caller
                 result_box["error"] = exc
 
-        thread = spawn_context_thread(_run, name=f"memory-prefetch-{provider.name}")
         with self._external_prefetch_lock:
             existing = self._external_prefetch_threads.get(provider.name)
             if existing is not None and existing.is_alive():
                 logger.debug("Memory provider '%s' prefetch is still running; skipping this turn", provider.name)
                 return ""
+            resource = concurrent_tool_resource_for_submit(str(uuid4()), kind="memory_prefetch_thread")
+            thread = spawn_context_thread(_run, args=(resource,), name=f"memory-prefetch-{provider.name}")
             self._external_prefetch_threads[provider.name] = thread
             thread.start()
 

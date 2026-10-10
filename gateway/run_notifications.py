@@ -1424,6 +1424,9 @@ class GatewayNotificationsMixin(GatewayNotificationOwnershipMixin):
         from hermes_constants import get_hermes_home_override
         source = self._build_process_event_source(evt)
         if source is None or not getattr(source, "profile", None):
+            raw_sid = _raw_process_event_session_id(evt)
+            if raw_sid and getattr(getattr(self, "config", None), "multiplex_profiles", False):
+                return self._served_api_server_event_scope(evt, raw_sid)
             # No routed profile: the launch profile's own completion. Bind ITS scope once the
             # process multiplexes — unscoped, a fail-closed ledger read raises on a legitimate
             # launch-profile event (no-op while single-profile).
@@ -1433,6 +1436,21 @@ class GatewayNotificationsMixin(GatewayNotificationOwnershipMixin):
         if get_hermes_home_override() == str(profile_home):
             return contextlib.nullcontext()  # already inside this profile's scope
         return _async_profile_runtime_scope(profile_home)
+
+    @contextlib.asynccontextmanager
+    async def _served_api_server_event_scope(self, evt: dict, raw_sid: str):
+        """Scope of the served profile whose own store holds a raw api_server session (its events name no
+        profile), else the launch profile's, as for any unrouted event."""
+        from gateway.run import _async_profile_runtime_scope
+        from tui_gateway.launch_profile_policy import async_launch_profile_scope_if_multiplexed
+        served = await asyncio.to_thread(self._served_api_server_wake_profile, evt, raw_sid)
+        if served:
+            source = SessionSource(platform=Platform.API_SERVER, chat_id=raw_sid, profile=served)
+            scope = _async_profile_runtime_scope(self._resolve_profile_home_for_source(source))
+        else:
+            scope = async_launch_profile_scope_if_multiplexed()
+        async with scope:
+            yield
 
     async def _deliver_completion_notification(
         self, synth_text: str, evt: dict, *, sibling_claims=(),

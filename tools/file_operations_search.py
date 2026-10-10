@@ -882,7 +882,14 @@ class SearchMixin:
             elif line:
                 raw_files.append(line)
         bounded_sigpipe = result.exit_code == 141 and len(raw_files) >= fetch_limit
-        if result.exit_code not in {0, 124} and not bounded_sigpipe:
+        # GNU find exits 1 when ANY directory could not be descended into (EACCES
+        # on an unreadable sibling) while still printing every match it did find;
+        # stderr is already discarded by the command, so matches in hand plus
+        # exit 1 means "partial traversal", not failure (#107403). An empty
+        # payload keeps failing closed: that is a bad root or, on the modified
+        # path, a find without -printf support.
+        partial_traversal = result.exit_code == 1 and bool(raw_files)
+        if result.exit_code not in {0, 124} and not bounded_sigpipe and not partial_traversal:
             if order == "modified":
                 return SearchResult(error=(
                     "Exact modification-time order requires GNU find with "
@@ -894,7 +901,9 @@ class SearchMixin:
             raw_files = [_msys_to_windows_path(file_path) for file_path in raw_files]
         return SearchResult(
             files=raw_files[offset:offset + limit], total_count=len(raw_files),
-            truncated=len(raw_files) > offset + limit or bool(limit_reason), limit_reason=limit_reason)
+            truncated=len(raw_files) > offset + limit or bool(limit_reason), limit_reason=limit_reason,
+            warning=("Some directories under the search root could not be traversed; "
+                     "results may be incomplete." if partial_traversal else None))
 
     def _search_files_rg(self, pattern: str, path: str | list[str], limit: int, offset: int,
                          order: str = "discovery", rg_executable: Optional[str] = None) -> SearchResult:

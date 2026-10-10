@@ -112,9 +112,11 @@ def _fallback_chain_phrase(job: Optional[dict] = None) -> str:
     config can't be read — never crash delivery.
     """
     if job is not None and _job_route_pinned(job):
+        from hermes_constants import profile_cli_selector
+
         return (
             "This job is pinned to its own provider/model, so it does not fall back to "
-            f"`fallback_providers`; `hermes cron edit {job.get('id')} --unpin` lets it follow the "
+            f"`fallback_providers`; `hermes {profile_cli_selector()}cron edit {job.get('id')} --unpin` lets it follow the "
             "main model and its fallback chain."
         )
     try:
@@ -127,35 +129,6 @@ def _fallback_chain_phrase(job: Optional[dict] = None) -> str:
     return (
         "No backup provider is configured — add one with `hermes fallback add`, "
         "or set a cron-wide default via `cron.model` + `cron.model_provider` in config.yaml."
-    )
-
-
-def _failure_streak_nudge(job: dict) -> str:
-    """Review nudge when a recurring job keeps failing, else "". The failure message is delivered
-    BEFORE mark_job_run records this run, hence stored ``failure_streak`` + 1. Threshold:
-    ``cron.failure_nudge_threshold`` (default 3, 0 disables)."""
-    schedule_kind = (job.get("schedule") or {}).get("kind")
-    if schedule_kind not in {"cron", "interval"}:
-        return ""
-    try:
-        cfg = load_config() or {}
-        threshold = int(
-            ((cfg.get("cron") or {}) if isinstance(cfg, dict) else {}).get(
-                "failure_nudge_threshold", 3
-            )
-        )
-    except Exception:
-        threshold = 3
-    if threshold <= 0:
-        return ""
-    streak = int(job.get("failure_streak") or 0) + 1  # +1 = this run
-    if streak < threshold:
-        return ""
-    job_ref = job.get("name") or job.get("id") or "this job"
-    return (
-        f"\nThis job has failed {streak} runs in a row — worth a review. "
-        f"Fix its prompt/config, or pause it with `hermes cron pause {job_ref}` "
-        "(resume/remove also available) to stop the noise."
     )
 
 
@@ -267,6 +240,7 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     job_id = job.get("id") or job_name
     text = (error or "unknown error").strip()
     lower = text.lower()
+    script_failed = lower.startswith(("script exited with code", "script execution failed"))
 
     # Script runner contract ("Script timed out after {n}s: {path}") — also for agent jobs with a
     # context script. Must precede provider classification so it never claims a model failure.
@@ -278,25 +252,20 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     # quiet, no model service involved. Its text may still contain "timed out", so it must be
     # recognised before the classifier (field-reported: a stuck `terminal` call was blamed on the
     # provider and the operator debugged the wrong system).
-    if re.search(r"idle for \d+s\s*\(limit \d+s\)", lower):
+    if not script_failed and re.search(r"idle for \d+s\s*\(limit \d+s\)", lower):
         return inactivity_notice(job_name, job_id)
 
     # no_agent jobs never reach a model, so provider errors are structurally impossible for them:
     # gate on job MODE before classifying, or a script's own wording ("429", "timed out") would
     # blame the wrong subsystem.
-    if not job.get("no_agent"):
+    if not job.get("no_agent") and not script_failed:
         notice = provider_failure_notice(
             job_name, job_id, classify_cron_failure_reason(text),
             backup_provider_phrase=_fallback_chain_phrase(job), provider=job.get("provider"))
         if notice is not None:
             return notice
 
-    # Strip exception wrappers; bound input first so a multi-KB blob can't slow the regexes.
-    cleaned = re.sub(r"^(RuntimeError|Exception|ValueError|HTTPStatusError):\s*", "", text[:2000])
-    cleaned = re.sub(r"\s+", " ", cleaned).strip().rstrip(".")
-    if len(cleaned) > 180:
-        cleaned = cleaned[:177].rstrip() + "..."
-    message = generic_failure_notice(job_name, job_id, cleaned)
+    message = generic_failure_notice(job_name, job_id, text)
 
     # Import-class failures (#95294 part 3): a long-lived gateway whose checkout was updated
     # underneath it (interrupted `hermes update`, manual git pull) serves MIXED modules and every
@@ -304,7 +273,7 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     # cause + fix — never replace the raw error, which carries the failing symbol. Fail-safe: skew
     # is None on non-git/no-fingerprint; no_agent jobs excluded (a fresh subprocess resolves
     # imports against disk, so its ImportError is the script's own problem).
-    if not job.get("no_agent") and re.search(
+    if not job.get("no_agent") and not script_failed and re.search(
         r"cannot import name|modulenotfounderror|importerror", lower
     ):
         try:
@@ -2929,6 +2898,8 @@ def _compose_run_delivery(
     silent_alert, incident_acked, failure_incident_id)``; ``silent_alert``: an alert-once marker
     says the operator was already told, deliver nothing. ``agent_declared``: *error* is the
     agent's own ``[CRON_FAILURE]`` evidence, delivered verbatim."""
+    from cron.scheduler_failure_copy import _failure_streak_nudge
+
     err = str(error) if error else ""
     # Failed jobs always deliver, except blocked-config runs, which alert exactly ONCE.
     blocked_config_silent = BLOCKED_CONFIG_SILENT_MARKER in err
@@ -2953,12 +2924,11 @@ def _compose_run_delivery(
         if incident_acked:
             deliver_content = ""
         elif agent_declared:
-            # The agent already diagnosed the failure in prose; the summarizer's substring
-            # heuristics would re-diagnose it ("timed out" -> blame the model service, "401" ->
-            # "sign in again") and attach the wrong remediation. Deliver the evidence as-is.
-            from cron.scheduler_failure_copy import generic_failure_notice
-            deliver_content = generic_failure_notice(
-                job.get("name") or job["id"], job["id"], err.strip().rstrip("."),
+            # Preserve the intentional diagnosis; ordinary outbound redaction still applies.
+            from hermes_constants import profile_cli_selector
+            deliver_content = (
+                f"⚠️ Cron '{job.get('name') or job['id']}' failed\n{err.strip()}\n"
+                f"Details: `hermes {profile_cli_selector()}cron runs {job['id']}`."
             ) + _failure_streak_nudge(job)
         else:
             from cron.quota_hold import hold_notice
@@ -3210,6 +3180,8 @@ def _deliver_crash_failure(
     """Failure notice for a run that raised out of run_job. Returns (delivery_error, outcome)."""
     normalized_deliver = _normalize_deliver_value(_delivery_lane_value(job, for_failure=True))
     # Same ack gate as the normal failure delivery: acked signatures stay silent here too.
+    from cron.scheduler_failure_copy import _failure_streak_nudge
+
     incident_acked, failure_incident_id = _upsert_incident_for_failure(job, err_text)
     if incident_acked:
         return None, "suppressed_acked"

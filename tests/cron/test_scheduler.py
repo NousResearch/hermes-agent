@@ -45,7 +45,7 @@ class TestSummarizeCronFailureForDelivery:
         )
 
         assert "rate-limited" not in summary
-        assert "hash429abc.md" in summary
+        assert summary.splitlines()[1] == "Execution failed."
 
     def test_http_429_is_still_classified_as_a_rate_limit(self):
         summary = _summarize_cron_failure_for_delivery(
@@ -2620,18 +2620,18 @@ class TestFailureStreakNudge:
         }
 
     def test_silent_below_threshold(self):
-        from cron.scheduler import _failure_streak_nudge
+        from cron.scheduler_failure_copy import _failure_streak_nudge
         with patch("cron.scheduler.load_config", return_value={}):
             assert _failure_streak_nudge(self._job(0)) == ""
             assert _failure_streak_nudge(self._job(1)) == ""
 
     def test_oneshot_never_nudges(self):
-        from cron.scheduler import _failure_streak_nudge
+        from cron.scheduler_failure_copy import _failure_streak_nudge
         with patch("cron.scheduler.load_config", return_value={}):
             assert _failure_streak_nudge(self._job(10, kind="once")) == ""
 
     def test_config_threshold_and_disable(self):
-        from cron.scheduler import _failure_streak_nudge
+        from cron.scheduler_failure_copy import _failure_streak_nudge
         cfg5 = {"cron": {"failure_nudge_threshold": 5}}
         with patch("cron.scheduler.load_config", return_value=cfg5):
             assert _failure_streak_nudge(self._job(3)) == ""
@@ -2640,7 +2640,7 @@ class TestFailureStreakNudge:
             assert _failure_streak_nudge(self._job(50)) == ""
 
     def test_missing_streak_field_backcompat(self):
-        from cron.scheduler import _failure_streak_nudge
+        from cron.scheduler_failure_copy import _failure_streak_nudge
         job = {"id": "old", "schedule": {"kind": "interval"}}  # pre-field job
         with patch("cron.scheduler.load_config", return_value={}):
             assert _failure_streak_nudge(job) == ""

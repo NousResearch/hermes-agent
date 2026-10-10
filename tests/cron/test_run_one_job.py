@@ -26,7 +26,7 @@ def _patch_pipeline(monkeypatch, *, success=True, output="out", final="final res
         return (success, output, fr, error)
 
     def fake_save(jid, out):
-        calls.append(("save", jid))
+        calls.append(("save", jid, out))
         return f"/tmp/{jid}.txt"
 
     def fake_deliver(job, content, adapters=None, loop=None, **kwargs):
@@ -80,20 +80,26 @@ def test_run_one_job_agent_declared_failure_uses_failure_bookkeeping(monkeypatch
     assert calls[-1] == ("mark", "declared-failure", False)
 
 
-def test_run_one_job_agent_declared_failure_is_delivered_verbatim(monkeypatch):
-    """The agent's own evidence reaches the operator as written, not re-diagnosed by the
-    provider-error heuristics (a child that "timed out" is not a model-service timeout)."""
+@pytest.mark.parametrize("evidence", [
+    "The export subagent timed out after 30 minutes waiting on the database.",
+    "HTTP 401: the report service needs its account renewed.",
+])
+def test_run_one_job_agent_declared_failure_preserves_its_diagnosis(monkeypatch, evidence):
+    """An intentional agent diagnosis is not reclassified as a provider failure."""
     delivered = []
-    evidence = "The export subagent timed out after 30 minutes waiting on the database."
-    _patch_pipeline(monkeypatch, final=f"[CRON_FAILURE]\n{evidence}")
+    original = f"[CRON_FAILURE]\n{evidence}"
+    calls = _patch_pipeline(monkeypatch, final=original, output=original)
     monkeypatch.setattr(
         s, "_deliver_result", lambda job, content, **kw: delivered.append(content))
 
     s.run_one_job({"id": "verbatim", "name": "nightly export", "deliver": "telegram"})
 
     assert len(delivered) == 1
-    assert evidence.rstrip(".") in delivered[0]
-    assert "model service" not in delivered[0]
+    assert evidence in delivered[0]
+    assert "hermes cron runs verbatim" in delivered[0]
+    assert ("save", "verbatim", original) in calls
+    assert calls[-1] == ("mark", "verbatim", False)
+    assert "model service" not in delivered[0] and "auth add" not in delivered[0]
 
 
 def test_run_one_job_marker_mentioned_in_report_stays_successful(monkeypatch):
@@ -246,8 +252,10 @@ def test_escaped_failure_delivery_carries_the_streak_nudge(monkeypatch):
 
     assert ok is False
     assert len(delivered) == 1
-    assert "cannot import name X" in delivered[0]
-    assert "hermes cron pause scout" in delivered[0]
+    assert "cannot import name X" not in delivered[0]
+    assert "Execution failed." in delivered[0]
+    assert "hermes cron runs j5" in delivered[0]
+    assert "hermes cron pause j5" in delivered[0]
 
 
 def test_escaped_failure_delivery_stays_quiet_below_the_threshold(monkeypatch):
@@ -269,7 +277,9 @@ def test_escaped_failure_delivery_stays_quiet_below_the_threshold(monkeypatch):
 
     assert ok is False
     assert len(delivered) == 1
-    assert "provider failed" in delivered[0]
+    assert "provider failed" not in delivered[0]
+    assert "Execution failed." in delivered[0]
+    assert "hermes cron runs j6" in delivered[0]
     assert "hermes cron pause scout" not in delivered[0]
 
 

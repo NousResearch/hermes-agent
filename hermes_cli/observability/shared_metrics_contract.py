@@ -253,7 +253,7 @@ LIMIT_HIT_VALUES = frozenset({"no", "yes"})
 # ---- end v4 model ----
 
 # ---- v4 loop ----
-MEMORY_OPS = frozenset({"add", "other", "read", "remove", "replace", "search"})
+MEMORY_OPS = frozenset({"add", "other", "patch", "read", "remove", "replace", "search"})
 MEMORY_OP_OUTCOMES = frozenset({"failed", "rejected", "success"})
 # Who asked: the user's turn, or the unattended self-improvement review fork.
 MEMORY_OP_ORIGINS = frozenset({"background_review", "foreground"})

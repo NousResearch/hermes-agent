@@ -198,6 +198,9 @@ class MemoryProvider(ABC):
         under the native-store lock. Notifications follow a successful complete write
         or batch; each batch operation sees the preceding operation's result. Older
         callers may omit this field: ``old_text`` alone is not authoritative identity.
+        The tool's ``patch`` action arrives as ``replace`` with
+        ``metadata["source_action"] == "patch"`` and the regex in ``metadata["pattern"]``;
+        ``content`` is then the full rewritten entry, not just the replaced span.
         """
 
     def backup_paths(self) -> list[str]:

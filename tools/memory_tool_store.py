@@ -3,6 +3,7 @@ Entries are joined by ``ENTRY_DELIMITER``; budgets are in chars (model-independe
 Module state that tests monkeypatch (``get_memory_dir``, ``fcntl``/``msvcrt``) stays
 in ``tools.memory_tool`` and is read lazily."""
 
+import difflib
 import logging
 import os
 import re
@@ -99,6 +100,30 @@ def _find_unique_match(entries: list[str], old_text: str) -> tuple[Optional[int]
     if len({entries[i] for i in matches}) > 1:
         return None, True
     return (matches[0] if matches else None), False
+
+
+def _fuzzy_candidates(pattern: str, entries: list[str], k: int = 3) -> list[dict[str, Any]]:
+    """Up to *k* entries most similar to a de-regexed *pattern*, for no-match ``patch`` feedback."""
+    probe = re.sub(r"[.^$*+?{}\[\]\\|()]", " ", pattern).strip().lower() or pattern.lower()
+    scored = [
+        {
+            "snippet": entry[:120] + ("..." if len(entry) > 120 else ""),
+            "confidence": round(difflib.SequenceMatcher(None, probe, entry.lower()).ratio(), 3),
+        }
+        for entry in entries
+    ]
+    scored.sort(key=lambda c: c["confidence"], reverse=True)
+    return scored[:k]
+
+
+def _compile_patch_regex(pattern: str) -> "re.Pattern[str] | dict[str, Any]":
+    """Compiled IGNORECASE|DOTALL pattern, or the error dict a ``patch`` returns."""
+    if not isinstance(pattern, str) or not pattern.strip():
+        return _error("pattern cannot be empty.", "invalid_args")
+    try:
+        return re.compile(pattern, re.IGNORECASE | re.DOTALL)
+    except re.error as e:
+        return _error(f"Invalid regex pattern: {e}", "invalid_args")
 
 
 def _no_match_error(entries: list[str], old_text: str, verb: str, **extra) -> dict[str, Any]:
@@ -374,6 +399,83 @@ class MemoryStore:
             return _error("old_text cannot be empty.", "missing_old_text")
         return self._edit(target, old_text.strip(), None, matched_entry)
 
+    def patch(self, target: str, pattern: str, new_content: str,
+              matched_entry: Optional[str] = None) -> dict[str, Any]:
+        """Regex-replace the first matching span inside one entry.
+
+        Unlike ``replace`` (exact ``old_text`` substring, whole-entry swap), ``patch``
+        compiles *pattern* as IGNORECASE|DOTALL and substitutes only the matched span,
+        so whitespace or wording drift does not miss. The replacement is literal (a
+        function repl, so ``\\1`` in *new_content* is not a backreference). On no match
+        it returns the closest existing entries. Single-op only. A staged write's
+        *matched_entry* is the full entry that was reviewed; replay rewrites only that
+        entry and refuses if it has changed.
+        """
+        new_content = (new_content or "").strip()
+        if not new_content:
+            return _error("new_content cannot be empty. Use 'remove' to delete entries.", "missing_content")
+        if scan_error := _scan_memory_content(new_content):
+            return _error(scan_error, "scan_blocked")
+        regex = _compile_patch_regex(pattern)
+        if isinstance(regex, dict):
+            return regex
+
+        def _apply(entries, limit):
+            if matched_entry is not None:
+                idx = _pinned_index(entries, matched_entry)
+                if idx is None:
+                    return _error(_stale_entry_message(matched_entry), "stale_entry")
+                if regex.search(entries[idx]) is None:
+                    return _error(
+                        f"Pattern '{pattern}' no longer matches the reviewed entry.", "no_match")
+            else:
+                matches = [(i, e) for i, e in enumerate(entries) if regex.search(e)]
+                if not matches:
+                    return self._consolidation_failure(_error(
+                        f"No entry matched pattern '{pattern}'.", "no_match",
+                        candidates=_fuzzy_candidates(pattern, entries)))
+                if len({e for _, e in matches}) > 1:
+                    previews = [e[:80] + ("..." if len(e) > 80 else "") for _, e in matches]
+                    return _error(
+                        f"Pattern '{pattern}' matched multiple entries. Tighten the pattern.",
+                        "ambiguous", matches=previews)
+                idx = matches[0][0]
+            # Literal replacement: a lambda stops re.sub from expanding \1 etc.
+            new_entry = regex.sub(lambda _m: new_content, entries[idx], count=1)
+            replaced = entries[:idx] + [new_entry] + entries[idx + 1:]
+            new_total = len(ENTRY_DELIMITER.join(replaced))
+            if new_total > limit:
+                return self._failure_with_entries(target, (
+                    f"Patch {_over_limit(new_total, limit)}. Shorten the new content, or 'remove' "
+                    f"other stale or less important entries to make room (see current_entries below), "
+                    f"then retry — all in this turn."))
+            return replaced, "Entry patched.", {
+                "patched_entry": new_entry, "replaced_entry": entries[idx]}
+
+        return self._mutate(target, _apply)
+
+    def resolve_patch_entry(self, target: str, pattern: str) -> dict[str, Any]:
+        """``{"success": True, "matched_entry": <full entry>}`` for the entry *pattern*
+        selects now, read under the lock, or the error a direct ``patch`` would return."""
+        regex = _compile_patch_regex(pattern)
+        if isinstance(regex, dict):
+            return regex
+
+        def _resolve(entries, limit):
+            matches = [(i, e) for i, e in enumerate(entries) if regex.search(e)]
+            if not matches:
+                return self._consolidation_failure(_error(
+                    f"No entry matched pattern '{pattern}'.", "no_match",
+                    candidates=_fuzzy_candidates(pattern, entries)))
+            if len({e for _, e in matches}) > 1:
+                previews = [e[:80] + ("..." if len(e) > 80 else "") for _, e in matches]
+                return _error(
+                    f"Pattern '{pattern}' matched multiple entries. Tighten the pattern.",
+                    "ambiguous", matches=previews)
+            return {"success": True, "matched_entry": matches[0][1]}
+
+        return self._mutate(target, _resolve, skip_drift=True)
+
     def _locate(self, entries: list[str], old_text: str, verb: str, matched_entry: Optional[str] = None):
         """Index of the entry *old_text* selects, or the error dict the edit returns. A write
         staged for approval carries the FULL entry it was reviewed against (*matched_entry*):
@@ -434,6 +536,9 @@ class MemoryStore:
                 working.append(content)
             return None, None, "none"
         if act not in ("replace", "remove"):
+            if act == "patch":
+                return (f"{pos}: unknown action 'patch' inside a batch. patch is single-op only.",
+                        None, "invalid_args")
             return f"{pos}: unknown action. Use add, replace, or remove.", None, "invalid_args"
         if not old_text:
             return f"{pos}: old_text is required.", None, "missing_old_text"

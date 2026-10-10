@@ -20,6 +20,7 @@ import pytest
 
 from tools import delegation_live_log as dll
 from tools.delegation_live_log import (
+    _STREAM_BUFFER_FLUSH_CHARS,
     LiveTranscriptWriter,
     create_live_transcripts,
     live_transcript_root,
@@ -457,6 +458,26 @@ def test_redaction_covers_every_helper_via_the_event_chokepoint():
     w.finalize({"status": "error", "error": f"f {_ENV_KEY}"})
     body = w.path.read_text(encoding="utf-8")
     assert _ENV_KEY not in body, "a write path escaped the redactor"
+
+
+def test_a_secret_cut_by_the_line_budget_is_still_redacted():
+    """A PEM whose END line falls past the result budget: redacting the cut
+    text no longer matches, so the key body reached disk."""
+    body = "\n".join(["QUFBQUZBS0VGQUtFRkFLRUZBS0VGQUtFRkFLRUZBS0VGQUtFRkFLRUZBS0VGQUtFRkFL"] * 7)
+    pem = f"-----BEGIN OPENSSH PRIVATE KEY-----\n{body}\n-----END OPENSSH PRIVATE KEY-----\n"
+    w = LiveTranscriptWriter("deleg_redact_cut", 0, "g")
+    w.observe("tool.completed", "terminal", None, None,
+              result=json.dumps({"output": pem, "exit_code": 0}), duration=0.1)
+    assert "QUFBQUZBS0VGQUtF" not in w.path.read_text(encoding="utf-8")
+
+
+def test_a_streamed_secret_straddling_the_flush_cap_is_redacted():
+    w = LiveTranscriptWriter("deleg_redact_split", 0, "g")
+    w.add_stream_delta("word " * (_STREAM_BUFFER_FLUSH_CHARS // 5 - 4) + "the key is ")
+    for i in range(0, len(_ENV_KEY), 3):
+        w.add_stream_delta(_ENV_KEY[i:i + 3])
+    w.flush_stream()
+    assert _ENV_KEY[10:] not in w.path.read_text(encoding="utf-8")
 
 
 def test_benign_transcript_content_is_untouched():

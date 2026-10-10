@@ -118,6 +118,11 @@ class CLIInitMixin:
         self._explicit_model_override = bool(model)
         self.model = model or _config_model or ""
         _cfg_provider = _model_config.get("provider") or os.getenv("HERMES_INFERENCE_PROVIDER")
+        # The pin is config-side only: a stale HERMES_INFERENCE_PROVIDER is ambient and must
+        # not turn into an "explicit pin" — resolve_requested_provider puts config before that
+        # env var for exactly the same reason.
+        _config_pin = (_model_config.get("provider")
+                       if isinstance(_model_config.get("provider"), str) else "")
         _startup_provider_override = _startup_base_url_override = _startup_api_key_override = ""
         if self.model:
             from hermes_cli.model_switch import resolve_startup_model_route
@@ -126,6 +131,9 @@ class CLIInitMixin:
                 self.model,
                 explicit_provider=provider or "",
                 current_provider=(provider or _nested_provider or _cfg_provider or ""),
+                # Only a config-sourced model carries its provider as a pin; an explicit -m
+                # keeps the prefix as a deliberate provider switch. See #125578.
+                pinned_provider=("" if model else str(_nested_provider or _config_pin or "")),
                 user_providers=CLI_CONFIG.get("providers"),
                 custom_providers=CLI_CONFIG.get("custom_providers"),
             )

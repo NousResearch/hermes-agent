@@ -74,8 +74,37 @@ _HELPFUL_DELTA, _UNHELPFUL_DELTA = 0.05, -0.10
 
 # Entity extraction patterns, applied in order: capitalized multi-word phrases ("John Doe"), double-quoted terms,
 # single-quoted terms, then "X aka Y" (both sides).
-_RE_SINGLE_ENTITY = (re.compile(r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b'), re.compile(r'"([^"]+)"'), re.compile(r"'([^']+)'"))
+# Entity extraction patterns, applied in order: capitalized multi-word phrases (with optional
+# hyphens and digits), single capitalized words, ALL-CAPS identifiers, CamelCase identifiers,
+# then double-quoted, single-quoted terms.
+_RE_SINGLE_ENTITY = (
+    # Title Case with optional hyphens: Hermes-Titan, Khadas-VIM4, Xylophone-42
+    re.compile(r'\b([A-ZА-ЯЁ][a-zа-яё]+(?:[-\s][A-ZА-ЯЁ0-9][a-zA-Zа-яёА-ЯЁ0-9]*)+)\b'),
+    # Single word, Latin/Cyrillic: Aider, Khadas, Хермес
+    re.compile(r'\b([A-ZА-ЯЁ][a-zа-яё]{2,})\b'),
+    # ALL CAPS (min 3 chars): API, LLM, VIM4, NVIDIA
+    re.compile(r'\b([A-ZА-ЯЁ][A-ZА-ЯЁ0-9]{2,})\b'),
+    # CamelCase: camelCaseIdentifiers, FreeLLMAPI
+    re.compile(r'\b([a-z][a-zA-Z0-9]*[A-Z][a-zA-Z0-9]*)\b'),
+    re.compile(r'\b([A-Z][a-zA-Z0-9]*[A-Z][a-zA-Z0-9]*)\b'),
+    re.compile(r'"([^"]+)"'),
+    re.compile(r"'([^']+)'"),
+)
 _RE_AKA = re.compile(r'(\w+(?:\s+\w+)*)\s+(?:aka|also known as)\s+(\w+(?:\s+\w+)*)', re.IGNORECASE)
+
+
+# Common words that look like entities but aren't. Lowercase comparison.
+_STOP_WORDS = {
+    # Latin
+    "the", "and", "for", "with", "from", "that", "this", "what", "which", "when",
+    "where", "while", "after", "before", "during", "about", "into", "over", "under",
+    "google", "search", "true", "false", "yes", "no", "ok", "okay",
+    # Cyrillic
+    "имя", "язык", "это", "что", "как", "для", "при", "без", "под", "над",
+    "тест", "тестовый", "проверка", "факт", "факты", "данные", "файл", "файлы",
+    "инструмент", "технология", "поиск", "модель", "модели", "система", "проект",
+    "доступ", "удалённый", "локальный", "бесплатный", "бесплатные",
+}
 _ENTITY_NAMES_SQL = "SELECT e.name FROM entities e JOIN fact_entities fe ON fe.entity_id = e.entity_id WHERE fe.fact_id = ?"
 # Entity lookup order: exact name, then aliases (comma-separated; wrapped in commas for whole-alias matching).
 _ENTITY_LOOKUPS = ("SELECT entity_id FROM entities WHERE name LIKE ?",
@@ -214,14 +243,26 @@ class MemoryStore:
             return {"fact_id": fact_id, "old_trust": old_trust, "new_trust": new_trust, "helpful_count": row["helpful_count"] + increment}
 
     def _extract_entities(self, text: str) -> list[str]:
-        """Regex entity candidates (see the pattern table), deduplicated case-insensitively in first-seen order."""
+        """Regex entity candidates (see the pattern table), deduplicated case-insensitively in first-seen order.
+        Filters stop words and drops candidates that are substrings of longer ones."""
         raw = [m.group(1) for pattern in _RE_SINGLE_ENTITY for m in pattern.finditer(text)]
         for m in _RE_AKA.finditer(text):
             raw += [m.group(1), m.group(2)]
         uniq: dict[str, str] = {}  # lower-cased key -> first-seen spelling, insertion-ordered
         for name in filter(None, (n.strip() for n in raw)):
-            uniq.setdefault(name.lower(), name)
-        return list(uniq.values())
+            key = name.lower()
+            if key in _STOP_WORDS:
+                continue
+            uniq.setdefault(key, name)
+        # Drop candidates fully contained in longer ones (case-insensitive).
+        names = list(uniq.values())
+        lower = [n.lower() for n in names]
+        result = []
+        for i, name in enumerate(names):
+            if any(i != j and lower[i] in lower[j] for j in range(len(names))):
+                continue
+            result.append(name)
+        return result
 
     def _link_entities(self, fact_id: int, content: str) -> None:
         """Extract entities from content, resolve/create them, and link each to the fact."""

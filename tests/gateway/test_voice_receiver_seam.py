@@ -208,6 +208,8 @@ def _rtp_packet(ssrc, seq=42, payload=b"\xaa" * 40, flags=0x80):
 
 def _patched_receiver(decrypted_payload, **kwargs):
     receiver = _make_receiver()
+    if "dave_session" in kwargs:
+        receiver._vc._connection.dave_session = kwargs["dave_session"]
     receiver.start()
     _FakeAead._plaintext = decrypted_payload
     fake_decoder = MagicMock()
@@ -225,10 +227,6 @@ def _patched_receiver(decrypted_payload, **kwargs):
         ),
         patch.object(voice_receiver, "discord", fake_discord),
     ]
-    if "dave_session" in kwargs:
-        patches.append(
-            patch.object(receiver, "_dave_session", kwargs["dave_session"])
-        )
     for p in patches:
         p.start()
     receiver._patches = patches

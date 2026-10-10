@@ -159,6 +159,18 @@ hermes chat --resume 20250305_091523_a1b2c3d4
 
 Session IDs are shown when you exit a CLI session, and can be found with `hermes sessions list`.
 
+### Resume With a Message
+
+Text after the session ID or title runs as the first message in that session, so you can pick a conversation back up and ask something in one command:
+
+```bash
+hermes -r 20250305_091523_a1b2c3d4 what changed since yesterday?
+hermes -c my project add tests for the parser
+hermes -r latest summarize where we left off
+```
+
+The message works like `-q`: on a terminal it seeds the interactive session, and with `-Q` or piped stdio Hermes answers and exits. Hermes treats the longest leading run of words that names an existing session as the target, so an unquoted multi-word title (`hermes -c Pokemon Agent Dev`) still resumes with no message. If no leading words name a session, you get the usual "Session not found" error.
+
 :::note
 `latest` is a reserved keyword for `--resume`. A session literally titled "latest" is still reachable by its ID or via `-c latest` (title match).
 :::

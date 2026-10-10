@@ -1543,6 +1543,7 @@ def _resolve_chat_session_args(args, use_tui: bool) -> None:
     --no-restore-cwd, skipped under --worktree).
     """
     _apply_in_dir(args)
+    apply_resume_message(args)  # `hermes -r <id> what changed?` -> query "what changed?"
 
     # --resume latest: same resolution as bare `-c`. The keyword wins over a
     # session literally titled "latest" (still reachable by ID or `-c latest`).
@@ -2479,45 +2480,7 @@ def cmd_update(args):
 
 
 
-def _coalesce_session_name_args(argv: list) -> list:
-    """Join unquoted multi-word session names after -c/--continue and -r/--resume.
-
-    ``hermes -c Pokemon Agent Dev`` → ``['-c', 'Pokemon Agent Dev']``; tokens
-    are collected until the next flag (``-*``) or known top-level subcommand.
-    """
-    _SUBCOMMANDS = {
-        "chat", "model", "gateway", "setup", "whatsapp", "whatsapp-cloud", "login", "logout",
-        "auth", "status", "cron", "doctor", "config", "pairing", "skills", "tools", "mcp",
-        "sessions", "insights", "update", "uninstall", "profile", "dashboard", "serve",
-        "desktop", "gui", "honcho", "claw", "plugins", "security", "acp", "webhook", "peer",
-        "memory", "dump", "debug", "backup", "import", "completion", "logs", "usage",
-    }
-    _SESSION_FLAGS = {"-c", "--continue", "-r", "--resume"}
-
-    result = []
-    i = 0
-    while i < len(argv):
-        token = argv[i]
-        if token in _SESSION_FLAGS:
-            result.append(token)
-            i += 1
-            # Collect subsequent non-flag, non-subcommand tokens as one name
-            parts: list = []
-            while (
-                i < len(argv)
-                and not argv[i].startswith("-")
-                and argv[i] not in _SUBCOMMANDS
-            ):
-                parts.append(argv[i])
-                i += 1
-            if parts:
-                result.append(" ".join(parts))
-        else:
-            result.append(token)
-            i += 1
-    return result
-
-
+from hermes_cli.main_resume_message import _coalesce_session_name_args, apply_resume_message
 from hermes_cli.profile_cmd import cmd_profile
 
 
@@ -3246,6 +3209,7 @@ def _try_termux_fast_cli_launch() -> bool:
     _promote_top_level_resume(args)
     if args.command in {None, "chat"}:
         _set_chat_arg_defaults(args)
+        apply_resume_message(args)  # before the prompt-vs-turn startup choice below
         interactive_prompt = not getattr(args, "query", None) and not getattr(args, "image", None)
         if interactive_prompt:
             # Reach the prompt first; agent-only discovery on the first turn.

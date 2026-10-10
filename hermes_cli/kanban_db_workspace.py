@@ -7,6 +7,8 @@ late-bound via ``_kb`` (import-cycle breaking) so monkeypatching
 
 from __future__ import annotations
 
+import json
+import logging
 import os
 import shutil
 import sqlite3
@@ -19,9 +21,13 @@ from typing import TYPE_CHECKING
 import contextlib
 
 from hermes_cli.worktree_ops import release_lsp_clients
+from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_constants import find_node_executable, with_hermes_node_path
 
 if TYPE_CHECKING:
     from hermes_cli.kanban_db import Task
+
+logger = logging.getLogger(__name__)
 
 _REMOVABLE_KINDS = ("scratch", "worktree")
 
@@ -686,11 +692,50 @@ def _repo_root_for_worktree_target(path: Path) -> Optional[Path]:
         current = current.parent
 
 
+def _provision_npm_workspace_dependencies(worktree: Path) -> None:
+    """Run ``npm ci`` once in a linked worktree whose root is an npm-workspaces project.
+
+    A linked worktree holds tracked files only. Without its own ``node_modules``, Node resolution
+    walks up into the main checkout's tree, whose workspace links point at the MAIN checkout's
+    packages, so the worker builds and tests code that is not on its branch. Best effort: a
+    failure is logged, any partial install is removed so the next dispatch retries, and the task
+    still dispatches.
+    """
+    node_modules = worktree / "node_modules"
+    package_lock = worktree / "package-lock.json"
+    if node_modules.exists() or not package_lock.is_file():
+        return
+    try:
+        package = json.loads((worktree / "package.json").read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return
+    if not isinstance(package, dict) or not package.get("workspaces"):
+        return
+    npm = find_node_executable("npm")
+    if npm is None:
+        logger.warning("Hermes-managed npm is not installed; %s starts without node_modules", worktree)
+        return
+    try:
+        result = subprocess.run(
+            [npm, "ci", "--no-audit", "--no-fund", "--maxsockets", "3"],
+            cwd=worktree, env=with_hermes_node_path(), stdin=subprocess.DEVNULL,
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=300, check=False, creationflags=windows_hide_flags(),
+        )
+        detail = "" if result.returncode == 0 else (result.stderr or result.stdout or "").strip()[-2000:]
+    except (OSError, subprocess.SubprocessError) as exc:
+        detail = str(exc)
+    if detail:
+        logger.warning("npm ci failed in %s; worker starts without node_modules: %s", worktree, detail)
+        shutil.rmtree(node_modules, ignore_errors=True)
+
+
 def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> None:
     """Materialize ``target`` as a linked git worktree under ``repo_root``."""
     target = target.expanduser()
     repo_common = _git_common_dir(repo_root)
     if target.exists() and repo_common is not None and _path_key(_git_common_dir(target)) == _path_key(repo_common):
+        _provision_npm_workspace_dependencies(target)
         return
     target.parent.mkdir(parents=True, exist_ok=True)
     if _git_branch_exists(repo_root, branch_name):
@@ -703,6 +748,7 @@ def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> Non
         raise RuntimeError(
             f"git worktree add failed for {target} on branch {branch_name}: {stderr}"
         )
+    _provision_npm_workspace_dependencies(target)
 
 
 def _anchored_worktree(repo_root: Path, task_id: str, branch_name: str) -> tuple[Path, str]:
@@ -754,6 +800,7 @@ def _resolve_worktree_workspace(task: Task, *, board: Optional[str] = None) -> t
     if requested.exists() and _is_linked_worktree_checkout(requested):
         actual_branch = _git_current_branch(requested)
         if actual_branch == branch_name:
+            _provision_npm_workspace_dependencies(requested_resolved)
             return requested_resolved, actual_branch
         # The requested path is an existing checkout of a DIFFERENT task's
         # branch (decompose children inherit the root's workspace_path

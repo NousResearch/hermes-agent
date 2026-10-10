@@ -606,7 +606,11 @@ def revoke(command: str) -> int:
         return before - len(data["approvals"])
 
 
-_SCRIPT_EXTENSIONS: tuple[str, ...] = (".sh", ".bash", ".zsh", ".fish", ".py", ".pyw", ".rb", ".pl", ".lua", ".js", ".mjs", ".cjs", ".ts")
+_SCRIPT_EXTENSIONS: tuple[str, ...] = (".sh", ".bash", ".zsh", ".fish", ".py", ".pyw", ".rb", ".pl", ".lua", ".js", ".mjs", ".cjs", ".ts",
+                                      # Windows script hosts: resolved by extension, not by being the
+                                      # first backslash token, so a path-valued argument before
+                                      # ``-File`` cannot become the monitored script.
+                                      ".ps1", ".psm1", ".bat", ".cmd")
 
 
 def _command_script_path(command: str) -> str:
@@ -616,7 +620,7 @@ def _command_script_path(command: str) -> str:
     except ValueError:
         return command
     return (next((p for p in parts if p.lower().endswith(_SCRIPT_EXTENSIONS)), None)
-            or next((p for p in parts if "/" in p or p.startswith("~")), None) or parts[0])
+            or next((p for p in parts if "/" in p or os.sep in p or p.startswith("~")), None) or parts[0])
 
 
 def _resolve_effective_accept(cfg: dict[str, Any], accept_hooks_arg: bool) -> bool:

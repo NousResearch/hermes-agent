@@ -21,7 +21,7 @@ def _agent(api_key):
     noop = lambda *a, **kw: None
     return SimpleNamespace(
         provider="nous", api_key=api_key, base_url=WELCOME, model=MODEL, log_prefix="",
-        _rate_limit_state=None, _has_pending_fallback=lambda: False, _dump_api_request_debug=noop,
+        _is_anthropic_oauth=False, _rate_limit_state=None, _has_pending_fallback=lambda: False, _dump_api_request_debug=noop,
         _flush_status_buffer=noop, _summarize_api_error=lambda e: str(e), _emit_status=noop,
         _persist_session=noop, _plines=noop, _vprint=noop, _buffer_status=noop, _buffer_vprint=noop,
         _emit_diagnostic_status=noop, _buffer_diagnostic_status=noop, _try_activate_fallback=lambda: False)

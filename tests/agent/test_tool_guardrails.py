@@ -376,3 +376,32 @@ def test_supervised_task_platforms_keep_warning_only_default():
     for platform in ("telegram", "discord", "cron", "kanban"):
         cfg = ToolCallGuardrailConfig.from_mapping({}, platform=platform)
         assert cfg.hard_stop_enabled is True, platform
+
+
+def test_successful_progress_restarts_idempotent_read_counter():
+    for progress_tool, progress_args, progress_result in (
+        ("terminal", {"command": "inspect-next-target"}, '{"output":"next target","exit_code":0}'),
+        ("patch", {"path": "x.py"}, '{"success":true,"diff":"changed"}'),
+    ):
+        c = _HARD()
+        args = {"name": "incident-response"}
+        result = '{"success":true,"status":"unchanged"}'
+        for _ in range(8):
+            assert c.before_call("skill_view", args).allows_execution
+            c.after_call("skill_view", args, result, failed=False)
+            c.after_call(progress_tool, progress_args, progress_result, failed=False)
+        assert c.halt_decision is None
+        for _ in range(5):
+            assert c.before_call("skill_view", args).allows_execution
+            c.after_call("skill_view", args, result, failed=False)
+        assert c.before_call("skill_view", args).code == "idempotent_no_progress_block"
+
+
+def test_failed_progress_call_does_not_restart_idempotent_read_counter():
+    c = _HARD()
+    args = {"name": "incident-response"}
+    for i in range(5):
+        assert c.before_call("skill_view", args).allows_execution
+        c.after_call("skill_view", args, '{"success":true,"status":"unchanged"}', failed=False)
+        c.after_call("terminal", {"command": f"failed-{i}"}, _RED, failed=True)
+    assert c.before_call("skill_view", args).code == "idempotent_no_progress_block"

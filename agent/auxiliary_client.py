@@ -33,6 +33,22 @@ from agent.error_classifier import (
 )
 from agent.auxiliary_reasoning_floor import remember_reasoning_floor, with_reasoning_floor
 from agent.auxiliary_structured_output import remember_structured_output_rejection
+# Relay logical-call bookkeeping lives in agent/auxiliary_relay.py; the names are bound
+# here because production call sites and tests (monkeypatch seams) read them off this module.
+from agent.auxiliary_relay import (
+    _RELAY_AUX_CALL_CONTEXT,
+    _complete_relay_auxiliary_call,
+    _note_relay_auxiliary_error,
+    _record_route_info,
+    _relay_async_completion,
+    _relay_aux_call_scope,
+    _relay_auxiliary_call,
+    _relay_auxiliary_call_async,
+    _relay_auxiliary_metadata,
+    _relay_sync_completion,
+    _relay_sync_stream,
+    _set_relay_auxiliary_route,
+)
 from agent.codex_headers import (
     CODEX_AUX_BASE_URL as _CODEX_AUX_BASE_URL,
     apply_required_codex_headers as _apply_required_codex_headers,
@@ -2538,183 +2554,6 @@ _RUNTIME_MAIN_CONTEXT: contextvars.ContextVar[Optional[dict[str, Any]]] = (
     contextvars.ContextVar("auxiliary_runtime_main", default=None)
 )
 
-_RELAY_AUX_CALL_CONTEXT: contextvars.ContextVar[Optional[dict[str, Any]]] = (
-    contextvars.ContextVar("auxiliary_relay_call", default=None)
-)
-
-
-@contextlib.contextmanager
-def _relay_aux_call_scope(args: tuple, kwargs: dict):
-    """Bind a fresh relay call context for one auxiliary call; mark it failed on any exception."""
-    task = args[0] if args else kwargs.get("task")
-    token = _RELAY_AUX_CALL_CONTEXT.set({
-        "task": str(task or "unknown"),
-        "request_id": f"aux-{uuid.uuid4().hex}",
-        "attempt_count": 0,
-        "provider": "",
-        "model": "",
-        "response_model": None,
-        "api_mode": "chat_completions",
-    })
-    try:
-        yield
-    except BaseException as exc:
-        _fail_relay_auxiliary_call(exc)
-        raise
-    finally:
-        _RELAY_AUX_CALL_CONTEXT.reset(token)
-
-
-def _relay_auxiliary_call(callback):
-    """Give every physical retry in one auxiliary call a shared Relay identity."""
-    @functools.wraps(callback)
-    def wrapped(*args, **kwargs):
-        with _relay_aux_call_scope(args, kwargs):
-            return callback(*args, **kwargs)
-    return wrapped
-
-
-def _relay_auxiliary_call_async(callback):
-    """Async counterpart to :func:`_relay_auxiliary_call`."""
-    @functools.wraps(callback)
-    async def wrapped(*args, **kwargs):
-        with _relay_aux_call_scope(args, kwargs):
-            return await callback(*args, **kwargs)
-    return wrapped
-
-
-def _set_relay_auxiliary_route(provider: str | None, model: str | None, api_mode: str | None) -> None:
-    context = _RELAY_AUX_CALL_CONTEXT.get()
-    if context is None:
-        return
-    context["provider"] = str(provider or "auxiliary")
-    context["model"] = str(model or "unknown")
-    context["response_model"] = None
-    context["api_mode"] = str(api_mode or "chat_completions")
-
-
-def _record_route_info(
-    route_info: Optional[dict[str, str]], provider: Optional[str], model: Optional[str]
-) -> None:
-    """Expose the concrete route selected for one auxiliary call."""
-    if route_info is not None:
-        route_info["provider"] = provider or "auto"
-        route_info["model"] = model or "default"
-
-
-def _relay_auxiliary_metadata(
-    *, provider: str | None = None, api_mode: str | None = None
-) -> tuple[str, str, dict[str, Any]] | None:
-    context = _RELAY_AUX_CALL_CONTEXT.get()
-    if context is None:
-        return None
-    attempt_count = int(context.get("attempt_count") or 0)
-    context["attempt_count"] = attempt_count + 1
-    provider_name = str(provider or context.get("provider") or "auxiliary")
-    model_name = str(context.get("model") or "unknown")
-    return provider_name, model_name, {
-        "api_mode": str(api_mode or context.get("api_mode") or "chat_completions"),
-        "api_request_id": str(context["request_id"]),
-        "call_role": f"auxiliary:{context['task']}",
-        "retry_count": attempt_count,
-        "auxiliary_task": str(context["task"]),
-    }
-
-
-def _relay_sync_completion(
-    client: Any, kwargs: dict[str, Any], *, provider: str | None = None,
-    api_mode: str | None = None, create: Callable[[dict[str, Any]], Any] | None = None,
-) -> Any:
-    from agent.auxiliary_wire import prepare_chat_messages
-
-    kwargs = prepare_chat_messages(client, kwargs)
-    # The progress hook is installed per TASK, so every attempt (retries, recovery rungs, fallbacks)
-    # must stream through _create_with_progress or the compression watchdog sees silence (#98466).
-    # Recovery rungs / credential retries keep the task's ``no_progress_timeout`` window; the
-    # first-token window uses this attempt's provider (fallbacks name theirs) for its stale timeout.
-    relay_context = _RELAY_AUX_CALL_CONTEXT.get() or {}
-    task = relay_context.get("task")
-    relay_context["stream_provider"] = provider or relay_context.get("provider")
-    callback = create or (lambda request: _create_with_progress(client, request, task))
-    route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
-    # Isolate only the provider callback so the owning thread can unwind its lease/DB
-    # transaction on hard cancel without touching the shared client.
-    if route is None:
-        return _run_protected_sync_provider_call(callback, kwargs)
-    provider_name, fallback_model, metadata = route
-    from agent import relay_llm
-    from agent.auxiliary_hooks import run_with_aux_hooks
-    model_name = str(kwargs.get("model") or fallback_model)
-    try:
-        return run_with_aux_hooks(
-            lambda: relay_llm.execute_current(
-                kwargs, lambda request: _run_protected_sync_provider_call(callback, request),
-                name=provider_name, model_name=model_name, metadata=metadata,
-                defer_logical_completion=True,
-            ),
-            aux_task=str(metadata.get("auxiliary_task") or ""), metadata=metadata, client=client, kwargs=kwargs,
-            provider=provider_name, model=model_name, api_mode=str(metadata.get("api_mode") or ""),
-        )
-    except Exception as exc:
-        _note_relay_auxiliary_error(exc)
-        raise
-
-
-async def _relay_async_completion(
-    client: Any, kwargs: dict[str, Any], *, provider: str | None = None,
-    api_mode: str | None = None, create: Callable[[dict[str, Any]], Any] | None = None,
-) -> Any:
-    from agent.auxiliary_wire import prepare_chat_messages
-
-    kwargs = prepare_chat_messages(client, kwargs)
-    # Async twin of the seam default above (#98466).
-    callback = create or (lambda request: _acreate_with_progress(client, request))
-    route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
-    if route is None:
-        return await callback(kwargs)
-    provider_name, fallback_model, metadata = route
-    from agent import relay_llm
-    from agent.auxiliary_hooks import arun_with_aux_hooks
-    model_name = str(kwargs.get("model") or fallback_model)
-    try:
-        return await arun_with_aux_hooks(
-            lambda: relay_llm.execute_current_async(
-                kwargs, callback, name=provider_name, model_name=model_name,
-                metadata=metadata, defer_logical_completion=True,
-            ),
-            aux_task=str(metadata.get("auxiliary_task") or ""), metadata=metadata, client=client, kwargs=kwargs,
-            provider=provider_name, model=model_name, api_mode=str(metadata.get("api_mode") or ""),
-        )
-    except Exception as exc:
-        _note_relay_auxiliary_error(exc)
-        raise
-
-
-def _relay_sync_stream(
-    client: Any, kwargs: dict[str, Any], *, provider: str | None = None, api_mode: str | None = None
-) -> Any:
-    from agent.auxiliary_wire import prepare_chat_messages
-
-    kwargs = prepare_chat_messages(client, kwargs)
-    # The bypass runs inside the provider callback, AFTER Relay has seen (and possibly
-    # rewritten) the real conversation; applying it to `kwargs` would hand Relay an empty one.
-    create = lambda request: client.chat.completions.create(**bypass_chat_sdk_request_transform(request, client))
-    route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
-    if route is None:
-        return create(kwargs)
-    provider_name, fallback_model, metadata = route
-    from agent import relay_llm
-    from agent.auxiliary_hooks import run_with_aux_hooks
-    model_name = str(kwargs.get("model") or fallback_model)
-    return run_with_aux_hooks(
-        lambda: relay_llm.stream_current(
-            kwargs, create, name=provider_name, model_name=model_name, finalizer=dict,
-            metadata=metadata, completed_response_predicate=lambda value: hasattr(value, "choices"),
-        ),
-        aux_task=str(metadata.get("auxiliary_task") or ""), metadata=metadata, client=client, kwargs=kwargs,
-        provider=provider_name, model=model_name, api_mode=str(metadata.get("api_mode") or ""), streaming=True,
-    )
-
 
 _RUNTIME_MAIN_COMPAT_SNAPSHOT: tuple[Any, ...] = ("", "", "", "", "", "")
 _RUNTIME_MAIN_COMPAT_LOCK = threading.Lock()
@@ -4126,12 +3965,19 @@ def _call_fallback_candidate_sync(
     fb_client: Any, fb_model: Optional[str], fb_label: str, *, task: Optional[str], messages: list,
     temperature: Optional[float], max_tokens: Optional[int], tools: Optional[list],
     effective_timeout: float, effective_extra_body: dict, reasoning_config: Optional[dict],
+    terminal_auth_exc: Optional[list] = None,
 ) -> Optional[Any]:
     """Call one fallback candidate with stale-credential recovery: on an auth error refresh its
     credentials and retry once with a rebuilt client; if that also auth-fails, quarantine the
     provider and return None so the caller moves on. A capacity error (quota/rate-limit 429, 402,
     connection, route-incompatible model, malformed response) also quarantines and returns None so
     the ordered chain advances to the next configured entry (#106367); other errors raise.
+
+    When ``terminal_auth_exc`` is a list and the candidate is quarantined,
+    the terminal auth exception of THIS physical attempt is appended to it,
+    so a caller whose fallback chain exhausts can propagate the error that
+    belongs to the last physical wire attempt instead of the primary's
+    earlier ``first_err`` (#72636).
 
     ``effective_timeout`` is the task-level deadline; a configured-chain candidate with its own ``timeout``
     entry gets that instead, so a fallback tuned differently from the primary is allowed its own budget
@@ -4170,7 +4016,10 @@ def _call_fallback_candidate_sync(
             _quarantine_fallback_candidate(
                 task, fb_label, destination.provider, fb_err, base_url=destination.base_url,
                 reason=capacity)
+            if terminal_auth_exc is not None:
+                terminal_auth_exc.append(fb_err)
             return None
+        terminal_exc = fb_err
         fb_provider, retry = _plan_fallback_auth_retry(
             destination, rebuild, async_mode=False, failed_api_key=getattr(fb_client, "api_key", ""))
         failed_destination = destination
@@ -4179,11 +4028,14 @@ def _call_fallback_candidate_sync(
             try:
                 return _send_recovering(*retry)
             except Exception as retry_err:
+                terminal_exc = retry_err
                 if not _is_auth_error(retry_err) and fallback_candidate_unavailable_reason(retry_err) is None:
                     raise
         _quarantine_fallback_candidate(
             task, fb_label, fb_provider, fb_err, base_url=failed_destination.base_url,
         )
+        if terminal_auth_exc is not None:
+            terminal_auth_exc.append(terminal_exc)
         return None
 
 
@@ -6865,44 +6717,6 @@ def _validate_llm_response(
     return response
 
 
-def _complete_relay_auxiliary_call(*, outcome: str = "success", error_class: Optional[str] = None) -> None:
-    """Close one auxiliary logical call after acceptance or terminal failure. A success
-    reports the last attempt error it recovered from (``none`` when the first attempt held)."""
-    context = _RELAY_AUX_CALL_CONTEXT.get()
-    if context is None:
-        return
-    from agent import relay_llm
-    relay_llm.complete_logical_call(
-        str(context.get("request_id") or ""), outcome=outcome,
-        model_name=str(context.get("model") or "unknown"),
-        provider_name=str(context.get("provider") or "auxiliary"),
-        response_model_name=context.get("response_model"),
-        error_class=error_class or context.get("error_class") or "none",
-    )
-
-
-def _note_relay_auxiliary_error(exc: BaseException) -> None:
-    """Remember one failed attempt's classified reason on the logical call."""
-    context = _RELAY_AUX_CALL_CONTEXT.get()
-    if context is not None and isinstance(exc, Exception):
-        from agent import auxiliary_call_outcome
-        context["error_class"] = auxiliary_call_outcome.error_class(
-            exc, provider=str(context.get("provider") or ""), model=str(context.get("model") or ""))
-
-
-def _fail_relay_auxiliary_call(exc: BaseException) -> None:
-    """Close a call that ended in ``exc`` without replacing it: a Hermes abort is ``cancelled``,
-    anything else ``failed`` with the classifier's reason for the error that ended it."""
-    try:
-        from agent import auxiliary_call_outcome
-        if auxiliary_call_outcome.is_cancellation(exc):
-            _complete_relay_auxiliary_call(outcome="cancelled", error_class="none")
-            return
-        _note_relay_auxiliary_error(exc)
-        _complete_relay_auxiliary_call(outcome="failed")
-    except Exception:
-        logger.warning("Relay auxiliary failure finalization failed", exc_info=True)
-
 
 def _unwrap_data_envelope(response: Any, task: str | None = None) -> Any:
     """Unwrap gateway envelopes like {"data": {<chat completion>}, "success": true}.
@@ -7494,6 +7308,7 @@ def _prepare_aux_request(
     timeout: Optional[float], extra_body: Optional[dict], reasoning_config: Optional[dict],
     extra_headers: Optional[dict[str, str]], api_mode: Optional[str],
     route_info: Optional[dict[str, str]], async_mode: bool,
+    route_callback: Optional[Callable[[str, Optional[str], str], None]] = None,
 ) -> _PreparedAuxRequest:
     """Shared head of call_llm/async_call_llm: resolve route + client, publish it, build request kwargs.
     Sync-only: compression fast lane, per-request ``extra_headers``, and ``base_info`` falling
@@ -7526,7 +7341,10 @@ def _prepare_aux_request(
             leak_guard_config=compression_config, max_tokens=max_tokens,
             extra_body=effective_extra_body,
         )
-    _set_relay_auxiliary_route(request_provider, final_model, resolved_api_mode)
+    _set_relay_auxiliary_route(
+        request_provider, final_model, resolved_api_mode,
+        route_callback=route_callback, route_info=route_info, main_runtime=main_runtime,
+    )
     _record_route_info(route_info, _fallback_provider_from_label(request_provider), final_model)
     if async_mode:
         base_info = str(getattr(client, "base_url", "") or "")
@@ -8048,6 +7866,7 @@ def call_llm(
     extra_headers: Optional[dict[str, str]] = None, api_mode: str | None = None, stream: bool = False,
     stream_options: dict | None = None, route_info: Optional[dict[str, str]] = None,
     latency_info: Optional[dict[str, int]] = None,
+    route_callback: Optional[Callable[[str, Optional[str], str], None]] = None,
 ) -> Any:
     """Run an auxiliary LLM request, applying the configured task limit."""
     queue_started_at = time.monotonic()
@@ -8077,6 +7896,7 @@ def call_llm(
                 max_tokens=max_tokens, tools=tools, timeout=timeout, extra_body=extra_body,
                 reasoning_config=reasoning_config, extra_headers=extra_headers, api_mode=api_mode,
                 stream=stream, stream_options=stream_options, route_info=route_info,
+                route_callback=route_callback,
             )
         if stream and semaphore is not None:
             stream_semaphore = semaphore
@@ -8110,6 +7930,7 @@ def _plan_aux_call(
     timeout: Optional[float], extra_body: Optional[dict], reasoning_config: Optional[dict],
     extra_headers: Optional[dict[str, str]], api_mode: Optional[str],
     route_info: Optional[dict[str, str]],
+    route_callback: Optional[Callable[[str, Optional[str], str], None]] = None,
 ) -> tuple[_PreparedAuxRequest, dict[str, Any], dict[str, Any]]:
     """Shared head of both call impls: prepare the request and bundle the kwargs the recovery
     drivers pass to ``_retry_same_provider_*`` / ``_call_fallback_candidate_*``. One immutable
@@ -8122,6 +7943,7 @@ def _plan_aux_call(
         max_tokens=max_tokens, tools=tools, timeout=timeout, extra_body=extra_body,
         reasoning_config=reasoning_config, extra_headers=extra_headers,
         api_mode=api_mode, route_info=route_info, async_mode=async_mode,
+        route_callback=route_callback,
     )
     candidate_kwargs = dict(
         task=task, messages=messages, temperature=temperature, max_tokens=max_tokens,
@@ -8182,18 +8004,23 @@ def _call_llm_impl(
     timeout: float | None = None, extra_body: dict | None = None, reasoning_config: Optional[dict] = None,
     extra_headers: Optional[dict[str, str]] = None, api_mode: str | None = None, stream: bool = False,
     stream_options: dict | None = None, route_info: Optional[dict[str, str]] = None,
+    route_callback: Optional[Callable[[str, Optional[str], str], None]] = None,
 ) -> Any:
     """Centralized synchronous LLM call: resolve provider/model, auth, kwargs, fallbacks.
     task: aux task whose provider:model comes from config (ignored if provider set); api_mode
     overrides task config; timeout=None reads auxiliary.{task}.timeout; extra_headers override
     client defaults. stream=True returns the raw SDK stream (caller consumes/falls back)
-    instead of a validated response. RuntimeError if no provider is configured."""
+    instead of a validated response. RuntimeError if no provider is configured.
+    route_callback: optional observer invoked immediately before every physical sync
+    wire attempt with the concrete provider, request model, and query-stripped client
+    endpoint. Later retries and fallbacks replace the caller's previous route snapshot."""
     req, retry_kwargs, candidate_kwargs = _plan_aux_call(
         task, async_mode=False, provider=provider, model=model, base_url=base_url,
         api_key=api_key, main_runtime=main_runtime, messages=messages,
         temperature=temperature, max_tokens=max_tokens, tools=tools, timeout=timeout,
         extra_body=extra_body, reasoning_config=reasoning_config,
         extra_headers=extra_headers, api_mode=api_mode, route_info=route_info,
+        route_callback=route_callback,
     )
     client, kwargs, request_provider = req.client, req.kwargs, req.request_provider
     # Streaming path (MoA aggregator): return the raw SDK stream, skipping validation and
@@ -8256,16 +8083,52 @@ def _call_llm_impl(
                     _last_transient = retry_transient
             raise _last_transient
     except Exception as first_err:
+        # Terminal auth exception of the most recent quarantined fallback
+        # candidate, if any. When the fallback chain exhausts, the route
+        # snapshot on the caller's side already identifies the LAST physical
+        # fallback attempt; the error propagated must belong to that same
+        # attempt or downstream diagnostics pair one attempt's identity with
+        # a different attempt's failure class (#72636).
+        _swallowed_auth: list = []
+        # Exceptions raised (not swallowed) by a fallback candidate itself. Their
+        # propagation is not a chain exhaustion: the ladder re-raises them as-is,
+        # and they must never be replaced by an earlier candidate's swallowed
+        # terminal error (#72636).
+        _candidate_raise: list = []
+
         def _perform(step: _LadderStep) -> Any:
             kind, args, kw = _ladder_step_call(step, req, retry_kwargs, candidate_kwargs)
             if kind == "call":
                 return _validate_llm_response(_relay_sync_completion(*args, **kw), task)
             if kind == "retry":
                 return _retry_same_provider_sync(**kw)
-            return _call_fallback_candidate_sync(*args, **kw)
-        return _drive_ladder(
-            _start_recovery_ladder(first_err, req, retry_kwargs, task=task, async_mode=False, route_info=route_info),
-            _perform)
+            try:
+                return _call_fallback_candidate_sync(*args, terminal_auth_exc=_swallowed_auth, **kw)
+            except Exception as candidate_err:
+                _candidate_raise.append(candidate_err)
+                raise
+        try:
+            return _drive_ladder(
+                _start_recovery_ladder(first_err, req, retry_kwargs, task=task, async_mode=False, route_info=route_info),
+                _perform)
+        except Exception:
+            if not _candidate_raise and _swallowed_auth and (
+                    task == "compression" or route_callback is not None):
+                # The last physical wire attempt was a fallback candidate whose
+                # credential was dead. The route snapshot already identifies that
+                # fallback, so propagate ITS terminal auth error (chained to the
+                # primary origin for context) instead of re-raising the primary's
+                # earlier error — otherwise the compression diagnostic pairs the
+                # fallback's endpoint with the primary's failure class (#72636).
+                #
+                # Scoped to the attribution path only (compression, or any caller
+                # that registered a route_callback): every other auxiliary task —
+                # vision, web_extract, title generation, ... — keeps the
+                # pre-existing exception contract, where a swallowed fallback 401
+                # leaves the PRIMARY error (e.g. a 429 that upper layers key
+                # backoff decisions on) as the one callers observe.
+                raise _swallowed_auth[-1] from first_err
+            raise
 
 
 def _coerce_llm_message(response):

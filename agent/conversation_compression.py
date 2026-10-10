@@ -36,6 +36,7 @@ from agent.conversation_compression_telemetry import (
     _emit_aborted_attempt_telemetry, _emit_blocked_attempt_telemetry, _emit_bypassed_attempt_telemetry,
     _emit_compression_attempt_telemetry, _record_committed_attempt_effect, _snapshot_compression_effect_input,
 )
+from agent.conversation_compression_diagnostics import _emit_compaction_done, _emit_compression_auth_hint
 from agent.memory_provider import PRE_COMPRESS_CHECKPOINT_API_VERSION
 from agent.model_metadata import estimate_messages_tokens_rough, estimate_request_tokens_rough
 from agent.session_activity import ActivityProvenance, normalize_activity_provenance
@@ -86,15 +87,6 @@ def _strip_marker_for_comparison(msgs: Any) -> Any:
     if not isinstance(msgs, list):
         return msgs
     return [{k: v for k, v in m.items() if k != _DB_PERSISTED_MARKER} if isinstance(m, dict) else m for m in msgs]
-
-
-def _emit_compaction_done(agent: Any) -> None:
-    """Emit the structured terminal edge for a started compaction."""
-    status_callback = getattr(agent, "status_callback", None)
-    if not status_callback:
-        return
-    with _swallow('status_callback error in compaction completion', exc_info=True):
-        status_callback("compacted", COMPACTION_DONE_STATUS)
 
 
 # Every ROUTINE compression status line lives here: suppressed on chat platforms
@@ -3543,6 +3535,9 @@ def _candidate_rejected(
                 "No messages were dropped — conversation continues unchanged. "
                 "Run /compress to retry, or /new to start a fresh session."
             )
+        # Point at the failing *compression* endpoint, not the main model's identity;
+        # silent when no useful attribution applies (#72636).
+        _emit_compression_auth_hint(agent)
         _emit_aborted_attempt_telemetry(
             agent, attempt.started_at, _summary_error and "summary_generation_aborted", attempt.seed
         )

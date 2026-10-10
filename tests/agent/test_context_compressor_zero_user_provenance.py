@@ -13,8 +13,8 @@ from agent.context_compressor import (
     MAX_ITERATIONS_SUMMARY_REQUEST,
     SUMMARY_PREFIX,
     ContextCompressor,
-    _NO_USER_TASK_SENTINEL,
 )
+from agent.context_compressor_prompts import _NO_USER_TASK_SENTINEL
 from agent.conversation_compression import (
     compress_context,
 )

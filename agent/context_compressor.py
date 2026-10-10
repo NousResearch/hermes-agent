@@ -31,6 +31,8 @@ from agent.auxiliary_client import (
     extract_content_or_reasoning,
 )
 from agent.context_engine import ContextEngine, sanitize_memory_context
+from agent.context_compressor_attribution import AuxRouteAttributionMixin
+from agent.context_compressor_prompts import _NO_USER_TASK_SENTINEL, _SECTION_INSTRUCTIONS
 from agent.context_compressor_prellm import PreLlmSkipMixin
 from agent.context_compressor_summary import SummaryDispatchMixin
 from agent.context_compressor_telemetry import CompressionTelemetryMixin
@@ -322,7 +324,6 @@ _DB_PERSISTED_MARKER = "_db_persisted"
 _COMPACTION_TAIL_MARKER = "_compaction_tail"
 PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY = "_proactive_prune_rearm_tokens"
 
-_NO_USER_TASK_SENTINEL = "None. This session contains no user-authored turns."
 COMPRESSION_CONTINUATION_USER_CONTENT = (
     "Continue from the compressed conversation context above. "
     "This marker exists because no human user turn was available."
@@ -2099,75 +2100,10 @@ def _today_for_prompt() -> str:
         return ""
 
 
-# Per-section summarizer instructions, keyed by "the transcript has a real user turn". Wording
-# is deliberately plain: Azure/OpenAI content filters have flagged stronger "injection" /
-# "do not respond" framing. Prompt text is byte-pinned — restructure code around it only.
-_SECTION_INSTRUCTIONS: dict[bool, dict[str, str]] = {
-    True: {
-        "language": (
-            "Write the summary in the same language the user was using in the "
-            "conversation — do not translate or switch to English. "
-        ),
-        "historical_task": """[THE SINGLE MOST IMPORTANT FIELD. Identify the user's most recent unfulfilled
-input precisely, but summarize it in your own words rather than copying long
-passages from the transcript. The compressor inserts a bounded, redacted
-snapshot of the real latest user turn after generation, so the model must not
-reproduce it.
-This includes:
-- Explicit task assignments ("<specific user task>")
-- Questions awaiting an answer ("<specific user question>")
-- Decisions awaiting input ("<option A or B?>")
-- Ongoing discussions where the assistant owes the next substantive reply
-A conversation where the user just asked a question IS an active task — the
-task is "answer that question with full context". Do NOT write "None" merely
-because the user did not issue an imperative command; reserve "None" for the
-rare case where the last exchange was fully resolved and the user said
-something like "thanks, that's all".
-If multiple items are outstanding, list only the ones NOT yet completed.
-This historical snapshot must identify the latest unresolved user input precisely. Examples:
-"User asked for <specific task and constraints>"
-"User asked <specific question> — needs investigation + answer"
-"User chose <option>; awaiting implementation of <specific next step>"
-If the user's most recent message was a reverse signal (stop, undo, roll
-back, never mind, just verify, change of topic) that supersedes earlier
-work, describe the reverse signal accurately and DO NOT carry forward the
-cancelled task.
-Example: "User asked to stop the prior task — earlier work is cancelled."
-If no outstanding task exists, write "None."]""",
-        "goal": "[What the user is trying to accomplish overall]",
-        "constraints": (
-            "[User preferences, coding style, constraints, important decisions. Any security or safety constraint "
-            "the user stated (files/data to avoid, operations that must not be performed, credential-handling rules) "
-            "MUST be quoted VERBATIM here so it continues to apply after compaction — never paraphrase those.]"
-        ),
-        "resolved_questions": (
-            "[Questions the user asked that were ALREADY answered — include the answer so it is not repeated]"
-        ),
-    },
-    False: {
-        "language": (
-            "This session contains no user-authored turns. Write the summary in the dominant language of the "
-            "source turns; if they are mixed, use the language of the most recent natural-language assistant "
-            "turn. Do not translate, invent a user, or attribute any request to a user. "
-        ),
-        "historical_task": f"""[NO user-authored turn exists in this session. Write exactly:
-{_NO_USER_TASK_SENTINEL}
-Do not write "User asked:" or any translated equivalent anywhere in the summary.
-Describe agent/tool work only as completed actions, state, or historical work.]""",
-        "goal": (
-            "[Historical cron/agent objective inferred only from assistant and "
-            "tool activity. Never call it a user goal.]"
-        ),
-        "constraints": (
-            "[Runtime, configuration, and technical constraints only. Do not invent user preferences.]"
-        ),
-        "resolved_questions": "[Write exactly: None. No user-authored questions exist.]",
-    },
-}
-
 
 class ContextCompressor(
-    SummaryDispatchMixin, PreLlmSkipMixin, CompressionTelemetryMixin, MicroCompactionMixin, ContextEngine,
+    SummaryDispatchMixin, PreLlmSkipMixin, CompressionTelemetryMixin, MicroCompactionMixin,
+    AuxRouteAttributionMixin, ContextEngine,
 ):
     """Default context engine: prune tool results, protect head/tail, summarize the middle
     with an LLM, and iteratively update the previous summary on later compactions."""
@@ -2305,6 +2241,9 @@ class ContextCompressor(
         # may differ from ``summary_model``/``model``). Recorded so a failed auto-resolved model is
         # named in the user-visible warning and falls back to the main model (#116472).
         self._last_aux_resolved_model = None
+        # Aux wire/config identity + per-attempt failure class for the abort
+        # diagnostic (#72636) — see AuxRouteAttributionMixin.
+        self._init_aux_route_attribution()
         self._consecutive_timeout_failures = self._consecutive_truncation_failures = 0
         # Sustained-overload escalation bookkeeping (#123167): per-session, reset by success.
         self._consecutive_overload_aborts = 0
@@ -3925,6 +3864,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         }
         # Pinned route (stall fallback) replaces task routing so the retry leaves the stalled backend.
         self._apply_summary_route(call_kwargs, _pinned_summary_call_kwargs())
+        self._prepare_aux_route_attribution(call_kwargs)
         # Compression is atomic: protect the in-flight summary call from a mid-turn gateway interrupt.
         # Without this, an incoming user message aborts the summary and compression falls back to a degraded
         # static marker, losing the real handoff (#23975). Re-entrant: a main-model retry (_generate_summary
@@ -3941,7 +3881,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         try:
             # Compression is atomic: shield the summary call from gateway interrupts. Re-entrant.
             with aux_interrupt_protection():
-                response = call_llm(**call_kwargs)
+                response = call_llm(route_callback=self._record_aux_route, **call_kwargs)
         finally:
             route_known = bool(_aux_route.get("provider") and _aux_route.get("model"))
             _aux_model = _aux_route.get("model") or self.summary_model or self.model or ""
@@ -3962,7 +3902,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             raise AuxiliaryExplicitCancellation()
         # Reasoning-field fallback (DeepSeek/Qwen/Kimi put the summary in reasoning_content); capped.
         content = extract_content_or_reasoning(response, max_reasoning_chars=8000)
-        where = f"(provider={self.provider or 'auto'} model={self.summary_model or self.model})"
+        where = self._aux_route_label(_aux_route)
         # Some OpenAI-compatible proxies (e.g. cmkey.cn, one-api channels) return a well-formed HTTP 200
         # with an empty or whitespace-only ``content`` instead of an error or empty ``choices``. That
         # payload passes ``_validate_llm_response`` (a ``message`` exists), so it reaches here and would
@@ -4229,12 +4169,13 @@ Write only the summary body. Do not include any preamble or prefix."""
         # session. A distinct summary_model still gets the one-shot main-model fallback.
         if access_error:
             # Field name kept for caller compatibility; now covers the whole access/quota class.
-            self._last_summary_auth_failure = True
+            self._record_summary_access_failure(e)
         if kind.json_decode and not kind.model_not_found and not kind.timeout:
+            _ident_provider, _ident_model, _ident_base_url = self._summary_failure_identity()
             logger.error(
                 "Context compression failed: auxiliary LLM returned a non-JSON response. provider=%s "
                 "summary_model=%s main_model=%s base_url=%s err=%s",
-                self.provider or "auto", self.summary_model or "(main)", self.model, self.base_url or "default", e,
+                _ident_provider, _ident_model, self.model, _ident_base_url, e,
             )
         # A distinct summary model gets ONE main-model retry: a specific reason for known transient classes,
         # else a best-effort "failed" retry — losing N turns is worse than one extra summary attempt.
@@ -4270,10 +4211,13 @@ Write only the summary body. Do not include any preamble or prefix."""
             # destroying the middle window for a placeholder marker — retrying once the provider recovers is
             # strictly better than dropping context (#29559, #25585, #94448).
             self._last_summary_network_failure = True
+            self._last_attempt_failure_class = "network"
         elif kind.truncated:
             self._last_summary_truncated_failure = True
+            self._classify_attempt_failure("other")
         elif kind.empty_content:
             self._last_summary_empty_content_failure = True
+            self._classify_attempt_failure("other")
         elif kind.overloaded and not access_error:
             # A 403/402 that also says "overloaded" is an auth/quota abort (#29559), not an
             # overload strike: counting it would let the next real 503 skip its grace (#115906).
@@ -4287,6 +4231,9 @@ Write only the summary body. Do not include any preamble or prefix."""
                 # The latest failure class decides: a stale network/empty/truncated/auth flag from
                 # an earlier failure (only a success clears those) must not keep aborting forever.
                 self._clear_terminal_summary_failures()
+            self._classify_attempt_failure("other")
+        elif self._last_attempt_failure_class is None:
+            self._classify_attempt_failure("other")
         logger.warning(
             "Failed to generate context summary: %s. Further summary attempts paused for %d seconds.", e,
             _transient_cooldown,

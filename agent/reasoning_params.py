@@ -161,9 +161,9 @@ class ReasoningParamsMixin:
         per turn — and recomputed after ``switch_model()`` / fallback activation or a recorded
         field rejection, the only events allowed to change the replayed bytes mid-session.
         """
-        from agent.message_sanitization import reasoning_replay_route, reasoning_route_key
+        from agent.message_sanitization import reasoning_replay_route, rejected_reasoning_carriers
 
-        rejected = frozenset(getattr(self, "_reasoning_rejecting_routes", {}).get(reasoning_route_key(self), ()))
+        rejected = rejected_reasoning_carriers(self)
         key = (getattr(self, "api_mode", None), self.provider, self.model, getattr(self, "_base_url_lower", self.base_url),
                self._reasoning_echo_opt_in(), rejected)
         cached = getattr(self, "_reasoning_route_cache", None)

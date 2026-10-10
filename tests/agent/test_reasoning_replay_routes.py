@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from agent.message_sanitization import (
-    apply_reasoning_content_policy, reapply_reasoning_echo, reasoning_replay_route,
+    apply_reasoning_content_policy, reapply_reasoning_echo, reasoning_replay_route, rejected_reasoning_carriers,
 )
 from agent.transports.chat_completions import ChatCompletionsTransport
 
@@ -74,11 +74,11 @@ class _Rejection(Exception):
         self.body = body
 
 
-def _agent(model):
+def _agent(model, db=None):
     return SimpleNamespace(
         provider="nous", model=model, base_url="https://inference-api.nousresearch.com/v1",
         api_mode="chat_completions", _force_ascii_payload=False, _image_rejecting_models=set(),
-        _reasoning_rejecting_routes={}, log_prefix="", _vprint=lambda *a, **k: None,
+        log_prefix="", _vprint=lambda *a, **k: None, session_id="s1" if db else None, _session_db=db,
     )
 
 
@@ -91,14 +91,18 @@ def _recover(agent, body, sent):
     )[0]
 
 
-def test_named_field_rejection_strips_once_per_model_and_never_loops():
-    lane = _agent("z-ai/glm-5.3-flash:US")
+def test_named_field_rejection_strips_once_per_model_and_never_loops(tmp_path):
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("s1", source="cli", model="z-ai/glm-5.3-flash:US")
+    lane = _agent("z-ai/glm-5.3-flash:US", db)
     sent = [{"role": "user", "content": "hi"}, deepcopy(_TURN)]
     sent[1].pop("tool_calls")
     body = "Extra inputs are not permitted, field: 'messages[1].reasoning_details'"
     # A generic upstream error (content filter behind "Provider returned error") is not a rejection.
     assert _recover(lane, "Provider returned error", sent) is False
-    assert lane._reasoning_rejecting_routes == {}
+    assert not rejected_reasoning_carriers(lane)
 
     assert _recover(lane, body, sent) is True
     rejected = lane._reasoning_rejecting_routes[("nous", "inference-api.nousresearch.com", "z-ai/glm-5.3-flash:US")]
@@ -110,6 +114,8 @@ def test_named_field_rejection_strips_once_per_model_and_never_loops():
     assert "reasoning" not in sent[1] and "reasoning_details" not in sent[1]
     # Same rejection again: nothing new to strip -> normal error path, no loop.
     assert _recover(lane, body, [{"role": "assistant", "reasoning_details": _DETAILS}]) is False
+    # A resumed process (fresh agent, same session) never re-learns it with another 400.
+    assert rejected_reasoning_carriers(_agent(lane.model, db)) == {"reasoning", "reasoning_details"}
     # A sibling model on the same gateway keeps every carrier.
     sibling = reasoning_replay_route("chat_completions", "nous", "moonshotai/kimi-k3", lane.base_url)
     assert "reasoning_details" in sibling.carriers

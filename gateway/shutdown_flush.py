@@ -21,7 +21,7 @@ import sqlite3
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -87,25 +87,69 @@ def _flush_value(flush_dir: Path, kind: str, session_key: str, value: Any, **ext
         return False
 
 
-def flush_pending_to_file(pending: dict[str, Any], *, reason: str = "shutdown") -> int:
-    """Serialise non-empty ``_pending_messages`` slots (``MessageEvent`` or str); return count."""
+def _recoverable_key(value: Any, slot_key: str,
+                     session_key_for: Optional[Callable[[Any], Any]] = None) -> str:
+    """The key to record for *value*: the store key of its source, else the slot key.
+
+    Slots are keyed by the adapter's own isolation flags (``PlatformConfig.extra``), which may
+    differ from the gateway-wide ones ``SessionStore`` routes by: an operator can override
+    ``group_sessions_per_user`` / ``thread_sessions_per_user`` on one platform. Recovery resolves
+    a key through the store only (routing map, then the durable row under the exact key), so a
+    slot key written verbatim matches neither and the message strands in the spool forever.
+    ``session_key_for`` is the store's key derivation (``SessionStore._generate_session_key``,
+    or ``GatewayRunner._session_key_for_source``); a value without a ``source`` (a raw str slot,
+    an agent-history payload) and any derivation failure keep the slot key unchanged.
+    """
+    source = getattr(value, "source", None)
+    if source is None or not callable(session_key_for):
+        return slot_key
+    try:
+        key = session_key_for(source)
+    except Exception:  # a store/profile lookup can fail any number of ways; the slot key still works
+        logger.debug("Could not resolve the store key for %s; recording the slot key",
+                     slot_key, exc_info=True)
+        return slot_key
+    return key if isinstance(key, str) and key else slot_key
+
+
+def adapter_store_key_for(adapter: Any) -> Optional[Callable[[Any], Any]]:
+    """``session_key_for`` for an adapter's flush: its session store's key derivation, or None.
+
+    ``None`` (no store wired, or an object without the derivation) makes the flushers record each
+    slot key verbatim, which is the pre-#136189 behaviour.
+    """
+    derive = getattr(getattr(adapter, "_session_store", None), "_generate_session_key", None)
+    return derive if callable(derive) else None
+
+
+def flush_pending_to_file(pending: dict[str, Any], *, reason: str = "shutdown",
+                          session_key_for: Optional[Callable[[Any], Any]] = None) -> int:
+    """Serialise non-empty ``_pending_messages`` slots (``MessageEvent`` or str); return count.
+
+    ``session_key_for`` maps a slot's ``source`` to the key the session store routes it by, so
+    the payload replays after a restart even when the adapter that queued it derived a different
+    key (see :func:`_recoverable_key`).
+    """
     if not pending:
         return 0
     flush_dir, ts, flushed = _get_flush_dir(), int(time.time()), 0
     for session_key, value in list(pending.items()):
         if value is not None:
-            flushed += _flush_value(flush_dir, "pending", session_key, value, reason=reason, ts=ts)
+            key = _recoverable_key(value, session_key, session_key_for)
+            flushed += _flush_value(flush_dir, "pending", key, value, reason=reason, ts=ts)
     if flushed:
         logger.info("Flushed %d pending message(s) to %s (reason=%s)", flushed, flush_dir, reason)
     return flushed
 
 
-def flush_overflow_to_file(overflow_by_session: dict[str, Any], *, reason: str = "shutdown") -> int:
+def flush_overflow_to_file(overflow_by_session: dict[str, Any], *, reason: str = "shutdown",
+                           session_key_for: Optional[Callable[[Any], Any]] = None) -> int:
     """Serialise the FIFO overflow tails (``queued_events``) to disk; return events flushed.
 
     The adapter slot holds the queue head and ``SessionState.conversation.queued_events`` the
     tail; both must survive restart. Each event is its own payload in the slot-flush shape so
     ``recover_pending_to_db`` replays them unchanged; ``seq`` preserves arrival order per session.
+    ``session_key_for`` canonicalises each event's key exactly as in :func:`flush_pending_to_file`.
     """
     if not overflow_by_session:
         return 0
@@ -115,7 +159,8 @@ def flush_overflow_to_file(overflow_by_session: dict[str, Any], *, reason: str =
             continue
         for seq, value in enumerate(list(events)):
             if value is not None:
-                flushed += _flush_value(flush_dir, "overflow", session_key, value, reason=reason,
+                key = _recoverable_key(value, session_key, session_key_for)
+                flushed += _flush_value(flush_dir, "overflow", key, value, reason=reason,
                                         ts=ts, seq=seq)
     if flushed:
         logger.info("Flushed %d queued overflow message(s) to %s (reason=%s)", flushed, flush_dir,

@@ -2010,13 +2010,13 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         # Flush pending messages before clearing: under FTS5 corruption they are the only surviving copy.
         with suppress(Exception):
             from gateway.shutdown_flush import flush_pending_to_file
-            flush_pending_to_file(dict(self._pending_messages), reason="shutdown")
+            flush_pending_to_file(dict(self._pending_messages), reason="shutdown", session_key_for=self._session_key_for_source)
         # The overflow FIFO tail lives in SessionState.conversation.queued_events — flush it too.
         with suppress(Exception):
             from gateway.shutdown_flush import flush_overflow_to_file
             flush_overflow_to_file(
                 {_k: list(_v) for _k, _v in dict(getattr(self, "_queued_events", None) or {}).items() if _v},
-                reason="shutdown",
+                reason="shutdown", session_key_for=self._session_key_for_source,
             )
         # Live SessionState views: clear() resets one field per session (never a wholesale dict swap).
         self._running_agents.clear()

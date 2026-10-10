@@ -22,6 +22,7 @@ from agent.turn_empty_response import (
     _reset_turn_scoped_state,
     _retry_empty,
 )
+from gateway.response_filters import MACHINERY_DISPLAY_KINDS as gateway_machinery_kinds
 
 
 def _agent(**overrides):
@@ -79,7 +80,7 @@ def _no_retry_wait(monkeypatch):
 class TestMachineryEmptyRetryBudget:
     def test_internal_notification_turn_skips_paid_retries(self):
         agent = _agent()
-        action, interrupt, deterministic = _retry_empty(
+        action, interrupt, _ = _retry_empty(
             agent, _empty_response(), "stop", True,
             display_kind=MACHINERY_TURN_DISPLAY_KIND,
             messages=[], conversation_history=None, api_call_count=1,
@@ -91,7 +92,7 @@ class TestMachineryEmptyRetryBudget:
 
     def test_human_turn_keeps_full_budget_and_retries(self):
         agent = _agent()
-        action, interrupt, deterministic = _retry_empty(
+        action, _, _ = _retry_empty(
             agent, _empty_response(), "stop", True,
             display_kind=None,
             messages=[], conversation_history=None, api_call_count=1,
@@ -150,6 +151,14 @@ class TestTurnScopedReset:
         )
         _reset_turn_scoped_state(agent, user_msg)
         assert agent._machinery_turn_display_kind == "internal_notification"
+        # Cross-layer drift guard: the agent-side mirror (agent/turn_empty_response.py
+        # MACHINERY_TURN_DISPLAY_KINDS) must stay equal to the set the gateway actually
+        # derives its kinds from (gateway/response_filters.py MACHINERY_DISPLAY_KINDS).
+        # If the gateway ever grows a second machinery kind, this mirror must follow —
+        # otherwise the paid empty-retry cut silently keeps billing the new machinery
+        # turns against the human retry budget.
+        assert gateway_machinery_kinds == MACHINERY_TURN_DISPLAY_KINDS
+        assert "internal_notification" in gateway_machinery_kinds
 
     def test_reset_clears_when_the_row_is_untyped(self):
         agent = _agent()
@@ -163,6 +172,3 @@ class TestTurnScopedReset:
         agent = _agent()
         _reset_turn_scoped_state(agent, "not-a-dict")
         assert agent._machinery_turn_display_kind is None
-
-    def test_machinery_kinds_cover_exactly_the_internal_notification_lane(self):
-        assert MACHINERY_TURN_DISPLAY_KINDS == frozenset({"internal_notification"})

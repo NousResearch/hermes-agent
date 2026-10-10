@@ -6,6 +6,11 @@ export const ruNotices = {
     message: reason =>
       `Включён программный рендеринг — обнаружен удалённый дисплей (${reason}). GPU-ускорение отключено, чтобы избежать мерцания.`
   },
+  previewDraft: {
+    discardTitle: 'Отменить несохранённые изменения?',
+    discardBody: label => `В ${label} есть несохранённые изменения. Если закрыть вкладку, они пропадут.`,
+    discardConfirm: 'Отменить изменения'
+  },
   butterbar: {
     goTo: (index, total) => `Показать уведомление ${index} из ${total}`,
     legal: {
@@ -16,4 +21,4 @@ export const ruNotices = {
       after: '.'
     }
   }
-} satisfies Pick<TranslationOverrides, 'remoteDisplayBanner' | 'butterbar'>
+} satisfies Pick<TranslationOverrides, 'remoteDisplayBanner' | 'previewDraft' | 'butterbar'>

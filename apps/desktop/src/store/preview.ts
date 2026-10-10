@@ -11,6 +11,7 @@ import { normalize } from '@/lib/text'
 
 import { recordFeatureUse } from './desktop-metrics'
 import { $rightRailActiveTabId, type RightRailTabId, selectRightRailTab } from './layout'
+import { hasPreviewDraft, prunePreviewDrafts, queuePreviewDiscard, setPreviewDraft } from './preview-edit'
 import { clearExplicitPreviewOpen, noteExplicitPreviewOpen, PREVIEW_TILE_PREFIX } from './preview-explicit'
 import {
   $pendingRuntimeByTab,
@@ -1079,21 +1080,54 @@ export function prunePreviewTabsForSession(sessionId: string): void {
   }
 
   $previewTabs.set($previewTabs.get().filter(keep))
+  forgetOrphanedDrafts()
+}
+
+/** A draft whose file no tab in any profile still shows has nothing to come
+ *  back to; drop it so reopening that file later starts from disk. */
+function forgetOrphanedDrafts() {
+  const open = [...$previewTabs.get(), ...Object.values(tabsByProfile).flat()]
+
+  prunePreviewDrafts(new Set(open.map(tab => tab.target.url)))
 }
 
 export function closeRightRailTab(tabId: string) {
   closeRightRailTabs(new Set([tabId]))
 }
 
-/** Close `tabIds` in one write, then re-home the selection once. */
-function closeRightRailTabs(tabIds: ReadonlySet<string>) {
+/** Close a tab that holds an unsaved spot-editor draft, throwing the draft
+ *  away — the discard confirmation's answer. */
+export function discardDraftAndCloseTab(tabId: string) {
+  closeRightRailTabs(new Set([tabId]), { discardDrafts: true })
+}
+
+/** Close `tabIds` in one write, then re-home the selection once. A tab with an
+ *  unsaved spot-editor draft never closes silently, whoever asks (the tab ✕,
+ *  ⌘W, Close others/all, an agent's close_preview): it stays open and joins
+ *  the discard confirmation queue. */
+function closeRightRailTabs(requested: ReadonlySet<string>, { discardDrafts = false } = {}) {
   const current = $previewTabs.get()
+
+  const held: string[] = discardDrafts
+    ? []
+    : current.filter(tab => requested.has(tab.id) && hasPreviewDraft(tab.target.url)).map(tab => tab.id)
+
+  queuePreviewDiscard(held)
+  const tabIds = new Set([...requested].filter(id => !held.includes(id)))
 
   if (!current.some(tab => tabIds.has(tab.id))) {
     return
   }
 
   const next = current.filter(tab => !tabIds.has(tab.id))
+  const openUrls = new Set(next.map(tab => tab.target.url))
+
+  for (const tab of current) {
+    if (tabIds.has(tab.id) && !openUrls.has(tab.target.url)) {
+      setPreviewDraft(tab.target.url, null)
+    }
+  }
+
   // The neighbour comes from the focused drawer: a hidden session's tab
   // must not become the selection.
   const activeId = $rightRailActiveTabId.get()

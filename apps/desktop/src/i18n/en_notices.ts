@@ -6,6 +6,11 @@ export const enNotices = {
     message: reason =>
       `Software rendering active — remote display detected (${reason}). GPU acceleration is disabled to prevent flickering.`
   },
+  previewDraft: {
+    discardTitle: 'Discard unsaved changes?',
+    discardBody: label => `${label} has edits you haven't saved. Closing the tab throws them away.`,
+    discardConfirm: 'Discard changes'
+  },
   butterbar: {
     goTo: (index, total) => `Show notice ${index} of ${total}`,
     legal: {
@@ -16,4 +21,4 @@ export const enNotices = {
       after: '.'
     }
   }
-} satisfies Pick<Translations, 'remoteDisplayBanner' | 'butterbar'>
+} satisfies Pick<Translations, 'remoteDisplayBanner' | 'previewDraft' | 'butterbar'>

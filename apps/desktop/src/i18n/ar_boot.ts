@@ -57,6 +57,11 @@ export const arBoot = {
   remoteDisplayBanner: {
     message: reason => `العرض البرمجي نشط — تم اكتشاف شاشة بعيدة (${reason}). تم تعطيل تسريع GPU لمنع الوميض.`
   },
+  previewDraft: {
+    discardTitle: 'تجاهل التغييرات غير المحفوظة؟',
+    discardBody: label => `يحتوي ${label} على تعديلات لم تُحفظ. إغلاق التبويب يتجاهلها.`,
+    discardConfirm: 'تجاهل التغييرات'
+  },
   butterbar: {
     goTo: (index, total) => `عرض الإشعار ${index} من ${total}`,
     legal: {
@@ -333,5 +338,5 @@ export const arBoot = {
   }
 } satisfies Pick<
   TranslationOverrides,
-  'boot' | 'remoteDisplayBanner' | 'butterbar' | 'updates' | 'install' | 'onboarding'
+  'boot' | 'remoteDisplayBanner' | 'previewDraft' | 'butterbar' | 'updates' | 'install' | 'onboarding'
 >

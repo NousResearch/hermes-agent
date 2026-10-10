@@ -21,9 +21,10 @@ import {
   treePanesWithPrefix
 } from '@/components/pane-shell/tree/store'
 import { type MenuKit, renderActionItem } from '@/components/ui/actions-menu'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { FileTypeIcon } from '@/components/ui/file-type-icon'
 import { ToolIcon } from '@/components/ui/tool-icon'
-import { translateNow } from '@/i18n'
+import { translateNow, useI18n } from '@/i18n'
 import { openExternalLink } from '@/lib/external-link'
 import { $rightRailActiveTabId, type RightRailTabId, selectRightRailTab } from '@/store/layout'
 import {
@@ -35,6 +36,7 @@ import {
   adoptPersistedBrowserTab,
   type BrowserPage,
   closeRightRailTab,
+  discardDraftAndCloseTab,
   forgetBrowserPage,
   markBrowserTabPopped,
   newBrowserTab,
@@ -43,6 +45,7 @@ import {
   type PreviewTarget,
   setPreviewTabPinned
 } from '@/store/preview'
+import { $dirtyPreviewUrls, $pendingPreviewDiscards, dequeuePreviewDiscard } from '@/store/preview-edit'
 import { explicitOpenBlocksZone, PREVIEW_TILE_PREFIX } from '@/store/preview-explicit'
 import { canOpenBrowserWindow } from '@/store/windows'
 
@@ -206,7 +209,26 @@ function PreviewTabLead({ tabId }: { tabId: string }) {
     return <ToolIcon className="opacity-70" name="globe" size="0.6875rem" />
   }
 
-  return <FileTypeIcon className="opacity-70" path={target.path || target.url} size="0.6875rem" />
+  return (
+    <span className="relative flex items-center">
+      <FileTypeIcon className="opacity-70" path={target.path || target.url} size="0.6875rem" />
+      <PreviewDraftDot url={target.url} />
+    </span>
+  )
+}
+
+/** The "modified" dot on a file tab whose spot editor holds an unsaved draft. */
+function PreviewDraftDot({ url }: { url: string }) {
+  const dirty = useStore($dirtyPreviewUrls)[url]
+
+  return dirty ? (
+    <span
+      aria-label={translateNow('preview.unsavedChanges')}
+      className="absolute -right-0.5 -top-0.5 size-1.5 rounded-full bg-amber-500 dark:bg-amber-400"
+      data-slot="preview-draft-dot"
+      role="img"
+    />
+  ) : null
 }
 
 const previewPaneId = (tabId: string) => `${PREVIEW_TILE_PREFIX}:${tabId}`
@@ -367,8 +389,46 @@ const watchPreviewTileMirror = paneMirror<{ id: string }>({
   // The body's own Close (an error state's way out) is the tab's ✕, verbatim.
   render: tabId => <PreviewTilePane onClose={() => closeTabPane(previewPaneId(tabId))} tabId={tabId} />,
   close: tabId => {
-    forgetBrowserPage(tabId)
-    forgetPreviewConsole(tabId)
     closeRightRailTab(tabId)
+
+    // A tab holding an unsaved draft stays open until the discard is
+    // confirmed; keep its console until then.
+    if (!targetFor(tabId)) {
+      forgetBrowserPage(tabId)
+      forgetPreviewConsole(tabId)
+    }
   }
 })
+
+/** Mounted once at the shell root: "Discard unsaved changes?" for a preview
+ *  tab whose close was held back because its spot editor has a draft. Cancel
+ *  keeps the tab and the draft; Discard closes the tab and forgets it. */
+export function PreviewDiscardConfirm() {
+  const { t } = useI18n()
+  const pending = useStore($pendingPreviewDiscards)
+  const tabs = useStore($previewTabs)
+  // A queued tab that closed some other way (its session was deleted) is skipped.
+  const tab = pending.map(id => tabs.find(item => item.id === id)).find(Boolean)
+  const tabId = tab?.id ?? null
+  const target = tab?.target ?? null
+
+  return (
+    <ConfirmDialog
+      confirmLabel={t.previewDraft.discardConfirm}
+      description={t.previewDraft.discardBody(target?.label || t.preview.unsavedChanges)}
+      destructive
+      dismissOnConfirm
+      onClose={() => tabId && dequeuePreviewDiscard(tabId)}
+      onConfirm={() => {
+        if (tabId) {
+          dequeuePreviewDiscard(tabId)
+          discardDraftAndCloseTab(tabId)
+          forgetBrowserPage(tabId)
+          forgetPreviewConsole(tabId)
+        }
+      }}
+      open={tabId !== null && target !== null}
+      title={t.previewDraft.discardTitle}
+    />
+  )
+}

@@ -8,6 +8,7 @@ import platform
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -974,8 +975,12 @@ def _kill_process_windows(proc) -> None:
 # address space is never copied. Process-group semantics are preserved: the child is its own
 # session (``setsid``) so ``pid == pgid`` and ``_kill_process_group_posix``'s killpg path
 # still applies. ``cwd`` is deliberately NOT a chdir file action — ``_run_bash`` prefixes
-# ``builtin cd -- <quoted> &&`` instead (see there).
+# ``builtin cd -- <quoted> &&`` instead (see there). The third thing the fast path normally
+# costs us, ``close_fds``, is preserved explicitly by ``_inherited_fd_close_actions`` below.
 _SETSID_KWARG_SUPPORTED: bool | None = None  # memoized: False once a runtime rejects the kwarg
+
+# Directories whose entries are this process's own open descriptors, best first.
+_FD_LISTING_DIRS = ("/dev/fd", "/proc/self/fd")
 
 
 def _posix_spawn_detached(argv: list[str], env: dict, file_actions: list) -> int:
@@ -991,6 +996,103 @@ def _posix_spawn_detached(argv: list[str], env: dict, file_actions: list) -> int
         except TypeError:  # no setsid kwarg on this runtime; parsed before any spawn
             _SETSID_KWARG_SUPPORTED = False
     return os.posix_spawn(argv[0], argv, env, file_actions=file_actions, setpgroup=0)
+
+
+def _open_fds_above_stderr() -> list[int]:
+    """The fd numbers above stderr this process currently holds open, as a listing.
+
+    ``/dev/fd`` (``/proc/self/fd`` on a kernel without the fdescfs mount) is O(open fds) —
+    ~190 in the session server — where probing ``RLIMIT_NOFILE`` would be ~2560 ``fcntl``
+    calls on every single command, i.e. a new per-spawn cost of the kind this change exists
+    to delete. The listing's *own* directory handle is part of what it returns and is
+    already closed again by the time the caller reads the result; the guard in
+    ``_inherited_fd_close_actions`` is what makes that harmless."""
+    for listing in _FD_LISTING_DIRS:
+        try:
+            names = os.listdir(listing)
+        except OSError:
+            continue
+        fds = []
+        for name in names:
+            try:
+                fd = int(name)
+            except ValueError:
+                continue
+            if fd > 2:
+                fds.append(fd)
+        return fds
+    logger.debug("neither %s is listable; child fd inheritance is CLOEXEC-only",
+                 " nor ".join(_FD_LISTING_DIRS))
+    return []
+
+
+def _spawn_has_no_fd(fd: int) -> bool:
+    """True when a close action for *fd* would be pointless, or worse, abort the spawn.
+
+    Three reasons, each measured on this host.
+
+    (1) ``F_GETFD`` fails with ``EBADF`` on a descriptor that closed since the listing —
+    the very failure the spawn dies on, so it is left out.
+
+    (2) ``FD_CLOEXEC``: the ``exec`` at the end of the spawn closes it, so a close action
+    adds nothing to the child and only buys a race window. This is where the churn is: a
+    concurrent renderer's pipes and file handles are PEP-446 non-inheritable, so their fd
+    numbers open and close *between* this check and the kernel applying the actions — with
+    them in the list, 149 of 2781 spawns under four-way load aborted on a target that had
+    vanished in exactly that window, each one a silent fall back to ``fork``.
+
+    (3) ``fstat`` reports a kqueue as ``S_IFIFO`` with no permission bits, where a real pipe
+    carries ``0o600``/``0o660``. macOS never hands a kqueue to a spawned child, so there is
+    nothing to close, yet naming one fails the whole spawn like a stale number — and every
+    asyncio event loop, this host's session server included, holds one.
+    """
+    import fcntl  # POSIX-only module; this helper is only reached on POSIX
+
+    try:
+        if fcntl.fcntl(fd, fcntl.F_GETFD) & fcntl.FD_CLOEXEC:
+            return True  # exec drops it regardless, and naming it can only lose a race
+    except OSError:
+        return True
+    try:
+        mode = os.fstat(fd).st_mode
+    except OSError:
+        return True
+    return stat.S_IFMT(mode) == stat.S_IFIFO and stat.S_IMODE(mode) == 0
+
+
+def _inherited_fd_close_actions(keep: frozenset[int]) -> list[tuple]:
+    """``POSIX_SPAWN_CLOSE`` actions for every descriptor above stderr, minus *keep*.
+
+    This is the ``close_fds=True`` half of the ``subprocess.Popen`` semantics this path
+    replaces: without it a bash child inherits everything this process holds — ~190
+    descriptors in the session server, its database and socket handles among them.
+
+    A bare close per fd is NOT safe here, and that is the whole reason this helper exists.
+    The listing yields fd *numbers*, and a number whose descriptor was closed between the
+    listing and the spawn makes ``posix_spawn`` fail the entire spawn with ``EBADF`` rather
+    than start a child (measured on this interpreter: closing 3..199 unguarded raises
+    ``OSError: [Errno 9] Bad file descriptor``). ``/dev/fd`` guarantees at least one such
+    number per call — its own directory handle — so an unguarded list is broken every time,
+    not occasionally. ``_spawn_has_no_fd`` decides which numbers are worth naming at all:
+    the child reaches ``exec`` with stdio either way — from the actions for descriptors that
+    survive ``exec``, from ``exec`` itself for the non-inheritable ones. What is left to
+    close is the small durable set, this process's long-lived handles, the descriptors
+    ``close_fds`` exists to keep out of a child. A number that still goes stale between that
+    check and the kernel applying the actions degrades to the fork+exec fallback in
+    ``_run_bash`` — a working terminal, never a wedged one.
+
+    The pipe ends are expected in *keep*: ``os.pipe`` yields PEP-446 non-inheritable
+    descriptors, so the exec at the end of the spawn drops them whether or not an action
+    names them, while the two that must survive are dup2'd onto 1 and 2 by actions ordered
+    ahead of these closes."""
+    close_actions = []
+    for fd in _open_fds_above_stderr():
+        if fd in keep:
+            continue
+        if _spawn_has_no_fd(fd):
+            continue
+        close_actions.append((os.POSIX_SPAWN_CLOSE, fd))
+    return close_actions
 
 
 class _PosixSpawnProcess:
@@ -1082,8 +1184,11 @@ def _spawn_bash_posix(argv: list[str], env: dict, stdin_data: str | None = None)
     """Spawn *argv* with ``os.posix_spawn``: stdout is a pipe the caller drains, stderr is folded
     into it (``dup2`` of the same write end, matching ``stderr=STDOUT``), stdin is a pipe when
     *stdin_data* is given and /dev/null otherwise — the same wiring ``Popen(..., stdout=PIPE,
-    stderr=STDOUT, stdin=...)`` produced. The parent's pipe ends are CLOEXEC (``os.pipe`` under
-    PEP 446), so no other descriptor leaks into the child."""
+    stderr=STDOUT, stdin=...)`` produced. ``close_fds=True`` is reproduced too: every descriptor
+    above stderr is closed in the child by ``_inherited_fd_close_actions``, so a bash child
+    inherits nothing of this process's own fds — the parent's pipe ends need no help there,
+    ``os.pipe`` being PEP-446 CLOEXEC and the two ends that must survive having been dup2'd onto
+    1 and 2 by actions ordered ahead of the closes."""
     stdout_r, stdout_w = os.pipe()
     stdin_r = stdin_w = None
     if stdin_data is not None:
@@ -1096,6 +1201,8 @@ def _spawn_bash_posix(argv: list[str], env: dict, stdin_data: str | None = None)
         file_actions.append((os.POSIX_SPAWN_DUP2, stdin_r, 0))
     else:
         file_actions.append((os.POSIX_SPAWN_OPEN, 0, os.devnull, os.O_RDONLY, 0o666))
+    file_actions.extend(_inherited_fd_close_actions(
+        frozenset(fd for fd in (stdout_w, stdin_r, stdin_w) if fd is not None)))
     try:
         pid = _posix_spawn_detached(argv, env, file_actions)
     finally:

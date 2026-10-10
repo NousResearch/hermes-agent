@@ -197,7 +197,10 @@ async def create_voice_live_session(payload: VoiceLiveSessionRequest, profile: O
     if not sdp.strip():
         raise HTTPException(status_code=400, detail="An SDP offer is required")
     try:
-        result = await _run_config_scoped(profile, lambda: create_webrtc_session(sdp, payload.history))
+        result = await _run_config_scoped(
+            profile,
+            lambda: create_webrtc_session(sdp, payload.history, expected_auth=payload.expected_auth),
+        )
     except ValueError as exc:
         raise HTTPException(status_code=503, detail=str(exc))
     except RuntimeError as exc:

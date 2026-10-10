@@ -5,7 +5,8 @@ import { activeGatewayProfileKey, requestGatewayForProfile } from '@/store/gatew
 
 /**
  * `voice.voice_chat_mode` as the backend resolves it, plus whether GPT-Live can
- * actually start (an OpenAI key resolves on the gateway host). The composer
+ * actually start (the explicitly selected API-key or Codex OAuth credential
+ * resolves on the gateway host). The composer
  * mounts the chained or the live conversation engine from this; refreshed with
  * the config snapshot so a Settings change applies to the next conversation.
  */

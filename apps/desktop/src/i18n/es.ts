@@ -1262,7 +1262,7 @@ export const esOverrides = {
         autoTts: 'Leer respuestas en voz alta',
         voiceChatMode: 'Modo de chat de voz',
         gptLive: {
-          voice: 'Voz de GPT-Live',
+          subscriptionVoice: 'Voz de GPT-Live', voice: 'Voz de GPT-Live',
           instructions: 'Personalidad de GPT-Live'
         }
       },
@@ -1441,9 +1441,9 @@ export const esOverrides = {
       voice: {
         autoTts: 'Lee automáticamente en voz alta las respuestas del asistente.',
         voiceChatMode:
-          'chained: voz a texto → Hermes → texto a voz con los proveedores de abajo. gpt-live: un modelo de voz full-duplex de OpenAI (gpt-live-1) escucha y habla, y pasa cada solicitud real a Hermes; el modelo que hayas seleccionado responde con todas las herramientas. Requiere una clave API de OpenAI; la capa de voz cuesta 0,05 US$ por minuto.',
+          'chained: voz a texto → Hermes → texto a voz con los proveedores de abajo. gpt-live: un modelo de voz full-duplex de OpenAI escucha y habla, y delega el trabajo real a Hermes con el modelo seleccionado y todas sus herramientas. La facturación por API y el acceso mediante suscripciones de ChatGPT/Codex que cumplan los requisitos son opciones explícitas y separadas.',
         gptLive: {
-          voice: 'Voz del modo GPT-Live. Se aceptan ID de voz personalizados.',
+          subscriptionVoice: 'Voz utilizada por el modo de suscripción de ChatGPT/Codex.', voice: 'Voz del modo GPT-Live facturado por API. Se aceptan ID de voz personalizados.',
           instructions:
             'Frases adicionales para la personalidad de voz en vivo (tono, ritmo, idioma). Hermes mantiene su propio prompt de sistema.'
         }

@@ -1720,6 +1720,19 @@ stt:
   #     command: "custom-asr --input {input_path} --output {output_path}"
   #     normalize: true  # requires ffmpeg; default false
 
+# Desktop full-duplex voice, with Hermes as the delegation backend.
+# Sign in with `hermes auth` -> OpenAI Codex on this host before choosing subscription.
+# API remains the default. Subscription never falls back to API or chained STT/TTS.
+# voice:
+#   voice_chat_mode: gpt-live   # chained (default) | gpt-live
+#   gpt_live:
+#     auth: subscription       # api (default) | subscription
+#     subscription_model: gpt-live-1-codex
+#     subscription_voice: cove
+#     model: gpt-live-1         # API mode only
+#     voice: marin             # API mode only
+#     instructions: ""         # optional persona additions for either mode
+
 # Text-to-speech. Only the deepinfra block is documented here — the
 # remaining providers (edge, openai, xai, minimax, mistral, gemini,
 # elevenlabs, neutts, kittentts, piper) inherit sensible defaults from

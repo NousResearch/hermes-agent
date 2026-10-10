@@ -359,6 +359,44 @@ class TestCharacterCountGuard(unittest.TestCase):
 # File deduplication
 # ---------------------------------------------------------------------------
 
+class TestFileVersionWindowsCtime(unittest.TestCase):
+    """#128639: on Windows os.fstat reported st_ctime_ns as the change time while
+    os.stat reported the creation time, so a file written right after creation made
+    the version snapshots disagree and _file_version returned None for ~1/3 of
+    freshly written files, flaking read dedup and the write baseline."""
+
+    def test_freshly_written_files_always_get_a_version(self):
+        import sys as _sys
+        from tools.file_tools_read_tracking import _file_version
+
+        if _sys.platform != "win32":
+            self.skipTest("Windows-only fstat/stat ctime divergence")
+        with tempfile.TemporaryDirectory() as d:
+            misses = 0
+            for i in range(100):
+                path = os.path.join(d, "f%d.txt" % i)
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write("x")
+                if _file_version(path) is None:
+                    misses += 1
+            self.assertEqual(misses, 0, "%d/100 freshly written files got no version" % misses)
+
+    def test_concurrent_modification_still_invalidates(self):
+        from tools.file_tools_read_tracking import _file_version
+
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "f.txt")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("hello")
+            v1 = _file_version(path)
+            self.assertIsNotNone(v1)
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(" world")
+            v2 = _file_version(path)
+            self.assertIsNotNone(v2)
+            self.assertNotEqual(v1, v2)
+
+
 class TestFileDedup(unittest.TestCase):
     """Re-reading an unchanged file should return a lightweight stub."""
 

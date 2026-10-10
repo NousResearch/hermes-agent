@@ -424,7 +424,7 @@ def test_forced_update_check_runs_in_the_named_profiles_scope(client, homes, mon
 
     seen = []
 
-    def check(*, force):
+    def check(*, force, passive=False):
         seen.append((get_hermes_home(), force))
         return {"behind": 0, "commits": []}
 

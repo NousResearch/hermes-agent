@@ -73,7 +73,7 @@ export async function readSourceUpdate(probe: SourceUpdateProbe): Promise<Source
     probe.git,
     ...(probe.branch ? ['--branch', probe.branch] : []),
     ...(probe.channel ? ['--channel', probe.channel] : []),
-    ...(probe.force ? ['--force'] : []),
+    ...(probe.force ? ['--force'] : ['--passive']),
     ...(probe.cachePath ? ['--cache-path', probe.cachePath] : []),
     ...(probe.branchConfigPath ? ['--branch-config-path', probe.branchConfigPath] : [])
   ]

@@ -578,7 +578,7 @@ def clear_all(checkpoint_base: Optional[Path] = None) -> dict[str, int]:
     try:
         from tools.checkpoint_pruning import store_lock
 
-        with store_lock(base):
+        with store_lock(base, repair_refs=False):
             _rmtree_force(base)
         out["bytes_freed"] = size
         out["deleted"] = True
@@ -596,7 +596,7 @@ def clear_legacy(checkpoint_base: Optional[Path] = None) -> dict[str, int]:
     from tools.checkpoint_pruning import store_lock
 
     try:
-        with store_lock(base):
+        with store_lock(base, repair_refs=False):
             for child in list(base.iterdir()):
                 if not child.is_dir() or not child.name.startswith(_LEGACY_PREFIX):
                     continue

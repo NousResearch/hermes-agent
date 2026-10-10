@@ -1385,3 +1385,59 @@ class TestSessionDiff:
         assert result["success"] is True
         assert "feature.py" in result["diff"]
         assert "+x = 1" in result["diff"]
+
+
+@pytest.mark.parametrize("damaged", [b"0" * 40 + b"\n", b"f" * 40 + b"\n", b"broken-ref\n"])
+def test_corrupt_loose_ref_recovers_packed_ancestry_without_discarding_original(
+    work_dir, checkpoint_base, mgr, damaged,
+):
+    assert mgr._take(str(work_dir), "original checkpoint")
+    store = _store_path()
+    ref = _ref_name(_project_hash(str(work_dir)))
+    ok, original_tip, _ = _run_git(["rev-parse", ref], store, str(work_dir))
+    assert ok
+    assert _run_git(["pack-refs", "--all"], store, str(work_dir))[0]
+    loose = store / ref
+    loose.parent.mkdir(parents=True, exist_ok=True)
+    loose.write_bytes(damaged)
+    (work_dir / "main.py").write_text("print('changed')\n")
+
+    mgr.new_turn()
+    assert mgr.ensure_checkpoint(str(work_dir))
+
+    ok, new_tip, _ = _run_git(["rev-parse", ref], store, str(work_dir))
+    assert ok and new_tip != original_tip
+    assert _run_git(["merge-base", "--is-ancestor", original_tip, new_tip], store, str(work_dir))[0]
+    preserved = list((checkpoint_base / "corrupt-refs").rglob(_project_hash(str(work_dir))))
+    assert len(preserved) == 1 and preserved[0].read_bytes() == damaged
+
+
+@pytest.mark.parametrize("external_writer", [False, True])
+def test_unrecoverable_or_locked_history_stays_intact_and_is_not_pruned(
+    work_dir, checkpoint_base, mgr, external_writer,
+):
+    assert mgr._take(str(work_dir), "original checkpoint")
+    store = _store_path()
+    ref = _ref_name(_project_hash(str(work_dir)))
+    loose = store / ref
+    damaged = b"0" * 40 + b"\n"
+    if external_writer:
+        assert _run_git(["pack-refs", "--all"], store, str(work_dir))[0]
+        loose.parent.mkdir(parents=True, exist_ok=True)
+    loose.write_bytes(damaged)
+    lock = loose.with_name(loose.name + ".lock")
+    if external_writer:
+        lock.write_bytes(b"external-writer")
+    (work_dir / "main.py").write_text("print('changed')\n")
+
+    mgr.new_turn()
+    assert not mgr.ensure_checkpoint(str(work_dir))
+    result = prune_checkpoints(checkpoint_base=checkpoint_base, delete_orphans=False, retention_days=365)
+
+    assert loose.read_bytes() == damaged
+    assert result["errors"] == 1
+    if external_writer:
+        assert lock.read_bytes() == b"external-writer"
+    else:
+        assert not lock.exists()
+        assert not list((checkpoint_base / "corrupt-refs").rglob(_project_hash(str(work_dir))))

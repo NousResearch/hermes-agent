@@ -21,7 +21,7 @@ def store_lock_path(base: Path) -> Path:
 
 
 @contextmanager
-def store_lock(base: Path):
+def store_lock(base: Path, *, repair_refs: bool = True):
     """Serialize whole operations, including GC and clear, across processes."""
     from hermes_cli.runtime_state import _lock
 
@@ -31,6 +31,10 @@ def store_lock(base: Path):
     try:
         if not _lock(fd, wait=False):
             raise PruneError(f"checkpoint store is busy: {base}")
+        if repair_refs:
+            from tools.checkpoint_manager import _repair_invalid_loose_refs
+
+            _repair_invalid_loose_refs(base / "store")
         yield
     finally:
         os.close(fd)

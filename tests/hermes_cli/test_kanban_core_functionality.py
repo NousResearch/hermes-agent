@@ -1365,6 +1365,27 @@ def test_dead_worker_reap_surfaces_the_workers_own_last_output(kanban_home, driv
         conn.close()
 
 
+def test_check_dispatcher_presence_standalone_daemon_alive(tmp_path, monkeypatch):
+    """When a standalone daemon is running, create must NOT warn (gateway off)."""
+    from hermes_cli.kanban import _check_dispatcher_presence
+    pidfile = tmp_path / "kanban-daemon.pid"
+    pidfile.write_text(f"{os.getpid()}\n")  # our own live pid — os.kill(pid,0) must not raise
+    monkeypatch.setattr("hermes_cli.kanban._daemon_pidfile", str(pidfile))
+    running, msg = _check_dispatcher_presence()
+    assert running is True
+    assert "daemon" in msg
+
+
+def test_check_dispatcher_presence_standalone_daemon_dead_pidfile(tmp_path, monkeypatch):
+    """A pidfile pointing at a dead pid must NOT count as a running dispatcher."""
+    from hermes_cli.kanban import _check_dispatcher_presence
+    pidfile = tmp_path / "kanban-daemon.pid"
+    pidfile.write_text("2147483647\n")  # max int32 pid — cannot exist
+    monkeypatch.setattr("hermes_cli.kanban._daemon_pidfile", str(pidfile))
+    running, msg = _check_dispatcher_presence()
+    assert "daemon" not in msg
+
+
 def test_dead_worker_reap_reads_the_log_of_the_dispatching_board(kanban_home):
     """The reap must read the worker log under the board the tick runs for, not the
     ambient "current" board — otherwise every non-default board silently gets the canned

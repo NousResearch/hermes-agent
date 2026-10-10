@@ -1333,6 +1333,16 @@ class SessionSessionsMixin:
         # it back (#90946).
         if not include_hidden and not archived_only:
             where_clauses.append("s.hidden = 0")
+        heads = {}
+        if not include_children:
+            # A local reset lineage is one conversation (hermes_state_local.local_lineage_index):
+            # earlier segments leave the page in SQL, before LIMIT/OFFSET, not after it.
+            from hermes_state_local import local_lineage_index
+            with self._read_ctx() as conn:
+                superseded, heads = local_lineage_index(conn)
+            if superseded:
+                where_clauses.append("s.id NOT IN (SELECT value FROM json_each(?))")
+                params.append(json.dumps(sorted(superseded)))
         where_sql = _where_sql(where_clauses)
         # Shared projection head of the three list queries (whitespace is part of the SQL text).
         select_head = (
@@ -1407,6 +1417,9 @@ class SessionSessionsMixin:
             )
             if not include_hidden and not archived_only:
                 pinned_clauses.append("s.hidden = 0")
+            if heads:
+                pinned_clauses.append("s.id NOT IN (SELECT value FROM json_each(?))")
+                pinned_params.append(json.dumps(sorted(superseded)))
             pinned_clauses.append("s.pinned = 1")
             pinned_where = _where_sql(pinned_clauses)
             pinned_query = f"""
@@ -1422,6 +1435,9 @@ class SessionSessionsMixin:
                     sessions.append(s)
         if project_compression_tips and not include_children:
             sessions = self._project_compression_tips(sessions, compact_rows)
+        if heads:
+            from hermes_state_local import annotate_local_lineages
+            sessions = annotate_local_lineages(sessions, heads)
         # last_read_at is lineage-stamped, so root and tip watermarks agree.
         for s in sessions:
             s["unread"] = self.session_unread(s)
@@ -1614,8 +1630,10 @@ class SessionSessionsMixin:
             # Use the borrowed read connection, never self._conn: handing the shared writer connection to a
             # helper here executes on it without self._lock — the same unsynchronized-read class as
             # #99349/#90734.
-            delegate_ids = _collect_delegate_child_ids(conn, [session_id])
-        return [session_id, *sorted(delegate_ids)]
+            from hermes_state_local import owned_lineage_ids
+            scope = owned_lineage_ids(conn, session_id)
+            delegate_ids = _collect_delegate_child_ids(conn, scope)
+        return [session_id, *sorted(set(scope) - {session_id}), *sorted(delegate_ids)]
 
     def _expand_compression_lineage(self, conn, session_ids: list[str]) -> list[str]:
         """Expand *session_ids* to every member of their compression chains.
@@ -1647,6 +1665,11 @@ class SessionSessionsMixin:
             targets = _expand_compression_lineage_ids(conn, frontier)
             frontier = [sid for sid in targets if sid not in seen]
             seen.update(frontier)
+        # A local reset lineage (creation id + every segment, compression children included) is one
+        # listed conversation: deleting any segment must not strand the others without an owner.
+        from hermes_state_local import local_conversation_ids
+        for sid in list(seen):
+            seen.update(local_conversation_ids(conn, sid))
         return list(seen)
 
     def delete_session(
@@ -1681,8 +1704,12 @@ class SessionSessionsMixin:
         def _do(conn):
             if conn.execute("SELECT 1 FROM sessions WHERE id = ? LIMIT 1", (session_id,)).fetchone() is None:
                 return False
+            # Deleting a local creation id takes its reset/compression segments with it (its policy
+            # goes); any other row, a single segment included, is just itself.
+            from hermes_state_local import owned_lineage_ids
+            scope = owned_lineage_ids(conn, session_id)
             target_ids = (
-                [session_id, *_collect_delegate_child_ids(conn, [session_id])]
+                [*scope, *_collect_delegate_child_ids(conn, scope)]
                 if exclude_active_write_guards or expected_ids is not None else None
             )
             if exclude_active_write_guards and self._guarded_ids(conn, target_ids):
@@ -1698,15 +1725,14 @@ class SessionSessionsMixin:
             ):
                 return False
             from hermes_state_mutation_retirement import retire_sessions
-            retire_sessions(conn, [session_id])
-            removed_ids.extend(_delete_delegate_children(conn, [session_id]))
-            conn.execute(  # orphan remaining children (branches) so FK is satisfied
-                "UPDATE sessions SET parent_session_id = NULL WHERE parent_session_id = ?", (session_id,),
-            )
-            conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
-            conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+            retire_sessions(conn, scope)
+            removed_ids.extend(_delete_delegate_children(conn, scope))
+            for sid in scope:  # orphan remaining children (branches) so FK is satisfied
+                conn.execute("UPDATE sessions SET parent_session_id = NULL WHERE parent_session_id = ?", (sid,))
+                conn.execute("DELETE FROM messages WHERE session_id = ?", (sid,))
+            conn.executemany("DELETE FROM sessions WHERE id = ?", [(sid,) for sid in scope])
             self._delete_unreferenced_system_prompts(conn)
-            removed_ids.append(session_id)
+            removed_ids.extend(scope)
             return True
         deleted = self._execute_write(_do)
         from hermes_state_media import collect_retired_media

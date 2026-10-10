@@ -88,6 +88,79 @@ def retire_local_receipts(conn, session_ids):
     conn.executemany('DELETE FROM state_meta WHERE key=?', [(key,) for key in gone])
 
 
+def local_lineage_owner(conn, session_id):
+    """The creation id whose receipt lineage holds physical segment *session_id* (a reset or
+    compression child, which carries the owner as ``chat_id``); *session_id* itself otherwise."""
+    row = conn.execute('SELECT chat_id FROM sessions WHERE id=?', (session_id,)).fetchone()
+    owner = row[0] if row else None
+    if not owner or owner == session_id:
+        return session_id
+    saved = conn.execute('SELECT value FROM state_meta WHERE key=?', (POLICY_PREFIX + owner,)).fetchone()
+    try:
+        lineage = json.loads(saved[0]).get('lineage') if saved else None
+    except (TypeError, ValueError, AttributeError):
+        return session_id
+    return owner if isinstance(lineage, list) and session_id in lineage else session_id
+
+
+def owned_lineage_ids(conn, session_id):
+    """[session_id] for any row, or the whole conversation when *session_id* IS a local creation id
+    whose receipt has moved its transcript to later segments: deleting the owner retires its policy,
+    so its segments must go with it or they are left readable but never continuable."""
+    if local_lineage_owner(conn, session_id) != session_id:
+        return [session_id]
+    return list(dict.fromkeys([session_id, *local_conversation_ids(conn, session_id)]))
+
+
+def local_conversation_ids(conn, session_id):
+    """Every row of the local conversation *session_id* belongs to: its creation id first, then
+    each segment of the receipt lineage. A canonical reset never forks the logical session (one
+    policy, FIFO and generation), so listing, delete and retirement treat these ids as one."""
+    owner = local_lineage_owner(conn, session_id)
+    saved = conn.execute('SELECT value FROM state_meta WHERE key=?', (POLICY_PREFIX + owner,)).fetchone()
+    try:
+        lineage = json.loads(saved[0]).get('lineage') if saved else None
+    except (TypeError, ValueError, AttributeError):
+        lineage = None
+    if not isinstance(lineage, list):
+        return [session_id]
+    return list(dict.fromkeys([owner, *(sid for sid in lineage if isinstance(sid, str))]))
+
+
+def local_lineage_index(conn):
+    """``(superseded, heads)`` for listing a local conversation as one row, as
+    ``acp_adapter.catalog`` does: a canonical reset keeps the creation id as the owner and moves the
+    transcript to a child, so every segment is one conversation. ``superseded`` holds the listable
+    roots of earlier reset segments (filtered in SQL, before paging); ``heads`` maps the latest
+    reset segment to ``(owner, lineage)`` for the row that represents the conversation."""
+    superseded, heads = set(), {}
+    rows = conn.execute("SELECT value FROM state_meta WHERE key GLOB ? AND json_valid(value) "
+                        "AND json_array_length(value, '$.lineage') > 1", (POLICY_PREFIX + '*',)).fetchall()
+    for (raw,) in rows:
+        receipt = json.loads(raw)
+        owner, lineage = receipt.get('session_id'), receipt.get('lineage')
+        if not isinstance(owner, str) or not all(isinstance(sid, str) for sid in lineage):
+            continue
+        marks = ','.join('?' * len(lineage))
+        ended = dict(conn.execute(f'SELECT id,end_reason FROM sessions WHERE id IN ({marks})', lineage).fetchall())
+        starts = [sid for i, sid in enumerate(lineage) if i == 0 or ended.get(lineage[i - 1]) == 'session_reset']
+        superseded.update(starts[:-1])
+        heads[starts[-1]] = (owner, lineage)
+    return superseded, heads
+
+
+def annotate_local_lineages(sessions, heads):
+    """Name the whole conversation on its representative row: ``_lineage_root_id`` is the creation
+    id (the id every surface resolves, deletes and pins by), ``_lineage_ids`` every segment."""
+    for row in sessions:
+        found = heads.get(row.get('_lineage_root_id') or row['id'])
+        if found is not None:
+            owner, lineage = found
+            row['_lineage_ids'] = list(lineage)
+            row['_lineage_root_id'] = owner if row['id'] != owner else None
+    return sessions
+
+
 def local_receipt(db, session_id):
     with db._read_ctx() as conn:
         row = conn.execute('SELECT value FROM state_meta WHERE key=?', (POLICY_PREFIX + session_id,)).fetchone()

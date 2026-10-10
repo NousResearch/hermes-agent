@@ -37,6 +37,7 @@ def _authorize_control(authority, actor, ref, params):
     # A receipt authorizes only its original principal's exact retry; the
     # transaction still verifies the entire digest and current epoch.
     if not has_mutation_receipt(authority.db, actor.subject, ref.session_id, params['request_id']):
+        ref = _owner_ref(authority, ref, params)
         if ref.session_id not in authority.sessions:
             from hermes_state_mutation_binding import authorize_history
             with authority.db._read_ctx() as conn:
@@ -46,6 +47,19 @@ def _authorize_control(authority, actor, ref, params):
         if not cold_history:
             authority.authorize(actor, ref, 'session:control')
     return cold_history
+
+
+def _owner_ref(authority, ref, params):
+    """A delete names the listed row, which may be a later reset segment of a local conversation;
+    the conversation's creation id owns its policy, FIFO and live session, so control and the
+    session gate are checked on that owner (the store deletes the whole lineage either way)."""
+    if params.get('operation') != 'delete':
+        return ref
+    from gateway.session_contract import SessionRef
+    from hermes_state_local import local_lineage_owner
+    with authority.db._read_ctx() as conn:
+        owner = local_lineage_owner(conn, ref.session_id)
+    return ref if owner == ref.session_id else SessionRef(ref.profile_id, owner)
 
 
 async def mutate_session(authority, actor, ref, params):
@@ -61,7 +75,7 @@ async def _owned_mutation(authority, actor, ref, params):
     if (params.get('operation') in {'model', 'compress', 'reset', 'rewind'}
             and ref.session_id not in authority.sessions and 'request_id' in params):
         _authorize_control(authority, actor, ref, params)
-    live = authority.sessions.get(ref.session_id)
+    live = authority.sessions.get(_owner_ref(authority, ref, params).session_id)
     if live is None:
         return await _mutate_session(authority, actor, ref, params)
     # Prepared policy/route publication is inseparable from its durable commit

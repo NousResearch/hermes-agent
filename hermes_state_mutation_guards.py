@@ -77,9 +77,14 @@ def delete_targets(conn, session_id):
     from hermes_state_compression import _CHAIN_CAP
     from hermes_state_local import POLICY_PREFIX
     from hermes_state_local_lineage import validate_local_lineage
+    from hermes_state_local import local_lineage_owner
     targets = {session_id}
+    # A reset/compression segment of a local conversation is that conversation: the listing
+    # shows one row for it, so its delete takes the creation id (policy, FIFO) and every segment.
+    owner = local_lineage_owner(conn, session_id)
+    targets.add(owner)
     saved = conn.execute('SELECT value FROM state_meta WHERE key=?',
-                         (POLICY_PREFIX + session_id,)).fetchone()
+                         (POLICY_PREFIX + owner,)).fetchone()
     if saved is not None:
         receipt = json.loads(saved[0])
         validate_local_lineage(conn, receipt)

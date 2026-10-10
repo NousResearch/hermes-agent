@@ -65,8 +65,8 @@ import {
 import {
   MOBILE_REPLACEMENT_WINDOW_MS,
   normalizePtyMobileInput,
-  shouldTreatInputAsMobileReplacement,
 } from "@/lib/pty-mobile-input";
+import { attachPtyTextareaInputGuards } from "@/lib/pty-ime-insert-text";
 import { computeKeyboardInset, keyboardRevealScrollDelta } from "@/lib/keyboard-inset";
 import {
   resolvePtyKeyboardShortcut,
@@ -831,29 +831,14 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       const isMobileLike =
         typeof navigator !== "undefined" &&
         /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
-      const markReplacementInput = (ev: Event) => {
-        const input = ev as InputEvent;
-        if (
-          shouldTreatInputAsMobileReplacement(
-            input.inputType,
-            input.data,
-            isMobileLike,
-          )
-        ) {
+      mobileInputCleanup = attachPtyTextareaInputGuards(textarea, {
+        isMobileLike,
+        markReplacementWindow: () => {
           mobileReplacementInputUntilRef.current = Date.now() + MOBILE_REPLACEMENT_WINDOW_MS;
-        }
-      };
-      const markCompositionEnd = (ev: CompositionEvent) => {
-        mobileReplacementInputUntilRef.current = Date.now() + MOBILE_REPLACEMENT_WINDOW_MS;
-        compositionForwarder.onCompositionEnd(ev.data);
-      };
-
-      textarea.addEventListener("beforeinput", markReplacementInput, true);
-      textarea.addEventListener("compositionend", markCompositionEnd, true);
-      mobileInputCleanup = () => {
-        textarea.removeEventListener("beforeinput", markReplacementInput, true);
-        textarea.removeEventListener("compositionend", markCompositionEnd, true);
-      };
+        },
+        onCompositionCommit: (data) => compositionForwarder.onCompositionEnd(data),
+        onDanglingInsertText: (data) => compositionForwarder.onInsertTextFallback(data),
+      });
     }
 
     // WebGL draws from a texture atlas sized with device pixels. On phones and

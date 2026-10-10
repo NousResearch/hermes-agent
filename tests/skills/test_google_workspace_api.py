@@ -1,5 +1,7 @@
 """Tests for Google Workspace gws bridge and CLI wrapper."""
 
+import base64
+import email
 import importlib.util
 import json
 import subprocess
@@ -144,6 +146,123 @@ def test_api_calendar_list_uses_events_list(api_module):
 
 
 
+
+
+def test_reply_all_promotes_sender_and_keeps_to_cc(api_module):
+    headers = {
+        "from": "Alice <alice@example.com>",
+        "to": "me@example.com, Bob <bob@example.com>",
+        "cc": "Carol <carol@example.com>",
+    }
+    to, cc = api_module._reply_all_recipients(headers, "me@example.com")
+    assert to == "alice@example.com, bob@example.com"
+    assert cc == "carol@example.com"
+
+
+def test_reply_all_drops_self_case_insensitively(api_module):
+    headers = {
+        "from": "alice@example.com",
+        "to": "ME@Example.COM, bob@example.com",
+        "cc": "Me@example.com",
+    }
+    to, cc = api_module._reply_all_recipients(headers, "me@example.com")
+    assert to == "alice@example.com, bob@example.com"
+    assert cc == ""
+
+
+def test_reply_all_dedupes_first_seen(api_module):
+    headers = {
+        "from": "Alice <alice@example.com>",
+        "to": "ALICE@example.com, bob@example.com",
+        "cc": "Bob <BOB@Example.com>, carol@example.com",
+    }
+    to, cc = api_module._reply_all_recipients(headers, "me@example.com")
+    assert to == "alice@example.com, bob@example.com"
+    assert cc == "carol@example.com"
+
+
+def test_reply_all_false_is_sender_only(api_module):
+    headers = {
+        "from": "alice@example.com",
+        "to": "bob@example.com",
+        "cc": "carol@example.com",
+    }
+    to, cc = api_module._reply_all_recipients(headers, "me@example.com", reply_all=False)
+    assert to == "alice@example.com"
+    assert cc == ""
+
+
+def test_reply_all_extra_to_cc_are_additive(api_module):
+    headers = {
+        "from": "alice@example.com",
+        "to": "bob@example.com",
+        "cc": "carol@example.com",
+    }
+    to, cc = api_module._reply_all_recipients(
+        headers, "me@example.com", extra_to="dave@example.com", extra_cc="erin@example.com"
+    )
+    assert to == "alice@example.com, bob@example.com, dave@example.com"
+    assert cc == "carol@example.com, erin@example.com"
+
+    # Extras still apply with --no-reply-all (sender-only base).
+    to, cc = api_module._reply_all_recipients(
+        headers, "me@example.com", extra_to="dave@example.com",
+        extra_cc="erin@example.com", reply_all=False,
+    )
+    assert to == "alice@example.com, dave@example.com"
+    assert cc == "erin@example.com"
+
+
+def test_api_gmail_reply_sends_reply_all_mime(api_module, monkeypatch, capsys):
+    """gmail_reply (API path) sends a threaded MIME reply carrying To + Cc."""
+    original = {
+        "threadId": "thread-1",
+        "payload": {
+            "headers": [
+                {"name": "From", "value": "Alice <alice@example.com>"},
+                {"name": "To", "value": "me@example.com, Bob <bob@example.com>"},
+                {"name": "Cc", "value": "carol@example.com"},
+                {"name": "Subject", "value": "Plans"},
+                {"name": "Message-ID", "value": "<orig@id>"},
+            ]
+        },
+    }
+
+    service = MagicMock()
+    users = service.users.return_value
+    users.messages.return_value.get.return_value.execute.return_value = original
+    users.getProfile.return_value.execute.return_value = {"emailAddress": "me@example.com"}
+    users.messages.return_value.send.return_value.execute.return_value = {
+        "id": "sent-1",
+        "threadId": "thread-1",
+    }
+
+    # Force the Python SDK path (the fixture pins _gws_binary to a fake path).
+    monkeypatch.setattr(api_module, "_gws_binary", lambda: None)
+    monkeypatch.setattr(api_module, "build_service", lambda api, version: service)
+
+    args = api_module.argparse.Namespace(
+        message_id="msg-1", body="Sounds good.", from_header="",
+        to="", cc="", no_reply_all=False,
+    )
+    api_module.gmail_reply(args)
+
+    get_kwargs = users.messages.return_value.get.call_args.kwargs
+    assert get_kwargs["metadataHeaders"] == ["From", "To", "Cc", "Subject", "Message-ID"]
+
+    send_body = users.messages.return_value.send.call_args.kwargs["body"]
+    assert send_body["threadId"] == "thread-1"
+
+    mime = email.message_from_bytes(base64.urlsafe_b64decode(send_body["raw"]))
+    assert mime["To"] == "alice@example.com, bob@example.com"
+    assert mime["Cc"] == "carol@example.com"
+    assert mime["Subject"] == "Re: Plans"
+    assert mime["In-Reply-To"] == "<orig@id>"
+
+    out = json.loads(capsys.readouterr().out)
+    assert out["status"] == "sent"
+    assert out["to"] == "alice@example.com, bob@example.com"
+    assert out["cc"] == "carol@example.com"
 
 
 def test_api_get_credentials_refresh_persists_authorized_user_type(api_module, monkeypatch):

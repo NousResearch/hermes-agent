@@ -773,7 +773,7 @@ class TestFilterDashboardRespawnCandidates:
 
 
 class TestCmdlineCapture:
-    """_dashboard_cmdline_for_pid reads /proc on Linux, ps on macOS."""
+    """_dashboard_cmdline_for_pid reads /proc on Linux, the kernel argv via psutil on macOS, ps last."""
 
     def _live(self):
         return main_dashboard
@@ -813,6 +813,7 @@ class TestCmdlineCapture:
             return MagicMock(returncode=0, stdout="hermes serve --port 8300\n", stderr="")
 
         with patch.object(live.os.path, "exists", return_value=False), \
+             patch.object(live, "_kernel_argv_for_pid", return_value=None), \
              patch("subprocess.run", side_effect=fake_run):
             argv = main_dashboard._dashboard_cmdline_for_pid(888)
 

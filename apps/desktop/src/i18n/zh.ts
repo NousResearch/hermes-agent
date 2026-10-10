@@ -738,7 +738,10 @@ export const zhOverrides = {
       testUnsupported: '此系统不支持原生通知。',
       completionSoundTitle: '完成提示音',
       completionSoundDesc: '智能体回合结束时播放。可在此选择预设并预览。',
-      completionSoundPreview: '预览'
+      completionSoundPreview: '预览',
+      attentionSoundTitle: '待处理提示音',
+      attentionSoundDesc: '当需要你答复的提示出现时播放：批准或拒绝危险命令，或回答阻塞性问题。刻意与完成提示音区分。',
+      attentionSoundPreview: '预览'
     },
     sections: {
       model: '模型',

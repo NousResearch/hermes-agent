@@ -558,7 +558,11 @@ export const jaOverrides = {
       testUnsupported: 'このシステムはネイティブ通知に対応していません。',
       completionSoundTitle: '完了サウンド',
       completionSoundDesc: 'エージェントのターン終了時に再生されます。プリセットを選んでここで試聴できます。',
-      completionSoundPreview: '試聴'
+      completionSoundPreview: '試聴',
+      attentionSoundTitle: 'アテンションサウンド',
+      attentionSoundDesc:
+        '回答が必要なプロンプトが出たときに再生されます。危険なコマンドの承認／拒否や、応答待ちの質問など。完了サウンドとは意図的に分けています。',
+      attentionSoundPreview: '試聴'
     },
     sections: {
       model: 'モデル',

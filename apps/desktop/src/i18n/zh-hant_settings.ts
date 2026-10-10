@@ -230,7 +230,10 @@ export const zhHantSettings = {
       testUnsupported: '此系統不支援原生通知。',
       completionSoundTitle: '完成提示音',
       completionSoundDesc: '代理回合結束時播放。可在此選擇預設並預覽。',
-      completionSoundPreview: '預覽'
+      completionSoundPreview: '預覽',
+      attentionSoundTitle: '待處理提示音',
+      attentionSoundDesc: '當需要你回覆的提示出現時播放：批准或拒絕危險命令，或回答阻塞性問題。刻意與完成提示音區分。',
+      attentionSoundPreview: '預覽'
     },
     sections: {
       model: '模型',

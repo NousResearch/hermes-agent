@@ -995,7 +995,11 @@ export const esOverrides = {
       completionSoundTitle: 'Sonido de finalización',
       completionSoundDesc:
         'Reproduce un sonido cuando termina el turno de un agente. Elige un ajuste predefinido y pruébalo aquí.',
-      completionSoundPreview: 'Vista previa'
+      completionSoundPreview: 'Vista previa',
+      attentionSoundTitle: 'Sonido de atención',
+      attentionSoundDesc:
+        'Se reproduce cuando un aviso necesita tu respuesta: aprobar o rechazar un comando peligroso, o responder una pregunta que bloquea el turno. Separado a propósito del sonido de finalización.',
+      attentionSoundPreview: 'Vista previa'
     },
     sections: {
       model: 'Modelo',

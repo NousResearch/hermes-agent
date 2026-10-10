@@ -992,7 +992,11 @@ export const deOverrides = {
       completionSoundTitle: 'Abschluss-Sound',
       completionSoundDesc:
         'Wird abgespielt, wenn ein Agent-Turn endet. Wählen Sie eine Vorlage aus und hören Sie sie hier an.',
-      completionSoundPreview: 'Vorschau'
+      completionSoundPreview: 'Vorschau',
+      attentionSoundTitle: 'Aufmerksamkeits-Sound',
+      attentionSoundDesc:
+        'Wird abgespielt, wenn eine Eingabe von Ihnen verlangt wird – ein gefährlicher Befehl zum Bestätigen oder Ablehnen oder eine blockierende Frage. Bewusst getrennt vom Abschluss-Sound.',
+      attentionSoundPreview: 'Vorschau'
     },
     sections: {
       model: 'Modell',

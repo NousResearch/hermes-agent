@@ -1,6 +1,7 @@
 import { atom } from 'nanostores'
 
 import { translateNow } from '@/i18n'
+import { playAttentionSound } from '@/lib/completion-sound'
 import { type HermesOpenTarget, resolveHermesOpenPath } from '@/lib/hermes-open-target'
 import { persistString, storedString } from '@/lib/storage'
 
@@ -257,6 +258,13 @@ export function dispatchNativeNotification(input: NativeNotificationInput): bool
     tag: input.tag,
     title
   })
+
+  // Approvals and blocking questions stop the turn until the user answers, so
+  // they carry their own cue on the same edge the OS notification fires: a
+  // prompt that arrives in silence is the failure this exists to prevent.
+  if (ATTENTION_KINDS.has(input.kind)) {
+    playAttentionSound(`${input.kind}:${input.sessionId ?? input.tag ?? 'global'}`)
+  }
 
   return true
 }

@@ -221,7 +221,11 @@ export const arSettings = {
       testUnsupported: 'هذا النظام لا يدعم الإشعارات الأصلية.',
       completionSoundTitle: 'صوت الاكتمال',
       completionSoundDesc: 'يُشغّل عند انتهاء دور الوكيل. اختر إعدادا مسبقا وعاينه هنا.',
-      completionSoundPreview: 'معاينة'
+      completionSoundPreview: 'معاينة',
+      attentionSoundTitle: 'صوت التنبيه',
+      attentionSoundDesc:
+        'يُشغّل عندما ينتظر إشعار جوابك: الموافقة على أمر خطير أو رفضه، أو الإجابة على سؤال يوقف الدور. منفصل عمدا عن صوت الاكتمال.',
+      attentionSoundPreview: 'معاينة'
     },
     sections: {
       model: 'النموذج',

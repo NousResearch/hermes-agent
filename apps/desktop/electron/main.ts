@@ -22,6 +22,7 @@ import {
   type IpcMainInvokeEvent,
   Menu,
   type MenuItemConstructorOptions,
+  nativeImage,
   nativeTheme,
   powerMonitor,
   powerSaveBlocker,
@@ -128,6 +129,7 @@ import {
 import { CHALLENGE_PARTITION } from './challenge-window'
 import { registerChallengeWindowIpc } from './challenge-window-ipc'
 import { provisionCliLinks } from './cli-provision'
+import { readClipboardImageAsPng } from './clipboard-image'
 import { closeStopFailureMessage, finishWindowsCloseStop, type RuntimeLock } from './close-stop-kill'
 import { shouldAttemptCloudBootCascade } from './cloud-boot-cascade'
 import { discoverWithTeamFallback } from './cloud-discovery'
@@ -17897,8 +17899,8 @@ ipcMain.handle('hermes:selectPaths', async (_event, options: any = {}) => {
   return result.filePaths
 })
 
-ipcMain.handle('hermes:writeClipboard', (_event, text) => {
-  clipboard.writeText(String(text || ''))
+ipcMain.handle('hermes:writeClipboard', async (_event, text) => {
+  await clipboard.writeText(String(text || ''))
 
   return true
 })
@@ -18010,10 +18012,10 @@ ipcMain.handle('hermes:savePastedText', async (_event, payload) => {
 })
 
 ipcMain.handle('hermes:saveClipboardImage', async () => {
-  const image = clipboard.readImage()
+  const clipboardPng = await readClipboardImageAsPng(await clipboard.read(), data => nativeImage.createFromBuffer(data))
 
-  if (image && !image.isEmpty()) {
-    return writeComposerImage(image.toPNG(), '.png')
+  if (clipboardPng) {
+    return writeComposerImage(clipboardPng, '.png')
   }
 
   // WSL2/WSLg doesn't bridge clipboard *images* from the Windows host to the

@@ -140,6 +140,25 @@ class TestCollectKanbanNotifications:
         assert len(rows) == 1
         assert rows[0]["last_event_id"] > pre_cursor
 
+    def test_held_card_notice_names_the_reason_and_the_unblock_command(self):
+        """A card held in Ready writes ``respawn_guarded`` every tick, which
+        stays silent; the one ``respawn_held`` event is what the session hears."""
+        tid = _create_subscribed_task()
+        conn = kbc.connect()
+        try:
+            kb._append_event(conn, tid, "respawn_guarded", {"reason": "active_pr"})
+            kb._append_event(conn, tid, "respawn_held", {"reason": "active_pr", "held_seconds": 720})
+        finally:
+            conn.close()
+
+        texts = _collect_kanban_notifications(_session())
+
+        assert len(texts) == 1
+        assert tid in texts[0]
+        assert "active_pr" in texts[0]
+        assert "12 min" in texts[0]
+        assert f"hermes kanban unblock {tid}" in texts[0]
+
     def test_non_tui_subscription_does_not_open_board_writable(self):
         tid = _create_subscribed_task(platform="telegram", chat_id="chat-1")
         # New subs start caught up at creation time (issue #29905); record the

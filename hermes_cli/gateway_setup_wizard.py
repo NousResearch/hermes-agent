@@ -872,6 +872,11 @@ def _wizard_install_service(backend: str) -> None:
     except subprocess.CalledProcessError as e:
         _gw().print_error(f"  Install failed: {e}")
         _gw().print_info("  You can try manually: hermes gateway install")
+    except SystemExit:
+        # The backend installers exit non-zero on a refused write (a unit pinning another home);
+        # setup reports it and goes on rather than ending the wizard.
+        _gw().print_warning("  Gateway service install did not complete.")
+        _gw().print_info("  You can try manually: hermes gateway install")
 
 
 def _wizard_post_setup() -> None:

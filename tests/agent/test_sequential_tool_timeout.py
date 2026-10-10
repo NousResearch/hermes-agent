@@ -38,7 +38,7 @@ def _deterministic_worker_start(monkeypatch):
     generous headroom to reach the dispatch — which is the behavior these
     tests mean to pin.
     """
-    import tools.daemon_pool as daemon_pool
+    from tools import daemon_pool
 
     real_executor = daemon_pool.DaemonThreadPoolExecutor
 
@@ -167,7 +167,7 @@ def test_sequential_tool_timeout_emits_result_and_continues(tmp_path, monkeypatc
 
 
 def test_sequential_tool_timeout_suppresses_late_terminal_event(tmp_path, monkeypatch):
-    import hermes_cli.lifecycle as lifecycle
+    from hermes_cli import lifecycle
     import model_tools
 
     agent = _make_agent(tmp_path)

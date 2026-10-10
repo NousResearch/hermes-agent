@@ -47,7 +47,7 @@ _BOARD_Q = Query(None, description="Kanban board slug (omit for current)")
 
 # --- Connection / board helpers ---------------------------------------------
 
-def _ws_upgrade_authorized(ws: "WebSocket") -> bool:
+def _ws_upgrade_authorized(ws: WebSocket) -> bool:
     """Authorize a WS upgrade via the dashboard's canonical gate (``web_server_chat._ws_auth_ok``:
     ``?token=`` / ``?ticket=`` / ``?internal=``) so this endpoint can never drift from core
     auth; accepts when the dashboard isn't importable (bare-FastAPI test harness)."""
@@ -69,8 +69,14 @@ def _resolve_board(board: Optional[str]) -> Optional[str]:
     if board is None or board == "":
         return None
     normed = _normalize_slug_or_400(board)
-    if normed and normed != kanban_db.DEFAULT_BOARD and not kanban_db.board_exists(normed):
-        raise HTTPException(status_code=404, detail=f"board {normed!r} does not exist")
+    if normed and normed != kanban_db.DEFAULT_BOARD:
+        if not kanban_db.board_exists(normed):
+            raise HTTPException(status_code=404, detail=f"board {normed!r} does not exist")
+        # An archived board has a tombstone board.json; it must not be openable
+        # (connect() would refuse anyway) — a stale dashboard tab gets a clean
+        # 404 instead of a resurrection or a 500 (#43243).
+        if kanban_db.read_board_metadata(normed).get("archived"):
+            raise HTTPException(status_code=404, detail=f"board {normed!r} is archived")
     return normed
 
 
@@ -1718,6 +1724,19 @@ def _ws_board(raw: Optional[str]) -> Optional[str]:
         return None
 
 
+def _ws_board_live(normed: Optional[str]) -> Optional[str]:
+    """Require an already-normalised slug to name a *live* board.
+
+    A stale dashboard tab can keep its old board slug around after the board
+    was archived or deleted; the event stream must reject it instead of handing
+    it to ``connect(board=slug)``, which would resurrect an empty board (#43243).
+    Returns ``None`` when the board is unknown/archived.
+    """
+    if not normed or normed == kanban_db.DEFAULT_BOARD:
+        return normed
+    return normed if kanban_db.board_exists(normed) else None
+
+
 class _EventTail:
     """Per-socket ``task_events`` tailer. One SQLite connection, used/closed only on a
     dedicated single-thread executor (connections are thread-affine); reusing it avoids
@@ -1788,7 +1807,14 @@ async def stream_events(ws: WebSocket):
     await ws.accept()
     # Board is pinned at the handshake; the UI opens a new WS on board change
     # rather than reconciling two cursors mid-stream.
-    tail = _EventTail(_ws_board(ws.query_params.get("board")))
+    raw_board = _ws_board(ws.query_params.get("board"))
+    board = _ws_board_live(raw_board)
+    if raw_board is not None and board is None:
+        # Stale tab: the slug names an archived or deleted board. Close the
+        # stream instead of connecting, which would resurrect the board (#43243).
+        await ws.close(code=http_status.WS_1008_POLICY_VIOLATION)
+        return
+    tail = _EventTail(board)
     since = _since_param(ws)
     try:
         # Capture the tail at accept, before the first wait, so an event that
@@ -1802,7 +1828,7 @@ async def stream_events(ws: WebSocket):
                 msg = await asyncio.wait_for(ws.receive(), timeout=_EVENT_POLL_SECONDS)
                 if msg["type"] == "websocket.disconnect":
                     return
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 pass  # no client message — poll the DB
             cursor, events = await tail.poll(cursor)
             if events:

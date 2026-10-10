@@ -103,6 +103,7 @@ async function probeWindowsRemote(ssh, explicitHermesPath = '') {
   const lines = stripPowerShellNoise(
     await ssh.exec(powerShellStdinCommand(), { stdinData: `${encodedPowerShell(script)}\r\n` })
   )
+
   const parsed = JSON.parse(lines[lines.length - 1] || 'null')
 
   if (!parsed?.os || !parsed?.arch) {
@@ -204,11 +205,12 @@ async function assertWindowsRemoteInstallUpdateClear(ssh, hermesHome, python = '
     // Same stdout channel as the probe: a CLIXML progress block after the
     // final `Write-Output $result` would otherwise win the .pop() and turn a
     // CLEAR gate into a fail-closed 'update-in-progress' verdict.
-    observation = stripPowerShellNoise(
-      await ssh.exec(powerShellStdinCommand(), {
-        stdinData: windowsUpdateMarkerProbeStdinData(hermesHome, python)
-      })
-    ).pop() || ''
+    observation =
+      stripPowerShellNoise(
+        await ssh.exec(powerShellStdinCommand(), {
+          stdinData: windowsUpdateMarkerProbeStdinData(hermesHome, python)
+        })
+      ).pop() || ''
   } catch (cause) {
     const error: any = new Error('Could not prove that the remote Hermes install is clear for SSH startup.')
     error.kind = 'update-in-progress'

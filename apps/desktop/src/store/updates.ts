@@ -630,6 +630,51 @@ export async function checkUpdates({ force = false }: UpdateCheckOptions = {}): 
   }
 }
 
+export type SourceUpdateChannel = 'main' | 'stable'
+
+/**
+ * The selectable channel of a source checkout, or null where the selector must not
+ * appear: packages own their channel, runtimes older than the flag cannot save one,
+ * and a custom branch is neither stable releases nor every commit on main.
+ */
+export function sourceUpdateChannel(status: DesktopUpdateStatus | null): SourceUpdateChannel | null {
+  const source = status?.mechanism === 'posix-handoff' || status?.mechanism === 'windows-handoff'
+
+  if (!status?.supported || !source || !status.channelSelectable) {
+    return null
+  }
+
+  if (status.channel === 'stable') {
+    return 'stable'
+  }
+
+  return status.channel === undefined && status.branch === 'main' ? 'main' : null
+}
+
+/**
+ * Persist the source checkout's channel; the reply is a fresh check against it.
+ * An unreachable release still returns a status naming the saved channel.
+ */
+export async function setUpdateChannel(channel: SourceUpdateChannel): Promise<DesktopUpdateStatus> {
+  const setChannel = window.hermesDesktop?.updates?.setChannel
+
+  if (!setChannel) {
+    throw new Error('This installation cannot change its update channel.')
+  }
+
+  $updateChecking.set(true)
+
+  try {
+    const status = await setChannel(channel)
+    $updateStatus.set(status)
+    maybeNotifyUpdateAvailable(status, 'client')
+
+    return status
+  } finally {
+    $updateChecking.set(false)
+  }
+}
+
 export async function applyUpdates(opts: DesktopUpdateApplyOptions = {}): Promise<DesktopUpdateApplyResult> {
   if ($updateStatus.get()?.retirement) {
     openUpdateOverlayFor('client')

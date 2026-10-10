@@ -516,7 +516,7 @@ def test_script_killed_before_the_delegate_line_appears_runs_no_update(tmp_path)
 @pytest.mark.parametrize("perl", ["present", "absent"])
 def test_timed_out_probe_is_killed_with_its_whole_process_tree(tmp_path, perl):
     body = POSIX.read_text(encoding="utf-8-sig")
-    found = re.search(r"^run_bounded\(\) \{.*?^\}\n", body, re.S | re.M)
+    found = re.search(r"^run_bounded\(\) \{.*?^\}\n", body, re.DOTALL | re.MULTILINE)
     assert found
     run_bounded = found.group(0)
     pidfile = tmp_path / "grandchild.pid"
@@ -541,7 +541,7 @@ def test_json_escape_round_trips_every_control_character(locale):
     a raw control char other than \\n \\r \\t (git/ps output: ESC colour codes, BEL...) made
     the whole result invalid JSON, so the Desktop dropped it unread."""
     body = POSIX.read_text(encoding="utf-8-sig")
-    found = re.search(r"^json_escape\(\) \{.*?^\}\n", body, re.S | re.M)
+    found = re.search(r"^json_escape\(\) \{.*?^\}\n", body, re.DOTALL | re.MULTILINE)
     assert found
     text = "".join(chr(c) for c in range(1, 128)) + " \u00e9 \u2713 & \\& \x1b[31mred\x1b[0m"
     env = {**os.environ, "LC_ALL": locale}

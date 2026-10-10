@@ -9,6 +9,7 @@ import subprocess
 import sys
 
 import pytest
+from datetime import UTC
 
 
 @pytest.mark.platforms("posix")
@@ -100,7 +101,7 @@ def test_pm_cli_verifies_tls_with_platform_trust(tmp_path, monkeypatch):
     shutil.copy2(source / "hermes_constants.py", repo / "hermes_constants.py")
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "PM test CA")])
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     cert = (x509.CertificateBuilder().subject_name(subject).issuer_name(subject)
             .public_key(key.public_key()).serial_number(x509.random_serial_number())
             .not_valid_before(now - timedelta(days=1)).not_valid_after(now + timedelta(days=1))
@@ -203,7 +204,7 @@ def test_cold_downloader_trusts_a_stored_intermediate_without_its_root(tmp_path)
     from cryptography.hazmat.primitives.asymmetric import ec
     from cryptography.x509.oid import NameOID
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     def issue(name, signer=None):
         key = ec.generate_private_key(ec.SECP256R1())
@@ -221,7 +222,7 @@ def test_cold_downloader_trusts_a_stored_intermediate_without_its_root(tmp_path)
     root_key, root_name, _ = issue("absent root")
     middle_key, middle_name, middle = issue("stored intermediate", (root_key, root_name))
     leaf_key, _, leaf = issue("leaf", (middle_key, middle_name))
-    pem = lambda cert: cert.public_bytes(serialization.Encoding.PEM)  # noqa: E731
+    pem = lambda cert: cert.public_bytes(serialization.Encoding.PEM)
     stores = {"stored": pem(middle), "unrelated": pem(issue("unrelated CA")[2])}
     for name, body in stores.items():
         (tmp_path / f"{name}.pem").write_bytes(body)

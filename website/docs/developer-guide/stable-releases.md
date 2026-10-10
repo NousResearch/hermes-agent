@@ -13,7 +13,7 @@ files on `main`.
 
 1. Refresh `origin/main` and the remote attempt and marker refs (`rc.*` and
    `abandoned-rc.*`). Derive the next SemVer from the published release family
-   seeded at `0.21.4` alone: the newer of the protected R2 stable head and the
+   seeded at `0.21.5` (the last legacy CalVer release, v2026.9.24) alone: the newer of the protected R2 stable head and the
    newest published non-prerelease GitHub release with a `vX.Y.Z` tag. A
    release that skipped bundles moves only the second. Attempts do not move the
    version line. A cut whose next version already has a final `vX.Y.Z` tag is
@@ -415,6 +415,9 @@ local helper suite. Never store the bootstrap output as a repo channel list.
 The last successful stable release that shipped bundles records
 `releases/stable/release-candidates.json` on the configured R2 public origin.
 A release that skipped bundles does not replace it.
+When no baseline exists, the release still runs every native smoke but skips
+the signed-package upgrade arms. A `baseline-manifest` input that does not
+exist is a blocker.
 It identifies actual Windows universal MSIX bundles, macOS ZIPs and package
 provenance. The next run combines those records with its candidate manifest
 and uses the existing native bundled-update drivers.

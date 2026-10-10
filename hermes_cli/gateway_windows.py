@@ -19,7 +19,7 @@ import subprocess
 import sys
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from xml.etree import ElementTree
 from xml.sax.saxutils import escape
@@ -1085,7 +1085,7 @@ def _write_start_attestation(pids: list[int], via: str, home: Path | None = None
         from hermes_cli.process_identity import _process_create_time
 
         payload = {
-            "pids": [int(p) for p in pids], "via": via, "ts": datetime.now(timezone.utc).isoformat(),
+            "pids": [int(p) for p in pids], "via": via, "ts": datetime.now(UTC).isoformat(),
             "generation": uuid.uuid4().hex,
         }
         # Bind each PID to its incarnation (#110020 review): the ledger sentinel is matched by PID
@@ -1123,7 +1123,7 @@ def _attestation_within_horizon(data: object) -> bool:
         if ts is None:
             return False
         if ts.tzinfo is None:
-            ts = ts.replace(tzinfo=timezone.utc)
+            ts = ts.replace(tzinfo=UTC)
         age = time.time() - ts.timestamp()
         return -_ATTESTATION_CLOCK_SLACK_S <= age <= START_ATTESTATION_MAX_AGE_S
     except Exception:
@@ -1474,7 +1474,7 @@ def is_installed() -> bool:
 
 def query_task_status() -> dict[str, str]:
     """Parse ``schtasks /Query /V /FO LIST`` and pull the interesting keys."""
-    code, out, err = _exec_schtasks(["/Query", "/TN", get_task_name(), "/V", "/FO", "LIST"])
+    code, out, _err = _exec_schtasks(["/Query", "/TN", get_task_name(), "/V", "/FO", "LIST"])
     if code != 0:
         return {}
     info: dict[str, str] = {}
@@ -1570,8 +1570,8 @@ def _probe_state_file(state_path: Path) -> None:
         age_str = ""
         if updated_at:
             try:
-                updated_dt = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
-                age_seconds = int((datetime.now(timezone.utc) - updated_dt).total_seconds())
+                updated_dt = datetime.fromisoformat(updated_at)
+                age_seconds = int((datetime.now(UTC) - updated_dt).total_seconds())
                 age_str = f" (updated {age_seconds}s ago)"
             except Exception:
                 pass

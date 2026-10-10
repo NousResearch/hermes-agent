@@ -132,7 +132,7 @@ def _teardown_runtimes():
 
 @pytest.fixture(autouse=True)
 def _fast_scope_timeout(monkeypatch):
-    monkeypatch.setattr(relay_runtime, "_SCOPE_OP_TIMEOUT", 1.0)
+    monkeypatch.setattr(relay_runtime, "SCOPE_OP_TIMEOUT", 1.0)
 
 
 @pytest.fixture(autouse=True)

@@ -109,7 +109,7 @@ def _git_op(proc, ops: tuple[str, ...]) -> tuple[str, int] | None:
         # Fails closed: a child that exited or hides its argv is not the git op this kill point
         # waits for; skipping it only delays the point, and _kill_when's bounded wait turns a
         # point never seen into a harness verdict, never a pass.
-        except Exception:  # noqa: BLE001 - any psutil/OS read error of a racing child
+        except Exception:
             continue
         op = next((a for a in argv[1:] if a in ops), None)
         if op:
@@ -390,7 +390,7 @@ def _update_child(proc, machine, target) -> str | None:
             argv = [a.lower() for a in child.cmdline()]
         # Fails closed: an unreadable child is not counted as the update child, so the kill
         # point waits on (bounded by _kill_when, whose timeout is a harness verdict).
-        except Exception:  # noqa: BLE001 - any psutil/OS read error of a racing child
+        except Exception:
             continue
         if "update" in argv and "--yes" in argv and "--help" not in argv:
             return "update child " + str(child.pid)

@@ -251,12 +251,54 @@ _SPECS = [
     _cmd("assign", [_TASK_ID, _arg("profile", help="Profile name (or 'none' to unassign)")],
          help="Assign or reassign a task"),
     _cmd("set-model", [
-        _TASK_ID,
-        _arg("model", nargs="?", help="Model to pin the worker to (or 'none' to clear the override)"),
+        _arg("positionals", nargs="*", metavar="TASK_ID|MODEL",
+             help="One or more task ids (t_...), then optionally the model to pin "
+                  "(or 'none' to clear). Task ids are recognised by their t_ prefix, "
+                  "so `set-model MODEL --where ...` also works."),
+        _arg("--model", dest="model_flag", metavar="MODEL",
+             help="Model to pin (alternative to the trailing positional)."),
         _arg("--provider",
              help="Provider the model belongs to (worker is spawned with "
                   "--provider <name>). Cleared together with the model."),
-    ], help="Set or clear a task's model/provider override (takes effect on the next dispatch)"),
+        _arg("--where", nargs="+", metavar="KEY=VALUE",
+             help="Select cards instead of naming ids, e.g. "
+                  "--where status=running,ready assignee=researcher. "
+                  "Keys: status, assignee. Only active (non-done, non-archived) cards match."),
+        _arg("--all-active", action="store_true",
+             help="Select every active card on the board (excludes done/archived)."),
+        _arg("--reclaim", action="store_true",
+             help="After the routes commit, release the claim on selected RUNNING cards so "
+                  "the next dispatch respawns them on the new route. Without it a live "
+                  "worker keeps its old model until it exits."),
+    ], help="Set or clear the model/provider override on one or many tasks "
+            "(takes effect on the next dispatch)"),
+    _cmd("lane-model", children=("lane_action", [
+        _cmd("set", [
+            _arg("route", metavar="PROVIDER/MODEL",
+                 help="Route to pin the lane to. Split on the FIRST slash, so model ids "
+                      "that contain slashes survive (openrouter/anthropic/claude-x)."),
+            _arg("--ttl", required=True, metavar="DURATION",
+                 help="How long the override lives (30m, 2h, 1d). Required: an override "
+                      "with no expiry is a config edit, not a window."),
+            _arg("--reason", required=True, help="Why the lane is re-routed (shown in show/stats)."),
+            _arg("--assignee", help="Restrict the override to one profile. Omit for board-wide."),
+            _arg("--effort", dest="reasoning_effort",
+                 help="Reasoning effort for lane spawns (a card's own effort still wins)."),
+        ], help="Install a lane override that expires on its TTL"),
+        _cmd("show", [_json_flag()], help="Show active lane overrides and their remaining TTL"),
+        _cmd("clear", [
+            _arg("--assignee", help="Lane to clear. Omit for the board-wide override."),
+            _arg("--all", action="store_true", dest="clear_all", help="Clear every lane override."),
+        ], help="Remove a lane override before its TTL elapses"),
+    ]), help="Time-boxed board-level model override, applied at dispatch to cards "
+             "without their own override",
+         description=(
+             "Route every spawn in a lane (one assignee, or the whole board) to a different "
+             "provider/model for a bounded window, e.g. while a provider is rate-limited. "
+             "Precedence at spawn: per-card set-model > assignee lane > board-wide lane > "
+             "profile default. Rows expire on the dispatcher clock and are never written onto "
+             "the cards themselves."
+         )),
     _cmd("reclaim", [_TASK_ID, _RECLAIM_REASON], help="Release an active worker claim on a running task"),
     _cmd("reassign", [
         _TASK_ID,

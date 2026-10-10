@@ -75,6 +75,15 @@ def test_python_bionic_pin_is_independent_of_desktop_build_version(lock):
     assert py.deb_package == "python"
 
 
+def test_node_bionic_pin_is_independent_of_desktop_version(lock):
+    from pm.registry import get_package
+
+    node = get_package("node")
+    package = lock["packages"]["node"]
+    assert node.fetch_url(package["version"], "linux-arm64-bionic") == package["artifacts"]["linux-arm64-bionic"]["url"]
+    assert node.deb_package == "nodejs"
+
+
 def test_uv_bionic_row_matches_supplier(lock):
     """The uv bionic row is an explicit pin of the termux-main pool .deb;
     the row and Uv.fetch_url(bionic arm) must agree."""

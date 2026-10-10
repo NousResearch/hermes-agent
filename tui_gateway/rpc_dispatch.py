@@ -34,6 +34,11 @@ def _handle_admitted_request(req: dict) -> dict | None:
         response = fn(rid, params)
     except ProfileUnavailableError as exc:
         return _err(rid, 4064, str(exc))
+    except ProfileBeingDeletedError as exc:
+        # A delete is draining this profile's sessions on THIS backend: the client's
+        # session.create/resume raced the removal. Typed (not a dispatch crash) so the
+        # desktop can surface "profile is being deleted" instead of a generic failure.
+        return _err(rid, 5037, str(exc) or "profile is being deleted")
     finally:
         _current_rpc_method.reset(token)
     if contract is not None and isinstance(response, dict) and isinstance(response.get("result"), dict):

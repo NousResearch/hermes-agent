@@ -105,21 +105,38 @@ def _is_telegram_thread_not_found(error: Exception) -> bool:
     return "thread not found" in str(error).lower()
 
 
-def _telegram_bot(token):
-    """Bot honouring TELEGRAM_PROXY (standalone sends time out where api.telegram.org is
-    blocked); falls back to a direct connection."""
+def _telegram_bot(token, extra=None):
+    """Bot honouring the platform's custom ``base_url`` (local Bot API server — matching the
+    gateway adapter), else TELEGRAM_PROXY (standalone sends time out where api.telegram.org
+    is blocked); falls back to a direct connection."""
     from telegram import Bot
+    from telegram.request import HTTPXRequest
+    try:
+        _read_timeout = float(os.environ.get("HERMES_TELEGRAM_HTTP_READ_TIMEOUT") or 60)
+    except ValueError:
+        _read_timeout = 60.0
+    # The server (local or proxy) answers only after the Telegram upload completes; PTB's
+    # default 5s read timeout fails any sizeable media file. Same HERMES_TELEGRAM_HTTP_READ_TIMEOUT
+    # knob as the gateway adapter, whose messaging default is 20s; the standalone default is 60s
+    # because uploads dominate this path.
+    def _bot_request(proxy=None):
+        return HTTPXRequest(read_timeout=_read_timeout, **({"proxy": proxy} if proxy else {}))
+    extra = extra or {}
+    base_url = extra.get("base_url")
+    if base_url:
+        logger.info("send_message: standalone Telegram send via custom base_url %s", base_url)
+        return Bot(token=token, base_url=base_url, base_file_url=extra.get("base_file_url") or base_url,
+                   request=_bot_request())
     try:
         from gateway.platforms.base import resolve_proxy_url
         proxy = resolve_proxy_url("TELEGRAM_PROXY", target_hosts=["api.telegram.org"])
         if not proxy:
-            return Bot(token=token)
-        from telegram.request import HTTPXRequest
+            return Bot(token=token, request=_bot_request())
         logger.info("send_message: standalone Telegram send routed through proxy %s", proxy)
-        return Bot(token=token, request=HTTPXRequest(proxy=proxy), get_updates_request=HTTPXRequest(proxy=proxy))
+        return Bot(token=token, request=_bot_request(proxy), get_updates_request=_bot_request(proxy))
     except Exception as proxy_err:
         logger.warning("send_message: failed to attach Telegram proxy (%s), falling back to direct connection", proxy_err)
-    return Bot(token=token)
+    return Bot(token=token, request=_bot_request())
 
 
 def _telegram_thread_kwargs(thread_id):
@@ -256,11 +273,11 @@ def _telegram_format(message):
         return message, ParseMode.MARKDOWN_V2, False  # formatting unavailable: send as-is
 
 
-async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False):
+async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False, extra=None):
     """One-shot Telegram Bot API send; parse failures fall back to plain text."""
     try:
         formatted, send_parse_mode, _has_html = _telegram_format(message)
-        bot = _telegram_bot(token)
+        bot = _telegram_bot(token, extra)
         from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id
         from gateway.platforms.base import BasePlatformAdapter, utf16_len
         # Telegram accepts a numeric chat_id OR an @username string; never force-int.

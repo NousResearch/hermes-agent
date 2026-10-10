@@ -8,6 +8,7 @@ late-bound via ``_kb`` (import-cycle breaking) so monkeypatching
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import re
 import signal
@@ -152,6 +153,13 @@ class DispatchResult:
     """Memory pressure that restricted this tick: ``"critical"`` (no new
     workers), ``"elevated"`` (at most one), ``None`` (no restriction).
     Reclaim/promotion bookkeeping still ran; deferred tasks stay queued."""
+    tick_yielded: str = ""
+    """Non-empty when this tick REFUSED to serve because the tree this process
+    imported no longer matches the checkout on disk (the content-based skew
+    gate, ruling ``t_8fed34c8``). The reason string starts with
+    ``tree-skew-yield:``. A refused tick reclaims nothing, promotes nothing and
+    spawns nothing; it is deliberately NOT ``skipped_locked`` and NOT idle --
+    a yielding ticker must never read green at the status surface."""
 
 
 def describe_suppression(results: Iterable[Optional[DispatchResult]]) -> str:
@@ -1950,6 +1958,397 @@ def _memory_pressure_level(sample: Optional[Mapping[str, Any]] = None) -> str:
         return "unknown"
 
 
+# ---------------------------------------------------------------------------
+# Consumer-side CONTENT skew gate on the tick (platform-stl ruling t_8fed34c8, R2 + R3)
+# ---------------------------------------------------------------------------
+#
+# The contract: a checkout rewrite must never leave a long-lived consumer serving a mixed
+# revision. ``sys.path``/``sys.modules`` are per-process, so the writer cannot reach a consumer
+# that is already running -- the enforceable half lives in the CONSUMER, and the first (and worst)
+# consumer is this dispatcher tick.
+#
+# Measured live 2026-10-10: gateway pid 56908 (booted 13:06:29) froze a patched ``hermes_cli/*``
+# beside an unpatched ``agent/*``; the disk was repaired, the PROCESS kept serving, and every
+# spawn died ``cannot import name 'ADVISORY_SKILLS_ENV' from 'agent.skill_commands'`` for ~2h56m
+# after the repair. ``gateway.code_skew.detect_code_skew()`` returned ``None`` for that whole
+# window: it fingerprints only ``.git/HEAD`` -> ref -> sha and never the working tree, and the
+# incident moved the WORKING TREE with HEAD unchanged (an interrupted merge leaves HEAD at the
+# pre-merge commit; the recovery restores paths "to HEAD"). So the decision here is CONTENT
+# (``hermes_cli.tree_fingerprint``); the ref check rides along as a cheap fast path and can only
+# ADD detection, never be the whole decision.
+#
+# What a refusal does, deterministically and with no model consulted: spawn nothing this tick,
+# write a NON-GREEN status record a human reads, and file EXACTLY ONE acting card to the seat that
+# owns the bounce (``default``, the ops seat -- see the ruling's D4: the reload door is NOT this
+# worker's). The standalone daemon loop and the CLI ``dispatch`` entry reach the same gate because
+# it sits in :func:`dispatch_once`, the one entry all three share.
+
+#: Greppable prefix of every refusal. A yielding ticker must be distinguishable from a healthy one
+#: at the status surface (the ``cron.scheduler.CronTickYielded`` precedent); this string is what a
+#: reader greps for.
+TICK_YIELD_PREFIX = "tree-skew-yield:"
+
+#: The non-green status record: ``<kanban_home>/kanban/dispatcher_tick_yield.json``, machine-global
+#: like the board itself. Tick-scoped on purpose, and a different record from the boot identity
+#: (this one records WHY a tick served nothing; the boot record records what the process loaded).
+TICK_YIELD_STATUS_FILENAME = "dispatcher_tick_yield.json"
+TICK_YIELD_STATUS_VERSION = 1
+
+#: Exactly ONE acting card, addressed to the seat that owns the bounce.
+TICK_YIELD_ACTOR_ASSIGNEE = "default"
+TICK_YIELD_ACTOR_EVENT = "tree_skew_actor_filed"
+TICK_YIELD_ACTOR_IDEMPOTENCY_PREFIX = "tree-skew:"
+TICK_YIELD_ACTOR_TITLE = "[guard] dispatcher is serving a mixed revision; refusing to spawn"
+
+#: The window the actor's idempotency key is bucketed by -- one hour, the same window the
+#: crash-sweep guard's actor uses. N ticks inside one window resolve to ONE key.
+TICK_YIELD_WINDOW_SECONDS = 3600
+
+
+class DispatcherTickYielded(RuntimeError):
+    """The tick refused to serve: the tree this process imported no longer matches the disk.
+
+    Mirrors ``cron.scheduler.CronTickYielded`` -- a yielding ticker must be distinguishable from a
+    healthy one at the status surface, never a silent or a false green. The exception carries the
+    forensics the status record and the acting card quote verbatim.
+
+    ``str(exc)`` always starts with :data:`TICK_YIELD_PREFIX`.
+    """
+
+    def __init__(self, boot_fingerprint: str, disk_fingerprint: str, *, boot_pid: int) -> None:
+        self.boot_fingerprint = str(boot_fingerprint)
+        self.disk_fingerprint = str(disk_fingerprint)
+        self.boot_pid = int(boot_pid)
+        self.boot_label = _short_tree_fingerprint(self.boot_fingerprint)
+        self.disk_label = _short_tree_fingerprint(self.disk_fingerprint)
+        super().__init__(
+            f"{TICK_YIELD_PREFIX} this dispatcher imported tree content {self.boot_label} "
+            f"(pid {self.boot_pid}) but the checkout on disk is now {self.disk_label}; refusing "
+            f"to spawn from a mixed revision until the gateway is reloaded onto the new code."
+        )
+
+
+def _short_tree_fingerprint(fingerprint: Optional[str]) -> str:
+    """Compact label for a tree fingerprint (degrades to the raw value, never raises)."""
+    try:
+        from hermes_cli.tree_fingerprint import short
+
+        return short(fingerprint)
+    except Exception:  # pragma: no cover - a tree without the module keeps the raw value
+        return fingerprint or "unresolved"
+
+
+def _consumer_tree_skew() -> Optional[tuple[str, str, int]]:
+    """``(boot_fingerprint, disk_fingerprint, boot_pid)`` when THIS process is skewed, else None.
+
+    CONTENT first, and load-bearing: the working tree is what moved in the incident this closes.
+    The git-ref check is consulted only when the content half reports nothing, so a pure HEAD move
+    whose files are byte-identical is still caught -- the ref path can ADD detection but never
+    replace it.
+
+    Every uncertain read returns ``None`` (no boot record, unreadable tree, unchanged tree): the
+    gate fails OPEN, exactly like the ref-only guard it backstops. A guard that refused on an
+    unreadable read would stop the fleet on a transient IO error.
+    """
+    try:
+        from hermes_cli import tree_fingerprint
+
+        content = tree_fingerprint.detect_skew()
+        record = tree_fingerprint.boot_record() or {}
+    except Exception:
+        content, record = None, {}
+    boot_pid = int(record.get("pid") or os.getpid())
+    if content is not None:
+        return str(content[0]), str(content[1]), boot_pid
+
+    try:
+        from gateway import code_skew
+
+        ref_skew = code_skew.detect_code_skew()
+    except Exception:
+        ref_skew = None
+    if ref_skew is None:
+        return None
+    boot_fingerprint = record.get("fingerprint") or f"git-ref:{ref_skew[0]}"
+    return str(boot_fingerprint), f"git-ref:{ref_skew[1]}", boot_pid
+
+
+def _raise_if_tree_skewed() -> None:
+    """Refuse the tick -- raise :class:`DispatcherTickYielded` -- when this process is provably
+    serving a mixed revision. The named entry point of the gate."""
+    skew = _consumer_tree_skew()
+    if skew is None:
+        return
+    raise DispatcherTickYielded(skew[0], skew[1], boot_pid=skew[2])
+
+
+def tick_yield_status_path(path: Any = None) -> Path:
+    """The non-green status record's path, or the explicit one a caller or a test supplies."""
+    if path is not None:
+        return Path(path)
+    return _kb.kanban_home() / "kanban" / TICK_YIELD_STATUS_FILENAME
+
+
+def _record_tick_yield(yielded: DispatcherTickYielded, *, board: Optional[str] = None) -> str:
+    """Write the NON-GREEN status record. Returns the path (or an ``unwritable`` note).
+
+    Best-effort by design -- an unwritable kanban home must not take the tick down -- but never
+    silent: the refusal has already been logged loudly by the caller, and the return value is
+    carried into the log line and the acting card so a reader can find the record even when it
+    could not be written.
+    """
+    path = tick_yield_status_path()
+    payload = {
+        "version": TICK_YIELD_STATUS_VERSION,
+        "yielded": True,
+        "reason": str(yielded),
+        "boot_fingerprint": yielded.boot_fingerprint,
+        "disk_fingerprint": yielded.disk_fingerprint,
+        "boot_label": yielded.boot_label,
+        "disk_label": yielded.disk_label,
+        "pid": yielded.boot_pid,
+        "board": board,
+        "recorded_at": int(time.time()),
+    }
+    try:
+        from utils import atomic_json_write
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_json_write(path, payload, mode=0o600)
+        return str(path)
+    except Exception as exc:
+        _kb._log.warning(
+            "kanban dispatcher: could not write the tree-skew status record to %s: %s", path, exc,
+        )
+        return f"(status record unwritable: {exc})"
+
+
+def _clear_tick_yield_status() -> None:
+    """Retire a stale non-green marker once a tick serves normally again.
+
+    Cleared ONLY when this process wrote the record (it is the one that is now healthy), or when
+    the recording process is PROVEN dead (its refusal is history, not a live condition). A fresh
+    dispatcher process must never clear a live gateway's marker -- that would read green over a
+    frozen gateway, which is the exact false green this record exists to prevent.
+    """
+    path = tick_yield_status_path()
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except (OSError, ValueError):
+        return
+    try:
+        record = json.loads(raw)
+    except (ValueError, TypeError):
+        record = None
+    if isinstance(record, dict):
+        recorded_pid = record.get("pid")
+        try:
+            recorded_pid = int(recorded_pid)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            recorded_pid = None
+        if recorded_pid is not None and recorded_pid != os.getpid():
+            return
+    try:
+        path.unlink()
+    except OSError:
+        pass
+
+
+def _tree_skew_subject_root() -> Path:
+    """The tree the gate reasoned about: the boot record's tree when it names one, else ours.
+
+    In production the two are the same install; naming the RECORDED tree keeps the card honest when
+    a caller points the fingerprint at another root (a scratch-tree demonstration), so a reader
+    never has to reconcile the evidence with the wrong checkout.
+    """
+    try:
+        from hermes_cli import tree_fingerprint
+
+        named = (tree_fingerprint.boot_record() or {}).get("tree")
+        if named:
+            return Path(str(named))
+    except Exception:
+        pass
+    return _tick_yield_tree_root()
+
+
+
+
+def _tick_yield_tree_root() -> Path:
+    """The tree THIS dispatcher runs from -- never a hardcoded path."""
+    return Path(__file__).resolve().parents[1]
+
+
+def _tree_skew_subject_root() -> Path:
+    """The tree the gate reasoned about: the boot record's tree when it names one, else ours."""
+    try:
+        from hermes_cli import tree_fingerprint
+
+        named = (tree_fingerprint.boot_record() or {}).get("tree")
+        if named:
+            return Path(str(named))
+    except Exception:
+        pass
+    return _tick_yield_tree_root()
+
+
+def _tick_yield_board_key(conn: sqlite3.Connection, board: Optional[str]) -> str:
+    """The board slug the actor's idempotency key is scoped to (connection first, argument second)."""
+    if board:
+        try:
+            explicit = _kb._normalize_board_slug(board)
+        except Exception:
+            explicit = None
+        if explicit:
+            return explicit
+    try:
+        for row in conn.execute("PRAGMA database_list").fetchall():
+            if str(row[1]) == "main" and row[2]:
+                db_file = Path(str(row[2]))
+                if db_file.parent == Path(_kb.kanban_home()):
+                    return "default"
+                if db_file.parent.name:
+                    return db_file.parent.name
+    except Exception:
+        pass
+    try:
+        return _kb._slug_or_default(board)
+    except Exception:
+        return "default"
+
+
+def _tick_yield_git_status_lines(tree: Path) -> list:
+    """``git status --porcelain`` for the tree, or the reason it could not be read."""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(tree), "status", "--porcelain"],
+            capture_output=True, text=True, check=False,
+        )
+    except (OSError, ValueError) as exc:
+        return [f"(git unavailable: {exc})"]
+    if proc.returncode != 0:
+        return [f"(git status failed rc={proc.returncode}: {proc.stderr.strip()})"]
+    return proc.stdout.splitlines() or ["(clean)"]
+
+
+def _tick_yield_actor_body(
+    yielded: DispatcherTickYielded,
+    *,
+    board: Optional[str],
+    status_path: str,
+    tree: Optional[Path] = None,
+) -> str:
+    """The acting card's body: deterministic evidence, no model, no prose to interpret."""
+    tree = Path(tree) if tree is not None else _tree_skew_subject_root()
+    return "\n".join([
+        "## Observed",
+        "",
+        f"`{TICK_YIELD_PREFIX}` the kanban dispatcher is refusing to spawn: the tree it IMPORTED",
+        "no longer matches the checkout on disk, so every worker it spawns would run a mixed",
+        "revision. Filed by the dispatcher's tick skew gate -- deterministic, no model consulted.",
+        "",
+        "## The measurement",
+        "",
+        f"- boot content fingerprint: `{yielded.boot_fingerprint}` (label `{yielded.boot_label}`)",
+        f"- disk content fingerprint: `{yielded.disk_fingerprint}` (label `{yielded.disk_label}`)",
+        f"- frozen process pid: {yielded.boot_pid}",
+        f"- tree: `{tree}`",
+        f"- board: `{board or 'unknown'}`",
+        f"- non-green status record: `{status_path}`",
+        "",
+        "## Why this is not the ref-only signal",
+        "",
+        "`gateway.code_skew.detect_code_skew()` fingerprints only `.git/HEAD` -> ref -> sha and",
+        "never reads the working tree, so it reports NO skew while a working-tree rewrite is in",
+        "progress under an unchanged HEAD -- measured live 2026-10-10 at 120 dirty paths with",
+        "`detect_code_skew() == None`. The signal above is content, so that window is covered.",
+        "",
+        "## What closes it",
+        "",
+        "Reload the gateway onto the current checkout (ops-seat hand bounce) -- the live tree only",
+        "loads at a restart. The gate clears itself on the first tick that serves normally.",
+        "",
+        "```",
+        *_tick_yield_git_status_lines(tree),
+        "```",
+    ])
+
+
+def _file_tick_yield_actor(
+    conn: sqlite3.Connection,
+    yielded: DispatcherTickYielded,
+    *,
+    board: Optional[str] = None,
+    status_path: str = "",
+    now: Optional[int] = None,
+) -> Optional[str]:
+    """File EXACTLY ONE acting card for this frozen process, idempotently.
+
+    The idempotency key is ``tree-skew:<boot-fingerprint>:<boot-pid>:<window-start>``. The boot
+    half is stable for the life of the frozen process, so N ticks on one skewed tree can only
+    ever resolve to ONE card -- while a process that boots AFTER a fix is a different pid and may
+    file its own if it, too, is skewed. Best-effort: a board that refuses the write is logged with
+    the key it could not file and never takes the tick down.
+    """
+    moment = int(time.time() if now is None else now)
+    window_start = moment // TICK_YIELD_WINDOW_SECONDS * TICK_YIELD_WINDOW_SECONDS
+    board_key = _tick_yield_board_key(conn, board)
+    key = (
+        f"{TICK_YIELD_ACTOR_IDEMPOTENCY_PREFIX}{yielded.boot_fingerprint}"
+        f":{yielded.boot_pid}:{window_start}"
+    )
+    try:
+        existing = conn.execute(
+            "SELECT id FROM tasks WHERE idempotency_key = ? AND status != 'archived' "
+            "ORDER BY created_at DESC LIMIT 1",
+            (key,),
+        ).fetchone()
+        if existing is not None:
+            return existing["id"]
+        actor_id = _kb.create_task(
+            conn,
+            title=TICK_YIELD_ACTOR_TITLE,
+            body=_tick_yield_actor_body(yielded, board=board_key, status_path=status_path),
+            assignee=TICK_YIELD_ACTOR_ASSIGNEE,
+            created_by="kanban-dispatcher",
+            idempotency_key=key,
+        )
+        with _kb.write_txn(conn):
+            _kb._append_event(
+                conn, actor_id, TICK_YIELD_ACTOR_EVENT,
+                {
+                    "boot_fingerprint": yielded.boot_fingerprint,
+                    "disk_fingerprint": yielded.disk_fingerprint,
+                    "boot_pid": yielded.boot_pid,
+                    "window_start": window_start,
+                    "status_record": status_path,
+                    "board": board_key,
+                },
+            )
+        return actor_id
+    except Exception as exc:
+        _kb._log.warning(
+            "kanban dispatcher: could not file the tree-skew actor (key=%s): %s", key, exc,
+        )
+        return None
+
+
+def _tick_refused_for_tree_skew(
+    conn: sqlite3.Connection,
+    yielded: DispatcherTickYielded,
+    *,
+    board: Optional[str] = None,
+    dry_run: bool = False,
+) -> DispatchResult:
+    """The whole non-green path for a refused tick: loud line, status record, ONE actor, result."""
+    status_path = "(dry run: nothing written)"
+    if not dry_run:
+        status_path = _record_tick_yield(yielded, board=board)
+        _file_tick_yield_actor(conn, yielded, board=board, status_path=status_path)
+    _kb._log.error("kanban dispatcher: %s (status record: %s)", yielded, status_path)
+    return DispatchResult(tick_yielded=str(yielded))
+
+
 def dispatch_once(
     conn: sqlite3.Connection,
     *,
@@ -1972,7 +2371,21 @@ def dispatch_once(
     frames. The loser returns an empty ``DispatchResult`` with
     ``skipped_locked=True`` and writes nothing; the lock is keyed on the
     resolved DB path so unrelated boards tick in parallel.
+
+    CONSUMED FIRST (ruling ``t_8fed34c8``): a process whose imported tree no longer matches the
+    checkout on disk refuses the whole tick -- no reclaim, no promotion, no spawn -- and returns a
+    NON-GREEN ``DispatchResult``. This sits here rather than in the board loop because every entry
+    point (the gateway's embedded dispatcher, ``run_daemon`` and the CLI ``dispatch`` verb) shares
+    this function, so none of them is a hole. The check is once per tick and bounded
+    (``hermes_cli.tree_fingerprint``: a stat walk on the steady state), never per card.
     """
+    try:
+        _raise_if_tree_skewed()
+    except DispatcherTickYielded as yielded:
+        result = _tick_refused_for_tree_skew(conn, yielded, board=board, dry_run=dry_run)
+        _kb._fire_dispatch_tick_hook(result, board=board, dry_run=dry_run)
+        return result
+
     def _locked_tick() -> DispatchResult:
         return _dispatch_once_locked(
             conn,
@@ -2003,6 +2416,10 @@ def dispatch_once(
             result = _locked_tick()
             # Still under the dispatch lock: periodic PASSIVE WAL checkpoint.
             _kbc._maybe_checkpoint_wal(conn, db_path)
+    # This tick served normally, so a non-green marker left by THIS process (or by a process that
+    # is now provably dead) is retired. A fresh process never clears a live gateway's marker.
+    if not dry_run:
+        _clear_tick_yield_status()
     # Lock released. Fire the tick observer strictly OUTSIDE the critical
     # section: a slow subscriber must never stall a sibling dispatcher's tick.
     _kb._fire_dispatch_tick_hook(result, board=board, dry_run=dry_run)
@@ -2991,8 +3408,22 @@ def run_daemon(
     are test hooks. Each tick resolves ``kanban.max_in_progress`` exactly like
     the gateway dispatcher and ``hermes kanban dispatch`` — the standalone
     daemon must not be the one uncapped entry point.
+
+    This loop is ALSO a long-lived consumer (ruling ``t_8fed34c8``): it records its own content
+    fingerprint at startup, so a checkout rewritten under it is detected by the gate in
+    :func:`dispatch_once` -- exactly as it is for the gateway's embedded dispatcher. A one-shot
+    ``hermes kanban dispatch`` needs no record: it imports fresh from disk and cannot be stale.
     """
     import threading
+
+    try:
+        from hermes_cli import tree_fingerprint
+
+        tree_fingerprint.record_boot()
+    except Exception:
+        # A daemon that cannot fingerprint its tree keeps ticking (fail open); the gate no-ops.
+        logger.debug("kanban daemon: could not record the boot tree fingerprint", exc_info=True)
+
 
     if stop_event is None:
         stop_event = threading.Event()

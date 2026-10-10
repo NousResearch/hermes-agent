@@ -847,8 +847,12 @@ class GeminiNativeClient:
         return {"x-goog-api-key": self.api_key}
 
     def _headers(self) -> dict[str, str]:
+        # ``_auth_headers`` is the only credential source.  An ``Authorization`` header inherited through
+        # caller-supplied ``default_headers`` (e.g. copied from an OpenAI-compat or aggregator profile) makes
+        # Google treat an API-key call as an OAuth2 flow and reject it with 401, so drop it case-insensitively.
+        inherited = {k: v for k, v in self._default_headers.items() if k.lower() != "authorization"}
         return {"Content-Type": "application/json", "Accept": "application/json", **self._auth_headers(),
-                "User-Agent": f"{_API_CLIENT} (gemini-native)", "X-Goog-Api-Client": _API_CLIENT, **self._default_headers}
+                "User-Agent": f"{_API_CLIENT} (gemini-native)", "X-Goog-Api-Client": _API_CLIENT, **inherited}
 
     def _http_error(self, response: httpx.Response, body_text: Optional[str] = None) -> GeminiAPIError:
         return gemini_http_error(response, body_text=body_text, api_key=self.api_key, base_url=self.base_url)

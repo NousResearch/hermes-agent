@@ -872,8 +872,21 @@ def _pid_from_record(record: Optional[dict[str, Any]], key: str = "pid") -> Opti
 
 
 def _start_times_conflict(recorded_start: Any, current_start: Any) -> bool:
-    """PID-reuse guard: True only when BOTH start times are known and differ."""
-    return None not in (recorded_start, current_start) and current_start != recorded_start
+    """PID-reuse guard: True only when BOTH start times are known and they are too far apart to be
+    the same incarnation.
+
+    Same-host readings drift by up to ~2 s on macOS (``kern.boottime`` is adjusted under a running
+    process, #117505), so an exact ``!=`` here reported a live gateway as a stale-lock owner and a
+    live record as reused. Uses the same :func:`start_time_fingerprints_match` tolerance as every
+    other identity check; a recycled PID is never that close to the original's start time. Junk on
+    either side is not a conflict — the caller has no evidence either way.
+    """
+    if None in (recorded_start, current_start):
+        return False
+    try:
+        return not start_time_fingerprints_match(recorded_start, current_start)
+    except (TypeError, ValueError):
+        return False
 
 
 def _live_pid_from_record(record: Optional[dict[str, Any]]) -> Optional[int]:

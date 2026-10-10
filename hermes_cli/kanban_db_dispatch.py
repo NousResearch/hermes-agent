@@ -393,6 +393,40 @@ def _worker_alive(pid: Optional[int], started_at) -> bool:
     return not _pid_recycled(pid, started_at)
 
 
+def _fingerprint_matches(pid: int, recorded: str) -> bool:
+    """True when ``recorded`` identifies the live process ``pid``, tolerating same-incarnation
+    start-time drift.
+
+    ``_process_fingerprint`` composes ``"<instantiation epoch>|<start time>"``. The epoch half must
+    match exactly (it changes only on reboot / container recreate, so a mismatch there is real PID
+    reuse). The start-time half is read again from the OS on every liveness decision, and on macOS
+    ``psutil``'s ``create_time`` is derived from ``kern.boottime``, which the kernel adjusts under a
+    running process (#117505) — the same incarnation then reads up to ~2 s away from the value
+    recorded at spawn. An exact string compare therefore reported a verifiably live worker as a
+    recycled stranger: ``_worker_alive`` went False, the expired claim was released instead of
+    extended, and ``_reclaim_dead_workers`` released the claim and respawned a SECOND worker beside
+    the first — two writers on one card, both performing its external side effects.
+
+    The tolerance is the repo's existing :data:`gateway.status.START_TIME_DRIFT_TOLERANCE` (200, i.e.
+    2 s on either the ×100 psutil-centisecond or the Linux clock-tick scale), already used by
+    ``delivery_ledger``, ``host_rendezvous`` and ``api_server_runs``. A genuine stranger stays far
+    outside that window, so PID-reuse refusal is unchanged.
+    """
+    recorded_epoch, _, recorded_start = recorded.partition("|")
+    current = _process_fingerprint(pid)
+    if current is None:
+        return False
+    current_epoch, _, current_start = current.partition("|")
+    if recorded_epoch != current_epoch:
+        return False
+    from gateway.status import start_time_fingerprints_match
+
+    try:
+        return start_time_fingerprints_match(recorded_start, current_start)
+    except (TypeError, ValueError):
+        return False
+
+
 def _pid_recycled(pid: Optional[int], started_at) -> bool:
     """True when a live ``pid`` is NOT the process fingerprinted at spawn (or the fingerprint can no
     longer be read). Signalling it would hit a stranger. ``None`` fingerprint = legacy row, never
@@ -403,7 +437,7 @@ def _pid_recycled(pid: Optional[int], started_at) -> bool:
     if started_at == UNVERIFIED_WORKER_FINGERPRINT:
         return True
     if isinstance(started_at, str) and "|" in started_at:
-        return _process_fingerprint(int(pid)) != started_at
+        return not _fingerprint_matches(int(pid), started_at)
     from gateway.status import _start_times_agree, get_process_start_time
     current = get_process_start_time(int(pid))
     if current is None:

@@ -303,7 +303,7 @@ def _check_manifest_v2(report: DoctorReport, manifest: Any) -> None:
     missing: list[str] = []
     unpinned: list[str] = []
     for req in pydeps:
-        dist = _re.split(r"[<>=!~\[;\s]", req, maxsplit=1)[0].strip()
+        dist = _requirement_dist(req)
         if not _re.search(r"<|==|~=", req):
             unpinned.append(req)
         if not dist:
@@ -367,6 +367,90 @@ def _check_desktop_half_copy(report: DoctorReport, path: Path) -> None:
         return
 
 
+def _requirement_dist(requirement: str) -> str:
+    """Distribution name of a requirement string ("pkg>=1,<2" -> "pkg")."""
+    import re as _re
+
+    return _re.split(r"[<>=!~\[;\s]", requirement, maxsplit=1)[0].strip()
+
+
+def _staged_runtime_venv() -> "Path | None":
+    """pm's staged runtime venv, or None when this process already runs inside it.
+
+    Plugin Doctor probes imports in the calling interpreter. When the gateway runs
+    pm's staged runtime venv but this CLI was launched from another one (e.g. the
+    legacy source-tree venv), an in-process probe blesses dependencies the gateway
+    cannot import (#134469) — declared deps must be re-checked inside that venv.
+    """
+    try:
+        from pm.environments import running_from_selected_environment
+        from pm.packages import Venv
+
+        venv = Venv()
+        venv_dir = venv.venv_dir()
+        project_root = venv.project_root()
+    except (ImportError, OSError, RuntimeError, ValueError):
+        # pm may be absent (isolated plugin checkout) or hold an unreadable selection.
+        return None
+    if venv_dir is None:
+        return None
+    staged = Path(venv_dir)
+    if not (staged / "pyvenv.cfg").is_file():
+        # pm also resolves the intended location before the first sync; an empty
+        # directory is not a provisioned venv (same guard as doctor_platform).
+        return None
+    return None if running_from_selected_environment(project_root) else staged
+
+
+_VENV_DEPS_PROBE = (
+    "import importlib.metadata as m, json, sys\n"
+    "out = {}\n"
+    "for dist in json.load(sys.stdin):\n"
+    "    try:\n"
+    "        out[dist] = m.version(dist)\n"
+    "    except m.PackageNotFoundError:\n"
+    "        out[dist] = None\n"
+    "json.dump(out, sys.stdout)\n"
+)
+
+
+def _deps_missing_from_venv(venv: Path, requirements: "list[str]") -> "list[str] | None":
+    """Declared requirements absent from *venv*; None when the probe itself cannot run."""
+    import subprocess
+
+    dists = sorted({dist for dist in (_requirement_dist(req) for req in requirements) if dist})
+    if not dists:
+        return []
+    python = venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    try:
+        run = subprocess.run(
+            [str(python), "-I", "-c", _VENV_DEPS_PROBE],
+            input=json.dumps(sorted(set(dists))), capture_output=True, text=True, timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    try:
+        versions = json.loads(run.stdout)
+    except ValueError:
+        return None
+    return [dist for dist, version in versions.items() if version is None]
+
+
+def _check_runtime_venv_dependencies(report: "DoctorReport", venv: "Path | None") -> None:
+    """Outside the runtime sandbox: verify declared deps under the interpreter the gateway runs."""
+    if venv is None:
+        return
+    pydeps = getattr(report.manifest, "python_dependencies", None) or []
+    if not pydeps:
+        return
+    missing = _deps_missing_from_venv(venv, list(pydeps))
+    if missing:
+        report.warning(
+            "declared python_dependencies missing from the staged runtime venv the gateway runs: "
+            + ", ".join(missing)
+            + " — run `hermes pm repair` to resync the runtime venv, then restart gateways")
+
+
 def doctor_plugin(target: str | os.PathLike[str] | None = None) -> DoctorReport:
     """Validate one plugin through Hermes' real scanner and registration path."""
     try:
@@ -377,6 +461,8 @@ def doctor_plugin(target: str | os.PathLike[str] | None = None) -> DoctorReport:
         return report
 
     report = DoctorReport(path)
+    # Before the sandbox swaps HERMES_HOME: pm's venv selection lives in the real one.
+    runtime_venv = _staged_runtime_venv()
     try:
         with _doctor_runtime(path) as host:
             report.manifest = host.manifest
@@ -429,6 +515,7 @@ def doctor_plugin(target: str | os.PathLike[str] | None = None) -> DoctorReport:
         report.error(f"unexpected validation failure: {type(exc).__name__}: {exc}")
     # Outside the runtime sandbox: it swaps HERMES_HOME for a temp dir, and the copy lives in the real one.
     _check_desktop_half_copy(report, path)
+    _check_runtime_venv_dependencies(report, runtime_venv)
     return report
 
 

@@ -616,11 +616,23 @@ def _cmd_delete(db, args):
             return
     elif _pinned_note:
         print(f"Warning: deleting a pinned session '{resolved_session_id}'.")
+    from hermes_state_runtime import RuntimeStoreError
     try:
         if not db.delete_session(resolved_session_id, sessions_dir=_sessions_dir(), exclude_active_write_guards=True):
             return _not_found(args.session_id)
     except SessionActiveWriteGuardError as exc:
         print(f"Cannot delete active session: {exc}")
+        return 1
+    except RuntimeStoreError as exc:
+        # The ledger refuses to delete a session with accepted, unfinished turns; say what to do.
+        if exc.reason == 'unknown_execution':
+            print(f"Cannot delete session '{resolved_session_id}': a turn was lost across a gateway restart. "
+                  f"Acknowledge it first with: hermes sessions discard {resolved_session_id}")
+        elif exc.reason == 'session_busy':
+            print(f"Cannot delete session '{resolved_session_id}': it has a queued or running turn. "
+                  "Wait for it to finish (or stop it), then retry.")
+        else:
+            print(f"Cannot delete session '{resolved_session_id}': {exc.reason}")
         return 1
     print(f"Deleted session '{resolved_session_id}'.")
 

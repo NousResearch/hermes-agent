@@ -263,6 +263,19 @@ class TestMethodNotFoundDetection:
         assert _is_method_not_found_error(_mcp_error(-32601)) is True
 
 
+    def test_method_not_supported_phrasing_is_match(self):
+        # google-workspace's MCP server surfaces ping-unsupported as a plain
+        # "Method not supported: ping" string with no structural -32601 code.
+        from tools.mcp_tool_errors import _is_method_not_found_error
+        assert _is_method_not_found_error(Exception("Method not supported: ping")) is True
+
+    def test_method_not_supported_for_other_method_is_not_match(self):
+        # The "not supported" phrasing is ping-scoped: a genuine
+        # method-not-supported for any other method must not latch the
+        # ping→list_tools fallback.
+        from tools.mcp_tool_errors import _is_method_not_found_error
+        assert _is_method_not_found_error(Exception("Method not supported: search")) is False
+
     def test_unrelated_exception_is_not_match(self):
         from tools.mcp_tool_errors import _is_method_not_found_error
         assert _is_method_not_found_error(TimeoutError()) is False
@@ -298,6 +311,23 @@ class TestKeepaliveProbeFallback:
         task.initialize_result = _caps(tools=SimpleNamespace())
         task.session = SimpleNamespace(
             send_ping=AsyncMock(side_effect=Exception("Unknown method: ping")),
+            list_tools=AsyncMock(return_value=SimpleNamespace(tools=[])),
+        )
+
+        await task._keepalive_probe()
+
+        task.session.send_ping.assert_awaited_once()
+        task.session.list_tools.assert_awaited_once()
+        assert task._ping_unsupported is True
+
+    async def test_falls_back_on_method_not_supported_string(self):
+        """google-workspace's MCP server phrases ping-unsupported as
+        "Method not supported: ping" (no structural -32601 code); the probe
+        must latch the fallback and use list_tools, NOT reconnect-loop."""
+        task = MCPServerTask("test")
+        task.initialize_result = _caps(tools=SimpleNamespace())
+        task.session = SimpleNamespace(
+            send_ping=AsyncMock(side_effect=Exception("Method not supported: ping")),
             list_tools=AsyncMock(return_value=SimpleNamespace(tools=[])),
         )
 

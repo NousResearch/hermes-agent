@@ -5,6 +5,7 @@ the MRO with zero test edits, plus aggressive behavior cases for the
 admission/mention policy and the lazy adapter-helper resolver.
 """
 
+import subprocess
 import sys
 
 import pytest
@@ -43,7 +44,6 @@ C1_MEMBERS = [
     "_resolve_channel_skills",
     "_resolve_channel_prompt",
     "_discord_require_mention",
-    "_discord_allow_any_attachment",
     "_discord_max_attachment_bytes",
     "_is_discord_voice_message_attachment",
     "_snapshot_gate_env",
@@ -86,22 +86,32 @@ class TestSeamIdentity:
     def test_adapter_subclasses_mixin(self):
         assert issubclass(DiscordAdapter, DiscordGateMixin)
 
-    def test_all_28_members_identity_bound(self):
+    def test_all_gate_members_identity_bound(self):
         for name in C1_MEMBERS:
             assert getattr(DiscordAdapter, name) is getattr(DiscordGateMixin, name), name
 
     def test_mixin_has_no_module_level_adapter_import(self):
-        # Circular-import guard: the mixin must not import adapter at module
-        # level — only indented (in-method) lazy imports are permitted.
-        import ast
-
-        tree = ast.parse(open(adapter_mod.__file__.replace("adapter.py", "discord_gate_mixin.py")).read())
-        for node in ast.walk(tree):
-            if isinstance(node, ast.ImportFrom) and "plugins.platforms.discord.adapter" in (
-                node.module or ""
-            ):
-                assert node.col_offset > 0, f"module-level adapter import at {node.lineno}"
-        assert True
+        code = (
+            "import importlib, sys\n"
+            "import plugins.platforms.discord as package\n"
+            "import plugins.platforms.discord.adapter\n"
+            "import plugins.platforms.discord.discord_gate_mixin\n"
+            "sys.modules['plugins.platforms.discord.adapter'] = None\n"
+            "delattr(package, 'adapter')\n"
+            "del sys.modules['plugins.platforms.discord.discord_gate_mixin']\n"
+            "delattr(package, 'discord_gate_mixin')\n"
+            "module = importlib.import_module("
+            "'plugins.platforms.discord.discord_gate_mixin')\n"
+            "print(module.DiscordGateMixin.__name__)\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "DiscordGateMixin"
 
 
 class TestGateAllowDeny:
@@ -162,7 +172,7 @@ class TestLazyHelperResolver:
     def test_snapshot_gate_env_uses_live_adapter_helper(self, monkeypatch):
         calls = []
 
-        def fake_scoped(name):
+        def fake_scoped(name, default=""):
             calls.append(name)
             return "777"
 

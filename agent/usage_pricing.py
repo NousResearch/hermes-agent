@@ -389,6 +389,18 @@ _SNAPSHOT_PROVIDER_ALIASES = {
 _GOOGLE_PROVIDER_NAMES = {"google", "gemini", "vertex", "google-gemini", "google-ai-studio", "google-vertex", "vertex-ai"}
 
 
+def _subscription_providers() -> frozenset[str]:
+    """Providers the user pays for as a flat plan (``usage.subscriptions`` in config.yaml, e.g. a token
+    plan): their usage bills as ``included``, like a Codex login, rather than unknown or per token."""
+    from hermes_cli.config import load_config_readonly
+
+    usage = load_config_readonly().get("usage")
+    listed = usage.get("subscriptions") if isinstance(usage, dict) else None
+    if not isinstance(listed, list):
+        return frozenset()
+    return frozenset(str(name).strip().lower() for name in listed if str(name).strip())
+
+
 def resolve_billing_route(
     model_name: str, provider: Optional[str] = None, base_url: Optional[str] = None
 ) -> BillingRoute:
@@ -409,8 +421,8 @@ def resolve_billing_route(
     def host(name: str) -> bool:
         return base_url_host_matches(url, name)
 
-    if provider_name == "openai-codex":
-        return BillingRoute(provider="openai-codex", model=model, base_url=url, billing_mode="subscription_included")
+    if provider_name == "openai-codex" or provider_name in _subscription_providers():
+        return BillingRoute(provider=provider_name, model=model, base_url=url, billing_mode="subscription_included")
     if provider_name == "openrouter" or host("openrouter.ai"):
         return BillingRoute(provider="openrouter", model=model, base_url=url, billing_mode="official_models_api")
     if provider_name == "nous" or host("inference-api.nousresearch.com"):

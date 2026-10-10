@@ -2150,12 +2150,18 @@ telemetry:
 # are the dependable unit: providers without a price list never report a cost,
 # so a dollar budget counts only the sessions Hermes could price. Nothing is
 # enforced; the desktop shows how much is used and when the month's pace runs out.
+#
+# subscriptions: providers you pay for as a flat plan (a token or coding plan).
+# Their usage is recorded as "included" at $0 instead of "price unknown", the
+# way a ChatGPT/Codex login already is. Names are provider ids as Command Center
+# shows them. Applies to sessions from now on; past sessions keep their status.
 # usage:
 #   budgets:
 #     openrouter:
 #       monthly_usd: 20
 #     xiaomi:
 #       monthly_tokens: 50000000
+#   subscriptions: [xiaomi, alibaba-coding-plan]
 
 
 # =============================================================================

@@ -965,7 +965,7 @@ _EXTRA_KNOWN_ROOT_KEYS = {
     "multiplex_profiles", "profile_routes", "platforms", "require_mention",
     "unauthorized_dm_behavior", "signal", "allow_all_users",
     "timeouts",          # unified timeout resolution section (agent/deadline.py)
-    "usage",             # usage.budgets per-provider monthly limits (hermes_cli/usage_budget.py)
+    "usage",             # usage.budgets (hermes_cli/usage_budget.py), usage.subscriptions (agent/usage_pricing.py)
 }
 _KNOWN_ROOT_KEYS = frozenset(DEFAULT_CONFIG.keys()) | _EXTRA_KNOWN_ROOT_KEYS
 

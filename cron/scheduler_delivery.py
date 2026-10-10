@@ -174,26 +174,6 @@ def _inchannel_seed_allowed(*, is_dm: bool, user_id: Optional[str]) -> bool:
     return bool(is_dm or user_id)
 
 
-def _redact_cron_payload(text: str, what: str) -> str:
-    """Fail-closed secret redaction for anything a cron job emits outward.
-
-    Every outward lane — chat message, session mirror, bot-chat turn — must apply the same policy,
-    so the policy lives in one place. ``force=True`` because this is a safety boundary, not
-    logging: the ``security.redact_secrets`` preference governs how much is scrubbed from the
-    user's own logs and must not be able to turn scrubbing off on the way out to a chat (same
-    reasoning as ``tools/delegation_live_log.py``). Empty input is returned as-is; any failure
-    inside the redactor replaces the payload entirely rather than letting an unscanned value out.
-    """
-    if not text:
-        return text
-    try:
-        from agent.redact import redact_sensitive_text
-        return redact_sensitive_text(text, force=True)
-    except Exception as e:
-        logger.warning("Failed to redact secrets from cron %s: %s", what, e)
-        return "[REDACTED - redaction failed]"
-
-
 def _cron_display_name(job: dict) -> str:
     """Job name/id as it appears in outward-facing text. The mirror sinks and the thread title
     splice the job *name* around the redacted payload, and the name is user-controlled config — a
@@ -2136,3 +2116,7 @@ from cron import scheduler as _sched
 from cron import scheduler_delivery_origin as _origin
 from cron import scheduler_preflight as _preflight
 from cron import scheduler_script as _script
+
+# Split out for the file-size ratchet; re-exported here so every existing caller (and any
+# monkeypatch of this module's name) keeps working unchanged.
+from cron.scheduler_delivery_redact import _redact_cron_payload as _redact_cron_payload

@@ -132,7 +132,8 @@ def local_lineage_index(conn):
     ``acp_adapter.catalog`` does: a canonical reset keeps the creation id as the owner and moves the
     transcript to a child, so every segment is one conversation. ``superseded`` holds the listable
     roots of earlier reset segments (filtered in SQL, before paging); ``heads`` maps the latest
-    reset segment to ``(owner, lineage)`` for the row that represents the conversation."""
+    reset segment to ``(owner, lineage)`` for the row that represents the conversation. A delete
+    of that row removes the whole lineage (``hermes_state_mutation_guards.delete_targets``)."""
     superseded, heads = set(), {}
     rows = conn.execute("SELECT value FROM state_meta WHERE key GLOB ? AND json_valid(value) "
                         "AND json_array_length(value, '$.lineage') > 1", (POLICY_PREFIX + '*',)).fetchall()
@@ -150,14 +151,13 @@ def local_lineage_index(conn):
 
 
 def annotate_local_lineages(sessions, heads):
-    """Name the whole conversation on its representative row: ``_lineage_root_id`` is the creation
-    id (the id every surface resolves, deletes and pins by), ``_lineage_ids`` every segment."""
+    """Name every segment on the conversation's representative row (``_lineage_ids``, which the
+    Desktop matches deletes, tombstones and stored ids against). ``_lineage_root_id`` stays the
+    compression root: pins and archive flags live on the listed segment's own chain."""
     for row in sessions:
         found = heads.get(row.get('_lineage_root_id') or row['id'])
         if found is not None:
-            owner, lineage = found
-            row['_lineage_ids'] = list(lineage)
-            row['_lineage_root_id'] = owner if row['id'] != owner else None
+            row['_lineage_ids'] = list(dict.fromkeys([*found[1], *(row.get('_lineage_ids') or ())]))
     return sessions
 
 

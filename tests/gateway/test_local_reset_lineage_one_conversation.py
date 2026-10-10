@@ -46,7 +46,8 @@ async def test_reset_lineage_lists_once_and_deleting_the_listed_row_deletes_it(r
     from gateway.session_mutations import mutate_session
     t = reset_lineage
     rows = t.authority.db.list_sessions_rich(order_by_last_active=True, limit=50)
-    assert [(r['id'], r.get('_lineage_root_id')) for r in rows] == [(t.s1, t.s0)], 'listed as two conversations'
+    assert [r['id'] for r in rows] == [t.s1], 'listed as two conversations'
+    assert {t.s0, t.s1} <= set(rows[0]['_lineage_ids'])
     # Pages are filtered before LIMIT/OFFSET: the superseded segment never fills a later page.
     assert t.authority.db.list_sessions_rich(limit=1, offset=1) == []
     row = t.authority.db.get_session(t.s1)

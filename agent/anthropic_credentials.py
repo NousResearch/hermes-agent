@@ -350,15 +350,29 @@ def _read_claude_code_credentials_from_file() -> Optional[dict[str, Any]]:
     return _claude_oauth_record(data, "claude_code_credentials_file") if data is not None else None
 
 
+def _claude_code_source_suppressed() -> bool:
+    """``suppressed_sources.anthropic`` holds ``claude_code``: the user removed (or asked Hermes to stop
+    borrowing) the external Claude Code login while ``auth.adopt_external_logins`` stays on. The borrowed
+    login must then never be resolved, exactly like the config opt-out. Late-bound, as in credential_pool."""
+    try:
+        from hermes_cli.auth import is_source_suppressed
+        return is_source_suppressed("anthropic", "claude_code")
+    except Exception:
+        return False
+
+
 def read_claude_code_credentials() -> Optional[dict[str, Any]]:
     """Read refreshable Claude Code OAuth credentials (Keychain and/or file). When both exist: prefer the only
     non-expired one (Claude Code 2.1.x refreshes one source but not the other), else the later ``expiresAt`` so a
     refresh uses the freshest refreshToken. ~/.claude.json primaryApiKey is deliberately excluded.
 
     This is the only reader of the borrowed login, so ``auth.adopt_external_logins: false`` is enforced here:
-    every resolver, pool seed/sync and 401 refresher then sees "no Claude Code login" and never touches the file."""
+    every resolver, pool seed/sync and 401 refresher then sees "no Claude Code login" and never touches the file.
+    A ``claude_code`` entry in ``suppressed_sources.anthropic`` is enforced the same way."""
     from agent.credential_sources import adopt_external_logins_enabled
     if not adopt_external_logins_enabled():
+        return None
+    if _claude_code_source_suppressed():
         return None
     kc_creds = _read_claude_code_credentials_from_keychain()
     file_creds = _read_claude_code_credentials_from_file()

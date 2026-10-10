@@ -31,6 +31,9 @@ logger = logging.getLogger("gateway.run")
 
 DEFAULT_IDLE_EXIT_SECONDS = 600.0
 IDLE_EXIT_REASON = "idle_exit"
+# Head of the ``exit_reason`` persisted with ``stopped``: a reconnecting client's ``--recover``
+# (ui-tui/scripts/gateway_bootstrap.py) tells this self-ended exit from an operator stop by it.
+IDLE_EXIT_STOP_PREFIX = "auto-started gateway idle"
 # Kanban statuses the embedded dispatcher acts on without a human (promotion, spawn, reclaim).
 _KANBAN_DUE_STATUSES = ("scheduled", "ready", "running", "review")
 
@@ -176,7 +179,7 @@ def _begin_idle_exit(runner, window: float) -> None:
     """Withdraw admission synchronously (no await between the last idle check and here), then stop."""
     runner._draining = True
     runner.session_runtime_descriptor.update(state="draining", capabilities=[], drain_reason=IDLE_EXIT_REASON)
-    runner._exit_reason = f"auto-started gateway idle for {window:.0f}s (gateway.unmanaged_idle_exit_seconds)"
+    runner._exit_reason = f"{IDLE_EXIT_STOP_PREFIX} for {window:.0f}s (gateway.unmanaged_idle_exit_seconds)"
     logger.info("Exiting: %s; the next client starts a fresh gateway", runner._exit_reason)
     runner._idle_exit_stop_task = asyncio.ensure_future(runner.stop())
 

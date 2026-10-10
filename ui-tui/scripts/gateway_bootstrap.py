@@ -1,9 +1,11 @@
 """Ink's private pipe bootstrap; the child is a client, never an agent owner.
 
 ``--start`` ensures the owner (first launch). A reconnect discovers only, except ``--recover``
-re-ensures an owner that CRASHED: discovery finds none while its retained runtime record still
-claims it live and the operator recorded no stop intent. An explicitly stopped gateway (its
-record says ``stopped``) is never resurrected by a reconnect.
+re-ensures an owner that is gone without anyone asking: it CRASHED (its retained runtime record
+still claims it live) or it ended ITSELF by the auto-started idle exit (``gateway/run_idle_exit.py``,
+"the next client starts a fresh gateway" — this reconnecting client is that next client). An
+explicitly stopped gateway (``hermes gateway stop`` / a planned stop: ``stopped`` without the idle
+exit's reason, or a durable ``desired_state: stopped``) is never resurrected by a reconnect.
 """
 import contextlib
 import json
@@ -19,13 +21,20 @@ _LIVE_CLAIMS = frozenset({"running", "starting", "draining", "degraded"})
 
 
 def owner_crashed(home: Path) -> bool:
-    """After discovery answered ``absent``: did the owner serving *home* die without a clean stop?"""
+    """After discovery answered ``absent``: did the owner serving *home* end without anyone asking
+    (a crash, or its own idle exit while this client was away — suspended, asleep, disconnected)?"""
+    from gateway.run_idle_exit import IDLE_EXIT_STOP_PREFIX
     from gateway.status import read_runtime_status
     from hermes_cli.gateway_runtime_multiplex import implied_host_root, multiplexer_serves_home
     owner = multiplexer_serves_home(home) or implied_host_root(home) or home
     record = read_runtime_status(owner / "gateway_state.json")
-    return (isinstance(record, dict) and record.get("desired_state") != "stopped"
-            and record.get("gateway_state") in _LIVE_CLAIMS)
+    if not isinstance(record, dict) or record.get("desired_state") == "stopped":
+        return False
+    # The owner's own idle exit (gateway/run_idle_exit.py) persists ``stopped`` with this reason;
+    # no operator asked for it, and "the next client starts a fresh gateway" is this client.
+    idle_exited = (record.get("gateway_state") == "stopped"
+                   and str(record.get("exit_reason") or "").startswith(IDLE_EXIT_STOP_PREFIX))
+    return idle_exited or record.get("gateway_state") in _LIVE_CLAIMS
 
 
 def bootstrap(start: bool, recover: bool = False) -> dict:

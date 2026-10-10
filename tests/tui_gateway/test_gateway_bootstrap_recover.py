@@ -28,6 +28,11 @@ def _load_bootstrap():
     ({"gateway_state": "running", "pid": 999999}, True),  # SIGKILL / OOM: dead process still claims live
     ({"gateway_state": "stopped", "pid": 999999}, False),  # `hermes gateway stop`
     ({"gateway_state": "running", "desired_state": "stopped"}, False),  # durable operator stop intent
+    # An auto-started owner ended itself (idle exit) while the TUI was suspended: the next client
+    # starts a fresh one. Its reason, not the bare `stopped`, tells it from an operator stop.
+    ({"gateway_state": "stopped", "exit_reason": "auto-started gateway idle for 600s "
+      "(gateway.unmanaged_idle_exit_seconds)"}, True),
+    ({"gateway_state": "stopped", "exit_reason": "Gateway restart requested"}, False),
 ])
 def test_recover_reensures_only_a_crashed_owner(monkeypatch, tmp_path, record, ensured):
     module = _load_bootstrap()

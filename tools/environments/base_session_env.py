@@ -178,7 +178,9 @@ def _split_cwd_marker(output: str, marker: str) -> tuple[str | None, str] | None
     first = output.rfind(marker, search_start, last)
     if first == -1 or first == last:
         return None
-    cwd_path = output[first + len(marker) : last].strip() or None
+    # Only line terminators: spaces and tabs at either end are part of a real directory
+    # name (`build `), and dropping them records a path that does not exist.
+    cwd_path = output[first + len(marker) : last].strip("\r\n") or None
     line_start = output.rfind("\n", 0, first)
     if line_start == -1:
         line_start = first

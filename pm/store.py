@@ -30,6 +30,11 @@ ALL_TARGETS = (
     "darwin-arm64",
 )
 MUSL_TARGETS = frozenset({"linux-x64-musl", "linux-arm64-musl"})
+JUNK_NAMES = frozenset({".DS_Store", "Thumbs.db", "desktop.ini", ".localized"})
+
+
+def is_junk(name: str) -> bool:
+    return name in JUNK_NAMES or name.startswith("._")
 
 
 def _native_machine() -> str:
@@ -275,7 +280,7 @@ def flatten_single_dir(dest: Path) -> None:
     (bin/, cmd/, lib/...). Refuses on name collisions. The tree was extracted
     seconds ago, when a Windows scanner still holds it (#131884)."""
     keep = {"bin", "cmd", "lib", "libexec", "share", "etc", "usr"}
-    entries = list(dest.iterdir())
+    entries = [entry for entry in dest.iterdir() if not is_junk(entry.name)]
     if len(entries) != 1 or not entries[0].is_dir() or entries[0].name in keep:
         return
     inner = entries[0]
@@ -320,12 +325,16 @@ def tree_digest(root: Path) -> str:
         descend = []
         for name in sorted(dirnames):
             path = Path(dirpath) / name
+            if is_junk(name):
+                continue
             if path.is_symlink() or is_junction(path):
                 files.append((path.relative_to(root).as_posix(), path))
             elif name != "__pycache__":
                 descend.append(name)
         dirnames[:] = descend
         for fname in filenames:
+            if is_junk(fname):
+                continue
             path = Path(dirpath) / fname
             files.append((path.relative_to(root).as_posix(), path))
     files.sort(key=lambda item: item[0])

@@ -362,6 +362,16 @@ _CONTENT_POLICY_BLOCKED_PATTERNS = (
     "prompt was flagged by our safety", "responses cannot be generated due to safety",
     "content_filter", "responsibleaipolicyviolation", "new_sensitive",
     "content exists risk",
+    # OpenRouter's gateway guardrail rejects the *prompt itself* (e.g. a bare
+    # <tool> placeholder in skill prose) with this fixed envelope. It is a
+    # deterministic per-request verdict, not a WAF/CDN page: the fallback chain
+    # would replay the identical 403 on every other provider (#132504).
+    "prompt injection patterns detected",
+    # Same verdict can ride only in ``error.metadata.patterns`` when the
+    # message shortens to a bare "Request blocked." (#132504) — without the
+    # tokens the 403 hits the WAF markers above and is misrouted
+    # upstream_blocked, replaying the refusal across the fallback chain.
+    "role_tag_injection", "role_delimiter_injection",
 )
 
 # Auth patterns (non-status-code signals).

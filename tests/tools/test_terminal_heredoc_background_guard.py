@@ -77,6 +77,15 @@ class TestInertQuotedHeredocPayloadAllowed:
         )
         assert guidance(cmd) is None
 
+    @pytest.mark.parametrize("interpreter", ["~/proj/.venv/bin/python", "/Users/me/Documents/proj/work/.venv/bin/python"])
+    def test_multi_segment_interpreter_path(self, interpreter):
+        cmd = (
+            "cd /tmp && " + interpreter + " - <<'PY'" + NL
+            + "x = a " + AMP + " b" + NL
+            + "PY"
+        )
+        assert guidance(cmd) is None
+
     def test_env_prefix_and_interpreter_path(self):
         cmd = (
             "FOO=1 env /usr/bin/python3.12 - <<'PY'" + NL

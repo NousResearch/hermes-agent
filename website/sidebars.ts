@@ -280,6 +280,16 @@ const sidebars: SidebarsConfig = {
                 },
                 {
                   type: 'category',
+                  label: 'session-health',
+                  key: 'skills-bundled-session-health',
+                  collapsed: true,
+                  items: [
+                    'user-guide/skills/bundled/session-health/session-health-session-health-check',
+                    'user-guide/skills/bundled/session-health/session-health-session-loop-detection',
+                  ],
+                },
+                {
+                  type: 'category',
                   label: 'social-media',
                   key: 'skills-bundled-social-media',
                   collapsed: true,

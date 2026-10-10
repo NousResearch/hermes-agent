@@ -51,6 +51,46 @@ class TestResolveContextCwd:
         assert resolve_context_cwd() == Path(os.path.expanduser("~"))
 
 
+class TestContainerCwdTranslation:
+    """A sandboxed gateway sets terminal.cwd to the path the AGENT sees
+    (/workspace). Context discovery runs host-side, so without translating that
+    back through the bind mount no AGENTS.md is ever found on the Docker backend."""
+
+    def test_translates_container_cwd_to_host_mount(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setenv("TERMINAL_CWD", "/workspace")
+        monkeypatch.setenv(
+            "TERMINAL_DOCKER_VOLUMES", f'["{tmp_path}:/workspace"]'
+        )
+        assert resolve_context_cwd() == tmp_path.resolve()
+
+    def test_read_only_mount_does_not_translate(self, monkeypatch, tmp_path):
+        # container_mount_map() drops :ro mounts. A read-only view is not the
+        # session's working directory and must not become one.
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setenv("TERMINAL_CWD", "/readonly-data")
+        monkeypatch.setenv(
+            "TERMINAL_DOCKER_VOLUMES", f'["{tmp_path}:/readonly-data:ro"]'
+        )
+        assert resolve_context_cwd() is None
+
+    def test_non_docker_backend_does_not_translate(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        monkeypatch.setenv("TERMINAL_CWD", "/workspace")
+        monkeypatch.setenv(
+            "TERMINAL_DOCKER_VOLUMES", f'["{tmp_path}:/workspace"]'
+        )
+        assert resolve_context_cwd() is None
+
+    def test_unmapped_container_path_still_returns_none(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setenv("TERMINAL_CWD", "/nowhere")
+        monkeypatch.setenv(
+            "TERMINAL_DOCKER_VOLUMES", f'["{tmp_path}:/workspace"]'
+        )
+        assert resolve_context_cwd() is None
+
+
 
 class TestSessionCwdOverride:
     """The #29531 per-session arm: a contextvar cwd wins over TERMINAL_CWD so a

@@ -163,6 +163,17 @@ class TestCursesBrowse:
         result = self._run_with_keys(sessions, keys)
         assert result == "s1"
 
+    def test_second_slash_while_searching_is_inert(self):
+        """A '/' typed while already searching does not get inserted into the query."""
+        sessions = [
+            {"id": "s1", "source": "cli", "title": "Data bus review", "preview": "data", "last_active": time.time()},
+            {"id": "s2", "source": "cli", "title": "Alpha project", "preview": "", "last_active": time.time()},
+        ]
+        # '/' arms search, 'd' + '/' (inert) + 'a' filters to 'da' still matching s1.
+        keys = [ord("/"), ord("d"), ord("/"), ord("a"), 10]
+        result = self._run_with_keys(sessions, keys)
+        assert result == "s1"
+
     def test_ordinary_letter_auto_enters_search(self):
         """Typing a non-reserved letter still filters immediately (no '/' needed)."""
         sessions = [

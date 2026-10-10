@@ -152,9 +152,10 @@ class _CursesBrowser:
         Search is mode-based so single-letter actions can never swallow a
         query's first character: press ``/`` to enter search mode, after which
         every printable character (including ``d`` and ``q``) goes into the
-        filter. While *not* searching, ``q`` quits, ``d`` deletes, and any
-        other printable character auto-enters search mode with itself as the
-        first query character.
+        filter. A second ``/`` while already searching is inert. While *not*
+        searching, ``q`` quits, ``d`` deletes, and any other printable
+        character auto-enters search mode with itself as the first query
+        character.
         """
         c = self.curses
         if self.confirm_delete is not None:  # y/n confirmation mode — only an explicit 'y' deletes
@@ -202,7 +203,9 @@ class _CursesBrowser:
                     return False
                 # First non-reserved printable char auto-enters search mode.
                 self.searching = True
-            self.search += ch
+                self.search += ch
+            elif ch != "/":  # a second '/' is inert while already searching
+                self.search += ch
             self._refilter()
         return False
 

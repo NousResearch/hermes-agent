@@ -34,8 +34,17 @@ def _make_adapter(tmp_path=None):
 
 
 def _set_dm(adapter, room_id="!room1:example.org", is_dm=True):
-    """Mark a room as DM (or not) in the adapter's cache."""
+    """Give the adapter a complete joined member list for a DM or room."""
     adapter._dm_rooms[room_id] = is_dm
+    members = [adapter._user_id, "@alice:example.org"]
+    if not is_dm:
+        members.append("@bob:example.org")
+    adapter._client = MagicMock()
+    adapter._client.get_state_event = AsyncMock(side_effect=Exception("no room state"))
+    adapter._client.state_store.has_full_member_list = AsyncMock(return_value=True)
+    adapter._client.state_store.get_members = AsyncMock(return_value=members)
+    adapter._client.state_store.get_member_profiles = AsyncMock(return_value={})
+    adapter._client.get_joined_members = AsyncMock(return_value={})
 
 
 def _make_event(

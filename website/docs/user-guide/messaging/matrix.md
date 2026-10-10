@@ -20,10 +20,10 @@ Before setup, here's the part most people want to know: how Hermes behaves once 
 
 | Context | Behavior |
 |---------|----------|
-| **DMs** | Hermes responds to every message. No `@mention` needed. Each DM has its own session. Set `MATRIX_DM_MENTION_THREADS=true` to start a thread when the bot is `@mentioned` in a DM. Any room with 2 or fewer joined members is treated as a DM this way too, even if it has an explicit name — Matrix clients auto-name 1:1 chats, so name alone isn't a reliable signal. |
-| **Rooms** | By default, Hermes requires an `@mention` to respond. Set `MATRIX_REQUIRE_MENTION=false` or add room IDs to `MATRIX_FREE_RESPONSE_ROOMS` for free-response rooms. Room invites are auto-accepted. A deliberately-created 2-person room is still classified as a DM (see above) and silently bypasses `MATRIX_ALLOWED_ROOMS`, `MATRIX_REQUIRE_MENTION`, and `MATRIX_FREE_RESPONSE_ROOMS` — add a third member if you need it to behave like a regular room. |
+| **DMs** | Hermes treats a room as a private bot chat when exactly two users have joined: the bot and one other user. It responds to every message from an authorised user without an `@mention`, and each chat has its own session. Set `MATRIX_DM_MENTION_THREADS=true` to start a thread when the bot is `@mentioned` in a private bot chat. The room name and `m.direct` metadata do not change this classification. |
+| **Rooms** | By default, Hermes requires an `@mention` to respond. Set `MATRIX_REQUIRE_MENTION=false` or add room IDs to `MATRIX_FREE_RESPONSE_ROOMS` for free-response rooms. Room invites are auto-accepted. A room with more than two joined users, or whose joined membership cannot be determined, follows room rules. Only private bot chats bypass `MATRIX_ALLOWED_ROOMS` and the room mention settings. |
 | **Threads** | Hermes supports Matrix threads (MSC3440). If you reply in a thread, Hermes keeps the thread context isolated from the main room timeline. Threads where the bot has already participated do not require a mention. |
-| **Auto-threading** | By default, Hermes auto-creates a thread for each message it responds to in a room. This keeps conversations isolated. Set `MATRIX_AUTO_THREAD=false` to disable. Set `MATRIX_DM_AUTO_THREAD=true` (default false) to also auto-create threads for DM messages — this is distinct from `MATRIX_DM_MENTION_THREADS`, which only starts a thread when the bot is `@mentioned` in a DM. Rooms with 2 or fewer joined members are DM-classified (see above) and follow `MATRIX_DM_AUTO_THREAD`, not `MATRIX_AUTO_THREAD`. |
+| **Auto-threading** | By default, Hermes auto-creates a thread for each message it responds to in a room. This keeps conversations isolated. Set `MATRIX_AUTO_THREAD=false` to disable. Set `MATRIX_DM_AUTO_THREAD=true` (default false) to also auto-create threads for private bot chats. This is distinct from `MATRIX_DM_MENTION_THREADS`, which starts a thread when the bot is `@mentioned` in a private bot chat. These two-person chats follow `MATRIX_DM_AUTO_THREAD`. |
 | **Commands** | Hermes accepts normal `/commands` when your Matrix client sends them. If your client reserves `/` for local commands, use `!commands` instead; Hermes normalizes known `!command` aliases to `/command`. |
 | **Interactive controls** | Dangerous-command approval and `/model` selection can use Matrix reactions. Approval reactions can be limited to the user who requested the action. |
 | **Thinking and tool activity** | Matrix uses threaded, editable thinking/tool-activity panes when gateway progress is enabled, so updates do not flood the main room timeline. |
@@ -103,6 +103,7 @@ matrix:
   auto_thread: true               # Auto-create threads for responses (default: true)
   dm_mention_threads: false       # Create thread when @mentioned in DM (default: false)
   max_message_length: 15000       # Outbound chunk size in UTF-8 bytes (default and max: 15000)
+  thread_backfill_limit: 20       # Prior thread messages to fetch for a new session (0 disables)
 ```
 
 Or via environment variables:
@@ -412,7 +413,7 @@ When E2EE is enabled, Hermes:
 
 Hermes does not expose Matrix-specific agent tools (such as room creation, invites, or redaction) — the agent interacts with Matrix through normal message delivery. The adapter uses reactions and redactions internally to power approval prompts and pickers.
 
-If `MATRIX_ALLOWED_ROOMS` is set, Hermes only responds in those rooms (DMs are exempt).
+If `MATRIX_ALLOWED_ROOMS` is set, Hermes only responds in those rooms and in private bot chats with exactly two joined users, including the bot.
 
 Reaction controls use:
 
@@ -513,9 +514,9 @@ MATRIX_HOME_ROOM=!abc123def456:matrix.example.org
 
 ## Room allowlist (`allowed_rooms`)
 
-Restrict the bot to a fixed set of Matrix rooms. When set, the bot **only** responds in rooms whose ID appears in the list — messages from any other room are silently ignored, even if the bot is mentioned.
+Restrict the bot to a fixed set of Matrix rooms. When set, the bot responds in listed rooms and private bot chats. It ignores messages from other rooms, even if the bot is mentioned.
 
-**DMs (direct chat rooms) are exempt** from this filter, so authorized users can always reach the bot one-on-one.
+**Private bot chats are exempt** from this filter when exactly two users have joined, including the bot. Other rooms require an allowlist entry, even if a Matrix client marks them as direct.
 
 ```yaml
 matrix:

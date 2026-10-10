@@ -37,7 +37,13 @@ def stage_runtime(uv: Path, python: Path, destination: Path, *,
             shutil.copyfile(project / name, snapshot / name)
         environment.create()
         if wheelhouse is None:
-            environment.sync(snapshot, locked=True, no_default_groups=True,
+            # frozen, not locked: `--locked` re-resolves against the ambient
+            # index (mirrors are bridged on purpose, pm/index_config) and any
+            # deviation from the lock's recorded pypi.org registry — a mirror
+            # URL or even a trailing slash — turns "the lockfile is
+            # authoritative" into a hard bootstrap failure (#125321).
+            # `--frozen` installs the exact locked, hash-verified set.
+            environment.sync(snapshot, locked=False, no_default_groups=True,
                              no_install_project=True, timeout=600)
         else:
             environment.install_wheelhouse(snapshot, wheelhouse, timeout=600)

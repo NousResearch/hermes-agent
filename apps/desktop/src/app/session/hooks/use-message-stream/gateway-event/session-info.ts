@@ -220,6 +220,22 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
         const cwdMoved = payload.cwd !== $currentCwd.get()
         const sameSession = !!sessionId && sessionId === lastCwdInfoSessionRef.current
 
+        // "Moved" must mean moved from THIS runtime's own last-reported cwd —
+        // $currentCwd is seeded at boot (remembered workspace, the configured
+        // default via ensureDefaultWorkspaceCwd) and a restored session's real
+        // cwd legitimately differs from that seed. The seed-vs-session
+        // reconciliation arrives as ordinary session.info heartbeats, so the
+        // FIRST info for the restored runtime looked like a switch (skipped)
+        // and every later one like a same-session move, flipping the sidebar
+        // into the grouped Projects view on every relaunch (#72491). The
+        // runtime cache holds the cwd this session last reported; a heartbeat
+        // that restates it is not a move. `null` = this runtime never reported
+        // a cwd to us (fresh entry / pruned) — learning it is not a move
+        // either, and the next info establishes the baseline.
+        const lastReportedCwd = sessionId
+          ? sessionStateByRuntimeIdRef.current.get(sessionId)?.cwd ?? null
+          : null
+
         lastCwdInfoSessionRef.current = sessionId
         setCurrentCwdTransient(payload.cwd)
 
@@ -231,7 +247,7 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
         // backend has confirmed (#71254).
         setWorkspaceCwdOwner($selectedStoredSessionId.get())
 
-        if (cwdMoved && sameSession) {
+        if (cwdMoved && sameSession && lastReportedCwd !== null && payload.cwd !== lastReportedCwd) {
           void followActiveSessionCwd(payload.cwd)
         }
       }

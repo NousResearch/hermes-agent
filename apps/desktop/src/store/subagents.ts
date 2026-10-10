@@ -241,8 +241,17 @@ function toProgress(payload: SubagentPayload, prev: SubagentProgress | undefined
   }
 }
 
-/** Reconcile a scoped, race-checked snapshot without replacing stream history. */
-export function reconcileSubagentSnapshot(sid: string, children: SubagentPayload[]) {
+const failedDelegationId = (p: SubagentPayload) => `delegation:${str(p.delegation_id)}:${num(p.task_index) ?? 0}`
+
+/** Reconcile a scoped, race-checked snapshot without replacing stream history.
+ *  `failedDelegations` are durable failed tasks the live roster no longer holds
+ *  (ended, or a renderer reload dropped them): they land as terminal failed rows
+ *  unless a live row already covers that task or a turn already retired it. */
+export function reconcileSubagentSnapshot(
+  sid: string,
+  children: SubagentPayload[],
+  failedDelegations: SubagentPayload[] = []
+) {
   const map = $subagentsBySession.get()
   const previous = getSubagentsForSession(map, sid) ?? []
   const ids = new Set(children.map(p => str(p.subagent_id)).filter(Boolean))
@@ -277,6 +286,31 @@ export function reconcileSubagentSnapshot(sid: string, children: SubagentPayload
     } else {
       next[index] = JSON.stringify(prev) === JSON.stringify(projected) ? prev : projected
     }
+  }
+
+  for (const payload of failedDelegations) {
+    const id = failedDelegationId(payload)
+    const delegationId = str(payload.delegation_id)
+    const taskIndex = num(payload.task_index) ?? 0
+
+    if (
+      !delegationId ||
+      retiredSubagents.get(previous)?.has(id) ||
+      next.some(item => item.id === id || (item.delegationId === delegationId && item.taskIndex === taskIndex))
+    ) {
+      continue
+    }
+
+    const at = (num(payload.completed_at) ?? 0) * 1000 || Date.now()
+    const startedAt = (num(payload.dispatched_at) ?? 0) * 1000 || at
+
+    next.push({
+      ...toProgress({ ...payload, subagent_id: id, summary: str(payload.error) }, undefined, 'subagent.complete'),
+      durationSeconds: Math.max(0, Math.round((at - startedAt) / 1000)),
+      id,
+      startedAt,
+      updatedAt: at
+    })
   }
 
   if (next.length !== previous.length || next.some((item, index) => item !== previous[index])) {
@@ -363,6 +397,28 @@ export function upsertSubagent(sid: string, payload: SubagentPayload, createIfMi
   setSessionSubagents(sid, list, nextList)
 }
 
+// Statuses that end a subagent run. The store's asStatus normalizes the last
+// three to failed/interrupted, so the event path treats them as terminal too.
+const SUBAGENT_TERMINAL_STATUSES = new Set([
+  'completed',
+  'failed',
+  'interrupted',
+  'timeout',
+  'error',
+  'cancelled',
+  'canceled'
+])
+
+/** True only for a `subagent.complete` carrying a status that ends the run —
+ *  the one event the interrupted-session guard in the message-stream must let
+ *  through (#75505). */
+export const isTerminalSubagentCompletion = (
+  eventType: string,
+  payload: Record<string, unknown> | undefined | null
+): boolean =>
+  eventType === 'subagent.complete' &&
+  SUBAGENT_TERMINAL_STATUSES.has(typeof payload?.status === 'string' ? payload.status : '')
+
 export function buildSubagentTree(items: readonly SubagentProgress[]): SubagentNode[] {
   const nodes = new Map<string, SubagentNode>()
 
@@ -393,6 +449,20 @@ export function buildSubagentTree(items: readonly SubagentProgress[]): SubagentN
 
 export const activeSubagentCount = (items: readonly SubagentProgress[]) =>
   items.filter(item => item.status === 'queued' || item.status === 'running').length
+
+/** Spawn-tree panel scope (#75505): running/queued rows from EVERY session —
+ *  cross-session visibility is the point, a background session's live work
+ *  must stay visible — but terminal rows only for the session the user is in.
+ *  The status-bar indicator counts the same way, so the count and the tree it
+ *  opens can never disagree, while finished history from inactive sessions
+ *  stops accumulating forever. */
+export const subagentsForPanel = (
+  bySession: Record<string, SubagentProgress[]>,
+  activeSessionId: string | null
+): SubagentProgress[] =>
+  Object.entries(bySession).flatMap(([sid, items]) =>
+    sid === activeSessionId ? items : items.filter(item => item.status === 'running' || item.status === 'queued')
+  )
 
 export const failedSubagentCount = (items: readonly SubagentProgress[]) =>
   items.filter(item => item.status === 'failed' || item.status === 'interrupted').length

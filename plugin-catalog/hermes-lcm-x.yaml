@@ -1,7 +1,7 @@
 name: hermes-lcm-x
 title: LCM-X
 repo: https://github.com/electricsheephq/lcm-x
-sha: 2f3a96623d351649a0714eb42d98ff5b945337f2
+sha: 601a9ccb3d5fefbe242a453e57ed2c8196bf33c3
 description: 'Lossless context memory engine: instead of lossy compaction, LCM-X keeps every turn in a local SQLite store (lcm.db)
   and builds a recoverable DAG of summaries over it, with 15 lcm_* tools to search, recall and expand earlier context. Select it
   with context.engine: lcm-x. Upgrading from hermes-lcm (breaking in v0.24.0): stop Hermes, then in plugins.enabled replace
@@ -19,7 +19,7 @@ tier: community
 category: memory
 requires_hermes: '>=0.21.3'
 docs_url: https://github.com/electricsheephq/lcm-x#readme
-version: "0.24.1"
+version: "0.24.3"
 platforms: []
 capabilities:
   provides_tools:

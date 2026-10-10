@@ -1,14 +1,14 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useState } from 'react'
 
-import { LogTail } from '@/components/chat/log-tail'
 import { getLogs } from '@/hermes'
 import { startCompletionPoll } from '@/lib/completion-poll'
 import { $activeGatewayProfile } from '@/store/profile'
 
 export const LOG_POLL_MS = 2000
 
-const STDIO_MARKER_RE = /^===== \[.*\] starting MCP server '(.+)' =====$/
+// Current banner: `<asctime> ===== starting …`; files written before it use `===== [<time>] starting …`.
+const STDIO_MARKER_RE = /^(?:\d{4}-\d{2}-\d{2} [\d:,]+ )?===== (?:\[.*\] )?starting MCP server '(.+)' =====$/
 
 export function filterStdioSections(lines: string[], server: string): string[] {
   const out: string[] = []
@@ -31,15 +31,7 @@ export function filterStdioSections(lines: string[], server: string): string[] {
 
 export type McpLogSource = 'agent' | 'stdio'
 
-export function McpLogs({
-  emptyLabel,
-  server,
-  source
-}: {
-  emptyLabel: string
-  server: null | string
-  source: McpLogSource
-}) {
+export function useMcpLogLines(server: null | string, source: McpLogSource): null | string[] {
   const [lines, setLines] = useState<null | string[]>(null)
   const activeProfile = useStore($activeGatewayProfile)
 
@@ -60,5 +52,5 @@ export function McpLogs({
     })
   }, [server, source, activeProfile])
 
-  return <LogTail emptyLabel={emptyLabel} lines={lines} />
+  return lines
 }

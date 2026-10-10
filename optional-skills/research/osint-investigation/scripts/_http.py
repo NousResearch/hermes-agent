@@ -54,7 +54,7 @@ def get(
                 # provider's actual message ("OVER_RATE_LIMIT" etc.).
                 try:
                     body = e.read(2048).decode("utf-8", errors="replace")
-                except Exception:  # noqa: BLE001
+                except Exception:
                     body = ""
                 raise RuntimeError(
                     f"HTTP 429 rate-limited by {urllib.parse.urlsplit(url).netloc}. "

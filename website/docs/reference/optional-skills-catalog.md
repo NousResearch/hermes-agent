@@ -64,6 +64,8 @@ hermes skills uninstall <skill-name>
 | [**auteur**](../user-guide/skills/optional/creative/creative-auteur.md) | Design and build cinematic, award-level web pages. |
 | [**baoyu-article-illustrator**](../user-guide/skills/optional/creative/creative-baoyu-article-illustrator.md) | Article illustrations: type × style × palette consistency. |
 | [**baoyu-comic**](../user-guide/skills/optional/creative/creative-baoyu-comic.md) | Knowledge comics (知识漫画): educational, biography, tutorial. |
+| [**brag**](../user-guide/skills/optional/creative/creative-brag.md) | Project launch video via Hyperframes, upstream-maintained. |
+| [**brag-slim**](../user-guide/skills/optional/creative/creative-brag-slim.md) | Launch video from a project or URL, upstream-maintained. |
 | [**comfyui**](../user-guide/skills/optional/creative/creative-comfyui.md) | Generate images, video, and audio via diffusion workflows. |
 | [**concept-diagrams**](../user-guide/skills/optional/creative/creative-concept-diagrams.md) | Generate flat, minimal educational SVG visuals as HTML. |
 | [**creative-ideation**](../user-guide/skills/optional/creative/creative-creative-ideation.md) | Generate ideas via named methods from creative practice. |
@@ -213,7 +215,9 @@ hermes skills uninstall <skill-name>
 |-------|-------------|
 | [**canvas**](../user-guide/skills/optional/productivity/productivity-canvas.md) | Fetch Canvas LMS courses and assignments via API token. |
 | [**decision-questionnaire**](../user-guide/skills/optional/productivity/productivity-decision-questionnaire.md) | Turn an unanswerable decision into a questionnaire doc. |
+| [**first-task**](../user-guide/skills/optional/productivity/productivity-first-task.md) | Run the first task chat that setup hands off. |
 | [**here-now**](../user-guide/skills/optional/productivity/productivity-here-now.md) | Publish sites to &#123;slug&#125;.here.now and store files in Drives. |
+| [**initiate-setup**](../user-guide/skills/optional/productivity/productivity-initiate-setup.md) | Run the first-run setup chat in the Hermes desktop app. |
 | [**live-dashboard**](../user-guide/skills/optional/productivity/productivity-live-dashboard.md) | Build self-updating dashboards from live sources. |
 | [**memento-flashcards**](../user-guide/skills/optional/productivity/productivity-memento-flashcards.md) | Spaced-repetition flashcards: create, review, quiz, export. |
 | [**property-listings**](../user-guide/skills/optional/productivity/productivity-property-listings.md) | Present property and rental listings as desktop cards. |

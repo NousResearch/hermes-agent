@@ -6,7 +6,7 @@ description: "当 Hermes 运行在远程机器、容器或跳板机后面时，�
 
 # SSH / 远程主机上的 OAuth
 
-部分 Hermes 提供商——**Spotify** 和 **远程 MCP 服务器**（Linear、Sentry、Atlassian、Asana、Figma 等）——使用*回环重定向（loopback redirect）* OAuth 流程。认证服务器将浏览器重定向到 `http://127.0.0.1:<port>/callback`，由 Hermes 启动的小型 HTTP 监听器获取授权码。
+部分 Hermes 提供商——**Spotify**（插件目录中的 `spotify` 插件）和 **远程 MCP 服务器**（Linear、Sentry、Atlassian、Asana、Figma 等）——使用*回环重定向（loopback redirect）* OAuth 流程。认证服务器将浏览器重定向到 `http://127.0.0.1:<port>/callback`，由 Hermes 启动的小型 HTTP 监听器获取授权码。
 
 当 Hermes 和浏览器在同一台机器上时，这一切运行正常。一旦两者不在同一台机器上就会出问题：你笔记本上的浏览器试图访问**你笔记本**上的 `127.0.0.1`，但监听器绑定的是**远程服务器**上的 `127.0.0.1`。
 
@@ -21,7 +21,7 @@ description: "当 Hermes 运行在远程机器、容器或跳板机后面时，�
 ssh -N -L 43827:127.0.0.1:43827 user@remote-host
 
 # 在远程机器的现有 SSH 会话中：
-hermes auth add spotify --no-browser
+hermes spotify login --no-browser
 # → Hermes 打印授权 URL，在笔记本的浏览器中打开。
 # → 浏览器重定向到 127.0.0.1:43827/callback，隧道转发到远程监听器，登录完成。
 ```
@@ -60,7 +60,7 @@ ssh -N -L 43827:127.0.0.1:43827 user@remote-host
 
 ```bash
 ssh user@remote-host
-hermes auth add spotify --no-browser
+hermes spotify login --no-browser
 ```
 
 Hermes 检测到 SSH 会话，跳过自动打开浏览器，并打印授权 URL 以及 `Waiting for callback on http://127.0.0.1:<port>/callback`。

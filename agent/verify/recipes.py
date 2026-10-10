@@ -47,7 +47,7 @@ class Recipe:
         }
 
     @classmethod
-    def from_dict(cls, raw: Any) -> "Recipe | None":
+    def from_dict(cls, raw: Any) -> Recipe | None:
         """Tolerant loader mirroring grok's ``normalizeVerifyRecipe``; accepts
         both this module's field names and grok's camelCase aliases."""
         if not isinstance(raw, dict):

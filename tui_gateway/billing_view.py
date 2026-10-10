@@ -71,8 +71,8 @@ def _serialize_auto_reload(ar, format_money) -> dict | None:
         "reload_to_display": format_money(ar.reload_to_usd), "card": card_out}
 
 
-def _serialize_billing_state(state, *, free_tier: bool = False) -> dict:
-    """Serialize a BillingState for the wire (Decimals → strings, money-safe). ``free_tier`` marks the
+def _serialize_billing_state(state, *, free_tier_account: bool = False) -> dict:
+    """Serialize a BillingState for the wire (Decimals → strings, money-safe). ``free_tier_account`` marks the
     Nous free tier: no account, no balance, nothing to pay; the renderer branches on it before
     ``logged_in``."""
     from agent.billing_view import format_money
@@ -92,7 +92,7 @@ def _serialize_billing_state(state, *, free_tier: bool = False) -> dict:
               "is_default_ceiling": m.is_default_ceiling}
     return {
         "ok": True, "logged_in": state.logged_in,
-        "free_tier": bool(free_tier), "free_tier_model": GUEST_MODEL if free_tier else None,
+        "free_tier_account": bool(free_tier_account), "free_tier_model": GUEST_MODEL if free_tier_account else None,
         "org_name": state.org_name,
         "org_slug": state.org_slug, "role": state.role, "is_admin": state.is_admin,
         "can_change_plan": state.can_change_plan, "can_charge": state.can_charge,

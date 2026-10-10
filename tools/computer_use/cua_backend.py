@@ -22,7 +22,7 @@ from hermes_platform.host.runtime import is_wsl
 from tools.computer_use.backend import ActionResult, ComputerUseBackend
 from tools.computer_use.cua_backend_capture import _CaptureMixin
 from tools.computer_use.cua_backend_daemon import _EmbeddedCuaDaemon
-from tools.computer_use.cua_backend_driver import (  # noqa: F401 — resolve_cua_driver_cmd: frozen updater surface
+from tools.computer_use.cua_backend_driver import (
     _CUA_DRIVER_CMD_ENV, cua_driver_binary_available, cua_driver_runtime_contract_status,
     resolve_cua_driver_cmd)
 from tools.computer_use.cua_backend_input import _InputMixin
@@ -35,7 +35,7 @@ _CUA_TELEMETRY_ENV_VAR = "CUA_DRIVER_RS_TELEMETRY_ENABLED"
 _CUA_NATIVE_WAYLAND_ENV_VAR = "CUA_DRIVER_RS_ENABLE_WAYLAND"
 
 
-def _computer_use_cfg() -> Dict[str, Any]:
+def _computer_use_cfg() -> dict[str, Any]:
     """The ``computer_use`` config block, or ``{}`` when config is unreadable."""
     with contextlib.suppress(Exception):
         from hermes_cli.config import load_config
@@ -122,7 +122,7 @@ def _computer_use_max_image_dimension() -> Optional[int]:
         dim = 1456
     return dim if dim > 0 else None
 
-def desktop_identity(env: Optional[Dict[str, str]] = None) -> str:
+def desktop_identity(env: Optional[dict[str, str]] = None) -> str:
     """The screen a backend spawned from ``env`` acts on: its DISPLAY (``''`` when none). Recorded next to the
     cached backend so a Bot Desktop that starts (or restarts on another number) AFTER the backend was cached is
     noticed — the cached cua-driver still points at the old seat or at no display at all."""
@@ -134,7 +134,7 @@ def backend_display_stale(recorded: str, current: str) -> bool:
     return (recorded or "") != (current or "")
 
 
-def cua_driver_child_env(base_env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+def cua_driver_child_env(base_env: Optional[dict[str, str]] = None) -> dict[str, str]:
     """Env for spawning cua-driver: ``base_env`` (default ``os.environ``) plus ``CUA_DRIVER_RS_TELEMETRY_ENABLED=0``
     unless the user opted in, plus the native-Wayland bridge (``computer_use.native_wayland`` config opt-in, only when
     the child has a Wayland display). Used by every spawn site (MCP, status, doctor, install) so CLI and gateway
@@ -150,7 +150,29 @@ def cua_driver_child_env(base_env: Optional[Dict[str, str]] = None) -> Dict[str,
         env[_CUA_NATIVE_WAYLAND_ENV_VAR] = "1"
     return env
 
-def sanitized_cua_driver_env() -> Dict[str, str]:
+def sandbox_mcp_invocation() -> Optional[tuple[tuple[str, list[str]], dict[str, str]]]:
+    """``((command, args), child_env)`` spawning ``cua-driver mcp`` INSIDE the terminal backend when the Bot
+    Desktop is placed there (the driver in the sandbox image drives the sandbox's own screen); None on a
+    gateway-hosted desktop, where the local driver is used. Placement is the authority: a ``terminal``
+    placement gets its screen started here and a ``refused`` one raises — the host driver is never the
+    fallback for a sandbox whose screen is down."""
+    from tools.bot_desktop import placement, runtime as _bd_runtime
+    if _bd_runtime.tool_placement() == placement.GATEWAY:
+        return None
+    published = _bd_runtime.published_env()
+    if not published.get("DISPLAY"):
+        raise RuntimeError("the screen inside the terminal backend's sandbox is gone; start it again")
+    from tools.bot_desktop import sandbox_host
+    env = _bd_runtime._sandbox_env(create=True)
+    if env is None:
+        raise RuntimeError("the terminal backend's sandbox is not running, so there is nowhere to run cua-driver")
+    command, args = sandbox_host.cua_mcp_invocation(env, _bd_runtime._profile_name(),
+                                                    {**published, _CUA_TELEMETRY_ENV_VAR: "0"})
+    _bd_runtime.touch_activity()
+    return (command, args), {"PATH": os.environ.get("PATH", "")}
+
+
+def sanitized_cua_driver_env() -> dict[str, str]:
     """``cua_driver_child_env()`` with Hermes provider secrets stripped — cua-driver is a third-party binary and must
     never inherit API keys. Falls back to the unsanitized telemetry env if the sanitizer can't import."""
     env = cua_driver_child_env()
@@ -161,7 +183,7 @@ def sanitized_cua_driver_env() -> Dict[str, str]:
         return _sanitize_subprocess_env(env)
     return env
 
-def _run_quiet(argv: List[str], *, timeout: float, swallow: Any = (), **kw: Any) -> Any:
+def _run_quiet(argv: list[str], *, timeout: float, swallow: Any = (), **kw: Any) -> Any:
     """``subprocess.run`` for short probe verbs: text mode, stdin=DEVNULL unless overridden (older drivers fall into a
     stdin-reading mode on unknown verbs; EOF makes them exit fast instead of blocking until the timeout), output
     captured unless the caller redirects it. Exceptions in ``swallow`` return None; others raise."""
@@ -256,12 +278,17 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
         self._clear_active_target()
 
     def start(self) -> None:
-        # Runtime acquisition is on-demand, never the explicit install command
+        # Driver inside the terminal backend: the sandbox image pins its own cua-driver; the host
+        # binary (if any) is not the one that will run, so neither its acquisition nor its contract
+        # matters. On the host, runtime acquisition is on-demand, never the explicit install command
         # (which may elevate for host setup and bypass the lazy-install gate).
-        if not os.environ.get(_CUA_DRIVER_CMD_ENV, "").strip():
-            from pm import ensure
-            ensure("cua-driver")
-        contract = cua_driver_runtime_contract_status()
+        if sandbox_mcp_invocation() is not None:
+            contract = {"ready": True}
+        else:
+            if not os.environ.get(_CUA_DRIVER_CMD_ENV, "").strip():
+                from pm import ensure
+                ensure("cua-driver")
+            contract = cua_driver_runtime_contract_status()
         if not contract.get("ready"):
             raise RuntimeError(f"cua-driver is not ready: {contract.get('reason') or 'runtime contract is incomplete'}. "
                                + ("Update the binary selected by HERMES_CUA_DRIVER_CMD or remove that override."
@@ -330,22 +357,22 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
         # alongside `element_index` so cua-driver detects "stale" explicitly instead of silently
         # re-resolving to a different element. Cleared whenever a fresh capture overwrites the snapshot
         # context.
-        self._snapshot_tokens: Dict[int, str] = {}
+        self._snapshot_tokens: dict[int, str] = {}
 
-    def _set_active_target(self, target: Dict[str, Any]) -> None:
+    def _set_active_target(self, target: dict[str, Any]) -> None:
         self._active_pid = target["pid"]
         self._active_window_id = target["window_id"]
         self._snapshot_tokens = {}  # prior snapshot's tokens: disarm before any capture so an exception can't pair them
         self._last_target = {"pid": self._active_pid, "window_id": self._active_window_id}
 
     def launch_app(self, *, bundle_id: Optional[str] = None, name: Optional[str] = None,
-                   urls: Optional[List[str]] = None, additional_arguments: Optional[List[str]] = None,
-                   creates_new_application_instance: bool = False) -> Dict[str, Any]:
+                   urls: Optional[list[str]] = None, additional_arguments: Optional[list[str]] = None,
+                   creates_new_application_instance: bool = False) -> dict[str, Any]:
         """Idempotent launch returning ``{pid, bundle_id, name, windows[]}``. ``creates_new_application_instance=True``
         forces a fresh instance so concurrent runs touching the same app get isolated windows."""
         if not bundle_id and not name:
             raise ValueError("launch_app requires either bundle_id or name")
-        args: Dict[str, Any] = {"session": self._session_id, **{k: v for k, v in (
+        args: dict[str, Any] = {"session": self._session_id, **{k: v for k, v in (
             ("bundle_id", bundle_id), ("name", name), ("urls", urls and list(urls)),
             ("additional_arguments", additional_arguments and list(additional_arguments)),
             ("creates_new_application_instance", creates_new_application_instance or None)) if v}}
@@ -354,7 +381,7 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
 
     def bring_to_front(self, *, pid: int, window_id: Optional[int] = None) -> ActionResult:
         """Activate a window so subsequent foreground-dispatched input lands on it."""
-        args: Dict[str, Any] = {"pid": int(pid), **({} if window_id is None else {"window_id": int(window_id)})}
+        args: dict[str, Any] = {"pid": int(pid), **({} if window_id is None else {"window_id": int(window_id)})}
         # Strict live schema with no session property: a standalone native focus op, not a session-scoped input action.
         return self._action("bring_to_front", args, inject_session=False)
 
@@ -367,14 +394,14 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
         """Set cua-driver config keys (e.g. ``max_image_dimension``); unknown keys pass through — cua-driver validates."""
         return self._action("set_config", dict(config))
 
-    def call_tool(self, name: str, args: Optional[Dict[str, Any]] = None, *, timeout: float = 30.0) -> Dict[str, Any]:
+    def call_tool(self, name: str, args: Optional[dict[str, Any]] = None, *, timeout: float = 30.0) -> dict[str, Any]:
         """Generic escape hatch: call any cua-driver MCP tool by name. ``session`` is injected via setdefault, so
         this is the supported path for tools the wrapper does not type-wrap (preferred over ``self._session.call_tool``)."""
         payload = dict(args) if args else {}
         payload.setdefault("session", self._session_id)
         return self._session.call_tool(name, payload, timeout=timeout)
 
-    def _action(self, name: str, args: Dict[str, Any], *, inject_session: bool = True) -> ActionResult:
+    def _action(self, name: str, args: dict[str, Any], *, inject_session: bool = True) -> ActionResult:
         # Attach the snapshot's `element_token` to an `element_index` call so a superseded snapshot yields an explicit
         # 'stale' error. Two ways to establish support, the live input schema first: cua-driver 0.21+ stopped
         # publishing per-tool `capabilities[]` while still accepting `element_token` in its schema, and it REFUSES a
@@ -401,40 +428,3 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
         meta = {k: v for part in (data, structured) if isinstance(part, dict) for k, v in part.items()}
         return _action_result_from(name, not out["isError"], message, meta, structured,
                                    requested_delivery=args.get("delivery_mode"))
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from pathlib import PureWindowsPath  # noqa: F401,E402
-from typing import Tuple  # noqa: F401,E402
-import asyncio  # noqa: F401,E402
-import base64  # noqa: F401,E402
-import concurrent.futures  # noqa: F401,E402
-from collections import deque  # noqa: F401,E402
-import functools  # noqa: F401,E402
-import json  # noqa: F401,E402
-import re  # noqa: F401,E402
-import shutil  # noqa: F401,E402
-import tempfile  # noqa: F401,E402
-import time  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'CaptureResult': ('tools.computer_use.backend', 'CaptureResult'),
-    'UIElement': ('tools.computer_use.backend', 'UIElement'),
-    'cua_driver_install_hint': ('tools.computer_use.cua_backend_driver', 'cua_driver_install_hint'),
-    'cua_driver_update_check': ('tools.computer_use.cua_backend_driver', 'cua_driver_update_check'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

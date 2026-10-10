@@ -154,6 +154,37 @@ describe('readProjectDir', () => {
     expect(result.entries.map(entry => entry.name)).toEqual(['src'])
   })
 
+  it('reveals revealable hygiene entries (out, vendor, coverage) when the root opted in (#55169)', async () => {
+    setShowIgnoredFiles('/repo', true)
+    readDir.mockResolvedValue(
+      ok([
+        { name: '.git', path: '/repo/.git', isDirectory: true },
+        { name: 'coverage', path: '/repo/coverage', isDirectory: true },
+        { name: 'out', path: '/repo/out', isDirectory: true },
+        { name: 'src', path: '/repo/src', isDirectory: true },
+        { name: 'vendor', path: '/repo/vendor', isDirectory: true }
+      ])
+    )
+
+    const result = await readProjectDir('/repo', '/repo')
+
+    expect(result.entries.map(entry => entry.name)).toEqual(['coverage', 'out', 'src', 'vendor'])
+  })
+
+  it('keeps revealable hygiene entries hidden when the root has not opted in', async () => {
+    readDir.mockResolvedValue(
+      ok([
+        { name: 'coverage', path: '/repo/coverage', isDirectory: true },
+        { name: 'out', path: '/repo/out', isDirectory: true },
+        { name: 'src', path: '/repo/src', isDirectory: true }
+      ])
+    )
+
+    const result = await readProjectDir('/repo', '/repo')
+
+    expect(result.entries.map(entry => entry.name)).toEqual(['src'])
+  })
+
   it('opting one root in leaves other roots filtered', async () => {
     setShowIgnoredFiles('/repo', true)
     gitRoot.mockResolvedValue('/other')
@@ -281,8 +312,10 @@ describe('readProjectDir', () => {
     // `nested` is the set of directories that are their own repository root;
     // everything else resolves to its parent repo. Growing the set between
     // reads simulates the user running `git init` underneath the project.
-    const gitRootOf = (nested: string[]) =>
-      async (path: string): Promise<string | null> => (nested.includes(path) ? path : path.startsWith('/repo2') ? '/repo2' : '/repo')
+    const gitRootOf =
+      (nested: string[]) =>
+      async (path: string): Promise<string | null> =>
+        nested.includes(path) ? path : path.startsWith('/repo2') ? '/repo2' : '/repo'
 
     const countCalls = (mock: typeof gitRoot | typeof readFileDataUrl, arg: string) =>
       mock.mock.calls.filter(([callArg]) => callArg === arg).length

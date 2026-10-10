@@ -11,7 +11,7 @@
 #   * Env vars blanked (conftest.py also does this, but this
 #     is belt-and-suspenders for anyone running pytest outside our
 #     conftest path — e.g. on a single file)
-#   * The activated checkout's test environment (activates when needed)
+#   * The checkout's test environment (via scripts/run-in-hermes-env when needed)
 #
 # Usage:
 #   scripts/run_tests.sh                            # full suite
@@ -38,11 +38,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # ── Locate python ───────────────────────────────────────────────────────────
-# The suite runs under the activated checkout's isolated test environment
-# (pm.testenv: `activate` builds it beside the checkout's install state, and CI
-# activates the same way). An inherited activation is re-checked against its
-# inputs (scripts/_activation.sh) and re-sourced when stale, so a branch switch
-# or lock edit never runs the suite against the previous dependency set.
+# The suite runs under the checkout's isolated test environment (pm.testenv),
+# and only there: unless the inherited environment is current for this
+# checkout, this script re-executes itself under scripts/run-in-hermes-env,
+# which syncs and applies it. That holds however the script is launched
+# (`scripts/run_tests.sh`, `bash scripts/run_tests.sh`, from CI or a shell), so
+# a branch switch or lock edit never runs the suite against the previous
+# dependency set.
 #
 # Without an activation, an explicit HERMES_PYTHON that has pytest is honored:
 # the Nix devShell's editable venv and CI's minimal installer lanes provide
@@ -55,22 +57,14 @@ if [ -z "${__HERMES_ACTIVATED:-}" ] && _has_pytest "${HERMES_PYTHON:-}"; then
   PYTHON="$HERMES_PYTHON"
   echo "▶ not activated — using HERMES_PYTHON: $PYTHON"
 else
-  test_stamp="${__HERMES_ACTIVATED:-}"
-  test_stamp="${test_stamp//\\//}"
-  if ! hermes_activation_current "$REPO_ROOT" ||
-     [ ! -f "${test_stamp%/*}/inputs/.test-environment" ] ||
-     ! _has_pytest "${__HERMES_TEST_PYTHON:-}"; then
-    echo "▶ activating $REPO_ROOT (environment missing or stale)" >&2
-    # activate is written for interactive shells, not errexit/nounset.
-    set +euo pipefail
-    # shellcheck source=/dev/null
-    . "$REPO_ROOT/activate" --
-    activated=$?
-    set -euo pipefail
-    if [ "$activated" != 0 ]; then
-      echo "error: activation failed (see above)" >&2
+  if ! hermes_activation_current "$REPO_ROOT"; then
+    if [ -n "${__HERMES_TESTS_REEXEC:-}" ]; then
+      echo "error: run-in-hermes-env did not produce a current environment for $REPO_ROOT" >&2
       exit 1
     fi
+    echo "▶ environment missing or stale for $REPO_ROOT — re-running under run-in-hermes-env" >&2
+    export __HERMES_TESTS_REEXEC=1
+    exec "$SCRIPT_DIR/run-in-hermes-env" "$BASH" "${BASH_SOURCE[0]}" "$@"
   fi
   PYTHON="${__HERMES_TEST_PYTHON:-}"
   if ! _has_pytest "$PYTHON"; then
@@ -144,6 +138,12 @@ _pf86="$(env | sed -n 's/^ProgramFiles(x86)=//p' | head -n1)"
 #     tests/e2e/core/terminal instead of a skip (set by the e2e CI job).
 #   * CI / GITHUB_ACTIONS tell suites they run on a disposable runner (e.g.
 #     tests/e2e/core/upgrade runs the real updater unsandboxed only there).
+#   * HERMES_E2E_WINDOWS_INSTALL opts tests/e2e/core/windows_update into running
+#     the real install.ps1 (it writes HKCU PATH); HERMES_E2E_MACHINE_ROOT,
+#     HERMES_E2E_PROFILES_ROOT and HERMES_E2E_ARTIFACTS place its fake machines,
+#     their user profiles and the transcripts CI uploads.
+#   * HERMES_E2E_STRICT_ACCEPTANCE makes tests/e2e/core/_pending_fixes.py's
+#     known gaps hard failures in an acceptance run (workflow dispatch input).
 #
 # These are test-infrastructure knobs, not credentials — same class as the
 # HERMES_RUN_SLOW_PET_TESTS / HERMES_E2E_BROWSER / HERMES_RUN_E2E opt-ins
@@ -156,7 +156,9 @@ _pf86="$(env | sed -n 's/^ProgramFiles(x86)=//p' | head -n1)"
 TEST_ENV=()
 for _test_var in HERMES_TEST_IMAGE HERMES_TEST_WORKERS HERMES_TEST_PATHS \
   HERMES_TEST_FILE_TIMEOUT HERMES_TEST_FILE_RETRIES HERMES_TEST_SLICE \
-  SSL_CERT_FILE SSL_CERT_DIR HERMES_GATEWAY_LOCK_DIR HERMES_E2E_REQUIRE_TUI CI GITHUB_ACTIONS; do
+  SSL_CERT_FILE SSL_CERT_DIR HERMES_GATEWAY_LOCK_DIR HERMES_E2E_REQUIRE_TUI CI GITHUB_ACTIONS \
+  HERMES_E2E_WINDOWS_INSTALL HERMES_E2E_MACHINE_ROOT HERMES_E2E_PROFILES_ROOT HERMES_E2E_ARTIFACTS \
+  HERMES_E2E_STRICT_ACCEPTANCE; do
   if [ -n "${!_test_var:-}" ]; then
     TEST_ENV+=("$_test_var=${!_test_var}")
   fi

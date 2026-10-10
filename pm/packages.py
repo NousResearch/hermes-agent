@@ -12,6 +12,7 @@ import tempfile
 from pathlib import Path
 from typing import Optional
 
+from pm.filesystem import long_root, native
 from pm.package import (
     DebPackage,
     InstallError,
@@ -19,9 +20,10 @@ from pm.package import (
     StatePackage,
     _entry_listing,
     _probe_reason,
+    unpack_deb,
 )
 from pm.registry import register
-from pm.store import ALL_TARGETS, Store, current_target, flatten_single_dir, merge_tree
+from pm.store import ALL_TARGETS, MUSL_TARGETS, Store, current_target, flatten_single_dir, merge_tree
 from pm.update import (
     btbn_index,
     btbn_versions,
@@ -42,6 +44,8 @@ _RUST_TRIPLE = {
     "win32-arm64": "aarch64-pc-windows-msvc",
     "linux-x64": "x86_64-unknown-linux-gnu",
     "linux-arm64": "aarch64-unknown-linux-gnu",
+    "linux-x64-musl": "x86_64-unknown-linux-musl",
+    "linux-arm64-musl": "aarch64-unknown-linux-musl",
     "darwin-x64": "x86_64-apple-darwin",
     "darwin-arm64": "aarch64-apple-darwin",
 }
@@ -51,6 +55,8 @@ _NODE_PLAT = {
     "win32-arm64": "win-arm64",
     "linux-x64": "linux-x64",
     "linux-arm64": "linux-arm64",
+    "linux-x64-musl": "linux-x64-musl",
+    "linux-arm64-musl": "linux-arm64-musl",
     "darwin-x64": "darwin-x64",
     "darwin-arm64": "darwin-arm64",
 }
@@ -96,16 +102,16 @@ class BinaryPackage(Package):
             return ""
         try:
             proc = subprocess.run(
-                [str(binary), *self.probe_args],
+                [native(binary), *self.probe_args],
                 capture_output=True,
                 timeout=60,
-                cwd=str(binary.parent) if self.probe_cwd else None,
+                cwd=native(binary.parent) if self.probe_cwd else None,
                 env=self._probe_env(),
             )
         except OSError as e:
-            return f"could not exec {binary} {' '.join(self.probe_args)}: {e}"
+            return f"could not exec {native(binary)} {' '.join(self.probe_args)}: {e}"
         except subprocess.TimeoutExpired:
-            return f"{binary} {' '.join(self.probe_args)} timed out after 60s"
+            return f"{native(binary)} {' '.join(self.probe_args)} timed out after 60s"
         if proc.returncode != 0:
             return _probe_reason(binary, proc)
         return ""
@@ -184,7 +190,7 @@ class _BionicDebArm:
 
 @register
 class Uv(_BionicDebArm, BinaryPackage, DebPackage):
-    """astral's prebuilt tarballs for glibc/mac/win; the Termux main-repo
+    """astral's prebuilt tarballs for glibc/musl/mac/win; the Termux main-repo
     uv .deb for bionic (termux builds uv from source -- no astral bionic
     artifact exists). The bionic arm is a runtime tool on the phone (lazy
     plugin installs) and the wheelhouse's resolver in the build container."""
@@ -296,47 +302,82 @@ def _uv_lock_digest(path: Path) -> bytes:
 _uv_lock_digest_cache: dict[Path, tuple] = {}
 
 
+def _copy_seed_file(src: str | os.PathLike, dst: str | os.PathLike) -> str | os.PathLike:
+    """Copy one payload cache file unless an earlier seed already copied it whole.
+
+    A copy cut short leaves the file in place with too few bytes, so a matching
+    size is what counts as done; a finished file is not rewritten.
+    """
+    try:
+        if os.stat(dst).st_size == os.stat(src).st_size:
+            return dst
+    except FileNotFoundError:
+        pass
+    # Other profiles share this cache: publish only a complete copy, without
+    # truncating the live entry or leaving a failed copy visible to readers.
+    fd, staging = tempfile.mkstemp(prefix=".seed-", dir=Path(dst).parent)
+    os.close(fd)
+    try:
+        shutil.copy2(src, staging)
+        os.replace(staging, dst)
+    finally:
+        Path(staging).unlink(missing_ok=True)
+    return dst
+
+
 def uv_cache_dir() -> Path:
     """The hermes-owned uv cache: machine-scoped and shared (keyed by
     content — two profiles reuse one cache), anchored to the DEFAULT
     hermes root like partials_root(). A bundle ships a seeded copy at
-    the payload root (uv-cache/); the first call on a sealed install
-    copies it out to the writable machine cache (the read-only payload
+    the payload root (uv-cache/); the first call under each uv.lock
+    merges it into the writable machine cache (the read-only payload
     can't serve uv's working cache), and a warm `uv sync --offline`
     from it is near-free (probed: 0.4s vs 1.2s cold) — the blow-away-
     on-update contract depends on it. uv's default cache location is
     per-user/platform-opinionated and never used by pm."""
     from hermes_constants import get_default_hermes_root
 
+    from pm.paths import repo_root, store_root
+
     machine_cache = get_default_hermes_root() / "cache" / "uv"
     marker = machine_cache / ".seeded"
-    if not marker.is_file():
+    # The marker names the lock whose payload was merged. An update ships a new payload cache for
+    # a new lock; a bare "done" marker skipped it forever, so plugin rebuilds fetched the new pins
+    # from the network (and built sdists where the index has no wheel for the target).
+    lock = repo_root() / "uv.lock"
+    seed = _uv_lock_digest(lock).hex() if lock.is_file() else "1"
+    try:
+        current = marker.read_text(encoding="utf-8-sig").strip() == seed
+    except OSError:
+        current = False
+    if not current:
         # Seed from a shipped bundle cache when present (payload root =
         # store_root().parent on a sealed install). Record completion ONLY after a clean copy: a
         # partial seed that marked itself done would never be retried, and every later offline
         # sync that needs the missing entries fails closed.
         try:
-            from pm.paths import store_root
-
-            payload_cache = store_root().parent / "uv-cache"
+            # uv's cache trees run deep; both roots get the long spelling so
+            # the copy is not cut at MAX_PATH. The returned path stays ordinary.
+            payload_cache = long_root(store_root().parent / "uv-cache")
             if payload_cache.is_dir():
-                machine_cache.mkdir(parents=True, exist_ok=True)
+                seeded = long_root(machine_cache)
+                seeded.mkdir(parents=True, exist_ok=True)
                 for entry in payload_cache.iterdir():
                     if entry.name == ".seeded":
                         continue
-                    dest = machine_cache / entry.name
-                    if not dest.exists():
-                        (
-                            shutil.copytree(entry, dest)
-                            if entry.is_dir()
-                            else shutil.copy2(entry, dest)
-                        )
+                    dest = seeded / entry.name
+                    # Merge into whatever an earlier failed or killed seed left: skipping
+                    # an existing directory would record that partial copy as complete.
+                    if entry.is_dir():
+                        shutil.copytree(entry, dest, dirs_exist_ok=True, copy_function=_copy_seed_file)
+                    else:
+                        _copy_seed_file(entry, dest)
         except OSError as exc:
             LOG.warning("uv cache seed incomplete, retrying on the next install: %s", exc)
         else:
             try:
                 marker.parent.mkdir(parents=True, exist_ok=True)
-                marker.write_text("1", encoding="utf-8")
+                marker.write_text(seed, encoding="utf-8")
             except OSError:
                 pass
     return machine_cache
@@ -435,8 +476,10 @@ class Venv(StatePackage):
             resolved_lock = generation / "workspace" / "uv.lock"
             environment.check()
             if repair:
+                from pm.environments import venv_command
                 from pm.recovery import validate_environment
-                validate_environment(environment.executable, env=dict(environment.env), cwd=resolved_lock.parent)
+                validate_environment(venv_command(project, candidate, ("-I",)),
+                                     env=dict(environment.env), cwd=resolved_lock.parent)
         except BaseException:
             shutil.rmtree(generation, ignore_errors=True)
             raise
@@ -446,8 +489,8 @@ class Venv(StatePackage):
 
 @register
 class Nodejs(_BionicDebArm, BinaryPackage, DebPackage):
-    """nodejs.org tarballs for glibc/mac/win; the Termux main-repo nodejs
-    .deb for bionic (same major line, termux-built)."""
+    """nodejs.org tarballs for glibc/mac/win, unofficial-builds for musl;
+    the Termux main-repo nodejs .deb for bionic (same major line, termux-built)."""
 
     name = "node"
     binary_rel = {"win32": "node.exe", "posix": "bin/node"}
@@ -465,10 +508,36 @@ class Nodejs(_BionicDebArm, BinaryPackage, DebPackage):
             return f"https://packages.termux.dev/apt/termux-main/pool/main/n/nodejs/nodejs_{version}-1_aarch64.deb"
         plat = _NODE_PLAT[target]
         ext = "zip" if target.startswith("win32") else "tar.xz"
-        return f"https://nodejs.org/dist/v{version}/node-v{version}-{plat}.{ext}"
+        base = (
+            "https://unofficial-builds.nodejs.org/download/release"
+            if target in MUSL_TARGETS
+            else "https://nodejs.org/dist"
+        )
+        return f"{base}/v{version}/node-v{version}-{plat}.{ext}"
 
     def latest_versions(self, target: str, locked=None) -> list[str]:
+        # Keep one Node version across targets. If unofficial musl publication
+        # lags nodejs.org, the later artifact pin/download fails before the
+        # lockfile is written rather than selecting glibc bytes on musl.
         return node_latest_versions()
+
+    def repair_staged_verification(self, entry: Path, target: str, reason: str) -> tuple[str, str]:
+        """Repair the host library needed by official Linux Node, then re-probe.
+
+        Keep this out of verify(): doctor/status checks call verify and must
+        never gain permission to install host packages.
+        """
+        if target != current_target() or not target.startswith("linux") or "libatomic.so.1" not in reason:
+            return reason, ""
+        from pm.libatomic import try_install_libatomic
+
+        installed, remedy = try_install_libatomic()
+        if not installed:
+            return reason, remedy
+        retried = self.verify(entry, target)
+        if "libatomic.so.1" in retried:
+            return retried, "the libatomic package installed, but Node still cannot load libatomic.so.1; check the loader path"
+        return retried, ""
 
 
 @register
@@ -583,9 +652,9 @@ class Npm(BinaryPackage):
         with tempfile.TemporaryDirectory(prefix="hermes-npm-cache-", ignore_cleanup_errors=True) as cache:
             proc = subprocess.run(
                 [
-                    str(node_bin), str(bundled_cli), "install", "--global",
-                    "--prefix", str(staged), "--offline", "--ignore-scripts",
-                    "--no-audit", "--no-fund", str(archive),
+                    native(node_bin), native(bundled_cli), "install", "--global",
+                    "--prefix", native(staged), "--offline", "--ignore-scripts",
+                    "--no-audit", "--no-fund", native(archive),
                 ],
                 capture_output=True,
                 text=True,
@@ -602,11 +671,19 @@ class Npm(BinaryPackage):
         return [latest] if latest else []
 
 
+# The pinned git artifact is a self-extracting 7z: only hosts where PE images
+# execute can stage it (tests patch this flag).
+_HOST_IS_WINDOWS = os.name == "nt"
+
+
 @register
 class Git(BinaryPackage):
     """Windows only: Git for Windows carries the bash.exe contract. POSIX
-    uses the system git — a deliberate gap, not an oversight. The tar.bz2
-    release asset extracts with stdlib tarfile: no self-extractor, no GUI."""
+    uses the system git - a deliberate gap, not an oversight. The pin is the
+    PortableGit self-extracting 7z: it carries its own extractor (stock
+    Windows 10 tar.exe has no bzip2), shows a progress window (-y only drops
+    prompts), and runs the vendor post-install, so the staged tree is
+    post-install output."""
 
     name = "git"
     optional = True
@@ -615,6 +692,8 @@ class Git(BinaryPackage):
     gaps = {
         "linux-x64": "POSIX uses system git by choice",
         "linux-arm64": "POSIX uses system git by choice",
+        "linux-x64-musl": "POSIX uses system git by choice",
+        "linux-arm64-musl": "POSIX uses system git by choice",
         "darwin-x64": "POSIX uses system git by choice",
         "darwin-arm64": "POSIX uses system git by choice",
     }
@@ -624,7 +703,7 @@ class Git(BinaryPackage):
         arch = "arm64" if target.endswith("arm64") else "64-bit"
         return (
             f"https://github.com/git-for-windows/git/releases/download/"
-            f"v{tag}.windows.{build}/Git-{tag}.{build}-{arch}.tar.bz2"
+            f"v{tag}.windows.{build}/PortableGit-{tag}.{build}-{arch}.7z.exe"
         )
 
     def latest_versions(self, target: str, locked=None) -> list[str]:
@@ -637,9 +716,44 @@ class Git(BinaryPackage):
         return out
 
     def unpack(self, archive: Path, staged: Path, target: str) -> None:
-        from pm.store import extract_tar
-
-        extract_tar(archive, staged, git_msys=True)
+        if not _HOST_IS_WINDOWS:
+            raise InstallError(
+                self.name,
+                "the pinned artifact is a PortableGit self-extracting 7z, which "
+                "only runs on Windows",
+                "stage win32 git on a Windows host; POSIX hosts use the system git",
+            )
+        shutil.rmtree(staged, ignore_errors=True)
+        staged.mkdir(parents=True)
+        # Execute a scratch copy, never the cached fetch-<sha> bytes: an executed
+        # PE can stay handle-held (on-execute AV scan, the RunProgram children)
+        # past pm's download-cleanup retry and fail the install (WinError 32).
+        with tempfile.TemporaryDirectory(
+            prefix=".sfx-", dir=staged.parent, ignore_cleanup_errors=True
+        ) as work:
+            exe = Path(work) / archive.name
+            shutil.copy2(archive, exe)
+            # No pipes: RunProgram children would inherit them and hold run()
+            # open past the stub's exit. Under -y the stub prints nothing anyway.
+            try:
+                proc = subprocess.run(
+                    [native(exe), f"-o{native(staged)}", "-y"],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=600,
+                )
+            except subprocess.TimeoutExpired:
+                raise InstallError(
+                    self.name, "PortableGit self-extractor did not finish in 600 s"
+                ) from None
+        if proc.returncode:
+            raise InstallError(
+                self.name,
+                f"PortableGit self-extractor exited {proc.returncode} (it reports "
+                "nothing under -y; usual causes: disk full, path-length limit, "
+                "antivirus lock)",
+            )
 
     def env(self, entry: Path, target: str) -> dict:
         return {"PATH": [str(entry / "cmd"), str(entry / "usr" / "bin")]}
@@ -652,7 +766,10 @@ class Gh(BinaryPackage):
     binary_rel = {"win32": "bin/gh.exe", "posix": "bin/gh"}
 
     def fetch_url(self, version: str, target: str) -> str:
-        osname, arch = target.split("-")
+        # GitHub CLI's Linux release matrix is built with CGO_ENABLED=0,
+        # so the generic Linux archive is libc-independent.
+        lookup_target = target.removesuffix("-musl") if target in MUSL_TARGETS else target
+        osname, arch = lookup_target.split("-")
         plat = {"win32": "windows", "linux": "linux", "darwin": "macOS"}[osname]
         arch = {"x64": "amd64", "arm64": "arm64"}[arch]
         ext = "zip" if osname in ("win32", "darwin") else "tar.gz"
@@ -667,12 +784,12 @@ class Gh(BinaryPackage):
 
 @register
 class Ffmpeg(_BionicDebArm, BinaryPackage, DebPackage):
-    """Static ffmpeg. GPLv3 builds; always bundled.
-    optional=False: ffmpeg is a required runtime tool. Sealed bundles ship
+    """FFmpeg builds for supported targets; BtbN Linux archives require glibc.
+    optional=False: ffmpeg is a required runtime tool where supported. Sealed bundles ship
     it baked into the payload; every `hermes update` and `hermes pm install`
     re-ensures it from the new lockfile before the venv sync
     (pm.client.ensure_tools_for_sync), so a pin bump lands. Windows + Linux:
-    BtbN/FFmpeg-Builds (dated autobuild tag; ships ffprobe too).
+    BtbN/FFmpeg-Builds (month-end autobuild tag, kept two years; ships ffprobe too).
     macOS: ffmpeg.martin-riedl.de (uniform ZIP, published sha256;
     single-binary — no ffprobe).
 
@@ -683,6 +800,7 @@ class Ffmpeg(_BionicDebArm, BinaryPackage, DebPackage):
     name = "ffmpeg"
     deb_package = "ffmpeg"
     optional = False
+    gaps = {target: "BtbN Linux builds link glibc dynamically" for target in MUSL_TARGETS}
 
     def main_rel(self, target: str) -> str:
         return "bin/ffmpeg"
@@ -710,6 +828,8 @@ class Ffmpeg(_BionicDebArm, BinaryPackage, DebPackage):
     def fetch_url(self, version: str, target: str) -> str:
         if target == "linux-arm64-bionic":
             return f"https://packages.termux.dev/apt/termux-main/pool/main/f/ffmpeg/ffmpeg_{version}_aarch64.deb"
+        if target in MUSL_TARGETS:
+            raise InstallError(self.name, f"unavailable on {target}: {self.missing_reason(target)}")
         osname, arch = target.split("-")
         if osname in ("win32", "linux"):
             artifact = btbn_index().get(target, {}).get(version)
@@ -727,6 +847,8 @@ class Ffmpeg(_BionicDebArm, BinaryPackage, DebPackage):
                            "retry when the upstream index is available, or keep the existing pin")
 
     def latest_versions(self, target: str, locked=None) -> list[str]:
+        if target in MUSL_TARGETS:
+            return []
         if target in ("win32-x64", "win32-arm64", "linux-x64", "linux-arm64"):
             return btbn_versions(target)
         return martin_riedl_versions(target)
@@ -783,6 +905,10 @@ class Ripgrep(BinaryPackage):
 class CuaDriver(BinaryPackage):
     name = "cua-driver"
     optional = True
+    # Computer use's only OS path, so the default install carries it.
+    default = True
+    gaps = {**{target: "cua-driver does not publish a musl build" for target in MUSL_TARGETS},
+            "linux-arm64-bionic": "cua-driver does not publish an Android build"}
     binary_rel = {
         "darwin-arm64": "CuaDriver.app/Contents/MacOS/cua-driver",
         "darwin-x64": "CuaDriver.app/Contents/MacOS/cua-driver",
@@ -840,7 +966,10 @@ class AgentBrowser(BinaryPackage):
     deps = ("chromium",)
     # Termux owns its browser stack (`npm install -g agent-browser`; see
     # tools/browser_tool_install.py), and PM has no bionic Chromium to drive.
-    gaps = {"linux-arm64-bionic": "Termux installs agent-browser through npm"}
+    gaps = {
+        "linux-arm64-bionic": "Termux installs agent-browser through npm",
+        **{target: "agent-browser has no musl Chromium runtime" for target in MUSL_TARGETS},
+    }
     flatten = True
     probe_version = False
     url = "https://registry.npmjs.org/agent-browser/-/agent-browser-{version}.tgz"
@@ -901,7 +1030,10 @@ class Chromium(Package):
     optional = True
     on_path = False
     # Neither Chrome-for-Testing nor Playwright's mirror builds for Android.
-    gaps = {"linux-arm64-bionic": "no Chromium build for Android/Termux"}
+    gaps = {
+        "linux-arm64-bionic": "no Chromium build for Android/Termux",
+        **{target: "Playwright/Chrome-for-Testing publishes no musl build" for target in MUSL_TARGETS},
+    }
     emulated_arch_targets = frozenset({"win32-arm64"})
     _CDN = "https://cdn.playwright.dev"
 
@@ -946,16 +1078,16 @@ class Chromium(Package):
     def verify(self, entry: Path, target: str) -> str:
         marker = entry / "INSTALLATION_COMPLETE"
         if not marker.is_file():
-            return f"INSTALLATION_COMPLETE missing under {entry}; {_entry_listing(entry)}"
+            return f"INSTALLATION_COMPLETE missing under {native(entry)}; {_entry_listing(entry)}"
         binary = self.binary(entry, target)
         if binary is None:
-            return f"Chromium executable missing under {entry}"
+            return f"Chromium executable missing under {native(entry)}"
         return self._binary_reason(binary, entry, target)
 
     def env(self, entry: Path, target: str) -> dict:
         binary = self.binary(entry, target)
         if binary is None:
-            raise InstallError(self.name, f"Chromium executable missing under {entry}")
+            raise InstallError(self.name, f"Chromium executable missing under {native(entry)}")
         return {
             "PLAYWRIGHT_BROWSERS_PATH": str(entry.parent),
             "AGENT_BROWSER_EXECUTABLE_PATH": str(binary),
@@ -964,10 +1096,10 @@ class Chromium(Package):
 
 class LlamaCpp(BinaryPackage):
     """One llama.cpp backend build. Backends are dlopen'd plugins, so a
-    usable engine is one archive per (target, backend) — plus, for Windows
-    CUDA, the cudart archive: end users have no CUDA toolkit, and Windows
-    resolves a DLL from the loading executable's own directory, so those
-    DLLs must land beside llama-server.exe rather than in a second entry.
+    usable engine is one archive per (target, backend) — plus, for CUDA, the
+    cudart archive (end users have no CUDA toolkit), and on Linux the libgomp
+    .deb. Every library lands beside llama-server: Windows resolves DLLs from
+    the executable's directory, and the Linux builds' RUNPATH is $ORIGIN.
 
     Backend is a HARDWARE choice, not a target, so each backend is its own
     optional package and the runtime asks for the one this machine can
@@ -986,6 +1118,18 @@ class LlamaCpp(BinaryPackage):
     backend: str = ""
     # Release-asset infix per target, or absent where upstream ships none.
     assets: dict[str, str] = {}
+    # Upstream's Linux builds (CPU included) link the system OpenMP runtime,
+    # which minimal hosts (WSL, containers) lack, and a normal install never
+    # touches the system package manager. The $ORIGIN RUNPATH loads this copy
+    # ahead of the host's, so its glibc floor must stay at or below every
+    # engine's. Ubuntu 22.04's needs glibc 2.34, the floor of the x64 CPU and
+    # Vulkan builds, and provides every GOMP version the builds reference. The
+    # release-pocket file stays in the pool until 22.04's EOL; the artifact
+    # mirror serves the pinned bytes after that.
+    _LIBGOMP = {
+        "linux-x64": "https://archive.ubuntu.com/ubuntu/pool/main/g/gcc-12/libgomp1_12-20220319-1ubuntu1_amd64.deb",
+        "linux-arm64": "https://ports.ubuntu.com/ubuntu-ports/pool/main/g/gcc-12/libgomp1_12-20220319-1ubuntu1_arm64.deb",
+    }
 
     @property
     def gaps(self) -> dict[str, str]:  # type: ignore[override]
@@ -1003,7 +1147,7 @@ class LlamaCpp(BinaryPackage):
         return [
             f"https://github.com/ggml-org/llama.cpp/releases/download/b{version}/{asset}"
             for asset in self._asset_names(version, target)
-        ]
+        ] + ([self._LIBGOMP[target]] if target in self._LIBGOMP else [])
 
     def fetch_url(self, version: str, target: str) -> str:
         return self.fetch_urls(version, target)[0]
@@ -1028,15 +1172,29 @@ class LlamaCpp(BinaryPackage):
             url.rsplit("/", 1)[-1]
         )
 
+    def unpack(self, archive: Path, staged: Path, target: str) -> None:
+        if archive.name.endswith(".deb"):
+            unpack_deb(self.name, archive, staged)
+        else:
+            super().unpack(archive, staged, target)
+
     def stage(self, store: Store, staged: Path, version: str, target: str) -> None:
         """Some archives nest the binaries under build/bin; hoist them so
-        binary_rel is one path for every target."""
-        if (staged / self.binary(staged, target).name).is_file():
-            return
-        found = sorted(staged.rglob(self.binary(staged, target).name))
-        if not found:
-            raise InstallError(self.name, "archive contains no llama-server")
-        merge_tree(found[0].parent, staged)
+        binary_rel is one path for every target. The libgomp .deb unpacks
+        in its filesystem layout (usr/lib/<triplet>/); only the library
+        itself moves beside llama-server."""
+        server = self.binary(staged, target).name
+        if not (staged / server).is_file():
+            found = sorted(staged.rglob(server))
+            if not found:
+                raise InstallError(self.name, "archive contains no llama-server")
+            merge_tree(found[0].parent, staged)
+        # The pin decides whether the .deb arrives (test_llamacpp_pins); verify()'s --version
+        # probe is what proves the libraries resolve.
+        libs = sorted((staged / "usr" / "lib").glob("*/libgomp.so.1"))
+        if libs:
+            shutil.copyfile(libs[0], staged / "libgomp.so.1")
+            shutil.rmtree(staged / "usr")
 
 
 def _github_release_digests(repo: str, tag: str) -> dict[str, str]:
@@ -1064,23 +1222,43 @@ _release_digest_cache: dict[tuple, dict] = {}
 
 @register
 class LlamaCppCuda(LlamaCpp):
-    """Windows only: upstream publishes no prebuilt Linux CUDA archive at
-    current tags, so NVIDIA Linux users run the vulkan build."""
+    """CUDA 13.4 everywhere upstream builds it: 13.x drivers run any 13.x
+    runtime (minor-version compatibility), and 13.4 is the only line upstream
+    ships for win-arm64. Linux archives first appeared after b10964, and
+    upstream dropped win-cuda-13.3 at the same time.
+
+    The engine archive carries no CUDA libraries (end users have no toolkit),
+    so each target pins a second cudart archive too."""
 
     name = "llamacpp-cuda"
     backend = "cuda"
-    # CUDA 13.3 verified against 13.1/13.2 drivers; arm64 prebuilts landed
-    # on 13.4 (the only CUDA line upstream builds for win-arm64).
     assets = {
-        "win32-x64": "win-cuda-13.3-x64",
+        "win32-x64": "win-cuda-13.4-x64",
         "win32-arm64": "win-cuda-13.4-arm64",
+        "linux-x64": "ubuntu-cuda-13.4-x64",
+        "linux-arm64": "ubuntu-cuda-13.4-arm64",
     }
-    _CUDART = {"win32-x64": "13.3-x64", "win32-arm64": "13.4-arm64"}
 
     def _asset_names(self, version: str, target: str) -> list[str]:
-        return super()._asset_names(version, target) + [
-            f"cudart-llama-bin-win-cuda-{self._CUDART[target]}.zip"
-        ]
+        # Upstream names the Windows cudart zip without the build tag and the
+        # Linux one with it.
+        infix = self.assets[target]
+        cudart = (
+            f"cudart-llama-bin-{infix}.zip"
+            if target.startswith("win32")
+            else f"cudart-llama-b{version}-bin-{infix}.tar.gz"
+        )
+        return super()._asset_names(version, target) + [cudart]
+
+    def stage(self, store: Store, staged: Path, version: str, target: str) -> None:
+        """The Linux cudart tarball unpacks into its own top-level dir, but the
+        engine's RUNPATH is $ORIGIN, so its libraries must sit beside
+        llama-server. The Windows zip is flat and needs no hoist."""
+        super().stage(store, staged, version, target)
+        for extra in sorted(staged.glob("cudart-*")):
+            if extra.is_dir():
+                merge_tree(extra, staged)
+                shutil.rmtree(extra)
 
 
 @register
@@ -1126,3 +1304,16 @@ class LlamaCppCpu(LlamaCpp):
         "darwin-x64": "macos-x64",
         "darwin-arm64": "macos-arm64",
     }
+
+
+@register
+class WhisperCppCpu(BinaryPackage):
+    """Native local STT for Windows ARM64, where faster-whisper has no wheel."""
+
+    name = "whispercpp-cpu"
+    optional = True
+    gaps = {target: "uses the existing faster-whisper provider" for target in ALL_TARGETS
+            if target != "win32-arm64"}
+    binary_rel = {"win32-arm64": "whisper-cli.exe"}
+    probe_args = ["--help"]
+    url = "https://github.com/ggml-org/whisper.cpp/releases/download/{version}/whisper-bin-win-cpu-arm64.zip"

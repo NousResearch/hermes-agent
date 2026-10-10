@@ -181,7 +181,7 @@ def _commits(payload: dict | None) -> list[dict]:
             continue
         commit = entry.get("commit") or {}
         when = (commit.get("committer") or {}).get("date") or ""
-        at = _quiet(lambda: int(datetime.fromisoformat(when.replace("Z", "+00:00")).timestamp() * 1000), 0)
+        at = _quiet(lambda: int(datetime.fromisoformat(when).timestamp() * 1000), 0)
         rows.append({"sha": entry["sha"], "summary": str(commit.get("message", "")).split("\n", 1)[0],
                      "author": str((commit.get("author") or {}).get("name", "")), "at": at})
     return rows[::-1]
@@ -267,14 +267,15 @@ def _write_cache(cache_file: Path, identity: dict, now: float, result: dict) -> 
         logger.debug("Could not cache source check: %s", exc)
 
 
-def _resolve_channel(result: dict, channel: str, co: _Checkout):
+def _resolve_channel(result: dict, channel: str, co: _Checkout, *, forward_only: bool = False):
     """Resolve a release channel's target into ``result``; the SourceTarget, or None on error.
 
     A target with a pinned commit is final; one without names a branch to follow instead.
     """
     try:
         source_target = resolve_source_target(channel, [co.git] if not co.embedded else None, co.root,
-                                              repository=co.repository or OFFICIAL_REPOSITORY)
+                                              repository=co.repository or OFFICIAL_REPOSITORY,
+                                              forward_only=forward_only)
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         result.update(error="release-unavailable", message=f"Could not resolve the {channel} source channel: {exc}")
         return None
@@ -306,6 +307,29 @@ def _heal_deleted_branch(branch_config_path: Path, desktop_config: dict) -> None
         atomic_json_write(branch_config_path, {**desktop_config, "branch": "main"})
 
 
+def _unhealable_reason(co: _Checkout, branch: str) -> Optional[str]:
+    """Why a branch the remote does not advertise must keep its pin; None when healing loses nothing.
+
+    An empty ref advertisement cannot tell "merged and deleted upstream" from "never pushed":
+    only a branch that was once published (remote-tracking ref or configured upstream, which
+    survives ``fetch --prune``) and whose commits are all in main may be re-pinned to main.
+    """
+    if co.embedded:
+        return None
+    local = f"refs/heads/{branch}"
+    if not _git_ok(["rev-parse", "--verify", "--quiet", local], cwd=co.root, git=co.git):
+        return None  # Nothing in this checkout to abandon.
+    if not (_git_ok(["rev-parse", "--verify", "--quiet", f"refs/remotes/origin/{branch}"], cwd=co.root, git=co.git)
+            or _git_ok(["config", "--get", f"branch.{branch}.merge"], cwd=co.root, git=co.git)):
+        return "never-pushed"
+    for base in ("refs/remotes/origin/main", "refs/heads/main"):
+        # `git cherry` also treats rebase-merged commits (same patch, new SHA) as merged.
+        cherry = _git_run(["cherry", base, local], cwd=co.root, git=co.git, timeout=10)
+        if cherry is not None and cherry.returncode == 0:
+            return "unmerged" if any(line.startswith("+") for line in cherry.stdout.splitlines()) else None
+    return "unmerged"  # Unknown merge state keeps the branch.
+
+
 def _behind_count(co: _Checkout, target: str) -> tuple[int, list[dict]]:
     """``(behind, commits)`` for ``target``: local ancestry first, then the GitHub compare API."""
     if co.head == target or (not co.embedded and _git_ok(
@@ -325,6 +349,13 @@ def _check_branch(result: dict, co: _Checkout, selected_branch: str, *,
     result["branch"] = selected_branch
     remote = _branch_remote(co, selected_branch)
     target, missing, failure = _branch_tip(co.repository, selected_branch, co.root, co.git, remote)
+    reason = _unhealable_reason(co, selected_branch) if missing and selected_branch != "main" else None
+    if reason:
+        detail = ("has never been pushed" if reason == "never-pushed"
+                  else "is gone from the remote but has commits that are not in main")
+        result.update(error="branch-local-only", localOnly=True,
+                      message=f"Branch '{selected_branch}' {detail}; keeping it instead of switching to main.")
+        return
     if missing and selected_branch != "main":
         result["branch"] = "main"
         if heal:
@@ -352,7 +383,7 @@ def check_for_updates(*, install_root: Path | None = None, home: Path | None = N
     """
     from hermes_cli.config import get_project_root, require_readable_config_before_write
     from hermes_cli.steward import read_install_stamp
-    from hermes_cli.update_channel import install_id, resolve_update_channel
+    from hermes_cli.update_channel import channel_record, install_id, resolve_update_channel, rides_default_channel
     from hermes_cli.release_channels import validate_name
 
     embedded = (os.environ.get("HERMES_REVISION") or None) if install_root is None else None
@@ -367,6 +398,7 @@ def check_for_updates(*, install_root: Path | None = None, home: Path | None = N
     if passive and (config.get("updates") or {}).get("check") is False:
         return {**result, "reason": "disabled"}
     channel = resolve_update_channel(config, root) if channel is None else validate_name(channel)
+    forward_only = rides_default_channel(channel_record(config, root), channel, root)
     co = _read_checkout(root, git, embedded)
     desktop_config = _read_json(branch_config_path) if branch_config_path else None
     configured_branch = _configured_branch(desktop_config)
@@ -377,7 +409,8 @@ def check_for_updates(*, install_root: Path | None = None, home: Path | None = N
     else:
         result["branch"] = selected_branch
     identity = {"root": str(root), "home": str(home), "head": co.head, "origin": co.origin, "branch": selected_branch,
-                "channel": channel, "embedded": embedded, "branchOverride": branch is not None, "channelProtocol": 1}
+                "channel": channel, "embedded": embedded, "branchOverride": branch is not None, "channelProtocol": 1,
+                "forwardOnly": forward_only}
     cache_file = Path(cache_path) if cache_path is not None else home / "source-checks" / f"{install_id(root)}.json"
     now = time.time()
     cached = None if force else _cached_status(cache_file, identity, now)
@@ -388,7 +421,7 @@ def check_for_updates(*, install_root: Path | None = None, home: Path | None = N
     if not _is_full_sha(co.head):
         result.update(error="head-unavailable", message="Could not read the installed revision.")
     elif branch is None:
-        source_target = _resolve_channel(result, channel, co)
+        source_target = _resolve_channel(result, channel, co, forward_only=forward_only)
         if source_target is not None and not source_target.commit:
             # The record supplies a default, not permission to leave the user's branch.
             selected_branch = configured_branch or _checked_out_branch(co.current_branch, source_target.branch)
@@ -415,9 +448,22 @@ def main() -> None:
     parser.add_argument("--cache-path", type=Path)
     parser.add_argument("--branch-config-path", type=Path)
     parser.add_argument("--force", action="store_true")
+    parser.add_argument("--set-channel", type=validate_name,
+                        help="Persist this install's channel (the Desktop selector), then report as usual.")
     args = parser.parse_args()
     with contextlib.redirect_stdout(sys.stderr):
-        result = check_for_updates(**vars(args))
+        if args.set_channel:
+            from hermes_constants import set_hermes_home_override
+            from hermes_cli.update_channel import set_install_channel
+
+            # The record belongs in the --home profile's config.yaml, as the check reads it.
+            set_hermes_home_override(args.home)
+            set_install_channel(args.set_channel, args.install_root)
+            args.force = True
+        result = check_for_updates(**{k: v for k, v in vars(args).items() if k != "set_channel"})
+    if isinstance(result, dict):
+        # Older runtimes reject --set-channel; Desktop offers its selector only on this flag.
+        result["channelSelectable"] = True
     print(json.dumps(result))
 
 

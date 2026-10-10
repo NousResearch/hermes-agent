@@ -33,8 +33,8 @@ The static fallback for `xai.grok-4.6` (including `global.` and `us.` inference
 profiles) is 500,000 tokens, per the
 [AWS model card](https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-xai-grok-4-6.html).
 This is Bedrock-specific, not the direct xAI API window. Existing compression
-rules still apply: without output reservation, the small-window 75% threshold floor
-yields 375,000 at this window, which the default `threshold_tokens` cap (256,000) then lowers.
+rules still apply: without output reservation or an explicit token cap, the
+small-window 75% threshold floor yields a 375,000-token trigger at this window.
 
 ## Pluggable Context Engine
 
@@ -226,6 +226,52 @@ attempt anyway:
   the next failure would extend the ladder (#100661). If that attempt fails,
   the cooldown is recorded normally.
 
+#### Attempt telemetry
+
+Every `compress_context` call that returns logs one content-free INFO line,
+`context compression attempt telemetry: {...}` (logger
+`agent.conversation_compression`). It never carries message text, summary
+text, the focus topic or error messages.
+
+- `trigger_source` names why the attempt ran: `manual`, `idle`,
+  `turn_start_threshold`, `engine_preflight`, `pre_api`, `post_tool`,
+  `gateway_hygiene` or `overflow`. An automatic caller that passes no label
+  reads `auto`; a refusal before any attempt began (pool saturation) reads
+  `unknown`.
+- `route` is `hermes` for the local compressor and `codex_app_server` when the
+  Codex thread owns compaction.
+- `commit_status` is `committed`, `aborted`, `failed`, `skipped` or `blocked`.
+  A `blocked` attempt was refused by an automatic guard; its `failure_class`
+  names the guard (`blocked:cooldown`, `blocked:structural_backoff`,
+  `blocked:ineffective`). Under the session lease, `session_ownership_lost`
+  (`skipped`) means another path already rotated the session, and
+  `session_ownership_unreadable` / `cooldown_state_unreadable` (`aborted`)
+  mean that state could not be read. `empty_transcript` (`aborted`) means the
+  engine returned no messages, so nothing was committed.
+- `attempt_id` names this attempt and `session_id` the session it started
+  in, even when the attempt then adopts a rotated child session or unwinds
+  after a newer attempt (a stall fallback) has begun. An attempt
+  that stops before the compressor runs, or rolls its state back, logs
+  `method: none` and no token counts, never an earlier attempt's numbers.
+- `method` says how the summary was produced: `llm_summary`,
+  `aux_fallback_main` (the summary model failed and the main model wrote it),
+  `deterministic_fallback` (static anchors summary; `items_dropped` counts the
+  replaced messages), `provider` (Codex) or `none`.
+- `messages_before` / `messages_after` and `tokens_before` / `tokens_after` /
+  `tokens_reclaimed` describe the transcript that crossed the commit boundary,
+  including retained `/compress here N` tail rows and boundary anchors.
+  `token_count_method: estimate_rough` marks them as rough message-only
+  estimates (system prompt and tool schemas excluded), so they compare like
+  for like. `tool_results_pruned` and `reasoning_items_pruned` count the
+  deterministic passes that ran before and after the summary.
+
+The opt-in `hermes.compression.count` shared metric keeps coarse triggers
+(`auto`, `manual`, `overflow`) and counts only attempts the local compressor
+ran; blocked and Codex-routed attempts appear in the log line only. When the
+NeMo Relay runtime is live, the same record, plus micro-compaction passes and
+committed proactive prunes, is also emitted as a `hermes.compaction` mark (see
+[NeMo Relay Shared Metrics](./relay-shared-metrics.md#compaction-marks)).
+
 
 ## Configuration
 
@@ -262,10 +308,10 @@ auxiliary:
 | Parameter | Default | Range | Description |
 |-----------|---------|-------|-------------|
 | `threshold` | `0.50` | 0.0-1.0 | Compression triggers when prompt tokens ≥ `threshold × context_length` (floored at 0.75 below 512K windows) |
-| `threshold_tokens` | `256000` | int or `null` | Absolute cap on the trigger: compaction fires at the lower of the ratio trigger and this count, so a 1M window compacts at 256K instead of 500K. `null` = ratio-only |
+| `threshold_tokens` | `null` | int or `null` | Optional absolute cap on the trigger: when set, compaction fires at the lower of the ratio trigger and this count. `null` = ratio-only |
 | `model_thresholds` | `{}` | map | Per-model overrides of `threshold`. Keys are substring-matched against the model name (longest match wins); `"<provider>:<substring>"` keys apply only on that provider. The small-context floor still applies on top (see below) |
 | `target_ratio` | `0.20` | 0.10-0.80 | Controls tail protection token budget: `threshold_tokens × target_ratio` (legacy mode only — `lean` uses its own clamp) |
-| `tail_mode` | `lean` | `lean`, `legacy` | Tail retention policy. `legacy` keeps a `target_ratio`-sized verbatim tail (~100K+ tokens on big-window models without the `threshold_tokens` cap). `lean` keeps a clamped tail of `2.5% × context window` (10K floor, 25K cap) and instead carries continuity in the summary: a detailed identifier-preserving session log (produced by the same single summary request — lean compaction makes exactly one auxiliary LLM call per attempt), a mechanically extracted anchor index (PR numbers, SHAs, paths, error strings — regex, never paraphrased), every real user message quoted verbatim (newest-first budget), and a `session_search` recovery pointer so the agent can re-access anything summarized away. Oversized regions are evenly sampled into the summarizer input (with explicit elision markers) rather than triggering extra calls. Result on 500K-token real sessions: ~49K retained vs ~162K, with higher recall when paired with recovery (see `evals/compaction/results/`). Old tool results inside the lean tail are demoted to one-line stubs carrying a recovery pointer |
+| `tail_mode` | `lean` | `lean`, `legacy` | Tail retention policy. `legacy` keeps a `target_ratio`-sized verbatim tail (~100K+ tokens on big-window models). `lean` keeps a clamped tail of `2.5% × context window` (10K floor, 25K cap) and instead carries continuity in the summary: a detailed identifier-preserving session log (produced by the same single summary request — lean compaction makes exactly one auxiliary LLM call per attempt), a mechanically extracted anchor index (PR numbers, SHAs, paths, error strings — regex, never paraphrased), every real user message quoted verbatim (newest-first budget), and a `session_search` recovery pointer so the agent can re-access anything summarized away. Oversized regions are evenly sampled into the summarizer input (with explicit elision markers) rather than triggering extra calls. Result on 500K-token real sessions: ~49K retained vs ~162K, with higher recall when paired with recovery (see `evals/compaction/results/`). Old tool results inside the lean tail are demoted to one-line stubs carrying a recovery pointer |
 | `protect_last_n` | `20` | ≥1 | Minimum number of recent messages always preserved |
 | `min_tail_user_messages` | `1` | ≥1 | Minimum number of REAL (actionable) user messages guaranteed to survive in the uncompressed tail. `1` = the existing single last-user anchor (behavior-preserving default). Raise to e.g. `3` to keep the last 3 real user turns verbatim even when bulky tool outputs fill the tail token budget. Blank platform echoes, compaction handoffs, and synthetic continuation rows never count toward N. The guarantee wins over the tail token budget — the tail may exceed the budget when the anchor pulls the cut back |
 | `protect_first_n` | `3` | (hardcoded) | System prompt + first exchange always preserved |
@@ -295,7 +341,7 @@ changing the selected tail policy. In `lean` mode the selection budget remains b
 on the **main model's context window**: 2.5%, clamped to 10K–25K tokens, and never more
 than 20% of that window (the 10K floor alone is 61% of a 16K local window, so without the cap a
 small model's "protected" tail was the whole request and compaction reclaimed nothing). For example,
-a 1M main model (`threshold_tokens: null`) with a 512K auxiliary model retains a 25K
+a 1M main model with a 512K auxiliary model retains a 25K
 selection budget even when feasibility lowers its trigger from 850K to 512K. Explicit `legacy` mode instead
 recomputes `threshold_tokens × target_ratio` (102,400 tokens at 512K × 0.20).
 These are tail-selection budgets, not strict limits on the entire compacted context:
@@ -386,7 +432,7 @@ more tokens per request and much faster subscription-usage burn, so the large
 window is strictly opt-in.
 
 To use the large window, pick the explicit `-900k` variant in `/model` (e.g.
-`gpt-6-sol-900k`, `gpt-6-terra-900k`, `gpt-6-luna-900k`, `gpt-5.6-sol-900k`,
+`gpt-6.1-sol-900k`, `gpt-6-sol-900k`, `gpt-6-luna-900k`, `gpt-5.6-sol-900k`,
 `gpt-5.6-terra-900k`, `gpt-5.6-luna-900k`, `gpt-5.4-900k`). These are Hermes-side aliases: the suffix is stripped before
 the model id is sent to the backend, and pricing/usage accounting treats them
 as the base model. Slugs that genuinely enforce 272K (gpt-5.5, gpt-5.4-mini)
@@ -478,7 +524,7 @@ max_summary_tokens   = min(200,000 × 0.05, 12,000) = 10,000
 ```
 
 :::note Threshold is derived from the MAIN model's context window
-`threshold_tokens` is `threshold × context_length` (then capped by `compression.threshold_tokens`), where `context_length`
+`threshold_tokens` is `threshold × context_length` (then capped by `compression.threshold_tokens` when set), where `context_length`
 is the **main agent model's** context window — never the auxiliary/summary
 model's. On a 262,144-token model at the default `0.50`, the threshold is
 `262,144 × 0.50 = 131,072`. That number being close to a common "128K context"
@@ -594,7 +640,8 @@ information across multiple compactions — items move from "In Progress" to "Do
 new progress is added, and obsolete information is removed.
 
 The `_previous_summary` field on the compressor instance stores the last summary
-text for this purpose.
+text for this purpose. A deterministic fallback summary is stored there too, since
+it is the handoff the transcript now carries.
 
 
 ## Before/After Example

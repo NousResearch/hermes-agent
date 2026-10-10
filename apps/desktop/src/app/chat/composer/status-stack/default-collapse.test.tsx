@@ -6,7 +6,7 @@ import { $backgroundStatusBySession } from '@/store/composer-status'
 import { $goalsBySession } from '@/store/goals'
 import { $sessionControlBySession } from '@/store/session-control'
 import { $subagentsBySession, upsertSubagent } from '@/store/subagents'
-import { $todosBySession } from '@/store/todos'
+import { $todosBySession, clearSessionTodos, restoreSessionTodosFromSnapshot } from '@/store/todos'
 
 import { QueuePanel } from '../queue-panel'
 
@@ -40,6 +40,29 @@ afterEach(() => {
   $sessionControlBySession.set({})
   $subagentsBySession.set({})
   $todosBySession.set({})
+  clearSessionTodos('owner')
+})
+
+it('offers a collapsed read-only checklist from an idle session, without a running spinner', () => {
+  restoreSessionTodosFromSnapshot(
+    'owner',
+    {
+      revision: 3,
+      todos: [
+        { id: 'one', content: 'Already done', status: 'completed' },
+        { id: 'two', content: 'Still open', status: 'in_progress' }
+      ]
+    },
+    false
+  )
+  render(stack())
+
+  const review = screen.getByRole('button', { name: /Previous tasks 1\/2/ })
+  expect(review.getAttribute('aria-expanded')).toBe('false')
+  expect(screen.queryByText('Still open')).toBeNull()
+  fireEvent.click(review)
+  expect(screen.getByText('Still open')).toBeTruthy()
+  expect(screen.queryByLabelText('Running')).toBeNull()
 })
 
 it('auto-expands only todos and keeps other groups closed as activity arrives', () => {

@@ -98,6 +98,38 @@ export function ownerScoped(owner?: OwnerScope): { connectionId?: string; priori
   }
 }
 
+/** An owner resolved ONCE for one operation (a recording, a voice conversation).
+ *  `null` halves mean "untagged": the primary profile / the connection an
+ *  untagged request lands on. They are never re-read from the ambient scope
+ *  later, so a gateway/profile switch mid-operation cannot move its tail
+ *  (release, transcription) to another backend. */
+export interface ResolvedOwner {
+  connectionId: null | string
+  profile: null | string
+}
+
+/** Fill an owner's missing halves from the ambient scope, now. */
+export function resolveOwnerNow(owner?: OwnerScope): ResolvedOwner {
+  const ambient = $apiRequestScope.get()
+
+  return {
+    connectionId: owner?.connectionId || ambient.connectionId || null,
+    profile: owner?.profile || ambient.profile || null
+  }
+}
+
+/** `hermesApi` for a resolved owner: its tags are sent verbatim, with no
+ *  ambient connection spread underneath. An untagged half stays untagged. A
+ *  named profile is always explicit here, so it carries the foreground
+ *  priority `profileScoped` gives explicit profiles (voice is user-driven). */
+export function hermesApiAs<T>(owner: ResolvedOwner, request: HermesApiRequest): Promise<T> {
+  return window.hermesDesktop.api<T>({
+    ...(owner.connectionId ? { connectionId: owner.connectionId } : {}),
+    ...(owner.profile ? { priority: 'foreground' as const, profile: owner.profile } : {}),
+    ...request
+  })
+}
+
 /** Profile that profile-scoped REST/WS calls should target (null → primary).
  *  Read-only twin of setApiRequestProfile for modules (e.g. voice playback)
  *  that build their own connection URLs and must stay on the same backend. */
@@ -224,4 +256,58 @@ export function profileScopeKey(scope?: ProfileScope): string {
  *  (null → the local pool). Read-only twin of setApiRequestConnection. */
 export function getApiRequestConnection(): null | string {
   return $apiRequestScope.get().connectionId
+}
+
+// ── Session-owner pin for session-scoped REST reads (#125372) ──────────────
+//
+// A read of /api/sessions/{id}[/messages|/timeline|/messages/around] only
+// means anything on the backend that OWNS the row. The store already resolves
+// that owner (knownOwnerForSession: tile route → persisted hint → tagged row)
+// and pushes the resolver here — same no-store-import seam as
+// setApiRequestProfile — so read helpers stop riding the WINDOW's ambient
+// connection onto a host that answers 404 "Session not found".
+
+export interface SessionReadOwnerRoute {
+  connectionId?: null | string
+  profile?: null | string
+  targetProfile?: null | string
+}
+
+export type SessionOwnerResolver = (sessionId: string) => SessionReadOwnerRoute | null | string | undefined
+
+let _sessionOwnerResolver: SessionOwnerResolver | null = null
+
+export function setSessionOwnerResolver(resolver: SessionOwnerResolver | null): void {
+  _sessionOwnerResolver = resolver
+}
+
+/** The connection pin a session-scoped READ must carry for `id`, or {} when
+ *  the caller already pinned a connection, no exact owner is known, or the
+ *  owner is the ambient connection. Pins 'local' too (the only way back to
+ *  this device when the primary is a remote registry source). When the caller
+ *  named no profile, the owner's backend-facing profile rides along: the
+ *  answering host resolves ?profile= against ITS OWN profiles. */
+export function sessionReadOwnerPin(id: string, profile?: ProfileScope): { connectionId?: string; profile?: string } {
+  if (profile && typeof profile === 'object' && String(profile.connectionId ?? '').trim()) {
+    return {}
+  }
+
+  const owner = _sessionOwnerResolver?.(id)
+
+  if (!owner || typeof owner === 'string') {
+    return {}
+  }
+
+  const connectionId = String(owner.connectionId ?? '').trim()
+
+  if (!connectionId || connectionId === (ambientOwnerConnectionId() ?? 'local')) {
+    return {}
+  }
+
+  const ownerProfile = String(owner.targetProfile || owner.profile || '').trim()
+
+  return {
+    connectionId,
+    ...(profile == null && ownerProfile ? { profile: ownerProfile } : {})
+  }
 }

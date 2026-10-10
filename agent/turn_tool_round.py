@@ -13,7 +13,7 @@ import logging
 from typing import Any, Dict, Optional, Tuple
 
 from agent.message_metadata import append_message
-from agent.message_sanitization import coalesce_tool_call_id
+from agent.message_sanitization import coalesce_tool_call_id, normalize_provider_tool_call_ids
 from agent.turn_preflight import compress_after_tool_results
 from agent.turn_tool_validation import validate_tool_calls
 
@@ -40,7 +40,7 @@ class ToolRoundVerdict:
     _turn_exit_reason: Any
     truncated_tool_call_retries: Any
     current_turn_user_idx: Any
-    result: Optional[Dict[str, Any]] = None
+    result: Optional[dict[str, Any]] = None
 
 
 def run_tool_round(
@@ -56,7 +56,7 @@ def run_tool_round(
     process-only state."""
     from agent.conversation_loop import _invalid_tool_name_error_content
 
-    def _verdict(action: str, result: Optional[Dict[str, Any]] = None) -> ToolRoundVerdict:
+    def _verdict(action: str, result: Optional[dict[str, Any]] = None) -> ToolRoundVerdict:
         return ToolRoundVerdict(
             action=action, messages=messages, conversation_history=conversation_history,
             active_system_prompt=active_system_prompt, compression_attempts=compression_attempts,
@@ -84,10 +84,19 @@ def run_tool_round(
     if _tvv.action == "continue":
         return _verdict("continue")
 
+    # Normalize only this unpersisted turn. Each local bridge entry must pass
+    # through the same scope, approvals, state and scheduling as a singleton.
+    from agent.tool_call_batches import expand_local_tool_batches
+    assistant_message.tool_calls = expand_local_tool_batches(
+        assistant_message.tool_calls, provider_data=getattr(assistant_message, "provider_data", None))
+
     # Post-call guardrails.
     assistant_message.tool_calls = agent._deduplicate_tool_calls(
         agent._cap_delegate_task_calls(assistant_message.tool_calls)
     )
+    # Filtering can turn a mixed batch into an all-provider one; re-check the final batch
+    # before it is staged (idempotent for already-normalized ids).
+    normalize_provider_tool_call_ids(assistant_message.tool_calls)
 
     # Mixed batch: the assistant message keeps EVERY emitted call (each tool_call needs a
     # matching result) while only valid ones dispatch.
@@ -152,6 +161,9 @@ def run_tool_round(
             agent.stream_delta_callback(None)
 
     agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
+    from hermes_cli.observability.shared_metrics_harness import finish_tool_round
+
+    finish_tool_round(agent)
 
     if getattr(agent, "_incremental_persistence_failed", False):
         # Tool result could not be made canonical: never send the in-memory result to
@@ -220,7 +232,7 @@ def run_tool_round(
 
 def stage_tool_call_message(
     agent: Any, *, assistant_message: Any, finish_reason: Any, messages: Any
-) -> Tuple[Dict[str, Any], bool]:
+) -> tuple[dict[str, Any], bool]:
     """Build the assistant tool-call row and update the per-turn fallback/mute state.
 
     Drops a bare bracketed marker beside a call (#78148), classifies housekeeping-only

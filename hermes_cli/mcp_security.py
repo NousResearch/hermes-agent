@@ -133,13 +133,3 @@ def validate_mcp_server_entry(name: str, entry: dict[str, Any]) -> list[str]:
             f"MCP server"
         )
     return issues
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def is_mcp_server_entry_suspicious(name: str, entry: dict[str, Any]) -> bool:
-    return bool(validate_mcp_server_entry(name, entry))
-# ---- END PLUGIN-COMPAT ----

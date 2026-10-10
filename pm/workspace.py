@@ -30,7 +30,7 @@ def _member_ignored(directory, names):
 # The uv failure classifier lives beside the uv runner (stdlib-only imports): the bootstrap
 # runner streams uv output from a pre-3.11 system python where this module's tomllib import
 # cannot load. Workspace callers keep reaching it from here.
-from pm.environment import ResolutionConflict, classify_uv_failure  # noqa: E402,F401
+from pm.environment import ResolutionConflict, classify_uv_failure
 
 
 def member_sources(plugin_dirs) -> dict[Path, Path]:
@@ -82,9 +82,14 @@ def _copy_core_inputs(source: Path, destination: Path) -> None:
         files.update(str(p.relative_to(source)) for p in source.glob(pattern))
     files.update(p.name for p in source.glob("*.py"))
 
-    excluded = {".git", ".venv", "venv", "node_modules", "__pycache__", "build", "dist", "release", "uv.lock"}
+    # uv.lock is not excluded: the root lock is never copied (only ``files`` are; lock_and_sync
+    # seeds or resolves it), and pm/uv.lock is the PM runtime's input (pm/runtime.py::_inputs).
+    excluded = {".git", ".venv", "venv", "node_modules", "__pycache__", "build", "dist", "release"}
+    # A root dist/ is build output, but below a package root it is shipped: the managed
+    # environment runs from this snapshot and serves bundled plugins' dashboard/dist/.
+    nested_excluded = excluded - {"dist"}
     def ignore(directory, names):
-        return [name for name in names if name in excluded or name.startswith(".")
+        return [name for name in names if name in nested_excluded or name.startswith(".")
                 or name.endswith(".egg-info") or (Path(directory) / name).is_symlink()]
 
     for entry in source.iterdir():

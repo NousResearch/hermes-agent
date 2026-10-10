@@ -86,11 +86,42 @@ class TestProfileScopedSkills:
     def test_scope_restores_module_globals(self, client, isolated_profiles):
         """The SKILLS_DIR swap is per-request; the module global must be
         restored even after a scoped call (cron-style locked swap)."""
-        import tools.skills_tool as skills_tool
+        from tools import skills_tool
 
         before = skills_tool.SKILLS_DIR
         client.get("/api/skills", params={"profile": "worker_alpha"})
         assert skills_tool.SKILLS_DIR == before
+
+    @pytest.mark.parametrize("method,path,body", [
+        ("PUT", "/api/learning/node", {"id": "shared-skill", "content": "EDITED"}),
+        ("DELETE", "/api/learning/node", {"id": "shared-skill"}),
+        ("PUT", "/api/skills/content", {"name": "shared-skill", "content": "EDITED"}),
+        ("POST", "/api/skills", {"name": "shared-skill-2", "content": "EDITED"}),
+    ])
+    def test_query_profile_scopes_skill_writes(self, client, isolated_profiles, method, path, body):
+        """A shared-backend Desktop names the profile in the query only; the write must land in
+        that profile and leave the same-named skill of the dashboard's own profile alone."""
+        skill_md = (
+            "---\nname: {name}\ndescription: edited\n---\n\n# EDITED\n").format(
+                name=body.get("name", body.get("id")))
+        if "content" in body:
+            body = {**body, "content": skill_md}
+        for home in isolated_profiles.values():
+            _write_skill(home / "skills", "shared-skill")
+        default_md = isolated_profiles["default"] / "skills" / "shared-skill" / "SKILL.md"
+        before = default_md.read_text()
+
+        resp = client.request(method, path, params={"profile": "worker_alpha"}, json=body)
+
+        assert resp.status_code == 200, resp.text
+        worker_skills = isolated_profiles["worker_alpha"] / "skills"
+        if method == "DELETE":
+            assert not (worker_skills / "shared-skill").exists()
+        else:
+            target = body.get("name", body.get("id"))
+            assert "# EDITED" in (worker_skills / target / "SKILL.md").read_text()
+        assert default_md.read_text() == before
+        assert not (isolated_profiles["default"] / "skills" / "shared-skill-2").exists()
 
 
 class TestProfileScopedHubActions:
@@ -100,7 +131,7 @@ class TestProfileScopedHubActions:
         """Hub installs must go through a fresh ``hermes -p <profile>``
         subprocess — the in-process scope can't reach skills_hub's
         import-time SKILLS_DIR binding."""
-        import hermes_cli.web_server as web_server
+        from hermes_cli import web_server
 
         calls = []
 
@@ -131,3 +162,35 @@ class TestProfileScopedHubActions:
             json={"identifier": "official/demo", "profile": "ghost"},
         )
         assert resp.status_code == 404
+
+    def test_hub_install_scoped_to_default_still_carries_the_selector(
+        self, client, isolated_profiles, monkeypatch
+    ):
+        """``default`` is a real named profile, not an alias for "the dashboard's own".
+        A pooled ``hermes -p worker_alpha serve`` dashboard answering a hub action with
+        ``profile=default`` must still emit ``-p default``: without it the child's env
+        carries this process's home verbatim and the install lands on worker_alpha."""
+        calls = []
+
+        class _FakeProc:
+            pid = 4242
+
+        def _fake_spawn(subcommand, name):
+            calls.append(list(subcommand))
+            return _FakeProc()
+
+        # Ambient home of a dashboard serving under the named profile.
+        monkeypatch.setenv("HERMES_HOME", str(isolated_profiles["worker_alpha"]))
+        monkeypatch.setattr(_web_server_gateway, "_spawn_hermes_action", _fake_spawn)
+        resp = client.post(
+            "/api/skills/hub/install",
+            json={"identifier": "official/demo", "profile": "default"},
+        )
+        assert resp.status_code == 200
+        assert calls == [
+            ["-p", "default", "skills", "install", "official/demo", "--yes"]
+        ]
+        # The spawn-path env pin must land the child on the default home, not the
+        # ambient one it would inherit from a selector-less argv.
+        env = _web_server_gateway._profile_action_environment(calls[0])
+        assert env["HERMES_HOME"] == str(isolated_profiles["default"])

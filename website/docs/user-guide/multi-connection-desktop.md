@@ -214,7 +214,7 @@ that live on one gateway.
 - Selecting a gateway restores the last profile used there. The home pill
   returns to its default profile and the layers pill shows **All profiles on
   this gateway**. **Cmd/Ctrl+1–9** continue to switch profiles within the
-  active gateway.
+  active gateway whenever no pane has a tab strip to claim them.
 - With several gateways the profile rail is a **fleet rail**: every registered
   gateway's profiles sit on the one strip, each group headed by that gateway's
   kind glyph (device, network, terminal, cloud) — the same glyph the gateway

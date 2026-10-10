@@ -118,7 +118,7 @@ def test_wait_for_process_kills_subprocess_on_keyboardinterrupt():
             # that goes through _wait_for_process.
             try:
                 result_holder["result"] = env.execute("sleep 30", timeout=60)
-            except BaseException as e:  # noqa: BLE001 — we want to observe it
+            except BaseException as e:
                 result_holder["exception"] = type(e).__name__
 
         t = threading.Thread(target=worker, daemon=True)
@@ -222,7 +222,7 @@ def test_exit_cleanup_kills_foreground_command_still_running(monkeypatch):
     the host exiting mid-command would otherwise orphan it to init."""
     from tools import terminal_tool_lifecycle
 
-    monkeypatch.setattr(terminal_tool_lifecycle, "_scratch_paths", lambda: [])
+    monkeypatch.setattr(terminal_tool_lifecycle, "_scratch_paths", list)
     env = LocalEnvironment(cwd="/tmp")
     result: dict = {}
     t = threading.Thread(target=lambda: result.update(env.execute("sleep 3517", timeout=600)), daemon=True)

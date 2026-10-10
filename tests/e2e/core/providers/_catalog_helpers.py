@@ -141,6 +141,9 @@ class Row:
         out[p + "/models"] = "listing"
         if self.dialect == "anthropic":
             out[p + "/v1/models"] = "listing"
+        if self.name == "lmstudio":
+            # LM Studio validates and lists through its NATIVE ``/api/v1/models`` at the server root.
+            out[f"/{self.name}/api/v1/models"] = "listing"
         return out
 
     def listing_routes(self) -> set[str]:

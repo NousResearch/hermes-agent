@@ -8,6 +8,7 @@ import { promisify } from 'node:util'
 
 import { expect, it, vi } from 'vitest'
 
+import { markerPath } from '../update-marker'
 import * as updaterProcess from '../updater-process'
 
 import { type CheckoutStrategyDeps, createCheckoutStrategy } from './checkout'
@@ -265,7 +266,12 @@ it('carries each install channel from Python publication checks into the source 
       responses.set(`/repos/NousResearch/hermes-agent/commits/${tags[channel]}`, { sha })
     }
 
-    responses.set('/releases/stable/release-candidates.json', { tag: tags.stable, commit: commits[1] })
+    // Stable IS the latest published GitHub release; no R2 record is consulted for it.
+    responses.set('/repos/NousResearch/hermes-agent/releases/latest', {
+      tag_name: tags.stable,
+      draft: false,
+      prerelease: false
+    })
     // The 'main' subscription is a source-branch channel record under the R2 protocol.
     responses.set(
       '/releases/channels/main.json',
@@ -366,6 +372,7 @@ urllib.request.build_opener = local_build
       isMac: process.platform === 'darwin',
       defaultUpdateBranch: 'main',
       updateHandoffDwellMs: 0,
+      handoffClaimTimeoutMs: 2000,
       resolveUpdateRoot: (): string => root,
       readSourceUpdate: (install: string, opts: { force?: boolean }): Promise<SourceUpdate | null> =>
         readSourceUpdate({
@@ -395,6 +402,9 @@ urllib.request.build_opener = local_build
     vi.spyOn(updaterProcess, 'spawnUpdaterProcess').mockImplementation(
       (command: string, args: string[], options: SpawnOptions): updaterProcess.UpdaterChild => {
         spawned.push({ command, args, options })
+        // C2: a hand-off has started only once the script takes the Desktop's
+        // bridge marker in its own (live, foreign) name — do that here.
+        fs.writeFileSync(markerPath(home), `${process.ppid}\n${Math.floor(Date.now() / 1000)}\n`)
 
         return { unref: (): void => {} }
       }
@@ -426,6 +436,8 @@ urllib.request.build_opener = local_build
       fs.writeFileSync(script, '')
       expect(await strategy.apply()).toMatchObject({ ok: true, handedOff: true })
       const handoff: (typeof spawned)[number] | undefined = spawned.pop()
+      // The update ran and released its claim; the next apply starts clean.
+      fs.rmSync(markerPath(home), { force: true })
       expect(handoff?.args).toContain(script)
       expect(handoff?.args).toContain(channel)
       expect(handoff?.args).toContain(process.platform === 'win32' ? '-Channel' : '--channel')
@@ -468,6 +480,7 @@ urllib.request.build_opener = local_build
     expect(spawned.pop()?.args).toEqual(
       expect.arrayContaining([process.platform === 'win32' ? '-Branch' : '--branch', 'feature/gui'])
     )
+    fs.rmSync(markerPath(home), { force: true })
     fs.rmSync(scriptDirectory, { recursive: true, force: true })
     expect(await strategy.apply()).toMatchObject({ manual: true, command: 'hermes update --branch feature/gui' })
     // apply() forces a fresh check; under the R2 protocol that re-resolution

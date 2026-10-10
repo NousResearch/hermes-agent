@@ -435,7 +435,7 @@ def resolve_billing_route(
         elif provider_name == "fireworks" or host("api.fireworks.ai"):
             snapshot_provider = "fireworks"
     if snapshot_provider:
-        if snapshot_provider == "openai":
+        if snapshot_provider == "openai" and (not url or host("api.openai.com")):
             bare = strip_codex_context_variant_suffix(bare)
         return BillingRoute(provider=snapshot_provider, model=bare, base_url=url, billing_mode="official_docs_snapshot")
     if provider_name in {"custom", "local"} or (base and base_url_hostname(base) in ("localhost", "127.0.0.1")):

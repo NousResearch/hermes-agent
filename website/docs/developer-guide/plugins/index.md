@@ -925,8 +925,11 @@ def register(ctx):
 ### Session-owned tools
 
 Use `ctx.session_toolset()` when a gateway client supplies tools for one live
-conversation. Register the complete catalog before dispatching the session's
-first message, then dispose the handle when the client disconnects:
+conversation. This API requires `plugins.isolation: in_process`: its registration handle stays
+in the gateway process and cannot cross the plugin-host boundary.
+
+Register the complete catalog before dispatching the session's first message,
+then dispose the handle when the client disconnects:
 
 ```python
 tools = ctx.session_toolset(

@@ -9,7 +9,7 @@ from typing import Any, Callable
 
 
 _LOCK = threading.RLock()
-_SESSION_TOOLSETS: dict[tuple[str, str], set["PluginSessionToolset"]] = {}
+_SESSION_TOOLSETS: dict[tuple[str, str], set[PluginSessionToolset]] = {}
 
 
 def session_toolset_names(session_key: str, *, scope: str) -> list[str]:
@@ -132,7 +132,7 @@ class PluginSessionToolset:
 
     close = dispose
 
-    def __enter__(self) -> "PluginSessionToolset":
+    def __enter__(self) -> PluginSessionToolset:
         return self
 
     def __exit__(self, *_exc: object) -> None:

@@ -21,6 +21,7 @@ def _schema(name: str) -> dict:
 def test_session_toolsets_are_isolated_frozen_and_disposed() -> None:
     from gateway.run_turn import GatewayTurnMixin
     from model_tools import get_tool_definitions
+    from tools.tool_search import is_deferrable_tool_name
     from tools.registry import registry
 
     session_a = "agent:main:test:dm:a"
@@ -64,6 +65,8 @@ def test_session_toolsets_are_isolated_frozen_and_disposed() -> None:
         }
         assert tool_a in names_a and tool_b not in names_a
         assert tool_b in names_b and tool_a not in names_b
+        assert not is_deferrable_tool_name(tool_a)
+        assert not is_deferrable_tool_name(tool_b)
         assert registry.dispatch(tool_a, {}, gateway_session_key=session_a) == "a"
         assert "outside its owning session" in registry.dispatch(
             tool_a, {}, gateway_session_key=session_b
@@ -139,3 +142,15 @@ def test_session_toolset_disposal_releases_ledger_and_preserves_replacement(monk
 
     assert len(manager._registration_order) == baseline_order
     assert len(manager._ownership_ledger.get(context.plugin_id, ())) == baseline_owned
+
+
+def test_abandoned_plugin_load_cannot_create_session_toolsets() -> None:
+    from hermes_cli.plugin_session_toolsets import active_session_toolset_names
+    from tools.registry import registry
+
+    context = _context("abandoned-session-tools")
+    scope = registry.current_scope_key()
+    before = active_session_toolset_names(scope=scope)
+    context._load_abandoned = True
+    assert context.session_toolset("agent:test:abandoned", name="client-tools") is None
+    assert active_session_toolset_names(scope=scope) == before

@@ -4,9 +4,13 @@ Bound onto ``GatewayRunner`` through ``GatewaySlashCommandsMixin``."""
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
 from agent.i18n import t
 from gateway.platforms.event import MessageEvent, MessageType
+
+if TYPE_CHECKING:
+    from gateway.config import Platform
 
 # Log-record parity with gateway/run.py and the origin module.
 logger = logging.getLogger("gateway.run")
@@ -29,6 +33,9 @@ def _mgr_call(prefix: str, fn, *args, errors=(RuntimeError, ValueError)):
 
 class GatewayGoalCommandsMixin:
     """Autonomy-loop gateway commands: /goal, /subgoal, /heartbeat, /loop, /refine, /review."""
+
+    if TYPE_CHECKING:
+        def _typed_command_prefix_for(self, platform: Platform) -> str: ...
 
     async def _handle_goal_command(self, event: MessageEvent) -> str:
         from hermes_cli.goal_command import dispatch_goal_command
@@ -151,7 +158,8 @@ class GatewayGoalCommandsMixin:
         if not quick_key:
             return None, None, t(f"gateway.{verb}.unavailable")
         if quick_key in self._running_agents:
-            return quick_key, None, t("gateway.shared.agent_running_retry_later", command=verb)
+            prefix = self._typed_command_prefix_for(event.source.platform)
+            return quick_key, None, t("gateway.shared.agent_running_retry_later", command=verb, prefix=prefix)
         agent = self._cached_agent_for(quick_key)
         if agent is None:
             return quick_key, None, t(f"gateway.{verb}.nothing_yet")

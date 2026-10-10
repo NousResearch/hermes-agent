@@ -162,7 +162,7 @@ def test_weixin_open_gate_honors_scope_opt_in():
 def test_yuanbao_access_policy_gate_ignores_default_env(profile_scope, multiplex_on, monkeypatch):
     monkeypatch.setenv("GATEWAY_ALLOW_ALL_USERS", "true")
 
-    from gateway.platforms.yuanbao import AccessPolicy
+    from gateway.platforms.yuanbao_inbound import (AccessPolicy)
 
     policy = AccessPolicy(
         dm_policy="open", dm_allow_from=[], group_policy="pairing", group_allow_from=[]

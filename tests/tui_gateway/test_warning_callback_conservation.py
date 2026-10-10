@@ -140,7 +140,7 @@ def test_diagnostic_turn_callbacks_from_real_worker_keep_controls_and_logs(turn_
     agent.run_conversation = run
     with caplog.at_level(logging.WARNING, logger="operator"):
         server._run_prompt_submit("request", "thread-owner", session, "engine failure",
-            display_metadata={"notification_category": "diagnostic"})
+            display_metadata={"notification_category": "diagnostic"}, turn_claim=server._claim_session_turn(session))
         session["_run_thread"].join(timeout=10)
         assert not session["_run_thread"].is_alive()
     assert not failures

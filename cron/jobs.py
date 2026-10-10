@@ -40,7 +40,9 @@ logger = logging.getLogger(__name__)
 from hermes_time import now as _hermes_now
 from hermes_time import get_timezone
 from hermes_cli.observability.shared_metrics_gateway import record_cron_missed
-from utils import atomic_replace, atomic_write_text, fsync_directory, mkstemp_beside
+from utils import (
+    _preserve_file_mode, _restore_file_mode, atomic_replace, atomic_write_text, fsync_directory, mkstemp_beside,
+)
 
 # croniter is imported lazily (slow import, only needed for cron exprs). HAS_CRONITER stays a
 # module attribute: a monkeypatched value wins because _ensure_croniter only probes while None
@@ -1560,7 +1562,9 @@ def _save_jobs_unlocked(
     rewrite for tests, disaster recovery and load_jobs' auto-repair of unmergeable shapes)."""
     jobs_file = _current_cron_store().jobs_file
     ensure_dirs()
-    # Owner snapshot BEFORE replace so a root writer can hand the file back to the gateway user.
+    # Owner and mode snapshot BEFORE replace: a root writer hands the file back to the gateway user, and
+    # the mkstemp temp's 0600 must not override a mode the operator set for a shared volume (#29660).
+    mode_before = _preserve_file_mode(jobs_file)
     _stat_before = None
     for probe in (jobs_file, jobs_file.parent):
         with contextlib.suppress(OSError):
@@ -1587,7 +1591,8 @@ def _save_jobs_unlocked(
             replaced = Path(atomic_replace(tmp_path, jobs_file))
             tmp_path = None
             fsync_directory(replaced.parent)
-            _secure_file(jobs_file)
+            _restore_file_mode(replaced, mode_before)
+            _secure_file(jobs_file)  # tightens to 0600 unless managed/container, which keep mode_before
             _preserve_file_ownership(jobs_file, _stat_before)
             # Invalidate (never refresh) the stamp: a refresh would let a nested save certify disk
             # against an OUTER caller's stale payload. Later saves take the full merge (fail-safe).

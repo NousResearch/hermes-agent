@@ -1,9 +1,11 @@
-import { act, render, waitFor } from '@testing-library/react'
+import { act, cleanup, render, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { useAgentTerminal } from './use-agent-terminal'
+import { useTerminalSession } from './use-terminal-session'
 
 const xterm = vi.hoisted(() => ({
+  constructorOptions: [] as Array<Record<string, unknown>>,
   attachCustomKeyEventHandler: vi.fn(),
   clearSelection: vi.fn(),
   dispose: vi.fn(),
@@ -11,6 +13,7 @@ const xterm = vi.hoisted(() => ({
   getSelection: vi.fn(() => ''),
   loadAddon: vi.fn(),
   onSelectionChange: vi.fn(() => ({ dispose: vi.fn() })),
+  onData: vi.fn(() => ({ dispose: vi.fn() })),
   open: vi.fn(),
   refresh: vi.fn(),
   write: vi.fn()
@@ -29,9 +32,11 @@ vi.mock('@xterm/xterm', () => ({
     readonly buffer = { active: {} }
     readonly rows = 24
     readonly unicode = { activeVersion: '6' }
+    readonly parser = { registerOscHandler: vi.fn(() => ({ dispose: vi.fn() })) }
     options: Record<string, unknown>
 
     constructor(options: Record<string, unknown>) {
+      xterm.constructorOptions.push(options)
       this.options = { ...options }
     }
 
@@ -42,9 +47,16 @@ vi.mock('@xterm/xterm', () => ({
     getSelection = xterm.getSelection
     loadAddon = xterm.loadAddon
     onSelectionChange = xterm.onSelectionChange
+    onData = xterm.onData
     open = xterm.open
     refresh = xterm.refresh
     write = xterm.write
+  }
+}))
+
+vi.mock('@xterm/addon-serialize', () => ({
+  SerializeAddon: class {
+    serialize = vi.fn(() => '')
   }
 }))
 
@@ -97,6 +109,12 @@ vi.mock('./buffer', () => ({
   registerTerminalReader: terminalRegistrations.registerReader
 }))
 
+function InteractiveHarness() {
+  const { hostRef } = useTerminalSession({ active: false, cwd: '/tmp', id: 'user-tab', onAddSelectionToChat: vi.fn() })
+
+  return <div ref={hostRef} />
+}
+
 function Harness() {
   const { hostRef } = useAgentTerminal({ active: false, id: 'agent-tab', procId: 'proc-1' })
 
@@ -104,6 +122,23 @@ function Harness() {
 }
 
 describe('useAgentTerminal', () => {
+  it('enables xterm screen reader output for the interactive terminal', () => {
+    const prior = window.hermesDesktop
+    Object.assign(window, { hermesDesktop: { terminal: { start: () => new Promise(() => undefined) } } })
+
+    try {
+      render(<InteractiveHarness />)
+      expect(xterm.constructorOptions.at(-1)?.screenReaderMode).toBe(true)
+    } finally {
+      Object.assign(window, { hermesDesktop: prior })
+    }
+  })
+
+  it('enables xterm screen reader output for the read-only agent mirror', () => {
+    render(<Harness />)
+    expect(xterm.constructorOptions.at(-1)?.screenReaderMode).toBe(true)
+  })
+
   let resolveFontLoad!: (faces: FontFace[]) => void
   let resizeObserverConstructor = vi.fn<() => void>()
 
@@ -133,6 +168,7 @@ describe('useAgentTerminal', () => {
   })
 
   afterEach(() => {
+    cleanup()
     vi.clearAllMocks()
     vi.unstubAllGlobals()
     Reflect.deleteProperty(globalThis.document, 'fonts')

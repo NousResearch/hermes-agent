@@ -232,6 +232,7 @@ const StatusbarItemView = memo(function StatusbarItemView({
   }
 
   const tooltipLabel = item.actionId ? <TipKeybindLabel actionId={item.actionId} text={item.title} /> : item.title
+  const accessibleName = !item.label && !item.detail ? item.title || item.toggleLabel : undefined
 
   const content = (
     <>
@@ -249,7 +250,12 @@ const StatusbarItemView = memo(function StatusbarItemView({
     // way profile-switcher.tsx stacks Popover/ContextMenu/Tooltip triggers.
     const trigger = (
       <DropdownMenuTrigger asChild>
-        <button className={cn(STATUSBAR_ACTION_CLASS, item.className)} disabled={item.disabled} type="button">
+        <button
+          aria-label={accessibleName}
+          className={cn(STATUSBAR_ACTION_CLASS, item.className)}
+          disabled={item.disabled}
+          type="button"
+        >
           {content}
         </button>
       </DropdownMenuTrigger>
@@ -333,7 +339,13 @@ const StatusbarItemView = memo(function StatusbarItemView({
   if (item.href || item.variant === 'link') {
     return (
       <Tip label={tooltipLabel}>
-        <a className={cn(STATUSBAR_ACTION_CLASS, item.className)} href={item.href} rel="noreferrer" target="_blank">
+        <a
+          aria-label={accessibleName}
+          className={cn(STATUSBAR_ACTION_CLASS, item.className)}
+          href={item.href}
+          rel="noreferrer"
+          target="_blank"
+        >
           {content}
         </a>
       </Tip>
@@ -343,6 +355,7 @@ const StatusbarItemView = memo(function StatusbarItemView({
   return (
     <Tip label={tooltipLabel}>
       <button
+        aria-label={accessibleName}
         className={cn(STATUSBAR_ACTION_CLASS, item.className)}
         disabled={item.disabled}
         onClick={event => {

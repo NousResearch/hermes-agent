@@ -42,6 +42,18 @@ function strip(): HTMLElement {
 }
 
 describe('GlyphSpinner', () => {
+  it('can be decorative beside visible loading text while standalone loaders keep a status', () => {
+    const { container, rerender } = render(<GlyphSpinner decorative />)
+    expect(screen.queryByRole('status')).toBeNull()
+    expect(container.querySelector('.glyph-spinner')?.parentElement?.getAttribute('aria-hidden')).toBe('true')
+
+    rerender(<GlyphSpinner />)
+    expect(screen.getByRole('status', { name: 'Loading' })).toBeTruthy()
+
+    rerender(<GlyphSpinner ariaLabel="Connecting" />)
+    expect(screen.getByRole('status', { name: 'Connecting' })).toBeTruthy()
+  })
+
   beforeEach(() => {
     vi.useFakeTimers()
   })
@@ -53,7 +65,7 @@ describe('GlyphSpinner', () => {
   })
 
   it('renders every frame in source order as the scroll strip', () => {
-    render(<GlyphSpinner spinner="braille" />)
+    render(<GlyphSpinner ariaLabel="Loading" spinner="braille" />)
 
     const frames = [...strip().querySelectorAll('.glyph-spinner__frame')].map(node => node.textContent)
 
@@ -61,7 +73,7 @@ describe('GlyphSpinner', () => {
   })
 
   it('feeds steps() and the duration from the spinner data, so cadence is unchanged', () => {
-    render(<GlyphSpinner spinner="braille" />)
+    render(<GlyphSpinner ariaLabel="Loading" spinner="braille" />)
 
     const style = strip().style
 
@@ -82,7 +94,7 @@ describe('GlyphSpinner', () => {
 
     render(
       <Profiler id="glyph-spinner" onRender={onRender}>
-        <GlyphSpinner spinner="braille" />
+        <GlyphSpinner ariaLabel="Loading" spinner="braille" />
       </Profiler>
     )
 
@@ -98,7 +110,7 @@ describe('GlyphSpinner', () => {
   it('pauses while its kept-alive pane is hidden, and resumes when shown', () => {
     const { rerender } = render(
       <PaneVisibleContext.Provider value={false}>
-        <GlyphSpinner spinner="braille" />
+        <GlyphSpinner ariaLabel="Loading" spinner="braille" />
       </PaneVisibleContext.Provider>
     )
 
@@ -108,7 +120,7 @@ describe('GlyphSpinner', () => {
 
     rerender(
       <PaneVisibleContext.Provider value>
-        <GlyphSpinner spinner="braille" />
+        <GlyphSpinner ariaLabel="Loading" spinner="braille" />
       </PaneVisibleContext.Provider>
     )
 
@@ -116,7 +128,7 @@ describe('GlyphSpinner', () => {
   })
 
   it('hides the decorative frames from assistive tech', () => {
-    render(<GlyphSpinner spinner="braille" />)
+    render(<GlyphSpinner ariaLabel="Loading" spinner="braille" />)
 
     // role="status" is a live region. The frames must not be announced — the
     // old implementation rewrote this region's text ~12x/second.
@@ -128,12 +140,12 @@ describe('GlyphSpinner', () => {
   it('pauses on request while staying mounted', () => {
     // For a caller that keeps the spinner in the tree through a fade-out
     // (ChatSwapOverlay) and does not want it animating once the wait is over.
-    const { rerender } = render(<GlyphSpinner paused spinner="braille" />)
+    const { rerender } = render(<GlyphSpinner ariaLabel="Loading" paused spinner="braille" />)
     const viewport = () => screen.getByRole('status', { name: 'Loading' }).querySelector('.glyph-spinner')
 
     expect(viewport()?.getAttribute('data-paused')).toBe('true')
 
-    rerender(<GlyphSpinner paused={false} spinner="braille" />)
+    rerender(<GlyphSpinner ariaLabel="Loading" paused={false} spinner="braille" />)
 
     expect(viewport()?.hasAttribute('data-paused')).toBe(false)
   })

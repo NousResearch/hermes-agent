@@ -165,6 +165,9 @@ _PREFIX_PATTERNS = [
     r"sk_live_[A-Za-z0-9]{10,}",        # Stripe secret key (live)
     r"sk_test_[A-Za-z0-9]{10,}",        # Stripe secret key (test)
     r"rk_live_[A-Za-z0-9]{10,}",        # Stripe restricted key
+    # Webhook signing secret: Stripe (alphanumeric) and Standard Webhooks/Svix (``whsec_`` + base64,
+    # the form gateway/platforms/webhook.py accepts). Ported from RooCodeInc/Roomote#3418.
+    r"whsec_[A-Za-z0-9+/]{20,}={0,2}",
     r"SG\.[A-Za-z0-9_-]{10,}",          # SendGrid API key
     r"hf_[A-Za-z0-9]{10,}",             # HuggingFace token
     r"r8_[A-Za-z0-9]{10,}",             # Replicate API token

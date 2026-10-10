@@ -809,30 +809,31 @@ def _anthropic_ordered_blocks(msg: dict) -> list[dict]:
     return [block for block in converted if block is not None]
 
 
-def _reasoning_details_blocks(msg: dict) -> list[dict]:
-    """Signed and redacted thinking from ``reasoning_details`` (Anthropic shape, or Converse's own redacted
-    capture), in stored order. Converse wants reasoning ahead of toolUse."""
+def _reasoning_details_blocks(msg: dict, claude: bool) -> list[dict]:
+    """Redacted thinking from ``reasoning_details`` (Converse's own capture) and, for Claude, signed thinking
+    in Anthropic shape, in stored order. Converse wants reasoning ahead of toolUse."""
     blocks = []
     for d in msg.get("reasoning_details") or []:
         if not isinstance(d, dict):
             continue
-        if d.get("type") == "thinking" and d.get("signature"):
+        if claude and d.get("type") == "thinking" and d.get("signature"):
             blocks.append(_reasoning_text_block(d.get("thinking"), d["signature"]))
         elif d.get("type") == "redacted_thinking" and (block := _redacted_reasoning_block(d.get("data") or d.get("redactedContentBase64"))):
             blocks.append(block)
     return blocks
 
 
-def _assistant_blocks(msg: dict, content) -> list[dict]:
+def _assistant_blocks(msg: dict, content, claude: bool = True) -> list[dict]:
     """Assistant message → Converse blocks, from the first carrier that yields any: the ordered
-    ``bedrock_content_blocks`` sidecar, the ordered ``anthropic_content_blocks`` sidecar, else thinking
-    from ``reasoning_details`` followed by text, then tool calls."""
+    ``bedrock_content_blocks`` sidecar, (Claude only) the ordered ``anthropic_content_blocks`` sidecar,
+    else thinking from ``reasoning_details`` followed by text, then tool calls. Anthropic-shaped carriers
+    hold Claude signatures, so other models never read them."""
     ordered_blocks = msg.get("bedrock_content_blocks")
     if isinstance(ordered_blocks, list) and (content_blocks := _replay_ordered_blocks(ordered_blocks)):
         return content_blocks
-    if content_blocks := _anthropic_ordered_blocks(msg):
+    if claude and (content_blocks := _anthropic_ordered_blocks(msg)):
         return content_blocks
-    content_blocks = _reasoning_details_blocks(msg)
+    content_blocks = _reasoning_details_blocks(msg, claude)
     if isinstance(content, str) and content.strip():
         content_blocks.append({"text": content})
     elif isinstance(content, list):
@@ -901,7 +902,8 @@ def convert_messages_to_converse(
     user blocks. Converse needs strict user/assistant alternation with a user turn first and last:
     same-role neighbours merge, placeholder user turns pad the ends. ``model`` selects the reasoning
     replay policy for turns before the in-flight tool loop (None replays every carrier verbatim)."""
-    prior_filter, loop_filter = _REASONING_FILTERS[_converse_replay_policy(model)]
+    policy = _converse_replay_policy(model)
+    prior_filter, loop_filter = _REASONING_FILTERS[policy]
     # Tool results are role "tool" here, so the last role "user" message opens the in-flight tool loop.
     loop_start = next((i for i in range(len(messages) - 1, -1, -1) if messages[i].get("role") == "user"), -1)
     system_blocks: list[dict] = []
@@ -923,7 +925,9 @@ def convert_messages_to_converse(
             append_turn("user", [{"toolResult": {
                 "toolUseId": msg.get("tool_call_id", ""), "content": [{"text": _safe_text(result_content)}]}}])
         elif role == "assistant":
-            blocks = _filter_reasoning(_assistant_blocks(msg, content), prior_filter if idx < loop_start else loop_filter)
+            blocks = _filter_reasoning(
+                _assistant_blocks(msg, content, claude=policy == "signed"), prior_filter if idx < loop_start else loop_filter
+            )
             append_turn("assistant", blocks or [dict(_PLACEHOLDER_BLOCK)])
         elif role == "user":
             append_turn("user", _convert_content_to_converse(content))

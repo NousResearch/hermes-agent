@@ -159,3 +159,66 @@ class TestPytestProcessRecognition:
                 raise PermissionError("access denied")
 
         assert not hermes_state_guard._process_looks_like_pytest(_Denied())
+
+
+class TestAncestryProbeFailureIsTransient:
+    """#126766: an indeterminate psutil walk must not be memoized.
+
+    ``psutil.Process().parents()`` raises when any ancestor cannot be
+    inspected (e.g. AccessDenied on a differently-owned process). The probe
+    keeps its fail-open answer — guessing "test" the other way would refuse
+    production opens — but that answer used to be cached, permanently
+    disarming the ancestry half of the live-DB guard for the process even
+    though the failure was transient.
+    """
+
+    @pytest.mark.skipif(
+        hermes_state_guard.psutil is None, reason="ancestry probe needs psutil"
+    )
+    def test_failed_walk_returns_false_without_latching_the_cache(self, monkeypatch):
+        monkeypatch.setattr(hermes_state_guard, "_PYTEST_ANCESTOR", None)
+
+        def _denied(self):
+            raise PermissionError("psutil walk denied")
+
+        monkeypatch.setattr(hermes_state_guard.psutil.Process, "parents", _denied)
+
+        assert hermes_state_guard._has_pytest_ancestor() is False
+        assert hermes_state_guard._PYTEST_ANCESTOR is None, (
+            "an indeterminate walk must stay uncached so the probe is retried"
+        )
+
+    @pytest.mark.skipif(
+        hermes_state_guard.psutil is None, reason="ancestry probe needs psutil"
+    )
+    def test_recovered_walk_still_detects_a_pytest_ancestor(self, monkeypatch):
+        monkeypatch.setattr(hermes_state_guard, "_PYTEST_ANCESTOR", None)
+
+        pytest_parent = TestPytestProcessRecognition._FakeProc(
+            ["/venv/bin/pytest", "-q"]
+        )
+        normal_parent = TestPytestProcessRecognition._FakeProc(
+            ["/usr/bin/python", "-m", "hermes_cli.main", "gateway"]
+        )
+        monkeypatch.setattr(
+            hermes_state_guard.psutil.Process,
+            "parents",
+            lambda self: [normal_parent, pytest_parent],
+        )
+
+        assert hermes_state_guard._has_pytest_ancestor() is True
+        assert hermes_state_guard._PYTEST_ANCESTOR is True
+
+    @pytest.mark.skipif(
+        hermes_state_guard.psutil is None, reason="ancestry probe needs psutil"
+    )
+    def test_completed_walk_still_memoizes_the_negative_answer(self, monkeypatch):
+        monkeypatch.setattr(hermes_state_guard, "_PYTEST_ANCESTOR", None)
+        monkeypatch.setattr(
+            hermes_state_guard.psutil.Process, "parents", lambda self: []
+        )
+
+        assert hermes_state_guard._has_pytest_ancestor() is False
+        assert hermes_state_guard._PYTEST_ANCESTOR is False, (
+            "a walk that completed keeps its memoised answer (hot path unchanged)"
+        )

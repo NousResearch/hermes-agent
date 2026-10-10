@@ -182,6 +182,16 @@ def _principal_matches_allowlist(source, user_id: str, allowed_ids: set) -> bool
         hex_user = _npub_to_hex(user_id) if user_id.startswith("npub") else None
         if hex_user:
             check_ids.add(hex_user)
+    # Feishu/Lark: ``open_id`` is app-scoped — the same person holds a different
+    # ``open_id`` under every Feishu app — so an operator's allowlist entry may hold
+    # the developer-scoped ``union_id`` instead, which the adapter carries as
+    # ``user_id_alt``. Without this the entry only admits the sender while that
+    # particular app's ``open_id`` is unchanged, and stops matching the moment the
+    # app is recreated or migrated.
+    if platform_value == "feishu":
+        union_id = getattr(source, "user_id_alt", None)
+        if union_id:
+            check_ids.add(str(union_id))
     return bool(check_ids & allowed_ids)
 
 

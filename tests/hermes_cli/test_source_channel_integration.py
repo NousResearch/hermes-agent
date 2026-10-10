@@ -207,16 +207,30 @@ def channel_archive(source, monkeypatch):
 
     archive = source.home / "archive"
     archive.mkdir()
+    blocked: dict[str, int] = {}
+
     class Handler(SimpleHTTPRequestHandler):
         def log_message(self, *args):
             pass
+
+        def do_GET(self):
+            # A WAF that hides existing objects: the mapped status for blocked
+            # keys (403 geo-block, 503 CDN blip), 404 for genuinely missing ones.
+            status = blocked.get(self.path.lstrip("/").removeprefix("releases/"))
+            if status is not None:
+                self.send_response(status)
+                self.end_headers()
+                self.wfile.write(b"<html>Attention Required!</html>")
+                return
+            return SimpleHTTPRequestHandler.do_GET(self)
+
     server = ThreadingHTTPServer(("127.0.0.1", 0), partial(Handler, directory=str(archive)))
     thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()
     base = f"http://127.0.0.1:{server.server_port}"
     monkeypatch.setattr(source_releases, "_PUBLIC_BASE", base)
     try:
-        yield archive, base
+        yield archive, base, blocked
     finally:
         server.shutdown()
         server.server_close()
@@ -227,7 +241,7 @@ def publish_channel_build(channel_archive, name, build_id, commit, *, sequence=1
     from hashlib import sha256
     from hermes_cli.release_channels import canonical_json
 
-    archive, base = channel_archive
+    archive, base, _blocked = channel_archive
     prefix = f"releases/channel-builds/{build_id}/"
     identity = {"token": "a" * 16, "displayName": "Preview fixture", "appNamePascal": "Fixture",
                 "artifactNamePascal": "Fixture", "appId": "ai.fixture.preview",
@@ -258,8 +272,113 @@ def publish_channel_build(channel_archive, name, build_id, commit, *, sequence=1
     return channel
 
 
+def test_geo_blocked_main_record_keeps_following_the_git_branch(source, monkeypatch, channel_archive):
+    """A real HTTP 403 on main.json (proxy, firewall, geo-block) is not evidence
+    that main was unpublished: the checkout stays updatable via git, while a
+    channel whose record genuinely does not exist stays fail-closed.
+
+    Unlike the unpublished-main test, this exercises ChannelReader.resolve()
+    itself over real HTTP — the place the fallback ambiguity lives.
+    """
+    from hermes_cli import source_check
+    from hermes_cli.release_channels import ChannelNotFound, ChannelUnavailable
+
+    archive, _base, blocked = channel_archive
+    name = "main"
+    publish_channel_build(channel_archive, name, "a" * 32, source.commits[1])
+    blocked[f"channels/{name}.json"] = 403
+    set_install_channel(name, source.root)
+
+    target = source_releases.resolve_source_target(name, ["git"], source.root)
+    assert target.branch == "main" and target.commit is None
+    status = source_check.check_for_updates(install_root=source.root, home=source.home, force=True)
+    assert "error" not in status, status
+    assert status["targetSha"] == source.commits[2]
+    # An unpublished channel is ChannelNotFound at the requested stage and stays
+    # fail-closed: only main's own record may fall back.
+    with pytest.raises(ChannelNotFound) as fault:
+        source_releases.resolve_source_target("preview-unpublished", ["git"], source.root)
+    assert fault.value.stage == "requested"
+    assert not isinstance(fault.value, ChannelUnavailable)
+
+
+@pytest.mark.parametrize("status", [403, 503])
+def test_blocked_main_retirement_is_not_discarded(source, channel_archive, status):
+    """Valid state="retired" main.json + an unreadable destination stays fail-closed.
+
+    The base behavior raises; a fallback here would report retired=False, hide
+    the retirement from the update receipt, and follow a branch the record did
+    not name.
+    """
+    from hermes_cli.release_channels import ChannelUnavailable, canonical_json
+
+    archive, _base, blocked = channel_archive
+    name = "main"
+    main_record = publish_channel_build(channel_archive, name, "a" * 32, source.commits[0])
+    qualified = publish_channel_build(channel_archive, "stable", "b" * 32, source.commits[1], stable=True)
+    retired = dict(main_record, state="retired", destination="stable", minimumVersion="1.0.0",
+                   destinationHead=qualified["head"], receiverProtocol=1,
+                   receiver={"kind": "discontinued"}, lastHead=main_record["head"])
+    (archive / f"releases/channels/{name}.json").write_bytes(canonical_json(retired))
+    blocked["channels/stable.json"] = status
+    blocked["channel-builds/" + qualified["head"]["buildId"] + "/build.json"] = status
+
+    with pytest.raises(ChannelUnavailable) as fault:
+        source_releases.resolve_source_target(name, ["git"], source.root)
+    assert fault.value.stage == "destination"
+
+
+def test_blocked_main_manifest_keeps_the_pin_fail_closed(source, channel_archive):
+    """main.json active with a published head + a faulted manifest read must not
+    silently downgrade the pinned commit to the branch tip."""
+    from hermes_cli.release_channels import ChannelUnavailable
+
+    _archive, _base, blocked = channel_archive
+    name = "main"
+    channel = publish_channel_build(channel_archive, name, "a" * 32, source.commits[1])
+    blocked["channel-builds/" + channel["head"]["buildId"] + "/build.json"] = 403
+
+    with pytest.raises(ChannelUnavailable) as fault:
+        source_releases.resolve_source_target(name, ["git"], source.root)
+    assert fault.value.stage == "manifest"
+
+
+def test_blocked_channel_manifest_never_downgrades_to_main(source, channel_archive):
+    """The ordinary CDN case: a fault on a published build's manifest — after
+    retries — stays fail-closed instead of picking the branch HEAD."""
+    from hermes_cli.release_channels import ChannelUnavailable, retrying_reads
+
+    _archive, _base, blocked = channel_archive
+    name = "preview-blocked-manifest"
+    channel = publish_channel_build(channel_archive, name, "b" * 32, source.commits[1])
+    blocked["channel-builds/" + channel["head"]["buildId"] + "/build.json"] = 503
+
+    with retrying_reads():
+        with pytest.raises(ChannelUnavailable) as fault:
+            source_releases.resolve_source_target(name, ["git"], source.root)
+    assert fault.value.stage == "manifest"
+
+
+def test_main_source_branch_delivery_is_honored_not_overridden(source, channel_archive):
+    """A main record declaring a source-branch delivery resolves to that branch;
+    the fallback's hardcoded main never competes with a readable record."""
+    from hermes_cli.release_channels import canonical_json
+
+    archive, _base, _blocked = channel_archive
+    record = {"schema": 1, "name": "main", "repository": "NousResearch/hermes-agent",
+              "policy": "source-branch", "state": "active", "identity": None,
+              "revision": 1, "nextSequence": 1, "head": None,
+              "delivery": {"kind": "source-branch", "branch": "trunk"}}
+    path = archive / "releases/channels/main.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(canonical_json(record))
+
+    target = source_releases.resolve_source_target("main", ["git"], source.root)
+    assert target.branch == "trunk" and target.commit is None
+
+
 def test_real_http_reader_resolves_tagless_build_through_cli(source, monkeypatch, channel_archive):
-    archive, _ = channel_archive
+    archive, _base, _blocked = channel_archive
     name = "http-preview-351"
     channel = publish_channel_build(channel_archive, name, "b" * 32, source.commits[1])
     from hermes_cli import source_check
@@ -282,7 +401,7 @@ def test_real_http_reader_resolves_tagless_build_through_cli(source, monkeypatch
 def retired_channel_archive(source, channel_archive):
     from hermes_cli.release_channels import canonical_json
 
-    archive, _ = channel_archive
+    archive, _base, _blocked = channel_archive
     name = "offline-preview"
     preview = publish_channel_build(channel_archive, name, "a" * 32, source.commits[0])
     qualified = publish_channel_build(channel_archive, "stable", "b" * 32, source.commits[1], stable=True)

@@ -33,7 +33,7 @@ def seed_manifest(pub, request, objects):
 
 def test_resolve_verifies_exact_manifest_and_preserves_retirement_constraints():
     from hermes_cli.release_channels import ChannelReader, ChannelError, canonical_json
-    with object_server() as (url, objects, _headers, _requests, _faults):
+    with object_server() as (url, objects, headers, requests, faults):
         pub = publisher(url)
         for name in ("old-preview", "next-preview"):
             pub.create(name)
@@ -140,10 +140,106 @@ def test_passive_reads_and_missing_objects_make_one_attempt(monkeypatch):
     assert len(calls) == 1
     assert waits == []
 
+def test_geo_blocked_object_is_unavailable_not_missing(monkeypatch):
+    """A 403 behind a proxy or geo-block hides records that exist.
+
+    Callers that may legitimately fall back to Git have to see "could not read"
+    apart from "was never published"; folding both into ChannelNotFound would
+    make a blocked archive indistinguishable from a retired channel.
+    """
+    from email.message import Message
+    from urllib.error import HTTPError
+    from hermes_cli.release_channels import (
+        ChannelError, ChannelNotFound, ChannelReader, ChannelUnavailable)
+
+    def opener(request, timeout):
+        raise HTTPError(request.full_url, 403, "Forbidden", Message(), None)
+
+    reader = ChannelReader("https://releases.example", opener=opener)
+    with pytest.raises(ChannelUnavailable, match="HTTP 403"):
+        reader.read_bytes("releases/channels/main.json")
+    assert issubclass(ChannelUnavailable, ChannelError)
+    assert not issubclass(ChannelUnavailable, ChannelNotFound)
+
+
+def test_geo_blocked_object_is_unavailable_not_missing():
+    """A 403 behind a proxy or geo-block hides records that exist.
+
+    Callers that may legitimately fall back to Git have to see "could not read"
+    apart from "was never published"; folding both into ChannelNotFound would
+    make a blocked archive indistinguishable from a retired channel.
+    """
+    from email.message import Message
+    from urllib.error import HTTPError
+    from hermes_cli.release_channels import (
+        ChannelError, ChannelNotFound, ChannelReader, ChannelUnavailable)
+
+    def opener(request, timeout):
+        raise HTTPError(request.full_url, 403, "Forbidden", Message(), None)
+
+    reader = ChannelReader("https://releases.example", opener=opener)
+    with pytest.raises(ChannelUnavailable, match="HTTP 403") as fault:
+        reader.read_bytes("releases/channels/main.json")
+    assert fault.value.stage == "requested"
+    assert issubclass(ChannelUnavailable, ChannelError)
+    assert not issubclass(ChannelUnavailable, ChannelNotFound)
+
+
+def test_resolve_tags_each_read_with_its_stage():
+    """resolve() reads up to three objects; a fault must name which one.
+
+    A requested-record fault is the only case a Git fallback may consider.
+    Destination and manifest faults mean the requested record was already read
+    and understood — its retirement or pinned head stands fail-closed.
+    """
+    from email.message import Message
+    from urllib.error import HTTPError
+    from hermes_cli.release_channels import (
+        ChannelError, ChannelNotFound, ChannelReader, ChannelUnavailable, canonical_json)
+
+    with object_server() as (url, objects, _headers, _requests, _faults):
+        pub = publisher(url)
+        for name in ("stage-old", "stage-new"):
+            pub.create(name)
+        request = pub.allocate("stage-new", "a" * 40, "1.2.3")
+        request.update(version="1.2.3", windowsVersion="1.2.3.0", releaseTag="v1.2.3")
+        _manifest, record = seed_manifest(pub, request, objects)
+        record["policy"] = "stable-release"
+        objects["releases/channels/stage-new.json"] = canonical_json(record)
+        old = pub._read("stage-old")[0]
+        old.update(state="retired", destination="stage-new", minimumVersion="1.0.0",
+                   destinationHead=record["head"], receiverProtocol=1,
+                   receiver={"kind": "discontinued"}, lastHead=old["head"])
+        objects["releases/channels/stage-old.json"] = canonical_json(old)
+
+        reader = ChannelReader(url + "/bucket", repository="example/hermes-agent")
+        resolved = reader.resolve("stage-old")
+        assert resolved.requested["state"] == "retired" and resolved.manifest is not None
+
+        def blocked(request, timeout):
+            raise HTTPError(request.full_url, 403, "Forbidden", Message(), None)
+        reader.opener = blocked
+
+        with pytest.raises(ChannelUnavailable) as fault:
+            reader.resolve("stage-old")
+        assert fault.value.stage == "requested"
+
+        reader.opener = pub.reader.opener
+        del objects["releases/channels/stage-new.json"]
+        with pytest.raises(ChannelNotFound) as fault:
+            reader.resolve("stage-old")
+        assert fault.value.stage == "destination"
+
+        objects["releases/channels/stage-new.json"] = canonical_json(record)
+        del objects[record["head"]["manifestKey"]]
+        with pytest.raises(ChannelNotFound) as fault:
+            reader.resolve("stage-old")
+        assert fault.value.stage == "manifest"
+
 
 def test_reader_rejects_cycles_identity_substitution_and_cross_authority():
     from hermes_cli.release_channels import ChannelReader, ChannelError, canonical_json
-    with object_server() as (url, objects, _headers, _requests, _faults):
+    with object_server() as (url, objects, headers, requests, faults):
         pub = publisher(url)
         pub.create("alpha")
         request = pub.allocate("alpha", "a" * 40, "1.2.3")
@@ -172,7 +268,7 @@ def test_reader_rejects_cycles_identity_substitution_and_cross_authority():
 
 def test_legacy_bootstrap_uses_real_archive_keys_and_source_main_has_no_bundle():
     from hermes_cli.release_channels import canonical_json, ChannelError
-    with object_server() as (url, objects, _headers, _requests, _faults):
+    with object_server() as (url, objects, headers, requests, faults):
         pub = publisher(url, verify_build=lambda request, manifest: True)
         preview = pub.create("temporary")
         request = pub.allocate("temporary", "a" * 40, "2.0.0")
@@ -224,7 +320,7 @@ def test_sequence_exhaustion_never_wraps(sequence):
 
 def test_malformed_record_and_unqualified_retirement_never_resolve():
     from hermes_cli.release_channels import ChannelError, canonical_json
-    with object_server() as (url, objects, _headers, _requests, _faults):
+    with object_server() as (url, objects, headers, requests, faults):
         pub = publisher(url)
         pub.create("preview")
         record = pub._read("preview")[0]

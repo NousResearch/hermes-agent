@@ -70,7 +70,10 @@ def _resolve_channel(name: str, repository: str):
     ChannelReader owns HTTPS, authority and digests. The source adapter below
     admits its retirement constraints before any checkout operation. No legacy
     GitHub fallback is allowed when a record is unavailable; the one exception
-    is an unpublished ``main`` record, which resolves to the main branch.
+    is main's own record being unreadable (unpublished, or hidden by a proxy,
+    firewall or geo-block): main IS the source branch, and its record can only
+    ever add a retirement. A fault on a retirement destination or a head
+    manifest stays fail-closed — those faults never justify following a branch.
     """
     from hermes_cli.release_channels import ChannelReader
 
@@ -121,7 +124,8 @@ def _head_containing(git_cmd, cwd, commit: str, repository: str) -> str | None:
 
 
 def _resolve_source_target(channel: str, git_cmd=None, cwd=None, *, repository=None) -> SourceTarget:
-    from hermes_cli.release_channels import ChannelNotFound, validate_name
+    from hermes_cli.release_channels import (
+        ChannelNotFound, ChannelUnavailable, validate_name)
 
     validate_name(channel)
     repository = repository or source_repository(git_cmd, cwd)
@@ -129,11 +133,18 @@ def _resolve_source_target(channel: str, git_cmd=None, cwd=None, *, repository=N
         return _resolve_stable(repository, git_cmd, cwd)
     try:
         resolved = _resolve_channel(channel, repository)
-    except ChannelNotFound:
-        if channel != "main":
+    except (ChannelNotFound, ChannelUnavailable) as error:
+        # The fallback exists for exactly one situation: main's OWN record could
+        # not be read, so no retirement or pin is known to exist. It must not
+        # swallow a fault on a retirement destination or a head manifest —
+        # those mean the record WAS read and understood, and its constraints
+        # stand fail-closed. Nor does it apply to any other channel, nor to a
+        # transport fault after retries (a CDN blip must not downgrade a pinned
+        # build to the branch tip).
+        if channel != "main" or getattr(error, "stage", "requested") != "requested":
             raise
         # main IS the source branch; its record can only add a retirement.
-        # Until one is published, a checkout keeps following the branch via git.
+        # Until one is readable, a checkout keeps following the branch via git.
         return SourceTarget(channel, channel, repository, branch="main")
     terminal = resolved.terminal
     if terminal["repository"].lower() != repository.lower():

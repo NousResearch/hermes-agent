@@ -24,7 +24,29 @@ class ChannelError(ValueError):
 
 
 class ChannelNotFound(ChannelError):
-    pass
+    """The object answered 404: it was never published (or was deleted)."""
+
+    def __init__(self, message: str = "", stage: str = "requested"):
+        super().__init__(message)
+        self.stage = stage
+
+
+class ChannelUnavailable(ChannelError):
+    """The archive could not be read: transport failure, DNS, or an HTTP status other than 404.
+
+    Deliberately distinct from ChannelNotFound. An unreadable object is not evidence that the
+    record is unpublished: a proxy, corporate firewall or geo-block answering 403 hides records
+    that do exist, so a caller allowed to fall back to Git has to tell the two apart.
+
+    ``stage`` names which read faulted — "requested" (the record the caller asked for),
+    "destination" (the retirement target that record named), or "manifest" (the head build).
+    A fault past the requested read means that record was already read and understood, and its
+    answer stands; only a "requested" fault may ever justify a fallback.
+    """
+
+    def __init__(self, message: str = "", stage: str = "requested"):
+        super().__init__(message)
+        self.stage = stage
 
 
 def _match(pattern: str, value: object, label: str) -> str:
@@ -280,7 +302,8 @@ class ChannelReader:
         self.repository = validate_repository(repository) if repository is not None else None
         self.opener = opener or build_opener(_NoRedirect()).open
 
-    def read_bytes(self, key: str, sha256: str | None = None) -> bytes:
+    def read_bytes(self, key: str, sha256: str | None = None,
+                   stage: str = "requested") -> bytes:
         url = self.base_url + "/" + artifact_key(key)
         if sha256 is not None:
             require_sha256(sha256)
@@ -299,26 +322,29 @@ class ChannelReader:
             body = retry_network(read) if _RETRY_READS.get() else read()
         except HTTPError as exc:
             if exc.code == 404:
-                raise ChannelNotFound(f"Channel object not found: {key}") from exc
-            raise ChannelError(f"Channel read unavailable: HTTP {exc.code}") from exc
+                raise ChannelNotFound(f"Channel object not found: {key}", stage) from exc
+            raise ChannelUnavailable(f"Channel read unavailable: HTTP {exc.code}", stage) from exc
         except (OSError, URLError) as exc:
-            raise ChannelError("Channel read unavailable") from exc
+            raise ChannelUnavailable("Channel read unavailable", stage) from exc
         if len(body) > MAX_METADATA:
             raise ChannelError("Channel metadata exceeds size limit")
         if sha256 is not None and hashlib.sha256(body).hexdigest() != sha256:
             raise ChannelError("Channel metadata SHA256 mismatch")
         return body
 
-    def read_record(self, name: str) -> dict:
-        return validate_record(decode_json(self.read_bytes(channel_key(name))), name=name, repository=self.repository)
+    def read_record(self, name: str, stage: str = "requested") -> dict:
+        return validate_record(decode_json(self.read_bytes(channel_key(name), stage=stage)),
+                               name=name, repository=self.repository)
 
     def resolve(self, name: str) -> ChannelResolution:
-        requested = record = self.read_record(name)
+        requested = record = self.read_record(name, stage="requested")
 
         if record["state"] == "retired":
             if record["destination"] == name:
                 raise ChannelError("Channel retirement cycle")
-            record = self.read_record(record["destination"])
+            # main.json was read and understood; its retirement answer stands. A fault
+            # on the destination is a destination-stage fault, never a reason to fall back.
+            record = self.read_record(record["destination"], stage="destination")
             if record["repository"].casefold() != requested["repository"].casefold():
                 raise ChannelError("Retirement repository authority mismatch")
             if record["state"] != "active" or record["policy"] != "stable-release":
@@ -330,7 +356,8 @@ class ChannelReader:
             if head is None or record["head"] is None or head["sequence"] > record["head"]["sequence"]:
                 raise ChannelError("Invalid retirement destination head")
         manifest = None if head is None else validate_manifest(
-            decode_json(self.read_bytes(head["manifestKey"], head["sha256"])), {**record, "head": head}, self.base_url)
+            decode_json(self.read_bytes(head["manifestKey"], head["sha256"], stage="manifest")),
+            {**record, "head": head}, self.base_url)
         if requested["state"] == "retired":
             assert manifest is not None
             if manifest.get("receiverProtocol") != requested["receiverProtocol"]:

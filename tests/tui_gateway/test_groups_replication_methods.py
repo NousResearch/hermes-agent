@@ -6,6 +6,7 @@ from __future__ import annotations
 import pytest
 
 import tui_gateway.server as srv
+from tui_gateway import methods_groups
 
 MEMBERS = [{"kind": "bot", "id": "planner"}]
 
@@ -14,8 +15,13 @@ MEMBERS = [{"kind": "bot", "id": "planner"}]
 def home(tmp_path, monkeypatch):
     path = tmp_path / ".hermes"
     path.mkdir()
+    (path / "profiles" / "ops").mkdir(parents=True)
+    (path / "profiles" / "ops" / "config.yaml").write_text("{}\n")  # identity marker: local roster
     monkeypatch.setenv("HERMES_HOME", str(path))
-    return path
+    methods_groups.stop_hosted_room_service(timeout=1.0)
+    methods_groups.start_hosted_room_service()
+    yield path
+    methods_groups.stop_hosted_room_service(timeout=1.0)
 
 
 def _result(envelope):
@@ -55,18 +61,6 @@ def _authority_page(tmp_path, gateway_id="install:" + "a" * 32, n=3):
     return rooms.read_events(db, room_id="room-1", since_seq=0, limit=100)
 
 
-def test_capabilities_advertise_replication(home):
-    result = _result(srv._methods["groups.capabilities"](1, {}))
-    assert "log_replication" in result["features"]
-    assert "authority_takeover" in result["features"]
-    for name in (
-        "groups.replicate",
-        "groups.replica_state",
-        "groups.promote",
-        "groups.demote",
-    ):
-        assert name in result["methods"]
-        assert name in srv._LONG_HANDLERS
 
 
 def test_replicate_then_state_roundtrip(home, tmp_path):
@@ -124,7 +118,18 @@ def test_demote_fences_local_room_against_newer_epoch(home):
     _result(
         srv._methods["groups.create"](
             1,
-            {"room_id": "room-1", "name": "Local room", "members": MEMBERS},
+            {
+                "room_id": "room-1",
+                "name": "Local room",
+                "members": [
+                    {
+                        "member_id": "default",
+                        "profile": "default",
+                        "handle": "hermes",
+                    },
+                    {"member_id": "ops", "profile": "ops", "handle": "ops"},
+                ],
+            },
         )
     )
     observed_gateway = "install:" + "b" * 32

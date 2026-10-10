@@ -26,6 +26,17 @@
 
   --ifm-link-color: #7A5800;
   --ifm-link-hover-color: #5A4100;
+
+  /* Catalog tier pills are inline styles. Gold #FFD700 is 1.4:1 on white;
+     these light-mode tones stay above 4.5:1. Dark mode overrides below. */
+  --plugin-catalog-official: var(--ifm-color-primary-darker);
+  --plugin-catalog-official-bg: rgba(110, 79, 0, 0.1);
+  --plugin-catalog-official-border: rgba(110, 79, 0, 0.4);
+  --plugin-catalog-community: #475569;
+  --plugin-catalog-community-bg: rgba(71, 85, 105, 0.1);
+  --plugin-catalog-community-border: rgba(71, 85, 105, 0.35);
+  /* Link blue for light-only catalog overrides (sky blue is 2:1 on white). */
+  --plugin-catalog-link: #1d4ed8;
 }
 
 /* Dark mode — the PRIMARY mode, matches landing page */
@@ -50,6 +61,13 @@
 
   --ifm-link-color: #FFD700;
   --ifm-link-hover-color: #FFBF00;
+
+  --plugin-catalog-official: #ffd700;
+  --plugin-catalog-official-bg: rgba(255, 215, 0, 0.08);
+  --plugin-catalog-official-border: rgba(255, 215, 0, 0.25);
+  --plugin-catalog-community: #94a3b8;
+  --plugin-catalog-community-bg: rgba(148, 163, 184, 0.08);
+  --plugin-catalog-community-border: rgba(148, 163, 184, 0.2);
 
   --ifm-code-background: #0f0f18;
 

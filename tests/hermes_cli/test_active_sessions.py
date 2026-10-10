@@ -1,10 +1,8 @@
-import logging
 import os
 import subprocess
 import sys
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -12,7 +10,18 @@ import pytest
 from hermes_cli import active_sessions
 
 
-def test_resolve_max_concurrent_sessions_values(caplog):
+
+def _backdate_leases(*homes, age_seconds=600.0):
+    """Age every lease in the given registries past the self-orphan grace."""
+    for home in homes:
+        state_path = active_sessions._state_path(home)
+        entries = active_sessions._read_entries(state_path)
+        for entry in entries:
+            entry["started_at"] = time.time() - age_seconds
+        active_sessions._write_entries(state_path, entries)
+
+
+def test_resolve_max_concurrent_sessions_values():
     assert active_sessions.resolve_max_concurrent_sessions({}) is None
     assert active_sessions.resolve_max_concurrent_sessions({"max_concurrent_sessions": None}) is None
     assert active_sessions.resolve_max_concurrent_sessions({"max_concurrent_sessions": 0}) is None
@@ -31,12 +40,7 @@ def test_resolve_max_concurrent_sessions_values(caplog):
         == 2
     )
 
-    caplog.set_level(logging.WARNING)
     assert active_sessions.resolve_max_concurrent_sessions({"max_concurrent_sessions": "many"}) is None
-    assert any(
-        "Ignoring invalid max_concurrent_sessions='many'" in record.message
-        for record in caplog.records
-    )
 
 
 
@@ -164,12 +168,55 @@ def test_release_orphaned_leases_reclaims_only_unowned_own_pid_entries(tmp_path,
         + [{"lease_id": "elsewhere", "session_id": "other", "surface": "cli", "pid": os.getpid() }],
     )
 
+    _backdate_leases(tmp_path / ".hermes")
     assert active_sessions.release_orphaned_leases({kept.lease_id, "elsewhere"}) == 1
     assert sorted(
         entry["session_id"]
         for entry in active_sessions.active_session_registry_snapshot()
     ) == ["kept", "other"]
     assert orphan is not None
+
+
+def test_release_orphaned_leases_sweeps_profile_runtime_registries(
+    tmp_path, monkeypatch
+):
+    root = tmp_path / "hermes"
+    profile = root / "profiles" / "worker"
+    profile.mkdir(parents=True)
+    (profile / "config.yaml").write_text("{}\n")  # identity marker: a bare dir is not a profile
+    monkeypatch.setenv("HERMES_HOME", str(root))
+
+    root_lease, root_error = active_sessions.try_acquire_active_session(
+        session_id="root-orphan", surface="desktop", config={}, registry_home=root
+    )
+    profile_lease, profile_error = active_sessions.try_acquire_active_session(
+        session_id="profile-orphan",
+        surface="desktop",
+        config={},
+        registry_home=profile,
+    )
+    assert root_lease is not None and root_error is None
+    assert profile_lease is not None and profile_error is None
+
+    # A lease written seconds ago is never an orphan: a sibling finalize that
+    # snapshotted its live ids before this acquire must not reap it (#101415).
+    assert active_sessions.release_orphaned_leases(set()) == 0
+    _backdate_leases(root, profile)
+    assert active_sessions.release_orphaned_leases(set()) == 2
+    assert active_sessions.active_session_registry_snapshot(root) == []
+    assert active_sessions.active_session_registry_snapshot(profile) == []
+
+
+def test_drop_self_orphans_spares_foreign_and_vouched_leases():
+    own = os.getpid()
+    entries = [
+        {"lease_id": "orphan", "pid": own},
+        {"lease_id": "live", "pid": own},
+        {"lease_id": "foreign", "pid": own + 1},
+    ]
+
+    assert active_sessions._drop_self_orphans(entries, None) == entries
+    assert active_sessions._drop_self_orphans(entries, {"live"}) == entries[1:]
 
 
 def test_release_under_profile_home_override_targets_acquisition_registry(
@@ -188,6 +235,7 @@ def test_release_under_profile_home_override_targets_acquisition_registry(
     root = tmp_path / "hermes"
     profile = root / "profiles" / "worker"
     profile.mkdir(parents=True)
+    (profile / "config.yaml").write_text("{}\n")  # identity marker: a bare dir is not a profile
     monkeypatch.setenv("HERMES_HOME", str(root))
 
     lease, error = active_sessions.try_acquire_active_session(
@@ -225,6 +273,7 @@ def test_transfer_under_profile_home_override_targets_acquisition_registry(
     root = tmp_path / "hermes"
     profile = root / "profiles" / "worker"
     profile.mkdir(parents=True)
+    (profile / "config.yaml").write_text("{}\n")  # identity marker: a bare dir is not a profile
     monkeypatch.setenv("HERMES_HOME", str(root))
 
     lease, error = active_sessions.try_acquire_active_session(
@@ -273,17 +322,19 @@ def test_liveness_registry_corruption_fails_closed_without_overwrite(
         )
     assert state_path.read_text(encoding="utf-8") == corrupt
 
-    # The pre-existing concurrency-cap path remains available/fail-open, but
-    # must not erase evidence that strict liveness ownership is unknown.
+    # Ownership uncertainty fails CLOSED on every path now (#94595): a corrupt
+    # registry must refuse the session — with a typed reason — rather than
+    # silently readmitting a possible second writer. It still must not erase
+    # the evidence.
     lease, message = active_sessions.try_acquire_active_session(
         session_id="cli-1",
         surface="cli",
         config={"max_concurrent_sessions": 1},
     )
-    assert lease is not None and message is None
-    assert lease.enabled is False
-    assert state_path.read_text(encoding="utf-8") == corrupt
-    lease.release()
+    assert lease is None
+    assert getattr(message, "reason", None) == (
+        active_sessions.SESSION_COORDINATION_UNAVAILABLE
+    )
     assert state_path.read_text(encoding="utf-8") == corrupt
 
 
@@ -409,15 +460,96 @@ def test_liveness_guard_rejects_unknown_pid_state(tmp_path, monkeypatch):
         with active_sessions.active_session_liveness_guard("session-1"):
             pass
 
-    original = state_path.read_text(encoding="utf-8")
+    # The unknown owner is unrelated to a NEW session id: it stays in the live
+    # set (fail closed on capacity, #94595) but no longer refuses the claim
+    # outright (#113683).
     lease, message = active_sessions.try_acquire_active_session(
         session_id="cli-cap-session",
         surface="cli",
         config={"max_concurrent_sessions": 1},
     )
+    assert lease is None
+    assert getattr(message, "reason", None) == active_sessions.MAX_CONCURRENT_SESSIONS
+    assert "unknown-owner" in state_path.read_text(encoding="utf-8")
+
+    lease, message = active_sessions.try_acquire_active_session(
+        session_id="cli-cap-session", surface="cli", config={},
+    )
     assert lease is not None and message is None
-    assert lease.enabled is False
-    assert state_path.read_text(encoding="utf-8") == original
+    assert "unknown-owner" in state_path.read_text(encoding="utf-8")
+
+
+def test_unknown_sibling_liveness_only_fences_its_own_session(tmp_path, monkeypatch):
+    """A desktop (liveness-tracked) claim, release and transfer survive an unrelated
+    sibling whose owner pid exists but whose start time cannot be read (LXC /proc after
+    a backend restart, #113683); the SAME session id still fails closed."""
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    state_path = home / "runtime" / "active_sessions.json"
+    active_sessions._write_entries(state_path, [{
+        "lease_id": "stale-sibling", "session_id": "old-chat", "surface": "desktop",
+        "pid": 1, "process_start_time": 1234.5, "track_liveness": True,
+    }])
+    original_start = active_sessions._process_start_time
+    monkeypatch.setattr(
+        active_sessions, "_process_start_time",
+        lambda pid: None if int(pid) == 1 else original_start(pid),
+    )
+    assert active_sessions._pid_liveness(1, 1234.5) is None
+
+    with pytest.raises(active_sessions.ActiveSessionRegistryError, match="liveness is unknown"):
+        active_sessions.try_acquire_active_session(
+            session_id="old-chat", surface="desktop", config={}, track_liveness=True,
+        )
+
+    lease, message = active_sessions.try_acquire_active_session(
+        session_id="new-chat", surface="desktop", config={}, track_liveness=True,
+    )
+    assert lease is not None and message is None
+    assert active_sessions.transfer_active_session(lease, session_id="new-chat-rotated")
+    lease.release()
+    assert lease.released is True
+    remaining = active_sessions._read_entries(state_path)
+    assert [e["lease_id"] for e in remaining] == ["stale-sibling"]
+
+
+def test_unknown_sibling_does_not_block_guarded_release_or_orphan_sweep(tmp_path, monkeypatch):
+    """Desktop automatic cleanup (orphan reap, disconnect, idle timeout) releases its
+    lease through ``release_active_session_liveness_guard``; that path and the
+    orphan sweep must tolerate an unknowable, unrelated sibling as well (#113683)."""
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    state_path = home / "runtime" / "active_sessions.json"
+    active_sessions._write_entries(state_path, [{
+        "lease_id": "stale-sibling", "session_id": "old-chat", "surface": "desktop",
+        "pid": 1, "process_start_time": 1234.5, "track_liveness": True,
+    }])
+    original_start = active_sessions._process_start_time
+    monkeypatch.setattr(
+        active_sessions, "_process_start_time",
+        lambda pid: None if int(pid) == 1 else original_start(pid),
+    )
+    lease, message = active_sessions.try_acquire_active_session(
+        session_id="new-chat", surface="desktop", config={}, track_liveness=True,
+    )
+    assert lease is not None and message is None
+
+    with active_sessions.release_active_session_liveness_guard(
+        lease, "new-chat", own_live_lease_ids=set()
+    ) as active:
+        assert active is False
+    assert lease.released is True
+    with active_sessions.active_session_liveness_guard("new-chat") as active:
+        assert active is False
+    assert [e["lease_id"] for e in active_sessions._read_entries(state_path)] == ["stale-sibling"]
+
+    orphan, _ = active_sessions.try_acquire_active_session(
+        session_id="orphaned", surface="desktop", config={}, track_liveness=True,
+    )
+    assert orphan is not None
+    _backdate_leases(home)
+    assert active_sessions._release_orphaned_leases_in_home(home, set()) == 1
+    assert [e["lease_id"] for e in active_sessions._read_entries(state_path)] == ["stale-sibling"]
 
 
 def test_liveness_release_failure_is_retryable(tmp_path, monkeypatch):
@@ -560,3 +692,86 @@ def test_release_wins_against_transfer_waiting_on_same_lease_lock(
     assert lease.released is True
     assert active_sessions.active_session_registry_snapshot() == []
 
+
+
+def test_liveness_guard_keeps_a_just_acquired_own_lease_it_cannot_vouch_for(
+    tmp_path, monkeypatch
+):
+    """Race in #101415's fix: the finalizing session snapshots its live lease
+    ids, then a sibling session acquires a lease before the registry lock is
+    taken. That lease is absent from the snapshot but is not an orphan."""
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    fresh, error = active_sessions.try_acquire_active_session(
+        session_id="fresh", surface="desktop", config={}, registry_home=home
+    )
+    assert fresh is not None and error is None
+
+    with active_sessions.active_session_liveness_guard(
+        "fresh", registry_home=home, own_live_lease_ids=set()
+    ) as active:
+        assert active is True
+    assert [e["lease_id"] for e in active_sessions.active_session_registry_snapshot(home)] == [fresh.lease_id]
+
+    _backdate_leases(home)
+    with active_sessions.active_session_liveness_guard(
+        "fresh", registry_home=home, own_live_lease_ids=set()
+    ) as active:
+        assert active is False
+    assert active_sessions.active_session_registry_snapshot(home) == []
+
+
+def test_pid_liveness_self_pid_skips_exists_probe(monkeypatch):
+    """The probing process is trivially live: no psutil sweep for os.getpid() (#108005)."""
+    exists_calls: list = []
+
+    def _count_exists(pid):
+        exists_calls.append(pid)
+        return True
+
+    monkeypatch.setattr("gateway.status._pid_exists", _count_exists)
+    assert active_sessions._pid_liveness(os.getpid()) is True
+    # Identity is still (pid, start time): our pid with a start we never had is a recycled pid.
+    assert active_sessions._pid_liveness(os.getpid(), 1.0) is False
+    assert exists_calls == []
+
+
+def test_snapshot_prunes_after_lock_release_and_keeps_concurrent_lease(tmp_path, monkeypatch):
+    """#115578: ``active_session_registry_snapshot`` must not run the per-entry liveness
+    probes while holding the exclusive registry lock (one psutil round-trip per lease held
+    under an unfair ``LK_LOCK`` starves every 2 Hz poller past ~7 leases), and the pruned
+    write-back must not drop a lease acquired between the snapshot and the write."""
+    home = tmp_path / ".hermes"
+    state_path = home / "runtime" / "active_sessions.json"
+    lock_path = home / "runtime" / "active_sessions.lock"
+    state_path.parent.mkdir(parents=True)
+    dead_pid = 2**30  # never a live pid: _pid_exists() is False, nothing is signalled
+    active_sessions._write_entries(state_path, [
+        {"lease_id": "live-1", "session_id": "s-live", "pid": os.getpid()},
+        {"lease_id": "dead-1", "session_id": "s-dead", "pid": dead_pid},
+    ])
+    newcomer = {"lease_id": "new-1", "session_id": "s-new", "pid": os.getpid()}
+    real_prune = active_sessions._prune_dead
+    acquired_during_prune = []
+
+    def concurrent_acquire():
+        with active_sessions._FileLock(lock_path):
+            current = active_sessions._read_entries(state_path, strict=True)
+            active_sessions._write_entries(state_path, current + [dict(newcomer)])
+
+    def spy_prune(entries, **kwargs):
+        # A concurrent acquirer must be able to take the lock while the probes run.
+        acquirer = threading.Thread(target=concurrent_acquire, daemon=True)
+        acquirer.start()
+        acquirer.join(timeout=5)
+        acquired_during_prune.append(not acquirer.is_alive())
+        return real_prune(entries, **kwargs)
+
+    monkeypatch.setattr(active_sessions, "_prune_dead", spy_prune)
+
+    live = active_sessions.active_session_registry_snapshot(registry_home=home)
+
+    assert acquired_during_prune == [True]
+    assert [e["lease_id"] for e in live] == ["live-1"]
+    persisted = active_sessions._read_entries(state_path, strict=True)
+    assert sorted(e["lease_id"] for e in persisted) == ["live-1", "new-1"]

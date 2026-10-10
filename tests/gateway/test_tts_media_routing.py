@@ -12,11 +12,13 @@ import sys
 import types
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+from urllib.parse import quote, unquote
 
 import pytest
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
+from gateway.platforms.base import BasePlatformAdapter, SendResult
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource, build_session_key
 
@@ -240,7 +242,7 @@ async def test_queued_followup_delivery_strips_media_tag_from_text_and_sends_ima
     )
     adapter.send_multiple_images.assert_awaited_once_with(
         chat_id="chat-1",
-        images=[(f"file://{media_file.as_posix()}", "")],
+        images=[(f"file://{quote(str(media_file))}", "")],
         metadata={"thread_id": "topic-1"},
     )
 
@@ -290,7 +292,7 @@ async def test_queued_followup_delivery_reuses_routing_metadata_for_media(
     )
     adapter.send_multiple_images.assert_awaited_once_with(
         chat_id="chat-1",
-        images=[(f"file://{media_file.as_posix()}", "")],
+        images=[(f"file://{quote(str(media_file))}", "")],
         metadata=routing_metadata,
     )
 
@@ -478,8 +480,7 @@ class _QueuedMediaCaptureAdapter(BasePlatformAdapter):
     async def send_multiple_images(self, chat_id, images, metadata=None, human_delay=0.0):
         for image_url, _alt in images:
             path = image_url
-            if path.startswith("file://"):
-                path = path[len("file://"):]
+            path = path.removeprefix("file://")
             self.images.append({"chat_id": chat_id, "image_path": path, "metadata": metadata})
 
     async def get_chat_info(self, chat_id):
@@ -493,7 +494,7 @@ class _QueuedMediaAgent:
     def __init__(self, **kwargs):
         self.tools = []
 
-    def run_conversation(self, message, conversation_history=None, task_id=None):
+    def run_conversation(self, message, conversation_history=None, task_id=None, **kwargs):
         type(self).calls += 1
         if type(self).calls == 1:
             return {
@@ -519,11 +520,11 @@ async def test_queued_resend_branch_delivers_media_and_preserves_protected_examp
     _QueuedMediaAgent.first_response = f"Quote here\nMEDIA:{media_file}\n{protected}"
 
     fake_dotenv = types.ModuleType("dotenv")
-    setattr(fake_dotenv, "load_dotenv", lambda *args, **kwargs: None)
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
     monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
 
     fake_run_agent = types.ModuleType("run_agent")
-    setattr(fake_run_agent, "AIAgent", _QueuedMediaAgent)
+    fake_run_agent.AIAgent = _QueuedMediaAgent
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
 
     adapter = _QueuedMediaCaptureAdapter()
@@ -578,6 +579,6 @@ async def test_queued_resend_branch_delivers_media_and_preserves_protected_examp
     assert first_texts, f"expected queued resend of first response, got: {adapter.sent!r}"
     assert f"MEDIA:{media_file}" not in first_texts[0]
     assert "`MEDIA:/tmp/example.png`" in first_texts[0]
-    assert any(str(media_file) in img["image_path"] for img in adapter.images), (
+    assert any(str(media_file) in unquote(img["image_path"]) for img in adapter.images), (
         f"expected native image delivery via queued resend, got: {adapter.images!r}"
     )

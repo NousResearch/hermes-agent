@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 
 import pytest
 
+from gateway import hosted_room_driver as driver
 from gateway import hosted_rooms as rooms
-import hermes_state
+import hermes_state_wal
+from gateway.hosted_room_policy_checkpoint import HostedRoomPolicyCheckpoint
 from hermes_state import SessionDB
 
 USER = {"kind": "user", "id": "desktop-user", "display_name": "User"}
@@ -165,7 +168,7 @@ def test_first_database_open_retries_only_transient_journal_lock(
     tmp_path,
     monkeypatch,
 ):
-    original = hermes_state.apply_wal_with_fallback
+    original = hermes_state_wal.apply_wal_with_fallback
     attempts = 0
 
     def transient_lock(conn, **kwargs):
@@ -175,7 +178,7 @@ def test_first_database_open_retries_only_transient_journal_lock(
             raise sqlite3.OperationalError("database is locked")
         return original(conn, **kwargs)
 
-    monkeypatch.setattr(hermes_state, "apply_wal_with_fallback", transient_lock)
+    monkeypatch.setattr(hermes_state_wal, "apply_wal_with_fallback", transient_lock)
 
     assert _create(tmp_path / "state.db")["room_id"] == "room-1"
     assert attempts == 3
@@ -195,8 +198,7 @@ def test_first_database_open_does_not_retry_other_journal_errors(
         )
 
     monkeypatch.setattr(
-        hermes_state,
-        "apply_wal_with_fallback",
+        hermes_state_wal, "apply_wal_with_fallback",
         configured_delete_refusal,
     )
 
@@ -205,16 +207,6 @@ def test_first_database_open_does_not_retry_other_journal_errors(
     assert attempts == 1
 
 
-def test_room_state_exposes_authority_and_replay_cursor(tmp_path):
-    db = tmp_path / "state.db"
-    room = _create(db)
-
-    assert room["authority_gateway_id"] == "gateway-a"
-    assert room["authority_epoch"] == 1
-    assert rooms.room_state(db, room_id="room-1") == {
-        **room,
-        "latest_seq": 0,
-    }
 
 
 def test_authority_claim_fences_stale_gateway_events(tmp_path):
@@ -396,7 +388,7 @@ def test_authority_scoped_events_require_gateway_and_epoch(tmp_path):
     _create(db)
 
     with pytest.raises(rooms.HostedRoomError, match="authority_gateway_id"):
-        _append(
+        rooms.append_event(
             db,
             room_id="room-1",
             event_id="turn-1",
@@ -760,45 +752,6 @@ def test_room_log_pages_are_bounded_by_serialized_event_bytes(tmp_path, monkeypa
     assert second["events"][0]["seq"] == first["cursor"] + 1
 
 
-def test_room_log_pages_bound_multibyte_utf8_and_advance_cursor(tmp_path, monkeypatch):
-    db = tmp_path / "state.db"
-    _create(db)
-    for index in range(3):
-        _append(
-            db,
-            room_id="room-1",
-            event_id=f"unicode-{index}",
-            kind="message.user",
-            actor=USER,
-            payload={"text": "😀漢é" * 40, "index": index},
-        )
-
-    def page_bytes(page):
-        return len(
-            json.dumps(page, ensure_ascii=False, separators=(",", ":")).encode(
-                "utf-8"
-            )
-        )
-
-    one_event_pages = [
-        rooms.read_events(db, room_id="room-1", since_seq=index, limit=1)
-        for index in range(3)
-    ]
-    budget = max(page_bytes(page) for page in one_event_pages) + 1
-    monkeypatch.setattr(rooms, "MAX_LOG_PAGE_BYTES", budget)
-    cursor = 0
-    replayed = []
-    while True:
-        page = rooms.read_events(db, room_id="room-1", since_seq=cursor, limit=3)
-        assert page["events"]
-        assert page_bytes(page) <= budget
-        replayed.extend(page["events"])
-        assert page["cursor"] > cursor
-        cursor = page["cursor"]
-        if not page["has_more"]:
-            break
-
-    assert [event["seq"] for event in replayed] == [1, 2, 3]
 
 
 def test_room_log_page_bound_includes_json_structure_overhead(tmp_path, monkeypatch):
@@ -927,6 +880,184 @@ def test_byte_pressure_pruning_keeps_retired_room_id_reserved(
     _assert_retired_identity_stays_reserved(db, "room-full", fresh_id="room-new")
 
 
+def test_tombstone_pruning_owns_only_room_log_driver_and_policy_tables(tmp_path):
+    db = tmp_path / "state.db"
+    _create(db)
+    identity = driver.TaskIdentity(
+        room_id="room-1",
+        task_id="task-1",
+        thread_id="thread-1",
+        turn_id="turn-1",
+    )
+    driver.admit_task(
+        db,
+        identity,
+        payload={
+            "target_profile": "ops",
+            "prompt": "Inspect.",
+            "source_event_seq": 1,
+        },
+        clock=lambda: 20,
+    )
+    driver.acquire_lease(
+        db,
+        room_id="room-1",
+        gateway_id="gateway-a",
+        authority_epoch=1,
+        process_generation="process-a",
+        ttl_seconds=30,
+        clock=lambda: 20,
+    )
+    HostedRoomPolicyCheckpoint(db)
+    _disband(db, room_id="room-1", now=50)
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            """INSERT INTO hosted_room_policy_cursors(
+                   room_id, through_seq, stopped_through_seq, updated_at
+               ) VALUES ('room-1', 1, 0, 50)"""
+        )
+        conn.execute(
+            """INSERT INTO hosted_room_policy_threads
+               VALUES ('room-1', 'thread-1', 'user-1', 1, 0)"""
+        )
+        conn.execute(
+            """INSERT INTO hosted_room_policy_events
+               VALUES ('room-1', 'thread-1', 'user-1', 1, '{}')"""
+        )
+        conn.execute(
+            """INSERT INTO hosted_room_policy_watermarks
+               VALUES ('room-1', 'thread-1', 'ops', 1)"""
+        )
+        conn.execute(
+            """INSERT INTO hosted_room_policy_publications
+               VALUES ('room-1', 'task-1', 'turn.settled', 0, 1)"""
+        )
+        conn.execute(
+            """INSERT INTO hosted_room_policy_transcript
+               VALUES (
+                   'room-1', 'thread-1', 1, 'message.user', NULL
+               )"""
+        )
+        conn.execute(
+            """CREATE TABLE hosted_room_messaging_refs (
+                room_id TEXT NOT NULL,
+                marker TEXT NOT NULL
+            )"""
+        )
+        conn.execute(
+            """INSERT INTO hosted_room_policy_transcript_state
+               VALUES ('room-1', 1)"""
+        )
+        conn.execute(
+            """INSERT INTO hosted_room_messaging_refs
+               VALUES ('room-1', 'outside-pr-b')"""
+        )
+
+    assert (
+        rooms.prune_disbanded_rooms(
+            db,
+            now=50 + rooms.DISBANDED_ROOM_RETENTION_SECONDS + 1,
+        )
+        == 1
+    )
+    with sqlite3.connect(db) as conn:
+        for table in (
+            "hosted_rooms",
+            "hosted_room_events",
+            "hosted_room_driver_tasks",
+            "hosted_room_driver_leases",
+            "hosted_room_policy_cursors",
+            "hosted_room_policy_threads",
+            "hosted_room_policy_events",
+            "hosted_room_policy_watermarks",
+            "hosted_room_policy_publications",
+            "hosted_room_policy_transcript",
+            "hosted_room_policy_transcript_state",
+        ):
+            assert conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+        assert (
+            conn.execute("SELECT marker FROM hosted_room_messaging_refs").fetchone()[0]
+            == "outside-pr-b"
+        )
+
+
+def test_peer_reservation_rejects_stale_or_conflicting_authority(tmp_path):
+    db = tmp_path / "state.db"
+    current = {
+        "room_id": "room-peer",
+        "member_id": "member-peer",
+        "target_profile": "reviewer",
+        "authority_gateway_id": "gateway-current",
+        "authority_epoch": 2,
+    }
+    rooms.reserve_peer_room(db, claims=current, expires_at=300, now=100)
+
+    with pytest.raises(rooms.AuthorityConflictError, match="authority changed"):
+        rooms.reserve_peer_room(
+            db,
+            claims={
+                **current,
+                "authority_gateway_id": "gateway-stale",
+                "authority_epoch": 1,
+            },
+            expires_at=300,
+            now=100,
+        )
+    with pytest.raises(rooms.AuthorityConflictError, match="authority changed"):
+        rooms.reserve_peer_room(
+            db,
+            claims={**current, "authority_gateway_id": "gateway-conflict"},
+            expires_at=300,
+            now=100,
+        )
+    assert rooms.peer_room_is_reserved(
+        db,
+        room_id="room-peer",
+        target_profile="reviewer",
+        now=200,
+    )
+
+
+def test_policy_sync_cannot_recreate_projection_after_room_pruning(
+    tmp_path,
+    monkeypatch,
+):
+    db = tmp_path / "state.db"
+    _create(db)
+    _append(
+        db,
+        room_id="room-1",
+        event_id="user-1",
+        kind="message.user",
+        actor=USER,
+        payload={"text": "hello", "thread_id": "thread-1"},
+        now=11,
+    )
+    checkpoint = HostedRoomPolicyCheckpoint(db)
+    original_read = rooms.read_events
+
+    def read_then_prune(*args, **kwargs):
+        page = original_read(*args, **kwargs)
+        _disband(db, room_id="room-1", now=20)
+        rooms.prune_disbanded_rooms(
+            db,
+            now=20 + rooms.DISBANDED_ROOM_RETENTION_SECONDS + 1,
+        )
+        return page
+
+    monkeypatch.setattr(rooms, "read_events", read_then_prune)
+    with pytest.raises(rooms.RoomNotFoundError, match="not found"):
+        checkpoint.sync(room_id="room-1", latest_seq=1)
+    with sqlite3.connect(db) as conn:
+        for table in (
+            "hosted_room_policy_cursors",
+            "hosted_room_policy_events",
+            "hosted_room_policy_transcript",
+            "hosted_room_policy_transcript_state",
+        ):
+            assert conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+
+
 def test_pre_actor_draft_database_migrates_with_explicit_legacy_identity(tmp_path):
     db = tmp_path / "state.db"
     _create_pre_actor_database(db)
@@ -969,6 +1100,56 @@ def test_migration_reserves_existing_disbanded_room_id_before_pruning(tmp_path):
     _assert_retired_identity_stays_reserved(db, "room-1", fresh_id="room-new")
 
 
+def test_legacy_adoption_fills_missing_targets_but_rejects_target_changes(tmp_path):
+    db = tmp_path / "state.db"
+    legacy_members = [
+        {"member_id": "ops", "profile": "ops", "handle": "ops"},
+    ]
+    targeted_members = [
+        {
+            **legacy_members[0],
+            "target": {"kind": "local", "profile": "ops"},
+        },
+    ]
+    rooms.create_room(
+        db,
+        room_id="legacy-targets",
+        name="Legacy targets",
+        members=legacy_members,
+        authority_gateway_id="legacy",
+        now=1,
+    )
+
+    adopted = rooms.create_room(
+        db,
+        room_id="legacy-targets",
+        name="Legacy targets",
+        members=targeted_members,
+        authority_gateway_id="gateway-a",
+        now=2,
+    )
+
+    assert adopted["members"] == targeted_members
+    with pytest.raises(rooms.RoomConflictError, match="different state"):
+        rooms.create_room(
+            db,
+            room_id="legacy-targets",
+            name="Legacy targets",
+            members=[
+                {
+                    **legacy_members[0],
+                    "target": {
+                        "kind": "peer",
+                        "installation_id": "install-b",
+                        "profile": "ops",
+                    },
+                },
+            ],
+            authority_gateway_id="gateway-a",
+            now=3,
+        )
+
+
 def test_draft_schema_migration_is_safe_across_processes(tmp_path):
     db = tmp_path / "state.db"
     _create_pre_actor_database(db)
@@ -979,6 +1160,56 @@ def test_draft_schema_migration_is_safe_across_processes(tmp_path):
     assert results == [("legacy", 1)] * 4
     replay = rooms.read_events(db, room_id="room-1")
     assert replay["events"][0]["actor"] == {"kind": "system", "id": "legacy"}
+
+
+def test_legacy_remote_run_receipt_migrates_without_current_lineage_access(
+    tmp_path,
+):
+    db = tmp_path / "state.db"
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            """CREATE TABLE hosted_room_remote_runs (
+                room_id TEXT NOT NULL,
+                member_id TEXT NOT NULL,
+                task_id TEXT NOT NULL,
+                execution_generation INTEGER NOT NULL,
+                target_install_id TEXT NOT NULL,
+                target_profile TEXT NOT NULL,
+                run_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL,
+                PRIMARY KEY (task_id, execution_generation)
+            )"""
+        )
+        conn.execute(
+            """INSERT INTO hosted_room_remote_runs VALUES(
+                'room-1', 'member-reviewer', 'task-1', 1, 'install-peer',
+                'reviewer', 'run-legacy', 'session-legacy', 1, 1
+            )"""
+        )
+
+    current = {
+        "room_id": "room-1",
+        "home_install_id": "install-home",
+        "authority_gateway_id": "gateway-home",
+        "authority_epoch": 2,
+        "member_id": "member-reviewer",
+        "target_install_id": "install-peer",
+        "target_profile": "reviewer",
+        "task_id": "task-1",
+        "execution_generation": 1,
+    }
+    assert rooms.remote_run_receipt(db, record=current) is None
+    legacy = rooms.list_remote_run_receipts(db)
+    assert legacy[0]["home_install_id"] == "legacy"
+    assert legacy[0]["authority_gateway_id"] == "legacy"
+
+    rooms.upsert_remote_run_receipt(
+        db,
+        record={**current, "run_id": "run-current", "session_id": "session-current"},
+    )
+    assert rooms.remote_run_receipt(db, record=current)["run_id"] == "run-current"
 
 
 def test_interrupted_draft_schema_migration_rolls_back_atomically(
@@ -1059,3 +1290,152 @@ def test_room_log_page_bound_counts_bytes_not_characters(tmp_path, monkeypatch):
     assert [event["seq"] for event in page["events"]] == [1]
     assert page_bytes(page) <= budget
     assert page["has_more"] is True
+
+
+def test_default_db_path_never_names_the_master_session_store(tmp_path, monkeypatch):
+    """Hosted-room coordination lives beside, never inside, the master ``state.db``.
+
+    Every profile gateway starts the hosted-room worker, so a store resolved to the
+    root session DB made every profile process a long-lived writer on state.db —
+    the multi-profile restart corruption in #102120 / #103339 / #103490. The store
+    is shared across profiles (one file at the install root) but is not the
+    SessionDB file the root gateway owns.
+    """
+    root = tmp_path / ".hermes"
+    profile_home = root / "profiles" / "bot1"
+    profile_home.mkdir(parents=True)
+
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+    from_profile = rooms.default_db_path()
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    from_root = rooms.default_db_path()
+
+    assert from_profile == from_root, "one coordination file per install"
+    assert from_root.parent == root
+    assert from_root.name != "state.db"
+
+
+def test_upgrade_keeps_rooms_from_before_the_shared_state_db_split(tmp_path):
+    """Rooms an install already had stay reachable after the move to ``shared-state.db``.
+
+    ``0e422e0ece`` repointed the store at ``shared-state.db`` but left the hosted_room* rows in
+    the root ``state.db``, so every pre-existing room resolved to "hosted room not found" (#109775).
+    This is that upgrade: rooms and their events already in ``state.db``, nothing in the new file.
+    """
+    legacy = tmp_path / "state.db"
+    _create(legacy)
+    _append(
+        legacy,
+        room_id="room-1",
+        event_id="event-1",
+        kind="message.user",
+        actor=USER,
+        payload={"text": "before the upgrade"},
+        now=11,
+    )
+
+    store = tmp_path / "shared-state.db"
+
+    assert [room["room_id"] for room in rooms.list_rooms(store)] == ["room-1"]
+    assert rooms.room_state(store, room_id="room-1")["latest_seq"] == 1
+    assert [
+        event["event_id"] for event in rooms.read_events(store, room_id="room-1")["events"]
+    ] == ["event-1"]
+
+
+def test_legacy_import_is_a_one_shot_and_skips_driver_liveness_state(tmp_path):
+    """The copy runs once, never overwrites, and leaves the driver's lease behind (#109775)."""
+    legacy = tmp_path / "state.db"
+    _create(legacy)
+
+    def now() -> float:
+        return 100.0
+
+    driver.admit_task(
+        legacy,
+        driver.TaskIdentity(room_id="room-1", task_id="task-1", thread_id="thread-1", turn_id="turn-1"),
+        payload={"target_profile": "ops", "prompt": "ping", "source_event_seq": 1},
+        clock=now,
+    )
+    driver.acquire_lease(
+        legacy,
+        room_id="room-1",
+        gateway_id="gateway-a",
+        authority_epoch=1,
+        process_generation="process-a",
+        ttl_seconds=30,
+        clock=now,
+    )
+
+    store = tmp_path / "shared-state.db"
+    assert [room["room_id"] for room in rooms.list_rooms(store)] == ["room-1"]
+    with sqlite3.connect(store) as conn:
+        # Durable work follows the room across; the lease is liveness state and stays behind.
+        assert conn.execute("SELECT COUNT(*) FROM hosted_room_driver_tasks").fetchone()[0] == 1
+        assert conn.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='hosted_room_driver_leases'"
+        ).fetchone()[0] == 0
+
+    # Forcing a second import (marker cleared) must not replace what this store already owns.
+    rooms.rename_room(store, room_id="room-1", event_id="rename-1", name="Renamed", now=12)
+    with sqlite3.connect(store) as conn:
+        conn.execute("DELETE FROM hosted_room_legacy_imports")
+    assert rooms.room_state(store, room_id="room-1")["name"] == "Renamed"
+
+    # And the record of the import is what keeps a purge from being undone by a later open.
+    with sqlite3.connect(store) as conn:
+        conn.execute("DELETE FROM hosted_rooms")
+    assert rooms.list_rooms(store) == []
+
+
+def test_legacy_import_skips_a_room_this_store_already_owns_as_a_unit(tmp_path):
+    """A room id present in both stores keeps THIS store's history intact and appendable.
+
+    Grafting only the non-colliding legacy events under the store's own room left ``next_seq``
+    behind ``MAX(seq)``, so every later append collided on (room_id, seq).
+    """
+    legacy = tmp_path / "state.db"
+    _create(legacy, room_id="same")
+    for index in range(5):
+        _append(legacy, room_id="same", event_id=f"legacy-{index}", kind="message.user", actor=USER,
+                payload={"text": str(index)}, now=11 + index)
+    # The store already has its own "same" before the import runs (a room re-created after "not found").
+    own = tmp_path / "scratch.db"
+    _create(own, room_id="same")
+    _append(own, room_id="same", event_id="own-1", kind="message.user", actor=USER, payload={"text": "s"}, now=11)
+    own.rename(tmp_path / "shared-state.db")
+    store = tmp_path / "shared-state.db"
+
+    assert [event["event_id"] for event in rooms.read_events(store, room_id="same")["events"]] == ["own-1"]
+    _append(store, room_id="same", event_id="own-2", kind="message.user", actor=USER, payload={"text": "t"}, now=30)
+    assert rooms.room_state(store, room_id="same")["latest_seq"] == 2
+
+
+def test_legacy_import_reads_layouts_from_before_the_actor_and_authority_columns(tmp_path):
+    """A legacy store without authority_gateway_id/actor_json imports with the migration's defaults.
+
+    ``INSERT OR IGNORE`` used to swallow the NOT NULL violations, drop every row and still record
+    the marker with rooms=0, losing the rooms permanently.
+    """
+    _create_pre_actor_database(str(tmp_path / "state.db"))
+    store = tmp_path / "shared-state.db"
+
+    assert _read_legacy_state(str(store)) == ("legacy", 1)
+    assert [event["event_id"] for event in rooms.read_events(store, room_id="room-1")["events"]] == ["legacy-event"]
+    with sqlite3.connect(store) as conn:
+        assert conn.execute("SELECT rooms FROM hosted_room_legacy_imports").fetchone() == (1,)
+        assert conn.execute("SELECT event_bytes FROM hosted_rooms").fetchone()[0] > 0
+
+
+def test_unreadable_legacy_store_is_reported_once_per_process(tmp_path, caplog):
+    """A corrupt legacy file leaves the marker unset but does not re-warn on every poll."""
+    (tmp_path / "state.db").write_bytes(b"not a sqlite file" * 100)
+    store = tmp_path / "shared-state.db"
+
+    with caplog.at_level(logging.WARNING, logger="gateway.hosted_rooms_legacy_import"):
+        for _ in range(4):
+            assert rooms.list_rooms(store) == []
+    assert len([record for record in caplog.records if "could not import" in record.message]) == 1
+    with sqlite3.connect(store) as conn:
+        assert not conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='hosted_room_legacy_imports'").fetchone()

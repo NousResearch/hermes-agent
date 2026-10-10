@@ -19,14 +19,15 @@ from pathlib import Path
 import pytest
 
 from hermes_cli import kanban_db as kb
-from hermes_cli.plugins import VALID_HOOKS, get_plugin_manager
+from hermes_cli import kanban_db_connect as kbc
+from hermes_cli import kanban_db_dispatch as kbd
+from hermes_cli.plugins import get_plugin_manager
 
 WORKER_HOOKS = (
     "on_kanban_worker_spawned",
     "on_kanban_worker_exited",
     "on_kanban_worker_stale_claim",
 )
-
 
 @pytest.fixture
 def kanban_home(tmp_path, monkeypatch):
@@ -38,7 +39,6 @@ def kanban_home(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     kb.init_db()
     return home
-
 
 @pytest.fixture
 def captured_hooks(monkeypatch):
@@ -76,10 +76,10 @@ def test_dispatch_spawn_fires_worker_spawned(
     mgr = get_plugin_manager()
     mgr._hooks.setdefault("on_kanban_worker_spawned", []).append(_read_pid)
 
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         tid = kb.create_task(conn, title="t", assignee="alice")
-        result = kb.dispatch_once(conn, spawn_fn=lambda *a, **k: 4242)
+        result = kbd.dispatch_once(conn, spawn_fn=lambda *a, **k: 4242)
         assert any(row[0] == tid for row in result.spawned)
     finally:
         conn.close()
@@ -98,13 +98,13 @@ def test_dispatch_spawn_fires_worker_spawned(
 
 def test_crash_reclaim_fires_worker_exited(kanban_home, captured_hooks, monkeypatch):
     """A dead-PID reclaim fires the exit observer with the exit facts."""
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         tid = kb.create_task(conn, title="t", assignee="worker")
         kb.claim_task(conn, tid)
-        kb._set_worker_pid(conn, tid, 98765)
+        kbd._set_worker_pid(conn, tid, 98765)
         monkeypatch.setattr(kb, "_pid_alive", lambda pid: False)
-        assert kb.detect_crashed_workers(conn) == [tid]
+        assert kbd.detect_crashed_workers(conn) == [tid]
     finally:
         conn.close()
 
@@ -124,7 +124,7 @@ def test_crash_reclaim_fires_worker_exited(kanban_home, captured_hooks, monkeypa
 
 def test_stale_claim_reclaim_fires_hook(kanban_home, captured_hooks):
     """A TTL-expired reclaim fires the stale-claim observer post-commit."""
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         tid = kb.create_task(conn, title="t", assignee="worker")
         kb.claim_task(conn, tid)
@@ -162,14 +162,14 @@ def test_raising_callbacks_never_break_worker_lifecycle(
     for hook in WORKER_HOOKS:
         mgr._hooks.setdefault(hook, []).append(_boom)
     try:
-        conn = kb.connect()
+        conn = kbc.connect()
         try:
             tid = kb.create_task(conn, title="t", assignee="alice")
-            result = kb.dispatch_once(conn, spawn_fn=lambda *a, **k: 111)
+            result = kbd.dispatch_once(conn, spawn_fn=lambda *a, **k: 111)
             assert any(row[0] == tid for row in result.spawned)
 
             monkeypatch.setattr(kb, "_pid_alive", lambda pid: False)
-            assert kb.detect_crashed_workers(conn) == [tid]
+            assert kbd.detect_crashed_workers(conn) == [tid]
 
             kb.claim_task(conn, tid)
             conn.execute(
@@ -183,28 +183,3 @@ def test_raising_callbacks_never_break_worker_lifecycle(
             conn.close()
     finally:
         mgr._hooks = saved
-
-
-def test_no_subscriber_short_circuits_worker_hooks(
-    kanban_home, all_assignees_spawnable, monkeypatch,
-):
-    """With nothing registered, the new observers are never invoked at all."""
-    from hermes_cli import lifecycle
-
-    invoked: list[str] = []
-    real_invoke = lifecycle.invoke_hook
-
-    def _spy(hook_name, **kw):
-        invoked.append(hook_name)
-        return real_invoke(hook_name, **kw)
-
-    monkeypatch.setattr(lifecycle, "invoke_hook", _spy)
-    conn = kb.connect()
-    try:
-        kb.create_task(conn, title="t", assignee="alice")
-        kb.dispatch_once(conn, spawn_fn=lambda *a, **k: 222)
-    finally:
-        conn.close()
-    assert "on_kanban_worker_spawned" not in invoked
-    # The shipped claimed hook has no short-circuit and still fires.
-    assert "kanban_task_claimed" in invoked

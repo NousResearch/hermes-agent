@@ -80,10 +80,10 @@ export function resolveRemoteRequestHeaders(
   requestUrl: string,
   options: { exactHeaders?: Record<string, string>; sources?: RemoteHeaderSource[] } = {}
 ): Record<string, string> {
-  const exact = options.exactHeaders || {}
+  const { Origin, ...exact } = options.exactHeaders || {}
 
   if (Object.keys(exact).length > 0) {
-    return exact
+    return Origin ? { ...exact, Origin } : exact
   }
 
   for (const source of options.sources || []) {
@@ -92,11 +92,11 @@ export function resolveRemoteRequestHeaders(
     }
 
     if (Object.keys(source.headers).length > 0 && remoteRequestMatchesBaseUrl(requestUrl, source.url)) {
-      return source.headers
+      return Origin ? { ...source.headers, Origin } : source.headers
     }
   }
 
-  return {}
+  return Origin ? { Origin } : {}
 }
 
 export function formatLoadUrlExtraHeaders(headers: Record<string, string> = {}): string {
@@ -113,7 +113,8 @@ export function oauthLoginLoadUrlOptions(headers: Record<string, string> = {}): 
 
 export function attachRemoteRequestHeaderListener(
   sessionLike: SessionLike,
-  headersForRequest: (requestUrl: string) => Record<string, string>
+  headersForRequest: (requestUrl: string) => Record<string, string>,
+  rendererOrigin = 'null'
 ) {
   // Chromium carries app-set headers across redirects, so a configured secret
   // injected into one hop rides along to the next. Track the header names we
@@ -123,7 +124,7 @@ export function attachRemoteRequestHeaderListener(
   const injectedByRequest: InjectedHeadersByRequest = new Map()
 
   sessionLike?.webRequest?.onBeforeSendHeaders?.((details, callback) => {
-    applyRemoteRequestHeaders(details, callback, headersForRequest, injectedByRequest)
+    applyRemoteRequestHeaders(details, callback, headersForRequest, injectedByRequest, rendererOrigin)
   })
 
   const forget = (details: { id?: number }) => {
@@ -140,11 +141,22 @@ export function createRemoteWsHeaderStore(limit = 100) {
   const headersByUrl = new Map<string, Record<string, string>>()
 
   const remember = (wsUrl: string, headers: Record<string, string> = {}) => {
-    if (!wsUrl || Object.keys(headers).length === 0) {
+    let url: URL
+
+    try {
+      url = new URL(wsUrl)
+    } catch {
       return
     }
 
-    headersByUrl.set(String(wsUrl), headers)
+    if (!['ws:', 'wss:'].includes(url.protocol)) {
+      return
+    }
+
+    // Main vouches only for exact authenticated gateway URLs. Dev renderers use
+    // HTTP; packaged renderers use file URLs. A non-web Origin avoids depending
+    // on a reverse proxy's public Host or Host rewriting policy.
+    headersByUrl.set(String(wsUrl), { ...headers, Origin: 'null' })
 
     while (headersByUrl.size > limit) {
       const oldest = headersByUrl.keys().next().value
@@ -181,7 +193,8 @@ export function applyRemoteRequestHeaders(
   details: RemoteRequestDetails,
   callback: RemoteRequestCallback,
   headersForRequest: (requestUrl: string) => Record<string, string>,
-  injectedByRequest: InjectedHeadersByRequest
+  injectedByRequest: InjectedHeadersByRequest,
+  rendererOrigin = 'null'
 ) {
   const headers = headersForRequest(details.url)
   const headerEntries = Object.entries(headers)
@@ -212,9 +225,33 @@ export function applyRemoteRequestHeaders(
     }
   }
 
+  const injectedNames = new Set(headerEntries.map(([name]) => name.toLowerCase()))
+
+  if (/^wss?:/.test(details.url) && headers.Origin) {
+    const originalOrigin = Object.entries(details.requestHeaders || {}).find(
+      ([name]) => name.toLowerCase() === 'origin'
+    )?.[1]
+
+    // Only the active renderer and explicit native spellings may borrow the
+    // exact remembered URL's stamp; arbitrary loopback/web origins may not.
+    const nativeOrigin =
+      !originalOrigin ||
+      originalOrigin === 'null' ||
+      originalOrigin === 'file://' ||
+      originalOrigin === 'app://hermes' ||
+      originalOrigin === rendererOrigin
+
+    if (!nativeOrigin) {
+      requestHeaders.Origin = originalOrigin
+      // A foreign frame's original Origin is preserved, not app-injected, so
+      // an out-of-scope redirect must not strip it with the proxy credentials.
+      injectedNames.delete('origin')
+    }
+  }
+
   if (details.id !== undefined) {
-    if (headerEntries.length > 0) {
-      injectedByRequest.set(details.id, new Set(headerEntries.map(([name]) => name.toLowerCase())))
+    if (injectedNames.size > 0) {
+      injectedByRequest.set(details.id, injectedNames)
     } else {
       injectedByRequest.delete(details.id)
     }

@@ -84,13 +84,13 @@ describe('registry gateway WebSocket headers', () => {
     store.remember(firstUrl, accessHeaders)
     store.remember(secondUrl, accessHeaders)
     expect(store.headersFor('wss://gateway.example/api/ws?token=missing&profile=research')).toEqual({})
-    expect(store.headersFor(firstUrl)).toEqual(accessHeaders)
+    expect(store.headersFor(firstUrl)).toEqual({ ...accessHeaders, Origin: 'null' })
 
     store.remember(thirdUrl, accessHeaders)
 
-    expect(store.headersFor(firstUrl)).toEqual(accessHeaders)
+    expect(store.headersFor(firstUrl)).toEqual({ ...accessHeaders, Origin: 'null' })
     expect(store.headersFor(secondUrl)).toEqual({})
-    expect(store.headersFor(thirdUrl)).toEqual(accessHeaders)
+    expect(store.headersFor(thirdUrl)).toEqual({ ...accessHeaders, Origin: 'null' })
   })
 
   it('updates headers without changing insertion recency', () => {
@@ -105,8 +105,8 @@ describe('registry gateway WebSocket headers', () => {
     store.remember(thirdUrl, accessHeaders)
 
     expect(store.headersFor(firstUrl)).toEqual({})
-    expect(store.headersFor(secondUrl)).toEqual(accessHeaders)
-    expect(store.headersFor(thirdUrl)).toEqual(accessHeaders)
+    expect(store.headersFor(secondUrl)).toEqual({ ...accessHeaders, Origin: 'null' })
+    expect(store.headersFor(thirdUrl)).toEqual({ ...accessHeaders, Origin: 'null' })
   })
 
   it('token path binds headers to the exact profile scoped URL', async () => {
@@ -125,8 +125,8 @@ describe('registry gateway WebSocket headers', () => {
     expect(result).toBe(expectedUrl)
     expect(ensureBackend).toHaveBeenCalledWith('remote-one', 'research')
     expect(mintTicket).not.toHaveBeenCalled()
-    expect(store.headersFor(result)).toEqual(accessHeaders)
-    expectRequestHeaders(store, result, accessHeaders)
+    expect(store.headersFor(result)).toEqual({ ...accessHeaders, Origin: 'null' })
+    expectRequestHeaders(store, result, { ...accessHeaders, Origin: 'null' })
     expectNoHeadersForNearbyUrls(store, result)
   })
 
@@ -146,8 +146,8 @@ describe('registry gateway WebSocket headers', () => {
     expect(result).toBe(expectedUrl)
     expect(mintTicket).toHaveBeenCalledOnce()
     expect(mintTicket).toHaveBeenCalledWith('https://gateway.example', accessHeaders)
-    expect(store.headersFor(result)).toEqual(accessHeaders)
-    expectRequestHeaders(store, result, accessHeaders)
+    expect(store.headersFor(result)).toEqual({ ...accessHeaders, Origin: 'null' })
+    expectRequestHeaders(store, result, { ...accessHeaders, Origin: 'null' })
     expectNoHeadersForNearbyUrls(store, result)
   })
 
@@ -164,13 +164,41 @@ describe('registry gateway WebSocket headers', () => {
     const result = await handler({ connectionId: 'remote-one', profile: 'research' })
 
     expect(result).toBe('wss://gateway.example/api/ws?trace=one&token=secret')
-    expect(store.headersFor(result)).toEqual(accessHeaders)
-    expectRequestHeaders(store, result, accessHeaders)
+    expect(store.headersFor(result)).toEqual({ ...accessHeaders, Origin: 'null' })
+    expectRequestHeaders(store, result, { ...accessHeaders, Origin: 'null' })
     expect(store.headersFor('wss://gateway.example/api/ws?token=secret&trace=one')).toEqual({})
   })
 })
 
 describe('OAuth login and registry extra headers', () => {
+  it('inherits matching proxy headers for Origin-only capabilities but preserves explicit header precedence', () => {
+    const store = createRemoteWsHeaderStore()
+    const url = 'wss://gateway.example/api/ws?token=synthetic'
+
+    const sources = collectRemoteHeaderSources({
+      connections: [{ kind: 'remote', url: 'https://gateway.example', headers: accessHeaders }]
+    })
+
+    store.remember(url)
+    for (const fallbackSources of [
+      sources,
+      collectRemoteHeaderSources({ v1Remote: { url: 'https://gateway.example', headers: accessHeaders } })
+    ]) {
+      expect(
+        resolveRemoteRequestHeaders(url, { exactHeaders: store.headersFor(url), sources: fallbackSources })
+      ).toEqual({
+        ...accessHeaders,
+        Origin: 'null'
+      })
+    }
+    const explicit = { 'CF-Access-Client-Id': 'route-specific' }
+    store.remember(url, explicit)
+    expect(resolveRemoteRequestHeaders(url, { exactHeaders: store.headersFor(url), sources })).toEqual({
+      ...explicit,
+      Origin: 'null'
+    })
+  })
+
   it('applies Connections extra headers to /login, not only an exact WebSocket URL', () => {
     const sources = collectRemoteHeaderSources({
       connections: [{ kind: 'local' }, { kind: 'remote', url: 'https://gateway.example', headers: accessHeaders }],

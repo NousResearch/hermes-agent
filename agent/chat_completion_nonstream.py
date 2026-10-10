@@ -174,7 +174,9 @@ class _NonStreamRequest:
                 elapsed=elapsed)
             # One neutral notice per silence; repeating it every heartbeat made
             # healthy long calls read as provider trouble (#92550).
-            if not self.wait_notice.should_emit(phase, watchdog):
+            if not self.wait_notice.should_emit(phase, watchdog,
+                    model=self.api_kwargs.get('model', 'the provider'),
+                    provider=getattr(self.agent, "provider", None), silence_secs=silence):
                 self.agent._touch_activity(f"waiting for provider response ({int(silence)}s, {phase})")
                 return
             self.agent._emit_wait_notice(wn.wait_notice_text(
@@ -187,6 +189,7 @@ class _NonStreamRequest:
         """No parsed Codex event past the first-event cutoff — kill so the retry loop
         reconnects instead of waiting out the stale timeout."""
         agent, wd = self.agent, self.wd
+        self.wait_notice.reset(outcome="ttfb_kill")  # close the log record for this silence
         silent_hint = h._codex_silent_hang_hint(agent, self.api_kwargs)
         h.logger.warning("Codex stream produced no parsed stream event within TTFB cutoff "
             "(%.0fs > %.0fs, model=%s). Backend accepted the connection "
@@ -206,6 +209,7 @@ class _NonStreamRequest:
     def _progress_kill(self, elapsed: float) -> None:
         """The stream opened, but this physical attempt never made model progress."""
         agent, wd = self.agent, self.wd
+        self.wait_notice.reset(outcome="progress_kill")  # close the log record for this silence
         h.logger.warning("Codex stream produced lifecycle events but no substantive model progress "
             "for %.0fs (threshold %.0fs, model=%s, context=~%s tokens). Reconnecting.",
             elapsed, wd.progress_timeout, self._model(), f"{wd.est_tokens:,}")

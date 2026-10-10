@@ -55,6 +55,7 @@ WECOM_CALLBACK_ENCODING_AES_KEY=your-43-char-aes-key
 WECOM_CALLBACK_HOST=0.0.0.0
 WECOM_CALLBACK_PORT=8645
 WECOM_CALLBACK_ALLOWED_USERS=user1,user2
+# WECOM_CALLBACK_API_BASE=  # 可选；不设则使用官方 https://qyapi.weixin.qq.com
 ```
 
 ### 3. 启动 Gateway
@@ -81,6 +82,7 @@ hermes gateway
 | `host` | `0.0.0.0` | HTTP 回调服务器绑定地址 |
 | `port` | `8645` | HTTP 回调服务器端口 |
 | `path` | `/wecom/callback` | 回调端点的 URL 路径 |
+| `api_base` | `https://qyapi.weixin.qq.com` | 出站 WeCom API（`message/send`、`gettoken`）的基础 URL。可指向保留路径的反向代理（如 `https://proxy.example.com`），固定企业微信看到的出口 IP——当网关运行动态 IP 网络、无法满足应用的可信 IP 白名单时非常有用。环境变量：`WECOM_CALLBACK_API_BASE`。 |
 
 ## 多应用路由
 

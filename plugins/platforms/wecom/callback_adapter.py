@@ -1,5 +1,10 @@
 """WeCom callback-mode adapter (self-built apps): decrypt POSTed XML, queue for the agent, ack at once;
-reply later via proactive ``message/send``. Multiple apps are scoped by ``corp_id:user_id``."""
+reply later via proactive ``message/send``. Multiple apps are scoped by ``corp_id:user_id``.
+
+Config (``platforms.wecom_callback.extra``): ``corp_id``/``corp_secret``/``agent_id``/``token``/
+``encoding_aes_key`` (or the WECOM_CALLBACK_* env vars), ``host``/``port``/``path`` for the inbound
+HTTP server, ``api_base`` (env WECOM_CALLBACK_API_BASE) to route outbound ``message/send``/``gettoken``
+through a path-preserving reverse proxy instead of qyapi.weixin.qq.com, and ``apps`` for multi-app routing."""
 
 from __future__ import annotations
 
@@ -39,14 +44,13 @@ from plugins.platforms.wecom.wecom_crypto import WXBizMsgCrypt, WeComCryptoError
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_API_BASE = "https://qyapi.weixin.qq.com"
 DEFAULT_HOST = None  # dual-stack bind ("0.0.0.0" broke IPv6-only); pin via extra.host
 DEFAULT_PORT = 8645
 DEFAULT_PATH = "/wecom/callback"
 _MAX_BODY = 65_536  # pre-auth body cap: callbacks are small encrypted XML envelopes
 ACCESS_TOKEN_TTL_SECONDS = 7200
 MESSAGE_DEDUP_TTL_SECONDS = 300
-_SEND_URL = "https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token="
-_TOKEN_URL = "https://qyapi.weixin.qq.com/cgi-bin/gettoken"
 
 
 def _utf8_len(text: str) -> int:
@@ -100,6 +104,11 @@ class WecomCallbackAdapter(BasePlatformAdapter):
         self._host = str(_raw_host) if _raw_host else None
         self._port = int(extra.get("port") or DEFAULT_PORT)
         self._path = str(extra.get("path") or DEFAULT_PATH)
+        # Outbound API base override: route message/send + gettoken through a path-preserving
+        # reverse proxy (e.g. "https://proxy.example.com") so WeCom sees a static egress IP —
+        # self-built apps enforce a trusted-IP allowlist (errcode 60020) that dynamic-IP hosts
+        # cannot satisfy. Empty/absent keeps the official qyapi.weixin.qq.com host.
+        self._api_base = str(extra.get("api_base") or DEFAULT_API_BASE).strip().rstrip("/") or DEFAULT_API_BASE
         self._apps: list[dict[str, Any]] = self._normalize_apps(extra)
         self._runner = self._site = self._app = self._http_client = self._poll_task = None
         self._message_queue: asyncio.Queue[MessageEvent] = asyncio.Queue()
@@ -198,7 +207,7 @@ class WecomCallbackAdapter(BasePlatformAdapter):
             payload = {"touser": chat_id.split(":", 1)[-1], "msgtype": "text", "agentid": int(str(app.get("agent_id") or 0)), "text": {"content": content}, "safe": 0}
             for _attempt in range(2):
                 token = await self._get_access_token(app)
-                resp = await self._http_client.post(f"{_SEND_URL}{token}", json=payload)
+                resp = await self._http_client.post(f"{self._api_base}/cgi-bin/message/send?access_token={token}", json=payload)
                 data = resp.json()
                 errcode = data.get("errcode")
                 if errcode in {40001, 42001} and _attempt == 0:  # token rejected — evict so the retry fetches a fresh one
@@ -304,7 +313,7 @@ class WecomCallbackAdapter(BasePlatformAdapter):
         return cached["token"] if cached and cached.get("expires_at", 0) > time.time() + 60 else await self._refresh_access_token(app)
 
     async def _refresh_access_token(self, app: dict[str, Any]) -> str:
-        resp = await self._http_client.get(_TOKEN_URL, params={"corpid": app.get("corp_id"), "corpsecret": app.get("corp_secret")})
+        resp = await self._http_client.get(f"{self._api_base}/cgi-bin/gettoken", params={"corpid": app.get("corp_id"), "corpsecret": app.get("corp_secret")})
         data = resp.json()
         if data.get("errcode") != 0:
             raise RuntimeError(f"WeCom token refresh failed: {data}")

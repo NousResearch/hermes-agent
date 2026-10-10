@@ -352,6 +352,7 @@ description: "Hermes Agent 使用的所有环境变量完整参考"
 | `WECOM_CALLBACK_ENCODING_AES_KEY` | 回调加密的 AES 密钥 |
 | `WECOM_CALLBACK_HOST` | 回调服务器绑定地址（默认：`0.0.0.0`） |
 | `WECOM_CALLBACK_PORT` | 回调服务器端口（默认：`8645`） |
+| `WECOM_CALLBACK_API_BASE` | 出站 WeCom API 基础 URL（默认：`https://qyapi.weixin.qq.com`）；指向反向代理可固定出口 IP |
 | `WECOM_CALLBACK_ALLOWED_USERS` | 白名单的逗号分隔用户 ID |
 | `WECOM_CALLBACK_ALLOW_ALL_USERS` | 设为 `true` 可无需白名单允许所有用户 |
 | `WEIXIN_ACCOUNT_ID` | 通过 iLink Bot API 扫码登录获取的微信账号 ID |

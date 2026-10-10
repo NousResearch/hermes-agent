@@ -472,6 +472,7 @@ These are set automatically by the Docker terminal backend when `proxy.enabled: 
 | `WECOM_CALLBACK_ENCODING_AES_KEY` | AES key for callback encryption |
 | `WECOM_CALLBACK_HOST` | Callback server bind address (default: `0.0.0.0`) |
 | `WECOM_CALLBACK_PORT` | Callback server port (default: `8645`) |
+| `WECOM_CALLBACK_API_BASE` | Base URL for the outbound WeCom API (default: `https://qyapi.weixin.qq.com`); point at a reverse proxy to pin the egress IP |
 | `WECOM_CALLBACK_ALLOWED_USERS` | Comma-separated user IDs for allowlist |
 | `WECOM_CALLBACK_ALLOW_ALL_USERS` | Set `true` to allow all users without an allowlist |
 | `WEIXIN_ACCOUNT_ID` | Weixin account ID obtained via QR login through iLink Bot API |

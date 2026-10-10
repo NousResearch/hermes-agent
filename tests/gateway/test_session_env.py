@@ -76,6 +76,27 @@ def test_set_session_env_sets_contextvars(monkeypatch):
     runner._clear_session_env(tokens)
 
 
+def test_set_session_env_sets_session_id(monkeypatch):
+    """_set_session_env must bind HERMES_SESSION_ID from context.session_id (#126115):
+    tool subprocesses keyed off the turn's session id got "" even though the id was
+    already on the context, set by build_session_context right before this call."""
+    runner = object.__new__(GatewayRunner)
+    source = SessionSource(
+        platform=Platform.TELEGRAM, chat_id="-1001", user_id="123456", user_name="alice",
+    )
+    context = SessionContext(
+        source=source, connected_platforms=[], home_channels={}, session_id="sess-abc123",
+    )
+
+    monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
+
+    tokens = runner._set_session_env(context)
+    try:
+        assert get_session_env("HERMES_SESSION_ID") == "sess-abc123"
+    finally:
+        runner._clear_session_env(tokens)
+
+
 def test_clear_session_env_restores_previous_state(monkeypatch):
     """_clear_session_env should restore contextvars to their pre-handler values."""
     runner = object.__new__(GatewayRunner)

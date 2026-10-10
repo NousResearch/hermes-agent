@@ -1,6 +1,7 @@
 """Tests for search_files zero-match probes and multi-path recovery."""
 
 import json
+import shutil
 
 import pytest
 
@@ -21,6 +22,17 @@ def proj(tmp_path, monkeypatch):
 
 
 class TestZeroMatchProbe:
+
+    @pytest.mark.skipif(not shutil.which("rg"), reason="requires ripgrep")
+    def test_leading_dash_pattern_reaches_case_insensitive_probe(self, proj):
+        d = proj / "proj"
+        (d / "flag.py").write_text("--PLAN = 'find_me_value'\n")
+
+        r = json.loads(search_tool("--plan", path=str(d), task_id="t-zm"))
+
+        assert r["total_count"] == 0
+        assert "case-insensitive" in r.get("warning", "")
+        assert "flag.py" in r.get("warning", "")
 
     def test_case_mismatch_hint_names_the_files(self, proj):
         # The probe already ran the -i search; it must hand over the paths,

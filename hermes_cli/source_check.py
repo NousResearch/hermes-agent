@@ -113,8 +113,8 @@ def _github_compare_behind(current_rev: str, target_rev: str, repository: str = 
 def _request(url: str, accept: str = "application/vnd.github+json") -> str:
     """GET an api.github.com resource with the credential ladder in hermes_cli.github_api.
 
-    A token GitHub rejects (401) drops this request to anonymous rather than
-    failing the check on a stale credential.
+    A token GitHub rejects with 401 or 403 drops this request to anonymous
+    rather than failing the check on a stale or suspended-account credential.
     """
     from hermes_cli.github_api import github_token
 
@@ -122,9 +122,9 @@ def _request(url: str, accept: str = "application/vnd.github+json") -> str:
     try:
         return _request_with(url, accept, token)
     except urllib.error.HTTPError as exc:
-        if token is None or exc.code != 401:
+        if token is None or exc.code not in (401, 403):
             raise
-        logger.debug("GitHub rejected the configured token; retrying anonymously")
+        logger.debug("GitHub rejected the configured token (HTTP %s); retrying anonymously", exc.code)
         return _request_with(url, accept, None)
 
 

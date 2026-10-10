@@ -538,6 +538,19 @@ describe('toChatMessages', () => {
     ])
   })
 
+  it('strips TODO list carriers but keeps questions quoting the public header', () => {
+    const header = '[Your active task list was preserved across context compression]'
+    const question = `what does ${header} mean? and tell me more`
+    const prose = `${header}\nand then I said something`
+    const messages = toChatMessages([
+      { role: 'user', content: `${header}\n- demo`, timestamp: 1 },
+      { role: 'user', content: `run the tests\n\n${header}\n- demo`, timestamp: 2 },
+      { role: 'user', content: question, timestamp: 3 },
+      { role: 'user', content: prose, timestamp: 4 }
+    ])
+    expect(messages.map(chatMessageText)).toEqual(['run the tests', question, prose])
+  })
+
   it('never paints a background-process heartbeat wake as a user bubble', () => {
     // Current backends type the wake `display_kind: 'hidden'`; a row persisted by an older
     // backend arrives untyped and must disappear the same way — the user never wrote it.

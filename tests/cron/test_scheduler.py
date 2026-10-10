@@ -45,7 +45,7 @@ class TestSummarizeCronFailureForDelivery:
         )
 
         assert "rate-limited" not in summary
-        assert "hash429abc.md" in summary
+        assert summary.splitlines()[1] == "Execution failed."
 
     def test_http_429_is_still_classified_as_a_rate_limit(self):
         summary = _summarize_cron_failure_for_delivery(

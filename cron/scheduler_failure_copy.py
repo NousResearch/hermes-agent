@@ -111,19 +111,15 @@ def provider_failure_notice(
 
 
 def generic_failure_notice(job_name: str, job_id: str, error: str) -> str:
-    """Short diagnostic and one read-only history pointer; full errors stay in run output."""
-    cleaned = re.sub(r"^(RuntimeError|Exception|ValueError|HTTPStatusError):\s*", "", error[:2000])
-    cleaned = re.sub(
-        r"^Script (?:exited with code -?\d+\s+(?:stderr|stdout):\s*|execution failed:\s*)(?=\S)",
-        "", cleaned,
-    )
-    cleaned = re.sub(r"\s+", " ", cleaned).strip().rstrip(".")
-    if len(cleaned) > 180:
-        cleaned = cleaned[:177].rstrip() + "..."
+    """Fixed summary and one read-only history pointer; diagnostics stay in run output."""
+    # Script output is arbitrary child data: keep it in the saved run, not chat.
+    exit_code = re.match(r"^Script exited with code (-?\d{1,5})(?=\s|$)", error)
+    summary = (f"Execution failed (exit code {exit_code.group(1)})"
+               if exit_code else "Execution failed")
     cron = f"hermes {profile_cli_selector()}cron"
     return (
         f"⚠️ Cron '{job_name}' failed\n"
-        f"{cleaned}.\n"
+        f"{summary}.\n"
         f"Details: `{cron} runs {job_id}`."
     )
 

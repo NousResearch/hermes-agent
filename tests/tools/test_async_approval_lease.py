@@ -132,3 +132,22 @@ def test_concurrent_children_have_independent_single_use_consent(monkeypatch):
     assert len(results) == 2
     assert executions == [1]
     assert not approval.has_blocking_approval(key)
+
+
+def test_cleared_session_revokes_child_transport():
+    from tools.approval_notify_lease import acquire
+
+    key = "session-clear-child"
+    delivered = []
+    approval.register_gateway_notify(key, delivered.append)
+    lease = acquire(key)
+    try:
+        approval.clear_session(key)
+        with pytest.raises(RuntimeError, match="unavailable"):
+            lease.notify({"command": "print(1)"})
+        assert delivered == []
+        assert not lease.active
+        assert lease.callback is None
+    finally:
+        lease.release()
+        approval.unregister_gateway_notify(key)

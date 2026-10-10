@@ -2145,6 +2145,12 @@ tts:
   elevenlabs:
     voice_id: "pNInz6obpgDQGcFmaJgB"
     model_id: "eleven_multilingual_v2"
+    language_code: "en"        # Optional ISO 639-1 language hint
+    voice_settings:
+      stability: 0.5
+      similarity_boost: 0.8
+    convert_options:            # Advanced ElevenLabs SDK options are validated before use
+      seed: 42
   openai:
     model: "gpt-4o-mini-tts"
     voice: "alloy"              # alloy, echo, fable, onyx, nova, shimmer
@@ -2174,6 +2180,14 @@ tts:
     model: neuphonic/neutts-air-q4-gguf
     device: cpu
 ```
+
+For Eleven v4, use `model_id: eleven_v4` for quality or
+`streaming_model_id: eleven_v4_turbo` for real-time playback. Those models only support the
+`stability` and `similarity_boost` voice settings; enabled `use_speaker_boost` and non-default
+`style` or `speed` settings are rejected instead of being silently sent to an incompatible model.
+Existing models continue to accept `style`, `use_speaker_boost`, and `speed`. ElevenLabs accepts
+`speed` from 0.7 to 1.2, so a global `tts.speed` tuned for another provider is clamped into that
+band instead of being rejected by the API; non-numeric or non-finite values fail before the request.
 
 This controls both the `text_to_speech` tool and spoken replies in voice mode (`/voice tts` in the CLI or messaging gateway).
 

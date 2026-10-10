@@ -378,7 +378,7 @@ def _dump_json(data: Any, f, *, indent: int | None, ensure_ascii: bool, dump_kwa
 
 
 def atomic_json_write(
-    path: str | Path, data: Any, *, indent: int = 2, mode: int | None = None,
+    path: str | Path, data: Any, *, indent: int | None = 2, mode: int | None = None,
     ensure_ascii: bool = False, fsync_dir: bool = False, **dump_kwargs: Any,
 ) -> None:
     """Write JSON to *path* atomically (temp file + fsync + replace).

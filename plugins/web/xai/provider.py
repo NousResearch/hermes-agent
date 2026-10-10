@@ -13,6 +13,7 @@ import re
 from typing import Any, Dict, List, Optional
 
 from plugins.web._common import BaseWebSearchProvider, search_fail as _fail, search_ok, setup_schema, title_hit as _row
+from agent.web_acquisition_errors import WebInvalidResponseError, acquisition_error
 from tools.xai_http import has_xai_credentials, hermes_xai_user_agent, resolve_xai_http_credentials
 
 logger = logging.getLogger(__name__)
@@ -153,17 +154,17 @@ class XAIWebSearchProvider(BaseWebSearchProvider):
                 except Exception:
                     body = ""
                 logger.warning("xAI web search HTTP %d: %s", status, body)
-                return None, _fail(f"xAI web search returned HTTP {status}: {body}".rstrip())
+                return None, _fail(f"xAI web search returned HTTP {status}: {body}".rstrip(), failure=acquisition_error(exc))
             except httpx.RequestError as exc:
                 logger.warning("xAI web search request error: %s", exc)
-                return None, _fail(f"Could not reach xAI: {exc}")
+                return None, _fail(f"Could not reach xAI: {exc}", failure=acquisition_error(exc))
         if resp is None:
             return None, _fail("xAI web search produced no response")
         try:
             return resp.json(), None
         except Exception as exc:
             logger.warning("xAI web search bad JSON: %s", exc)
-            return None, _fail("Could not parse xAI Responses API reply as JSON")
+            return None, _fail("Could not parse xAI Responses API reply as JSON", failure=WebInvalidResponseError(cause=exc))
 
     @staticmethod
     def _build_prompt(query: str, limit: int) -> str:

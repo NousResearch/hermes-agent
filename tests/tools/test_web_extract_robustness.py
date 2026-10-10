@@ -8,6 +8,7 @@ Covers two robustness gaps left unaddressed when #54843 merged:
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 import tools.web_tools as wt
 from tools import web_tools_truncate
@@ -21,7 +22,7 @@ def test_store_full_text_is_bounded(tmp_path, monkeypatch):
     assert len(huge) > web_tools_truncate.MAX_STORED_TEXT_CHARS
     path = web_tools_truncate._store_full_text("https://example.com/big", huge)
     assert path is not None
-    stored = open(path, encoding="utf-8").read()
+    stored = Path(path).read_text(encoding="utf-8")
     # Stored copy capped (+ short marker), not the full unbounded blob.
     assert len(stored) <= web_tools_truncate.MAX_STORED_TEXT_CHARS + 200
     assert "stored copy truncated" in stored

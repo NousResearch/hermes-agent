@@ -12,7 +12,8 @@ Debug: ``WEB_TOOLS_DEBUG=true`` writes ``logs/web_tools_debug_<UUID>.json``.
 import json
 import logging
 import os
-from typing import List, Any, Optional
+from typing import List, Any, Optional, overload
+from agent.web_acquisition import WebSearchRequest
 # Per-vendor client cache slots; plugins read/write these via tools.web_tools (tests reset them to None).
 _firecrawl_client = _firecrawl_client_config = _parallel_client = _async_parallel_client = _exa_client = None
 
@@ -20,7 +21,7 @@ from plugins.web.firecrawl.provider import _is_tool_gateway_ready, check_firecra
 from tools.debug_helpers import DebugSession
 from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, read_selection, selection_exists
 from tools.url_safety import async_is_safe_url
-from tools.web_tools_rescue import _managed_search_fallback, _rescue_eligible, _rescue_search
+from tools.web_tools_search import acquire_search
 from tools.web_tools_truncate import _effective_char_limit, _trim_results, _truncate_results, convert_base64_images_to_links
 from tools.web_tools_extract import (
     _extract_safe_urls, _merge_in_order, _no_provider_error, _resolve_extract_provider, _result_entry,
@@ -176,8 +177,8 @@ def _managed_web_search() -> bool:
 
 def _get_search_backend() -> str:
     """Backend for web_search: ``web.search_backend`` (strict, no probe) > ``web.backend`` > autodetect.
-    The managed Nous route (a ``nous`` pin or shared selection) serves search from Perplexity (extract
-    stays on Firecrawl); managed Firecrawl is the per-call fallback, see ``_memoized_search``."""
+    The managed Nous route serves search from Perplexity (extract stays on Firecrawl); managed Firecrawl
+    is the per-call fallback in ``tools.web_tools_search``."""
     pin = _configured_backend("search_backend")
     if pin and pin != NOUS_MANAGED_PROVIDER:
         return pin
@@ -289,6 +290,14 @@ def _ensure_web_plugins_loaded() -> None:
         logger.warning("Web plugin discovery failed (non-fatal): %s", exc)
 
 
+@overload
+def _finish_debug(call_name: str, debug_call_data: dict, error_msg: None = None) -> None: ...
+
+
+@overload
+def _finish_debug(call_name: str, debug_call_data: dict, error_msg: str) -> str: ...
+
+
 def _finish_debug(call_name: str, debug_call_data: dict, error_msg: Optional[str] = None) -> Optional[str]:
     """Log the call into the debug session; with *error_msg*, record it and return its ``tool_error`` envelope."""
     if error_msg is not None:
@@ -315,30 +324,13 @@ def web_search_tool(query: str, limit: int = 5) -> str:
     }
 
     try:
-        from tools.interrupt import is_interrupted
-        if is_interrupted():
-            return tool_error("Interrupted", success=False)
-        # Sync only — every provider's search() is sync.
-        _ensure_web_plugins_loaded()
-        from agent.web_search_registry import get_active_search_provider, get_provider as _wsp_get_provider
-        backend = _get_search_backend()
-        provider = _wsp_get_provider(backend) if backend else None
-        if provider is None or not provider.supports_search():
-            if provider is None and backend and selection_exists("web"):
-                error_text = debug_call_data["error"] = _strict_selection_error("search", backend)
-                _finish_debug("web_search_tool", debug_call_data)
-                return json.dumps({"success": False, "error": error_text}, indent=2, ensure_ascii=False)
-            # Never-configured install: legacy availability-walked autodetect.
-            provider = get_active_search_provider()
+        exchange = acquire_search(WebSearchRequest(query=query, limit=limit))
+        if exchange.presentation_error is not None:
+            return _finish_debug("web_search_tool", debug_call_data, exchange.presentation_error)
+        response_data = exchange.presentation
 
-        if provider is None:
-            fallback = "No web search provider configured. Run `hermes tools` to set one up."
-            response_data = {"success": False, "error": _no_provider_error("search", fallback)}
-        else:
-            logger.info("Web search via %s: '%s' (limit: %d)", provider.name, query, limit)
-            response_data = _memoized_search(provider, query, limit)
-
-        debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
+        data = response_data.get("data", {})
+        debug_call_data["results_count"] = len(data.get("web", [])) if isinstance(data, dict) else 0
         result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
         debug_call_data["final_response_size"] = len(result_json)
         _finish_debug("web_search_tool", debug_call_data)
@@ -347,49 +339,7 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         return _finish_debug("web_search_tool", debug_call_data, f"Error searching web: {e!s}")
 
 
-def _memoized_search(provider, query: str, limit: int) -> dict:
-    """TTL memo + single-flight around the paid vendor call (tools/web_result_cache.py); sits after every
-    safety/config check. The provider is asked for the BUCKETED count so near-identical limits share an entry;
-    the caller's count is sliced out. Only successful, non-rescued responses are cached — caching a rescue
-    would make the one-shot ring fallback sticky for a whole TTL."""
-    from tools.web_result_cache import bucket_limit, search_memo, slice_search_response
-
-    def _paid_search() -> tuple[dict, bool]:
-        fetch_limit = bucket_limit(limit)
-        try:
-            resp = provider.search(query, fetch_limit)
-        except Exception as exc:
-            served = _served_after_failure(str(exc), fetch_limit)
-            if served is None:
-                raise
-            return served, True
-        if not resp.get("success"):
-            served = _served_after_failure(str(resp.get("error", "")), fetch_limit)
-            if served is not None:
-                return served, True
-        return resp, False
-
-    def _served_after_failure(error: str, fetch_limit: int) -> Optional[dict]:
-        """Managed Firecrawl for a failed managed Perplexity call, else the one-shot keyless rescue when
-        eligible; None means the vendor's own failure stands."""
-        fallback = _managed_search_fallback(provider, error, query, fetch_limit)
-        if fallback is not None:
-            return fallback
-        return _rescue_search(provider.name, error, query, fetch_limit) if _rescue_eligible(provider) else None
-
-    response_data = search_memo.lookup(provider.name, query, limit)
-    if response_data is None:
-        with search_memo.flight_lock(provider.name, query, limit):
-            # Re-check inside the lock: a concurrent identical call may have stored.
-            response_data = search_memo.lookup(provider.name, query, limit)
-            if response_data is None:
-                response_data, was_rescued = _paid_search()
-                if not was_rescued:
-                    search_memo.store(provider.name, query, limit, response_data)
-    return slice_search_response(response_data, limit)
-
-
-async def web_extract_tool(urls: list[Any], format: str | None = None, char_limit: Optional[int] = None) -> str:
+async def web_extract_tool(urls: list[Any], format: Optional[str] = None, char_limit: Optional[int] = None) -> str:
     """Extract clean page content (no LLM) from URLs via the configured backend.
 
     Pages over ``char_limit`` (default web.extract_char_limit or 15000) are head+tail truncated with a footer
@@ -407,30 +357,17 @@ async def web_extract_tool(urls: list[Any], format: str | None = None, char_limi
 
     try:
         logger.info("Extracting content from %d URL(s)", len(normalized_urls))
-        # SSRF protection — filter private/internal URLs before any backend.
-        safe_urls, safe_indices, ssrf_blocked = [], [], {}
-        for index, url in zip(normalized_indices, normalized_urls):
-            if await async_is_safe_url(url):
-                safe_urls.append(url)
-                safe_indices.append(index)
-            else:
-                ssrf_blocked[index] = _result_entry(
-                    url, "Blocked: URL targets a private or internal network address"
-                )
-
+        from agent.web_acquisition import WebExtractRequest
+        from tools.web_tools_extract import acquire_extract
         results = []
-        if safe_urls:
-            backend = _get_extract_backend()
-            _ensure_web_plugins_loaded()
-            provider, error_json = _resolve_extract_provider(backend)
-            if error_json is not None:
-                return error_json
-            results = await _extract_safe_urls(provider, safe_urls, format)
-        # Reconstruct input order across invalid, blocked, and provider entries (providers preserve
-        # the order of the safe URL list they receive).
-        if invalid_urls or ssrf_blocked:
-            fixed = {**ssrf_blocked, **invalid_urls}
-            results = _merge_in_order(len(urls), fixed, safe_indices, safe_urls, results)
+        if normalized_urls:
+            request = WebExtractRequest.model_validate({"urls": tuple(normalized_urls), "format": format})
+            exchange = await acquire_extract(request)
+            if exchange.presentation_error is not None:
+                return exchange.presentation_error
+            results = exchange.presentation
+        if invalid_urls:
+            results = _merge_in_order(len(urls), invalid_urls, normalized_indices, normalized_urls, results)
 
         logger.info("Extracted content from %d pages", len(results))
         debug_call_data["pages_extracted"] = len(results)
@@ -565,7 +502,7 @@ registry.register(
 registry.register(
     name="web_extract", toolset="web", schema=WEB_EXTRACT_SCHEMA,
     handler=lambda args, **kw: web_extract_tool(
-        args.get("urls", [])[:5] if isinstance(args.get("urls"), list) else [], "markdown",
+        args.get("urls", [])[:5] if isinstance(args.get("urls"), list) else [], None,
         char_limit=args.get("char_limit"),
     ),
     check_fn=check_web_api_key, requires_env=_web_requires_env(), is_async=True, emoji="📄",

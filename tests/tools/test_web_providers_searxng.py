@@ -197,7 +197,8 @@ class TestCheckWebApiKey:
     def test_no_credentials_fails(self, monkeypatch):
         from tools import web_tools
         from agent import web_search_registry
-        monkeypatch.setattr(web_tools, "_load_web_config", dict)
+        from plugins.web.ddgs.provider import DDGSWebSearchProvider
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {})
         monkeypatch.delenv("FIRECRAWL_API_KEY", raising=False)
         monkeypatch.delenv("FIRECRAWL_API_URL", raising=False)
         monkeypatch.delenv("PARALLEL_API_KEY", raising=False)
@@ -207,6 +208,7 @@ class TestCheckWebApiKey:
         monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
         monkeypatch.setattr(web_tools, "check_firecrawl_api_key", lambda: False)
         monkeypatch.setattr(web_tools, "_ddgs_package_importable", lambda: False)
+        monkeypatch.setattr(DDGSWebSearchProvider, "is_available", lambda self: False)
         # Disable the keyless free tier — with it on, zero credentials still
         # resolves (Parallel/Exa anonymous MCP; see test_web_keyless_fallback.py).
         monkeypatch.setattr(web_search_registry, "_keyless_tier_enabled", lambda: False)

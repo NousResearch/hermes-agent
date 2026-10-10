@@ -16,6 +16,10 @@ import sys
 import time
 from typing import Any, Dict, Optional
 
+from agent.web_acquisition_errors import (
+    WebAcquisitionError, WebCancelledError, WebDependencyMissingError, WebInvalidResponseError,
+    WebRateLimitedError, WebTimeoutError, WebUnclassifiedFailure, acquisition_error, failure_from_data,
+)
 from plugins.web._common import BaseWebSearchProvider, search_fail, search_ok, setup_schema, title_hit
 
 logger = logging.getLogger(__name__)
@@ -35,6 +39,37 @@ class _SearchInterrupted(Exception):
     """Raised when tools.interrupt.is_interrupted() trips during a search wait."""
 
 
+def _ddgs_failure(error: BaseException) -> WebAcquisitionError:
+    native = acquisition_error(error)
+    if not isinstance(native, WebUnclassifiedFailure):
+        return native
+    try:
+        from ddgs.exceptions import DDGSException, RatelimitException, TimeoutException
+    except ImportError:
+        return native
+    pending = [error]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        classified = acquisition_error(current)
+        if not isinstance(classified, WebUnclassifiedFailure):
+            if not isinstance(current, WebAcquisitionError):
+                classified.__cause__ = error
+            return classified
+        if isinstance(current, RatelimitException):
+            return WebRateLimitedError(cause=error)
+        if isinstance(current, TimeoutException):
+            return WebTimeoutError(cause=error)
+        if current.__cause__ is not None:
+            pending.append(current.__cause__)
+        if isinstance(current, DDGSException) and current.args and isinstance(current.args[0], BaseException):
+            pending.append(current.args[0])
+    return native
+
+
 def _run_ddgs_search(query: str, safe_limit: int) -> list[dict[str, Any]]:
     """Blocking ddgs query → normalized hits (module-level: the child worker imports it,
     tests patch it for in-process runs).
@@ -42,7 +77,7 @@ def _run_ddgs_search(query: str, safe_limit: int) -> list[dict[str, Any]]:
     ``DDGS(timeout=…)`` bounds each individual HTTP request; the overall wall-clock cap is enforced by the
     parent via process timeout (#68096).
     """
-    from ddgs import DDGS  # type: ignore
+    from ddgs import DDGS
     results: list[dict[str, Any]] = []
     with DDGS(timeout=10) as client:
         for i, hit in enumerate(client.text(query, max_results=safe_limit)):
@@ -119,22 +154,26 @@ def _spawn_worker(env: dict[str, str]) -> subprocess.Popen:
     )
 
 
-def _parse_envelope(raw: str, proc: subprocess.Popen) -> list[dict[str, Any]]:
-    """Decode the worker's stdout envelope; raise ``RuntimeError`` on any malformed shape."""
+def _parse_envelope(raw: str) -> list[dict[str, Any]]:
+    """Decode the worker envelope and preserve validated cause-specific failures."""
     raw = raw.strip()
     if not raw:
-        raise RuntimeError(f"DDGS worker exited without a result (code={proc.poll()})")
+        raise WebInvalidResponseError()
     try:
         envelope = json.loads(raw)
     except json.JSONDecodeError as exc:
-        raise RuntimeError(f"DDGS worker returned invalid JSON: {raw[:200]!r}") from exc
+        raise WebInvalidResponseError(cause=exc) from exc
     if not isinstance(envelope, dict):
-        raise RuntimeError(f"DDGS worker returned an invalid envelope: {envelope!r}")
-    if not envelope.get("ok"):
-        raise RuntimeError(str(envelope.get("error") or "DDGS worker failed"))
+        raise WebInvalidResponseError()
+    if envelope.get("ok") is False:
+        if "failure" in envelope:
+            raise failure_from_data(envelope["failure"])
+        raise WebUnclassifiedFailure()
+    if envelope.get("ok") is not True:
+        raise WebInvalidResponseError()
     results = envelope.get("results") or []
     if not isinstance(results, list):
-        raise RuntimeError("DDGS worker returned non-list results")
+        raise WebInvalidResponseError()
     return results
 
 
@@ -177,7 +216,7 @@ def _run_ddgs_search_bounded(query: str, safe_limit: int) -> list[dict[str, Any]
         raise _SearchInterrupted("DuckDuckGo search interrupted")
     if not done:
         raise TimeoutError(f"DuckDuckGo search timed out after {_SEARCH_TIMEOUT_SECS}s")
-    return _parse_envelope(raw, proc)
+    return _parse_envelope(raw)
 
 
 class DDGSWebSearchProvider(BaseWebSearchProvider):
@@ -203,22 +242,23 @@ class DDGSWebSearchProvider(BaseWebSearchProvider):
         See #36776, #68096.
         """
         if not self.is_available():
-            return search_fail("ddgs package is not installed — run `pip install ddgs`")
+            return search_fail("ddgs package is not installed — run `pip install ddgs`", failure=WebDependencyMissingError("ddgs"))
         try:
             # max(1, …): defensive cap in case the package ignores its max_results hint.
             web_results = _run_ddgs_search_bounded(query, max(1, int(limit)))
-        except TimeoutError:
+        except TimeoutError as exc:
             logger.warning("DDGS search timed out after %ds for query: %r", _SEARCH_TIMEOUT_SECS, query)
             return search_fail(
                 f"DuckDuckGo search timed out after {_SEARCH_TIMEOUT_SECS}s — "
-                "DuckDuckGo may be rate-limiting or slow. Try again later or switch to a different search provider."
+                "DuckDuckGo may be rate-limiting or slow. Try again later or switch to a different search provider.",
+                failure=WebTimeoutError(_SEARCH_TIMEOUT_SECS, cause=exc),
             )
         except _SearchInterrupted:
             logger.info("DDGS search interrupted for query: %r", query)
-            return search_fail("DuckDuckGo search interrupted")
-        except Exception as exc:
+            return search_fail("DuckDuckGo search interrupted", failure=WebCancelledError())
+        except Exception as exc:  # noqa: BLE001 — ddgs raises its own exceptions
             logger.warning("DDGS search error: %s", exc)
-            return search_fail(f"DuckDuckGo search failed: {exc}")
+            return search_fail(f"DuckDuckGo search failed: {exc}", failure=_ddgs_failure(exc))
         logger.info("DDGS search '%s': %d results (limit %d)", query, len(web_results), limit)
         return search_ok(web_results)
 

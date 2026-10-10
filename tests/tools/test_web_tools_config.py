@@ -421,12 +421,14 @@ class TestParallelClientConfig:
         fake_parallel = types.ModuleType("parallel")
 
         class Parallel:
-            def __init__(self, api_key):
+            def __init__(self, api_key, *, _strict_response_validation=False):
                 self.api_key = api_key
+                self._strict_response_validation = _strict_response_validation
 
         class AsyncParallel:
-            def __init__(self, api_key):
+            def __init__(self, api_key, *, _strict_response_validation=False):
                 self.api_key = api_key
+                self._strict_response_validation = _strict_response_validation
 
         fake_parallel.Parallel = Parallel
         fake_parallel.AsyncParallel = AsyncParallel
@@ -452,14 +454,15 @@ class TestParallelClientConfig:
             from plugins.web.parallel.provider import _get_sync_client as _get_parallel_client
             from parallel import Parallel
             client = _get_parallel_client()
-            assert client is not None
             assert isinstance(client, Parallel)
+            assert vars(client) == {"api_key": "test-key", "_strict_response_validation": True}
 
-    def test_no_key_raises_with_helpful_message(self):
-        """No PARALLEL_API_KEY → ValueError with guidance."""
+    def test_no_key_preserves_the_required_credential(self):
+        from agent.web_acquisition_errors import WebCredentialsMissingError
         from plugins.web.parallel.provider import _get_sync_client as _get_parallel_client
-        with pytest.raises(ValueError, match="PARALLEL_API_KEY"):
+        with pytest.raises(WebCredentialsMissingError) as raised:
             _get_parallel_client()
+        assert raised.value.to_failure() == {"kind": "credentials-missing", "retry": "never", "scope": "provider", "credential": "PARALLEL_API_KEY"}
 
     def test_singleton_returns_same_instance(self):
         """Second call returns cached client."""
@@ -473,6 +476,7 @@ class TestParallelClientConfig:
         """/reload (reload_env) fixing or removing the key reaches the next call: the client built
         with the old key is never handed out again."""
         from hermes_cli.config import get_env_path, reload_env
+        from agent.web_acquisition_errors import WebCredentialsMissingError
         from plugins.web.parallel.provider import _get_sync_client as _get_parallel_client
         with patch.dict(os.environ):
             get_env_path().write_text("PARALLEL_API_KEY=typo-key\n")
@@ -483,8 +487,9 @@ class TestParallelClientConfig:
             assert _get_parallel_client().api_key == "fixed-key"
             get_env_path().write_text("")
             reload_env()
-            with pytest.raises(ValueError, match="PARALLEL_API_KEY"):
+            with pytest.raises(WebCredentialsMissingError) as raised:
                 _get_parallel_client()
+            assert raised.value.to_failure() == {"kind": "credentials-missing", "retry": "never", "scope": "provider", "credential": "PARALLEL_API_KEY"}
 
 
 class TestExaClientConfig:
@@ -1024,6 +1029,7 @@ def test_xai_only_gate_agrees_with_dispatcher_when_web_xai_plugin_loaded(monkeyp
         with patch("tools.web_tools._load_web_config", return_value={}), \
              patch("tools.web_tools._ensure_web_plugins_loaded", lambda: None), \
              patch("tools.web_tools.check_firecrawl_api_key", return_value=False), \
+             patch("tools.web_tools._ddgs_package_importable", return_value=False), \
              patch("agent.web_search_registry._keyless_tier_enabled", return_value=False):
             from tools.web_tools import _get_backend, check_web_api_key
             assert registry.get_active_search_provider().name == "xai"

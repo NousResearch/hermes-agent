@@ -19,7 +19,7 @@ provider configured as ``web.extract_backend`` falls through):
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from agent.provider_registry import ProviderRegistry, is_available_safe
 from agent.web_search_provider import WebSearchProvider
@@ -31,6 +31,9 @@ _registry: ProviderRegistry[WebSearchProvider] = ProviderRegistry(
     label="Web", provider_cls=WebSearchProvider, logger=logger,
 )
 _registry.export(globals())
+
+if TYPE_CHECKING:
+    get_provider = _registry.get_provider
 
 def _read_config_key(*path: str) -> Optional[str]:
     """Resolve a dotted config key from ``config.yaml``. Returns None on miss."""

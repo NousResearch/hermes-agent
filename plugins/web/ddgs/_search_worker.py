@@ -1,7 +1,7 @@
 """DDGS search child-process entrypoint, run as ``python plugins/web/ddgs/_search_worker.py``.
 
 Reads one JSON request ``{"query": str, "safe_limit": int}`` from stdin, writes one
-envelope ``{"ok": true, "results": [...]}`` / ``{"ok": false, "error": str}`` to
+envelope ``{"ok": true, "results": [...]}`` / ``{"ok": false, "error": str, "failure": {...}}`` to
 stdout, exits. Test hooks (``"test_hook": "sleep"|"gil"|"empty"``) are honored only
 when ``HERMES_DDGS_ALLOW_TEST_HOOKS=1``.
 """
@@ -12,6 +12,10 @@ import json
 import os
 import sys
 import time
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from agent.web_acquisition_errors import WebAcquisitionError
 
 
 def _hold_gil(secs: int) -> None:
@@ -42,22 +46,25 @@ def _write_envelope(envelope: dict) -> None:
     sys.stdout.flush()
 
 
-def _fail(error: str, code: int) -> int:
-    _write_envelope({"ok": False, "error": error})
+def _fail(error: str, code: int, failure: WebAcquisitionError | None = None) -> int:
+    envelope: dict[str, object] = {"ok": False, "error": error}
+    if failure is not None:
+        envelope["failure"] = failure.to_failure()
+    _write_envelope(envelope)
     return code
 
 
 def main() -> int:
     try:
         request = json.load(sys.stdin)
-    except Exception as exc:
-        return _fail(f"invalid request: {exc}", 2)
+    except Exception:  # noqa: BLE001
+        return _fail("Invalid DDGS worker request", 2)
     hook = request.get("test_hook")
     if hook:
         if os.environ.get("HERMES_DDGS_ALLOW_TEST_HOOKS") != "1":
             return _fail("test_hook refused (hooks not enabled)", 3)
         fn = _TEST_HOOKS.get(str(hook))
-        envelope = fn() if fn else {"ok": False, "error": f"unknown test_hook: {hook!r}"}
+        envelope = fn() if fn else {"ok": False, "error": "Unknown DDGS test hook"}
         _write_envelope(envelope)
         return 0 if envelope.get("ok") else 1
     query, safe_limit = str(request.get("query") or ""), max(1, int(request.get("safe_limit") or 1))
@@ -65,8 +72,10 @@ def main() -> int:
         from plugins.web.ddgs.provider import _run_ddgs_search  # lazy: light startup, patchable
         _write_envelope({"ok": True, "results": _run_ddgs_search(query, safe_limit)})
         return 0
-    except Exception as exc:
-        return _fail(f"{type(exc).__name__}: {exc}", 1)
+    except Exception as exc:  # noqa: BLE001
+        from plugins.web.ddgs.provider import _ddgs_failure
+        failure = _ddgs_failure(exc)
+        return _fail(failure.diagnostic, 1, failure)
 
 
 if __name__ == "__main__":

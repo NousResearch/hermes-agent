@@ -15,7 +15,7 @@ import threading
 import time
 from contextlib import suppress
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, Literal, Optional, Tuple
 from urllib.parse import urlparse
 from utils import atomic_json_write
 
@@ -89,7 +89,8 @@ class SearchMemo:
 
     @staticmethod
     def _key(provider: str, query: str, limit: int) -> tuple:
-        return (provider, normalize_query(query), bucket_limit(limit))
+        from hermes_constants import hermes_home_key
+        return (hermes_home_key(), provider, normalize_query(query), bucket_limit(limit))
 
     def lookup(self, provider: str, query: str, limit: int) -> Optional[dict]:
         if not cache_enabled():
@@ -168,8 +169,11 @@ def _cache_dir() -> Optional[Path]:
 
 
 def _load_index() -> dict:
+    directory = _cache_dir()
+    if directory is None:
+        return {}
     try:
-        data = json.loads((_cache_dir() / _INDEX_FILENAME).read_text(encoding="utf-8-sig"))
+        data = json.loads((directory / _INDEX_FILENAME).read_text(encoding="utf-8-sig"))
         return data if isinstance(data, dict) else {}
     except Exception:
         return {}
@@ -190,13 +194,15 @@ def _save_index(index: dict) -> None:
         logger.debug("Failed to save web extract cache index: %s", exc)
 
 
-def _url_digest(url: str, format: Optional[str], provider: str = "") -> str:
+def _url_digest(url: str, format: Optional[str], provider: str = "", max_chars: int | None = None) -> str:
     # format AND provider are part of the key: html != markdown, and one backend's rendering is not another's.
-    raw = f"{url}\n{format or 'markdown'}\n{provider or ''}"
+    raw = f"{url}\n{format or 'default'}\n{provider or ''}"
+    if max_chars is not None:
+        raw += f"\nmax_chars={max_chars}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
 
-def _entry_file_path(url: str, format: Optional[str], provider: str) -> Optional[Path]:
+def _entry_file_path(url: str, format: Optional[str], provider: str, max_chars: int | None = None) -> Optional[Path]:
     """Dedicated cache file per (url, format, provider) — deliberately NOT the truncate-store file
     (keyed on URL alone), which html/markdown or two providers' copies of one URL would overwrite.
 
@@ -208,7 +214,7 @@ def _entry_file_path(url: str, format: Optional[str], provider: str) -> Optional
     slug = "page"
     with suppress(Exception):
         slug = _host_slug(url)
-    return d / f"{slug}-{_url_digest(url, format, provider)}.cache.md"
+    return d / f"{slug}-{_url_digest(url, format, provider, max_chars)}.cache.md"
 
 
 def _host_matches_pattern(host: str, pattern: str) -> bool:
@@ -258,28 +264,47 @@ def _cacheable(url: str) -> bool:
     return cache_enabled() and not (_is_local_dev_url(url) or _is_cache_exempt_host(url))
 
 
-def extract_cache_get(url: str, format: Optional[str] = None, provider: str = "") -> Optional[dict]:
+def extract_cache_get(
+    url: str, format: Optional[str] = None, provider: str = "", *,
+    max_chars: int | None = None, required_coverage: Literal["any", "full"] = "any",
+) -> Optional[dict]:
     """Return {'url','title','content'} for a fresh cached page, else None."""
     if not _cacheable(url):
         return None
     with _index_lock:
-        entry = _load_index().get(_url_digest(url, format, provider))
-    if not entry or (time.time() - float(entry.get("fetched_at", 0))) >= ttl_seconds():
-        return None
+        entry = _load_index().get(_url_digest(url, format, provider, max_chars))
     try:
+        if not isinstance(entry, dict) or entry.get("url") != url:
+            return None
+        if (time.time() - float(entry.get("fetched_at", 0))) >= ttl_seconds():
+            return None
+        if required_coverage == "full" and entry.get("coverage") != "full":
+            return None
+        if not isinstance(entry.get("title", ""), str):
+            return None
+        if entry.get("coverage", "unknown") not in {"full", "partial", "unknown"}:
+            return None
+        for field in ("resolved_url", "served_provider"):
+            if field in entry and (not isinstance(entry[field], str) or not entry[field]):
+                return None
         file_path, cache_root = Path(entry["file"]), _cache_dir()
         # The index is plain JSON on disk; never let a tampered entry read outside cache/web.
-        if cache_root.resolve() not in file_path.resolve().parents:
+        if cache_root is None or cache_root.resolve() not in file_path.resolve().parents:
             return None
         content = file_path.read_text(encoding="utf-8-sig")
     except Exception:
         return None
     logger.info("web_extract cache hit: %s", url)
-    return {"url": url, "title": entry.get("title", ""), "content": content, "error": None, "cached": True}
+    result = {"url": entry.get("resolved_url", url), "title": entry.get("title", ""), "content": content, "error": None, "cached": True}
+    if "coverage" in entry:
+        result.update(requested_url=url, coverage=entry["coverage"], served_provider=entry.get("served_provider"))
+    return result
 
 
 def extract_cache_put(
-    url: str, content: str, title: str = "", format: Optional[str] = None, provider: str = ""
+    url: str, content: str, title: str = "", format: Optional[str] = None, provider: str = "", *,
+    max_chars: int | None = None, resolved_url: str | None = None,
+    coverage: Literal["full", "partial", "unknown"] | None = None, served_provider: str | None = None,
 ) -> None:
     """Store one successful extraction's full clean text for TTL reuse; pages over the truncate-store
     ceiling are not cached (serving a capped copy back as if whole would silently lose the tail)."""
@@ -287,16 +312,21 @@ def extract_cache_put(
         return
     try:
         from tools.web_tools_truncate import MAX_STORED_TEXT_CHARS
-        file_path = _entry_file_path(url, format, provider)
+        file_path = _entry_file_path(url, format, provider, max_chars)
         if len(content) > MAX_STORED_TEXT_CHARS or file_path is None:
             return
         from tools.spill_safety import write_text_exclusive
         write_text_exclusive(file_path, content, private=False, overwrite=True)
         with _index_lock:
             index = _load_index()
-            index[_url_digest(url, format, provider)] = {
+            entry = {
                 "url": url, "file": str(file_path), "title": title or "", "fetched_at": time.time(),
             }
+            if coverage is not None:
+                entry.update(resolved_url=resolved_url or url, coverage=coverage)
+                if served_provider is not None:
+                    entry["served_provider"] = served_provider
+            index[_url_digest(url, format, provider, max_chars)] = entry
             _save_index(index)
     except Exception as exc:
         logger.debug("Failed to cache web extract for %s: %s", url, exc)

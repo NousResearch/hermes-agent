@@ -71,6 +71,7 @@ def _write_home(home, monkeypatch, *, nous_state=None, config=None):
     from hermes_cli.config import atomic_config_write
     from hermes_cli.nous_account import reset_nous_portal_account_info_cache
 
+    monkeypatch.setattr("tools.web_tools._ddgs_package_importable", lambda: False)
     home.mkdir(parents=True)
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setenv("HERMES_GUEST_ONBOARDING", "1")

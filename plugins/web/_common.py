@@ -13,6 +13,11 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional
 import httpx
 
 from agent.web_search_provider import WebSearchProvider
+from agent.web_acquisition import WebExtractCapabilities, WebExtractFormat
+from agent.web_acquisition_errors import (
+    ContentCoverage, FailureClassifier, WebAcquisitionError, WebCancelledError, WebCredentialsMissingError,
+    WebInvalidResponseError, acquisition_error,
+)
 
 SEARCH_LIMIT_CAP = 20  # every vendor here caps max_results at 20 server-side
 
@@ -38,8 +43,11 @@ def search_ok(web_results: list[dict[str, Any]]) -> dict[str, Any]:
     return {"success": True, "data": {"web": web_results}}
 
 
-def search_fail(error: str) -> dict[str, Any]:
-    return {"success": False, "error": error}
+def search_fail(error: str, *, failure: Optional[WebAcquisitionError] = None) -> dict[str, Any]:
+    result = {"success": False, "error": error}
+    if failure is not None:
+        result["failure"] = failure.to_failure()
+    return result
 
 
 def web_hit(url: str, title: str, description: str, position: int) -> dict[str, Any]:
@@ -51,20 +59,28 @@ def title_hit(title: str, url: str, description: str, position: int) -> dict[str
     return {"title": title, "url": url, "description": description, "position": position}
 
 
-def document(url: str, title: str, content: str, *, source_url: Optional[str] = None) -> dict[str, Any]:
+def document(url: str, title: str, content: str, *, source_url: Optional[str] = None, coverage: Optional[ContentCoverage] = None) -> dict[str, Any]:
     """Successful extract entry; ``raw_content`` mirrors ``content`` for the legacy pipeline."""
-    return {
+    result = {
         "url": url, "title": title, "content": content, "raw_content": content,
         "metadata": {"sourceURL": url if source_url is None else source_url, "title": title},
     }
+    if source_url is not None:
+        result["requested_url"] = source_url
+    if coverage is not None:
+        result["coverage"] = coverage
+    return result
 
 
-def page_error(url: str, error: str) -> dict[str, Any]:
-    return {"url": url, "title": "", "content": "", "error": error}
+def page_error(url: str, error: str, *, failure: Optional[WebAcquisitionError] = None) -> dict[str, Any]:
+    result = {"url": url, "title": "", "content": "", "error": error}
+    if failure is not None:
+        result["failure"] = failure.to_failure()
+    return result
 
 
-def extract_fail(urls: list[str], error: str) -> list[dict[str, Any]]:
-    return [page_error(u, error) for u in urls]
+def extract_fail(urls: list[str], error: str, *, failure: Optional[WebAcquisitionError] = None) -> list[dict[str, Any]]:
+    return [page_error(u, error, failure=failure) for u in urls]
 
 
 # --- Keyless ring hand-off (shared by exa / parallel / keenable) ---------------
@@ -74,10 +90,10 @@ def keyless_search(display: str, name: str, query: str, limit: int, logger: logg
     return search_with_failover(name, query, limit)
 
 
-def keyless_extract(display: str, name: str, urls: list[str], logger: logging.Logger) -> list[dict[str, Any]]:
+def keyless_extract(display: str, name: str, urls: list[str], logger: logging.Logger, **kwargs: Any) -> list[dict[str, Any]]:
     from plugins.web.keyless_mcp import extract_with_failover
     logger.info("%s keyless extract: %d URL(s)", display, len(urls))
-    return extract_with_failover(name, list(urls))
+    return extract_with_failover(name, list(urls), **kwargs)
 
 
 # --- Guarded execution: interrupt check + uniform failure classification ---
@@ -93,42 +109,42 @@ def _failure_message(vendor: str, kind: str, exc: Exception, logger: logging.Log
     return f"{vendor} {kind} failed: {exc}"
 
 
-def _guarded(vendor: str, kind: str, logger: logging.Logger, body: Callable[[], Any], interrupted: Any, fail: Callable[[str], Any], sdk: bool, vve: bool) -> Any:
+def _guarded(vendor: str, kind: str, logger: logging.Logger, body: Callable[[], Any], interrupted: Any, fail: Callable[[str, WebAcquisitionError], Any], sdk: bool, vve: bool, classify: FailureClassifier | None) -> Any:
     try:
         if _interrupted():
             return interrupted
         return body()
-    except Exception as exc:
-        return fail(_failure_message(vendor, kind, exc, logger, sdk=sdk, verbatim_value_error=vve))
+    except Exception as exc:  # noqa: BLE001 — surface as failure shape
+        return fail(_failure_message(vendor, kind, exc, logger, sdk=sdk, verbatim_value_error=vve), acquisition_error(exc, classify=classify))
 
 
-def run_search(vendor: str, logger: logging.Logger, body: Callable[[], dict[str, Any]], *, sdk: bool = False, verbatim_value_error: bool = True) -> dict[str, Any]:
-    return _guarded(vendor, "search", logger, body, search_fail("Interrupted"), search_fail, sdk, verbatim_value_error)
+def run_search(vendor: str, logger: logging.Logger, body: Callable[[], dict[str, Any]], *, sdk: bool = False, verbatim_value_error: bool = True, classify: FailureClassifier | None = None) -> dict[str, Any]:
+    return _guarded(vendor, "search", logger, body, search_fail("Interrupted", failure=WebCancelledError()), lambda m, e: search_fail(m, failure=e), sdk, verbatim_value_error, classify)
 
 
 def _extract_interrupted(urls: list[str]) -> list[dict[str, Any]]:
-    return [{"url": u, "error": "Interrupted", "title": ""} for u in urls]
+    return [{"url": u, "error": "Interrupted", "title": "", "failure": WebCancelledError().to_failure()} for u in urls]
 
 
 def run_extract(
     vendor: str, logger: logging.Logger, urls: list[str], body: Callable[[], list[dict[str, Any]]],
-    *, sdk: bool = False, verbatim_value_error: bool = True,
+    *, sdk: bool = False, verbatim_value_error: bool = True, classify: FailureClassifier | None = None,
 ) -> list[dict[str, Any]]:
     """Per-URL failures are returned as entries with ``error`` — never raised."""
-    return _guarded(vendor, "extract", logger, body, _extract_interrupted(urls), lambda m: extract_fail(urls, m), sdk, verbatim_value_error)
+    return _guarded(vendor, "extract", logger, body, _extract_interrupted(urls), lambda m, e: extract_fail(urls, m, failure=e), sdk, verbatim_value_error, classify)
 
 
 async def run_extract_async(
     vendor: str, logger: logging.Logger, urls: list[str], body: Callable[[], Awaitable[list[dict[str, Any]]]],
-    *, sdk: bool = False, verbatim_value_error: bool = True,
+    *, sdk: bool = False, verbatim_value_error: bool = True, classify: FailureClassifier | None = None,
 ) -> list[dict[str, Any]]:
     """Async twin of :func:`run_extract` (``body`` is awaited inside the guard)."""
     try:
         if _interrupted():
             return _extract_interrupted(urls)
         return await body()
-    except Exception as exc:
-        return extract_fail(urls, _failure_message(vendor, "extract", exc, logger, sdk=sdk, verbatim_value_error=verbatim_value_error))
+    except Exception as exc:  # noqa: BLE001
+        return extract_fail(urls, _failure_message(vendor, "extract", exc, logger, sdk=sdk, verbatim_value_error=verbatim_value_error), failure=acquisition_error(exc, classify=classify))
 
 
 # --- HTTP + SDK client helpers ---
@@ -148,15 +164,15 @@ def http_get_json(
         resp.raise_for_status()
     except httpx.HTTPStatusError as exc:
         logger.warning("%s HTTP error: %s", label, exc)
-        return None, search_fail(f"{label} returned HTTP {exc.response.status_code}")
+        return None, search_fail(f"{label} returned HTTP {exc.response.status_code}", failure=acquisition_error(exc))
     except httpx.RequestError as exc:
         logger.warning("%s request error: %s", label, exc)
-        return None, search_fail(f"Could not reach {reach_target or label}: {exc}")
+        return None, search_fail(f"Could not reach {reach_target or label}: {exc}", failure=acquisition_error(exc))
     try:
         return resp.json(), None
     except Exception as exc:
         logger.warning("%s response parse error: %s", label, exc)
-        return None, search_fail(f"Could not parse {label} response as JSON")
+        return None, search_fail(f"Could not parse {label} response as JSON", failure=WebInvalidResponseError(cause=exc))
 
 
 def titled_rows(raw_results: list[dict[str, Any]], description_key: str) -> list[dict[str, Any]]:
@@ -180,14 +196,14 @@ def lazy_ensure(extra: str) -> None:
 
 def cached_sdk_client(slot: str, env_var: str, missing_key_error: str, feature: str, factory: Callable[[str], Any]) -> Any:
     """Lazy-build + cache a vendor SDK client on ``tools.web_tools.<slot>`` (so tests that
-    reset ``tools.web_tools._<vendor>_client = None`` see fresh state). Raises ValueError
-    when the key is unset."""
+    reset ``tools.web_tools._<vendor>_client = None`` see fresh state). Raises
+    ``WebCredentialsMissingError`` when the key is unset."""
     import tools.web_tools as _wt
     # Resolved before the cache is consulted: the slot is one per process, but the key can change
     # under it (``/reload``, or each multiplexed profile's secret scope resolving its own key).
     api_key = provider_env(env_var)
     if not api_key:
-        raise ValueError(missing_key_error)
+        raise WebCredentialsMissingError(env_var)
     # (key, client) as one value so concurrent builds under different keys can never leave one
     # key recorded beside another key's client.
     cached = getattr(_wt, slot, None)
@@ -211,6 +227,8 @@ class BaseWebSearchProvider(WebSearchProvider):
     KEY_ENV: str = ""
     EXTRACT: bool = False
     KEYLESS: bool = False
+    EXTRACT_FORMATS: tuple[WebExtractFormat, ...] = ("markdown",)
+    EXTRACT_MAX_CHARACTERS: bool = False
 
     name = property(lambda self: self.NAME)
     display_name = property(lambda self: self.DISPLAY_NAME)
@@ -228,6 +246,9 @@ class BaseWebSearchProvider(WebSearchProvider):
     def supports_extract(self) -> bool:
         return self.EXTRACT
 
+    def extract_capabilities(self) -> WebExtractCapabilities:
+        return WebExtractCapabilities(formats=self.EXTRACT_FORMATS, max_characters=self.EXTRACT_MAX_CHARACTERS)
+
 
 def setup_schema(name: str, badge: str, tag: str, key_env: str = "", prompt: str = "", url: str = "", **extra: Any) -> dict[str, Any]:
     """``hermes tools`` picker entry; ``env_vars`` is empty when ``key_env`` is blank."""
@@ -239,3 +260,12 @@ def keyless_variant_schema(display: str, key_env: str, key_url: str, *, free_tag
     """Picker entry for a keyless-ring vendor with a paid variant."""
     paid = setup_schema(f"{display} · Paid (API key)", "paid", paid_tag, key_env, f"{display} API key", key_url, web_tier="paid")
     return setup_schema(f"{display} · Free (keyless)", "free · no key", free_tag, web_tier="free", variants=[paid])
+
+
+def search_result_rows(payload: Any) -> list[dict[str, Any]]:
+    if not isinstance(payload, dict):
+        raise WebInvalidResponseError()
+    rows = payload.get("results")
+    if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+        raise WebInvalidResponseError()
+    return rows

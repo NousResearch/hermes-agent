@@ -20,6 +20,7 @@ import json
 from typing import Any, Dict
 
 from plugins.web._common import BaseWebSearchProvider, search_fail
+from agent.web_acquisition_errors import WebCapabilityUnsupportedError
 
 _UNSUPPORTED_MSG = (
     "openai-native declares OpenAI's server-side web_search tool; it cannot run as a "
@@ -75,7 +76,7 @@ class OpenAINativeWebSearchProvider(BaseWebSearchProvider):
         """Never called on a successful native turn — the transport replaces the tool
         before the request goes out. Reached only when the active transport cannot host
         the built-in, so fail loudly instead of returning an empty result set."""
-        return search_fail(_UNSUPPORTED_MSG)
+        return search_fail(_UNSUPPORTED_MSG, failure=WebCapabilityUnsupportedError("client-side-search"))
 
     def get_setup_schema(self) -> dict[str, Any]:
         from plugins.web._common import setup_schema

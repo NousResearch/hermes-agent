@@ -8,13 +8,20 @@ Parallel gets a random per-process ``session_id`` (rate limiting only) and its o
 from __future__ import annotations
 
 import json
+import inspect
 import logging
 import re
 import threading
 import uuid
-from typing import Any, Callable, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
+if TYPE_CHECKING:
+    from requests import Response
 
 from plugins.web._common import document as _page, page_error as _page_error, search_fail, search_ok, web_hit as _row
+from agent.web_acquisition_errors import WebCancelledError, WebCapabilityUnsupportedError, WebInvalidResponseError, WebResultMissingError, WebUnclassifiedFailure, acquisition_error, failure_from_data, http_failure
+from agent.web_acquisition import WebAttempt, WebAttemptFailure, WebAttemptSuccess, WebExtractCapabilities
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +38,56 @@ _TIMEOUT_SECONDS = 30
 
 class KeylessMCPError(RuntimeError):
     """A keyless MCP call failed (transport, rate limit, or tool error)."""
+
+
+class KeylessMCPHttpError(KeylessMCPError):
+    """A provider endpoint response with a known HTTP status."""
+
+    def __init__(self, response: Response):
+        status = response.status_code
+        if type(status) is not int or not 400 <= status <= 599:
+            raise WebInvalidResponseError()
+        super().__init__(f"HTTP {status}: {_response_text(response)[:300]}")
+        self.__cause__ = http_failure(status, response.headers)
+
+
+class KeylessMCPInvalidResponseError(KeylessMCPError):
+    """The upstream response did not contain a valid MCP envelope."""
+
+    def __init__(self, *, cause: BaseException | None = None):
+        super().__init__("Unrecognized MCP response shape")
+        self.__cause__ = WebInvalidResponseError(cause=cause)
+
+
+class KeylessMCPNoTextError(KeylessMCPError):
+    """The MCP response did not contain usable text content."""
+
+    def __init__(self):
+        super().__init__("MCP response contained no text content")
+        self.__cause__ = WebInvalidResponseError()
+
+
+class _MCPContent(BaseModel):
+    model_config = ConfigDict(extra="ignore", strict=True)
+    type: str | None = None
+    text: str | None = None
+
+
+class _MCPResult(BaseModel):
+    model_config = ConfigDict(extra="ignore", strict=True)
+    content: list[_MCPContent] = Field(default_factory=list)
+    is_error: bool = Field(default=False, alias="isError")
+
+
+class _MCPError(BaseModel):
+    model_config = ConfigDict(extra="ignore", strict=True)
+    message: str
+
+
+class _MCPEnvelope(BaseModel):
+    model_config = ConfigDict(extra="ignore", strict=True)
+    result: _MCPResult | None = None
+    error: _MCPError | None = None
 
 
 _RATE_LIMIT_MARKERS = ("rate limit", "rate-limit", "ratelimit", "too many requests", "429", "quota exceeded", "slow down")
@@ -81,9 +138,13 @@ def _search(vendor: str, rows: Callable[[], list[dict[str, Any]]], catch: Any = 
     try:
         return search_ok(rows())
     except KeylessMCPError as exc:
-        return search_fail(_fail_msg(vendor, "search", exc))
+        return search_fail(_fail_msg(vendor, "search", exc), failure=acquisition_error(exc))
     except catch as exc:
-        return search_fail(fmt(exc))
+        failure = acquisition_error(exc)
+        if isinstance(failure, WebUnclassifiedFailure) and isinstance(exc, (TypeError, KeyError)):
+            failure = WebInvalidResponseError(cause=exc)
+        diagnostic = fmt(exc) if fmt is not None else _fail_msg(vendor, "search", exc)
+        return search_fail(diagnostic, failure=failure)
 
 
 def _per_url(urls: list[str], fetch: Callable[[str], dict[str, Any]], vendor: str, catch: Any = Exception, hint: bool = False) -> list[dict[str, Any]]:
@@ -91,8 +152,8 @@ def _per_url(urls: list[str], fetch: Callable[[str], dict[str, Any]], vendor: st
     def _one(url: str) -> dict[str, Any]:
         try:
             return fetch(url)
-        except catch as exc:
-            return _page_error(url, _fail_msg(vendor, "extract", exc, other_backends=hint))
+        except catch as exc:  # noqa: BLE001 — per-URL error entry
+            return _page_error(url, _fail_msg(vendor, "extract", exc, other_backends=hint), failure=acquisition_error(exc))
 
     return [_one(u) for u in urls]
 
@@ -155,14 +216,19 @@ def _parse_mcp_body(body: str) -> str:
         if not payload.startswith("{"):
             return None
         data = json.loads(payload)
-        err = data.get("error")
-        if err:
-            raise KeylessMCPError(str(err.get("message") or err))
-        result = data.get("result") or {}
-        texts = [c.get("text", "") for c in result.get("content") or [] if isinstance(c, dict)]
-        if result.get("isError"):
+        try:
+            envelope = _MCPEnvelope.model_validate(data)
+        except ValidationError as exc:
+            raise KeylessMCPInvalidResponseError(cause=exc)
+        if envelope.error is not None:
+            raise KeylessMCPError(envelope.error.message)
+        result = envelope.result
+        if result is None:
+            return ""
+        texts = [content.text for content in result.content if content.text]
+        if result.is_error:
             raise KeylessMCPError(" ".join(t for t in texts if t) or "MCP tool call failed")
-        return next((str(t) for t in texts if t), "")
+        return next(iter(texts), "")
 
     stripped = body.strip()
     candidates = [stripped] if stripped.startswith("{") else []
@@ -176,7 +242,9 @@ def _parse_mcp_body(body: str) -> str:
         if text:
             return text
         envelope_seen = envelope_seen or text == ""
-    raise KeylessMCPError("MCP response contained no text content" if envelope_seen else "Unrecognized MCP response shape")
+    if envelope_seen:
+        raise KeylessMCPNoTextError()
+    raise KeylessMCPInvalidResponseError()
 
 
 def _response_text(response: Any) -> str:
@@ -201,7 +269,7 @@ def mcp_call(url: str, tool: str, arguments: dict[str, Any], timeout: int = _TIM
     except requests.RequestException as exc:
         raise KeylessMCPError(f"request failed: {exc}") from exc
     if response.status_code >= 400:
-        raise KeylessMCPError(f"HTTP {response.status_code}: {_response_text(response)[:300]}")
+        raise KeylessMCPHttpError(response)
     return _parse_mcp_body(_response_text(response))
 
 
@@ -209,23 +277,25 @@ def mcp_call(url: str, tool: str, arguments: dict[str, Any], timeout: int = _TIM
 def parallel_search_keyless(query: str, limit: int = 5) -> dict[str, Any]:
     def _rows() -> list[dict[str, Any]]:
         text = mcp_call(PARALLEL_MCP_URL, "web_search", {"objective": query, "search_queries": [query], "session_id": _SESSION_ID})
-        results = json.loads(text).get("results") or []
+        from plugins.web._common import search_result_rows
+        results = search_result_rows(json.loads(text))
         return [
             _row(r.get("url") or "", r.get("title") or "", " ".join(r.get("excerpts") or []), i + 1)
             for i, r in enumerate(results[:max(limit, 0)] if limit else results)
         ]
 
-    return _search("parallel", _rows, (json.JSONDecodeError, TypeError, KeyError), lambda exc: f"Keyless Parallel search returned an unexpected payload: {exc}")
+    return _search("parallel", _rows, (json.JSONDecodeError, TypeError, KeyError, WebInvalidResponseError), lambda exc: f"Keyless Parallel search returned an unexpected payload: {exc}")
 
 
-def parallel_extract_keyless(urls: list[str]) -> list[dict[str, Any]]:
+def parallel_extract_keyless(urls: list[str], **kwargs: Any) -> list[dict[str, Any]]:
     try:
         data = json.loads(mcp_call(PARALLEL_MCP_URL, "web_fetch", {"urls": list(urls), "objective": "Full page content", "session_id": _SESSION_ID}))
     except (KeylessMCPError, json.JSONDecodeError, TypeError) as exc:
         message = _fail_msg("parallel", "extract", exc)
-        return [_page_error(u, message) for u in urls]
+        failure = acquisition_error(exc) if isinstance(exc, KeylessMCPError) else WebInvalidResponseError(cause=exc)
+        return [_page_error(u, message, failure=failure) for u in urls]
     results = [
-        _page(r.get("url") or "", r.get("title") or "", r.get("full_content") or r.get("content") or "\n\n".join(r.get("excerpts") or []))
+        _page(r.get("url") or "", r.get("title") or "", r.get("full_content") or r.get("content") or "\n\n".join(r.get("excerpts") or []), coverage="full" if r.get("full_content") else "partial" if r.get("excerpts") else "unknown")
         for r in data.get("results") or []
     ]
     for error in data.get("errors") or []:
@@ -273,10 +343,13 @@ def exa_search_keyless(query: str, limit: int = 5) -> dict[str, Any]:
     return _search("exa", lambda: _parse_exa_search_text(mcp_call(EXA_MCP_URL, "web_search_exa", {"query": query, "numResults": max(1, int(limit))}), limit))
 
 
-def exa_extract_keyless(urls: list[str]) -> list[dict[str, Any]]:
+def exa_extract_keyless(urls: list[str], **kwargs: Any) -> list[dict[str, Any]]:
     """Called per-URL; the tool returns one combined text payload."""
     def _fetch(url: str) -> dict[str, Any]:
-        text = mcp_call(EXA_MCP_URL, "web_fetch_exa", {"urls": [url]})
+        arguments = {"urls": [url]}
+        if kwargs.get("max_chars") is not None:
+            arguments["maxCharacters"] = kwargs["max_chars"]
+        text = mcp_call(EXA_MCP_URL, "web_fetch_exa", arguments)
         # Title: first markdown H1 or ``Title:`` line, whichever comes first.
         titles = (_after(s, "# " if s.startswith("# ") else "Title:") for s in map(str.strip, text.splitlines()) if s.startswith(("# ", "Title:")))
         return _page(url, next(titles, ""), text)
@@ -291,15 +364,16 @@ def firecrawl_search_keyless(query: str, limit: int = 5) -> dict[str, Any]:
     return _search("firecrawl", rows, Exception, lambda exc: _fail_msg("firecrawl", "search", exc))
 
 
-def firecrawl_extract_keyless(urls: list[str]) -> list[dict[str, Any]]:
+def firecrawl_extract_keyless(urls: list[str], **kwargs: Any) -> list[dict[str, Any]]:
     from plugins.web.firecrawl.provider import _KeylessFirecrawlClient, _extract_scrape_payload
     client = _KeylessFirecrawlClient()
 
     def _fetch(url: str) -> dict[str, Any]:
-        payload = _extract_scrape_payload(client.scrape(url=url, formats=["markdown"])) or {}
+        format = kwargs.get("format") or "markdown"
+        payload = _extract_scrape_payload(client.scrape(url=url, formats=[format])) or {}
         metadata = payload.get("metadata") or {}
         title = metadata.get("title") if isinstance(metadata, dict) else None
-        return _page(url, title or "", payload.get("markdown") or payload.get("html") or "")
+        return _page(metadata.get("sourceURL") or url, title or "", payload.get(format) or "", source_url=url, coverage="full")
 
     return _per_url(urls, _fetch, "firecrawl")
 
@@ -313,25 +387,26 @@ def _keenable_request(method: str, path: str, **kwargs: Any) -> dict[str, Any]:
         headers["Content-Type"] = "application/json"
     response = getattr(requests, method)(f"{KEENABLE_API_URL}{path}", headers=headers, timeout=_TIMEOUT_SECONDS, **kwargs)
     if response.status_code >= 400:
-        raise KeylessMCPError(f"HTTP {response.status_code}: {_response_text(response).strip()[:300]}")
+        raise KeylessMCPHttpError(response)
     return response.json()
 
 
 def keenable_search_keyless(query: str, limit: int = 5) -> dict[str, Any]:
     def _rows() -> list[dict[str, Any]]:
         data = _keenable_request("post", "/v1/search/public", json={"query": query, "max_results": max(1, int(limit))})
+        from plugins.web._common import search_result_rows
         return [
             _row(r.get("url") or "", r.get("title") or "", r.get("snippet") or r.get("description") or "", i + 1)
-            for i, r in enumerate(data.get("results") or [])
+            for i, r in enumerate(search_result_rows(data))
         ]
 
     return _search("keenable", _rows, Exception, lambda exc: f"Keyless Keenable search failed: {exc}.")
 
 
-def keenable_extract_keyless(urls: list[str]) -> list[dict[str, Any]]:
+def keenable_extract_keyless(urls: list[str], **kwargs: Any) -> list[dict[str, Any]]:
     def _fetch(url: str) -> dict[str, Any]:
         data = _keenable_request("get", "/v1/fetch/public", params={"url": url})
-        return _page(data.get("url") or url, data.get("title") or "", data.get("content") or "", source_url=url)
+        return _page(data.get("url") or url, data.get("title") or "", data.get("content") or "", source_url=url, coverage="full")
 
     return _per_url(urls, _fetch, "keenable")
 
@@ -342,7 +417,14 @@ _KEYLESS_RING = ("exa", "parallel", "firecrawl", "keenable")
 # Late-bound lookups (not bare references) so ``patch.object(keyless_mcp, "<vendor>_search_keyless")``
 # is honored at call time. Tests also ``setitem`` these dicts directly.
 _KEYLESS_SEARCHERS: dict[str, Callable[[str, int], dict[str, Any]]] = {v: (lambda query, limit, _v=v: globals()[f"{_v}_search_keyless"](query, limit)) for v in _KEYLESS_RING}
-_KEYLESS_EXTRACTORS: dict[str, Callable[[list[str]], list[dict[str, Any]]]] = {v: (lambda urls, _v=v: globals()[f"{_v}_extract_keyless"](urls)) for v in _KEYLESS_RING}
+def _keyless_extractor(vendor: str, urls: list[str], **kwargs: Any) -> list[dict[str, Any]]:
+    extract = globals()[f"{vendor}_extract_keyless"]
+    parameters = inspect.signature(extract).parameters
+    supported = kwargs if any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()) else {key: value for key, value in kwargs.items() if key in parameters}
+    return extract(urls, **supported)
+
+
+_KEYLESS_EXTRACTORS: dict[str, Callable[..., list[dict[str, Any]]]] = {v: (lambda urls, _v=v, **kwargs: _keyless_extractor(_v, urls, **kwargs)) for v in _KEYLESS_RING}
 
 # Per-process round-robin cursor, seeded by the random session id so the fleet
 # spreads across vendors; advances once per unpinned keyless request.
@@ -380,14 +462,29 @@ def _ring_order(name: str) -> list[str]:
 _ALL_PAID_MSG = "All keyless web providers are pinned to paid tiers."
 
 
-def _walk_ring(name: str, kind: str, call, throttled) -> tuple:
+def _walk_ring(name: str, kind: str, call, throttled, *, attempts: list[WebAttempt] | None = None) -> tuple:
     """Call each vendor from :func:`_ring_order` until a result is not ``throttled``.
     Returns ``(order, vendor, result, exhausted)``; ``order`` is empty (result None)
     when every vendor is pinned paid."""
     order = _ring_order(name)
     vendor, result = None, None
     for i, vendor in enumerate(order):
-        result = call(vendor)
+        if attempts is not None:
+            from tools.interrupt import is_interrupted
+            if is_interrupted():
+                return order, vendor, search_fail("Interrupted", failure=WebCancelledError()), False
+        if attempts is None:
+            result = call(vendor)
+        else:
+            from tools.web_tools_search import checked_search_response, search_attempts
+            try:
+                result = call(vendor)
+            except Exception as exc:  # noqa: BLE001 — preserve the actual attempted vendor
+                result = search_fail(_fail_msg(vendor, kind, exc), failure=acquisition_error(exc))
+            result = checked_search_response(result)
+            attempts.extend(search_attempts(result, vendor, "keyless"))
+            if is_interrupted():
+                return order, vendor, search_fail("Interrupted", failure=WebCancelledError()), False
         if not throttled(result):
             return order, vendor, result, False
         if i + 1 < len(order):
@@ -403,25 +500,86 @@ def search_with_failover(name: str, query: str, limit: int = 5) -> dict[str, Any
     def _throttled(result: dict[str, Any]) -> bool:
         return not result.get("success") and _is_search_failover_eligible(result.get("error", ""))
 
-    order, vendor, result, exhausted = _walk_ring(name, "search", lambda v: _KEYLESS_SEARCHERS[v](query, limit), _throttled)
+    attempts: list[WebAttempt] = []
+    order, vendor, result, exhausted = _walk_ring(name, "search", lambda v: _KEYLESS_SEARCHERS[v](query, limit), _throttled, attempts=attempts)
     if not order:
-        return search_fail(_ALL_PAID_MSG)
+        return search_fail(_ALL_PAID_MSG, failure=WebUnclassifiedFailure())
     if exhausted:
         result["error"] = f"{result.get('error', '')} (all keyless vendors unavailable: {', '.join(order)})"
     elif result.get("success") and vendor != name:
         result.setdefault("data", {})["served_by"] = vendor
+    result["attempts"] = [attempt.model_dump(mode="json", exclude_none=True) for attempt in attempts]
+    if result.get("success"):
+        result["served_provider"] = vendor
+    elif result.get("failure", {}).get("kind") != "cancelled" and attempts and isinstance(attempts[0], WebAttemptFailure):
+        result["failure"] = attempts[0].failure
     return result
 
 
-def extract_with_failover(name: str, urls: list[str]) -> list[dict[str, Any]]:
-    """Advances to the next ring vendor only when EVERY url in a batch comes
-    back with a rate-limit-shaped error — partial failures and HTTP 403s can
-    be page problems, not provider throttling, and return as-is."""
+_KEYLESS_EXTRACT_CAPABILITIES = {
+    "exa": WebExtractCapabilities(formats=("markdown",), max_characters=True),
+    "parallel": WebExtractCapabilities(formats=("markdown",)),
+    "firecrawl": WebExtractCapabilities(formats=("markdown", "html")),
+    "keenable": WebExtractCapabilities(formats=("markdown",)),
+}
 
-    def _all_throttled(results: list[dict[str, Any]]) -> bool:
-        return bool(results) and all(r.get("error", "") and _is_rate_limitish(r.get("error", "")) for r in results)
 
-    order, _vendor, results, _exhausted = _walk_ring(name, "extract", lambda v: _KEYLESS_EXTRACTORS[v](list(urls)), _all_throttled)
+def extract_with_failover(name: str, urls: list[str], **kwargs: Any) -> list[dict[str, Any]]:
+    """Preserve per-page receipts through the native keyless ring and cancellation."""
+    from tools.interrupt import is_interrupted
+    from tools.web_tools_extract import checked_extract_rows
+
+    order = _ring_order(name)
     if not order:
-        return [_page_error(u, _ALL_PAID_MSG) for u in urls]
-    return results
+        return [_page_error(url, _ALL_PAID_MSG, failure=WebUnclassifiedFailure()) for url in urls]
+    order = [vendor for vendor in order
+             if (kwargs.get("format") is None or kwargs["format"] in _KEYLESS_EXTRACT_CAPABILITIES[vendor].formats)
+             and (kwargs.get("max_chars") is None or _KEYLESS_EXTRACT_CAPABILITIES[vendor].max_characters)]
+    if not order:
+        failure = WebCapabilityUnsupportedError("extract-options")
+        return [{**_page_error(url, failure.diagnostic, failure=failure), "attempts": []} for url in urls]
+    requested = list(dict.fromkeys(urls))
+    attempts: dict[str, list[WebAttempt]] = {url: [] for url in requested}
+    results: dict[str, dict[str, Any]] = {}
+
+    def cancelled() -> list[dict[str, Any]]:
+        return [{**_page_error(url, "Interrupted", failure=WebCancelledError()),
+                 "attempts": [attempt.model_dump(mode="json", exclude_none=True) for attempt in attempts[url]]}
+                for url in urls]
+
+    for vendor in order:
+        if is_interrupted():
+            return cancelled()
+        try:
+            extract = _KEYLESS_EXTRACTORS[vendor]
+            parameters = inspect.signature(extract).parameters
+            supported = kwargs if any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()) else {key: value for key, value in kwargs.items() if key in parameters}
+            rows = checked_extract_rows(extract(requested, **supported), requested)
+        except Exception as exc:  # noqa: BLE001 — record the attempted vendor before advancing
+            failure = acquisition_error(exc)
+            rows = checked_extract_rows([_page_error(url, _fail_msg(vendor, "extract", exc), failure=failure) for url in requested], requested)
+        throttled = True
+        for url in requested:
+            row = rows.get(url)
+            failure = WebResultMissingError() if row is None else failure_from_data(row.failure) if row.failure is not None else WebUnclassifiedFailure() if row.error else None
+            if failure is not None:
+                attempts[url].append(WebAttemptFailure(provider=vendor, route="keyless", failure=failure.to_failure()))
+                results[url] = _page_error(url, row.error if row is not None and row.error else failure.diagnostic, failure=failure)
+                throttled = throttled and failure.scope == "provider" and _is_rate_limitish(results[url]["error"])
+                continue
+            if row is None:
+                raise WebInvalidResponseError()
+            attempts[url].append(WebAttemptSuccess(provider=vendor, route="keyless"))
+            results[url] = row.model_dump(mode="json", exclude_none=True)
+            results[url]["served_provider"] = vendor
+            throttled = False
+        if is_interrupted():
+            return cancelled()
+        if not throttled:
+            break
+    for url, result in results.items():
+        first = attempts[url][0]
+        if result.get("error") and isinstance(first, WebAttemptFailure):
+            result["failure"] = first.failure
+        result["attempts"] = [attempt.model_dump(mode="json", exclude_none=True) for attempt in attempts[url]]
+    return [results[url] for url in urls]

@@ -1,0 +1,197 @@
+{
+  "src/app/agents/index.tsx": {
+    "no-restricted-properties": {
+      "count": 1
+    }
+  },
+  "src/app/chat/composer/hooks/use-voice-conversation.ts": {
+    "no-restricted-properties": {
+      "count": 1
+    }
+  },
+  "src/app/chat/composer/hooks/use-voice-live-conversation.ts": {
+    "no-restricted-properties": {
+      "count": 1
+    }
+  },
+  "src/app/chat/composer/hooks/use-voice-recorder.ts": {
+    "no-restricted-properties": {
+      "count": 1
+    }
+  },
+  "src/app/chat/composer/status-stack/index.tsx": {
+    "no-restricted-globals": {
+      "count": 1
+    }
+  },
+  "src/app/chat/composer/status-stack/session-control-heartbeat.tsx": {
+    "no-restricted-properties": {
+      "count": 1
+    }
+  },
+  "src/app/chat/composer/status-stack/subagent-transcript.tsx": {
+    "no-restricted-properties": {
+      "count": 1
+    }
+  },
+  "src/app/chat/composer/status-stack/use-subagent-snapshot.ts": {
+    "no-restricted-properties": {
+      "count": 1
+    }
+  },
+  "src/app/chat/short-session-hang-repro.tsx": {
+    "no-restricted-properties": {
+      "count": 1
+    }
+  },
+  "src/app/chat/sidebar/cron-jobs-section.tsx": {
+    "no-restricted-properties": {
+      "count": 2
+    }
+  },
+  "src/app/contrib/hooks/use-background-sync.ts": {
+    "no-restricted-properties": {
+      "count": 2
+    }
+  },
+  "src/app/contrib/hooks/use-desktop-metrics.ts": {
+    "no-restricted-properties": {
+      "count": 1
+    }
+  },
+  "src/app/cron/index.tsx": {
+    "no-restricted-properties": {
+      "count": 1
+    }
+  },
+  "src/app/gateway/hooks/use-gateway-boot.ts": {
+    "no-restricted-globals": {
+      "count": 1
+    }
+  },
+  "src/app/hud/transcript-band.ts": {
+    "no-restricted-properties": {
+      "count": 1
+    }
+  },
+  "src/app/messaging/index.tsx": {
+    "no-restricted-properties": {
+      "count": 1
+    }
+  },
+  "src/app/messaging/telegram-qr-setup.tsx": {
+    "no-restricted-properties": {
+      "count": 1
+    }
+  },
+  "src/app/pet-generate/components/hatch-preview.tsx": {
+    "no-restricted-globals": {
+      "count": 1
+    }
+  },
+  "src/app/right-sidebar/files/use-project-tree.ts": {
+    "no-restricted-properties": {
+      "count": 1
+    }
+  },
+  "src/app/session/hooks/use-message-stream/gateway-event/server-requests.ts": {
+    "no-restricted-globals": {
+      "count": 1
+    }
+  },
+  "src/app/settings/memory/connect.tsx": {
+    "no-restricted-globals": {
+      "count": 1
+    }
+  },
+  "src/app/shell/gateway-menu-panel.tsx": {
+    "no-restricted-properties": {
+      "count": 1
+    }
+  },
+  "src/components/assistant-ui/thread/assistant-message.tsx": {
+    "no-restricted-properties": {
+      "count": 1
+    }
+  },
+  "src/components/desktop-install-overlay.tsx": {
+    "no-restricted-properties": {
+      "count": 1
+    }
+  },
+  "src/components/onboarding/glyph.tsx": {
+    "no-restricted-properties": {
+      "count": 2
+    }
+  },
+  "src/components/pet/floating-pet.tsx": {
+    "no-restricted-properties": {
+      "count": 1
+    }
+  },
+  "src/components/pet/pet-bubble.tsx": {
+    "no-restricted-properties": {
+      "count": 1
+    }
+  },
+  "src/components/tips/index.tsx": {
+    "no-restricted-properties": {
+      "count": 1
+    }
+  },
+  "src/components/tips/use-tip-rotation.ts": {
+    "no-restricted-properties": {
+      "count": 2
+    }
+  },
+  "src/components/ui/decode-text.tsx": {
+    "no-restricted-properties": {
+      "count": 1
+    }
+  },
+  "src/contrib/plugin.ts": {
+    "no-restricted-properties": {
+      "count": 1
+    }
+  },
+  "src/contrib/runtime-loader.ts": {
+    "no-restricted-properties": {
+      "count": 1
+    }
+  },
+  "src/lib/voice-live.ts": {
+    "no-restricted-properties": {
+      "count": 1
+    }
+  },
+  "src/plugins/hermes-bots/relay.ts": {
+    "no-restricted-globals": {
+      "count": 3
+    }
+  },
+  "src/plugins/kanban/ui.tsx": {
+    "no-restricted-properties": {
+      "count": 1
+    }
+  },
+  "src/store/free-tier-sign-in.ts": {
+    "no-restricted-properties": {
+      "count": 1
+    }
+  },
+  "src/store/mcp-health.ts": {
+    "no-restricted-globals": {
+      "count": 1
+    }
+  },
+  "src/store/onboarding.ts": {
+    "no-restricted-properties": {
+      "count": 1
+    }
+  },
+  "src/store/updates.ts": {
+    "no-restricted-globals": {
+      "count": 1
+    }
+  }
+}

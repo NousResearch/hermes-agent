@@ -24,6 +24,8 @@ _mcp_discovery_deferred: Optional[threading.Timer] = None
 # in this module (inline, background, deferred), so a ``-t terminal``
 # oneshot never cold-starts MCP subprocesses it cannot use.
 _mcp_server_filter: Optional[list[str]] = None
+# One "filter keeps no MCP server" diagnostic per filter, not one per discovery entry point.
+_mcp_filter_skip_logged = False
 
 
 def set_mcp_server_filter(toolsets: object) -> Optional[list[str]]:
@@ -33,7 +35,8 @@ def set_mcp_server_filter(toolsets: object) -> Optional[list[str]]:
     configured ``mcp_servers`` key). ``all``/``*`` or an empty/absent value
     clears the filter. Returns the stored list for logging/tests.
     """
-    global _mcp_server_filter
+    global _mcp_server_filter, _mcp_filter_skip_logged
+    _mcp_filter_skip_logged = False
     names: list[str] = []
     if isinstance(toolsets, str):
         names = [t.strip() for t in toolsets.split(",") if t.strip()]
@@ -64,6 +67,45 @@ def _has_configured_mcp_servers() -> bool:
         return has_enabled_agent_plugin_mcp(raw_config)
     except Exception:
         return True  # conservative: still try discovery in the background; startup can't block
+
+
+def _server_filter_excludes_all_configured(logger) -> bool:
+    """True when ``-t/--toolsets`` names none of the configured ``mcp_servers``.
+
+    ``-t vision`` (any built-in-only list) is a deliberately MCP-free session: discovery spawns
+    nothing by design, so reporting "zero connected servers" and re-running discovery on every
+    agent build was noise, not a failure. Plugin-provided servers are not enumerable from config,
+    so their presence keeps discovery on (conservative). Re-read on every call so a matching
+    server added to config.yaml later is still picked up. Reads the effective config (user file +
+    Managed Scope overlay), the same server set discovery spawns from: a server published only by
+    an administrator must not be skipped, and a torn user yaml serves its last-known-good copy
+    instead of reading as "nothing configured".
+    """
+    global _mcp_filter_skip_logged
+    if _mcp_server_filter is None:
+        return False
+    try:
+        from hermes_cli.config_effective import load_user_config_effective
+
+        config = load_user_config_effective()
+        servers = config.get("mcp_servers")
+        names = set(servers) if isinstance(servers, dict) else set()
+        if names & set(_mcp_server_filter):
+            return False
+        from hermes_cli.agent_plugins import has_enabled_agent_plugin_mcp
+
+        if has_enabled_agent_plugin_mcp(config):
+            return False
+    except Exception:
+        return False
+    if names and not _mcp_filter_skip_logged:
+        _mcp_filter_skip_logged = True
+        logger.info(
+            "MCP discovery skipped: --toolsets %s names none of the %d configured MCP server(s); "
+            "add a server name to --toolsets to load it",
+            ",".join(_mcp_server_filter), len(names),
+        )
+    return True
 
 
 def _discovery_registered_servers(status) -> bool:
@@ -101,6 +143,12 @@ def start_background_mcp_discovery(*, logger, thread_name: str) -> None:
     """
     home_key = hermes_home_key()
     with _mcp_discovery_lock:
+        # Nothing to spawn by design (no servers configured, #70881, or ``-t`` names none of them):
+        # stop before the retry branch, which read this threadless state as a failed run and
+        # warned + re-ran discovery on every agent build / ws accept. The slot stays unclaimed,
+        # so a server added to config later gets a clean first run instead of a "retrying" warning.
+        if not _has_configured_mcp_servers() or _server_filter_excludes_all_configured(logger):
+            return
         if home_key in _mcp_discovery_started:
             thread = _mcp_discovery_thread.get(home_key)
             if thread is not None and thread.is_alive():
@@ -123,8 +171,6 @@ def start_background_mcp_discovery(*, logger, thread_name: str) -> None:
             _mcp_discovery_thread.pop(home_key, None)
 
         _mcp_discovery_started.add(home_key)
-        if not _has_configured_mcp_servers():
-            return
 
         # Bare threads start from an empty context: run discovery under a copy of the caller's, so
         # the context-local HERMES_HOME override (multi-profile dashboard/desktop backends, #67605)

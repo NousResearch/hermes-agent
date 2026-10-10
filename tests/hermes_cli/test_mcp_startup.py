@@ -500,3 +500,194 @@ def test_server_added_after_discovery_is_connected_by_the_next_agent_build(monke
     configured["linear"] = {"url": "https://mcp.example.test/linear"}  # hermes mcp add linear
     build_agent()
     assert len(runs) == 2
+
+
+@pytest.mark.parametrize(("toolsets", "spawned"), [("vision", False), ("vision,demo", True)])
+def test_filter_excluding_every_server_skips_discovery_quietly(
+    monkeypatch, _reset_mcp_server_filter, toolsets, spawned
+):
+    """``-t vision`` keeps no configured MCP server, so discovery connecting zero is the intended
+    state: no zero-connected warning, no retry on the agent-build re-entry, and one info line
+    naming the filter (not the servers). Control: a filter that names a server still spawns and
+    still gets the zero-connected retry when that server fails to connect."""
+    calls: list = []
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.config",
+        types.SimpleNamespace(read_raw_config=lambda: {"mcp_servers": {"demo": {}, "other": {}}}),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.config_effective",
+        types.SimpleNamespace(load_user_config_effective=lambda: {"mcp_servers": {"demo": {}, "other": {}}}),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.agent_plugins",
+        types.SimpleNamespace(has_enabled_agent_plugin_mcp=lambda _raw: False),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_oauth",
+        types.SimpleNamespace(suppress_interactive_oauth=nullcontext),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_tool_discovery",
+        types.SimpleNamespace(
+            discover_mcp_tools=lambda allowed_mcp_names=None: calls.append(allowed_mcp_names),
+            get_mcp_status=lambda: [{"name": "demo", "connected": False, "status": "configured"}],
+        ),
+    )
+    warnings: list = []
+    infos: list = []
+    logger = types.SimpleNamespace(
+        debug=lambda *_a, **_k: None,
+        info=lambda msg, *a, **_k: infos.append(msg % a if a else msg),
+        warning=lambda msg, *a, **_k: warnings.append(msg % a if a else msg),
+    )
+    mcp_startup.set_mcp_server_filter(toolsets)
+
+    for _ in range(2):  # CLI startup, then the agent-build re-entry
+        mcp_startup.start_background_mcp_discovery(logger=logger, thread_name="t")
+        thread = mcp_startup._current_home_thread()
+        if thread is not None:
+            thread.join(timeout=5.0)
+
+    if spawned:
+        assert len(calls) == 2
+        assert any("retrying discovery thread" in w for w in warnings)
+        assert infos == []
+    else:
+        assert calls == []
+        assert warnings == []
+        assert len(infos) == 1
+        assert "--toolsets vision" in infos[0] and "2 configured" in infos[0]
+        assert "demo" not in infos[0] and "other" not in infos[0]
+
+
+def test_filter_skip_picks_up_a_matching_server_added_later(monkeypatch, _reset_mcp_server_filter):
+    """Recovery: the skip re-reads config, so a matching server added mid-process still loads."""
+    servers: dict = {"other": {}}
+    calls: list = []
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.config",
+        types.SimpleNamespace(read_raw_config=lambda: {"mcp_servers": dict(servers)}),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.config_effective",
+        types.SimpleNamespace(load_user_config_effective=lambda: {"mcp_servers": dict(servers)}),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.agent_plugins",
+        types.SimpleNamespace(has_enabled_agent_plugin_mcp=lambda _raw: False),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_oauth",
+        types.SimpleNamespace(suppress_interactive_oauth=nullcontext),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_tool_discovery",
+        types.SimpleNamespace(
+            discover_mcp_tools=lambda allowed_mcp_names=None: calls.append(allowed_mcp_names),
+            get_mcp_status=lambda: [{"name": "demo", "connected": True}],
+        ),
+    )
+    logger = types.SimpleNamespace(debug=lambda *_a, **_k: None, info=lambda *_a, **_k: None,
+                                   warning=lambda *_a, **_k: None)
+    mcp_startup.set_mcp_server_filter("vision,demo")
+
+    mcp_startup.start_background_mcp_discovery(logger=logger, thread_name="t")
+    assert calls == []
+    servers["demo"] = {}
+    mcp_startup.start_background_mcp_discovery(logger=logger, thread_name="t")
+    thread = mcp_startup._current_home_thread()
+    if thread is not None:
+        thread.join(timeout=5.0)
+    assert calls == [["vision", "demo"]]
+
+
+def test_no_configured_servers_never_warns_or_retries(monkeypatch):
+    """#70881: with no ``mcp_servers`` the first call returns without a thread, and every later
+    call (each agent build, each ws accept) read that as a failed run: "retrying discovery
+    thread" once per call, forever. Nothing configured is the expected threadless state, and a
+    server added afterwards gets a clean first run, not a "retrying" warning."""
+    calls = {"mcp": 0}
+    raw: dict = {}
+    monkeypatch.setitem(sys.modules, "hermes_cli.config", types.SimpleNamespace(read_raw_config=lambda: dict(raw)))
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.agent_plugins",
+        types.SimpleNamespace(has_enabled_agent_plugin_mcp=lambda _raw: False),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_oauth",
+        types.SimpleNamespace(suppress_interactive_oauth=nullcontext),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_tool_discovery",
+        types.SimpleNamespace(
+            discover_mcp_tools=lambda: calls.__setitem__("mcp", calls["mcp"] + 1),
+            get_mcp_status=lambda: [],
+        ),
+    )
+    warnings: list = []
+    logger = types.SimpleNamespace(debug=lambda *_a, **_k: None, info=lambda *_a, **_k: None,
+                                   warning=lambda msg, *a, **_k: warnings.append(msg % a if a else msg))
+
+    for _ in range(3):
+        mcp_startup.start_background_mcp_discovery(logger=logger, thread_name="t")
+        assert mcp_startup._current_home_thread() is None
+
+    assert calls["mcp"] == 0
+    assert warnings == []
+
+    raw["mcp_servers"] = {"demo": {}}  # hermes mcp add demo
+    mcp_startup.start_background_mcp_discovery(logger=logger, thread_name="t")
+    thread = mcp_startup._current_home_thread()
+    if thread is not None:
+        thread.join(timeout=5.0)
+    assert calls["mcp"] == 1
+    assert not any("retrying discovery thread" in w for w in warnings)
+
+
+def test_filter_gate_sees_servers_published_only_by_managed_scope(
+    monkeypatch, tmp_path, _reset_mcp_server_filter
+):
+    """The gate must read the server set discovery spawns from. A server published only in the
+    Managed Scope layer (``$HERMES_MANAGED_DIR/config.yaml``) and named by ``-t`` is not in the
+    raw user yaml; a raw-config gate skipped it and told the user to edit their own yaml."""
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "config.yaml").write_text("model:\n  default: demo-model\n", encoding="utf-8")
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    (managed / "config.yaml").write_text(
+        "mcp_servers:\n  corp:\n    command: corp-mcp\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed))
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.agent_plugins",
+        types.SimpleNamespace(has_enabled_agent_plugin_mcp=lambda _cfg: False),
+    )
+    infos: list = []
+    logger = types.SimpleNamespace(debug=lambda *_a, **_k: None,
+                                   info=lambda msg, *a, **_k: infos.append(msg % a if a else msg),
+                                   warning=lambda *_a, **_k: None)
+
+    mcp_startup.set_mcp_server_filter("corp")
+    assert mcp_startup._server_filter_excludes_all_configured(logger) is False
+    assert infos == []
+
+    mcp_startup.set_mcp_server_filter("vision")
+    assert mcp_startup._server_filter_excludes_all_configured(logger) is True
+    assert len(infos) == 1 and "1 configured" in infos[0]

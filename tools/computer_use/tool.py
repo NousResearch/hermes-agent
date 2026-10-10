@@ -77,7 +77,11 @@ def _input_target_mismatch(backend, requested_app: str) -> Optional[str]:
 
 # ── Backend selection — env-swappable for tests ─────────────────────────────
 # Per-Hermes-session cached backends (own cua-driver session, native target, refs, grant namespace).
+# ``_backend_lock`` protects registry mutations only; backend start/stop can wait on processes and must run outside it.
 _backend_lock = threading.Lock()
+_backend_owner_locks: Dict[str, threading.Lock] = {}
+_backend_owner_lock_users: Dict[str, int] = {}
+_backend_generation = 0
 _backend: Optional[ComputerUseBackend] = None  # backward-compatible empty-session injection hook (older tests)
 _backends: dict[str, ComputerUseBackend] = {}
 _backend_call_locks: dict[str, threading.RLock] = {}
@@ -158,13 +162,39 @@ def _new_backend(permission_mode: str) -> ComputerUseBackend:
     from plugins.computer_use import get_active_provider
     return get_active_provider().create_backend(permission_mode=permission_mode)
 
-def _install_backend(sid: str, backend: ComputerUseBackend, permission_mode: str) -> ComputerUseBackend:
+@contextlib.contextmanager
+def _backend_owner_lifecycle(sid: str) -> Iterator[None]:
+    """Serialize lifecycle work for one profile/session owner without holding the registry lock.
+
+    Users are counted before they wait, so the keyed lock cannot be replaced under a waiter. The entry is pruned after
+    the final holder/waiter exits; the registry is therefore bounded by concurrent lifecycle work, not session churn.
+    """
+    with _backend_lock:
+        lock = _backend_owner_locks.setdefault(sid, threading.Lock())
+        _backend_owner_lock_users[sid] = _backend_owner_lock_users.get(sid, 0) + 1
+    lock.acquire()
+    try:
+        yield
+    finally:
+        lock.release()
+        with _backend_lock:
+            users = _backend_owner_lock_users[sid] - 1
+            if users:
+                _backend_owner_lock_users[sid] = users
+            else:
+                _backend_owner_lock_users.pop(sid, None)
+                if _backend_owner_locks.get(sid) is lock:
+                    _backend_owner_locks.pop(sid, None)
+
+
+def _install_backend(
+    sid: str, backend: ComputerUseBackend, permission_mode: str, display: str
+) -> ComputerUseBackend:
     """Record a backend in the session caches (the empty session also mirrors it onto the ``_backend`` hook).
     Caller holds ``_backend_lock``."""
     global _backend
-    from tools.computer_use.cua_backend import desktop_identity
     _backends[sid], _backend_permission_modes[sid] = backend, permission_mode
-    _backend_displays[sid] = desktop_identity()
+    _backend_displays[sid] = display
     _backend_call_locks[sid] = threading.RLock()
     _backend = backend if sid == "" else _backend
     return backend
@@ -200,24 +230,50 @@ def _scoped_sid(session_id: str) -> str:
 
 def _get_backend(session_id: str = "") -> ComputerUseBackend:
     bare_sid, sid = str(session_id or ""), _scoped_sid(session_id)
-    while True:
-        with _backend_lock:
-            # Mode resolved under the cache lock; YOLO mutation never holds the approval lock while releasing it.
+    from tools.computer_use.cua_backend import backend_display_stale, desktop_identity
+
+    with _backend_owner_lifecycle(sid):
+        while True:
             permission_mode = _cua_permission_mode(bare_sid)  # approval state is keyed by the Hermes session id
-            if sid == "" and _backend is not None and sid not in _backends:
-                _install_backend(sid, _backend, permission_mode)  # fold the injection hook into the cache
-            if (cached := _backends.get(sid)) is None:
-                backend = _new_backend(permission_mode)
-                backend.start()  # under the cache lock: one backend per session; a concurrent toggle releases it
-                return _install_backend(sid, backend, permission_mode)
-            from tools.computer_use.cua_backend import backend_display_stale, desktop_identity
-            if (_backend_permission_modes.get(sid, "standard") == permission_mode
-                    and not backend_display_stale(_backend_displays.get(sid, ""), desktop_identity())):
-                return cached
-            # Cua's mode and DISPLAY are fixed at daemon startup: a /yolo toggle, or a Bot Desktop that started
-            # (or moved) after this backend was cached, replaces only this session's backend.
-            _, stale_lock = _detach_locked(sid)  # stopped outside the cache lock; the loop re-reads the mode first
-        _stop_backend(cached, stale_lock, lambda e: None)
+            display = desktop_identity()
+            with _backend_lock:
+                generation = _backend_generation
+                if sid == "" and _backend is not None and sid not in _backends:
+                    # Fold the legacy injection hook into the normal cache.
+                    _install_backend(sid, _backend, permission_mode, display)
+                cached = _backends.get(sid)
+                if cached is not None and (
+                    _backend_permission_modes.get(sid, "standard") == permission_mode
+                    and not backend_display_stale(_backend_displays.get(sid, ""), display)
+                ):
+                    return cached
+                if cached is not None:
+                    # Cua's mode and DISPLAY are fixed at daemon startup: a /yolo toggle, or a Bot Desktop that
+                    # started (or moved) after this backend was cached, replaces only this session's backend.
+                    _, stale_lock = _detach_locked(sid)
+                else:
+                    stale_lock = None
+            if cached is not None:
+                _stop_backend(cached, stale_lock, lambda e: None)
+                continue
+
+            backend = _new_backend(permission_mode)
+            try:
+                backend.start()
+            except Exception:
+                # Finish teardown before the same owner's waiter retries; Cua construction owns a bridge thread even
+                # when startup fails before the backend reaches the cache.
+                _stop_backend(backend, None, lambda e: logger.debug(
+                    "computer_use failed-start cleanup failed for session %s", sid, exc_info=True))
+                raise
+            with _backend_lock:
+                if generation == _backend_generation:
+                    return _install_backend(sid, backend, permission_mode, display)
+            # Test reset / interpreter shutdown cleared the generation while start was outside the registry lock.
+            # Never publish a backend after that close boundary.
+            _stop_backend(backend, None, lambda e: logger.debug(
+                "computer_use cancelled-start cleanup failed for session %s", sid, exc_info=True))
+            raise RuntimeError("computer_use backend startup was cancelled by shutdown")
 
 @contextlib.contextmanager
 def _backend_for_call(session_id: str = "") -> Iterator[ComputerUseBackend]:
@@ -256,13 +312,14 @@ def release_computer_use_session(session_id: str) -> bool:
     grants are not touched here: they live in the shared store and die with ``tools.approval.clear_session``."""
     sid = _scoped_sid(session_id)
     _reset_screenshot_dedup(sid)  # the next capture of a re-created session must deliver pixels
-    with _backend_lock:
-        backend, call_lock = _detach_locked(sid)
-    if backend is None:
-        return False
-    _stop_backend(backend, call_lock,
-                  lambda e: logger.debug("computer_use backend release failed for session %s", sid, exc_info=True))
-    return True
+    with _backend_owner_lifecycle(sid):
+        with _backend_lock:
+            backend, call_lock = _detach_locked(sid)
+        if backend is None:
+            return False
+        _stop_backend(backend, call_lock,
+                      lambda e: logger.debug("computer_use backend release failed for session %s", sid, exc_info=True))
+        return True
 
 @atexit.register
 def _shutdown_backend_atexit() -> None:
@@ -274,12 +331,13 @@ def _shutdown_backend_atexit() -> None:
     the Hermes process that spawned it (#28152 item 3). #69903 kept the orphan from burning a core by
     disabling the cursor overlay; the process itself still lingered.
     """
-    global _backend
+    global _backend, _backend_generation
     with _backend_lock:
         unique = {id(b): (b, _backend_call_locks.get(sid)) for sid, b in _backends.items()}
         if _backend is not None:
             unique.setdefault(id(_backend), (_backend, _backend_call_locks.get("")))
         _backend = None
+        _backend_generation += 1  # in-flight starts from the prior generation must not publish after this close
         _backends.clear(), _backend_call_locks.clear(), _backend_permission_modes.clear(), _backend_displays.clear()
     with _approval_lock:
         _escalation_warned.clear()

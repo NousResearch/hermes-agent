@@ -3693,6 +3693,7 @@ def _launch_external_cron_worker(job: dict) -> bool:
         handoff_dir.chmod(0o700)
     except OSError:
         pass
+    deadline = time.monotonic() + HANDOFF_ADOPTION_GRACE_SECONDS
     fd = os.open(payload_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as payload_file:
@@ -3701,6 +3702,7 @@ def _launch_external_cron_worker(job: dict) -> bool:
                     "job": job,
                     "profile_home": str(_get_hermes_home().resolve()),
                     "multiplex_active": multiplex_active,
+                    "adoption_deadline": deadline,
                 },
                 payload_file,
             )
@@ -3767,7 +3769,6 @@ def _launch_external_cron_worker(job: dict) -> bool:
     # worker start (imports + secret hydration) measures ~10-12s in the field, and
     # a dispatch deadline shorter than the adoption grace made the two guards
     # around one handoff disagree.
-    deadline = time.monotonic() + HANDOFF_ADOPTION_GRACE_SECONDS
     while time.monotonic() < deadline:
         if ack_path.exists():
             try:
@@ -3892,7 +3893,7 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
         set_multiplex_active,
         set_secret_scope,
     )
-    from cron.executions import adopt_claimed_execution
+    from cron.scheduler_adoption import adopt_with_retry
     from hermes_cli.env_loader import hydrate_profile_secret_sources
     from hermes_constants import (
         reset_hermes_home_override,
@@ -3923,7 +3924,7 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
         GatewayStartupMixin._register_config_hooks(
             "Cron external worker: config hook registration failed", level=logging.WARNING)
         with use_cron_store(profile_home):
-            if adopt_claimed_execution(execution_id) is None:
+            if adopt_with_retry(execution_id, payload.get("adoption_deadline", time.monotonic())) is None:
                 logger.error(
                     "Cron external worker refused execution %s: durable ownership "
                     "could not be established",

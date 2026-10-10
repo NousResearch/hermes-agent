@@ -792,11 +792,15 @@ def _ensure_session_row(agent: Any, pending_cli_message: Any) -> None:
 
 def _collect_pre_llm_call_context(
     agent: Any, *, effective_task_id: str, turn_id: str, original_user_message: Any,
-    messages: list[Any], conversation_history: Optional[list[Any]],
+    messages: list[Any], conversation_history: Optional[list[Any]], system_prompt: Optional[str] = None,
 ) -> str:
     """Run ``pre_llm_call`` plugins; their context is injected into the user message
     (never the system prompt). Oversized per-hook context is spilled to disk so a
-    runaway plugin can't inflate every subsequent turn's prompt."""
+    runaway plugin can't inflate every subsequent turn's prompt.
+
+    ``system_prompt`` is the prompt this turn actually sends (a continuing session reuses
+    its stored prompt), so a plugin can tell what a pinned ``skills.auto_load`` skill
+    already carries instead of repeating it in the user message."""
     if getattr(agent, "_persist_disabled", False):
         return ""
     try:
@@ -813,6 +817,8 @@ def _collect_pre_llm_call_context(
             platform=getattr(agent, "platform", None) or "",
             parent_session_id=getattr(agent, "_parent_session_id", None) or "",
             sender_id=getattr(agent, "_user_id", None) or "",
+            system_prompt=(system_prompt if system_prompt is not None
+                           else getattr(agent, "_cached_system_prompt", None)) or "",
         )
         try:
             # Spill oversized per-hook context to disk so a runaway plugin can't inflate every subsequent
@@ -1172,7 +1178,7 @@ def build_turn_context(
     plugin_user_context = _collect_pre_llm_call_context(
         agent, effective_task_id=effective_task_id, turn_id=turn_id,
         original_user_message=original_user_message, messages=messages,
-        conversation_history=conversation_history,
+        conversation_history=conversation_history, system_prompt=active_system_prompt,
     )
     # Every turn, not only on a prompt restore: a long-lived agent (CLI, TUI, Desktop) keeps its
     # prompt in memory for the whole conversation and would never re-check its skills index.

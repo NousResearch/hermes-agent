@@ -667,7 +667,7 @@ class TestMacOSAudioOutputPolicy:
             pytest.skip("CoreAudio has no Ogg reader before macOS 15")
         handed = []
 
-        def _fake_player(cmd):
+        def _fake_player(cmd, *_):
             # wave.open raises on anything that is not a WAV, e.g. the original Ogg.
             with wave.open(cmd[-1], "rb") as wf:
                 handed.append((cmd[0], wf.getnframes() / wf.getframerate()))
@@ -949,7 +949,7 @@ class TestPlaybackInterrupt:
         reply.write_bytes(b"\xff\xfb")
         tried = []
 
-        def _barged_in_player(cmd):
+        def _barged_in_player(cmd, *_):
             tried.append(cmd[0])
             vm.stop_playback()
             return False  # what the terminated player reports
@@ -961,6 +961,52 @@ class TestPlaybackInterrupt:
         vm.play_audio_file(str(reply))
 
         assert tried == ["first"]
+
+    def test_stop_before_the_call_keeps_the_reply_silent(self, monkeypatch, tmp_path):
+        """Callers take the baseline before synthesis; a stop after it means the reply was
+        cut while it was being generated."""
+        import tools.voice_mode as vm
+
+        reply = tmp_path / "reply.mp3"
+        reply.write_bytes(b"\xff\xfb")
+        tried = []
+        monkeypatch.setattr(vm, "_system_player_candidates", lambda path: [["first", path]])
+        monkeypatch.setattr(vm.shutil, "which", lambda name: name)
+        monkeypatch.setattr(vm, "_run_system_player", lambda cmd, *_: tried.append(cmd[0]))
+
+        baseline = vm.playback_stop_count()
+        vm.stop_playback()
+
+        assert vm.play_audio_file(str(reply), stops=baseline) is False
+        assert tried == []
+
+    def test_stop_while_the_player_starts_kills_it(self, monkeypatch, tmp_path):
+        """stop_playback() during Popen finds no registered player to terminate. The new
+        process must not be left to play the whole clip, and no other player may take over."""
+        import tools.voice_mode as vm
+
+        reply = tmp_path / "reply.mp3"
+        reply.write_bytes(b"\xff\xfb")
+        spawned = []
+
+        def _popen_racing_a_stop(cmd, **_kw):
+            vm.stop_playback()  # lands before the player is registered
+            proc = MagicMock()
+            proc.poll.return_value = None
+            spawned.append((cmd[0], proc))
+            return proc
+
+        monkeypatch.setattr(vm, "_system_player_candidates", lambda path: [["first", path], ["second", path]])
+        monkeypatch.setattr(vm.shutil, "which", lambda name: name)
+        monkeypatch.setattr(vm.subprocess, "Popen", _popen_racing_a_stop)
+
+        assert vm.play_audio_file(str(reply)) is False
+        assert [name for name, _ in spawned] == ["first"]
+        proc = spawned[0][1]
+        proc.kill.assert_called_once()
+        assert all(c.kwargs.get("timeout") != 300 for c in proc.wait.call_args_list)
+        with vm._playback_lock:
+            assert vm._active_playback is None
 
 # ============================================================================
 # Continuous mode flow

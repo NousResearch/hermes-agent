@@ -1017,13 +1017,16 @@ def _wsl_powershell_tts_available() -> bool:
     return bool(is_wsl() and shutil.which("powershell.exe") and shutil.which("ffmpeg"))
 
 
-def play_audio_file(file_path: str) -> bool:
+def play_audio_file(file_path: str, stops: Optional[int] = None) -> bool:
     """Play an audio file; True on success. WAV via ``sounddevice.play()`` when allowed,
     else system players: afplay (macOS, Ogg/Opus decoded to WAV first), WSL2 PowerShell
-    bridge, ffplay, aplay (Linux). Interruptible via ``stop_playback()``."""
+    bridge, ffplay, aplay (Linux). Interruptible via ``stop_playback()``.
+
+    *stops* is a ``playback_stop_count()`` taken by the caller, e.g. before synthesis; a stop
+    after it means the reply was cut, so nothing plays. Defaults to the count at call time."""
     mark_audio_output_active(True)  # ref-count real speaker output for the whole call
     try:
-        return _play_audio_file_impl(file_path)
+        return _play_audio_file_impl(file_path, stops)
     finally:
         mark_audio_output_active(False)
 
@@ -1103,8 +1106,10 @@ def _system_player_candidates(file_path: str) -> list[list[str]]:
     return players
 
 
-def _run_system_player(cmd: list[str]) -> bool:
-    """Run one player to completion (interruptible via stop_playback)."""
+def _run_system_player(cmd: list[str], stops: Optional[int] = None) -> bool:
+    """Run one player to completion (interruptible via stop_playback). *stops* is the
+    ``playback_stop_count()`` baseline; a stop past it kills the player."""
+    global _active_playback
     proc = None
     try:
         # Sibling of the TTS/STT credential scrub: players must not inherit tokens/keys.
@@ -1112,7 +1117,16 @@ def _run_system_player(cmd: list[str]) -> bool:
         from tools.environments.local import hermes_subprocess_env
         proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
                                 env=hermes_subprocess_env(inherit_credentials=False))
-        _set_active_playback(proc)
+        # Check and register under the lock stop_playback() bumps the counter in: a stop that
+        # landed while Popen was starting found nothing to terminate, so kill the player here.
+        with _playback_lock:
+            stopped = stops is not None and _stop_requests != stops
+            if not stopped:
+                _active_playback = proc
+        if stopped:
+            proc.kill()
+            proc.wait()
+            return False
         proc.wait(timeout=300)
         rc = proc.returncode
         if rc == 0:
@@ -1169,15 +1183,17 @@ def _play_audio_file_impl(file_path: str, stops: Optional[int] = None) -> bool:
             return _play_audio_file_impl(wav_path, stops)
         finally:
             _unlink_quietly(wav_path)
+    if _stop_requests != stops:
+        return False  # stopped before playback began, e.g. during synthesis or the Ogg decode
     # macOS skips sounddevice output (TCC media-library prompt) and plays through afplay.
     if file_path.endswith(".wav") and _sounddevice_output_allowed() and _play_wav_via_sounddevice(file_path):
         return True
     for cmd in _system_player_candidates(file_path):
         # A player killed by stop_playback() exits non-zero; the next one would restart the
-        # reply from the top. This also catches a stop that landed during the Ogg decode.
+        # reply from the top.
         if _stop_requests != stops:
             return False
-        if shutil.which(cmd[0]) and _run_system_player(cmd):
+        if shutil.which(cmd[0]) and _run_system_player(cmd, stops):
             return True
     logger.warning("No audio player available for %s", file_path)
     return False

@@ -399,6 +399,16 @@ def resolve_startup_model_route(
     custom_ids.update(custom_provider_slug(str(entry.get("name") or ""))
                       for entry in (custom_providers or []) if isinstance(entry, dict) and _clean(entry.get("name")))
     qualified_provider, qualified_model = parse_model_input(raw, "", custom_ids=custom_ids)
+    # On a local endpoint ``qwen:7b`` / ``nemotron:70b`` are Ollama tags, not ``provider:model`` — the
+    # same guard as /model's vendor-colon step. Only a custom id or a provider the user configured splits.
+    # Callers pass the raw ``model.provider``, so fold local aliases (local, vllm, llamacpp, ...) first.
+    from hermes_cli.providers import normalize_provider as _canonical_provider
+    cur = _canonical_provider(_clean(current_provider))
+    if qualified_provider and (cur.startswith("custom") or cur == "lmstudio") and not (
+            qualified_provider.startswith("custom")
+            or {raw.split(":", 1)[0].strip().lower(), qualified_provider.lower()}
+            & {str(name).strip().lower() for name in (user_providers or {})}):
+        qualified_provider = ""
     if qualified_provider:
         return StartupModelRoute(model=qualified_model, provider=qualified_provider)
     if "/" not in raw:

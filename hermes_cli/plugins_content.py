@@ -77,3 +77,29 @@ def register_automation_blueprint(
     return self._register_entry("automation_blueprint", blueprint.key,
                                 self._manager._automation_blueprints, blueprint,
                                 "Plugin %s registered automation blueprint: %s", blueprint.key)
+
+
+def register_kanban_terminal_tool(self, name) -> None:
+    """Sanction *name* as an additional terminal kanban exit: a worker that ends its
+    turn with this tool call is considered to have handed the card off (see
+    :mod:`agent.kanban_stop`). Wrong-type / empty names are warned about and ignored;
+    unload revokes the registration."""
+    from agent import kanban_stop as _kanban_stop
+    if not isinstance(name, str):
+        logger.warning(
+            "Plugin '%s' tried to register a kanban terminal tool that is not a str (%s); "
+            "ignored", self.manifest.name, type(name).__name__)
+        return
+    if not name.strip():
+        logger.warning(
+            "Plugin '%s' tried to register an empty kanban terminal tool name; ignored",
+            self.manifest.name)
+        return
+    _kanban_stop.register_terminal_tool(name)
+    logger.info("Plugin '%s' registered kanban terminal tool: %s", self.manifest.name, name)
+    self._track_replacement(
+        "kanban_terminal_tool", name,
+        slot=("manager_value", id(self._manager), "_kanban_terminal_tool"),
+        current=name, previous=None,
+        restore=lambda replacement: bool(_kanban_stop.unregister_terminal_tool(name)) or True,
+    )

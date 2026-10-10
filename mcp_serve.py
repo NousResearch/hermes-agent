@@ -118,7 +118,7 @@ def _load_sessions_index() -> dict:
 def _iso(ts) -> str:
     try:
         return datetime.fromtimestamp(float(ts)).isoformat() if ts else ""
-    except (TypeError, ValueError, OSError):
+    except (TypeError, ValueError, OverflowError, OSError):
         return ""
 
 

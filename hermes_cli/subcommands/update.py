@@ -25,6 +25,11 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
             "profiles with its supervisor and running code version, and how "
             "each will be restarted. Read-only; safe on a live fleet.")
     update_parser.add_argument(
+        "--json", action="store_true", default=False,
+        help="With --plan: emit the plan plus the fresh fail-closed pre-update "
+            "admission snapshot as one JSON document (read-only admission "
+            "observation for unattended updaters; see #127611).")
+    update_parser.add_argument(
         "--list-venv-holders", action="store_true", default=False,
         help="Print the processes the Windows venv-holder guard would refuse on as a JSON list "
             "[{pid, exe, argv, kind}] and exit: 0 when the venv is free, 3 when holders are present. "

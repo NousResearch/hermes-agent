@@ -95,3 +95,38 @@ async def test_unserve_stops_and_joins_the_running_turn_before_release(tmp_path,
         agent.release.set()
         await asyncio.sleep(.05)
         db.close()
+
+
+class _RoomService:
+    """Like the hosted runtime's stop: never interrupts the accepted member turn, and its room
+    thread cannot finish until that turn has returned."""
+
+    def __init__(self, returned):
+        self.returned = returned
+
+    def stop(self, *, timeout):
+        return self.returned.wait(min(timeout, 1.5))
+
+
+@pytest.mark.asyncio
+async def test_retire_stops_the_turn_a_hosted_room_stop_waits_for(tmp_path, monkeypatch):
+    from gateway import session_finite
+    agent = _Agent()
+    db, authority, execute, returned = _authority(tmp_path, agent)
+    authority.hosted_room_service = _RoomService(returned)
+    monkeypatch.setattr(session_finite, 'execute_finite_admission', execute)
+    monkeypatch.setattr(run_runtime, 'TURN_SETTLE_SECONDS', 1.0, raising=False)
+    monkeypatch.setattr('gateway.session_cron.unbind_owner', lambda authority: None)
+    try:
+        with db:
+            await authority.submit(ACTOR, Submission(request_id='running', ref=REF, payload={'text': 'a'}, intent='queue'))
+            await asyncio.wait_for(asyncio.to_thread(agent.started.wait, 5), 6)
+
+            retired = await run_runtime._retire_profile_authority(authority)
+
+            assert agent.stopped.is_set(), 'the room stop failed before the turn was ever told to stop'
+            assert retired is True and returned.is_set()
+    finally:
+        agent.release.set()
+        await asyncio.sleep(.05)
+        db.close()

@@ -247,19 +247,28 @@ async def _retire_profile_authority(authority):
 
     Claims are refused from here on; every executing turn gets a cooperative Stop, and its session
     task is joined (an in-process turn's task ends only after its executor thread returned and the
-    admission settled). False when a turn misses TURN_SETTLE_SECONDS: its thread may still call tools
-    and write history, so the caller must keep the profile's reservation and store handles."""
+    admission settled). The hosted-room stop runs alongside that join under the same deadline: it
+    never interrupts accepted turns and its room threads wait for the member turns they observe, so
+    those turns must be signalled first or the room stop cannot finish. False when a turn or room
+    thread misses TURN_SETTLE_SECONDS: it may still call tools and write history, so the
+    caller must keep the profile's reservation and store handles."""
     from gateway.session_cron import unbind_owner
-    from gateway.session_runtime_workers import join_authority_work
+    from gateway.session_runtime_workers import join_authority_work, stop_authority_work
+    timeout = TURN_SETTLE_SECONDS
     authority.retiring = True
+    stop_authority_work(authority)
     service = getattr(authority, 'hosted_room_service', None)
-    if service is not None:
-        if await asyncio.to_thread(service.stop, timeout=5) is False:
-            return False
+    rooms = None if service is None else asyncio.ensure_future(asyncio.to_thread(service.stop, timeout=timeout))
     try:
-        await join_authority_work(authority, TURN_SETTLE_SECONDS)
+        await join_authority_work(authority, timeout)
+        workers_stopped = True
     except TimeoutError:
         logger.error('Profile %s workers did not stop; ownership retained', authority.profile_id)
+        workers_stopped = False
+    rooms_stopped = rooms is None or await rooms is not False
+    if not rooms_stopped:
+        logger.error('Profile %s hosted rooms did not stop; ownership retained', authority.profile_id)
+    if not (workers_stopped and rooms_stopped):
         return False
     # Idle drains and receipt watchers wait on admissions this profile will no longer run.
     rest = _authority_tasks(authority)

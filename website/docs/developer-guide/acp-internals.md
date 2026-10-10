@@ -149,6 +149,8 @@ repair is session rotation, not another row.
 - calls `agent.interrupt()` when available
 - causes the prompt response to return `stop_reason="cancelled"`
 
+When the client disconnects (stdio EOF), the adapter cancels every turn that is still running the same way before it exits, so no turn keeps running tools or calling the model with nobody connected.
+
 ### Forking
 
 `fork_session()` deep-copies message history into a new live session, preserving conversation state while giving the fork its own session ID and cwd.

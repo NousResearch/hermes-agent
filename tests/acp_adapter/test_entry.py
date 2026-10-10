@@ -99,3 +99,44 @@ def test_setup_browser_is_one_explicit_package_request(monkeypatch):
     entry.main(["--setup-browser", "--yes"])
 
     assert calls == [("agent-browser", {"explicit": True})]
+
+
+def test_client_disconnect_stops_the_running_turn(monkeypatch):
+    """stdio EOF ends ``acp.run_agent`` while a turn still runs on the executor thread. Nobody can
+    receive its updates or answer its approvals, so the turn must be stopped, not finished headless."""
+    import asyncio
+    import threading
+
+    from acp.schema import TextContentBlock
+
+    class BlockingAgent:
+        session_id = "busy"
+
+        def __init__(self):
+            self.started, self.stopped = threading.Event(), threading.Event()
+
+        def run_conversation(self, **kwargs):
+            self.started.set()
+            self.stopped.wait(30)  # a long foreground tool
+            return {"final_response": "", "messages": []}
+
+        def interrupt(self, message=None):
+            self.stopped.set()
+
+    turn_agent = BlockingAgent()
+
+    async def fake_run_agent(agent, **kwargs):
+        agent.session_manager._install_state("busy", turn_agent, ".", "m", [], persist=False)
+        asyncio.get_running_loop().create_task(agent.prompt([TextContentBlock(type="text", text="go")], "busy"))
+        await asyncio.to_thread(turn_agent.started.wait, 10)
+        # Returning here is the client hanging up mid-turn.
+
+    monkeypatch.setattr(entry, "_setup_logging", lambda: None)
+    monkeypatch.setattr(entry, "_load_env", lambda: None)
+    monkeypatch.setenv("HERMES_ACP_SKIP_CONFIGURED_MCP", "1")
+    monkeypatch.setattr(acp, "run_agent", fake_run_agent)
+
+    entry.main([])
+
+    assert turn_agent.started.is_set()
+    assert turn_agent.stopped.is_set()

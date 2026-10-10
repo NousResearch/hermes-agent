@@ -1120,6 +1120,21 @@ def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
 
 def _camofox_eval(expression: str, task_id: Optional[str] = None) -> str:
     """Evaluate JS via Camofox's /tabs/{tab_id}/evaluate endpoint (if available)."""
+    # On hosted gateway backends the REST /tabs evaluate endpoint is
+    # unavailable — route through the MCP transport (
+    # this was the last verb still hitting raw /tabs).
+    try:
+        from tools.browser_mcp_transport import _is_gateway_backend
+        _gateway_backend = _is_gateway_backend()
+    except Exception:
+        _gateway_backend = False
+    if _gateway_backend:
+        # Gateway backends deny every raw /tabs call — evaluate must ride MCP.
+        # postprocess=True applies the shared eval tail (post-eval private-URL recheck
+        # + forced redaction) that the REST path gets — review P1-3.
+        from tools.browser_mcp_transport import mcp_evaluate
+        return mcp_evaluate(expression, timeout_secs=_get_command_timeout(),
+                            task_id=task_id, postprocess=True)
     from tools.browser_camofox import _ensure_tab, _post
     try:
         tab_info = _ensure_tab(task_id or "default")

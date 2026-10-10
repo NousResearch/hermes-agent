@@ -41,12 +41,26 @@ def _expression_targets_private_url(expression: str) -> Optional[str]:
     return next((c for c in (m.rstrip(".,;") for m in literals) if _url_blocked(_bt, c)), None)
 
 
-def _current_page_private_url(effective_task_id: str) -> Optional[str]:
+def _current_page_private_url(effective_task_id) -> Optional[str]:
     """Return the current page URL when it targets a private/internal address (e.g. after a prior
-    ``location.href = '...'`` eval). Fail-open on probe failure, matching the snapshot/vision guards."""
+    ``location.href = '...'`` eval). Fail-open on probe failure, matching the snapshot/vision guards.
+    Gateway (MCP-only) backends probe through the MCP transport — the local CLI probe would
+    hit the wrong browser (review defect 2 in the #135861 fix round)."""
     _bt = _origin()
     try:
-        url_result = _session._run_browser_command(effective_task_id, "eval", ["window.location.href"], timeout=5, _engine_override="auto")
+        from tools.browser_mcp_transport import _is_gateway_backend
+        if _is_gateway_backend():
+            from tools.browser_mcp_transport import mcp_evaluate
+            raw = mcp_evaluate("window.location.href", task_id=effective_task_id)
+            data = json.loads(raw) if raw.lstrip().startswith("{") else {}
+            current_url = str(data.get("result") or "").strip().strip('"').strip("'")
+        else:
+            url_result = _session._run_browser_command(effective_task_id, "eval", ["window.location.href"], timeout=5, _engine_override="auto")
+            if not url_result.get("success"):
+                return None
+            current_url = url_result.get("data", {}).get("result", "").strip().strip('"').strip("'")
+        if current_url and _url_blocked(_bt, current_url):
+            return current_url
         if url_result.get("success"):
             current_url = url_result.get("data", {}).get("result", "").strip().strip('"').strip("'")
             if current_url and _url_blocked(_bt, current_url):
@@ -151,14 +165,23 @@ def _enforce_browser_eval_policy(expression: str) -> Optional[str]:
             "browser.restrict_evaluate: false in config.yaml to allow programmatic evaluation.")
 
 
-def _camofox_current_page_private_url(tab_id: str, user_id: str) -> Optional[str]:
+def _camofox_current_page_private_url(tab_id: str, user_id: str, task_id=None) -> Optional[str]:
     """Camofox analogue of ``_current_page_private_url`` (evaluate endpoint instead of the CLI). Fail-open
     on probe failure, matching the snapshot/vision guards — do not make fail-closed without the sibling."""
     _bt = _origin()
     try:
-        from tools.browser_camofox import _post
-        data = _post(f"/tabs/{tab_id}/evaluate", body={"expression": "window.location.href", "userId": user_id})
-        current_url = str(data.get("result") if isinstance(data, dict) else data or "")
+        # Hosted gateways deny raw REST /tabs (MCP-only); route the probe through MCP there.
+        from tools.browser_mcp_transport import _is_gateway_backend
+        if _is_gateway_backend():
+            import json as _json
+            from tools.browser_mcp_transport import mcp_evaluate
+            raw = mcp_evaluate("window.location.href", task_id=task_id)
+            data = _json.loads(raw) if raw.lstrip().startswith("{") else {}
+            current_url = str(data.get("result") or "")
+        else:
+            from tools.browser_camofox import _post
+            data = _post(f"/tabs/{tab_id}/evaluate", body={"expression": "window.location.href", "userId": user_id})
+            current_url = str(data.get("result") if isinstance(data, dict) else data or "")
         current_url = current_url.strip().strip('"').strip("'")
         if current_url and _url_blocked(_bt, current_url):
             return current_url

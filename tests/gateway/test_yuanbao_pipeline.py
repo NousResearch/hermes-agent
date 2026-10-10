@@ -14,6 +14,7 @@ import asyncio
 import sys
 import os
 import json
+import time
 
 # Ensure project root is on the path
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -629,6 +630,153 @@ class TestGroupAtGuardMiddleware:
         next_fn = AsyncMock()
 
         await GroupAtGuardMiddleware()(ctx, next_fn)
+        next_fn.assert_awaited_once()
+
+
+class TestGroupAtGuardTypedMentionFallback:
+    """Hand-typed ``@botname`` in a group: opt-in fallback, resolved from the member cache.
+
+    A picker-attached mention is a TIMCustomElem (``elem_type`` 1002) and keeps working untouched;
+    a hand-typed or copy-pasted one is plain text, so it is only honoured when the text carries a
+    name the member cache resolves to THIS bot. Everything else stays observe-only.
+    """
+
+    BOT_ID = "bot_123"
+    GROUP = "grp-1"
+
+    @staticmethod
+    def _text_body(*texts):
+        return [{"msg_type": "TIMTextElem", "msg_content": {"text": t}} for t in texts]
+
+    def _ctx(self, adapter, msg_body, **overrides):
+        ctx = make_ctx(
+            adapter=adapter,
+            chat_type="group",
+            chat_id=f"group:{self.GROUP}",
+            group_code=self.GROUP,
+            msg_body=msg_body,
+            from_account="alice",
+            sender_nickname="Alice",
+            source=MagicMock(),
+            **overrides,
+        )
+        ctx.raw_text = overrides.get("raw_text", " ".join(
+            e["msg_content"]["text"] for e in msg_body if e.get("msg_type") == "TIMTextElem"))
+        return ctx
+
+    def _adapter(self, **kwargs):
+        adapter = make_adapter(**kwargs)
+        adapter._bot_id = self.BOT_ID
+        adapter._session_store = None  # observing is a no-op; we assert on dispatch only
+        adapter.MEMBER_CACHE_TTL_S = 300.0
+        adapter._member_cache = {
+            self.GROUP: (time.time(), [
+                {"user_id": self.BOT_ID, "nickname": "Hermes", "name_card": "群助手", "role": 0},
+                {"user_id": "u-alice", "nickname": "Alice", "name_card": "", "role": 0},
+            ]),
+        }
+        return adapter
+
+    @pytest.mark.asyncio
+    async def test_typed_bot_mention_dispatches_when_enabled(self):
+        adapter = self._adapter(extra={"text_mention_fallback": True})
+        ctx = self._ctx(adapter, self._text_body("@Hermes please summarise"))
+        next_fn = AsyncMock()
+
+        await GroupAtGuardMiddleware()(ctx, next_fn)
+
+        next_fn.assert_awaited_once()
+        assert ctx.group_mention_name == "Hermes"
+        # the typed name reaches the prompt so the model knows what it was called
+        prompt = GroupAtGuardMiddleware._build_group_channel_prompt(
+            ctx.msg_body, self.BOT_ID, typed_mention=f"@{ctx.group_mention_name}")
+        assert "@Hermes" in prompt
+
+    @pytest.mark.asyncio
+    async def test_typed_bot_group_nickname_dispatches(self):
+        """The group-specific name_card (群昵称) also counts as the bot's own name."""
+        adapter = self._adapter(extra={"text_mention_fallback": "1"})
+        ctx = self._ctx(adapter, self._text_body("@群助手 帮忙看一下"))
+        next_fn = AsyncMock()
+
+        await GroupAtGuardMiddleware()(ctx, next_fn)
+
+        next_fn.assert_awaited_once()
+        assert ctx.group_mention_name == "群助手"
+
+    @pytest.mark.asyncio
+    async def test_typed_bot_mention_observed_when_disabled(self):
+        """Fallback off (default) ⇒ today's observe-only behaviour, unchanged."""
+        adapter = self._adapter()
+        ctx = self._ctx(adapter, self._text_body("@Hermes please summarise"))
+        next_fn = AsyncMock()
+
+        await GroupAtGuardMiddleware()(ctx, next_fn)
+
+        next_fn.assert_not_awaited()
+        assert ctx.group_mention_name == ""
+
+    @pytest.mark.asyncio
+    async def test_other_members_name_never_dispatches(self):
+        """Typing @Alice must not wake the bot, even with the fallback enabled."""
+        adapter = self._adapter(extra={"text_mention_fallback": True})
+        ctx = self._ctx(adapter, self._text_body("@Alice can you look at this?"))
+        next_fn = AsyncMock()
+
+        await GroupAtGuardMiddleware()(ctx, next_fn)
+
+        next_fn.assert_not_awaited()
+        assert ctx.group_mention_name == ""
+
+    @pytest.mark.asyncio
+    async def test_cache_miss_fails_closed(self):
+        """No member cache for the group ⇒ the bot's own name is unknown ⇒ observe-only."""
+        adapter = self._adapter(extra={"text_mention_fallback": True})
+        adapter._member_cache = {}
+        ctx = self._ctx(adapter, self._text_body("@Hermes please summarise"))
+        next_fn = AsyncMock()
+
+        await GroupAtGuardMiddleware()(ctx, next_fn)
+
+        next_fn.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_expired_cache_fails_closed(self):
+        """An entry past MEMBER_CACHE_TTL_S must not be trusted — same as a cold cache."""
+        adapter = self._adapter(extra={"text_mention_fallback": True})
+        members = adapter._member_cache[self.GROUP][1]
+        adapter._member_cache = {self.GROUP: (time.time() - 301.0, members)}
+        ctx = self._ctx(adapter, self._text_body("@Hermes please summarise"))
+        next_fn = AsyncMock()
+
+        await GroupAtGuardMiddleware()(ctx, next_fn)
+
+        next_fn.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_picker_mention_unaffected_by_flag(self):
+        """A real picker mention (TIMCustomElem 1002) dispatches with the fallback off."""
+        adapter = self._adapter()
+        ctx = self._ctx(adapter, [{
+            "msg_type": "TIMCustomElem",
+            "msg_content": {"data": json.dumps({"elem_type": 1002, "text": "@Hermes", "user_id": self.BOT_ID})},
+        }])
+        next_fn = AsyncMock()
+
+        await GroupAtGuardMiddleware()(ctx, next_fn)
+
+        next_fn.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_owner_command_still_skips_the_mention_check(self):
+        """Owner commands bypass the gate entirely (fallback on or off)."""
+        adapter = self._adapter(extra={"text_mention_fallback": True})
+        adapter._member_cache = {}
+        ctx = self._ctx(adapter, self._text_body("/new"), owner_command="/new")
+        next_fn = AsyncMock()
+
+        await GroupAtGuardMiddleware()(ctx, next_fn)
+
         next_fn.assert_awaited_once()
 
 

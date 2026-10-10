@@ -187,6 +187,7 @@ LibreOffice or hand the file to the user unconverted.
 - After creating: `xlsx_read.py out.xlsx --sheets` and confirm sheet
   names, dimensions, merged ranges, and chart counts match intent.
 - Dump data with `--json` and compare against the source values.
+- For bulk validation with `load_workbook(..., read_only=True)`, consume each sheet once through `iter_rows(values_only=True)` and compare rows in memory. Avoid thousands of `ws.cell(i, j)` calls: read-only worksheets can rescan their XML for each random-access lookup, turning a small report check into minutes of repeated parsing.
 - After edits: re-dump the touched range; if formulas were written,
   confirm `--formulas` lists them and that `--recalc` was applied.
 - After `xlsx_restructure.py`: read its JSON report, then re-run

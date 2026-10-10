@@ -9,6 +9,7 @@ one-shot keyless rescue. Logs under the origin (tools.web_tools) logger.
 import asyncio
 import json
 import logging
+import re
 from typing import Any, Dict, List, Optional
 
 from tools.tool_backend_helpers import selection_error, selection_exists
@@ -23,17 +24,24 @@ _EXTRACT_BACKENDS_HINT = "firecrawl, tavily, keenable, exa, or parallel."
 _INVALID_ITEM_ERROR = (
     "Invalid URL item at index {}: expected a URL string or an object with a string 'url' or 'href' field"
 )
+# Scheme-less host (``example.com/page``, ``localhost:8080``, ``10.0.0.5/x``) with optional port.
+_BARE_HOST_RE = re.compile(
+    r"(?:localhost|\d{1,3}(?:\.\d{1,3}){3}|(?:[\w-]+\.)+[^\W\d_]{2,})(?::\d+)?(?:[/?#]|$)", re.I
+)
 
 
 def _web_extract_url(value: Any) -> Optional[str]:
     """URL from a model-supplied extract item (str, or dict with ``url``/``href``); None if unusable.
 
     Models sometimes forward a whole search result instead of its URL, hence the dict form. Never
-    stringify arbitrary objects into misleading fetch targets.
+    stringify arbitrary objects into misleading fetch targets. A bare host gets ``https://`` (what a
+    browser and ``open_preview`` assume) so the SSRF gate judges the host instead of rejecting the
+    missing scheme as a private address.
     """
     if isinstance(value, dict):
         value = value.get("url") or value.get("href")
-    return (value.strip() or None) if isinstance(value, str) else None
+    url = (value.strip() or None) if isinstance(value, str) else None
+    return f"https://{url}" if url and _BARE_HOST_RE.match(url) else url
 
 
 def _disabled_plugin_error(capability: str, disabled_key: str) -> str:

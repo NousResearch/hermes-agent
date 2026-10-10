@@ -35,7 +35,6 @@ from agent.fast_mode import STATIC_TIERS
 from agent.replay_cleanup import canonicalize_replay_history
 from agent.reasoning_effort import clamp_effort, route_supported_efforts
 from agent.voice_turn_route import session_runtime_view
-from agent.compaction_display import project_compaction_message_for_display
 from agent.skill_commands import describe_skill_invocation
 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 from tui_gateway import git_probe
@@ -3129,7 +3128,7 @@ def _reconcile_display_with_live(db_display: list[dict], in_memory: list[dict]) 
         return db_display
 
     def _key(msg: dict) -> tuple:
-        return (msg.get("role"), _coerce_message_text(msg.get("content")))
+        return (msg.get("role"), render_message_content(msg.get("content")))
     anchor = _key(db_display[-1])
     last_shared = max((idx for idx, msg in enumerate(in_memory) if isinstance(msg, dict) and _key(msg) == anchor), default=-1)
     if last_shared == -1:

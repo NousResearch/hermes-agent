@@ -5,6 +5,8 @@ the bodies close over server.py globals through ``method_ctx.bind_module`` exact
 publication still runs from the parent's ``register()``.
 """
 
+from agent.message_display import render_message_content
+
 from .method_ctx import HandlerRegistry, bind_module
 
 _registry = HandlerRegistry()
@@ -14,7 +16,7 @@ def _visible_branch_history(messages) -> list:
     """user/assistant rows with visible text, as FULL copies (reasoning + timeline-marker tags survive)."""
     return [dict(message) for message in messages or []
             if isinstance(message, dict) and message.get("role") in {"user", "assistant"}
-            and _coerce_message_text(message.get("content")).strip()]
+            and render_message_content(message.get("content")).strip()]
 
 
 def _build_branch_agent(session: dict, new_sid: str, new_key: str, history: list, source: str):

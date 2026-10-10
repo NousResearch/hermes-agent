@@ -1,6 +1,6 @@
 """``inline_images=false`` history reads (#116511): the reachable ``[image]`` projection.
 
-``_history_dict_text(content, *, image_urls)`` has always had both renderings; the API layer
+``render_message_content(content, *, image_urls)`` has always had both renderings; the API layer
 hard-coded ``image_urls=True`` so a remote client re-transmitted every stored attachment
 (26+ MiB for one measured conversation) on every ``session.resume``. Both history surfaces now
 accept ``inline_images=false`` and route to the placeholder branch:
@@ -13,6 +13,8 @@ when asked; non-image content is byte-identical either way.
 """
 
 import pytest
+
+from agent.message_display import render_message_content
 
 import tui_gateway.server as srv
 import tui_gateway.methods_session
@@ -29,7 +31,7 @@ IMAGE_TURN = [
 
 def test_coerce_message_text_switches_image_rendering():
     """The projection seam: default inlines the URI; ``image_urls=False`` renders ``[image]``."""
-    coerce, history_to_messages = srv._coerce_message_text, srv._history_to_messages  # server.py-bound
+    coerce = render_message_content
     content = IMAGE_TURN[0]["content"]
     assert DATA_URI in coerce(content)
     assert DATA_URI not in coerce(content, image_urls=False)

@@ -513,6 +513,10 @@ def _notif_dispatch_event(sid: str, session: dict, evt: dict, text: str) -> None
         # honour ``hidden``). Only what the agent says about the new output is visible.
         from tools.process_registry_notifications import HEARTBEAT_DISPLAY_KIND
         kwargs = {"display_kind": HEARTBEAT_DISPLAY_KIND}
+    elif evt_type == "completion":
+        from tools.process_registry_notifications import PROCESS_COMPLETE_DISPLAY_KIND, process_completion_display_text
+        kwargs = {"display_kind": PROCESS_COMPLETE_DISPLAY_KIND,
+                  "display_metadata": {"display_text": process_completion_display_text([evt])}}
     from agent.notification_presentation import diagnostic_process_event
     if diagnostic_process_event(evt):
         kwargs.setdefault("display_metadata", {})["notification_category"] = "diagnostic"

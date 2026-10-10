@@ -2267,7 +2267,7 @@ def _message_contains_busy_steer(message: Any) -> bool:
 
 
 def _extract_steer_text_from_message(message: Any) -> Optional[str]:
-    """Extract the inner user text from a steer marker, or None."""
+    """Inner authored text (possibly empty), or None when no complete steer envelope exists."""
     text = _message_text(message)
     if not text:
         return None
@@ -2287,7 +2287,7 @@ def _extract_steer_text_from_message(message: Any) -> Optional[str]:
         end = text.find(_STEER_FALLBACK_CLOSE, start)
         if end == -1:
             return None
-    return text[start:end].strip() or None
+    return text[start:end].strip()
 
 
 def _compressed_has_busy_steer(messages: list) -> bool:

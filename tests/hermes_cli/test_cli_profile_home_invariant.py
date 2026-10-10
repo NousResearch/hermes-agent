@@ -109,3 +109,37 @@ def test_explicit_switch_replaces_an_inherited_profile_home(hermes_root, monkeyp
     monkeypatch.setenv("HERMES_HOME", str(hermes_root / "profiles" / "alpha"))
 
     assert _launch(monkeypatch, "-p", "beta", "chat") == str(hermes_root / "profiles" / "beta")
+
+
+# What `hermes -p <name> gateway run` really does, in order, inside ONE process image: the PM
+# bootstrap (pm.runtime_environment) runs first, then the CLI re-homes, then gateway modules
+# resolve their profile-scoped paths. A subprocess, because the fallback warning latches per
+# process and the gateway's own resolvers must be imported AFTER the re-home.
+_GATEWAY_BOOTSTRAP = """
+import sys
+sys.path.insert(0, {repo!r})
+sys.argv = ["hermes", "-p", {profile!r}, "gateway", "run"]
+from pm.runtime import runtime_environment
+bootstrap_home = runtime_environment()["HERMES_HOME"]
+from hermes_cli.main import _apply_profile_override
+_apply_profile_override()
+from gateway.lifecycle_ledger import get_lifecycle_sentinel_path
+print(bootstrap_home)
+print(get_lifecycle_sentinel_path())
+"""
+
+
+def test_gateway_start_reaches_the_named_profile_without_the_default_fallback(hermes_root, tmp_path):
+    profile = hermes_root / "profiles" / PROFILE
+    child = subprocess.run(
+        [sys.executable, "-c", _GATEWAY_BOOTSTRAP.format(repo=str(REPO_ROOT), profile=PROFILE)],
+        env={k: v for k, v in os.environ.items() if k != "HERMES_HOME"} | {"HOME": str(tmp_path)},
+        capture_output=True, text=True, check=True, cwd=str(tmp_path),
+    )
+    bootstrap_home, lifecycle = child.stdout.strip().split("\n")
+
+    # The install-scoped bootstrap names the root it was launched from, never a profile it is
+    # about to be re-homed to; the gateway's own profile-scoped state then lands in the profile.
+    assert Path(bootstrap_home) == hermes_root
+    assert Path(lifecycle) == profile / "state" / "gateway.lifecycle.json"
+    assert "HERMES_HOME fallback" not in child.stderr

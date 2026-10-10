@@ -9,9 +9,9 @@ import assert from 'node:assert/strict'
 import type { ChildProcess } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 
-import { test } from 'vitest'
+import { test, vi } from 'vitest'
 
-import { type ExternalOpenDeps, openExternalUrl, reportPreOpenStatFailure } from './external-open'
+import { type ExternalOpenDeps, OPEN_TIMEOUT_MS, openExternalUrl, reportPreOpenStatFailure } from './external-open'
 
 function makeDeps(overrides: Partial<ExternalOpenDeps> = {}) {
   const calls = {
@@ -242,4 +242,66 @@ test('guard: a non-missing stat failure is logged and classified as proceed-to-O
   assert.equal(reported.length, 0)
   assert.equal(logged.length, 4)
   assert.ok(logged.every(line => line.includes('[file] pre-open stat failed')))
+})
+
+// Electron settles openExternal/openPath only once the xdg-open it spawned
+// exits. When the desktop-portal handshake never completes they stay pending
+// forever; an awaiting IPC handler then never replies, and the renderer shows
+// "reply was never sent" instead of the fallback modal. These lock in that a
+// hang resolves as a reported failure.
+test('bounds a web open that never settles instead of hanging the caller', async () => {
+  vi.useFakeTimers()
+
+  try {
+    const { deps, calls } = makeDeps({ openExternal: () => new Promise<void>(() => {}) })
+
+    const pending = openExternalUrl('https://example.com', deps)
+
+    await vi.advanceTimersByTimeAsync(OPEN_TIMEOUT_MS + 1)
+
+    const result = await pending
+
+    assert.equal(result.ok, false)
+
+    if (result.ok === false && result.reason === 'failed') {
+      assert.match(result.message, /did not respond/)
+    }
+
+    assert.equal(calls.notified.length, 1)
+    assert.ok(calls.logged.some(line => line.includes('openExternal failed')))
+  } finally {
+    vi.useRealTimers()
+  }
+})
+
+test('bounds a file open that never settles', async () => {
+  vi.useFakeTimers()
+
+  try {
+    const { deps, calls } = makeDeps({ openFile: () => new Promise<void>(() => {}) })
+
+    const pending = openExternalUrl('file:///tmp/x.html', deps)
+
+    await vi.advanceTimersByTimeAsync(OPEN_TIMEOUT_MS + 1)
+
+    const result = await pending
+
+    assert.equal(result.ok, false)
+    assert.equal(calls.notified.length, 1)
+  } finally {
+    vi.useRealTimers()
+  }
+})
+
+test('a rejected file open is still ok — main handles its own fallback', async () => {
+  const { deps, calls } = makeDeps({
+    openFile: async () => {
+      throw new Error('no handler for .html')
+    }
+  })
+
+  const result = await openExternalUrl('file:///tmp/x.html', deps)
+
+  assert.deepEqual(result, { ok: true })
+  assert.equal(calls.notified.length, 0)
 })

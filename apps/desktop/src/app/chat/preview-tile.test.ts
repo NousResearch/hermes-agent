@@ -218,6 +218,49 @@ describe('preview tiles mirror the visible session tabs', () => {
     expect(tree.treePanesWithPrefix('preview-tile:')).toHaveLength(0)
   })
 
+  it('fronts the tab a session last had in front when switching back to it', async () => {
+    const { preview, session } = await setup()
+    const layout = await import('@/store/layout')
+
+    session.$selectedStoredSessionId.set('sess-1')
+    preview.openPreview(htmlTarget('/work/a.html'))
+    preview.openPreview(htmlTarget('/work/b.html'))
+    const bId = layout.$rightRailActiveTabId.get()
+
+    preview.openPreview(htmlTarget('/work/a.html'))
+    layout.selectRightRailTab(bId)
+
+    session.$selectedStoredSessionId.set('sess-2')
+    preview.openPreview(htmlTarget('/work/c.html'))
+
+    session.$selectedStoredSessionId.set('sess-1')
+    expect(layout.$rightRailActiveTabId.get()).toBe(bId)
+  })
+
+  const browserTarget = (url: string) => ({ kind: 'url', label: url, source: url, url }) as const
+
+  it('unmounts only the longest-hidden live page past the cap, and reopens it on return', async () => {
+    const { preview, session, tree } = await setup()
+    const { registry } = await import('@/contrib/registry')
+    const contribution = (id: string) => registry.getArea('panes').find(pane => pane.id === `preview-tile:${id}`)
+    const ids: string[] = []
+
+    for (let index = 0; index < 10; index++) {
+      session.$selectedStoredSessionId.set(`sess-cap-${index}`)
+      preview.openPreview(browserTarget(`https://cap-${index}.example`))
+      ids.push(preview.$previewTabs.get().at(-1)!.id)
+    }
+
+    // Nine hidden, eight kept: the first session's page was let go.
+    expect(contribution(ids[0]!)).toBeUndefined()
+    ids.slice(1).forEach(id => expect(contribution(id)).toBeDefined())
+    expect(preview.$previewTabs.get()).toHaveLength(10)
+
+    session.$selectedStoredSessionId.set('sess-cap-0')
+    expect(contribution(ids[0]!)).toBeDefined()
+    expect(tree.treePanesWithPrefix('preview-tile:')).toEqual([`preview-tile:${ids[0]}`])
+  })
+
   it('does not create panes for another session tabs', async () => {
     const { preview, session, tree } = await setup()
 

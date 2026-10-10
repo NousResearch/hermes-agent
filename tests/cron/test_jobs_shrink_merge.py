@@ -8,7 +8,9 @@ unexpected on-disk ids back unless the caller passes ``removed_ids``.
 
 from __future__ import annotations
 
+import errno
 import json
+import os
 
 import pytest
 
@@ -124,7 +126,7 @@ def test_replace_flag_allows_wholesale_rewrite(hermes_env):
 def test_sibling_write_inside_section_is_merged(hermes_env):
     """A write that lands on disk after the section's load changes the stamp,
     so the save must re-merge instead of trusting its stale snapshot."""
-    import cron.jobs as jobs
+    from cron import jobs
     from cron.jobs import create_job
 
     job = create_job(
@@ -171,7 +173,7 @@ def test_save_over_corrupt_store_fails_closed(hermes_env):
     """A merging save over an unreadable jobs.json must refuse (the jobs in it
     are unknown, so overwriting would drop them) and leave the bytes intact;
     ``replace=True`` stays available as the explicit recovery rewrite."""
-    import cron.jobs as jobs
+    from cron import jobs
     from cron.jobs import load_jobs, save_jobs
 
     jobs.ensure_dirs()
@@ -191,7 +193,7 @@ def test_nested_create_survives_outer_stale_save(hermes_env):
     an outer caller's later save with a pre-create payload must re-merge and
     keep the nested create (stamp refresh here would deterministically
     clobber it)."""
-    import cron.jobs as jobs
+    from cron import jobs
     from cron.jobs import create_job, load_jobs, save_jobs
 
     seed = {"id": "aaaaaaaaaaaa", "name": "a"}
@@ -207,3 +209,34 @@ def test_nested_create_survives_outer_stale_save(hermes_env):
     ids = {j["id"] for j in load_jobs()}
     assert created["id"] in ids, "nested create was clobbered by outer stale save"
     assert seed["id"] in ids
+
+
+def test_symlinked_store_saves_by_rename_not_in_place_copy(hermes_env, tmp_path, monkeypatch):
+    """jobs.json symlinked into another dir (treated as another filesystem) must still be
+    published by an atomic rename — never the EXDEV in-place copy fallback, which tears the
+    store on a crash mid-copy."""
+    from cron.jobs import load_jobs, save_jobs
+
+    real_dir = tmp_path / "elsewhere"
+    real_dir.mkdir()
+    (real_dir / "jobs.json").write_text('{"jobs": []}')
+    link = hermes_env / "cron" / "jobs.json"
+    link.symlink_to(real_dir / "jobs.json")
+
+    real_replace = os.replace
+
+    def replace_same_dir_only(src, dst):
+        if os.path.dirname(os.path.realpath(src)) != os.path.dirname(os.path.realpath(dst)):
+            raise OSError(errno.EXDEV, os.strerror(errno.EXDEV))
+        return real_replace(src, dst)
+
+    def no_copy(*a, **k):
+        raise AssertionError("in-place copy fallback used")
+
+    monkeypatch.setattr("utils.os.replace", replace_same_dir_only)
+    monkeypatch.setattr("utils._copy_fallback", no_copy)
+
+    save_jobs([{"id": "a", "prompt": "x"}], replace=True)
+
+    assert link.is_symlink()
+    assert [j["id"] for j in load_jobs()] == ["a"]

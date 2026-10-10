@@ -779,6 +779,8 @@ gateway:
   plan:
     ack_task: "Plane: {task}"
     ack_conversation: "Plane anhand des Kontexts dieser Konversation…"
+  initiate_setup:
+    ack: "Einrichtung wird gestartet…"
   init:
     start_failed: "/init konnte nicht gestartet werden — bitte versuchen Sie es erneut."
     ack_update: "Aktualisiere AGENTS.md anhand eines Projekt-Scans…"
@@ -847,6 +849,9 @@ gateway:
     db_fts_corrupt: "⚠️ Die Sitzungsdatenbank hat einen Beschädigungsfehler gemeldet, der auf den Suchindex (FTS5) beschränkt ist; die Nachrichtentabellen sind nicht beschädigt. Nachrichten werden bis zur Reparatur möglicherweise nicht gespeichert: Führen Sie `hermes {profile_arg}doctor --fix` aus und starten Sie dann das Gateway neu. Verwenden Sie keine Wiederherstellungstools und stellen Sie kein Backup wieder her, sofern `hermes {profile_arg}doctor` keinen Schaden bestätigt."
     db_then_restart: "{action} Danach `hermes {profile_arg}gateway restart`."
     db_unavailable: "⚠️ Sitzungsdatenbank nicht verfügbar — Nachrichten werden möglicherweise nicht gespeichert und /resume bleibt leer. Ursache: {cause}. {action}"
+  cron_store:
+    unwritable: "⚠️ Cron-Speicher {store} ist seit {since} nicht beschreibbar ({error}). Geplante Jobs werden übersprungen, bis er wieder Schreibzugriffe annimmt. Lösung: {fix}."
+    recovered: "✅ Cron-Speicher {store} ist wieder beschreibbar; {skipped} übersprungene Ausführung(en), jeder Job wird einmal nachgeholt."
   whoami:
     scope_dm: "Direktnachricht"
     scope_group: "Gruppe/Kanal"
@@ -1448,8 +1453,6 @@ platform:
   irc:
     quit_message: "Hermes Agent wird heruntergefahren"
     standalone_quit: "zugestellt"
-  homeassistant:
-    notification_title: "Hermes Agent"
   relay:
     confirm_approve_once: "Einmalig genehmigen"
     confirm_always_approve: "Immer genehmigen"
@@ -1555,6 +1558,8 @@ slash:
     description: "Einen Prompt in dieser Sitzung in einem wiederkehrenden Intervall erneut ausführen"
   plan:
     description: "Einen Markdown-Umsetzungsplan nach .hermes/plans/ schreiben, ohne etwas auszuführen"
+  initiate-setup:
+    description: "Ersteinrichtung starten: dich kennenlernen und Hermes auf dich einstellen"
   moa:
     description: "Einen Prompt durch das Standard-Mixture-of-Agents-Preset laufen lassen und dann Ihr Modell wiederherstellen"
   subgoal:
@@ -2252,6 +2257,8 @@ cli:
   approval:
     bell_context: "Genehmigung"
     label: "Genehmigung"
+    timeout_denying: "⏱ Zeitüberschreitung — Befehl wird abgelehnt"
+    timed_out_no_response: "Zeitüberschreitung (keine Antwort)"
     outcome_once: "einmalig erlaubt"
     outcome_session: "für diese Sitzung erlaubt"
     outcome_always: "zur Erlaubnisliste hinzugefügt"
@@ -2259,6 +2266,7 @@ cli:
   clarify:
     bell_context: "Rückfrage"
     label: "Rückfrage"
+    timed_out_locked_answers: "(Rückfrage nach {timeout}s abgelaufen — festgelegte Antworten zurückgegeben)"
   connect:
     bell_context: "Verbindungseinrichtung"
     cannot_restart: "Diese Verbindung kann nicht erneut gestartet werden. Brechen Sie ab und fragen Sie den Agenten erneut."
@@ -2352,6 +2360,7 @@ cli:
     removed: "Warteschlangeneintrag {index} entfernt: {preview}"
     item_not_found: "Warteschlangeneintrag {index} nicht gefunden. Aktuelle Größe: {size}"
     usage_edit: "Verwendung: /queue edit <number> <new prompt>"
+    usage_remove: "Verwendung: /queue rm <number>"
     updated: "Warteschlangeneintrag {index} aktualisiert: {preview}"
     usage_move: "Verwendung: /queue move <from> <to>"
     move_out_of_range: "Verschiebung außerhalb der Warteschlange. Aktuelle Größe: {size}"
@@ -2390,6 +2399,7 @@ cli:
     session_not_found: "Sitzung nicht gefunden: {session_id}"
     compressed_into: "Sitzung {session_id} wurde in {descendant} komprimiert; die Nachfolgesitzung wird mit Ihrem Transkript fortgesetzt."
     cannot_resume: "Sitzung kann nicht fortgesetzt werden: {error}"
+    kanban_owned: "⛔ Sitzung {session_id} ist ein Kanban-Worker-Transkript. Das Fortsetzen würde hier einen Schreiber erzeugen, den das Kanban-Board weder beobachten noch überwachen kann — versuche stattdessen, die Karte auf dem Board erneut zu starten oder zu entblocken, damit der Dispatcher den nächsten Lauf besitzt."
     cannot_resume_prefix: "Sitzung kann nicht fortgesetzt werden:"
     resumed_session: "↻ Sitzung fortgesetzt"
     counts_one: "({count} Benutzernachricht, {total} Nachrichten insgesamt)"
@@ -2424,7 +2434,6 @@ cli:
     run_model_to_retry: "Führen Sie 'hermes model' aus, um es erneut zu versuchen."
     provider_configured: "✓ Anbieter konfiguriert — Sie können loschatten."
     provider_setup_incomplete: "Die Anbieter-Einrichtung wurde nicht abgeschlossen. Führen Sie 'hermes model' aus, um es erneut zu versuchen."
-    tirith_unavailable: "⚠ tirith-Sicherheitsscanner aktiviert, aber nicht verfügbar — Befehlsprüfung nutzt nur Musterabgleich"
     unknown_toolsets: "Warnung: Unbekannte Toolsets: {names}"
     stdin_unusable: "\nFehler: stdin ist nicht nutzbar ({error}).\nDas kann bei bestimmten Python-Installationen vorkommen (z. B. uv-verwaltetes cPython auf macOS),\nbei denen kqueue fd 0 nicht registrieren kann.\nInstallieren Sie Python über pyenv oder Homebrew neu und führen Sie dann erneut aus: hermes setup"
     warning: "Warnung: {warning}"
@@ -2717,6 +2726,7 @@ cli:
       restored: "Zustand wiederhergestellt aus: {snapshot_id}"
       restart_recommended: "Neustart empfohlen, damit Gateway-/Dashboard-Prozesse die Änderungen an state.db übernehmen."
       not_found: "Schnappschuss nicht gefunden: {snapshot_id}"
+      restore_incomplete: "Schnappschuss {snapshot_id} wurde nicht vollständig wiederhergestellt; einige Dateien wurden abgelehnt (siehe Logs)"
       usage_prune: "Verwendung: /snapshot prune [keep-count]"
       pruned: "{deleted} alte(r) Schnappschuss/Schnappschüsse entfernt ({keep} werden behalten)."
     export:
@@ -2908,6 +2918,8 @@ cli:
     plan:
       planning: "📋 Planung: {task}"
       from_conversation: "📋 Planung aus dem Kontext dieser Konversation..."
+    initiate_setup:
+      starting: "🧭 Einrichtung wird gestartet..."
     init:
       updating: "⚡ Aktualisiere AGENTS.md anhand eines Projekt-Scans..."
       generating: "⚡ Erzeuge AGENTS.md anhand eines Projekt-Scans..."
@@ -3284,6 +3296,7 @@ cli:
     shallow_clone_keeping: "⚠ Flacher Klon — Push-Status kann nicht geprüft werden, wird behalten: {path}"
     next_session_deepens: "Die nächste `hermes -w`-Sitzung vertieft den Klon und entfernt gemergte Worktrees automatisch."
     unpushed_keeping: "⚠ Worktree hat nicht gepushte Commits, wird behalten: {path}"
+    uncommitted_keeping: "⚠ Worktree hat nicht committete Änderungen, wird behalten: {path}"
     clean_up_manually: "Manuell aufräumen mit: git worktree remove --force {path}"
     cleaned_up: "✓ Worktree aufgeräumt: {path}"
 display:
@@ -3640,7 +3653,7 @@ tips:
   t167: "Die Genehmigung gefährlicher Befehle hat 4 Stufen: einmalig, für diese Sitzung, dauerhaft (permanente Erlaubnisliste), ablehnen."
   t168: "Der Smart-Genehmigungsmodus nutzt ein LLM, um sichere Befehle automatisch zu genehmigen und gefährliche zu markieren."
   t169: "Der SSRF-Schutz blockiert private Netze, Loopback-, Link-Local- und Cloud-Metadaten-Adressen."
-  t170: "Das Tirith-Pre-Exec-Scanning erkennt Homograph-URL-Spoofing und Pipe-to-Interpreter-Muster."
+  t170: "Sitzungs-IDs beginnen mit einem Zeitstempel (20250305_091523_abcd), sodass die Sortierung in ls und jq natürlich funktioniert."
   t171: "MCP-Unterprozesse erhalten eine gefilterte Umgebung — nur sichere Systemvariablen werden durchgereicht."
   t172: "Kontextdateien (.hermes.md, AGENTS.md) werden vor dem Laden sicherheitsseitig auf Prompt-Injection geprüft."
   t173: "command_allowlist in config.yaml genehmigt bestimmte Shell-Befehlsmuster dauerhaft."
@@ -3670,7 +3683,7 @@ tips:
   t197: "Das Speichern von Trajektorien (--save-trajectories) erfasst vollständige Tool-Nutzungsprotokolle für das Modelltraining."
   t198: "Drei Plugin-Typen: allgemein (Tools/Hooks), Memory-Anbieter und Kontext-Engines."
   t199: "hermes plugins install owner/repo installiert Plugins direkt von GitHub."
-  t200: "Externe Memory-Anbieter: Honcho, OpenViking, Mem0 sind mitgeliefert; Hindsight und weitere über hermes plugins install."
+  t200: "Externe Memory-Anbieter: Honcho, Hindsight, Mem0, OpenViking und weitere über hermes plugins install."
   t201: "Plugin-Hooks umfassen pre/post_tool_call, pre/post_llm_call und transform_terminal_output zur Kanonisierung von Ausgaben."
   t202: "Prompt-Caching (Anthropic) senkt die Kosten, indem zwischengespeicherte Präfixe des System-Prompts wiederverwendet werden."
   t203: "Der Agent erzeugt Sitzungstitel automatisch in einem Hintergrund-Thread — ohne Auswirkung auf die Latenz."
@@ -3845,12 +3858,9 @@ tips:
   t372: "image_gen.model in config.yaml wählt das FAL-Modell: flux-2/klein, gpt-image-2, nano-banana-pro und weitere."
   t373: "image_gen.provider leitet die Bilderzeugung statt über den Standard durch ein Plugin (OpenAI Images, Codex, FAL)."
   t374: "AUXILIARY_VISION_BASE_URL + AUXILIARY_VISION_API_KEY richten die Bildanalyse auf einen beliebigen OpenAI-kompatiblen Endpunkt."
-  t375: "security.tirith_fail_open: false lässt Hermes Befehle blockieren, wenn der tirith-Scanner selbst mit einem Fehler abbricht."
-  t376: "Die Umgebungsvariable TIRITH_FAIL_OPEN überschreibt die Konfiguration tirith_fail_open — ein schneller Schalter ohne Editieren von config.yaml."
+  t375: "API_SERVER_MODEL_NAME passt den Modellnamen unter /v1/models an — unerlässlich für Open-WebUI-Setups mit mehreren Profilen."
+  t376: "Dashboard-Plugins werden unter /dashboard-plugins/<name>/ ausgeliefert — legen Sie die Dateien in ~/.hermes/dashboard-plugins/ ab."
   t377: "Chats mit --source tool sind in hermes sessions list standardmäßig ausgeblendet — setzen Sie --source explizit, um sie zu sehen."
-  t378: "Sitzungs-IDs beginnen mit einem Zeitstempel (20250305_091523_abcd), sodass die Sortierung in ls und jq natürlich funktioniert."
-  t379: "API_SERVER_MODEL_NAME passt den Modellnamen unter /v1/models an — unerlässlich für Open-WebUI-Setups mit mehreren Profilen."
-  t380: "Dashboard-Plugins werden unter /dashboard-plugins/<name>/ ausgeliefert — legen Sie die Dateien in ~/.hermes/dashboard-plugins/ ab."
   placeholder:
     p01: "Fragen Sie etwas oder geben Sie / für Befehle ein…"
     p02: "Fasse zusammen, was in diesem Ordner liegt"

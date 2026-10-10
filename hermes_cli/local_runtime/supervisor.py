@@ -223,13 +223,17 @@ class LlamaServerSupervisor:
     def _write_state(self) -> None:
         import os
         import psutil
+        from gateway.status import get_process_start_time
         from utils import atomic_json_write
 
         proc = psutil.Process(self.proc.pid)
+        # create_time stays for runtimes that predate start_time.
         self._state = {"base_url": self.base_url, "api_key": self.api_key,
                        "pid": proc.pid, "create_time": proc.create_time(),
+                       "start_time": get_process_start_time(proc.pid),
                        "executable": proc.exe(), "owner_pid": os.getpid(),
-                       "owner_create_time": psutil.Process().create_time()}
+                       "owner_create_time": psutil.Process().create_time(),
+                       "owner_start_time": get_process_start_time(os.getpid())}
         path = state_path()
         from hermes_constants import mkdir_under_hermes_home
         mkdir_under_hermes_home(path.parent)
@@ -276,7 +280,7 @@ class LlamaServerSupervisor:
                 self._wait_health(120)
                 if self.primary_model:
                     self.ensure_model_ready(self.primary_model)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.error("llama-server restart failed: %s", exc)
 
     def stop(self) -> None:
@@ -346,7 +350,7 @@ class LlamaServerSupervisor:
             import psutil
 
             exe = str(self.binary)
-        except Exception:  # noqa: BLE001
+        except Exception:
             return
         own_pid = self.proc.pid if self.proc is not None else None
         for p in psutil.process_iter(["exe", "ppid"]):
@@ -383,7 +387,7 @@ class LlamaServerSupervisor:
             try:
                 if self.models().get(model_id) not in (*_RESIDENT, "unloading"):
                     return
-            except Exception:  # noqa: BLE001
+            except Exception:
                 return
             time.sleep(0.3)
 
@@ -396,7 +400,7 @@ class LlamaServerSupervisor:
         unloaded: list[str] = []
         try:
             statuses = self.models()
-        except Exception:  # noqa: BLE001
+        except Exception:
             return unloaded
         for model_id, status in statuses.items():
             if status not in _RESIDENT:
@@ -418,7 +422,7 @@ class LlamaServerSupervisor:
                 self._idle_since.pop(model_id, None)
                 unloaded.append(model_id)
                 logger.info("idle-unloaded %s (idle %ds)", model_id, int(now - first_idle))
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.warning("idle unload of %s failed: %s", model_id, exc)
         return unloaded
 
@@ -432,7 +436,7 @@ class LlamaServerSupervisor:
             msg = resp["choices"][0]["message"]
             blob = (msg.get("content") or "") + " " + (msg.get("reasoning_content") or "")
             return TOUCH_EXPECT in blob.lower()
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("touch generation failed for %s: %s", model_id, exc)
             return False
 
@@ -471,5 +475,5 @@ class LlamaServerSupervisor:
                             and float(line.split()[-1]) != 0.0):
                         return False
             return True
-        except Exception:  # noqa: BLE001
+        except Exception:
             return None

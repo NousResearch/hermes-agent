@@ -454,6 +454,11 @@ def test_an_in_place_engine_whose_split_fails_after_the_archive_is_still_a_compa
     from run_agent import AIAgent
 
     def _in_place(msgs, **_kwargs):
+        compressor = agent.context_compressor
+        compressor._active_compression_telemetry = compressor._last_compression_telemetry = (
+            compressor._begin_compression_telemetry(current_tokens=80_000)
+        )
+        compressor._active_compression_telemetry.update(messages_before=len(msgs), messages_after=999)
         msgs[:] = [msgs[0], {"role": "assistant", "content": "SANITIZED SUMMARY"}, msgs[-1]]
         return msgs
 
@@ -477,3 +482,5 @@ def test_an_in_place_engine_whose_split_fails_after_the_archive_is_still_a_compa
     assert compressed is messages and len(compressed) < len(_messages())
     [(_sid, name, payload)] = published
     assert (name, payload["outcome"], payload["split_status"]) == ("compaction", "committed", "failed_not_indexed")
+    # The candidate's counts are replaced by the transcript that survived.
+    assert payload["messages_after"] == len(compressed)

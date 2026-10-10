@@ -3935,6 +3935,11 @@ def _run_summary_phase(
         _activity_heartbeat = _CompressionActivityHeartbeat(
             agent, commit_fence=commit_fence, emit_client_status=lease.status_emitted,
         ).start()
+        # Start this attempt's telemetry clean (#118580) only now, under the lease: done at entry, a call that stops
+        # at a gate or the lease erased a running attempt's record and seed.
+        for _name, _value in zip(_ATTEMPT_TELEMETRY_FIELDS, (None, None, dict(attempt.seed))):
+            with contextlib.suppress(Exception):
+                setattr(agent.context_compressor, _name, _value)
         compressed = _run_summary_dispatch(
             agent, messages, compress_fn, compress_kwargs, commit_fence=commit_fence,
             attempt_generation=attempt.generation, hard_cancel_event=hard_cancel_event,
@@ -4013,7 +4018,8 @@ def _begin_compression_attempt(
     agent: Any, *, force: bool, defer_notification: bool, trigger: Optional[str] = None,
     approx_tokens: Optional[int] = None, overflow_reason: Optional[str] = None,
 ) -> _Attempt:
-    """Snapshot + claim the compressor, reset per-attempt agent signals, seed telemetry.
+    """Snapshot + claim the compressor, reset per-attempt agent signals, build this attempt's telemetry seed
+    (written to the compressor only at dispatch, in ``_run_summary_phase``).
     The claim stops a late-unwinding sibling (stall-fallback overlap) from restoring its snapshot over ours or
     clearing our cancellation consult. Signals are cleared at the VERY TOP, before codex/breaker
     early-returns, so a stale value cannot make a later no-op look like lock contention;
@@ -4021,13 +4027,6 @@ def _begin_compression_attempt(
     ``conversation_history_after_compression()``."""
     snapshot = _snapshot_compressor_attempt_state(agent.context_compressor)
     generation = _claim_compressor_attempt(agent.context_compressor)
-    # A previous attempt's telemetry must not ride into this one (#118580 follow-up): the
-    # commit-time hold keeps the trio for THIS attempt's own emit, but the next attempt (and
-    # every emit before it re-seeds) must start clean. AFTER the snapshot so a late-unwind
-    # restore still round-trips the full pre-attempt state.
-    for _name in _ATTEMPT_TELEMETRY_FIELDS:
-        with contextlib.suppress(Exception):
-            setattr(agent.context_compressor, _name, None)
     if defer_notification and callable(getattr(agent, _PENDING_CONTEXT_ENGINE_NOTIFICATION, None)):
         raise RuntimeError("a compression notification is already pending")
     agent._last_compression_attempt_recorded = True
@@ -4053,7 +4052,6 @@ def _begin_compression_attempt(
         from hermes_cli.observability.shared_metrics_events import begin_compression_attempt
 
         begin_compression_attempt(trigger, approx_tokens or getattr(agent.context_compressor, "last_prompt_tokens", None))
-        agent.context_compressor._compression_telemetry_seed = dict(seed)
     return _Attempt(snapshot, generation, started_at, seed)
 
 
@@ -4349,13 +4347,14 @@ def compress_context(
         lifecycle.commit_status = (
             "committed" if split_status in {"not_applicable", "in_place_committed", "rotated_committed"} else "aborted"
         )
-        if lifecycle.commit_status == "committed":
+        # A rewrite that survived a later bookkeeping failure is still what the model sees: count it as saved.
+        rewritten = commit.compacted_in_place or compressed is not messages
+        if rewritten or lifecycle.commit_status == "committed":
             _record_committed_attempt_effect(agent, effect_messages_before, compressed, verbatim_tail, split_status)
         _emit_compression_attempt_telemetry(
             agent, started_at=attempt.started_at, commit_status=lifecycle.commit_status, split_status=split_status,
             failure_class=("session_split_failed" if split_status in {"failed_not_indexed", "aborted"} else None),
-            commit_started_at=commit.commit_started_at, attempt_seed=attempt.seed,
-            history_rewritten=commit.compacted_in_place or compressed is not messages,
+            commit_started_at=commit.commit_started_at, attempt_seed=attempt.seed, history_rewritten=rewritten,
         )
         return compressed, new_system_prompt
     finally:

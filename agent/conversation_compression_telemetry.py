@@ -101,9 +101,9 @@ def _emit_compression_attempt_telemetry(
         seed = _attempt_seed(agent, attempt_began=include_last_telemetry, attempt_seed=attempt_seed)
         own = isinstance(telemetry, dict) and telemetry.get("attempt_id") == seed["attempt_id"]
         if not own:
-            # The attempt-start clear leaves no dict before compress() seeds one, a pre-commit restore puts
-            # the previous attempt's back, and a newer attempt may have seeded its own: describe THIS attempt
-            # from its seed, never another's numbers.
+            # Before dispatch the compressor still holds the previous attempt's dict, a pre-commit restore puts
+            # it back, and a newer attempt may have seeded its own: describe THIS attempt from its seed, never
+            # another's numbers.
             telemetry = {**seed, "method": "none"}
         payload = dict(telemetry)
         payload.setdefault("event", "compression_attempt")

@@ -1,9 +1,10 @@
 name: Docker / shell lint
 
-# Lints the container build inputs: Dockerfile (via hadolint) and any shell
-# scripts under docker/ (via shellcheck). These catch the class of regression
-# the behavioral docker smoke test can't — unquoted variable
-# expansions, silently-failing RUN commands, etc.
+# Lints the container build inputs: Dockerfile (via hadolint), any shell
+# scripts under docker/ (via shellcheck), and the download/base-pin supply
+# chain rules (scripts/check_docker_supply_chain.py). These catch the class
+# of regression the behavioral docker smoke test can't — unquoted variable
+# expansions, silently-failing RUN commands, unverified `curl|tar` downloads.
 #
 # Rules and ignores are documented in .hadolint.yaml at the repo root.
 # shellcheck severity is pinned to `error` so SC1091-style "can't follow
@@ -42,6 +43,20 @@ jobs:
           dockerfile: docker/sandbox-desktop.Dockerfile
           config: .hadolint.yaml
           failure-threshold: warning
+
+  docker-supply-chain:
+    name: Dockerfile download + base-pin guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # Fails when a repo Dockerfile streams a download into tar/sh/... with no
+      # verification step, or names a base image by a mutable tag with no
+      # digest (#126942). Rules and the exemption marker live in the script.
+      - name: supply-chain guard
+        run: python3 scripts/check_docker_supply_chain.py
 
   shellcheck:
     name: Lint docker/ shell scripts (shellcheck)

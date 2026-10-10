@@ -261,7 +261,7 @@ class GatewayProfileReconcileMixin:
         from gateway.run_runtime import parked_profile_map
         return list(parked_profile_map(self))
 
-    async def _serve_profile_runtime(self, name: str, home: "Path") -> Optional[str]:
+    async def _serve_profile_runtime(self, name: str, home: Path) -> Optional[str]:
         """Grow the reservation by *home* and build its session authority (boot's per-secondary
         steps). Returns the park reason — reservation released — when another gateway owns the home
         (a stray per-profile daemon) or its store cannot be opened; None when served. An
@@ -278,6 +278,13 @@ class GatewayProfileReconcileMixin:
         try:
             await serve_profile_runtime(self, name, home)
         except Exception as exc:
+            if self.session_authorities.for_home(home) is not None:
+                # Retirement of the failed attempt missed its deadline: its writer may still use
+                # this home, so the reservation and authority stay; the profile is parked (no
+                # adapters) and the batch goes on for every other profile.
+                logger.error("[MULTIPLEX] Profile '%s' not served (%s); a turn outlived its Stop, "
+                             "ownership retained", name, exc, exc_info=True)
+                return f"stopping after a failed serve; ownership retained: {exc}"
             logger.error("[MULTIPLEX] Profile '%s' not served: its session store is unusable (%s): %s",
                          name, home, exc, exc_info=True)
             release_profile_home(self, home)

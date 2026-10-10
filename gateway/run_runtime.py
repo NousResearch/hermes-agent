@@ -242,7 +242,7 @@ def stop_managed_turns(runner):
     return sum(stop_authority_turns(authority) for authority in _authorities(runner))
 
 
-async def _retire_profile_authority(authority):
+async def _retire_profile_authority(authority, timeout=None):
     """Stop profile-local services and turns before its ownership is released.
 
     Claims are refused from here on; every executing turn gets a cooperative Stop, and its session
@@ -250,11 +250,11 @@ async def _retire_profile_authority(authority):
     admission settled). The hosted-room stop runs alongside that join under the same deadline: it
     never interrupts accepted turns and its room threads wait for the member turns they observe, so
     those turns must be signalled first or the room stop cannot finish. False when a turn or room
-    thread misses TURN_SETTLE_SECONDS: it may still call tools and write history, so the
-    caller must keep the profile's reservation and store handles."""
+    thread misses *timeout* (default TURN_SETTLE_SECONDS): it may still call tools and write
+    history, so the caller must keep the profile's reservation and store handles."""
     from gateway.session_cron import unbind_owner
     from gateway.session_runtime_workers import join_authority_work, stop_authority_work
-    timeout = TURN_SETTLE_SECONDS
+    timeout = TURN_SETTLE_SECONDS if timeout is None else timeout
     authority.retiring = True
     stop_authority_work(authority)
     service = getattr(authority, 'hosted_room_service', None)
@@ -280,6 +280,10 @@ async def _retire_profile_authority(authority):
     return True
 
 
+class ProfileOwnershipRetained(RuntimeError):
+    """A retired attempt's writer is still live: the profile keeps its reservation and authority."""
+
+
 async def serve_profile_runtime(runner, name, home):
     """Hot-serve one reserved profile's runtime: build its authority, recover its durable state and
     publish it in the descriptor/ticket store — the steps boot performs per secondary. Raises when
@@ -291,8 +295,16 @@ async def serve_profile_runtime(runner, name, home):
     from gateway.platforms.webhook_ingress import recover_webhook_finalizations
     home = await asyncio.to_thread(Path(home).resolve)
     registry = runner.session_authorities
-    if registry.for_home(home) is not None:
-        return registry.for_home(home)
+    existing = registry.for_home(home)
+    if existing is not None and getattr(existing, 'retiring', False):
+        # An earlier failed attempt kept this authority because its writer outlived Stop. It refuses
+        # every admission, so serving it would start adapters on a dead profile: finish its
+        # retirement without waiting, or refuse (the caller parks and keeps the reservation).
+        if not await _retire_profile_authority(existing, timeout=0):
+            raise ProfileOwnershipRetained(f'an earlier serve of {home} is still stopping')
+        registry.remove(home)
+    elif existing is not None:
+        return existing
     authority = await _build_profile_authority(runner, name, home, register=False)
     try:
         with owner_scope(authority):

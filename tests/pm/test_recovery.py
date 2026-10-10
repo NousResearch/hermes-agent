@@ -30,7 +30,9 @@ def test_startup_validation_checks_real_ruamel_dependency(tmp_path, failure):
     from pm.recovery import validate_environment
 
     candidate = tmp_path / "candidate"
-    venv.EnvBuilder(with_pip=False).create(candidate)
+    # A copied interpreter cannot start on macOS (dyld wants lib/libpython3.*.dylib
+    # beside it); a symlinked stub starts through the real distribution.
+    venv.EnvBuilder(with_pip=False, symlinks=True).create(candidate)
     python = candidate / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     target = site_packages(candidate)
     package = target / "ruamel" / "yaml"

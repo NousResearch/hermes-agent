@@ -1897,3 +1897,56 @@ def test_docker_env_warnings_never_echo_values(caplog):
     with caplog.at_level(logging.WARNING, logger="tools.environments.docker"):
         docker_env._normalize_env_dict({"TOKEN": ["sk-live-value"], "OK": "1"})
     assert "TOKEN" in caplog.text and "sk-live-value" not in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# tmpfs exec/noexec invariants (issue #126245)
+# ---------------------------------------------------------------------------
+
+
+def _tmpfs_specs_from_start_call(calls):
+    """tmpfs specs of the first `docker run` captured by _mock_subprocess_run."""
+    run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
+    assert run_calls, "docker run should have been called"
+    run_args = run_calls[0][0]
+    return [run_args[i + 1] for i, a in enumerate(run_args[:-1]) if a == "--tmpfs"]
+
+
+def test_every_tmpfs_spec_names_exactly_one_of_exec_noexec(monkeypatch):
+    """Every --tmpfs mount spec must state its exec intent explicitly.
+
+    Moby prepends ``noexec,nosuid,nodev`` to each --tmpfs option list and only
+    a later explicit ``exec`` overrides ``noexec`` — so a spec naming neither
+    token is silently noexec on Docker Engine, whatever it may do elsewhere.
+    ``/run``, ``/workspace``, ``/home`` and ``/root`` already name their token;
+    a mount that stays silent about it inherits the engine default instead of
+    its documented intent."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+
+    _make_dummy_env()
+
+    tmpfs_vals = _tmpfs_specs_from_start_call(calls)
+    assert tmpfs_vals, "sandbox start should mount tmpfs volumes"
+    for spec in tmpfs_vals:
+        opts = spec.split(":", 1)[1].split(",")
+        assert opts.count("exec") + opts.count("noexec") == 1, (
+            f"tmpfs spec {spec!r} must name exactly one of exec/noexec"
+        )
+
+
+def test_tmp_tmpfs_is_exec_for_package_builds(monkeypatch):
+    """pip/npm builds compile and run build tools in /tmp, so the sandbox /tmp
+    tmpfs must carry an explicit ``exec`` token (not merely omit ``noexec``)."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+
+    _make_dummy_env()
+
+    tmpfs_vals = _tmpfs_specs_from_start_call(calls)
+    tmp_mounts = [v for v in tmpfs_vals if v.startswith("/tmp:")]
+    assert tmp_mounts, f"no /tmp tmpfs mount found in {tmpfs_vals}"
+    opts = tmp_mounts[0].split(":", 1)[1].split(",")
+    assert "exec" in opts and "noexec" not in opts, (
+        f"/tmp must be mounted exec for package builds, got: {tmp_mounts[0]}"
+    )

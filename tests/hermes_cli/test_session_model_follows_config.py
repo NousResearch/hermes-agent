@@ -23,6 +23,8 @@ resume path.
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 # Imported at module scope (aliased: the stub locals below are named ``cli``):
 # ``patch.dict("cli.CLI_CONFIG", ...)`` would otherwise resolve the dotted string at
 # call time, forcing a fresh ``cli`` import *inside* the test's file-I/O guard —
@@ -30,7 +32,11 @@ from unittest.mock import patch
 import cli as cli_module
 
 from hermes_cli.cli_model_switch_mixin import (
+    SESSION_MODEL_POLICY_FOLLOW_CONFIG,
+    SESSION_MODEL_POLICY_NEVER_PIN,
     CLIModelSwitchMixin,
+    SessionModelPolicyError,
+    resolve_session_model_policy,
     stored_model_is_config_cache,
 )
 
@@ -171,3 +177,220 @@ def test_the_reconcile_warns_rather_than_being_silent():
     with patch.dict(cli_module.CLI_CONFIG, _CFG, clear=False):
         CLIModelSwitchMixin._restore_session_model(cli, _cache_row(), quiet=False)
     assert cli._printed, "a config change that overrides a pin must be announced, never silent"
+
+
+# --------------------------------------------------------------------------- #
+# the pin must not RETURN: the repair leaves a row that is still a cache
+# --------------------------------------------------------------------------- #
+
+def _apply_patch(config: dict, patch: dict) -> dict:
+    """Emulate ``SessionDB._merge_model_config_json``: ``None`` deletes a key."""
+    out = dict(config)
+    for key, value in patch.items():
+        if value is None:
+            out.pop(key, None)
+        else:
+            out[key] = value
+    return out
+
+
+def test_the_repair_deletes_the_stale_route_instead_of_restamping_it():
+    """The repair must not write the route it just rejected: a stamp IS provenance, so
+    restamping would make the row a permanent "deliberate pick" and hand the pin back."""
+    db = _FakeDB()
+    cli = _cli(model="deepseek-flash", db=db)
+    row = _cache_row(model_config={"provider": "zai", "base_url": "https://api.z.ai/v1",
+                                   "gateway_runtime": {"provider": "zai"}})
+    with patch.dict(cli_module.CLI_CONFIG, _CFG, clear=False):
+        CLIModelSwitchMixin._restore_session_model(cli, row, quiet=True)
+    assert cli.model == "deepseek-flash"
+    sid, repaired = db.config_patches[-1]
+    assert sid == "s1"
+    assert repaired.get("provider") is None, "the stale route must be deleted, never re-stamped"
+    assert repaired.get("base_url") is None
+    assert repaired.get("gateway_runtime") is None
+    repaired_row = dict(row, model="deepseek-flash",
+                        model_config=_apply_patch(row["model_config"], repaired))
+    assert stored_model_is_config_cache(repaired_row) is True, \
+        "a repaired row carries no provenance, so it stays a cache"
+
+
+def test_a_repaired_row_reconciles_again_when_the_config_moves():
+    """Second config change, same row: the pin must not come back through the repair.
+
+    An interactive source with no route is a cache; after the repair it must STILL be one —
+    so this fails if the repair stamps the provider it just rejected.
+    """
+    db = _FakeDB()
+    cli = _cli(model="deepseek-flash", db=db)
+    row = _cache_row(source="cli")
+    with patch.dict(cli_module.CLI_CONFIG, _CFG, clear=False):
+        CLIModelSwitchMixin._restore_session_model(cli, row, quiet=True)
+    _, repaired = db.config_patches[-1]
+    row = dict(row, model="deepseek-flash",
+               model_config=_apply_patch(row["model_config"], repaired))
+    moved = {"model": {"provider": "deepseek", "default": "deepseek-v4-lite"}}
+    cli2 = _cli(model="deepseek-v4-lite", db=db)
+    with patch.dict(cli_module.CLI_CONFIG, moved, clear=False):
+        CLIModelSwitchMixin._restore_session_model(cli2, row, quiet=True)
+    assert cli2.model == "deepseek-v4-lite"
+    assert db.model_writes[-1] == ("s1", "deepseek-v4-lite")
+
+
+# --------------------------------------------------------------------------- #
+# every non-interactive source is a cache, route key or not
+# --------------------------------------------------------------------------- #
+
+_NON_INTERACTIVE_SOURCES = ("kanban", "cron", "oneshot", "bot_peer_dm", "peer", "webhook",
+                            "delegation", "subagent", "background_review")
+
+
+def test_a_stray_route_key_cannot_rescue_a_non_interactive_row():
+    for source in _NON_INTERACTIVE_SOURCES:
+        row = {"model": _OLD_DEFAULT, "source": source,
+               "model_config": {"provider": "zai", "base_url": "https://api.z.ai/v1",
+                                "gateway_runtime": {"provider": "zai"}}}
+        assert stored_model_is_config_cache(row) is True, source
+
+
+def test_a_non_interactive_row_with_a_route_is_reconciled_on_resume():
+    db = _FakeDB()
+    cli = _cli(model="deepseek-flash", db=db)
+    row = _cache_row(model_config={"provider": "zai"})
+    with patch.dict(cli_module.CLI_CONFIG, _CFG, clear=False):
+        CLIModelSwitchMixin._restore_session_model(cli, row, quiet=True)
+    assert cli.model == "deepseek-flash"
+    assert db.model_writes == [("s1", "deepseek-flash")]
+
+
+def test_a_resumed_one_shot_never_restores_a_stored_pin():
+    """One-shot IS a non-interactive source: no user was there to pick, so the stored
+    route is a cache like any other — the ambient/config choice stands."""
+    from hermes_cli.oneshot import _ModelChoice, _apply_stored_session_runtime
+
+    choice = _ModelChoice(model="deepseek-flash", provider="deepseek", api_key="k")
+    row = {"model": "zai/glm-5.1", "source": "oneshot",
+           "model_config": {"provider": "zai", "base_url": "https://api.z.ai/v1"}}
+    out = _apply_stored_session_runtime(choice, row, explicit_model=False)
+    assert (out.model, out.provider) == ("deepseek-flash", "deepseek")
+
+
+def test_an_explicit_one_shot_model_still_wins():
+    from hermes_cli.oneshot import _ModelChoice, _apply_stored_session_runtime
+
+    choice = _ModelChoice(model="deepseek-flash", provider="deepseek", api_key="k")
+    row = {"model": "zai/glm-5.1", "source": "desktop", "model_config": {"provider": "zai"}}
+    out = _apply_stored_session_runtime(choice, row, explicit_model=True)
+    assert out.model == "deepseek-flash"
+
+
+# --------------------------------------------------------------------------- #
+# session.model_policy (config knob, ruling R3)
+# --------------------------------------------------------------------------- #
+
+_NEVER_PIN_CFG = {**_CFG, "session": {"model_policy": SESSION_MODEL_POLICY_NEVER_PIN}}
+
+
+def test_the_default_policy_is_follow_config():
+    assert resolve_session_model_policy({}) == SESSION_MODEL_POLICY_FOLLOW_CONFIG
+    assert resolve_session_model_policy({"session": {}}) == SESSION_MODEL_POLICY_FOLLOW_CONFIG
+    assert resolve_session_model_policy(
+        {"session": {"model_policy": None}}) == SESSION_MODEL_POLICY_FOLLOW_CONFIG
+
+
+def test_never_pin_is_read_from_the_session_section():
+    assert resolve_session_model_policy(
+        {"session": {"model_policy": "never_pin"}}) == SESSION_MODEL_POLICY_NEVER_PIN
+    assert resolve_session_model_policy(
+        {"session": {"model_policy": "  NEVER_PIN  "}}) == SESSION_MODEL_POLICY_NEVER_PIN
+
+
+def test_an_unknown_policy_is_refused_rather_than_falling_back():
+    with pytest.raises(SessionModelPolicyError):
+        resolve_session_model_policy({"session": {"model_policy": "sometimes"}})
+    with pytest.raises(SessionModelPolicyError):
+        resolve_session_model_policy({"session": {"model_policy": ""}})
+
+
+def test_the_config_validator_reports_an_unknown_policy_as_an_error():
+    from hermes_cli.config import validate_config_structure
+
+    issues = validate_config_structure({"session": {"model_policy": "sometimes"}})
+    flagged = [i for i in issues if "session.model_policy" in i.message]
+    assert flagged, "an unknown policy must be flagged, not silently ignored"
+    assert all(i.severity == "error" for i in flagged)
+
+
+def test_a_known_policy_passes_the_config_validator():
+    from hermes_cli.config import validate_config_structure
+
+    for value in ("follow_config", "never_pin"):
+        issues = validate_config_structure({"session": {"model_policy": value}})
+        assert not [i for i in issues if "session.model_policy" in i.message], value
+
+
+def test_the_knob_is_registered_in_the_canonical_config_defaults():
+    """Every reader has a registry entry: the knob is declared in DEFAULT_CONFIG and in the
+    CLI loader's own defaults, so it inherits per-lane exactly like model.default."""
+    from hermes_cli.cli_config_load import _cli_config_defaults
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+
+    assert DEFAULT_CONFIG["session"]["model_policy"] == SESSION_MODEL_POLICY_FOLLOW_CONFIG
+    assert _cli_config_defaults()["session"]["model_policy"] == SESSION_MODEL_POLICY_FOLLOW_CONFIG
+
+
+def test_a_temp_config_yaml_carries_the_knob_through_the_cli_loader(tmp_path, monkeypatch):
+    import hermes_yaml as yaml
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(cli_module, "_hermes_home", home)
+    (home / "config.yaml").write_text(yaml.safe_dump({
+        "model": {"default": "deepseek-flash", "provider": "deepseek"},
+        "session": {"model_policy": "never_pin"}}))
+    cfg = cli_module.load_cli_config()
+    assert resolve_session_model_policy(cfg) == SESSION_MODEL_POLICY_NEVER_PIN
+
+
+def test_never_pin_makes_every_row_a_cache_even_a_deliberate_pick():
+    row = {"model": "zai/glm-5.1", "source": "desktop",
+           "model_config": {"provider": "zai", "base_url": "https://api.z.ai/v1"}}
+    assert stored_model_is_config_cache(row) is False
+    assert stored_model_is_config_cache(
+        row, policy=SESSION_MODEL_POLICY_NEVER_PIN) is True
+
+
+def test_never_pin_overrides_a_deliberate_pick_on_resume():
+    db = _FakeDB()
+    cli = _cli(model="deepseek-flash", db=db)
+    cli.base_url = None
+    row = {"model": "zai/glm-5.1", "source": "desktop",
+           "model_config": {"provider": "zai", "base_url": "https://api.z.ai/v1"}}
+    with patch.dict(cli_module.CLI_CONFIG, _NEVER_PIN_CFG, clear=False):
+        CLIModelSwitchMixin._restore_session_model(cli, row, quiet=True)
+    assert cli.model == "deepseek-flash"
+    assert db.model_writes == [("s1", "deepseek-flash")]
+
+
+def test_never_pin_with_no_configured_default_leaves_the_resolved_model_alone():
+    db = _FakeDB()
+    cli = _cli(model="deepseek-flash", db=db)
+    row = {"model": "zai/glm-5.1", "source": "desktop", "model_config": {"provider": "zai"}}
+    cfg = {"model": {}, "session": {"model_policy": SESSION_MODEL_POLICY_NEVER_PIN}}
+    with patch.dict(cli_module.CLI_CONFIG, cfg, clear=False):
+        CLIModelSwitchMixin._restore_session_model(cli, row, quiet=True)
+    assert cli.model == "deepseek-flash", "never_pin must never fall back to the stored pin"
+
+
+def test_follow_config_still_honours_a_deliberate_pick_under_the_knob():
+    db = _FakeDB()
+    cli = _cli(model="deepseek-flash", db=db)
+    cli.base_url = None
+    row = {"model": "zai/glm-5.1", "source": "desktop",
+           "model_config": {"gateway_runtime": {"provider": "zai", "base_url": "https://api.z.ai/v1"}}}
+    cfg = {**_CFG, "session": {"model_policy": SESSION_MODEL_POLICY_FOLLOW_CONFIG}}
+    with patch.dict(cli_module.CLI_CONFIG, cfg, clear=False):
+        CLIModelSwitchMixin._restore_session_model(cli, row, quiet=True)
+    assert cli.model == "zai/glm-5.1"
+    assert db.model_writes == []

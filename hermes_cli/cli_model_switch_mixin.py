@@ -79,6 +79,52 @@ def stored_session_route(session_meta, *, current_model, current_provider):
     return stored_model, provider, base_url, api_mode, provider_changed
 
 
+#: ``session.model_policy`` — what a stored ``sessions.model`` MEANS when a session is
+#: resumed. ``follow_config`` (default): the stored model is a CACHE of the profile's
+#: config decision, honoured only for a row that records a deliberate pick (a route
+#: stamp) and came from an interactive source. ``never_pin``: no stored model is ever
+#: restored — the resolved profile config always wins.
+SESSION_MODEL_POLICY_FOLLOW_CONFIG = "follow_config"
+SESSION_MODEL_POLICY_NEVER_PIN = "never_pin"
+SESSION_MODEL_POLICIES = (SESSION_MODEL_POLICY_FOLLOW_CONFIG, SESSION_MODEL_POLICY_NEVER_PIN)
+
+#: The knob rides the same resolved config dict as ``model.default`` (``load_cli_config``
+#: merges the per-lane ``config.yaml`` over the built-in defaults), so a lane inherits or
+#: overrides it exactly like its model default.
+SESSION_MODEL_POLICY_KEY = "session.model_policy"
+
+
+class SessionModelPolicyError(ValueError):
+    """``session.model_policy`` names a value this build does not implement.
+
+    A CONFIG ERROR — raised, never quietly downgraded to the default: a typo that
+    silently restored pinning is the exact failure this knob exists to prevent.
+    """
+
+
+def resolve_session_model_policy(config=None) -> str:
+    """``session.model_policy`` for the running profile, validated.
+
+    Defaults to the CLI's resolved config (per-lane file already merged over the
+    built-in defaults). Only an absent or ``null`` value means "unset"; every other
+    value must name a known policy or ``SessionModelPolicyError`` is raised.
+    """
+    if config is None:
+        from cli import CLI_CONFIG
+        config = CLI_CONFIG
+    session_cfg = (config or {}).get("session")
+    session_cfg = session_cfg if isinstance(session_cfg, dict) else {}
+    raw = session_cfg.get("model_policy")
+    if raw is None:
+        return SESSION_MODEL_POLICY_FOLLOW_CONFIG
+    value = str(raw).strip().lower()
+    if value not in SESSION_MODEL_POLICIES:
+        raise SessionModelPolicyError(
+            f"{SESSION_MODEL_POLICY_KEY}={raw!r} is not a policy this build knows; "
+            f"use one of: {', '.join(SESSION_MODEL_POLICIES)}")
+    return value
+
+
 #: Session surfaces with no user in them. A row created by one of these can never
 #: hold a model a PERSON chose, so its ``sessions.model`` is always re-derived from
 #: the profile's config on resume. Closed by construction from the live stores; a
@@ -90,7 +136,7 @@ _NON_INTERACTIVE_SESSION_SOURCES = frozenset({
 })
 
 
-def stored_model_is_config_cache(session_meta) -> bool:
+def stored_model_is_config_cache(session_meta, *, policy: str | None = None) -> bool:
     """True when ``sessions.model`` is a CACHE of the profile's config default rather
     than a model a user deliberately chose.
 
@@ -110,7 +156,12 @@ def stored_model_is_config_cache(session_meta) -> bool:
 
     ``follow_profile_config`` is the gateway's own "this chat follows config"
     marker: it makes the row a cache by declaration.
+
+    ``policy`` overrides the ``session.model_policy`` read: under ``never_pin``
+    EVERY row is a cache — not even a stamped deliberate pick is restored.
     """
+    if (policy or resolve_session_model_policy()) == SESSION_MODEL_POLICY_NEVER_PIN:
+        return True
     meta = session_meta or {}
     source = str(meta.get("source") or "").strip().lower()
     if source in _NON_INTERACTIVE_SESSION_SOURCES:
@@ -144,8 +195,16 @@ def config_model_target() -> tuple:
     return str(model or "").strip(), str(provider or "").strip()
 
 
-def _repair_stored_model_pin(cli, stored_model: str, config_provider: str) -> None:
-    """Write the config-derived route back onto the row so the cache stops lying.
+def _repair_stored_model_pin(cli, stored_model: str) -> None:
+    """Write the config-derived model back onto the row and DELETE the stale route.
+
+    The deletion is load-bearing: a route key (``provider`` at the top level of
+    ``model_config`` or under its nested ``gateway_runtime``) is exactly what
+    ``stored_model_is_config_cache`` reads as pick-provenance, so restamping the very
+    route this guard just rejected would hand the row a permanent "a user chose this"
+    and the pin would come back at the next config change — the incident shape, one
+    resume later. The repaired row records the model that actually ran and no route:
+    what a cache looks like.
 
     Best-effort: the session must open even if the store is read-only, and the guard
     in ``_reconcile_stored_model_to_config`` already protected THIS resume without it.
@@ -157,38 +216,41 @@ def _repair_stored_model_pin(cli, stored_model: str, config_provider: str) -> No
         return
     try:
         db.update_session_model(sid, cli.model)
-        if config_provider:
-            db.patch_session_model_config(
-                sid, {"provider": config_provider, "model": cli.model,
-                      "gateway_runtime": {"provider": config_provider}})
+        db.patch_session_model_config(sid, {
+            "provider": None, "base_url": None, "api_mode": None, "gateway_runtime": None})
     except Exception:
         logger.debug("Failed to repair a stale stored model pin", exc_info=True)
 
 
-def _reconcile_stored_model_to_config(cli, session_meta, *, quiet: bool = False) -> bool:
+def _reconcile_stored_model_to_config(cli, session_meta, *, quiet: bool = False,
+                                      policy: str | None = None) -> bool:
     """A config change must never be silently bypassed by a stale stored pin.
 
     The row's ``model`` was a copy of ``model.default`` at creation. The CLI has
     already resolved the profile's CURRENT default into ``cli.model`` /
     ``cli.provider``, so the repair is simply: do NOT overwrite them with the cached
-    value — and write the corrected route back to the row so the stale pin stops
-    reappearing on every resume. A mismatch is announced (never silent): silence here
-    is what let a stale pin keep billing a superseded model, undetected.
+    value — and write the model back to the row so the stale pin stops reappearing on
+    every resume. A mismatch is announced (never silent): silence here is what let a
+    stale pin keep billing a superseded model, undetected.
 
     Returns True once the row is reconciled (the caller must NOT also run the ordinary
     stored-route restore). Returns False when the profile config names no default at
     all: a cache is only a cache OF a config default, so with nothing to reconcile
     against the caller must run that ordinary restore unchanged — it carries the
     credential re-resolution and the in-place agent swap a partial re-implementation
-    here would silently drop.
+    here would silently drop. ``session.model_policy: never_pin`` is the exception:
+    there the stored model is never honoured at all, so the caller must NOT restore it
+    even with nothing configured to replace it.
 
     Module-level because the switch paths are driven with bare stubs (see the module
     docstring): ``cli`` may be a SimpleNamespace with no mixin methods.
     """
     from cli import logger
+    policy = policy or resolve_session_model_policy()
+    never_pin = policy == SESSION_MODEL_POLICY_NEVER_PIN
     stored_model = str((session_meta or {}).get("model") or "").strip()
-    config_model, config_provider = config_model_target()
-    if not config_model:
+    config_model, _config_provider = config_model_target()
+    if not config_model and not never_pin:
         # No configured default to reconcile against — nothing this guard's row can be a
         # cache OF. Let the caller run the ordinary stored-route restore, which also
         # re-resolves credentials and swaps a live agent; re-implementing it here would
@@ -196,11 +258,17 @@ def _reconcile_stored_model_to_config(cli, session_meta, *, quiet: bool = False)
         return False
     resolved = cli.model or config_model
     if stored_model != resolved:
-        msg = (f"Session was pinned to {stored_model}, which this profile's config no "
-               f"longer defaults to; following config ({resolved}).")
+        if never_pin:
+            msg = (f"{SESSION_MODEL_POLICY_KEY} is {SESSION_MODEL_POLICY_NEVER_PIN}: the model "
+                   f"stored on this session ({stored_model}) is ignored; running the "
+                   f"configured model ({resolved}).")
+        else:
+            msg = (f"Session was pinned to {stored_model}, which this profile's config no "
+                   f"longer defaults to; following config ({resolved}).")
         logger.warning(
-            "session %s stored model %r is a stale cache of the profile config default; "
-            "reconciled to %r", getattr(cli, "session_id", "?"), stored_model, resolved)
+            "session %s stored model %r is a cache under %s=%s, not a deliberate pick; "
+            "reconciled to %r", getattr(cli, "session_id", "?"), stored_model,
+            SESSION_MODEL_POLICY_KEY, policy, resolved)
         if quiet:
             print(msg, file=sys.stderr)
         else:
@@ -212,7 +280,7 @@ def _reconcile_stored_model_to_config(cli, session_meta, *, quiet: bool = False)
                 base_url=cli.base_url or "", api_mode=cli.api_mode or "")
         except Exception:
             logger.debug("In-place agent model swap on config reconcile failed", exc_info=True)
-    _repair_stored_model_pin(cli, stored_model, config_provider)
+    _repair_stored_model_pin(cli, stored_model)
     return True
 
 
@@ -589,7 +657,9 @@ class CLIModelSwitchMixin:
         A row whose model is a CACHE of the profile's config default (see
         ``stored_model_is_config_cache``) is NOT restored: the config the CLI already
         resolved wins, and the stale pin is repaired so it cannot drift again. Only a row
-        that records a deliberate pick may move the model.
+        that records a deliberate pick may move the model. Which rows may carry a
+        deliberate pick is ``session.model_policy``: ``follow_config`` (default) keeps the
+        provenance test, ``never_pin`` restores nothing at all.
         A different stored provider gets its credentials re-resolved — the ambient ``api_key``
         must not be sent to the session's endpoint; on failure the ambient credentials are kept
         so the session still opens (the first turn surfaces the auth error).
@@ -597,8 +667,9 @@ class CLIModelSwitchMixin:
         from cli import logger
         if not (session_meta or {}).get("model") or getattr(self, "_explicit_model_override", False):
             return
-        if stored_model_is_config_cache(session_meta) and _reconcile_stored_model_to_config(
-                self, session_meta, quiet=quiet):
+        policy = resolve_session_model_policy()
+        if stored_model_is_config_cache(session_meta, policy=policy) and _reconcile_stored_model_to_config(
+                self, session_meta, quiet=quiet, policy=policy):
             # The profile's CURRENT config default wins over a cached pin; the row was
             # repaired and the override announced. Nothing left to restore.
             return

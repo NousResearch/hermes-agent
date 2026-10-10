@@ -13,7 +13,7 @@ import threading
 import time
 from collections import deque
 from pathlib import Path
-from typing import IO, Callable, Protocol
+from typing import IO, Any, Callable, Protocol
 
 from hermes_constants import get_hermes_home
 from tools.tool_output_truncate import head_tail_split, truncation_notice
@@ -225,7 +225,11 @@ def _pipe_stdin(proc: "ProcessHandle", data: str) -> None:
             return
         # Resolve the target BEFORE encoding: a failed encode must still
         # reach the finally-close, or the child hangs on EOF forever.
-        target = getattr(proc.stdin, "buffer", proc.stdin)
+        # ``stdin`` is the handle's TEXT stream; the bytes go to its raw buffer when the
+        # stream has one (a real Popen under text=True) and to the stream itself for the
+        # mock/alternate writers the tests install. Typed at the write site: the protocol
+        # promises a text stdin, and the buffer preference is this helper's business.
+        target: IO[Any] = getattr(proc.stdin, "buffer", proc.stdin)
         try:
             raw = data.encode("utf-8", "surrogateescape") if isinstance(data, str) else data
             written = target.write(raw)
@@ -268,7 +272,18 @@ def _popen_bash(cmd: list[str], stdin_data: str | None = None, **kwargs) -> subp
 # --- ProcessHandle protocol ---
 class ProcessHandle(Protocol):
     """Duck type every backend's _run_bash() must return. subprocess.Popen satisfies this
-    natively; SDK backends (Modal, Daytona) return _ThreadedProcessHandle."""
+    natively; SDK backends (Modal, Daytona) return _ThreadedProcessHandle.
+
+    The stream and pid members are part of the contract, not decoration: they are what
+    CONSUMERS of a handle read. ``_release_finished_handles`` in tools/process_registry
+    releases ``stdout``/``stderr``/``stdin`` of an ADOPTED handle, and the registry records
+    ``pid`` on the session it tracks and fingerprints it before signalling the group. A
+    handle that answers ``poll``/``wait`` but not ``stderr`` does not degrade - it wedges
+    backgrounding for the life of the process (t_73f1fd2c: the posix_spawn handle omitted
+    the attribute its ``stderr=STDOUT`` wiring implies). A backend with no separate stream
+    or host pid of its own must still DECLARE it, as ``None`` - the shape
+    ``Popen(stdout=PIPE, stderr=STDOUT, stdin=DEVNULL)`` reports - never omit it.
+    """
 
     def poll(self) -> int | None: ...
     def kill(self) -> None: ...
@@ -276,6 +291,15 @@ class ProcessHandle(Protocol):
 
     @property
     def stdout(self) -> IO[str] | None: ...
+
+    @property
+    def stderr(self) -> IO[str] | None: ...
+
+    @property
+    def stdin(self) -> IO[str] | None: ...
+
+    @property
+    def pid(self) -> int | None: ...
 
     @property
     def returncode(self) -> int | None: ...
@@ -290,6 +314,14 @@ class _ThreadedProcessHandle:
         self._cancel_fn = cancel_fn
         self._done = threading.Event()
         self._returncode: int | None = None
+        # The full ProcessHandle surface, declared rather than omitted: there is no host
+        # pid behind an SDK exec and no stderr/stdin stream of its own (the backend returns
+        # one merged output string) - the same shape Popen(stdout=PIPE, stderr=STDOUT,
+        # stdin=DEVNULL) reports, and the reason a consumer may read every member without
+        # a guard.
+        self.pid = None
+        self.stderr = None
+        self.stdin = None
 
         # Pipe for stdout — the drain thread in _wait_for_process reads the read end.
         read_fd, write_fd = os.pipe()

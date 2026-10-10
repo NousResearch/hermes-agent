@@ -826,6 +826,28 @@ _SOCKET_CLIENT_TASK_ATTRS = ("current_session_monitor", "message_processor", "me
 _SOCKET_TASK_CANCEL_TIMEOUT_S = 3.0
 
 
+def _tasks_running_on(obj: Any) -> list:
+    """Every task whose coroutine chain is inside a method of ``obj``, found by walking ``cr_await``.
+    Catches the SDK's anonymous ``ensure_future(run_message_listeners(...))`` tasks, which handle
+    Slack's periodic ``disconnect`` frame by calling ``connect()`` and are held by no attribute.
+    Never includes the calling task, so a teardown started from a Slack listener still finishes."""
+    if obj is None:
+        return []
+    current = asyncio.current_task()
+    found = []
+    for task in asyncio.all_tasks():
+        if task is current:
+            continue
+        coro = task.get_coro()
+        while coro is not None:
+            frame = getattr(coro, "cr_frame", None)
+            if frame is not None and frame.f_locals.get("self") is obj:
+                found.append(task)
+                break
+            coro = getattr(coro, "cr_await", None)
+    return found
+
+
 async def _cancel_socket_tasks(tasks: Any) -> None:
     """Cancel Socket Mode tasks and await them (bounded); unawaited cancel still races the work."""
     live = [
@@ -1260,13 +1282,16 @@ class SlackAdapter(BasePlatformAdapter):
         ``monitor_current_session()`` and ``receive_messages()`` each get there on their own, and
         ``connect()`` rebinds the client's task attributes on success, so the set of live tasks changes
         across the awaits inside ``close()``. Cancelling from a snapshot taken partway through that would
-        race a moving target. See slackapi/python-slack-sdk#1913.
+        race a moving target. See slackapi/python-slack-sdk#1913. The named attrs are not the whole
+        set: a ``disconnect`` frame reconnects from an anonymous listener task, so every task running
+        on the client is cancelled too (WEA-1251).
         """
         handler, task = self._handler, self._socket_mode_task
         self._handler = self._socket_mode_task = None
         client = getattr(handler, "client", None)
         await _cancel_socket_tasks(
-            [task] + [getattr(client, attr, None) for attr in _SOCKET_CLIENT_TASK_ATTRS])
+            [task] + [getattr(client, attr, None) for attr in _SOCKET_CLIENT_TASK_ATTRS]
+            + _tasks_running_on(client))
         if handler is not None:
             try:
                 await handler.close_async()

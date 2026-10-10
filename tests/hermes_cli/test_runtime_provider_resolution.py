@@ -49,6 +49,47 @@ def test_noauth_lmstudio_still_resolves(monkeypatch):
     assert resolved["api_key"]
 
 
+@pytest.mark.parametrize("source", ["argument", "environment"])
+@pytest.mark.parametrize("base_url,expected", [
+    ("http://127.0.0.1:1234", "http://127.0.0.1:1234/v1"),
+    ("http://localhost:1234/api", "http://localhost:1234/v1"),
+    ("http://localhost:1234/api/v1/", "http://localhost:1234/v1"),
+    ("http://localhost:1234/v1/", "http://localhost:1234/v1"),
+    ("https://models.example/lm/api/v1", "https://models.example/lm/v1"),
+])
+def test_explicit_lmstudio_normalizes_runtime_endpoint(monkeypatch, source, base_url, expected):
+    config = {"provider": "lmstudio", "default": "local-model", "api_mode": "chat_completions"}
+    before = dict(config)
+    monkeypatch.setattr(rp, "_get_model_config", lambda: config)
+    monkeypatch.setattr(rp, "load_pool", lambda *a: pytest.fail("explicit credentials must bypass pools"))
+    kwargs = {"requested": "lmstudio", "explicit_api_key": "local-test"}
+    if source == "argument":
+        kwargs["explicit_base_url"] = base_url
+    else:
+        env_name = rp.PROVIDER_REGISTRY["lmstudio"].base_url_env_var
+        assert env_name
+        monkeypatch.setenv(env_name, base_url)
+    result = rp.resolve_runtime_provider(**kwargs)
+    assert result["base_url"] == expected
+    assert result["provider"] == "lmstudio"
+    assert result["api_key"] == "local-test"
+    assert result["api_mode"] == "chat_completions"
+    assert result["source"] == "explicit"
+    assert config == before
+    assert rp.resolve_runtime_provider(
+        requested="lmstudio", explicit_api_key="local-test", explicit_base_url=result["base_url"]
+    ) == result
+
+
+def test_explicit_other_provider_keeps_its_endpoint(monkeypatch):
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {"api_mode": "chat_completions"})
+    result = rp.resolve_runtime_provider(
+        requested="deepseek", explicit_api_key="other-test", explicit_base_url="https://proxy.example/api/v1"
+    )
+    assert result["base_url"] == "https://proxy.example/api/v1"
+    assert result["provider"] == "deepseek"
+
+
 def _fake_invoke_jwt(ttl_seconds=3600):
     header = base64.urlsafe_b64encode(b'{"alg":"none","typ":"JWT"}').decode().rstrip("=")
     payload = base64.urlsafe_b64encode(

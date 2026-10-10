@@ -265,12 +265,7 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
         if notice is not None:
             return notice
 
-    # Strip exception wrappers; bound input first so a multi-KB blob can't slow the regexes.
-    cleaned = re.sub(r"^(RuntimeError|Exception|ValueError|HTTPStatusError):\s*", "", text[:2000])
-    cleaned = re.sub(r"\s+", " ", cleaned).strip().rstrip(".")
-    if len(cleaned) > 180:
-        cleaned = cleaned[:177].rstrip() + "..."
-    message = generic_failure_notice(job_name, job_id, cleaned)
+    message = generic_failure_notice(job_name, job_id, text)
 
     # Import-class failures (#95294 part 3): a long-lived gateway whose checkout was updated
     # underneath it (interrupted `hermes update`, manual git pull) serves MIXED modules and every

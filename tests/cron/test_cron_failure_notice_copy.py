@@ -90,13 +90,16 @@ def test_script_failure_keeps_its_cause(monkeypatch, tmp_path):
     early, _, _ = scheduler._apply_monitor_gate(job, JOB["id"], JOB["name"], None)
     assert early is not None and early[0] is False
     real_error = early[3]
-    for error in (
-        real_error,
-        "Script execution failed: HTTP 429: remote service rate limit",
-        "Script exited with code 1\nstderr:\nidle for 600s (limit 600s)",
+    for error, cause in (
+        (real_error, "HTTP 401: deploy token revoked"),
+        ("Script execution failed: HTTP 429: remote service rate limit", "HTTP 429: remote service rate limit"),
+        ("Script exited with code 1\nstderr:\nidle for 600s (limit 600s)", "idle for 600s (limit 600s)"),
     ):
         msg = _summarize_cron_failure_for_delivery(job, error)
-        assert error.splitlines()[-1] in msg, msg
+        assert cause in msg, msg
+        assert "Script exited with code" not in msg, msg
+        assert "Script execution failed:" not in msg, msg
+        assert "stderr:" not in msg, msg
         assert "backup provider" not in msg.lower(), msg
         assert "auth add" not in msg, msg
         assert "--provider" not in msg, msg
@@ -123,3 +126,27 @@ def test_cron_actions_target_the_owning_profile(monkeypatch, tmp_path):
     assert "hermes -p ops cron doctor" in blocked_config_notice(JOB["name"], "missing key")
     nudge = _failure_streak_nudge(job)
     assert "hermes -p ops cron pause ab12cd34" in nudge, nudge
+
+
+def test_generic_failure_is_readable_and_keeps_one_profile_scoped_details_pointer(monkeypatch, tmp_path):
+    profile_home = tmp_path / ".hermes" / "profiles" / "ops"
+    profile_home.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+    cause = "Task API read failed (timeout 15s). No task command was submitted."
+    for error in (
+        f"Script exited with code 1\nstderr:\n{cause}",
+        f"Script exited with code 2\nstdout:\n{cause}",
+        f"Script execution failed: {cause}",
+        "Script exited with code 7",
+        "Script execution failed:",
+    ):
+        msg = _summarize_cron_failure_for_delivery({**JOB, "no_agent": True}, error)
+        lines = msg.splitlines()
+        assert len(lines) == 3, msg
+        assert lines[0] == "⚠️ Cron 'Morning brief' failed", msg
+        displayed = cause if cause in error else error
+        assert displayed in lines[1], msg
+        assert lines[2] == "Details: `hermes -p ops cron runs ab12cd34`.", msg
+        assert "Output:" not in msg and "History:" not in msg, msg
+        assert "cron run " not in msg and "cron edit " not in msg and "cron pause " not in msg, msg

@@ -2,8 +2,8 @@
 
 The scheduler classifies the failure text through ``agent.error_classifier.classify_api_error``
 (one classifier for the whole app, no cron-local regex ladder) and looks the verdict up here.
-Every notice says WHAT happened and WHAT TO DO, and names the exact ``hermes cron`` command plus
-the real output directory — "cron output" alone sent operators hunting.
+Every notice says what happened and where to inspect it. Generic failures name only the
+profile-scoped history command; classified failures retain their specific recovery action.
 """
 
 from __future__ import annotations
@@ -110,12 +110,21 @@ def provider_failure_notice(
     )
 
 
-def generic_failure_notice(job_name: str, job_id: str, cleaned_error: str) -> str:
-    """Unclassified failure: the cleaned error text plus where to look and what to do."""
+def generic_failure_notice(job_name: str, job_id: str, error: str) -> str:
+    """Short diagnostic and one read-only history pointer; full errors stay in run output."""
+    cleaned = re.sub(r"^(RuntimeError|Exception|ValueError|HTTPStatusError):\s*", "", error[:2000])
+    cleaned = re.sub(
+        r"^Script (?:exited with code -?\d+\s+(?:stderr|stdout):\s*|execution failed:\s*)(?=\S)",
+        "", cleaned,
+    )
+    cleaned = re.sub(r"\s+", " ", cleaned).strip().rstrip(".")
+    if len(cleaned) > 180:
+        cleaned = cleaned[:177].rstrip() + "..."
     cron = f"hermes {profile_cli_selector()}cron"
     return (
-        f"⚠️ Cron '{job_name}' failed: {cleaned_error}.\n"
-        f"Output: {cron_output_dir_display(job_id)}. History: `{cron} runs {job_id}`."
+        f"⚠️ Cron '{job_name}' failed\n"
+        f"{cleaned}.\n"
+        f"Details: `{cron} runs {job_id}`."
     )
 
 

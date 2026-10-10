@@ -29,6 +29,7 @@ __all__ = [
     "PAYLOAD_DIR_NAME",
     "BundleLayout",
     "NotBundledApp",
+    "desktop_app_env",
     "launch_detached",
     "resolve_bundle_layout",
 ]
@@ -153,6 +154,17 @@ def _only(candidates: list[Path]) -> Path | None:
     return candidates[0] if len(candidates) == 1 else None
 
 
+def desktop_app_env(env: dict[str, str] | None = None) -> dict[str, str]:
+    """Copy a GUI launch environment without Electron's Node-only mode.
+
+    Shells embedded in other Electron apps can inherit this variable. It must
+    be absent before spawning the GUI, before any Electron app code can run.
+    """
+    child_env = dict(os.environ if env is None else env)
+    child_env.pop("ELECTRON_RUN_AS_NODE", None)
+    return child_env
+
+
 def launch_detached(
     argv: list[str], *, env: dict[str, str] | None = None, cwd: Path | str | None = None
 ) -> int:
@@ -169,7 +181,7 @@ def launch_detached(
     child = subprocess.Popen(
         argv,
         cwd=str(cwd) if cwd is not None else None,
-        env=env,
+        env=desktop_app_env(env),
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,

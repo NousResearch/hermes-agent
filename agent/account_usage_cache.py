@@ -102,11 +102,12 @@ def remember_account_usage(
     the single-account gauge — and additionally in the account's identity slot when the fetcher
     identified it, so a pooled picker sees per-turn data without waiting on its own refresh.
 
-    A snapshot without windows is never stored: a failed or empty fetch must not erase a fresher
-    snapshot. A fetch that STARTED before the freshest stored one cannot replace it either
+    A snapshot with neither windows nor balances is never stored: a failed or empty fetch must not
+    erase a fresher snapshot. (A balance-only snapshot is kept; gauges read ``windows`` and so stay
+    unchanged by it.) A fetch that STARTED before the freshest stored one cannot replace it either
     (``started_monotonic``), however late its response arrives.
     """
-    if not provider or snapshot is None or not snapshot.windows:
+    if not provider or snapshot is None or not (snapshot.windows or snapshot.balances):
         return
     started = time.monotonic() if started_monotonic is None else started_monotonic
     with _lock:

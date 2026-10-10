@@ -39,6 +39,14 @@ class AccountUsageWindow:
 
 
 @dataclass(frozen=True)
+class AccountBalance:
+    """Money left on the account, as the provider reports it (OpenRouter credits, DeepSeek balance)."""
+    label: str
+    amount: float
+    currency: str  # ISO 4217, upper-case
+
+
+@dataclass(frozen=True)
 class AccountUsageSnapshot:
     provider: str
     source: str
@@ -47,6 +55,9 @@ class AccountUsageSnapshot:
     plan: Optional[str] = None
     windows: tuple[AccountUsageWindow, ...] = ()
     details: tuple[str, ...] = ()
+    # Money left; ``render_account_usage_lines`` prints each as "<label>: <amount>", so fetchers
+    # never format it into ``details`` themselves.
+    balances: tuple[AccountBalance, ...] = ()
     unavailable_reason: Optional[str] = None
     # Stable account identity of the credential the snapshot was fetched with (e.g. a decoded
     # Codex JWT principal), when the provider supports one. Never a secret; ``None`` = the
@@ -58,7 +69,7 @@ class AccountUsageSnapshot:
 
     @property
     def available(self) -> bool:
-        return bool(self.windows or self.details) and not self.unavailable_reason
+        return bool(self.windows or self.details or self.balances) and not self.unavailable_reason
 
 
 def _snapshot(provider: str, source: str, windows: list, details: list, **kw: Any) -> AccountUsageSnapshot:
@@ -117,6 +128,7 @@ def render_account_usage_lines(snapshot: Optional[AccountUsageSnapshot], *, mark
         elif window.detail:
             base += f" • {window.detail}"
         lines.append(base)
+    lines.extend(f"{balance.label}: {_fmt_money(balance.amount, balance.currency)}" for balance in snapshot.balances)
     lines.extend(snapshot.details)
     if snapshot.unavailable_reason:
         lines.append(f"Unavailable: {snapshot.unavailable_reason}")
@@ -125,6 +137,14 @@ def render_account_usage_lines(snapshot: Optional[AccountUsageSnapshot], *, mark
 
 def _fmt_usd(d: float) -> str:
     return f"${d:,.2f}"
+
+
+_CURRENCY_SYMBOLS = {"USD": "$", "CNY": "¥"}
+
+
+def _fmt_money(amount: float, currency: str) -> str:
+    symbol = _CURRENCY_SYMBOLS.get(currency)
+    return f"{symbol}{amount:.2f}" if symbol else f"{amount:.2f} {currency}"
 
 
 def _is_num(v: Any) -> TypeGuard[float]:
@@ -675,8 +695,8 @@ def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[s
             key_data = _data("key")
         except Exception:
             key_data = {}
-    balance = float(credits.get("total_credits") or 0.0) - float(credits.get("total_usage") or 0.0)
-    details = [f"Credits balance: ${max(0.0, balance):.2f}"]
+    balance = max(0.0, float(credits.get("total_credits") or 0.0) - float(credits.get("total_usage") or 0.0))
+    details: list[str] = []
     windows: list[AccountUsageWindow] = []
     limit, limit_remaining, usage = key_data.get("limit"), key_data.get("limit_remaining"), key_data.get("usage")
     limit_reset = str(key_data.get("limit_reset") or "").strip()
@@ -692,7 +712,8 @@ def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[s
             if _is_num(value) and float(value) > 0:
                 usage_parts.append(f"${float(value):.2f} {label}")
         details.append(" • ".join(usage_parts))
-    return _snapshot("openrouter", "credits_api", windows, details)
+    return _snapshot("openrouter", "credits_api", windows, details,
+                     balances=(AccountBalance(label="Credits balance", amount=balance, currency="USD"),))
 
 
 _USAGE_FETCHERS: dict[str, Callable[[Optional[str], Optional[str]], Optional[AccountUsageSnapshot]]] = {

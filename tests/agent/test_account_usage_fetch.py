@@ -201,7 +201,7 @@ def test_fetch_account_usage_openrouter_uses_limit_remaining_and_ignores_depreca
             detail="$70.00 of $100.00 remaining • resets monthly",
         ),
     )
-    assert "Credits balance: $289.08" in snapshot.details
+    assert "Credits balance: $289.08" in render_account_usage_lines(snapshot)
     assert "API key usage: $12.50 total • $0.50 today • $2.00 this week • $8.00 this month" in snapshot.details
     assert all("-1 requests / 10s" not in line for line in render_account_usage_lines(snapshot))
 
@@ -240,7 +240,7 @@ def test_fetch_account_usage_openrouter_omits_quota_window_when_key_has_no_limit
 
     assert snapshot is not None
     assert snapshot.windows == ()
-    assert "Credits balance: $74.50" in snapshot.details
+    assert "Credits balance: $74.50" in render_account_usage_lines(snapshot)
     assert "API key usage: $25.50 total • $1.25 today • $4.50 this week • $18.00 this month" in snapshot.details
 
 

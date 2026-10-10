@@ -31,6 +31,10 @@ def usage_snapshot_document(snapshot) -> dict:
             for window in snapshot.windows
         ],
         "details": list(snapshot.details),
+        "balances": [
+            {"label": balance.label, "amount": balance.amount, "currency": balance.currency}
+            for balance in snapshot.balances
+        ],
         "unavailable_reason": snapshot.unavailable_reason,
     }
 

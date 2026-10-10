@@ -698,8 +698,8 @@ Subcommands: `add`, `list`, `remove`, `reset`, `priority`, `refresh`, `status`, 
 ## `hermes usage`
 
 The account-limits block of the `/usage` slash command — Codex 5-hour / weekly windows, plan and banked
-resets; Anthropic OAuth windows; OpenRouter credits — without starting a session, so shell scripts and cron
-jobs can read it.
+resets; Anthropic OAuth windows; OpenRouter and DeepSeek balances — without starting a session, so shell scripts
+and cron jobs can read it.
 
 ```bash
 hermes usage                          # configured model provider, human-readable block
@@ -709,7 +709,7 @@ hermes usage --json                   # one JSON document on stdout
 
 | Option | Description |
 |--------|-------------|
-| `--provider NAME` | Provider to query (default: the configured `model.provider`). Supported: `openai-codex`, `anthropic`, `openrouter`. |
+| `--provider NAME` | Provider to query (default: the configured `model.provider`). Supported: `openai-codex`, `anthropic`, `openrouter`, `deepseek`, and any provider plugin that implements the usage hook. |
 | `--json` | Print one JSON document instead of the human-readable block. |
 
 Credentials resolve exactly as they do for `/usage` in a session with no live agent (the auth store, then
@@ -731,12 +731,15 @@ has no usage endpoint, or the fetch fails (stdout stays empty).
     {"label": "Weekly", "used_percent": 12.5, "resets_at": "2026-09-25T09:00:00+00:00", "detail": null}
   ],
   "details": ["You have 1 reset banked - use /usage reset to activate"],
+  "balances": [],
   "unavailable_reason": null
 }
 ```
 
 `used_percent` is `null` when the provider did not report the window; `resets_at` is ISO-8601 UTC or `null`
-(some windows carry a free-text `detail` instead); `plan` is `null` when unknown.
+(some windows carry a free-text `detail` instead); `plan` is `null` when unknown. `balances` lists money left on the
+account as `{"label", "amount", "currency"}` (ISO 4217 currency, e.g. OpenRouter credits in `USD`, DeepSeek in `CNY`
+and/or `USD`); it is empty for providers that report only windows.
 
 ## `hermes status`
 

@@ -52,7 +52,7 @@ def test_hermes_usage_json_is_one_stable_document(capsys):
         {"label": "Weekly", "used_percent": 12.5, "resets_at": None, "detail": None},
     ]
     assert doc["details"] == ["You have 1 reset banked - use /usage reset to activate"]
-    assert set(doc) == {"provider", "source", "title", "plan", "fetched_at", "windows", "details", "unavailable_reason"}
+    assert set(doc) == {"provider", "source", "title", "plan", "fetched_at", "windows", "details", "balances", "unavailable_reason"}
 
 
 def test_hermes_usage_without_credential_exits_nonzero_with_one_stderr_line(capsys):

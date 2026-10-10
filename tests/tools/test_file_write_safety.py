@@ -651,7 +651,144 @@ class TestProtectedInstructionFiles:
         from tools.file_tools import write_file_tool
         return json.loads(write_file_tool(str(path), content))
 
+    def _select_transport(self, monkeypatch, present, *, fallback=None):
+        from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+        from tools import approval_context, approval_prompt
+
+        manager = PluginManager()
+        manifest = PluginManifest(
+            name="protected-write-approval",
+            version="1.0.0",
+            description="fixture",
+            source="user",
+            key="protected-write-approval",
+        )
+        PluginContext(manifest, manager).register_approval_transport("phone", present)
+        monkeypatch.setattr(approval_prompt, "get_plugin_manager", lambda: manager)
+        monkeypatch.setattr(
+            approval_context,
+            "_get_approval_transport_config",
+            lambda: ("phone", fallback),
+        )
+        return manager
+
     # ---- core behavior -------------------------------------------------
+
+    def test_selected_transport_precedes_cli_and_reprompts_each_write(
+        self, approvals, monkeypatch
+    ):
+        from tools import approval_context
+        from tools.file_tools_write_guards import _request_protected_instruction_approval
+
+        seen = []
+        self._select_transport(
+            monkeypatch,
+            lambda request: seen.append(request) or request.respond("once"),
+        )
+        approvals["answer"] = "once"
+        token = approval_context.set_current_session_key("protected-transport-cli")
+        try:
+            first = _request_protected_instruction_approval(["AGENTS.md"])
+            second = _request_protected_instruction_approval(["AGENTS.md"])
+        finally:
+            approval_context.reset_current_session_key(token)
+
+        assert first is None
+        assert second is None
+        assert approvals["calls"] == []
+        assert len(seen) == 2
+        assert seen[0].request_id != seen[1].request_id
+        assert seen[0].digest != seen[1].digest
+        for request in seen:
+            assert request.command == "<write to AGENTS.md>"
+            assert "Write to protected agent-instruction file(s): AGENTS.md" in request.description
+            assert request.pattern_key == "protected_instruction_file"
+            assert request.pattern_keys == ("protected_instruction_file",)
+            assert request.surface == "cli"
+            assert request.allowed_choices == ("once", "deny")
+
+    def test_gateway_selected_transport_does_not_require_builtin_notifier(
+        self, monkeypatch
+    ):
+        from tools import approval_context
+        from tools.file_tools_write_guards import _request_protected_instruction_approval
+
+        seen = []
+        self._select_transport(
+            monkeypatch,
+            lambda request: seen.append(request) or request.respond("once"),
+        )
+        monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
+        token = approval_context.set_current_session_key("protected-transport-gateway")
+        try:
+            result = _request_protected_instruction_approval(["SOUL.md"])
+        finally:
+            approval_context.reset_current_session_key(token)
+
+        assert result is None
+        assert len(seen) == 1
+        assert seen[0].surface == "gateway"
+        assert seen[0].allowed_choices == ("once", "deny")
+
+    def test_selected_transport_stale_response_fails_closed_without_builtin_fallback(
+        self, approvals, monkeypatch
+    ):
+        from hermes_cli.approval_transport import ApprovalDecision
+        from tools.file_tools_write_guards import _request_protected_instruction_approval
+
+        calls = []
+
+        def stale(request):
+            calls.append(request)
+            return ApprovalDecision("stale-request", request.digest, "once")
+
+        self._select_transport(monkeypatch, stale)
+        approvals["answer"] = "once"
+
+        result = _request_protected_instruction_approval(["CLAUDE.md"])
+
+        assert calls
+        assert result and "Selected approval transport failed (stale)" in result
+        assert approvals["calls"] == []
+
+    def test_selected_transport_failure_uses_explicit_builtin_fallback(
+        self, approvals, monkeypatch
+    ):
+        from tools.file_tools_write_guards import _request_protected_instruction_approval
+
+        calls = []
+        self._select_transport(
+            monkeypatch,
+            lambda request: calls.append(request) or {"choice": "once"},
+            fallback="builtin",
+        )
+        approvals["answer"] = "once"
+
+        result = _request_protected_instruction_approval(["SOUL.md"])
+
+        assert calls
+        assert result is None
+        assert len(approvals["calls"]) == 1
+
+    def test_yolo_cannot_bypass_selected_transport_denial(
+        self, approvals, monkeypatch
+    ):
+        import tools.approval as approval
+        from tools.file_tools_write_guards import _request_protected_instruction_approval
+
+        calls = []
+        self._select_transport(
+            monkeypatch,
+            lambda request: calls.append(request) or request.respond("deny"),
+        )
+        monkeypatch.setattr(approval, "_YOLO_MODE_FROZEN", True)
+        approvals["answer"] = "once"
+
+        result = _request_protected_instruction_approval(["AGENTS.md"])
+
+        assert len(calls) == 1
+        assert result and "BLOCKED" in result
+        assert approvals["calls"] == []
 
     @pytest.mark.parametrize(
         "name", ["AGENTS.md", "CLAUDE.md", "SOUL.md", ".cursorrules"]
@@ -684,12 +821,15 @@ class TestProtectedInstructionFiles:
         assert not target.exists()
         assert len(approvals["calls"]) == 1, "yolo bypassed the protected gate"
 
-    def test_second_write_prompts_again(self, tmp_path, approvals):
-        """One-operation approval: no session stickiness."""
-        target = tmp_path / "AGENTS.md"
-        approvals["answer"] = "once"
-        self._write(target)
-        self._write(target, "second")
+    @pytest.mark.parametrize("answer", ["once", "session", "always"])
+    def test_scope_choices_are_treated_as_one_operation(self, approvals, answer):
+        """Legacy clients may return a wider scope despite the hidden controls;
+        every accepted choice is still consumed as one operation only."""
+        from tools.file_tools_write_guards import _request_protected_instruction_approval
+
+        approvals["answer"] = answer
+        assert _request_protected_instruction_approval(["AGENTS.md"]) is None
+        assert _request_protected_instruction_approval(["AGENTS.md"]) is None
         assert len(approvals["calls"]) == 2
 
     def test_cli_prompt_is_told_no_scope_persists(self, tmp_path, approvals):

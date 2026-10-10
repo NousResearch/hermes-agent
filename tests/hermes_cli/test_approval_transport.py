@@ -440,6 +440,115 @@ def test_explicit_builtin_fallback_uses_existing_surface(monkeypatch):
     assert builtin_calls == [1]
 
 
+def test_selected_transport_uses_explicit_longer_timeout_for_request_and_invoke(monkeypatch):
+    import hermes_cli.approval_transport as transport_module
+
+    manager = PluginManager()
+    _context(manager).register_approval_transport("phone", lambda request: request.respond("once"))
+    monkeypatch.setattr(approval_prompt, "get_plugin_manager", lambda: manager)
+    monkeypatch.setattr(approval_context, "_get_approval_transport_config", lambda: ("phone", None))
+    monkeypatch.setattr(approval_context, "_get_approval_timeout", lambda: 300)
+    monkeypatch.setattr(approval_context, "_get_approval_transport_timeout", lambda: 3_600)
+    seen = {}
+
+    def invoke(present, request, *, timeout_seconds, **kwargs):
+        seen["request_timeout"] = request.timeout_seconds
+        seen["invoke_timeout"] = timeout_seconds
+        return transport_module.ApprovalTransportResult("once")
+
+    monkeypatch.setattr(transport_module, "invoke_approval_transport", invoke)
+
+    result = approval_prompt._present_with_selected_transport(
+        command="rm -rf /tmp/example",
+        description="dangerous",
+        pattern_key="rm_recursive",
+        pattern_keys=["rm_recursive"],
+        session_key="session-a",
+        surface="gateway",
+        allow_session=True,
+        allow_permanent=True,
+    )
+
+    assert result["choice"] == "once"
+    assert seen == {"request_timeout": 3_600, "invoke_timeout": 3_600}
+
+
+def test_builtin_fallback_keeps_normal_prompt_timeout(monkeypatch):
+    from tools import approval
+
+    manager = PluginManager()
+    transport_requests = []
+    _context(manager).register_approval_transport(
+        "phone", lambda request: transport_requests.append(request) or {"choice": "invalid"}
+    )
+    _configure_manual_guard(monkeypatch, approval, manager, fallback="builtin")
+    monkeypatch.setattr(approval_context, "_get_approval_timeout", lambda: 300)
+    monkeypatch.setattr(approval_context, "_get_approval_transport_timeout", lambda: 3_600)
+    builtin_timeouts = []
+    monkeypatch.setattr(
+        approval_prompt,
+        "_ask_human",
+        lambda command, description, timeout_seconds, *args, **kwargs:
+            builtin_timeouts.append(timeout_seconds) or "once",
+    )
+
+    result = approval.check_all_command_guards("rm -rf /tmp/example", "local")
+
+    assert result["approved"] is True
+    assert transport_requests[0].timeout_seconds == 3_600
+    assert builtin_timeouts == [300]
+
+
+@pytest.mark.parametrize(
+    ("transport_config", "expected"),
+    [({}, 300), ({"transport_timeout": 3_600}, 3_600)],
+)
+def test_transport_timeout_defaults_to_normal_or_accepts_longer_integer(
+    monkeypatch, transport_config, expected
+):
+    import hermes_cli.config as config_module
+
+    monkeypatch.setattr(approval_context, "_get_approval_timeout", lambda: 300)
+    monkeypatch.setattr(
+        config_module,
+        "load_config_readonly",
+        lambda: {"security": {"approval": transport_config}},
+    )
+
+    assert approval_context._get_approval_transport_timeout() == expected
+
+
+@pytest.mark.parametrize(
+    "configured",
+    [-1, 0, True, "forever", float("nan"), float("inf")],
+)
+def test_malformed_transport_timeout_falls_back_to_normal_prompt_timeout(monkeypatch, configured):
+    import hermes_cli.config as config_module
+
+    monkeypatch.setattr(approval_context, "_get_approval_timeout", lambda: 300)
+    monkeypatch.setattr(
+        config_module,
+        "load_config_readonly",
+        lambda: {"security": {"approval": {"transport_timeout": configured}}},
+    )
+
+    assert approval_context._get_approval_transport_timeout() == 300
+
+
+def test_oversized_transport_timeout_falls_back_to_normal_prompt_timeout(monkeypatch):
+    from agent.deadline import MAX_SAFE_TIMEOUT_S
+    import hermes_cli.config as config_module
+
+    monkeypatch.setattr(approval_context, "_get_approval_timeout", lambda: 300)
+    monkeypatch.setattr(
+        config_module,
+        "load_config_readonly",
+        lambda: {"security": {"approval": {"transport_timeout": int(MAX_SAFE_TIMEOUT_S) + 1}}},
+    )
+
+    assert approval_context._get_approval_transport_timeout() == 300
+
+
 def test_live_temp_home_fixture_plugin_routes_and_hardline_stays_core_owned(
     tmp_path, monkeypatch
 ):

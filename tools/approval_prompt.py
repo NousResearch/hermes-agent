@@ -222,7 +222,7 @@ def _present_with_selected_transport(*, command: str, description: str, pattern_
         from agent.redact import redact_approval_display
         from hermes_cli.approval_transport import ApprovalRequest, invoke_approval_transport
 
-        timeout_seconds = _ctx._get_approval_timeout()
+        timeout_seconds = _ctx._get_approval_transport_timeout()
         request = ApprovalRequest.create(
             command=redact_approval_display(command, force=True),
             description=redact_approval_display(description, force=True), pattern_key=pattern_key,

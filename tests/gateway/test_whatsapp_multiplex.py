@@ -44,8 +44,7 @@ async def test_secondary_ports_and_foreign_listener(tmp_path, monkeypatch):
             adapter = WhatsAppAdapter(PlatformConfig())
         adapter._hermes_profile_name = name
         adapter._runtime_status_platform_key = f"{name}:whatsapp"
-        monkeypatch.setattr(adapter, "_preflight", lambda: True)
-        monkeypatch.setattr(adapter, "_ensure_bridge_deps", lambda path: False)
+        monkeypatch.setattr(adapter, "_preflight", lambda: False)
         await adapter.connect()
         adapters.append(adapter)
         if name == "a":
@@ -59,7 +58,6 @@ async def test_secondary_ports_and_foreign_listener(tmp_path, monkeypatch):
         explicit._hermes_profile_name = "b"
         explicit._runtime_status_platform_key = "b:whatsapp"
         monkeypatch.setattr(explicit, "_preflight", lambda: True)
-        monkeypatch.setattr(explicit, "_ensure_bridge_deps", lambda path: True)
         probe = AsyncMock(side_effect=AssertionError("must not probe foreign bridge"))
         monkeypatch.setattr(explicit, "_probe_bridge_health", probe)
         def no_kill(*args):
@@ -151,7 +149,6 @@ async def test_secondary_adopts_its_own_orphaned_bridge(tmp_path, monkeypatch):
         adapter = WhatsAppAdapter(PlatformConfig())
     adapter._runtime_status_platform_key = "c:whatsapp"
     monkeypatch.setattr(adapter, "_preflight", lambda: True)
-    monkeypatch.setattr(adapter, "_ensure_bridge_deps", lambda path: True)
     sock, port = _hold_port()
     (home / "platforms/whatsapp").mkdir(parents=True)
     (home / "platforms/whatsapp/bridge_port").write_text(str(port))
@@ -184,7 +181,6 @@ async def test_live_old_bridge_does_not_authorize_a_different_port(tmp_path, mon
         adapter = WhatsAppAdapter(PlatformConfig(extra={"bridge_port": foreign_port}))
     adapter._runtime_status_platform_key = "d:whatsapp"
     monkeypatch.setattr(adapter, "_preflight", lambda: True)
-    monkeypatch.setattr(adapter, "_ensure_bridge_deps", lambda path: True)
     adapter._session_path.mkdir(parents=True, exist_ok=True)
     _write_bridge_pidfile(adapter._session_path, os.getpid(), old_port)
     reuse = AsyncMock(side_effect=AssertionError("must not probe or adopt a foreign endpoint"))

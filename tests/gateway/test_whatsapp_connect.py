@@ -80,6 +80,10 @@ def _connect_patches(mock_proc, mock_fh):
         patch("builtins.open", return_value=mock_fh),
         patch("plugins.platforms.whatsapp.adapter.asyncio.sleep", new_callable=AsyncMock),
         patch("plugins.platforms.whatsapp.adapter.asyncio.create_task"),
+        patch(
+            "plugins.platforms.whatsapp.adapter.whatsapp_bridge_dependencies_fresh",
+            return_value=True,
+        ),
     ]
     return base
 
@@ -150,7 +154,7 @@ class TestFileHandleClosedOnError:
         patches = _connect_patches(mock_proc, mock_fh)
 
         with patches[0], patches[1], patches[2], patches[3], patches[4], \
-             patches[5], patches[6], patches[7]:
+             patches[5], patches[6], patches[7], patches[8]:
             result = await adapter.connect()
 
         assert result is False
@@ -158,30 +162,61 @@ class TestFileHandleClosedOnError:
         assert adapter._bridge_log_fh is None
 
 
-class TestConnectCleanup:
-    """Verify failure paths release the scoped session lock."""
+class TestConnectPreflight:
+    """Gateway startup verifies bridge dependencies without mutating them."""
 
     @pytest.mark.asyncio
-    async def test_releases_lock_when_npm_install_fails(self):
+    async def test_missing_node_fails_without_installing(self):
         adapter = _make_adapter()
+        with patch(
+            "plugins.platforms.whatsapp.adapter.find_node_executable",
+            return_value=None,
+        ), patch("pm.ensure") as mock_ensure:
+            assert await adapter.connect() is False
 
-        def _path_exists(path_obj):
-            return not str(path_obj).endswith("node_modules")
+        assert adapter.fatal_error_code == "whatsapp_node_missing"
+        mock_ensure.assert_not_called()
 
-        install_result = MagicMock(returncode=1, stderr="install failed")
+    def test_dependency_check_is_read_only_and_actionable(self, tmp_path):
+        bridge_dir = tmp_path / "bridge"
+        (bridge_dir / "node_modules").mkdir(parents=True)
+        (bridge_dir / "bridge.js").write_text("// bridge", encoding="utf-8")
+        (bridge_dir / "package.json").write_text(
+            '{"dependencies": {}}', encoding="utf-8"
+        )
+        (bridge_dir / "package-lock.json").write_text(
+            '{"lockfileVersion": 3}', encoding="utf-8"
+        )
+        session_path = tmp_path / "session"
+        session_path.mkdir()
+        (session_path / "creds.json").write_text("{}", encoding="utf-8")
 
-        with patch("plugins.platforms.whatsapp.adapter.check_whatsapp_requirements", return_value=True), \
-             patch.object(Path, "exists", autospec=True, side_effect=_path_exists), \
-             patch("subprocess.run", return_value=install_result), \
-             patch("gateway.status.acquire_scoped_lock", return_value=(True, None)), \
-             patch("gateway.status.release_scoped_lock") as mock_release:
-            result = await adapter.connect()
+        stale_adapter = _make_adapter()
+        stale_adapter._bridge_script = str(bridge_dir / "bridge.js")
+        stale_adapter._session_path = session_path
+        fresh_adapter = _make_adapter()
+        fresh_adapter._bridge_script = str(bridge_dir / "bridge.js")
+        fresh_adapter._session_path = session_path
 
-        assert result is False
-        assert adapter.fatal_error_code == "whatsapp_npm_install_failed"
-        assert adapter.fatal_error_retryable is False
-        mock_release.assert_called_once_with("whatsapp-session", str(adapter._session_path))
-        assert adapter._platform_lock_identity is None
+        with (
+            patch(
+                "plugins.platforms.whatsapp.adapter.check_whatsapp_requirements",
+                return_value=True,
+            ),
+            patch("subprocess.run") as mock_run,
+        ):
+            assert stale_adapter._preflight() is False
+            from gateway.platforms.whatsapp_common import (
+                record_whatsapp_bridge_dependency_fingerprint,
+            )
+
+            assert record_whatsapp_bridge_dependency_fingerprint(bridge_dir) is True
+            assert fresh_adapter._preflight() is True
+
+        assert stale_adapter.fatal_error_code == "whatsapp_bridge_dependencies_stale"
+        assert stale_adapter.fatal_error_retryable is False
+        assert "hermes whatsapp" in (stale_adapter.fatal_error_message or "")
+        mock_run.assert_not_called()
 
 
 class TestBridgeRuntimeFailure:
@@ -552,31 +587,28 @@ class TestNamedConnectFailures:
     """A failed connect names its cause; an unnamed False loops forever as an unclassified failure (#126358)."""
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("aiohttp_module, lazy_allowed, cause, retryable", [
-        (None, False, "lazy installs are disabled", False),
-        # Installed but this process could not adopt it: final would exit the gateway 78 instead of restarting.
-        (None, True, "sms installed; restart Hermes to activate it", True),
-        (types.ModuleType("aiohttp"), True, "incomplete install", False),  # a shadowing aiohttp.py has no __path__
+    @pytest.mark.parametrize("aiohttp_module, cause", [
+        (None, "aiohttp"),
+        (types.ModuleType("aiohttp"), "incomplete install"),  # a shadowing aiohttp.py has no __path__
     ])
-    async def test_missing_aiohttp_is_named_and_final_only_when_pm_cannot_install(
-            self, aiohttp_module, lazy_allowed, cause, retryable):
-        from pm.package import InstallError
-
+    async def test_missing_aiohttp_is_named_and_never_installs(self, aiohttp_module, cause):
         adapter = _make_adapter()
         adapter._acquire_platform_lock = MagicMock(return_value=False)
-        ensure_import = MagicMock(side_effect=InstallError("venv", cause))
+        ensure_import = MagicMock(side_effect=RuntimeError("maintenance owns installation"))
         with patch("plugins.platforms.whatsapp.adapter.check_whatsapp_requirements", return_value=True), \
+             patch("plugins.platforms.whatsapp.adapter.whatsapp_bridge_dependencies_fresh", return_value=True), \
              patch.object(Path, "exists", return_value=True), patch.dict(sys.modules, {"aiohttp": aiohttp_module}), \
              patch("pm.extras.ensure_import", ensure_import), \
-             patch("pm.install.lazy_installs_allowed", return_value=lazy_allowed), \
+             patch("pm.install.lazy_installs_allowed", return_value=True), \
              patch("pm.environments.running_from_selected_environment", return_value=True):
             assert await adapter.connect() is False
 
-        assert ensure_import.call_count == (aiohttp_module is None)
+        ensure_import.assert_not_called()
         adapter._acquire_platform_lock.assert_not_called()  # bridge never started
         assert adapter.fatal_error_code == "whatsapp_aiohttp_missing"
-        assert adapter.fatal_error_retryable is retryable
+        assert adapter.fatal_error_retryable is False
         assert cause in adapter.fatal_error_message
+        assert "hermes pm install --extra sms" in adapter.fatal_error_message
 
     @pytest.mark.asyncio
     async def test_bridge_http_timeout_is_a_named_retryable_failure(self):

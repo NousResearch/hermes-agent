@@ -1156,7 +1156,7 @@ if (PAIR_ONLY) {
     process.exit(1);
   });
 } else {
-  app.listen(PORT, '127.0.0.1', () => {
+  const server = app.listen(PORT, '127.0.0.1', () => {
     console.log(`🌉 WhatsApp bridge listening on port ${PORT} (mode: ${WHATSAPP_MODE})`);
     console.log(`📁 Session stored in: ${SESSION_DIR}`);
     if (ALLOWED_USERS.size > 0) {
@@ -1175,5 +1175,15 @@ if (PAIR_ONLY) {
     }
     console.log();
     scheduleReconnect(0);
+  });
+  // Without this handler an EADDRINUSE (an old bridge that has not released the port yet) crashes
+  // with a bare stack trace; the adapter's reconnect loop retried blind. Fail loudly and fast.
+  server.on('error', (err) => {
+    if (err && err.code === 'EADDRINUSE') {
+      console.error(`FATAL: port ${PORT} already in use on 127.0.0.1 — another bridge or process is listening there.`);
+    } else {
+      console.error(`FATAL: bridge HTTP server error: ${err && err.message ? err.message : err}`);
+    }
+    process.exit(1);
   });
 }

@@ -1,4 +1,5 @@
 """Non-destructive bridge allocation for multiplexed secondary profiles."""
+import os
 import socket
 from contextlib import suppress
 from pathlib import Path
@@ -11,6 +12,20 @@ SECONDARY_PORT_LAST = 3999
 
 def port_is_free(port: int) -> bool:
     with socket.socket() as sock:
+        try:
+            sock.bind(("127.0.0.1", port))
+        except OSError:
+            return False
+    return True
+
+
+def port_accepts_listen(port: int) -> bool:
+    """Whether the bridge's own ``listen`` would succeed now. libuv sets SO_REUSEADDR on POSIX, so
+    a TIME_WAIT left by the old bridge's closed connections does not block it — only a live
+    listener does. A plain bind (``port_is_free``) refuses for up to the 60s TIME_WAIT window."""
+    with socket.socket() as sock:
+        if os.name != "nt":  # on Windows SO_REUSEADDR allows binding over a live listener
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             sock.bind(("127.0.0.1", port))
         except OSError:

@@ -116,3 +116,10 @@ All default to unsupported/no-op, so existing adapters are untouched. When a
 turn's streaming audio completes, the whole-file auto-TTS reply for that turn
 is suppressed (no double playback); when streaming fails before any audio was
 audible, the gateway falls back to the legacy whole-file voice reply.
+
+Finalisation: after the agent run the gateway calls `finish()` and keeps waiting while the
+consumer makes progress (`StreamingTTSConsumer.idle_seconds()`), aborting only after
+`STREAMING_TTS_STALL_SECONDS` (10 s) without progress or a 5-minute cap, so a long reply that is
+still synthesising is not cut off. The agent also flushes the sentence chunker as soon as each
+model response finishes streaming (`AIAgent.stream_flush_callback`), so a reply's last sentence is
+spoken without waiting for the gateway's post-turn work.

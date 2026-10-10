@@ -35,6 +35,7 @@ from agent.context_engine import ContextEngine, sanitize_memory_context
 from agent.context_compressor_prellm import PreLlmSkipMixin
 from agent.context_compressor_summary import SummaryDispatchMixin
 from agent.error_classifier import FailoverReason, classify_api_error
+from agent.message_metadata import keep_newest_channel_state
 from agent.micro_compaction import MicroCompactionMixin
 from agent.prompt_builder import STEER_DISPLAY_KIND
 from agent.model_metadata import (
@@ -5745,14 +5746,16 @@ Write only the summary body. Do not include any preamble or prefix."""
         summary_role, merge_into_tail, force_user_leading, first_tail_visible_idx = (
             self._summary_placement(compressed, tail_messages, compress_start)
         )
+        summary_row = None
         if not merge_into_tail:
             # End marker stops weak models treating the quoted summary as fresh input (#11475) or
             # regurgitating it (#33256).
-            compressed.append({
+            summary_row = {
                 "role": summary_role, "content": summary + "\n\n" + _SUMMARY_END_MARKER,
                 COMPRESSED_SUMMARY_METADATA_KEY: True,
                 COMPRESSED_SUMMARY_HAS_USER_TURN_KEY: bool(self._summary_has_user_turn),
-            })
+            }
+            compressed.append(summary_row)
         # Default carrier is tail[0]: an exempt row absorbs the summary invisibly. The forced repair
         # path needs a non-empty role=user row, so it targets the template-visible row.
         merge_target_idx = first_tail_visible_idx if force_user_leading and first_tail_visible_idx is not None else 0
@@ -5763,7 +5766,10 @@ Write only the summary body. Do not include any preamble or prefix."""
                 msg[_COMPACTION_TAIL_MARKER] = True
             if merge_into_tail and tail_idx == merge_target_idx:
                 self._merge_summary_into_tail_row(msg, summary, summary_role, force_user_leading)
+                summary_row = msg
             compressed.append(msg)
+        if summary_row is not None:
+            keep_newest_channel_state(messages, compressed, summary_row)
         return compressed
 
 

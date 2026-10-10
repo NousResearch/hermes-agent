@@ -28,6 +28,7 @@ from gateway.platforms.event import MessageEvent
 from gateway.response_filters import (
     display_kind_for_event, is_machinery_display_kind, reply_expected_metadata, silence_allowed,
 )
+from gateway.run_inbound_turn_context import channel_state_metadata
 from gateway.warning_notifications import diagnostic_metadata, diagnostic_turn_muted, diagnostic_wake_muted
 from gateway.session import (
     SessionSource, _session_key_namespace, build_channel_continuity_note,
@@ -1757,7 +1758,7 @@ class GatewayTurnMixin:
         return agent_failed_early, hidden_reasoning_incomplete, is_context_overflow_failure
 
     async def _hmwa_compression_exhaustion_reset(
-        self, agent_result, response, session_entry, session_key, source,
+        self, agent_result, response, session_entry, session_key, source, *, internal: bool,
     ):
         """Auto-reset a permanently oversized session so the next message starts fresh instead of
         replaying the oversized context forever. Never on a lock-contended defer — that is the
@@ -1775,7 +1776,11 @@ class GatewayTurnMixin:
             )
         elif agent_result.get("compression_exhausted") and session_entry and session_key:
             logger.info("Auto-resetting session %s after compression exhaustion.", session_entry.session_id)
-            new_entry = await self.async_session_store.reset_session(session_key)
+            # An internal event's source has routing fields only, so its empty chat and user names
+            # must not replace the origin's.
+            new_entry = await self.async_session_store.reset_session(
+                session_key, source=None if internal else source,
+            )
             self._evict_cached_agent(session_key)
             # Conversation boundary: the funnel clears every conversation-scoped per-session dict.
             self._clear_conversation_scope(session_key, reason="compression_exhausted_reset")
@@ -1814,8 +1819,11 @@ class GatewayTurnMixin:
         }
         if prepared.persist_user_display_kind:
             _user_entry["display_kind"] = prepared.persist_user_display_kind
+        display_metadata = channel_state_metadata(event)
         if prepared.persistence_owner:
-            _user_entry["display_metadata"] = {"gateway_input_owner": prepared.persistence_owner}
+            display_metadata["gateway_input_owner"] = prepared.persistence_owner
+        if display_metadata:
+            _user_entry["display_metadata"] = display_metadata
         if getattr(event, "message_id", None):
             _user_entry["message_id"] = str(event.message_id)
         return _user_entry
@@ -2043,7 +2051,15 @@ class GatewayTurnMixin:
         persistence_owner: Optional[str] = None
         title_user_message: Optional[str] = None
 
-    async def _hmwa_prepare_turn(self, event, source, session_entry, session_key, _quick_key, run_generation):
+    async def _hmwa_prepare_turn(
+        self: "GatewayRunner",
+        event,
+        source,
+        session_entry,
+        session_key,
+        _quick_key,
+        run_generation,
+    ):
         """Everything between session resolution and the agent run: session open, task-local env,
         context prompt, sidecar notes, turn lease, transcript load + hygiene, inbound text. Returns
         ``(_PreparedTurn, env_tokens)``; a ``str`` first element is a reply to send instead of
@@ -2066,7 +2082,8 @@ class GatewayTurnMixin:
         if event.internal and session_key:
             await self._rehydrate_prompt_pins(session_key, session_entry.session_id)
         context_prompt = self._pinned_session_context_prompt(
-            context, _redact_pii, session_key, internal=event.internal,
+            self._prompt_session_context(context, session_entry), _redact_pii, session_key,
+            internal=event.internal,
         )
 
         # Per-turn notes ride the user message via the api_content sidecar, NOT context_prompt
@@ -2141,7 +2158,9 @@ class GatewayTurnMixin:
             title_user_message=title_user_message,
         ), _session_env_tokens
 
-    async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
+    async def _handle_message_with_agent(
+        self: "GatewayRunner", event, source, _quick_key: str, run_generation: int
+    ):
         """Inner handler that runs under the _running_agents sentinel guard."""
         _msg_start_time = time.time()
         _platform_name = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
@@ -2206,7 +2225,7 @@ class GatewayTurnMixin:
                 persist_user_display_kind=prepared.persist_user_display_kind,
                 reply_expected=event.reply_expected,
                 persist_user_display_metadata={
-                    "gateway_input_owner": prepared.persistence_owner,
+                    "gateway_input_owner": prepared.persistence_owner, **channel_state_metadata(event),
                     **reply_expected_metadata(event.reply_expected), **diagnostic_metadata(event)},
                 message_type=event.message_type,
                 scheduled_heartbeat=bool(getattr(event, "_heartbeat_session_id", None)),
@@ -2251,7 +2270,7 @@ class GatewayTurnMixin:
             if agent_failed_early and not is_context_overflow_failure:
                 response = self._hmwa_add_failed_turn_notice(response, self._hmwa_failed_turn_notice(agent_result))
             response, session_entry = await self._hmwa_compression_exhaustion_reset(
-                agent_result, response, session_entry, session_key, source,
+                agent_result, response, session_entry, session_key, source, internal=event.internal,
             )
             await self._hmwa_persist_turn_transcript(
                 event=event, source=source, session_entry=session_entry, session_key=session_key,
@@ -3945,6 +3964,7 @@ class GatewayTurnMixin:
                 persist_user_display_kind=next_display_kind,
                 reply_expected=next_reply_expected,
                 persist_user_display_metadata={
+                    **channel_state_metadata(pending_event),
                     **reply_expected_metadata(next_reply_expected), **diagnostic_metadata(pending_event)} or None,
             )
         except asyncio.CancelledError:

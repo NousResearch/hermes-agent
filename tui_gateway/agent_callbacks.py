@@ -552,8 +552,13 @@ def _rebuild_session_agent(sid: str, session: dict, **kwargs):
         if opened:
             session_db = _open_profile_session_db(profile_home)
         if kwargs.pop("preserve_runtime", True) and "model_override" not in kwargs:
-            from tui_gateway.fallback_recovery import recovery_state
+            from tui_gateway.fallback_recovery import recovery_state, recovery_matches_profile
             recovery = recovery_state(old_agent) if old_agent is not None else None
+            # Unpinned rebuilds adopt the owning profile below. Do not mark an edit
+            # seen while carrying recovery to a primary the profile no longer wants.
+            if (recovery and not session.get("model_override")
+                    and not recovery_matches_profile(recovery, config_model_seen, _load_cfg())):
+                recovery = None
             if recovery:
                 kwargs["model_override"] = {**recovery["primary"], "_fallback_recovery": recovery}
         # A rebuild is not a conversation boundary (/new pops the pins before calling us): carry the

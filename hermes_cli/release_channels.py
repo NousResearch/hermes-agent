@@ -275,6 +275,15 @@ def retrying_reads():
 
 
 class ChannelReader:
+    # One shared header set for every channel read (JSON, YAML, XML,
+    # .appinstaller readback, bytes): `Accept: */*` because read_bytes serves
+    # non-JSON too, and the same `hermes-update` UA as source_releases._read so
+    # a Cloudflare zone rule can name one client (review: #132280). A shared
+    # constant across source_releases + pm + release_channels is follow-up.
+    _CHANNEL_HEADERS = {
+        "User-Agent": "hermes-update", "Cache-Control": "no-cache", "Accept": "*/*",
+    }
+
     def __init__(self, base_url: str, repository: str | None = None, opener=None):
         self.base_url = public_base(base_url)
         self.repository = validate_repository(repository) if repository is not None else None
@@ -290,7 +299,7 @@ class ChannelReader:
         from pm.network import retry_network
 
         def read() -> bytes:
-            with self.opener(Request(url, headers={"Cache-Control": "no-cache"}), timeout=30) as response:
+            with self.opener(Request(url, headers=_CHANNEL_HEADERS), timeout=30) as response:
                 if response.geturl() != url:
                     raise ChannelError("Channel archive redirects are not permitted")
                 return response.read(MAX_METADATA + 1)
@@ -300,6 +309,8 @@ class ChannelReader:
         except HTTPError as exc:
             if exc.code == 404:
                 raise ChannelNotFound(f"Channel object not found: {key}") from exc
+            if exc.code == 403:
+                raise ChannelError(f"Channel read unavailable: HTTP 403 (Cloudflare WAF — see #128295)") from exc
             raise ChannelError(f"Channel read unavailable: HTTP {exc.code}") from exc
         except (OSError, URLError) as exc:
             raise ChannelError("Channel read unavailable") from exc

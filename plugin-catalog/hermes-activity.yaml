@@ -1,0 +1,20 @@
+name: hermes-activity
+repo: https://github.com/hassan-kamel/hermes-activity
+sha: 716dd439068af4e4a0e143510615482b6a6d4589
+title: Activity
+description: "Hermes Desktop activity overview with a yearly contribution grid, token mix, model/platform breakdowns, tools, skills, and notable sessions. Disclosure — reads the selected Hermes profile's state.db through SQLite read-only mode. Desktop calls the plugin's fixed read-only command through profile-routed cli.exec; remote profiles use the configured Hermes gateway connection. No third-party API calls, credential reads, uploads, or telemetry."
+maintainer: hassan-kamel
+tier: community
+category: desktop
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/hassan-kamel/hermes-activity
+version: "0.1.0"
+screenshots:
+  - https://raw.githubusercontent.com/hassan-kamel/hermes-activity/716dd439068af4e4a0e143510615482b6a6d4589/assets/activity-preview.png
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

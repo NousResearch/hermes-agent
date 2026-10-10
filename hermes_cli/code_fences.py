@@ -17,6 +17,12 @@ _FENCE_CLOSER_RE = re.compile(r'^\s*(`{3,}|~{3,})\s*$')
 def parse_code_fences(source: str) -> list[dict]:
     """Parse all fenced code blocks from raw source text.
 
+    Copying contract: ``raw_content`` is the exact text between the fence
+    lines, split on ``\n`` and rejoined with ``\n``. The newline immediately
+    preceding the closing delimiter is NOT part of the payload; interior
+    line breaks (including blank lines) and any ``\r`` characters from
+    CRLF input are preserved verbatim.
+
     Returns a list of dicts with keys:
 
     * ``closed`` (bool) — whether a matching closer was found

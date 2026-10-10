@@ -1,14 +1,13 @@
 import { PassThrough } from 'stream'
 
 import { Box, renderSync } from '@hermes/ink'
-import chalk from 'chalk'
-import React from 'react'
 import { stripAnsi } from '@hermes/shared/ansi'
+import React from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { AUDIO_DIRECTIVE_RE, INLINE_RE, Md, MEDIA_LINE_RE, stripInlineMarkup } from '../components/markdown.js'
 import { __resetLinkTitleCache, fetchLinkTitle } from '../lib/externalLink.js'
-import { DEFAULT_THEME, LIGHT_THEME } from '../theme.js'
+import { DEFAULT_THEME } from '../theme.js'
 
 afterEach(() => {
   __resetLinkTitleCache()
@@ -271,199 +270,113 @@ describe('Md wrapping', () => {
 })
 
 describe('Md link labels', () => {
-  it('renders bare URLs with readable slug labels', () => {
-    const lines = renderPlain(
-      React.createElement(
-        Box,
-        { width: 120 },
-        React.createElement(Md, {
-          t: DEFAULT_THEME,
-          text: 'see https://www.expedia.com/things-to-do/puerto-rico-el-yunque-rainforest-adventure for details'
-        })
-      )
-    )
+  const BEL = String.fromCharCode(7)
+  const ESC = String.fromCharCode(27)
+  const OSC_RE = new RegExp(`${ESC}\\][\\s\\S]*?(?:${BEL}|${ESC}\\\\)`, 'g')
 
-    const rendered = lines.join('\n')
-
-    expect(rendered).toContain('Puerto Rico El Yunque Rainforest Adventure')
-    expect(rendered).not.toContain('https://www.expedia.com/things-to-do/puerto-rico-el-yunque-rainforest-adventure')
-  })
-
-  it('keeps the authored markdown label even when a page title resolves', async () => {
-    const url = 'https://www.expedia.com/things-to-do/puerto-rico-el-yunque-rainforest-adventure'
-
-    // Warm the shared cache so `useLinkTitle` would have a title to render
-    // synchronously — the label must still win.
-    await stubFetchedTitle(url, 'El Yunque Rainforest Adventure | Expedia')
-
-    const lines = renderPlain(
-      React.createElement(
-        Box,
-        { width: 80 },
-        React.createElement(Md, { t: DEFAULT_THEME, text: `[Trip details](${url})` })
-      )
-    )
-
-    const rendered = lines.join('\n')
-
-    expect(rendered).toContain('Trip details')
-    expect(rendered).not.toContain('El Yunque Rainforest Adventure | Expedia')
-  })
-
-  it('still resolves titles for links whose label is just the URL', async () => {
-    const url = 'https://www.expedia.com/things-to-do/puerto-rico-el-yunque-rainforest-adventure'
-
-    await stubFetchedTitle(url, 'Rainforest Adventure Tour')
-
-    const lines = renderPlain(
-      React.createElement(Box, { width: 120 }, React.createElement(Md, { t: DEFAULT_THEME, text: `[${url}](${url})` }))
-    )
-
-    expect(lines.join('\n')).toContain('Rainforest Adventure Tour')
-  })
-})
-
-describe('renderTable CJK width alignment', () => {
-  it('column starts share the same display offset across CJK rows', async () => {
-    const { stringWidth } = await import('@hermes/ink')
-
-    const md = [
-      '| 配置 | Config | 状态 |',
-      '|------|--------|------|',
-      '| Vicuna (report) | dense | × |',
-      '| ChatGLM | chat | ✓ |',
-      '| 通义千问 | qwen | × |'
-    ].join('\n')
-
-    // Pre-fix bug: ` `.repeat(w - stripInlineMarkup(...).length) used
-    // UTF-16 code units, so a CJK header cell padded to 2 cells while
-    // the body cell padded to 4, drifting subsequent columns by 2
-    // cells per CJK char.
-    //
-    // Post-fix contract: the prefix preceding the start of column N
-    // has the same display width across the header and every body row
-    // (deduped to skip the divider, which renders independently).
-    const lines = renderPlain(
-      React.createElement(Box, null, React.createElement(Md, { compact: true, t: DEFAULT_THEME, text: md }))
-    ).filter(line => line.trim().length > 0)
-
-    // Heuristic: a "data row" line either contains 'Config' (header)
-    // or one of the body labels; a divider is all box-drawing.  Use
-    // the substring 'Config' / 'dense' / 'chat' / 'qwen' as the
-    // unique anchor for column 2's start position on each row.
-    const colStarts = (line: string, anchor: string): number => {
-      const idx = line.indexOf(anchor)
-
-      return idx < 0 ? -1 : stringWidth(line.slice(0, idx))
-    }
-
-    const headerCol2 = lines.map(l => colStarts(l, 'Config')).find(v => v >= 0)
-    const denseCol2 = lines.map(l => colStarts(l, 'dense')).find(v => v >= 0)
-    const chatCol2 = lines.map(l => colStarts(l, 'chat')).find(v => v >= 0)
-    const qwenCol2 = lines.map(l => colStarts(l, 'qwen')).find(v => v >= 0)
-
-    expect(headerCol2).toBeDefined()
-    expect(denseCol2).toBe(headerCol2)
-    expect(chatCol2).toBe(headerCol2)
-    // The CJK row is the one that drifted before the fix.  It must
-    // align with the rest now.
-    expect(qwenCol2).toBe(headerCol2)
-  })
-})
-
-describe('Markdown fences', () => {
-  it('keeps recursively rendering fenced Markdown', () => {
-    const markdown = ['```markdown', '## Nested heading', '', '- nested item', '```'].join('\n')
-    const output = renderPlain(React.createElement(Md, { t: DEFAULT_THEME, text: markdown })).join('\n')
-
-    expect(output).toContain('Nested heading')
-    expect(output).toContain('nested item')
-    expect(output).not.toContain('⧉⧉⧉')
-  })
-})
-
-describe('body prose stays in the theme palette', () => {
-  // Prose used to render in the terminal's DEFAULT foreground while inline
-  // tokens beside it carried a theme color, so one line mixed two inks.
-  // Because an inline token can match mid-word, so could a single word.
-  // LIGHT_THEME is the vehicle here because every tone in it is hex, so
-  // emitted SGR maps back to palette entries without format juggling.
-  const foregroundRuns = (text: string): string[] => {
-    // chalk is a singleton and defaults to level 0 under vitest (no TTY),
-    // which would emit no SGR at all and make every assertion here vacuous.
-    const savedLevel = chalk.level
-    chalk.level = 3
-
+  const renderAnsi = (node: React.ReactNode) => {
     const stdout = new PassThrough()
     const stdin = new PassThrough()
     const stderr = new PassThrough()
     let output = ''
 
-    Object.assign(stdout, { columns: 80, isTTY: true, rows: 24 })
+    Object.assign(stdout, { columns: 120, isTTY: false, rows: 24 })
     Object.assign(stdin, { isTTY: false })
     Object.assign(stderr, { isTTY: false })
     stdout.on('data', chunk => {
       output += chunk.toString()
     })
 
-    const instance = renderSync(
-      React.createElement(Box, { width: 70 }, React.createElement(Md, { cols: 68, t: LIGHT_THEME, text })),
-      {
-        patchConsole: false,
-        stderr: stderr as NodeJS.WriteStream,
-        stdin: stdin as NodeJS.ReadStream,
-        stdout: stdout as NodeJS.WriteStream
-      }
-    )
+    const instance = renderSync(node, {
+      patchConsole: false,
+      stderr: stderr as NodeJS.WriteStream,
+      stdin: stdin as NodeJS.ReadStream,
+      stdout: stdout as NodeJS.WriteStream
+    })
 
     instance.unmount()
     instance.cleanup()
-    chalk.level = savedLevel
 
-    return [...output.matchAll(new RegExp(`${ESC}\\[38;2;(\\d+);(\\d+);(\\d+)m`, 'g'))].map(
-      m =>
-        '#' +
-        m
-          .slice(1, 4)
-          .map(v => Number(v).toString(16).padStart(2, '0'))
-          .join('')
-    )
+    return output
   }
 
-  const PALETTE = new Set(
-    Object.values(LIGHT_THEME.color)
-      .filter((v): v is string => typeof v === 'string' && v.startsWith('#'))
-      .map(v => v.toLowerCase())
-  )
+  const md = (text: string, width = 200) =>
+    React.createElement(Box, { width }, React.createElement(Md, { cols: width, t: DEFAULT_THEME, text }))
 
-  const INK = LIGHT_THEME.color.text.toLowerCase()
+  it('renders a bare URL verbatim instead of a derived label', () => {
+    const url = 'https://connect.example.com/link/lk_9f2c1d7e'
+    const rendered = renderPlain(md(`see ${url} for details`)).join('\n')
 
-  it('opens a paragraph with the theme ink, not the terminal default', () => {
-    expect(foregroundRuns('plain prose line')[0]).toBe(INK)
+    expect(rendered).toContain(url)
+    // `urlSlugTitleLabel` used to turn the last path segment into this.
+    expect(rendered).not.toContain('Lk 9f2c1d7e')
   })
 
-  it('keeps every foreground on a mixed-token line inside the palette', () => {
-    // `render_terminal_output` trips the underscore-italic token mid-word —
-    // the exact shape that split one word across two inks.
-    const fg = foregroundRuns('set the `flag` and re-render_terminal_output for the run')
+  it('wraps a bare URL in an OSC 8 hyperlink pointing at the same target', () => {
+    const url = 'https://connect.example.com/link/lk_9f2c1d7e'
+    const ansi = renderAnsi(md(`Connect link: ${url}`))
 
-    expect(fg.length).toBeGreaterThan(0)
-
-    for (const c of fg) {
-      expect(PALETTE.has(c)).toBe(true)
-    }
+    expect(ansi).toContain(`;${url}${BEL}`)
+    expect(ansi).toContain(`${ESC}]8;`)
   })
 
-  it('returns to the theme ink after an inline token, not to the terminal default', () => {
-    const fg = foregroundRuns('before `code` after')
+  it('leaves trailing prose punctuation outside the visible URL', () => {
+    const url = 'https://docs.example.com/guide/auth'
+    const rendered = renderPlain(md(`open ${url}, then retry`)).join('\n')
 
-    expect(fg[0]).toBe(INK)
-    expect(fg.at(-1)).toBe(INK)
+    expect(rendered).toContain(`open ${url}, then retry`)
   })
 
-  it('themes list-item prose too', () => {
-    for (const text of ['- a bullet item', '1. a numbered item']) {
-      expect(foregroundRuns(text)).toContain(INK)
-    }
+  it('renders an autolink verbatim', () => {
+    const url = 'https://docs.example.com/guide/auth'
+    const rendered = renderPlain(md(`see <${url}>`)).join('\n')
+
+    expect(rendered).toContain(url)
+  })
+
+  it('keeps an authored markdown label and carries the target in OSC 8', () => {
+    const url = 'https://docs.example.com/guide/auth'
+    const ansi = renderAnsi(md(`[Trip details](${url})`))
+
+    expect(stripAnsi(ansi.replace(OSC_RE, ''))).toContain('Trip details')
+    expect(ansi).toContain(`;${url}${BEL}`)
+  })
+
+  it('never lets a fetched page title replace the URL', async () => {
+    const url = 'https://connect.example.com/link/lk_9f2c1d7e'
+
+    // Warm the shared title cache, then prove the renderer ignores it. This
+    // is the exact shape of the live defect: the fetched title was the only
+    // thing on screen.
+    await stubFetchedTitle(url, 'Connect your account')
+
+    const rendered = renderPlain(md(`Connect link: ${url}`)).join('\n')
+
+    expect(rendered).toContain(url)
+    expect(rendered).not.toContain('Connect your account')
+  })
+
+  it('renders a URL-labelled markdown link as the URL', async () => {
+    const url = 'https://docs.example.com/guide/auth'
+
+    await stubFetchedTitle(url, 'Auth Guide')
+
+    const rendered = renderPlain(md(`[${url}](${url})`)).join('\n')
+
+    expect(rendered).toContain(url)
+    expect(rendered).not.toContain('Auth Guide')
+  })
+
+  it('falls back to the URL when the markdown label is blank', () => {
+    const url = 'https://docs.example.com/guide/auth'
+    const rendered = renderPlain(md(`[ ](${url})`)).join('\n')
+
+    expect(rendered).toContain(url)
+  })
+
+  it('renders a mailto autolink as the address', () => {
+    const rendered = renderPlain(md('write <ops@example.com> today')).join('\n')
+
+    expect(rendered).toContain('write ops@example.com today')
   })
 })

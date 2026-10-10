@@ -91,3 +91,27 @@ def test_diff_detected():
     source = "```\n--- old\n+++ new\n```\n"
     fences = parse_code_fences(source)
     assert fences[0]["language"] == "diff"
+
+
+def test_crlf_input_preserves_carriage_returns_and_parity():
+    """CRLF input: \r characters survive in raw_content (exact-copy semantics)."""
+    fences = parse_code_fences("```py\r\nx = 1\r\n\r\ny = 2\r\n```")
+    assert len(fences) == 1
+    fence = fences[0]
+    assert fence["closed"] is True
+    assert fence["language"] == "py"
+    assert fence["raw_content"] == "x = 1\r\n\r\ny = 2\r"
+
+
+def test_trailing_newline_before_closer_is_not_in_payload():
+    """Delimiter-adjacent newline is stripped; interior blank lines are kept."""
+    fences = parse_code_fences("```py\nx = 1\n\n```")
+    assert fences[0]["raw_content"] == "x = 1\n"
+    assert parse_code_fences("```py\nx = 1\n```")[0]["raw_content"] == "x = 1"
+
+
+def test_differing_fence_lengths_and_tilde():
+    """Longer closer matches shorter opener; tilde fences parse symmetrically."""
+    assert parse_code_fences("````py\nx\n````")[0]["raw_content"] == "x"
+    assert parse_code_fences("~~~py\nx\n~~~")[0]["raw_content"] == "x"
+    assert parse_code_fences("```py\nx\n````\n")[0]["raw_content"] == "x"

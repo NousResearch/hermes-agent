@@ -7,7 +7,7 @@
  * clipboard.
  */
 
-export const FENCE_OPENER_RE = /^\s*(`{3,}|~{3,})(.*)$/
+export const FENCE_OPENER_RE = /^\s*(`{3,}|~{3,})(.*?)[ \t]?\r?$/
 export const FENCE_CLOSER_RE = /^\s*(`{3,}|~{3,})\s*$/
 
 export interface CopyBloxFence {
@@ -57,6 +57,12 @@ function lineBoundaries(source: string): Array<[number, number]> {
 
 /**
  * Parse all fenced code blocks from raw source text.
+ *
+ * Copying contract: `rawContent` is the exact text between the fence lines,
+ * split on '\n' and rejoined with '\n'. The newline immediately preceding
+ * the closing delimiter is NOT part of the payload; interior line breaks
+ * (including blank lines) and any '\r' characters from CRLF input are
+ * preserved verbatim.
  *
  * `source` is the unmodified text from the message (before display
  * normalisation). The parser matches fences against `source` directly and

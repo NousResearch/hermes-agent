@@ -231,4 +231,22 @@ describe('parseCodeFences', () => {
     expect(fences[0]!.closed).toBe(true)
     expect(fences[0]!.rawContent).toBe('tilde ~~~ is not a fence\n~~~')
   })
+
+  it('preserves CRLF carriage returns for exact copy (parity with Python)', () => {
+    const [fence] = parseCodeFences('```py\r\nx = 1\r\n\r\ny = 2\r\n```')
+
+    expect(fence?.closed).toBe(true)
+    expect(fence?.language).toBe('py')
+    expect(fence?.rawContent).toBe('x = 1\r\n\r\ny = 2\r')
+  })
+
+  it('excludes the delimiter-adjacent newline but keeps interior blank lines', () => {
+    expect(parseCodeFences('```py\nx = 1\n\n```')[0]?.rawContent).toBe('x = 1\n')
+    expect(parseCodeFences('```py\nx = 1\n```')[0]?.rawContent).toBe('x = 1')
+  })
+
+  it('matches longer closers and parses tilde fences', () => {
+    expect(parseCodeFences('````py\nx\n````')[0]?.rawContent).toBe('x')
+    expect(parseCodeFences('~~~py\nx\n~~~')[0]?.rawContent).toBe('x')
+  })
 })

@@ -381,9 +381,9 @@ export const coreCommands: SlashCommand[] = [
   },
 
   {
-    aliases: ['copyblock'],
+    aliases: ['cc', 'copyblock'],
     help: 'copy a fenced code block from the latest assistant response',
-    name: 'cc',
+    name: 'copy-code',
     run: async (arg, ctx) => {
       const { sys } = ctx.transcript
       const all = ctx.local.getHistoryItems().filter(message => message.role === 'assistant')

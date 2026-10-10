@@ -78,22 +78,29 @@ export const fencedWrappedLines = (
 ) => {
   const bodyWidth = Math.max(1, width - 2)
   const frameRows = compact || width < 20 ? 1 : 2
-  const lines = text.split('\n')
+  // Byte-budget bound: past maxLines * width chars, additional rows cannot
+  // increase the estimate — bail instead of materializing every line of a
+  // multi-megabyte message (matches wrappedLines' bound).
+  const budget = Math.min(text.length, maxLines * width + maxLines)
   let rows = 0
   let fenceChar = ''
   let fenceLength = 0
   let fenceLanguage = ''
   let fenceBody: string[] = []
+  let lineStart = 0
 
   const addRows = (count: number) => {
     rows = Math.min(maxLines, rows + count)
   }
 
-  const finishFence = () => {
-    if (MARKDOWN_FENCE_LANGS.has(fenceLanguage)) {
-      addRows(fenceBody.length ? wrappedLines(fenceBody.join('\n'), width, maxLines - rows) : 0)
-    } else {
-      addRows(fenceBody.length ? wrappedLines(fenceBody.join('\n'), bodyWidth, maxLines - rows) : 0)
+  const flushBody = () => {
+    if (fenceBody.length) {
+      addRows(
+        wrappedLines(fenceBody.join('\n'), MARKDOWN_FENCE_LANGS.has(fenceLanguage) ? width : bodyWidth, maxLines - rows)
+      )
+    }
+
+    if (!MARKDOWN_FENCE_LANGS.has(fenceLanguage)) {
       addRows(frameRows)
     }
 
@@ -103,35 +110,41 @@ export const fencedWrappedLines = (
     fenceBody = []
   }
 
-  for (const line of lines) {
-    if (!fenceChar) {
-      const open = line.match(FENCE_OPEN_RE)
+  for (let i = 0; i <= budget; i++) {
+    if (i === text.length || i === budget || text.charCodeAt(i) === 10) {
+      const line = text.slice(lineStart, i)
 
-      if (open) {
-        fenceChar = open[1]![0]
-        fenceLength = open[1]!.length
-        fenceLanguage = open[2]!.trim().toLowerCase()
-        fenceBody = []
+      lineStart = i + 1
+
+      if (!fenceChar) {
+        const open = line.match(FENCE_OPEN_RE)
+
+        if (open) {
+          fenceChar = open[1]![0]
+          fenceLength = open[1]!.length
+          fenceLanguage = open[2]!.trim().toLowerCase()
+          fenceBody = []
+        } else {
+          addRows(wrappedLines(line, width, maxLines - rows))
+        }
       } else {
-        addRows(wrappedLines(line, width, maxLines - rows))
-      }
-    } else {
-      const close = line.match(FENCE_CLOSE_RE)?.[1]
+        const close = line.match(FENCE_CLOSE_RE)?.[1]
 
-      if (close && close[0] === fenceChar && close.length >= fenceLength) {
-        finishFence()
-      } else {
-        fenceBody.push(line)
+        if (close && close[0] === fenceChar && close.length >= fenceLength) {
+          flushBody()
+        } else {
+          fenceBody.push(line)
+        }
       }
-    }
 
-    if (rows >= maxLines) {
-      return maxLines
+      if (rows >= maxLines) {
+        return maxLines
+      }
     }
   }
 
   if (fenceChar) {
-    finishFence()
+    flushBody()
   }
 
   return rows

@@ -5,7 +5,7 @@ import json
 import logging
 import sys
 import time
-from datetime import datetime, timezone, UTC
+from datetime import datetime, timedelta, timezone, UTC
 from pathlib import Path
 
 import httpx
@@ -1113,3 +1113,99 @@ def test_poll_for_token_timeout_raises_actionable_message():
             expires_in=1,
             poll_interval=1,
         )
+
+
+# =============================================================================
+# Device-code grant lifetime (#135518)
+# =============================================================================
+
+
+class TestDeviceCodeGrantLifetime:
+    """The grant hard-expires 30 days after the human approved it, and an access-token
+    refresh does NOT extend it. A headless gateway refreshed every 45-60 min rewrote
+    ``obtained_at`` each time, so nothing on disk recorded the approval time and the
+    first observable of expiry was the outage itself."""
+
+    def test_refresh_preserves_the_grant_approval_time(self):
+        from hermes_cli.auth_nous import _apply_nous_refreshed_tokens
+
+        granted_at = "2026-10-01T00:00:00+00:00"
+        state = {"obtained_at": granted_at, "grant_obtained_at": granted_at}
+        _apply_nous_refreshed_tokens(
+            state, {"access_token": "new", "expires_in": 3600}, "r2")
+
+        assert state["grant_obtained_at"] == granted_at
+        # ...while the access token's own clock does move forward.
+        assert state["obtained_at"] != granted_at
+
+    def test_first_refresh_after_upgrade_anchors_the_grant_time(self):
+        """A state written before this field existed must not stay permanently unanchored."""
+        from hermes_cli.auth_nous import _apply_nous_refreshed_tokens
+
+        state = {"obtained_at": "2026-10-01T00:00:00+00:00"}
+        _apply_nous_refreshed_tokens(
+            state, {"access_token": "new", "expires_in": 3600}, "r2")
+
+        assert state["grant_obtained_at"] == "2026-10-01T00:00:00+00:00"
+
+    def test_grant_expiry_is_thirty_days_after_approval(self):
+        from hermes_cli.auth_nous import nous_grant_expires_at
+
+        assert nous_grant_expires_at("2026-10-01T00:00:00+00:00") == "2026-10-31T00:00:00+00:00"
+
+    @pytest.mark.parametrize("bad", [None, "", "not-a-timestamp"])
+    def test_grant_expiry_is_unknown_without_a_usable_approval_time(self, bad):
+        from hermes_cli.auth_nous import nous_grant_expires_at
+
+        assert nous_grant_expires_at(bad) is None
+
+    def test_grant_time_survives_a_state_rebuild(self):
+        """refresh_nous_oauth_from_state rebuilds the dict field by field; a field it does not
+        copy is lost on the very next refresh, which is the bug this pins."""
+        from hermes_cli.auth_nous import _nous_shared_shape, refresh_nous_oauth_from_state
+
+        src = {"grant_obtained_at": "2026-10-01T00:00:00+00:00"}
+        assert _nous_shared_shape(src)["grant_obtained_at"] == "2026-10-01T00:00:00+00:00"
+
+    def test_pre_epoch_approval_still_yields_a_deadline(self):
+        """A valid timestamp that parses to 0.0 is a real deadline, not a missing one.
+
+        ``if not started`` would drop it, so a corrupted-but-valid approval time silently
+        became "unknown" instead of long-expired."""
+        from hermes_cli.auth_nous import nous_grant_expires_at
+
+        assert nous_grant_expires_at("1970-01-01T00:00:00+00:00") == "1970-01-31T00:00:00+00:00"
+
+    def test_auth_status_reports_the_grant_deadline(self, tmp_path, monkeypatch):
+        """The advance signal the issue asks for: status carries the deadline even while the
+        instance still reports itself healthy."""
+        from hermes_cli import auth_nous
+
+        granted = datetime(2026, 10, 1, tzinfo=UTC)
+        state = {"access_token": "a", "refresh_token": "r", "obtained_at": granted.isoformat(),
+                 "expires_at": (granted + timedelta(hours=1)).isoformat(),
+                 "grant_obtained_at": granted.isoformat(), "scope": auth_nous.DEFAULT_NOUS_SCOPE}
+        monkeypatch.setattr("hermes_cli.auth.get_provider_auth_state", lambda _p: state)
+        monkeypatch.setattr(auth_nous, "_state_invoke_jwt_status", lambda *_a, **_k: None)
+        monkeypatch.setattr(auth_nous, "_terminal_quarantine_marker", lambda *_a: None)
+
+        status = auth_nous.get_nous_auth_status_local()
+
+        assert status["grant_obtained_at"] == granted.isoformat()
+        assert status["grant_expires_at"] == "2026-10-31T00:00:00+00:00"
+        # 9 days out: healthy, but inside the 3-day warning? no.
+        assert "grant_expiring" not in status
+
+    def test_auth_status_flags_a_grant_inside_the_warning_window(self, tmp_path, monkeypatch):
+        from datetime import timedelta
+        from hermes_cli import auth_nous
+
+        granted = datetime.now(UTC) - timedelta(days=29)
+        state = {"access_token": "a", "refresh_token": "r", "obtained_at": granted.isoformat(),
+                 "expires_at": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
+                 "grant_obtained_at": granted.isoformat(), "scope": auth_nous.DEFAULT_NOUS_SCOPE}
+        monkeypatch.setattr("hermes_cli.auth.get_provider_auth_state", lambda _p: state)
+        monkeypatch.setattr(auth_nous, "_state_invoke_jwt_status", lambda *_a, **_k: None)
+        monkeypatch.setattr(auth_nous, "_terminal_quarantine_marker", lambda *_a: None)
+
+        assert auth_nous.get_nous_auth_status_local()["grant_expiring"] is True

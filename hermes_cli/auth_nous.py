@@ -78,6 +78,31 @@ _NOUS_EMPTY_AGENT_KEY_FIELDS: dict[str, Any] = {
 
 _NOUS_STALE_PORTAL_HOSTS: frozenset[str] = frozenset({"api.nousresearch.com"})
 
+#: The Nous device-code grant hard-expires 30 days after the human approved it, and a
+#: refresh-token rotation does NOT extend it (#135518). Access-token refreshes rewrite
+#: ``obtained_at`` every 45-60 minutes, so nothing on disk recorded the approval time and
+#: a headless gateway reported itself healthy until the refused refresh quarantined it.
+NOUS_DEVICE_CODE_GRANT_LIFETIME_DAYS = 30
+
+#: How far ahead of the deadline ``hermes auth status nous`` flags the grant, so an operator
+#: sees the expiry while a re-login is still possible unattended.
+_NOUS_GRANT_EXPIRY_WARN_SECONDS = 3 * 24 * 3600
+
+
+def nous_grant_expires_at(granted_at: Any) -> Optional[str]:
+    """When a device-code grant approved at *granted_at* dies, or ``None`` if unparseable."""
+    from hermes_cli.auth import _parse_iso_timestamp
+
+    if not granted_at:
+        return None
+    started = _parse_iso_timestamp(granted_at)
+    # ``is None``, not falsy: a valid pre-1970 timestamp parses to 0.0 and IS a real deadline.
+    if started is None:
+        return None
+    return _iso_after(
+        datetime.fromtimestamp(started, tz=UTC),
+        NOUS_DEVICE_CODE_GRANT_LIFETIME_DAYS * 24 * 3600)
+
 
 def _portal_entitlement_message(capability: str) -> str:
     """Portal entitlement notice for *capability* (fresh account data), "" when unavailable."""
@@ -408,6 +433,8 @@ def _shared_lock_timeout(timeout_seconds: float) -> float:
 _NOUS_SHARED_STATE_KEYS = (
     "access_token", "refresh_token", "token_type", "scope", "client_id", "portal_base_url",
     "inference_base_url", "obtained_at", "expires_at",
+    # The device-code grant's own approval time; rotates with the grant, never with the token.
+    "grant_obtained_at",
     # Guest (``auth_method: anonymous``) identity: the ``anon_`` credential is the refresh material.
     "auth_method", "account_tier", "anon_token", "user_id", "org_id")
 # Shared-store key: an account's latest refresh, kept beside a different identity the store holds.
@@ -486,7 +513,8 @@ def _nous_shared_shape(src: dict[str, Any]) -> dict[str, Any]:
             DEFAULT_NOUS_WELCOME_URL if src.get("auth_method") == "anonymous" else DEFAULT_NOUS_INFERENCE_URL),
         "obtained_at": src.get("obtained_at"), "expires_at": src.get("expires_at"),
         # WELCOME_CLAIM_FLAG travels too: an adopted connector guest that lost it would read as pre-trial.
-        **{k: src[k] for k in ("auth_method", "account_tier", "anon_token", "user_id", "org_id", "connectors_token",
+        **{k: src[k] for k in ("grant_obtained_at", "auth_method", "account_tier",
+                               "anon_token", "user_id", "org_id", "connectors_token",
                                WELCOME_CLAIM_FLAG)
            if src.get(k) not in (None, "")}}
 
@@ -797,9 +825,16 @@ def _apply_nous_refreshed_tokens(
     state["scope"] = refreshed.get("scope") or state.get("scope")
     if inference_base_url is not None:
         state["inference_base_url"] = inference_base_url
+    # Read the PRE-refresh obtained_at first: it is the anchor for a state written before
+    # this field existed, and it is overwritten two lines below.
+    granted_at = state.get("grant_obtained_at") or state.get("obtained_at")
     state["obtained_at"] = now.isoformat()
     state["expires_in"] = access_ttl
     state["expires_at"] = _iso_after(now, access_ttl)
+    # Carry the device-code approval time across rotations: it dates the GRANT, not this
+    # access token, so a successful refresh must leave it exactly as the login wrote it.
+    if granted_at:
+        state["grant_obtained_at"] = granted_at
 
 
 def _healed_nous_inference_url(refreshed: dict[str, Any]) -> str:
@@ -908,6 +943,7 @@ def refresh_nous_oauth_from_state(
         "token_type": src.get("token_type") or "Bearer",
         "scope": src.get("scope") or DEFAULT_NOUS_SCOPE,
         "obtained_at": src.get("obtained_at"), "expires_at": src.get("expires_at"),
+        "grant_obtained_at": src.get("grant_obtained_at"),
         "agent_key": src.get("agent_key"), "agent_key_expires_at": src.get("agent_key_expires_at"),
         "tls": {"insecure": bool(insecure), "ca_bundle": ca_bundle}}
     verify = _resolve_verify(insecure=insecure, ca_bundle=ca_bundle, auth_state=state)
@@ -1356,7 +1392,7 @@ def get_nous_auth_status_local() -> dict[str, Any]:
     the server still accepts it.
     """
     from hermes_cli.anon_auth import guest_without_free_tier
-    from hermes_cli.auth import get_provider_auth_state
+    from hermes_cli.auth import _is_expiring, get_provider_auth_state
     try:
         state = get_provider_auth_state("nous")
     except Exception:
@@ -1367,6 +1403,14 @@ def get_nous_auth_status_local() -> dict[str, Any]:
     last_err = _terminal_quarantine_marker(state)
     logged_in = (jwt_reason is None) or (bool(state.get("refresh_token")) and last_err is None)
     status = _nous_status_from_state(state, logged_in=logged_in, source="auth_store_local")
+    # The grant deadline is not derivable from anything above: the access token keeps rotating,
+    # so ``logged_in`` stays true right up to the refused refresh that IS the outage (#135518).
+    grant_expires_at = nous_grant_expires_at(state.get("grant_obtained_at"))
+    if grant_expires_at:
+        status["grant_obtained_at"] = state.get("grant_obtained_at")
+        status["grant_expires_at"] = grant_expires_at
+        if _is_expiring(grant_expires_at, _NOUS_GRANT_EXPIRY_WARN_SECONDS):
+            status["grant_expiring"] = True
     if last_err is not None:
         status.update(
             relogin_required=True, error_code=last_err.get("code"),
@@ -1519,6 +1563,10 @@ def _nous_device_code_login(
         "refresh_token": token_data.get("refresh_token"),
         "obtained_at": now.isoformat(), "expires_at": _iso_after(now, token_expires_in),
         "expires_in": token_expires_in, "tls": _tls_state_from_verify(verify),
+        # The device-code grant dies 30 days after THIS approval regardless of how often the
+        # access token is refreshed, so the approval time is recorded separately from
+        # ``obtained_at`` and never rewritten by a refresh (#135518).
+        "grant_obtained_at": now.isoformat(),
         **_NOUS_EMPTY_AGENT_KEY_FIELDS}
     try:
         return refresh_nous_oauth_from_state(

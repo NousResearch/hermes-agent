@@ -45,7 +45,7 @@ function derive(status: DesktopUpdateStatus | null, apply: UpdateApplyState = ID
 describe('deriveUpdateStatus', () => {
   it('names the stable release only when the checkout is on it', () => {
     const latestRelease = en.settings.about.channel.latestRelease
-    const stable = { supported: true, behind: 0, channel: 'stable', sourceVersion: '0.21.6', targetSha: 'a'.repeat(40) }
+    const stable = { supported: true, behind: 0, channel: 'stable', sourceVersion: '0.21.6', targetSha: 'a'.repeat(40), aheadOfRelease: false }
     const on = deriveUpdateStatus({ apply: IDLE_APPLY, checking: false, latestRelease, status: { ...stable, currentSha: 'a'.repeat(40) }, target: 'client', u: en.updates })
     expect(on.line).toBe('You’re on the latest stable release (v0.21.6).')
 
@@ -61,6 +61,18 @@ describe('deriveUpdateStatus', () => {
     })
 
     expect(ahead.line).toBe(en.updates.latestBody)
+
+    // An older checker omits the field and may also pin an ahead checkout to HEAD: never name the release.
+    const older = deriveUpdateStatus({
+      apply: IDLE_APPLY,
+      checking: false,
+      latestRelease,
+      status: { ...stable, currentSha: 'a'.repeat(40), aheadOfRelease: undefined },
+      target: 'client',
+      u: en.updates
+    })
+
+    expect(older.line).toBe(en.updates.latestBody)
     expect(derive({ supported: true, behind: 0, branch: 'main' }).line).toBe(en.updates.latestBody)
   })
 

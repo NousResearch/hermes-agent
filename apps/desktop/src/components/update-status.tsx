@@ -129,7 +129,8 @@ function ordinaryUpdateStatus({ apply, checking, latestRelease, status, target, 
       latestRelease &&
       status.channel === 'stable' &&
       status.sourceVersion &&
-      !status.aheadOfRelease &&
+      // Older checkers omit the field and may also pin an ahead checkout to HEAD.
+      status.aheadOfRelease === false &&
       status.targetSha &&
       status.currentSha === status.targetSha
 

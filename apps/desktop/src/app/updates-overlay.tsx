@@ -49,6 +49,7 @@ import {
   dismissDiscontinuedNotice,
   resetUpdateApplyState,
   setUpdateOverlayOpen,
+  sourceUpdateChannel,
   type UpdateApplyState
 } from '@/store/updates'
 
@@ -236,7 +237,10 @@ function IdleView({
     </button>
   )
 
-  const details = version ? <VersionDetails channelAction={changeChannel} version={version} /> : null
+  // Only where Settings shows a selector: a custom branch or an older runtime gets the label alone.
+  const details = version ? (
+    <VersionDetails channelAction={sourceUpdateChannel(status) ? changeChannel : undefined} version={version} />
+  ) : null
 
   // App-installer check-unknown (OS checker unavailable): NOT "no updates"
   // and NOT a generic error — the OS also installs updates automatically on

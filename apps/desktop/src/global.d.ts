@@ -887,7 +887,7 @@ export interface DesktopUpdateStatus {
   latestTag?: string | null
   /** Source stable: the release version the channel resolves to, e.g. `0.21.6`. */
   sourceVersion?: string
-  /** Source stable, forward-only: this checkout is newer than that release and waits for the next. */
+  /** Source stable: true when forward-only (newer than the release); absent from older checkers. */
   aheadOfRelease?: boolean
   targetSha?: string
   commits?: DesktopUpdateCommit[]

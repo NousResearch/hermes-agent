@@ -14,6 +14,7 @@ from typing import Callable
 
 _LOCK = threading.RLock()
 _REGISTRATIONS: dict[object, tuple[str, frozenset[str]]] = {}
+_CHILD_RETAINED: dict[object, frozenset[str]] = {}
 _RETAINED: ContextVar[tuple[tuple[str, frozenset[str]], ...]] = ContextVar(
     "hermes_retained_private_child_env", default=(),
 )
@@ -49,6 +50,18 @@ def private_env_keys() -> frozenset[str]:
         return frozenset(name for owner, names in groups if owner == scope for name in names)
 
 
+def child_private_env_keys() -> frozenset[str]:
+    """Names to strip from children, regardless of the child profile.
+
+    The parent environment is process-wide: an operator-exported credential has
+    no dotenv provenance, so a child in another profile can inherit it. This
+    denial-only view exposes no values or authority from another profile.
+    """
+    with _LOCK:
+        groups = tuple(keys for _, keys in _REGISTRATIONS.values()) + tuple(_CHILD_RETAINED.values())
+        return frozenset(name for names in groups for name in names)
+
+
 @contextmanager
 def retained_middleware_callbacks(manager, kind: str):
     """Capture callbacks and private names together, then run without registry locks.
@@ -56,6 +69,8 @@ def retained_middleware_callbacks(manager, kind: str):
     Discovery/unload uses the manager lock; individual key-handle disposal uses
     the registry lock. An in-flight callback keeps its profile's names even if
     its plugin is unloaded before the approved child is actually dispatched.
+    Child scrubbing also retains the process-wide names visible at capture, so
+    an inherited credential cannot escape through another profile or thread.
     This snapshot contains names only and never becomes middleware payload.
     """
     if not manager._middleware.get(kind):
@@ -66,6 +81,7 @@ def retained_middleware_callbacks(manager, kind: str):
         # The discovery owner waits for this worker while holding its lock.
         raise RuntimeError("Authorized tool middleware cannot execute during plugin registration")
     from hermes_constants import hermes_home_key
+    child_token = object()
     with manager._discovery_lock, _LOCK:
         callbacks = tuple(manager._middleware.get(kind, ()))
         if callbacks:
@@ -73,6 +89,7 @@ def retained_middleware_callbacks(manager, kind: str):
             names = frozenset(name for owner, keys in _REGISTRATIONS.values()
                               if owner == scope for name in keys)
             retained = ((scope, names),)
+            _CHILD_RETAINED[child_token] = child_private_env_keys()
         else:
             retained = ()
     token = _RETAINED.set(_RETAINED.get() + retained)
@@ -80,3 +97,5 @@ def retained_middleware_callbacks(manager, kind: str):
         yield callbacks
     finally:
         _RETAINED.reset(token)
+        with _LOCK:
+            _CHILD_RETAINED.pop(child_token, None)

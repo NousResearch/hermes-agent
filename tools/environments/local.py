@@ -241,6 +241,7 @@ def _inject_session_context_env(env: dict) -> None:
 
 def _filter_secret_env(
     items: Mapping[str, str], out: dict, *, unwrap_force: bool,
+    private_keys: frozenset,
     plugin_strip: frozenset = frozenset()) -> None:
     """Copy *items* into *out*, dropping Hermes-managed secrets. ``_HERMES_FORCE_<NAME>``
     unwraps to ``NAME`` when ``unwrap_force`` (caller extras / terminal env), else is
@@ -252,15 +253,15 @@ def _filter_secret_env(
     except Exception:
         is_env_passthrough, resolve_passthrough_value = (lambda _: False), (lambda _n, fb: fb)
     plugin_strip_folded = frozenset(k.upper() for k in plugin_strip)
-    from hermes_cli.private_child_env import private_env_keys
-    private_keys = private_env_keys()
     registered = _registered_adapter_secret_env()
     for key, value in items.items():
+        if key.upper().removeprefix(_HERMES_PROVIDER_ENV_FORCE_PREFIX) in private_keys:
+            continue
         if key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
             if not unwrap_force:
                 continue
             key = key[len(_HERMES_PROVIDER_ENV_FORCE_PREFIX):]
-            if not _is_hermes_internal_secret(key) and key.upper() not in private_keys:
+            if not _is_hermes_internal_secret(key):
                 out[key] = value
             continue
         if _is_hermes_internal_secret(key) or key.upper() in plugin_strip_folded:
@@ -287,15 +288,18 @@ def _finalize_child_env(env: dict) -> dict:
     return delegated_child_subprocess_env(env)
 
 
-def _scrubbed_env(parts, plugin_strip: frozenset, fix_path) -> dict:
+def _scrubbed_env(parts, plugin_strip: frozenset, fix_path, *, private_keys: frozenset | None = None) -> dict:
     """Filter each ``(items, unwrap_force)`` in *parts* into one env, rewrite PATH via
     *fix_path* (always prepending the hermes install dir so bare ``hermes`` resolves
     for children of a systemd/cron-launched gateway), then apply the shared guards."""
-    from hermes_cli.private_child_env import private_env_keys
-    plugin_strip = plugin_strip | private_env_keys()
+    from hermes_cli.private_child_env import child_private_env_keys
+    if private_keys is None:
+        private_keys = child_private_env_keys()
+    plugin_strip = plugin_strip | private_keys
     out: dict[str, str] = {}
     for items, unwrap_force in parts:
-        _filter_secret_env(items, out, unwrap_force=unwrap_force, plugin_strip=plugin_strip)
+        _filter_secret_env(items, out, unwrap_force=unwrap_force,
+                           plugin_strip=plugin_strip, private_keys=private_keys)
     # Declared names the bound profile scope holds but the process env never did (a routed
     # profile's own .env / sources) — the filter above can only see names already present.
     # Unguarded on purpose: a scope/config failure here must be loud, not silently drop the
@@ -315,8 +319,10 @@ def _scrubbed_env(parts, plugin_strip: frozenset, fix_path) -> dict:
 def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = None) -> dict:
     """Filter Hermes-managed secrets from a subprocess environment (background/PTY
     spawn path, search workers, computer-use driver, user-script runners)."""
+    from hermes_cli.private_child_env import child_private_env_keys
+    private_keys = child_private_env_keys()
     return _scrubbed_env([(base_env or {}, False), (extra_env or {}, True)],
-                         _plugin_terminal_env_strip_keys(), lambda p: p)
+                         _plugin_terminal_env_strip_keys(), lambda p: p, private_keys=private_keys)
 
 
 def hermes_subprocess_env(
@@ -341,10 +347,13 @@ def _scrub_credentials(env: dict, *, inherit_credentials: bool) -> dict:
     # Credential names fold to uppercase for membership: on Windows the env block
     # itself is case-insensitive, so a lowercase-stored ``gh_token`` IS GH_TOKEN.
     home_secrets = _home_adapter_secret_env()  # one manifest stamp per scrub
+    from hermes_cli.private_child_env import child_private_env_keys
+    private_keys = child_private_env_keys()
     strip_folded = _ALWAYS_STRIP_FOLDED | {k.upper() for k in _plugin_terminal_env_strip_keys()} | home_secrets
     registered = _registry_adapter_secret_env()  # home_secrets already strip above
     for key in list(env):
         if (key.upper() in strip_folded
+                or key.upper().removeprefix(_HERMES_PROVIDER_ENV_FORCE_PREFIX) in private_keys
                 or (not inherit_credentials and _is_provider_env_blocklisted(key, registered))
                 or key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX)
                 or _is_hermes_internal_secret(key)):

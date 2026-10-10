@@ -360,8 +360,8 @@ def _plugin_terminal_env_strip_keys() -> frozenset:
     """Credential env keys owned by plugin-registered terminal backends (Tier-1:
     stripped from every spawned subprocess). Computed at call time because plugins
     register after import; fail-soft to empty."""
-    from hermes_cli.private_child_env import private_env_keys
-    private = private_env_keys()
+    from hermes_cli.private_child_env import child_private_env_keys
+    private = child_private_env_keys()
     try:
         from agent.terminal_env_registry import plugin_strip_env_keys
 

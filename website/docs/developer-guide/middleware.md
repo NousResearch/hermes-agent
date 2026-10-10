@@ -168,12 +168,18 @@ owner's declaration. Multiple plugins can protect the same name independently.
 An authorized middleware call captures its callbacks and profile's private names
 together. If a plugin unloads while that call is waiting for admission, the call
 retains those names through execution and cleanup, then releases its snapshot.
-Nested calls into another profile do not inherit the first profile's names.
-This retention stores no values and does not keep the plugin registered.
+Nested calls into another profile do not inherit the first profile's registration
+authority. Child-environment scrubbing retains the process-wide names visible at
+capture until the call finishes, including for children of another profile or
+thread. This retention stores no values and does not keep the plugin registered.
 
-Declarations are scoped to the active Hermes profile. The existing child-env
-builders strip declared names from inherited values, extras, credential-inheriting
-children, and skill passthrough additions. Name matching is case-insensitive,
+Registration ownership and lookup remain scoped to the active Hermes profile.
+The existing child-env builders strip the union of registered private names from
+all profiles: the parent process environment can contain operator-injected keys
+with no profile provenance. This denial-only union does not share values,
+callbacks or permissions between profiles. It applies to inherited values,
+extras, credential-inheriting children, and skill passthrough additions.
+Name matching is case-insensitive,
 including Windows environment blocks. `_HERMES_FORCE_...` extras cannot reintroduce
 a private key; other existing FORCE behavior is unchanged. Snapshot the configured
 key at registration and require plugin reload when it changes, so the credential
@@ -181,7 +187,8 @@ used by the control client always has a matching declaration.
 
 This controls normal Hermes child-environment construction. It does not erase an
 already-running shell's environment or prevent a trusted local tool from reading
-the user's secret files. Disabling/unloading the plugin removes its declaration;
+the user's secret files. Explicit internal `scrub_secrets=False` callers retain
+their existing unsanitized contract. Disabling/unloading the plugin removes its declaration;
 remove obsolete control credentials from the environment as part of disabling the
 integration. Do not publish credential values or expose them as tool arguments.
 

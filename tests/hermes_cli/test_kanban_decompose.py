@@ -114,6 +114,118 @@ def test_decompose_with_fanout_creates_children(kanban_home):
     assert c1.assignee == "engineer"
 
 
+# ---------------------------------------------------------------------------
+# Parent comments are decisions already taken (#126700)
+# ---------------------------------------------------------------------------
+
+def test_decompose_prompt_carries_parent_comments(kanban_home):
+    """The decompose prompt includes the parent's comment thread with the
+    decisions-already-taken rule; a scope ruling made after the body was
+    written reaches the decomposer."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="triage card", body="target is 3 files", triage=True)
+        kb.add_comment(conn, tid, author="maintainer", body="Ruling: target is widened to 6 files")
+
+    captured = {}
+
+    def _capture(*args, **kwargs):
+        messages = kwargs.get("messages") or []
+        for message in messages:
+            if message.get("role") == "system":
+                captured["system"] = message.get("content") or ""
+            elif message.get("role") == "user":
+                captured["user"] = message.get("content") or ""
+        return _fake_aux_response(jsonlib.dumps({
+            "fanout": True, "rationale": "split",
+            "tasks": [{"title": "work", "body": "do it", "assignee": None, "parents": []}],
+        }))
+
+    patches = _patch_list_profiles(["orchestrator"])
+    for p in patches:
+        p.start()
+    try:
+        with patch("agent.auxiliary_client.call_llm", side_effect=_capture), _patch_extra_body():
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok, outcome.reason
+    user_prompt = captured.get("user") or ""
+    assert "Ruling: target is widened to 6 files" in user_prompt
+    assert "maintainer" in user_prompt  # author rides verbatim
+    assert "decisions already taken" in (captured.get("system") or "")
+
+
+def test_decompose_children_carry_the_ruling_verbatim(kanban_home):
+    """Every child body carries the same decision thread verbatim — a model that
+    ignores the prompt cannot lose a ruling made after the body was written."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="triage card", body="target is 3 files", triage=True)
+        kb.add_comment(conn, tid, author="maintainer", body="Ruling: target is widened to 6 files")
+
+    llm_payload = jsonlib.dumps({
+        "fanout": True, "rationale": "split",
+        "tasks": [
+            {"title": "a", "body": "stale scope spec", "assignee": None, "parents": []},
+            {"title": "b", "body": "another stale spec", "assignee": None, "parents": []},
+        ],
+    })
+
+    patches = _patch_list_profiles(["orchestrator"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_aux_client(llm_payload), _patch_extra_body():
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok and outcome.child_ids
+    with kbc.connect() as conn:
+        children = [kb.get_task(conn, cid) for cid in outcome.child_ids]
+    for child in children:
+        assert "Ruling: target is widened to 6 files" in (child.body or ""), child.body
+        assert "maintainer" in (child.body or "")
+
+
+def test_comment_block_clips_largest_first(kanban_home):
+    """Largest-first with a floor: 'newest wins' dropped the ruling because the
+    discussion after a decision is newer than the decision."""
+    big_ruling = "Ruling: " + ("detail " * 200)  # the largest, and the OLDEST
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="card", triage=True)
+        kb.add_comment(conn, tid, author="maintainer", body=big_ruling)
+        kb.add_comment(conn, tid, author="chatter", body="btw nice card")  # newest, tiny
+
+    with kbc.connect() as conn:
+        comments = kb.list_comments(conn, tid)
+    block = decomp._decision_comments_block(comments, decomp._DECISION_COMMENTS_MAX_BYTES)
+
+    assert "Ruling:" in block  # the largest decision rides, not the newest chatter
+    assert "maintainer" in block
+
+
+def test_child_body_block_stays_under_worker_cap(kanban_home):
+    """The appended block is sized against build_worker_context's 8 KiB task.body
+    cap — anything past the cap is invisible to the worker, so a body near the cap
+    shrinks (or drops) the block instead of pushing it past the truncation point."""
+    near_cap_body = "spec " * 1600  # ~8 KiB minus a little
+    block = decomp._append_comments_to_body(near_cap_body, "Ruling: " + ("detail " * 2000))
+    assert len(block.encode("utf-8")) <= decomp._WORKER_BODY_CAP_BYTES
+    assert "Ruling:" in block  # the largest decision still rides, clipped to the room left
+
+    over_cap_body = "spec " * 3000  # already past the cap: no room at all
+    dropped = decomp._append_comments_to_body(over_cap_body, "Ruling: keep this visible")
+    assert "Ruling:" not in dropped  # dropped rather than appended invisible
+
+    small_body = "short spec"
+    ok_block = decomp._append_comments_to_body(small_body, "Ruling: keep this visible")
+    assert "Ruling: keep this visible" in ok_block
+    assert len(ok_block.encode("utf-8")) <= decomp._WORKER_BODY_CAP_BYTES
+
+
 def test_decompose_fanout_children_inherit_root_assignee_when_unrouted(kanban_home):
     """Unrouted children fall back to the ROOT task's assignee, not
     the decomposer's active profile (#114294). The active profile here is ``private``

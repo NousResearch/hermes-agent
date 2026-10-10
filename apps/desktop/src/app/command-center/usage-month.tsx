@@ -24,11 +24,16 @@ function amount(kind: UsageBudget['kind'], value: number): string {
   return kind === 'usd' ? usd.format(value) : compactNumber(value)
 }
 
+/** A date as the viewer's short day-and-month ("Oct 26"). */
+export function shortDate(date: Date): string {
+  return date.toLocaleDateString(undefined, { day: 'numeric', month: 'short' })
+}
+
 /** `2026-10-26` as the viewer's short date, read as a local calendar day (not UTC midnight). */
 export function formatRunsOut(isoDate: string): string {
   const [year, month, day] = isoDate.split('-').map(Number)
 
-  return new Date(year, month - 1, day).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })
+  return shortDate(new Date(year, month - 1, day))
 }
 
 /** "This month" in Command Center → Usage. Per billing provider: tokens used (always known), money
@@ -50,7 +55,10 @@ export function UsageMonthSection(): ReactElement {
       <div className="flex items-baseline justify-between">
         <span className={headingClass}>{cc.thisMonth}</span>
         {month ? (
-          <span className={captionClass}>{cc.monthProgress(Math.ceil(month.days_elapsed), month.days_in_month)}</span>
+          <span className={cn(captionClass, 'flex gap-2')}>
+            <span>{cc.monthProgress(Math.ceil(month.days_elapsed), month.days_in_month)}</span>
+            {month.counted_since ? <span>{cc.countingSince(shortDate(new Date(month.counted_since)))}</span> : null}
+          </span>
         ) : null}
       </div>
       {state.loading && !month ? <span className={captionClass}>{cc.loadingMonth(loadingFor)}</span> : null}

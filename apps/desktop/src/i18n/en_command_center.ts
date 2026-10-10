@@ -19,6 +19,7 @@ export const enCommandCenter: Translations['commandCenter'] = {
   budgetSaveFailed: (error: string) => `Couldn't save the budget: ${error}`,
   loadingMonth: (seconds: number) => `Loading this month… ${seconds}s`,
   noUsageThisMonth: 'No usage recorded this month yet.',
+  countingSince: (date: string) => `Counting since ${date}`,
   close: 'Close command center',
   paletteTitle: 'Command palette',
   back: 'Back',

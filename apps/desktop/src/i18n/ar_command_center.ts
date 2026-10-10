@@ -19,6 +19,7 @@ export const arCommandCenter = {
     budgetSaveFailed: (error: string) => `تعذّر حفظ الميزانية: ${error}`,
     loadingMonth: (seconds: number) => `جارٍ تحميل هذا الشهر… ${seconds} ث`,
     noUsageThisMonth: 'لا يوجد استخدام مسجّل هذا الشهر بعد.',
+    countingSince: (date: string) => `يُحسب منذ ${date}`,
     close: 'إغلاق',
     paletteTitle: 'لوحة الأوامر',
     back: 'رجوع',

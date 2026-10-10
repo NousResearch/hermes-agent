@@ -14,7 +14,7 @@ import { enCommandCenter as cc } from '@/i18n/en_command_center'
 import { $usageMonth } from '@/store/usage-month'
 import type { UsageMonthProvider } from '@/types/hermes'
 
-import { formatRunsOut, UsageMonthSection } from './usage-month'
+import { formatRunsOut, shortDate, UsageMonthSection } from './usage-month'
 
 const xiaomi: UsageMonthProvider = {
   actual_cost: 0,
@@ -87,6 +87,13 @@ describe('UsageMonthSection', () => {
       expect(setUsageBudget).toHaveBeenCalledWith({ monthly_tokens: 500_000_000, provider: 'xiaomi' })
     )
     await waitFor(() => expect(getUsageMonth).toHaveBeenCalledTimes(2))
+  })
+
+  it('says from when the month is counted when the ledger started mid-month', async () => {
+    getUsageMonth.mockResolvedValue({ ...month([xiaomi]), counted_since: '2026-10-05T14:00:00+00:00' })
+    render(<UsageMonthSection />)
+
+    await screen.findByText(cc.countingSince(shortDate(new Date('2026-10-05T14:00:00+00:00'))))
   })
 
   it('says what it is loading and for how long', () => {

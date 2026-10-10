@@ -18,6 +18,7 @@ export const jaCommandCenter = {
   budgetSaveFailed: (error: string) => `予算を保存できませんでした: ${error}`,
   loadingMonth: (seconds: number) => `今月のデータを読み込み中… ${seconds}秒`,
   noUsageThisMonth: '今月の使用量はまだありません。',
+  countingSince: (date: string) => `${date}から集計`,
   close: 'コマンドセンターを閉じる',
   paletteTitle: 'コマンドパレット',
   back: '戻る',

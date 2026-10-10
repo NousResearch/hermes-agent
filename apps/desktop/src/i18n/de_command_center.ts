@@ -19,6 +19,7 @@ export const deCommandCenter = {
   budgetSaveFailed: (error: string) => `Budget konnte nicht gespeichert werden: ${error}`,
   loadingMonth: (seconds: number) => `Dieser Monat wird geladen… ${seconds}s`,
   noUsageThisMonth: 'Diesen Monat noch keine Nutzung erfasst.',
+  countingSince: (date: string) => `Gezählt seit ${date}`,
   close: 'Command Center schließen',
   paletteTitle: 'Befehlspalette',
   back: 'Zurück',

@@ -20,6 +20,7 @@ export const ruCommandCenter = {
   budgetSaveFailed: (error: string) => `Не удалось сохранить бюджет: ${error}`,
   loadingMonth: (seconds: number) => `Загрузка месяца… ${seconds} с`,
   noUsageThisMonth: 'В этом месяце использования пока нет.',
+  countingSince: (date: string) => `Учёт с ${date}`,
   close: 'Закрыть командный центр',
   paletteTitle: 'Палитра команд',
   back: 'Назад',

@@ -6,6 +6,7 @@ expose it, so operators could not request networkless Docker execution from
 config.yaml.
 """
 
+from tests.tools.test_docker_environment import _found_by_ps
 from tools import terminal_tool
 from tools.environments import docker as docker_env
 
@@ -72,6 +73,7 @@ def _reuse_guard_harness(
     Returns the list of docker commands issued.
     """
     commands = []
+    legacy_probes = []
 
     def fake_run(cmd, *args, **kwargs):
         commands.append(cmd)
@@ -85,10 +87,28 @@ def _reuse_guard_harness(
             # Matches the egress-aware reuse probe: with egress off the
             # format string is ID\tState\tEgressLabel and docker renders a
             # missing label as "<no value>".
+            if any(a.startswith("label=") for a in cmd):
+                legacy_probes.append(cmd)
             Result.stdout = "existing-container-id\trunning\t<no value>\n"
         elif len(cmd) > 1 and cmd[1] == "inspect":
-            # Two probes share `inspect`: image identity (must match for reuse) and network mode.
-            Result.stdout = f"{existing_image}\n" if ".Config.Image" in cmd[3] else f"{existing_mode}\n"
+            fmt = cmd[cmd.index("--format") + 1] if "--format" in cmd else ""
+            if "--type" in cmd and "container" in cmd:
+                # `inspect --type container` is the JSON probe (name lookup, refusal probe,
+                # legacy-adoption identity check). Only the container the label-filtered `ps`
+                # matched exists; it carries every label that probe filtered on, so the
+                # adoption check sees the legacy fingerprint. A name lookup misses, as before.
+                refs = cmd[cmd.index("--format") + 2:]
+                if "existing-container-id" in refs:
+                    Result.stdout = _found_by_ps(legacy_probes[-1] if legacy_probes else [],
+                                                 "existing-container-id", "running")
+                else:
+                    Result.returncode = 1
+                    Result.stderr = "Error response from daemon: No such container: " + (refs[0] if refs else "")
+            elif ".Config.Image" in fmt:
+                # Two plain probes share `inspect`: image identity (must match for reuse) and network mode.
+                Result.stdout = f"{existing_image}\n"
+            else:
+                Result.stdout = f"{existing_mode}\n"
         elif len(cmd) > 2 and cmd[1:3] == ["image", "inspect"]:
             Result.returncode = 1  # never in the local store: the replacement must go through `pull`
         elif len(cmd) > 1 and cmd[1] == "pull":

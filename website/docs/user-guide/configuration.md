@@ -403,18 +403,21 @@ terminal:
 
 #### Container lifecycle
 
-Hermes-managed containers carry labels so subsequent processes (and the orphan reaper) can identify them:
+Each sandbox configuration has one identity, the environment fingerprint: a digest of the image, the mount arguments, the active `HERMES_HOME`, the egress posture and the task. Host paths and volume sources are hashed, not exposed. Per-process tempdir-sourced mounts (the symlink-safe skills copy) are hashed by their stable container path, not the random host tempdir, so they don't defeat reuse. With `docker_shared_container_key` set, the fingerprint is the shared key, the egress posture and the task.
+
+The container is **named after the fingerprint** (`hermes-<first 12 hex digits>`). On startup Hermes attaches to the container holding that name; if it is `exited` (e.g. after a Docker daemon restart), it's `docker start`'d and reused — filesystem state and any installed packages survive, but in-container background processes do not. Otherwise Hermes runs a fresh container under that name. Docker refuses a second container with one name, so two processes starting the same configuration at once converge on one container.
+
+Changing the image, mount arguments, `HERMES_HOME` or the egress posture changes the fingerprint and therefore the name: the next session starts a fresh container and leaves the old one alone. The old container keeps running beside its successor, both mounting the same per-task sandbox directories, until a Docker daemon or host restart stops it (the orphan reaper only removes exited containers); `docker rm -f` it to end that sooner. Hermes refuses to start a container when a running Hermes container of another configuration bind-mounts one of its real host paths read-write, naming that container, rather than let two sandboxes write one tree. A container from before fingerprint names is found by its labels and renamed to the canonical name.
+
+Labels let other processes, the orphan reaper and operators identify the containers:
 
 - `hermes-agent=1` — marks it as Hermes-managed
-- `hermes-task-id=<sanitized task_id>` — keys the per-task reuse probe
-- `hermes-profile=<sanitized profile name>` — scopes reuse and reaping to the active Hermes profile by default; when `docker_shared_container_key` is set, its sanitized value is used instead
-- `hermes-environment=<digest>` — for containers without an explicit shared key, scopes reuse to the requested image, mount arguments, and active `HERMES_HOME`; host paths and volume sources are hashed rather than exposed in this label. Per-process tempdir-sourced mounts (the symlink-safe skills copy) are hashed by their stable container path, not the random host tempdir, so they don't defeat reuse
+- `hermes-task-id=<sanitized task_id>` — the task bucket
+- `hermes-profile=<sanitized profile name>` — scopes reaping to the active Hermes profile by default; when `docker_shared_container_key` is set, its sanitized value is used instead
+- `hermes-egress=<posture>` — the egress posture
+- `hermes-environment=<digest>` — the full environment fingerprint the name is derived from
 
-On startup, Hermes runs `docker ps --filter label=hermes-task-id=<id> --filter label=hermes-profile=<identity>` and **attaches to the existing container** when it finds one. The identity is the active profile unless `docker_shared_container_key` explicitly opts trusted profiles into a common value. If the container is `exited` (e.g. after a Docker daemon restart), it's `docker start`'d and reused — filesystem state and any installed packages survive, but in-container background processes do not.
-
-Without an explicit shared key, the reuse probe also requires a matching `hermes-environment` label. Changing the image, mount arguments, or `HERMES_HOME` starts a fresh container instead of silently using another configuration. Containers created before this label was introduced do not match, so the first session after upgrading starts a fresh container; existing running containers are not removed.
-
-When a Hermes process exits — `/quit`, closing a TUI session, gateway shutdown, even SIGKILL — the cleanup path is a **no-op for the container in default mode**. The container keeps running. The next Hermes process attaches to it in milliseconds via the label probe. This is the behavior the "one long-lived container shared across sessions" contract requires: it's the only way background processes (npm watchers, dev servers, long-running pytest) survive across sessions.
+When a Hermes process exits — `/quit`, closing a TUI session, gateway shutdown, even SIGKILL — the cleanup path is a **no-op for the container in default mode**. The container keeps running. The next Hermes process attaches to it in milliseconds by name. This is the behavior the "one long-lived container shared across sessions" contract requires: it's the only way background processes (npm watchers, dev servers, long-running pytest) survive across sessions.
 
 **The container is only torn down (stopped and `docker rm -f`'d) in these cases:**
 

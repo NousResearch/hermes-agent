@@ -32,11 +32,8 @@ def test_docker_recovery_marks_pending_and_finalizer_warns(monkeypatch):
     when the backend never flagged a recreation."""
     env = docker_env.DockerEnvironment.__new__(docker_env.DockerEnvironment)
     env._container_id = "old"
-    env._labels = {}
-    env._image = ""
     monkeypatch.setattr(
-        docker_env.DockerEnvironment, "_find_reusable_container",
-        lambda self, *a: ("newcid", "running"))
+        docker_env.DockerEnvironment, "_attach_existing_container", lambda self: "newcid")
     monkeypatch.setattr(docker_env.DockerEnvironment, "init_session", lambda self: None)
     assert env._recreate_container() is True
     assert getattr(env, "_recreated_notice_pending", False) is True

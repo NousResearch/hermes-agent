@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import re
@@ -446,8 +447,9 @@ def test_snap_compat_drops_only_init_and_no_new_privileges(monkeypatch):
     assert "--init" in default and "no-new-privileges" in default
     assert "--init" not in compat and "no-new-privileges" not in compat
 
-    def strip(argv):  # everything except the two flags and the random container name
-        return [a for a in argv if a not in ("--init", "--security-opt", "no-new-privileges") and not a.startswith("hermes-")]
+    def strip(argv):  # everything except the two flags and the per-spawn container name and nonce
+        return [a for a in argv if a not in ("--init", "--security-opt", "no-new-privileges")
+                and not a.startswith("hermes-")]
 
     assert strip(default) == strip(compat)
 
@@ -800,8 +802,9 @@ def test_labels_attribute_populated_after_init(monkeypatch):
 
 
 @pytest.mark.parametrize("changed_setting", ["image", "volumes", "hermes_home"])
-def test_reuse_probe_filters_on_environment_fingerprint(monkeypatch, tmp_path, changed_setting):
-    """Reuse and recovery must select the requested configuration, not stale mounts."""
+def test_container_name_follows_environment_fingerprint(monkeypatch, tmp_path, changed_setting):
+    """Lookup and spawn both go through the fingerprint-derived name, so a changed configuration
+    selects a different container instead of reusing one with stale mounts."""
     monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
     monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "alpha"))
@@ -810,19 +813,16 @@ def test_reuse_probe_filters_on_environment_fingerprint(monkeypatch, tmp_path, c
         (tmp_path / name / "skills").mkdir(parents=True)
     calls = _mock_subprocess_run(monkeypatch)
 
-    def reuse_filters():
-        return tuple(
-            arg for cmd, _ in calls if isinstance(cmd, list) and cmd[1] == "ps"
-            for arg in cmd if arg.startswith("label=")
-        )
+    def used_names():
+        looked_up = {cmd[-1] for cmd, _ in calls if isinstance(cmd, list) and cmd[1:4] == ["inspect", "--type", "container"]}
+        run_argv = _run_args_from_calls(calls)
+        return looked_up, run_argv[run_argv.index("--name") + 1]
 
     config = {"image": "python:3.11", "volumes": ["volume-a:/workspace"]}
-    _make_dummy_env(**config)
-    original_filters = reuse_filters()
-    assert original_filters
+    original = _make_dummy_env(**config)
+    assert used_names() == ({original._name}, original._name)
     calls.clear()
-    _make_dummy_env(**config)
-    assert reuse_filters() == original_filters
+    assert _make_dummy_env(**config)._name == original._name
 
     if changed_setting == "hermes_home":
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "beta"))
@@ -830,14 +830,12 @@ def test_reuse_probe_filters_on_environment_fingerprint(monkeypatch, tmp_path, c
         config[changed_setting] = {"image": "python:3.12", "volumes": ["volume-b:/workspace"]}[changed_setting]
     calls.clear()
     env = _make_dummy_env(**config)
-    changed_filters = reuse_filters()
-    assert changed_filters != original_filters
-    assert f"label=hermes-environment={env._labels['hermes-environment']}" in changed_filters
-    assert set(f.removeprefix("label=") for f in changed_filters) <= _labels_in_run_args(_run_args_from_calls(calls))
+    assert env._name != original._name
+    assert used_names() == ({env._name}, env._name)
 
     calls.clear()
     assert env._recreate_container()
-    assert reuse_filters() == changed_filters
+    assert used_names() == ({env._name}, env._name)
 
 
 def test_shared_container_key_replaces_profile_identity(monkeypatch, tmp_path):
@@ -901,6 +899,13 @@ def test_empty_shared_container_key_preserves_profile_isolation(monkeypatch):
 # ── Cross-process container reuse (issue #20561) ──────────────────
 
 
+def _found_by_ps(ps_cmd, cid, state):
+    """``inspect --type container`` output for the container a label-filtered ``ps`` matched: it
+    carries every label the probe filtered on."""
+    labels = dict(a.removeprefix("label=").split("=", 1) for a in ps_cmd if a.startswith("label="))
+    return json.dumps({"id": cid, "name": "/hermes-legacy", "state": state, "labels": labels, "mounts": []}) + "\n"
+
+
 def _mock_subprocess_run_with_reuse(monkeypatch, ps_state: str | None,
                                      start_succeeds: bool = True):
     """Reuse-aware subprocess.run mock.
@@ -916,6 +921,7 @@ def _mock_subprocess_run_with_reuse(monkeypatch, ps_state: str | None,
     commands actually ran.
     """
     calls = []
+    probes = []
 
     def _run(cmd, **kwargs):
         calls.append((list(cmd) if isinstance(cmd, list) else cmd, kwargs))
@@ -923,9 +929,13 @@ def _mock_subprocess_run_with_reuse(monkeypatch, ps_state: str | None,
             sub = cmd[1]
             if sub == "version":
                 return subprocess.CompletedProcess(cmd, 0, stdout="Docker version", stderr="")
+            if sub == "inspect" and "reused-cid" in cmd:
+                return subprocess.CompletedProcess(cmd, 0, stdout=_found_by_ps(probes[0], "reused-cid", ps_state),
+                                                   stderr="")
             if sub == "ps":
                 if ps_state is None:
                     return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+                probes.append(cmd)
                 # 2-field format: ID, State. The egress posture is enforced
                 # by the label filters on the ps command itself (#99213).
                 return subprocess.CompletedProcess(
@@ -997,7 +1007,7 @@ def test_egress_enabled_does_not_reuse_pre_egress_container(monkeypatch):
             sub = cmd[1]
             if sub == "version":
                 return subprocess.CompletedProcess(cmd, 0, stdout="Docker version", stderr="")
-            if sub == "ps":
+            if cmd[1:3] == ["ps", "-a"]:
                 # Simulate an old pre-egress container: without the egress label
                 # filter it would match; with the filter Docker returns no match.
                 assert any(str(part).startswith("label=hermes-egress=") for part in cmd)
@@ -1029,6 +1039,7 @@ def test_reuse_probe_format_is_podman_compatible(monkeypatch):
     monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
 
     calls = []
+    probes = []
 
     def _run(cmd, **kwargs):
         calls.append(list(cmd) if isinstance(cmd, list) else cmd)
@@ -1036,7 +1047,11 @@ def test_reuse_probe_format_is_podman_compatible(monkeypatch):
             sub = cmd[1]
             if sub == "version":
                 return subprocess.CompletedProcess(cmd, 0, stdout="podman version", stderr="")
+            if sub == "inspect" and "podman-cid" in cmd:
+                return subprocess.CompletedProcess(cmd, 0, stdout=_found_by_ps(probes[0], "podman-cid", "running"),
+                                                   stderr="")
             if sub == "ps":
+                probes.append(cmd)
                 if "--format" in cmd:
                     fmt = cmd[cmd.index("--format") + 1]
                     if "{{.Label" in fmt:
@@ -1181,9 +1196,14 @@ def test_reuse_starts_stopped_container_before_attaching(monkeypatch):
     assert not run_invocations, "should not docker run when reusing an exited container"
 
 
-def test_failed_docker_run_cleans_up_orphaned_container(monkeypatch):
-    """When ``docker run`` fails (e.g. exit 125), the partially-created
-    container must be removed by name.
+@pytest.mark.parametrize("failure", [
+    subprocess.CalledProcessError(125, "docker run", output="", stderr="docker: Error response from daemon"),
+    # TimeoutExpired carries bytes even under text=True; it must not trip the "already in use" check.
+    subprocess.TimeoutExpired("docker run", 120, stderr=b"Pulling fs layer"),
+], ids=["exit-125", "timeout-mid-pull"])
+def test_failed_docker_run_cleans_up_orphaned_container(monkeypatch, failure):
+    """When ``docker run`` fails (exit 125, or a timeout on a slow image pull), the
+    partially-created container must be removed by the id its spawn-nonce label resolves to.
 
     Docker can create the container object before failing to start it,
     leaving a stale ``Created`` container. The exited-only orphan reaper
@@ -1195,69 +1215,30 @@ def test_failed_docker_run_cleans_up_orphaned_container(monkeypatch):
     monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
 
     cleanup_calls = []
+    nonce = []
 
     def _run(cmd, **kwargs):
         if isinstance(cmd, list) and len(cmd) >= 2:
             sub = cmd[1]
             if sub == "version":
                 return subprocess.CompletedProcess(cmd, 0, stdout="Docker version", stderr="")
-            if sub == "ps":
-                # No reusable container -> fall through to a fresh `docker run`.
-                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
             if sub == "run":
-                raise subprocess.CalledProcessError(
-                    125, cmd, output="", stderr="docker: Error response from daemon"
-                )
+                nonce.extend(a for a in cmd if a.startswith("hermes-spawn="))
+                raise failure
+            if sub == "ps" and nonce and f"label={nonce[0]}" in cmd:
+                return subprocess.CompletedProcess(cmd, 0, stdout="orphan-cid\n", stderr="")
             if sub == "rm":
                 cleanup_calls.append(list(cmd))
-                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        # No container by name or label -> fall through to a fresh `docker run`.
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     monkeypatch.setattr(docker_env.subprocess, "run", _run)
 
-    with pytest.raises(subprocess.CalledProcessError):
+    with pytest.raises(type(failure)):
         _make_dummy_env()
 
-    assert len(cleanup_calls) == 1, "docker rm should be called once for the orphaned container"
-    rm_cmd = cleanup_calls[0]
-    assert rm_cmd[1] == "rm" and rm_cmd[2] == "-f"
-    assert rm_cmd[3].startswith("hermes-"), "should remove the container by its generated name"
-
-
-def test_docker_run_timeout_cleans_up_orphaned_container(monkeypatch):
-    """When ``docker run`` times out (e.g. slow image pull), the
-    partially-created container must be removed. Salvage of #7440
-    (@Tranquil-Flow); regression for #7439.
-    """
-    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
-    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
-
-    cleanup_calls = []
-
-    def _run(cmd, **kwargs):
-        if isinstance(cmd, list) and len(cmd) >= 2:
-            sub = cmd[1]
-            if sub == "version":
-                return subprocess.CompletedProcess(cmd, 0, stdout="Docker version", stderr="")
-            if sub == "ps":
-                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-            if sub == "run":
-                raise subprocess.TimeoutExpired(cmd, 120)
-            if sub == "rm":
-                cleanup_calls.append(list(cmd))
-                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-
-    monkeypatch.setattr(docker_env.subprocess, "run", _run)
-
-    with pytest.raises(subprocess.TimeoutExpired):
-        _make_dummy_env()
-
-    assert len(cleanup_calls) == 1, "docker rm should be called once for the orphaned container"
-    rm_cmd = cleanup_calls[0]
-    assert rm_cmd[1] == "rm" and rm_cmd[2] == "-f"
-    assert rm_cmd[3].startswith("hermes-"), "should remove the container by its generated name"
-
+    # Plain rm of exactly our container: never by the name a sibling may hold by now.
+    assert cleanup_calls == [["/usr/bin/docker", "rm", "orphan-cid"]]
 
 
 

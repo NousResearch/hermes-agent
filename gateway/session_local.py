@@ -67,18 +67,46 @@ class LocalSessionAdapter(BasePlatformAdapter):
         return SendResult(success=True, message_id=uuid.uuid4().hex)
 
     async def send_clarify(self, chat_id, question, choices, clarify_id, session_key, metadata=None):
-        policy = self.policies.get(chat_id)
-        if policy is not None and policy.source == 'bot_room':
-            # Hosted controls expose approvals only; acknowledging this question would park the
-            # member on an answer nobody can submit. A structured decline releases the wait at
-            # once and skips the plain-text re-ask (an ordinary failure would fall back to a
-            # send() that ACKs, and the member would wait the whole clarify timeout).
+        error = self._unanswerable_clarify(chat_id)
+        if error is not None:
+            # Acknowledging this question would park the turn on an answer nobody can submit.
+            # A structured decline releases the wait at once and skips the plain-text re-ask
+            # (an ordinary failure would fall back to a send() that ACKs, and the turn would
+            # wait the whole clarify timeout).
             from gateway.relay.egress import EGRESS_DECLINE_CODE
-            error = 'Clarification is unavailable in hosted rooms'
             return SendResult(success=False, error=error, error_kind='forbidden',
                               raw_response={'success': False, 'code': EGRESS_DECLINE_CODE, 'error': error})
         # Local sessions keep the base prompt: a choice question also captures typed text.
         return await super().send_clarify(chat_id, question, choices, clarify_id, session_key, metadata)
+
+    def _unanswerable_clarify(self, chat_id):
+        """Why no one can answer a question asked in this chat now, or None to ask it.
+
+        Hosted rooms (controls expose approvals only) and forwarded A2A conversations (the
+        author is a remote peer with no prompt surface) never have an answering viewer. Any
+        other chat can be answered by an attached viewer holding ``session:respond``; with none
+        attached, a producer turn (Bot Chat DM, plugin/heartbeat injection) declines, while a
+        viewer's own turn keeps waiting so its author can re-attach and answer."""
+        policy = self.policies.get(chat_id)
+        if policy is None:
+            return None
+        from gateway.session_a2a import is_forward_policy
+        if policy.source == 'bot_room':
+            return 'Clarification is unavailable in hosted rooms'
+        if is_forward_policy(policy):
+            return 'Clarification is unavailable to a forwarded peer'
+        live = self.authority.sessions.get(chat_id)
+        if live is None:
+            return None
+        with live.event_stream.lock:
+            if any('session:respond' in member.capabilities for member in live.subscribers.values()):
+                return None
+        from hermes_state_runtime import list_session_admissions
+        started = next((row for row in list_session_admissions(self.authority.db, session_id=chat_id)
+                        if row['status'] == 'started'), None)
+        if started is not None and 'local_automation_v1' in started['payload']:
+            return 'Clarification is unavailable: no viewer can answer this chat'
+        return None
 
 
 def authorize_local_source(runner, source):

@@ -62,6 +62,36 @@ def client(monkeypatch, profiles_on_disk):
     return c
 
 
+def test_profiles_sessions_deep_page_uses_the_requested_profile(client, profiles_on_disk):
+    """A bot's visible-session sweep must reach rows after the first 500."""
+    from hermes_state import SessionDB
+
+    worker = profiles_on_disk["worker"]
+    db = SessionDB(db_path=worker / "state.db")
+    try:
+        for index in range(620):
+            db.create_session(f"worker-{index:03d}", source="cli")
+        db.append_message(session_id="worker-619", role="user", content="hi")
+        # A pinned row outside this page is projected, but must not shift the
+        # ordinary offset window (the sweep advances by limit, not row count).
+        assert db.set_session_pinned("worker-619", True)
+    finally:
+        db.close()
+    _seed_session(profiles_on_disk["default"], "other-profile", source="cli")
+
+    page = client.get("/api/profiles/sessions", params={
+        "profile": "worker", "order": "created", "limit": 200, "offset": 600,
+        "min_messages": 0, "archived": "exclude",
+    })
+    assert page.status_code == 200
+    payload = page.json()
+    assert payload["total"] == 620
+    assert payload["offset"] == 600
+    assert len(payload["sessions"]) == 21
+    assert {row["id"] for row in payload["sessions"]} == {f"worker-{index:03d}" for index in range(20)} | {"worker-619"}
+    assert all(row["profile"] == "worker" for row in payload["sessions"])
+
+
 def _seed_session(home, session_id, *, source, cwd=None, tokens=None, cost=None, pinned=False):
     """One session with a message, so it clears the sidebar's min_messages=1.
 

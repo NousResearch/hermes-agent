@@ -1,0 +1,15 @@
+name: contentforge
+repo: https://github.com/indranilbanerjee/contentforge
+sha: 9e17acf26f608e8f15ce8832bea81793870b4dd0
+description: "Open-source long-form content pipeline: research, fact-check, draft, humanize, SEO and review in ten gated phases, delivered as a .docx, with a run auditor and a published quality contract; 22 skills registered as Hermes skills. Disclosure: optional stdlib scripts call Google Drive/Sheets or Airtable only when the user picks those backends, with the user's own credentials; C2PA signing sends a timestamp request to a public timestamp server; nothing is installed unless the user opts in; see PRIVACY.md."
+maintainer: Indranil Banerjee
+tier: community
+category: tools
+docs_url: https://github.com/indranilbanerjee/contentforge#readme
+version: "4.5.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

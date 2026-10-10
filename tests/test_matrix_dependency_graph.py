@@ -1,8 +1,11 @@
 """Matrix extra preserves Linux E2EE while admitting non-Linux plain clients."""
 
+import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tomllib
 
 from packaging.markers import Marker, default_environment
@@ -48,20 +51,31 @@ def test_matrix_declaration_and_frozen_edges_select_the_same_dependencies(system
         assert set(row.get("extras", [])) == requirement.extras
 
 
-@pytest.mark.parametrize("system", ["linux", "darwin", "win32"])
-def test_frozen_matrix_export_keeps_crypto_only_on_linux(system, tmp_path):
+@pytest.mark.parametrize("system, target", [
+    ("linux", "x86_64-unknown-linux-gnu"),
+    ("darwin", "aarch64-apple-darwin"),
+    ("win32", "x86_64-pc-windows-msvc"),
+])
+def test_frozen_matrix_sync_keeps_crypto_only_on_linux(system, target, tmp_path):
     uv = shutil.which("uv")
     if uv is None:
-        pytest.skip("uv is required to exercise the frozen dependency export")
-    output = tmp_path / "matrix.txt"
-    subprocess.run([uv, "export", "--frozen", "--extra", "matrix", "--no-dev",
-                    "--no-hashes", "--no-emit-project", "--output-file", str(output)],
-                   cwd=ROOT, check=True, capture_output=True, text=True, timeout=30)
-    environment = {**default_environment(), "sys_platform": system,
-                   "python_full_version": "3.14.7", "python_version": "3.14"}
-    requirements = [Requirement(line.strip()) for line in output.read_text().splitlines()
-                    if line.strip() and not line.lstrip().startswith("#")]
-    selected = {req.name for req in requirements
-                if req.marker is None or req.marker.evaluate(environment)}
+        pytest.skip("uv is required to exercise the frozen dependency plan")
+    # Exported transitive requirements can lose their parent's platform marker.
+    # Resolve the frozen graph for each target instead of reinterpreting an export.
+    environment = {**os.environ,
+                   "UV_PROJECT_ENVIRONMENT": str(tmp_path / "environment"),
+                   "MACOSX_DEPLOYMENT_TARGET": "14.0"}
+    result = subprocess.run(
+        [uv, "sync", "--frozen", "--extra", "matrix", "--no-dev",
+         "--no-install-project", "--dry-run", "--python", sys.executable,
+         "--python-platform", target, "--output-format", "json"],
+        cwd=ROOT, env=environment, check=True, capture_output=True, text=True,
+        timeout=60,
+    )
+    plan = json.loads(result.stdout)
+    assert plan["dry_run"] is True
+    selected = {change["name"] for change in plan["sync"]["changes"]
+                if change["action"] == "installed"}
     assert COMMON <= selected
     assert CRYPTO & selected == (CRYPTO if system == "linux" else set())
+    assert not (tmp_path / "environment").exists()

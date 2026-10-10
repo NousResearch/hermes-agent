@@ -1023,6 +1023,43 @@ def _off_route_host(c: _Ctx) -> str:
 # default so the configured retry budget applies and no credential is benched.
 _403_TRANSIENT_CODES = frozenset({"upstream_unavailable"})
 
+# Code/type tokens that mean the 403 IS about the credential. Anything else in
+# a structured ``error.code``/``error.type`` is the endpoint (or a policy
+# gateway in front of it) refusing the call for its own stated reason, so the
+# body's explanation must surface instead of key guidance (#125058). Match
+# complete underscore/dash/dot-delimited tokens so policy codes such as
+# ``policy_authorization_required`` are not mistaken for credential failures.
+_403_AUTH_ERROR_CODE_TOKENS = (
+    "auth", "unauthorized", "unauthenticated", "invalid_api_key", "api_key",
+    "invalid_token", "token_expired", "token_revoked", "permission", "permitted",
+    "access_denied", "forbidden", "insufficient_scope",
+)
+_403_AUTH_ERROR_CODE_RE = re.compile(
+    rf"(?:^|[-_.])(?:{'|'.join(map(re.escape, _403_AUTH_ERROR_CODE_TOKENS))})(?:$|[-_.])"
+)
+
+
+def _structured_non_auth_403(c: _Ctx) -> bool:
+    """True when a 403 body carries a machine-readable code/type that is provably
+    not an auth refusal plus a human-readable explanation.
+
+    A governance/policy gateway in front of a custom endpoint answers 403 with
+    ``{"error": {"type": "...", "reason": "estimated cost exceeds policy ..."}}``:
+    the API key never failed — the same key answers the calls before and after
+    (#125058). Requires both a code (a bare ``forbidden`` body has none) and
+    text to surface, so wording-only auth refusals keep today's classification."""
+    if not c.code or _403_AUTH_ERROR_CODE_RE.search(c.code):
+        return False
+    if c.code in _BILLING_ERROR_CODES:
+        return False  # bare billing codes on a 403 stay auth (see _XAI_SPENDING_LIMIT_ERROR_CODE)
+    sources = [_error_obj(c.body)]
+    if isinstance(c.body, dict):
+        sources.append(c.body)
+    return any(
+        isinstance(src.get(key), str) and src[key].strip()
+        for src in sources for key in ("message", "reason", "detail")
+    )
+
 
 def _status_403(c: _Ctx) -> Verdict:
     if c.code in _403_TRANSIENT_CODES:
@@ -1037,6 +1074,10 @@ def _status_403(c: _Ctx) -> Verdict:
     # 403 and on established block/challenge markers; any other 403 stays auth.
     if any(p in c.msg for p in _UPSTREAM_BLOCKED_PATTERNS):
         return _V_UPSTREAM_BLOCKED
+    # A structured non-auth code on the body is a policy refusal speaking for itself:
+    # surface its reason, don't tell the user their key was rejected (#125058).
+    if _structured_non_auth_403(c):
+        return _V_POLICY_BLOCKED
     return _V_AUTH_FALLBACK
 
 
@@ -1366,6 +1407,10 @@ def _body_message_candidates(body: dict) -> Iterator[Any]:
     """Body message fields in priority order (OpenAI, flat, litellm/Bedrock proxy, FastAPI shapes)."""
     yield _error_obj(body).get("message")
     yield body.get("message")
+    # Policy gateways in front of a custom endpoint state their refusal in ``reason``
+    # with no ``message`` at all (#125058).
+    yield _error_obj(body).get("reason")
+    yield body.get("reason")
     yield body.get("errorMessage")
     args = body.get("errorArgs")
     yield args.get("reason") if isinstance(args, dict) else None

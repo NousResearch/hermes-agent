@@ -1,0 +1,8 @@
+{
+  "dataset": "hermes-regression-v1",
+  "experiment_prefix": "hermes-offline",
+  "score_name": "hermes_prompt_ok_avg",
+  "min_score": 1.0,
+  "evaluator_version": "hermes-prompt-v1",
+  "note": "Floor is the schema check, set before the run. Echo experiments use prefix hermes-echo and are not read."
+}

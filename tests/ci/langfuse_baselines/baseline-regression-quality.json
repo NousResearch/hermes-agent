@@ -1,0 +1,8 @@
+{
+  "dataset": "hermes-regression-quality-v1",
+  "experiment_prefix": "hermes-regression-quality",
+  "score_name": "hermes-regression-quality-avg",
+  "min_score": 1.0,
+  "evaluator_version": "hermes-regression-quality-v1",
+  "note": "Exact source match. expected_output copied from eval_items.json quotes."
+}

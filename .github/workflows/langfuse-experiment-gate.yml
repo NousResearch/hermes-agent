@@ -1,0 +1,60 @@
+# Sibling of live-providers.yml. Not referenced by ci.yaml.
+# Do not add this job to all-checks-pass. Forks never see these secrets.
+# Reads experiment scores only. Does not run Hermes chat or spend a provider key.
+name: Langfuse experiment gate
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: langfuse-experiment-gate-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  langfuse-gate:
+    name: Langfuse experiment gate
+    if: github.repository == 'NousResearch/hermes-agent'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check Langfuse secrets exist
+        id: gate
+        env:
+          HAS_PK: ${{ secrets.LANGFUSE_PUBLIC_KEY != '' }}
+          HAS_SK: ${{ secrets.LANGFUSE_SECRET_KEY != '' }}
+          HAS_URL: ${{ secrets.LANGFUSE_BASE_URL != '' }}
+        run: |
+          if [ "$HAS_PK" != "true" ] || [ "$HAS_SK" != "true" ] || [ "$HAS_URL" != "true" ]; then
+            echo "::notice::LANGFUSE_* secrets missing; gate skipped."
+            echo "configured=0" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=1" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout code
+        if: steps.gate.outputs.configured == '1'
+        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+
+      - name: Set up Python
+        if: steps.gate.outputs.configured == '1'
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install langfuse SDK
+        if: steps.gate.outputs.configured == '1'
+        run: pip install 'langfuse==4.15.2'
+
+      - name: Read experiment scores
+        if: steps.gate.outputs.configured == '1'
+        env:
+          LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+          LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
+          LANGFUSE_BASE_URL: ${{ secrets.LANGFUSE_BASE_URL }}
+        run: python scripts/langfuse_ci_gate.py --live-read

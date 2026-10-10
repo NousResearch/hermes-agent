@@ -1,0 +1,7 @@
+{
+  "dataset": "hermes-correctness-v1",
+  "experiment_prefix": "hermes-correctness-source",
+  "score_name": "hermes-correctness-avg",
+  "min_score": 1.0,
+  "evaluator_version": "hermes-correctness-v1"
+}

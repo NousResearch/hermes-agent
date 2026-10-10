@@ -1,0 +1,7 @@
+{
+  "dataset": "hermes-groundedness-v1",
+  "experiment_prefix": "hermes-groundedness-source",
+  "score_name": "hermes-groundedness-avg",
+  "min_score": 1.0,
+  "evaluator_version": "hermes-groundedness-v1"
+}

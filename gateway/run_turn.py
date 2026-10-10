@@ -2523,9 +2523,10 @@ class GatewayTurnMixin:
             from gateway.run_notifications import _IMAGE_EXTS, _VIDEO_EXTS
             for media_path, _is_voice in (media_files or []):
                 _ext = os.path.splitext(media_path)[1].lower()
+                _result = None
                 with suppress(Exception):
                     if _should_send_media_as_audio(source.platform, _ext, _is_voice):
-                        await adapter.send_voice(
+                        _result = await adapter.send_voice(
                             chat_id=source.chat_id, audio_path=media_path, metadata=_thread_metadata,
                             is_voice=_is_voice,
                         )
@@ -2535,7 +2536,13 @@ class GatewayTurnMixin:
                             else (adapter.send_image_file, "image_path") if _ext in _IMAGE_EXTS
                             else (adapter.send_document, "file_path")
                         )
-                        await sender(chat_id=source.chat_id, metadata=_thread_metadata, **{key: media_path})
+                        _result = await sender(chat_id=source.chat_id, metadata=_thread_metadata, **{key: media_path})
+                # A flood refusal is a result, not an exception: without this it is dropped silently
+                # (the ledger only arms on text final responses) and the file vanishes (#125857).
+                if _result is not None:
+                    await self._ledger_flood_refused_media(
+                        adapter, source.chat_id, media_path, _result,
+                        thread_id=getattr(source, "thread_id", None), message_ref=str(task_id))
 
         except Exception as e:
             logger.exception("Background task %s failed", task_id)

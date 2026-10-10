@@ -68,6 +68,31 @@ class TestBlocksMutationsInSourceRepo:
         hit, _ = _detect("git status; git reset --hard HEAD~1", repo, repo)
         assert hit is True
 
+    @pytest.mark.parametrize(
+        "command",
+        [
+            # ``#`` opens a comment only at a word start. ``\r``, ``\xa0``, and the
+            # ``)`` closing ``$(...)`` are ordinary word characters to bash, so the
+            # ``#`` is literal and the ``;``-separated tail still runs. Treating any
+            # of them as a comment opener hides the tail from the guard entirely.
+            "git status\r#x; git checkout main",
+            "git status\xa0#x; git checkout main",
+            "git status$(true)#x; git checkout main",
+            # ``$'...'`` is ANSI-C quoting: ``\'`` stays inside the quote, so the
+            # quote closes at the LAST tick and ``;`` after it is a real boundary.
+            # Reading ``$'`` as a plain quote desyncs parity and swallows the tail.
+            "echo $'\\'x\\'' ; git checkout main",
+        ],
+    )
+    def test_mid_word_hash_and_ansi_c_tail_not_hidden(self, repo, command):
+        hit, _ = _detect(command, repo, repo)
+        assert hit is True
+
+    def test_real_comment_tail_not_scanned(self, repo):
+        # ``#`` at a real word start opens a comment; bash never runs the tail.
+        hit, _ = _detect("git status #x; git checkout main", repo, repo)
+        assert hit is False
+
     def test_wrapped_in_sudo_env(self, repo):
         hit, _ = _detect("sudo env GIT_PAGER=cat git checkout main", repo, repo)
         assert hit is True

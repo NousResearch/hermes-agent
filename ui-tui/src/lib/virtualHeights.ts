@@ -41,6 +41,10 @@ export const messageHeightKey = (msg: Msg) => {
 // ceiling was 16 lines, then full text — this is the sane middle).
 const MAX_ESTIMATE_LINES = 800
 
+const FENCE_OPEN_RE = /^\s*(`{3,}|~{3,})(.*)$/
+const FENCE_CLOSE_RE = /^\s*(`{3,}|~{3,})\s*$/
+const MARKDOWN_FENCE_LANGS = new Set(['md', 'markdown'])
+
 export const wrappedLines = (text: string, width: number, maxLines: number = MAX_ESTIMATE_LINES) => {
   const w = Math.max(1, width)
   // Worst case: every cell is its own row at width=1, plus a small
@@ -66,6 +70,86 @@ export const wrappedLines = (text: string, width: number, maxLines: number = MAX
   return n
 }
 
+export const fencedWrappedLines = (
+  text: string,
+  width: number,
+  compact: boolean,
+  maxLines: number = MAX_ESTIMATE_LINES
+) => {
+  const bodyWidth = Math.max(1, width - 2)
+  const frameRows = compact || width < 20 ? 1 : 2
+  // Byte-budget bound: past maxLines * width chars, additional rows cannot
+  // increase the estimate — bail instead of materializing every line of a
+  // multi-megabyte message (matches wrappedLines' bound).
+  const budget = Math.min(text.length, maxLines * width + maxLines)
+  let rows = 0
+  let fenceChar = ''
+  let fenceLength = 0
+  let fenceLanguage = ''
+  let fenceBody: string[] = []
+  let lineStart = 0
+
+  const addRows = (count: number) => {
+    rows = Math.min(maxLines, rows + count)
+  }
+
+  const flushBody = () => {
+    if (fenceBody.length) {
+      addRows(
+        wrappedLines(fenceBody.join('\n'), MARKDOWN_FENCE_LANGS.has(fenceLanguage) ? width : bodyWidth, maxLines - rows)
+      )
+    }
+
+    if (!MARKDOWN_FENCE_LANGS.has(fenceLanguage)) {
+      addRows(frameRows)
+    }
+
+    fenceChar = ''
+    fenceLength = 0
+    fenceLanguage = ''
+    fenceBody = []
+  }
+
+  for (let i = 0; i <= budget; i++) {
+    if (i === text.length || i === budget || text.charCodeAt(i) === 10) {
+      const line = text.slice(lineStart, i)
+
+      lineStart = i + 1
+
+      if (!fenceChar) {
+        const open = line.match(FENCE_OPEN_RE)
+
+        if (open) {
+          fenceChar = open[1]![0]
+          fenceLength = open[1]!.length
+          fenceLanguage = open[2]!.trim().toLowerCase()
+          fenceBody = []
+        } else {
+          addRows(wrappedLines(line, width, maxLines - rows))
+        }
+      } else {
+        const close = line.match(FENCE_CLOSE_RE)?.[1]
+
+        if (close && close[0] === fenceChar && close.length >= fenceLength) {
+          flushBody()
+        } else {
+          fenceBody.push(line)
+        }
+      }
+
+      if (rows >= maxLines) {
+        return maxLines
+      }
+    }
+  }
+
+  if (fenceChar) {
+    flushBody()
+  }
+
+  return rows
+}
+
 export const estimatedMsgHeight = (
   msg: Msg,
   cols: number,
@@ -82,8 +166,8 @@ export const estimatedMsgHeight = (
     compact: boolean
     details: boolean
     leadGap?: boolean
-    thinkingExpanded?: boolean
     thinkingVisible?: boolean
+    thinkingExpanded?: boolean
     toolsVisible?: boolean
     userPrompt?: string
     withSeparator?: boolean
@@ -107,7 +191,7 @@ export const estimatedMsgHeight = (
 
   const bodyWidth = transcriptBodyWidth(cols, msg.role, userPrompt, TERMUX_TUI_MODE)
   const text = msg.text
-  let h = wrappedLines(text || ' ', bodyWidth)
+  let h = fencedWrappedLines(text || ' ', bodyWidth, compact)
 
   if (!compact && msg.role === 'assistant') {
     // Paragraph gaps add up to 6 extra rows of breathing room. Slice

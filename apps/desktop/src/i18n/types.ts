@@ -4098,6 +4098,8 @@ export interface Translations extends NoticeTranslations {
       readAloudFailed: string
       preparingAudio: string
       stopReading: string
+      playbackSpeed: string
+      playbackSpeedNormal: string
       readAloud: string
       copyFullResponse: string
       readAloudFullResponseHint: string

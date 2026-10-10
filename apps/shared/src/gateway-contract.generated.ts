@@ -2425,6 +2425,36 @@ export interface ProjectsSetActiveParams {
 export interface ActiveIdResult {
   active_id?: string | null
 }
+export interface ProjectStateResult {
+  state?: ProjectState | null
+}
+/** ``hermes_cli/projects_db.py::get_project_state`` — one handover record (the newest is current). */
+export interface ProjectState {
+  project_id: string
+  goal?: string | null
+  now?: string | null
+  next?: string | null
+  blockers?: string | null
+  updated_at: number
+  updated_by: 'user' | 'agent'
+}
+/** Absent fields keep their previous value; ``''`` clears one. The author is always ``user``. */
+export interface ProjectsStateSetParams {
+  profile?: string | null
+  id: string
+  goal?: string | null
+  now?: string | null
+  next?: string | null
+  blockers?: string | null
+}
+export interface ProjectsStateHistoryParams {
+  profile?: string | null
+  id: string
+  limit?: number | null
+}
+export interface ProjectStateHistoryResult {
+  history: ProjectState[]
+}
 /** Absent ``cwd`` resolves the gateway's default completion cwd. */
 export interface ProjectsForCwdParams {
   profile?: string | null
@@ -5316,6 +5346,12 @@ export interface RpcMethods {
   'projects.set_active': { params: ProjectsSetActiveParams; result: ActiveIdResult }
   /** Make one attached folder the project's primary path. */
   'projects.set_primary': { params: ProjectFolderParams; result: ProjectResult }
+  /** A project's current handover record (goal / now / next / blockers), or null. */
+  'projects.state.get': { params: ProjectIdParams; result: ProjectStateResult }
+  /** Past handover records, newest first (bounded retention). */
+  'projects.state.history': { params: ProjectsStateHistoryParams; result: ProjectStateHistoryResult }
+  /** Record a handover as the user (partial update); archived projects and empty records answer 5063. */
+  'projects.state.set': { params: ProjectsStateSetParams; result: ProjectStateResult }
   /** Project → repo → lane overview with counts and a few preview sessions per project. */
   'projects.tree': { params: ProjectsTreeParams; result: ProjectsTreeResult }
   /** Patch a project's display fields; answers the refreshed project. */
@@ -5673,6 +5709,9 @@ export const RPC_METHODS = [
   'projects.remove_folder',
   'projects.set_active',
   'projects.set_primary',
+  'projects.state.get',
+  'projects.state.history',
+  'projects.state.set',
   'projects.tree',
   'projects.update',
   'prompt.background',

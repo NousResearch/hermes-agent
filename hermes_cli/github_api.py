@@ -6,11 +6,14 @@ that budget is 60 requests/hour keyed on the *client IP*, so a shared exit
 reports a 403 that read as "Hermes can't reach the update server".
 Authenticating moves the caller onto the token's 5,000/hour budget.
 
-Credential ladder: GITHUB_TOKEN, then GH_TOKEN, then ``gh auth token`` (the
-gh CLI's own login — the only rung most desktop users have, since a
-GUI-launched app inherits a minimal environment; its answer is cached per
-process so the check never spawns gh more than once), then anonymous. A
-token GitHub rejects (401) drops that request to anonymous. The token itself
+Credential ladder: GITHUB_TOKEN, then GH_TOKEN, then the active home's
+``.env`` (where ``hermes config set GITHUB_TOKEN`` writes — a GUI-launched
+Desktop spawns the check via ``--run-module``, which never runs the CLI's
+dotenv load, so without this rung a token the user configured in Hermes's
+own secrets file was invisible and the check went out anonymous), then
+``gh auth token`` (the gh CLI's own login; its answer is cached per process
+so the check never spawns gh more than once), then anonymous. A token
+GitHub rejects (401) drops that request to anonymous. The token itself
 never reaches a log line or an error string.
 """
 from __future__ import annotations
@@ -20,6 +23,7 @@ import os
 import subprocess
 import time
 import urllib.error
+from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -28,6 +32,9 @@ GITHUB_TOKEN_ENV_VARS = ("GITHUB_TOKEN", "GH_TOKEN")
 _GH_CLI_TIMEOUT_SECONDS = 3
 _gh_cli_cache: Optional[str] = None
 _gh_cli_probed = False
+# Keyed by resolved home: one profile's .env secret never serves another
+# profile's request in a multiplex process.
+_dotenv_cache: dict[str, Optional[str]] = {}
 
 
 def github_token_from_env(env=os.environ) -> Optional[str]:
@@ -58,9 +65,38 @@ def _gh_cli_token() -> Optional[str]:
     return _gh_cli_cache
 
 
+def _read_dotenv_token(path: Path) -> Optional[str]:
+    """First non-blank token key in one dotenv file, or None (never raises)."""
+    try:
+        from dotenv import dotenv_values
+        values = dotenv_values(path)
+    except (OSError, UnicodeDecodeError) as exc:
+        logger.debug("Hermes dotenv token lookup unavailable: %s", exc)
+        return None
+    for name in GITHUB_TOKEN_ENV_VARS:
+        value = (values.get(name) or "").strip()
+        if value:
+            return value
+    return None
+
+
+def _hermes_dotenv_token() -> Optional[str]:
+    """Token from the active home's ``.env``, without mutating ``os.environ``.
+
+    Reading (not loading) keeps a profile's secret out of the process-global
+    environment a multiplex gateway shares across profiles.
+    """
+    from hermes_constants import get_hermes_home
+
+    home = str(get_hermes_home().resolve())
+    if home not in _dotenv_cache:
+        _dotenv_cache[home] = _read_dotenv_token(Path(home) / ".env")
+    return _dotenv_cache[home]
+
+
 def github_token() -> Optional[str]:
     """The credential for this request, or None for anonymous."""
-    return github_token_from_env() or _gh_cli_token()
+    return github_token_from_env() or _hermes_dotenv_token() or _gh_cli_token()
 
 
 def describe_github_failure(exc: BaseException, authenticated: bool, now: Optional[float] = None) -> str:
@@ -85,7 +121,7 @@ def describe_github_failure(exc: BaseException, authenticated: bool, now: Option
                 return f"GitHub API rate limit reached for your GITHUB_TOKEN (HTTP {status}) — it resets {when}."
             return (f"GitHub API rate limit reached (HTTP {status}): anonymous requests are limited to 60 per hour "
                     f"per network address, shared with everyone behind the same connection. It resets {when}; "
-                    "setting GITHUB_TOKEN in the environment lifts the limit.")
+                    "a GITHUB_TOKEN lifts the limit (`hermes config set GITHUB_TOKEN`, or set it in the environment).")
         if status >= 500:
             return (f"GitHub is having trouble (HTTP {status} from api.github.com) — check githubstatus.com "
                     "and try again later.")

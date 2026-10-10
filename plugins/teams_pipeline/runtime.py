@@ -13,7 +13,7 @@ from plugins.teams_pipeline.subscriptions import build_graph_client
 logger = logging.getLogger(__name__)
 
 # Teams platform settings mirrored into the pipeline's teams_delivery config (pipeline keys win).
-_DELIVERY_KEYS = ("incoming_webhook_url", "access_token", "team_id", "channel_id", "chat_id")
+_DELIVERY_KEYS = ("incoming_webhook_url", "incoming_webhook_urls", "access_token", "team_id", "channel_id", "chat_id")
 
 
 def _teams_delivery_is_configured(teams_extra: dict[str, Any], teams_delivery: dict[str, Any]) -> bool:
@@ -21,7 +21,7 @@ def _teams_delivery_is_configured(teams_extra: dict[str, Any], teams_delivery: d
         return teams_delivery.get(key) or teams_extra.get(key)
     delivery_mode = str(teams_delivery.get("mode") or pick("delivery_mode") or "").strip().lower()
     if delivery_mode == "incoming_webhook":
-        return bool(pick("incoming_webhook_url"))
+        return bool(pick("incoming_webhook_url") or pick("incoming_webhook_urls"))
     if delivery_mode == "graph":
         return bool(pick("chat_id") or (pick("team_id") and pick("channel_id")))
     return False
@@ -39,7 +39,7 @@ def build_pipeline_runtime_config(gateway_config: Any) -> dict[str, Any]:
             teams_delivery["mode"] = delivery_mode
         for key in _DELIVERY_KEYS:
             value = teams_extra.get(key)
-            if value not in {None, ""}:
+            if value is not None and value != "":
                 teams_delivery[key] = value
         if teams_delivery:
             teams_delivery["enabled"] = _teams_delivery_is_configured(teams_extra, teams_delivery)

@@ -630,6 +630,38 @@ export async function checkUpdates({ force = false }: UpdateCheckOptions = {}): 
   }
 }
 
+export type SourceUpdateChannel = 'main' | 'stable'
+
+/** The selectable channel of a source checkout, or null where the package owns it. */
+export function sourceUpdateChannel(status: DesktopUpdateStatus | null): SourceUpdateChannel | null {
+  if (!status?.supported || (status.mechanism !== 'posix-handoff' && status.mechanism !== 'windows-handoff')) {
+    return null
+  }
+
+  return status.channel === undefined ? 'main' : status.channel === 'stable' ? 'stable' : null
+}
+
+/** Persist the source checkout's channel; the reply is a fresh check against it. */
+export async function setUpdateChannel(channel: SourceUpdateChannel): Promise<DesktopUpdateStatus | null> {
+  const setChannel = window.hermesDesktop?.updates?.setChannel
+
+  if (!setChannel || $updateChecking.get()) {
+    return null
+  }
+
+  $updateChecking.set(true)
+
+  try {
+    const status = await setChannel(channel)
+    $updateStatus.set(status)
+    maybeNotifyUpdateAvailable(status, 'client')
+
+    return status
+  } finally {
+    $updateChecking.set(false)
+  }
+}
+
 export async function applyUpdates(opts: DesktopUpdateApplyOptions = {}): Promise<DesktopUpdateApplyResult> {
   if ($updateStatus.get()?.retirement) {
     openUpdateOverlayFor('client')

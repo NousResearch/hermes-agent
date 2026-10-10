@@ -1,6 +1,7 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import type { TranslationOverrides } from './define-locale'
+import { zhHantUpdateChannel } from './zh-hant_update_channel'
 
 export const zhHantSettings = {
   language: {
@@ -762,7 +763,8 @@ export const zhHantSettings = {
       driverHealth: '驅動程式健康狀態'
     },
     about: {
-      updates: '更新'
+      updates: '更新',
+      channel: zhHantUpdateChannel
     },
     config: {
       minimizeToTrayTitle: '最小化至系統匣',

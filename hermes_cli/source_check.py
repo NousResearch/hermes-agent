@@ -448,9 +448,19 @@ def main() -> None:
     parser.add_argument("--cache-path", type=Path)
     parser.add_argument("--branch-config-path", type=Path)
     parser.add_argument("--force", action="store_true")
+    parser.add_argument("--set-channel", type=validate_name,
+                        help="Persist this install's channel (the Desktop selector), then report as usual.")
     args = parser.parse_args()
     with contextlib.redirect_stdout(sys.stderr):
-        result = check_for_updates(**vars(args))
+        if args.set_channel:
+            from hermes_constants import set_hermes_home_override
+            from hermes_cli.update_channel import set_install_channel
+
+            # The record belongs in the --home profile's config.yaml, as the check reads it.
+            set_hermes_home_override(args.home)
+            set_install_channel(args.set_channel, args.install_root)
+            args.force = True
+        result = check_for_updates(**{k: v for k, v in vars(args).items() if k != "set_channel"})
     print(json.dumps(result))
 
 

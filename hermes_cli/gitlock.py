@@ -652,6 +652,34 @@ def heal_shallow_history(repo_root: Path, branch: str, **run_kwargs) -> bool:
     return _shallow_file_path(repo_root) is not None and fetch_full_commit_graph(repo_root, branch, **run_kwargs)
 
 
+def _release_tag_remotes(repo_root: Path, **run_kwargs) -> list[str]:
+    """Remotes to pull version tags from, best first — git's own remote order for identity.
+
+    Tags are refs, not objects: a clone that was fetched with ``--no-tags`` (a PINNED release
+    fetch, an installer's ``--single-branch``, a shallow install) carries the release commits as
+    objects while every ``refs/tags/v*`` is absent, so the checkout's nearest-reachable-tag
+    identity (#122208) collapses to the newest tag it happens to have — or to ``unknown``. The
+    tree is correct and the version it reports is stale.
+
+    Which remote publishes those tags depends on the install shape, so ask git instead of hardcoding
+    ``origin``: ``git remote`` lists the configured remotes in configuration order, which is
+    origin-then-sidings for a normal clone and *initial-remote-first* for a mirror. A fork checkout
+    promoted to ``upstream`` (``_is_fork`` -> ``_add_upstream_remote`` moves the official URL to
+    ``upstream``) therefore asks ``upstream`` first, while one configured the other way round still
+    asks ``origin`` first — on both, the fork is still tried before giving up, and connection
+    errors on an unreachable siting fall through to the next candidate.
+
+    Never raises: an unreadable remote list returns ``[]`` and the caller keeps today's behavior.
+    """
+    result = run_git(
+        ["git"], ["remote"], cwd=str(repo_root), capture_output=True, text=True,
+        encoding="utf-8", errors="replace", timeout=30, **run_kwargs,
+    )
+    if result.returncode != 0:
+        return []
+    return [name for name in result.stdout.split() if name.strip()]
+
+
 def fetch_full_commit_graph(repo_root: Path, *extra_refspecs: str, **run_kwargs) -> bool:
     """Refresh release tags and fill shallow history before publishing identity.
 
@@ -678,14 +706,38 @@ def fetch_full_commit_graph(repo_root: Path, *extra_refspecs: str, **run_kwargs)
         repo_root, shallow_path.read_text(encoding="utf-8-sig").split()))
     if converts:
         fetch_filter = "blob:none"
+    remotes = _release_tag_remotes(repo_root, **run_kwargs) or ["origin"]
+
+    def _fetch_tags(remote: str, refspecs: tuple[str, ...]) -> Optional[subprocess.CalledProcessError]:
+        try:
+            run_git(
+                ["git"], ["fetch", "--quiet", *(["--unshallow"] if shallow else []),
+                 *([f"--filter={fetch_filter}"] if fetch_filter else []),
+                 "--no-tags", remote, "refs/tags/v*:refs/tags/v*", *refspecs],
+                cwd=str(repo_root), check=True, capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=900, **run_kwargs,
+            )
+            return None
+        except subprocess.CalledProcessError as exc:
+            return exc
+
     try:
-        run_git(
-            ["git"], ["fetch", "--quiet", *(["--unshallow"] if shallow else []),
-             *([f"--filter={fetch_filter}"] if fetch_filter else []),
-             "--no-tags", "origin", "refs/tags/v*:refs/tags/v*", *extra_refspecs],
-            cwd=str(repo_root), check=True, capture_output=True, text=True,
-            encoding="utf-8", errors="replace", timeout=900, **run_kwargs,
-        )
+        # Version tags live wherever the release is published, which is not necessarily the remote
+        # the checkout was cloned from: a fork install keeps the releases on the siting it was
+        # promoted to ``upstream``, and a mirror sees its own at ``origin``. Ask every configured
+        # remote, cheapest-first, so the identity is the newest release any of them can prove — and
+        # so a siting that is unreachable (offline fork, expired credential) cannot hide a
+        # reachable one. Only the FIRST remote also carries the caller's branch refspecs (the
+        # shallow heal), so a later siting cannot pull an unrelated branch over the tracked one.
+        first_error = _fetch_tags(remotes[0], tuple(extra_refspecs))
+        for remote in remotes[1:]:
+            error = _fetch_tags(remote, ())
+            if error is None:
+                first_error = None
+            else:
+                logger.debug("release-tag fetch from '%s' failed: %s", remote, (error.stderr or "").strip())
+        if first_error is not None:  # every siting failed: report the first, as the single-remote path did
+            raise first_error
     finally:
         # git writes the partial-clone config before it fetches, so a failed fetch converts too.
         if converts:

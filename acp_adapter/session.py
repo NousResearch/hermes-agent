@@ -19,7 +19,7 @@ import time
 import uuid
 from datetime import datetime, timezone, UTC
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -136,6 +136,7 @@ class SessionState:
     agent: Any  # AIAgent instance
     cwd: str = "."
     model: str = ""
+    reasoning_override: dict[str, Any] | None = None
     history: list[dict[str, Any]] = field(default_factory=list)
     cancel_event: Any = None  # threading.Event
     is_running: bool = False
@@ -200,10 +201,24 @@ class SessionManager:
         original = self.get_session(session_id)  # checks DB too
         if original is None:
             return None
+        with original.runtime_lock:
+            source_model = original.model
+            source_agent = original.agent
+            history = copy.deepcopy(original.history)
+            reasoning_override = copy.deepcopy(original.reasoning_override)
         new_id = str(uuid.uuid4())
-        agent = self._make_agent(session_id=new_id, cwd=cwd, model=original.model or None)
-        model = getattr(agent, "model", original.model) or original.model
-        state = self._install_state(new_id, agent, cwd, model, copy.deepcopy(original.history))
+        agent = self._make_agent(
+            session_id=new_id, cwd=cwd, model=source_model or None,
+            requested_provider=getattr(source_agent, "provider", None),
+            base_url=getattr(source_agent, "base_url", None),
+            api_mode=getattr(source_agent, "api_mode", None),
+            reasoning_override=reasoning_override,
+        )
+        model = getattr(agent, "model", source_model) or source_model
+        state = self._install_state(
+            new_id, agent, cwd, model, history,
+            reasoning_override=reasoning_override,
+        )
         logger.info("Forked ACP session %s -> %s", session_id, new_id)
         return state
 
@@ -304,10 +319,11 @@ class SessionManager:
     # ---- persistence via SessionDB ------------------------------------------
 
     def _install_state(self, session_id: str, agent: Any, cwd: str, model: str,
-                       history: list[dict[str, Any]], *, persist: bool = True) -> SessionState:
+                       history: list[dict[str, Any]], *, persist: bool = True,
+                       reasoning_override: dict[str, Any] | None = None) -> SessionState:
         """Build a SessionState, register it in memory, bind its cwd for tools, optionally persist."""
         state = SessionState(session_id=session_id, agent=agent, cwd=cwd, model=model,
-                             history=history, cancel_event=threading.Event())
+                             history=history, cancel_event=threading.Event(), reasoning_override=reasoning_override)
         with self._lock:
             self._sessions[session_id] = state
         _register_task_cwd(session_id, cwd)
@@ -348,6 +364,8 @@ class SessionManager:
         # Ensure model is a plain string (not a MagicMock or other proxy).
         model_str = str(state.model) if state.model else None
         session_meta = {"cwd": state.cwd}
+        if state.reasoning_override is not None:
+            session_meta["reasoning_override"] = state.reasoning_override
         for key in ("provider", "base_url", "api_mode"):
             value = getattr(state.agent, key, None)
             if isinstance(value, str) and value.strip():
@@ -480,12 +498,13 @@ class SessionManager:
             agent = self._make_agent(
                 session_id=session_id, cwd=cwd, model=model, api_mode=meta.get("api_mode") or None,
                 requested_provider=meta.get("provider") or row.get("billing_provider"),
-                base_url=meta.get("base_url") or row.get("billing_base_url"))
+                base_url=meta.get("base_url") or row.get("billing_base_url"),
+                reasoning_override=meta.get("reasoning_override"))
         except Exception:
             logger.warning("Failed to recreate agent for ACP session %s", session_id, exc_info=True)
             return None
         state = self._install_state(session_id, agent, cwd, model or getattr(agent, "model", "") or "",
-                                    history, persist=False)
+                                    history, persist=False, reasoning_override=meta.get("reasoning_override"))
         logger.info("Restored ACP session %s from DB (%d messages)", session_id, len(history))
         return state
 
@@ -493,7 +512,8 @@ class SessionManager:
 
     def _make_agent(self, *, session_id: str, cwd: str, model: str | None = None,
                     requested_provider: str | None = None, base_url: str | None = None, api_mode: str | None = None,
-                    enabled_toolsets: list[str] | None = None, disabled_toolsets: list[str] | None = None):
+                    enabled_toolsets: list[str] | None = None, disabled_toolsets: list[str] | None = None,
+                    reasoning_override: dict[str, Any] | None = None):
         """``enabled_toolsets``/``disabled_toolsets`` carry a live session's toolsets into a rebuild; ``None`` derives
         them from config (fresh session)."""
         if self._agent_factory is not None:
@@ -532,7 +552,8 @@ class SessionManager:
             # Same chokepoint as the CLI/gateway/TUI/cron: without it ``agent.reasoning_effort: none`` never
             # reaches an ACP session and the transport applies its default effort (a 400 on non-reasoning
             # models). Resolved against the session's model so per-model overrides apply.
-            "reasoning_config": resolve_reasoning_config(config, model or default_model),
+            "reasoning_config": (dict(reasoning_override) if reasoning_override is not None
+                                 else resolve_reasoning_config(config, model or default_model)),
         }
         resolve_error: Exception | None = None
         try:

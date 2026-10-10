@@ -59,6 +59,33 @@ agent:
 MCP servers that the editor sends with `session/new` are separate. The
 client asks for them per session, and they are always added.
 
+## Model and reasoning discovery
+
+Session creation, loading, resuming, and forking return typed `configOptions`
+alongside the legacy `models` state. The model option uses category `model`
+and the existing available-model catalog without an arbitrary size limit.
+`Configured Default` labels the configured catalog entry; it is not a
+separate model alias.
+
+Reasoning uses category `thought_level` only when the selected provider and
+model have a known supported effort range. Models with unknown or unsupported
+reasoning capabilities do not receive a reasoning selector. The edit approval
+option uses category `mode`.
+
+`session/set_config_option` validates advertised values and returns the complete
+updated option list. Model switches, reasoning changes, and legacy mode/model
+changes also publish `config_option_update`. Slash-command model changes refresh
+the same typed state. Changing models resets the explicit reasoning override
+for the new model; setting reasoning stores a session-specific override.
+Loading, resuming, and forking restore the selected model and reasoning override.
+These controls do not rewrite the user's global provider configuration.
+
+## Approval policy
+
+ACP does not require approval for every terminal command. File edits and risky
+actions follow Hermes's existing risk policy; safe commands such as `pwd` can
+run without an approval card. Typed discovery does not change this policy.
+
 ## Installation
 
 Install Hermes normally, then add the ACP extra from the install checkout:

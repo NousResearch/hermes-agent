@@ -49,7 +49,7 @@ async def scoped_to_thread(profile: Optional[str], fn: Callable[[], Any]) -> Any
 
 async def config_scoped_to_thread(profile: Optional[str], fn: Callable[[], Any]) -> Any:
     """Run ``fn()`` inside ``_config_profile_scope(profile)`` on a worker thread —
-    home + secret scope without the process-global skills-module swap."""
+    home + secret scope without ``_profile_scope``'s process-wide lock."""
 
     def _run():
         with _config_profile_scope(profile):

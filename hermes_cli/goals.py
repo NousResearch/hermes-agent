@@ -126,7 +126,12 @@ JUDGE_SYSTEM_PROMPT = (
     "out of scope, no valid path to the deliverable), or refuses to "
     "fabricate a deliverable that cannot exist, OR\n"
     "- The response explains progress is blocked and the next step needs "
-    "user input to proceed.\n"
+    "user input to proceed, OR\n"
+    "- The response shows the agent has halted its work and is explicitly "
+    "waiting for the user before taking any further step — including when "
+    "it stopped because the user asked it to stop (plain \"stop\"/\"cancel\"). "
+    "Injecting another continuation would override that stop, so the verdict "
+    "is BLOCKED, not CONTINUE.\n"
     "Return BLOCKED with the reason describing what is blocking. BLOCKED is "
     "a refusal, not a completion — never return BLOCKED for a goal that "
     "was achieved.\n"
@@ -1526,8 +1531,8 @@ class GoalManager:
         # of scope, needs user input). See #100954.
         if verdict == "blocked":
             return self._pause_decision(
-                f"judged unachievable: {reason}", "blocked", reason,
-                f"🚫 Goal judged unachievable — paused: {reason} Re-scope with /goal set, or override with /goal resume.",
+                f"judge blocked: {reason}", "blocked", reason,
+                f"⏸ Goal paused — blocked: {reason} Re-scope with /goal set, or resume with /goal resume.",
             )
 
         if verdict == "done":

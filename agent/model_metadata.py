@@ -1313,6 +1313,13 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
         r'supports at most\s+(\d+)\s*(?:completion\s+)?tokens',
         # Scaleway: "max_completion_tokens is limited to 16384 for glm-5.2".
         r'(?:max_tokens|max_completion_tokens) is limited to\s*(\d+)',
+        # Direct comparisons (OpenAI-compat relays, AgnesAI, vLLM), anchored to a
+        # token-limit field so non-token validation errors (e.g. "temperature
+        # cannot be greater than 2") do not match (#129737 review).
+        r'(?:max_tokens|max_completion_tokens|max_output_tokens)\b.*?exceeds?\s+the\s+limit\s+of\s*(\d+)',
+        r'(?:max_tokens|max_completion_tokens|max_output_tokens)\b.*?(?:is\s+)?greater than the maximum of\s*(\d+)',
+        r'(?:max_tokens|max_completion_tokens|max_output_tokens)\b.*?cannot be greater than\s*(?:max_model_len\s*=\s*)?(\d+)',
+        r'cannot be greater than\s*max_model_len\s*=\s*(\d+)',
         r'=\s*(\d+)\s*$',
     ):
         match = re.search(pattern, error_lower)
@@ -1369,6 +1376,17 @@ _OUTPUT_CAP_SIGNALS = (
     ("output limit",), ("maximum allowed number of output tokens",),
     ("max_tokens is too large", "supports at most"), ("tokens from the input messages", "tokens for the completion"),
     ("limited to",),  # Scaleway: "max_completion_tokens is limited to 16384 for <model>" (#67453)
+    # Direct comparisons (#128171), scoped to a token-limit field so non-token
+    # validation errors (e.g. "temperature cannot be greater than 2") do not match.
+    ("max_tokens", "exceeds the limit of"), ("max_completion_tokens", "exceeds the limit of"),
+    ("max_output_tokens", "exceeds the limit of"),
+    ("max_tokens", "exceed the limit of"), ("max_completion_tokens", "exceed the limit of"),
+    ("max_output_tokens", "exceed the limit of"),
+    ("max_tokens", "greater than the maximum of"),
+    ("max_completion_tokens", "greater than the maximum of"),
+    ("max_output_tokens", "greater than the maximum of"),
+    ("max_tokens", "cannot be greater than"), ("max_completion_tokens", "cannot be greater than"),
+    ("max_output_tokens", "cannot be greater than"), ("max_model_len", "cannot be greater than"),
 )
 _INPUT_OVERFLOW_SIGNALS = (
     "prompt is too long", "prompt too long", "input is too long", "input token",
@@ -1387,6 +1405,16 @@ _PARSEABLE_OUTPUT_CAP_SIGNALS = (
     ("output limit",), ("max_tokens", "maximum allowed number of output tokens"),
     ("max_tokens is too large", "supports at most"), ("tokens from the input messages", "tokens for the completion"),
     ("limited to",),
+    # Direct comparisons (#128171), scoped to a token-limit field (see _OUTPUT_CAP_SIGNALS).
+    ("max_tokens", "exceeds the limit of"), ("max_completion_tokens", "exceeds the limit of"),
+    ("max_output_tokens", "exceeds the limit of"),
+    ("max_tokens", "exceed the limit of"), ("max_completion_tokens", "exceed the limit of"),
+    ("max_output_tokens", "exceed the limit of"),
+    ("max_tokens", "greater than the maximum of"),
+    ("max_completion_tokens", "greater than the maximum of"),
+    ("max_output_tokens", "greater than the maximum of"),
+    ("max_tokens", "cannot be greater than"), ("max_completion_tokens", "cannot be greater than"),
+    ("max_output_tokens", "cannot be greater than"), ("max_model_len", "cannot be greater than"),
 )
 
 

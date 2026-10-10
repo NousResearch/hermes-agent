@@ -374,6 +374,75 @@ def test_gateway_vbs_script_is_console_less(monkeypatch):
     assert content.endswith("\r\n")
 
 
+@pytest.mark.parametrize(
+    ("hermes_home", "profile_arg"),
+    [
+        pytest.param(r"C:\TenantB\hermes", "", id="different-tenant"),
+        pytest.param(r"C:\Hermes\profiles\work", "--profile work", id="standalone-profile"),
+    ],
+)
+def test_gateway_vbs_script_defers_gateway_ownership_to_runtime(
+    monkeypatch, hermes_home, profile_arg
+):
+    """The launcher must not suppress valid tenant or standalone gateways before runtime attach."""
+    monkeypatch.setattr(
+        gateway_windows,
+        "_resolve_detached_python",
+        lambda exe: (r"C:\venv\Scripts\python.exe", Path(r"C:\venv"), []),
+    )
+
+    content = gateway_windows._build_gateway_vbs_script(
+        r"C:\venv\Scripts\python.exe", r"C:\Hermes", hermes_home, profile_arg
+    )
+
+    assert "Win32_Process" not in content
+    assert "WScript.Quit 0" not in content
+    assert content.count("sh.Run") == 1
+    assert "hermes_cli.main" in content
+    assert "gateway run" in content
+
+
+def test_generated_vbs_launchers_are_utf16_with_bom(monkeypatch, tmp_path):
+    """WSH must read non-ASCII Windows account paths as Unicode, independent of the ANSI codepage."""
+    service_dir = tmp_path / "gateway-service"
+    startup_dir = tmp_path / "Startup"
+    service_dir.mkdir()
+    startup_dir.mkdir()
+    script_path = service_dir / "Hermes_Gateway.cmd"
+    startup_entry = startup_dir / "Hermes_Gateway.vbs"
+    japanese_home = r"C:\Users\齋藤厚作リープアローズ\AppData\Local\hermes"
+
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(gateway_windows, "get_task_script_path", lambda: script_path)
+    monkeypatch.setattr(gateway_windows, "get_startup_entry_path", lambda: startup_entry)
+    monkeypatch.setattr(gateway_windows, "_startup_staging_path", lambda: startup_dir / "Hermes_Gateway.tmp")
+    monkeypatch.setattr(gateway_windows, "_legacy_startup_entry_path", lambda: startup_dir / "Hermes_Gateway.cmd")
+    monkeypatch.setattr(
+        gateway_windows,
+        "_launcher_settings",
+        lambda: (
+            japanese_home + r"\tools\python.exe",
+            japanese_home,
+            japanese_home,
+            "",
+        ),
+    )
+    monkeypatch.setattr(
+        gateway_windows,
+        "_resolve_detached_python",
+        lambda exe: (exe, Path(japanese_home) / "tools", []),
+    )
+    monkeypatch.setattr(gateway_windows, "_launcher_pythonpath_entries", lambda extra: [japanese_home + r"\hermes-agent"])
+
+    generated_script = gateway_windows._write_task_script()
+    generated_startup = gateway_windows._install_startup_entry(generated_script)
+
+    for path in (script_path.with_suffix(".vbs"), generated_startup):
+        raw = path.read_bytes()
+        assert raw.startswith(b"\xff\xfe")
+        assert "齋藤厚作リープアローズ" in raw.decode("utf-16")
+
+
 def test_atomic_write_leaves_no_staging_file_when_swap_fails(monkeypatch, tmp_path):
     """The Startup folder is the staging dir: a leftover .tmp there is opened by Windows at every login."""
     startup = tmp_path / "Startup"

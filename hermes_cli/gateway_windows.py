@@ -423,6 +423,9 @@ def _build_gateway_vbs_script(python_path: str, working_dir: str, hermes_home: s
         f"' {_TASK_DESCRIPTION}",
         "Option Explicit",
         "Dim sh, env, existing_pp",
+        # Ownership is decided by the gateway's tenant-aware runtime attach/lock logic. A launcher-side
+        # process-table shortcut cannot identify HERMES_HOME or standalone-profile scope and would
+        # silently suppress valid coexisting gateways.
         'Set sh = CreateObject("WScript.Shell")',
         'Set env = sh.Environment("PROCESS")',
         f"env.Item({q('HERMES_HOME')}) = {q(hermes_home)}",
@@ -470,11 +473,14 @@ def _write_task_script() -> Path:
     # Also render the console-less .vbs launcher used by Scheduled Task and the Startup-folder fallback via
     # wscript.exe (issue #45599 fix A). The .cmd wrapper stays as a generated helper/compatibility artifact.
     vbs_path = script_path.with_suffix(".vbs")
-    _atomic_write(vbs_path, _build_gateway_vbs_script(*settings), vbs_path.with_name(vbs_path.name + ".tmp"))
+    _atomic_write(
+        vbs_path, _build_gateway_vbs_script(*settings), vbs_path.with_name(vbs_path.name + ".tmp"),
+        encoding="utf-16",
+    )
     return script_path
 
 
-def _atomic_write(path: Path, content: str, tmp: Path) -> None:
+def _atomic_write(path: Path, content: str, tmp: Path, *, encoding: str = "utf-8") -> None:
     """Write ``content`` verbatim (no newline translation) via ``tmp`` then rename over ``path``.
 
     The staging file is removed even when the rename fails: the Startup-folder caller stages
@@ -482,7 +488,7 @@ def _atomic_write(path: Path, content: str, tmp: Path) -> None:
     ``Hermes_Gateway.tmp`` pops up in Notepad after every sign-in (#114093).
     """
     try:
-        tmp.write_text(content, encoding="utf-8", newline="")
+        tmp.write_text(content, encoding=encoding, newline="")
         tmp.replace(path)
     finally:
         try:
@@ -599,7 +605,7 @@ def _install_startup_entry(script_path: Path) -> Path:
     """Write the Startup-folder fallback launcher. Returns its path."""
     entry = get_startup_entry_path()
     entry.parent.mkdir(parents=True, exist_ok=True)
-    _atomic_write(entry, _build_startup_launcher(script_path), _startup_staging_path())
+    _atomic_write(entry, _build_startup_launcher(script_path), _startup_staging_path(), encoding="utf-16")
     legacy_entry = _legacy_startup_entry_path()
     try:
         if legacy_entry.exists():

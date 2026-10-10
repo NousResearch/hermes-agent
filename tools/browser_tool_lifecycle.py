@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
+from utils import unlink_files_older_than
 from tools.browser_tool_origin import origin as _bt
 from tools import browser_tool_cdp as _cdp
 from tools import browser_tool_cloud as _cloud
@@ -571,20 +572,6 @@ def _pid_exists(pid: int) -> bool:
     return _gateway_pid_exists(pid)
 
 
-def _unlink_older_than(directory: Path, pattern: str, max_age_hours: float, label: str) -> None:
-    """Delete ``directory/pattern`` files older than ``max_age_hours``; never raises."""
-    try:
-        cutoff = time.time() - (max_age_hours * 3600)
-        for f in directory.glob(pattern):
-            try:
-                if f.stat().st_mtime < cutoff:
-                    f.unlink()
-            except Exception as e:
-                _bt.logger.debug("Failed to clean old %s %s: %s", label, f, e)
-    except Exception as e:
-        _bt.logger.debug("%s cleanup error (non-critical): %s", label.capitalize(), e)
-
-
 def _cleanup_old_screenshots(screenshots_dir, max_age_hours=24):
     """Prune old browser screenshots; throttled to once per hour per directory."""
     key = str(screenshots_dir)
@@ -592,7 +579,7 @@ def _cleanup_old_screenshots(screenshots_dir, max_age_hours=24):
     if now - _bt._last_screenshot_cleanup_by_dir.get(key, 0.0) < 3600:
         return
     _bt._last_screenshot_cleanup_by_dir[key] = now
-    _unlink_older_than(screenshots_dir, "browser_screenshot_*.png", max_age_hours, "screenshot")
+    unlink_files_older_than(screenshots_dir, "browser_screenshot_*.png", max_age_hours * 3600)
 
 
 def _cleanup_old_recordings(max_age_hours=72):
@@ -603,7 +590,7 @@ def _cleanup_old_recordings(max_age_hours=72):
         _bt.logger.debug("Recording cleanup error (non-critical): %s", e)
         return
     if recordings_dir.exists():
-        _unlink_older_than(recordings_dir, "session_*.webm", max_age_hours, "recording")
+        unlink_files_older_than(recordings_dir, "session_*.webm", max_age_hours * 3600)
 
 
 def _drop_last_active_binding(task_id: str) -> None:

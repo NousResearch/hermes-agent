@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any, Iterator, Mapping, Optional
 
 from tools.bot_mode_probe import _default_home, _hermes_root, alias_forms
-from utils import atomic_json_write
+from utils import atomic_json_write, unlink_files_older_than
 
 logger = logging.getLogger(__name__)
 
@@ -447,21 +447,9 @@ def write_reply(root: Path | str, envelope_id: str, *, reply: str = "", error: s
     return path
 
 
-def unlink_files_older_than(directory: Path, pattern: str, cutoff: float) -> int:
-    """Unlink regular files matching ``pattern`` with mtime before ``cutoff``; returns count. Never raises."""
-    removed = 0
-    with contextlib.suppress(OSError):
-        for path in directory.glob(pattern):
-            with contextlib.suppress(OSError):
-                if path.is_file() and path.stat().st_mtime < cutoff:
-                    path.unlink()
-                    removed += 1
-    return removed
-
-
 def _sweep_stale(base: Path, *, now: float | None = None) -> int:
-    cutoff = (time.time() if now is None else now) - STALE_AFTER_SECONDS
-    return sum(unlink_files_older_than(base / sub, "*.json", cutoff) for sub in (CLAIMED_DIR, REPLIES_DIR, OUTBOX_DIR))
+    return sum(unlink_files_older_than(base / sub, "*.json", STALE_AFTER_SECONDS, now=now)
+               for sub in (CLAIMED_DIR, REPLIES_DIR, OUTBOX_DIR))
 
 
 def cleanup_bot_relay_artifacts(max_age_hours: float | None = None) -> int:

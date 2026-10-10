@@ -11,8 +11,9 @@ supervisor (SIGUSR1 drain), and success is a fresh supervised PID — never the 
 from __future__ import annotations
 
 import sys
-import time
 from pathlib import Path
+
+from agent.deadline import poll_until
 
 # A custom KeepAlive supervisor keeps its own respawn interval (launchd's is ~once per 10s,
 # per LAUNCHD_SUPERVISION_VERIFY_TIMEOUT); 15s matches _wait_for_launchd_service_pid's budget.
@@ -62,14 +63,11 @@ def _wait_for_supervised_gateway_replacement(
 
     if timeout is None:
         timeout = SUPERVISED_REPLACEMENT_VERIFY_TIMEOUT
-    deadline = time.monotonic() + max(timeout, 0.5)
-    while True:
+    def _fresh_pid() -> int | None:
         pid = get_running_pid()
-        if pid is not None and pid > 0 and pid != old_pid:
-            return pid
-        if time.monotonic() >= deadline:
-            return None
-        time.sleep(poll_interval)
+        return pid if pid is not None and pid > 0 and pid != old_pid else None
+
+    return poll_until(_fresh_pid, max(timeout, 0.5), poll_interval)
 
 
 def restart_externally_supervised_gateway(supervised_pid: int) -> None:

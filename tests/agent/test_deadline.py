@@ -27,6 +27,7 @@ from agent.deadline import (
     MAX_SAFE_TIMEOUT_S,
     clamp_timeout,
     kill_process_tree,
+    poll_until,
     resolve_timeout,
     run_bounded_async,
     run_bounded_sync,
@@ -68,6 +69,54 @@ class TestClampTimeout:
     def test_nan_and_junk_treated_as_unbounded(self):
         assert clamp_timeout(float("nan")) is None
         assert clamp_timeout("not-a-number") is None  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+# poll_until
+# ---------------------------------------------------------------------------
+
+
+class _FakeClock:
+    def __init__(self):
+        self.now = 0.0
+        self.slept: list[float] = []
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.slept.append(seconds)
+        self.now += seconds
+
+
+@pytest.fixture
+def fake_clock(monkeypatch):
+    clock = _FakeClock()
+    monkeypatch.setattr("agent.deadline.time.monotonic", clock.monotonic)
+    monkeypatch.setattr("agent.deadline.time.sleep", clock.sleep)
+    return clock
+
+
+class TestPollUntil:
+    def test_returns_the_truthy_result_without_sleeping(self, fake_clock):
+        assert poll_until(lambda: 4242, 10.0, 0.5) == 4242
+        assert fake_clock.slept == []
+
+    def test_gives_up_at_the_deadline_with_the_last_falsy_result(self, fake_clock):
+        assert poll_until(lambda: None, 2.0, 0.5) is None
+        assert sum(fake_clock.slept) == 2.0
+
+    def test_condition_that_holds_when_the_deadline_arrives_counts(self, fake_clock):
+        # Interval 3 against a 5 s budget: the second sleep is cut to 2 s, and the check made at
+        # the deadline itself still sees the condition.
+        assert poll_until(lambda: fake_clock.now >= 5.0, 5.0, 3.0) is True
+        assert fake_clock.slept == [3.0, 2.0]
+
+    def test_zero_timeout_is_one_check(self, fake_clock):
+        calls = []
+        assert poll_until(lambda: calls.append(1), 0.0, 1.0) is None
+        assert calls == [1]
+        assert fake_clock.slept == []
 
 
 # ---------------------------------------------------------------------------

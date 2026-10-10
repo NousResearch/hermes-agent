@@ -22,8 +22,10 @@ from hermes_cli.config import load_env
 from agent.secret_scope import get_secret as _get_secret, get_secret_str
 from agent.retry_utils import reset_delay_from_message
 from hermes_cli.auth_plugin_providers import plugin_refresh_hook
+from agent.credential_pool_priority import _normalize_pool_priorities
 from agent.credential_pool_plugin import apply_plugin_refresh_result, plugin_row_is_expiring, recover_failed_plugin_refresh
 from agent.credential_persistence import (
+    coerce_credential_priority,
     fingerprint_secret_value,
     is_borrowed_credential_source,
     sanitize_borrowed_credential_payload,
@@ -243,6 +245,7 @@ class PooledCredential:
     def __post_init__(self):
         if self.extra is None:
             self.extra = {}
+        self.priority = coerce_credential_priority(self.priority)
         self.auth_type = _normalize_pool_auth_type(self.provider, self.access_token, self.auth_type)
 
     def __getattr__(self, name: str):
@@ -2517,39 +2520,6 @@ def _upsert_entry(entries: list[PooledCredential], provider: str, source: str, p
     return bool(duplicate_indices)
 
 
-_ANTHROPIC_SOURCE_RANK = {
-    "env:ANTHROPIC_TOKEN": 0,
-    "env:CLAUDE_CODE_OAUTH_TOKEN": 1,
-    "hermes_pkce": 2,
-    "claude_code": 3,
-    "env:ANTHROPIC_API_KEY": 4,
-}
-
-
-def _normalize_pool_priorities(provider: str, entries: list[PooledCredential]) -> bool:
-    if provider != "anthropic":
-        return False
-    manual_entries = sorted(
-        (entry for entry in entries if _is_manual_source(entry.source)),
-        key=lambda entry: entry.priority,
-    )
-    seeded_entries = sorted(
-        (entry for entry in entries if not _is_manual_source(entry.source)),
-        key=lambda entry: (
-            _ANTHROPIC_SOURCE_RANK.get(entry.source, len(_ANTHROPIC_SOURCE_RANK)),
-            entry.priority,
-            entry.label,
-        ),
-    )
-    id_to_idx = {entry.id: idx for idx, entry in enumerate(entries)}
-    changed = False
-    for new_priority, entry in enumerate([*manual_entries, *seeded_entries]):
-        if entry.priority != new_priority:
-            entries[id_to_idx[entry.id]] = replace(entry, priority=new_priority)
-            changed = True
-    return changed
-
-
 def _retain_sources_not_in(entries: list[PooledCredential], drop: set[str]) -> bool:
     """Remove entries whose source is in *drop*; True if anything was removed."""
     retained = [entry for entry in entries if entry.source not in drop]
@@ -3077,14 +3047,16 @@ def load_pool(provider: str) -> CredentialPool:
         for payload in raw_entries
     )
     entries = [PooledCredential.from_dict(provider, payload) for payload in raw_entries]
-    raw_needs_auth_normalization = any(
+    raw_needs_normalization = any(
         isinstance(payload, dict)
-        and _normalize_pool_auth_type(
+        and (_normalize_pool_auth_type(
             provider, payload.get("access_token"), payload.get("auth_type", AUTH_TYPE_API_KEY),
         ) != payload.get("auth_type", AUTH_TYPE_API_KEY)
+            or not isinstance(payload.get("priority", 0), int))
         for payload in raw_entries
     )
-    if raw_needs_auth_normalization:
+    if raw_needs_normalization:
+        # Legacy auth_type labels / string-or-None priorities are healed in memory above.
         # A profile may be reading this provider from the global-root fallback.
         # Keep that fallback read-only: only the owning store may rewrite these
         # rows; loading the default/root profile heals global rows.

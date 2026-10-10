@@ -2,12 +2,13 @@ import { PassThrough } from 'stream'
 
 import { Box, renderSync } from '@hermes/ink'
 import { stripAnsi } from '@hermes/shared/ansi'
+import chalk from 'chalk'
 import React from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { AUDIO_DIRECTIVE_RE, INLINE_RE, Md, MEDIA_LINE_RE, stripInlineMarkup } from '../components/markdown.js'
 import { __resetLinkTitleCache, fetchLinkTitle } from '../lib/externalLink.js'
-import { DEFAULT_THEME } from '../theme.js'
+import { DEFAULT_THEME, LIGHT_THEME } from '../theme.js'
 
 afterEach(() => {
   __resetLinkTitleCache()
@@ -353,5 +354,139 @@ describe('Md link labels', () => {
     const rendered = renderPlain(md('write <ops@example.com> today')).join('\n')
 
     expect(rendered).toContain('write ops@example.com today')
+  })
+})
+
+describe('renderTable CJK width alignment', () => {
+  it('column starts share the same display offset across CJK rows', async () => {
+    const { stringWidth } = await import('@hermes/ink')
+
+    const md = [
+      '| 配置 | Config | 状态 |',
+      '|------|--------|------|',
+      '| Vicuna (report) | dense | × |',
+      '| ChatGLM | chat | ✓ |',
+      '| 通义千问 | qwen | × |'
+    ].join('\n')
+
+    // Pre-fix bug: ` `.repeat(w - stripInlineMarkup(...).length) used
+    // UTF-16 code units, so a CJK header cell padded to 2 cells while
+    // the body cell padded to 4, drifting subsequent columns by 2
+    // cells per CJK char.
+    //
+    // Post-fix contract: the prefix preceding the start of column N
+    // has the same display width across the header and every body row
+    // (deduped to skip the divider, which renders independently).
+    const lines = renderPlain(
+      React.createElement(Box, null, React.createElement(Md, { compact: true, t: DEFAULT_THEME, text: md }))
+    ).filter(line => line.trim().length > 0)
+
+    // Heuristic: a "data row" line either contains 'Config' (header)
+    // or one of the body labels; a divider is all box-drawing.  Use
+    // the substring 'Config' / 'dense' / 'chat' / 'qwen' as the
+    // unique anchor for column 2's start position on each row.
+    const colStarts = (line: string, anchor: string): number => {
+      const idx = line.indexOf(anchor)
+
+      return idx < 0 ? -1 : stringWidth(line.slice(0, idx))
+    }
+
+    const headerCol2 = lines.map(l => colStarts(l, 'Config')).find(v => v >= 0)
+    const denseCol2 = lines.map(l => colStarts(l, 'dense')).find(v => v >= 0)
+    const chatCol2 = lines.map(l => colStarts(l, 'chat')).find(v => v >= 0)
+    const qwenCol2 = lines.map(l => colStarts(l, 'qwen')).find(v => v >= 0)
+
+    expect(headerCol2).toBeDefined()
+    expect(denseCol2).toBe(headerCol2)
+    expect(chatCol2).toBe(headerCol2)
+    // The CJK row is the one that drifted before the fix.  It must
+    // align with the rest now.
+    expect(qwenCol2).toBe(headerCol2)
+  })
+})
+
+describe('body prose stays in the theme palette', () => {
+  // Prose used to render in the terminal's DEFAULT foreground while inline
+  // tokens beside it carried a theme color, so one line mixed two inks.
+  // Because an inline token can match mid-word, so could a single word.
+  // LIGHT_THEME is the vehicle here because every tone in it is hex, so
+  // emitted SGR maps back to palette entries without format juggling.
+  const foregroundRuns = (text: string): string[] => {
+    // chalk is a singleton and defaults to level 0 under vitest (no TTY),
+    // which would emit no SGR at all and make every assertion here vacuous.
+    const savedLevel = chalk.level
+    chalk.level = 3
+
+    const stdout = new PassThrough()
+    const stdin = new PassThrough()
+    const stderr = new PassThrough()
+    let output = ''
+
+    Object.assign(stdout, { columns: 80, isTTY: true, rows: 24 })
+    Object.assign(stdin, { isTTY: false })
+    Object.assign(stderr, { isTTY: false })
+    stdout.on('data', chunk => {
+      output += chunk.toString()
+    })
+
+    const instance = renderSync(
+      React.createElement(Box, { width: 70 }, React.createElement(Md, { cols: 68, t: LIGHT_THEME, text })),
+      {
+        patchConsole: false,
+        stderr: stderr as NodeJS.WriteStream,
+        stdin: stdin as NodeJS.ReadStream,
+        stdout: stdout as NodeJS.WriteStream
+      }
+    )
+
+    instance.unmount()
+    instance.cleanup()
+    chalk.level = savedLevel
+
+    return [...output.matchAll(new RegExp(`${ESC}\\[38;2;(\\d+);(\\d+);(\\d+)m`, 'g'))].map(
+      m =>
+        '#' +
+        m
+          .slice(1, 4)
+          .map(v => Number(v).toString(16).padStart(2, '0'))
+          .join('')
+    )
+  }
+
+  const PALETTE = new Set(
+    Object.values(LIGHT_THEME.color)
+      .filter((v): v is string => typeof v === 'string' && v.startsWith('#'))
+      .map(v => v.toLowerCase())
+  )
+
+  const INK = LIGHT_THEME.color.text.toLowerCase()
+
+  it('opens a paragraph with the theme ink, not the terminal default', () => {
+    expect(foregroundRuns('plain prose line')[0]).toBe(INK)
+  })
+
+  it('keeps every foreground on a mixed-token line inside the palette', () => {
+    // `render_terminal_output` trips the underscore-italic token mid-word —
+    // the exact shape that split one word across two inks.
+    const fg = foregroundRuns('set the `flag` and re-render_terminal_output for the run')
+
+    expect(fg.length).toBeGreaterThan(0)
+
+    for (const c of fg) {
+      expect(PALETTE.has(c)).toBe(true)
+    }
+  })
+
+  it('returns to the theme ink after an inline token, not to the terminal default', () => {
+    const fg = foregroundRuns('before `code` after')
+
+    expect(fg[0]).toBe(INK)
+    expect(fg.at(-1)).toBe(INK)
+  })
+
+  it('themes list-item prose too', () => {
+    for (const text of ['- a bullet item', '1. a numbered item']) {
+      expect(foregroundRuns(text)).toContain(INK)
+    }
   })
 })

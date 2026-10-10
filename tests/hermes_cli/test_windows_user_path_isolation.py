@@ -23,14 +23,14 @@ because the entry really landed in the operator's PATH.
 """
 from __future__ import annotations
 
-import sys
-import winreg
-
 import pytest
 
-pytestmark = pytest.mark.skipif(
-    sys.platform != "win32", reason="HKCU\\Environment is a Windows registry key"
-)
+# ``platforms("windows")`` rather than ``skipif(sys.platform != "win32")``: the
+# OS lanes import the files ``scripts/ci/list_os_marked_tests.py`` lists for
+# their marker, and the Linux full-suite lane skips anything gated off it — so a
+# bare skipif leaves these tests running on NO host. It also kept ``winreg`` in
+# the module header, which made the file a collection ERROR on Linux.
+pytestmark = pytest.mark.platforms("windows")
 
 
 def _raw_user_path() -> tuple[str, int] | None:
@@ -39,6 +39,8 @@ def _raw_user_path() -> tuple[str, int] | None:
     Expanding would hide a type change (REG_EXPAND_SZ -> REG_SZ freezes
     ``%LOCALAPPDATA%\\...`` entries), so the comparison is on raw bytes.
     """
+    import winreg  # lazy: the module must stay importable off Windows
+
     with winreg.OpenKey(
         winreg.HKEY_CURRENT_USER, "Environment", 0, winreg.KEY_READ
     ) as key:

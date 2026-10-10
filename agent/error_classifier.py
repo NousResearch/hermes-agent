@@ -550,7 +550,9 @@ def is_reasoning_field_rejection(error_msg: str) -> bool:
     ``thinking``/``think``): the field token plus either a generic unsupported marker ("Unrecognized
     request argument supplied: reasoning_effort", #112781) or a standalone "unsupported" next to the
     field in either word order ("unsupported reasoning_effort"; "reasoning_effort 'none' unsupported;
-    use minimal|low|medium|high|xhigh", #114460). The route default is the right answer for such a
+    use minimal|low|medium|high|xhigh", #114460), or "not enabled for this model" next to the field
+    (Mistral: "reasoning_effort is not enabled for this model" on codestral-2508 / ministral-*, at
+    every effort including ``none``, #119249). The route default is the right answer for such a
     model, so both the main loop and the auxiliary ladder retry once without the disable. A body
     whose structured ``param``/code names the reasoning field (``'param': 'reasoning.effort'``,
     ``invalid_reasoning_effort``, #100536) is a rejection whatever the message says — even none.
@@ -566,7 +568,10 @@ def is_reasoning_field_rejection(error_msg: str) -> bool:
     if token is None:
         return False
     near = msg[max(0, token.start() - 32):token.end() + 32]
-    return "unsupported" in near or any(m in msg for m in UNSUPPORTED_PARAM_MARKERS)
+    return (
+        "unsupported" in near or "not enabled for this model" in near
+        or any(m in msg for m in UNSUPPORTED_PARAM_MARKERS)
+    )
 
 
 def _billing_hints(error_msg: str) -> Verdict:

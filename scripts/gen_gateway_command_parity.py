@@ -112,13 +112,15 @@ def ink_cell(cmd, gateway, ink, served):
     if entry is None:
         return "slash.exec" if gateway != "refused" else "slash.exec: refused"
     _, block = entry
+    methods = set(re.findall(r"(?:rpc|request)(?:<[^>]*>)?\(\s*'([a-z_]+\.[a-z_.]+)'", block))
     if "canonical.controls.notAvailable" in block:
         # The shared gateway refuses it in the client (no owner verb yet), whatever it calls on a
-        # standalone backend; never reported as a working route.
-        return "refused: not available yet"
+        # standalone backend; never reported as a working route. A bare form that still reads the
+        # current value through a served ``.get`` is named.
+        reads = sorted(m for m in methods & served if m.endswith(".get"))
+        return (", ".join(reads) + "; change refused: not available yet") if reads else "refused: not available yet"
     if "isCanonical" in block:
         return "canonical route"
-    methods = set(re.findall(r"(?:rpc|request)(?:<[^>]*>)?\(\s*'([a-z_]+\.[a-z_.]+)'", block))
     return _rpc_cell(methods, served) if methods else "local"
 
 

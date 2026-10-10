@@ -47,6 +47,10 @@ function harness() {
       return { launch_request: { toolsets: ['terminal', 'web'] } }
     }
 
+    if (method === 'config.get') {
+      return { value: params.key === 'skin' ? 'default' : 'auto' }
+    }
+
     if (method === 'slash.exec' && params.command === 'status') {
       return { output: 'Session: owner' }
     }
@@ -187,4 +191,26 @@ it('/stop is session-scoped; process-global /agents pause, /reload-mcp and /relo
   for (const name of ['agents pause', 'reload-mcp', 'reload']) {
     expect(notices).toContain(`/${name} is not available on the shared gateway yet`)
   }
+})
+
+it('setting writes the shared gateway has no verb for say so instead of a bare invalid_params; reads still work', async () => {
+  const { request, slash, sys } = harness()
+
+  // dokterdok P3: the canonical config.set accepts only busy / verbose / yolo / model.
+  for (const cmd of ['/theme dark', '/skin mono', '/indicator ascii', '/reasoning high', '/fast fast', '/personality pirate', '/skin']) {
+    slash(cmd)
+  }
+
+  await flush()
+
+  expect(request.mock.calls.map(([method]) => method)).not.toContain('config.set')
+  expect(request).toHaveBeenCalledWith('config.get', { key: 'skin' })
+
+  const notices = sys.mock.calls.map(([text]) => String(text))
+
+  for (const name of ['theme', 'skin', 'indicator', 'reasoning', 'fast', 'personality']) {
+    expect(notices).toContain(`/${name} is not available on the shared gateway yet`)
+  }
+
+  expect(notices.some(line => /skin: default/.test(line))).toBe(true)
 })

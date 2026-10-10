@@ -195,4 +195,6 @@ def _classify(check: dict, sha: str, outcome: str | None, is_run: bool) -> str:
         return "stale"
     if is_run and check.get("status") != "completed":
         return "pending"
-    return {"success": "success", "failure": "failure", "error": "infra", "pending": "pending"}.get(outcome, "infra")
+    # GitHub merges required checks that are successful, skipped or neutral: https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches#require-status-checks-before-merging
+    return {"success": "success", "skipped": "success", "neutral": "success", "failure": "failure",
+            "error": "infra", "pending": "pending"}.get(outcome, "infra")

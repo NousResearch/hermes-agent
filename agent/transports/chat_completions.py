@@ -17,6 +17,7 @@ from agent.message_sanitization import normalize_finish_reason as _normalize_fin
 from agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
 from agent.prompt_builder import DEVELOPER_ROLE_MODELS
 from agent.transports.base import ProviderTransport
+from agent.transports.chat_tool_call_ids import normalize_replayed_tool_call_ids
 from agent.transports.types import NormalizedResponse, ToolCall, Usage
 
 # xAI reserves ``tool_search`` for its server-side tool (HTTP 400 on client
@@ -455,6 +456,7 @@ class ChatCompletionsTransport(ProviderTransport):
 
         Returns the input list unchanged when nothing needs sanitizing.
         """
+        messages = normalize_replayed_tool_call_ids(messages)
         strip_extra_content = not _model_consumes_thought_signature(kwargs.get("model"))
         # A profile declaring a native carrier type consumes replayed details by contract.
         native_type = getattr(kwargs.get("provider_profile"), "native_reasoning_details_type", None) or None

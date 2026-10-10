@@ -56,7 +56,13 @@ def run_in_custody(project_root: Path, command: list, label: str, **kwargs):
     from hermes_cli.update_custody import contained_command
 
     with contained_command(command, root=project_root) as (argv, custody):
-        return run_contained(argv, label, **kwargs, **custody)
+        try:
+            return run_contained(argv, label, **kwargs, **custody)
+        except subprocess.CalledProcessError as exc:
+            # Name the build that failed, not the launcher around it: the "⚠ <step> failed"
+            # line and the owed follow-up (cut at 500 chars) quote ``exc.cmd``.
+            exc.cmd = list(command)
+            raise
 
 
 def run_source_script(project_root: Path, script: str, *args: str, env: dict, label: str) -> None:

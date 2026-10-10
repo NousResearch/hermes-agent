@@ -25,7 +25,7 @@ def _patch_pipeline(monkeypatch, *, success=True, output="out", final="final res
         fr = final if silent_marker_in is None else silent_marker_in
         return (success, output, fr, error)
 
-    def fake_save(jid, out):
+    def fake_save(jid, out, execution_id=None):
         calls.append(("save", jid))
         return f"/tmp/{jid}.txt"
 
@@ -288,7 +288,7 @@ def test_run_one_job_exception_after_delivery_does_not_redeliver(monkeypatch):
         "run_job",
         lambda *_a, **_kw: (True, "out", "final response", None),
     )
-    monkeypatch.setattr(s, "save_job_output", lambda jid, out: f"/tmp/{jid}.txt")
+    monkeypatch.setattr(s, "save_job_output", lambda jid, out, execution_id=None: f"/tmp/{jid}.txt")
     monkeypatch.setattr(
         s,
         "_deliver_result",
@@ -393,7 +393,7 @@ def test_run_one_job_installs_secret_scope_under_multiplex(monkeypatch, tmp_path
         scope_during_delivery["base_url"] = ss.get_secret("OPENROUTER_BASE_URL")
 
     monkeypatch.setattr(s, "run_job", fake_run_job)
-    monkeypatch.setattr(s, "save_job_output", lambda jid, out: f"/tmp/{jid}.txt")
+    monkeypatch.setattr(s, "save_job_output", lambda jid, out, execution_id=None: f"/tmp/{jid}.txt")
     monkeypatch.setattr(s, "_deliver_result", fake_deliver)
     monkeypatch.setattr(s, "mark_job_run", lambda *a, **k: None)
 

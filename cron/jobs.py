@@ -3400,15 +3400,22 @@ def _prune_job_output(job_output_dir: Path, keep: int) -> int:
     return deleted
 
 
-def save_job_output(job_id: str, output: str):
-    """Save job output to file."""
+def save_job_output(job_id: str, output: str, execution_id: Optional[str] = None):
+    """Save timestamp-ordered output and optionally link it to its ledger attempt."""
     ensure_dirs()
     job_output_dir = _job_output_dir(job_id)
     _ensure_cron_dir(job_output_dir)
     _secure_dir(job_output_dir)
-    output_file = job_output_dir / f"{_hermes_now().strftime('%Y-%m-%d_%H-%M-%S')}.md"
+    # Both retention and the background completion excerpt sort filenames lexically.
+    # Keep time first; microseconds order rapid runs and a unique suffix prevents
+    # collisions even when the clock has coarse resolution or an attempt saves twice.
+    timestamp = _hermes_now().strftime('%Y-%m-%d_%H-%M-%S_%f')
+    output_file = job_output_dir / f"{timestamp}_{uuid.uuid4().hex}.md"
     atomic_write_text(output_file, output, tmp_prefix=".output_", mode=0o600)
     _secure_file(output_file)
+    if execution_id:
+        from cron.executions import set_execution_output_path
+        set_execution_output_path(execution_id, str(output_file))
     # Bound per-job output growth so long-running deploys don't fill the disk (#52383).
     _prune_job_output(job_output_dir, _cron_output_keep())
     return output_file

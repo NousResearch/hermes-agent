@@ -499,7 +499,7 @@ class GatewayNotificationsMixin:
         if session_key and isinstance(adapter, BasePlatformAdapter):
             result, _ = await adapter.send_final_ledgered(
                 MessageEvent(text="", source=source, ledger_message_id=inbound_message_id),
-                session_key, text_content, _mark_notify_metadata(metadata), reply_to=event_message_id)
+                session_key, text_content, _mark_notify_metadata(metadata), reply_to=event_message_id, allow_reply_bursts=False)
         else:
             result = await adapter.send(source.chat_id, text_content, metadata=metadata)
         if not getattr(result, "success", False):

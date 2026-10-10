@@ -1456,6 +1456,8 @@ platform_toolsets:
 #       # Render live tool calls as Slack-native plan/task cards. This explicit
 #       # opt-in works even though Slack text tool_progress defaults to off.
 #       native_task_cards: false
+#       # Buffer conversational DM finals, then send paragraphs one second apart.
+#       dm_reply_bursts: false
 #       # Slack user IDs whose Web-API posts (user token, e.g. your own
 #       # dashboard/mobile front-end) count as human instead of being dropped
 #       # as app traffic. Narrower than allow_bots: all. Users only — never apps.

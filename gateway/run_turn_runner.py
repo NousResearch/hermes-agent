@@ -934,7 +934,7 @@ class TurnRunner:
             try:
                 from gateway.stream_consumer import GatewayStreamConsumer
                 adapter = self._runner._delivery_adapter_for(ctx.source)
-                if adapter:
+                if adapter and adapter.prefers_buffered_reply(ctx.source.chat_id) is not True:
                     supports_incremental_stream = (
                         getattr(adapter, "SUPPORTS_MESSAGE_EDITING", True)
                         or bool(getattr(adapter, "SUPPORTS_NATIVE_STREAMING", False))

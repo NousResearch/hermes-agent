@@ -2736,7 +2736,7 @@ class GatewayTurnMixin:
         try:
             from gateway.stream_consumer import GatewayStreamConsumer
             _adapter = self._delivery_adapter_for(source)
-            if not _adapter:
+            if not _adapter or _adapter.prefers_buffered_reply(source.chat_id) is True:
                 return None
             _consumer_cfg, _pause_typing_before_finalize = self._build_stream_consumer_config(
                 source, _scfg, _adapter, on_missing_cursor="fallback",

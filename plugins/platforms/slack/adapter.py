@@ -1003,7 +1003,10 @@ def _extra_or_env_channel_set_getter(
     return getter
 
 
-class SlackAdapter(BasePlatformAdapter):
+from plugins.platforms.slack.reply_bursts import SlackReplyChunksMixin
+
+
+class SlackAdapter(SlackReplyChunksMixin, BasePlatformAdapter):
     """Slack bot adapter (Socket Mode).
     Needs SLACK_BOT_TOKEN (xoxb-, API calls) and SLACK_APP_TOKEN (xapp-, Socket Mode). DMs +
     mention-gated channels, threads, attachments, slash commands, status text."""
@@ -1478,11 +1481,6 @@ class SlackAdapter(BasePlatformAdapter):
             k for k, v in self._slash_command_contexts.items()
             if now - v["ts"] > self._SLASH_CTX_TTL]:
             self._slash_command_contexts.pop(k, None)
-
-    def _format_chunks(self, content: str) -> list[str]:
-        """mrkdwn-format ``content`` and split to ``MAX_MESSAGE_LENGTH`` (never empty)."""
-        formatted = self.format_message(content)
-        return self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH) or [formatted]
 
     async def _send_slash_ephemeral(self, ctx: dict[str, Any], content: str) -> SendResult:
         """Replace the ephemeral ack via ``response_url`` (``replace_original`` valid 30 min). First

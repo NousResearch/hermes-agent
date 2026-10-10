@@ -32,6 +32,28 @@ def prepare_acceptance(conn, task_id, expected_run_id, metadata):
     # The assignee profile's gh login owns the repo: acceptance must not run as
     # the ambient login of whichever process completes the card (#122689).
     assignee = conn.execute("SELECT assignee FROM tasks WHERE id=?", (task_id,)).fetchone()["assignee"]
+    from hermes_cli.kanban_pr_acceptance import _GateAuthError, _assignee_profile_home
+    from hermes_cli.kanban_pr_acceptance_mcp import (GH_TRANSPORT, MCP_TRANSPORT,
+                                                     collect_acceptance_mcp, read_transport,
+                                                     unsupported_transport_receipt)
+    try:
+        profile_home = _assignee_profile_home(assignee)
+    except _GateAuthError:
+        # Native behavior: an auth receipt naming the profile; no subprocess of any
+        # kind runs, so there is no transport to fall back to either.
+        return snapshot, collect_acceptance(contract, published_pr, assignee=assignee)
+    try:
+        current_transport = read_transport(None)
+        transport = read_transport(profile_home)
+        # The completing profile can impose MCP-only policy, but never lend
+        # its server/env to another assignee. Missing target config fails closed.
+        if current_transport == MCP_TRANSPORT:
+            transport = MCP_TRANSPORT
+    except Exception:  # unknown transport value: fail closed, never gh
+        return snapshot, unsupported_transport_receipt(published_pr)
+    if transport == MCP_TRANSPORT:
+        return snapshot, collect_acceptance_mcp(contract, published_pr, profile_home=profile_home)
+    assert transport in (None, GH_TRANSPORT)
     return snapshot, collect_acceptance(contract, published_pr, assignee=assignee)
 
 

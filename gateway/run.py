@@ -1828,7 +1828,7 @@ async def _async_profile_runtime_scope(profile_home: Path):
         yield
 
 
-def load_gateway_config_for_runner() -> GatewayConfig:
+def load_gateway_config_for_runner() -> "GatewayConfig":
     """Load gateway config for the process-level GatewayRunner. An UNSET ``multiplex_profiles`` is
     settled first by ``resolve_multiplex_mode`` (the default is on; the boot guard keeps a fleet that
     still runs per-profile gateways standalone). Multiplexed: set multiplex-active, then reload
@@ -1898,7 +1898,7 @@ async def _discover_gateway_mcp_tools(config: object) -> None:
                 logger.warning("MCP tool discovery failed for profile '%s'", profile_name, exc_info=True)
 
 
-def _platform_has_bot_credential(platform: Platform, platform_config: PlatformConfig) -> bool:
+def _platform_has_bot_credential(platform: "Platform", platform_config: "PlatformConfig") -> bool:
     """Return True when a token-authenticated platform has a usable bot credential; platforms not using
     ``PlatformConfig.token`` (Signal session paths, port-binding HTTP adapters) always return True."""
     from gateway.config import PLATFORM_TOKEN_ENV_NAMES, Platform

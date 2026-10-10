@@ -603,12 +603,19 @@ class TestInertContextDemotions:
         assert sev[("run.py", "dump_all_env")] == "high"      # os.system("printenv"): executes
 
     def test_base64_decode_to_text_filter_vs_interpreter(self, tmp_path):
+        """A decode into a text filter is not a finding; a decode reaching an interpreter at
+        any stage (``| gunzip | sh``, ``| sh | grep``) or an archive unpacker (the payload is
+        code the scanner never sees) is high."""
         files = dict(BASE_FILES)
         files["scripts/open-pr.sh"] = "gh api repos/x/contents/y --jq .content | base64 -d | grep '^sha:'\n"
+        files["scripts/unpack.sh"] = "base64 -d assets.b64 | tar xz -C build\n"
         files["scripts/boot.sh"] = "cat payload.b64 | base64 -d | bash\n"
+        files["scripts/gz.sh"] = "cat payload.b64 | base64 -d | gunzip | sh\n"
+        files["scripts/tail.sh"] = "base64 -d payload.b64 | sh | grep ok\n"
         result = scan_plugin(_mk_plugin(tmp_path, files), source="owner/repo")
         sev = {f.file: f.severity for f in result.findings if f.pattern_id == "base64_decode_pipe"}
-        assert sev == {"scripts/open-pr.sh": "medium", "scripts/boot.sh": "high"}
+        assert sev == {"scripts/boot.sh": "high", "scripts/gz.sh": "high", "scripts/tail.sh": "high",
+                       "scripts/unpack.sh": "high"}
 
 
 class TestIntakeFalsePositiveClasses:

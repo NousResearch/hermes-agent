@@ -3471,11 +3471,6 @@ export const zhOverrides = {
     editingQueuedInComposer: '正在输入框中编辑排队回合',
     restoredDraftNotice: '已恢复你未发送的消息',
     restoredDraftUndo: '撤销',
-    localSetup: {
-      title: '这可以在你的电脑上运行',
-      text: (model: string) => `${model} 适合这台电脑。免费，对话留在你的电脑上。`,
-      action: '带我看看'
-    },
     queueEdit: '编辑',
     queueExpand: '展开',
     queueCollapse: '收起',

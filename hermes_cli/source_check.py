@@ -267,14 +267,15 @@ def _write_cache(cache_file: Path, identity: dict, now: float, result: dict) -> 
         logger.debug("Could not cache source check: %s", exc)
 
 
-def _resolve_channel(result: dict, channel: str, co: _Checkout):
+def _resolve_channel(result: dict, channel: str, co: _Checkout, *, forward_only: bool = False):
     """Resolve a release channel's target into ``result``; the SourceTarget, or None on error.
 
     A target with a pinned commit is final; one without names a branch to follow instead.
     """
     try:
         source_target = resolve_source_target(channel, [co.git] if not co.embedded else None, co.root,
-                                              repository=co.repository or OFFICIAL_REPOSITORY)
+                                              repository=co.repository or OFFICIAL_REPOSITORY,
+                                              forward_only=forward_only)
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         result.update(error="release-unavailable", message=f"Could not resolve the {channel} source channel: {exc}")
         return None
@@ -382,7 +383,7 @@ def check_for_updates(*, install_root: Path | None = None, home: Path | None = N
     """
     from hermes_cli.config import get_project_root, require_readable_config_before_write
     from hermes_cli.steward import read_install_stamp
-    from hermes_cli.update_channel import install_id, resolve_update_channel
+    from hermes_cli.update_channel import channel_record, install_id, resolve_update_channel, rides_default_channel
     from hermes_cli.release_channels import validate_name
 
     embedded = (os.environ.get("HERMES_REVISION") or None) if install_root is None else None
@@ -397,6 +398,7 @@ def check_for_updates(*, install_root: Path | None = None, home: Path | None = N
     if passive and (config.get("updates") or {}).get("check") is False:
         return {**result, "reason": "disabled"}
     channel = resolve_update_channel(config, root) if channel is None else validate_name(channel)
+    forward_only = rides_default_channel(channel_record(config, root), channel, root)
     co = _read_checkout(root, git, embedded)
     desktop_config = _read_json(branch_config_path) if branch_config_path else None
     configured_branch = _configured_branch(desktop_config)
@@ -407,7 +409,8 @@ def check_for_updates(*, install_root: Path | None = None, home: Path | None = N
     else:
         result["branch"] = selected_branch
     identity = {"root": str(root), "home": str(home), "head": co.head, "origin": co.origin, "branch": selected_branch,
-                "channel": channel, "embedded": embedded, "branchOverride": branch is not None, "channelProtocol": 1}
+                "channel": channel, "embedded": embedded, "branchOverride": branch is not None, "channelProtocol": 1,
+                "forwardOnly": forward_only}
     cache_file = Path(cache_path) if cache_path is not None else home / "source-checks" / f"{install_id(root)}.json"
     now = time.time()
     cached = None if force else _cached_status(cache_file, identity, now)
@@ -418,7 +421,7 @@ def check_for_updates(*, install_root: Path | None = None, home: Path | None = N
     if not _is_full_sha(co.head):
         result.update(error="head-unavailable", message="Could not read the installed revision.")
     elif branch is None:
-        source_target = _resolve_channel(result, channel, co)
+        source_target = _resolve_channel(result, channel, co, forward_only=forward_only)
         if source_target is not None and not source_target.commit:
             # The record supplies a default, not permission to leave the user's branch.
             selected_branch = configured_branch or _checked_out_branch(co.current_branch, source_target.branch)

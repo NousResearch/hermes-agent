@@ -497,6 +497,7 @@ UPDATE_STOP_CLASSES = frozenset({
     "disk_full",              # (see above)
     "download_failed",        # the ZIP fallback download failed
     "fetch_failed",           # git fetch failed
+    "gateway_pause_failed",   # Windows: the gateways could not be paused safely before the venv moves
     "git_in_progress",        # a merge/rebase/cherry-pick/... was already in progress
     "git_index_locked",       # git refused: another git process's .git/index.lock exists
     "git_timeout",            # a network git call hit the updater's time limit

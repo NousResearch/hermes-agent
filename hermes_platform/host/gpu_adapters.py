@@ -59,7 +59,7 @@ def _method(obj: ctypes.c_void_p, slot: int, *argtypes):
 
 
 @functools.cache
-def windows_gpu_adapters() -> "tuple[Adapter, ...]":
+def windows_gpu_adapters() -> tuple[Adapter, ...]:
     """Every adapter DXGI enumerates, in its order; empty off Windows or when DXGI can't answer."""
     with suppress(OSError, AttributeError):
         factory = ctypes.c_void_p()

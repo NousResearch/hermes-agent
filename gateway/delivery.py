@@ -121,7 +121,7 @@ class DeliveryTarget:
     unknown_platform: Optional[str] = None
 
     @classmethod
-    def parse(cls, target: str, origin: Optional[SessionSource] = None) -> DeliveryTarget:
+    def parse(cls, target: str, origin: Optional[SessionSource] = None) -> "DeliveryTarget":
         """Parse "origin" | "local" | "<platform>" | "<platform>:<chat_id>[:<thread_id>]"."""
         target = target.strip()
         if target.lower() == "origin":

@@ -146,7 +146,7 @@ class ProcessTerminationMixin:
     # escalated kill as incomplete.
     _KILL_SETTLE_SECONDS = 1.0
 
-    def _post_kill_survivors(self, session: ProcessSession) -> list[int]:
+    def _post_kill_survivors(self, session: "ProcessSession") -> list[int]:
         """Host PIDs still alive once the kill signals have had time to land (#115490).
 
         Fail-closed: anything unverifiable counts as a survivor, so a kill
@@ -160,7 +160,7 @@ class ProcessTerminationMixin:
                 return survivors
             time.sleep(0.05)
 
-    def _probe_survivors(self, session: ProcessSession) -> list[int]:
+    def _probe_survivors(self, session: "ProcessSession") -> list[int]:
         survivors: list[int] = []
         proc = getattr(session, "process", None)
         if proc is not None:

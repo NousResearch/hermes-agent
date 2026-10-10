@@ -1774,6 +1774,25 @@ def _apply_pulled_update(
     _complete_source_update(completion_request)
 
 
+def _pause_gateways_for_update(opts):
+    """Windows pauses here (venv locks); Linux/macOS only arm a pause the commit point performs."""
+    try:
+        return _m()._pause_windows_gateways_for_update() or _posix_pause.arm_pause(
+            no_gateway_restart=opts.no_gateway_restart)
+    except RuntimeError:  # update_cmd_windows._abort_on_error / ServicePauseFailed: nothing moved
+        _record_stop("gateway_pause_failed")
+        raise
+
+
+def _update_run_channel(args) -> str:
+    """``_source_update_channel`` for this run, naming the exit when the configured channel is invalid."""
+    try:
+        return _source_update_channel(args)
+    except ValueError:  # ChannelError: this install's configured channel is not a valid name
+        _record_stop("channel_unresolved")
+        raise
+
+
 def _cmd_update_impl(args, gateway_mode: bool):
     """Apply the update; the command boundary owns errors, receipts and stdio."""
     # Marks this frame as the CURRENT updater for
@@ -1816,9 +1835,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
     _record_pre_update_backup_outcome(args, pre_update_snapshot_id)
     _record_snapshot_stage(args, pre_update_snapshot_id)
 
-    # Windows pauses here (venv locks); Linux/macOS only arm a pause the commit point performs.
-    _windows_gateway_resume = _m()._pause_windows_gateways_for_update() or _posix_pause.arm_pause(
-        no_gateway_restart=opts.no_gateway_restart)
+    _windows_gateway_resume = _pause_gateways_for_update(opts)
     if _windows_gateway_resume:
         import atexit as _atexit
         _atexit.register(_m()._resume_windows_gateways_after_update, _windows_gateway_resume)
@@ -1837,47 +1854,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
         had_desktop_app_before_update, gateway_mode)
     branch = _m()._resolve_update_branch(args)
     completion_request["branch"] = branch
-    target_ref = f"origin/{branch}"
-    release_sha = None
-    target_repository = None
-    selected_channel = _source_update_channel(args)
-    if not getattr(args, "branch", None):
-        from hermes_cli.release_channels import retrying_reads
-        from hermes_cli.source_releases import resolve_source_target
-
-        from copy import deepcopy
-        from hermes_cli.config import require_readable_config_before_write
-        from hermes_cli.update_channel import channel_record
-
-        original_record = deepcopy(channel_record(require_readable_config_before_write(
-            Path(completion_request["home"]) / "config.yaml"), _m().PROJECT_ROOT))
-        print(f"→ Update channel: {selected_channel}")
-        try:
-            with retrying_reads():
-                target = resolve_source_target(
-                    selected_channel, None if use_zip_update else git_cmd, _m().PROJECT_ROOT)
-        except (OSError, ValueError, subprocess.SubprocessError) as exc:
-            print(f"✗ Could not resolve the {selected_channel} source channel: {exc}. No update was applied.")
-            _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
-            _record_stop("channel_unresolved")
-            sys.exit(1)
-        if target.retired:
-            print(f"→ {selected_channel} retired; source destination: {target.channel}")
-            if (not getattr(args, "channel", None)
-                    and original_record.get("channel", "main") == selected_channel):
-                completion_request["channel_retirement"] = {
-                    "original": original_record, "destination": target.channel}
-        target_repository = target.repository
-        release_sha = target.commit
-        if release_sha:
-            print(f"→ Latest release: {target.label}")
-            target_ref = release_sha
-            completion_request["expected_sha"] = release_sha
-        else:
-            assert target.branch is not None  # a SourceTarget without a commit names its branch
-            branch = target.branch
-            completion_request["branch"] = branch
-            target_ref = f"origin/{branch}"
+    target_ref, release_sha, target_is_head, target_repository = _check.select_apply_target(
+        args, branch, completion_request, git_cmd=None if use_zip_update else git_cmd,
+        stop=lambda: _m()._resume_windows_gateways_after_update(_windows_gateway_resume))
+    branch = completion_request["branch"]
 
     if use_zip_update:
         try:
@@ -1912,15 +1892,21 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # (#123346, #124645). Unshallow it (commits only) first.
         _heal_stale_shallow_checkout(_m().PROJECT_ROOT, branch)
 
-        print("→ Fetching updates...")
-        if release_sha:
+        if release_sha and target_is_head:
+            # Forward-only default: the checkout already contains the release; nothing to fetch.
+            fetch_args = None
+        elif release_sha:
             fetch_args = ["fetch", "--no-tags", "origin", target_ref]
         else:
             fetch_args = ["fetch", "origin", _check.tracking_refspec("origin", branch)]
         from hermes_cli.gitlock import fetch_with_partial_clone_recovery, is_partial_clone_pack_objects_crash
         # Marking the unmarked packs clears the git 2.53+ partial-clone pack-objects crash (#124272).
-        fetch_result = fetch_with_partial_clone_recovery(
-            lambda gc, a: _git_run(gc, a, network=True), git_cmd, fetch_args, _m().PROJECT_ROOT)
+        if fetch_args is None:
+            fetch_result = subprocess.CompletedProcess([], 0)
+        else:
+            print("→ Fetching updates...")
+            fetch_result = fetch_with_partial_clone_recovery(
+                lambda gc, a: _git_run(gc, a, network=True), git_cmd, fetch_args, _m().PROJECT_ROOT)
         if fetch_result.returncode != 0:
             if is_partial_clone_pack_objects_crash(fetch_result.stderr or ""):
                 print("✗ git still crashed after marking this checkout's packs. See 'Fetch fails with"

@@ -80,7 +80,7 @@ class _WebhookDeliveryIdentity:
     delivery_id: str
 
     @classmethod
-    def from_parts(cls, profile: Optional[str], route: str, delivery_id: str) -> _WebhookDeliveryIdentity:
+    def from_parts(cls, profile: Optional[str], route: str, delivery_id: str) -> "_WebhookDeliveryIdentity":
         return cls(profile=profile or "default", route=route, delivery_id=delivery_id)
 
     @property

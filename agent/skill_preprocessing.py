@@ -1,6 +1,7 @@
 """Shared SKILL.md preprocessing helpers: ``${HERMES_*}`` template tokens and
 inline ``!`cmd``` shell expansion."""
 
+import json
 import logging
 import re
 import subprocess
@@ -103,29 +104,39 @@ def _is_community_hub_skill(skill_dir: Path | None) -> bool:
     DSL scans as high severity, so auto-executing it on view would re-arm exactly what the
     gate refused (#63307). Provenance is the hub lock entry (trusted/builtin entries expand;
     anything without one — bundled-synced, user-created, project/external — keeps the flag's
-    contract). A lock read failure skips the gate, like every other provenance consumer.
+    contract). It covers every SKILL.md nested inside a community install and is read from
+    the lock that owns the skills tree the dir lives in, not only the active profile's
+    (``external_dirs`` can expose another profile's installs). A lock that exists but cannot
+    be read fails closed for skills in its tree; no lock means no hub installs.
     """
     if skill_dir is None:
         return False
     try:
-        from tools.skills_tool import _skills_dir
         from tools.skills_hub import HubLockFile
-        installed = HubLockFile().load().get("installed") or {}
-        for entry in installed.values():
-            if not (isinstance(entry, dict) and entry.get("trust_level") == "community"):
-                continue
-            rel = str(entry.get("install_path") or "")
-            if not rel:
+        from tools.skills_tool import _skills_dir
+
+        target = skill_dir.resolve()
+        locks = {HubLockFile().path.resolve(): _skills_dir().resolve()}
+        for root in target.parents:
+            if root.name == "skills" and (root / ".hub" / "lock.json").is_file():
+                locks.setdefault((root / ".hub" / "lock.json").resolve(), root)
+        for lock_path, root in locks.items():
+            if not (target.is_relative_to(root) and lock_path.is_file()):
                 continue
             try:
-                if skill_dir.resolve() == (_skills_dir() / rel).resolve():
+                installed = json.loads(lock_path.read_text(encoding="utf-8-sig"))["installed"]
+                entries = [e for e in installed.values() if isinstance(e, dict)]
+            except (OSError, ValueError, KeyError, TypeError, AttributeError):
+                logger.debug("Unreadable hub lock %s; inline shell stays off for its tree", lock_path, exc_info=True)
+                return True
+            for entry in entries:
+                rel = str(entry.get("install_path") or "")
+                if entry.get("trust_level") == "community" and rel and target.is_relative_to((root / rel).resolve()):
                     return True
-            except (OSError, ValueError):
-                continue
         return False
     except Exception:
-        logger.debug("Could not read hub lock for inline-shell trust scoping", exc_info=True)
-        return False
+        logger.debug("Could not resolve hub provenance for inline-shell trust scoping", exc_info=True)
+        return True
 
 
 def preprocess_skill_content(

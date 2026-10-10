@@ -302,7 +302,7 @@ class MemoryStore:
                         MemoryStore._shared.pop(self._key, None)
             self._entry = None
 
-    def __enter__(self) -> MemoryStore:
+    def __enter__(self) -> "MemoryStore":
         return self
 
     def __exit__(self, *_: object) -> None:

@@ -1002,7 +1002,7 @@ def _wait_agent_for_prompt(session: dict, rid: str, sid: str) -> dict | None:
     return _err(rid, 5032, err) if (err := session.get("agent_error")) else None
 
 
-def _bind_build_profile_scopes(profile_home: str | None) -> _TurnScopes | None:
+def _bind_build_profile_scopes(profile_home: str | None) -> "_TurnScopes | None":
     """Bind a session profile's HERMES_HOME / secret / terminal scopes for an agent build. ``None`` is the
     launch profile: its own launch-env secret scope (live env while single-profile, frozen once
     multiplexing is active — a hosted-room turn for a default member otherwise died at build with
@@ -1020,7 +1020,7 @@ def _bind_build_profile_scopes(profile_home: str | None) -> _TurnScopes | None:
     return scopes
 
 
-def _release_build_profile_scopes(scopes: _TurnScopes | None) -> None:
+def _release_build_profile_scopes(scopes: "_TurnScopes | None") -> None:
     with contextlib.suppress(Exception):
         _release_profile_runtime_scope_tokens(scopes)
 

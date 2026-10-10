@@ -58,7 +58,7 @@ def _interpreter_dirs(root: Path) -> tuple[str, ...]:
 def _run(step: dict, ctx: dict, cwd: Path | None = None, *, receipt: bool = False) -> tuple[dict, list]:
     required(step, ctx)
     assert step.get("shell", "bash") == "bash", "only safe Bash selection steps are replayed"
-    with tempfile.TemporaryDirectory(prefix="workflow-replay-") as directory:
+    with tempfile.TemporaryDirectory(prefix="workflow-replay-", ignore_cleanup_errors=True) as directory:
         root = Path(directory)
         output, calls = root / "outputs", root / "calls"
         output.touch()
@@ -76,17 +76,30 @@ def _run(step: dict, ctx: dict, cwd: Path | None = None, *, receipt: bool = Fals
         }
         script = root / "step.sh"
         script.write_text((_RECEIPTS if receipt else "") + gha.render(step["run"], ctx), encoding="utf-8")
-        result = subprocess.run(
-            [bash, "--noprofile", "--norc", "-eo", "pipefail", str(script)],
-            cwd=cwd or root, env=env, stdin=subprocess.DEVNULL,
-            capture_output=True, text=True, timeout=30,
-        )
+        # Files, not pipes: on Windows a timed-out run() kills bash and then calls communicate()
+        # with no timeout, which blocks for good while any descendant (Git's bash.exe launcher
+        # spawns usr/bin/bash.exe) still holds the pipe; the test file then died at the runner's
+        # 300 s cap with no output. With files the 30 s timeout raises and names the step.
+        out_path, err_path = root / "stdout", root / "stderr"
+        with out_path.open("wb") as out_f, err_path.open("wb") as err_f:
+            try:
+                returncode = subprocess.run(
+                    [bash, "--noprofile", "--norc", "-eo", "pipefail", str(script)],
+                    cwd=cwd or root, env=env, stdin=subprocess.DEVNULL,
+                    stdout=out_f, stderr=err_f, timeout=30,
+                ).returncode
+            except subprocess.TimeoutExpired:
+                returncode = None
+        stdout = out_path.read_text(encoding="utf-8", errors="replace")
+        stderr = err_path.read_text(encoding="utf-8", errors="replace")
         # workflow_steps is not a test module, so pytest does not rewrite this assert: the
         # message is all a CI failure shows. A child that dies without a word (a Windows
         # NTSTATUS exit, a process killed from outside) must still name its exit code.
-        assert result.returncode == 0, (
-            f"replayed step exited {result.returncode} (0x{result.returncode & 0xFFFFFFFF:08X}) "
-            f"under {bash}\n--- stdout ---\n{result.stdout}--- stderr ---\n{result.stderr}")
+        assert returncode is not None, (
+            f"replayed step timed out after 30 s under {bash}\n--- stdout ---\n{stdout}--- stderr ---\n{stderr}")
+        assert returncode == 0, (
+            f"replayed step exited {returncode} (0x{returncode & 0xFFFFFFFF:08X}) "
+            f"under {bash}\n--- stdout ---\n{stdout}--- stderr ---\n{stderr}")
         return (dict(line.split("=", 1) for line in output.read_text(encoding="utf-8-sig").splitlines()),
                 [json.loads(line) for line in calls.read_text(encoding="utf-8-sig").splitlines()])
 

@@ -2,8 +2,9 @@
 line-length = 88
 indent-width = 4
 
-# Assume Python 3.14
-target-version = "py314"
+# The oldest Python we support (requires-python): quote-stripping (UP037) and every other
+# version-gated fix must stay valid where annotations are evaluated eagerly (< 3.14).
+target-version = "py311"
 
 [format]
 # Like Black, use double quotes for strings.

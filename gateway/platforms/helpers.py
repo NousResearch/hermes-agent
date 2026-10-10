@@ -60,7 +60,7 @@ class MessageDeduplicator:
     def clear(self):
         self._seen.clear()
 
-    def absorb(self, other: MessageDeduplicator) -> None:
+    def absorb(self, other: "MessageDeduplicator") -> None:
         """Adopt *other*'s still-live IDs (at their original seen times) into this cache."""
         cutoff = time.time() - self._ttl
         self._seen.update({k: v for k, v in other._seen.items() if v > cutoff and k not in self._seen})

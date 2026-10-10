@@ -104,6 +104,16 @@ def _admit(adapter, durable_key, request_id, binding, run_kwargs, model):
     return admitted_context(admitted, replay=replay)
 
 
+def _stored_owner(adapter, session_id):
+    """A stored response keeps the physical transcript tip its turn ended on, which is a
+    compression child after an out-of-place compression. The canonical admission owner is
+    the lineage root (the API binding, route and FIFO stay there), so a chained turn admits
+    on that root; the legacy in-process path still continues the physical tip itself."""
+    from gateway.session_authorities import active_authority
+    authority = active_authority(adapter.gateway_runner) if session_id else None
+    return authority.logical_owner(session_id) if authority is not None else session_id
+
+
 async def prepare_context(adapter, request, body, gateway_session_key, durable_key, scope, key):
     """Validate first-time requests; exact retries use the accepted payload and result only."""
     import asyncio
@@ -133,7 +143,7 @@ async def prepare_context(adapter, request, body, gateway_session_key, durable_k
         if stored is None:
             return None, _error_response(f'Previous response not found: {previous}', 404)
         history = list(stored.get('conversation_history', []))
-        stored_session_id = stored.get('session_id')
+        stored_session_id = await asyncio.to_thread(_stored_owner, adapter, stored.get('session_id'))
         if instructions is None:
             instructions = stored.get('instructions')
     history.extend(messages[:-1])

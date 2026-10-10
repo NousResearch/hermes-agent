@@ -1898,3 +1898,144 @@ def test_docker_env_warnings_never_echo_values(caplog):
     with caplog.at_level(logging.WARNING, logger="tools.environments.docker"):
         docker_env._normalize_env_dict({"TOKEN": ["sk-live-value"], "OK": "1"})
     assert "TOKEN" in caplog.text and "sk-live-value" not in caplog.text
+
+
+# --- Image-user $HOME bootstrap (#127341) ---
+
+def _home_bootstrap_exec_calls(calls):
+    return [c for c in calls
+            if isinstance(c, list) and len(c) >= 2 and c[1] == "exec" and "-u" in c and "0" in c]
+
+
+def _exercise_home_bootstrap(script, user, passwd_entry, tmp_path):
+    """Run the bootstrap script exactly as ``docker exec ... sh -c SCRIPT hermes-home name``
+    would, under a POSIX sh with stubbed ``getent``/``chown`` on PATH, against a real
+    filesystem: ``passwd_entry``'s home field points inside *tmp_path*, so a correct script
+    really creates it and a stubbed ``chown`` (the test process is not root) records its
+    argv. Returns ``(chown_argv, home_exists)`` — the observable contract, not the text."""
+    stub_bin = tmp_path / "stub-bin"
+    stub_bin.mkdir(exist_ok=True)
+    (stub_bin / "getent").write_text(
+        '#!/bin/sh\n[ "$1" = passwd ] && [ "$2" = "$STUB_USER" ] '
+        '&& printf \'%s\\n\' "$STUB_PASSWD_ENTRY" && exit 0\nexit 2\n')
+    (stub_bin / "chown").write_text(
+        '#!/bin/sh\nprintf \'%s\\n\' "$*" >> "$STUB_CHOWN_LOG"\nexit 0\n')
+    for stub in stub_bin.iterdir():
+        stub.chmod(0o755)
+    home = passwd_entry.rstrip("\n").split(":")[5]
+    env = {
+        "PATH": f"{stub_bin}{os.pathsep}{os.environ.get('PATH', os.defpath)}",
+        "STUB_USER": user,
+        "STUB_PASSWD_ENTRY": passwd_entry,
+        "STUB_CHOWN_LOG": str(tmp_path / "chown.log"),
+    }
+    # ``-c SCRIPT hermes-home name``: $0/$1 land exactly as they do through docker exec.
+    # Popen, not subprocess.run: this test file's docker mocks monkeypatch ``run`` on the
+    # shared subprocess module, and the stub bootstrap must actually execute.
+    subprocess.Popen(["/bin/sh", "-c", script, "hermes-home", user], env=env).wait()
+    log = tmp_path / "chown.log"
+    chown_argv = log.read_text().strip() if log.exists() else ""
+    return chown_argv, os.path.isdir(home)
+
+
+def _make_booted_env(monkeypatch, container_user):
+    """Boot a DockerEnvironment with docker mocked: ``version`` ok, ``run`` returns a fresh
+    container id, ``ps`` finds no reusable container, and ``inspect`` (the container query,
+    not ``image inspect``) reports *container_user* as the container's ``Config.User``."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    docker_env._cgroup_limits_ok = True
+    calls = []
+
+    def _run(cmd, **kwargs):
+        calls.append(list(cmd) if isinstance(cmd, list) else cmd)
+        if isinstance(cmd, list) and len(cmd) >= 2:
+            if cmd[1] == "version":
+                return subprocess.CompletedProcess(cmd, 0, stdout="Docker version", stderr="")
+            if cmd[1] == "run":
+                return subprocess.CompletedProcess(cmd, 0, stdout="fake-container-id\n", stderr="")
+            if cmd[1] == "inspect":
+                return subprocess.CompletedProcess(cmd, 0, stdout=f"{container_user}\n", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+    return _make_dummy_env(), calls
+
+
+def test_container_boot_ensures_home_for_non_root_image_user(monkeypatch, tmp_path):
+    """A non-root image user (hermes-sandbox:desktop's `pn`) must get a root-side, idempotent
+    $HOME bootstrap after container start — without it every $HOME write (browser cache,
+    agent-browser install) fails or hangs (#127341). The script is executed against a stub
+    passwd, so the assertions are its behaviour: the home really appears and chown receives
+    (uid, gid, home) — not substring matches on the script text."""
+    env, calls = _make_booted_env(monkeypatch, "pn")
+
+    execs = _home_bootstrap_exec_calls(calls)
+    assert execs, "a non-root image user must get a root-side $HOME bootstrap exec"
+    argv = execs[0]
+    assert argv[0] == "/usr/bin/docker"
+    assert argv[1:4] == ["exec", "-u", "0"]
+    assert env._container_id in argv
+    script_index = argv.index("-c") + 1
+    script = argv[script_index]
+    # The user spec travels as a parameter, never spliced into the script text.
+    assert argv[-1] == "pn"
+    assert "pn" not in script
+
+    home = tmp_path / "home" / "pn"
+    passwd_entry = f"pn:x:4242:4343::{home}:/bin/sh"
+    chown_argv, home_exists = _exercise_home_bootstrap(script, "pn", passwd_entry, tmp_path)
+    assert home_exists, "the passwd-declared home must actually be created"
+    assert chown_argv == f"4242:4343 {home}"
+
+
+def test_home_bootstrap_is_idempotent_on_an_existing_home(monkeypatch, tmp_path):
+    """The bootstrap must be safe to re-run against a container whose home already exists
+    (reattached containers heal on the next session): mkdir -p stays a no-op and the
+    chown re-stamps the same triple."""
+    _, calls = _make_booted_env(monkeypatch, "pn")
+    argv = _home_bootstrap_exec_calls(calls)[0]
+    script = argv[argv.index("-c") + 1]
+
+    home = tmp_path / "home" / "pn"
+    home.mkdir(parents=True)
+    passwd_entry = f"pn:x:4242:4343::{home}:/bin/sh"
+    chown_argv, home_exists = _exercise_home_bootstrap(script, "pn", passwd_entry, tmp_path)
+    assert home_exists
+    assert chown_argv == f"4242:4343 {home}"
+
+
+@pytest.mark.parametrize("container_user", ["", "root", "0:0", "root:root"])
+def test_container_boot_skips_home_ensure_for_root_image_user(monkeypatch, container_user):
+    """Root images keep the exact pre-fix startup sequence: no extra exec after docker run."""
+    _, calls = _make_booted_env(monkeypatch, container_user)
+    assert not _home_bootstrap_exec_calls(calls)
+
+
+def test_home_bootstrap_failure_keeps_container_boot_working(monkeypatch):
+    """The $HOME bootstrap is best-effort: a timeout or missing shell in the image must
+    degrade to the pre-fix behaviour instead of failing the sandbox start."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    docker_env._cgroup_limits_ok = True
+
+    def _run(cmd, **kwargs):
+        if isinstance(cmd, list) and len(cmd) >= 2 and cmd[1] == "version":
+            return subprocess.CompletedProcess(cmd, 0, stdout="Docker version", stderr="")
+        if isinstance(cmd, list) and len(cmd) >= 2 and cmd[1] == "run":
+            return subprocess.CompletedProcess(cmd, 0, stdout="fake-container-id\n", stderr="")
+        if isinstance(cmd, list) and len(cmd) >= 2 and cmd[1] == "inspect":
+            return subprocess.CompletedProcess(cmd, 0, stdout="pn\n", stderr="")
+        if isinstance(cmd, list) and len(cmd) >= 2 and cmd[1] == "exec":
+            raise subprocess.TimeoutExpired(cmd, 30)
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+    env = _make_dummy_env()
+    assert env._container_id
+
+
+def test_home_ensure_is_a_noop_without_a_container():
+    """Recovery paths that clear the container id must not probe docker at all."""
+    env = docker_env.DockerEnvironment.__new__(docker_env.DockerEnvironment)
+    env._container_id = None
+    env._docker_exe = "/usr/bin/docker"
+    env._ensure_image_user_home()

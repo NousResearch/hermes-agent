@@ -179,11 +179,13 @@ gateway:
     label_normal: "NORMAL"
     status_fast: "hızlı"
     status_normal: "normal"
-    picker_title: "⚡ **Priority Processing**\\n\\nMevcut mod: `{mode}`\\n\\nBir seçenek seçin:"
+    picker_title: "⚡ **Priority Processing**\n\nMevcut mod: `{mode}`\n\nBir seçenek seçin:"
     choice_fast: "fast — Priority Processing açık"
     choice_normal: "normal — standart işleme"
     choice_auto: "auto — her turun ilk saniyelerinde hızlı"
     choice_cold: "cold — yalnızca oturumun ilk turunda hızlı"
+    choice_ultrafast: "ultrafast — OpenAI Ultrafast (GPT-6 Astra, 6 kat fiyat)"
+    ultrafast_not_supported: "⚡ Ultrafast yalnızca GPT-6 Astra için kullanılabilir (geçerli model: `{model}`)."
   footer:
     status: "📎 Çalışma zamanı altbilgisi: **{state}**\nAlanlar: `{fields}`\nPlatform: `{platform}`"
     usage: "Kullanım: `/footer [on|off|status]`"
@@ -280,7 +282,7 @@ gateway:
     reset_global_unsupported: "⚠️ `/reasoning reset --global` desteklenmiyor. Genel varsayılanı değiştirmek için `/reasoning <level> --global` kullanın."
     reset_done: "🧠 ✓ Oturumun akıl yürütme geçersiz kılması temizlendi; genel yapılandırmaya geri dönülüyor."
     unknown_arg: "⚠️ Bilinmeyen argüman: `{arg}`\n\n**Geçerli seviyeler:** none, minimal, low, medium, high, xhigh, max, ultra\n**Görüntüleme:** show, hide\n**Kalıcı:** bu oturumun ötesinde kaydetmek için `--global` ekleyin"
-    picker_title: "🧠 **Akıl Yürütme Ayarları**\\n\\n**Güç:** `{level}`\\n**Kapsam:** {scope}\\n**Görüntüleme:** {display}\\n\\nBir seçenek seçin:"
+    picker_title: "🧠 **Akıl Yürütme Ayarları**\n\n**Güç:** `{level}`\n**Kapsam:** {scope}\n**Görüntüleme:** {display}\n\nBir seçenek seçin:"
     choice_none: "none — akıl yürütmeyi kapat"
     choice_reset: "reset — oturum geçersiz kılmasını temizle"
     choice_show: "yanıtlarda akıl yürütmeyi göster"
@@ -653,6 +655,7 @@ gateway:
     cancelled: "↩️ Netleştirme iptal edildi — mesajınız devam mesajı olarak işlenecek."
     expired: "⏳ Bu sorunun süresi doldu — lütfen yeni bir istek gönderin."
     native_stream_placeholder: "💬 Seçiminiz bekleniyor..."
+    skip_hint: 'Bu soruyu atlamak için "skip" yazın.'
   errors:
     rate_limited: "⏱️ Yapay zekâ model servisi istekleri hız sınırlamasına tabi tutuyor. Biraz bekleyin, ardından /retry kullanın."
     auth_failed: "⚠️ Yapay zekâ model servisine giriş başarısız oldu. Yeniden giriş yapmak için /login kullanın veya bu botu işleten kişiden ana makinede `hermes doctor` çalıştırmasını isteyin."
@@ -776,6 +779,8 @@ gateway:
   plan:
     ack_task: "Planlanıyor: {task}"
     ack_conversation: "Bu konuşmanın bağlamından plan yapılıyor…"
+  initiate_setup:
+    ack: "Kurulum başlatılıyor…"
   init:
     start_failed: "/init başlatılamadı — lütfen yeniden deneyin."
     ack_update: "AGENTS.md proje taramasıyla güncelleniyor…"
@@ -844,6 +849,9 @@ gateway:
     db_fts_corrupt: "⚠️ Oturum veritabanı yalnızca arama dizinini (FTS5) etkileyen bir bozulma hatası bildirdi; mesaj tabloları hasarlı değil. Onarılana kadar mesajlar kalıcı olarak kaydedilmeyebilir: `hermes {profile_arg}doctor --fix` çalıştırıp gateway'i yeniden başlatın. `hermes {profile_arg}doctor` hasarı doğrulamadıkça kurtarma araçlarını çalıştırmayın veya yedek geri yüklemeyin."
     db_then_restart: "{action} Ardından `hermes {profile_arg}gateway restart` çalıştırın."
     db_unavailable: "⚠️ Oturum veritabanı kullanılamıyor — mesajlar kaydedilmeyebilir ve /resume boş olacak. Neden: {cause}. {action}"
+  cron_store:
+    unwritable: "⚠️ Cron deposu {store} {since} tarihinden beri yazılamıyor ({error}). Yeniden yazma kabul edene kadar zamanlanmış işler atlanıyor. Çözüm: {fix}."
+    recovered: "✅ Cron deposu {store} yeniden yazılabilir; {skipped} atlanan çalıştırma, her iş bir kez telafi edilecek."
   whoami:
     scope_dm: "DM"
     scope_group: "grup/kanal"
@@ -1445,8 +1453,6 @@ platform:
   irc:
     quit_message: "Hermes Agent kapatılıyor"
     standalone_quit: "teslim edildi"
-  homeassistant:
-    notification_title: "Hermes Agent"
   relay:
     confirm_approve_once: "Bir Kez Onayla"
     confirm_always_approve: "Her Zaman Onayla"
@@ -1552,6 +1558,8 @@ slash:
     description: "Bir istemi bu oturumda yinelenen aralıklarla yeniden çalıştır"
   plan:
     description: ".hermes/plans/ altına hiçbir şey çalıştırmadan markdown uygulama planı yaz"
+  initiate-setup:
+    description: "İlk kurulumu çalıştır: seni tanı ve Hermes'i sana göre ayarla"
   moa:
     description: "Bir istemi varsayılan Mixture of Agents ön ayarıyla çalıştır, sonra modelinize geri dön"
   subgoal:
@@ -1597,7 +1605,7 @@ slash:
   reasoning:
     description: "Akıl yürütme düzeyini ve gösterimini yönet"
   fast:
-    description: "Hızlı mod — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold)"
+    description: "Hızlı mod — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold/ultrafast)"
   skin:
     description: "Görüntü görünümünü/temasını göster veya değiştir"
   indicator:
@@ -2032,7 +2040,6 @@ cli:
     clarify_other_type_below: "Diğer (aşağıya yazın)"
     clarify_other_type_answer: "Diğer (yanıtınızı yazın)"
     clarify_guidance: "Yanıtınızı aşağıdaki istem satırına yazın, ardından Enter'a basın."
-    clarify_question_truncated: "… (soru kısaltıldı)"
     picker_title_provider: "⚙ Model Seçici — Sağlayıcı Seçin"
     picker_provider_row_one: "{name} ({count} model)"
     picker_provider_row_other: "{name} ({count} model)"
@@ -2077,7 +2084,6 @@ cli:
     hint_vault_username: "yazarken görünür · devam için Enter"
     hint_clarify_freetext: "yanıtınızı yazıp Enter'a basın"
     hint_clarify_batch: "↑/↓ seç, Enter kilitle, Tab sonraki soru"
-    hint_clarify_choice: "↑/↓ seç, Enter onayla"
     hint_input_disabled: "giriş geçici olarak devre dışı"
     hint_input_queues: "giriş aktif kalır; Enter sıraya alır"
     hint_command_running: "{frame} komut çalışıyor · {detail}"
@@ -2260,7 +2266,6 @@ cli:
   clarify:
     bell_context: "netleştirme"
     label: "Netleştirme"
-    timed_out_agent_decides: "(netleştirme {timeout} sn sonra zaman aşımına uğradı — ajan karar verecek)"
     timed_out_locked_answers: "(netleştirme {timeout} sn sonra zaman aşımına uğradı — kilitlenen yanıtlar döndürüldü)"
   connect:
     bell_context: "bağlantı kurulumu"
@@ -2355,6 +2360,7 @@ cli:
     removed: "Kuyruk öğesi {index} kaldırıldı: {preview}"
     item_not_found: "Kuyruk öğesi {index} bulunamadı. Geçerli boyut: {size}"
     usage_edit: "Kullanım: /queue edit <number> <new prompt>"
+    usage_remove: "Kullanım: /queue rm <number>"
     updated: "Kuyruk öğesi {index} güncellendi: {preview}"
     usage_move: "Kullanım: /queue move <from> <to>"
     move_out_of_range: "Kuyruk taşıma aralık dışında. Geçerli boyut: {size}"
@@ -2393,6 +2399,7 @@ cli:
     session_not_found: "Oturum bulunamadı: {session_id}"
     compressed_into: "{session_id} oturumu {descendant} içine sıkıştırıldı; transkriptinizle alt oturum sürdürülüyor."
     cannot_resume: "Oturum sürdürülemiyor: {error}"
+    kanban_owned: "⛔ Oturum {session_id} bir Kanban çalışanı transkriptidir. Burada sürdürmek, Kanban panosunun gözlemleyip denetleyemeyeceği bir yazıcı oluşturur — bunun yerine kartı panoda yeniden deneyin veya engelini kaldırın, böylece bir sonraki çalışmayı dispatch sahibi olur."
     cannot_resume_prefix: "Oturum sürdürülemiyor:"
     resumed_session: "↻ Oturum sürdürüldü"
     counts_one: "({count} kullanıcı mesajı, toplam {total} mesaj)"
@@ -2427,7 +2434,6 @@ cli:
     run_model_to_retry: "Yeniden denemek için 'hermes model' komutunu çalıştırın."
     provider_configured: "✓ Sağlayıcı yapılandırıldı — sohbete hazırsınız."
     provider_setup_incomplete: "Sağlayıcı kurulumu tamamlanmadı. Yeniden denemek için 'hermes model' komutunu çalıştırın."
-    tirith_unavailable: "⚠ tirith güvenlik tarayıcısı etkin ancak kullanılamıyor — komut taraması yalnızca desen eşleştirme kullanacak"
     unknown_toolsets: "Uyarı: Bilinmeyen araç setleri: {names}"
     stdin_unusable: "\nHata: stdin kullanılamıyor ({error}).\nBu durum, kqueue'nun fd 0'ı kaydedemediği bazı Python kurulumlarında\n(örn. macOS'ta uv ile yönetilen cPython) görülebilir.\nPython'ı pyenv veya Homebrew ile yeniden kurup şunu tekrar çalıştırın: hermes setup"
     warning: "Uyarı: {warning}"
@@ -2653,7 +2659,9 @@ cli:
       feature_generic: "Hızlı mod"
       feature_anthropic: "Anthropic Fast Mode"
       feature_openai: "Priority Processing"
-      usage: "Kullanım: /fast [normal|fast|auto|cold|status] [--global]"
+      feature_ultrafast: "OpenAI Ultrafast"
+      ultrafast_not_supported: "(._.) Ultrafast yalnızca GPT-6 Astra için kullanılabilir (geçerli model: {model})."
+      usage: "Kullanım: /fast [normal|fast|auto|cold|ultrafast|status] [--global]"
       status: "{feature}: {status}"
       set_to: "✓ {feature} {value} olarak ayarlandı {scope}"
     hatch:
@@ -2718,6 +2726,7 @@ cli:
       restored: "Durum şuradan geri yüklendi: {snapshot_id}"
       restart_recommended: "Gateway/panel süreçlerinin state.db değişikliklerini alması için yeniden başlatma önerilir."
       not_found: "Anlık görüntü bulunamadı: {snapshot_id}"
+      restore_incomplete: "Anlık görüntü {snapshot_id} tamamen geri yüklenmedi; bazı dosyalar reddedildi (günlüklere bakın)"
       usage_prune: "Kullanım: /snapshot prune [tutulacak-sayı]"
       pruned: "{deleted} eski anlık görüntü silindi ({keep} tanesi tutuluyor)."
     export:
@@ -2909,6 +2918,8 @@ cli:
     plan:
       planning: "📋 Planlanıyor: {task}"
       from_conversation: "📋 Bu konuşmanın bağlamından planlanıyor..."
+    initiate_setup:
+      starting: "🧭 Kurulum başlatılıyor..."
     init:
       updating: "⚡ AGENTS.md proje taramasından güncelleniyor..."
       generating: "⚡ AGENTS.md proje taramasından oluşturuluyor..."
@@ -3285,6 +3296,7 @@ cli:
     shallow_clone_keeping: "⚠ Sığ klon — push durumu doğrulanamıyor, korunuyor: {path}"
     next_session_deepens: "Bir sonraki `hermes -w` oturumu klonu derinleştirir ve birleştirilmiş worktree'leri otomatik olarak temizler."
     unpushed_keeping: "⚠ Worktree'de push edilmemiş commit'ler var, korunuyor: {path}"
+    uncommitted_keeping: "⚠ Worktree'de commit edilmemiş değişiklikler var, korunuyor: {path}"
     clean_up_manually: "Elle temizlemek için: git worktree remove --force {path}"
     cleaned_up: "✓ Worktree temizlendi: {path}"
 display:
@@ -3641,7 +3653,7 @@ tips:
   t167: "Tehlikeli komut onayının 4 kademesi vardır: bir kez, oturum, her zaman (kalıcı izin listesi), reddet."
   t168: "Akıllı onay modu, güvenli komutları otomatik onaylamak ve tehlikeli olanları işaretlemek için bir LLM kullanır."
   t169: "SSRF koruması özel ağları, loopback, link-local ve bulut meta veri adreslerini engeller."
-  t170: "Tirith ön çalıştırma taraması, homograf URL sahteciliğini ve yorumlayıcıya boru (pipe) desenlerini tespit eder."
+  t170: "Oturum kimlikleri zaman damgasıyla başlar (20250305_091523_abcd); böylece ls ve jq içinde sıralama doğal olarak çalışır."
   t171: "MCP alt süreçleri filtrelenmiş bir ortam alır — yalnızca güvenli sistem değişkenleri aktarılır."
   t172: "Bağlam dosyaları (.hermes.md, AGENTS.md) yüklenmeden önce istem enjeksiyonuna karşı güvenlik taramasından geçer."
   t173: "config.yaml içindeki command_allowlist, belirli kabuk komutu desenlerini kalıcı olarak onaylar."
@@ -3671,7 +3683,7 @@ tips:
   t197: "Yörünge kaydı (--save-trajectories), model eğitimi için tam araç kullanım izlerini yakalar."
   t198: "Üç eklenti türü: genel (araçlar/kancalar), bellek sağlayıcıları ve bağlam motorları."
   t199: "hermes plugins install owner/repo, eklentileri doğrudan GitHub'dan kurar."
-  t200: "Harici bellek sağlayıcıları: Honcho, OpenViking, Mem0 dahili gelir; Hindsight ve diğerleri hermes plugins install ile kurulur."
+  t200: "Harici bellek sağlayıcıları: Honcho, Hindsight, Mem0, OpenViking ve diğerleri hermes plugins install ile kurulur."
   t201: "Eklenti kancaları arasında pre/post_tool_call, pre/post_llm_call ve çıktı normalleştirme için transform_terminal_output bulunur."
   t202: "İstem önbelleği (Anthropic), önbelleğe alınmış sistem istemi öneklerini yeniden kullanarak maliyetleri düşürür."
   t203: "Ajan oturum başlıklarını arka plan iş parçacığında otomatik oluşturur — gecikmeye sıfır etki."
@@ -3846,12 +3858,9 @@ tips:
   t372: "config.yaml içindeki image_gen.model, FAL modelini seçer: flux-2/klein, gpt-image-2, nano-banana-pro ve daha fazlası."
   t373: "image_gen.provider, görüntü üretimini varsayılan yerine bir eklenti (OpenAI Images, Codex, FAL) üzerinden yönlendirir."
   t374: "AUXILIARY_VISION_BASE_URL + AUXILIARY_VISION_API_KEY, görüntü analizini OpenAI uyumlu herhangi bir uç noktaya yönlendirir."
-  t375: "security.tirith_fail_open: false, tirith tarayıcısının kendisi hata verdiğinde Hermes'in komutları engellemesini sağlar."
-  t376: "TIRITH_FAIL_OPEN ortam değişkeni, tirith_fail_open yapılandırmasını geçersiz kılar — config.yaml'ı düzenlemeden hızlı bir anahtar."
+  t375: "API_SERVER_MODEL_NAME, /v1/models üzerindeki model adını özelleştirir — çok profilli Open WebUI kurulumları için şarttır."
+  t376: "Panel eklentileri /dashboard-plugins/<name>/ yolundan sunulur — dosyaları ~/.hermes/dashboard-plugins/ içine koyun."
   t377: "--source tool sohbetleri varsayılan olarak hermes sessions list çıktısında yer almaz — görmek için --source değerini açıkça belirtin."
-  t378: "Oturum kimlikleri zaman damgasıyla başlar (20250305_091523_abcd); böylece ls ve jq içinde sıralama doğal olarak çalışır."
-  t379: "API_SERVER_MODEL_NAME, /v1/models üzerindeki model adını özelleştirir — çok profilli Open WebUI kurulumları için şarttır."
-  t380: "Panel eklentileri /dashboard-plugins/<name>/ yolundan sunulur — dosyaları ~/.hermes/dashboard-plugins/ içine koyun."
   placeholder:
     p01: "Bir şey sorun veya komutlar için / yazın…"
     p02: "Bu klasördekileri özetle"

@@ -19,14 +19,73 @@ def _pc():
     return plugins_cmd
 
 
+_PENDING_DELETE_DIR = "plugin-pending-delete"
+
+
+def _pending_delete_root() -> Path:
+    """``<HERMES_HOME>/cache/plugin-pending-delete``: trees a running process still held at removal."""
+    from hermes_constants import get_hermes_home
+    return get_hermes_home() / "cache" / _PENDING_DELETE_DIR
+
+
+def sweep_pending_plugin_deletes() -> None:
+    """Delete what an earlier remove parked because another process held it; cheap when empty.
+    A ``<name>.path`` note names a stripped tree that could not even be moved out of ``plugins/``."""
+    root = _pending_delete_root()
+    if not root.is_dir():
+        return
+    for entry in root.iterdir():
+        if entry.suffix == ".path" and entry.is_file():
+            held = Path(entry.read_text(encoding="utf-8-sig").strip())
+            _pc().rmtree_readonly(held, ignore_errors=True)
+            if not held.exists():
+                entry.unlink(missing_ok=True)
+        else:
+            _pc().rmtree_readonly(entry, ignore_errors=True)
+
+
+def _discard_tree(tree: Path) -> None:
+    """Delete *tree*. On Windows a running gateway / plugin host that loaded the plugin keeps its
+    native modules mapped and its open files locked (WinError 5/32), and deleting stops at the first
+    one. The rest is then moved out of ``plugins/`` into the pending-delete area, so nothing loadable
+    stays behind, and the sweep at the next start finishes the job."""
+    try:
+        _pc().rmtree_readonly(tree)
+        return
+    except PermissionError:
+        if os.name != "nt" or not tree.exists():
+            raise
+    root = _pending_delete_root()
+    root.mkdir(parents=True, exist_ok=True)
+    parked = Path(tempfile.mkdtemp(prefix=f"{tree.name}-", dir=root)) / "plugin"
+    try:
+        os.replace(tree, parked)  # same volume (both under HERMES_HOME): a rename, allowed on mapped DLLs
+    except OSError:
+        # A held directory itself (a process's cwd, an open handle on it) cannot even be renamed. Strip
+        # its manifests so the remnant no longer loads, and leave the files to the next start.
+        for name in ("plugin.yaml", "plugin.yml", "plugin.json", "__init__.py"):
+            (tree / name).unlink(missing_ok=True)
+        (root / f"{tree.parent.name}-{tree.name}.path").write_text(str(tree), encoding="utf-8")
+
+
 def _remove_plugin_core(target: Path) -> None:
     """Remove one plugin and its metadata without splitting their state."""
     if target.name not in _pc()._read_install_metadata():
-        _pc().rmtree_readonly(target)
+        _discard_tree(target)
         return
     staging = Path(tempfile.mkdtemp(prefix=f".{target.name}.remove-", dir=target.parent))
     backup = staging / "plugin"
-    os.replace(target, backup)
+    try:
+        os.replace(target, backup)
+    except PermissionError:
+        _pc().rmtree_readonly(staging, ignore_errors=True)
+        if os.name != "nt":
+            raise
+        # Windows refuses to rename a directory another process holds open; record removal first
+        # (the plugin is uninstalled from this point), then discard the tree in place.
+        _pc()._update_install_record(target.name, lambda _current: None)
+        _discard_tree(target)
+        return
     try:
         _pc()._update_install_record(target.name, lambda _current: None)
     except Exception:
@@ -39,7 +98,7 @@ def _remove_plugin_core(target: Path) -> None:
             ) from restore_exc
         _pc().rmtree_readonly(staging, ignore_errors=True)
         raise
-    _pc().rmtree_readonly(staging)
+    _discard_tree(staging)
 
 
 def cmd_remove(name: str) -> None:
@@ -74,8 +133,7 @@ def _remove_user_plugin(plugins_dir: Path, name: str, target: Path) -> dict[str,
     entry = next((e for e in _pc()._discover_all_plugins() if Path(str(e[4])) == target), None)
     key = entry[5] if entry else target.name
     aliases = _pc()._plugin_aliases(key) | {target.name}
-    if _pc()._read_manifest(target).get("provides_tools"):
-        _pc()._toggle_plugin_toolset(key, enable=False)
+    _pc()._toggle_plugin_toolset(key, enable=False)
     _remove_plugin_core(target)
     return {"ok": True, "name": name, **_pc()._forget_plugin_config(aliases)}
 

@@ -18,12 +18,13 @@ import pytest
 from hermes_cli.release_channels import canonical_json
 from scripts.releases import channel_publish, handoff, r2
 from scripts.releases.channels import preview_identity
+from scripts.releases.versioning import tag_record
 from tests.ci.desktop_release_roles import (
     DOWNLOADABLE_DISPATCHES, admitted, channel_publisher, commit_summary, gate, native_builds, needs_of, stage_step,
     universal_assembler,
 )
 from tests.ci.test_desktop_release_tag_admission import _seed_repo, _git, _workflow
-from tests.scripts.test_release_r2 import r2_server  # noqa: F401
+from tests.scripts.test_release_r2 import r2_server
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -321,7 +322,7 @@ def test_real_publication_cas_and_manifest_summary(tmp_path, r2_server, staged_c
     else:
         tag = "v0.0.7+channel.20260922T012345Z.98765"
         assert _git("tag", "--list", tag, cwd=tmp_path / "clone") == tag
-        receipt = json.loads(_git("tag", "-l", tag, "--format=%(contents)", cwd=tmp_path / "clone"))
+        receipt = tag_record(_git("tag", "-l", tag, "--format=%(contents)", cwd=tmp_path / "clone"))
         assert receipt == {
             "schema": 1, "kind": "channel", "tag": tag, "version": request["version"],
             "commit": request["commit"], "runId": "98765", "runCreatedAt": "2026-09-22T01:23:45Z",
@@ -400,7 +401,7 @@ def test_disposable_controller_allocates_then_separate_admission(tmp_path):
     from tests.scripts.test_release_channels import object_server
     _origin, clone = _seed_repo(tmp_path)
     commit = _git("rev-parse", "HEAD", cwd=clone)
-    with object_server() as (url, objects, headers, requests, faults):
+    with object_server() as (url, objects, _headers, requests, _faults):
         # run_shell redirects only the R2 network endpoint; the controller,
         # permission CLI, pushed Git source and both workflow scripts run for real.
         from types import SimpleNamespace
@@ -456,7 +457,7 @@ def test_receiver_allocation_uses_official_identity_only_inside_scope(tmp_path):
     from scripts.releases.channel_releases import product_identity
     from scripts.releases.r2_scope import R2Scope
 
-    with object_server() as (url, objects, *_):
+    with object_server() as (url, _objects, *_):
         pub = publisher(url)
         with pytest.raises(ValueError, match="disposable"):
             allocate_receivers(pub, "a" * 40, "1.2.3", "a" * 40)

@@ -171,17 +171,16 @@ When you try to add an entry that would exceed the limit, the tool returns an er
 ```json
 {
   "success": false,
-  "error": "Memory at 2,100/2,200 chars. Adding this entry (250 chars) would exceed the limit. Consolidate now: use 'replace' to merge overlapping entries into shorter ones or 'remove' stale or less important entries (see current_entries below), then retry this add — all in this turn.",
+  "error": "Memory at 2,100/2,200 chars; adding this entry (250 chars) would exceed the limit by 153 chars. Retry as ONE 'operations' batch that removes or shortens (replace) stale entries from current_entries below to free at least 153 chars AND adds this entry — the limit is checked only on the batch result.",
   "current_entries": ["..."],
   "usage": "2,100/2,200"
 }
 ```
 
-The agent should then:
-1. Read the current entries (shown in the error response)
-2. Identify entries that can be removed or consolidated
-3. Use `replace` to merge related entries into shorter versions
-4. Then `add` the new entry
+The agent then reissues one `operations` batch that frees at least the stated number of
+characters (removes, or `replace`s with shorter versions) and adds the new entry; the limit
+is checked only on the batch's final result. A `replace`/`remove` whose `old_text` matches no
+entry fails the same way, with the entries it most resembles under `closest_entries`.
 
 **Best practice:** When memory is above 80% capacity (visible in the system prompt header), consolidate entries before adding new ones. For example, merge three separate "project uses X" entries into one comprehensive project description entry.
 
@@ -273,6 +272,7 @@ memory:
   memory_char_limit: 2200   # ~800 tokens
   user_char_limit: 1375     # ~500 tokens
   write_approval: false     # false = write freely (default) | true = require approval
+  prefetch_spill_enabled: false  # external recall stays intact unless explicitly enabled
 ```
 
 Setting **both** `memory_enabled` and `user_profile_enabled` to `false` turns the
@@ -289,6 +289,24 @@ it backs the profile store — but the system prompt swaps the full memory
 guidance for a narrower profile-only block. The tool schema advertises only the
 `user` target, and direct or staged writes to disabled `MEMORY.md` are rejected.
 The inverse configuration advertises only `memory` and rejects `USER.md` writes.
+
+### External recall size
+
+External memory providers return their full prefetched context by default,
+up to a safety ceiling of 10× `hooks.output_spill.max_chars` (at least 100,000
+characters); recall above that still spills so a runaway provider can't overflow
+the context window.
+`memory.prefetch_spill_enabled: true` opts the active profile into replacing
+oversized recall with a head/tail preview and a file path. This can reduce
+replayed context, but the relevance-ranked middle is no longer immediately
+visible to the model. Prefer your provider's own recall budget when available.
+
+The opt-in uses the shared `hooks.output_spill` threshold, preview lengths, and
+directory; `hooks.output_spill.enabled: false` still disables it. Normal plugin
+hooks continue to spill by default, independently of the memory opt-in. Settings
+are captured at provider registration: restart Hermes after changing them.
+See [oversized prefetch results](../../developer-guide/memory-provider-plugin.md#oversized-prefetch-results)
+for the configuration details.
 
 ## Controlling memory writes (`write_approval`)
 
@@ -507,7 +525,7 @@ Full details in [Gating agent skill writes](./skills.md#gating-agent-skill-write
 
 ## External Memory Providers
 
-For deeper, persistent memory that goes beyond MEMORY.md and USER.md, Hermes ships with 7 external memory provider plugins — Honcho, OpenViking, Mem0, Holographic, RetainDB, ByteRover, and Supermemory — and more, such as Hindsight, are available from the [plugin catalog](plugins.md) via `hermes plugins install <name>`.
+For deeper, persistent memory that goes beyond MEMORY.md and USER.md, Hermes ships with 3 external memory provider plugins — Holographic, RetainDB and ByteRover — and more, such as Honcho, Hindsight, Supermemory, Mem0 and OpenViking, are available from the [plugin catalog](plugins.md) via `hermes plugins install <name>`.
 
 External providers run **alongside** built-in memory (never replacing it) and add capabilities like knowledge graphs, semantic search, automatic fact extraction, and cross-session user modeling.
 

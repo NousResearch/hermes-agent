@@ -5,6 +5,8 @@ onto server.py, so they must not collide with its globals.
 """
 
 import contextlib
+import logging
+import sqlite3
 
 from .method_ctx import HandlerRegistry, bind_module
 
@@ -145,6 +147,17 @@ def _resurrect_recoverable_canonical(db, profile_path, session_id):
         return False
 
 
+def _live_count_field(db, session_id) -> dict:
+    """``{"live_message_count": n}`` sized like a stored-transcript read, else ``{}`` (older stores).
+
+    The denormalized ``message_count`` also counts folded rows (orphaned compaction marks, full
+    rewinds, model-only rows), which once made the roster wait for history no reader serves."""
+    try:
+        return {"live_message_count": db.display_message_count(str(session_id))}
+    except sqlite3.Error:
+        return {}
+
+
 def _canonical_session_row(db, profile_path):
     """Summary of the profile's canonical "Bot Chat" row (identity is the NAME), or None.
     Lineages via ``get_compression_tip`` (NOT the resume walker's unmarked-child fallback);
@@ -177,7 +190,7 @@ def _canonical_session_row(db, profile_path):
             "title": tip_row.get("title") or "", "preview": _latest_message_preview(db, tip),
             "started_at": tip_row.get("started_at") or started,
             "last_active": tip_row.get("last_activity_at") or tip_row.get("started_at") or started,
-            "message_count": tip_row.get("message_count") or 0}
+            "message_count": tip_row.get("message_count") or 0, **_live_count_field(db, tip)}
     except Exception:
         return None
 
@@ -206,7 +219,8 @@ def _latest_profile_session_rows(db):
                 human = {"id": s["id"], "title": title,
                          "preview": _latest_message_preview(db, s["id"]) or s.get("preview") or "",
                          "started_at": s.get("started_at") or 0, "last_active": last_active,
-                         "message_count": s.get("message_count") or 0}
+                         "message_count": s.get("message_count") or 0,
+                         **_live_count_field(db, s["id"])}
             if human is not None and worker is not None:
                 break
         return human, worker
@@ -276,14 +290,16 @@ def _(rid, params: dict) -> dict:
         row = {"name": p.name, "path": str(p.path), "is_default": bool(p.is_default), "model": p.model,
                "provider": p.provider, "description": p.description or "",
                "display_name": p.display_name or "", "skill_count": p.skill_count or 0,
-               "previous_names": list(p.previous_names or []), "role": p.role}
+               "previous_names": list(p.previous_names or [])}
         if include_sessions:
             _profile_session_fields(row, p.path)
         _profile_ui_meta_fields(row, Path(str(p.path)))
         out.append(row)
     # bot_mode_protocol: this backend injects the Bot Mode teammate-messaging protocol into every
-    # session, so clients must not append it to SOUL.md.
-    return _ok(rid, {"profiles": out, "bot_mode_protocol": True})
+    # session, so clients must not append it to SOUL.md. install_id (same value as /api/status)
+    # lets a multi-connection client prove WHICH machine answered a routed list.
+    from hermes_cli.install_identity import get_install_id
+    return _ok(rid, {"profiles": out, "bot_mode_protocol": True, "install_id": _try(lambda: get_install_id() or "", "")})
 
 
 @method("profiles.create")
@@ -447,12 +463,6 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"found": False})
 
 
-@_profile_handler("profiles.remember_onboarding", 5067)
-def _(rid, params: dict) -> dict:
-    from tui_gateway.onboarding_personalization import remember_onboarding
-    return _ok(rid, remember_onboarding(params.get("answers")))
-
-
 def _mirror_secret(path, launch_home, name: str, wanted) -> bool:
     """Copy the launch ``name`` file into the profile (0600) when it exists and ``wanted(src, dst)``."""
     src, dst = launch_home / name, path / name
@@ -474,8 +484,10 @@ def _mirror_voice_sections(path) -> bool:
     """Copy stt/tts/voice sections from the launch profile (a fresh profile has only ``model``,
     so voice fell back to defaults); True if written."""
     try:
-        from hermes_cli.config import load_config_readonly, read_user_config_raw, save_config
-        src_cfg = load_config_readonly() or {}
+        from hermes_cli.config import read_user_config_raw, save_config
+        # Launch file RAW too: the loaded config has ${VAR} refs expanded, and the new profile
+        # must get the ref (resolved against its own .env), never the launch profile's secret.
+        src_cfg = read_user_config_raw()
         sections = {k: src_cfg[k] for k in ("stt", "tts", "voice") if src_cfg.get(k)}
         if not sections:
             return False
@@ -509,7 +521,8 @@ def _inherit_launch_model(path) -> bool:
     # A custom `providers:` gateway travels with the model it backs (same seed as the CLI path). It is
     # written BEFORE the pin: the pin validates the pick inside the new profile, and an empty profile
     # rejects a provider it has not been told about ("Unknown provider").
-    custom = _lazy("hermes_cli.profiles", "launch_model_seed")(launch_cfg).get("providers")
+    # Seeded from the RAW launch file so a ${VAR} api_key travels as the ref, not its value.
+    custom = _lazy("hermes_cli.profiles", "launch_model_seed")(read_user_config_raw()).get("providers")
     if custom:
         from hermes_cli.config import load_config, save_config
         with _hermes_home_scope(path):
@@ -572,6 +585,11 @@ def _describe_toolsets(cfg):
     return toolsets_out, pinned_set
 
 
+def _bots_title(ui_meta: dict):
+    bots = ui_meta.get("hermes-bots")
+    return bots.get("title") if isinstance(bots, dict) else None
+
+
 def _configure_ui_meta(profile_dir, params, applied) -> None:
     """Merge ``params["ui_meta"]`` key-wise into profile.yaml (None deletes). 64KB cap (rides
     every roster paint). ``ui_meta_expected_revisions``: per-key CAS, any mismatch rejects the
@@ -599,6 +617,7 @@ def _configure_ui_meta(profile_dir, params, applied) -> None:
                 return
             current = existing.get("ui_meta")
             current = current if isinstance(current, dict) else {}
+            old_title = _bots_title(current)
             for key, value in incoming.items():
                 if value is None:
                     current.pop(key, None)
@@ -614,6 +633,13 @@ def _configure_ui_meta(profile_dir, params, applied) -> None:
             atomic_yaml_write(profile_dir / "profile.yaml", existing, sort_keys=False)
             applied["ui_meta"] = True
             applied["ui_meta_revisions"] = {key: revisions[key] for key in incoming}
+            if _bots_title(current) != old_title:
+                # A client writing another machine's bot title lands here; the Desktop's
+                # `[bot-meta win=…]` desktop.log line at the same time names the window.
+                logging.getLogger(__name__).info(
+                    "ui_meta hermes-bots title for profile %s: %r -> %r (revision %s)",
+                    params.get("name") or profile_dir.name, old_title, _bots_title(current),
+                    revisions.get("hermes-bots"))
     except Exception:
         applied["ui_meta"] = False
 
@@ -689,7 +715,8 @@ def _configure_cfg_sections(profile_dir, params, applied) -> None:
     want_mcp = isinstance(params.get("enabled_mcp_servers"), list)
     launch_mcp = {}
     if want_mcp:  # launch catalog read BEFORE the home override flips config resolution
-        load_launch = _lazy("hermes_cli.config", "load_config_readonly")
+        # RAW: a copied entry keeps its ${VAR} refs instead of the launch profile's expanded secrets.
+        load_launch = _lazy("hermes_cli.config", "read_user_config_raw")
         launch_mcp = _try(lambda: (load_launch() or {}).get("mcp_servers"), {})
         launch_mcp = launch_mcp if isinstance(launch_mcp, dict) else {}
     with _hermes_home_scope(profile_dir):

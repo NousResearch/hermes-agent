@@ -62,8 +62,29 @@ it('restores app localizations from the filtered framework without copying local
     await configuredHook(ctx)
     expect((await readdir(resources)).filter(name => name.endsWith('.lproj')).sort())
       .toEqual(['en_GB.lproj', 'nb.lproj'])
+    expect(await readdir(resources)).toContain('icon.icns')
     expect(await readdir(path.join(resources, 'nb.lproj'))).toEqual([])
     expect(await readFile(path.join(framework, 'nb.lproj', 'locale.pak'), 'utf8')).toBe('untouched locale data')
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+it('puts the full-resolution .icns back after electron-builder packaged the layered icon', async () => {
+  // With `mac.icon` pointing at the Icon Composer package, electron-builder
+  // bundles actool's 256px fallback as icon.icns; macOS <= 15 shows that file.
+  const root = await mkdtemp(path.join(os.tmpdir(), 'hermes-mac-icon-'))
+  try {
+    const ctx = context(root)
+    await seedPackagedMain(ctx)
+    const resources = ctx.packager.getResourcesDir(root)
+    await mkdir(ctx.packager.getMacOsElectronFrameworkResourcesDir(root), { recursive: true })
+    await mkdir(resources, { recursive: true })
+    await writeFile(path.join(resources, 'icon.icns'), 'actool fallback')
+    await configuredHook(ctx)
+    const restored = await readFile(path.join(resources, 'icon.icns'))
+    expect(restored.equals(await readFile(path.join(desktopRoot, 'assets', 'icon.icns')))).toBe(true)
+    expect(restored.subarray(0, 4).toString('latin1')).toBe('icns')
   } finally {
     await rm(root, { recursive: true, force: true })
   }
@@ -83,6 +104,7 @@ it('leaves Linux alone and reports a missing framework without failing packaging
     await configuredHook(ctx)
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('macOS locale markers were not restored'))
     expect((await readdir(root)).sort()).toEqual(['Hermes Preview.app', 'resources'])
+    expect(await readdir(ctx.packager.getResourcesDir(root))).toContain('icon.icns')
   } finally {
     warn.mockRestore()
     await rm(root, { recursive: true, force: true })

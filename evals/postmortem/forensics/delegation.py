@@ -27,16 +27,16 @@ _TRUNC = re.compile(r"\[SUMMARY TRUNCATED\]|middle omitted|trimmed to protect th
 def main(argv=None) -> int:
     run = Run.from_args(argv, (__doc__ or "").split("\n\n")[0])
     parent_of = {s: run.sessions[s].get("parent_session_id") for s in run.in_run}
-    children_of: Dict[str, List[str]] = collections.defaultdict(list)
+    children_of: dict[str, list[str]] = collections.defaultdict(list)
     for s, p in parent_of.items():
         if p:
             children_of[p].append(s)
     orchestrators = [s for s in run.in_run if children_of.get(s)]
 
-    timeouts_by_sess: Dict[str, int] = collections.Counter()
+    timeouts_by_sess: dict[str, int] = collections.Counter()
     delegate_results = delegate_ok = 0
     sleep_seconds_after_timeout = 0
-    first_timeout_ts: Dict[str, float] = {}
+    first_timeout_ts: dict[str, float] = {}
     truncated_summaries = total_summaries = 0
     for sid in orchestrators:
         for m in run.messages(sid, "role, tool_name, content, tool_calls, timestamp"):
@@ -67,11 +67,11 @@ def main(argv=None) -> int:
     lifetime_cache_write = sum(float(run.sessions[s].get("cache_write_tokens") or 0) for s in timeout_sessions) * run.price_per_token["cache_write_tokens"]
 
     # batch-join delivery delay: children of one parent dispatched within 60 s of each other = one batch
-    withheld: Dict[int, List[float]] = collections.defaultdict(list)
+    withheld: dict[int, list[float]] = collections.defaultdict(list)
     for p, kids in children_of.items():
         kids = sorted(kids, key=lambda k: float(run.sessions[k].get("started_at") or 0))
-        batch: List[str] = []
-        def flush(batch: List[str]) -> None:
+        batch: list[str] = []
+        def flush(batch: list[str]) -> None:
             if len(batch) < 2:
                 return
             ends = [float(run.sessions[k].get("ended_at") or 0) for k in batch]
@@ -83,7 +83,7 @@ def main(argv=None) -> int:
             batch.append(k)
         flush(batch)
 
-    report: Dict[str, Any] = {
+    report: dict[str, Any] = {
         "observed": {
             "orchestrators": len(orchestrators),
             "delegate_task_results": delegate_results,

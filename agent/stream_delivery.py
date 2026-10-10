@@ -121,14 +121,14 @@ class StreamDeliveryMixin:
         visible, streamed = self._interim_visible_and_streamed(content)
         return bool(visible) and visible == streamed
 
-    def _extract_codex_interim_visible_parts(self, assistant_msg: Dict[str, Any]) -> List[str]:
+    def _extract_codex_interim_visible_parts(self, assistant_msg: dict[str, Any]) -> list[str]:
         """Visible Codex commentary (``phase=commentary`` items), one string per message item.
 
         ``phase=analysis`` stays hidden (scratchpad); with ``display.show_commentary=false``
         commentary stays on the reasoning channel.
         """
         items = assistant_msg.get("codex_message_items") if getattr(self, "show_commentary", True) else None
-        messages: List[str] = []
+        messages: list[str] = []
         for item in items if isinstance(items, list) else ():
             if not isinstance(item, dict) or item.get("type") != "message":
                 continue
@@ -147,13 +147,13 @@ class StreamDeliveryMixin:
 
     def _visible_commentary(self, text: str) -> str:
         """Think-stripped, redacted commentary text ("" when nothing visible remains)."""
-        return visible_commentary(text, strip_thinking=getattr(self, "_strip_think_blocks"))
+        return visible_commentary(text, strip_thinking=self._strip_think_blocks)
 
-    def _extract_codex_interim_visible_text(self, assistant_msg: Dict[str, Any]) -> str:
+    def _extract_codex_interim_visible_text(self, assistant_msg: dict[str, Any]) -> str:
         """All visible Codex commentary joined, for comparison/fallback."""
         return "\n\n".join(self._extract_codex_interim_visible_parts(assistant_msg)).strip()
 
-    def _interim_assistant_visible_text(self, assistant_msg: Dict[str, Any]) -> str:
+    def _interim_assistant_visible_text(self, assistant_msg: dict[str, Any]) -> str:
         """Assistant text eligible for interim delivery: structured Codex commentary first — a response can
         hold commentary AND a partial final answer while tools are pending, and treating content as
         progress leaks the answer early — else top-level content (may be a parts list)."""
@@ -173,7 +173,7 @@ class StreamDeliveryMixin:
                 self._delivered_interim_texts = set()
             self._delivered_interim_texts.add(normalized)
 
-    def _deliver_interim(self, visible: str, *, already_streamed: bool, record: List[str]) -> None:
+    def _deliver_interim(self, visible: str, *, already_streamed: bool, record: list[str]) -> None:
         """Hand ``visible`` to ``interim_assistant_callback`` and mark ``record`` delivered; swallows callback errors."""
         cb = getattr(self, "interim_assistant_callback", None)
         if cb is None:
@@ -194,7 +194,7 @@ class StreamDeliveryMixin:
             return
         self._deliver_interim(visible, already_streamed=False, record=[visible])
 
-    def _emit_interim_assistant_message(self, assistant_msg: Dict[str, Any]) -> None:
+    def _emit_interim_assistant_message(self, assistant_msg: dict[str, Any]) -> None:
         """Surface a real mid-turn assistant commentary message to the UI layer. Does NOT set
         ``_response_was_previewed`` ("the final response was shown") — the CLI would then suppress a
         different final summary."""
@@ -279,7 +279,7 @@ class StreamDeliveryMixin:
                 where, _n,
             )
 
-    def _stream_hook_base_payload(self) -> Dict[str, Any]:
+    def _stream_hook_base_payload(self) -> dict[str, Any]:
         return {
             "turn_id": getattr(self, "_current_turn_id", "") or "",
             "iteration": int(getattr(self, "_api_call_count", 0) or 0),

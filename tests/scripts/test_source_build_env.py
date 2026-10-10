@@ -99,7 +99,7 @@ console.log(JSON.stringify(process.env));
         # -File, not -Command: Windows PowerShell 5.1 reads a multi-line -Command argument as
         # far as the first line break and exits 0 having run only the preference line.
         script = tmp_path / "probe.ps1"
-        script.write_text('''$ErrorActionPreference = 'Stop'
+        script.write_text(r'''$ErrorActionPreference = 'Stop'
 [Console]::Error.WriteLine("probe start: $($PSVersionTable.PSVersion) assets=$env:ASSETS python=$env:PROBE_PYTHON")
 trap { [Console]::Error.WriteLine("probe trap: $_"); [Console]::Error.WriteLine($_.ScriptStackTrace); exit 97 }
 . (Join-Path $env:ASSETS 'source-build-env.ps1')

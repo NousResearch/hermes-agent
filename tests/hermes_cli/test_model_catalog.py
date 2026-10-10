@@ -256,7 +256,7 @@ class TestDefaultModelFromCache:
     def test_shipped_manifest_labels_glm52_default(self, isolated_home):
         """Contract with the in-repo manifest: both provider blocks label the
         same default entry the code constant points at."""
-        import hermes_cli.model_catalog as model_catalog
+        from hermes_cli import model_catalog
         from hermes_cli.models import PREFERRED_SILENT_DEFAULT_MODEL
 
         repo_root = Path(model_catalog.__file__).resolve().parent.parent
@@ -446,8 +446,9 @@ class TestIntegrationWithModelsModule:
         full_row = _nous(full)
         assert full_row is not None and full_row["models"] == expected
 
+        # The Nous row is already curated, so an int cap never trims it (its free tier sits last).
         one_row = _nous(one)
-        assert one_row is not None and one_row["models"] == expected[:1]
+        assert one_row is not None and one_row["models"] == expected
 
         zero_row = _nous(zero)
         # 0 means an empty model list — NOT unlimited. total_models still real.
@@ -538,7 +539,6 @@ class TestSwrRefreshProfileScope:
             with seen:
                 refreshed_paths.append(str(model_catalog._cache_path()))
             release.wait(5)
-            return None
 
         set_multiplex_active(True)
         try:
@@ -599,3 +599,27 @@ class TestManifestMatchesInRepoLists:
             "Run: python scripts/build_model_catalog.py && "
             "git add website/static/api/model-catalog.json"
         )
+
+    def test_inclusion_ling_free_is_curated_and_published(self):
+        """inclusionai/ling-3.0-flash:free must reach the picker from BOTH sources (#73686).
+
+        The model works when named explicitly via ``hermes config set model.default`` but was
+        absent from the curated fallback list, so the runtime fetcher's stale-while-revalidate
+        and offline floors never offered it in the Desktop model picker. The static list is
+        the floor; the published manifest is what fresh installs fetch — both must carry it.
+        """
+        from hermes_cli.models_catalog_static import OPENROUTER_MODELS
+
+        curated_ids = [mid for mid, _desc in OPENROUTER_MODELS]
+        assert "inclusionai/ling-3.0-flash:free" in curated_ids
+
+        repo_root = Path(__file__).resolve().parents[2]
+        manifest_path = repo_root / "website" / "static" / "api" / "model-catalog.json"
+        if not manifest_path.exists():
+            pytest.skip(f"manifest missing at {manifest_path}")
+        with open(manifest_path, encoding="utf-8") as fh:
+            manifest_ids = [
+                entry["id"]
+                for entry in json.load(fh)["providers"]["openrouter"]["models"]
+            ]
+        assert "inclusionai/ling-3.0-flash:free" in manifest_ids

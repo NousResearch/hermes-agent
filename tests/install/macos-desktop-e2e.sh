@@ -258,11 +258,12 @@ phase_install() {
       const app = apps.objectAtIndex(i);
       if (app.executableURL && ObjC.unwrap(app.executableURL.path) === args[0]) {
         if (!app.terminate) throw new Error("normal Quit refused");
-        // A historical app (v2026.7.1) that the bootstrap launched moments ago
-        // was seen not to finish quitting within 30s while its backend was
-        // still starting. Allow longer, but the quit must stay the normal one.
+        // AppKit updates `terminated` only from the run loop, and delay()
+        // does not run it, so poll by spinning the run loop instead.
         const deadline = Date.now() + 120000;
-        while (!app.terminated && Date.now() < deadline) delay(0.2);
+        while (!app.terminated && Date.now() < deadline) {
+          $.NSRunLoop.currentRunLoop.runUntilDate($.NSDate.dateWithTimeIntervalSinceNow(0.2));
+        }
         if (!app.terminated) throw new Error("installed app did not quit normally");
       }
     }

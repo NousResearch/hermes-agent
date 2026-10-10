@@ -48,7 +48,7 @@ def cache_age_days(now: float | None = None) -> float | None:
 
 
 def _now_iso() -> str:
-    return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return _dt.datetime.now(_dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _min_future_recheck(ledger: dict, at: str) -> str | None:

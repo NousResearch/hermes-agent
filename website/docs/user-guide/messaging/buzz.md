@@ -109,6 +109,8 @@ gateway:
 
 Replies are threaded by default: the agent's answer (and any enabled progress/status messages) is anchored to the message that triggered it. Anchoring is NIP-10 aware — when the triggering message was already **inside** a thread, the agent replies to that thread's *root*, so the answer joins the existing thread instead of nesting a new one-message sub-thread under every turn.
 
+Each new channel post that reaches the agent starts a separate session when replies are threaded. Follow-ups in that thread retain the starter's context; other channel posts do not share its transcript. Existing group/thread per-user session settings still apply. Top-level DMs keep their shared conversation session.
+
 To post replies flat at the channel level instead, set either of these (they are equivalent; `reply_in_thread` matches the key Slack uses):
 
 ```yaml
@@ -119,6 +121,8 @@ gateway:
       extra:
         reply_in_thread: false    # Slack-style key; env: BUZZ_REPLY_IN_THREAD
 ```
+
+With this opt-out, top-level channel posts keep the existing shared session routing instead of starting a session per post. Messages already inside a thread still use their existing thread-root session.
 
 The opt-out applies to **all** send paths — final answers, streamed updates, interim commentary, tool-progress bubbles, and out-of-process cron delivery (`deliver=buzz`).
 

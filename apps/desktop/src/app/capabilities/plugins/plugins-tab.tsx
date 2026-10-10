@@ -9,12 +9,14 @@ import {
   useState
 } from 'react'
 
+import { $apiRequestScope } from '@/api/client'
 import { getToolsets, setToolsetEnabled } from '@/api/toolsets'
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Switch } from '@/components/ui/switch'
 import { Tip } from '@/components/ui/tooltip'
+import { type PluginSettingsScope, PluginSettingsSlot } from '@/contrib/plugin-settings'
 import { $pluginRecords, enablePackageDesktopHalf, type PluginRecord, setPluginEnabled } from '@/contrib/plugins-store'
 import { useContributions } from '@/contrib/react/use-contributions'
 import { discoverRuntimePlugins, uninstallDiskPlugin } from '@/contrib/runtime-loader'
@@ -39,7 +41,6 @@ import {
   isDesktopRelevantPlugin,
   loadAgentPlugins,
   removeAgentPlugin,
-  toggleAgentPlugin,
   updateAgentPlugin
 } from '@/store/agent-plugins'
 import { confirm } from '@/store/confirm'
@@ -47,6 +48,7 @@ import { notify, notifyError } from '@/store/notifications'
 import { $paneHeightOverride, setPaneHeightOverride } from '@/store/panes'
 import { openCatalogPluginInstall } from '@/store/plugin-catalog-install'
 import { openPluginInstallRequest } from '@/store/plugin-install-request'
+import { $activeGatewayProfile } from '@/store/profile'
 import { $connection } from '@/store/session'
 
 import { PanelEmpty } from '../../overlays/panel'
@@ -54,6 +56,7 @@ import { Pill } from '../../settings/primitives'
 import { useDeepLinkHighlight } from '../../settings/use-deep-link-highlight'
 import { TOOLSETS_QUERY_KEY } from '../toolsets/toolsets-data'
 
+import { AgentPluginToggle } from './agent-plugin-toggle'
 import { mergePluginPackages, type PackageKind, type PluginPackage } from './plugin-packages'
 
 // The REAL Plugin Catalog page (docs site) embedded as a one-click picker —
@@ -241,20 +244,22 @@ function Dash() {
 function PackageRow({
   pkg,
   scope,
+  settingsScope,
   profile,
   scopeLabel,
   busy,
-  onAgentToggle,
+  actionsBusy,
   onAgentUpdate,
   onAgentRemove,
   onDesktopRemove
 }: {
   pkg: PluginPackage
   scope: null | string
+  settingsScope: PluginSettingsScope | null
   profile: ProfileScope
   scopeLabel: string
   busy: boolean
-  onAgentToggle: (row: AgentPluginRow, enable: boolean) => void
+  actionsBusy: boolean
   onAgentUpdate: (row: AgentPluginRow) => void
   onAgentRemove: (row: AgentPluginRow) => void
   onDesktopRemove: (record: PluginRecord) => void
@@ -391,6 +396,9 @@ function PackageRow({
                 </div>
               ) : null
             )}
+            {settingsScope && desktop?.status === 'loaded' && (
+              <PluginSettingsSlot pluginId={desktop.id} scope={settingsScope} />
+            )}
           </div>
           {/* Fixed slot so the switch column stays straight whether or not
             this row has a folder to reveal (bundled plugins have none). */}
@@ -479,7 +487,7 @@ function PackageRow({
               {agent.update_available && (
                 <Button
                   className="h-5 px-1.5 text-[0.65rem]"
-                  disabled={busy}
+                  disabled={actionsBusy}
                   onClick={() => onAgentUpdate(agent)}
                   size="xs"
                   variant="outline"
@@ -489,11 +497,18 @@ function PackageRow({
               )}
               {busy && <Loader2 className="size-3.5 animate-spin text-(--ui-text-tertiary)" />}
               {agentToggleable ? (
-                <Switch
-                  aria-label={`${p.halfAgent}: ${pkg.name}`}
-                  checked={agentOn}
-                  disabled={busy}
-                  onCheckedChange={on => onAgentToggle(agent, on)}
+                <AgentPluginToggle
+                  busy={actionsBusy}
+                  label={`${p.halfAgent}: ${pkg.name}`}
+                  onEnabled={() => {
+                    const half = desktop?.packageName
+
+                    if (half) {
+                      void enablePackageDesktopHalf(half, { keepUserChoice: true })
+                    }
+                  }}
+                  profile={scope}
+                  row={agent}
                 />
               ) : (
                 <Tip label={p.legacyBackend}>
@@ -552,8 +567,21 @@ export const PluginsTab = memo(function PluginsTab({
   const status = useStore($agentPluginsStatus)
   const error = useStore($agentPluginsError)
   const busyKey = useStore($agentPluginBusy)
+  const activeProfile = useStore($activeGatewayProfile)
 
   const scope = profileParam(profile)
+
+  // Subscribe to the transport's actual tag; never infer a local pin from a
+  // selector label or roster, or rely on another atom's notification timing.
+  const taggedConnection = useStore($apiRequestScope).connectionId
+
+  const settingsScope =
+    profile && typeof profile === 'object' && profile.connectionId?.trim() && profile.profile?.trim()
+      ? { connectionId: profile.connectionId, profile: profile.profile }
+      : typeof profile === 'string' && profile.trim() && taggedConnection?.trim()
+        ? { connectionId: taggedConnection, profile }
+        : null
+
   const label = scopeLabel ?? scope ?? t.skills.plugins.defaultProfile
 
   useEffect(() => {
@@ -728,8 +756,9 @@ export const PluginsTab = memo(function PluginsTab({
             </div>
             {packages.map(pkg => (
               <PackageRow
+                actionsBusy={busyKey !== null}
                 busy={pkg.agent ? agentBusy(pkg.agent) : false}
-                key={pkg.key}
+                key={`${scope ?? activeProfile}:${pkg.key}`}
                 onAgentRemove={row => {
                   void confirm({
                     confirmLabel: p.uninstall,
@@ -745,23 +774,6 @@ export const PluginsTab = memo(function PluginsTab({
                       notify({ kind: 'success', message: p.uninstalled(row.name) })
                       // Prunes the app-level desktop half whose source package just went away.
                       void rescanAll(requestGateway, scope)
-                    }
-                  })
-                }}
-                onAgentToggle={(row, enable) => {
-                  if (!row.key) {
-                    return
-                  }
-
-                  void toggleAgentPlugin(requestGateway, row.key, enable, p.toggleFailed(row.name), scope).then(ok => {
-                    // Turning a unified package on turns its desktop half on too
-                    // (unless the user switched that half off on purpose).
-                    // Off stays per half: the desktop half is app-wide, and
-                    // another profile may still run the agent half.
-                    const half = pkg.desktop?.packageName
-
-                    if (ok && enable && half) {
-                      void enablePackageDesktopHalf(half, { keepUserChoice: true })
                     }
                   })
                 }}
@@ -819,6 +831,7 @@ export const PluginsTab = memo(function PluginsTab({
                 profile={profile}
                 scope={scope}
                 scopeLabel={label}
+                settingsScope={settingsScope}
               />
             ))}
           </div>

@@ -189,6 +189,15 @@ class ComputerUseProvider(ProviderBase):
         """A fresh, unstarted backend for one Hermes session (the tool calls ``start()``/``stop()``).
         ``permission_mode`` is ``standard`` | ``bounded`` | ``unrestricted`` (approval bypass active)."""
 
+    def create_execution_backend(self, *, permission_mode: str, execution_context) -> ComputerUseBackend:
+        """Opt-in factory for a validated session-owned launch. Legacy providers fail closed.
+
+        The returned backend must retain and enforce the supplied execution context.
+        Ordinary sessions continue to use ``create_backend`` without new arguments.
+        """
+        from hermes_cli.session_execution import SessionExecutionError
+        raise SessionExecutionError("selected computer-use provider does not support session execution contexts")
+
     def is_available(self) -> bool:
         """Usable on this host right now (the tool's ``check_fn``). Cheap: no network, no spawning."""
         return True

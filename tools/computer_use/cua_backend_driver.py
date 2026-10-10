@@ -34,10 +34,11 @@ def _cb():
     from tools.computer_use import cua_backend
     return cua_backend
 
-def _driver_json(driver_cmd: str, *args: str, timeout: float) -> Optional[dict[str, Any]]:
+def _driver_json(driver_cmd: str, *args: str, timeout: float, execution_context=None) -> Optional[dict[str, Any]]:
     """Run a driver verb and parse its stdout as a JSON object; None on spawn failure, empty stdout (older drivers
     print usage to stderr), unparseable or non-object output, or a non-zero exit."""
-    proc = _cb()._run_driver(driver_cmd, *args, timeout=timeout, swallow=Exception)
+    proc = _cb()._run_driver(driver_cmd, *args, timeout=timeout, swallow=Exception,
+                            **({"execution_context": execution_context} if execution_context else {}))
     out = (proc.stdout or "").strip() if proc is not None else ""
     return None if proc is None or not out or proc.returncode != 0 else _json_object(out)
 
@@ -92,8 +93,14 @@ def cua_driver_install_hint() -> str:
     return ("cua-driver is not installed. Install the pinned driver with:\n  hermes computer-use install\n"
             "Or run `hermes tools` and enable the Computer Use toolset to install it automatically.")
 
-def _mcp_args_with_overlay_flag(args: list[str], driver_cmd: str = _CUA_DRIVER_DEFAULT_CMD) -> list[str]:
+def _mcp_args_with_overlay_flag(args: list[str], driver_cmd: str = _CUA_DRIVER_DEFAULT_CMD, *, execution_context=None) -> list[str]:
     """Return *args* with ``--no-overlay`` appended when configured and supported."""
+    if execution_context is not None:
+        launch = execution_context.context.computer_use
+        no_overlay = launch.no_overlay if launch and launch.no_overlay is not None else _cb()._cua_no_overlay()
+        # Context-selected binaries pass the runtime contract; pass explicit policy
+        # without falling back to a process-global cached probe/driver.
+        return [*args, "--no-overlay"] if no_overlay else list(args)
     on = _cb()._cua_no_overlay() and _cua_driver_supports_no_overlay(driver_cmd)
     return [*args, "--no-overlay"] if on else list(args)
 
@@ -107,7 +114,7 @@ def _cua_driver_supports_no_overlay(driver_cmd: str) -> bool:
     except Exception:
         return False
 
-def _resolve_mcp_invocation(driver_cmd: str, *, timeout: float = 6.0) -> tuple[str, list[str]]:
+def _resolve_mcp_invocation(driver_cmd: str, *, timeout: float = 6.0, execution_context=None) -> tuple[str, list[str]]:
     """``(command, args)`` that spawn cua-driver's stdio MCP server, asked of the driver itself via ``cua-driver
     manifest`` (``mcp_invocation``) so a subcommand rename keeps working. Falls back to ``(driver_cmd, ["mcp"])``
     on older drivers or any discovery failure — the wrapper must not refuse to start over a failed discovery hop.
@@ -122,7 +129,8 @@ def _resolve_mcp_invocation(driver_cmd: str, *, timeout: float = 6.0) -> tuple[s
     indefinitely when idle (#28152, #47032). Older drivers that don't recognise the flag will reject it;
     callers should fall back to the no-overlay invocation on spawn failure.
     """
-    manifest = _driver_json(driver_cmd, "manifest", timeout=timeout) or {}
+    manifest = _driver_json(driver_cmd, "manifest", timeout=timeout,
+                            **({"execution_context": execution_context} if execution_context else {})) or {}
     invocation = manifest.get("mcp_invocation")
     args = _valid_mcp_args(invocation)
     command = invocation.get("command") if args is not None and isinstance(invocation, dict) else None
@@ -133,6 +141,10 @@ def _resolve_mcp_invocation(driver_cmd: str, *, timeout: float = 6.0) -> tuple[s
     # not the system one.
     command = _wsl_windows_path_to_posix(command) if isinstance(command, str) and command else ""
     command = command if command and _has_path_separator(command) else driver_cmd
+    if execution_context is not None:
+        # Explicit selection is authoritative; don't execute a manifest-selected stranger.
+        command = driver_cmd
+        return command, _mcp_args_with_overlay_flag(args, driver_cmd=command, execution_context=execution_context)
     return command, _mcp_args_with_overlay_flag(args, driver_cmd=command)
 
 def _manifest_contract_reason(manifest: Optional[dict[str, Any]]) -> str:
@@ -157,14 +169,15 @@ def _manifest_contract_reason(manifest: Optional[dict[str, Any]]) -> str:
                for arg in sorted(required - advertised.get(command, set()))]
     return "driver manifest is missing: " + ", ".join(missing) if missing else ""
 
-def cua_driver_runtime_contract_status(binary: Optional[str] = None) -> dict[str, Any]:
+def cua_driver_runtime_contract_status(binary: Optional[str] = None, *, execution_context=None) -> dict[str, Any]:
     """Report whether a local driver can host Hermes' 0.20 integration."""
     resolved = binary or resolve_cua_driver_cmd()
     version: Optional[str] = None
     reason = "cua-driver is not installed"
     if resolved:
         try:
-            result = _cb()._run_driver(resolved, "manifest", timeout=15.0 if sys.platform == "win32" else 5.0)
+            result = _cb()._run_driver(resolved, "manifest", timeout=15.0 if sys.platform == "win32" else 5.0,
+                                       **({"execution_context": execution_context} if execution_context else {}))
         except (OSError, subprocess.SubprocessError) as exc:
             result, reason = None, f"manifest check failed: {exc}"
         if result is not None and result.returncode != 0:

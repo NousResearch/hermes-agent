@@ -388,6 +388,8 @@ class PluginManifest:
     # ``<key>:``; ``listens`` fully-qualified ``<plugin>:<event>`` names.
     emits: list[str] = field(default_factory=list)
     listens: list[str] = field(default_factory=list)
+    # Management-only metadata. Discovery preserves it but NEVER invokes setup.
+    setup: Optional[dict[str, Any]] = None
     # Language pack declaration: ids whose ``locales/<id>[.tui|.desktop].yaml`` the loader registers
     # automatically (no Python needed). ``locale_metadata`` carries the optional per-id
     # ``{endonym, rtl}`` from the mapping form of a ``provides_locales`` entry.
@@ -552,7 +554,7 @@ def parse_manifest_file(
             kind=kind, key=key, requires_hermes=str(data.get("requires_hermes") or "").strip(),
             capabilities=_parse_declared_capabilities(data.get("capabilities"), name),
             **_parse_manifest_v2_fields(data, key), emits=data.get("emits") or [],
-            listens=data.get("listens") or [],
+            listens=data.get("listens") or [], setup=data.get("setup"),
             provides_locales=provides_locales, locale_metadata=locale_metadata,
         )
     except Exception as exc:

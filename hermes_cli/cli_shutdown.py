@@ -168,11 +168,13 @@ def _should_emit_cleanup_session_finalize(session_id: str | None) -> bool:
     return session_id not in _cli()._single_query_finalize_attempted_session_ids
 
 
-def _notify_session_finalize(*, session_id: str | None, platform: str = "cli", reason: str = "shutdown") -> list[str]:
-    """Fire on_session_finalize; return the plugin messages meant for the user (never raises)."""
+def _notify_session_finalize(*, session_id: str | None, platform: str = "cli", reason: str = "shutdown", agent=None) -> list[str]:
     with suppress(Exception):
         from hermes_cli.lifecycle import finalize_session, session_end_messages
-        return session_end_messages(finalize_session(session_id=session_id, platform=platform, reason=reason))
+        from hermes_cli.session_hook_context import agent_session_identity
+        context = agent_session_identity(agent)
+        context["session_id"] = session_id
+        return session_end_messages(finalize_session(**context, platform=platform, reason=reason))
     return []
 
 
@@ -186,10 +188,13 @@ def _invoke_interrupted_session_end(agent, session_id, reason: str, **extra) -> 
     """Best-effort ``on_session_end`` hook for a turn cut short (never raises)."""
     with suppress(Exception):
         from hermes_cli.lifecycle import invoke_hook as _invoke_hook
+        from hermes_cli.session_hook_context import agent_session_identity
+        context = agent_session_identity(agent)
+        context.update(extra, session_id=session_id)
         _invoke_hook(
-            "on_session_end", session_id=session_id, completed=False, interrupted=True,
+            "on_session_end", **context, completed=False, interrupted=True,
             model=getattr(agent, "model", None), platform=getattr(agent, "platform", None) or "cli",
-            reason=reason, **extra,
+            reason=reason,
         )
 
 
@@ -228,7 +233,7 @@ def _notify_single_query_session_finalize(cli, *, reason: str = "shutdown") -> N
     try:
         # stderr: one-shot stdout is the answer scripts parse.
         for message in _notify_session_finalize(
-                session_id=session_id, platform=getattr(agent, "platform", None) or "cli", reason=reason):
+                session_id=session_id, platform=getattr(agent, "platform", None) or "cli", reason=reason, agent=agent):
             print(message, file=sys.stderr, flush=True)
     finally:
         _cli()._single_query_finalize_attempted_session_ids.add(session_id)

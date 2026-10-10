@@ -7,6 +7,7 @@ sibling (install, update, remove, git, capabilities, toggle, listing, catalog)."
 from __future__ import annotations
 
 import functools
+import json
 import logging
 import os
 import shutil
@@ -669,7 +670,8 @@ def _find_plugin_entry(name: str) -> Optional[tuple]:
     ``observability/langfuse``) only when unique; else the catalog name the plugin was installed under.
     Never guesses between two candidates."""
     entries = _discover_all_plugins()
-    exact = next((entry for entry in entries if name in (entry[0], entry[5])), None)
+    exact = (next((entry for entry in entries if name == entry[5]), None)
+             or next((entry for entry in entries if name == entry[0]), None))
     if exact is not None:
         return exact
     leaf_matches = [entry for entry in entries if name == entry[5].split("/")[-1]]
@@ -686,7 +688,80 @@ def _resolve_plugin_key_and_source(name: str) -> Optional[tuple]:
     return (entry[5], entry[3]) if entry else None
 
 
-def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
+def _plugin_setup_lock():
+    """Profile-scoped lock serializing consented setup with the enablement it gates."""
+    from hermes_cli.active_sessions import _FileLock
+    return _FileLock(get_hermes_home() / ".plugin-enable.lock")
+
+
+def _setup_lock_for(name: str):
+    """:func:`_plugin_setup_lock` when *name* declares native setup, else a no-op context.
+
+    The lock serializes a consented setup with the enable it gates. Plugins without setup keep
+    the admission transaction's own optimistic concurrency (a stale selection is refused)."""
+    import contextlib
+    key = _resolve_plugin_key(name)
+    entry = next((entry for entry in _discover_all_plugins() if entry[5] == key), None) if key else None
+    if entry is not None and entry[4] and "setup" in _read_manifest(Path(entry[4])):
+        return _plugin_setup_lock()
+    return contextlib.nullcontext()
+
+
+def _setup_refusal(name: str, setup_consent=None) -> Optional[dict]:
+    """Run a plugin's consented native setup; a refusal dict, or None when ready.
+
+    The caller holds :func:`_plugin_setup_lock` and persists enablement only on None."""
+    from hermes_cli.plugins_setup import prepare_plugin_setup
+    key = _resolve_plugin_key(name)
+    if key is None:
+        return {"ok": False, "error": f"Plugin '{name}' is not installed or bundled."}
+    entry = next((entry for entry in _discover_all_plugins() if entry[5] == key), None)
+    if entry is None:
+        return {"ok": False, "error": f"Plugin '{key}' is no longer installed or bundled."}
+    return prepare_plugin_setup(entry, setup_consent=setup_consent)
+
+
+def _prompt_setup_consent(console, refusal) -> bool:
+    """Show a refused setup and ask to run it; the default is always No."""
+    console.print(refusal["setup"]["summary"], markup=False)
+    for detail in refusal["setup"]["details"]:
+        console.print(detail, markup=False)
+    console.print("Reviewed setup consent: " + json.dumps(refusal["consent"]), markup=False)
+    return _is_tty() and _ask_yes("  Run this plugin setup and enable? [y/N]: ")
+
+
+def _setup_gate_cli(key, console, setup_consent=None) -> Optional[dict]:
+    """The CLI setup gate without enabling (the picker admits its whole selection at once)."""
+    with _plugin_setup_lock():
+        refusal = _setup_refusal(key, setup_consent)
+    if refusal and refusal.get("status") == "consent_required" and _prompt_setup_consent(console, refusal):
+        with _plugin_setup_lock():
+            refusal = _setup_refusal(key, refusal["consent"])
+    return refusal
+
+
+def _enable_plugin_cli(key, console, setup_consent=None):
+    """CLI consent is separate from selecting enable; default is always No.
+
+    Setup and the enable admission run under one profile lock hold (plugins that declare setup).
+    Admission refusals raise :class:`AdmissionRefused` exactly like ``_activate_key``; setup
+    refusals return a dict."""
+    def attempt(consent):
+        with _setup_lock_for(key):
+            refusal = _setup_refusal(key, consent)
+            if refusal:
+                return refusal
+            resolved = _resolve_plugin_key(key) or key
+            changed = _activate_key(resolved, enable=True, console=console)
+        return {"ok": True, "name": resolved, "unchanged": not changed}
+
+    result = attempt(setup_consent)
+    if result.get("status") == "consent_required" and _prompt_setup_consent(console, result):
+        result = attempt(result["consent"])
+    return result
+
+
+def cmd_enable(name: str, allow_tool_override: Optional[bool] = None, *, setup_consent=None) -> None:
     """Add a plugin to the enabled allow-list (and remove it from disabled).
 
     Non-bundled plugins request consent for declared capabilities. The legacy
@@ -717,16 +792,18 @@ def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
         except PluginOperationError as exc:
             _fail(console, f"[red]Error:[/red] {exc}")
 
-    changed = _activate_key(key, enable=True, console=console)
-    if changed:
+    result = _enable_plugin_cli(key, console, setup_consent=setup_consent)
+    if not result.get("ok"):
+        _fail(console, result["error"])
+    if result.get("unchanged"):
+        console.print(f"[dim]Plugin '{key}' is already enabled.[/dim]")
+    else:
         from hermes_cli.plugins_activation import activate_plugin_now, activation_hint
         console.print(f"[green]✓[/green] Plugin [bold]{key}[/bold] enabled. Takes effect on next session.")
         console.print(f"[dim]{activation_hint(activate_plugin_now(key, in_process=False))}[/dim]")
-    else:
-        console.print(f"[dim]Plugin '{key}' is already enabled.[/dim]")
     if source != "bundled":
         _enable_consent(console, key, allow_tool_override)
-    if changed:  # after consent: register() sees the grants; same saved-list edit as the Desktop toggle
+    if not result.get("unchanged"):
         _toggle_plugin_toolset(key, enable=True)
 
 
@@ -923,7 +1000,12 @@ def _get_plugin_toolset_key(name: str) -> Optional[str]:
 
     def _from_loaded_plugin() -> Optional[str]:
         from hermes_cli.plugins import discover_plugins, get_plugin_manager
-        discover_plugins()  # idempotent — ensures plugins are loaded
+        from hermes_cli.plugins_activation import _needs_restart_to_load
+        # Cold management processes still need the enabled plugin's toolset before
+        # disabling/removing it. Never load a new dependency generation into an old process.
+        if _needs_restart_to_load(name):
+            return None
+        discover_plugins()  # idempotent: warm processes retain their startup snapshot
         for _key, loaded in get_plugin_manager()._plugins.items():
             if loaded.manifest.name == name or _key == name:
                 return _first_toolset(loaded.tools_registered)
@@ -983,28 +1065,39 @@ def _toggle_plugin_toolset(name: str, *, enable: bool, toolset_key: Optional[str
         save_config(config)
 
 
-def dashboard_set_agent_plugin_enabled(name: str, *, enabled: bool) -> dict[str, Any]:
-    """Enable or disable a plugin in ``config.yaml`` (runtime allow/deny lists). *name* may be the
-    canonical key, the manifest name or a unique bare leaf; the canonical key is what gets written
-    (the loader never matches a bare leaf, and a stale key in ``disabled`` outranks a manifest-name
-    entry in ``enabled`` — so writing the raw identifier reported success while the plugin stayed off)."""
-    key = _resolve_plugin_key(name)
-    if key is None:
-        return {"ok": False, "error": f"Plugin '{name}' is not installed or bundled."}
+def dashboard_set_agent_plugin_enabled(
+    name: str, *, enabled: bool, setup_consent=None, _toggle_toolsets=True,
+) -> dict[str, Any]:
+    """Save enablement only after consented setup verifies readiness, profile-scoped.
+
+    *name* may be the canonical key, the manifest name or a unique bare leaf; the canonical key is
+    what gets written (the loader never matches a bare leaf, and a stale key in ``disabled`` outranks
+    a manifest-name entry in ``enabled``). ``_toggle_toolsets`` marks the direct dashboard/RPC toggle:
+    it also flips the plugin's toolset and loads an enabled plugin now; install callers do their own
+    activation.
+    """
     from hermes_cli.plugins_admission import AdmissionRefused
 
-    toolset_key = None if enabled else _saved_list_toolset_key(key)
-    try:
-        changed = _activate_key(key, enable=enabled)
-    except AdmissionRefused as exc:
-        return {
-            "ok": False,
-            "error": str(exc),
-            "name": key,
-            "unchanged": True,
-            "restart_required": False,
-        }
-    if changed and enabled:
+    with _setup_lock_for(name):
+        key = _resolve_plugin_key(name)
+        if key is None:
+            return {"ok": False, "error": f"Plugin '{name}' is not installed or bundled."}
+        toolset_key = None if enabled else _saved_list_toolset_key(key)
+        if enabled:
+            refusal = _setup_refusal(key, setup_consent)
+            if refusal:
+                return refusal
+        try:
+            changed = _activate_key(key, enable=enabled)
+        except AdmissionRefused as exc:
+            return {
+                "ok": False,
+                "error": str(exc),
+                "name": key,
+                "unchanged": True,
+                "restart_required": False,
+            }
+    if changed and enabled and _toggle_toolsets:
         # Load it now, here and in the running gateway; ``activation`` tells the UI what is live vs
         # deferred, and ``restart_required`` only survives when no gateway answered (#87770).
         from hermes_cli.plugins_activation import activate_plugin_now
@@ -1013,7 +1106,7 @@ def dashboard_set_agent_plugin_enabled(name: str, *, enabled: bool) -> dict[str,
         # while the plugin was off held a placeholder and the toolset was never re-added.
         _toggle_plugin_toolset(key, enable=True)
         return result
-    if changed:
+    if changed and _toggle_toolsets:
         _toggle_plugin_toolset(key, enable=False, toolset_key=toolset_key)
     # Disable is config-only: there is no un-wire primitive, so a running gateway keeps the plugin's
     # handlers until restart and every UI says so — #71595/#54941.
@@ -1068,6 +1161,7 @@ _PLUGIN_ACTIONS = {
         force=getattr(args, "force", False),
         enable=_tri_state_flag(args, "enable", "no_enable"),
         ref=getattr(args, "ref", None),
+        setup_consent=getattr(args, "setup_consent", None),
         allow_removed=getattr(args, "allow_removed", False),
         no_deps=getattr(args, "no_deps", False),
         yes_deps=getattr(args, "yes_deps", False)),
@@ -1086,7 +1180,8 @@ _PLUGIN_ACTIONS = {
     "uninstall": lambda args: cmd_remove(args.name),
     "enable": lambda args: cmd_enable(
         args.name,
-        allow_tool_override=_tri_state_flag(args, "allow_tool_override", "no_allow_tool_override")),
+        allow_tool_override=_tri_state_flag(args, "allow_tool_override", "no_allow_tool_override"),
+        setup_consent=getattr(args, "setup_consent", None)),
     "disable": lambda args: cmd_disable(args.name),
     "capabilities": lambda args: cmd_capabilities(getattr(args, "name", None)),
     "list": lambda args: cmd_list(args),

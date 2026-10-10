@@ -97,8 +97,8 @@ def test_dispatch_rechecks_admission(runtime, monkeypatch, pause_at, change):
             paused.set()
             assert resume.wait(10), "test did not release the waiting call"
 
-    def get(session_id=""):
-        backend = real_get(session_id)
+    def get(session_id="", **kwargs):
+        backend = real_get(session_id, **kwargs)
         if pause_at == "after_lookup":
             pause()
         return backend
@@ -201,8 +201,8 @@ def test_backend_retry_preserves_the_original_human_lease_epoch(runtime, monkeyp
     real_get = cu._get_backend
     old = real_get("shared")
 
-    def get(session_id=""):
-        backend = real_get(session_id)
+    def get(session_id="", **kwargs):
+        backend = real_get(session_id, **kwargs)
         if threading.current_thread().name == "waiting-call" and not paused.is_set():
             paused.set()
             assert resume.wait(10)
@@ -224,3 +224,20 @@ def test_backend_retry_preserves_the_original_human_lease_epoch(runtime, monkeyp
         resume.set()
         worker.join(timeout=10)
         assert not worker.is_alive()
+
+
+def test_backend_admission_retry_is_bounded(monkeypatch):
+    """A backend that never becomes admissible fails loudly instead of spinning forever."""
+    calls = []
+
+    def uncached(**_kwargs):
+        calls.append(1)
+        if len(calls) > 1000:
+            raise AssertionError("admission retry is unbounded")
+        return object()  # never installed in the backend cache
+
+    monkeypatch.setattr(cu, "_get_backend", uncached)
+    with pytest.raises(RuntimeError, match="could not be admitted"):
+        with cu._backend_for_call("bounded"):
+            pass
+    assert len(calls) == cu._BACKEND_ADMISSION_ATTEMPTS

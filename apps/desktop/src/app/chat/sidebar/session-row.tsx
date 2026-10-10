@@ -13,6 +13,8 @@ import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { RowButton } from '@/components/ui/row-button'
 import { OverflowTip, Tip } from '@/components/ui/tooltip'
+import { SESSION_AREAS } from '@/contrib/session'
+import { SessionContributions } from '@/contrib/session-contributions'
 import type { SessionInfo } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
@@ -550,6 +552,7 @@ function SidebarSessionRowImpl({
                   <SessionRowSlot area={SESSION_ROW_AREAS.leading} sessionId={sessionPinId(session)} />
                   {handoffBadge}
                   {continuationBadge}
+                  <SessionContributions area={SESSION_AREAS.listBadge} row={session} storedSessionId={session.id} />
                   <span className="min-w-0 flex-1 self-center">
                     {/* The row's primary action (#38072 finding 3): the title
                         is the session row's real button — the grabber and ⋯
@@ -619,6 +622,7 @@ function SidebarSessionRowImpl({
                   </span>
                   {handoffBadge}
                   {continuationBadge}
+                  <SessionContributions area={SESSION_AREAS.listBadge} row={session} storedSessionId={session.id} />
                   <SessionRowSlot area={SESSION_ROW_AREAS.trailing} sessionId={sessionPinId(session)} />
                   {actionsNode}
                 </div>

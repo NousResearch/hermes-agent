@@ -111,6 +111,7 @@ import { pluginDecisions, profiles, skills, toolsets } from './bridge'
 import { composerHost } from './composer'
 import { i18nHost } from './i18n'
 import { planPluginOpenSession } from './plugin-open-session-plan'
+import { openPluginPreview } from './preview'
 import { sessionsHost } from './sessions'
 import { desktopSettings } from './settings'
 
@@ -668,6 +669,7 @@ async function awaitProfileActivation(
 }
 
 export const host = {
+  openPreview: openPluginPreview,
   state: {
     /** Runtime id of the active chat session (null on a fresh draft). */
     activeSessionId: readonlyAtom<null | string>($activeSessionId),
@@ -1653,6 +1655,7 @@ export const host = {
 
 /** The plugin authoring contract (`HermesPlugin`, `PluginContext`, `ctx.*` door types). */
 export type * from './plugin-contract'
+export type { PluginPreviewInput } from './preview'
 
 // -- ui: the design language --------------------------------------------------
 
@@ -1882,6 +1885,13 @@ export { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 export { Textarea } from '@/components/ui/textarea'
 export { Tip, Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 export type { GatewayEventListener } from '@/contrib/events'
+export {
+  PLUGIN_SETTINGS_AREA,
+  type PluginSettingsContribution,
+  type PluginSettingsContributionProps,
+  type PluginSettingsScope
+} from '@/contrib/plugin-settings'
+export type { PluginViewerInput } from '@/contrib/plugin-viewer'
 /** Mount-scoped contribution: while the rendering component is mounted, its
  *  children render in the target area's slot; unmount disposes it. Use for
  *  page-owned chrome (a page's titlebar control leaves with the page) —
@@ -1891,6 +1901,12 @@ export { Contribute, type ContributeProps } from '@/contrib/react/contribute'
 
 // -- contracts ----------------------------------------------------------------
 
+export {
+  type PluginSessionContext,
+  SESSION_AREAS,
+  type SessionContribution,
+  type SessionContributionProps
+} from '@/contrib/session'
 /** Settings ▸ Plugins entries (`ctx.registerSettingsPage`); `pluginSettingsHref` deep-links one. */
 export { pluginSettingsHref, SETTINGS_PLUGINS_AREA } from '@/contrib/settings-pages'
 export type { Contribution } from '@/contrib/types'

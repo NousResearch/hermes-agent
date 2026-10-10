@@ -534,6 +534,7 @@ def cmd_install(
     force: bool = False,
     enable: Optional[bool] = None,
     ref: Optional[str] = None,
+    setup_consent=None,
     allow_removed: bool = False,
     no_deps: bool = False,
     yes_deps: bool = False,
@@ -657,13 +658,15 @@ def cmd_install(
         from hermes_cli.plugins_admission import AdmissionRefused
 
         try:
-            _pc()._set_plugin_enabled(installed_name, enable=True, console=console)
+            result = _pc()._enable_plugin_cli(installed_name, console, setup_consent=setup_consent)
         except AdmissionRefused:
             console.print(
                 "[dim]The plugin stays installed but disabled; re-enable "
                 "after resolving the conflict.[/dim]"
             )
         else:
+            if not result.get("ok"):
+                _pc()._fail(console, result["error"] + " Plugin files were installed; retry `hermes plugins enable`.")
             console.print(
                 f"[green]✓[/green] Plugin [bold]{installed_name}[/bold] enabled.",
             )
@@ -802,24 +805,28 @@ def _place_tree(entry, identifier: str, *, force: bool, ref: Optional[str], assu
         return {"ok": False, "error": str(exc)}
 
 
-def _enable_placed(installed_name: str, deps, step: Callable[[InstallPhase], None]) -> Optional[dict]:
+def _enable_placed(installed_name: str, deps, step: Callable[[InstallPhase], None], *, setup_consent=None) -> Optional[dict]:
     """None once enabled, else the refusal result. Enabling admits the plugin, and admission resolves
     its Python dependencies."""
     from hermes_cli.plugins_admission import AdmissionRefused
 
     if deps:
         step(InstallPhase.python_packages)
-    try:
-        # _set_plugin_enabled serializes per home itself (parallel install-card rows).
-        _pc()._set_plugin_enabled(installed_name, enable=True)
-    except AdmissionRefused as exc:
-        return {"ok": False, "error": f"enable refused: {exc}", "plugin_name": installed_name, "enabled": False}
+    # Keep setup and enable admission under the same owning-profile lock.
+    with _pc()._setup_lock_for(installed_name):
+        refusal = _pc()._setup_refusal(installed_name, setup_consent)
+        if refusal:
+            return {**refusal, "installed": True, "plugin_name": installed_name, "python_dependencies": deps}
+        try:
+            _pc()._set_plugin_enabled(installed_name, enable=True)
+        except AdmissionRefused as exc:
+            return {"ok": False, "error": f"enable refused: {exc}", "plugin_name": installed_name, "enabled": False}
     return None
 
 
 def dashboard_install_plugin(
     identifier: str, *, force: bool, enable: bool, catalog_name: Optional[str] = None,
-    ref: Optional[str] = None, assume_deps_consent: Optional[bool] = None,
+    ref: Optional[str] = None, setup_consent=None, assume_deps_consent: Optional[bool] = None,
     on_step: Optional[Callable[[InstallPhase], None]] = None,
 ) -> dict[str, Any]:
     """Non-interactive install for the dashboard/TUI. *catalog_name* installs a curated entry at its
@@ -841,7 +848,7 @@ def dashboard_install_plugin(
         return placed
     target, installed_manifest, installed_name = placed
     deps = _pc()._python_dependency_summary(target, warnings)
-    if enable and (refused := _enable_placed(installed_name, deps, step)):
+    if enable and (refused := _enable_placed(installed_name, deps, step, setup_consent=setup_consent)):
         return refused
     ap = target / "after-install.md"
     # Deps first, then load: the plugin activates in this process (TUI/Desktop server subscribers see it)

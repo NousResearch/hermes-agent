@@ -207,7 +207,7 @@ def _finalize_wait_result(collector: _BoundedOutputCollector, rendered: str, ret
 
 
 # --- Stdin / spawn helpers ---
-def _pipe_stdin(proc: subprocess.Popen, data: str) -> None:
+def _pipe_stdin(proc: "ProcessHandle", data: str) -> None:
     """Write *data* to proc.stdin on a daemon thread to avoid pipe-buffer deadlocks.
     Writes go through ``proc.stdin.buffer`` as UTF-8 bytes we encode ourselves: Windows
     text-mode stdin would translate ``\\n`` -> ``\\r\\n`` and corrupt every write_file/patch

@@ -965,6 +965,154 @@ def _kill_process_windows(proc) -> None:
         proc.wait(timeout=2.0)
 
 
+# --- POSIX spawn without fork() ---
+# ``subprocess.Popen`` forks on POSIX: CPython's own posix_spawn fast path is disabled by any
+# of ``start_new_session``/``cwd``/``close_fds``. On Darwin a fork of this process (large-graph
+# heap) stalls in the malloc-zone lock — frames park in ``do_fork_exec`` /
+# ``_xzm_foreach_lock`` — which is what makes a terminal command cost seconds under load.
+# ``os.posix_spawn`` passes argv/env/fds to the kernel and execs directly, so the parent's
+# address space is never copied. Process-group semantics are preserved: the child is its own
+# session (``setsid``) so ``pid == pgid`` and ``_kill_process_group_posix``'s killpg path
+# still applies. ``cwd`` is deliberately NOT a chdir file action — ``_run_bash`` prefixes
+# ``builtin cd -- <quoted> &&`` instead (see there).
+_SETSID_KWARG_SUPPORTED: bool | None = None  # memoized: False once a runtime rejects the kwarg
+
+
+def _posix_spawn_detached(argv: list[str], env: dict, file_actions: list) -> int:
+    """``os.posix_spawn`` with a fresh session — ``setsid=True`` is the direct flag, and a
+    runtime whose signature lacks it gets ``POSIX_SPAWN_SETPGROUP`` (``pgroup=0``) instead:
+    same ``pid == pgid`` guarantee, only the session (not the group) is inherited from us."""
+    global _SETSID_KWARG_SUPPORTED
+    if _SETSID_KWARG_SUPPORTED is not False:
+        try:
+            pid = os.posix_spawn(argv[0], argv, env, file_actions=file_actions, setsid=True)
+            _SETSID_KWARG_SUPPORTED = True
+            return pid
+        except TypeError:  # no setsid kwarg on this runtime; parsed before any spawn
+            _SETSID_KWARG_SUPPORTED = False
+    return os.posix_spawn(argv[0], argv, env, file_actions=file_actions, setpgroup=0)
+
+
+class _PosixSpawnProcess:
+    """``subprocess.Popen``-shaped handle for a child spawned with ``os.posix_spawn``.
+
+    Implements the ``ProcessHandle`` duck type ``_wait_for_process`` needs (``poll``, ``kill``,
+    ``wait``, ``stdout``, ``returncode``) and the attributes this module's teardown touches
+    (``pid``, ``args``, ``stdin``, ``_hermes_pgid``). Reaping is cached under a lock: the drain
+    thread and the waiter both call ``poll()``. Exit-status handling mirrors ``Popen`` —
+    a child reaped elsewhere (``ChildProcessError``) reads as a 0 exit, any other transient
+    ``OSError`` leaves the code unknown rather than inventing one."""
+
+    def __init__(self, pid: int, args: list[str], stdout, stdin=None):
+        self.pid = pid
+        self.args = list(args)
+        self.stdout = stdout
+        self.stdin = stdin
+        self._returncode: int | None = None
+        self._reap_lock = threading.Lock()
+
+    @property
+    def returncode(self) -> int | None:
+        return self._returncode
+
+    def poll(self) -> int | None:
+        if self._returncode is not None:
+            return self._returncode
+        with self._reap_lock:
+            if self._returncode is None:
+                try:
+                    pid, status = os.waitpid(self.pid, os.WNOHANG)
+                except ChildProcessError:  # reaped elsewhere; Popen reports 0 here too
+                    pid, status = self.pid, 0
+                except OSError:
+                    return None
+                if pid == self.pid:
+                    self._returncode = os.waitstatus_to_exitcode(status)
+        return self._returncode
+
+    def wait(self, timeout: float | None = None) -> int:
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while True:
+            rc = self.poll()
+            if rc is not None:
+                return rc
+            if deadline is not None and time.monotonic() >= deadline:
+                raise subprocess.TimeoutExpired(self.args, float(timeout or 0.0))
+            time.sleep(0.005)
+
+    def send_signal(self, sig: int) -> None:
+        with contextlib.suppress(ProcessLookupError, OSError):
+            os.kill(self.pid, sig)
+
+    def terminate(self) -> None:
+        self.send_signal(signal.SIGTERM)
+
+    def kill(self) -> None:
+        self.send_signal(signal.SIGKILL)
+
+    def communicate(self, timeout: float | None = None):
+        """Fallback for ``Popen.communicate`` callers: closes stdin, reads stdout to EOF, then
+        waits. The tool path does not use this — it drains ``stdout`` on its own thread and
+        polls — so this exists only to keep the handle drop-in."""
+        if self.stdin is not None:
+            with contextlib.suppress(Exception):
+                self.stdin.close()
+            self.stdin = None
+        out = ""
+        try:
+            if self.stdout is not None:
+                out = self.stdout.read()
+        except Exception:
+            out = ""
+        finally:
+            self._close_streams()
+        return out, None
+
+    def _close_streams(self) -> None:
+        for stream in (self.stdout, self.stdin):
+            if stream is not None:
+                with contextlib.suppress(Exception):
+                    stream.close()
+
+    def __repr__(self) -> str:
+        return f"<posix_spawn process pid={self.pid} returncode={self._returncode}>"
+
+
+def _spawn_bash_posix(argv: list[str], env: dict, stdin_data: str | None = None) -> _PosixSpawnProcess:
+    """Spawn *argv* with ``os.posix_spawn``: stdout is a pipe the caller drains, stderr is folded
+    into it (``dup2`` of the same write end, matching ``stderr=STDOUT``), stdin is a pipe when
+    *stdin_data* is given and /dev/null otherwise — the same wiring ``Popen(..., stdout=PIPE,
+    stderr=STDOUT, stdin=...)`` produced. The parent's pipe ends are CLOEXEC (``os.pipe`` under
+    PEP 446), so no other descriptor leaks into the child."""
+    stdout_r, stdout_w = os.pipe()
+    stdin_r = stdin_w = None
+    if stdin_data is not None:
+        stdin_r, stdin_w = os.pipe()
+    file_actions = [
+        (os.POSIX_SPAWN_DUP2, stdout_w, 1),
+        (os.POSIX_SPAWN_DUP2, stdout_w, 2),
+    ]
+    if stdin_r is not None:
+        file_actions.append((os.POSIX_SPAWN_DUP2, stdin_r, 0))
+    else:
+        file_actions.append((os.POSIX_SPAWN_OPEN, 0, os.devnull, os.O_RDONLY, 0o666))
+    try:
+        pid = _posix_spawn_detached(argv, env, file_actions)
+    finally:
+        os.close(stdout_w)
+        if stdin_r is not None:
+            os.close(stdin_r)
+    try:
+        stdout = os.fdopen(stdout_r, "r", encoding="utf-8", errors="replace")
+        stdin = os.fdopen(stdin_w, "wb") if stdin_w is not None else None
+    except Exception:
+        os.close(stdout_r)
+        if stdin_w is not None:
+            os.close(stdin_w)
+        raise
+    return _PosixSpawnProcess(pid, argv, stdout=stdout, stdin=stdin)
+
+
 class LocalEnvironment(BaseEnvironment):
     """Run commands directly on the host: every execute() spawns a fresh bash;
     the session snapshot preserves env vars across calls; CWD persists via the
@@ -1058,7 +1206,7 @@ class LocalEnvironment(BaseEnvironment):
         self.cwd = safe_cwd
 
     def _run_bash(self, cmd_string: str, *, login: bool = False, timeout: int = 120,
-                  stdin_data: str | None = None) -> subprocess.Popen:
+                  stdin_data: str | None = None) -> "_PosixSpawnProcess | subprocess.Popen":
         bash = _find_bash()
         # Login invocations (init_session's env snapshot) source the user's rc /
         # custom init files so nvm/asdf/pyenv land on PATH in the snapshot.
@@ -1066,12 +1214,28 @@ class LocalEnvironment(BaseEnvironment):
             cmd_string = _prepend_shell_init(cmd_string, _resolve_shell_init_files())
         args = [bash, *(["-l"] if login else []), "-c", cmd_string]
         self._recover_cwd()
-        proc = subprocess.Popen(
-            args, text=True, env=_make_run_env(self.env), encoding="utf-8", errors="replace",
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
-            start_new_session=True, cwd=self.cwd,
-            **({"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}))
+        proc = None
+        if not _IS_WINDOWS:
+            # POSIX: spawn straight into bash — no fork of this process's heap. The child leads
+            # its own session (``_posix_spawn_detached``) and the working directory rides on the
+            # command line, since a chdir file action is not worth the spawn-attribute trade.
+            spawn_args = list(args)
+            if self.cwd:
+                spawn_args[-1] = (f"builtin cd -- {self._quote_cwd_for_cd(self.cwd)} && "
+                                  f"{cmd_string}")
+            try:
+                proc = _spawn_bash_posix(spawn_args, _make_run_env(self.env), stdin_data)
+            except OSError as exc:  # a spawn failure must not leave the terminal unusable
+                logger.warning("posix_spawn of %s failed (%s); falling back to fork+exec",
+                               bash, exc)
+                proc = None
+        if proc is None:
+            proc = subprocess.Popen(
+                args, text=True, env=_make_run_env(self.env), encoding="utf-8", errors="replace",
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
+                start_new_session=True, cwd=self.cwd,
+                **({"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}))
         if not _IS_WINDOWS:
             with contextlib.suppress(ProcessLookupError):
                 proc._hermes_pgid = os.getpgid(proc.pid)

@@ -8,7 +8,7 @@ description: >-
   user's own `alias/` models, instead of all 719 IDs from /v1/models. Context windows come from
   LowRouter's catalog instead of Hermes' 256K fallback, and /usage shows the credit balance in
   euros. LowRouter bills in EUR, so the plugin reports no USD cost and Hermes shows it as unknown.
-  Maintained by LowRouter. Disclosure: registers one model provider and nothing else (no tools,
+  Maintained by LowRouter. Disclosure — registers one model provider and nothing else (no tools,
   hooks, commands or threads). Prompts, tool schemas and LOWROUTER_API_KEY go to
   https://api.lowrouter.ai/v1 (or the configured model.base_url) through Hermes' client, and
   LowRouter forwards each request to the host serving the model. The plugin's own requests are

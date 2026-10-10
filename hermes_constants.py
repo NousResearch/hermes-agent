@@ -853,6 +853,25 @@ def _chown_to_hermes_uid(path) -> None:
         pass
 
 
+def _named_user_acl_mask(path) -> int | None:
+    """ACL mask bits (``0o7``) of *path* when its POSIX access ACL has named-user entries.
+
+    Read in-process from the Linux ``system.posix_acl_access`` xattr rather than via
+    ``getfacl``: this runs on every config load, including under code that fakes
+    ``subprocess``. ``None`` = no ACL, no named users, or the platform cannot say.
+    """
+    try:
+        raw = os.getxattr(path, "system.posix_acl_access")
+    except (OSError, AttributeError):  # ENODATA / ENOTSUP, or no getxattr off Linux
+        return None
+    # Layout: u32 version (2), then (u16 tag, u16 perm, u32 id) entries, little-endian.
+    if len(raw) < 4 or (len(raw) - 4) % 8 or int.from_bytes(raw[:4], "little") != 2:
+        return None
+    perms = {int.from_bytes(raw[o:o + 2], "little"): int.from_bytes(raw[o + 2:o + 4], "little")
+             for o in range(4, len(raw), 8)}
+    return perms[0x10] & 0o7 if 0x02 in perms and 0x10 in perms else None  # ACL_USER, ACL_MASK
+
+
 def apply_secure_dir_policy(path, *, home: str | Path | None = None) -> None:
     """Apply the canonical Hermes home-directory permission policy to *path*.
 
@@ -882,6 +901,12 @@ def apply_secure_dir_policy(path, *, home: str | Path | None = None) -> None:
         mode = int(explicit_mode or "700", 8)
     except ValueError:
         mode = 0o700
+    # On a directory with a POSIX ACL, chmod's group bits become the ACL mask, so a plain
+    # 0700 would silently void named-user grants (e.g. a web server user allowed to traverse
+    # the home). Keep the existing mask bits; owner/other bits still follow the policy.
+    acl_mask = _named_user_acl_mask(path)
+    if acl_mask is not None:
+        mode |= acl_mask << 3
     try:
         os.chmod(path, mode)
     except (OSError, NotImplementedError):

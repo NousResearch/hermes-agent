@@ -4381,7 +4381,8 @@ class BasePlatformAdapter(ABC):
         """Clear the crash-recovery marker the runner handed to this delivery lifecycle
         (``_turn_marker_handoff``): only once the final reply is ledgered or nothing more is owed,
         so no kill leaves a persisted reply with neither marker nor ledger row. Idempotent."""
-        if getattr(event, "_turn_marker_handoff", False) and getattr(event, "_gateway_active_turn_token", None):
+        if (getattr(event, "_turn_marker_handoff", False) and getattr(event, "_gateway_active_turn_token", None)
+                and self.gateway_runner is not None):
             await self.gateway_runner._clear_durable_active_turn(event)
 
     async def _send_final_text(

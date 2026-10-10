@@ -858,6 +858,62 @@ def test_custom_endpoint_explicit_custom_prefers_config_key(monkeypatch):
     assert resolved["api_key"] == "sk-vllm-key"
 
 
+@pytest.mark.parametrize("endpoint_override", [None, "https://my-vllm-server.example.com/v1"])
+def test_custom_endpoint_uses_model_key_env(monkeypatch, endpoint_override):
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "custom",
+            "base_url": "https://my-vllm-server.example.com/v1",
+            "key_env": "MY_VLLM_KEY",
+        },
+    )
+    monkeypatch.setenv("MY_VLLM_KEY", "sk-vllm-env")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-wrong-key")
+
+    resolved = rp.resolve_runtime_provider(requested="custom", explicit_base_url=endpoint_override)
+
+    assert resolved["api_key"] == "sk-vllm-env"
+
+
+@pytest.mark.parametrize("endpoint_override", [None, "https://api.deepseek.com/v1"])
+def test_custom_endpoint_missing_declared_key_env_fails_closed(monkeypatch, endpoint_override):
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "custom",
+            "base_url": "https://api.deepseek.com/v1",
+            "key_env": "TENANT_B_API_KEY",
+        },
+    )
+    monkeypatch.delenv("TENANT_B_API_KEY", raising=False)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-wrong-tenant")
+
+    with pytest.raises(rp.AuthError, match="TENANT_B_API_KEY"):
+        rp.resolve_runtime_provider(requested="custom", explicit_base_url=endpoint_override)
+
+
+def test_named_custom_missing_declared_key_env_fails_closed(monkeypatch):
+    monkeypatch.setattr(
+        rp,
+        "_get_named_custom_provider",
+        lambda _name: {
+            "name": "tenant-b",
+            "base_url": "https://api.deepseek.com/v1",
+            "key_env": "TENANT_B_API_KEY",
+        },
+    )
+    monkeypatch.delenv("TENANT_B_API_KEY", raising=False)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-wrong-tenant")
+
+    with pytest.raises(rp.AuthError, match="TENANT_B_API_KEY"):
+        rp._resolve_named_custom_runtime(requested_provider="tenant-b")
+
+
 def test_bare_custom_uses_loopback_model_base_url_when_provider_not_custom(monkeypatch):
     """Regression for #14676: /model can select Custom while YAML still lists another provider."""
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
@@ -2266,7 +2322,7 @@ def test_bare_custom_resolves_model_key_env_for_configured_base_url(monkeypatch)
     assert other["api_key"] == "no-key-required"
 
 
-def test_configured_key_env_resolving_empty_is_logged(monkeypatch, caplog):
+def test_configured_key_env_resolving_empty_is_refused(monkeypatch, caplog):
     """#67453: a declared ``key_env`` whose variable is unset used to be laundered silently into
     ``no-key-required`` and surface only as the provider's 403; a keyless block stays silent."""
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "custom")
@@ -2275,10 +2331,11 @@ def test_configured_key_env_resolving_empty_is_logged(monkeypatch, caplog):
         {"name": "local", "base_url": "http://127.0.0.1:8080/v1", "model": "m"}]})
     monkeypatch.delenv("UNSET_LLM_KEY", raising=False)
     with caplog.at_level("WARNING", logger="hermes_cli.runtime_provider"):
-        assert rp.resolve_runtime_provider(requested="custom:scw")["api_key"] == "no-key-required"
+        with pytest.raises(rp.AuthError, match="UNSET_LLM_KEY") as exc:
+            rp.resolve_runtime_provider(requested="custom:scw")
+        assert exc.value.code == "declared_key_env_unresolved"
         assert rp.resolve_runtime_provider(requested="custom:local")["api_key"] == "no-key-required"
-    hits = [r for r in caplog.records if "UNSET_LLM_KEY" in r.getMessage()]
-    assert len(hits) == 1 and "scw" in hits[0].getMessage()
+    assert not caplog.records
 
 
 # ── model.openai_runtime: codex_app_server on every ladder rung (#115169) ─────────────────

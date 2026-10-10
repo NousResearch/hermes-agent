@@ -654,6 +654,60 @@ def _migrate_to_48(results: dict[str, Any], quiet: bool) -> None:
             )(results, quiet)
 
 
+def _migrate_to_51(results: Dict[str, Any], quiet: bool) -> None:
+    # 50 → 51: move custom-endpoint secrets out of config.yaml.
+    _c = _cfg()
+    config = _c.read_raw_config()
+    moved = 0
+
+    def migrate_entry(entry: Any, identity: str) -> None:
+        nonlocal moved
+        if not isinstance(entry, dict):
+            return
+        secret = str(entry.get("api_key") or "").strip()
+        if not secret or (secret.startswith("${") and secret.endswith("}")):
+            return
+        key_env = str(entry.get("key_env") or entry.get("api_key_env") or "").strip()
+        # A declared, populated binding is authoritative. Removing stale
+        # plaintext must not rotate a key another configured endpoint uses.
+        if not key_env or not (_c.get_env_value(key_env) or "").strip():
+            key_env = key_env or _c.custom_endpoint_key_env(identity)
+            _c.save_env_value(key_env, secret)
+            if (_c.get_env_value(key_env) or "").strip() != secret:
+                raise RuntimeError(f"failed to persist {key_env} to .env")
+        entry["key_env"] = key_env
+        entry.pop("api_key_env", None)
+        entry.pop("api_key", None)
+        moved += 1
+
+    model = config.get("model")
+    if isinstance(model, dict):
+        base_url = str(model.get("base_url") or "").strip()
+        if base_url:
+            migrate_entry(model, base_url)
+
+    providers = config.get("providers")
+    if isinstance(providers, dict):
+        for provider_id, entry in providers.items():
+            if isinstance(entry, dict) and (entry.get("base_url") or entry.get("api")):
+                migrate_entry(entry, str(provider_id))
+
+    custom_providers = config.get("custom_providers")
+    if isinstance(custom_providers, list):
+        for entry in custom_providers:
+            if isinstance(entry, dict) and entry.get("base_url"):
+                identity = str(entry.get("name") or entry.get("id") or entry["base_url"])
+                migrate_entry(entry, identity)
+
+    if moved:
+        _persist_migration(config)
+        results["config_added"].append(
+            f"moved {moved} custom-endpoint api_key value(s) to .env via key_env"
+        )
+        if not quiet:
+            print(f"  Moved {moved} custom endpoint API key(s) from config.yaml to .env")
+
+
 #: Registry of (target_version, step), strictly ascending; simple default-flip steps are
 #: declared inline via _rewrite_stale_default / _rewrite_key partials. Later steps observe
 #: earlier steps' writes via read_raw_config() (filesystem state). v12 is the support floor:
@@ -835,6 +889,8 @@ MIGRATIONS: tuple[tuple[int, Callable[[dict[str, Any], bool], None]], ...] = (
     (49, _migrate_to_49),
     # 49 → 50: security.tirith_* dropped; the bundled scanner is gone (see _migrate_to_50).
     (50, _migrate_to_50),
+    # 50 → 51: move custom-endpoint secrets out of config.yaml (see _migrate_to_51).
+    (51, _migrate_to_51),
 )
 
 #: Steps triggered by a legacy key or identifier (a renamed or retired key, a removed plugin or
@@ -846,7 +902,7 @@ MIGRATIONS: tuple[tuple[int, Callable[[dict[str, Any], bool], None]], ...] = (
 #: out: it clears OPENAI_MODEL from .env, a generic name Hermes never reads but the user's tools may.
 #: v41 is left out too: it rewrites profile SOUL.md on a heading match, an artifact whose
 #: provenance the config stamp says nothing about.
-LEGACY_KEY_STEPS = frozenset({12, 14, 16, 17, 29, 33, 38, 39, 42, 43, 46, 50})
+LEGACY_KEY_STEPS = frozenset({12, 14, 16, 17, 29, 33, 38, 39, 42, 43, 46, 50, 51})
 
 
 def run_migrations(
@@ -862,6 +918,10 @@ def run_migrations(
             try:
                 migration_fn(results, quiet)
             except Exception as exc:
+                if migration_fn is _migrate_to_51:
+                    # Do not stamp a credential migration complete until both the
+                    # secret and its config reference have been persisted.
+                    raise
                 # A malformed nested value in one step must not abort the rest of the
                 # ladder (config loading itself fails otherwise). Loud, not silent.
                 warning = f"config migration to v{target_ver} failed and was skipped: {exc}"

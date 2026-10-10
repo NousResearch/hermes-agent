@@ -17,6 +17,7 @@ from hermes_cli.config import (
 from hermes_cli.web_server_memory import _normalize_memory_provider_name
 from tools.transcription_common import STT_MODEL_CATALOG
 from tools.wake_word import _PROVIDER_PREFERENCE
+from hermes_cli.model_assignment import persist_custom_endpoint_secret
 
 if TYPE_CHECKING:
     from hermes_cli.model_switch import ModelSwitchResult
@@ -486,17 +487,20 @@ def _validated_main_model_selection(
     from hermes_cli.model_switch import switch_model
 
     model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
-    is_bare_custom = provider.strip().lower() in {"custom", "local"}
+    provider_norm = provider.strip().lower()
+    is_bare_custom = provider_norm in {"custom", "local"}
+    is_custom_endpoint = is_bare_custom or provider_norm.startswith("custom:")
+    switch_provider = "custom" if provider_norm.startswith("custom:") else provider
     result = switch_model(
-        raw_input=model, explicit_provider=provider, is_global=True,
+        raw_input=model, explicit_provider=switch_provider, is_global=True,
         current_provider=str(model_cfg.get("provider") or ""), current_model=str(model_cfg.get("default") or ""),
-        current_base_url=base_url if is_bare_custom else str(model_cfg.get("base_url") or ""),
-        current_api_key=api_key if is_bare_custom else "",
+        current_base_url=base_url if is_custom_endpoint else str(model_cfg.get("base_url") or ""),
+        current_api_key=api_key if is_custom_endpoint else "",
         user_providers=cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {},
         custom_providers=get_compatible_custom_providers(cfg))
     if not result.success:
         raise HTTPException(status_code=400, detail=result.error_message or "model switch rejected")
-    if is_bare_custom and base_url.strip():
+    if is_custom_endpoint and base_url.strip():
         # The submitted endpoint IS the route this pick asked for; the credential step may have
         # re-resolved the bare target onto an env/config endpoint (CUSTOM_BASE_URL, a stale
         # model.base_url, the OPENROUTER_BASE_URL mirror). Restore the submitted endpoint AND the
@@ -510,19 +514,29 @@ def _validated_main_model_selection(
     return result
 
 
-def _apply_main_model_assignment(model_cfg: Any, result: "ModelSwitchResult", api_key: str = "") -> dict:
-    """Apply a main-slot selection to a ``model`` config dict via the canonical /model shape
-    (``hermes_cli.model_switch.apply_model_selection``). An explicit key for a custom endpoint is
-    the one inline credential the runtime reads (``model.api_key``); the legacy ``api`` alias is
-    dropped so a stale secret cannot shadow it.
-
-    Returns a new dict."""
+def _apply_main_model_assignment(
+    model_cfg: Any,
+    result: ModelSwitchResult,
+    api_key: str = "",
+    key_env: str = "",
+    provider: str = "",
+) -> dict:
+    """Apply the canonical route shape and its explicitly submitted credential."""
     from hermes_cli.model_switch import apply_model_selection
 
+    if provider:
+        result = replace(result, target_provider=provider)
     model_cfg = apply_model_selection(model_cfg, result)
-    if api_key.strip():
+    if key_env.strip():
+        model_cfg["key_env"] = key_env.strip()
+        model_cfg.pop("api_key_env", None)
+        model_cfg.pop("api_key", None)
+        model_cfg.pop("api", None)
+    elif api_key.strip():
         model_cfg["api_key"] = api_key.strip()
         model_cfg.pop("api", None)
+        model_cfg.pop("key_env", None)
+        model_cfg.pop("api_key_env", None)
     return model_cfg
 
 
@@ -685,7 +699,7 @@ def _endpoint_known_to_config(cfg: dict, base_url: str) -> bool:
     return False
 
 
-def _register_custom_endpoint(base_url: str, api_key: str, model: str) -> None:
+def _register_custom_endpoint(base_url: str, api_key: str, model: str, *, key_env: str = "") -> None:
     """Register a named ``custom_providers`` entry for a custom/local endpoint (mirrors the
     ``hermes model`` custom flow) so the picker gets a proper ready row instead of a "needs
     setup" dead-end. Dedups by base_url; never blocks the already-persisted assignment.
@@ -699,7 +713,7 @@ def _register_custom_endpoint(base_url: str, api_key: str, model: str) -> None:
     try:
         from hermes_cli.main_provider_setup import _auto_provider_name, _save_custom_provider
 
-        _save_custom_provider(base_url, api_key, model, name=_auto_provider_name(base_url))
+        _save_custom_provider(base_url, api_key, model, name=_auto_provider_name(base_url), key_env=key_env)
     except Exception:
         _log.debug("custom_providers registration skipped", exc_info=True)
 
@@ -756,8 +770,11 @@ def _apply_main_assignment_sync(cfg: dict, provider: str, model: str, base_url: 
                                 prepared: "Optional[tuple[str, ModelSwitchResult]]" = None) -> dict:
     from hermes_cli.config import save_config
     from hermes_cli.free_tier_bootstrap import reconcile_record
+    requested_provider = provider
     base_url, result = prepared or _prepare_main_assignment(cfg, provider, model, base_url, api_key)
     provider, model = result.target_provider, result.new_model
+    if requested_provider.strip().lower().startswith("custom:"):
+        provider = requested_provider.strip()
     provider_entry = _provider_entry(cfg, provider)
     # Snapshot BEFORE the new assignment overwrites cfg["model"]: this is the state the user
     # (CLI setup, a prior dashboard save) already had on disk, and it decides whether the
@@ -766,15 +783,22 @@ def _apply_main_assignment_sync(cfg: dict, provider: str, model: str, base_url: 
     provider_lc = provider.strip().lower()
     endpoint_already_known = (
         provider_lc in {"custom", "local"} and bool(base_url) and _endpoint_known_to_config(cfg, base_url))
-    model_cfg = _apply_main_model_assignment(cfg.get("model", {}), result, api_key)
-    _resolve_assignment_credentials(model_cfg, provider, provider_entry)
+    assignment_key_env = persist_custom_endpoint_secret(provider, base_url, api_key)
+    if assignment_key_env:
+        api_key = ""
+    model_cfg = _apply_main_model_assignment(
+        cfg.get("model", {}), result, api_key, assignment_key_env, provider
+    )
+    if not assignment_key_env and not api_key:
+        _resolve_assignment_credentials(model_cfg, provider, provider_entry)
+
     cfg["model"] = model_cfg
 
     new_provider = provider.strip().lower()
     gateway_tools = _apply_nous_gateway_defaults(cfg) if new_provider == "nous" else []
     save_config(cfg)
     if new_provider in {"custom", "local"} and base_url and not endpoint_already_known:
-        _register_custom_endpoint(base_url, api_key, model)
+        _register_custom_endpoint(base_url, api_key, model, key_env=assignment_key_env)
     # The serve process's boot record may still say "nothing configured"; the chat gates on it.
     reconcile_record()
 

@@ -424,6 +424,26 @@ def _apply_custom_provider_extras(custom_provider: dict[str, Any], target_model:
         result["request_overrides"] = {**(result.get("request_overrides") or {}), **request_overrides}
 
 
+def _resolve_declared_key_env(
+    entry: dict[str, Any], explicit_api_key: Optional[str]
+) -> tuple[str, bool]:
+    """Resolve an authoritative custom-endpoint key binding."""
+    rp = _rp()
+    env_var = str(entry.get("key_env") or entry.get("api_key_env") or "").strip()
+    if not env_var:
+        return "", False
+    if rp.has_usable_secret((explicit_api_key or "").strip()):
+        return "", True
+    value = get_secret_str(env_var, "").strip()
+    if not rp.has_usable_secret(value):
+        raise rp.AuthError(
+            f"Custom endpoint declares key_env {env_var!r}, but it has no usable value",
+            provider="custom",
+            code="declared_key_env_unresolved",
+        )
+    return value, True
+
+
 def _resolve_llamacpp_runtime(requested_provider: str, explicit_api_key: Optional[str]) -> dict[str, Any]:
     """Managed llama.cpp runtime: the supervised (or detected external) server, or a typed error.
     No server => say so and stop; falling through to the generic custom path would surface "local
@@ -486,16 +506,20 @@ def _resolve_direct_alias_runtime(requested_provider: str, explicit_api_key: Opt
     """Bare ``custom`` + explicit base_url (e.g. a ``model_aliases:`` direct alias)."""
     rp = _rp()
     base_url = explicit_base_url.strip().rstrip("/")
-    # Pool first — mirrors the named-custom path so bare `provider: custom` with a configured
-    # custom_providers entry gets its api_key from the pool instead of env fallbacks.
-    pool_result = rp._try_resolve_from_custom_pool(base_url, "custom", None)
+    model_cfg = rp._get_model_config()
+    same_endpoint = _clean(model_cfg.get("base_url")).rstrip("/") == base_url
+    bound_key, has_declared_key = _resolve_declared_key_env(
+        model_cfg if same_endpoint else {}, explicit_api_key
+    )
+    # A declared binding for this endpoint outranks credential-pool fallback.
+    pool_result = None if has_declared_key else rp._try_resolve_from_custom_pool(base_url, "custom", None)
     if pool_result:
         pool_result["source"] = "direct-alias"
         return pool_result
     # OLLAMA_API_KEY gets its own gate here: without it a `model_aliases:` entry pointing at
     # Ollama Cloud resolved no key at all.
     # ``model.key_env`` only when this alias endpoint IS the configured model.base_url (#67453).
-    candidates = [(explicit_api_key or "").strip(), _model_cfg_key_env_for(rp._get_model_config(), base_url),
+    candidates = [(explicit_api_key or "").strip(), bound_key,
                   *rp._host_gated_env_key_candidates(base_url, ollama=True)]
     api_key = next((c for c in candidates if rp.has_usable_secret(c)), "")
     return _custom_runtime(rp, base_url, api_key, None, source="direct-alias", requested_provider=requested_provider)
@@ -548,10 +572,15 @@ def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: 
     base_url = ((explicit_base_url or "").strip() or custom_provider.get("base_url", "")).rstrip("/")
     if not base_url:
         return None
-    pool_result = rp._try_resolve_from_custom_pool(
-        base_url, "custom", custom_provider.get("api_mode"),
-        provider_name=custom_provider.get("provider_key") or custom_provider.get("name"),
+    bound_key, has_declared_key = _resolve_declared_key_env(
+        custom_provider, explicit_api_key
     )
+    pool_result = None
+    if not has_declared_key:
+        pool_result = rp._try_resolve_from_custom_pool(
+            base_url, "custom", custom_provider.get("api_mode"),
+            provider_name=custom_provider.get("provider_key") or custom_provider.get("name"),
+        )
     if pool_result:
         # The pool doesn't know the custom_providers fields — propagate them here too.
         _apply_custom_provider_extras(custom_provider, target_model, pool_result)
@@ -559,8 +588,12 @@ def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: 
     explicit_key = (explicit_api_key or "").strip()
     candidates = [
         explicit_key,
-        _clean(custom_provider.get("api_key", "")),
-        _key_env_secret(custom_provider, f"custom provider '{custom_provider.get('name', requested_provider)}'"),
+        bound_key,
+        (
+            _clean(custom_provider.get("api_key", ""))
+            if not has_declared_key
+            else ""
+        ),
         *rp._host_gated_env_key_candidates(base_url, ollama=False),
     ]
     api_key: Any = next((c for c in candidates if rp.has_usable_secret(c)), "")
@@ -568,7 +601,7 @@ def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: 
     # mid-session); both wire clients accept a callable api_key (the Entra ID contract). An
     # explicit --api-key still wins as the one-off recovery escape hatch.
     key_cmd = _clean(custom_provider.get("key_cmd", ""))
-    if key_cmd and not rp.has_usable_secret(explicit_key):
+    if key_cmd and not has_declared_key and not rp.has_usable_secret(explicit_key):
         from agent.command_token_source import build_command_token_provider
         token_provider = build_command_token_provider(key_cmd, str(custom_provider.get("name", requested_provider) or "custom"))
         if token_provider is not None:

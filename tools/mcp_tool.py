@@ -91,6 +91,9 @@ if not _MCP_AVAILABLE:
 ClientSession: Any = None
 _MCP_SDK_IMPORT_ATTEMPTED = False
 _MCP_SDK_IMPORT_LOCK = threading.Lock()
+# First SDK import that broke inside an installed package (e.g. a pydantic_core built for another
+# Python) rather than on a module/name this SDK build lacks; "not available" errors name it.
+_MCP_SDK_IMPORT_ERROR: Optional[str] = None
 
 # Optional SDK type families (module, names, debug message when absent), bound in this order to
 # _MCP_SAMPLING_TYPES / _MCP_ELICITATION_TYPES / _MCP_NOTIFICATION_TYPES; an older SDK only
@@ -125,12 +128,18 @@ def __getattr__(name: str):
 def _import_sdk_names(module: str, names: tuple, missing_msg: Optional[str] = None) -> bool:
     """Bind ``names`` from SDK ``module`` into this module's globals; False (nothing bound,
     optional debug line) when this SDK build lacks the module or any of the names."""
+    global _MCP_SDK_IMPORT_ERROR
     try:
         mod = importlib.import_module(module)
         values = {n: getattr(mod, n) for n in names}
-    except (ImportError, AttributeError):
+    except (ImportError, AttributeError) as exc:
         if missing_msg:
             logger.debug(missing_msg)
+        missing = getattr(exc, "name", None) if isinstance(exc, ModuleNotFoundError) else None
+        absent = isinstance(exc, AttributeError) or (
+            missing is not None and (module == missing or module.startswith(missing + ".")))
+        if not absent and _MCP_SDK_IMPORT_ERROR is None:
+            _MCP_SDK_IMPORT_ERROR = f"{type(exc).__name__}: {exc}"
         return False
     globals().update(values)
     return True

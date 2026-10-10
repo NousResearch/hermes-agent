@@ -91,7 +91,10 @@ def test_generated_file_rpc_kwargs_correlation_and_authority(tmp_path, monkeypat
             results = list(pool.map(lambda i: namespace["terminal"](f"tag-{i}", 3, "/tmp"), range(8)))
         assert [r["args"]["command"] for r in results] == [f"tag-{i}" for i in range(8)]
         assert "not available" in namespace["_call"]("unauthorized-tool", {})["error"]
-        assert "limit reached" in namespace["terminal"]("over-budget")["error"]
+        over = namespace["terminal"]("over-budget")
+        # the refusal keeps the stub's documented shape, so r["output"] is not a KeyError
+        assert "limit reached" in over["error"] and "limit reached" in over["output"]
+        assert over["exit_code"] == -1
         assert counter == [budget] and len(seen) == len(log) == budget
     finally:
         stop.set()

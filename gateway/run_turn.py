@@ -25,9 +25,11 @@ from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter, ProcessingOutcome
 from gateway.platforms.event import MessageEvent
+from gateway.inbound_context import PreparedInboundMessage
 from gateway.response_filters import (
     display_kind_for_event, is_machinery_display_kind, reply_expected_metadata, silence_allowed,
 )
+from gateway.run_inbound_turn_context import channel_state_metadata
 from gateway.warning_notifications import diagnostic_metadata, diagnostic_turn_muted, diagnostic_wake_muted
 from gateway.session import (
     SessionSource, _session_key_namespace, build_channel_continuity_note,
@@ -1458,12 +1460,9 @@ class GatewayTurnMixin:
             )
 
     def _hmwa_apply_message_timestamp(self, event, message_text):
-        """Capture the platform event time as message metadata and keep the persisted transcript
-        clean — strip any leading timestamp prefix and the Discord triggering-message note (a
-        model instruction, not authored text) — regardless of the toggle; only the in-context
-        RENDER is gated behind gateway.message_timestamps.enabled (default OFF)."""
+        """Capture the event time and keep transport notes out of the persisted user message."""
         from gateway.run import _load_gateway_config, _message_timestamps_enabled
-        from gateway.run_inbound import strip_discord_triggering_note
+        from gateway.run_inbound import strip_inbound_source_note
         persist_user_message = None
         persist_user_timestamp = None
         try:
@@ -1476,7 +1475,7 @@ class GatewayTurnMixin:
             _evt_tz = _get_evt_tz()
             if message_text and isinstance(message_text, str):
                 _clean_message_text, _embedded_ts = _strip_msg_ts(message_text, tz=_evt_tz)
-                persist_user_message = strip_discord_triggering_note(event, _clean_message_text)
+                persist_user_message = strip_inbound_source_note(event, _clean_message_text)
                 _event_epoch = _coerce_msg_ts(getattr(event, "timestamp", None), tz=_evt_tz)
                 persist_user_timestamp = _event_epoch if _event_epoch is not None else _embedded_ts
                 if _message_timestamps_enabled(_load_gateway_config()):
@@ -1757,7 +1756,7 @@ class GatewayTurnMixin:
         return agent_failed_early, hidden_reasoning_incomplete, is_context_overflow_failure
 
     async def _hmwa_compression_exhaustion_reset(
-        self, agent_result, response, session_entry, session_key, source,
+        self, agent_result, response, session_entry, session_key, source, *, internal: bool,
     ):
         """Auto-reset a permanently oversized session so the next message starts fresh instead of
         replaying the oversized context forever. Never on a lock-contended defer — that is the
@@ -1775,7 +1774,11 @@ class GatewayTurnMixin:
             )
         elif agent_result.get("compression_exhausted") and session_entry and session_key:
             logger.info("Auto-resetting session %s after compression exhaustion.", session_entry.session_id)
-            new_entry = await self.async_session_store.reset_session(session_key)
+            # An internal event's source has routing fields only, so its empty chat and user names
+            # must not replace the origin's.
+            new_entry = await self.async_session_store.reset_session(
+                session_key, source=None if internal else source,
+            )
             self._evict_cached_agent(session_key)
             # Conversation boundary: the funnel clears every conversation-scoped per-session dict.
             self._clear_conversation_scope(session_key, reason="compression_exhausted_reset")
@@ -1814,8 +1817,11 @@ class GatewayTurnMixin:
         }
         if prepared.persist_user_display_kind:
             _user_entry["display_kind"] = prepared.persist_user_display_kind
+        display_metadata = channel_state_metadata(event)
         if prepared.persistence_owner:
-            _user_entry["display_metadata"] = {"gateway_input_owner": prepared.persistence_owner}
+            display_metadata["gateway_input_owner"] = prepared.persistence_owner
+        if display_metadata:
+            _user_entry["display_metadata"] = display_metadata
         if getattr(event, "message_id", None):
             _user_entry["message_id"] = str(event.message_id)
         return _user_entry
@@ -2066,7 +2072,8 @@ class GatewayTurnMixin:
         if event.internal and session_key:
             await self._rehydrate_prompt_pins(session_key, session_entry.session_id)
         context_prompt = self._pinned_session_context_prompt(
-            context, _redact_pii, session_key, internal=event.internal,
+            self._prompt_session_context(context, session_entry), _redact_pii, session_key,
+            internal=event.internal,
         )
 
         # Per-turn notes ride the user message via the api_content sidecar, NOT context_prompt
@@ -2206,11 +2213,16 @@ class GatewayTurnMixin:
                 persist_user_display_kind=prepared.persist_user_display_kind,
                 reply_expected=event.reply_expected,
                 persist_user_display_metadata={
-                    "gateway_input_owner": prepared.persistence_owner,
+                    "gateway_input_owner": prepared.persistence_owner, **channel_state_metadata(event),
                     **reply_expected_metadata(event.reply_expected), **diagnostic_metadata(event)},
                 message_type=event.message_type,
                 scheduled_heartbeat=bool(getattr(event, "_heartbeat_session_id", None)),
+                input_snapshot=getattr(event, "_prepared_inbound", None),
             )
+            if getattr(event, "_prepared_inbound", None) is not None:
+                prepared.message_text = event._prepared_inbound.message_text
+                prepared.persist_user_message = event._prepared_inbound.persist_user_message
+                prepared.persist_user_timestamp = event._prepared_inbound.persist_user_timestamp
             _turn_seconds = time.monotonic() - _turn_started_monotonic
 
             # A queued (/queue) chain answered the LAST message of the chain, so the outer final
@@ -2251,7 +2263,7 @@ class GatewayTurnMixin:
             if agent_failed_early and not is_context_overflow_failure:
                 response = self._hmwa_add_failed_turn_notice(response, self._hmwa_failed_turn_notice(agent_result))
             response, session_entry = await self._hmwa_compression_exhaustion_reset(
-                agent_result, response, session_entry, session_key, source,
+                agent_result, response, session_entry, session_key, source, internal=event.internal,
             )
             await self._hmwa_persist_turn_transcript(
                 event=event, source=source, session_entry=session_entry, session_key=session_key,
@@ -2755,6 +2767,7 @@ class GatewayTurnMixin:
         source: SessionSource, session_id: str, session_key: str | None = None,
         run_generation: Optional[int] = None, event_message_id: Optional[str] = None,
         scheduled_heartbeat: bool = False,
+        input_snapshot: Optional[PreparedInboundMessage] = None,
     ) -> dict[str, Any]:
         """Forward the message to a remote Hermes API server instead of running a local AIAgent.
 
@@ -2853,6 +2866,10 @@ class GatewayTurnMixin:
             # (DNS fail, firewall, remote down) fails fast instead of hanging on the OS default.
             _timeout = ClientTimeout(total=0, sock_read=1800, sock_connect=30)
             async with _AioClientSession(timeout=_timeout) as session:
+                if input_snapshot is not None:
+                    await input_snapshot.snapshot.refresh()
+                    message = input_snapshot.render(self, timestamps=True)
+                    api_messages[-1]["content"] = message
                 async with session.post(f"{proxy_url}/v1/chat/completions", json=body, headers=headers) as resp:
                     if resp.status != 200:
                         error_text = await resp.text()
@@ -3881,8 +3898,8 @@ class GatewayTurnMixin:
             )
             if next_message is None:
                 return result
-            from gateway.run_inbound import strip_discord_triggering_note
-            next_persist_message = strip_discord_triggering_note(pending_event, next_message)
+            from gateway.run_inbound import strip_inbound_source_note
+            next_persist_message = strip_inbound_source_note(pending_event, next_message)
             next_message_id = self._reply_anchor_for_event(pending_event)
             next_inbound_id = str(pending_event.message_id) if getattr(pending_event, "message_id", None) else None
             next_channel_prompt, next_source = self._pinned_channel_inputs(
@@ -3944,7 +3961,9 @@ class GatewayTurnMixin:
                 persist_user_message=next_persist_message,
                 persist_user_display_kind=next_display_kind,
                 reply_expected=next_reply_expected,
+                input_snapshot=getattr(pending_event, "_prepared_inbound", None),
                 persist_user_display_metadata={
+                    **channel_state_metadata(pending_event),
                     **reply_expected_metadata(next_reply_expected), **diagnostic_metadata(pending_event)} or None,
             )
         except asyncio.CancelledError:
@@ -4273,16 +4292,23 @@ class GatewayTurnMixin:
         persist_user_display_metadata: Optional[dict] = None,
         reply_expected: Optional[bool] = None,
         scheduled_heartbeat: bool = False,
+        input_snapshot: Optional[PreparedInboundMessage] = None,
         title_user_message: Optional[str] = None,
     ) -> dict[str, Any]:
         """Run the agent; returns the full run_conversation result dict.
 
         Keys: "final_response", "messages", "api_calls", "completed"."""
+        if input_snapshot is not None:
+            await input_snapshot.snapshot.refresh()
+            message = input_snapshot.render(self, timestamps=True)
+            persist_user_message = input_snapshot.persist_user_message
+            persist_user_timestamp = input_snapshot.persist_user_timestamp
         if self._get_proxy_url():
             return await self._run_agent_via_proxy(
                 message=message, context_prompt=context_prompt, history=history, source=source,
                 session_id=session_id, session_key=session_key, run_generation=run_generation,
                 event_message_id=event_message_id, scheduled_heartbeat=scheduled_heartbeat,
+                input_snapshot=input_snapshot,
             )
 
         from run_agent import AIAgent
@@ -4311,8 +4337,10 @@ class GatewayTurnMixin:
             persist_user_timestamp=persist_user_timestamp,
             persist_user_display_kind=persist_user_display_kind,
             reply_expected=reply_expected,
-            persist_user_display_metadata=persist_user_display_metadata, scheduled_heartbeat=scheduled_heartbeat,
+            persist_user_display_metadata=persist_user_display_metadata,
+            scheduled_heartbeat=scheduled_heartbeat,
             voice_turn=str(getattr(message_type, "value", message_type) or "").lower() == "voice",
+            input_snapshot=input_snapshot,
         )
         _status_thread_metadata = self._run_agent_bind_turn_wiring(
             turn_ctx, turn_runner, source, event_message_id, disp._native_slack_task_cards,

@@ -8,7 +8,6 @@ import shutil
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
-from hermes_cli.config import cfg_get
 from tools.browser_tool_origin import origin as _bt
 from tools import browser_tool_cloud as _cloud
 from tools import browser_tool_lightpanda_fallback as _lp
@@ -102,32 +101,13 @@ def _analyze_screenshot_with_aux_llm(screenshot_path: Path, question: str) -> st
     _screenshot_bytes = screenshot_path.read_bytes()
     _screenshot_b64 = base64.b64encode(_screenshot_bytes).decode("ascii")
     data_url = f"data:image/png;base64,{_screenshot_b64}"
-    vision_model = _bt._get_vision_model()
     _bt.logger.debug("browser_vision: analysing screenshot (%d bytes)", len(_screenshot_bytes))
 
-    vision_timeout = 120.0
-    vision_temperature = 0.1
-    try:
-        from hermes_cli.config import load_config
-        _vision_cfg = cfg_get(load_config(), "auxiliary", "vision", default={})
-        if _vision_cfg.get("timeout") is not None:
-            vision_timeout = float(_vision_cfg["timeout"])
-        if _vision_cfg.get("temperature") is not None:
-            vision_temperature = float(_vision_cfg["temperature"])
-    except Exception:
-        pass
-
     from agent.auxiliary_client import call_llm  # lazy: heavy client, only needed on the vision path
+    from tools.vision_tools import _aux_call_kwargs, _media_messages
 
-    call_kwargs = {
-        "task": "vision", "temperature": vision_temperature, "timeout": vision_timeout,
-        "messages": [{"role": "user", "content": [
-            {"type": "text", "text": vision_prompt},
-            {"type": "image_url", "image_url": {"url": data_url}},
-        ]}],
-    }
-    if vision_model:
-        call_kwargs["model"] = vision_model
+    call_kwargs = _aux_call_kwargs(_media_messages(vision_prompt, "image_url", data_url),
+                                   _bt._get_vision_model(), 120.0)
     try:
         response = call_llm(**call_kwargs)
     except Exception as _api_err:

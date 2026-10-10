@@ -1168,6 +1168,10 @@ agent:
   # Recommended: 20-30 for focused tasks, 50-100 for open exploration
   max_turns: 500
 
+  # One xAI prompt-cache routing key for every session of this profile ("" = per-session key).
+  # xAI caches per key, so a shared key lets new sessions read the system prompt and tools from cache.
+  # xai_cache_scope: ""
+
   # Inactivity timeout for gateway agent runs (seconds, 0 = unlimited).
   # The agent can run indefinitely when actively calling tools or receiving
   # API responses.  Only fires after the agent has been idle for this duration.

@@ -35,6 +35,29 @@ def _cache_scope_from_session_id(session_id: Optional[str]) -> str:
     return match.group(1) if match else sid
 
 
+def _configured_xai_cache_scope() -> str:
+    """``agent.xai_cache_scope`` from config.yaml ("" when unset or unreadable)."""
+    try:
+        from hermes_cli.config import load_config_readonly
+        agent_cfg = load_config_readonly().get("agent") or {}
+        return str(agent_cfg.get("xai_cache_scope") or "").strip() if isinstance(agent_cfg, dict) else ""
+    except Exception:
+        logger.debug("agent.xai_cache_scope lookup failed", exc_info=True)
+        return ""
+
+
+def _apply_xai_shared_scope(is_xai_responses: bool, scope: str, cache_key: Any) -> tuple:
+    """Opt-in ``agent.xai_cache_scope``: one xAI routing key for every session of a profile.
+
+    xAI keeps prompt caches per routing key (``prompt_cache_key`` / ``x-grok-conv-id``), so a fresh
+    per-session key makes every new session's first call re-bill the whole system prompt + tool
+    schemas. A shared key lets new sessions read that prefix from cache. Used verbatim, not
+    content-hashed: sessions whose volatile prompt tail differs still share the long stable prefix.
+    """
+    shared = _configured_xai_cache_scope() if is_xai_responses else ""
+    return (shared, shared) if shared else (scope, cache_key)
+
+
 def _bounded_prompt_cache_key(value: Any) -> Optional[str]:
     """Return a provider-safe (<=64 char) cache key without changing session identity."""
     key = "" if value is None else str(value).strip()
@@ -741,6 +764,7 @@ class ResponsesApiTransport(ProviderTransport):
         # compression rotation; session_id itself stays untouched for transcript isolation.
         _cache_scope = _cache_scope_from_session_id(params.get("cache_scope_id") or session_id)
         cache_key = _content_cache_key(instructions, response_tools, _cache_scope) or _cache_scope
+        _cache_scope, cache_key = _apply_xai_shared_scope(is_xai_responses, _cache_scope, cache_key)
         # xAI takes prompt_cache_key in extra_body (below); GitHub Models opts out entirely.
         if not is_github_responses and not is_xai_responses and cache_key:
             kwargs["prompt_cache_key"] = cache_key

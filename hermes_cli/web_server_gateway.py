@@ -388,12 +388,16 @@ def _profile_action_environment(
         from hermes_cli.env_loader import (
             _PROFILE_MANAGED_ENV_KEYS, _env_keys_defined_in_dotenv, get_secret_source_values,
         )
+        from agent.secret_scope import _is_global_env
+        from tools.env_passthrough import get_all_passthrough
         from hermes_cli.web_server_profiles import _resolve_profile_dir
         from hermes_constants import apply_subprocess_home_env, get_default_hermes_root
         from tools.environments.local import build_subprocess_env, strip_launch_profile_env
+        from tui_gateway.launch_profile_policy import launch_profile_scope_if_multiplexed
 
         target_home = _resolve_profile_dir(profile)
-        action_env = build_subprocess_env(base=os.environ, scrub_secrets=True)
+        with launch_profile_scope_if_multiplexed():
+            action_env = build_subprocess_env(base=os.environ, scrub_secrets=True)
 
         profile_keys = set(_PROFILE_MANAGED_ENV_KEYS)
         try:
@@ -405,11 +409,24 @@ def _profile_action_environment(
             # Secret managers contribute locally named credentials that never appear in .env;
             # the dashboard already hydrated its own sources, so their key names are a boundary too.
             profile_keys.update(get_secret_source_values(source_home).keys())
-        for key in profile_keys:
-            action_env.pop(key, None)
-        # Authorization gates that reached this process outside any dotenv (unit-file
-        # ``Environment=``, an operator export) are not in ``profile_keys``; the target
-        # profile's ``.env`` rarely defines them, so they would survive into the child (#113270).
+        try:
+            launch_home = get_hermes_home().resolve()
+            same_profile = target_home.resolve() == launch_home
+        except OSError:
+            same_profile = False
+        if not same_profile:
+            # A registered name may have arrived solely from the launch process environment
+            # (systemd/Compose/op run/operator export), so it is absent from dotenv/source
+            # registries. It is still launch-profile state and must not cross into a named child.
+            # Process-global names are deliberately retained, including when also registered for
+            # passthrough; they are deployment settings, not profile credentials.
+            boundary_names = profile_keys | set(get_all_passthrough())
+            boundary_names_upper = {
+                key.upper() for key in boundary_names
+                if not _is_global_env(key.upper())
+            }
+            for key in [key for key in action_env if key.upper() in boundary_names_upper]:
+                action_env.pop(key, None)
         strip_launch_profile_env(action_env, target_home)
 
         # Pin the child before import-time startup runs; the explicit -p flag stays authoritative

@@ -390,6 +390,24 @@ class TestSessionStoreSwitchSession:
         assert resumed["end_reason"] is None
         db.close()
 
+    def test_switch_session_can_record_internal_compression_repoint(self, tmp_path):
+        from hermes_state import SessionDB
+
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path / "sessions", config=GatewayConfig())
+        db = SessionDB(db_path=tmp_path / "state.db")
+        store._db = db
+        store._loaded = True
+        source = SessionSource(platform=Platform.SLACK, chat_id="C123", chat_type="dm", user_id="U123")
+        current = store.get_or_create_session(source)
+        switched = store.switch_session(
+            current.session_key, "compression-tip", end_reason="compression",
+        )
+
+        assert switched is not None
+        assert db.get_session(current.session_id)["end_reason"] == "compression"
+        db.close()
+
     def test_switch_session_expected_session_id_refuses_moved_route(self, tmp_path):
         """With ``expected_session_id`` the repoint is a CAS: a route that moved past the caller's
         snapshot is left alone (None), while a matching snapshot still switches."""

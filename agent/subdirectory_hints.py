@@ -273,12 +273,16 @@ class SubdirectoryHintTracker:
 
     def _load_hints_for_directory(self, directory: Path) -> Optional[str]:
         """Load the first hint file in *directory*; formatted text or None."""
+        # Construct hint_path from working_dir to handle relative paths correctly
+        hint_path = self.working_dir / directory
+        self._loaded_dirs.add(hint_path)
+        if not self._within_working_dir(hint_path):
         self._loaded_dirs.add(directory)
         if self._home_is_working_dir or not self._within_working_dir(directory):
             logger.debug("Skipping hint files in %s — outside working_dir %s", directory, self.working_dir)
             return None
         for filename in _HINT_FILENAMES:
-            hint_path = directory / filename
+            hint_path = self.working_dir / directory / filename
             try:
                 if not hint_path.is_file():
                     continue
@@ -311,7 +315,8 @@ class SubdirectoryHintTracker:
         """Working-dir-relative, else ``~/``-relative (POSIX rendering so Windows
         never shows ``~/AppData\\Local\\...`` chimeras), else absolute."""
         try:
-            return str(hint_path.relative_to(self.working_dir))
+            resolved = hint_path.resolve()
+            return str(resolved.relative_to(self.working_dir))
         except (ValueError, RuntimeError):
             pass
         try:

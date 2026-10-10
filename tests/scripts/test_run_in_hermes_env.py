@@ -177,3 +177,46 @@ def test_no_command_is_a_usage_error(checkout: Path):
     run = _run_in(checkout, sentinel=None)
     assert run.returncode == 2
     assert "usage" in run.stderr
+
+
+def test_bootstrap_python_searches_the_pm_default_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The store fallback in ``hermes_bootstrap_python`` must be pm's default home.
+
+    ``_get_platform_default_hermes_home`` appends ``HERMES_DATA_DIR_SUFFIX``
+    literally and leads with LOCALAPPDATA on Git Bash (pm runs win32 there);
+    searching ``~/.hermes`` alone misses every suffixed and every
+    Windows-default store and reports "no bootstrap Python found" over a
+    populated tool directory. The checkout candidates (.venv/venv) and
+    ``$repo/../tools`` are deliberately absent so only the fallback decides.
+    """
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+    monkeypatch.delenv("HERMES_RUNTIME_DIR", raising=False)
+    monkeypatch.setenv("HERMES_DATA_DIR_SUFFIX", "-ci")
+    home = tmp_path / "account-home"
+    home.mkdir()
+    local = tmp_path / "local-app-data"
+    local.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("LOCALAPPDATA", str(local))
+
+    from hermes_constants import _get_platform_default_hermes_home
+
+    default = _get_platform_default_hermes_home()
+    python = default / "tools" / "python-3.14.0" / "bin" / "python3"
+    python.parent.mkdir(parents=True)
+    python.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    python.chmod(0o755)
+
+    repo = tmp_path / "checkout"
+    repo.mkdir()
+    result = subprocess.run(
+        [bash(), "-c", '. "$1"; hermes_bootstrap_python "$2"', "probe",
+         posix(REPO_ROOT / "scripts" / "_activation.sh"), posix(repo)],
+        env={**os.environ}, capture_output=True, text=True, timeout=60,
+    )
+    assert Path(result.stdout.strip()) == python, (
+        f"rc={result.returncode} out={result.stdout!r} err={result.stderr!r}"
+    )

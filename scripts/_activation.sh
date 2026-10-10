@@ -30,15 +30,35 @@ hermes_sync() {
     ) >&2
 }
 
+# hermes_activation_default_home: the home pm's _get_platform_default_hermes_home
+# answers for this shell -- LOCALAPPDATA first on MSYS/Cygwin/Git Bash (pm runs
+# win32 there and the store lands under it), the account home elsewhere, with
+# HERMES_DATA_DIR_SUFFIX appended LITERALLY like pm does. Empty when there is
+# no account home to anchor a search on.
+hermes_activation_default_home() {
+    local suffix="${HERMES_DATA_DIR_SUFFIX:-}"
+    case "$(uname -s 2>/dev/null)" in
+        MINGW*|MSYS*|CYGWIN*)
+            if [ -n "${LOCALAPPDATA:-}" ]; then printf '%s' "$LOCALAPPDATA/hermes$suffix"
+            elif [ -n "${HOME:-}" ]; then printf '%s' "$HOME/AppData/Local/hermes$suffix"
+            fi
+            ;;
+        *)
+            if [ -n "${HOME:-}" ]; then printf '%s' "$HOME/.hermes$suffix"; fi
+            ;;
+    esac
+}
+
 # hermes_bootstrap_python REPO: print the interpreter that can run pm before
 # any dependency is importable. It only emits the environment; it installs nothing.
 hermes_bootstrap_python() {
-    local repo="$1" store candidate
+    local repo="$1" store candidate home
     for candidate in "$repo/.venv/bin/python" "$repo/.venv/Scripts/python.exe" \
                      "$repo/venv/bin/python" "$repo/venv/Scripts/python.exe"; do
         [ -x "$candidate" ] && { printf '%s\n' "$candidate"; return 0; }
     done
-    for store in "${HERMES_RUNTIME_DIR:-}" "$repo/../tools" "${HERMES_HOME:-$HOME/.hermes}/tools"; do
+    home="${HERMES_HOME:-$(hermes_activation_default_home)}"
+    for store in "${HERMES_RUNTIME_DIR:-}" "$repo/../tools" "${home:+$home/tools}"; do
         [ -n "$store" ] || continue
         for candidate in "$store"/python-*/bin/python3 "$store"/python-*/python.exe \
                          "$store"/python-*/bin/python "$store"/python-*/bin/python.exe; do

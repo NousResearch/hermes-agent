@@ -17,10 +17,10 @@ def _is_windows() -> bool:
     return sys.platform == "win32"
 
 
-#: Launcher command names install.ps1's Set-PathVariable exposes from the
-#: managed binary dir (the default Hermes root's ``bin``, next to uv.exe)
-#: on the user PATH. Keep in lockstep with WINDOWS_BIN_LAUNCHERS in
-#: hermes_cli/_launchers.py and scripts/install.ps1.
+#: Launcher command names install.ps1's Set-LauncherUserPath exposes from the
+#: managed binary dir (the default Hermes root's ``bin``) on the user PATH.
+#: Keep in lockstep with WINDOWS_BIN_LAUNCHERS in hermes_cli/_launchers.py
+#: (install.ps1's Set-LauncherUserPath exposes whatever that module stages).
 _WINDOWS_BIN_LAUNCHERS = ("hermes", "hermes-acp")
 
 
@@ -69,7 +69,7 @@ def ensure_windows_bin_launchers(
     interpreter (no-boot-through-venv; ``pyvenv.cfg`` is inert dead
     config). The canonical launcher home is
     the managed binary dir — the default Hermes root's ``bin``
-    (``%LOCALAPPDATA%\\hermes\\bin``, next to the managed uv) — which lives
+    (``%LOCALAPPDATA%\\hermes\\bin``) — which lives
     OUTSIDE the git checkout so no git operation can ever touch it. It is
     a per-machine dir shared by every profile: ``get_hermes_home()`` would
     point inside ``profiles\\<name>`` under ``hermes -p``, so the anchor
@@ -249,7 +249,7 @@ def migrate_windows_bin_path(
     """One-time PATH migration to the ``HERMES_HOME\\bin`` launcher layout.
 
     Runs from the ``hermes update`` tail (and mirrors what install.ps1's
-    Set-PathVariable does on fresh installs/repairs, which never reach
+    Set-LauncherUserPath does on fresh installs/repairs, which never reach
     existing installs — updates don't run install.ps1):
 
     1. stage the launcher copies into the managed binary dir (via

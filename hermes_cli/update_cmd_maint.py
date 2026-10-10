@@ -942,6 +942,45 @@ def _print_checkpoint_footprint_notice() -> None:
         print(f"\n\033[1;33mℹ  {notice}\033[0m")
 
 
+def _notice_legacy_managed_uv() -> None:
+    """Name the pre-PM ``uv``/``uvx`` a legacy install left in each home's ``bin``.
+
+    Notice only — never an unattended delete: shape identifies uv but the old
+    installer wrote no receipt, so the copy in ``bin`` might be the user's own.
+    The explicit migration is ``hermes doctor --fix`` (which explains exactly
+    that). Runs only once PM's store carries its own uv (until then the legacy
+    binary is the install's only uv) and only where an anchored fix exists;
+    every home is walked, including a custom ``HERMES_HOME`` ``list_profiles()``
+    never enumerates.
+    """
+    import pm
+    from hermes_constants import get_hermes_home
+    from hermes_cli.profiles import list_profiles
+    from hermes_cli.legacy_uv import (
+        automatic_cleanup, LEGACY_MANAGED_UV_NAMES, REMOVABLE, bin_escapes_home,
+        classify_leftover,
+    )
+
+    if not automatic_cleanup() or not pm.is_installed("uv"):
+        return
+    homes = {profile.path for profile in list_profiles(lazy_skill_count=True)}
+    homes.add(get_hermes_home())
+    for home in sorted(homes, key=lambda h: str(h)):
+        if bin_escapes_home(home):
+            continue
+        found = [
+            name for name in LEGACY_MANAGED_UV_NAMES
+            if classify_leftover(home / "bin" / name) == REMOVABLE
+        ]
+        if found:
+            print(
+                f"\n\033[1;33m⚠  Pre-PM uv binaries in {home}/bin ({', '.join(found)}) shadow "
+                f"your own uv. Hermes cannot prove it installed them, so they are left in "
+                f"place — run 'hermes doctor --fix' to remove them, or keep them if they are "
+                f"yours.\033[0m"
+            )
+
+
 def _print_post_update_notices_and_self_heals() -> None:
     """Best-effort notices (FTS optimize, curator) and self-heals (FHS PATH, ACP launcher,
     Windows bin launchers, cua-driver refresh) that run after the summary."""
@@ -962,6 +1001,7 @@ def _print_post_update_notices_and_self_heals() -> None:
         ('FHS PATH guard check failed: %s', _ensure_fhs_path_guard),
         ('CLI launcher exposure failed: %s', lambda: _launchers.expose_cli(_m().PROJECT_ROOT)),
         ('Windows bin launcher migration failed: %s', _migrate_windows_bin_path),
+        ('Legacy uv migration notice failed: %s', _notice_legacy_managed_uv),
         ('cua-driver refresh failed: %s', _refresh_cua_driver_after_update),
         ('Default PM tool install failed: %s', _install_default_tools_after_update),
         ('Checkpoint footprint notice failed: %s', _print_checkpoint_footprint_notice),

@@ -162,6 +162,66 @@ class TestDoctorToolAvailabilitySummary:
         assert "system dependency not met" in next(line for line in out.splitlines() if "homeassistant" in line)
         assert any("hermes setup" in issue for issue in f.issues)
 
+    def test_browser_use_row_reports_setup_hint_not_system_dependency(self, monkeypatch):
+        """browser-use declares no env var (the CLI is a PM-managed install, not a key); a
+        missing CLI is a setup problem that must name the post-setup hook — not 'system
+        dependency', and not the generic API-key summary: this exact row is what users see
+        after an update skipped provisioning."""
+        unavailable = [{"name": "browser-use", "env_vars": [], "tools": ["browser_exec"]},
+                       {"name": "homeassistant", "env_vars": [], "tools": []}]
+        monkeypatch.setattr(doctor_tools, "_enabled_cli_toolsets_for_doctor", lambda: {"browser-use"})
+        monkeypatch.setattr(doctor_tools, "_apply_doctor_tool_availability_overrides", lambda a, u: (a, u))
+        monkeypatch.setattr(doctor_tools, "_doctor_web_capability_rows", lambda: [])
+        fake_model_tools = types.SimpleNamespace(
+            check_tool_availability=lambda: ([], unavailable),
+            TOOLSET_REQUIREMENTS={"browser-use": {"name": "browser-use"}, "homeassistant": {"name": "homeassistant"}},
+        )
+        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+        # Pin the reason to the state this row fixes: default mode, CLI missing.
+        monkeypatch.setattr("hermes_cli.config.read_raw_config", lambda: {})
+        monkeypatch.setattr("tools.browser_use_cli._camofox_active", lambda context="": False)
+        monkeypatch.setattr("tools.browser_use_cli._find_cli", lambda: None)
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            f = doctor_tools._check_tool_availability(False)
+        out = buf.getvalue()
+
+        row = next(line for line in out.splitlines() if "browser-use" in line)
+        assert "post-setup browser_use_cli" in row and "system dependency" not in row
+        assert "system dependency not met" in next(line for line in out.splitlines() if "homeassistant" in line)
+        # Install-only hint: the row names the remedy, but must not feed the generic
+        # 'configure missing API keys' summary — no key can resolve a missing CLI.
+        assert not any("hermes setup" in issue for issue in f.issues)
+
+    def test_browser_use_opt_out_row_names_the_opt_out_not_an_install(self, monkeypatch):
+        """``browser.backend: off`` is a deliberate opt-out — the row must name it instead of
+        advising a CLI install, keyed on the same check the availability path uses and not on
+        the toolset name (#122412 review). Even an installed CLI keeps the row opt-out-shaped."""
+        unavailable = [{"name": "browser-use", "env_vars": [], "tools": ["browser_exec"]}]
+        monkeypatch.setattr(doctor_tools, "_enabled_cli_toolsets_for_doctor", lambda: {"browser-use"})
+        monkeypatch.setattr(doctor_tools, "_apply_doctor_tool_availability_overrides", lambda a, u: (a, u))
+        monkeypatch.setattr(doctor_tools, "_doctor_web_capability_rows", lambda: [])
+        fake_model_tools = types.SimpleNamespace(
+            check_tool_availability=lambda: ([], unavailable),
+            TOOLSET_REQUIREMENTS={"browser-use": {"name": "browser-use"}},
+        )
+        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+        monkeypatch.setattr("hermes_cli.config.read_raw_config", lambda: {"browser": {"backend": "off"}})
+        monkeypatch.setattr("tools.browser_use_cli._camofox_active", lambda context="": False)
+        monkeypatch.setattr("tools.browser_use_cli._find_cli", lambda: ["/usr/bin/browser-use"])
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            f = doctor_tools._check_tool_availability(False)
+        out = buf.getvalue()
+
+        row = next(line for line in out.splitlines() if "browser-use" in line)
+        assert "browser.backend: off" in row
+        assert "post-setup" not in row and "system dependency" not in row
+        # Install-only remedy: the API-key summary stays silent for this state too.
+        assert not any("hermes setup" in issue for issue in f.issues)
+
     def test_web_capability_rows_warn_when_selected_provider_not_ready(self, monkeypatch):
         """#78412: selected firecrawl with is_available=False must warn."""
         class _Unavailable:

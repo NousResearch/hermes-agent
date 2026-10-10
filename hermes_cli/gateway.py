@@ -4705,9 +4705,6 @@ from hermes_cli.gateway_setup_wizard import (
     _clean_discord_ids,
     _prompt_allowlist_var,
     _setup_standard_platform,
-    _WEIXIN_DM_POLICIES,
-    _WEIXIN_GROUP_NOTE,
-    _setup_weixin,
     _setup_qqbot,
     _signal_line_input,
     _setup_signal,
@@ -4724,6 +4721,8 @@ from hermes_cli.gateway_setup_wizard import (
     _wizard_post_setup,
     gateway_setup,
 )
+
+from hermes_cli.gateway_setup_weixin import _setup_weixin
 
 
 # Operator wording for the out-of-loop watchdog exit reasons stamped by gateway/shutdown_watchdog.py.

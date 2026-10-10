@@ -15,6 +15,7 @@ def stamp_origin_discriminators(t: Any, route_metadata: dict, media_metadata: di
     """
     discriminators = (
         ("scope_id", t.origin.get("scope_id") if t.origin_target else None),
+        ("account_id", t.origin.get("account_id") if t.origin_target else None),
         ("user_id", t.origin_user_id if t.is_relay else None),
     )
     for key, value in discriminators:

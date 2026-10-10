@@ -64,7 +64,7 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
     "whatsapp_cloud": _TIER_LOW,  # adapter lacks edit_message; promote once it lands
     "photon": _TIER_LOW,  # permanent-message iMessage inboxes (no edit)
     "bluebubbles": _TIER_LOW,
-    "weixin": _TIER_LOW,
+    "weixin": {**_TIER_LOW, "streaming": None},  # append-only blocks follow the global switch
     # Non-editable, but its native "stream" msgtype gives a typing animation + cumulative updates.
     "wecom": {**_TIER_LOW, "streaming": True},
     "wecom_callback": _TIER_LOW,

@@ -1186,7 +1186,7 @@ class GatewayStartupMixin:
     async def _start_prefilter_platforms(self) -> tuple[bool, int, list, list]:
         """Create + wire an adapter per enabled platform (no connects). Returns
         (aborted, enabled_platform_count, multiplex_skipped_platforms, pending_connects)."""
-        from gateway.run import _platform_has_bot_credential
+        from gateway.run_credentials import _platform_has_bot_credential
         from gateway.run_adapters import _adapter_unavailable_message
         enabled_platform_count = 0
         _multiplex_on = self._multiplex_on()

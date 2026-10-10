@@ -695,7 +695,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     platform_name = platform.value if hasattr(platform, "value") else str(platform)
     media_files = media_files or []
     if platform == Platform.WEIXIN:
-        return await _send_weixin(pconfig, chat_id, message, media_files=media_files)
+        account = {"account_id": args["account_id"]} if args and args.get("account_id") else {}
+        return await _send_weixin(pconfig, chat_id, message, media_files=media_files, **account)
     # Telegram chunks internally on the *formatted* text (escaping inflates length).
     if platform == Platform.TELEGRAM:
         return await _send_telegram(

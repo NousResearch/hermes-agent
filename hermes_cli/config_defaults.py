@@ -4,10 +4,10 @@ Pure-data leaf module — must not import from hermes_cli.config. Comments are t
 docs of config.yaml.
 """
 
+from hermes_cli.config_defaults_weixin import DEFAULT_WEIXIN_CONFIG
 
 #: Image every container terminal backend (docker/modal/daytona/singularity) uses unless the
-#: user pins one. LEGACY_SANDBOX_IMAGES are the plain defaults that preceded the desktop stack
-#: (the 3.14 pin shipped between the two without a migration); a saved config still holding one
+#: user pins one. LEGACY_SANDBOX_IMAGES preceded the desktop stack (the 3.14 pin had no migration); a saved config holding one
 #: is the template copied, and the config migration unsets it, never a user's own pin.
 DEFAULT_SANDBOX_IMAGE = "nousresearch/hermes-sandbox:desktop"
 LEGACY_SANDBOX_IMAGES = ("nikolaik/python-nodejs:python3.11-nodejs20", "nikolaik/python-nodejs:python3.14-nodejs22")
@@ -2097,8 +2097,8 @@ DEFAULT_CONFIG = {
         # secret values); values are read from the environment at export time.
         "export": {"otlp": {"enabled": False, "endpoint": "", "headers_env": {}}},
     },
+    "platforms": {"weixin": DEFAULT_WEIXIN_CONFIG},
     "gateway": {  # Gateway settings (messaging platforms: Telegram, Discord, Slack, ...).
-
         # Seconds to let a SIGTERM-interrupted gateway agent unwind before adapter/database
         # teardown. Keep short so service-manager shutdowns don't exhaust their stop budget.
         "signal_interrupt_grace_timeout": 1,

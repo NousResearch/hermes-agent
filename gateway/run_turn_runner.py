@@ -27,6 +27,7 @@ from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.platforms.base_exec_approval import ea_default_reason_text
 from gateway.turn_context import TurnContext
+from gateway.run_progress_tasks import TaskCardState
 from hermes_cli.config import cfg_get
 from utils import is_truthy_value
 
@@ -324,64 +325,6 @@ class TurnRunner:
 
     # ── Slack-native task cards (progress-queue drain) ──────────────────────────────────────
 
-    @dataclasses.dataclass
-    class _TaskCardState:
-        """Task-card rail state for ``_send_native_task_card_progress``."""
-        adapter: Any
-        tasks: dict[str, dict[str, str]] = dataclasses.field(default_factory=dict)
-        task_order: list[str] = dataclasses.field(default_factory=list)
-        fallback_msg_id: Optional[str] = None
-        native_failed: bool = False
-        # TERMINAL for the turn, distinct from native_failed: no later publication
-        # in this turn may deliver task text through the native lane OR the text
-        # fallback. Two causes, both properties of the destination rather than of
-        # one attempt: the connector's egress guard refused the chat, or the chat
-        # cannot host a card (no thread anchor). Declared rather than set
-        # dynamically so the state is visible where it lives.
-        publication_suppressed: bool = False
-        anonymous_seq: int = 0
-
-        @staticmethod
-        def _compact(value: Any, limit: int = 120) -> str:
-            text = re.sub(r"\s+", " ", str(value or "")).strip()
-            return text if len(text) <= limit else text[: limit - 3].rstrip() + "..."
-
-        def visible_tasks(self) -> list[dict[str, str]]:
-            return [self.tasks[task_id] for task_id in self.task_order[-8:]]
-
-        def fallback_text(self) -> str:
-            labels = {"in_progress": t("gateway.progress.task_status_running"),
-                      "complete": t("gateway.progress.task_status_complete"),
-                      "error": t("gateway.progress.task_status_error")}
-            lines = [t("gateway.progress.task_line", title=task["title"], status=labels.get(task["status"], task["status"]))
-                     for task in self.visible_tasks()]
-            return t("gateway.progress.task_card_title") + "\n" + "\n".join(lines)
-
-        def _upsert(self, call_id: str, title: str) -> dict[str, str]:
-            if call_id not in self.tasks:
-                self.task_order.append(call_id)
-            self.tasks[call_id] = {"id": call_id, "title": self._compact(title), "status": "in_progress"}
-            return self.tasks[call_id]
-
-        def apply_event(self, raw: Any) -> bool:
-            event_type = raw.get("type") if isinstance(raw, dict) else None
-            if event_type not in {"tool.started", "tool.completed"}:
-                return False
-            call_id = str(raw.get("tool_call_id") or "")
-            if not call_id:
-                self.anonymous_seq += 1
-                call_id = f"anonymous_{self.anonymous_seq}"
-            tool_name = str(raw.get("tool_name") or "tool")
-            if event_type == "tool.started":
-                preview = self._compact(raw.get("preview"), 64)
-                self._upsert(call_id, f"{tool_name} - {preview}" if preview else tool_name)
-                return True
-            # Completion-only events are rare but valid on some runtimes; keep their real ID instead
-            # of guessing a same-name pending call.
-            task = self.tasks.get(call_id) or self._upsert(call_id, tool_name)
-            task["status"] = "error" if raw.get("is_error") else "complete"
-            return True
-
     async def _task_card_send_or_edit_fallback(self, st) -> None:
         ctx = self._ctx
         text = st.fallback_text()
@@ -507,7 +450,7 @@ class TurnRunner:
         See #29483.
         """
         ctx = self._ctx
-        st = self._TaskCardState(adapter)
+        st = TaskCardState(adapter)
         try:
             while ctx._run_still_current():
                 try:
@@ -932,12 +875,13 @@ class TurnRunner:
         want_interim_messages = bool(ctx.interim_assistant_messages_enabled) and not ctx.scheduled_heartbeat
         if want_stream_deltas or want_interim_messages:
             try:
-                from gateway.stream_consumer import GatewayStreamConsumer
+                from gateway.stream_consumer_factory import create_stream_consumer
                 adapter = self._runner._delivery_adapter_for(ctx.source)
                 if adapter:
                     supports_incremental_stream = (
                         getattr(adapter, "SUPPORTS_MESSAGE_EDITING", True)
                         or bool(getattr(adapter, "SUPPORTS_NATIVE_STREAMING", False))
+                        or getattr(adapter, "SUPPORTS_BLOCK_STREAMING", False) is True
                     )
                     consumer_stream_deltas = want_stream_deltas and supports_incremental_stream
                     consumer_cfg, pause_typing_before_finalize = self._runner._build_stream_consumer_config(
@@ -947,7 +891,7 @@ class TurnRunner:
                         # callback carrying the final answer participates in final-send dedup.
                         on_missing_cursor="fallback" if want_interim_messages else "raise",
                     )
-                    stream_consumer = GatewayStreamConsumer(
+                    stream_consumer = create_stream_consumer(
                         adapter=adapter, chat_id=ctx.source.chat_id, config=consumer_cfg,
                         metadata=ctx._status_thread_metadata,
                         on_new_message=(

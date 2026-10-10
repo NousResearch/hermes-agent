@@ -168,7 +168,8 @@ class ReasoningParamsMixin:
         if cached is not None and cached[0] == key:
             return cached[1]
         result = (self._needs_deepseek_tool_reasoning() or self._needs_kimi_tool_reasoning()
-                  or self._needs_mimo_tool_reasoning() or self._reasoning_echo_opt_in())
+                  or self._needs_mimo_tool_reasoning() or self._needs_ollama_tool_reasoning()
+                  or self._reasoning_echo_opt_in())
         self._thinking_pad_cache = (key, result)
         return result
 
@@ -204,6 +205,10 @@ class ReasoningParamsMixin:
     def _needs_mimo_tool_reasoning(self) -> bool:
         """True when the current provider is Xiaomi MiMo thinking mode."""
         return matches_reasoning_echo_family("mimo", (self.provider or "").lower(), self.model, self.base_url)
+
+    def _needs_ollama_tool_reasoning(self) -> bool:
+        """True for Ollama Cloud (provider, host, or a local ``:cloud`` model)."""
+        return matches_reasoning_echo_family("ollama", (self.provider or "").lower(), self.model, self.base_url)
 
     _copy_reasoning_content_for_api = _forward("agent.agent_runtime_helpers", "copy_reasoning_content_for_api")
 

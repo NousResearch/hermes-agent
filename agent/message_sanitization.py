@@ -641,6 +641,8 @@ def _set_provider_tool_id(tc: Any, key: str, value: str) -> None:
 # purpose: aggregators re-exporting kimi models reject the echo. deepseek — provider "deepseek", model
 # contains "deepseek", or host api.deepseek.com (#15250; V4 rejects empty-string pads, hence the " "
 # single-space pad, #17341). mimo     — provider "xiaomi", model contains "mimo", or host *.xiaomimimo.com.
+# ollama   — provider "ollama-cloud", host ollama.com, or a local ":cloud" model (Ollama's /v1 feeds the
+# field back into the template's thinking slot; stripping it drops the model's own CoT mid tool loop).
 # strict side (field rejected with 400/422 "Extra inputs are not permitted"): everyone else — Mistral,
 # Cerebras, Groq, SambaNova, … (#45655). Strip the key entirely, even a single-space pad.
 _REASONING_ECHO_RULES: tuple = (
@@ -648,6 +650,7 @@ _REASONING_ECHO_RULES: tuple = (
     ("kimi", frozenset({"kimi-coding", "kimi-coding-cn"}), frozenset(), (), ("api.kimi.com", "moonshot.ai", "moonshot.cn")),
     ("deepseek", frozenset(), frozenset({"deepseek"}), ("deepseek",), ("api.deepseek.com",)),
     ("mimo", frozenset(), frozenset({"xiaomi"}), ("mimo",), ("api.xiaomimimo.com", "xiaomimimo.com")),
+    ("ollama", frozenset(), frozenset({"ollama-cloud"}), (":cloud",), ("ollama.com",)),
 )
 _REASONING_ECHO_RULE_BY_FAMILY = {rule[0]: rule for rule in _REASONING_ECHO_RULES}
 

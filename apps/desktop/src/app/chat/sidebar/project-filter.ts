@@ -34,10 +34,6 @@ export function filterToSessionBearingProjects<
   T extends { discovered?: boolean; isAuto?: boolean; isNoProject?: boolean; sessionCount?: number }
 >(projects: readonly T[]): T[] {
   return projects.filter(
-    project =>
-      !project.isAuto ||
-      project.isNoProject ||
-      project.discovered === true ||
-      (project.sessionCount ?? 0) > 0
+    project => !project.isAuto || project.isNoProject || project.discovered === true || (project.sessionCount ?? 0) > 0
   )
 }

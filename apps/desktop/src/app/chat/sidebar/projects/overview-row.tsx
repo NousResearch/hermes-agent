@@ -337,14 +337,16 @@ export function ProjectOverviewRow({
 
   const shell = (
     <SidebarGroupRow
-      actions={<ProjectRowActions
-        isActive={isActive}
-        newSessionPath={newSessionPath}
-        onNewSession={onNewSession}
-        onNewSessionSplit={onNewSessionSplit}
-        project={project}
-        rowRef={rowRef}
-      />}
+      actions={
+        <ProjectRowActions
+          isActive={isActive}
+          newSessionPath={newSessionPath}
+          onNewSession={onNewSession}
+          onNewSessionSplit={onNewSessionSplit}
+          project={project}
+          rowRef={rowRef}
+        />
+      }
       className={cn(dragging && 'cursor-grabbing bg-(--ui-sidebar-surface-background)')}
       data-glass-opaque={dragging ? '' : undefined}
       label={

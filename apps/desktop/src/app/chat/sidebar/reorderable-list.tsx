@@ -77,9 +77,8 @@ type NestDragEvent = DragCancelEvent | DragEndEvent | DragMoveEvent | DragStartE
 /** dnd-kit hands collision detection the pointer's position relative to the droppable container,
  *  which is the viewport box for this list — so it IS client coordinates. A null is the keyboard
  *  drag (no pointer), which no quiet zone can claim. */
-const pointerOf = (
-  coordinates: null | { x: number; y: number }
-): null | { x: number; y: number } => (coordinates ? { x: coordinates.x, y: coordinates.y } : null)
+const pointerOf = (coordinates: null | { x: number; y: number }): null | { x: number; y: number } =>
+  coordinates ? { x: coordinates.x, y: coordinates.y } : null
 
 /**
  * Swallow exactly the one `click` a finished pointer drag leaves behind.
@@ -120,9 +119,7 @@ const closestWithin = (node: EventTarget | null, attr: string, root: HTMLElement
  *  built out of `id`: sortable ids are opaque, and the gateway/profile groups' are `JSON.stringify`ed
  *  arrays whose quotes made `[data-session-row="${id}"]` a CSS syntax error. */
 export const findSessionRow = (id: string): HTMLElement | null =>
-  [...document.querySelectorAll<HTMLElement>('[data-session-row]')].find(
-    row => row.dataset.sessionRow === id
-  ) ?? null
+  [...document.querySelectorAll<HTMLElement>('[data-session-row]')].find(row => row.dataset.sessionRow === id) ?? null
 
 export function createDropClickSwallow(): DropClickSwallow {
   let owner: HTMLElement | null = null

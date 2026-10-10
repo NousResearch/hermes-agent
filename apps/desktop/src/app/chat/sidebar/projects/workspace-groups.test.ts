@@ -617,12 +617,10 @@ describe('liveSessionsForProject (#134012)', () => {
     expect(liveSessionsForProject('p_parent', [childRow], projects, new Map([[childRow.id, 'p_child']]))).toEqual([])
   })
 
-  it('keeps the entered project\'s own rows', () => {
+  it("keeps the entered project's own rows", () => {
     const ownRow = makeCwdSession('/work/ws')
 
-    expect(liveSessionsForProject('p_parent', [ownRow], projects, new Map([[ownRow.id, 'p_parent']]))).toEqual([
-      ownRow
-    ])
+    expect(liveSessionsForProject('p_parent', [ownRow], projects, new Map([[ownRow.id, 'p_parent']]))).toEqual([ownRow])
   })
 
   it('keeps rows with no resolvable owner — detached and kanban-task rows', () => {

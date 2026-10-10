@@ -262,8 +262,7 @@ export function SidebarSessionsSection({
         projects: () => $projectTree.get(),
         setParent: (id, parentId) =>
           void setProjectParent(id, parentId).catch(err => notifyError(err, t.sidebar.projects.nestFailed)),
-        setTopLevel: id =>
-          void setProjectParent(id, '').catch(err => notifyError(err, t.sidebar.projects.nestFailed)),
+        setTopLevel: id => void setProjectParent(id, '').catch(err => notifyError(err, t.sidebar.projects.nestFailed)),
         strings: { nestInto: t.sidebar.projects.dragNestInto, topLevel: t.sidebar.projects.dragTopLevel }
       }),
     [t]

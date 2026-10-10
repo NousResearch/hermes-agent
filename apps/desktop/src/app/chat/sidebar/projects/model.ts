@@ -157,9 +157,7 @@ export function nestProjectsByParent(projects: SidebarProjectTree[]): SidebarPro
   const present = new Set(projects.map(project => project.id))
 
   const parentOf = (project: SidebarProjectTree): null | string =>
-    project.parentId && project.parentId !== project.id && present.has(project.parentId)
-      ? project.parentId
-      : null
+    project.parentId && project.parentId !== project.id && present.has(project.parentId) ? project.parentId : null
 
   const children = new Map<string, SidebarProjectTree[]>()
 
@@ -213,10 +211,7 @@ export function nestProjectsByParent(projects: SidebarProjectTree[]): SidebarPro
  * The dragged project plus everything nested under it, transitively, and the project itself — so
  * `has(id)` answers "is this that project, or one of its descendants?".
  */
-export function projectDescendantIds(
-  projects: Pick<SidebarProjectTree, 'id' | 'parentId'>[],
-  id: string
-): Set<string> {
+export function projectDescendantIds(projects: Pick<SidebarProjectTree, 'id' | 'parentId'>[], id: string): Set<string> {
   const children = new Map<string, string[]>()
 
   for (const project of projects) {
@@ -247,10 +242,7 @@ export function projectDescendantIds(
  * or `null` for the overview when it is a top-level one. The mirror of entering a nested row, so a
  * drill-down walks back out a step at a time.
  */
-export function projectBackTarget(
-  projects: Pick<SidebarProjectTree, 'id' | 'parentId'>[],
-  id: string
-): null | string {
+export function projectBackTarget(projects: Pick<SidebarProjectTree, 'id' | 'parentId'>[], id: string): null | string {
   const parentId = projects.find(project => project.id === id)?.parentId
 
   // A parent id that names no present project is no level to step back into (the same tolerance

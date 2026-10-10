@@ -78,7 +78,7 @@ describe('RepoScanSetting', () => {
 
   it('quotes the error when the scan throws', async () => {
     mocks.scan.mockResolvedValue({
-      detail: "invalid params for projects.record_repos: discovery_policy.nestedd: Extra inputs are not permitted",
+      detail: 'invalid params for projects.record_repos: discovery_policy.nestedd: Extra inputs are not permitted',
       reason: 'failed'
     })
 

@@ -1529,10 +1529,9 @@ export async function deleteProject(id: string): Promise<void> {
   // the row the user just removed comes straight back as an auto-discovered one.
   const removed = snap.projects.find(project => project.id === id)
 
-  const removedPaths = [
-    removed?.primary_path,
-    ...(removed?.folders ?? []).map(folder => folder.path)
-  ].filter((path): path is string => Boolean(path && path.trim()))
+  const removedPaths = [removed?.primary_path, ...(removed?.folders ?? []).map(folder => folder.path)].filter(
+    (path): path is string => Boolean(path && path.trim())
+  )
 
   $projects.set(snap.projects.filter(project => project.id !== id))
   $projectTree.set(snap.tree.filter(node => node.id !== id))

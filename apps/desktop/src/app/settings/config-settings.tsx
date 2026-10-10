@@ -138,7 +138,8 @@ function configSectionFlags(sectionId: ConfigSettingsProps['activeSectionId'], s
   return {
     showAttachments: sectionId === 'chat' && (subpage === undefined || subpage === 'attachments'),
     showDesktopSettings: sectionId === 'advanced' && (subpage === undefined || subpage === 'desktop'),
-    showModelSettings: sectionId === 'model' && (subpage === undefined || ['main', 'auxiliary', 'moa'].includes(subpage)),
+    showModelSettings:
+      sectionId === 'model' && (subpage === undefined || ['main', 'auxiliary', 'moa'].includes(subpage)),
     showRepoScan: sectionId === 'workspace' && subpage === 'projects',
     showSharedMetrics: sectionId === 'safety' && subpage === 'privacy'
   }

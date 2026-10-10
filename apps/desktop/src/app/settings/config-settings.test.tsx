@@ -166,7 +166,12 @@ describe('ConfigSettings workspace section', () => {
   }
 
   it('offers nested discovery as a refinement of the scan', async () => {
-    withDiscovery({ repo_scan_enabled: true, repo_scan_exclude_paths: [], repo_scan_nested: false, repo_scan_roots: [] })
+    withDiscovery({
+      repo_scan_enabled: true,
+      repo_scan_exclude_paths: [],
+      repo_scan_nested: false,
+      repo_scan_roots: []
+    })
 
     renderConfigSettings('workspace')
 
@@ -175,7 +180,12 @@ describe('ConfigSettings workspace section', () => {
   })
 
   it('offers a manual scan on the projects subpage', async () => {
-    withDiscovery({ repo_scan_enabled: true, repo_scan_exclude_paths: [], repo_scan_nested: false, repo_scan_roots: [] })
+    withDiscovery({
+      repo_scan_enabled: true,
+      repo_scan_exclude_paths: [],
+      repo_scan_nested: false,
+      repo_scan_roots: []
+    })
 
     renderConfigSettings('workspace', 'projects')
 
@@ -186,7 +196,12 @@ describe('ConfigSettings workspace section', () => {
   it('hides nested discovery while the scan itself is off', async () => {
     // The sub-setting only ever describes what the scan produced: with the scan off it would
     // promise subprojects nothing can find.
-    withDiscovery({ repo_scan_enabled: false, repo_scan_exclude_paths: [], repo_scan_nested: false, repo_scan_roots: [] })
+    withDiscovery({
+      repo_scan_enabled: false,
+      repo_scan_exclude_paths: [],
+      repo_scan_nested: false,
+      repo_scan_roots: []
+    })
 
     renderConfigSettings('workspace')
 

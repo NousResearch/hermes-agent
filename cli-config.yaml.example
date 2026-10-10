@@ -33,6 +33,15 @@ database:
   # synchronous: FULL
 
 # =============================================================================
+# Gateway completion logs
+# =============================================================================
+# Off by default. When enabled, gateway completion lines include bounded previews
+# of tool arguments, tool results, and final responses. Known secret patterns are
+# redacted, but arbitrary private output can still reach disk logs.
+logging:
+  tool_previews: false
+
+# =============================================================================
 # Runtime Limits
 # =============================================================================
 # Long-running Hermes server processes raise their RLIMIT_NOFILE soft limit to

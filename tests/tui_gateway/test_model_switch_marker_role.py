@@ -9,6 +9,7 @@ sanitize/merge pass already coalesces consecutive user messages.
 
 from __future__ import annotations
 
+import threading
 
 from tui_gateway.server import _append_model_switch_marker
 
@@ -91,6 +92,49 @@ class TestModelSwitchMarkerDedup:
         _append_model_switch_marker(session, model="model-a", provider="p")
         _append_model_switch_marker(session, model="model-b", provider="p")
         assert session["history_version"] == 2  # one increment per switch
+
+
+class TestMarkerMergedWithPrompt:
+    """#131382: the marker is role=user, so the turn loop's alternation repair folds the next real
+    prompt into it (``marker + "\\n\\n" + prompt``). The next switch drops the stale marker, and must
+    keep the prompt it absorbed: the transcript still shows it, so the model must still see it."""
+
+    @staticmethod
+    def _switched_then_prompted() -> dict:
+        from agent.agent_runtime_helpers import repair_message_sequence
+
+        session: dict = {
+            "session_key": "s",
+            "history": [{"role": "user", "content": "q1"}, {"role": "assistant", "content": "a1"}],
+        }
+        _append_model_switch_marker(session, model="model-a", provider="p")
+        # What the turn loop does: append the prompt, repair the user;user pair in place, and that
+        # list (plus the reply) becomes the session history.
+        turn = session["history"] + [{"role": "user", "content": "the prompt"}]
+        assert repair_message_sequence(None, turn) == 1
+        session["history"] = turn + [{"role": "assistant", "content": "a2"}]
+        return session
+
+    def test_next_switch_keeps_the_absorbed_prompt(self) -> None:
+        session = self._switched_then_prompted()
+        _append_model_switch_marker(session, model="model-b", provider="p")
+        contents = [h["content"] for h in session["history"]]
+        assert contents[:4] == ["q1", "a1", "the prompt", "a2"]
+        assert len(contents) == 5 and "model-b" in contents[4]
+        assert not any("model-a" in c for c in contents), "the stale marker text is still dropped"
+
+    def test_switch_during_the_next_turn_keeps_both_turns(self) -> None:
+        from tui_gateway.server import _commit_turn_history
+
+        session = self._switched_then_prompted()
+        session.update(history_lock=threading.Lock(), history_version=5)
+        turn_start = list(session["history"])
+        result = {"messages": turn_start + [{"role": "user", "content": "q3"}, {"role": "assistant", "content": "a3"}]}
+        _append_model_switch_marker(session, model="model-b", provider="p")  # lands while the turn runs
+        assert _commit_turn_history(session, result, turn_start, 5) is None
+        contents = [h["content"] for h in session["history"]]
+        assert contents[:4] == ["q1", "a1", "the prompt", "a2"]
+        assert contents[-2:] == ["q3", "a3"]
 
 
 def _make_marker_entry(model: str) -> dict:

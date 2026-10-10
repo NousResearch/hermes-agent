@@ -381,6 +381,30 @@ def _coerce_seed_history(value: Any) -> list[dict]:
     return history
 
 
+def _without_model_switch_marker(entry: Any) -> Any:
+    """``entry`` minus a model-switch marker: None for a bare marker, else the entry itself. The marker is
+    role=user (#48338), so alternation repair folds the next real prompt into it (``_merge_consecutive_users``
+    joins with a blank line); such a row returns as a copy holding only the absorbed text, since dropping it
+    whole would erase a prompt the transcript still shows (#131382). Copies: turn-start lists share these dicts."""
+    if not _is_model_switch_marker(entry):
+        return entry
+    paragraphs = entry["content"].split("\n\n")
+    while paragraphs and paragraphs[0].startswith(_MODEL_SWITCH_MARKER_PREFIX):
+        paragraphs.pop(0)
+    if not paragraphs:
+        return None
+    from agent.message_metadata import MERGED_TURN_PREFIX
+    kept = {k: v for k, v in entry.items() if k != MERGED_TURN_PREFIX}
+    kept["content"] = "\n\n".join(paragraphs)
+    if kept.get("display_kind") == "model_switch":
+        del kept["display_kind"]
+    return kept
+
+
+def _without_model_switch_markers(history: list) -> list:
+    return [kept for entry in history if (kept := _without_model_switch_marker(entry)) is not None]
+
+
 def _inflight_text(value: Any) -> str:
     return _content_display_text(value).strip()
 

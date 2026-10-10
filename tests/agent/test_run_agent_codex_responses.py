@@ -976,6 +976,71 @@ def test_run_codex_stream_skips_post_terminal_drain_without_socket(monkeypatch):
     assert closed.is_set()
 
 
+def test_post_terminal_drain_preserves_private_context_redaction(monkeypatch, caplog):
+    """The owner-thread finalizer drain must not log a volatile location snapshot."""
+    import logging
+
+    import httpx
+
+    from agent.redact import bind_volatile_sensitive_text
+
+    agent = _build_agent(monkeypatch)
+    message_item = SimpleNamespace(
+        type="message",
+        status="completed",
+        content=[SimpleNamespace(type="output_text", text="All done.")],
+    )
+    class _Socket:
+        def settimeout(self, _value):
+            pass
+
+        def shutdown(self, _how):
+            pass
+
+    socket = _Socket()
+    network_stream = SimpleNamespace(
+        get_extra_info=lambda key: socket if key == "socket" else None
+    )
+
+    class _PrivatePostTerminalDrop(_FakeCreateStream):
+        def __init__(self, events):
+            super().__init__(events)
+            self.response = SimpleNamespace(
+                extensions={"network_stream": network_stream}
+            )
+
+        def __iter__(self):
+            yield from super().__iter__()
+            raise httpx.RemoteProtocolError(
+                "provider echoed coordinate fragments 37.77 / -122.41"
+            )
+
+    events = [
+        SimpleNamespace(type="response.output_item.done", item=message_item),
+        SimpleNamespace(
+            type="response.completed",
+            response=SimpleNamespace(status="completed", id="resp_private_drain"),
+        ),
+    ]
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            create=lambda **_kwargs: _PrivatePostTerminalDrop(events)
+        )
+    )
+    snapshot = "Latitude: 37.7749\nLongitude: -122.4194"
+
+    with (
+        bind_volatile_sensitive_text(snapshot),
+        caplog.at_level(logging.WARNING, logger="agent.codex_runtime"),
+    ):
+        response = agent._run_codex_stream(_codex_request_kwargs())
+
+    assert response.id == "resp_private_drain"
+    assert "details withheld for private-context turn" in caplog.text
+    assert "37.77" not in caplog.text
+    assert "-122.41" not in caplog.text
+
+
 def test_run_codex_stream_owner_close_does_not_retry_raw_when_managed_close_raises(monkeypatch):
     """A managed close that already closes the provider must not trigger a second raw close."""
     import threading

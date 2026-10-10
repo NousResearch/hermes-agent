@@ -8,11 +8,22 @@ Retired ``deepseek-chat``/``deepseek-reasoner`` IDs are remapped in
 ``hermes_cli.model_normalize`` before reaching here.
 """
 
+import math
+import re
 from typing import Any
 
 from agent.reasoning_effort import DEEPSEEK_V4_EFFORTS, DEEPSEEK_V4_OVERRIDES, thinking_toggle_extras
 from providers import register_provider
 from providers.base import ProviderProfile
+
+
+def _amount(value: Any) -> float | None:
+    """A balance field (sent as a decimal string) as a finite float, or None."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
 
 
 # Version-less canonical ids for thinking-capable DeepSeek models. The 2026-09 Flash
@@ -49,6 +60,44 @@ class DeepSeekProfile(ProviderProfile):
         if rc is not None and effort in {"none", "false", "disabled"}:
             return {"thinking": {"type": "disabled"}}, {}
         return extras, top_level
+
+    def fetch_account_usage(self, *, base_url: str | None = None, api_key: str | None = None):
+        """Account balance for /usage via ``GET /user/balance`` (api-docs.deepseek.com/api/get-user-balance).
+
+        The endpoint sits beside ``/v1`` on the host this slot is configured for, so the key only
+        ever goes to that host. One entry per currency, amounts as decimal strings; nothing readable
+        → None rather than an empty gauge."""
+        from datetime import UTC, datetime
+
+        import httpx
+
+        from agent.account_usage import AccountBalance, AccountUsageSnapshot
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        runtime = resolve_runtime_provider(requested=self.name, explicit_base_url=base_url, explicit_api_key=api_key)
+        token = str(runtime.get("api_key", "") or "").strip()
+        if not token:
+            return None
+        root = str(runtime.get("base_url", "") or "").rstrip("/").removesuffix("/v1")
+        # Under the shared 10 s plugin-hook deadline (PLUGIN_USAGE_HOOK_DEADLINE_S).
+        with httpx.Client(timeout=8.0) as client:
+            response = client.get(f"{root}/user/balance",
+                                  headers={"Authorization": f"Bearer {token}", "Accept": "application/json"})
+            response.raise_for_status()
+        payload = response.json() or {}
+        infos = payload.get("balance_infos")
+        balances = []
+        for info in infos if isinstance(infos, list) else ():
+            currency = str(info.get("currency") or "") if isinstance(info, dict) else ""
+            total = _amount(info.get("total_balance")) if currency else None
+            if total is not None and re.fullmatch(r"[A-Z]{3}", currency):
+                balances.append(AccountBalance(label="Balance", amount=total, currency=currency))
+        if not balances:
+            return None
+        depleted = ("Status: balance too low for API calls — top up to restore",)
+        return AccountUsageSnapshot(provider=self.name, source="balance_api", fetched_at=datetime.now(UTC),
+                                    title="Account balance", balances=tuple(balances),
+                                    details=depleted if payload.get("is_available") is False else (), raw=payload)
 
 
 deepseek = DeepSeekProfile(

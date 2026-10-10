@@ -229,9 +229,15 @@ replace the account-usage behavior for a built-in provider. The hook runs under 
 renders nothing for that turn rather than stalling `/usage`, so give your own HTTP calls a shorter
 timeout.
 
+Money left on the account goes in `balances`, as `agent.account_usage.AccountBalance(label, amount,
+currency)` with an upper-case ISO 4217 currency. The core formatter prints each as `<label>: <amount>`,
+`hermes usage --json` lists them, and Desktop's Command Center → Usage shows them beside the month's
+spend. Don't also write the balance into `details`.
+
 The bundled `plugins/model-providers/opencode-zen/` profile implements this hook for the
-OpenCode Go plan windows; every `/usage` surface (CLI `hermes usage` and `/usage`, the messaging
-gateway, the TUI/Desktop usage feed) renders the snapshot through the same core formatter.
+OpenCode Go plan windows, and `plugins/model-providers/deepseek/` for the account balance. Every
+`/usage` surface (CLI `hermes usage` and `/usage`, the messaging gateway, the TUI/Desktop usage feed)
+renders the snapshot through the same core formatter.
 
 ```python
 from datetime import datetime, timezone

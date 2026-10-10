@@ -610,6 +610,9 @@ def _speak_whole_file(text: str) -> None:
     os.makedirs(os.path.join(tempfile.gettempdir(), "hermes_voice"), exist_ok=True)
     mp3_path = os.path.join(tempfile.gettempdir(), "hermes_voice", f"tts_{time.strftime('%Y%m%d_%H%M%S')}.mp3")
     _debug(f"speak_text: synthesizing {len(tts_text)} chars -> {mp3_path}")
+    # Taken before synthesis: a barge-in or /voice off while the provider is still generating
+    # must keep this reply from starting once the audio is ready.
+    stops = playback_stop_count()
     raw_result = text_to_speech_tool(text=tts_text, output_path=mp3_path)
     try:
         tts_result = json.loads(raw_result) if isinstance(raw_result, str) else {}
@@ -619,13 +622,13 @@ def _speak_whole_file(text: str) -> None:
     # The tool result is authoritative — long-form output may be several files.
     play_paths = tts_result.get("file_paths") or [tts_result.get("file_path") or mp3_path]
     played_any = False
-    stops = playback_stop_count()
     for play_path in play_paths if tts_result.get("success") else []:
         if playback_stop_count() != stops:
-            break  # cut mid-reply; the next part would start playing
+            _debug("speak_text: playback stopped, dropping the rest of the reply")
+            break  # cut before or during the reply; don't start the next part
         if os.path.isfile(play_path) and os.path.getsize(play_path) > 0:
             _debug(f"speak_text: playing {play_path} ({os.path.getsize(play_path)} bytes)")
-            play_audio_file(play_path)
+            play_audio_file(play_path, stops=stops)
             played_any = True
     for path in set(play_paths + [mp3_path, mp3_path.rsplit(".", 1)[0] + ".ogg"]):
         if os.path.isfile(path):

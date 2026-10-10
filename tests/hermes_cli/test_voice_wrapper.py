@@ -178,7 +178,7 @@ class TestSpeakTextGuards:
         monkeypatch.setattr(voice.os.path, "isfile", lambda path: path == returned_path)
         monkeypatch.setattr(voice.os.path, "getsize", lambda _path: 1000)
         monkeypatch.setattr(voice.os, "unlink", lambda _path: None)
-        monkeypatch.setattr(voice, "play_audio_file", lambda path: played.append(path))
+        monkeypatch.setattr(voice, "play_audio_file", lambda path, **_kw: played.append(path))
 
         assert voice.speak_text("Hello world") is None
         assert played == [returned_path]
@@ -205,7 +205,7 @@ class TestSpeakTextGuards:
         monkeypatch.setattr(voice.os.path, "isfile", lambda _path: True)
         monkeypatch.setattr(voice.os.path, "getsize", lambda _path: 1000)
         monkeypatch.setattr(voice.os, "unlink", lambda _path: None)
-        monkeypatch.setattr(voice, "play_audio_file", lambda path: played.append(path))
+        monkeypatch.setattr(voice, "play_audio_file", lambda path, **_kw: played.append(path))
 
         assert voice.speak_text("Hello world") is None
         # Should play the path from the result, not the requested MP3 path
@@ -225,7 +225,7 @@ class TestSpeakTextGuards:
             parts.append(str(tmp_path / name))
         played = []
 
-        def _barged_in(path):
+        def _barged_in(path, **_kw):
             played.append(path)
             vm.stop_playback()
             return False
@@ -238,6 +238,28 @@ class TestSpeakTextGuards:
         voice.speak_text("A reply split in two")
 
         assert played == parts[:1]
+
+    def test_stop_during_synthesis_keeps_the_reply_silent(self, monkeypatch, tmp_path):
+        """A barge-in or /voice off while the provider is still generating used to become the
+        new baseline, so the reply started once the audio was ready."""
+        import hermes_cli.voice as voice
+        import tools.voice_mode as vm
+        from tools import tts_tool
+
+        reply = tmp_path / "reply.mp3"
+        reply.write_bytes(b"\xff\xfb")
+        played = []
+
+        def _stopped_while_generating(**_kw):
+            vm.stop_playback()
+            return json.dumps({"success": True, "file_path": str(reply)})
+
+        monkeypatch.setattr(tts_tool, "text_to_speech_tool", _stopped_while_generating)
+        monkeypatch.setattr(voice, "play_audio_file", lambda path, **_kw: played.append(path))
+
+        voice.speak_text("A reply nobody wants any more")
+
+        assert played == []
 
 
 class TestContinuousAPI:

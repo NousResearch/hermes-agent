@@ -110,16 +110,15 @@ class AuxRouteAttributionMixin:
     def _aux_route_label(self, route: Dict[str, str]) -> str:
         """Route label for summary diagnostics.
 
-        ``summary_model`` is empty in every production construction (the only in-tree
-        call passes summary_model_override=None), so naming it here unconditionally
-        reported the MAIN model — the misattribution quoted in #113582. ``route``
-        already carries the route call_llm actually selected; keep the static
-        expression only as the pre-dispatch fallback (#72636 review).
+        Keep the same wire → effective config → static precedence as failure identity.
+        Without a wire snapshot, a configured auxiliary model must not be replaced
+        by the main model merely because ``summary_model`` is empty (#72636).
         """
-        return (
-            f"(provider={route.get('provider') or self.provider or 'auto'} "
-            f"model={route.get('model') or self.summary_model or self.model})"
-        )
+        provider = (route.get("provider") or self._last_aux_call_provider
+                    or self._last_aux_config_provider or self.provider or "auto")
+        model = (route.get("model") or self._last_aux_call_model
+                 or self._last_aux_config_model or self.summary_model or self.model)
+        return f"(provider={provider} model={model})"
 
     def _summary_failure_identity(self) -> Tuple[str, str, str]:
         """(provider, model, base_url) identifying the failed aux summary call.

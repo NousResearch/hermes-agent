@@ -123,9 +123,14 @@ def _request(url: str, accept: str = "application/vnd.github+json") -> str:
         return _request_with(url, accept, token)
     except urllib.error.HTTPError as exc:
         if token is None or exc.code != 401:
+            exc.hermes_authenticated = token is not None  # which quota a 403/429 spent
             raise
         logger.debug("GitHub rejected the configured token; retrying anonymously")
+    try:
         return _request_with(url, accept, None)
+    except urllib.error.HTTPError as exc:
+        exc.hermes_authenticated = False
+        raise
 
 
 def _request_with(url: str, accept: str, token: str | None) -> str:

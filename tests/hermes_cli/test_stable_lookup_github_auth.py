@@ -17,12 +17,16 @@ SHA = "818c13be1dc4fd28987e1e881a9408224afd4535"
 def github(monkeypatch):
     """A local api.github.com: answers releases/latest + commits/<tag>, or 403s the quota."""
     seen: list[tuple[str, str | None]] = []
-    state = {"limited": False}
+    state = {"limited": False, "reject_token": False}
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
-            seen.append((self.path, self.headers.get("Authorization")))
-            if state["limited"]:
+            auth = self.headers.get("Authorization")
+            seen.append((self.path, auth))
+            if state["reject_token"] and auth:
+                body = b'{"message":"Bad credentials"}'
+                self.send_response(401)
+            elif state["limited"]:
                 body = b'{"message":"API rate limit exceeded"}'
                 self.send_response(403)
                 self.send_header("x-ratelimit-remaining", "0")
@@ -43,7 +47,8 @@ def github(monkeypatch):
             pass
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
     real = urllib.request.urlopen
 
     def local(request, *args, **kwargs):
@@ -59,6 +64,8 @@ def github(monkeypatch):
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
     yield seen, state
     server.shutdown()
+    server.server_close()
+    thread.join()
 
 
 def test_stable_lookup_sends_the_configured_token(github, monkeypatch):
@@ -82,3 +89,15 @@ def test_a_rate_limit_is_reported_as_one_not_as_a_missing_release(github, monkey
     message = str(caught.value)
     assert "rate limit" in message and "No published stable release" not in message
     assert ("GITHUB_TOKEN in the environment" in message) is (token is None)
+
+
+def test_a_rejected_token_then_anonymous_limit_names_the_anonymous_quota(github, monkeypatch):
+    seen, state = github
+    state["limited"] = state["reject_token"] = True
+    monkeypatch.setenv("GH_TOKEN", "ghp_revoked")
+    with pytest.raises(ValueError) as caught:
+        source_releases._resolve_stable("NousResearch/hermes-agent")
+    # The 403 came from the anonymous retry, so the user's token quota is not the one to wait on.
+    assert [auth for _, auth in seen] == ["Bearer ghp_revoked", None]
+    assert "anonymous requests are limited" in str(caught.value)
+    assert "for your GITHUB_TOKEN" not in str(caught.value)

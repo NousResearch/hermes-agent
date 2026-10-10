@@ -263,13 +263,24 @@ def quote_in_evidence(quote: str, evidence: str) -> bool:
     return bool(q) and q in _match_key(evidence)
 
 
+_CJK_RE = re.compile(r"[\u3400-\u9fff\uf900-\ufaff\u3040-\u30ff]")
+
+
+def _word_count(text: str) -> int:
+    """Whitespace-token count with CJK compensation: unspaced CJK text counts
+    2 hanzi/kana as one word, since Chinese prose carries no spaces."""
+    words = len((text or "").split())
+    cjk = len(_CJK_RE.findall(text or ""))
+    return words + cjk // 2
+
+
 def attach_quote(path: Path, source_id: int, quote: str, evidence: str) -> dict[str, Any]:
     """Attach a verbatim quote to a ledger entry after checking it against
     the evidence text.  Raises SystemExit on unknown id or non-verbatim text —
     a quote the page does not contain is exactly the fabrication this guards
     against."""
     quote = (quote or "").strip()
-    if len(_normalize_ws(quote).split()) < 3:
+    if _word_count(quote) < 3:
         raise SystemExit("error: quote too short — use at least 3 words of verbatim text")
     if not quote_in_evidence(quote, evidence):
         raise SystemExit(
@@ -391,9 +402,9 @@ def _sentences(prose: str) -> list[str]:
             continue
         if stripped.startswith(">"):
             stripped = stripped.lstrip("> ").strip()
-        for part in re.split(r"(?<=[.!?])\s+", stripped):
+        for part in re.split(r"(?<=[。！？；])\s*|(?<=[.!?])\s+", stripped):
             part = part.strip()
-            if len(part.split()) >= 4:
+            if _word_count(part) >= 4:
                 out.append(part)
     return out
 

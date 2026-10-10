@@ -111,7 +111,10 @@ jobs:
           # the verified Git pin once, before per-file parallelism; otherwise
           # each isolated PowerShell stage races to download/extract the archive.
           packages: ${{ matrix.marker == 'windows' && 'git,ripgrep' || 'ripgrep' }}
-          extras: '["all", "telegram", "anthropic", "mistral", "fal", "modal", "daytona", "parallel-web"]'
+          # `audio-io`: numpy, without which the marker lanes import the
+          # numpy-gated files only to skip them wholesale — see
+          # evals/background_review/CI-EXTRAS-AUDIO-IO-20261010.md.
+          extras: '["all", "telegram", "anthropic", "mistral", "fal", "modal", "daytona", "parallel-web", "audio-io"]'
           test-environment: 'true'
           prune-python-cache: true
 

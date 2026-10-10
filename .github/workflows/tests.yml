@@ -66,7 +66,11 @@ jobs:
       - name: Set up locked Python and test dependencies
         uses: ./.github/actions/setup-pm
         with:
-          extras: '["all", "anthropic", "bedrock", "mistral", "fal", "modal", "daytona", "parallel-web"]'
+          # `audio-io`: numpy, without which 5 test files are module-level
+          # skipped (pytest.importorskip) and 2 more lose their numpy-gated
+          # tests — see evals/background_review/CI-EXTRAS-AUDIO-IO-20261010.md.
+          # The extra's other package (sounddevice) is faked by those tests.
+          extras: '["all", "anthropic", "bedrock", "mistral", "fal", "modal", "daytona", "parallel-web", "audio-io"]'
           test-environment: 'true'
           prune-python-cache: true
 

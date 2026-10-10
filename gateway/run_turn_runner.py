@@ -1905,6 +1905,10 @@ class TurnRunner:
         platform_key = "cli" if ctx.source.platform == Platform.LOCAL else ctx.source.platform.value
         combined_ephemeral = self._combined_ephemeral_prompt()
         max_iterations = _current_max_iterations()
+        # Honor the Phase-1 user-tier clamp stashed while resolving toolsets (#20744).
+        _tier_mi = (ctx.user_config or {}).get("_hermes_user_tier_max_iterations")
+        if isinstance(_tier_mi, int) and _tier_mi > 0:
+            max_iterations = min(max_iterations, _tier_mi)
         try:
             model, runtime_kwargs = runner._resolve_session_agent_runtime(
                 source=ctx.source, session_key=ctx.session_key, user_config=ctx.user_config,

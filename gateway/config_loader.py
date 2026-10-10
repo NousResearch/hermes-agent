@@ -219,6 +219,9 @@ _SHARED_KEYS: tuple = (
     *_plain(
         "dm_policy", "allow_from", "allow_admin_from", "user_allowed_commands",
         "group_policy", "group_allow_from", "group_allow_admin_from", "group_user_allowed_commands",
+        # Phase-1 non-admin tool tier (#20744). Same bridge as the slash-admin lists:
+        # a root-level platform key lands in PlatformConfig.extra.
+        "user_toolsets", "user_tools", "user_max_iterations", "user_limits",
     ),
     ("channel_skill_bindings", _DISCORD_SLACK, None),
     ("channel_prompts", None, _str_keyed),

@@ -1908,6 +1908,29 @@ export interface ClientCapabilitiesResult {
   server_requests: string[]
   declines_not_shown?: boolean
 }
+/** Client→server method params / server→client request params. Unknown keys are rejected. */
+export type Params = Record<string, never>
+/** ``machine_kind`` is ``Spark``, ``Mac``, ``PC`` or ``computer``. ``full_name`` is the OS account's real name (never a login handle) and ``locale`` its first UI language; each is null when the OS has none. */
+export interface MachineFactsResult {
+  machine: MachineInfo
+  machine_kind: string
+  has_nvidia_gpu: boolean
+  is_spark: boolean
+  locale?: string | null
+  full_name?: string | null
+}
+/** Measured hardware; a key that was not measured is absent. */
+export interface MachineInfo {
+  os_family?: string | null
+  os_release?: string | null
+  native_arch?: string | null
+  cpu_model?: string | null
+  ram_gb?: number | null
+  gpu_class?: string | null
+  vendor?: string | null
+  wsl?: boolean | null
+  container?: boolean | null
+}
 /** ``word`` is the token under the cursor (``@`` prefix = context reference); ``cwd`` / ``session_id`` pick the directory the listing resolves against. */
 export interface CompletePathParams {
   profile?: string | null
@@ -2148,8 +2171,6 @@ export interface ProfilesGetAssetResult {
   size?: number | null
   data?: string | null
 }
-/** Client→server method params / server→client request params. Unknown keys are rejected. */
-export type Params = Record<string, never>
 /** ``created`` is false when an existing setup profile was found (and returned untouched). */
 export interface OnboardingEnsureSetupProfileResult {
   name: string
@@ -2172,6 +2193,25 @@ export interface OnboardingStateResult {
   profile?: string | null
 }
 export type OnboardingIntro = 'unseen' | 'seen'
+/** The agentic guide's state plus ``run``; the guide's fields stay until its renderer is deleted. */
+export interface OnboardingStateRunResult {
+  eligible: boolean
+  intro: OnboardingIntro
+  failed_starts: number
+  completed_at?: string | null
+  profile?: string | null
+  run: boolean
+}
+/** ``mark_profile_offered`` also latches ``onboarding.seen.profile_build_offered`` in the root config, so the first chat after the questionnaire gets the plain intro instead of the profile offer. */
+export interface OnboardingSetRunParams {
+  run: boolean
+  mark_profile_offered?: boolean
+}
+/** ``run``: the questionnaire opens on this launch (root config ``onboarding.run``, else a fresh install). ``eligible``: the free tier is on for this backend (``anon_auth.guest_enabled``). */
+export interface OnboardingRunStateResult {
+  run: boolean
+  eligible: boolean
+}
 export interface OnboardingResetSetupProfileResult {
   name: string
   path: string
@@ -4307,7 +4347,7 @@ export interface LegacyPluginRow {
   version: string
   enabled: boolean
 }
-/** ``toggle``: ``key``/``name`` + ``enable``; ``install``: ``identifier``/``repo`` or ``catalog_name`` (+ ``force``, ``enable``, ``ref``); ``update``: ``name`` (+ ``accept_capabilities`` to apply a re-pin that widened the plugin after the user confirmed the ``delta``); ``remove``: ``name`` (user installs only); ``settings``: ``key`` + ``values`` (``{setting_key: value}``, non-secret schema keys only). */
+/** ``toggle``: ``key``/``name`` + ``enable``; ``install``: ``identifier``/``repo`` or ``catalog_name`` (+ ``force``, ``enable``, ``ref``); ``update``: ``name`` (+ ``accept_capabilities`` to apply a re-pin that widened the plugin after the user confirmed the ``delta``); ``remove``: ``name`` (user installs only); ``settings``: ``key`` + ``values`` (``{setting_key: value}``, non-secret schema keys only); ``presence``: ``names`` (catalog names, answered in that order). */
 export interface PluginsManageParams {
   profile?: string | null
   action?: PluginsAction
@@ -4321,8 +4361,9 @@ export interface PluginsManageParams {
   ref?: string | null
   accept_capabilities?: boolean | null
   values?: Record<string, unknown> | null
+  names?: string[] | null
 }
-export type PluginsAction = 'list' | 'toggle' | 'install' | 'update' | 'remove' | 'settings' | 'onboarding'
+export type PluginsAction = 'list' | 'toggle' | 'install' | 'update' | 'remove' | 'settings' | 'onboarding' | 'presence'
 /** ``list`` → ``plugins`` + counts; ``toggle`` → ``ok``/``unchanged``/``restart_required``/``name`` (the canonical key written)/``plugin``; ``install`` → ``hermes_cli.plugins_cmd.dashboard_install_plugin``'s ok payload; ``toggle``/``install``/``update`` that loaded a plugin also carry ``gateway_reloaded`` (the running gateway picked it up and re-wired its handlers) and ``activation`` — the honest split of what is live now vs deferred, so ``restart_required`` is True only when no gateway answered; ``update`` → ``ok``/``unchanged``/``sha``, or ``ok=false`` + ``consent_required`` with the ``delta`` (``{surface: [added...]}``) / ``delta_lines`` a widened pin adds — nothing changed until the client retries with ``accept_capabilities``; ``remove`` → ``ok``/``name`` plus ``cleared_memory_provider`` when the removed plugin was the live ``memory.provider``. */
 export interface PluginsManageResult {
   plugins?: AgentPluginRow[] | null
@@ -4350,6 +4391,7 @@ export interface PluginsManageResult {
   error?: string | null
   written?: string[] | null
   onboarding?: OnboardingCatalogPlugin[] | null
+  presence?: CatalogPluginPresence[] | null
 }
 /** ``methods_tools._plugin_rows`` + ``plugins_cmd_catalog.catalog_row_fields`` provenance. */
 export interface AgentPluginRow {
@@ -4425,6 +4467,14 @@ export interface OnboardingCatalogPlugin {
   platforms: string[]
   app_state: CatalogAppState
   sentence: string
+}
+/** A named catalog plugin this OS runs. ``state`` is the pinned ``plugin.json`` app declaration judged on this host; ``sentence`` names what is missing (empty when present or unknown); ``disclosure`` is the catalog description's ``Disclosure:`` sentence (empty when it has none). */
+export interface CatalogPluginPresence {
+  name: string
+  title: string
+  state: CatalogAppState
+  sentence: string
+  disclosure: string
 }
 /** ``answers`` rides only on a reconnect replay (locks the server already accepted; null = skipped). */
 export interface ClarifyRequestParams {
@@ -5190,6 +5240,8 @@ export interface RpcMethods {
   'learning.frames': { params: LearningFramesParams; result: LearningFramesResult }
   /** Stateless one-shot LLM completion (titles, ideas) on the session's or the task backend. */
   'llm.oneshot': { params: LlmOneshotParams; result: LlmOneshotResult }
+  /** Facts about the machine running this backend and its OS account, for the desktop first run. */
+  'machine.facts': { params: Params; result: MachineFactsResult }
   /** Curated MCP presets with per-profile installed/enabled state and the env keys each needs. */
   'mcp.catalog': { params: ProfileParams; result: McpCatalogResult }
   /** Add a server to the profile's config from a catalog preset and/or an explicit config. */
@@ -5227,7 +5279,10 @@ export interface RpcMethods {
   'onboarding.record_failed_start': { params: Params; result: OnboardingStateResult }
   /** Restore the setup profile to its created state in place (soul, memories, skills, sessions). */
   'onboarding.reset_setup_profile': { params: Params; result: OnboardingResetSetupProfileResult }
-  'onboarding.state': { params: Params; result: OnboardingStateResult }
+  /** Write onboarding.run in the root profile's config.yaml; answers the new state. */
+  'onboarding.set_run': { params: OnboardingSetRunParams; result: OnboardingRunStateResult }
+  /** Whether the desktop first-run questionnaire is due; reads the root profile's config. */
+  'onboarding.state': { params: Params; result: OnboardingStateRunResult }
   /** Spill a large paste to a file and hand back the inline placeholder. */
   'paste.collapse': { params: PasteCollapseParams; result: PasteCollapseResult }
   /** Render a PDF's pages to PNG and queue them as images for the next turn. */
@@ -5608,6 +5663,7 @@ export const RPC_METHODS = [
   'learning.edit',
   'learning.frames',
   'llm.oneshot',
+  'machine.facts',
   'mcp.catalog',
   'mcp.servers.add',
   'mcp.servers.list',
@@ -5628,6 +5684,7 @@ export const RPC_METHODS = [
   'onboarding.mark_seen',
   'onboarding.record_failed_start',
   'onboarding.reset_setup_profile',
+  'onboarding.set_run',
   'onboarding.state',
   'paste.collapse',
   'pdf.attach',

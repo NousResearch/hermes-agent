@@ -48,14 +48,36 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"profile": setup.name, "session_id": row["id"], "empty": not row["message_count"]})
 
 
+# onboarding.state and onboarding.set_run are unscoped on purpose: onboarding.run and the first-chat
+# flag live in the root profile's config.yaml whichever profile this backend was launched under.
+# The agentic guide's fields (intro, profile, ...) stay alongside run until that renderer is deleted.
 @method("onboarding.state")
 def _(rid, params: dict) -> dict:
     from hermes_cli.setup_profile import read_state, settle_returning_user
 
     def settle_then_read() -> dict:
         settle_returning_user()
-        return read_state()
+        return {**read_state(), **_run_state()}
     return _onboarding_state_result(rid, settle_then_read)
+
+
+@method("onboarding.set_run")
+def _(rid, params: dict) -> dict:
+    from hermes_cli.onboarding_run import set_run
+    if not isinstance(params.get("run"), bool):
+        return _err(rid, 4002, "onboarding.set_run requires a boolean 'run'")
+    try:
+        set_run(params["run"], mark_profile_offered=bool(params.get("mark_profile_offered")))
+    except Exception as e:
+        logger.exception("onboarding.set_run failed")
+        return _err(rid, 5077, str(e))
+    return _ok(rid, _run_state())
+
+
+def _run_state() -> dict:
+    from hermes_cli.anon_auth import guest_enabled
+    from hermes_cli.onboarding_run import should_run
+    return {"run": should_run(), "eligible": guest_enabled()}
 
 
 @method("onboarding.record_failed_start")

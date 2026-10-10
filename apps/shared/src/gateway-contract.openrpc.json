@@ -1717,6 +1717,24 @@
       }
     },
     {
+      "name": "machine.facts",
+      "summary": "Facts about the machine running this backend and its OS account, for the desktop first run.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/Params"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/MachineFactsResult"
+        }
+      }
+    },
+    {
       "name": "mcp.catalog",
       "summary": "Curated MCP presets with per-profile installed/enabled state and the env keys each needs.",
       "params": [
@@ -2077,8 +2095,26 @@
       }
     },
     {
+      "name": "onboarding.set_run",
+      "summary": "Write onboarding.run in the root profile's config.yaml; answers the new state.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/OnboardingSetRunParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/OnboardingRunStateResult"
+        }
+      }
+    },
+    {
       "name": "onboarding.state",
-      "summary": "",
+      "summary": "Whether the desktop first-run questionnaire is due; reads the root profile's config.",
       "params": [
         {
           "name": "params",
@@ -2090,7 +2126,7 @@
       "result": {
         "name": "result",
         "schema": {
-          "$ref": "#/components/schemas/OnboardingStateResult"
+          "$ref": "#/components/schemas/OnboardingStateRunResult"
         }
       }
     },
@@ -7679,6 +7715,40 @@
           "enable"
         ],
         "title": "CatalogApproved",
+        "type": "object"
+      },
+      "CatalogPluginPresence": {
+        "additionalProperties": false,
+        "description": "A named catalog plugin this OS runs. ``state`` is the pinned ``plugin.json`` app declaration judged\non this host; ``sentence`` names what is missing (empty when present or unknown); ``disclosure`` is the\ncatalog description's ``Disclosure:`` sentence (empty when it has none).",
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/CatalogAppState"
+          },
+          "sentence": {
+            "title": "Sentence",
+            "type": "string"
+          },
+          "disclosure": {
+            "title": "Disclosure",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "title",
+          "state",
+          "sentence",
+          "disclosure"
+        ],
+        "title": "CatalogPluginPresence",
         "type": "object"
       },
       "CatalogScan": {
@@ -17763,6 +17833,175 @@
         "title": "LoopSnapshot",
         "type": "object"
       },
+      "MachineFactsResult": {
+        "additionalProperties": false,
+        "description": "``machine_kind`` is ``Spark``, ``Mac``, ``PC`` or ``computer``. ``full_name`` is the OS account's\nreal name (never a login handle) and ``locale`` its first UI language; each is null when the OS has none.",
+        "properties": {
+          "machine": {
+            "$ref": "#/components/schemas/MachineInfo"
+          },
+          "machine_kind": {
+            "title": "Machine Kind",
+            "type": "string"
+          },
+          "has_nvidia_gpu": {
+            "title": "Has Nvidia Gpu",
+            "type": "boolean"
+          },
+          "is_spark": {
+            "title": "Is Spark",
+            "type": "boolean"
+          },
+          "locale": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Locale"
+          },
+          "full_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Full Name"
+          }
+        },
+        "required": [
+          "machine",
+          "machine_kind",
+          "has_nvidia_gpu",
+          "is_spark"
+        ],
+        "title": "MachineFactsResult",
+        "type": "object"
+      },
+      "MachineInfo": {
+        "additionalProperties": false,
+        "description": "Measured hardware; a key that was not measured is absent.",
+        "properties": {
+          "os_family": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Os Family"
+          },
+          "os_release": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Os Release"
+          },
+          "native_arch": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Native Arch"
+          },
+          "cpu_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cpu Model"
+          },
+          "ram_gb": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Ram Gb"
+          },
+          "gpu_class": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Gpu Class"
+          },
+          "vendor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Vendor"
+          },
+          "wsl": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Wsl"
+          },
+          "container": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Container"
+          }
+        },
+        "title": "MachineInfo",
+        "type": "object"
+      },
       "McpCatalogEntry": {
         "additionalProperties": false,
         "properties": {
@@ -20088,6 +20327,46 @@
         "title": "OnboardingResetSetupProfileResult",
         "type": "object"
       },
+      "OnboardingRunStateResult": {
+        "additionalProperties": false,
+        "description": "``run``: the questionnaire opens on this launch (root config ``onboarding.run``, else a fresh\ninstall). ``eligible``: the free tier is on for this backend (``anon_auth.guest_enabled``).",
+        "properties": {
+          "run": {
+            "title": "Run",
+            "type": "boolean"
+          },
+          "eligible": {
+            "title": "Eligible",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "run",
+          "eligible"
+        ],
+        "title": "OnboardingRunStateResult",
+        "type": "object"
+      },
+      "OnboardingSetRunParams": {
+        "additionalProperties": false,
+        "description": "``mark_profile_offered`` also latches ``onboarding.seen.profile_build_offered`` in the root config,\nso the first chat after the questionnaire gets the plain intro instead of the profile offer.",
+        "properties": {
+          "run": {
+            "title": "Run",
+            "type": "boolean"
+          },
+          "mark_profile_offered": {
+            "default": false,
+            "title": "Mark Profile Offered",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "run"
+        ],
+        "title": "OnboardingSetRunParams",
+        "type": "object"
+      },
       "OnboardingStateResult": {
         "additionalProperties": false,
         "properties": {
@@ -20133,6 +20412,59 @@
           "failed_starts"
         ],
         "title": "OnboardingStateResult",
+        "type": "object"
+      },
+      "OnboardingStateRunResult": {
+        "additionalProperties": false,
+        "description": "The agentic guide's state plus ``run``; the guide's fields stay until its renderer is deleted.",
+        "properties": {
+          "eligible": {
+            "title": "Eligible",
+            "type": "boolean"
+          },
+          "intro": {
+            "$ref": "#/components/schemas/OnboardingIntro"
+          },
+          "failed_starts": {
+            "title": "Failed Starts",
+            "type": "integer"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Completed At"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "run": {
+            "title": "Run",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "eligible",
+          "intro",
+          "failed_starts",
+          "run"
+        ],
+        "title": "OnboardingStateRunResult",
         "type": "object"
       },
       "OpenRequestEntry": {
@@ -22500,7 +22832,8 @@
           "update",
           "remove",
           "settings",
-          "onboarding"
+          "onboarding",
+          "presence"
         ],
         "title": "PluginsAction",
         "type": "string"
@@ -22530,7 +22863,7 @@
       },
       "PluginsManageParams": {
         "additionalProperties": false,
-        "description": "``toggle``: ``key``/``name`` + ``enable``; ``install``: ``identifier``/``repo`` or ``catalog_name``\n(+ ``force``, ``enable``, ``ref``); ``update``: ``name`` (+ ``accept_capabilities`` to apply a re-pin\nthat widened the plugin after the user confirmed the ``delta``); ``remove``: ``name`` (user installs only);\n``settings``: ``key`` + ``values`` (``{setting_key: value}``, non-secret schema keys only).",
+        "description": "``toggle``: ``key``/``name`` + ``enable``; ``install``: ``identifier``/``repo`` or ``catalog_name``\n(+ ``force``, ``enable``, ``ref``); ``update``: ``name`` (+ ``accept_capabilities`` to apply a re-pin\nthat widened the plugin after the user confirmed the ``delta``); ``remove``: ``name`` (user installs only);\n``settings``: ``key`` + ``values`` (``{setting_key: value}``, non-secret schema keys only);\n``presence``: ``names`` (catalog names, answered in that order).",
         "properties": {
           "profile": {
             "anyOf": [
@@ -22668,6 +23001,21 @@
             ],
             "default": null,
             "title": "Values"
+          },
+          "names": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Names"
           }
         },
         "title": "PluginsManageParams",
@@ -23004,6 +23352,21 @@
             ],
             "default": null,
             "title": "Onboarding"
+          },
+          "presence": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/CatalogPluginPresence"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Presence"
           }
         },
         "title": "PluginsManageResult",

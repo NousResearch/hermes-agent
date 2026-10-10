@@ -61,8 +61,8 @@ _debug = DebugSession("vision_tools", env_var="VISION_TOOLS_DEBUG")
 def _cfg_auxiliary(*keys: str, default=None):
     """``auxiliary.<keys...>`` from config.yaml; ``default`` when config is unavailable."""
     try:
-        from hermes_cli.config import cfg_get, load_config
-        return cfg_get(load_config(), "auxiliary", *keys, default=default)
+        from hermes_cli.config import cfg_get, load_config_readonly
+        return cfg_get(load_config_readonly(), "auxiliary", *keys, default=default)
     except Exception:
         return default
 
@@ -583,8 +583,8 @@ def _should_use_native_vision_fast_path() -> bool:
     """:func:`_native_tool_result_images` for the active main model; any failure → False."""
     try:
         from agent.auxiliary_client import _read_main_provider, _read_main_model
-        from hermes_cli.config import load_config
-        return _native_tool_result_images(_read_main_provider(), _read_main_model(), load_config())
+        from hermes_cli.config import load_config_readonly
+        return _native_tool_result_images(_read_main_provider(), _read_main_model(), load_config_readonly())
     except Exception as exc:
         logger.debug("Native vision fast-path check failed: %s", exc)
         return False

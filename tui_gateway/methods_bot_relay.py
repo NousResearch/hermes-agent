@@ -128,7 +128,8 @@ def _(rid, params: dict, _root=_relay_root, _run=_run_delivery,
                 record, _session_lookup_key(record, fallback=live_sid)) == BOT_CHAT_TITLE), "")
         # The sender fields are whatever the relaying client says. The author labels memory only and grants nothing.
         from tools.bot_relay import (
-            DeliveryAuthor, delivery_env, delivery_turn_author, relaying_principal_author)
+            DeliveryAuthor, delivery_env, delivery_turn_author, extend_delivery_path,
+            relaying_principal_author)
         from tui_gateway.methods_browser_control import _is_authenticated_identity, _principal_digest
         sender_fields = ("from_profile", "from_handle", "from_connection")
         identity = getattr(current_transport(), "auth_identity", None)
@@ -195,7 +196,7 @@ def _(rid, params: dict, _root=_relay_root, _run=_run_delivery,
             from tools.bot_failure_reasons import turn_failure_text
             return turn_failure_text(p.stdout, p.stderr)
 
-        turn_env = delivery_env(author, live_home)
+        turn_env = extend_delivery_path(delivery_env(author, live_home), resolved)
 
         fd, tmp = tempfile.mkstemp(prefix="hermes-relay-dm-", suffix=".txt", text=True)
         try:

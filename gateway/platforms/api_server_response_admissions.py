@@ -74,7 +74,8 @@ def admitted_context(admitted, *, replay=False):
     _, ref, row = admitted
     payload = row['payload']
     data = payload.get('api_turn_v1', {})
-    return dict(session_id=ref.session_id, user_message=payload.get('text', ''),
+    from gateway.session_api_media import rehydrate_api_images
+    return dict(session_id=ref.session_id, user_message=rehydrate_api_images(payload.get('text', ''), data.get('media')),
                 conversation_history=data.get('history') or [],
                 instructions=data.get('settings', {}).get('ephemeral_system_prompt'),
                 run_kwargs={}, run_agent=partial(observe_api_turn, admitted),

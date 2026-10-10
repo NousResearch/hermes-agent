@@ -318,6 +318,10 @@ def release_admission_media(db, admission_id):
     row = get_session_admission(db, admission_id=admission_id)
     if row is None or row['status'] != 'terminal':
         return 0
+    if row['payload'].get('api_turn_v1', {}).get('media'):
+        # Settled: the inline base64 copy of these committed images is redundant row weight.
+        from gateway.session_api_media import compact_settled_api_payloads
+        compact_settled_api_payloads(db, admission_id)
     released = release_unheld_media(db, admission_media_references(row['payload']), retain_history=False)
     # A hosted document is named in the prompt the transcript keeps, so it is history context like
     # an API image: it goes once no live row and no transcript row names it (session deletion then

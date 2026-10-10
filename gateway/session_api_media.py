@@ -45,7 +45,7 @@ def commit_api_images(content):
     for mime, data in images:
         path = Path(get_image_cache_dir()).resolve() / ('api_' + hashlib.sha256(data).hexdigest()[:32] + _MIME_EXT[mime])
         if not path.exists():
-            temporary = path.with_name(path.name + '.%d.tmp' % os.getpid())
+            temporary = path.with_name(f'{path.name}.{os.getpid()}.tmp')
             temporary.write_bytes(data)
             os.replace(temporary, path)
         staged.append(path)
@@ -61,9 +61,9 @@ def restore_api_images(content, media):
     hints = []
     for url in _image_urls(content):
         if _data_url_bytes(url) is not None:
-            hints.append('[Image attached at: %s]' % next(paths))
+            hints.append(f'[Image attached at: {next(paths)}]')
         else:
-            hints.append('[Image attached: %s]' % url)
+            hints.append(f'[Image attached: {url}]')
     if not hints:
         return content
     parts = [dict(part) for part in content]
@@ -72,4 +72,86 @@ def restore_api_images(content, media):
         text = {'type': 'text', 'text': 'What do you see in this image?'}
         parts.insert(0, text)
     text['text'] = text['text'] + '\n\n' + '\n'.join(hints)
+    return parts
+
+
+# A settled admission's inline ``data:`` image is replaced by this reference to its committed bytes.
+_RETAINED = 'hermes-retained:'
+
+
+def _compacted(content, media):
+    """``content`` with every committed inline image reduced to its digest, or ``None`` when
+    nothing changes. Only bytes this admission committed are compacted (same order as capture)."""
+    if not isinstance(content, list) or not media:
+        return None
+    digests, parts, changed = iter(reference['sha256'] for reference in media), [], False
+    for part in content:
+        url = (part.get('image_url') or {}).get('url', '') if isinstance(part, dict) and part.get('type') == 'image_url' else ''
+        decoded = _data_url_bytes(url) if url else None
+        digest = next(digests, None) if decoded is not None else None
+        if digest is not None and hashlib.sha256(decoded[1]).hexdigest() == digest:
+            part = {**part, 'image_url': {**part['image_url'], 'url': _RETAINED + digest}}
+            changed = True
+        parts.append(part)
+    return parts if changed else None
+
+
+def compact_settled_api_payloads(db, admission_id=None):
+    """Drop the redundant base64 copy of committed API images from TERMINAL admission rows: one
+    row at settlement, or (``admission_id=None``) the startup sweep for rows a crash left between
+    settlement and this pass. The bytes stay in content-addressed ``native-inputs`` (held by
+    ``api_turn_v1.media`` as history context); ``payload_digest`` is untouched, so an exact retry
+    still matches. Queued/started/unknown rows are never rewritten: they may still execute."""
+    import json
+    from hermes_state_runtime import _json
+    candidates = ("SELECT admission_id FROM session_admissions WHERE status='terminal' AND principal_id='api' "
+                  "AND json_type(payload_json, '$.api_turn_v1.media') IS NOT NULL "
+                  "AND instr(payload_json, 'data:image/') > 0")
+    if admission_id is None:
+        # The scan runs on a read snapshot; a write transaction opens only when there is work.
+        with db._read_ctx() as conn:
+            ids = [row[0] for row in conn.execute(candidates)]
+    else:
+        ids = [admission_id]
+
+    def write(conn):
+        compacted = 0
+        for row_id in ids:
+            row = conn.execute(candidates.replace('SELECT admission_id', 'SELECT payload_json')
+                               + ' AND admission_id=?', (row_id,)).fetchone()
+            payload = json.loads(row[0]) if row is not None else None
+            text = _compacted(payload.get('text'), payload['api_turn_v1']['media']) if payload else None
+            if text is not None:
+                conn.execute('UPDATE session_admissions SET payload_json=? WHERE admission_id=?',
+                             (_json({**payload, 'text': text}), row_id))
+                compacted += 1
+        return compacted
+    return db._execute_write(write) if ids else 0
+
+
+def rehydrate_api_images(content, media):
+    """The original request content of a compacted settled row, for terminal replay projections;
+    an image whose committed bytes are gone becomes a text notice rather than a dangling URL."""
+    if not isinstance(content, list):
+        return content
+    from gateway.session_ingress_media import restore_native_media
+    from hermes_state_runtime import RuntimeStoreError
+    by_digest = {reference['sha256']: reference for reference in media or ()}
+    mimes = {ext: mime for mime, ext in _MIME_EXT.items()}
+    parts = []
+    for part in content:
+        url = (part.get('image_url') or {}).get('url', '') if isinstance(part, dict) and part.get('type') == 'image_url' else ''
+        reference = by_digest.get(url[len(_RETAINED):]) if url.startswith(_RETAINED) else None
+        if url.startswith(_RETAINED):
+            try:
+                path = Path(restore_native_media([reference])[0]) if reference else None
+            except RuntimeStoreError:
+                path = None
+            if path is None:
+                part = {'type': 'text', 'text': '[Image no longer retained]'}
+            else:
+                data = base64.b64encode(path.read_bytes()).decode()
+                part = {**part, 'image_url': {**part['image_url'],
+                        'url': f'data:{mimes.get(path.suffix, "image/png")};base64,{data}'}}
+        parts.append(part)
     return parts

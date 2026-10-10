@@ -4315,6 +4315,7 @@
     "sidebar.projects.sectionLabel",
     "sidebar.projects.showAllCount",
     "sidebar.projects.showAllSessions",
+    "sidebar.projects.showFewer",
     "sidebar.projects.staleBackend",
     "sidebar.projects.startWork",
     "sidebar.projects.startWorkFailed",

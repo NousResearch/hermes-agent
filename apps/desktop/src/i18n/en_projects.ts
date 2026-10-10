@@ -80,5 +80,6 @@ export const enProjects: Translations['sidebar']['projects'] = {
   reorder: label => `Reorder ${label}`,
   toggle: (label, open) => `${open ? 'Show' : 'Hide'} ${label} sessions`,
   showAllCount: count => `Show all ${count} sessions`,
+  showFewer: 'Show fewer',
   back: 'All projects'
 }

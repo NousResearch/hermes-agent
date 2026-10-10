@@ -292,6 +292,7 @@ export const arChrome = {
       reorder: label => `إعادة ترتيب ${label}`,
       toggle: (label, open) => `${open ? 'إظهار' : 'إخفاء'} جلسات ${label}`,
       showAllCount: count => `إظهار كل الجلسات (${count})`,
+      showFewer: 'إظهار أقل',
       back: 'كل المشاريع'
     },
     newSessionIn: label => `جلسة جديدة في ${label}`,

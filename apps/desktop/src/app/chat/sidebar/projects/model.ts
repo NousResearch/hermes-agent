@@ -24,14 +24,20 @@ export const PROJECT_SESSION_PAGE = 50
 
 // Reveal `rows` a page at a time: the first `first`, then PROJECT_SESSION_PAGE
 // per `showMore()`. `more` is the next step's size (0 once everything shows).
-export function useRevealedRows<T>(rows: T[], first: number): { more: number; shown: T[]; showMore: () => void } {
+export function useRevealedRows<T>(
+  rows: T[],
+  first: number
+): { more: number; shown: T[]; showMore: () => void; reset: () => void } {
   const [count, setCount] = useState(first)
   const shown = rows.length > count ? rows.slice(0, count) : rows
 
   return {
     more: Math.min(PROJECT_SESSION_PAGE, rows.length - shown.length),
     shown,
-    showMore: () => setCount(current => current + PROJECT_SESSION_PAGE)
+    showMore: () => setCount(current => current + PROJECT_SESSION_PAGE),
+    // Collapsing a hydrated project (#136091) must not keep revealed progress:
+    // a stale count would mount every row at once on re-expand.
+    reset: () => setCount(first)
   }
 }
 

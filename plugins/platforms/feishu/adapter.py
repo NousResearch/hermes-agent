@@ -1717,8 +1717,16 @@ class FeishuAdapter(BasePlatformAdapter):
         try:
             msg_type, payload = self._build_outbound_payload(content)
             result = await _update(msg_type, payload)
-            if not result.success and msg_type == "post" and _POST_CONTENT_INVALID_RE.search(result.error or ""):
-                logger.warning("[Feishu] Invalid post update payload rejected by API; falling back to plain text")
+            if not result.success and msg_type == "post":
+                # The wording of a post-content rejection is not stable across Feishu's
+                # validation changes, and matching one exact string here strands the edit
+                # channel: the stream consumer then falls back to a fresh send and the
+                # frozen preview duplicates the reply. Retry any rejected post update as
+                # plain text so the in-place edit survives.
+                logger.warning(
+                    "[Feishu] Post update rejected by API (%s); retrying update as plain text",
+                    result.error,
+                )
                 result = await _update(
                     "text", json.dumps({"text": _strip_markdown_to_plain_text(content)}, ensure_ascii=False),
                 )

@@ -39,6 +39,23 @@ def _signal_name(sig: Any) -> str:
     return _SIGNAL_NAME_BY_NUM.get(sig_int, f"signal#{sig_int}")
 
 
+def label_marker_driven_shutdown(
+    ctx: Dict[str, Any], *, planned_takeover: bool, planned_stop: bool, received_signal: Any
+) -> None:
+    """Replace the ``UNKNOWN`` placeholder when a consumed marker already proved the stop was planned.
+
+    Windows has no ``add_signal_handler``, so ``hermes gateway stop`` / ``/restart`` reach the
+    handler through the planned-stop marker watcher with ``signal=None`` and would log exactly like
+    an external kill (#61596). A real OS signal keeps its name; an unexplained ``None`` stays UNKNOWN.
+    """
+    if received_signal is not None:
+        return
+    if planned_takeover:
+        ctx["signal"] = "PLANNED_TAKEOVER"
+    elif planned_stop:
+        ctx["signal"] = "PLANNED_STOP"
+
+
 def _read_proc_field(pid: int, key: str) -> Optional[str]:
     """Read a single field from /proc/<pid>/status.  Linux only; None elsewhere."""
     with contextlib.suppress(OSError), open(f"/proc/{pid}/status", encoding="utf-8") as fh:

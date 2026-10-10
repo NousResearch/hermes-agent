@@ -165,3 +165,33 @@ class TestParseSystemdDuration:
 # ---------------------------------------------------------------------------
 # check_systemd_timing_alignment
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# label_marker_driven_shutdown
+# ---------------------------------------------------------------------------
+
+class TestLabelMarkerDrivenShutdown:
+    """Regression for #61596: Windows planned stops reach the handler via the
+    marker watcher with signal=None; a consumed marker must label them instead
+    of UNKNOWN, while real signals and unexplained invocations stay truthful."""
+
+    @pytest.mark.parametrize(
+        ("received_signal", "planned_takeover", "planned_stop", "expected"),
+        [
+            (None, False, True, "PLANNED_STOP"),
+            (None, True, True, "PLANNED_TAKEOVER"),
+            (None, False, False, "UNKNOWN"),
+            (signal.SIGTERM, False, True, "SIGTERM"),
+        ],
+    )
+    def test_label_only_replaces_unknown_when_a_marker_proved_intent(
+        self, received_signal, planned_takeover, planned_stop, expected
+    ):
+        ctx = sf.snapshot_shutdown_context(received_signal)
+        sf.label_marker_driven_shutdown(
+            ctx,
+            planned_takeover=planned_takeover,
+            planned_stop=planned_stop,
+            received_signal=received_signal,
+        )
+        assert ctx["signal"] == expected

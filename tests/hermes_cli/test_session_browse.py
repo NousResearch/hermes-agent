@@ -194,6 +194,26 @@ class TestCursesBrowse:
         result = self._run_with_keys(sessions, keys)
         assert result is None
 
+    def test_backspace_empty_stays_in_search_mode(self):
+        """Backspace that empties the query keeps you in search mode, so a
+        subsequent 'd'/'q' still types instead of delete/quit."""
+        sessions = [
+            {"id": "s1", "source": "cli", "title": "Data bus review", "preview": "data", "last_active": time.time()},
+        ]
+        # '/' 'd' Backspace(empties, must stay searching) 'q' -> q becomes search char
+        keys = [ord("/"), ord("d"), 127, ord("q")]
+        result = self._run_with_keys(sessions, keys)  # if q quit, result would be None
+        assert result is not None  # still filtering, didn't quit
+
+    def test_backspace_no_chars_stays_searching(self):
+        """Backspace on an empty armed search does not exit search mode."""
+        sessions = [
+            {"id": "s1", "source": "cli", "title": "Data bus review", "preview": "data", "last_active": time.time()},
+        ]
+        # '/' then Backspace (no chars) then Esc quits -> None (not treated as a normal backspace-exit)
+        keys = [ord("/"), 127, 27]
+        result = self._run_with_keys(sessions, keys)
+        assert result is None  # Esc finally quits
 
 
 

@@ -183,11 +183,10 @@ class _CursesBrowser:
             self.search = ""
             self._refilter()
         elif key in {c.KEY_BACKSPACE, 127, 8}:
-            if self.search:
-                self.search = self.search[:-1]
-                self._refilter()
-                if not self.search:
-                    self.searching = False
+            if self.searching:
+                if self.search:  # remove a char, but stay in search mode (even if it empties)
+                    self.search = self.search[:-1]
+                    self._refilter()
         elif 32 <= key <= 126:  # printable ASCII
             ch = chr(key)
             if not self.searching:

@@ -63,28 +63,8 @@ def _fence_unfenced_tables(text: str) -> str:
     return "\n".join(out)
 
 
-def markdown_to_signal(text: str) -> tuple[str, list[str]]:
-    """Convert markdown to plain text + Signal textStyles list. Signal uses ``bodyRanges`` (signal-cli
-    ``textStyle`` / ``textStyles`` params) as ``start:length:STYLE`` with positions in UTF-16 code units.
-    Supported styles: BOLD, ITALIC, STRIKETHROUGH, MONOSPACE."""
-    text = _fence_tables(_normalize_bullet_markers(re.sub(r"\n{3,}", "\n\n", text).strip()))
-    styles: list[tuple[int, int, str]] = []
-    while match := _CODE_BLOCK_RE.search(text):
-        inner = match.group(1).rstrip("\n")
-        styles.append((match.start(), len(inner), "MONOSPACE"))
-        text = text[: match.start()] + inner + text[match.end() :]
-    new_text, last_end = "", 0
-    for match in _HEADING_RE.finditer(text):
-        new_text += text[last_end : match.start()]
-        eol = text.find("\n", match.end())
-        if eol == -1:
-            eol = len(text)
-        heading_text = text[match.end() : eol]
-        styles.append((len(new_text), len(heading_text), "BOLD"))
-        new_text += heading_text
-        last_end = eol
-    text = new_text + text[last_end:]
-    # Inline markers: first pattern to claim a span wins; later overlapping matches are dropped.
+def _process_inline(text: str) -> tuple[str, list[tuple[int, int, str]]]:
+    """strip inline markdown markers and return plain text with relative style spans."""
     all_matches: list[tuple[int, int, int, int, str]] = []
     occupied: list[tuple[int, int]] = []
     for pattern, style in _INLINE_PATTERNS:
@@ -94,37 +74,91 @@ def markdown_to_signal(text: str) -> tuple[str, list[str]]:
                 all_matches.append((ms, me, match.start(1), match.end(1), style))
                 occupied.append((ms, me))
     all_matches.sort()
-    # Strip the markers, recording (pos, len) removals so earlier block/heading ranges can be
-    # shifted, and capturing inline ranges in the stripped text.
-    result, last_end = "", 0
-    removals: list[tuple[int, int]] = []
+    result = ""
+    last_end = 0
     inline_styles: list[tuple[int, int, str]] = []
     for ms, me, g1s, g1e, style in all_matches:
-        if g1s > ms:
-            removals.append((ms, g1s - ms))
-        if me > g1e:
-            removals.append((g1e, me - g1e))
         result += text[last_end:ms]
+        start_offset = len(result)
         inner = text[g1s:g1e]
-        inline_styles.append((len(result), len(inner), style))
+        inline_styles.append((start_offset, len(inner), style))
         result += inner
         last_end = me
-    removals.sort()
+    result += text[last_end:]
+    return result, inline_styles
 
-    def _adjust(pos: int) -> int:
-        shift = 0
-        for remove_pos, remove_len in removals:
-            if remove_pos >= pos:
-                break
-            shift += min(remove_len, pos - remove_pos)
-        return pos - shift
 
-    adjusted_prior = [(_adjust(start), _adjust(start + length) - _adjust(start), style)
-                      for start, length, style in styles if _adjust(start + length) > _adjust(start)]
-    text = result + text[last_end:]
+def _process_plain_markdown(text: str) -> tuple[str, list[tuple[int, int, str]]]:
+    """process headings and inline styles in non-code markdown segments."""
+    result = ""
+    styles: list[tuple[int, int, str]] = []
+    last_end = 0
+    for match in _HEADING_RE.finditer(text):
+        before = text[last_end:match.start()]
+        if before:
+            clean_before, before_styles = _process_inline(before)
+            base_offset = len(result)
+            for s, l, st in before_styles:
+                styles.append((base_offset + s, l, st))
+            result += clean_before
+
+        eol = text.find("\n", match.end())
+        if eol == -1:
+            eol = len(text)
+        heading_raw = text[match.end():eol]
+        clean_heading, heading_inline = _process_inline(heading_raw)
+        base_offset = len(result)
+        styles.append((base_offset, len(clean_heading), "BOLD"))
+        for s, l, st in heading_inline:
+            styles.append((base_offset + s, l, st))
+        result += clean_heading
+        last_end = eol
+
+    after = text[last_end:]
+    if after:
+        clean_after, after_styles = _process_inline(after)
+        base_offset = len(result)
+        for s, l, st in after_styles:
+            styles.append((base_offset + s, l, st))
+        result += clean_after
+
+    return result, styles
+
+
+def markdown_to_signal(text: str) -> tuple[str, list[str]]:
+    """convert markdown to plain text + signal textstyles list."""
+    text = _fence_tables(_normalize_bullet_markers(re.sub(r"\n{3,}", "\n\n", text).strip()))
+    final_text = ""
+    raw_styles: list[tuple[int, int, str]] = []
+    last_end = 0
+    for match in _CODE_BLOCK_RE.finditer(text):
+        before = text[last_end:match.start()]
+        if before:
+            clean_before, before_styles = _process_plain_markdown(before)
+            base_offset = len(final_text)
+            for s, l, st in before_styles:
+                raw_styles.append((base_offset + s, l, st))
+            final_text += clean_before
+
+        inner = match.group(1).rstrip("\n")
+        base_offset = len(final_text)
+        raw_styles.append((base_offset, len(inner), "MONOSPACE"))
+        final_text += inner
+        last_end = match.end()
+
+    after = text[last_end:]
+    if after:
+        clean_after, after_styles = _process_plain_markdown(after)
+        base_offset = len(final_text)
+        for s, l, st in after_styles:
+            raw_styles.append((base_offset + s, l, st))
+        final_text += clean_after
+
     style_strings: list[str] = []
-    for cp_start, cp_len, style_type in sorted(adjusted_prior + inline_styles):
-        if 0 <= cp_start and cp_start + cp_len <= len(text):
-            u16_start, u16_len = _utf16_len(text[:cp_start]), _utf16_len(text[cp_start : cp_start + cp_len])
+    for cp_start, cp_len, style_type in sorted(raw_styles):
+        if 0 <= cp_start and cp_start + cp_len <= len(final_text) and cp_len > 0:
+            u16_start = _utf16_len(final_text[:cp_start])
+            u16_len = _utf16_len(final_text[cp_start : cp_start + cp_len])
             style_strings.append(f"{u16_start}:{u16_len}:{style_type}")
-    return text, style_strings
+    return final_text, style_strings
+

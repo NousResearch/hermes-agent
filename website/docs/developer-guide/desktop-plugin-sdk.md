@@ -1125,7 +1125,31 @@ host.profiles.list(scope?: ProfileScope)   // the profile list the profile rail 
 host.pluginDecisions                       // READ-ONLY atom: this window's plugin on/off decisions (frozen copies)
 host.i18n.registerAppLocale(id, { endonym?, rtl?, translations? })  // add a whole UI language (language pack); returns disposer
 host.i18n.languageOptions()                // [{ id, endonym, rtl, source }] — what the language switcher lists
+host.submitPrompt({connectionId, profile, sessionId, text}) // confirmed text through the native composer
 ```
+
+`host.submitPrompt` is the native text-send door for confirmed companion/plugin
+instructions. Pass the runtime `host.state.focusedSessionId` and its
+`focusedSessionOwner` captured for the confirmed target. The target must still
+be the focused, hydrated, visible conversation with the same owner; a stale,
+disabled or unavailable composer refuses. The call never opens a session,
+changes profiles, inherits local attachments, edits the draft, or interrupts a
+running turn. Slash commands and hidden sends are not supported.
+
+The returned promise reports `{status: 'accepted' | 'queued' | 'rejected' |
+'unknown', queueId?: string}`. An idle send uses the ordinary native submit
+pipeline (including the user bubble); a busy conversation or existing queue
+appends plain text to the native FIFO. `queued` is acceptance in either the
+renderer queue (`queueId` present) or the server queue; neither proves agent
+completion. Renderer persistence at enqueue is best-effort, but its one-attempt
+claim must be persisted and read back before dispatch. A proven pre-transmission
+refusal releases this claim; an uncertain outcome holds the entry across reload.
+`accepted` is
+submit acceptance, not agent completion. Observe the normal gateway events and
+transcript for completion. A timeout or thrown submit returns `unknown`: never
+retry it automatically. Callers own confirmation and cross-reconnection
+idempotency. Detect this method before use on older Desktop builds; raw
+`prompt.submit` is not a transcript-preserving fallback.
 
 `host.request` is the same JSON-RPC the app itself uses (sessions, config, skills,
 cron, kanban, …). `host.requestProfile` accepts a descriptor from

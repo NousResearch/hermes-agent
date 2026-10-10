@@ -11,6 +11,7 @@ from typing import Any, List, Optional
 from agent.memory_provider import (
     MAX_MEMORY_OBSERVATION_BYTES,
     MAX_MEMORY_OBSERVATION_FIELD_CHARS,
+    MAX_MEMORY_OBSERVATION_ITEMS,
     MAX_MEMORY_OBSERVATIONS,
     MemoryObservation,
     MemoryPrefetchResult,
@@ -35,11 +36,13 @@ def _builtin_dict_fields(value: dict, names: tuple[str, ...]) -> dict[str, Any]:
     """Read selected fields without hashing or comparing provider-controlled keys."""
     wanted = set(names)
     fields = {}
-    for key, child in dict.items(value):
+    for index, (key, child) in enumerate(dict.items(value)):
         if isinstance(key, str):
             key = str.__str__(key)
             if key in wanted:
                 fields[key] = child
+        if index + 1 >= MAX_MEMORY_OBSERVATION_ITEMS:
+            break
     return fields
 
 

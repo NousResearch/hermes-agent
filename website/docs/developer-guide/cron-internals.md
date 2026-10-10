@@ -76,6 +76,13 @@ must never test `== "ok"` for "the user got their result":
 | `error` | Agent run failed | `last_error` |
 | `delivery_failed` | Agent run succeeded, but the output never reached its target | `last_delivery_error` (`last_error` is `null`) |
 | `blocked_config` | Pre-dispatch validation refused to burn a run | `last_error` |
+| `delivery_queued` | Agent run succeeded and its output was **admitted to the target's queue** (bot-chat); a historical admission outcome, **not** proof of delivery | `last_delivery_queued` |
+
+`delivery_queued` is the **success-side** sibling of `ok`: a bot-chat target reports it
+when the turn is admitted to the owner's mailbox (see the Bot Chat section below).
+Treat `ok` **and** `delivery_queued` as "the run itself succeeded" when classifying a
+job as failed or not, and treat any **unrecognised** literal as a failure that needs a
+human (never enumerate failure literals — the set grows with the code).
 
 ### Job Lifecycle States
 

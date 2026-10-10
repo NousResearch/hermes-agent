@@ -365,7 +365,13 @@ THREAT_PATTERNS = [
     (r'\.\./\.\./\.\.', "path_traversal_deep", "high", "traversal", "deep relative path traversal (3+ levels up)"),
     (r'\.\./\.\.', "path_traversal", "medium", "traversal", "relative path traversal (2+ levels up)"),
     (r'/etc/passwd|/etc/shadow', "system_passwd_access", "critical", "traversal", "references system password files"),
-    (r'/proc/self|/proc/\d+/', "proc_access", "high", "traversal", "references /proc filesystem (process introspection)"),
+    # Fixed-path procfs introspection (cgroup/stat/loadavg under a numeric PID) is standard
+    # container detection, not traversal — flagging it blocked read-only diagnostics plugins
+    # (#132155). Escapes through /proc/<pid>/root|cwd and any variable-PID path (a fixed
+    # numeric PID names one process; $VAR/${VAR}/$(cmd) target whatever the runtime resolves)
+    # still score high.
+    (r'/proc/self|/proc/(?:\$\{?[A-Za-z_]\w*\}?|\$\([^)]*\))|/proc/\d+/(?!cgroup\b|stat\b|loadavg\b)',
+     "proc_access", "high", "traversal", "references /proc filesystem (process introspection)"),
     (r'/dev/shm/', "dev_shm", "medium", "traversal", "references shared memory (common staging area)"),
     # ── Crypto mining ──
     (r'xmrig|stratum\+tcp|monero|coinhive|cryptonight', "crypto_mining", "critical", "mining", "cryptocurrency mining reference"),

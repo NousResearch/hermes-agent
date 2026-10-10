@@ -17,7 +17,8 @@ from typing import Any, Dict, List, Optional
 from agent.context_engine import automatic_compaction_status_message
 from agent.conversation_compression import (
     IDLE_COMPACTION_STATUS_TEMPLATE, PREFLIGHT_COMPRESSION_STATUS_TEMPLATE,
-    compression_skipped_due_to_lock, conversation_history_after_compression,
+    compression_attempt_was_housekeeping, compression_skipped_due_to_lock,
+    conversation_history_after_compression,
 )
 
 logger = logging.getLogger("agent.turn_context")
@@ -383,7 +384,9 @@ def _run_preflight_passes(
             _preflight_input, system_message, approx_tokens=_preflight_tokens,
             task_id=effective_task_id,
         )
-        if out.messages is _preflight_input and compression_skipped_due_to_lock(agent):
+        if out.messages is _preflight_input and (
+            compression_skipped_due_to_lock(agent) or compression_attempt_was_housekeeping(agent)
+        ):
             # Lock-skip: another path holds the lock, so this is a DEFER, not proof of
             # incompressibility — don't arm the blocker; stop passes this turn.
             logger.info(

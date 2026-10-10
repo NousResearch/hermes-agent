@@ -2836,6 +2836,7 @@ export interface Translations {
       noModels: string
       editModels: string
       refreshModels: string
+      showModelSlugs: string
       fast: string
     }
     modelOptions: {

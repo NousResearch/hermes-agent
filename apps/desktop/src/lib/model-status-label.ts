@@ -116,10 +116,52 @@ export function displayModelName(model: string): string {
  *  so rows render this as a subtitle beneath the display name (#58566, #94706). */
 export function modelSlugSuffix(model: string): string {
   const trimmed = model.trim()
+
   if (!trimmed || !trimmed.includes('/')) {
     return ''
   }
+
   return trimmed
+}
+
+/** Ids in one provider's catalog whose display name collides with a sibling's
+ *  (`gc/grok-4.6` vs `grok-cli/grok-4.6` both render "Grok 4.6"). Pass the
+ *  provider's full catalog, not just the visible shortlist, so a lone enabled
+ *  variant still says which upstream it is. */
+export function collidingModelIds(models: readonly string[]): Set<string> {
+  const byName = new Map<string, string[]>()
+
+  for (const id of models) {
+    const { name, tag } = modelDisplayParts(id)
+    const key = tag ? `${name}\u0000${tag}` : name
+    const ids = byName.get(key)
+
+    if (ids) {
+      ids.push(id)
+    } else {
+      byName.set(key, [id])
+    }
+  }
+
+  return new Set([...byName.values()].filter(ids => ids.length > 1).flat())
+}
+
+/** Subtitle for one picker row (a base id plus its optional `-fast` sibling):
+ *  shown when the row's label collides within its provider, or everywhere when
+ *  the user opted in. Empty means render no subtitle. A colliding bare id has
+ *  no provider segment, so the raw id is the only thing that tells it apart. */
+export function modelSlugLine(
+  family: { fastId: null | string; id: string },
+  colliding: ReadonlySet<string>,
+  showAll: boolean
+): string {
+  const isColliding = colliding.has(family.id) || (family.fastId !== null && colliding.has(family.fastId))
+
+  if (!showAll && !isColliding) {
+    return ''
+  }
+
+  return modelSlugSuffix(family.id) || (isColliding ? family.id.trim() : '')
 }
 
 /** Status bar trigger label — model name plus the live session state (effort/fast).

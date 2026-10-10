@@ -5,6 +5,7 @@ import { createContext, type ReactNode, useContext, useEffect, useMemo, useRef, 
 import { Codicon } from '@/components/ui/codicon'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import {
+  DropdownMenuCheckboxItem,
   DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuLabel,
@@ -22,13 +23,14 @@ import type { HermesGateway } from '@/hermes'
 import { getLocalModelsStatus } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { catalogProviderMatches, modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
-import { displayModelName, modelDisplayParts, modelSlugSuffix } from '@/lib/model-status-label'
+import { collidingModelIds, displayModelName, modelDisplayParts, modelSlugLine } from '@/lib/model-status-label'
 import { DEFAULT_REASONING_EFFORT, reasoningEffortLabel } from '@/lib/reasoning-effort'
 import { foldIncludes, normalize } from '@/lib/text'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { $localModelsEnabled } from '@/store/local-models-flag'
 import { $localRuntimeJobs, runningModelDownloads, watchLocalRuntimeJobs } from '@/store/local-runtime-jobs'
+import { $showModelSlugs, toggleShowModelSlugs } from '@/store/model-slug-prefs'
 import {
   $visibleModels,
   collapseModelFamilies,
@@ -140,6 +142,7 @@ export function ModelCatalogMenu({
   // catalog must show the same shortlist. A per-caller opt-in is how the board
   // and the composer would end up disagreeing about what "my models" means.
   const visibleModels = useStore($visibleModels)
+  const showModelSlugs = useStore($showModelSlugs)
 
   const modelOptions = useQuery({
     queryKey: modelOptionsQueryKey(profile, sessionId, ownerConnectionId),
@@ -457,6 +460,9 @@ export function ModelCatalogMenu({
             // Collapsed when the user stored it (and not while searching, which
             // spans every model regardless of collapse state).
             const collapsed = collapsedProviders.includes(slug) && !search
+            // Against the provider's FULL catalog, not the shortlist: a lone
+            // enabled variant still collides with its hidden siblings.
+            const colliding = collidingModelIds(group.provider.models ?? [])
 
             return (
               <DropdownMenuGroup className="py-0.5" key={slug}>
@@ -495,7 +501,7 @@ export function ModelCatalogMenu({
 
                     const isCurrent = activeId !== null
                     const { name, tag } = modelDisplayParts(family.id)
-                    const slugSuffix = modelSlugSuffix(family.id)
+                    const slugLine = modelSlugLine(family, colliding, showModelSlugs)
                     const caps = group.provider.capabilities?.[family.id]
 
                     // Managed local model loading into memory right now:
@@ -556,12 +562,14 @@ export function ModelCatalogMenu({
                               ) : null}
                               {meta ? <span className="text-(--ui-text-tertiary)"> {meta}</span> : null}
                             </span>
-                            <span
-                              className="block truncate text-[0.625rem] text-(--ui-text-quaternary)"
-                              title={family.id}
-                            >
-                              {slugSuffix}
-                            </span>
+                            {slugLine ? (
+                              <span
+                                className="block truncate text-[0.625rem] text-(--ui-text-quaternary)"
+                                title={family.id}
+                              >
+                                {slugLine}
+                              </span>
+                            ) : null}
                           </div>
                           {loadProgress ? (
                             <span
@@ -670,6 +678,17 @@ export function ModelCatalogMenu({
         <Codicon name="settings-gear" size="0.75rem" />
         {copy.editModels}
       </DropdownMenuItem>
+      <DropdownMenuCheckboxItem
+        checked={showModelSlugs}
+        className={cn(dropdownMenuRow, 'text-(--ui-text-tertiary)')}
+        onSelect={event => {
+          // Keep the menu open so the rows visibly gain/lose their slugs.
+          event.preventDefault()
+          toggleShowModelSlugs()
+        }}
+      >
+        {copy.showModelSlugs}
+      </DropdownMenuCheckboxItem>
     </>
   )
 }

@@ -5,6 +5,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import { DropdownMenu, DropdownMenuContent } from '@/components/ui/dropdown-menu'
 import { $localModelsEnabled } from '@/store/local-models-flag'
 import { $localRuntimeJobs } from '@/store/local-runtime-jobs'
+import { $showModelSlugs } from '@/store/model-slug-prefs'
 import {
   $modelVisibilityOpen,
   $visibleModels,
@@ -131,6 +132,53 @@ describe('the catalog owns model curation', () => {
     fireEvent.click(screen.getByText('Edit models…'))
 
     expect($modelVisibilityOpen.get()).toBe(true)
+  })
+})
+
+// Slugs disambiguate, so they appear where labels collide — including against
+// siblings the shortlist hides — and everywhere only when the user opts in.
+describe('model slug subtitles', () => {
+  beforeEach(() => {
+    $showModelSlugs.set(false)
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        { models: ['gc/grok-4.6', 'grok-cli/grok-4.6', 'openai/gpt-5.5'], name: 'Omni Router', slug: 'omnirouter' }
+      ]
+    })
+  })
+
+  afterEach(() => $showModelSlugs.set(false))
+
+  const slugLine = (id: string) => screen.queryByText(id, { selector: `span[title="${id}"]` })
+
+  it('shows slugs only under rows whose display name collides', async () => {
+    renderMenu()
+    await screen.findByText(/GPT-5\.5/)
+
+    expect(slugLine('gc/grok-4.6')).not.toBeNull()
+    expect(slugLine('grok-cli/grok-4.6')).not.toBeNull()
+    expect(slugLine('openai/gpt-5.5')).toBeNull()
+  })
+
+  it('detects a collision against a sibling the shortlist hides', async () => {
+    setVisibleModels(new Set([modelVisibilityKey('omnirouter', 'gc/grok-4.6')]))
+
+    renderMenu()
+    await screen.findByText(/Grok 4\.6/)
+
+    expect(slugLine('gc/grok-4.6')).not.toBeNull()
+  })
+
+  it('shows every slug once the user opts in, and the footer toggle flips it in place', async () => {
+    renderMenu()
+    await screen.findByText(/GPT-5\.5/)
+    expect(slugLine('openai/gpt-5.5')).toBeNull()
+
+    fireEvent.click(screen.getByText('Show model slugs'))
+
+    expect($showModelSlugs.get()).toBe(true)
+    await screen.findByText('openai/gpt-5.5', { selector: 'span[title="openai/gpt-5.5"]' })
+    expect(slugLine('gc/grok-4.6')).not.toBeNull()
   })
 })
 

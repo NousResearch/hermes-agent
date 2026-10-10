@@ -2891,6 +2891,7 @@ export const ja = defineLocale({
       noModels: 'モデルが見つかりません',
       editModels: 'モデルを編集…',
       refreshModels: 'モデルを更新',
+      showModelSlugs: 'モデル ID を表示',
       fast: '高速'
     },
     modelOptions: {

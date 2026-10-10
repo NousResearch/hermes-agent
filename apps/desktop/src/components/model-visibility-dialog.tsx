@@ -13,8 +13,9 @@ import type { HermesGateway } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { Search } from '@/lib/icons'
 import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
-import { displayModelName, modelDisplayParts, modelSlugSuffix } from '@/lib/model-status-label'
+import { collidingModelIds, displayModelName, modelDisplayParts, modelSlugLine } from '@/lib/model-status-label'
 import { foldIncludes, normalize } from '@/lib/text'
+import { $showModelSlugs } from '@/store/model-slug-prefs'
 import {
   $visibleModels,
   collapseModelFamilies,
@@ -51,6 +52,7 @@ export function ModelVisibilityDialog({
   const [search, setSearch] = useState('')
   const stored = useStore($visibleModels)
   const collapsedProviders = useStore($collapsedProviders)
+  const showModelSlugs = useStore($showModelSlugs)
 
   const modelOptions = useQuery({
     queryKey: modelOptionsQueryKey(profile, sessionId, ownerConnectionId),
@@ -119,6 +121,7 @@ export function ModelVisibilityDialog({
               const checkState = onCount === 0 ? false : onCount === allFamilies.length ? true : 'indeterminate'
 
               const collapsed = collapsedProviders.includes(provider.slug) && !q
+              const colliding = collidingModelIds(provider.models ?? [])
 
               return (
                 <div className="py-0.5" key={provider.slug}>
@@ -145,7 +148,7 @@ export function ModelVisibilityDialog({
                   {!collapsed &&
                     models.map(family => {
                       const { name, tag } = modelDisplayParts(family.id)
-                      const slugSuffix = modelSlugSuffix(family.id)
+                      const slugLine = modelSlugLine(family, colliding, showModelSlugs)
                       const key = modelVisibilityKey(provider.slug, family.id)
 
                       return (
@@ -158,12 +161,14 @@ export function ModelVisibilityDialog({
                               <HighlightMatches foldSeparators query={search} text={name} />
                               {tag ? <span className="text-(--ui-text-tertiary)"> {tag}</span> : null}
                             </span>
-                            <span
-                              className="block truncate text-[0.625rem] text-(--ui-text-quaternary)"
-                              title={family.id}
-                            >
-                              {slugSuffix}
-                            </span>
+                            {slugLine ? (
+                              <span
+                                className="block truncate text-[0.625rem] text-(--ui-text-quaternary)"
+                                title={family.id}
+                              >
+                                {slugLine}
+                              </span>
+                            ) : null}
                           </div>
                           <Switch
                             checked={visible.has(key)}

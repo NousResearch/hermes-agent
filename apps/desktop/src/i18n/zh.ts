@@ -3447,6 +3447,7 @@ export const zh: Translations = {
       noModels: '未找到模型',
       editModels: '编辑模型…',
       refreshModels: '刷新模型',
+      showModelSlugs: '显示模型 ID',
       fast: '快速'
     },
     modelOptions: {

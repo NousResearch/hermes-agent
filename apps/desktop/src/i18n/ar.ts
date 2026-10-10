@@ -2493,6 +2493,7 @@ export const ar = defineLocale({
       noModels: 'لا توجد نماذج',
       editModels: 'تحرير النماذج',
       refreshModels: 'تحديث النماذج',
+      showModelSlugs: 'إظهار معرّفات النماذج',
       fast: 'سريع'
     },
     modelOptions: {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  collidingModelIds,
   currentPickerSelection,
   displayModelName,
   formatModelStatusLabel,
@@ -42,6 +43,30 @@ describe('model-status-label', () => {
     expect(modelSlugSuffix('gpt-5.5')).toBe('')
     expect(modelSlugSuffix('')).toBe('')
     expect(modelSlugSuffix('  ')).toBe('')
+  })
+
+  it('flags no ids when every display name in a catalog is distinct', () => {
+    expect(collidingModelIds(['openai/gpt-5.5', 'anthropic/claude-opus-4.8', 'google/gemini-3.1-pro']).size).toBe(0)
+    expect(collidingModelIds([]).size).toBe(0)
+  })
+
+  it('flags every id whose display name collides across routing prefixes', () => {
+    const models = ['gc/grok-4.6', 'grok-cli/grok-4.6', 'openai/gpt-5.5']
+
+    expect(collidingModelIds(models)).toEqual(new Set(['gc/grok-4.6', 'grok-cli/grok-4.6']))
+  })
+
+  it('keys collisions on the rendered label, variant tags and date pins included', () => {
+    // A -fast sibling renders with its own "Fast" tag, so it stays distinguishable.
+    expect(collidingModelIds(['anthropic/claude-opus-4.8', 'anthropic/claude-opus-4.8-fast']).size).toBe(0)
+    // Two upstreams of the same Fast variant render identically.
+    expect(collidingModelIds(['a/claude-opus-4.8-fast', 'b/claude-opus-4.8-fast', 'a/claude-opus-4.8'])).toEqual(
+      new Set(['a/claude-opus-4.8-fast', 'b/claude-opus-4.8-fast'])
+    )
+    // A date pin is dropped from the label, so pinned and unpinned ids collide.
+    expect(collidingModelIds(['claude-opus-4-5', 'claude-opus-4-5-20251101'])).toEqual(
+      new Set(['claude-opus-4-5', 'claude-opus-4-5-20251101'])
+    )
   })
 
   it('maps reasoning effort to compact labels', () => {

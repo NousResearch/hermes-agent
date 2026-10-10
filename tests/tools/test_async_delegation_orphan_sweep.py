@@ -17,7 +17,13 @@ from pathlib import Path
 
 import pytest
 
-from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
+from hermes_constants import (
+    get_hermes_home,
+    reset_hermes_home_override,
+    reset_store_home_override,
+    set_hermes_home_override,
+    set_store_home_override,
+)
 from tools import async_delegation as ad
 from tools.process_registry import process_registry
 
@@ -314,3 +320,58 @@ def test_throttle_runs_at_most_one_sweep_per_home_per_interval(tmp_path, monkeyp
             ad.maybe_sweep_orphaned_completions(q, now=101.0)
         ad.maybe_sweep_orphaned_completions(q, now=100.0 + ad.ORPHAN_SWEEP_INTERVAL_S + 1)
     assert calls == [str(tmp_path / "a"), str(tmp_path / "b"), str(tmp_path / "a")]
+
+
+# Several profiles may keep ONE background-work ledger (``set_store_home_override``). The owner
+# homes its ledger elsewhere before dispatching, exactly as such an embedder does.
+_SHARED_OWNER = ("import os\nfrom hermes_constants import set_store_home_override\n"
+                 "set_store_home_override('background_work', os.environ['SHARED_LEDGER'])\n" + _OWNER)
+
+
+def _shared_orphan(home: Path, ledger: Path) -> str:
+    home.mkdir(parents=True, exist_ok=True)
+    env = {**os.environ, "HERMES_HOME": str(home), "SHARED_LEDGER": str(ledger), "PYTHONPATH": REPO}
+    out = subprocess.run([sys.executable, "-c", _SHARED_OWNER], cwd=REPO, env=env, text=True,
+                         capture_output=True, timeout=60, check=True)
+    return out.stdout.strip().splitlines()[-1]
+
+
+class _SharedLedger(_Home):
+    def __init__(self, home: Path, ledger: Path):
+        super().__init__(home)
+        self.ledger = ledger
+
+    def __enter__(self):
+        super().__enter__()
+        self._store = set_store_home_override("background_work", str(self.ledger))
+        return self
+
+    def __exit__(self, *exc):
+        reset_store_home_override(self._store)
+        super().__exit__(*exc)
+
+
+def test_sweep_over_a_shared_ledger_offers_only_the_sweeping_profiles_rows(tmp_path):
+    ledger, home_a, home_b = tmp_path / "ledger", tmp_path / "a", tmp_path / "b"
+    id_a, id_b = _shared_orphan(home_a, ledger), _shared_orphan(home_b, ledger)
+    assert not (home_a / "state.db").exists() and not (home_b / "state.db").exists()
+    later = max(_row(ledger, id_a)["updated_at"], _row(ledger, id_b)["updated_at"]) + ad._ORPHAN_STALE_S + 1
+    q = queue.Queue()
+    with _SharedLedger(home_a, ledger):
+        ad.sweep_orphaned_completions(q, now=later)
+    assert [e["delegation_id"] for e in _drain(q)] == [id_a]  # A's own orphan IS offered; B's is not
+    with _SharedLedger(home_b, ledger):
+        ad.sweep_orphaned_completions(q, now=later)
+    assert [e["delegation_id"] for e in _drain(q)] == [id_b]
+
+
+def test_restart_replay_over_a_shared_ledger_offers_only_the_replaying_profiles_rows(tmp_path):
+    ledger, home_a, home_b = tmp_path / "ledger", tmp_path / "a", tmp_path / "b"
+    id_a, id_b = _shared_orphan(home_a, ledger), _shared_orphan(home_b, ledger)
+    q = queue.Queue()
+    with _SharedLedger(home_b, ledger):
+        assert ad.restore_undelivered_completions(q) == 1
+    assert [e["delegation_id"] for e in _drain(q)] == [id_b]
+    with _SharedLedger(home_a, ledger):
+        assert ad.restore_undelivered_completions(q) == 1
+    assert [e["delegation_id"] for e in _drain(q)] == [id_a]

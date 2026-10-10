@@ -606,7 +606,11 @@ CREATE TABLE IF NOT EXISTS async_delegations (
     -- async_delegations shapes depending on whether the delegation tool had
     -- ever run, breaking rebuild/replay pipelines that reconstruct state.db
     -- from the canonical schema (#94691).
-    origin_session_id TEXT NOT NULL DEFAULT ''
+    origin_session_id TEXT NOT NULL DEFAULT '',
+    -- hermes_home_key of the dispatching profile. One ledger can serve several profiles
+    -- (set_store_home_override), so startup replay and the orphan sweep offer a row only
+    -- to its owner. '' = written before this column, owned by the ledger's own home.
+    owner_home TEXT NOT NULL DEFAULT ''
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);

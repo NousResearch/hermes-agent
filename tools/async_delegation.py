@@ -20,7 +20,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Dict, List, Optional
 
-from hermes_constants import get_hermes_home, hermes_home_key
+from hermes_constants import get_hermes_home, get_store_home, hermes_home_key
 from tools.daemon_pool import DaemonThreadPoolExecutor
 from tools.thread_context import propagate_context_to_thread
 
@@ -95,7 +95,7 @@ _STALL_FIELD_MAP = (("_stall_quiet_seconds", "stalled_after_quiet_seconds"),
 
 # ── Durable ledger (state.db / async_delegations) ───────────────────────────
 def _db_path():
-    return get_hermes_home() / "state.db"
+    return get_store_home("background_work") / "state.db"
 
 
 def _connect() -> sqlite3.Connection:
@@ -170,11 +170,11 @@ def _persist_dispatch(record: dict[str, Any]) -> None:
                (delegation_id, origin_session, origin_ui_session_id,
                 parent_session_id, state, dispatched_at, updated_at,
                 delivery_state, delivery_attempts, owner_pid,
-                owner_started_at, task_json, origin_session_id)
-               VALUES (?, ?, ?, ?, 'running', ?, ?, 'pending', 0, ?, ?, ?, ?)""",
+                owner_started_at, task_json, origin_session_id, owner_home)
+               VALUES (?, ?, ?, ?, 'running', ?, ?, 'pending', 0, ?, ?, ?, ?, ?)""",
             (record["delegation_id"], record.get("session_key", ""), record.get("origin_ui_session_id", ""),
              record.get("parent_session_id"), record["dispatched_at"], now, os.getpid(), owner_started_at,
-             json.dumps(task_payload), record.get("origin_session_id", "")))
+             json.dumps(task_payload), record.get("origin_session_id", ""), hermes_home_key(get_hermes_home())))
     _prune_durable_records()
 
 
@@ -257,6 +257,15 @@ def _owner_liveness() -> Optional[Callable[[Any, Any], bool]]:
     return alive
 
 
+def _owned_rows_sql() -> tuple:
+    """``(sql, params)`` restricting a ledger read to the current profile's rows. A ledger shared by several
+    profiles (``set_store_home_override``) must not replay one profile's completions into another's
+    queue; a row written before ``owner_home`` existed belongs to the home whose own ledger it is in."""
+    home = hermes_home_key(get_hermes_home())
+    own_ledger = hermes_home_key(get_store_home("background_work")) == home
+    return "(owner_home = ? OR (owner_home = '' AND ?))", (home, int(own_ledger))
+
+
 def recover_abandoned_delegations() -> int:
     """Classify records whose owning process disappeared as outcome unknown; children a multi-child unit had already
     recorded (``record_unit_child``) are replayed with their real results."""
@@ -325,11 +334,12 @@ def restore_undelivered_completions(target_queue) -> int:
         return 0  # nothing to replay; a replay must not create (or migrate) the ledger (#123265)
     recover_abandoned_delegations()
     now = time.time()
+    owned, owned_params = _owned_rows_sql()
     with _DB_LOCK, _transaction() as conn:
-        rows = conn.execute("""SELECT delegation_id, event_json, completed_at, dispatched_at
+        rows = conn.execute(f"""SELECT delegation_id, event_json, completed_at, dispatched_at
                FROM async_delegations
-               WHERE state != 'running' AND delivery_state='pending' AND event_json IS NOT NULL
-               ORDER BY completed_at, delegation_id""").fetchall()
+               WHERE state != 'running' AND delivery_state='pending' AND event_json IS NOT NULL AND {owned}
+               ORDER BY completed_at, delegation_id""", owned_params).fetchall()
         return _replay_pending(conn, rows, target_queue, now)
 
 
@@ -369,8 +379,8 @@ def sweep_orphaned_completions(target_queue, *, now: Optional[float] = None) -> 
     check. A row is offered once per live in-memory copy: a consumer that discards the copy with the row
     still pending hands it back for the next sweep. The consumer's ``claim_completion_delivery`` stays
     the atomic cross-process gate, so two processes offering one row never both deliver it. Rows past
-    the delivery budget or the replay age converge to ``dropped``. Reads the current profile's ledger:
-    callers bind the owning profile first."""
+    the delivery budget or the replay age converge to ``dropped``. Reads the current profile's ledger and,
+    when that ledger is shared, only the rows it dispatched: callers bind the owning profile first."""
     alive = _owner_liveness()
     if alive is None or not _db_path().exists():
         return 0  # never create a ledger just to sweep it
@@ -379,14 +389,16 @@ def sweep_orphaned_completions(target_queue, *, now: Optional[float] = None) -> 
     home = hermes_home_key(get_hermes_home())
     with _orphan_lock:
         offered = {delegation_id for key, delegation_id in _offered if key == home}
+    owned, owned_params = _owned_rows_sql()
     with _DB_LOCK, _transaction() as conn:
-        rows = conn.execute("""SELECT delegation_id, event_json, completed_at, dispatched_at,
+        rows = conn.execute(f"""SELECT delegation_id, event_json, completed_at, dispatched_at,
                       owner_pid, owner_started_at, delivery_attempts
                FROM async_delegations
                WHERE state NOT IN ('running','finalizing') AND delivery_state='pending'
                  AND event_json IS NOT NULL AND updated_at < ?
-                 AND (delivery_claim IS NULL OR delivery_claimed_at < ?)
-               ORDER BY completed_at, delegation_id""", (now - _ORPHAN_STALE_S, now - _CLAIM_LEASE_S)).fetchall()
+                 AND (delivery_claim IS NULL OR delivery_claimed_at < ?) AND {owned}
+               ORDER BY completed_at, delegation_id""",
+            (now - _ORPHAN_STALE_S, now - _CLAIM_LEASE_S, *owned_params)).fetchall()
         orphans = []
         for delegation_id, payload, completed_at, dispatched_at, pid, started, attempts in rows:
             if delegation_id in offered or alive(pid, started):

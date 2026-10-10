@@ -26,7 +26,7 @@ class TestOAuthUserAgentPrefix:
 
         mock_sdk = MagicMock()
         with patch("agent.anthropic_adapter._get_anthropic_sdk", return_value=mock_sdk):
-            build_anthropic_client("sk-ant-oauth-abc123", "https://api.anthropic.com")
+            build_anthropic_client("sk-ant-oat01-abc123", "https://api.anthropic.com")
 
         # Inspect the kwargs passed to Anthropic()
         call_kwargs = mock_sdk.Anthropic.call_args[1]

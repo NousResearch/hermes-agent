@@ -2890,6 +2890,11 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     # Tag the session `kanban` so session-browsing surfaces filter it out by
     # source instead of rendering one sidebar row per attempt.
     env["HERMES_SESSION_SOURCE"] = "kanban"
+    # An explicit task pin is a policy, not a preference: prevent the worker
+    # from inheriting the profile-wide fallback chain and silently changing
+    # providers when the pinned credential is unavailable.
+    if task.model_override or task.provider_override:
+        env["HERMES_KANBAN_PINNED_RUNTIME"] = "1"
     # TERMINAL_CWD takes precedence over process cwd in file_tools and
     # build_context_files_prompt; without it relative writes land in the gateway
     # user's home and workers load the gateway's AGENTS.md. file_tools rejects

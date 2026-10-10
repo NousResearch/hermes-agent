@@ -829,7 +829,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     consecutive_failures INTEGER NOT NULL DEFAULT 0,
     worker_pid           INTEGER,
     -- Restart-stable fingerprint of worker_pid ("<boot/instantiation epoch>|<start time>",
-    -- kanban_db_dispatch._process_fingerprint) recorded at spawn: liveness and kills require pid
+    -- process_identity.process_fingerprint) recorded at spawn: liveness and kills require pid
     -- AND fingerprint to agree, so a PID recycled after a reboot is never read as our worker or
     -- signalled. NULL = legacy row (pre-fingerprint spawn); 'unverified' = capture failed at
     -- spawn (held while live, never signalled). Column keeps its INTEGER affinity for the

@@ -71,6 +71,28 @@ def _process_create_time(pid: Optional[int] = None) -> Optional[float]:
         return None
 
 
+# ``worker_started_at`` / ledger ``holder_fingerprint`` value for a process whose fingerprint could not
+# be captured. Distinct from the NULL legacy row (pre-fingerprint spawn): such a holder is held (its
+# claim is never released beside the live PID) but NEVER signalled — missing process identity is
+# refusal, not permission (#99558).
+UNVERIFIED_WORKER_FINGERPRINT = "unverified"
+
+
+def process_fingerprint(pid: int) -> Optional[str]:
+    """Restart-stable identity of a live process: ``"<instantiation epoch>|<start time>"``. The start
+    time alone (``/proc/<pid>/stat`` field 22 on Linux) is clock ticks since THIS boot, so a row that
+    survives a reboot could match an unrelated process with the same PID and the same tick value;
+    ``gateway.drain_control.current_instantiation_epoch`` (``boot_id`` + PID-1 start) changes on every
+    reboot / container recreate, so the composed value never survives one. ``None`` when unreadable.
+    Kanban worker rows and ``agent.work_ledger`` holders share this one format."""
+    from gateway.drain_control import current_instantiation_epoch
+    from gateway.status import get_process_start_time
+    start = get_process_start_time(int(pid))
+    if start is None:
+        return None
+    return f"{current_instantiation_epoch()}|{start}"
+
+
 # Layer 1 — spawn tags
 
 

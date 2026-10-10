@@ -83,3 +83,54 @@ def test_cache_media_bytes_returns_host_path_and_translates_in_note(two_homes):
         cached = cache_media_bytes(b"%PDF-1.4 x", filename="report.pdf", mime_type="application/pdf")
         assert Path(cached.path).is_file() and Path(cached.path).parent == b / "cache" / "documents"
         assert cached.context_note().startswith("[document 'report.pdf' saved at: /root/.hermes/cache/documents/doc_")
+
+
+@pytest.mark.parametrize("failure", ["missing", "io-error"])
+@pytest.mark.parametrize("quoted_failed", [False, True])
+def test_failed_transfer_removes_only_the_foreign_attachment(
+    two_homes, monkeypatch, failure, quoted_failed,
+):
+    from gateway.platforms.event import QuotedMediaDependency
+    from gateway import run_inbound_media
+
+    launch, routed = two_homes
+    failed = _adapter_cached(launch, "images", "failed.jpg")
+    owned = _adapter_cached(routed, "images", "owned.jpg")
+    shared = _adapter_cached(launch, "images", "shared.jpg")
+    if failure == "missing":
+        Path(failed).unlink()
+    else:
+        for operation in ("move", "copy2"):
+            original = getattr(run_inbound_media.shutil, operation)
+
+            def transfer(src, dest, *args, _original=original, **kwargs):
+                if str(src) == failed:
+                    raise OSError("transfer refused")
+                return _original(src, dest, *args, **kwargs)
+
+            monkeypatch.setattr(run_inbound_media.shutil, operation, transfer)
+    quoted = (QuotedMediaDependency("!room", "$shared", 2, "shared-content"),)
+    if quoted_failed:
+        quoted += (QuotedMediaDependency("!room", "$failed", 0, "failed-content"),)
+    event = MessageEvent(
+        text=f"caption [attachment saved at: {failed}]", message_type=MessageType.PHOTO,
+        media_urls=[failed, owned, shared], media_types=["image/jpeg"] * 3,
+        media_text_inlined=[True, False, True], _quoted_media_dependencies=quoted,
+    )
+    with _profile_runtime_scope(routed):
+        rehome_inbound_media(event)
+    shared_copy = str(routed / "cache" / "images" / "shared.jpg")
+    expected = MessageEvent(
+        text="caption [attachment saved at: [attachment unavailable]]",
+        message_type=MessageType.PHOTO, media_urls=[owned, shared_copy],
+        media_types=["image/jpeg"] * 2, media_text_inlined=[False, True], timestamp=event.timestamp,
+    )
+    expected_authored = MessageEvent(
+        text=expected.text, message_type=MessageType.PHOTO, media_urls=[owned],
+        media_types=["image/jpeg"], media_text_inlined=[False], timestamp=event.timestamp,
+    )
+    assert (event, event._quoted_media_dependencies, event.authored_media(),
+            Path(shared).read_bytes(), Path(shared_copy).read_bytes()) == (
+        expected, (QuotedMediaDependency("!room", "$shared", 1, "shared-content"),),
+        expected_authored, b"\xff\xd8\xff\xe0 jpeg", b"\xff\xd8\xff\xe0 jpeg",
+    )

@@ -9859,15 +9859,20 @@ class TelegramAdapter(BasePlatformAdapter):
         update would be silently dropped. Flatten the blocks to plaintext
         (formatting loss is acceptable — the content survives) and dispatch
         through the normal text pipeline.
+
+        Exactly-once: group-0 handlers claim every message carrying
+        ``text``/``caption``; returning early for those guarantees a claimed
+        update is never enqueued a second time through this catch-all, so a
+        recovered rich-only update enters the authorized text pipeline
+        exactly once.
         """
         msg = self._effective_update_message(update)
         if not msg:
             return
         if getattr(msg, "text", None) or getattr(msg, "caption", None):
             return  # already claimed by a group-0 handler
-        rich_text = self._extract_rich_reply_text(msg)
-        if not rich_text:
-            return  # not a rich message (or empty) — nothing to recover
+        # Authorize before doing any work with the payload: an unauthorized
+        # user's rich content is never parsed, let alone dispatched.
         if not self._is_user_authorized_from_message(msg):
             logger.warning(
                 "[Telegram] Blocked unauthorized user %s in chat %s",
@@ -9875,9 +9880,19 @@ class TelegramAdapter(BasePlatformAdapter):
                 getattr(getattr(msg, "chat", None), "id", None),
             )
             return
+        rich_text = self._extract_rich_reply_text(msg)
+        if not rich_text:
+            # Not a rich message (or empty) — nothing to recover. Log the
+            # inspected field names only, never message content.
+            logger.debug(
+                "[Telegram] Rich-only handler: no recoverable rich content; "
+                "inspected fields: %s",
+                ", ".join(self._rich_inspected_field_names(msg)),
+            )
+            return
         if not self._should_process_message(msg):
             return
-        await self._ensure_forum_commands(update.message)
+        await self._ensure_forum_commands(msg)
 
         logger.info("[%s] Recovered rich-only message as plaintext (%d chars)", self.name, len(rich_text))
         event = self._build_message_event(msg, MessageType.TEXT, update_id=update.update_id)
@@ -10655,44 +10670,57 @@ class TelegramAdapter(BasePlatformAdapter):
                 self.name, cache_key, thread_id,
             )
 
+    #: Maximum recursion depth for rich-message flattening (bounded nesting:
+    #: a crafted rich_message payload must not be able to drive unbounded
+    #: recursion).
+    _RICH_MAX_DEPTH = 8
+
+    @staticmethod
+    def _rich_node_get(node: Any, key: str, default: Any = None) -> Any:
+        """Read a rich-message node field from a dict payload or a typed object.
+
+        Bot API payloads arrive as dicts (via ``api_kwargs`` on PTB 22.x);
+        if a future PTB models ``rich_message`` as typed objects, the same
+        flatteners keep working through attribute access.
+        """
+        if isinstance(node, dict):
+            return node.get(key, default)
+        return getattr(node, key, default)
+
     @classmethod
-    def _flatten_rich_inline_text(cls, value: Any) -> str:
+    def _flatten_rich_inline_text(cls, value: Any, _depth: int = 0) -> str:
         """Best-effort plaintext flattener for Bot API rich-message inline nodes."""
-        if value is None:
+        if value is None or _depth > cls._RICH_MAX_DEPTH:
             return ""
         if isinstance(value, str):
             return value
         if isinstance(value, list):
-            return "".join(cls._flatten_rich_inline_text(item) for item in value)
-        if isinstance(value, dict):
-            text = value.get("text")
-            if text is not None:
-                return cls._flatten_rich_inline_text(text)
-            children = value.get("children")
-            if children is not None:
-                return cls._flatten_rich_inline_text(children)
+            return "".join(cls._flatten_rich_inline_text(item, _depth + 1) for item in value)
+        text = cls._rich_node_get(value, "text")
+        if text is not None:
+            return cls._flatten_rich_inline_text(text, _depth + 1)
+        children = cls._rich_node_get(value, "children")
+        if children is not None:
+            return cls._flatten_rich_inline_text(children, _depth + 1)
         return ""
 
     @classmethod
-    def _flatten_rich_blocks(cls, blocks: Any) -> str:
+    def _flatten_rich_blocks(cls, blocks: Any, _depth: int = 0) -> str:
         """Best-effort plaintext flattener for Bot API rich-message blocks."""
-        if not isinstance(blocks, list):
+        if not isinstance(blocks, list) or _depth > cls._RICH_MAX_DEPTH:
             return ""
 
         lines: List[str] = []
         for block in blocks:
-            if not isinstance(block, dict):
-                continue
-
-            block_type = block.get("type")
+            block_type = cls._rich_node_get(block, "type")
             if block_type == "list":
-                for item in block.get("items", []):
-                    if not isinstance(item, dict):
-                        continue
-                    item_text = cls._flatten_rich_blocks(item.get("blocks"))
+                for item in cls._rich_node_get(block, "items", []) or []:
+                    item_text = cls._flatten_rich_blocks(
+                        cls._rich_node_get(item, "blocks"), _depth + 1
+                    )
                     if not item_text:
                         continue
-                    label = item.get("label")
+                    label = cls._rich_node_get(item, "label")
                     item_lines = item_text.splitlines()
                     if not item_lines:
                         continue
@@ -10703,7 +10731,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     lines.extend(item_lines[1:])
                 continue
 
-            text = cls._flatten_rich_inline_text(block.get("text"))
+            text = cls._flatten_rich_inline_text(cls._rich_node_get(block, "text"), _depth + 1)
             if text:
                 lines.extend(text.splitlines())
 
@@ -10711,20 +10739,40 @@ class TelegramAdapter(BasePlatformAdapter):
 
     @classmethod
     def _extract_rich_reply_text(cls, reply_to_message: Any) -> Optional[str]:
-        """Return plaintext echoed by Telegram's rich_message reply payload."""
+        """Return plaintext echoed by Telegram's rich_message payload.
+
+        Reads the typed ``rich_message`` attribute when the Bot API client
+        models it, falling back to the raw ``api_kwargs`` payload (PTB 22.x
+        carries unmodeled fields there).
+        """
         try:
-            api_kwargs = getattr(reply_to_message, "api_kwargs", None)
-            getter = getattr(api_kwargs, "get", None)
-            if not callable(getter):
-                return None
-            rich_message = getter("rich_message")
-            rich_getter = getattr(rich_message, "get", None)
-            if not callable(rich_getter):
-                return None
-            text = cls._flatten_rich_blocks(rich_getter("blocks")).strip()
+            rich = getattr(reply_to_message, "rich_message", None)
+            if rich is None:
+                api_kwargs = getattr(reply_to_message, "api_kwargs", None)
+                getter = getattr(api_kwargs, "get", None)
+                if not callable(getter):
+                    return None
+                rich = getter("rich_message")
+                if rich is None:
+                    return None
+            blocks = cls._rich_node_get(rich, "blocks")
+            text = cls._flatten_rich_blocks(blocks).strip()
             return text or None
         except Exception:
             return None
+
+    @staticmethod
+    def _rich_inspected_field_names(msg: Any) -> List[str]:
+        """Field names the rich-only handler inspected (for field-name-only logging)."""
+        names = ["text", "caption", "rich_message"]
+        api_kwargs = getattr(msg, "api_kwargs", None)
+        keys = getattr(api_kwargs, "keys", None)
+        if callable(keys):
+            try:
+                names.extend(f"api_kwargs.{k}" for k in keys())
+            except Exception:
+                pass
+        return names
 
     def _build_message_event(
         self,

@@ -3157,6 +3157,14 @@ def block_task(
     audit event is appended, while status, failure evidence and the terminal
     runs stay exactly as the breaker left them. A typed block, a card with a
     live run, or a kind-less call on a blocked card are still refused.
+
+    A ``triage`` card the loop breaker poisoned is re-parkable when *kind* is
+    supplied (#130239): the call used to miss the ``running``/``ready`` guard
+    and fail forever, leaving the park unlatchable. The re-park is the
+    supervisor's explicit intent, so the card returns to ``blocked`` with the
+    counter re-armed at 1 -- a fresh loop budget, mirroring how ``unblock``
+    treats ``consecutive_failures``. Ownership-asserting callers are refused
+    like on any parked card: the poisoned run is over.
     """
     if kind is not None and kind not in VALID_BLOCK_KINDS:
         raise ValueError(f"block kind must be one of {sorted(VALID_BLOCK_KINDS)} or None")
@@ -3186,6 +3194,29 @@ def block_task(
                 return False
             _append_event(conn, task_id, "blocked", {
                 "kind": kind, "reason": reason, "classified_in_place": True,
+            })
+            return True
+        if cur_row["status"] == "triage":
+            # Same ownership rules as the classification lane above: only the
+            # supervisor re-asserts a park, and only with a policy attached.
+            if kind is None or expected_run_id is not None:
+                return False
+            reparked = conn.execute(
+                "UPDATE tasks SET status = 'blocked', block_kind = ?, "
+                "block_recurrences = 1, claim_lock = NULL, claim_expires = NULL, "
+                "worker_pid = NULL WHERE id = ? AND status = 'triage'",
+                (kind, task_id),
+            ).rowcount
+            if reparked != 1:
+                return False
+            # Carry the source phase across the re-park: ``unblock_task`` picks
+            # the landing lane from the newest lifecycle event's source_status,
+            # so a reviewer-blocked card must not silently resume as 'ready'.
+            triage_payload = _json_dict(
+                _row_get(_latest_event(conn, task_id, "block_loop_detected"), "payload"))
+            _append_event(conn, task_id, "blocked", {
+                "kind": kind, "reason": reason, "reparked": True,
+                "source_status": triage_payload.get("source_status") or "ready",
             })
             return True
         source_status = _retry_status_for_run(conn, task_id) if cur_row["status"] == "running" else "ready"
@@ -3248,7 +3279,12 @@ def _route_block(
     recurrences: block_task only fires from running/ready (AFTER an unblock
     returned the task to the pool), so a stored ``block_kind`` equal to the
     incoming one means blocked -> unblocked -> re-block for the same cause
-    (un-typed None compares equal to a prior un-typed block). At
+    (un-typed None compares equal to a prior un-typed block). The count is
+    deliberately reason-blind: the reason is free text a worker can reword
+    at zero cost, so keying the reset on it lets a stalled claim loop dodge
+    the breaker by varying the sentence (#28712). A supervisor's legitimate
+    re-park has its own escape hatch — the triage re-park path in
+    :func:`block_task` re-arms the counter at 1 (#130239). At
     ``BLOCK_RECURRENCE_LIMIT`` the task routes to ``triage`` for a human.
     """
     payload = {"reason": reason, "kind": kind, "source_status": source_status}

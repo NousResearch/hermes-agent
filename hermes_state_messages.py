@@ -8,7 +8,7 @@ import json
 import logging
 import re
 import time
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Tuple
 
 from agent.context_compressor import (
     _DB_PERSISTED_MARKER as _DB_PERSISTED_MARKER_KEY, MODEL_ONLY_DISPLAY_METADATA_KEY, _is_checkpoint_item,
@@ -21,7 +21,7 @@ from agent.message_sanitization import _sanitize_surrogates, coalesce_tool_call_
 from hermes_cli.timefmt import coerce_epoch
 from hermes_state_common import (
     _COMPRESSION_LOCK_ROW_SQL, _ENDED_ROW_SQL, _RESET_END_REASONS, _RESET_END_REASONS_SQL, _ended_by_compression,
-    _json_or, _legacy_reset_child_sql, _placeholders, _sql_json_extract)
+    _id_chunks, _json_or, _legacy_reset_child_sql, _placeholders, _sql_json_extract)
 from hermes_state_identity import (
     _absorbed_uids_json, _restore_identity_columns, _stable_tool_key, _tool_call_uid_map, _tool_call_uid_or_none, _tool_call_uids_json)
 
@@ -119,6 +119,9 @@ def _stale_holder(row, now: float) -> bool:
 
 class SessionMessagesMixin:
     """Message append/replace/rewind, reactions, resume conversations, replay dedupe."""
+
+    if TYPE_CHECKING:
+        _TRANSCRIPT_WRITE_PATIENCE_S: float
 
     def _bump_conversation_generation(self, conn, session_id: str, end_reason: str) -> None:
         """Advance the peer's conversation generation past a boundary, in the txn that writes it. Only
@@ -489,6 +492,47 @@ class SessionMessagesMixin:
             inserted, tool_calls_total = self._insert_message_rows(conn, session_id, inserted_rows)
             self._bump_session_counters(conn, session_id, inserted, tool_calls_total, unit=False)
             return inserted
+        return self._execute_transcript_write(_do, messages, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
+
+    def append_recovered_messages_batch(self, session_id: str, messages: List[Dict[str, Any]]) -> int:
+        """Atomically replay one versioned recovery envelope; return newly inserted rows.
+
+        ``message_uid`` is the idempotency key. A startup crash after SQLite commits but before the
+        spool file is unlinked therefore turns the next replay into a no-op. Identity is prepared
+        across the COMPLETE batch before already-present rows are filtered, so a missing tool result
+        still receives the occurrence UID minted by an assistant call that was durable already.
+        """
+        if not messages:
+            return 0
+
+        def _do(conn):
+            self._check_transcript_write_guards(conn, session_id, None)
+            tool_uid_index: Dict[str, str] = {}
+            message_uids: List[str] = []
+            seen_uids: set[str] = set()
+            for msg in messages:
+                uid = stamp_message_uid(msg)
+                if uid in seen_uids:
+                    raise ValueError(f"duplicate message_uid in recovery envelope: {uid}")
+                seen_uids.add(uid)
+                message_uids.append(uid)
+                self._stamp_tool_call_uids(msg, _parse_tool_calls(msg.get("tool_calls")), tool_uid_index)
+
+            existing_uids: set[str] = set()
+            for chunk in _id_chunks(message_uids):
+                existing_uids.update(
+                    str(row[0]) for row in conn.execute(
+                        f"SELECT message_uid FROM messages WHERE session_id = ? AND active = 1 "
+                        f"AND message_uid IN ({_placeholders(chunk)})",
+                        (session_id, *chunk),
+                    ).fetchall()
+                    if row[0]
+                )
+            pending = [msg for msg, uid in zip(messages, message_uids) if uid not in existing_uids]
+            inserted, tool_calls_total = self._insert_message_rows(conn, session_id, pending)
+            self._bump_session_counters(conn, session_id, inserted, tool_calls_total, unit=False)
+            return inserted
+
         return self._execute_transcript_write(_do, messages, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
 
     _ROW_STATE_KEYS = ("_row_id", DB_ROW_SNAPSHOT, "timestamp")

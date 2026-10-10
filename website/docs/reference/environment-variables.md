@@ -521,21 +521,22 @@ These are set automatically by the Docker terminal backend when `proxy.enabled: 
 | `MATRIX_ALLOW_ALL_USERS` | Allow any Matrix user to trigger the bot (dev only). |
 | `MATRIX_HOME_CHANNEL` | Default room ID for cron / notification delivery. |
 | `MATRIX_HOME_CHANNEL_NAME` | Display name for the Matrix home room. |
-| `MATRIX_ALLOWED_ROOMS` | Comma-separated Matrix room IDs allowed to trigger bot responses. Does not apply to rooms auto-classified as DMs (any room with 2 or fewer joined members, regardless of name) — those always respond. |
+| `MATRIX_ALLOWED_ROOMS` | Comma-separated Matrix room IDs allowed to trigger bot responses. The bot always responds in DMs, so they do not need to be listed. Hermes classifies a room as a DM only when its complete joined membership is the bot and exactly one other user, whatever the room's name or `m.direct` entry. A room whose joined membership cannot be read follows room rules. |
 | `MATRIX_HOME_ROOM` | Room ID for proactive message delivery (e.g. `!abc123:matrix.org`) |
 | `MATRIX_ENCRYPTION` | Enable end-to-end encryption (`true`/`false`, default: `false`) |
 | `MATRIX_E2EE_MODE` | Matrix E2EE behavior: `off`, `optional`, or `required`. Overrides `MATRIX_ENCRYPTION` when set. |
 | `MATRIX_DEVICE_ID` | Stable Matrix device ID for E2EE persistence across restarts (e.g. `HERMES_BOT`). Without this, E2EE keys rotate every startup and historic-room decrypt breaks. |
 | `MATRIX_REACTIONS` | Enable processing-lifecycle emoji reactions on inbound messages (default: `true`). Set to `false` to disable. |
-| `MATRIX_REQUIRE_MENTION` | Require `@mention` in rooms (default: `true`). Set to `false` to respond to all messages. A room with 2 or fewer joined members is auto-classified as a DM and never requires a mention, regardless of this setting — add a third member if you need a deliberately-2-person room to behave like a regular room. |
-| `MATRIX_FREE_RESPONSE_ROOMS` | Comma-separated room IDs where bot responds without `@mention`. Rooms auto-classified as DMs (2 or fewer joined members) already respond without a mention and ignore this list. |
+| `MATRIX_REQUIRE_MENTION` | Require `@mention` in rooms (default: `true`). Set to `false` to respond to all messages. DMs (rooms whose joined members are exactly the bot and one other user) never require a mention, whatever this setting is. Every other room follows this setting, including a room with only the bot and a room whose joined membership cannot be read. |
+| `MATRIX_FREE_RESPONSE_ROOMS` | Comma-separated room IDs where bot responds without `@mention`. DMs (rooms whose joined members are exactly the bot and one other user) already respond without a mention and ignore this list. |
 | `MATRIX_IGNORE_USER_PATTERNS` | Comma-separated regular expressions for Matrix bridge/appservice ghost user IDs to ignore |
 | `MATRIX_PROCESS_NOTICES` | Process inbound Matrix `m.notice` events (default: `false`) |
 | `MATRIX_SESSION_SCOPE` | Matrix session scope for project rooms: `auto`, `room`, or `thread` (default: `auto`) |
 | `MATRIX_ALLOW_ROOM_MENTIONS` | Allow outbound `@room` mentions to notify all room members (default: `false`) |
-| `MATRIX_AUTO_THREAD` | Auto-create threads for room messages (default: `true`). Does not apply to rooms auto-classified as DMs (2 or fewer joined members) — those follow `MATRIX_DM_AUTO_THREAD` instead. |
+| `MATRIX_AUTO_THREAD` | Auto-create threads for room messages (default: `true`). DMs (rooms whose joined members are exactly the bot and one other user) follow `MATRIX_DM_AUTO_THREAD` instead. |
 | `MATRIX_DM_AUTO_THREAD` | Auto-create threads for DM messages in Matrix (default: `false`) |
 | `MATRIX_DM_MENTION_THREADS` | Create a thread when bot is `@mentioned` in a DM (default: `false`) |
+| `MATRIX_REPLY_TO_MODE` | Reply references on Matrix responses: `off`, `first` (default), or `all`. The mode applies to the whole response, and every reference points at the request (the message that Hermes is answering), never at an earlier chunk. `first` quotes the request once, on the first message that Hermes sends for it, whether that is commentary or the answer. `all` quotes it from every message and chunk. `off` never quotes it. In `first` and `all`, a notice that replies to a message without answering it, such as a busy acknowledgement or a reaction-picker confirmation, quotes that message and does not count as the first message. In threads, every message keeps the `m.thread` relation, and a message without a quote uses a fallback reference. When the request is itself the thread root, as in auto-created threads, it is never quoted. |
 | `MATRIX_APPROVAL_REQUIRE_SENDER` | Require approval/model-picker reactions to come from the original requester when known (default: `true`) |
 | `MATRIX_APPROVAL_TIMEOUT_SECONDS` | Timeout for Matrix reaction approval/model-picker prompts (default: `300`) |
 | `MATRIX_ALLOW_PUBLIC_ROOMS` | Allow Matrix room-creation tools to create public rooms (default: `false`) |

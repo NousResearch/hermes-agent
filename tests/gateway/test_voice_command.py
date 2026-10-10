@@ -61,6 +61,9 @@ def _unbound_voice_adapter() -> AsyncMock:
     adapter = AsyncMock()
     adapter._voice_text_channels, adapter._voice_sources = {111: 123}, {}
     adapter._client = MagicMock()
+    adapter._resolve_channel_prompt = MagicMock(return_value=None)
+    adapter._resolve_channel_skills = MagicMock(return_value=None)
+    adapter._guild_channel_labels = MagicMock(return_value=None)
     adapter.handle_message = AsyncMock()
     adapter._thread_id_and_chat_for_channel = MagicMock(return_value=(None, "123"))
     adapter.build_source = MagicMock(side_effect=lambda **kw: SessionSource(platform=Platform.DISCORD, **kw))
@@ -567,6 +570,9 @@ class TestVoiceChannelCommands:
             lambda _config: [("team-bot", None), ("first", None), ("second", None)],
         )
         mock_adapter = AsyncMock()
+        mock_adapter._resolve_channel_prompt = MagicMock(return_value=None)
+        mock_adapter._resolve_channel_skills = MagicMock(return_value=None)
+        mock_adapter._guild_channel_labels = MagicMock(return_value=None)
         mock_adapter._owner_profile = "team-bot"
         mock_adapter._voice_text_channels = {111: 123}
         mock_adapter._voice_sources = {111: SessionSource(
@@ -617,6 +623,9 @@ class TestVoiceChannelCommands:
         )
 
         mock_adapter = AsyncMock()
+        mock_adapter._resolve_channel_prompt = MagicMock(return_value=None)
+        mock_adapter._resolve_channel_skills = MagicMock(return_value=None)
+        mock_adapter._guild_channel_labels = MagicMock(return_value=None)
         mock_adapter._voice_text_channels = {111: 123}
         mock_adapter._voice_sources = {111: bound_source.to_dict()}
         mock_channel = AsyncMock()

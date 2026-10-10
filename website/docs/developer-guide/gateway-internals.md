@@ -152,6 +152,7 @@ plugins/platforms/                  # plugin-packaged adapters (one dir each)
 ├── slack/adapter.py        # Slack Socket Mode
 ├── whatsapp/adapter.py     # WhatsApp Business Cloud API
 ├── matrix/adapter.py       # Matrix via mautrix (optional E2EE)
+├── matrix/inbound_events.py # Inbound event construction and timestamps
 ├── mattermost/adapter.py   # Mattermost WebSocket API
 ├── email/adapter.py        # Email via IMAP/SMTP
 ├── sms/adapter.py          # SMS via Twilio
@@ -343,7 +344,7 @@ With `gateway.multiplex_profiles: true` one process serves the default profile p
 |---|---|
 | Routed turn | `gateway/run.py::_profile_runtime_scope(home)` via `run_turn.py::_profile_scope_for_source` |
 | Agent release / eviction (TTL, LRU, memory pressure) | `gateway/run_agent_cache.py::_run_release_in_profile_scope` |
-| Shutdown | `gateway/run_shutdown.py::_finalize_session` |
+| Shutdown | `gateway/run_shutdown.py::_finalize_session`; notices in `gateway/run_shutdown_notices.py`, process teardown in `gateway/run_shutdown_processes.py` |
 | Post-turn media delivery | `gateway/platforms/base.py::_media_delivery_scope` |
 | Cron tick | `cron/scheduler_provider.py::_profile_cron_scope(home)` (one ticker, profiles in sequence) |
 | Child processes (`hermes -p X` workers, relay turns, browser drivers) | `tools/environments/local.py::served_profile_child_env` |

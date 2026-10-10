@@ -1,12 +1,17 @@
 """RelayAdapter capability-advertisement tests (relay Phase 1, Task 1.1)."""
 
 import asyncio
+from typing import Any
+
+from unittest.mock import Mock
 
 import pytest
 
 from gateway.config import Platform, PlatformConfig
 from gateway.relay.adapter import RelayAdapter
+from gateway.relay.transport import RelayTransport
 from gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
+from gateway.relay.transport import InboundHandler, PassthroughHandler
 
 
 def make_desc(**kw) -> CapabilityDescriptor:
@@ -52,21 +57,52 @@ def test_len_fn_utf16_counts_code_units():
 
 
 class _CaptureTransport:
-    """Minimal RelayTransport stand-in that records the outbound action."""
+    """Recording transport for outbound routing tests."""
 
-    def __init__(self):
-        self.sent = None
-        self.sent_platform = None
-        # No concrete fronted identities ⇒ fronts_platform is a no-op here.
-        self._identities = []
+    def __init__(self) -> None:
+        self.sent: dict[str, Any] | None = None
+        self.sent_platform: str | None = None
+        self._identities: list[tuple[str, str]] = []
+        self._h: InboundHandler | None = None
 
-    def set_inbound_handler(self, h):
-        self._h = h
+    async def connect(self) -> bool:
+        raise AssertionError("Unexpected transport.connect call")
 
-    async def send_outbound(self, action, *, platform=None):
+    async def disconnect(self) -> None:
+        raise AssertionError("Unexpected transport.disconnect call")
+
+    async def handshake(self) -> CapabilityDescriptor:
+        raise AssertionError("Unexpected transport.handshake call")
+
+    def set_inbound_handler(self, handler: InboundHandler) -> None:
+        self._h = handler
+
+    def set_passthrough_handler(self, handler: PassthroughHandler) -> None:
+        raise AssertionError("Unexpected transport.set_passthrough_handler call")
+
+    async def send_outbound(
+        self, action: dict[str, Any], *, platform: str | None = None
+    ) -> dict[str, Any]:
         self.sent = action
         self.sent_platform = platform
         return {"success": True, "message_id": "m1"}
+
+    async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
+        raise AssertionError("Unexpected transport.get_chat_info call")
+
+    async def send_interrupt(
+        self, session_key: str, reason: str | None = None
+    ) -> None:
+        raise AssertionError("Unexpected transport.send_interrupt call")
+
+    async def go_idle(self, timeout_s: float = 10.0) -> bool:
+        raise AssertionError("Unexpected transport.go_idle call")
+
+    async def send_follow_up(
+        self, action: dict[str, Any], *, platform: str | None = None
+    ) -> dict[str, Any]:
+        raise AssertionError("Unexpected transport.send_follow_up call")
+
 
 
 def _make_event(chat_id="chan-1", scope_id="scope-9"):
@@ -119,6 +155,38 @@ def _make_scoped_event_with_author(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("door", ["send", "send_for_platform"])
+@pytest.mark.parametrize(
+    "marker",
+    [{"_stream_reply_to_message_id": "req-1"}, {"_notice_reply": True}],
+    ids=["request", "notice"],
+)
+async def test_reply_markers_never_reach_the_wire(door, marker):
+    """Reply-reference markers are gateway-internal, like ``_interim_send``."""
+    t = _CaptureTransport()
+    t._identities = [("discord", "bot-1")]
+    a = RelayAdapter(
+        PlatformConfig(),
+        make_desc(platform="discord"),
+        transport=Mock(spec=RelayTransport, wraps=t, _identities=t._identities),
+    )
+
+    async def wire_metadata(metadata):
+        if door == "send":
+            await a.send("chan-1", "tail", metadata=metadata)
+        else:
+            await a.send_for_platform("discord", "chan-1", "tail", metadata=metadata)
+        assert isinstance(t.sent, dict)
+        return t.sent["metadata"]
+
+    routing = {"thread_id": "t-1", "_interim_send": True}
+    marked = await wire_metadata({**routing, **marker})
+    unmarked = await wire_metadata(routing)
+
+    assert marked == unmarked
+
+
+@pytest.mark.asyncio
 async def test_send_reattaches_dm_user_id_from_inbound_scope():
     """A DM reply has no scope_id, so the connector resolves the tenant from the
     recipient's author binding — it needs metadata.user_id. The adapter must
@@ -126,11 +194,16 @@ async def test_send_reattaches_dm_user_id_from_inbound_scope():
     live 'discord egress declined: target not routed to an onboarded tenant' on
     DM replies (the connector-side fix is gateway-gateway #67)."""
     t = _CaptureTransport()
-    a = RelayAdapter(PlatformConfig(), make_desc(platform="discord"), transport=t)
+    a = RelayAdapter(
+        PlatformConfig(),
+        make_desc(platform="discord"),
+        transport=Mock(spec=RelayTransport, wraps=t, _identities=t._identities),
+    )
     a._capture_scope(_make_dm_event(chat_id="dm-1", user_id="user-42"))
 
     await a.send("dm-1", "the reply")
 
+    assert isinstance(t.sent, dict)
     assert t.sent["metadata"].get("user_id") == "user-42"
     # A DM carries no scope_id — only the author discriminator.
     assert "scope_id" not in t.sent["metadata"]
@@ -146,13 +219,18 @@ async def test_scoped_reply_reattaches_both_scope_id_and_user_id():
     target not routed to an onboarded tenant' on GUILD replies (paired with
     gateway-gateway makeDiscordTenantOf guild-route-miss fallback)."""
     t = _CaptureTransport()
-    a = RelayAdapter(PlatformConfig(), make_desc(platform="discord"), transport=t)
+    a = RelayAdapter(
+        PlatformConfig(),
+        make_desc(platform="discord"),
+        transport=Mock(spec=RelayTransport, wraps=t, _identities=t._identities),
+    )
     a._capture_scope(
         _make_scoped_event_with_author(
             chat_id="chan-1", scope_id="scope-9", user_id="user-42"
         )
     )
     await a.send("chan-1", "hi")
+    assert isinstance(t.sent, dict)
     assert t.sent["metadata"].get("scope_id") == "scope-9"
     assert t.sent["metadata"].get("user_id") == "user-42"
 
@@ -160,7 +238,11 @@ async def test_scoped_reply_reattaches_both_scope_id_and_user_id():
 @pytest.mark.asyncio
 async def test_stop_typing_forwards_explicit_clear_with_routing_context():
     t = _CaptureTransport()
-    a = RelayAdapter(PlatformConfig(), make_desc(platform="slack"), transport=t)
+    a = RelayAdapter(
+        PlatformConfig(),
+        make_desc(platform="slack"),
+        transport=Mock(spec=RelayTransport, wraps=t, _identities=t._identities),
+    )
     event = _make_event(chat_id="channel-1", scope_id="workspace-1")
     event.source.platform = Platform.SLACK
     a._capture_scope(event)
@@ -191,7 +273,11 @@ async def test_send_typing_tags_egress_platform():
     from gateway.session import SessionSource
 
     t = _CaptureTransport()
-    a = RelayAdapter(PlatformConfig(), make_desc(platform="discord"), transport=t)
+    a = RelayAdapter(
+        PlatformConfig(),
+        make_desc(platform="discord"),
+        transport=Mock(spec=RelayTransport, wraps=t, _identities=t._identities),
+    )
     src = SessionSource(
         platform=Platform.DISCORD,
         chat_id="chan-2",

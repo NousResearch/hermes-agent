@@ -13,6 +13,7 @@ import pytest
 
 from gateway.stream_consumer import (
     GatewayStreamConsumer,
+    StreamConsumerConfig,
 )
 
 
@@ -26,6 +27,41 @@ def _make_adapter(send_result=None, edit_result=None, max_length=4096):
     )
     adapter.MAX_MESSAGE_LENGTH = max_length
     return adapter
+
+
+@pytest.mark.asyncio
+async def test_segment_tail_flush_carries_the_request_without_a_reply_target():
+    adapter = _make_adapter()
+    metadata = {"thread_id": "topic", "custom": "value"}
+    consumer = GatewayStreamConsumer(
+        adapter,
+        "chat_123",
+        StreamConsumerConfig(cursor=""),
+        metadata=metadata,
+        initial_reply_to_id="request",
+    )
+    consumer._last_sent_text = "shown "
+    consumer._accumulated = "shown remainder"
+    consumer._fallback_final_send = True
+    await consumer._flush_segment_tail_on_edit_failure()
+
+    assert (
+        [call.kwargs for call in adapter.send.await_args_list],
+        consumer.metadata,
+    ) == (
+        [
+            {
+                "chat_id": "chat_123",
+                "content": "remainder",
+                "metadata": {
+                    **metadata,
+                    "_interim_send": True,
+                    "_stream_reply_to_message_id": "request",
+                },
+            }
+        ],
+        metadata,
+    )
 
 
 class TestInitialReplyToId:

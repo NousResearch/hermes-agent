@@ -40,6 +40,7 @@ import pytest
 import hermes_yaml as yaml
 
 import agent.auxiliary_client as aux
+from agent.auxiliary_calls import _aux_recovery_ladder
 
 AUX_MODEL = "z-ai/glm-5.3-flash"
 FALLBACK_MODEL = "fallback-model"
@@ -75,7 +76,7 @@ class _ExplicitProviderClient:
 
 
 def _ladder(base_info=(f"https://{NOUS_HOST}/v1"), resolved_provider="nous"):
-    return aux._aux_recovery_ladder(
+    return _aux_recovery_ladder(
         _auth_error(),
         client=_FakeClient(),
         kwargs={"model": AUX_MODEL},
@@ -188,7 +189,7 @@ def test_explicit_provider_auth_uses_its_configured_task_fallback(monkeypatch, s
         return client, FALLBACK_MODEL, label
 
     monkeypatch.setattr(aux, "_try_configured_fallback_chain", configured_chain)
-    ladder = aux._aux_recovery_ladder(
+    ladder = _aux_recovery_ladder(
         _auth_error(),
         client=_ExplicitProviderClient(),
         kwargs={"model": AUX_MODEL},
@@ -232,7 +233,7 @@ def test_explicit_provider_auth_never_uses_an_unconfigured_fallback(monkeypatch)
         "_try_main_agent_model_fallback",
         lambda *args, **kwargs: pytest.fail("explicit auth must not use the main-agent fallback"),
     )
-    ladder = aux._aux_recovery_ladder(
+    ladder = _aux_recovery_ladder(
         _auth_error(),
         client=_ExplicitProviderClient(),
         kwargs={"model": AUX_MODEL},

@@ -79,8 +79,7 @@ def test_gateway_passes_a_profile_gate_to_the_cron_ticker(tmp_path, monkeypatch)
     from cron import scheduler_thread
 
     monkeypatch.setattr(scheduler_thread, "SupervisedTickerThread", _Thread)
-    monkeypatch.setattr(gw_run, "_start_gateway_housekeeping_thread", lambda *_a, **_k: None,
-                        raising=False)
+    monkeypatch.setattr(gw_run, "_start_gateway_housekeeping", lambda *_a, **_k: None)
 
     runner = types.SimpleNamespace(
         config={}, adapters={}, _profile_adapters=None, _primary_profile_name="default",

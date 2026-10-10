@@ -57,8 +57,8 @@ async def tracked_write(authority, write, then=None, *, ordered=False):
     """Run a synchronous ledger write (``write()``) in a worker thread, off the owner loop.
 
     A held SQLite writer (``_WRITE_PATIENCE_S``) must not freeze every session, timer, socket,
-    Stop and approval. The write and its loop-side follow-up (``then(result)``: publication,
-    scheduling, the claim's execution stamp) are one task tracked like ``track_mutation``, so
+    Stop and approval. The write and its loop-side follow-up (``then(result)``, sync or a
+    coroutine: publication, scheduling, the claim's execution stamp) are one task tracked like ``track_mutation``, so
     retirement joins it, and shielded, so a cancelled caller cannot separate a commit from it.
     ``ordered`` writes (admissions) commit in call order, as they did on the loop: worker threads
     alone would let a later input take an earlier FIFO position."""
@@ -74,7 +74,6 @@ async def tracked_write(authority, write, then=None, *, ordered=False):
             result = await asyncio.to_thread(write)
         if then is None:
             return result
-        # An async follow-up (Discard's delivery) runs inside the same tracked task, before it ends.
         followed = then(result)
         return await followed if asyncio.iscoroutine(followed) else followed
     return await asyncio.shield(track_mutation(authority, run()))

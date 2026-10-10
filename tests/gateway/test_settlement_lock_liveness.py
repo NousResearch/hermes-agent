@@ -175,3 +175,39 @@ async def test_submit_claim_and_discard_behind_a_held_writer_leave_the_loop_free
         assert (resolved.status, resolved.outcome) == ('terminal', 'interrupted')
         assert get_session_admission(db, admission_id=receipt.admission_id)['status'] == 'terminal'
         assert not mutation_tasks(authority)
+
+
+@pytest.mark.asyncio
+async def test_input_admitted_while_an_idle_claim_is_in_flight_still_runs(tmp_path, monkeypatch):
+    """The claim's transaction runs off-loop: an admission that commits after it read an empty
+    FIFO must not be stranded by the drain exiting idle (its ``_schedule`` saw the drain alive)."""
+    from gateway import session_authority as sa
+    db, authority = _authority(tmp_path, monkeypatch)
+    ran, read_empty, admitted = [], threading.Event(), threading.Event()
+    claim = sa.claim_session_input
+
+    def racing_claim(*args, **kwargs):
+        row = claim(*args, **kwargs)
+        if row is None and not read_empty.is_set():
+            read_empty.set()
+            admitted.wait(5)  # the submit commits and schedules while this claim reports idle
+        return row
+    monkeypatch.setattr(sa, 'claim_session_input', racing_claim)
+
+    async def execute(owner, ref, row):
+        ran.append(row['request_id'])
+        owner.pending_results[row['admission_id']] = {'result': {'final_response': 'done'}, 'usage': {}}
+        return 'done'
+    monkeypatch.setattr('gateway.session_finite.execute_finite_admission', execute)
+    with db:
+        authority._schedule(REF)
+        assert await asyncio.to_thread(read_empty.wait, 5)
+        # The API path's shape (admit_api_turn, then observe_api_turn's _schedule): it takes no
+        # session mutation lock, so it can commit while the claim's transaction is in flight.
+        from hermes_state_runtime import admit_session_input
+        admit_session_input(db, epoch=authority.epoch, principal_id='api', session_id='s',
+                            request_id='late', payload={'text': 'late'})
+        authority._schedule(REF)
+        admitted.set()
+        await asyncio.wait_for(authority.sessions['s'].task, 10)
+        assert ran == ['late']

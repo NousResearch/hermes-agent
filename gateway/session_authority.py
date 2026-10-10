@@ -43,6 +43,9 @@ class LiveSession:
     # ``mutation_lock``, so admissions are not parked behind an LLM call): no turn is claimed
     # under a compression that is still preparing its replacement transcript.
     claim_gate: asyncio.Lock = field(default_factory=asyncio.Lock)
+    # Set by ``_schedule`` while a drain is alive. The claim commits off-loop, so input admitted
+    # after its transaction read the FIFO would otherwise be stranded by a drain that exits idle.
+    rescan: bool = False
     # admission id -> its started claim, from the moment the settlement worker starts the terminal
     # write until the completion frame is published. The write runs outside ``event_stream.lock``
     # (a contended SQLite writer must not stall loop-side lock takers); readers holding that lock
@@ -261,6 +264,7 @@ class SessionAuthority:
 
     def _schedule(self, ref):
         live = self.sessions[ref.session_id]
+        live.rescan = True
         if live.task is None or live.task.done():
             live.task = asyncio.create_task(self._drain(ref))
             live.task.add_done_callback(_log_drain_failure)
@@ -525,12 +529,11 @@ class SessionAuthority:
         # result the answer is normally already the transcript tail, so the closer is a no-op.
         from gateway.session_results import close_discarded_turn
         from gateway.session_runtime_workers import tracked_write
-        row = await tracked_write(self, partial(
+        return await tracked_write(self, partial(
             resolve_unknown_session_input, self.db, epoch=self.epoch, admission_id=admission_id,
             generation=generation, _captured=prepared,
             _terminal_write=lambda conn, lost: close_discarded_turn(self.db, conn, lost)),
             then=partial(self._resolved_unknown, ref, admission_id, prepared, captured))
-        return self._receipt(row)
 
     async def _resolved_unknown(self, ref, admission_id, prepared, captured, row):
         self.pending_results.pop(admission_id, None)
@@ -554,7 +557,7 @@ class SessionAuthority:
         await deliver_resolved(self, admission_id, owed=prepared is not None and row['owner_epoch'] == self.epoch)
         self._publish_pending(ref)
         self._schedule(ref)
-        return row
+        return self._receipt(row)
 
     async def interrupt(self, actor, ref, generation):
         self.authorize(actor, ref, 'session:control')
@@ -687,10 +690,13 @@ class SessionAuthority:
                 check_api_turn(self, ref, first['payload'])
             self._require_admission_open()
             from gateway.session_runtime_workers import tracked_write
+            live.rescan = False  # a _schedule from here on may not be visible to this claim's read
             row = await tracked_write(self, partial(claim_session_input, self.db, epoch=self.epoch,
                                                     session_id=ref.session_id, _guard=self._admission_gate()),
                                       then=partial(self._stamp_claim, ref, live))
-            return row, first
+            # Input scheduled while this claim's transaction ran may postdate its read: re-read
+            # instead of letting the drain exit idle over a committed admission.
+            return (False if row is None and live.rescan else row), first
 
     def _stamp_claim(self, ref, live, row):
         """The claim's execution stamp, in the same tracked task as its commit: no observer (or

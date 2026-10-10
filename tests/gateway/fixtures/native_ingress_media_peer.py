@@ -88,6 +88,9 @@ async def probe(mode, peer):
             assert not event._gateway_accepted
         finally:
             digest_dir.unlink()
+        # Capture only admits (the owner is killed below with media-1 still queued and the second
+        # row claimed here). Admission commits off-loop, so a drain would otherwise run first.
+        authority._schedule = lambda ref: None
         receipt = await authority.admit_native(event)
         assert event._gateway_accepted
         saved = rows(receipt.ref.session_id)[0]

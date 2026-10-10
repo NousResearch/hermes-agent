@@ -77,13 +77,22 @@ async def test_web_extract_dispatches_urls_from_search_result_objects(extract_pr
 
 def test_web_extract_registry_dispatch_accepts_search_result_objects(
     extract_provider,
+    monkeypatch,
 ):
     """The model-facing registry path preserves object URLs through dispatch."""
-    raw = web_tools.registry.dispatch("web_extract", {
-        "urls": [{"url": "https://example.net/from-registry", "title": "R"}],
-    })
-    assert isinstance(raw, str)
-    result = json.loads(raw)
+    import model_tools
 
-    assert extract_provider.received_urls == ["https://example.net/from-registry"]
-    assert result["results"][0]["url"] == "https://example.net/from-registry"
+    monkeypatch.setattr(model_tools, "_tool_loop", None)
+    try:
+        raw = web_tools.registry.dispatch("web_extract", {
+            "urls": [{"url": "https://example.net/from-registry", "title": "R"}],
+        })
+        assert isinstance(raw, str)
+        result = json.loads(raw)
+
+        assert extract_provider.received_urls == ["https://example.net/from-registry"]
+        assert result["results"][0]["url"] == "https://example.net/from-registry"
+
+    finally:
+        if model_tools._tool_loop is not None:
+            model_tools._tool_loop.close()

@@ -10,6 +10,16 @@ from gateway.platforms.base import resolve_proxy_url
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource
 
+# Reused harness from the streaming / queued-delivery suites: a recording adapter, the fuller
+# runner the completion seam needs, and ``_completion_seam`` — the helper that runs a result
+# through ``_hmwa_deliver_turn_response`` and returns the text the caller would send (None =
+# already delivered). The streamed-proxy tests below need all three.
+from tests.gateway.test_queued_followup_final_delivery import _completion_seam
+from tests.gateway.test_run_progress_topics import (
+    MetadataEditProgressCaptureAdapter,
+    _make_runner as _make_streaming_runner,
+)
+
 def _make_runner(proxy_url=None):
     """Create a minimal GatewayRunner for proxy tests."""
     runner = object.__new__(GatewayRunner)
@@ -538,3 +548,110 @@ class TestStreamingResilience:
                     )
 
         assert result["final_response"] == "Hello world"
+
+
+# ---------------------------------------------------------------------------------------------
+# Streamed proxy turns reconcile the streamed body before the normal final send.
+#
+# The proxy lane builds its OWN GatewayStreamConsumer when streaming is enabled
+# (``_proxy_stream_consumer``) and feeds it the SSE deltas. ``_run_agent_via_proxy`` then calls
+# ``_run_agent_mark_streamed_delivery`` so the lane behaves like the local ``_run_agent_inner``
+# path: when the consumer already delivered the final body the result is marked ``already_sent``
+# so the completion seam (``_hmwa_deliver_turn_response``) does not send the same text twice, and
+# a response-filter replacement that arrived after the body streamed is written back over the
+# streamed message instead of being lost.
+#
+# Every other test in this file leaves the runner on the default ``StreamingConfig()`` (whose
+# ``globally_enabled`` is False), so ``_proxy_stream_consumer`` returns None and none of this
+# executes. These tests supply a consumer (streaming on) and pin both directions: streamed
+# (suppressed / edited) and unstreamed (the completion seam owns the final send).
+
+
+class _ResponseRedactor:
+    """Subscriber offering a replacement for every outbound response text."""
+
+    async def emit_collect(self, event_type, context):
+        if event_type == "agent:response:filter":
+            return [{"response": "redacted answer"}]
+        return []
+
+
+def _sse_streamed(*parts):
+    """SSE body streaming ``parts`` in order, then the terminal ``[DONE]``."""
+    frames = "".join(
+        'data: {"choices":[{"delta":{"content":"%s"}}]}\n\n' % part for part in parts
+    )
+    return _FakeSSEResponse(status=200, sse_chunks=[frames + "data: [DONE]\n\n"])
+
+
+def _proxy_runner(adapter, *, streaming):
+    """Proxy runner whose config decides whether ``_proxy_stream_consumer`` builds one."""
+    runner = _make_streaming_runner(adapter)
+    runner.config.streaming = StreamingConfig(
+        enabled=streaming, edit_interval=0.01, buffer_threshold=1,
+    )
+    return runner
+
+
+async def _run_streamed_proxy(monkeypatch, runner, source, *parts):
+    monkeypatch.setenv("GATEWAY_PROXY_URL", "http://host:8642")
+    monkeypatch.delenv("GATEWAY_PROXY_KEY", raising=False)
+    session = _FakeSession(_sse_streamed(*parts))
+    with patch("gateway.run._load_gateway_config", return_value={}):
+        with _patch_aiohttp(session):
+            with patch("aiohttp.ClientTimeout"):
+                return await runner._run_agent_via_proxy(
+                    message="hi", context_prompt="", history=[], source=source,
+                    session_id="s-stream-proxy",
+                )
+
+
+@pytest.mark.asyncio
+async def test_streamed_proxy_turn_is_not_sent_twice(monkeypatch):
+    """The proxy's own stream consumer delivered the body: the completion seam must not resend it."""
+    adapter = MetadataEditProgressCaptureAdapter(platform=Platform.MATRIX)
+    runner = _proxy_runner(adapter, streaming=True)
+    source = _make_source()
+
+    result = await _run_streamed_proxy(monkeypatch, runner, source, "Hello", " world")
+
+    assert result["final_response"] == "Hello world"
+    # Adapter-visible delivery: the body reached the user through the lane's consumer.
+    delivered = [c["content"] for c in adapter.sent] + [e["content"] for e in adapter.edits]
+    assert any("Hello world" in text for text in delivered), delivered
+    # ...and the completion seam sends nothing more.
+    assert result.get("already_sent") is True
+    sends_before = list(adapter.sent)
+    assert await _completion_seam(adapter, result, result["final_response"]) is None
+    assert adapter.sent == sends_before
+
+
+@pytest.mark.asyncio
+async def test_proxy_turn_without_streaming_defers_to_the_completion_send(monkeypatch):
+    """Streaming off (the default): no consumer, so the completion seam owns the final send."""
+    adapter = MetadataEditProgressCaptureAdapter(platform=Platform.MATRIX)
+    runner = _proxy_runner(adapter, streaming=False)
+    source = _make_source()
+
+    result = await _run_streamed_proxy(monkeypatch, runner, source, "Hello", " world")
+
+    assert result["final_response"] == "Hello world"
+    assert not result.get("already_sent")
+    assert adapter.sent == [] and adapter.edits == []
+    assert await _completion_seam(adapter, result, result["final_response"]) == "Hello world"
+
+
+@pytest.mark.asyncio
+async def test_streamed_proxy_turn_delivers_the_response_filter_replacement(monkeypatch):
+    """A replacement applied after the body streamed must reach the user, not be dropped."""
+    adapter = MetadataEditProgressCaptureAdapter(platform=Platform.MATRIX)
+    runner = _proxy_runner(adapter, streaming=True)
+    runner.hooks = _ResponseRedactor()
+    source = _make_source()
+
+    result = await _run_streamed_proxy(monkeypatch, runner, source, "raw", " answer")
+
+    assert result["final_response"] == "redacted answer"
+    visible = [c["content"] for c in adapter.sent] + [e["content"] for e in adapter.edits]
+    assert "redacted answer" in visible, visible
+    assert await _completion_seam(adapter, result, result["final_response"]) is None

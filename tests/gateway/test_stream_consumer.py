@@ -7,6 +7,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from agent.think_scrubber import THINK_TAG_NAMES
+from gateway.config import Platform
+from gateway.session import SessionSource
 from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 
 
@@ -1415,10 +1417,10 @@ class TestConfirmedFinalDeliveryConsultsCommentaryRecord:
         """Drive the production gateway boundary that decides ``already_sent`` for the normal final send."""
         from gateway.run_turn import GatewayTurnMixin
         response = {"final_response": final_text}
-        turn_ctx = SimpleNamespace(
-            stream_consumer_holder=[consumer], source=SimpleNamespace(platform="telegram"), session_key="s1",
-        )
-        asyncio.run(GatewayTurnMixin()._run_agent_mark_streamed_delivery(response, turn_ctx))
+        asyncio.run(GatewayTurnMixin()._run_agent_mark_streamed_delivery(
+            response, stream_consumer=consumer,
+            source=SessionSource(platform=Platform.TELEGRAM, chat_id="c1"), session_key="s1",
+        ))
         return response
 
     def test_same_text_delivered_as_commentary_suppresses_normal_final_send_without_previewed_flag(self):

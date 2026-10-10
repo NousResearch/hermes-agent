@@ -184,7 +184,10 @@ def test_delete_after_verified_rejects_same_count_content_change(monkeypatch, tm
         return path
 
     monkeypatch.setattr(session_export_md, "write_session_markdown", write_then_rewrite)
-    _export_delete(monkeypatch, tmp_path / "out", "s1")
+    # A refused --delete-after is a failed request, so the command exits non-zero.
+    with pytest.raises(SystemExit) as refused:
+        _export_delete(monkeypatch, tmp_path / "out", "s1")
+    assert refused.value.code == 1
 
     output = capsys.readouterr().out
     assert "was not deleted because its history or delegate set changed after export" in output

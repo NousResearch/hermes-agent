@@ -172,6 +172,9 @@ def _refresh_agent_tool_definitions(agent) -> bool:
     return bool(added)
 
 
+# One attempt's telemetry trio: cleared at attempt start, held across the commit-time memory flush.
+_COMPRESSOR_TELEMETRY_FIELDS = ("_last_compression_telemetry", "_active_compression_telemetry", "_compression_telemetry_seed")
+
 _COMPRESSOR_ATTEMPT_STATE_FIELDS = (
     "_previous_summary", "_summary_has_user_turn", "compression_count", "_last_compression_savings_pct",
     "_ineffective_compression_count", "_anti_thrash_recovery_deadline", "_fallback_compression_streak",
@@ -183,7 +186,7 @@ _COMPRESSOR_ATTEMPT_STATE_FIELDS = (
     "_last_summary_overload_failure", "_consecutive_overload_aborts", "_last_summary_overload_degraded",
     "_last_aux_model_failure_error", "_last_aux_model_failure_model", "_last_aux_resolved_model",
     "_summary_model_fallen_back", "summary_model",
-    "_last_compression_telemetry", "_active_compression_telemetry", "_compression_telemetry_seed",
+    *_COMPRESSOR_TELEMETRY_FIELDS,
     "_proactive_prune_rearm_tokens",
 )
 
@@ -3682,7 +3685,7 @@ def _commit_compaction(
     messages_before_compression: Optional[list], made_progress: bool, attempt: _Attempt,
     verbatim_tail: Optional[list] = None, carried_messages: Optional[list] = None,
 ) -> _CommitOutcome:
-    """Persist the compacted transcript: memory extraction, anti-growth guard, then the
+    """Persist the compacted transcript: anti-growth guard, memory extraction, then the
     in-place archive or the parent->child rotation.
 
     Failures roll the live list back and arm the split-failure cooldown; a refused (would-grow) candidate returns
@@ -3711,28 +3714,14 @@ def _commit_compaction(
             # Publish memory only after every refusal gate, from the immutable pre-compression snapshot.
             # Memory extraction runs in BOTH modes: pre-compaction turns are summarized
             # away whether or not the id rotates.
-            # The engine session-end notification below answers with a full per-session
-            # reset, which nulls the in-flight attempt telemetry the success emit still
-            # needs (#118580). The attempt is live (in-place keeps the id; rotation
-            # rebinds after), so hold the telemetry trio across the call.
-            # ponytail: save/restore of 3 attrs; a keep-flag on on_session_end if more sites need it.
+            # The engine session-end notification answers with a full per-session reset, which nulls the
+            # in-flight attempt telemetry the success emit still needs (#118580); hold it across the call.
             _telemetry_compressor = agent.context_compressor
-            _held_telemetry = tuple(
-                getattr(_telemetry_compressor, _name, None) for _name in (
-                    "_last_compression_telemetry", "_active_compression_telemetry",
-                    "_compression_telemetry_seed",
-                )
-            )
+            _held_telemetry = {name: getattr(_telemetry_compressor, name, None) for name in _COMPRESSOR_TELEMETRY_FIELDS}
             try:
                 agent.commit_memory_session(original_messages)
             finally:
-                for _name, _value in zip(
-                    (
-                        "_last_compression_telemetry", "_active_compression_telemetry",
-                        "_compression_telemetry_seed",
-                    ),
-                    _held_telemetry,
-                ):
+                for _name, _value in _held_telemetry.items():
                     with contextlib.suppress(Exception):
                         setattr(_telemetry_compressor, _name, _value)
             from agent.context_compressor import PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY, stamp_db_persisted_markers
@@ -3776,7 +3765,7 @@ def _commit_compaction(
                 from agent.conversation_compression_archive import coverage_for_commit
                 covered_ids, unresolved_held = coverage_for_commit(
                     agent._session_db, agent.session_id,
-                    messages_before_compression if messages_before_compression is not None else messages,
+                    original_messages,
                     verbatim_tail)
                 agent._session_db.archive_and_compact(
                     agent.session_id, persisted, model_config_patch={PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY: None},
@@ -4029,7 +4018,7 @@ def _begin_compression_attempt(
     # commit-time hold keeps the trio for THIS attempt's own emit, but the next attempt (and
     # every emit before it re-seeds) must start clean. AFTER the snapshot so a late-unwind
     # restore still round-trips the full pre-attempt state.
-    for _name in ("_last_compression_telemetry", "_active_compression_telemetry", "_compression_telemetry_seed"):
+    for _name in _COMPRESSOR_TELEMETRY_FIELDS:
         with contextlib.suppress(Exception):
             setattr(agent.context_compressor, _name, None)
     if defer_notification and callable(getattr(agent, _PENDING_CONTEXT_ENGINE_NOTIFICATION, None)):
@@ -4051,8 +4040,6 @@ def _begin_compression_attempt(
     seed = {"attempt_id": attempt_id, "session_id": getattr(agent, "session_id", None) or "", "trigger_source": trigger}
     with contextlib.suppress(Exception):
         agent._compression_attempt_id = attempt_id
-        # The agent keeps its own copy: a pre-commit restore puts the previous seed back on the compressor.
-        agent._compression_attempt_seed = dict(seed)
         from hermes_cli.observability.shared_metrics_events import begin_compression_attempt
 
         begin_compression_attempt(trigger, approx_tokens or getattr(agent.context_compressor, "last_prompt_tokens", None))

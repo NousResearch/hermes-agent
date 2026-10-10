@@ -169,7 +169,9 @@ class ReasoningParamsMixin:
             return cached[1]
         result = (self._needs_deepseek_tool_reasoning() or self._needs_kimi_tool_reasoning()
                   or self._needs_mimo_tool_reasoning() or self._needs_ollama_tool_reasoning()
-                  or self._reasoning_echo_opt_in())
+                  or self._reasoning_echo_opt_in()
+                  or ((self.provider or "").lower() == "nous"
+                      and (self.model or "").lower() == "stealth/missingno"))
         self._thinking_pad_cache = (key, result)
         return result
 

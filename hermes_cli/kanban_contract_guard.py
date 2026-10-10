@@ -77,8 +77,14 @@ def _extract_contract(body: Any) -> tuple[Optional[dict[str, Any]], Optional[str
         return None, "body_missing"
     if body.count(CONTRACT_BEGIN) != 1 or body.count(CONTRACT_END) != 1:
         return None, "snapshot_marker_invalid"
-    before, remainder = body.split(CONTRACT_BEGIN, 1)
-    payload, after = remainder.split(CONTRACT_END, 1)
+    try:
+        before, remainder = body.split(CONTRACT_BEGIN, 1)
+        payload, after = remainder.split(CONTRACT_END, 1)
+    except ValueError:
+        # Individually unique but reversed markers leave no END marker after
+        # BEGIN.  Malformed user-controlled text must be a rejection, never an
+        # exception that aborts the rest of the board's dispatch tick.
+        return None, "snapshot_marker_invalid"
     if CONTRACT_END in before or CONTRACT_BEGIN in after:
         return None, "snapshot_marker_invalid"
     payload = payload.strip()
@@ -118,7 +124,23 @@ def _validate_relations(value: Any) -> bool:
     )
 
 
-def fleet_contract_guard_reason(row: Mapping[str, Any]) -> Optional[str]:
+def _linked_project_slug(project_id: str) -> Optional[str]:
+    """Resolve immutable first-class project identity for a task link.
+
+    Branch names and workspace paths are derived presentation data.  The
+    linked Project record is the authoritative repository identity.
+    """
+    try:
+        from hermes_cli import projects_db
+
+        with projects_db.connect_closing() as conn:
+            project = projects_db.get_project(conn, project_id)
+    except Exception:
+        return None
+    return project.slug if project is not None else None
+
+
+def _fleet_contract_guard_reason(row: Mapping[str, Any]) -> Optional[str]:
     """Return a stable rejection code, or ``None`` when dispatch may proceed.
 
     A row is fleet-governed when either provenance marker is present. Requiring
@@ -156,7 +178,8 @@ def fleet_contract_guard_reason(row: Mapping[str, Any]) -> Optional[str]:
     for key in ("agent_ready", "blocked"):
         if not isinstance(contract.get(key), bool):
             return f"snapshot_{key}_invalid"
-    if contract.get("execution_mode") not in VALID_EXECUTION_MODES:
+    execution_mode = contract.get("execution_mode")
+    if not isinstance(execution_mode, str) or execution_mode not in VALID_EXECUTION_MODES:
         return "snapshot_execution_mode_invalid"
     for key in ("labels", "redactions"):
         if not _is_sorted_unique_strings(contract.get(key)):
@@ -190,6 +213,11 @@ def fleet_contract_guard_reason(row: Mapping[str, Any]) -> Optional[str]:
     project_id = _value(row, "project_id")
     if not isinstance(project_id, str) or not project_id.strip():
         return "task_project_missing"
+    project_slug = _linked_project_slug(project_id)
+    if project_slug is None:
+        return "task_project_unknown"
+    if project_slug != contract["repository"]:
+        return "repository_project_mismatch"
     if _value(row, "workspace_kind") != "worktree":
         return "task_workspace_kind_invalid"
     branch_name = _value(row, "branch_name")
@@ -203,3 +231,16 @@ def fleet_contract_guard_reason(row: Mapping[str, Any]) -> Optional[str]:
     if not normalized_workspace.endswith(os.sep + expected_suffix):
         return "task_workspace_path_invalid"
     return None
+
+
+def fleet_contract_guard_reason(row: Mapping[str, Any]) -> Optional[str]:
+    """Return a stable rejection code, never an exception, for any task row.
+
+    Fleet task bodies are external input.  A malformed JSON shape, marker
+    order, or unexpected SQLite value must quarantine only that card; it must
+    not prevent unrelated ready/review work from progressing.
+    """
+    try:
+        return _fleet_contract_guard_reason(row)
+    except Exception:
+        return "snapshot_invalid"

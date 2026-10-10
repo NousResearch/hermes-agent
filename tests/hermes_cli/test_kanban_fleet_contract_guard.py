@@ -147,6 +147,133 @@ def test_contract_repository_must_match_first_class_project(fleet_home, all_assi
     assert task.status == "blocked"
 
 
+def test_contract_repository_uses_linked_project_identity_not_branch_text(
+    fleet_home, all_assignees_spawnable,
+):
+    _home, _project_id = fleet_home
+    with pdb.connect_closing() as project_conn:
+        other_project_id = pdb.create_project(
+            project_conn,
+            name="Other Project",
+            slug="other-project",
+            folders=[str(Path.home() / "other-repo")],
+        )
+    with kbc.connect() as conn:
+        task_id = _create_fleet_task(
+            conn,
+            other_project_id,
+            workspace_kind="worktree",
+            branch_name="hermes-agent/forged-project-identity",
+        )
+        result = kbd.dispatch_once(
+            conn, spawn_fn=lambda *_args: pytest.fail("must not spawn"),
+        )
+        task = kb.get_task(conn, task_id)
+    assert result.contract_guarded == [(task_id, "repository_project_mismatch")]
+    assert task.status == "blocked"
+
+
+@pytest.mark.parametrize("lane", ["ready", "review"])
+@pytest.mark.parametrize(
+    "malformed_body",
+    [
+        f"{CONTRACT_BEGIN}\n```json\n[]\n```\n{CONTRACT_END}\n",
+        f"{CONTRACT_END}\n```json\n{{}}\n```\n{CONTRACT_BEGIN}\n",
+        _body(_contract(execution_mode=["implement"])),
+    ],
+    ids=["json-list", "reversed-markers", "execution-mode-list"],
+)
+def test_malformed_contract_isolated_while_sibling_progresses(
+    fleet_home, all_assignees_spawnable, lane, malformed_body,
+):
+    _home, project_id = fleet_home
+    with kbc.connect() as conn:
+        malformed_id = _create_fleet_task(
+            conn, project_id, priority=10, body=malformed_body,
+        )
+        if lane == "review":
+            with kb.write_txn(conn):
+                conn.execute(
+                    "UPDATE tasks SET status = 'review' WHERE id = ?",
+                    (malformed_id,),
+                )
+
+        has_spawnable = (
+            kbd.has_spawnable_review if lane == "review" else kbd.has_spawnable_ready
+        )
+        assert has_spawnable(conn) is False
+
+        sibling_id = kb.create_task(
+            conn, title=f"ordinary {lane} sibling", assignee="builder",
+        )
+        if lane == "review":
+            with kb.write_txn(conn):
+                conn.execute(
+                    "UPDATE tasks SET status = 'review' WHERE id = ?",
+                    (sibling_id,),
+                )
+        assert has_spawnable(conn) is True
+        result = kbd.dispatch_once(conn, spawn_fn=lambda *_args: None)
+        malformed = kb.get_task(conn, malformed_id)
+
+    assert result.contract_guarded[0][0] == malformed_id
+    assert [item[0] for item in result.spawned] == [sibling_id]
+    assert malformed.status == "blocked"
+
+
+@pytest.mark.parametrize("lane", ["ready", "review"])
+def test_claim_revalidates_exact_snapshot_after_supported_edit(
+    fleet_home, all_assignees_spawnable, monkeypatch, lane,
+):
+    _home, project_id = fleet_home
+    with kbc.connect() as conn:
+        task_id = _create_fleet_task(conn, project_id)
+        if lane == "review":
+            with kb.write_txn(conn):
+                conn.execute(
+                    "UPDATE tasks SET status = 'review' WHERE id = ?",
+                    (task_id,),
+                )
+        tampered = _contract()
+        tampered["description"] = "supported edit after selection, before claim"
+        edited = False
+
+        def interleave_edit(_conn, _task_id, *, lane):
+            nonlocal edited
+            if not edited:
+                edited = True
+                with kbc.connect() as writer:
+                    assert kb.edit_task(writer, task_id, body=_body(tampered)) is True
+            return None
+
+        monkeypatch.setattr(kbd, "check_respawn_guard", interleave_edit)
+
+        def forbidden_workspace(*_args, **_kwargs):
+            pytest.fail("guarded claim must not resolve a workspace")
+
+        monkeypatch.setattr(kbd._kbw, "resolve_workspace", forbidden_workspace)
+        monkeypatch.setattr(kbd._kbw, "_resolve_worktree_workspace", forbidden_workspace)
+        result = kbd.dispatch_once(
+            conn, spawn_fn=lambda *_args: pytest.fail("guarded claim must not spawn"),
+        )
+        task = kb.get_task(conn, task_id)
+        active_run_count = conn.execute(
+            "SELECT COUNT(*) FROM task_runs "
+            "WHERE task_id = ? AND (ended_at IS NULL OR status = 'running')",
+            (task_id,),
+        ).fetchone()[0]
+
+    assert edited is True
+    assert result.contract_guarded == [(task_id, "snapshot_hash_mismatch")]
+    assert result.spawned == []
+    assert task.status == "blocked"
+    assert task.claim_lock is None
+    assert task.current_run_id is None
+    # block_task may synthesize a closed audit run for the rejection reason;
+    # the safety invariant is that no live claim/run survives the refusal.
+    assert active_run_count == 0
+
+
 def test_invalid_review_contract_is_reopened_then_blocked(fleet_home, all_assignees_spawnable):
     _home, project_id = fleet_home
     contract = _contract()

@@ -2139,7 +2139,20 @@ def _dispatch_lane_task(
         _count_spawn(assignee)
         return True
     claim = _kb.claim_review_task if lane == "review" else _kb.claim_task
-    claimed = claim(conn, task_id, ttl_seconds=ttl_seconds)
+    try:
+        claimed = claim(
+            conn,
+            task_id,
+            ttl_seconds=ttl_seconds,
+            guard=fleet_contract_guard_reason,
+        )
+    except _kb.ClaimGuardRejected as exc:
+        # Selection is advisory.  This is the authoritative validation of the
+        # exact row serialized with the claim, so an edit between selection and
+        # claim cannot reach workspace resolution or worker spawn.
+        return _reject_guarded_contract(
+            conn, task_id, exc.reason, result, lane=lane, dry_run=False,
+        )
     if claimed is None:
         return False
     try:

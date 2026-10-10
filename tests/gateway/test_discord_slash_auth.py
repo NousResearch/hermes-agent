@@ -584,3 +584,146 @@ async def test_skill_handler_known_and_unknown_produce_same_rejection(
     assert known_kwargs == unknown_kwargs
 
 
+# ---------------------------------------------------------------------------
+# /model autocomplete
+# ---------------------------------------------------------------------------
+
+
+def _model_spec_args():
+    """The option specs ``/model`` registers, as ``_native_slash_commands()`` serves them."""
+    from plugins.platforms.discord.adapter import _native_slash_commands
+
+    return next(
+        args for name, _desc, args, _template, _followup in _native_slash_commands()
+        if name == "model"
+    )
+
+
+def test_model_option_declares_the_autocomplete_provider():
+    """The declarative spec names the provider; registration resolves it later.
+
+    A missing 6th element silently degrades ``/model`` back to free text, which
+    is invisible from the Discord side, so assert the wiring at the source."""
+    args = _model_spec_args()
+    assert args[0][0] == "name"
+    assert args[0][5] == "models"
+
+
+def test_slash_proxy_attaches_model_autocomplete(adapter, monkeypatch):
+    """``_slash_proxy`` binds ``_autocomplete_model`` to the ``name`` option."""
+    import discord
+
+    captured: dict = {}
+
+    def fake_autocomplete(**kwargs):
+        captured.update(kwargs)
+        return lambda fn: fn
+
+    monkeypatch.setattr(
+        discord.app_commands, "autocomplete", fake_autocomplete, raising=False,
+    )
+    adapter._slash_proxy("model", _model_spec_args(), "/model {name}", None)
+
+    assert set(captured) == {"name"}
+    assert getattr(captured["name"], "__self__", None) is adapter
+    assert getattr(captured["name"], "__func__", None) is adapter._autocomplete_model.__func__
+
+
+def test_slash_proxy_ignores_specs_without_an_autocomplete_provider(adapter, monkeypatch):
+    """A five-element spec — every other option — must not gain autocomplete."""
+    import discord
+
+    from plugins.platforms.discord.adapter import _native_slash_commands
+
+    captured: dict = {}
+    monkeypatch.setattr(
+        discord.app_commands, "autocomplete",
+        lambda **kwargs: (captured.update(kwargs) or (lambda fn: fn)),
+        raising=False,
+    )
+    btw_args = next(
+        args for name, _desc, args, _template, _followup in _native_slash_commands()
+        if name == "btw"
+    )
+    adapter._slash_proxy("btw", btw_args, "/btw {question}", None)
+
+    assert captured == {}
+
+
+@pytest.mark.asyncio
+async def test_model_autocomplete_returns_empty_for_unauthorized(adapter, monkeypatch):
+    """The catalog must not leak to a user who cannot run /model."""
+    adapter._allowed_user_ids = {"100200300"}
+    monkeypatch.setattr(
+        adapter, "_model_autocomplete_entries",
+        lambda: [("gpt-5 · Atlas", "gpt-5")],
+    )
+
+    result = await adapter._autocomplete_model(_make_interaction("999999999"), "")
+
+    assert result == []
+
+
+@pytest.mark.asyncio
+async def test_model_autocomplete_filters_caps_and_skips_overlong_values(
+    adapter, monkeypatch,
+):
+    """Discord's limits are enforced before the response leaves the process.
+
+    An overlong Choice *value* is dropped, never clipped: a truncated model id
+    is a different, invalid model id. Labels may be clipped — cosmetic only."""
+    adapter._allowed_user_ids = {"999999999"}
+    overlong = "m" * 101
+    entries = [(f"model-{i:02d} · Atlas", f"model-{i:02d}") for i in range(40)]
+    entries.append((overlong, overlong))
+    entries.append(("x" * 200, "short-value"))
+    monkeypatch.setattr(adapter, "_model_autocomplete_entries", lambda: entries)
+
+    interaction = _make_interaction("999999999")
+    choices = await adapter._autocomplete_model(interaction, "")
+    assert len(choices) == 25  # Discord's per-response cap
+    assert all(len(choice.value) <= 100 for choice in choices)
+    assert all(overlong not in choice.value for choice in choices)
+
+    filtered = await adapter._autocomplete_model(interaction, "model-07")
+    assert [choice.value for choice in filtered] == ["model-07"]
+
+    long_label = await adapter._autocomplete_model(interaction, "x" * 200)
+    assert [choice.value for choice in long_label] == ["short-value"]
+    assert len(long_label[0].name) <= 100
+
+
+def test_model_autocomplete_entries_round_trip_through_the_model_argument(
+    adapter, monkeypatch,
+):
+    """A value must be exactly what ``/model`` accepts: a bare model id for the
+    current provider, ``<id> --provider <slug>`` for every other one."""
+    import sys
+    import types
+
+    # The adapter imports these lazily at call time; registering stand-ins keeps
+    # the test off the real gateway/hermes_cli modules (importing them reads the
+    # real hermes home, which the home-io guard refuses).
+    fake_run = types.ModuleType("gateway.run")
+    fake_run._load_gateway_config = lambda: {"model": {"provider": "atlas"}}
+    monkeypatch.setitem(sys.modules, "gateway.run", fake_run)
+
+    fake_cp = types.ModuleType("hermes_cli.config_providers")
+    fake_cp.get_compatible_custom_providers = lambda cfg: []
+    monkeypatch.setitem(sys.modules, "hermes_cli.config_providers", fake_cp)
+
+    fake_msp = types.ModuleType("hermes_cli.model_switch_providers")
+    fake_msp.list_authenticated_providers = lambda **kwargs: [
+        {"slug": "openrouter", "name": "OpenRouter", "models": ["gpt-5"]},
+        {"slug": "atlas", "name": "Atlas Cloud", "models": ["gpt-5"]},
+    ]
+    monkeypatch.setitem(sys.modules, "hermes_cli.model_switch_providers", fake_msp)
+
+    entries = adapter._model_autocomplete_entries()
+    values = {value: label for label, value in entries}
+
+    assert values["gpt-5"] == "gpt-5 · Atlas Cloud"  # current provider keeps a bare id
+    assert values["gpt-5 --provider openrouter"] == "gpt-5 · OpenRouter"
+    assert len(entries) == 2  # the same id on two providers stays distinct
+
+

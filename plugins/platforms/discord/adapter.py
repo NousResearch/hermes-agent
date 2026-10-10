@@ -101,7 +101,7 @@ _NATIVE_SLASH_COMMAND_SPECS: tuple = (
     ("new", "platform.discord.command.new.description", (), "/reset", "platform.discord.command.new.followup"),
     ("reset", "platform.discord.command.reset.description", (), "/reset", "platform.discord.command.reset.followup"),
     ("model", "platform.discord.command.model.description",
-     (("name", str, "", "platform.discord.command.model.arg_name", None),),
+     (("name", str, "", "platform.discord.command.model.arg_name", None, "models"),),
      "/model {name}", None),
     ("reasoning", "platform.discord.command.reasoning.description",
      (("effort", str, "", "platform.discord.command.reasoning.arg_effort",
@@ -171,6 +171,17 @@ _NATIVE_SLASH_COMMAND_SPECS: tuple = (
 # Discord rejects the whole bulk sync (error 50035) when ONE description / parameter description /
 # Choice name exceeds 100 UTF-16 units, so every localized slot is cut at the cap.
 _DISCORD_APP_COMMAND_TEXT_LIMIT = 100
+# Discord app-command autocomplete: at most 25 choices per response, and a Choice's name and
+# value may each be at most 100 characters.
+_DISCORD_AUTOCOMPLETE_MAX_CHOICES = 25
+_DISCORD_CHOICE_LIMIT = 100
+# Autocomplete providers an option spec may request via its optional 6th element, mapped to the
+# adapter method that serves it. An unrecognised key is ignored, so a typo degrades the option
+# to plain free text instead of breaking command registration.
+_AUTOCOMPLETE_PROVIDERS = {"models": "_autocomplete_model"}
+# /model autocomplete: the catalog read fires on every keystroke, so memoise it briefly.
+_MODEL_AUTOCOMPLETE_CACHE_TTL = 120.0
+_MODEL_AUTOCOMPLETE_MAX_MODELS = 1000
 
 
 def _default_voice_ack_phrases() -> list:
@@ -197,8 +208,11 @@ def _native_slash_commands() -> tuple:
     for name, description_key, args, template, followup_key in _NATIVE_SLASH_COMMAND_SPECS:
         localized_args = tuple(
             (arg_name, arg_type, default, _text(desc_key),
-             tuple((_choice_label(lbl), val) for lbl, val in choices) if choices else None)
-            for arg_name, arg_type, default, desc_key, choices in args)
+             tuple((_choice_label(lbl), val) for lbl, val in choices) if choices else None,
+             # An optional 6th element names an autocomplete provider; it rides through
+             # untouched (``_slash_proxy`` resolves it and ignores unknown keys).
+             rest[0] if rest else None)
+            for arg_name, arg_type, default, desc_key, choices, *rest in args)
         out.append((name, _text(description_key), localized_args, template, followup_key))
     return tuple(out)
 
@@ -4580,6 +4594,108 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
         except Exception as e:
             logger.debug("Discord interaction cleanup failed: %s", e)
 
+    def _model_autocomplete_entries(self) -> "list[tuple[str, str]]":
+        """Build (and briefly cache) the flat model list for ``/model`` autocomplete.
+
+        Returns ``(label, value)`` tuples where *value* is the argument string handed to
+        ``/model``: a bare model id for the current provider, or ``"<id> --provider <slug>"``
+        for the others. Sourced from the same authenticated-provider catalog the interactive
+        picker reads, so the two cannot disagree.
+
+        The read comes from the provider-model cache, but autocomplete fires on every
+        keystroke, so the result is memoised briefly.
+        """
+        now = time.time()
+        cached = getattr(self, "_model_entries_cache", None)
+        cached_at = getattr(self, "_model_entries_cache_at", 0.0)
+        if cached is not None and (now - cached_at) < _MODEL_AUTOCOMPLETE_CACHE_TTL:
+            return cached
+        entries: "list[tuple[str, str]]" = []
+        try:
+            from gateway.run import _load_gateway_config
+            from hermes_cli.model_switch_providers import list_authenticated_providers
+
+            cfg = _load_gateway_config() or {}
+            model_cfg = cfg.get("model", {})
+            if not isinstance(model_cfg, dict):
+                model_cfg = {}
+            cur_provider = str(model_cfg.get("provider", "") or "")
+            try:
+                from hermes_cli.config_providers import get_compatible_custom_providers
+
+                custom_provs = get_compatible_custom_providers(cfg)
+            except Exception:
+                custom_provs = cfg.get("custom_providers")
+            providers = list_authenticated_providers(
+                current_provider=cur_provider,
+                current_base_url=str(model_cfg.get("base_url", "") or ""),
+                current_model=str(model_cfg.get("default", "") or ""),
+                user_providers=cfg.get("providers") or {},
+                custom_providers=custom_provs,
+                max_models=_MODEL_AUTOCOMPLETE_MAX_MODELS,
+                # Discord kills an autocomplete response after 3s, so never block a
+                # keystroke on a catalog probe: serve what is cached and let stale
+                # catalogs warm up in the background (same list, ~4x faster).
+                non_blocking_catalogs=True,
+            )
+            providers = sorted(
+                providers,
+                key=lambda p: 0 if str(p.get("slug", "")).lower() == cur_provider.lower() else 1,
+            )
+            seen: "set[tuple[str, str]]" = set()
+            for p in providers:
+                slug = str(p.get("slug", "") or "")
+                pname = str(p.get("name", "") or slug)
+                is_current = slug.lower() == cur_provider.lower()
+                for mid in p.get("models", []) or []:
+                    mid = str(mid)
+                    if not mid or (mid, slug) in seen:
+                        continue
+                    seen.add((mid, slug))
+                    entries.append((
+                        f"{mid} · {pname}",
+                        mid if is_current else f"{mid} --provider {slug}",
+                    ))
+        except Exception:
+            entries = cached or []
+        self._model_entries_cache = entries
+        self._model_entries_cache_at = now
+        return entries
+
+    async def _autocomplete_model(
+        self, interaction: "discord.Interaction", current: str,
+    ) -> list:
+        """Model choices for ``/model``; ``[]`` when unauthorized or on error.
+
+        Authorized callers only, so the catalog never leaks to someone who cannot run the
+        command. Never raises: Discord treats an autocomplete error as a dead interaction.
+        """
+        try:
+            allowed, _reason = self._evaluate_slash_authorization(interaction)
+        except Exception:
+            return []
+        if not allowed:
+            return []
+        try:
+            entries = await asyncio.to_thread(self._model_autocomplete_entries)
+        except Exception:
+            return []
+        needle = (current or "").strip().lower()
+        choices: list = []
+        for label, value in entries:
+            # Discord caps a Choice's value at 100 chars; a clipped model id is a different,
+            # invalid model id, so overlong entries are skipped rather than truncated.
+            if len(value) > _DISCORD_CHOICE_LIMIT:
+                continue
+            if needle and needle not in label.lower():
+                continue
+            if len(label) > _DISCORD_CHOICE_LIMIT:
+                label = label[: _DISCORD_CHOICE_LIMIT - 1] + _DISCORD_ELLIPSIS
+            choices.append(discord.app_commands.Choice(name=label, value=value))
+            if len(choices) >= _DISCORD_AUTOCOMPLETE_MAX_CHOICES:
+                break
+        return choices
+
     def _slash_proxy(self, name: str, args: tuple, template: str, followup: Optional[str], *,
                      strip: bool = True, prefix: str = "slash_"):
         """Build a slash callback rendering ``template`` from its args via ``_run_simple_slash``;
@@ -4590,7 +4706,7 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
             await self._run_simple_slash(interaction, *call_args)
         _handler.__name__ = prefix + {"bg": "background"}.get(name, name).replace("-", "_")
         params = [inspect.Parameter("interaction", inspect.Parameter.POSITIONAL_OR_KEYWORD, annotation=discord.Interaction)]
-        for arg_name, arg_type, default, _desc, _choices in args:
+        for arg_name, arg_type, default, _desc, _choices, *_auto in args:
             params.append(inspect.Parameter(
                 arg_name, inspect.Parameter.POSITIONAL_OR_KEYWORD, annotation=arg_type,
                 default=inspect.Parameter.empty if default is _REQUIRED else default,
@@ -4601,6 +4717,13 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
             choices = {a[0]: [discord.app_commands.Choice(name=lbl, value=val) for lbl, val in a[4]] for a in args if a[4]}
             if choices:
                 _handler = discord.app_commands.choices(**choices)(_handler)
+            autos = {
+                a[0]: getattr(self, _AUTOCOMPLETE_PROVIDERS[a[5]])
+                for a in args
+                if len(a) > 5 and a[5] in _AUTOCOMPLETE_PROVIDERS
+            }
+            if autos:
+                _handler = discord.app_commands.autocomplete(**autos)(_handler)
         return _handler
 
     def _register_thread_slash(self, tree, name: str, description: str) -> None:

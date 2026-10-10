@@ -36,6 +36,9 @@ from gateway.session import (
 from gateway.session_transcript import TranscriptReadError
 from gateway.turn_context import TurnContext
 from gateway.turn_lease import DEFAULT_LEASE_WAIT, TurnLeaseTimeoutError
+from gateway.run_turn_context_overflow import (
+    is_context_overflow_exception, is_context_overflow_failure_result,
+)
 from hermes_constants import get_hermes_home_override
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -76,14 +79,6 @@ def _tool_call_logger() -> logging.Logger:
 
 
 
-_CONTEXT_OVERFLOW_ERROR_PHRASES = (
-    "context length", "context size", "context window",
-    "maximum context", "token limit", "too many tokens",
-    "reduce the length", "exceeds the limit",
-    "request entity too large", "prompt is too long",
-    "payload too large", "input is too long",
-)
-
 def _unexpected_silence_reply() -> str:
     """Reply when the model returned only a silence marker for a message that needed an answer."""
     return t("gateway.errors.unexpected_silence")
@@ -93,20 +88,6 @@ def _bg_prompt_preview(prompt: str, limit: int = 60) -> str:
     """Short single-line quote of a /bg prompt for its failure notice (the task id means nothing to the user)."""
     text = " ".join(str(prompt or "").split())
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
-
-
-def is_context_overflow_failure_result(agent_result: dict, history_len: int) -> bool:
-    """One verdict for "this failed turn is a context overflow", shared by transcript persistence
-    (#1630 skip) and the user-facing reply so the two can never disagree.
-
-    Multi-word phrases (not bare "exceed"/"token") avoid matching "rate limit exceeded" or
-    "invalid authentication token"; a bare 400 only counts on a long session."""
-    if not agent_result.get("failed"):
-        return False
-    if agent_result.get("compression_exhausted"):
-        return True
-    err = str(agent_result.get("error") or "").lower()
-    return any(p in err for p in _CONTEXT_OVERFLOW_ERROR_PHRASES) or ("400" in err and history_len > 50)
 
 
 # Setup/prefix rows rather than conversation: the agent rebuilds its own system prompt, and a
@@ -1973,7 +1954,22 @@ class GatewayTurnMixin:
         await self._hmwa_stop_typing_for_turn(event, source)
         logger.exception("Agent error in session %s", session_key)
         status_code = getattr(e, "status_code", None)
-        if status_code in {400, 500} and len(prepared.history) > 50:
+        approx_tokens = 0
+        context_length = 200_000
+        try:
+            from agent.model_metadata import estimate_messages_tokens_rough, get_model_context_length_async
+
+            hs = await self._hmwa_hygiene_settings(source, session_key)
+            context_length = await get_model_context_length_async(
+                hs.model, base_url=hs.base_url or "", api_key=hs.api_key or "",
+                config_context_length=hs.config_context_length, provider=hs.provider or "",
+            )
+            approx_tokens = session_entry.last_prompt_tokens or estimate_messages_tokens_rough(prepared.history)
+        except Exception:
+            logger.debug("Could not resolve session token context for provider exception", exc_info=True)
+        if is_context_overflow_exception(
+            e, len(prepared.history), approx_tokens=approx_tokens, context_length=context_length,
+        ):
             # Context overflow / payload too large: a deterministic rejection (#107567), and the same
             # no-grow rule as the persist path (#1630) — nothing is written into an oversized session.
             from gateway.run import _context_overflow_reply

@@ -106,6 +106,7 @@ def test_remote_backend_never_prunes(tmp_path, monkeypatch):
     result = ops.search("*.txt", path=str(home), target="files")
 
     rg_command = _rg_files_commands(env.commands)[0]
+    assert "!Downloads" not in rg_command
     assert "!Downloads/**" not in rg_command
     assert result.warning is None
 
@@ -142,7 +143,9 @@ def test_rg_multi_root_scopes_protected_globs_and_restores_absolute_paths(monkey
     command = commands[0]
     assert command.startswith("set -o pipefail; cd '/' && ")
     assert "--sortr=modified" in command
+    assert "'!Users/alice/Downloads'" in command
     assert "'!Users/alice/Downloads/**'" in command
+    assert "'!repo/Downloads'" not in command
     assert "'!repo/Downloads/**'" not in command
     assert "'Users/alice' 'repo'" in command
     assert result.files == [

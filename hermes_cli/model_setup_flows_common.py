@@ -148,11 +148,27 @@ def _finish_model(selected, provider: str, done: str, *, no_change: str = "No ch
 
 
 def _activate_provider_model(selected, provider_id: str, base_url: str, done: str,
-                             no_change: str | None = "No change.") -> None:
+                             no_change: str | None = "No change.",
+                             api_key: str = "") -> None:
     """OAuth-provider persist: model choice + ``_update_config_for_provider`` (which owns
-    the auth-state bookkeeping), then *done*; *no_change* (``None`` = silent) otherwise."""
+    the auth-state bookkeeping), then *done*; *no_change* (``None`` = silent) otherwise.
+
+    Entitlement-gated like every other persist surface (t_27cf7a7b): a pick the
+    provider proves this account cannot use does not become the default, so the
+    ``_save_model_choice`` / ``_update_config_for_provider`` writes are never
+    reached. ``api_key`` is the flow's resolved credential; when it is empty the
+    gate resolves the provider's own (``resolve_endpoint``) and, if that fails
+    too, the probe is inconclusive and the pick is allowed — fail-open.
+    """
     from hermes_cli.auth import _save_model_choice, _update_config_for_provider
+    from hermes_cli.model_entitlement_guard import ensure_pick_entitled, resolve_endpoint
     if not selected:
+        if no_change is not None:
+            print(no_change)
+        return
+    endpoint, endpoint_key = resolve_endpoint(provider_id)
+    if not ensure_pick_entitled(selected, provider=provider_id, base_url=base_url or endpoint,
+                                api_key=api_key or endpoint_key):
         if no_change is not None:
             print(no_change)
         return

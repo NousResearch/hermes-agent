@@ -18,8 +18,11 @@ self-healing rate-limit window.
 WHAT THIS DOES
 --------------
 ``ensure_pick_entitled`` live-probes the model ON THE ENDPOINT THE PICK WOULD RUN
-ON (one tiny chat completion) and, when the provider's own error body proves the
-model unusable for this account, refuses to let the pick become the default:
+ON — one tiny completion, sent on THE SAME WIRE the session will use
+(``/chat/completions``, ``/responses`` or ``/v1/messages``, per
+``hermes_cli.providers.determine_api_mode``) — and, when the provider's own error
+body proves the model unusable for this account, refuses to let the pick become
+the default:
 
   * the config write never happens, so the profile is left on its previous
     default and nothing has to be reverted;
@@ -29,12 +32,32 @@ model unusable for this account, refuses to let the pick become the default:
     anyone who wants the old warn-and-persist behaviour:
     ``HERMES_ALLOW_UNENTITLED_PICK=1 hermes model``.
 
+WHERE IT IS WIRED (the persist surfaces, by construction)
+--------------------------------------------------------
+  * ``model_setup_flows_common._persist_model`` — the standard setup step, and
+    through it every ``_finish_model`` caller (openrouter, ai-gateway, copilot,
+    zai/GLM, deepseek, …);
+  * ``model_setup_flows_common._activate_provider_model`` — the OAuth flows
+    (openai-codex, xai-oauth, qwen-oauth, minimax-oauth);
+  * ``model_setup_flows._nous_persist_selection`` and ``auth_nous._login_nous``
+    — the Nous sign-in path, which persists its own selection;
+  * ``model_setup_flows_custom`` — both custom-endpoint flows;
+  * ``model_switch.persist_model_selection`` — ``/model --global`` and the
+    dashboard's main-slot pick (``web_server_config`` routes through it).
+
+EXEMPT BY DESIGN: ``moa`` (``is_exempt_provider``) — its ``model.default`` is a
+preset NAME resolved against the user's own configured providers, so there is no
+endpoint to probe. The exemption is explicit, not an omission.
+
 FAIL-OPEN BY DESIGN. The probe is an extra HTTP call to a third party, so every
 way it can be inconclusive — no endpoint or credential to test, a local endpoint,
 a transport error, a 5xx, a 429 that is a real throttle — allows the pick and
 says nothing. Only a *proven* refusal (an entitlement/billing verdict from
-``agent.error_classifier``, or an unambiguous 402/404/410) blocks. A guard that
-blocked on a flaky network would be worse than the bug it fixes.
+``agent.error_classifier``, or an unambiguous 402/410) blocks. A bare 404 does NOT
+block either: a wrong-wire 404 must never be mistaken for an entitlement wall,
+and a real 404 wall (a retired free slug) blocks through its error body. A guard
+that blocked on a flaky network or on a protocol mismatch would be worse than the
+bug it fixes.
 
 The classification is the runtime's own: ``agent.error_classifier`` already owns
 ``FailoverReason.model_entitlement`` (the zai ``1311`` code was added to it with
@@ -65,8 +88,18 @@ POLICY_ENV = "HERMES_ALLOW_UNENTITLED_PICK"
 #: this model here" rather than "try again later".
 REFUSAL_REASONS = frozenset({"model_entitlement", "billing"})
 
-#: Statuses that are decisive on their own (no body pattern needed).
-REFUSAL_STATUSES = frozenset({402, 404, 410})
+#: Statuses decisive on their own. ``402`` (payment required) and ``410`` (gone)
+#: are unambiguous whatever the body says. ``404`` is deliberately NOT here: it is
+#: also what a WRONG WIRE returns (the pick would run on ``/responses`` or
+#: ``/v1/messages`` but a probe sent to ``/chat/completions``), so a bare 404 must
+#: stay inconclusive. A 404 that really is an entitlement wall carries it in the
+#: body ("no longer free", "requires available credits") and blocks through
+#: ``REFUSAL_REASONS`` instead.
+REFUSAL_STATUSES = frozenset({402, 410})
+
+#: Providers whose default is a VIRTUAL preset name, not a wire route: there is
+#: no endpoint to probe, so the gate cannot judge them and must not pretend to.
+EXEMPT_PROVIDERS = frozenset({"moa"})
 
 #: A local endpoint is the user's own server: no plan to be entitled by.
 _LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "0.0.0.0", "::1", "[::1]"})
@@ -86,6 +119,21 @@ class _ProbeError(Exception):
 def policy() -> str:
     """``"refuse"`` (default) or ``"warn"`` (``HERMES_ALLOW_UNENTITLED_PICK`` set)."""
     return "warn" if os.environ.get(POLICY_ENV, "").strip() else "refuse"
+
+
+def is_exempt_provider(provider: str) -> bool:
+    """True for a provider the gate cannot judge (a virtual preset, not a route).
+
+    Only ``moa`` today: its ``model.default`` is a preset NAME resolved against
+    the user's own configured providers — there is no endpoint the pick would run
+    on, so a probe would test nothing. The exemption is stated here, in the
+    module docstring and in ``tests/hermes_cli/test_model_entitlement_guard.py``
+    so it reads as a decision rather than an oversight.
+    """
+    slug = (provider or "").strip().lower()
+    if ":" in slug:
+        slug = slug.split(":", 1)[1]
+    return slug in EXEMPT_PROVIDERS
 
 
 def block_message(model: str, *, provider: str = "", rationale: str = "") -> str:
@@ -112,26 +160,80 @@ def _is_local_endpoint(base_url: str) -> bool:
     return host.lower() in _LOCAL_HOSTS
 
 
-def _post_chat_completion(base_url: str, api_key: str, model: str, timeout: float) -> tuple[int, dict]:
-    """One tiny chat completion; returns ``(status_code, parsed_body)``.
+def _wire_for(provider: str, base_url: str, model: str) -> str:
+    """The wire protocol this pick would actually run on.
 
-    Raises on transport failure (the caller treats that as inconclusive). The
-    credential is never logged or echoed.
+    A probe must speak the SAME protocol the session will: an OAuth route that
+    requires ``/responses`` or ``/v1/messages`` 404s a ``/chat/completions``
+    request, and that 404 is about the probe, not about entitlement. Falls back
+    to ``chat_completions`` — the transport that answers everywhere — when the
+    provider table is unavailable.
     """
-    payload = json.dumps({
-        "model": model,
-        "messages": [{"role": "user", "content": "ping"}],
-        "max_tokens": 1,
-        "stream": False,
-    }).encode()
+    try:
+        from hermes_cli.providers import determine_api_mode
+
+        return determine_api_mode(provider, base_url, model) or "chat_completions"
+    except Exception:
+        return "chat_completions"
+
+
+def _wire_request(
+    base_url: str, api_key: str, model: str, wire: str,
+) -> tuple[str, dict, str | None]:
+    """``(url, body, auth_header_name)`` for *wire*.
+
+    ``auth_header_name`` is ``None`` for Bearer. Anthropic-Messages on a
+    third-party endpoint (MiniMax) authenticates with Bearer, native Anthropic
+    with ``x-api-key``; the adapter owns that choice, so mirror its rule rather
+    than guessing on a host we do not recognise.
+    """
+    root = base_url.rstrip("/")
+    ping = "ping"
+    if wire == "codex_responses":
+        return (root + "/responses",
+                {"model": model, "input": [{"role": "user", "content": ping}],
+                 "max_output_tokens": 16, "stream": False},
+                None)
+    if wire == "anthropic_messages":
+        auth = "x-api-key"
+        try:
+            from agent.anthropic_endpoints import _is_minimax_anthropic_endpoint
+
+            if _is_minimax_anthropic_endpoint(base_url):
+                auth = None  # MiniMax uses Bearer even on its Messages route
+        except Exception:
+            auth = None  # unknown third-party Messages host: Bearer is the safer guess
+        return (root + "/v1/messages",
+                {"model": model, "max_tokens": 1, "messages": [{"role": "user", "content": ping}]},
+                auth)
+    return (root + "/chat/completions",
+            {"model": model, "messages": [{"role": "user", "content": ping}],
+             "max_tokens": 1, "stream": False},
+            None)
+
+
+def _post_chat_completion(base_url: str, api_key: str, model: str, timeout: float,
+                          *, provider: str = "") -> tuple[int, dict]:
+    """One tiny completion on the wire *this pick* would run on.
+
+    Returns ``(status_code, parsed_body)``. Raises on transport failure (the
+    caller treats that as inconclusive). The credential is never logged or
+    echoed.
+    """
+    wire = _wire_for(provider, base_url, model)
+    url, payload, auth_header = _wire_request(base_url, api_key, model, wire)
     headers = {
-        "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
         # python-urllib's default UA is WAF-blocked by some gateways (nous 1010).
         "User-Agent": _USER_AGENT,
     }
-    req = urllib.request.Request(
-        base_url.rstrip("/") + "/chat/completions", data=payload, headers=headers)
+    if auth_header:
+        headers[auth_header] = api_key
+        if auth_header == "x-api-key":
+            headers["anthropic-version"] = "2023-06-01"
+    else:
+        headers["Authorization"] = f"Bearer {api_key}"
+    req = urllib.request.Request(url, data=json.dumps(payload).encode(), headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             raw = resp.read().decode(errors="replace")
@@ -181,10 +283,11 @@ def refusal_for_pick(
     """
     if not model or not base_url or not api_key:
         return None
-    if _is_local_endpoint(base_url):
+    if _is_local_endpoint(base_url) or is_exempt_provider(provider):
         return None
     try:
-        status, body = _post_chat_completion(base_url, api_key, model, timeout)
+        status, body = _post_chat_completion(base_url, api_key, model, timeout,
+                                             provider=provider)
     except Exception as exc:
         logger.debug("entitlement probe inconclusive for %s/%s: %s", provider, model, exc)
         return None

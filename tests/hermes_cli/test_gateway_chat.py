@@ -276,3 +276,38 @@ async def test_launch_key_flags_are_never_silently_dropped(monkeypatch, tmp_path
     sent = {method: params for method, params in calls}
     assert sent["session.resume"] == {"session_id": "stored", "api_key": "launch-key"}
     assert sent["session.create"]["api_key"] == "launch-key"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command", ["/new", "/branch"])
+async def test_new_and_branch_move_the_terminal_continue_pointer(monkeypatch, tmp_path, command):
+    """P3: a bare `hermes -c` after `/new` or `/branch` continues the session this terminal is
+    now on (the in-process CLI re-wrote its breadcrumb on every switch), not the old one."""
+    from hermes_cli import gateway_chat_commands, terminal_breadcrumbs
+    from hermes_cli.gateway_chat_view import GatewayChatView
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("TMUX_PANE", "%9")
+    monkeypatch.setattr(terminal_breadcrumbs.os, "ttyname", lambda fd: (_ for _ in ()).throw(OSError()))
+
+    class Peer:
+        async def rpc(self, method, **params):
+            if method == "runtime.describe":
+                return {"session_create": {"sources": ["cli"], "parameters": ["cwd", "source"]}}
+            if method == "session.info":
+                return {"launch_request": {"source": "cli"}, "cwd": str(tmp_path)}
+            if method == "session.mutate":
+                return {"status": "applied", "branched_session_id": "moved"}
+            return {"stored_session_id": "moved", "execution_generation": 0, "info": {}}
+
+    view = GatewayChatView(Peer(), {"stored_session_id": "old", "execution_generation": 0, "info": {}}, quiet=True)
+    terminal_breadcrumbs.write_breadcrumb("old")
+
+    async def apply(client, original, operation, payload, confirm=None):
+        return await client.rpc("session.mutate")
+
+    monkeypatch.setattr(view.mutations, "apply", apply)
+    if command == "/new":
+        await gateway_chat_commands._new(view, "")
+    else:
+        assert await view.command(command) is True
+    assert terminal_breadcrumbs.read_breadcrumb()["session_id"] == "moved"

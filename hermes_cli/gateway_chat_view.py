@@ -299,6 +299,11 @@ class GatewayChatView:
         self.prompts = {p['prompt_id']: p for p in snapshot.get('prompts', [])}
         self.pending = snapshot.get('pending', [])
         self.model = str((snapshot.get('info') or {}).get('model') or self.model).split('/')[-1]
+        if not self.finite:
+            # Bare `hermes -c` in this terminal continues the session it is now on, as the
+            # in-process CLI re-wrote its breadcrumb on every session switch.
+            from hermes_cli.terminal_breadcrumbs import write_breadcrumb
+            await asyncio.to_thread(write_breadcrumb, self.session_id)
 
     async def _confirm_model_switch(self, refusal):
         """The owner refused a guarded model target (cost / data policy / large context): ask as

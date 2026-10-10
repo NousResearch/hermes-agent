@@ -180,7 +180,7 @@ _MEDIA_KIND_KEYS = {
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from plugins.platforms.telegram.telegram_entities import expand_link_entities
 from plugins.platforms.telegram.telegram_held_inbound import TelegramHeldInboundMixin
-from plugins.platforms.telegram.telegram_ids import message_origin, normalize_telegram_chat_id
+from plugins.platforms.telegram.telegram_ids import message_origin_fields, normalize_telegram_chat_id
 from plugins.platforms.telegram.telegram_network import (
     SEED_FALLBACK_IPS, TelegramFallbackTransport, discover_fallback_ips, parse_fallback_ip_env, tcp_keepalive_socket_options)
 from utils import env_float, env_int
@@ -6620,7 +6620,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         existing.media_types.extend(event.media_types)
         if event.text:
             existing.text = self._merge_caption(existing.text, event.text)
-        existing.absorb(event)
+        existing.absorb_origins(event)
 
     def _enqueue_photo_event(self, batch_key: str, event: MessageEvent) -> None:
         """Merge photo events into a pending batch and schedule flush."""
@@ -7102,7 +7102,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             message_id=str(message.message_id), platform_update_id=update_id,
             reply_to_message_id=reply_to_id, reply_to_text=reply_to_text, auto_skill=topic_skill,
             channel_prompt=group_identity_prompt(self, message, channel_prompt),
-            timestamp=message.date, source_origins=(message_origin(message, update_id),), source_origins_complete=update_id is not None)
+            timestamp=message.date, **message_origin_fields(message, update_id))
 
     # -- Message reactions (processing lifecycle) --
 

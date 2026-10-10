@@ -33,9 +33,14 @@ def parse_telegram_username_target(target_ref: Any) -> str | None:
     return value if looks_like_telegram_username(value) else None
 
 
-def message_origin(message: Any, update_id: int | None) -> MessageOrigin:
-    """One inbound message revision. Telegram sends ``edit_date`` only for an edit, so an ordinary
-    message is fully identified by its chat, message and update ids with ``edit_date`` None."""
+def message_origin_fields(message: Any, update_id: int | None) -> dict[str, Any]:
+    """``MessageEvent`` origin fields for one inbound message revision. Its raw chat, message and
+    update ids must all be present: a missing one leaves the event unidentified (the defaults),
+    never a stringified ``None``. Telegram sends ``edit_date`` only for an edit, so an ordinary
+    message is identified with it None."""
+    chat_id, message_id = message.chat.id, message.message_id
+    if chat_id is None or message_id is None or update_id is None:
+        return {}
     edit_date = getattr(message, "edit_date", None)
-    return MessageOrigin(str(message.chat.id), str(message.message_id), update_id,
-                         int(edit_date.timestamp()) if edit_date else None)
+    origin = MessageOrigin(str(chat_id), str(message_id), update_id, int(edit_date.timestamp()) if edit_date else None)
+    return {"source_origins": (origin,), "source_origins_complete": True}

@@ -8,7 +8,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, NamedTuple, Optional
+from typing import Any, Dict, List, Optional
 
 from gateway.session import SessionSource
 
@@ -41,12 +41,12 @@ class ProcessingOutcome(Enum):
     CANCELLED = "cancelled"
 
 
-class MessageOrigin(NamedTuple):
-    """One inbound platform message revision a turn was built from. A tuple of scalars, so
-    origins are deeply immutable and can be shared with every hook callback as they are."""
+@dataclass(frozen=True, slots=True)
+class MessageOrigin:
+    """One inbound platform message revision a turn was built from: identities only, never content."""
     chat_id: str
     message_id: str
-    update_id: Optional[int] = None
+    update_id: int
     edit_date: Optional[int] = None  # Unix seconds; None for a message that was never edited
 
 
@@ -111,7 +111,7 @@ class MessageEvent:
     # fallback, like True.
     reply_expected: Optional[bool] = None
     # The platform messages this event was built from, in arrival order; complete only when the
-    # adapter identified every one of them (merges: ``absorb``).
+    # adapter identified every one of them (merges: ``absorb_origins``).
     source_origins: tuple[MessageOrigin, ...] = ()
     source_origins_complete: bool = False
 
@@ -122,9 +122,13 @@ class MessageEvent:
 
     def absorb(self, other: "MessageEvent") -> None:
         """One turn now answers *other* too: an addressed message wins, then an unknown one; its
-        origins join ours, complete only if both sides were."""
+        origins join ours."""
         if self.reply_expected is not True and other.reply_expected is not False:
             self.reply_expected = other.reply_expected
+        self.absorb_origins(other)
+
+    def absorb_origins(self, other: "MessageEvent") -> None:
+        """*other*'s messages join ours; the result is complete only if both sides were."""
         self.source_origins += other.source_origins
         self.source_origins_complete = self.source_origins_complete and other.source_origins_complete
 

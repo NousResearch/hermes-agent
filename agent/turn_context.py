@@ -14,7 +14,7 @@ import threading
 import time
 import uuid
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from agent.conversation_compression import recover_rotated_compression_session
@@ -802,6 +802,7 @@ def _collect_pre_llm_call_context(
         return ""
     try:
         from hermes_cli.lifecycle import invoke_hook as _invoke_hook
+        from hermes_cli.plugins_dispatch import PerCallbackCopy
         _pre_results = _invoke_hook(
             "pre_llm_call",
             session_id=agent.session_id,
@@ -814,7 +815,8 @@ def _collect_pre_llm_call_context(
             platform=getattr(agent, "platform", None) or "",
             parent_session_id=getattr(agent, "_parent_session_id", None) or "",
             sender_id=getattr(agent, "_user_id", None) or "",
-            source_origins=source_origins,
+            # A new list of new dicts per callback: no plugin can change the turn's or another's copy.
+            source_origins=PerCallbackCopy(lambda: [asdict(origin) for origin in source_origins]),
             source_origins_complete=source_origins_complete,
         )
         try:

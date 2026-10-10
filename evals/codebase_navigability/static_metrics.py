@@ -57,7 +57,7 @@ def analyse(files):
         try: tree = ast.parse(src)
         except Exception: m["unparsable"] = m.get("unparsable", 0) + 1; continue
         rel = os.path.relpath(p, TREE)[:-3].replace(os.sep, ".")
-        if rel.endswith(".__init__"): rel = rel[:-9]
+        rel = rel.removesuffix(".__init__")
         mods[rel] = p
         for n in ast.walk(tree):
             if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):

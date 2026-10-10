@@ -67,7 +67,7 @@ def test_unlocked_reader_releases_a_lease_the_installer_moved_away_from(generati
 def test_release_removes_the_lease_file(generations):
     from hermes_cli.runtime_state import lease_generation
 
-    _, state, select = generations
+    _, _state, select = generations
     environment = select("first")
     release = lease_generation(environment)
     assert list((environment.parent / ".leases").iterdir())

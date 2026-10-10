@@ -51,11 +51,14 @@ _POOL_RAM_FRACTION = 0.75
 
 # cuDeviceGetAttribute enum: device is integrated with host memory.
 _CU_DEVICE_ATTRIBUTE_INTEGRATED = 18
+_NVIDIA_VENDOR_ID = 0x10DE
+# Engines whose devices the ggml probe reports; the CPU, CUDA and Metal builds answer elsewhere.
+_GPU_ENGINE_BACKENDS = ("vulkan", "hip")
 
 # One probe per process once a device answers (silicon doesn't change); a miss retries after this
 # long so a runtime installed mid-session gets picked up by the engine fallback.
 _POOL_NEGATIVE_TTL_S = 60.0
-_pool_probe_cache: tuple[float, "tuple[int, bool | None] | None"] | None = None
+_pool_probe_cache: tuple[float, tuple[int, bool | None] | None] | None = None
 
 # '  CUDA0: NVIDIA Example Device (1234-core Example GPU) (46464 MiB, 46284 MiB free)'
 # — greedy .* pins the LAST parenthesized group, so device names with parentheses parse.
@@ -171,7 +174,7 @@ def _ram_bytes() -> tuple[int, int]:
 # nvidia-smi lives at a fixed path under the driver install; PATH presence varies by session type
 # (services and gateways often run minimal environments) and by driver generation (the legacy
 # NVSMI dir was never on PATH). Cached: the driver doesn't move mid-process.
-_smi_path_cache: "tuple[str | None] | None" = None
+_smi_path_cache: tuple[str | None] | None = None
 
 
 def _nvidia_smi_path() -> str | None:
@@ -209,7 +212,7 @@ def _nvidia_vram() -> tuple[int, int, str, int | None] | None:
     return query["total_bytes"], query["free_bytes"], query["gpu_name"], query.get("gpu_pci_id")
 
 
-_gpu_query_cache: "tuple[float, dict | None] | None" = None
+_gpu_query_cache: tuple[float, dict | None] | None = None
 # The statusbar polls /api/local-models/hardware every 5s and the endpoint needs
 # name/util/vram; the budget probe needs total/free. One shared query (with a TTL
 # shorter than the poll) serves both, so one poll = one nvidia-smi spawn (#120262)
@@ -218,7 +221,7 @@ _gpu_query_cache: "tuple[float, dict | None] | None" = None
 _GPU_QUERY_TTL_S = 4.0
 
 
-def _cached_nvidia_gpu_query(ttl_s: float = _GPU_QUERY_TTL_S) -> "dict | None":
+def _cached_nvidia_gpu_query(ttl_s: float = _GPU_QUERY_TTL_S) -> dict | None:
     """One nvidia-smi read shared by the budget probe and the hardware endpoint.
 
     Returns ``dict(gpu_name=, total_bytes=, free_bytes=, used_bytes=, gpu_util_percent=,
@@ -264,7 +267,7 @@ def _cached_nvidia_gpu_query(ttl_s: float = _GPU_QUERY_TTL_S) -> "dict | None":
     return None
 
 
-def _cuda_driver_pool() -> "tuple[int, bool | None] | None":
+def _cuda_driver_pool() -> tuple[int, bool | None] | None:
     """(allocator_total_bytes, integrated_or_None) from the CUDA driver API via ctypes against the
     driver's own DLL/SO — no toolkit, no subprocess, ~ms. INTEGRATED is the vendor's own
     unified-memory declaration; total is the pool the allocator will actually hand out (on
@@ -312,7 +315,7 @@ def _configured_engine():
     return installed_engine(section.get("backend") or "auto")
 
 
-def _engine_device_pool() -> "tuple[int, bool | None] | None":
+def _engine_device_pool() -> tuple[int, bool | None] | None:
     """(engine_total_bytes, None) from the installed runtime's own --list-devices, or None. The
     fallback when the driver API is unreachable: asks the exact binary that will do the
     allocating. Carries no integrated verdict — callers must gate it."""
@@ -332,7 +335,7 @@ def _engine_device_pool() -> "tuple[int, bool | None] | None":
     return None
 
 
-def _device_pool_view() -> "tuple[int, bool | None] | None":
+def _device_pool_view() -> tuple[int, bool | None] | None:
     """Best available allocator-side view, cached: a hit is permanent for the process, a miss
     retries after a short TTL (the engine binary can appear mid-session via a pane install)."""
     global _pool_probe_cache
@@ -346,10 +349,10 @@ def _device_pool_view() -> "tuple[int, bool | None] | None":
     return view
 
 
-_accelerator_cache: "dict[str, tuple[float, dict | None]]" = {}
+_accelerator_cache: dict[str, tuple[float, dict | None]] = {}
 
 
-def _accelerator_device(*, fresh: bool = False) -> "dict | None":
+def _accelerator_device(*, fresh: bool = False) -> dict | None:
     """The device a Vulkan/HIP engine will place layers on, or None (no such engine, probe miss).
 
     Mirrors llama.cpp's own placement: discrete devices whenever one exists, an integrated one only
@@ -362,7 +365,7 @@ def _accelerator_device(*, fresh: bool = False) -> "dict | None":
         from hermes_cli.local_runtime.devices import probe_devices
 
         engine = _configured_engine()
-        if engine is None or engine.backend not in ("vulkan", "hip"):
+        if engine is None or engine.backend not in _GPU_ENGINE_BACKENDS:
             return None
         key, now = str(engine.binary), time.monotonic()
         cached = _accelerator_cache.get(key)
@@ -399,6 +402,39 @@ def _uma_budget(base: int, total: int, *, gpu_name: str = "",
     return HardwareBudget(usable_vram_bytes=usable, total_device_bytes=total,
                           ram_available_bytes=0, uma=True, gpu_name=gpu_name, platform=sys.platform,
                           gpu_pci_id=gpu_pci_id, lazy_reads=lazy_reads)
+
+
+def _gpu_engine_runs_the_model() -> bool:
+    """Whether a Vulkan/HIP engine runs the model: the serving or installed engine, else the one
+    setup would install for ``local_runtime.backend``. False when the engine can't be resolved."""
+    with suppress(Exception):
+        engine = _configured_engine()
+        if engine is not None:
+            return engine.backend in _GPU_ENGINE_BACKENDS
+        from hermes_cli.config import load_config_readonly
+        from hermes_cli.local_runtime.binaries import resolve_backend
+
+        section = load_config_readonly().get("local_runtime") or {}
+        return resolve_backend(section.get("backend") or "auto") in _GPU_ENGINE_BACKENDS
+    return False
+
+
+def _windows_igpu_bytes(device: dict | None) -> int | None:
+    """What Windows lets the integrated GPU allocate (Task Manager's GPU memory), or None.
+
+    The adapter is the one the engine named, else the only non-NVIDIA hardware adapter when a
+    Vulkan/HIP engine will run the model; the CPU engine (chosen, or the only build for a Snapdragon)
+    keeps the model in system RAM. Not the engine's own figure: ggml-vulkan sums every memory heap
+    of an integrated GPU, host-visible ones included, so it can exceed what Windows grants.
+    """
+    from hermes_platform.host.gpu_adapters import windows_gpu_adapters
+
+    hardware = [a for a in windows_gpu_adapters() if not a.software]
+    named = [a for a in hardware if device is not None and a.description == device["description"]]
+    candidates = named or [a for a in hardware if a.vendor_id != _NVIDIA_VENDOR_ID]
+    if len(candidates) != 1 or (device is None and not _gpu_engine_runs_the_model()):
+        return None
+    return candidates[0].memory_bytes
 
 
 def probe_budget(*, planning: bool = False) -> HardwareBudget:
@@ -445,10 +481,12 @@ def probe_budget(*, planning: bool = False) -> HardwareBudget:
             return HardwareBudget(usable_vram_bytes=max(0, total - margin), total_device_bytes=total,
                                   ram_available_bytes=ram_total if planning else ram_avail,
                                   uma=False, gpu_name=device["description"], platform=sys.platform)
-        # Integrated GPU, Metal, CPU, or no answer: budget from RAM as unified memory. llama.cpp
-        # loads lazy tensors up front on an AMD/Intel integrated GPU, where reading them on demand
-        # halved prefill (#28160).
-        return _uma_budget(ram_total if planning else ram_avail, ram_total,
+        # Integrated GPU, Metal, CPU, or no answer: budget from RAM as unified memory, capped at what
+        # Windows lets an integrated GPU allocate (18 GB of 31.5 on an Arc B390). llama.cpp loads
+        # lazy tensors up front on an AMD/Intel integrated GPU, where reading them on demand halved
+        # prefill (#28160).
+        pool = min(ram_total, _windows_igpu_bytes(device) or ram_total)
+        return _uma_budget(pool if planning else min(pool, ram_avail), pool,
                            lazy_reads=gpu_class() not in ("amd", "intel"))
 
     total, free, gpu_name, gpu_pci_id = vram

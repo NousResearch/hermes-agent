@@ -28,7 +28,7 @@ import time
 # session's batch deadline. State is process-global like the rest of this module's approval state; entries
 # are bounded by _HUMAN_WAIT_MAX_SESSIONS.
 class _HumanWaitState:
-    __slots__ = ("pending", "window_started", "completed_seconds")
+    __slots__ = ("completed_seconds", "pending", "window_started")
 
     def __init__(self) -> None:
         self.pending = 0

@@ -50,7 +50,7 @@ class _ModelHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     requests: list[dict[str, Any]] = []
 
-    def do_GET(self) -> None:  # noqa: N802
+    def do_GET(self) -> None:
         if self.path.rstrip("/") != "/v1/models":
             self.send_error(404)
             return
@@ -66,7 +66,7 @@ class _ModelHandler(BaseHTTPRequestHandler):
             ],
         })
 
-    def do_POST(self) -> None:  # noqa: N802
+    def do_POST(self) -> None:
         if self.path.rstrip("/") != "/v1/chat/completions":
             self.send_error(404)
             return
@@ -225,7 +225,7 @@ class _ModelHandler(BaseHTTPRequestHandler):
         self.send_header("Connection", "close")
         self.end_headers()
         for chunk in chunks:
-            self.wfile.write(f"data: {json.dumps(chunk)}\n\n".encode("utf-8"))
+            self.wfile.write(f"data: {json.dumps(chunk)}\n\n".encode())
             self.wfile.flush()
         self.wfile.write(b"data: [DONE]\n\n")
         self.wfile.flush()
@@ -277,7 +277,7 @@ telemetry:
 
 # ---- iuf c1 ----
 # The offline probes in the skill-lifecycle subprocess: one failed URL plugin install and one failed
-# update run (refused before the checkout moved), identical in SQLite and in the export.
+# update run (its fetch failed before the checkout moved), identical in SQLite and in the export.
 FAILURE_EXPECTED_DIMENSIONS = {
     "hermes.extension.install.count": {
         "failure_class": "clone_failed", "kind": "plugin", "name": "custom", "outcome": "failed",
@@ -285,7 +285,7 @@ FAILURE_EXPECTED_DIMENSIONS = {
     },
     "hermes.update.run": {
         "apply_mode": "unknown", "duration_bucket": "lt_30s", "failed_stage": "apply",
-        "failure_class": "aborted_before_apply", "from_version_age_bucket": "unknown", "kind": "cli",
+        "failure_class": "fetch_failed", "from_version_age_bucket": "unknown", "kind": "cli",
         "outcome": "failed",
     },
 }
@@ -816,7 +816,7 @@ def main() -> int:
                 "set_state(skill, STATE_ACTIVE)",
                 "record_installed(installed)",
                 # A real failing plugin install (offline: a file:// repo that does not exist) and a
-                # dirty-tree-shaped final update receipt: each emits one row with a failure_class.
+                # final update receipt whose fetch failed: each emits one row with a failure_class.
                 "from pathlib import Path",
                 "from hermes_cli.plugins_cmd import PluginOperationError, _install_plugin_core",
                 "from hermes_cli.plugins_cmd_install import recorded_install",
@@ -831,6 +831,7 @@ def main() -> int:
                 "record_update_receipt({'schema': 1, 'update_id': '0123456789abcdef',",
                 "    'started_at': '2026-10-06T10:00:00+00:00', 'finished_at': '2026-10-06T10:00:01+00:00',",
                 "    'outcome': 'failed', 'exit_code': 1, 'stop_reason': 'sys.exit(1)', 'pre_update': {},",
+                "    'stop_class': 'fetch_failed',",
                 "    'stages': [{'name': 'plan', 'outcome': 'success', 'at': '2026-10-06T10:00:00+00:00'},",
                 "               {'name': 'snapshot', 'outcome': 'skipped', 'at': '2026-10-06T10:00:00+00:00'}],",
                 "    'steps': [], 'fleet': []})",

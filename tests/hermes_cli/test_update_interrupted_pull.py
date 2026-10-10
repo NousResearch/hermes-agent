@@ -677,7 +677,7 @@ def test_a_pull_whose_target_does_not_resolve_never_moves_the_tree(checkout, com
 
 def test_an_arm_failure_after_the_autostash_still_names_the_stash(checkout, commit_point, monkeypatch, capsys):
     """An unwritable install state refuses the pull; the user is still told where their work is (F29)."""
-    root, _a, _b = checkout
+    _root, _a, _b = checkout
 
     def unwritable(*_args, **_kwargs):
         raise OSError(28, "No space left on device")
@@ -864,7 +864,7 @@ def test_the_tree_move_marker_is_durable_before_it_appears_under_its_name(checko
     torn tree, which no launch can identify (review C3)."""
     from hermes_cli import update_cmd_commit
 
-    root, a, b = checkout
+    root, _a, b = checkout
     marker = er.interrupted_pull_marker(root)
     marker.write_text("pid=1\npre=older\n", encoding="utf-8")
     synced, replaced = [], []

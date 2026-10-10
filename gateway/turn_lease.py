@@ -25,7 +25,7 @@ DEFAULT_MAX_LEASES = 512
 DEFAULT_LEASE_WAIT = 5.0
 
 
-def _holder_desc(holder: Optional["TurnLeaseToken"]) -> tuple:
+def _holder_desc(holder: "Optional[TurnLeaseToken]") -> tuple:
     return (holder.owner_key, holder.generation) if holder else ("?", "?")
 
 
@@ -43,7 +43,7 @@ class TurnLeaseToken:
     """Held-lease handle from :meth:`SessionTurnLeaseRegistry.acquire`; ``released`` makes
     release idempotent."""
 
-    __slots__ = ("session_id", "owner_key", "generation", "released", "lease")
+    __slots__ = ("generation", "lease", "owner_key", "released", "session_id")
 
     def __init__(self, session_id: str, owner_key: str, generation: int, lease: "_SessionLease") -> None:
         self.session_id, self.owner_key, self.generation = session_id, owner_key, generation
@@ -58,7 +58,7 @@ class TurnLeaseToken:
 
 
 class _SessionLease:
-    __slots__ = ("lock", "holder", "acquired_at", "last_used", "pending_acquires")
+    __slots__ = ("acquired_at", "holder", "last_used", "lock", "pending_acquires")
 
     def __init__(self) -> None:
         self.lock = asyncio.Lock()
@@ -76,7 +76,7 @@ class SessionTurnLeaseRegistry:
     visibility scope as the routing-key guards it extends); call only from the gateway loop."""
 
     def __init__(self, max_entries: int = DEFAULT_MAX_LEASES) -> None:
-        self._leases: Dict[str, _SessionLease] = {}
+        self._leases: dict[str, _SessionLease] = {}
         self._max_entries = max(1, int(max_entries))
 
     def _get_or_create(self, session_id: str) -> _SessionLease:
@@ -120,7 +120,7 @@ class SessionTurnLeaseRegistry:
         lease.pending_acquires += 1
         try:
             await asyncio.wait_for(lease.lock.acquire(), timeout=wait)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.error(
                 "turn lease wait timed out after %.0fs on session %s (waiter: routing key %s gen "
                 "%s; holder: routing key %s gen %s) — failing closed: refusing to run this turn "

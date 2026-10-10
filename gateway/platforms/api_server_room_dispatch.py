@@ -48,7 +48,7 @@ async def _ensure_hosted_member_session(self, dispatch: Any) -> str:
     return await asyncio.to_thread(db._execute_write, atomic)
 
 
-def _room_dispatch_error(exc: Exception, *, _openai_error) -> "web.Response":
+def _room_dispatch_error(exc: Exception, *, _openai_error) -> web.Response:
     message, code = str(exc), "invalid_room_dispatch"
     lowered = message.lower()
     if "execution policy" in lowered or "remote room execution requires" in lowered:
@@ -61,7 +61,7 @@ def _room_dispatch_error(exc: Exception, *, _openai_error) -> "web.Response":
 
 
 async def _normalize_room_dispatch(
-    self, request: "web.Request", body: Any, *, _api_server) -> tuple[Any, "web.Response | None"]:
+    self, request: web.Request, body: Any, *, _api_server) -> tuple[Any, web.Response | None]:
     """Validate and normalize a scoped RoomLink dispatch request."""
     _openai_error, room_token = _api_server._openai_error, self._room_grant_token(request)
     if not room_token:

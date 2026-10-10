@@ -10,7 +10,7 @@ from agent.transports.types import NormalizedResponse
 
 @pytest.fixture
 def transport():
-    import agent.transports.codex  # noqa: F401
+    import agent.transports.codex
     return get_transport("codex_responses")
 
 
@@ -1962,7 +1962,7 @@ def test_text_verbosity_reaches_responses_body_only_when_configured(transport):
     (its /responses rejects unknown top-level fields), and the chat_completions
     transport has no such field at all.
     """
-    from agent.transports import chat_completions  # noqa: F401  (registers the sibling)
+    from agent.transports import chat_completions
 
     msgs = [{"role": "user", "content": "hi"}]
     assert transport.build_kwargs(model="gpt-5.1", messages=msgs, text_verbosity="low")["text"] == {"verbosity": "low"}

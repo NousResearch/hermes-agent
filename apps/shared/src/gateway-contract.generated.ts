@@ -4772,6 +4772,7 @@ export interface CanonicalResumeParams {
   workspace?: string | null
   source?: string | null
   editor?: Record<string, unknown> | null
+  api_key?: string | null
   defer_history?: boolean
   omit_messages?: boolean
   cols?: number | null

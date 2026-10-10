@@ -234,3 +234,45 @@ async def test_documented_env_opt_ins_ride_the_classic_create_and_bypass_needs_a
         monkeypatch.delenv(name)
     assert gateway_chat.launch_from_args(argparse.Namespace(query="q")) == 1
     assert "--model" in capsys.readouterr().err
+
+
+@pytest.mark.asyncio
+async def test_launch_key_flags_are_never_silently_dropped(monkeypatch, tmp_path, capsys):
+    """N23: `--tui` cannot carry --api-key/--base-url/--reasoning into Ink's create yet, so it
+    refuses them (exit 2) instead of running on the profile's endpoint; classic chat re-supplies
+    the launch key on resume (an owner restart revoked it) and `/new` keeps it."""
+    from contextlib import asynccontextmanager
+    from hermes_cli import gateway_chat, gateway_chat_commands, main as main_mod
+    from hermes_cli.gateway_chat_view import GatewayChatView
+    monkeypatch.setattr(main_mod, "_launch_tui", lambda *_a, **_k: pytest.fail("TUI launched without the flags"))
+    for flag in ("api_key", "base_url", "reasoning"):
+        with pytest.raises(SystemExit) as refused:
+            main_mod.cmd_chat(argparse.Namespace(tui=True, **{flag: "x"}))
+        assert refused.value.code == 2 and "--" + flag.replace("_", "-") in capsys.readouterr().err
+    calls = []
+
+    class Peer:
+        async def rpc(self, method, **params):
+            calls.append((method, params))
+            if method == "runtime.describe":
+                return {"session_create": {"sources": ["cli"], "parameters": ["cwd", "model", "api_key", "source"]}}
+            if method == "session.info":
+                return {"launch_request": {"source": "cli", "model": "m"}, "cwd": str(tmp_path)}
+            return {"stored_session_id": "stored", "execution_generation": 0,
+                    "info": {"launch_request": {"source": "cli", "model": "m"}}}
+
+    @asynccontextmanager
+    async def connected():
+        yield Peer()
+
+    async def rendered(self, query, *, oneshot):
+        await gateway_chat_commands._new(self, "")
+        return 0
+
+    monkeypatch.setattr(gateway_chat, "connect_gateway", connected)
+    monkeypatch.setattr(GatewayChatView, "run", rendered)
+    args = argparse.Namespace(resume="stored", api_key="launch-key", query="q", quiet=True)
+    assert await gateway_chat.run_gateway_chat(args) == 0
+    sent = {method: params for method, params in calls}
+    assert sent["session.resume"] == {"session_id": "stored", "api_key": "launch-key"}
+    assert sent["session.create"]["api_key"] == "launch-key"

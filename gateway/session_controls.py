@@ -367,6 +367,11 @@ class AuthorityConnection:
             self.authority.authorize(self.actor, ref, 'session:control')
             from gateway.session_local_mcp import resume_editor_mcp
             resume_editor_mcp(self.authority, ref, params['editor'])
+        if 'api_key' in params:
+            # A launch-only key re-supplied after a restart (`--resume <id> --api-key`).
+            self.authority.authorize(self.actor, ref, 'session:control')
+            from gateway.session_policy import rebind_launch_key
+            rebind_launch_key(self.authority, ref, params['api_key'])
         # Read-only mount (#85303): an ended row stays ended until the first admitted turn
         # reopens it (``reopen_local_session`` in the drain), so opening a finished chat
         # never re-lights DB-derived liveness with no new activity.

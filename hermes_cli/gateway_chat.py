@@ -106,6 +106,20 @@ def _workspace_key(cwd):
         os.chdir(previous)
 
 
+async def _resume(client, args, **params):
+    """``session.resume``; ``--api-key`` re-supplies a launch-only key an owner restart revoked.
+    The owner binds it only to a session launched with that same key (never durable); anything
+    else is a route override and refused like every other creation flag on resume."""
+    key = getattr(args, "api_key", None)
+    try:
+        return await client.rpc("session.resume", **params, **({"api_key": key} if key else {}))
+    except GatewayClientError as exc:
+        if key and str(exc) == "admission_conflict":
+            raise GatewayClientError("--api-key on resume must be the key this session was launched with "
+                                     "(a session launched without --api-key keeps its profile credentials).") from None
+        raise
+
+
 async def _resume_latest(client, args):
     """Bare ``-c``: this terminal's breadcrumb session when the owner still has it, else (and for
     ``--resume latest``) the owner's most recent CLI session, this workspace first."""
@@ -113,13 +127,13 @@ async def _resume_latest(client, args):
     crumb = (read_breadcrumb() or {}).get("session_id") if getattr(args, "continue_last", None) is True else None
     if isinstance(crumb, str) and crumb:
         try:
-            return await client.rpc("session.resume", session_id=crumb)
+            return await _resume(client, args, session_id=crumb)
         except GatewayClientError as exc:
             if str(exc) not in {"not_found", "permission_denied"}:
                 raise
     workspace = await asyncio.to_thread(_workspace_key, _caller_cwd(args))
     try:
-        return await client.rpc("session.resume", latest="cli", **({"workspace": workspace} if workspace else {}))
+        return await _resume(client, args, latest="cli", **({"workspace": workspace} if workspace else {}))
     except GatewayClientError as exc:
         if str(exc) != "not_found":
             raise
@@ -149,12 +163,12 @@ async def run_gateway_chat(args, emitter=None):
             name = getattr(args, "resume", None) or title
             try:
                 # Exact id first, then title (latest lineage continuation), as the classic CLI did.
-                snapshot = await client.rpc("session.resume", session_id=name)
+                snapshot = await _resume(client, args, session_id=name)
             except GatewayClientError as exc:
                 if str(exc) != "not_found":
                     raise
                 try:
-                    snapshot = await client.rpc("session.resume", title=name)
+                    snapshot = await _resume(client, args, title=name)
                 except GatewayClientError as exc:
                     if str(exc) != "not_found":
                         raise
@@ -195,6 +209,7 @@ async def run_gateway_chat(args, emitter=None):
             emitter.bind_session(snapshot["stored_session_id"])
         view = GatewayChatView(client, snapshot, quiet=quiet, emitter=emitter,
                                usage_file=getattr(args, "usage_file", None))
+        view.launch_api_key = getattr(args, "api_key", None)  # /new keeps this launch's key
         view.unattended = isinstance(oneshot_prompt, str)
         view.resume_footer = oneshot and not quiet
         if (getattr(args, "resume", None) or title or latest) and not quiet:

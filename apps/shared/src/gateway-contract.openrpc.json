@@ -9410,6 +9410,18 @@
             "default": null,
             "title": "Editor"
           },
+          "api_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Api Key"
+          },
           "defer_history": {
             "default": false,
             "title": "Defer History",

@@ -48,6 +48,8 @@ class CanonicalResumeParams(ProfileParams):
     workspace: str | None = None
     source: str | None = None
     editor: dict[str, JsonValue] | None = None
+    # Re-supplies a launch-only key a restart revoked; never durable, must match the launch's.
+    api_key: str | None = None
     defer_history: bool = False
     omit_messages: bool = False
     cols: int | None = None

@@ -330,8 +330,50 @@ def bind_launch_key(authority, session_id, policy, api_key, *, config_secrets=No
         configs[config_ref] = dict(config_secrets)
     if api_key is not None:
         keys[ref] = api_key
-    return replace(policy, credential_ref=ref if api_key is not None else None,
+    # The durable ref carries the key's fingerprint (the digest config_secret_ref already
+    # persists for config keys) so a restarted owner can verify a re-supplied key
+    # (rebind_launch_key); the key itself is never durable.
+    from agent.credential_persistence import fingerprint_secret_value
+    return replace(policy, credential_ref=f'{ref}#{fingerprint_secret_value(api_key)}' if api_key is not None else None,
                    config_secret_ref=config_ref if config_secrets else None)
+
+
+def _key_slot(credential_ref):
+    """The in-memory slot of a durable credential ref (``<instance>:<epoch>:<sid>[#<fingerprint>]``)."""
+    return credential_ref.split('#', 1)[0]
+
+
+def rebind_launch_key(authority, session, api_key):
+    """``session.resume`` re-supplying a launch-only key after an owner restart revoked it
+    (call after authorizing *session*, a SessionRef).
+
+    Only a session launched with a key can take one, and only that same key (its durable
+    fingerprint); anything else is an override of the frozen route and is refused. Like the
+    original, the key lives in this authority's memory only."""
+    import hmac
+    from agent.credential_persistence import fingerprint_secret_value
+    from gateway.config import Platform
+    if not isinstance(api_key, str) or not api_key.strip():
+        raise RuntimeStoreError('invalid_params')
+    source = authority.sessions[session.session_id].source
+    if source is None or source.platform != Platform.LOCAL:
+        raise RuntimeStoreError('admission_conflict')
+    from hermes_state_local import local_receipt
+    ref = restore_policy(local_receipt(authority.db, session.session_id)['policy']).credential_ref
+    if ref is None:
+        raise RuntimeStoreError('admission_conflict')
+    keys = getattr(authority, '_local_launch_keys', None)
+    if keys is None:
+        keys = authority._local_launch_keys = {}
+    held = keys.get(_key_slot(ref))
+    if held is not None:
+        if not hmac.compare_digest(held, api_key):
+            raise RuntimeStoreError('admission_conflict')
+        return
+    _, _, fingerprint = ref.partition('#')
+    if not fingerprint or not hmac.compare_digest(fingerprint, fingerprint_secret_value(api_key) or ''):
+        raise RuntimeStoreError('admission_conflict')
+    keys[_key_slot(ref)] = api_key
 
 
 def release_launch_secrets(authority, session_ids):
@@ -346,7 +388,8 @@ def release_launch_secrets(authority, session_ids):
         return
     prefix = f'{authority.instance_id}:{authority.epoch}:'
     keys = getattr(authority, '_local_launch_keys', None) or {}
-    for ref in [ref for ref in keys if ref.startswith(prefix) and ref[len(prefix):] in retired]:
+    # A key re-supplied after a restart sits in the slot of the epoch that minted it.
+    for ref in [ref for ref in keys if ref.split(':', 2)[-1] in retired]:
         del keys[ref]
     configs = getattr(authority, '_local_config_secrets', None) or {}
     for ref in list(configs):
@@ -364,7 +407,7 @@ def release_launch_secrets(authority, session_ids):
 def launch_key(authority, policy):
     if policy.credential_ref is None:
         return None
-    value = getattr(authority, '_local_launch_keys', {}).get(policy.credential_ref)
+    value = getattr(authority, '_local_launch_keys', {}).get(_key_slot(policy.credential_ref))
     if value is None:
         raise RuntimeStoreError('launch_credentials_unavailable')
     return value

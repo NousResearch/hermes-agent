@@ -113,6 +113,9 @@ async def _new(view, rest):
                if key in accepted and key not in {"request_id", "title"}}
     if info.get("cwd") and "cwd" in accepted:
         request["cwd"] = info["cwd"]
+    # The frozen request never holds the launch key; the one this terminal supplied rides along.
+    if getattr(view, "launch_api_key", None) and "api_key" in accepted:
+        request["api_key"] = view.launch_api_key
     snapshot = await view.client.rpc("session.create", request_id=uuid.uuid4().hex, **request)
     await view.adopt(snapshot)
     print(t("cli.session.new_session"))

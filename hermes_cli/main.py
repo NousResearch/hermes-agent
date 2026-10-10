@@ -905,6 +905,7 @@ from hermes_cli.main_web_build import (  # frozen updater surface: update_cmd*.p
 from hermes_cli.main_tui_launch import (
     _launch_tui,
     _pin_kanban_board_env,
+    _refuse_unforwarded_tui_flags,
     _resolve_use_tui,
     _sync_bundled_skills_quietly,
 )
@@ -1709,6 +1710,7 @@ def cmd_chat(args):
     if stream_json_requested(args) or _bypass_chat_launch(args) or not _resolve_use_tui(args):
         from hermes_cli.gateway_chat_startup import launch_gateway_chat
         sys.exit(launch_gateway_chat(args))
+    _refuse_unforwarded_tui_flags(args)
     _apply_safe_mode(args)
     _apply_user_config_bypass(args)
     _guard_noninteractive_user_config(args)

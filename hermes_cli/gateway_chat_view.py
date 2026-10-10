@@ -48,6 +48,7 @@ class GatewayChatView:
         self.finite = False
         self.unattended = False  # `-z`: the classic one-shot auto-approves; `-q` stays single-query
         self.resume_footer = False  # `chat -q` without -Q: main's "Resume this session with:" block
+        self.launch_api_key = None  # `--api-key` of this terminal's launch; never durable (/new reuses it)
         self.finite_admission = None
         self._finite_events = []
         self.streams = {}

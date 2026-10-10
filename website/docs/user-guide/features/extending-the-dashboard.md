@@ -418,7 +418,26 @@ Write the JS bundle (a plain IIFE — no build step needed):
 })();
 ```
 
-Refresh the dashboard — your tab appears in the nav bar, after **Skills**.
+Enable it. User plugins are opt-in: the dashboard lists a plugin from `~/.hermes/plugins/`, and serves its assets and API routes, only once its name is in `plugins.enabled`. `hermes plugins enable` finds plugins by their `plugin.yaml`, so give a dashboard-only plugin a minimal one next to the `dashboard/` folder:
+
+```yaml
+# ~/.hermes/plugins/my-plugin/plugin.yaml
+name: my-plugin
+version: "1.0.0"
+description: My custom dashboard tab
+```
+
+```bash
+hermes plugins enable my-plugin
+```
+
+(Or add `my-plugin` under `plugins.enabled` in `config.yaml` yourself.) Keep the `plugin.yaml` name, the directory name and `manifest.json:name` the same.
+
+Then pick the new plugin up and refresh the dashboard — your tab appears in the nav bar, after **Skills**:
+
+```bash
+curl http://127.0.0.1:9119/api/dashboard/plugins/rescan
+```
 
 :::tip Skip React.createElement
 If you prefer JSX, use any bundler (esbuild, Vite, rollup) with React as an external and IIFE output. The only hard requirement is that the final file is a single JS file loadable via `<script>`. React is never bundled; it comes from `SDK.React`.
@@ -428,8 +447,8 @@ If you prefer JSX, use any bundler (esbuild, Vite, rollup) with React as an exte
 
 ```
 ~/.hermes/plugins/my-plugin/
-├── plugin.yaml              # optional — existing CLI/gateway plugin manifest
-├── __init__.py              # optional — existing CLI/gateway hooks
+├── plugin.yaml              # CLI/gateway plugin manifest; also how `hermes plugins enable` finds the plugin
+├── __init__.py              # optional — CLI/gateway hooks
 └── dashboard/               # dashboard extension
     ├── manifest.json        # required — tab config, icon, entry point
     ├── dist/
@@ -444,7 +463,7 @@ A single plugin directory can carry three orthogonal extensions:
 - `dashboard/manifest.json` + `dashboard/dist/index.js` — dashboard UI plugin.
 - `dashboard/plugin_api.py` — dashboard backend routes.
 
-None of them are required; include only the layers you need.
+None of them are required to load the dashboard extension; include only the layers you need. A user plugin still has to be enabled (see the quick start), and `hermes plugins enable` needs `plugin.yaml` to find it. If you add `plugin.yaml` but no `__init__.py`, the CLI/gateway loader logs `No __init__.py` at startup; an `__init__.py` with a no-op `def register(ctx): return None` keeps it quiet.
 
 ### Manifest reference
 
@@ -813,6 +832,8 @@ The dashboard scans three directories for `dashboard/manifest.json`:
 | 2 | `<repo>/plugins/<name>/dashboard/` | `bundled` |
 | 3 | `./.hermes/plugins/<name>/dashboard/` | `project` — only when `HERMES_ENABLE_PROJECT_PLUGINS` is set |
 
+Only enabled user plugins are listed, served or mounted: a user plugin whose name isn't in `plugins.enabled` (or is in `plugins.disabled`) is left out of `GET /api/dashboard/plugins` without an error. Bundled plugins are listed unless disabled.
+
 Discovery results are cached per dashboard process. After adding a new plugin, either:
 
 ```bash
@@ -902,18 +923,19 @@ Read the plugin source (`strike-freedom-cockpit/dashboard/dist/index.js` in the 
 Check that the file is in `~/.hermes/dashboard-themes/` and ends in `.yaml` or `.yml`. Refresh the page. Run `curl http://127.0.0.1:9119/api/dashboard/themes` — your theme should be in the response. If the YAML has a parse error, the dashboard logs to `errors.log` under `~/.hermes/logs/`.
 
 **My plugin's tab doesn't show up.**
-1. Check the manifest is at `~/.hermes/plugins/<name>/dashboard/manifest.json` (note the `dashboard/` subdirectory).
-2. `curl http://127.0.0.1:9119/api/dashboard/plugins/rescan` to force re-discovery.
-3. Open browser dev tools → Network — confirm `manifest.json`, `index.js`, and any CSS loaded without 404s.
-4. Open browser dev tools → Console — look for errors during the IIFE or `window.__HERMES_PLUGINS__ is undefined` (indicates the SDK didn't initialize, usually a React render crash earlier).
-5. Verify your bundle calls `window.__HERMES_PLUGINS__.register(...)` with the **same name** as `manifest.json:name`.
+1. Check the plugin is enabled: `hermes plugins list` should show it as `enabled`. A user plugin that isn't in `plugins.enabled` is silently left out of `GET /api/dashboard/plugins`. If it isn't in the list at all, it has no `plugin.yaml` (see the quick start).
+2. Check the manifest is at `~/.hermes/plugins/<name>/dashboard/manifest.json` (note the `dashboard/` subdirectory).
+3. `curl http://127.0.0.1:9119/api/dashboard/plugins/rescan` to force re-discovery.
+4. Open browser dev tools → Network — confirm `manifest.json`, `index.js`, and any CSS loaded without 404s.
+5. Open browser dev tools → Console — look for errors during the IIFE or `window.__HERMES_PLUGINS__ is undefined` (indicates the SDK didn't initialize, usually a React render crash earlier).
+6. Verify your bundle calls `window.__HERMES_PLUGINS__.register(...)` with the **same name** as `manifest.json:name`.
 
 **Slot-registered components don't render.**
 The `sidebar` slot only renders when the active theme has `layoutVariant: cockpit`. Other slots always render. If you're registering into a slot with no hits, add `console.log` inside `registerSlot` to confirm the plugin bundle ran at all.
 
 **Plugin backend routes return 404.**
 1. Confirm the manifest has `"api": "plugin_api.py"` pointing to an existing file inside `dashboard/`.
-2. Restart `hermes dashboard` — plugin API routes are mounted once at startup, **not** on rescan.
+2. Confirm the plugin is enabled. Routes of a user plugin that isn't in `plugins.enabled` are never mounted. A plugin enabled after the dashboard started has its routes mounted on the first request to `/api/plugins/<name>/…`, with no restart needed.
 3. Check that `plugin_api.py` exports a module-level `router = APIRouter()`. Other export names are not picked up.
 4. Tail `~/.hermes/logs/errors.log` for `Failed to load plugin <name> API routes` — import errors are logged there.
 

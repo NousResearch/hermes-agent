@@ -155,6 +155,70 @@ class TestStatelessChannelForcesSyncDelegation:
 
 class TestAdapterCapabilityFlag:
 
+    def test_webhook_class_flag_disables_async_delivery(self):
+        from gateway.platforms.webhook import WebhookAdapter
+
+        assert WebhookAdapter.supports_async_delivery is False
+
+    def test_gateway_binds_webhook_no_delivery(self):
+        """The class flag only matters if the gateway actually propagates it.
+        ``_set_session_env`` looks up the live adapter for the inbound
+        platform and binds its ``supports_async_delivery`` into the session
+        contextvar. A webhook inbound must bind async_delivery=False."""
+        from gateway.run import GatewayRunner
+        from gateway.config import Platform
+        from gateway.platforms.webhook import WebhookAdapter
+        from gateway.session import SessionContext, SessionSource
+        from gateway.session_context import clear_session_vars
+
+        runner = object.__new__(GatewayRunner)
+        runner.adapters = {
+            Platform.WEBHOOK: object.__new__(WebhookAdapter),
+        }
+        ctx = SessionContext(
+            source=SessionSource(platform=Platform.WEBHOOK, chat_id="hook1"),
+            connected_platforms=[Platform.WEBHOOK],
+            home_channels={},
+            session_key="webhook:hook1",
+        )
+        tokens = runner._set_session_env(ctx)
+        try:
+            assert async_delivery_supported() is False
+            assert get_session_env("HERMES_SESSION_PLATFORM") == "webhook"
+        finally:
+            clear_session_vars(tokens)
+
+    def test_gateway_binds_delivering_platform_supported(self):
+        """Control: a delivering interface (telegram) with the default
+        supports_async_delivery=True binds async_delivery=True through the
+        SAME gateway path, so the webhook False above is a real signal, not a
+        blanket off."""
+        from gateway.run import GatewayRunner
+        from gateway.config import Platform
+        from gateway.platforms.base import BasePlatformAdapter
+        from gateway.session import SessionContext, SessionSource
+        from gateway.session_context import clear_session_vars
+
+        # A delivering adapter inherits the default True from the base class.
+        class _DeliveringAdapter:
+            supports_async_delivery = BasePlatformAdapter.supports_async_delivery
+
+        runner = object.__new__(GatewayRunner)
+        runner.adapters = {
+            Platform.TELEGRAM: _DeliveringAdapter(),
+        }
+        ctx = SessionContext(
+            source=SessionSource(platform=Platform.TELEGRAM, chat_id="123"),
+            connected_platforms=[Platform.TELEGRAM],
+            home_channels={},
+            session_key="telegram:private:123",
+        )
+        tokens = runner._set_session_env(ctx)
+        try:
+            assert async_delivery_supported() is True
+            assert get_session_env("HERMES_SESSION_PLATFORM") == "telegram"
+        finally:
+            clear_session_vars(tokens)
 
     def test_api_server_bind_chokepoint_hardwires_no_delivery(self):
         """Every API-server agent-entry path binds through

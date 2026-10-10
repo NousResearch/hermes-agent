@@ -131,9 +131,9 @@ def _default_output_dir() -> str:
 
 
 # ===========================================================================
-# Korean TTS reading normalization (ki66, restored 2026-10-10 from the
-# 2026-07-13 stash): Korean voices read raw digits/units poorly ("23°C" is
-# spelled out glyph by glyph, "$1,700" reads "dollar one seven zero zero").
+# Korean TTS reading normalization: Korean voices read raw digits/units poorly
+# ("23°C" is spelled out glyph by glyph, "$1,700" reads "dollar one seven zero
+# zero").
 # Upstream's ``tts_text_normalize`` targets English ("dollars", "percent"),
 # so this block rewrites Korean readings for Korean-voice synthesis only.
 # ===========================================================================
@@ -654,7 +654,7 @@ def text_to_speech_tool(
         return tool_error("Text is required", success=False)
     # Korean reading normalization must run BEFORE the shared English cleaner:
     # prepare_spoken_text rewrites "23°C"→"23 degrees Celsius" and "$12.34"→
-    # "12.34 dollars", which destroys the Korean patterns (ki66).
+    # "12.34 dollars", which destroys the Korean patterns.
     tts_config, provider = _apply_call_overrides(_load_tts_config(), speed, provider)
     text = _normalize_korean_tts_reading(text, provider, tts_config)
     try:  # shared cleaner: markdown, emoji, think blocks, verifier footer, units, newlines

@@ -11,6 +11,7 @@ import json
 import logging
 import re
 import time
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
@@ -977,29 +978,46 @@ def _apply_llamacpp_props(cache: dict[str, dict[str, Any]], request_candidate: s
     via ``/props?model=``; unloaded children are skipped — probing could autoload them."""
     base = request_candidate.rstrip("/").replace("/v1", "")
     def _props(params=None):
-        resp = model_metadata_http.get(base + "/v1/props", params=params, headers=headers, timeout=5, verify=verify)
-        if resp.is_error:
-            resp = model_metadata_http.get(base + "/props", params=params, headers=headers, timeout=5, verify=verify)
-        return resp
-    def _n_ctx(props: dict[str, Any]) -> Any:
-        return (props.get("default_generation_settings") or {}).get("n_ctx")
-    props_resp = _props()
-    if not props_resp.is_error:
-        props = props_resp.json()
-        n_ctx, model_alias = _n_ctx(props), props.get("model_alias", "")
-        if n_ctx and model_alias and model_alias in cache:
+        for path in ("/v1/props", "/props"):
+            try:
+                response = model_metadata_http.get(
+                    base + path, params=params, headers=headers, timeout=5, verify=verify,
+                )
+                if response.is_error:
+                    continue
+                props = response.json()
+            except Exception:
+                continue
+            if not isinstance(props, Mapping):
+                continue
+            settings = props.get("default_generation_settings")
+            if not isinstance(settings, Mapping):
+                continue
+            n_ctx = settings.get("n_ctx")
+            if isinstance(n_ctx, int) and not isinstance(n_ctx, bool) and n_ctx > 0:
+                return props, n_ctx
+        return None
+
+    props_result = _props()
+    if props_result is not None:
+        props, n_ctx = props_result
+        model_alias = props.get("model_alias", "")
+        if isinstance(model_alias, str) and model_alias in cache:
             cache[model_alias]["context_length"] = n_ctx
-        return
+            return
     native = model_metadata_http.get(base + "/models", headers=headers, timeout=5, verify=verify)
     if native.is_error:
         return
-    for child in (native.json() or {}).get("data", [])[:16]:
+    native_payload = native.json()
+    if not isinstance(native_payload, Mapping):
+        return
+    for child in native_payload.get("data", [])[:16]:
         child_id = child.get("id") if isinstance(child, dict) else None
         if not child_id or child_id not in cache or (child.get("status") or {}).get("value") not in ("loaded", "ready"):
             continue
-        pr = _props({"model": child_id})
-        child_ctx = _n_ctx(pr.json()) if not pr.is_error else None
-        if child_ctx:
+        child_props = _props({"model": child_id})
+        if child_props is not None:
+            _, child_ctx = child_props
             cache[child_id]["context_length"] = child_ctx
 
 

@@ -436,12 +436,23 @@ def _conv_path(context_id: str) -> Path:
 
 
 def persist_message(context_id: str, role: str, text: str, task_id: str = "") -> None:
-    """Append one message to the context's on-disk conversation log. Never raises."""
+    """Append one message to the context's on-disk conversation log. Never raises.
+
+    Every inbound *and* outbound A2A message ends up here, so this is the one place
+    that can guarantee a credential is not written to disk in the clear. The
+    transcript is a durable, long-lived plaintext artifact that a later reader
+    (including the peer we are talking to) can replay, so it is held to the same
+    egress standard as anything sent over the wire. Redaction happens HERE rather
+    than at the call sites: a new caller cannot forget it.
+    """
     try:
         path = _conv_path(context_id)
         path.parent.mkdir(parents=True, exist_ok=True)
+        from plugins.platforms.a2a.security import redact_for_persist as _redact
+
         with path.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps({"ts": time.time(), "role": role, "text": text, "task_id": task_id}, ensure_ascii=False) + "\n")
+            fh.write(json.dumps({"ts": time.time(), "role": role, "text": _redact(text),
+                                 "task_id": task_id}, ensure_ascii=False) + "\n")
     except Exception:
         pass
 

@@ -98,9 +98,8 @@ def _responses_fingerprint_keys(body):
 
 def _response_identity(store, durable_key):
     if durable_key is not None:
-        import hashlib
-        return ('resp_' + hashlib.sha256(durable_key[0].encode()).hexdigest()[:28],
-                store.request_created_at(durable_key[0]))
+        from gateway.platforms.api_server_response_identity import durable_response_id
+        return durable_response_id(durable_key[0]), store.request_created_at(durable_key[0])
     return f'resp_{uuid.uuid4().hex[:28]}', int(time.time())
 
 

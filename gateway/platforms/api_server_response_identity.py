@@ -9,6 +9,12 @@ import json
 _PREFIXES = {'function_call': 'fc', 'function_call_output': 'fco', 'reasoning': 'rs', 'message': 'msg'}
 
 
+def durable_response_id(request_key):
+    """The public response id of an Idempotency-Key request; the store derives it again for an
+    identity whose replay record was never written."""
+    return 'resp_' + hashlib.sha256(request_key.encode()).hexdigest()[:28]
+
+
 def next_item_id(response_id, counters, kind, *, call_id=None, commentary=False):
     # The final message is distinct from any live commentary, which is not part of the answer.
     key = (kind, call_id, bool(commentary))

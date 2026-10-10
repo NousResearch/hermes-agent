@@ -22,6 +22,7 @@ from tui_gateway import server
 from tui_gateway.event_replay import replay_epoch
 from tui_gateway.server import _CRASH_LOG, _err, dispatch, resolve_skin, write_json
 from tui_gateway.transport import TeeTransport
+from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
 
@@ -104,7 +105,7 @@ def _hard_exit() -> None:
     """The grace timer's ``os._exit``. The flush runs first and the graceful foreground kill
     (TERM, wait, KILL) after it, so a SIGTERM-ignoring command is usually still alive here:
     SIGKILL its tree now or it outlives us, reparented to init."""
-    with suppress(Exception):  # only armed by a termination signal (a requested stop); os._exit skips atexit
+    with suppress(Exception):  # armed only for a requested stop (signal or stdin EOF); os._exit skips atexit
         from hermes_cli.observability.shared_metrics_process import stamp_exit
         stamp_exit("clean")
     with suppress(Exception):
@@ -166,7 +167,36 @@ if hasattr(signal, "SIGHUP"):
     _install_signal("SIGHUP", _log_signal)
 elif hasattr(signal, "SIGBREAK"):
     _install_signal("SIGBREAK", _log_signal)
-_install_signal("SIGINT", signal.SIG_IGN)
+# SIGINT only reaches us when Ink's raw mode is off or the process group is signalled (keyboard
+# Ctrl+C is normally a ``session.interrupt`` RPC). SIG_IGN left a wedged turn unrecoverable
+# (#53362), so the first SIGINT interrupts running turns and a second one inside the window exits.
+_SIGINT_ESCALATE_WINDOW_S = 3.0
+_last_sigint_at: float | None = None
+
+
+def _interrupt_running_sessions() -> None:
+    # Off the signal handler: the interrupt path writes frames under the non-reentrant
+    # _stdout_lock, which the interrupted main thread may already hold.
+    with server._sessions_lock:
+        # A compute-host turn in flight can outlive a lagging parent ``running`` flag.
+        running = [(sid, s) for sid, s in server._sessions.items()
+                   if s.get("running") or s.get("_compute_host_turn_id")]
+    for sid, session in running:
+        with suppress(Exception):
+            server._interrupt_session_turn(sid, session)
+
+
+def _handle_sigint(signum: int, frame) -> None:
+    global _last_sigint_at
+    now = time.monotonic()
+    previous, _last_sigint_at = _last_sigint_at, now
+    if previous is not None and now - previous < _SIGINT_ESCALATE_WINDOW_S:
+        _log_signal(signum, frame)
+    threading.Thread(target=_interrupt_running_sessions, name="tui-sigint-interrupt", daemon=True).start()
+
+
+# The dashboard's embedded TUI has no restart path, so it keeps ignoring SIGINT like its Node parent.
+_install_signal("SIGINT", signal.SIG_IGN if is_truthy_value(os.environ.get("HERMES_TUI_DASHBOARD")) else _handle_sigint)
 
 
 def _log_exit(reason: str) -> None:
@@ -362,4 +392,14 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    finally:
+        # Interpreter shutdown joins non-daemon threads BEFORE atexit, so one wedged worker kept an
+        # EOF'd child alive (and spinning) forever. Same order as ``_log_signal``: arm the exit
+        # timer first (a wedged teardown must not block it), then finalize.
+        _exit_timer = threading.Timer(_shutdown_grace_seconds() + server._EXIT_FLUSH_BUDGET_S, _hard_exit)
+        _exit_timer.daemon = True
+        _exit_timer.start()
+        with suppress(Exception):
+            server._shutdown_sessions()

@@ -42,7 +42,13 @@ def declined(project_root: Path | None = None) -> frozenset[str]:
         raise InstallError("defaults", f"cannot read {declined_path(project_root)}: {exc}",
                            "fix or delete the file, then retry") from exc
     names = data.get("declined") if isinstance(data, dict) else None
-    return frozenset(name for name in names or () if isinstance(name, str))
+    if (not isinstance(data, dict) or type(data.get("schema")) is not int or data["schema"] != 1
+            or not isinstance(names, list) or any(not isinstance(name, str) or not name for name in names)):
+        from pm.package import InstallError
+
+        raise InstallError("defaults", f"cannot read {declined_path(project_root)}: invalid opt-out record",
+                           "fix or delete the file, then retry")
+    return frozenset(names)
 
 
 def record_declined(*, add: Iterable[str] = (), remove: Iterable[str] = (),

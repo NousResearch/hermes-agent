@@ -147,11 +147,18 @@ class _CursesBrowser:
         self._put(stdscr, max_y - 1, 0, footer, max_x - 1, footer_attr)
 
     def _handle_key(self, key) -> bool:
-        """Apply one keypress; return True when the picker should exit."""
+        """Apply one keypress; return True when the picker should exit.
+
+        ``key`` comes from :meth:`curses.window.get_wch` — a ``str`` for typed
+        characters (ASCII or wide/CJK) and an ``int`` for special keys. The
+        confirm-delete and search handlers accept both, so ``y``/``Y`` confirm
+        and printable/CJK characters filter regardless of which form get_wch
+        reports (it returns strings on most terminals, ints under keypad).
+        """
         c = self.curses
         if self.confirm_delete is not None:  # y/n confirmation mode — only an explicit 'y' deletes
             target, self.confirm_delete = self.confirm_delete, None
-            if key not in {ord("y"), ord("Y")}:
+            if key not in ("y", "Y", ord("y"), ord("Y")):
                 return False
             try:
                 ok = self.delete_fn(target["id"])
@@ -165,6 +172,33 @@ class _CursesBrowser:
             self._refilter(reset_cursor=False)
             self.flash = "Deleted."
             return not self.sessions
+        if isinstance(key, str):  # get_wch() returns a str for typed chars (ASCII or wide/CJK)
+            if key in ("\n", "\r"):
+                if self.filtered:
+                    self.result = self.filtered[self.cursor]["id"]
+                return True
+            if key == "\x1b":  # Esc: first clears the search, second exits
+                if not self.search:
+                    return True
+                self.search = ""
+                self._refilter()
+                return False
+            if key in ("\x7f", "\b"):
+                if self.search:
+                    self.search = self.search[:-1]
+                    self._refilter()
+                return False
+            if key == "q" and not self.search:
+                return True
+            if key == "d" and not self.search and self.delete_fn is not None and self.filtered:
+                # 'd' deletes only when the filter is empty; mid-search it types into the query.
+                self.confirm_delete = self.filtered[self.cursor]
+                return False
+            if not key.isprintable():  # ignore stray control characters
+                return False
+            self.search += key
+            self._refilter()
+            return False
         if key in (c.KEY_UP, c.KEY_DOWN):
             if self.filtered:
                 self.cursor = (self.cursor + (1 if key == c.KEY_DOWN else -1)) % len(self.filtered)
@@ -214,7 +248,7 @@ class _CursesBrowser:
                 return
             self._draw(stdscr, max_y, max_x)
             stdscr.refresh()
-            if self._handle_key(stdscr.getch()):
+            if self._handle_key(stdscr.get_wch()):
                 return
 
 

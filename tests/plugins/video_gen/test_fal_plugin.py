@@ -156,6 +156,21 @@ def test_wan_30_audio_toggle_uses_family_key_and_start_image_url():
     assert _build_payload(FAL_FAMILIES["veo3.1"], image_url=None, **kw)["generate_audio"] is True
 
 
+def test_kandinsky_6_payloads_stay_inside_the_vendor_schema():
+    """Kandinsky 6.0 Lite/Pro send only keys fal's OpenAPI declares: no duration/resolution (fixed 480p clips;
+    the paid upscale_factor stays off), generate_audio + seed on both, negative_prompt on Pro only."""
+    from plugins.video_gen.fal import FAL_FAMILIES, _build_payload
+
+    kw = dict(prompt="x", duration=8, aspect_ratio="9:16", resolution="1080p", negative_prompt="blur", audio=False, seed=3)
+    common = {"prompt", "aspect_ratio", "generate_audio", "seed"}
+    for fid, extra in (("kandinsky-6-lite", set()), ("kandinsky-6-pro", {"negative_prompt"})):
+        t2v = _build_payload(FAL_FAMILIES[fid], image_url=None, **kw)
+        i2v = _build_payload(FAL_FAMILIES[fid], image_url="https://i.png", **kw)
+        assert set(t2v) == common | extra, (fid, t2v)
+        assert set(i2v) == common | extra | {"image_url"}, (fid, i2v)
+        assert t2v["generate_audio"] is False and t2v["aspect_ratio"] == "9:16"
+
+
 def test_text_only_job_errors_cleanly_for_i2v_only_family(monkeypatch):
     """Catalog-shape guard: a family without a text endpoint must error cleanly
     instead of submitting to a None endpoint. Every cataloged family is now

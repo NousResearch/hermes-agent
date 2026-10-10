@@ -55,8 +55,24 @@ def _make_adapter():
 
 class _FakeMatrixClient:
     def __init__(self):
-        self.state_store = MagicMock()
-        self.state_store.get_members = AsyncMock(return_value=["@bot:example.org", SENDER])
+        from mautrix.client.state_store import MemoryStateStore
+        from mautrix.client.state_store.memory import SerializedStateStore
+        from mautrix.types import RoomID, UserID
+
+        joined = {
+            UserID("@bot:example.org"): {"membership": "join"},
+            UserID(SENDER): {"membership": "join"},
+        }
+        rooms = (RoomID(PROJECT_A_ROOM_ID), RoomID(PROJECT_B_ROOM_ID))
+        self.state_store = MemoryStateStore()
+        serialized: SerializedStateStore = {
+            "members": {room_id: joined for room_id in rooms},
+            "full_member_list": {room_id: True for room_id in rooms},
+            "power_levels": {},
+            "encryption": {},
+            "create": {},
+        }
+        self.state_store.deserialize(serialized)
 
     async def get_state_event(self, room_id, event_type):
         rid = str(room_id)
@@ -115,9 +131,9 @@ def _context_for(source: SessionSource) -> SessionContext:
 @pytest.mark.asyncio
 async def test_matrix_session_scope_auto_and_thread_preserve_synthetic_threads():
     adapter = _make_adapter()
-    # Override member_count to 3 so the named project room is NOT classified as
-    # a DM (the DM fix uses member_count <= 2 as the primary DM signal).
-    adapter._get_room_member_count = AsyncMock(return_value=3)
+    adapter._get_room_members = AsyncMock(return_value={
+        "@bot:example.org", "@alice:example.org", "@bob:example.org",
+    })
     adapter._auto_thread = True
     adapter._matrix_session_scope = "auto"
     auto_source = await _source_for(adapter, PROJECT_B_ROOM_ID, "$auto")
@@ -338,5 +354,3 @@ async def test_matrix_resume_cross_room_requires_explicit_flag_and_warns():
     assert "Cross-room resume" in result
     assert PROJECT_B_NAME in result
     runner.session_store.switch_session.assert_called_once()
-
-

@@ -20,7 +20,7 @@ def _make_runner() -> GatewayRunner:
 
 @pytest.mark.asyncio
 async def test_video_attachment_adds_path_note_not_document_note():
-    from gateway.run import _build_media_placeholder
+    from gateway.run_inbound_media import _build_media_placeholder
 
     runner = _make_runner()
     source = SessionSource(platform=Platform.SLACK, chat_id="D123", chat_type="dm")

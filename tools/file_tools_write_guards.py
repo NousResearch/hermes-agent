@@ -2,8 +2,8 @@
 
 Every guard returns ``None`` when the write may proceed, else an error string
 the tool returns verbatim.
-Guards, in the order the tools apply them: ``_check_sensitive_path`` (hard
-deny), ``_check_binary_document_write``, ``_check_protected_instruction_write``
+Guards, in the order the tools apply them: ``_check_sensitive_path`` and
+``_check_container_host_path`` (hard denies), ``_check_binary_document_write``, ``_check_protected_instruction_write``
 (ALWAYS ask), ``_check_approval_required_write`` (normal gate),
 ``_check_cross_profile_path`` (sandbox-mirror lost-work), ``_is_internal_file_tool_content``.
 ``_stale_overwrite_blocker`` (write_file only, under the per-path lock) refuses a
@@ -23,7 +23,8 @@ from tools.binary_extensions import (
     is_sqlite_sidecar,
 )
 from tools.file_tools_paths import (
-    _expand_tilde, _resolve_path_for_task, _ssh_path_escapes_home, _terminal_env_type_for_task)
+    _expand_tilde, _is_host_only_absolute, _resolve_path_for_task, _ssh_path_escapes_home, _task_env,
+    _terminal_env_type_for_task, container_backend_for_task)
 from tools.file_tools_read_tracking import _has_full_write_baseline, _is_own_blind_patch, _read_mtime_drifted
 import itertools
 
@@ -172,6 +173,26 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
             "Agent cannot modify security-sensitive configuration. "
             "Edit ~/.hermes/config.yaml directly or use 'hermes config' instead.")
     return None
+
+
+def _check_container_host_path(filepath: str, task_id: str = "default") -> str | None:
+    """Refuse a write that still names a Hermes-host path (a Windows drive or UNC path)
+    after resolution on a container backend: the environment did not mount it, so the
+    shell would write it into the container's own filesystem while the tool reported
+    the host path. A path under the mount resolved to its container path already."""
+    backend = container_backend_for_task(task_id)
+    if backend is None:
+        return None
+    resolved = _resolved_or_raw(filepath, task_id)
+    if not _is_host_only_absolute(resolved):
+        return None
+    env = _task_env(task_id)
+    host, mount = getattr(env, "host_cwd", None), getattr(env, "host_cwd_mount", None)
+    seen = f"it mounts only {host} at {mount}" if host and mount else "it has no host directory mounted"
+    shown = repr(filepath) if resolved == filepath else f"{filepath!r} ({resolved})"
+    return (
+        f"Cannot write {shown}: it is a path on the Hermes host that the {backend} sandbox "
+        f"cannot see ({seen}). Use a path inside the sandbox instead.")
 
 
 # ── Protected agent-instruction files (always-ask approval gate) ─────────

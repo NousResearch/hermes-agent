@@ -1,0 +1,15 @@
+name: socialforge
+repo: https://github.com/indranilbanerjee/socialforge
+sha: a160e9da9d3b328c0cee1f6b099106c6922edd9b
+description: "Open-source social media production: a monthly content calendar in, on-brand copy, images, carousels and video out, with human approval at every creative stage; 21 skills registered as Hermes skills. Disclosure: image and video generation call Google Gemini/Vertex AI, WaveSpeed or HiggsField with the user's own keys after the user approves the quoted cost; C2PA signing sends a timestamp request to a public timestamp server; nothing is installed unless the user says yes; see PRIVACY.md."
+maintainer: Indranil Banerjee
+tier: community
+category: tools
+docs_url: https://github.com/indranilbanerjee/socialforge#readme
+version: "1.29.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

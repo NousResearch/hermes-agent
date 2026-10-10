@@ -894,6 +894,25 @@ class TestLowercaseDottedConfigKeys:
         assert "server.port=8080" in result  # non-secret keys preserved
         assert "username=admin" in result
 
+    def test_spaced_separator_still_masked(self):
+        """INI/TOML files align values with spaces around ``=``; only the adjacent
+        spelling was masked (the #16413 gap extended to ``password = x``)."""
+        text = (
+            "db.password = Sup3rS3cret!\n"
+            "password = \"An0therS3cret!\"\n"
+            "export password = Th1rdS3cret!\n"
+        )
+        result = redact_sensitive_text(text)
+        assert "Sup3rS3cret!" not in result
+        assert "An0therS3cret!" not in result
+        assert "Th1rdS3cret!" not in result
+        assert "db.password" in result  # keys preserved
+
+    def test_prose_mid_sentence_spaced_equals_unchanged(self):
+        # Not line-anchored, not dotted: conversational text, leave alone (#4367).
+        text = "I have password = foo and other things"
+        assert redact_sensitive_text(text) == text
+
     # --- carve-outs: must NOT redact ---
 
     def test_prose_mid_sentence_password_unchanged(self):

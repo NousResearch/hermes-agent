@@ -712,6 +712,21 @@ def _dispatch_authorized_once(
         resolve = lambda: _pre_tool_block(agent, ref)
         block_message, ref.args = resolve() if authorization_gate is None else authorization_gate.run(resolve)
         state.args = ref.args
+
+    # Enforce delivery authority on the final, post-plugin payload.  The
+    # explicit agent policy avoids relying solely on ContextVar propagation,
+    # and this location prevents request middleware or a composite tool from
+    # rewriting an allowed call into a prohibited action.
+    if block_message is None:
+        from tools.delivery_policy import delivery_tool_block_reason
+
+        block_message = delivery_tool_block_reason(
+            ref.name,
+            ref.args,
+            getattr(agent, "_delivery_policy", None),
+        )
+        if block_message is not None:
+            block_error_type = "delivery_policy_block"
     block_body = None if block_message is None else {"error": block_message}
 
     # Checked once, after plugin modify hooks (which may replace arguments) and

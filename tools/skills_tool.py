@@ -712,6 +712,9 @@ def _skill_view_with_bump(args, **kw):
         parsed = json.loads(result)
         if isinstance(parsed, dict) and parsed.get("success"):
             _record_skill_view(dedup_task_id, name, args.get("file_path"), parsed)
+            from tools.delivery_policy import current_delivery_role
+            if current_delivery_role() in {"reviewer", "merger", "closure_controller"}:
+                return result
             if resolved := parsed.get("name") or name:  # qualified forms return the canonical name
                 from tools.skill_usage import bump_use, bump_view
                 bump_view(str(resolved))

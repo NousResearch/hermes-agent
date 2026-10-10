@@ -893,6 +893,10 @@ def handle_function_call(
     ids = _CallIds(task_id, session_id, tool_call_id, turn_id, api_request_id)
     start = time.monotonic()
 
+    from tools.delivery_policy import delivery_tool_block_reason
+    if delivery_block := delivery_tool_block_reason(function_name, function_args):
+        return tool_error(delivery_block)
+
     def _emit(result: Any, **extra: Any) -> Any:
         """Emit post_tool_call with this call's identity fields; returns *result*."""
         _emit_post_tool_call_hook(function_name=function_name, function_args=function_args, result=result,

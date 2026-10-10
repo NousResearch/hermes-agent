@@ -709,6 +709,8 @@ PATH, HOME, USER, LANG, LC_ALL, TERM, SHELL, TMPDIR
 
 Plus any `XDG_*` variables. All other environment variables (API keys, tokens, secrets) are **stripped**.
 
+Variables supplied by an [external secret source](secrets/index.md) (Bitwarden, 1Password, a command helper) are also passed, except Hermes-managed credentials: model-provider keys, tool keys Hermes uses itself, and bot, gateway and relay tokens. That covers every name Hermes reads such a credential by: the numbered rotation keys (`DEEPSEEK_API_KEY_2`), any variable a [credential pool](features/credential-pools.md) entry points at (`source: env:MY_KEY`), and the profile-suffixed form the active profile uses (`TELEGRAM_BOT_TOKEN_<PROFILE>`). Those are stripped wherever they are stored. If a server needs one, declare it in that server's `env` (for example `OPENAI_API_KEY: "${OPENAI_API_KEY}"`).
+
 Variables explicitly defined in the MCP server's `env` config are passed through:
 
 ```yaml

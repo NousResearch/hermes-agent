@@ -38,6 +38,9 @@ import React, { Fragment, useEffect, useState } from "react";
  *  to inject widgets, cards, or toolbars into existing pages without
  *  overriding the whole route):
  *  - `sessions:top`     — top of /sessions page (above session list)
+ *  - `sessions:overview-top` — inside the Sessions Overview tab, above
+ *                         Recent Sessions (in the overview composition,
+ *                         unlike `sessions:top` which sits above the view toggle)
  *  - `sessions:bottom`  — bottom of /sessions page
  *  - `analytics:top`    — top of /analytics page
  *  - `analytics:bottom` — bottom of /analytics page
@@ -72,6 +75,7 @@ export const KNOWN_SLOT_NAMES = [
   "overlay",
   // Page-scoped
   "sessions:top",
+  "sessions:overview-top",
   "sessions:bottom",
   "analytics:top",
   "analytics:bottom",

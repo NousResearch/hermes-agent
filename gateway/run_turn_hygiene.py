@@ -734,7 +734,7 @@ class GatewayTurnHygieneMixin:
                 # task_id = the live turn's dedup bucket (session row id), never "" (= reset every task).
                 lambda: _hyg_agent._compress_context(
                     _hyg_msgs, "", approx_tokens=plan.approx_tokens, commit_fence=_hyg_commit_fence,
-                    task_id=session_entry.session_id or "default",
+                    task_id=session_entry.session_id or "default", trigger="gateway_hygiene",
                 ),
             )
             # Register the live worker with shutdown NOW, not only once it is deferred: the default

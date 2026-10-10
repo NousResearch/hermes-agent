@@ -57,6 +57,8 @@ def test_legacy_env_becomes_validated_toml_selected_from_env(profile_env):
     sink = document["components"][0]["config"]["atof"]["sinks"][0]
     assert sink["type"] == "file" and sink["filename"] == "hermes-atof.jsonl"
     assert document["components"][0]["config"]["atif"]["filename_template"] == "trajectory-{session_id}.json"
+    # Migrated exporters never sent OTLP; Relay 0.10's env-driven auto-export must stay off.
+    assert document["components"][0]["config"]["opentelemetry"]["enabled"] is False
     # Relay accepts the complete document generated from the legacy settings.
     report = nemo_relay.plugin.validate_exact(document)
     assert report["config"]["diagnostics"] == []

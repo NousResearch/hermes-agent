@@ -38,7 +38,10 @@ import type { UpdaterApplyResultWire, UpdaterMechanism, UpdaterStatusWire, Updat
  */
 export interface CheckoutStrategyDeps {
   resolveUpdateRoot: () => string
-  readSourceUpdate: (root: string, opts: { force?: boolean }) => Promise<SourceUpdate | null>
+  readSourceUpdate: (
+    root: string,
+    opts: { force?: boolean; setChannel?: 'main' | 'stable' }
+  ) => Promise<SourceUpdate | null>
   hermesHome: string
   isWindows: boolean
   isMac: boolean
@@ -130,7 +133,11 @@ export function readStampedCommit(root: string): string | null {
  * The bodies are the production update flow; the mechanism stamp rides on
  * every result the way the wire contract expects.
  */
-export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrategy {
+export interface CheckoutStrategy extends UpdaterStrategy {
+  check(opts?: { force?: boolean; setChannel?: 'main' | 'stable' }): Promise<UpdaterStatusWire>
+}
+
+export function createCheckoutStrategy(deps: CheckoutStrategyDeps): CheckoutStrategy {
   function markerHelper(op: MarkerHelperOp, runId: string | null): Promise<MarkerHelperVerdict> {
     return (deps.markerHelper ?? runMarkerHelper)(op, {
       updateRoot: deps.resolveUpdateRoot(),
@@ -294,7 +301,7 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
 
   const mechanism: UpdaterMechanism = deps.isWindows ? 'windows-handoff' : 'posix-handoff'
 
-  async function check(opts: { force?: boolean } = {}): Promise<UpdaterStatusWire> {
+  async function check(opts: { force?: boolean; setChannel?: 'main' | 'stable' } = {}): Promise<UpdaterStatusWire> {
     const root: string = deps.resolveUpdateRoot()
 
     // A checkout without the source probe predates source channels, so it can

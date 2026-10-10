@@ -1,0 +1,14 @@
+name: iowap
+repo: https://github.com/iowap-org/iowap-hermes-integration
+sha: 6ca7224380112f233a70b71bba26c9a352eac80f
+description: "Fleet control for Hermes Desktop: live statusbar chip (N/M IOWAP nodes online), a draggable fleet pane, a full fleet page (status, load, queue depth, capabilities per node, activity) and a tasks page that submits to any task-type capability on the fleet and tracks submitted tasks live (per-stage status dots, result previews, artifacts). Data stays local via the local node-cli against your own IOWAP relay; agent sessions join through an optional iowap-task bridge into a shared track store. Disclosure — the dashboard backend runs the local node-cli (the IOWAP node client from github.com/iowap-org/iowap-node) to read your relay's node list, capabilities and task results, and to submit tasks you start from the Tasks page to nodes on your IOWAP fleet. It reads ~/.relay/iowap-agent.json for the relay address and makes an unauthenticated /health request to that relay. Tracked task ids are stored in your Hermes home under plugin-data/iowap/."
+maintainer: Kesuek
+tier: community
+category: desktop
+version: "0.3.0"
+docs_url: https://github.com/iowap-org/iowap-hermes-integration#readme
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

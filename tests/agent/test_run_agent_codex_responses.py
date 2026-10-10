@@ -1735,7 +1735,7 @@ def test_run_conversation_compresses_mid_turn_before_output_budget_exhaustion(mo
 
     compress_calls = []
 
-    def _fake_compress_context(messages, system_message, *, approx_tokens=None, task_id="default", focus_topic=None):
+    def _fake_compress_context(messages, system_message, *, approx_tokens=None, task_id="default", focus_topic=None, trigger=None):
         compress_calls.append(approx_tokens)
         return [
             {"role": "user", "content": "[summary of prior tool-heavy work]"},
@@ -1799,7 +1799,7 @@ def test_mid_turn_compaction_does_not_double_persist_in_place_rows(monkeypatch, 
                 {"role": "tool", "tool_call_id": call.id, "content": "x" * 80_000}
             )
 
-    def _fake_compress_context(messages, system_message, *, approx_tokens=None, task_id="default", focus_topic=None):
+    def _fake_compress_context(messages, system_message, *, approx_tokens=None, task_id="default", focus_topic=None, trigger=None):
         # Emulate the real in-place compaction DB side effect: soft-archive the
         # prior rows and insert the compacted set under the SAME session id,
         # then reset the flush identity seed — exactly as archive_and_compact +

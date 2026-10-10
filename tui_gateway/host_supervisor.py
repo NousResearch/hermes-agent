@@ -255,6 +255,11 @@ class HostSupervisor:
         self._send_frame(
             {"type": "interrupt", "sid": sid, "request_id": request_id or uuid.uuid4().hex})
 
+    def has_pending_turn(self, sid: str) -> bool:
+        """Whether a completion callback remains registered for this session."""
+        with self._lock:
+            return any(s == sid for s, _cb in self._pending_turns.values())
+
     def _await_reply(self, frame: dict[str, Any], request_id: str, timeout: float) -> dict:
         """Send ``frame`` and block for the host reply carrying ``request_id``."""
         q: queue.Queue[dict] = queue.Queue(maxsize=1)

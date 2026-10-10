@@ -31,6 +31,7 @@ from tools.skill_manager_guards import (
     _background_review_delete_guard, _background_review_preflight, _background_review_read_before_write_guard,
     _containing_skills_root, _curator_consolidation_delete_guard, _is_path_redirect, _pinned_guard,
     _validate_delete_target, _is_background_review, _refusal as _err)
+from skills.protection import check_mutable, check_deletable
 from tools.skill_manager_batch import (
     _PATCH_EITHER_OR, _PATCH_NEEDS_NEW_STRING, _PATCH_NEEDS_OLD_STRING, _op_shape_error, _skill_manage_batch)
 from tools.skills_guard import scan_skill, should_allow_install, format_scan_report
@@ -496,6 +497,10 @@ def _edit_skill(name: str, content: str) -> dict[str, Any]:
     if err := _validate_frontmatter(content) or _validate_content_size(content):
         return _err(err)
     skill_dir, guard = _locate_for_write(name, "edit")
+    if guard:
+        return guard
+    if protect_err := check_mutable(skill_dir, name, "edit"):
+        return protect_err
     # SKILL.md always exists here (_find_skill requires it), so a blocked scan restores it.
     if guard := guard or _guarded_write(name, skill_dir, skill_dir / "SKILL.md", "edit", "SKILL.md", content):
         return guard
@@ -517,6 +522,8 @@ def _patch_skill(name: str, old_string: str, new_string: str, file_path: str | N
     skill_dir, guard = _locate_for_write(name, "patch")
     if guard:
         return guard
+    if protect_err := check_mutable(skill_dir, name, "patch"):
+        return protect_err
     target_label = file_path or "SKILL.md"
     if file_path:
         target, err = _resolve_supporting_file(skill_dir, file_path)
@@ -564,6 +571,8 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> dict[str, A
         return guard
     if pinned_err := _pinned_guard(name):
         return _err(pinned_err)
+    if protect_err := check_deletable(skill_dir, name):
+        return protect_err
     absorbed_target = absorbed_into.strip() if isinstance(absorbed_into, str) else ""
     if absorbed_target:
         if absorbed_target == name:
@@ -612,6 +621,8 @@ def _write_file(name: str, file_path: str, file_content: str) -> dict[str, Any]:
     skill_dir, guard = _locate_for_write(name, "write_file", " Create it first with action='create'.")
     if guard:
         return guard
+    if protect_err := check_mutable(skill_dir, name, "write_file"):
+        return protect_err
     target, err = _resolve_supporting_file(skill_dir, file_path)
     if guard := err or _guarded_write(name, skill_dir, target, "write_file", file_path, file_content):
         return guard
@@ -630,6 +641,8 @@ def _remove_file(name: str, file_path: str) -> dict[str, Any]:
     skill_dir, guard = _locate_for_write(name, "remove_file")
     if guard:
         return guard
+    if protect_err := check_mutable(skill_dir, name, "remove_file"):
+        return protect_err
     target, err = _resolve_supporting_file(skill_dir, file_path)
     if err:
         return err

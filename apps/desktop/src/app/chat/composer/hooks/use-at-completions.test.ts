@@ -105,3 +105,44 @@ describe('PERF: @ path completions are cached and skip the debounce', () => {
     vi.useRealTimers()
   })
 })
+
+it('keeps draft path requests and cached rows on the selected profile across A → B → A', async () => {
+  vi.useFakeTimers()
+  queryClient.clear()
+
+  const gateway = {
+    request: vi.fn(async (_method: string, params: { word: string; profile?: string }) => ({
+      items: [{ text: `@file:${params.profile}-only.md`, display: `${params.profile}-only.md`, meta: '' }]
+    }))
+  }
+
+  const { result, rerender, unmount } = renderHook(
+    ({ profile }: { profile: string }) =>
+      useAtCompletions({ gateway: gateway as never, sessionId: null, cwd: '/shared', profile }),
+    { initialProps: { profile: 'a' } }
+  )
+
+  try {
+    for (const profile of ['a', 'b', 'a']) {
+      rerender({ profile })
+      act(() => {
+        result.current.adapter.search?.('file:')
+      })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(200)
+      })
+      const rows = result.current.adapter.search?.('file:')
+
+      expect(rows).toEqual([expect.objectContaining({ label: `${profile}-only.md` })])
+    }
+
+    expect(gateway.request.mock.calls.map(([, params]) => params)).toEqual([
+      { word: '@file:', cwd: '/shared', profile: 'a' },
+      { word: '@file:', cwd: '/shared', profile: 'b' }
+    ])
+  } finally {
+    unmount()
+    vi.useRealTimers()
+    queryClient.clear()
+  }
+})

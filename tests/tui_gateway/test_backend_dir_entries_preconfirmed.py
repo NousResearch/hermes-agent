@@ -1,56 +1,42 @@
-"""Backend path completion must arrive at ``terminal_tool`` pre-confirmed.
+"""Internal path listings bypass model approvals and keep their session identity (#115478)."""
 
-The composer's remote-backend directory listing wraps a fixed read-only script in
-``sh -c``, which the dangerous-command guard flags as "shell command via -c/-lc
-flag". Under smart approvals that verdict fires an auxiliary-LLM call per
-completion — the main model when no auxiliary approval model is configured — and
-Desktop's websocket reconnect loop re-runs completion on every reconnect, so an
-idle Desktop makes model calls around the clock (#115478).
-"""
-
-import json
+from types import SimpleNamespace
 
 import pytest
 
+from gateway.session_context import get_session_env
 from tui_gateway.methods_complete import _backend_dir_entries
 
 
-def _fake_terminal_tool(seen, output="src/\nREADME.md\n", exit_code=0):
-    def _capture(command, **kwargs):
-        seen["command"] = command
-        seen["kwargs"] = kwargs
-        return json.dumps({"output": output, "exit_code": exit_code})
+def _live_environment(monkeypatch, seen, payload=None):
+    def execute(command, **kwargs):
+        seen.update(command=command, kwargs=kwargs, session=get_session_env("HERMES_SESSION_KEY"))
+        return payload if payload is not None else {"output": "src/\nREADME.md\n", "returncode": 0}
 
-    return _capture
-
-
+    monkeypatch.setattr("tools.terminal_tool_lifecycle.get_active_env",
+                        lambda task_id: SimpleNamespace(execute=execute))
 
 
 def test_backend_dir_entries_preconfirms_internal_listing(monkeypatch):
-    """The listing is Hermes-owned plumbing: it must skip the approval gate, not consult it."""
     seen = {}
-    monkeypatch.setattr("tools.terminal_tool.terminal_tool", _fake_terminal_tool(seen))
-    entries = _backend_dir_entries("/workspace", session_key="sess")
+    _live_environment(monkeypatch, seen)
 
-    assert seen["kwargs"]["force"] is True
-    assert entries == [("README.md", False), ("src", True)]
+    def approval(*args, **kwargs):
+        raise AssertionError("internal listing entered the model approval path")
+
+    monkeypatch.setattr("tools.terminal_tool.terminal_tool", approval)
+    assert _backend_dir_entries("/workspace", session_key="sess") == [("README.md", False), ("src", True)]
+    assert seen["kwargs"] == {"timeout": 3, "allow_start": False}
 
 
 def test_backend_dir_entries_keeps_session_routing(monkeypatch):
     seen = {}
-    monkeypatch.setattr("tools.terminal_tool.terminal_tool", _fake_terminal_tool(seen))
+    _live_environment(monkeypatch, seen)
     _backend_dir_entries("~/proj", session_key="sess-42")
+    assert seen["session"] == "sess-42"
 
-    assert seen["kwargs"]["task_id"] == "sess-42"
 
-
-@pytest.mark.parametrize("payload", [
-    {"output": "boom", "exit_code": 1},
-    {"error": "backend unreachable"},
-])
+@pytest.mark.parametrize("payload", [{"output": "boom", "returncode": 1}, {"error": "backend unreachable"}])
 def test_backend_dir_entries_swallows_failed_listings(monkeypatch, payload):
-    def _raw(command, **kwargs):
-        return json.dumps(payload)
-
-    monkeypatch.setattr("tools.terminal_tool.terminal_tool", _raw)
+    _live_environment(monkeypatch, {}, payload)
     assert _backend_dir_entries("/workspace", session_key="sess") == []

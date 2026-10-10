@@ -126,9 +126,11 @@ function classify(entry: CompletionEntry): {
 export function useAtCompletions(options: {
   gateway: HermesGateway | null
   sessionId: string | null
+  /** Selected profile for a draft that has no live session owner yet. */
+  profile?: string | null
   cwd: string | null
 }): { adapter: Unstable_TriggerAdapter; loading: boolean } {
-  const { gateway, sessionId, cwd } = options
+  const { gateway, sessionId, profile, cwd } = options
   const enabled = Boolean(gateway)
 
   const contributed = useContributions(COMPOSER_AREAS.atCompletions)
@@ -196,7 +198,8 @@ export function useAtCompletions(options: {
   // Cache key: the completion depends on the query AND the directory it's
   // resolved against, so a cwd or session change can't serve another tree's
   // listing.
-  const cacheKey = useCallback((query: string) => `${cwd ?? ''}|${sessionId ?? ''}|${query}`, [cwd, sessionId])
+  const scopeKey = `${profile ?? ''}|${cwd ?? ''}|${sessionId ?? ''}`
+  const cacheKey = useCallback((query: string) => `${scopeKey}|${query}`, [scopeKey])
 
   const fetcher = useCallback(
     async (query: string): Promise<CompletionPayload> => {
@@ -212,6 +215,8 @@ export function useAtCompletions(options: {
 
       if (sessionId) {
         params.session_id = sessionId
+      } else if (profile) {
+        params.profile = profile
       }
 
       if (cwd) {
@@ -236,7 +241,7 @@ export function useAtCompletions(options: {
         return { items: mergeCompletionEntries(extras, starters, claimedHandles), query }
       }
     },
-    [cacheKey, contributedEntries, gateway, sessionId, cwd]
+    [cacheKey, contributedEntries, gateway, sessionId, profile, cwd]
   )
 
   const toItem = useCallback((entry: CompletionEntry, index: number): Unstable_TriggerItem => {
@@ -267,7 +272,7 @@ export function useAtCompletions(options: {
   // nothing when the answer is already in hand.
   const isCached = useCallback((query: string) => hasCachedPathCompletion(cacheKey(query)), [cacheKey])
 
-  return useLiveCompletionAdapter({ enabled, fetcher, isCached, toItem })
+  return useLiveCompletionAdapter({ enabled, epoch: scopeKey, fetcher, isCached, toItem })
 }
 
 /** Re-export `classify` for use by the formatter (insertion side). */

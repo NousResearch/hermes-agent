@@ -188,6 +188,8 @@ def _terminal_task_cwd_with_source(session: dict | None) -> tuple[str, str]:
     """``(cwd, source)``: ``"session"`` for THIS session's workspace (``explicit_cwd``/tracked dir), ``"process"`` for
     the global ``TERMINAL_CWD``/``terminal.cwd`` fallback — under per-session docker isolation that is a PREVIOUS
     session's launch artifact, so terminal_tool refuses it as a bind-mount source."""
+    from tools.terminal_scope import terminal_env
+
     profile_home = (session or {}).get("profile_home")
     # A named ssh profile's session is ssh whatever the launch process runs; other named backends keep main's
     # process-backend semantics (docker isolation's "process" vs "session" source depends on it).
@@ -201,7 +203,7 @@ def _terminal_task_cwd_with_source(session: dict | None) -> tuple[str, str]:
         if named_ssh:
             remote_cwd = _declared_remote_profile_cwd(profile_home)
             return (remote_cwd, "session") if remote_cwd else ("~", "process")
-        raw = os.environ.get("TERMINAL_CWD", "").strip() or _workdir_terminal_cfg("cwd")
+        raw = terminal_env("TERMINAL_CWD").strip() or _workdir_terminal_cfg("cwd")
         if raw and raw not in {".", "auto", "cwd"}:
             return raw, "process"
         if backend == "ssh":
@@ -333,6 +335,10 @@ def _session_is_local_backend(session: dict | None) -> bool:
 def _effective_terminal_backend() -> str:
     """Active terminal backend name (``local``, ``docker``, ``ssh``, ...): ``TERMINAL_ENV`` when set (launchers bridge
     ``terminal.backend`` into env), else the ``terminal.backend`` config key (in-process gateways skip that bridge)."""
+    from tools.terminal_scope import get_terminal_scope, terminal_env
+
+    if get_terminal_scope() is not None:
+        return terminal_env("TERMINAL_ENV", "local").strip().lower() or "local"
     backend = (os.environ.get("TERMINAL_ENV") or "").strip().lower()
     if not backend or backend == "local":
         backend = _workdir_terminal_cfg("backend").lower()

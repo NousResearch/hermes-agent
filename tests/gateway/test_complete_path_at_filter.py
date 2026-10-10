@@ -35,7 +35,10 @@ def _fixture(tmp_path: Path):
 
 
 def _items(word: str):
-    resp = server.handle_request({"id": "1", "method": "complete.path", "params": {"word": word}})
+    params = {"word": word}
+    if "remote-sid" in server._sessions:
+        params["session_id"] = "remote-sid"
+    resp = server.handle_request({"id": "1", "method": "complete.path", "params": params})
 
     return [(it["text"], it["display"], it.get("meta", "")) for it in resp["result"]["items"]]
 
@@ -88,21 +91,22 @@ def test_at_file_colon_only_files(tmp_path, monkeypatch):
 def _fake_remote_backend(monkeypatch, remote_root: Path) -> list:
     """Stand in for an SSH/Docker backend: run the gateway's listing command inside ``remote_root``
     (its ``$HOME`` too) and record what was asked, so the host tree cannot leak into the answer."""
-    import json
     import subprocess
+    from types import SimpleNamespace
 
-    import tools.terminal_tool as terminal_tool_mod
+    import tools.terminal_tool_lifecycle as lifecycle
 
     calls = []
 
-    def fake_terminal_tool(command, **kwargs):
-        calls.append((command, kwargs.get("task_id")))
+    def execute(command, **kwargs):
+        from gateway.session_context import get_session_env
+        calls.append((command, get_session_env("HERMES_SESSION_KEY")))
         proc = subprocess.run(
             command, shell=True, cwd=remote_root, capture_output=True, text=True,
             env={"PATH": os.environ.get("PATH", ""), "HOME": str(remote_root)})
-        return json.dumps({"output": proc.stdout, "exit_code": proc.returncode})
+        return {"output": proc.stdout, "returncode": proc.returncode}
 
-    monkeypatch.setattr(terminal_tool_mod, "terminal_tool", fake_terminal_tool)
+    monkeypatch.setattr(lifecycle, "get_active_env", lambda task_id: SimpleNamespace(execute=execute))
     return calls
 
 
@@ -144,6 +148,7 @@ def test_remote_backend_completion_expands_tilde_on_the_backend(tmp_path, monkey
     monkeypatch.setenv("TERMINAL_ENV", "ssh")
     monkeypatch.delenv("TERMINAL_CWD", raising=False)
     calls = _fake_remote_backend(monkeypatch, remote)
+    monkeypatch.setitem(server._sessions, "remote-sid", {"session_key": "remote-key"})
 
     texts = [t for t, _, _ in _items("~/pro")]
 
@@ -168,6 +173,7 @@ def test_remote_backend_completion_speaks_posix_from_a_windows_host(tmp_path, mo
     windows_os.path, windows_os.sep = ntpath, "\\"
     monkeypatch.setattr(server, "os", windows_os)
     calls = _fake_remote_backend(monkeypatch, remote)
+    monkeypatch.setitem(server._sessions, "remote-sid", {"session_key": "remote-key"})
 
     texts = [t for t, _, _ in _items("sub/re")]
 

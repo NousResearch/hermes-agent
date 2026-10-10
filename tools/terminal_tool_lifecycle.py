@@ -175,10 +175,15 @@ def _cleanup_inactive_envs(lifetime_seconds: int = 300):
 
 def get_active_env(task_id: str):
     """Return the active BaseEnvironment for *task_id*, or None."""
-    from tools.terminal_tool import _active_environments, _env_lock, _resolve_container_task_id
+    from tools.terminal_tool import (
+        _active_environments, _env_lock, _qualify_task_key, _resolve_container_task_id,
+    )
     lookup = _resolve_container_task_id(task_id)
+    # A legacy raw slot can belong to the launch profile with the same session
+    # id. Its fallback must carry the caller's home qualification too.
+    raw = _qualify_task_key(task_id) if task_id else task_id
     with _env_lock:
-        return _active_environments.get(lookup) or _active_environments.get(task_id)
+        return _active_environments.get(lookup) or _active_environments.get(raw)
 
 
 def ensure_task_env(task_id: Optional[str] = None):

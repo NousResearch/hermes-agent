@@ -607,6 +607,7 @@ class BaseEnvironment(ABC):
         *,
         timeout: int | None = None,
         stdin_data: str | None = None,
+        allow_start: bool = True,
         rewrite_compound_background: bool = True,
         bounded_capture: bool = False,
         yield_handler: Callable[[ProcessHandle, str], dict] | None = None) -> dict:
@@ -621,7 +622,10 @@ class BaseEnvironment(ABC):
         is drained (head/tail window) instead of holding the full output in memory (#64435).
         See #94285.
         """
-        self._before_execute()
+        # Advisory reads observe only what is already running. Preparation may
+        # restart a stopped sandbox or sync files, so it belongs to ordinary work.
+        if allow_start:
+            self._before_execute()
 
         exec_command, sudo_stdin = self._prepare_command(command)
         # Guard against the `A && B &` subshell-wait trap by default; callers

@@ -1153,10 +1153,12 @@ class DockerEnvironment(BaseEnvironment):
 
     def execute(self, command: str, cwd: str = "", **kwargs) -> dict:
         """Execute a command; if the container was removed out-of-band (idle reaper,
-        docker prune, OOM, daemon restart) recreate it and retry once."""
+        docker prune, OOM, daemon restart) recreate it and retry once, unless this
+        is an advisory read (``allow_start=False``)."""
         result = super().execute(command, cwd, **kwargs)
         if (
-            result.get("returncode", 0) != 0
+            kwargs.get("allow_start", True)
+            and result.get("returncode", 0) != 0
             and self._is_container_gone(result.get("output", ""))
             and self._persist_across_processes
             and self._recreate_container()):

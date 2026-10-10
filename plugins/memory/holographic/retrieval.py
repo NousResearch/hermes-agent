@@ -70,6 +70,7 @@ class FactRetriever:
             if self.half_life > 0:
                 fact["score"] *= self._temporal_decay(fact.get("updated_at") or fact.get("created_at"))
         results = sorted(candidates, key=lambda x: x["score"], reverse=True)[:limit]
+        self.store.record_retrievals([f["fact_id"] for f in results])
         for fact in results:
             fact.pop("hrr_vector", None)  # callers expect JSON-serializable dicts
         return results
@@ -164,7 +165,9 @@ class FactRetriever:
         scored = [dict(row) for row in rows]
         for fact in scored:
             fact["score"] = _shift(sim_fn(fact, self._phases(fact.pop("hrr_vector")))) * fact["trust_score"]
-        return sorted(scored, key=lambda x: x["score"], reverse=True)[:limit]
+        results = sorted(scored, key=lambda x: x["score"], reverse=True)[:limit]
+        self.store.record_retrievals([f["fact_id"] for f in results])
+        return results
 
     def _fts_candidates(self, query: str, category: str | None, min_trust: float, limit: int) -> list[dict]:
         """Raw FTS5 MATCH candidates with rank normalized to [0, 1] as 'fts_rank'."""

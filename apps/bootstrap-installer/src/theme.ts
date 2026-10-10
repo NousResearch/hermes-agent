@@ -112,16 +112,24 @@ export async function watchTheme(deps?: ThemeTrackerDeps): Promise<void> {
   const tracker = deps ?? (await liveDeps().catch(() => mediaOnlyDeps()))
 
   // Every signal re-resolves through the window theme first (see above).
+  // The last explicit reading latches: a transient IPC failure must not
+  // drop a working explicit theme back to the (unreliable on some
+  // webviews) media query. A genuine null simply leaves the latch empty
+  // and the media query drives, as before.
+  let lastWindowTheme: Theme | null = null
   const refresh = async (): Promise<void> => {
-    let windowTheme: Theme | null = null
-
     try {
-      windowTheme = await tracker.readWindowTheme()
+      const windowTheme = await tracker.readWindowTheme()
+
+      if (windowTheme) {
+        lastWindowTheme = windowTheme
+      }
     } catch {
-      // A denied/failing window command degrades to the media query.
+      // A denied/failing window command keeps the last explicit reading
+      // (or the media query when there never was one).
     }
 
-    tracker.applyTheme(resolveTheme(windowTheme, tracker.mediaDark()))
+    tracker.applyTheme(resolveTheme(lastWindowTheme, tracker.mediaDark()))
   }
 
   await refresh()

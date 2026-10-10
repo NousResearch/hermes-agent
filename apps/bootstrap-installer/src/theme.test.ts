@@ -169,4 +169,20 @@ void describe('watchTheme', () => {
 
     assert.deepEqual(state.applied, ['dark', 'light'])
   })
+
+  void it('keeps a working explicit theme across transient backend failures', async () => {
+    const state = makeState({ tauriTheme: 'dark', mediaDark: false })
+    await watchTheme(makeDeps(state))
+    assert.deepEqual(state.applied, ['dark'])
+
+    // The backend answered, then starts failing while the OS toggles:
+    // the latched explicit theme must survive, not fall back to media.
+    state.readFails = true
+    state.mediaDark = true
+
+    for (const cb of state.mediaCbs) { cb() }
+    await tick()
+
+    assert.deepEqual(state.applied, ['dark', 'dark'])
+  })
 })

@@ -1,0 +1,21 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <title>Field Notes · Studio plans</title>
+  </head>
+  <body>
+    <main>
+      <h1>Find your next workspace</h1>
+      <article id="offer">
+        <h2>Harbour Studio</h2>
+        <p>Monthly price: $240</p>
+        <p>Includes meeting rooms and a waterfront workspace.</p>
+      </article>
+      <p id="other">Another offer: $310</p>
+    </main>
+    <script>
+      if (localStorage.getItem('updated')) document.querySelector('#offer p').textContent = 'Monthly price: $210'
+    </script>
+  </body>
+</html>

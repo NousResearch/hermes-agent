@@ -571,8 +571,14 @@ def discover_plugin_cli_commands() -> list[dict]:
             if not spec or not spec.loader:
                 return []
             cli_mod = importlib.util.module_from_spec(spec)
-            sys.modules[module_name] = cli_mod
-            spec.loader.exec_module(cli_mod)
+            _publish_module(module_name, cli_mod)
+            try:
+                spec.loader.exec_module(cli_mod)
+            except Exception:
+                # Symmetric rollback: a half-executed module must not stay bound
+                # on the parent while sys.modules no longer holds it.
+                _unpublish_module(module_name)
+                raise
 
         register_cli = getattr(cli_mod, "register_cli", None)
         if not callable(register_cli):
@@ -589,3 +595,49 @@ def discover_plugin_cli_commands() -> list[dict]:
     except Exception as e:
         logger.debug("Failed to scan CLI for memory plugin '%s': %s", active_provider, e)
         return []
+
+
+def _publish_module(full_name: str, module) -> None:
+    """Register ``module`` under ``full_name`` the way real import machinery does:
+    in ``sys.modules`` AND as an attribute of its parent package. Without the second
+    step ``import_module`` / ``from parent import child`` still resolve (both fall back
+    to ``sys.modules``), but ``getattr(parent, "cli")`` and ``parent.cli.x`` raise
+    ``AttributeError``.
+
+    This binds onto whatever parent exists NOW (for a user-installed provider, the
+    synthetic shell). When the real package is loaded later it replaces that shell;
+    ``plugin_loader.load_plugin_module`` re-binds already-loaded siblings onto it.
+    A parent absent from ``sys.modules`` is not written to.
+    """
+
+    sys.modules[full_name] = module
+    parent_name, _, child = full_name.rpartition(".")
+    if not parent_name:
+        return
+    parent = sys.modules.get(parent_name)
+    if parent is None:
+        return
+    try:
+        setattr(parent, child, module)
+    except Exception:  # noqa: BLE001 — a binding failure must never fail a load
+        logger.debug("could not bind %s on %s", child, parent_name, exc_info=True)
+
+def _unpublish_module(full_name: str) -> None:
+    """Undo :func:`_publish_module` — BOTH halves.
+
+    The rollback has to be symmetric or the fix trades one inconsistency for
+    another: a provider whose ``exec_module`` raised used to leave nothing
+    behind, and would now leave a parent attribute pointing at a half-executed
+    module that ``sys.modules`` no longer holds — which is the same
+    two-answers-for-one-name defect, aimed at the failure path.
+    """
+
+    sys.modules.pop(full_name, None)
+    parent_name, _, child = full_name.rpartition(".")
+    parent = sys.modules.get(parent_name) if parent_name else None
+    if parent is None:
+        return
+    try:
+        delattr(parent, child)
+    except AttributeError:
+        pass

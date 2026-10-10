@@ -209,7 +209,12 @@ def _load_plugin_module_locked(module_name: str, plugin_dir: Path, init_file: Pa
     loaded_submodules = []
     for sub_file in plugin_dir.glob("*.py"):
         full_sub_name = f"{module_name}.{sub_file.stem}"
-        if sub_file.name == "__init__.py" or full_sub_name in sys.modules:
+        if sub_file.name == "__init__.py":
+            continue
+        if full_sub_name in sys.modules:
+            # Loaded before this package (e.g. a memory provider's cli.py at argparse
+            # setup): bind it on the fresh module too, or the attribute is lost.
+            loaded_submodules.append((sub_file.stem, sys.modules[full_sub_name]))
             continue
         sub_mod = _new_module(full_sub_name, sub_file)
         if _exec(sub_mod, logger):

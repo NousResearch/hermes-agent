@@ -637,10 +637,19 @@ export function ModelCatalogMenu({
     return true
   }
 
+  // Which row's options submenu is open (controlled). Nested list scroll does
+  // not reliably keep a portaled SubContent glued to its trigger — Floating
+  // UI's rAF strategy tracks the parent Content, not this inner overflow
+  // pane — so the OPTIONS panel drifts off its row while the user scrolls.
+  // Closing on list scroll is the honest fix; reopen by hovering again.
+  const [openSubKey, setOpenSubKey] = useState<string | null>(null)
+
   // Only the sub THIS row opened from the keyboard owes focus back to the
   // search field; during mouse use focus never left it, and hover open/close
   // fires constantly.
   const handleSubOpenChange = (open: boolean, key: string) => {
+    setOpenSubKey(prev => (open ? key : prev === key ? null : prev))
+
     const claim = keyboardSubRef.current
 
     if (open || claim?.key !== key) {
@@ -664,10 +673,34 @@ export function ModelCatalogMenu({
 
   // Keep the selected row in view while arrowing through the scrollable list.
   const listRef = useRef<HTMLDivElement>(null)
+  // scrollIntoView fires a scroll event on the list. Consume exactly one such
+  // event so keyboard navigation does not yank an open options sub closed;
+  // any later user scroll still closes the sub.
+  const ignoreListScrollRef = useRef(false)
 
+  // One-shot flag for the scroll handler, not a mirrored atom value.
+  // eslint-disable-next-line no-restricted-syntax
   useEffect(() => {
-    listRef.current?.querySelector('[data-kb-active]')?.scrollIntoView({ block: 'nearest' })
+    const list = listRef.current
+    const active = list?.querySelector('[data-kb-active]')
+
+    if (!list || !active) {
+      return
+    }
+
+    ignoreListScrollRef.current = true
+    active.scrollIntoView({ block: 'nearest' })
   }, [kbActiveKey])
+
+  const closeSubOnListScroll = () => {
+    if (ignoreListScrollRef.current) {
+      ignoreListScrollRef.current = false
+
+      return
+    }
+
+    setOpenSubKey(null)
+  }
 
   const kbRowProps = (key: string) => {
     const active = kbActiveKey === key
@@ -744,7 +777,11 @@ export function ModelCatalogMenu({
           {copy.noModels}
         </DropdownMenuItem>
       ) : hasList ? (
-        <div className="max-h-[max(150px,30dvh)] overflow-y-auto py-0.5" ref={listRef}>
+        <div
+          className="dt-portal-scrollbar dt-portal-scrollbar-always max-h-[max(150px,30dvh)] overflow-y-auto overscroll-contain py-0.5 [scrollbar-gutter:stable]"
+          onScroll={closeSubOnListScroll}
+          ref={listRef}
+        >
           {/* Favorites first — the shortcut the star exists for. The section
               paints nothing with no favorites, and nothing while searching,
               where every match is listed in its provider's place instead. */}
@@ -762,10 +799,12 @@ export function ModelCatalogMenu({
                     defaultEffort={defaultEffort}
                     family={family}
                     favorite
+                    fullId
                     kbProps={kbRowProps(`${provider.slug}:${family.id}`)}
                     loadingModels={loadingModels}
                     onSelect={selectFamily}
                     onSubOpenChange={handleSubOpenChange}
+                    openSub={openSubKey === `${provider.slug}:${family.id}`}
                     provider={provider}
                     search={search}
                   />
@@ -816,6 +855,7 @@ export function ModelCatalogMenu({
                       loadingModels={loadingModels}
                       onSelect={selectFamily}
                       onSubOpenChange={handleSubOpenChange}
+                      openSub={openSubKey === `${group.provider.slug}:${family.id}`}
                       provider={group.provider}
                       search={search}
                     />
@@ -978,8 +1018,14 @@ interface ModelFamilyRowProps {
   onSelect: (family: ModelFamily, provider: ModelOptionProvider) => Promise<boolean | void> | void
   /** Keyboard-focus round trip for the sub this row opens (#86966). */
   onSubOpenChange?: (open: boolean, key: string) => void
+  /** Controlled open state for the options submenu — host closes it on list
+   *  scroll so a portaled OPTIONS panel cannot drift off its trigger row. */
+  openSub?: boolean
   provider: ModelOptionProvider
   search: string
+  /** Paint the full model id (wrapped, no prettify/truncate). Set in the
+   *  Favorites section, where the id is the row's identity. */
+  fullId?: boolean
 }
 
 /** One model family row: the favorite star, the trigger that commits the
@@ -992,10 +1038,12 @@ function ModelFamilyRow({
   defaultEffort,
   family,
   favorite,
+  fullId = false,
   kbProps,
   loadingModels,
   onSelect,
   onSubOpenChange,
+  openSub = false,
   provider,
   search
 }: ModelFamilyRowProps): ReactElement {
@@ -1082,7 +1130,7 @@ function ModelFamilyRow({
   const favoriteLabel = favorite ? copy.removeFavorite : copy.addFavorite
 
   return (
-    <DropdownMenuSub onOpenChange={open => onSubOpenChange?.(open, rowKey)}>
+    <DropdownMenuSub onOpenChange={open => onSubOpenChange?.(open, rowKey)} open={openSub}>
       <DropdownMenuSubTrigger
         onClick={event => {
           // Shift-click stars, the same gesture that pins a chat row in the
@@ -1103,7 +1151,15 @@ function ModelFamilyRow({
           }
         }}
         {...kbProps}
-        className={cn(kbProps.className, 'group/model')}
+        className={cn(
+          kbProps.className,
+          'group/model min-w-0',
+          // Favorites rows wrap the full model id onto as many lines as it
+          // needs. `items-start` keeps the star aligned to the first line;
+          // without `whitespace-normal` the menu's default single-line flex
+          // lets overflow-x-hidden on the panel clip the id mid-token.
+          fullId && 'h-auto items-start whitespace-normal'
+        )}
       >
         {/* The star IS the favorite control: filled when starred, a quiet
             outline otherwise. Its click never reaches the row, so starring
@@ -1130,12 +1186,24 @@ function ModelFamilyRow({
             <Codicon name={favorite ? 'star-full' : 'star-empty'} size="0.75rem" />
           </button>
         </Tip>
-        <span className={cn('flex min-w-0 flex-1 items-center gap-1.5', limit.tone)}>
+        <span className={cn('flex min-w-0 flex-1 gap-1.5', fullId ? 'items-start' : 'items-center', limit.tone)}>
           {decoration.icon !== undefined ? <ModelMenuRowIcon icon={decoration.icon} /> : null}
-          <span className="min-w-0 truncate">
-            <HighlightMatches foldSeparators query={search} text={name} />
+          <span className="min-w-0 flex-1 overflow-hidden">
+            {/* Full model id on favorites: wrap anywhere so a long slug never
+                gets clipped by the panel's overflow-x-hidden. Provider groups
+                keep the single-line truncate + pretty name. */}
+            <span
+              className={cn('block max-w-full', fullId ? 'whitespace-normal break-all' : 'truncate')}
+              style={fullId ? { overflowWrap: 'anywhere', wordBreak: 'break-word' } : undefined}
+              // Native title tooltips park on the viewport and drift while the
+              // list scrolls — same class of bug as the OPTIONS panel. Skip
+              // when the full id is already the primary label (favorites).
+              title={fullId ? undefined : family.id}
+            >
+              <HighlightMatches foldSeparators query={search} text={fullId ? family.id : name} />
+            </span>
           </span>
-          {tag ? <ModelChip>{tag}</ModelChip> : null}
+          {tag && !fullId ? <ModelChip>{tag}</ModelChip> : null}
           {decoration.badge ? (
             <Badge className="shrink-0 uppercase tracking-wide" data-model-menu-row-badge="" size="xs" variant="muted">
               {decoration.badge}

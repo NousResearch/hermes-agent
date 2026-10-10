@@ -2,6 +2,7 @@ import { JsonRpcGatewayClient } from '@hermes/shared'
 import { map, type MapStore } from 'nanostores'
 
 import type { HermesApiRequest } from '@/global'
+import { onConnectionScopeChange } from '@/lib/connection-scoped'
 
 // Desktop startup fires a burst of read-only data calls (config, profiles,
 // model info/options, cron) the moment the backend passes readiness. On a
@@ -61,8 +62,67 @@ interface ApiRequestScope {
 // This is the request authority, not a second copy in a presentation store.
 export const $apiRequestScope: MapStore<ApiRequestScope> = map<ApiRequestScope>({ profile: null, connectionId: null })
 
+/** Immutable owner + epoch for one operation against the active REST scope.
+ * The epoch distinguishes A → B → A from an operation that never left A. */
+export interface ApiRequestScopeToken {
+  readonly connectionId: null | string
+  readonly generation: number
+  readonly profile: null | string
+}
+
+let apiRequestScopeGeneration = 0
+const apiRequestScopeListeners = new Set<() => void>()
+
+function publishApiRequestScopeChange(): void {
+  for (const listener of apiRequestScopeListeners) {
+    listener()
+  }
+}
+
+// Registry ids are the routing identity when present. Legacy remotes have no
+// id, so also advance on the canonical descriptor identity (base URL/mode)
+// maintained by connection-scoped stores.
+onConnectionScopeChange(() => {
+  apiRequestScopeGeneration += 1
+  publishApiRequestScopeChange()
+})
+
 export function setApiRequestProfile(profile: null | string): void {
-  $apiRequestScope.setKey('profile', profile || null)
+  const next = profile || null
+
+  if ($apiRequestScope.get().profile === next) {
+    return
+  }
+
+  apiRequestScopeGeneration += 1
+  $apiRequestScope.setKey('profile', next)
+  publishApiRequestScopeChange()
+}
+
+/** Capture the active connection + profile exactly once for routing and
+ * completion fencing. Frozen so a caller cannot silently retarget it. */
+export function captureApiRequestScope(): ApiRequestScopeToken {
+  const { connectionId, profile } = $apiRequestScope.get()
+
+  return Object.freeze({ connectionId, generation: apiRequestScopeGeneration, profile })
+}
+
+export function isApiRequestScopeCurrent(token: ApiRequestScopeToken): boolean {
+  const current = $apiRequestScope.get()
+
+  return (
+    token.generation === apiRequestScopeGeneration &&
+    token.connectionId === current.connectionId &&
+    token.profile === current.profile
+  )
+}
+
+/** Observe active request-owner changes. The callback runs after the new owner
+ * and generation are published. */
+export function onApiRequestScopeChange(listener: () => void): () => void {
+  apiRequestScopeListeners.add(listener)
+
+  return () => void apiRequestScopeListeners.delete(listener)
 }
 
 // An explicit scope (string or object, not `undefined`/`null`) is a user
@@ -146,7 +206,15 @@ export function getApiRequestProfile(): null | string {
 // Same no-store-import contract as profile scope (avoids a cycle).
 
 export function setApiRequestConnection(connectionId: null | string): void {
-  $apiRequestScope.setKey('connectionId', connectionId || null)
+  const next = connectionId || null
+
+  if ($apiRequestScope.get().connectionId === next) {
+    return
+  }
+
+  apiRequestScopeGeneration += 1
+  $apiRequestScope.setKey('connectionId', next)
+  publishApiRequestScopeChange()
 }
 
 // Registry connection scope for a REST request. A registered remote gateway
@@ -214,7 +282,10 @@ export function hermesApi<T>(request: HermesApiRequest): Promise<T> {
 //     remote/cloud/ssh gateway: the v1 fallback route treats a remote registry
 //     primary as global-remote, so the explicit pin is the ONLY way back to
 //     this machine (see apiRequestRegistryConnectionId in Electron main).
-export type ProfileScope = undefined | null | string | { connectionId?: null | string; profile?: null | string }
+//   - ApiRequestScopeToken → the ambient route captured earlier. It pins the
+//     same owner without upgrading background work to foreground priority.
+export type ProfileScope =
+  undefined | null | string | ApiRequestScopeToken | { connectionId?: null | string; profile?: null | string }
 
 export function capabilityScoped(scope?: ProfileScope): {
   connectionId?: string
@@ -224,11 +295,12 @@ export function capabilityScoped(scope?: ProfileScope): {
   if (scope && typeof scope === 'object') {
     const profile = (scope.profile ?? '').trim()
     const connectionId = (scope.connectionId ?? '').trim()
+    const capturedAmbient = 'generation' in scope
 
     return {
       ...(profile ? { profile } : {}),
       ...(connectionId ? { connectionId } : {}),
-      priority: 'foreground'
+      ...(capturedAmbient ? {} : { priority: 'foreground' as const })
     }
   }
 

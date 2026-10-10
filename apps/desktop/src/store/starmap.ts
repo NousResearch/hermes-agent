@@ -1,6 +1,12 @@
 import { atom } from 'nanostores'
 
-import { getStarmapGraph } from '@/hermes'
+import {
+  type ApiRequestScopeToken,
+  captureApiRequestScope,
+  getStarmapGraph,
+  isApiRequestScopeCurrent,
+  onApiRequestScopeChange
+} from '@/hermes'
 import type { StarmapGraph } from '@/types/hermes'
 
 // On-demand cache for the star map. The graph scan touches the skills catalog +
@@ -10,11 +16,16 @@ export const $starmapGraph = atom<StarmapGraph | null>(null)
 export const $starmapLoading = atom(false)
 export const $starmapError = atom<null | string>(null)
 
-let inflight: Promise<void> | null = null
+interface StarmapFlight {
+  owner: ApiRequestScopeToken
+  promise: Promise<void>
+}
+
+let inflight: StarmapFlight | null = null
 
 export async function loadStarmapGraph(force = false): Promise<void> {
   if (inflight) {
-    return inflight
+    return inflight.promise
   }
 
   if ($starmapGraph.get() && !force) {
@@ -24,22 +35,42 @@ export async function loadStarmapGraph(force = false): Promise<void> {
   $starmapLoading.set(true)
   $starmapError.set(null)
 
-  inflight = (async () => {
+  const owner = captureApiRequestScope()
+  const flight: StarmapFlight = { owner, promise: Promise.resolve() }
+
+  inflight = flight
+
+  flight.promise = (async () => {
     try {
-      $starmapGraph.set(await getStarmapGraph())
+      const graph = await getStarmapGraph(owner)
+
+      if (inflight === flight && isApiRequestScopeCurrent(owner)) {
+        $starmapGraph.set(graph)
+      }
     } catch (err) {
-      $starmapError.set(err instanceof Error ? err.message : String(err))
+      if (inflight === flight && isApiRequestScopeCurrent(owner)) {
+        $starmapError.set(err instanceof Error ? err.message : String(err))
+      }
     } finally {
-      $starmapLoading.set(false)
-      inflight = null
+      if (inflight === flight) {
+        inflight = null
+
+        if (isApiRequestScopeCurrent(owner)) {
+          $starmapLoading.set(false)
+        }
+      }
     }
   })()
 
-  return inflight
+  return flight.promise
 }
 
 /** Drop one node from the cached graph immediately; return rollback. */
-export function evictStarmapNode(id: string): () => void {
+export function evictStarmapNode(id: string, owner = captureApiRequestScope()): () => void {
+  if (!isApiRequestScopeCurrent(owner)) {
+    return () => {}
+  }
+
   const prev = $starmapGraph.get()
 
   if (!prev) {
@@ -54,12 +85,21 @@ export function evictStarmapNode(id: string): () => void {
 
   $starmapGraph.set(next)
 
-  return () => $starmapGraph.set(prev)
+  return () => {
+    if (isApiRequestScopeCurrent(owner)) {
+      $starmapGraph.set(prev)
+    }
+  }
 }
 
-/** Drop the cache so the next open refetches against the now-active profile. */
+/** Drop the cache so the next open refetches against the now-active owner. */
 export function resetStarmapGraph(): void {
   inflight = null
   $starmapGraph.set(null)
+  $starmapLoading.set(false)
   $starmapError.set(null)
 }
+
+// The star map is one foreground cache. A same-named profile on another
+// connection is a different owner, so clear synchronously when routing moves.
+onApiRequestScopeChange(resetStarmapGraph)

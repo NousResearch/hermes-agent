@@ -1579,11 +1579,23 @@ def _reload_runtime_env_preserving_config_authority() -> None:
     """Reload .env per turn for rotated keys while config.yaml stays authoritative for budgets (else a
     stale HERMES_MAX_ITERATIONS wins). Multiplex never reloads .env globally: secrets come from the
     per-turn ``set_secret_scope`` and mutating ``os.environ`` would leak the default profile's keys to
-    every profile; it still honors the max_turns bridge."""
+    every profile; it still honors the max_turns bridge.
+    When the reload actually changes the env, cached auxiliary clients are dropped too: they bake the
+    resolved key in at build time, so a rotated key would keep serving stale 401s from
+    ``_client_cache`` until restart (#21013)."""
     from agent.secret_scope import is_multiplex_active
     if not is_multiplex_active():
+        prev_env = dict(os.environ)
         load_hermes_dotenv(
             hermes_home=_hermes_home, project_env=Path(__file__).resolve().parents[1] / '.env')
+        if dict(os.environ) != prev_env:
+            # Invalidate cached auxiliary clients so new .env keys take effect. The env is compared
+            # before/after so the per-turn reload keeps the cache warm when nothing rotated.
+            try:
+                from agent.auxiliary_client import shutdown_cached_clients
+                shutdown_cached_clients()
+            except Exception:
+                pass
     _bridge_max_turns_from_config(_hermes_home)
 
 

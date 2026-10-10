@@ -1,0 +1,18 @@
+name: agent-ledger
+repo: https://github.com/ZidoCode/agent-ledger
+sha: 4580387e7b3ecca385b86d58dbe7f08b27b98a2f
+description: Write-ahead ledger for agent side effects. Catches tool calls that were issued but never confirmed (e.g. lost to a compaction turn teardown), then injects a verification prompt so the agent checks the real state instead of silently trusting it.
+maintainer: ZidoCode
+tier: community
+requires_hermes: ">=0.19"
+docs_url: https://github.com/ZidoCode/agent-ledger#readme
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_tool_call
+    - post_tool_call
+    - pre_llm_call
+    - on_session_start
+  provides_middleware: []
+  requires_env: []

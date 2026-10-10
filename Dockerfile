@@ -285,6 +285,19 @@ RUN python3 -m pm.build_env --source /opt/hermes --python /usr/local/bin/python3
     --extra all --extra messaging --extra otlp --extra anthropic --extra bedrock \
     --extra azure-identity --extra matrix --extra google-chat
 
+# Record the image's exact feature set beside the payload, exactly as a bundle does
+# (scripts/bundles/native.py: installed_extras + write_features). Without this file a
+# docker install ships no feature baseline, so the FIRST dependency generation built by a
+# sync that passes no extras -- the plugin catalogue install, the memory-provider
+# migration, a boot-time refresh -- records an EMPTY selection. Every later refresh then
+# rebuilds a bare generation that drops aiohttp and the rest of the payload's extras, and
+# a process adopting it silently loses them: the gateway's API server never listens and
+# the compose health check fails (2026-10-09 fleet incident, CT115-118). Deriving the list
+# from the built venv keeps ONE authority -- the --extra flags above.
+RUN python3 -c 'from pathlib import Path; from pm.features import installed_extras, write_features; \
+    features = installed_extras(Path("/opt/hermes"), Path("/opt/hermes/.venv"), python_exe=Path("/opt/hermes/.venv/bin/python")); \
+    write_features(features, Path("/opt/hermes")); print("✓ enabled-features.json", features)'
+
 # Icons render on the runtime environment: Pillow and resvg-py are core
 # dependencies. A stage of its own so the frontend stage keeps building its
 # Node dependencies in parallel with the Python ones.

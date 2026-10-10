@@ -483,7 +483,7 @@ async def bulk_delete_sessions_endpoint(body: BulkDeleteSessions):
     skipped: list[str] = []  # rows a live turn/compression still owns; the UI must keep them listed
     deleted = await asyncio.to_thread(_with_db, profile, lambda db: db.delete_sessions(
         body.ids, exclude_active_write_guards=True, skipped_ids=skipped,
-        include_compression_chain=True), read_only=False)
+        include_compression_chain=True, deletion_origin="user_rest"), read_only=False)
     return {"ok": True, "deleted": deleted, "skipped_active": skipped}
 
 
@@ -842,7 +842,8 @@ async def delete_session_endpoint(session_id: str, profile: Optional[str] = None
             # physical row would resurface the conversation as the previous chain link
             # on reload (#57543).
             db.delete_session(sid, sessions_dir=_session_files_dir(profile),
-                              exclude_active_write_guards=True, include_compression_chain=True)
+                              exclude_active_write_guards=True, include_compression_chain=True,
+                              deletion_origin="user_rest")
         except SessionActiveWriteGuardError as exc:
             raise HTTPException(status_code=409, detail=str(exc))
         return {"ok": True}

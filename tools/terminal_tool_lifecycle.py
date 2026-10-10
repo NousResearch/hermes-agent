@@ -20,7 +20,12 @@ from tools.terminal_tool_backends import (
     _container_config_from_config,
     _ssh_config_from_config,
 )
-from tools.terminal_tool_config import _quiet
+from tools.terminal_tool_config import (
+    _is_container_backend,
+    _is_unusable_container_cwd,
+    _quiet,
+    coerce_ssh_remote_cwd,
+)
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("tools.terminal_tool")
@@ -63,14 +68,62 @@ def _check_disk_usage_warning():
         return False
 
 
+def _resolve_env_target(
+    config: Dict[str, Any], env_type: str, task_id: Optional[str],
+) -> tuple[str, str, Optional[str]]:
+    """``(image, cwd, host_cwd)`` a new sandbox for *task_id* is created with.
+
+    The one owner of that policy: the terminal tool and every lazy creator (file tools,
+    ``execute_code``, :func:`ensure_task_env`) call it, so which tool builds a shared container
+    first cannot change its image, workdir or workspace mount. A per-task cwd override or session
+    record is a raw HOST path; on a container backend it must never reach ``docker run -w`` (the
+    workdir would not exist in the sandbox), so it is remapped to the mounted workspace, or dropped
+    for the sanitized config cwd (#54447).
+    """
+    from tools.terminal_tool import (
+        _resolve_task_host_cwd, _select_image, get_session_cwd, resolve_task_overrides,
+    )
+    overrides = resolve_task_overrides(task_id)
+    image = _select_image(env_type, overrides, config)
+    cwd = coerce_ssh_remote_cwd(
+        overrides.get("cwd") or get_session_cwd(task_id) or config["cwd"], env_type)
+    host_cwd = _resolve_task_host_cwd(config, task_id)
+    if _is_container_backend(env_type) and _is_unusable_container_cwd(cwd, mounted_host=host_cwd):
+        remapped = "/workspace" if host_cwd else config["cwd"]
+        if cwd != remapped:
+            logger.info(
+                "Remapping host/relative cwd override %r for %s backend "
+                "(won't exist in sandbox). Using %r instead.", cwd, env_type, remapped)
+        cwd = remapped
+    return image, cwd, host_cwd
+
+
+def _create_env_for_task(
+    config: Dict[str, Any], raw_task_id: Optional[str], effective_task_id: str,
+) -> tuple[str, Any]:
+    """``(env_type, env)`` for a lazy creator; the caller caches it under *effective_task_id*.
+
+    *raw_task_id* is the caller's own id (overrides and session cwd are recorded under it);
+    *effective_task_id* is the ``_active_environments`` key it collapsed to.
+    """
+    env_type = config["env_type"]
+    image, cwd, host_cwd = _resolve_env_target(config, env_type, raw_task_id)
+    logger.info("Creating new %s environment for task %s...", env_type, effective_task_id[:8])
+    env = _create_configured_env(
+        config, env_type, image=image, cwd=cwd, timeout=config["timeout"],
+        task_id=effective_task_id, host_cwd=host_cwd,
+        local_config={"persistent": config.get("local_persistent", False)} if env_type == "local" else None,
+    )
+    return env_type, env
+
+
 def _create_configured_env(
     config: dict[str, Any], env_type: str, *, image: str, cwd: str, timeout: int,
     task_id: str, host_cwd: Optional[str], local_config: Optional[dict] = None,
 ):
     """``_create_environment`` with the ssh/container kwargs shaped from *config*
-    (shared by the terminal tool and the lazy :func:`ensure_task_env` bring-up)."""
+    (shared by the terminal tool and the lazy :func:`_create_env_for_task` creators)."""
     from tools.terminal_tool_backends import _create_environment
-    from tools.terminal_tool_config import _is_container_backend
     return _create_environment(
         env_type=env_type, image=image, cwd=cwd, timeout=timeout,
         ssh_config=_ssh_config_from_config(config) if env_type == "ssh" else None,
@@ -197,8 +250,7 @@ def ensure_task_env(task_id: Optional[str] = None):
     """
     from tools.terminal_tool import (
         _active_environments, _creation_locks, _creation_locks_lock, _env_lock,
-        _get_env_config, _last_activity, _resolve_container_task_id,
-        _resolve_task_host_cwd, _select_image, _start_cleanup_thread, resolve_task_overrides,
+        _get_env_config, _last_activity, _resolve_container_task_id, _start_cleanup_thread,
     )
     config = _get_env_config()
     env_type = config["env_type"]
@@ -213,8 +265,6 @@ def ensure_task_env(task_id: Optional[str] = None):
             _last_activity[effective_task_id] = time.time()
         return existing
 
-    image = _select_image(env_type, resolve_task_overrides(task_id), config)
-
     _start_cleanup_thread()
 
     with _creation_locks_lock:
@@ -225,12 +275,8 @@ def ensure_task_env(task_id: Optional[str] = None):
         if existing is not None:
             return existing
         try:
-            new_env = _create_configured_env(
-                config, env_type, image=image, cwd=config["cwd"],
-                timeout=config["timeout"], task_id=effective_task_id,
-                host_cwd=_resolve_task_host_cwd(config, task_id),
-            )
-        except Exception as exc:
+            _, new_env = _create_env_for_task(config, task_id, effective_task_id)
+        except Exception as exc:  # noqa: BLE001 — best-effort bring-up
             logger.warning(
                 "Lazy %s environment init failed for task %s: %s",
                 env_type, effective_task_id[:8], exc,

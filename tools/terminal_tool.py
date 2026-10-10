@@ -41,7 +41,7 @@ def _redact_terminal_error_text(value: Any) -> str:
 from tools.registry import tool_error
 from tools.terminal_tool_lifecycle import (
     _check_disk_usage_warning, _cleanup_inactive_envs, _create_configured_env,
-    _evict_environment_for_task, cleanup_all_environments, ensure_task_env,
+    _evict_environment_for_task, _resolve_env_target, cleanup_all_environments, ensure_task_env,
 )
 from tools.terminal_tool_config import (
     _is_container_backend, _is_host_cwd, _is_mounted_host_cwd, _is_unusable_container_cwd,
@@ -1108,30 +1108,8 @@ def _plan_execution(
         # the configured Docker/SSH backend; keep their env cache separate.
         effective_task_id = f"host-local-{effective_task_id}"
 
-    # Per-task overrides (RL/benchmark envs, ACP workspace cwd) win over
-    # the global env-var config; ``resolve_task_overrides`` reads the raw
-    # task id first, then the collapsed container id.
-    overrides = resolve_task_overrides(task_id)
-    image = _select_image(env_type, overrides, config)
-
-    cwd = coerce_ssh_remote_cwd(
-        overrides.get("cwd") or get_session_cwd(task_id) or config["cwd"], env_type)
-    host_cwd = _resolve_task_host_cwd(config, task_id)
-    # config["cwd"] was sanitized for container backends in _get_env_config
-    # but an override / session record is raw: a host path would reach
-    # `docker run -w` and fail with exit 125. Re-apply the guard to the
-    # resolved cwd; when the host path IS this session's mounted workspace,
-    # remap to /workspace instead of discarding it. Mount equality is part of
-    # the unusable check so /mnt and /srv are not left as the container cwd.
-    if _is_container_backend(env_type) and _is_unusable_container_cwd(cwd, mounted_host=host_cwd):
-        remapped = "/workspace" if host_cwd else config["cwd"]
-        if cwd != remapped:
-            logger.info(
-                "Remapping host/relative cwd override %r for %s backend "
-                "(won't exist in sandbox). Using %r instead.",
-                cwd, env_type, remapped,
-            )
-        cwd = remapped
+    # Per-task overrides (RL/benchmark envs, ACP workspace cwd) win over the global env-var config.
+    image, cwd, host_cwd = _resolve_env_target(config, env_type, task_id)
     # Reject non-positive timeouts before deadline math: ``timeout or
     # default`` would silently turn 0 into the default, and a negative
     # value is truthy and would fire an immediate "-Ns" timeout.

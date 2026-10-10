@@ -267,50 +267,6 @@ _file_ops_lock = threading.Lock()
 _file_ops_cache: dict = {}
 
 
-def _create_terminal_env_for_file_ops(raw_task_id: str, task_id: str):
-    """Build the terminal environment for *task_id* via the shared ``_create_configured_env``,
-    so a file tool that runs before any terminal command still gets the configured backend."""
-    from tools.terminal_tool_config import _is_container_backend, coerce_ssh_remote_cwd
-    from tools.terminal_tool import (
-        _create_configured_env, _get_env_config, _is_mounted_host_cwd, _is_unusable_container_cwd,
-        _resolve_task_host_cwd, _select_image, get_session_cwd, resolve_task_overrides)
-
-    config = _get_env_config()
-    env_type = config["env_type"]
-    overrides = resolve_task_overrides(raw_task_id)
-    try:
-        recorded_cwd = get_session_cwd(raw_task_id)
-    except Exception:
-        recorded_cwd = None
-    cwd = coerce_ssh_remote_cwd(overrides.get("cwd") or recorded_cwd or config["cwd"], env_type)
-    # Re-apply the container cwd guard: a gateway/TUI/ACP override is a raw HOST
-    # path and ``docker run -w <host-path>`` makes search_files & co silently
-    # return nothing. Valid in-container overrides (/workspace, /root) pass.
-    # Re-apply the container cwd guard that _get_env_config() already ran on config["cwd"] (see #50636). A
-    # per-task cwd override registered by the gateway/TUI/ACP for workspace tracking is a raw host path
-    # (e.g. a Desktop session's /Users/<me>/workspace or C:\\Users\\<me>). On a container backend that
-    # reaches ``docker run -w <host-path>`` and the container starts in a directory that doesn't exist
-    # inside the sandbox, so search_files and friends silently return empty results (#54447). Sanitize it
-    # back to the already-validated config["cwd"] so the override can't bypass the guard.
-    host_cwd = _resolve_task_host_cwd(config, raw_task_id)
-    if _is_container_backend(env_type) and _is_unusable_container_cwd(cwd, mounted_host=host_cwd):
-        fallback = "/workspace" if _is_mounted_host_cwd(cwd, host_cwd) else config["cwd"]
-        if cwd != fallback:
-            logger.info(
-                "Ignoring host/relative cwd override %r for %s backend "
-                "(won't exist in sandbox). Using %r instead.",
-                cwd, env_type, fallback)
-        cwd = fallback
-    logger.info("Creating new %s environment for task %s...", env_type, task_id[:8])
-    terminal_env = _create_configured_env(
-        config, env_type, image=_select_image(env_type, overrides, config), cwd=cwd,
-        timeout=config["timeout"], task_id=task_id,
-        host_cwd=host_cwd,
-        local_config={"persistent": config.get("local_persistent", False)} if env_type == "local" else None,
-    )
-    return env_type, terminal_env
-
-
 def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
     """Get or create ShellFileOperations for the task's terminal environment.
 
@@ -321,8 +277,9 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
     """
     from tools.terminal_tool import (
         _active_environments, _env_lock, _last_activity, _start_cleanup_thread,
-        _creation_locks, _creation_locks_lock, _resolve_container_task_id,
+        _creation_locks, _creation_locks_lock, _get_env_config, _resolve_container_task_id,
         get_session_cwd, record_session_cwd)
+    from tools.terminal_tool_lifecycle import _create_env_for_task
 
     raw_task_id = task_id or "default"
     task_id = _resolve_container_task_id(raw_task_id)
@@ -363,7 +320,7 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
             if terminal_env is not None:
                 _last_activity[task_id] = time.time()
         if terminal_env is None:
-            env_type, terminal_env = _create_terminal_env_for_file_ops(raw_task_id, task_id)
+            env_type, terminal_env = _create_env_for_task(_get_env_config(), raw_task_id, task_id)
             with _env_lock:
                 _active_environments[task_id] = terminal_env
                 _last_activity[task_id] = time.time()

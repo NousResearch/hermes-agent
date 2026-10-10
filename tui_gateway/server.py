@@ -320,7 +320,8 @@ class _SlashWorker:
 
         A command like /prompt may also have parked a next-turn prompt (a "seed")
         on the worker CLI; it rides back on the reply's ``seed`` field and is
-        retrieved separately via ``pop_seed()``.
+        retrieved separately via ``pop_seed()``. A falsy ``process_command``
+        verdict rides back as ``exit`` and is retrieved via ``pop_exit()``.
         """
         if self.proc.poll() is not None:
             raise RuntimeError("slash worker exited")
@@ -341,9 +342,17 @@ class _SlashWorker:
                 if not msg.get("ok"):
                     raise RuntimeError(msg.get("error", "slash worker failed"))
                 self._last_seed = str(msg.get("seed", "") or "")
+                self._last_exit = bool(msg.get("exit"))
                 return str(msg.get("output", "")).rstrip()
             raise RuntimeError(
                 f"slash worker closed pipe{': ' + chr(10).join(self.stderr_tail[-8:]) if self.stderr_tail else ''}")
+
+    def pop_exit(self) -> bool:
+        """Return and clear the exit verdict from the last ``run()`` — the command said its
+        caller should exit (``/handoff`` completed; #133725), so the pane must not keep
+        holding the session lease the gateway has already claimed."""
+        verdict, self._last_exit = getattr(self, "_last_exit", False), False
+        return verdict
 
     def pop_seed(self) -> str:
         """Return and clear the seed from the last ``run()`` (empty when none)."""

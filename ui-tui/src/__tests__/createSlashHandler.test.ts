@@ -169,6 +169,66 @@ describe('createSlashHandler', () => {
     vi.useRealTimers()
   })
 
+  // /handoff completed in the worker returns False from process_command; the
+  // reply carries it as `exit: true` and the pane must quit like the classic
+  // REPL (#133725) instead of holding a lease the gateway has already claimed.
+  it('dies after showing output when slash.exec carries an exit verdict', async () => {
+    vi.useFakeTimers()
+    const ctx = buildCtx({
+      gateway: {
+        gw: {
+          getLogTail: vi.fn(() => ''),
+          kill: vi.fn(),
+          request: vi.fn((method: string) =>
+            method === 'slash.exec'
+              ? Promise.resolve({ exit: true, output: 'handoff complete' })
+              : Promise.resolve({}))
+        },
+        rpc: vi.fn(() => Promise.resolve({}))
+      }
+    })
+
+    expect(createSlashHandler(ctx)('/handoff discord')).toBe(true)
+
+    await vi.waitFor(() => {
+      expect(ctx.transcript.sys).toHaveBeenCalledWith('handoff complete')
+    })
+    expect(ctx.session.die).not.toHaveBeenCalled()
+
+    vi.advanceTimersByTime(150)
+    expect(ctx.session.die).toHaveBeenCalledTimes(1)
+
+    vi.useRealTimers()
+  })
+
+  it('refuses to die on an exit verdict in hosted dashboard chat', async () => {
+    vi.useFakeTimers()
+    envState.dashboardTuiMode = true
+    const ctx = buildCtx({
+      gateway: {
+        gw: {
+          getLogTail: vi.fn(() => ''),
+          kill: vi.fn(),
+          request: vi.fn((method: string) =>
+            method === 'slash.exec'
+              ? Promise.resolve({ exit: true, output: 'handoff complete' })
+              : Promise.resolve({}))
+        },
+        rpc: vi.fn(() => Promise.resolve({}))
+      }
+    })
+
+    expect(createSlashHandler(ctx)('/handoff discord')).toBe(true)
+
+    await vi.waitFor(() => {
+      expect(ctx.transcript.sys).toHaveBeenCalledWith(t('slashCmd.core.quit.dashboardDisabled'))
+    })
+    vi.advanceTimersByTime(150)
+    expect(ctx.session.die).not.toHaveBeenCalled()
+
+    vi.useRealTimers()
+  })
+
   it('routes /status to live session.status instead of slash worker', async () => {
     patchUiState({ sid: 'sid-abc' })
     const rpc = vi.fn(() => Promise.resolve({ output: 'Hermes TUI Status' }))

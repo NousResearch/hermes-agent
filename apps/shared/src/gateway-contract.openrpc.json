@@ -34518,7 +34518,7 @@
       },
       "SlashExecResult": {
         "additionalProperties": false,
-        "description": "Plain worker/plugin text in ``output`` (+ ``warning``), or \u2014 when the command was rerouted to\n``command.dispatch`` \u2014 that method's directive fields with ``type`` set.",
+        "description": "Plain worker/plugin text in ``output`` (+ ``warning``), or \u2014 when the command was rerouted to\n``command.dispatch`` \u2014 that method's directive fields with ``type`` set. ``exit`` is true when\nthe worker's ``process_command`` returned False: the command said its caller should exit\n(``/handoff`` completed \u2014 #133725), so the client should terminate the pane like /quit would.",
         "properties": {
           "output": {
             "anyOf": [
@@ -34543,6 +34543,18 @@
             ],
             "default": null,
             "title": "Warning"
+          },
+          "exit": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Exit"
           },
           "type": {
             "anyOf": [

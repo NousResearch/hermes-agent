@@ -340,6 +340,24 @@ def _live_slash_command_output(sid: str, session: Optional[dict], name: str, arg
     return fmt(sid, session, arg) if callable(fmt) else fmt
 
 
+# ── Worker replies ───────────────────────────────────────────────────
+
+_SKILL_WORKER_REFUSED = "skill command refused before process: /"
+
+
+def _worker_refused_skill(exc: BaseException) -> bool:
+    return _SKILL_WORKER_REFUSED in str(exc)
+
+
+def _apply_worker_exit_verdict(payload: dict, worker) -> None:
+    """Stamp ``exit: true`` when the worker's ``process_command`` returned False — the command
+    said its caller should exit (``/handoff`` completed — #133725), so the client must
+    terminate the pane like the classic REPL does instead of keeping a session lease the
+    gateway has already claimed."""
+    if hasattr(worker, "pop_exit") and worker.pop_exit():
+        payload["exit"] = True
+
+
 # ── Side-effect mirroring ────────────────────────────────────────────
 
 # Read-then-mutate live agent/session state that a running turn is using; rejected

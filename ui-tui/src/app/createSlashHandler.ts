@@ -2,6 +2,8 @@ import { parseCommandDispatch, parseSlashCommand } from '@hermes/shared/slash'
 
 import type { GatewayClient } from '../gatewayClient.js'
 import type { SlashExecResponse } from '../gatewayTypes.js'
+import { DASHBOARD_TUI_MODE } from '../config/env.js'
+import { t } from '../i18n/runtime.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
 import { launchWidget } from '../sdk/host.js'
 import { getWidgetApp } from '../sdk/registry.js'
@@ -192,6 +194,19 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string, type
         const long = text.length > 180 || text.split('\n').filter(Boolean).length > 2
 
         long ? page(text, parsed.name[0]!.toUpperCase() + parsed.name.slice(1)) : sys(text)
+
+        // An exit verdict (the worker's process_command returned False, e.g. /handoff
+        // completed) means the command's caller should exit — the classic REPL honours
+        // it, and so must this pane, or it keeps holding a session lease the gateway
+        // has already claimed (#133725). Gated like /quit: dying in the hosted
+        // dashboard's PTY would brick the tab until a refresh.
+        if (r?.exit) {
+          if (DASHBOARD_TUI_MODE) {
+            sys(t('slashCmd.core.quit.dashboardDisabled'))
+          } else {
+            setTimeout(() => ctx.session.die(), 100)
+          }
+        }
       })
       .catch((execErr: unknown) => {
         // Only "slash.exec does not own this command" refusals (4011/4018) may

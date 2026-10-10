@@ -650,19 +650,12 @@ def _profile_skill_command(session: dict, base: str) -> bool | None:
         return None
 
 
-_SKILL_WORKER_REFUSED = "skill command refused before process: /"
-
-
 def _skill_dispatch_or_refuse(rid, sid, base, arg):
     """Return command.dispatch's directive, or a hard error. Never an ok banner."""
     dispatched = _methods["command.dispatch"](rid, {"name": base, "arg": arg, "session_id": sid})
     if "error" in dispatched or (dispatched.get("result") or {}).get("type"):
         return dispatched
     return _err(rid, 4018, f"skill command: use command.dispatch for /{base}")
-
-
-def _worker_refused_skill(exc: BaseException) -> bool:
-    return _SKILL_WORKER_REFUSED in str(exc)
 
 
 def _is_registry_command(base: str) -> bool:
@@ -1176,6 +1169,7 @@ def _(rid, params: dict) -> dict:
             # send dispatch (both Desktop and TUI clients already handle {type:"send"}).
             return _ok(rid, {"type": "send", "message": seed})
         payload = {"output": output or "(no output)"}
+        _apply_worker_exit_verdict(payload, worker)  # /handoff's False verdict must reach the pane (#133725)
         if warning := _mirror_slash_side_effects(sid, session, cmd):
             payload["warning"] = warning
         if base in _SESSION_CONTROL_SLASHES:

@@ -4664,6 +4664,13 @@ export interface StreamDeltaPayload {
   rendered?: string | null
   verbose?: boolean | null
 }
+/** Current callbacks send status captions; unmarked legacy chunks may be reasoning. */
+export interface ThinkingDeltaPayload {
+  text: string
+  rendered?: string | null
+  verbose?: boolean | null
+  status_only?: boolean | null
+}
 /** ``prompt_turn._interim_assistant_cb`` / ``agent_callbacks`` interim_assistant_callback. */
 export interface MessageInterimPayload {
   text: string
@@ -5952,8 +5959,8 @@ export interface BackendGatewayEventMap {
   'subagent.tool': SubagentEventPayload
   /** An agent-owned background process closed. */
   'terminal.close': TerminalClosePayload
-  /** Legacy thinking-text chunk (thinking_callback). */
-  'thinking.delta': StreamDeltaPayload
+  /** Status caption when status_only is true; otherwise legacy thinking text. */
+  'thinking.delta': ThinkingDeltaPayload
   /** Point at a desktop element with a one-line tip bubble. */
   'tip.show': TipShowPayload
   /** Full todo snapshot after a todo tool ran. */

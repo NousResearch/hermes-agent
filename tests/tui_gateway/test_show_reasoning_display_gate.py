@@ -38,6 +38,22 @@ def _session(monkeypatch, sid, *, show_reasoning, effort="high", tool_progress="
     )
 
 
+@pytest.mark.parametrize("show_reasoning", [False, True])
+@pytest.mark.parametrize("text", ["(=^..^=) pondering...", ""])
+def test_thinking_callback_marks_status_on_the_wire(monkeypatch, show_reasoning, text):
+    _session(monkeypatch, "status-wire", show_reasoning=show_reasoning)
+    frames = []
+    monkeypatch.setattr(server, "write_json", lambda frame: frames.append(json.loads(json.dumps(frame))) or True)
+
+    server._agent_cbs("status-wire")["thinking_callback"](text)
+
+    assert frames == [{
+        "jsonrpc": "2.0", "method": "event",
+        "params": {"type": "thinking.delta", "session_id": "status-wire",
+                   "payload": {"text": text, "status_only": True}},
+    }]
+
+
 @pytest.mark.parametrize("tool_progress", ["all", "off"])
 def test_hidden_reasoning_does_not_emit_reasoning_deltas(monkeypatch, tool_progress):
     events = _capture(monkeypatch)

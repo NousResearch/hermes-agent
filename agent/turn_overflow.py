@@ -230,6 +230,19 @@ def _recover_payload_too_large(st: _Recovery, _retry: TurnRetryState) -> Overflo
     from agent.model_metadata import estimate_messages_tokens_rough
 
     agent = st.agent
+    # A 413 on a fresh attachment is one or more multi-MB native images, not a long history. Compaction
+    # cannot shed them (``_strip_historical_media`` keeps the newest user image by design) and the strip
+    # fallback below only touches tool messages, so without this the turn ends "cannot compress further"
+    # and every later turn replays the same body. Re-encode oversized parts once, as the image_too_large
+    # path does, before spending compression attempts. Copy-on-write: stored history keeps the original.
+    if not _retry.image_shrink_retry_attempted:
+        from agent.conversation_compression import try_shrink_image_parts_in_messages
+
+        _retry.image_shrink_retry_attempted = True
+        if try_shrink_image_parts_in_messages(st.api_messages):
+            agent._buffer_status("📐 Request payload too large (413): shrank oversized image(s), retrying...")
+            return st.done("continue")
+
     exhausted = st.count_attempt(payload_too_large=True)
     if exhausted is not None:
         return exhausted

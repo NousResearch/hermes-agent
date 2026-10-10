@@ -1,6 +1,7 @@
 """OpenAI Ultrafast (``service_tier: "ultrafast"``): one tier word table, a per-model request gate,
 and pricing from the tier the response was SERVED at. Relationship tests, no catalog snapshots."""
 
+from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
@@ -128,6 +129,25 @@ def test_served_ultrafast_bills_at_the_ultrafast_row_and_requested_only_does_not
 @pytest.mark.parametrize("model", ["gpt-6-sol", "gpt-6.1-sol-pro", "gpt-6.1-sol-preview-900k"])
 def test_served_ultrafast_on_a_model_without_a_published_rate_is_unknown(model):
     assert estimate_usage_cost(model, _usage(1_000, "ultrafast"), provider="openai-api").status == "unknown"
+
+
+@pytest.mark.parametrize("provider", ["openai", "openai-api"])
+@pytest.mark.parametrize("base_url,amount,source", [
+    ("https://api.openai.com/v1", "0.06", "official_docs_snapshot"),
+    ("https://proxy.example/v1", "0.007", "provider_models_api"),
+    ("https://api.openai.com.proxy.example/v1", "0.007", "provider_models_api"),
+])
+def test_context_alias_pricing_preserves_custom_endpoint_rates(monkeypatch, provider, base_url, amount, source):
+    import agent.usage_pricing as pricing
+
+    monkeypatch.setattr(pricing, "fetch_endpoint_model_metadata", lambda *a, **kw: {
+        "gpt-6-astra-900k": {"pricing": {"prompt": "0.000003", "completion": "0.000004"}},
+    })
+    cost = estimate_usage_cost(
+        "gpt-6-astra-900k", CanonicalUsage(input_tokens=1000, output_tokens=1000),
+        provider=provider, base_url=base_url,
+    )
+    assert (cost.amount_usd, cost.source) == (Decimal(amount), source)
 
 
 @pytest.mark.parametrize("model", SOL_SPELLINGS)

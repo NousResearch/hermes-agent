@@ -13,6 +13,8 @@
  * The markers below mirror `agent/skill_commands.py` byte for byte.
  */
 
+// agent/initiate_setup_prompt.py HEADER: the /initiate-setup built-in's own header.
+const INITIATE_SETUP_HEADER = '[/initiate-setup]'
 const INVOCATION_PREFIX = '[IMPORTANT: The user has invoked the '
 const SINGLE_MARKER = 'The full skill content is loaded below.]'
 const SINGLE_INSTRUCTION = 'The user has provided the following instruction alongside the skill invocation: '
@@ -44,6 +46,10 @@ function between(text: string, marker: string, end: string, fromEnd = false): st
  * when `text` is ordinary user prose that should render as written.
  */
 export function skillInvocationText(text: string): null | string {
+  if (text.startsWith(INITIATE_SETUP_HEADER)) {
+    return '/initiate-setup'
+  }
+
   if (!text.startsWith(INVOCATION_PREFIX)) {
     return null
   }

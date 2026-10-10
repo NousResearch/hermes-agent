@@ -9,6 +9,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from agent.i18n import t
+
 
 def _make_voice_cli(**overrides):
     """Create a minimal HermesCLI with only voice-related attrs initialized.
@@ -46,7 +48,7 @@ def _make_voice_cli(**overrides):
 # Markdown stripping — import real function from tts_tool
 # ============================================================================
 
-from tools.tts_tool import _strip_markdown_for_tts
+from tools.tts_text_normalize import _strip_markdown_for_tts
 
 
 class TestMarkdownStripping:
@@ -227,7 +229,9 @@ class TestMaxRecordingSecondsConfigReal:
         # become a 1-second cap; it falls back to the documented 120 default,
         # mirroring the silence-param corruption handling.
         recorder = self._start_with_voice_cfg({"max_recording_seconds": True})
-        assert recorder._max_recording_seconds == 120.0
+        from hermes_cli.config import DEFAULT_CONFIG
+
+        assert recorder._max_recording_seconds == DEFAULT_CONFIG["voice"]["max_recording_seconds"]
 
 class TestDisableVoiceModeReal:
     """Tests _disable_voice_mode with real CLI instance."""
@@ -370,7 +374,7 @@ class TestVoiceStopAndTranscribeReal:
             cli._voice_stop_and_transcribe()
 
         messages = [call.args[0] for call in mock_print.call_args_list]
-        assert any("Transcribing..." in message for message in messages)
+        assert any(t("cli.voice.transcribing") in message for message in messages)
         assert all("Hugging Face" not in message for message in messages)
         mock_transcribe.assert_called_once_with("/tmp/test.wav", model="whisper-1")
 
@@ -472,7 +476,6 @@ class TestVoiceBargeCaptureSubmit:
         cli._voice_submit_barge_utterance(str(wav))
 
         queued = cli._pending_input.get_nowait()
-        from cli import _VoiceInputMessage
         assert str(queued) == "actually can you check my calendar for tomorrow"
 
     def test_generation_phase_transcript_not_echo_checked(self, tmp_path, monkeypatch):
@@ -493,7 +496,6 @@ class TestVoiceBargeCaptureSubmit:
         cli._voice_submit_barge_utterance(str(wav))
 
         queued = cli._pending_input.get_nowait()
-        from cli import _VoiceInputMessage
         assert str(queued) == "stop, do it differently"
 
 
@@ -568,7 +570,6 @@ class TestVoiceFullDuplexListener:
             # turn fully done
             cli._voice_tts_done.set()
             probes["done"] = should_stop()
-            return None
 
         cli = self._cli(monkeypatch, listen=fake_listen, _agent_running=True)
         cli._voice_tts_done.set()
@@ -600,7 +601,7 @@ class TestVoiceFullDuplexListener:
             lambda path, model=None: {"success": True, "transcript": "stop"},
         )
         monkeypatch.setattr(
-            "tools.voice_mode.is_voice_stop_phrase",
+            "tools.voice_mode_transcript.is_voice_stop_phrase",
             lambda text: text.strip().lower() == "stop",
         )
 
@@ -630,7 +631,7 @@ class TestTypedVoiceStop:
         # Hermetic: don't let a dev machine's voice.stop_phrases config
         # change which utterances count as a stop phrase.
         monkeypatch.setattr(
-            "tools.voice_mode._load_voice_stop_phrases", lambda: ("stop",)
+            "tools.voice_mode_transcript._load_voice_stop_phrases", lambda: ("stop",)
         )
 
     def test_typed_stop_ends_voice_chat_when_voice_on(self):

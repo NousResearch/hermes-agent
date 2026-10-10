@@ -28,16 +28,12 @@ def _env(status, listen=("127.0.0.1", 9090), capture_console=False):
     """Patch the iron-proxy hooks cmd_health depends on.
 
     ``listen`` is the ``(host, port)`` the daemon binds, as reported by
-    ``_read_http_listen_from_config`` — the source of truth for the probe
+    ``_probe_target`` — the source of truth for the probe
     host (loopback on macOS/Windows, the docker bridge gateway on Linux).
     """
-    patches = [
-        patch("hermes_cli.proxy_cli.ip.get_status", return_value=status),
-        patch(
-            "hermes_cli.proxy_cli.ip._read_http_listen_from_config",
-            return_value=listen,
-        ),
-    ]
+    patches = [patch("hermes_cli.proxy_cli.ip.get_status", return_value=status)]
+    if listen is not None:  # None: leave _probe_target real (no proxy.yaml in the test home)
+        patches.append(patch("hermes_cli.proxy_cli.ip._probe_target", return_value=listen))
     console = None
     if capture_console:
         console = MagicMock()
@@ -137,8 +133,8 @@ class TestCmdHealth:
         assert "172.17.0.1:9070" in _printed(console)
 
     def test_falls_back_to_loopback_when_config_absent(self):
-        """No proxy.yaml (helper returns None) → loopback is the correct
-        display default, matching get_status()'s own fallback."""
+        """No proxy.yaml → _probe_target() falls back to loopback, the same
+        default get_status() probes."""
         status = _make_status(pid=1234, listening=True, tunnel_port=9090)
         with _env(status, listen=None, capture_console=True) as console:
             assert cmd_health(_args()) == 0

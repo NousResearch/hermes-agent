@@ -94,6 +94,18 @@ def test_locked_manager_is_reported_not_prompted_when_headless(fake_bw, monkeypa
     assert not unlock_mod.is_unlocked("bitwarden")
 
 
+def test_bitwarden_unlocks_from_profile_secret(fake_bw):
+    exe, _log = fake_bw
+    from agent.secret_scope import reset_secret_scope, set_secret_scope
+
+    backend = BitwardenLoginBackend({"enabled": True, "binary_path": str(exe)})
+    scope = set_secret_scope({"BW_PASSWORD": "correct horse"}, profile_home=os.environ["HERMES_HOME"])
+    try:
+        assert backend.is_unlocked()
+    finally:
+        reset_secret_scope(scope)
+
+
 def test_unlock_uses_vendor_passwordenv_contract_then_fill_routes_by_prefix(fake_bw):
     exe, log = fake_bw
     from tools.browser_vault_tool import browser_vault_fill, browser_vault_list

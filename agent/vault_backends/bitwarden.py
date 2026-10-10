@@ -17,6 +17,7 @@ import subprocess
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from agent.secret_scope import get_secret
 from agent.secret_sources.base import run_cli, scrub_ansi
 from agent.vault_backends import unlock as _unlock
 from agent.vault_backends.base import LoginBackend, UnlockRequired, run_with_secret_env
@@ -53,7 +54,20 @@ class BitwardenLoginBackend(LoginBackend):
         return env
 
     def is_unlocked(self) -> bool:
-        return _unlock.is_unlocked(self.name)
+        if _unlock.is_unlocked(self.name):
+            return True
+
+        master_password = get_secret("BW_PASSWORD", "")
+        if not master_password:
+            return False
+
+        try:
+            self.unlock(master_password)
+        except RuntimeError as exc:
+            logger.warning("Bitwarden automatic unlock failed: %s", exc)
+            return False
+
+        return True
 
     def unlock(self, master_password: str) -> None:
         # bw refuses a piped password ("Master password is required"); its non-interactive contract is

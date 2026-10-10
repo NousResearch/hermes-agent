@@ -1,11 +1,12 @@
 """``gateway_ingress_observer``: an observer-only audit stream of what an adapter received.
 
 Fire sites number each event of a connection (an *epoch*) gap-free and hand it to one
-process-wide queue without waiting; a single daemon thread delivers it to the plugin callbacks
-in the profile scope captured when the epoch opened. The gateway never waits for, retries or
-changes behaviour because of an observer, and every structure this path owns is bounded: the
-queue (events and accounted bytes), each connection's fetch association map, the per-epoch seal
-state (live epochs plus a few closed ones) and the constant-size fault records.
+process-wide queue without waiting; one daemon thread delivers it to the plugin callbacks in the
+profile scope captured when the epoch opened, each callback getting its own read-only copy. The
+gateway never waits for, retries or changes behaviour because of an observer, and every structure
+this path owns is bounded: the queue (events and accounted bytes), each connection's fetch
+association map, the per-epoch seal state (open epochs plus a few closed ones) and the
+constant-size fault records.
 
 Each delivery carries ``prev``, the outcome of the previous *delivered* event of its epoch
 (an event's own outcome is only ever published by its successor), and the epoch's sticky
@@ -34,8 +35,21 @@ _MAX_ASSOCIATIONS = 4096  # per connection
 _MAX_CLOSED_EPOCHS = 16
 _COUNTER_CAP = 2**31 - 1  # counters saturate here instead of wrapping
 _LATE_AFTER_SECONDS = 0.25
+_IDLE_EXIT_SECONDS = 60.0  # an idle delivery thread exits; the next event starts it again
 
 Build = Callable[..., tuple[dict[str, Any], int]]
+
+
+@dataclass(frozen=True, eq=False, slots=True)
+class _Stream:
+    """All delivery needs of an epoch: its identity and the owning profile's plugins and scope.
+    Queued events hold only this, never the connection's producer state."""
+
+    platform: str
+    bot_id: str
+    epoch_id: str
+    plugins: Any
+    context: contextvars.Context
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,9 +69,9 @@ class _Association:
     conflict: bool = False
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class _Event:
-    epoch: IngressEpoch
+    stream: _Stream
     event_no: int
     kind: str
     created_at: float
@@ -69,11 +83,33 @@ class _Event:
 
 @dataclass(slots=True)
 class _Seal:
-    """Delivery-thread state of one epoch: the pending seal and the dispatcher's own faults."""
+    """Dispatcher state of one epoch: the pending seal and the dispatcher's own faults."""
 
-    prev: Optional[dict[str, Any]] = None
+    prev: Optional[tuple[int, str]] = None  # (event_no, outcome) of the last dispatched event
     first_event_no: Optional[int] = None
     kinds: frozenset[str] = frozenset()
+    closed: bool = False
+
+
+class _ReadOnlyDict(dict):
+    """A dict no callback can edit: every payload field is a statement by the gateway."""
+
+    def _refuse(self, *args: Any, **kwargs: Any) -> None:
+        raise TypeError(f"{HOOK} payloads are read-only")
+
+    __setitem__ = __delitem__ = __ior__ = clear = pop = popitem = setdefault = update = _refuse
+
+    def __reduce__(self):
+        return type(self), (dict(self),)
+
+
+def _read_only(value: Any) -> Any:
+    """A deep read-only copy of JSON-shaped data; built per callback, so none shares an object."""
+    if isinstance(value, dict):
+        return _ReadOnlyDict({key: _read_only(item) for key, item in value.items()})
+    if isinstance(value, (list, tuple)):
+        return tuple(_read_only(item) for item in value)
+    return value
 
 
 def _no_fields(epoch: IngressEpoch, event_no: int) -> tuple[dict[str, Any], int]:
@@ -91,18 +127,14 @@ class IngressEpoch:
     def __init__(self, platform: str, bot_id: str) -> None:
         from hermes_cli.plugins import get_plugin_manager
 
-        self.platform = platform
-        self.bot_id = bot_id
-        self.epoch_id = secrets.token_hex(8)
-        self.closed = False
-        self.evicted = False  # written and read by the delivery thread only
         # The owning profile's plugins and scope, resolved where connect() runs.
-        self.plugins = get_plugin_manager()
-        self.context = contextvars.copy_context()
+        self.stream = _Stream(platform, bot_id, secrets.token_hex(8), get_plugin_manager(), contextvars.copy_context())
+        self.closed = False
         self._event_no = 0
         self._fault: Optional[_Fault] = None
         self._associations: OrderedDict[int, _Association] = OrderedDict()
         self._dispatcher = _dispatcher
+        self._dispatcher.open(self.stream)
 
     def emit(self, kind: str, generation: int, build: Build = _no_fields, *args: Any) -> None:
         """Number one event and enqueue it. ``build(epoch, event_no, *args)`` returns the
@@ -112,10 +144,10 @@ class IngressEpoch:
         # Numbered even with no observer, so a callback registered mid-epoch sees the gap.
         self._event_no += 1
         try:
-            if not self.plugins.has_hook(HOOK):
+            if not self.stream.plugins.has_hook(HOOK):
                 return
             fields, size = build(self, self._event_no, *args)
-            event = _Event(self, self._event_no, kind, time.time(), generation, fields, self._fault,
+            event = _Event(self.stream, self._event_no, kind, time.time(), generation, fields, self._fault,
                            _EVENT_BYTES + size)
             if self._dispatcher.put(event):
                 return
@@ -124,14 +156,16 @@ class IngressEpoch:
         self._record_drop()
 
     def end(self, generation: int, steps_clean: bool) -> None:
-        """Emit the epoch's last event; called once the transport has been stopped."""
+        """Emit the epoch's last event; called once the transport's stop steps are over."""
         self.emit("end", generation, _end_fields, steps_clean)
         self.close()
 
     def close(self) -> None:
-        """Refuse every later event; nothing can be observed any more, so drop the associations."""
+        """Refuse every later event, drop the associations and retire the epoch's seal state
+        under the closed-epoch bound. Idempotent."""
         self.closed = True
         self._associations.clear()
+        self._dispatcher.close(self.stream)
 
     def associate(self, update_id: int, event_no: int, raw_sha256: str) -> None:
         """Pin a fetched update to its first unresolved fetch; an identical refetch only counts."""
@@ -176,33 +210,52 @@ def _fault_record(fault: Optional[_Fault], seal: Optional[_Seal]) -> Optional[di
     return {"first_event_no": first, "kinds": sorted(kinds), "dropped_count": fault.dropped_count if fault else 0}
 
 
-def _deliver(manager: Any, payload: dict[str, Any]) -> str:
-    """Run every registered callback; the outcome is ``failed`` if any raised (or none exist),
-    ``late`` if they took longer than ``_LATE_AFTER_SECONDS``, else ``ok``."""
+def _deliver(manager: Any, payload: dict[str, Any]) -> tuple[str, Optional[BaseException]]:
+    """Run every registered callback on its own read-only copy of ``payload``. The outcome is
+    ``failed`` if any raised or was cancelled (or none is registered), ``late`` if together
+    they took longer than ``_LATE_AFTER_SECONDS``, else ``ok``; plus the first error."""
     callbacks = manager.iter_hook_callbacks(HOOK)
-    outcome = "ok" if callbacks else "failed"
+    if not callbacks:
+        return "failed", None
+    error = None
     started = time.monotonic()
     for callback in callbacks:
         try:
-            manager._invoke_hook_callback(callback, payload)
-        except (Exception, SystemExit) as exc:  # health: allow BLE001 -- plugin boundary; reported warn-once
-            manager._report_hook_failure(HOOK, callback, payload, exc)
-            outcome = "failed"
-    if outcome == "ok" and time.monotonic() - started > _LATE_AFTER_SECONDS:
-        return "late"
-    return outcome
+            manager._invoke_hook_callback(callback, _read_only(payload))
+        except BaseException as exc:  # health: allow BLE001 -- plugin boundary: an exception, exit or cancellation fails the event, never the delivery thread
+            error = error or exc
+    if error is not None:
+        return "failed", error
+    return ("late" if time.monotonic() - started > _LATE_AFTER_SECONDS else "ok"), None
 
 
 class _Dispatcher:
-    """The process-wide bounded queue and its one delivery thread, started on first use and
-    reused for every epoch. Shutdown never waits for it."""
+    """The process-wide bounded queue, its delivery thread (at most one, started on demand) and
+    the seal state of every open epoch plus at most ``_MAX_CLOSED_EPOCHS`` closed ones. Shutdown
+    never waits for it."""
 
     def __init__(self) -> None:
         self._ready = threading.Condition()
         self._events: deque[_Event] = deque()
         self._bytes = 0
         self._thread: Optional[threading.Thread] = None
-        self._seals: dict[IngressEpoch, _Seal] = {}  # delivery thread only
+        self._seals: dict[_Stream, _Seal] = {}
+
+    def open(self, stream: _Stream) -> None:
+        with self._ready:
+            self._seals[stream] = _Seal()
+
+    def close(self, stream: _Stream) -> None:
+        """Mark an epoch closed and evict the oldest closed epochs beyond the bound; their queued
+        events are then delivered as ``evicted`` and can never produce a clean end."""
+        with self._ready:
+            seal = self._seals.get(stream)
+            if seal is None:
+                return
+            seal.closed = True
+            closed = [known for known, state in self._seals.items() if state.closed]
+            for old in closed[:-_MAX_CLOSED_EPOCHS]:
+                del self._seals[old]
 
     def put(self, event: _Event) -> bool:
         with self._ready:
@@ -220,44 +273,45 @@ class _Dispatcher:
     def _run(self) -> None:
         while True:
             with self._ready:
-                while not self._events:
-                    self._ready.wait()
+                if not self._ready.wait_for(lambda: self._events, _IDLE_EXIT_SECONDS):
+                    self._thread = None
+                    return
                 event = self._events.popleft()
                 self._bytes -= event.size
             self._dispatch(event)
 
     def _dispatch(self, event: _Event) -> None:
-        epoch = event.epoch
-        seal = self._seals.get(epoch)
-        if seal is None and not epoch.evicted:
-            seal = self._admit(epoch)
+        stream = event.stream
+        with self._ready:
+            seal = self._seals.get(stream)
+            prev = None if seal is None else seal.prev
+            fault = _fault_record(event.fault, seal)
         payload = {
-            "platform": epoch.platform, "bot_id": epoch.bot_id, "epoch": epoch.epoch_id, "event_no": event.event_no,
-            "kind": event.kind, "created_at": event.created_at, "generation": event.generation,
+            "platform": stream.platform, "bot_id": stream.bot_id, "epoch": stream.epoch_id,
+            "event_no": event.event_no, "kind": event.kind, "created_at": event.created_at,
+            "generation": event.generation,
             # An evicted epoch fails closed: no seal, and it can never produce a clean end.
-            "epoch_state": "evicted" if seal is None else "live", "prev": None if seal is None else seal.prev,
-            "fault": _fault_record(event.fault, seal), **event.fields,
+            "epoch_state": "evicted" if seal is None else "live",
+            "prev": None if prev is None else {"event_no": prev[0], "outcome": prev[1]},
+            "fault": fault, **event.fields,
         }
-        outcome = epoch.context.run(_deliver, epoch.plugins, payload)
-        if seal is None:
-            return
-        if event.kind == "end":
-            del self._seals[epoch]
-            return
-        seal.prev = {"event_no": event.event_no, "outcome": outcome}
-        if outcome != "ok":
-            seal.kinds |= {outcome}
-            if seal.first_event_no is None:
-                seal.first_event_no = event.event_no
-
-    def _admit(self, epoch: IngressEpoch) -> _Seal:
-        """Start an epoch's seal state, evicting the oldest closed epochs beyond the retained few."""
-        seal = self._seals[epoch] = _Seal()
-        closed = [known for known in self._seals if known.closed]
-        for old in closed[:-_MAX_CLOSED_EPOCHS]:
-            del self._seals[old]
-            old.evicted = True
-        return seal
+        outcome, error = stream.context.run(_deliver, stream.plugins, payload)
+        with self._ready:
+            current = seal is not None and self._seals.get(stream) is seal  # not evicted before or during delivery
+            first_failure = current and outcome == "failed" and "failed" not in seal.kinds
+            if current and event.kind == "end":
+                del self._seals[stream]
+            elif current:
+                seal.prev = (event.event_no, outcome)
+                if outcome != "ok":
+                    seal.kinds |= {outcome}
+                    if seal.first_event_no is None:
+                        seal.first_event_no = event.event_no
+        if error is not None:
+            # Warn once per epoch; the fault record carries every later failure.
+            logger.log(logging.WARNING if first_failure else logging.DEBUG,
+                       "%s callback failed (%s bot %s, epoch %s, event %d)", HOOK, stream.platform, stream.bot_id,
+                       stream.epoch_id, event.event_no, exc_info=error)
 
 
 _dispatcher = _Dispatcher()

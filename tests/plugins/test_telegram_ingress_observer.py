@@ -1,9 +1,12 @@
 """Telegram fire sites of ``gateway_ingress_observer`` through real PTB polling and dispatch.
 
 One getUpdates script runs through the real Updater, TelegramApplication admission and handler
-groups with no observer, then with observers that record, raise, block, run slow or are async and
-swallow cancellation: every core outcome must be identical. Transport and model work are the only
-stand-ins. The delivery machinery itself is covered in tests/gateway/test_ingress_observer.py.
+groups with no observer, then with observers that record, raise, block, run slow, are async, or are
+cancelled: every core outcome must be identical, including the full getUpdates request sequence and
+the ``gateway_platform_event`` envelopes. That compares against this tree with no observer
+registered; the same projection was also compared against the pre-change tree out of suite.
+Transport and model work are the only stand-ins. The delivery machinery itself is covered in
+tests/gateway/test_ingress_observer.py.
 """
 
 import asyncio
@@ -25,10 +28,12 @@ from gateway.config import PlatformConfig
 from hermes_cli import plugins
 from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+from plugins.platforms.telegram import adapter as tg_adapter
 from plugins.platforms.telegram.adapter import TelegramAdapter
 
 BOT = 111
 WAIT = 5.0
+_EMPTY = b'{"ok":true,"result":[]}'
 
 
 class _BotApi(BaseRequest):
@@ -52,8 +57,9 @@ class _BotApi(BaseRequest):
 
 
 class _Wire(_BotApi):
-    """getUpdates: connect's readiness probe gets an empty answer, the scripted batches follow once
-    ``go`` is set, then empty long polls. Records every requested offset."""
+    """getUpdates: connect's readiness probe gets an empty answer; the scripted batches follow once
+    ``go`` is set, after which the long poll is held open as Telegram holds an idle one. Without a
+    script, polls come back empty. Every request's offset is recorded in order."""
 
     def __init__(self, batches):
         self.batches = [json.dumps({"ok": True, "result": batch}).encode() for batch in batches]
@@ -61,12 +67,18 @@ class _Wire(_BotApi):
         self.go = asyncio.Event()
 
     async def do_request(self, url, method, request_data=None, **kwargs):
-        self.offsets.append(request_data.parameters.get("offset") if request_data else None)
+        parameters = request_data.parameters if request_data is not None else {}
+        timeout = parameters.get("timeout")
+        self.offsets.append(parameters.get("offset"))
+        if (timeout.total_seconds() if hasattr(timeout, "total_seconds") else timeout) == 0:
+            return 200, _EMPTY  # the updater's read receipt while stopping
         if len(self.offsets) > 1 and self.batches:
             await self.go.wait()
             return 200, self.batches.pop(0)
+        if self.go.is_set():
+            await asyncio.Event().wait()
         await asyncio.sleep(0.01)
-        return 200, b'{"ok":true,"result":[]}'
+        return 200, _EMPTY
 
 
 def _sender(user):
@@ -112,6 +124,13 @@ async def _fail_replies(msg, event):
         raise OSError("replied-to media unavailable")
 
 
+def _delivered(event):
+    source = event.source
+    return [event.message_id, event.platform_update_id, event.message_type.value, event.text,
+            event.reply_to_message_id, event.reply_to_text, event.media_urls, source.chat_id, source.chat_type,
+            source.user_id, source.user_name, source.thread_id]
+
+
 class _Gateway:
     """One offline Telegram adapter wired as the gateway wires it, plus what core produced."""
 
@@ -126,6 +145,7 @@ class _Gateway:
             from gateway import ingress_observer
 
             monkeypatch.setattr(ingress_observer, "_dispatcher", ingress_observer._Dispatcher())
+            monkeypatch.setattr(ingress_observer, "_IDLE_EXIT_SECONDS", 0.2)
             context.register_hook("gateway_ingress_observer", observer)
         monkeypatch.setattr(plugins, "get_plugin_manager", lambda: manager)
         monkeypatch.setenv("TELEGRAM_WEBHOOK_URL", "")
@@ -170,14 +190,14 @@ class _Gateway:
     def core(self):
         adapter = self.adapter
         return {
-            "delivered": sorted((event.message_id, event.text, event.source.user_id) for event in self.delivered),
+            "delivered": sorted(_delivered(event) for event in self.delivered),
             "seen": sorted(adapter._seen_update_ids), "inflight": sorted(adapter._inflight_update_ids),
-            "offsets": sorted({offset for offset in self.wire.offsets if offset is not None}),
             "received": adapter._updates_received_total, "dispatched": adapter._updates_dispatched_total,
-            "platform_events": sorted((event["event_type"], event["payload"]["chat_id"]) for event in self.platform_events),
+            "platform_events": sorted(json.dumps(event, sort_keys=True) for event in self.platform_events),
             "later_groups": sorted(self.later), "errors": sorted(self.errors),
-            "polling": (adapter._polling_progress_event.is_set(), adapter._send_path_degraded,
-                        adapter._polling_network_error_count, adapter._polling_conflict_count),
+            "polling": [adapter._polling_progress_event.is_set(), adapter._send_path_degraded,
+                        adapter._polling_network_error_count, adapter._polling_conflict_count,
+                        adapter._polling_generation],
         }
 
     def receipts(self):
@@ -201,7 +221,7 @@ async def _run(monkeypatch, home, *, observer=None, error_handler=False):
         await gateway.play(SCRIPT)
         core = gateway.core()
         await gateway.adapter.disconnect()
-        return {**core, "receipts": gateway.receipts()}
+        return {**core, "getupdates_offsets": gateway.wire.offsets, "receipts": gateway.receipts()}
 
 
 class _Recorder:
@@ -218,15 +238,15 @@ class _Recorder:
         if self.mode == "slow":
             time.sleep(0.3)
 
-    async def swallow_cancellation(self, **event):
-        try:
-            await asyncio.sleep(0)
-        except asyncio.CancelledError:
-            pass
+    async def asynchronous(self, **event):
         self.events.append(event)
+        await asyncio.sleep(0)
+        if self.mode == "cancelled":
+            asyncio.current_task().cancel()
+            await asyncio.sleep(0)
 
     def callback(self):
-        return self.swallow_cancellation if self.mode == "async" else self
+        return self.asynchronous if self.mode in ("async", "cancelled") else self
 
     async def until(self, condition):
         await _until(lambda: condition(self.events))
@@ -239,7 +259,9 @@ async def test_observers_never_change_core_ingress(monkeypatch, tmp_path, error_
     if not error_handler:
         assert baseline["later_groups"] == [10, 11, 12, 13, 14]
         assert baseline["seen"] == [f"{BOT}:{update_id}" for update_id in (10, 11, 12, 13, 14)]
-    for mode in ("records", "raises", "blocks", "slow", "async"):
+    # Probe, five scripted batches, the held long poll, the stop-time read receipt.
+    assert len(baseline["getupdates_offsets"]) == 8
+    for mode in ("records", "raises", "blocks", "slow", "async", "cancelled"):
         recorder = _Recorder(mode)
         try:
             assert await _run(monkeypatch, tmp_path / mode, observer=recorder.callback(),
@@ -262,7 +284,7 @@ async def test_fetched_and_observed_follow_the_fire_sites(monkeypatch, tmp_path)
     assert events[-1]["steps_clean"] is True
     assert events[-1]["prev"] == {"event_no": len(events) - 1, "outcome": "ok"}
     fetched = [event for event in events if event["kind"] == "fetched"]
-    assert any(not event["updates"] for event in fetched)  # empty round trips are events too
+    assert [len(event["updates"]) for event in fetched] == [0, 2, 0, 3, 1, 1]  # probe, then the script
     fetched_by_update = {}
     for event in fetched:
         for update in event["updates"]:
@@ -282,6 +304,35 @@ async def test_fetched_and_observed_follow_the_fire_sites(monkeypatch, tmp_path)
     assert (observed[11]["authorized"], observed[11]["message"], observed[11]["user_id"]) == (False, None, "99")
     assert observed[12]["message"]["edit_date"] == 1800000010
     assert (observed[13]["authorized"], observed[13]["message"], observed[13]["chat_id"]) == (None, None, "1013")
+
+
+@pytest.mark.asyncio
+async def test_observations_can_arrive_out_of_fetch_order_across_chats(monkeypatch, tmp_path):
+    """Updates of different chats dispatch concurrently: a later batch's update may be observed
+    first, so ``fetch_event_no`` can decrease while ``event_no`` increases."""
+    recorder = _Recorder()
+    script = [[_message(40)], [_message(41)]]
+    with _home(tmp_path):
+        gateway = _Gateway(monkeypatch, tmp_path, script, recorder)
+        await gateway.connect()
+        released = asyncio.Event()
+
+        async def hold_first_chat(update, context):
+            if update.update_id == 40:
+                await released.wait()
+
+        gateway.adapter._app.add_handler(TypeHandler(Update, hold_first_chat), group=-1)
+        playing = asyncio.ensure_future(gateway.play(script))
+        await recorder.until(lambda events: any(event.get("update_id") == 41 for event in events))
+        released.set()
+        await playing
+        await gateway.adapter.disconnect()
+    await recorder.until(lambda events: events[-1]["kind"] == "end")
+
+    observed = {event["update_id"]: event for event in recorder.events if event["kind"] == "observed"}
+    assert observed[41]["event_no"] < observed[40]["event_no"]
+    assert observed[41]["fetch_event_no"] > observed[40]["fetch_event_no"]
+    assert observed[40]["association"] == observed[41]["association"] == "ok"
 
 
 async def _observe_now(gateway, raw):
@@ -384,9 +435,10 @@ async def test_teardown_never_waits_for_a_blocked_observer(monkeypatch, tmp_path
         first_epoch = recorder.events[0]["epoch"]
         assert [event["kind"] for event in recorder.events] == ["start"]
         thread = ingress_observer._dispatcher._thread
-        gateway.wire.batches = []
+        gateway.wire.go.clear()
         await gateway.adapter.connect()
         await gateway.adapter.disconnect()
+        assert ingress_observer._dispatcher._thread is thread
     recorder.release.set()
     await recorder.until(lambda events: sum(event["kind"] == "end" for event in events) == 2)
 
@@ -394,9 +446,8 @@ async def test_teardown_never_waits_for_a_blocked_observer(monkeypatch, tmp_path
     second = [event for event in recorder.events if event["epoch"] != first_epoch]
     first_observed = next(event["event_no"] for event in first if event["kind"] == "observed")
     assert first[-1]["kind"] == "end" and first[-1]["steps_clean"] is True
-    assert first[-1]["fault"] == {"first_event_no": first_observed, "kinds": ["failed"], "dropped_count": 0}
+    assert first[-1]["fault"] == {"first_event_no": first_observed, "kinds": ("failed",), "dropped_count": 0}
     assert (second[0]["kind"], second[0]["event_no"], second[-1]["kind"]) == ("start", 1, "end")
-    assert ingress_observer._dispatcher._thread is thread
 
 
 @pytest.mark.asyncio
@@ -433,7 +484,10 @@ async def test_a_transient_rebuild_keeps_the_epoch_and_its_numbering(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_end_follows_the_stop_steps_and_reports_an_abandoned_one(monkeypatch, tmp_path):
+@pytest.mark.parametrize("step,failure", [
+    ("app.shutdown", None), ("app.shutdown", "cancelled"), ("app.shutdown", "abandoned"), ("app.shutdown", "raised"),
+    ("app.stop", "cancelled"), ("updater.stop", "cancelled")])
+async def test_end_follows_the_stop_steps_and_only_a_normal_finish_is_clean(monkeypatch, tmp_path, step, failure):
     from gateway.ingress_observer import IngressEpoch
 
     recorder = _Recorder()
@@ -443,17 +497,28 @@ async def test_end_follows_the_stop_steps_and_reports_an_abandoned_one(monkeypat
         adapter._ingress_epoch = stale = IngressEpoch("telegram", str(BOT))  # never disconnected
         await gateway.connect()
         assert stale.closed and adapter._ingress_epoch is not stale
-        epoch, steps, step = adapter._ingress_epoch, [], adapter._await_disconnect_step
+        epoch, open_during = adapter._ingress_epoch, []
+        owner = type(adapter._app.updater if step == "updater.stop" else adapter._app)
+        name = step.split(".")[1]
+        original = getattr(owner, name)
 
-        async def observed_step(awaitable, timeout, label):
-            steps.append((label, epoch.closed))
-            completed = await step(awaitable, timeout, label)
-            return completed and label != "app.stop()"  # as if app.stop() hit its deadline
+        async def substitute(self):
+            open_during.append(not epoch.closed)
+            if failure == "abandoned":
+                await asyncio.sleep(60)
+            if failure == "raised":
+                raise RuntimeError(f"{step} failed")
+            await original(self)
+            if failure == "cancelled":
+                raise asyncio.CancelledError  # the step's own task ends cancelled, not finished
 
-        monkeypatch.setattr(adapter, "_await_disconnect_step", observed_step)
+        monkeypatch.setattr(owner, name, substitute)
+        monkeypatch.setattr(tg_adapter, "_DISCONNECT_STEP_TIMEOUT", 0.2)
+        app = adapter._app
         await adapter.disconnect()
+        if failure in ("abandoned", "raised"):
+            await original(app)
     await recorder.until(lambda events: events[-1]["kind"] == "end")
 
-    assert {label: closed for label, closed in steps if label.startswith(("updater", "app"))} == {
-        "updater.stop()": False, "app.stop()": False, "app.shutdown()": False}
-    assert epoch.closed and recorder.events[-1]["steps_clean"] is False
+    assert open_during == [True]
+    assert recorder.events[-1]["steps_clean"] is (failure is None)

@@ -3268,6 +3268,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
     async def _await_disconnect_step(self, awaitable, timeout: float, step: str) -> bool:
         """Await one disconnect step; detach on timeout so teardown advances (``wait_for`` would wait for a
         PTB close that swallows ``CancelledError`` on a half-dead socket). Abandoned tasks are observed.
+        True only when the step finished normally (not cancelled, not detached); its errors propagate.
 
         ``asyncio.wait_for`` cancels an overdue child but then waits for it to exit. Detach at the deadline
         and continue — the abandoned task is observed via ``_consume_abandoned_task``. See #80598.
@@ -3284,7 +3285,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         if task in done:
             with contextlib.suppress(asyncio.CancelledError):
                 await task
-            return True
+            return not task.cancelled()
         task.cancel()
         task.add_done_callback(_consume_abandoned_task)
         logger.warning("[%s] %s timed out after %.1fs during disconnect; continuing teardown", self.name, step, timeout)
@@ -3370,7 +3371,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
                 logger.warning("[%s] Error during Telegram disconnect: %s", self.name, _redact_telegram_error_text(e))
         self._app = None
         self._bot = None
-        # Only after the stop steps returned; an abandoned step marks the end unclean.
+        # After the bounded stop attempts; a failed, cancelled or abandoned step makes the end unclean.
         if self._ingress_epoch is not None:
             self._ingress_epoch.end(self._polling_generation, steps_clean)
         # Land the last completed receipts before a replacement adapter reads them.

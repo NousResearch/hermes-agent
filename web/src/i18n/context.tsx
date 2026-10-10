@@ -57,9 +57,27 @@ function getInitialLocale(): Locale {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
     if (stored && isLocale(stored)) return stored;
+
+    const browserLanguage = navigator.language.toLowerCase();
+
+    if (
+      browserLanguage === "zh-tw" ||
+      browserLanguage === "zh-hk" ||
+      browserLanguage === "zh-mo" ||
+      browserLanguage.startsWith("zh-hant")
+    ) {
+  return "zh-hant";
+    }
+
+    if (isLocale(browserLanguage)) return browserLanguage;
+
+    const baseLanguage = browserLanguage.split("-")[0];
+
+    if (isLocale(baseLanguage)) return baseLanguage;
   } catch {
     // SSR or privacy mode
   }
+
   return "en";
 }
 

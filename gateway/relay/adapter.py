@@ -1173,6 +1173,18 @@ class RelayAdapter(BasePlatformAdapter):
         user = (member.get("user") if isinstance(member, dict) else None) or payload.get("user") or {}
         if not isinstance(user, dict):
             user = {}
+        if not isinstance(member, dict):
+            member = {}
+        # Prefer the display name (member nick, then global name, then username)
+        # like the native adapter's author.display_name, not the raw username, so
+        # relayed slash turns pin the same user label as relayed text turns
+        # (fixes #128796). `display_name` is NOT a Discord API user field — only
+        # member nick / user global_name / user username exist.
+        # chat_name/chat_topic are not in the raw interaction body; the connector
+        # should forward its resolved labels (follow-up) to stop those flips.
+        _display_name = (
+            member.get("nick") or user.get("global_name") or user.get("username")
+        )
         guild_id = payload.get("guild_id")
         source = SessionSource(
             # The LOGICAL platform, not RELAY: session keys must match the connector's
@@ -1184,7 +1196,7 @@ class RelayAdapter(BasePlatformAdapter):
             # native Discord adapter key guild channels as "group".
             chat_type="group" if guild_id else "dm",
             user_id=str(user["id"]) if user.get("id") else None,
-            user_name=str(user["username"]) if user.get("username") else None,
+            user_name=str(_display_name) if _display_name else None,
             scope_id=str(guild_id) if guild_id else None,
             message_id=str(payload.get("id")) if payload.get("id") else None,
             # Same upstream-trust marker the relay text lane stamps. Set locally, never

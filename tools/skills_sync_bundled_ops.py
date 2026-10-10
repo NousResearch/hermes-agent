@@ -47,8 +47,9 @@ def reset_bundled_skill(name: str, restore: bool = False) -> dict:
                 return _fail("not_reset", f"Could not delete user copy at {dest}: {e}. "
                              f"Manifest entry preserved — nothing was changed.")
     if in_manifest:
+        baseline = dict(manifest)
         del manifest[name]
-        ss._write_manifest(manifest)
+        ss._write_manifest_merged(baseline, manifest)
     synced = ss.sync_skills(quiet=True)
     if not restore:
         action, message = "manifest_cleared", (f"Cleared manifest entry for '{name}'. Future `hermes update` runs "
@@ -86,6 +87,7 @@ def ensure_bundled_skill(name: str) -> dict:
     ``hermes update`` leaves it alone: intended, the user's data wins."""
     from tools import skill_usage
     ss, manifest, bundled_dir, bundled_by_name = _bundled_state()
+    baseline = dict(manifest)  # as read: the write re-applies only this call's delta
     src = bundled_by_name[name]
     dest = ss._compute_relative_dest(src, bundled_dir)
     if skill_usage.is_hub_installed(name):
@@ -120,7 +122,7 @@ def ensure_bundled_skill(name: str) -> dict:
         return {"ok": False, "action": "not_restored", "path": dest,
                 "message": f"Could not copy the built-in skill '{name}' to {dest}: {e}"}
     manifest[name] = ss._dir_hash(src)
-    ss._write_manifest(manifest)
+    ss._write_manifest_merged(baseline, manifest)
     skill_usage._toggle_suppressed_name(name, add=False)  # lift a curator prune the way restore_skill does
     skill_usage.set_state(name, skill_usage.STATE_ACTIVE)
     return {"ok": True, "action": "restored", "path": dest, "message": ""}
@@ -230,6 +232,7 @@ def remove_pristine_bundled_skills(dry_run: bool = False) -> dict:
     their manifest entry so a later opt-in re-seed treats them as new.
     Returns ``{ok, removed, skipped: [{name, reason}], dry_run, message}``."""
     ss, manifest, bundled_dir, bundled_by_name = _bundled_state()
+    baseline = dict(manifest)  # as read: the write re-applies only this call's delta
     removed: list[str] = []
     skipped: list[dict] = []
     for name, origin_hash in sorted(manifest.items()):
@@ -254,7 +257,7 @@ def remove_pristine_bundled_skills(dry_run: bool = False) -> dict:
             manifest.pop(name, None)
         removed.append(name)
     if not dry_run and removed:
-        ss._write_manifest(manifest)
+        ss._write_manifest_merged(baseline, manifest)
     verb = "Would remove" if dry_run else "Removed"
     return {"ok": True, "removed": removed, "skipped": skipped, "dry_run": dry_run,
             "message": f"{verb} {len(removed)} pristine bundled skill(s); kept {len(skipped)}."}

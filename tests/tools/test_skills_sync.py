@@ -1035,3 +1035,106 @@ class TestCallTimeDirResolution:
                 ss._rmtree_writable(foreign)
         finally:
             reset_hermes_home_override(token)
+
+class TestConcurrentManifestWriters:
+    """A second sync's manifest write must not be erased by this one.
+
+    ``sync_skills()`` reads the manifest once at the top and writes the whole dict once at the
+    bottom, with no lock and no compare-and-swap in between. Two overlapping runs — gateway boot
+    vs. ``hermes update``, or two checkouts sharing one home — each carried a snapshot taken
+    before the other's changes, so the later write dropped every baseline the earlier one had
+    just recorded. The losing run's ``↑ updated`` entries then leave no trace on disk: the next
+    sync still reads the pre-update hash, so it reads the now-newer copy as user-modified and
+    stops updating that skill forever.
+    """
+
+    def _fixture(self, tmp_path):
+        """Bundled ``alpha``/``beta``; the user tree already holds a pristine ``alpha``."""
+        bundled = tmp_path / "bundled"
+        for name in ("alpha", "beta"):
+            d = bundled / "cat" / name
+            d.mkdir(parents=True)
+            (d / "SKILL.md").write_text(f"---\nname: {name}\n---\n# {name}\n")
+        skills_dir = tmp_path / "user_skills"
+        alpha_dest = skills_dir / "cat" / "alpha"
+        alpha_dest.mkdir(parents=True)
+        (alpha_dest / "SKILL.md").write_text("---\nname: alpha\n---\n# alpha\n")
+        manifest_file = skills_dir / ".bundled_manifest"
+        manifest_file.write_text(f"alpha:{_dir_hash(alpha_dest)}\n")
+        return bundled, skills_dir, manifest_file
+
+    def _patches(self, bundled, skills_dir, manifest_file):
+        from contextlib import ExitStack
+        stack = ExitStack()
+        stack.enter_context(patch("tools.skills_sync._get_bundled_dir", return_value=bundled))
+        stack.enter_context(patch("tools.skills_sync._get_optional_dir", return_value=bundled.parent / "optional-skills"))
+        stack.enter_context(patch("tools.skills_sync.SKILLS_DIR", skills_dir))
+        stack.enter_context(patch("tools.skills_sync.MANIFEST_FILE", manifest_file))
+        return stack
+
+    @staticmethod
+    def _interleave(ss, other_entries):
+        """Patch the last step before sync_skills()'s manifest write so a second sync's write
+        lands in that window — deterministic, no real concurrency or timing needed."""
+        real_seed = ss._seed_category_descriptions
+
+        def _second_writer(bundled_dir, only_dirs):
+            real_seed(bundled_dir, only_dirs)
+            ss._write_manifest(other_entries)
+        return patch("tools.skills_sync._seed_category_descriptions", side_effect=_second_writer)
+
+    def test_concurrent_writers_new_entry_survives(self, tmp_path):
+        import tools.skills_sync as ss
+        bundled, skills_dir, manifest_file = self._fixture(tmp_path)
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            baseline = ss._read_manifest()
+            other = dict(baseline, gamma="ghash")
+            with self._interleave(ss, other):
+                result = sync_skills(quiet=True)
+            manifest = ss._read_manifest()
+
+        assert "beta" in result["copied"], "this run must still do its own work"
+        assert manifest["beta"] == _dir_hash(bundled / "cat" / "beta")
+        assert manifest["gamma"] == "ghash", "the other writer's entry was dropped"
+        assert manifest["alpha"] == baseline["alpha"]
+
+    def test_concurrent_entry_survives_while_this_runs_cleanup_applies(self, tmp_path):
+        import tools.skills_sync as ss
+        bundled, skills_dir, manifest_file = self._fixture(tmp_path)
+        # A skill dropped upstream with no copy left: this run's cleanup must delete its entry.
+        manifest_file.write_text(manifest_file.read_text(encoding="utf-8") + "ghost:oldhash\n")
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            baseline = ss._read_manifest()
+            other = dict(baseline, gamma="ghash")
+            with self._interleave(ss, other):
+                result = sync_skills(quiet=True)
+            manifest = ss._read_manifest()
+
+        assert result["cleaned"] == ["ghost"]
+        assert "ghost" not in manifest
+        assert manifest["gamma"] == "ghash", "the other writer's entry was dropped"
+        assert manifest["beta"] == _dir_hash(bundled / "cat" / "beta")
+
+    def test_merged_write_keeps_the_other_writers_keys(self, tmp_path):
+        """Contract of the merge: unchanged on disk == a plain write; when the file moved under
+        us, the other writer's untouched keys survive and our own writes AND deletions apply."""
+        import tools.skills_sync as ss
+        skills_dir = tmp_path / "user_skills"
+        skills_dir.mkdir()
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        with self._patches(tmp_path / "bundled", skills_dir, manifest_file):
+            ss._write_manifest({"keep": "k1", "drop": "d1"})
+            baseline = ss._read_manifest()
+
+            # Fast path: nothing wrote in between -> exactly this run's entries.
+            ss._write_manifest_merged(baseline, {"keep": "k2"})
+            assert ss._read_manifest() == {"keep": "k2"}
+
+            # Concurrent change: our deletion still applies, their new key is not erased.
+            baseline = ss._read_manifest()
+            ss._write_manifest({"keep": "k2", "theirs": "t1"})
+            ss._write_manifest_merged(baseline, {})
+            assert ss._read_manifest() == {"theirs": "t1"}

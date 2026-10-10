@@ -167,6 +167,37 @@ def _write_manifest(entries: dict[str, str]):
         logger.debug("Failed to write skills manifest %s: %s", _manifest_file(), e, exc_info=True)
 
 
+def _write_manifest_merged(baseline: dict[str, str], entries: dict[str, str]) -> None:
+    """Write ``entries`` (this run's manifest) without erasing a concurrent writer's entries.
+
+    ``sync_skills()`` reads the manifest once at the top and writes the whole dict once at the end,
+    with no lock and no compare-and-swap in between. Two overlapping runs — gateway boot vs.
+    ``hermes update``, or two checkouts sharing one home — each wrote a snapshot taken before the
+    other's changes, so the later write dropped the earlier one's baselines. The losing run's
+    ``↑ updated`` entries then leave no trace on disk: the next sync still reads the pre-update
+    hash, so it reads the (now newer) copy as user-modified and stops updating it forever.
+
+    Re-read the file here and re-apply only this run's delta (``baseline`` -> ``entries``) on top of
+    it; when nothing else wrote in between — the normal case — the result is byte-identical to a
+    plain write. A key BOTH writers touched keeps this run's value, deletion included: that is the
+    decision this run already acted on in the skills tree.
+
+    Deliberately NOT a cross-process lock: the read and the write are a whole loop apart and that
+    loop does the copy/replace I/O, so a lock would have to be held across the entire sync (or
+    re-acquired per skill), serializing every update behind a slow tree copy and adding a lock file
+    to every profile's skills dir. The delta merge fixes the lost update with no new file.
+    """
+    on_disk = _read_manifest()
+    if on_disk == baseline:  # nobody else wrote: the fast path is exactly the old write
+        _write_manifest(entries)
+        return
+    merged = dict(on_disk)
+    merged.update({name: h for name, h in entries.items() if baseline.get(name) != h})
+    for removed in baseline.keys() - entries.keys():
+        merged.pop(removed, None)
+    _write_manifest(merged)
+
+
 def _discover_bundled_skills(bundled_dir: Path) -> list[tuple[str, Path]]:
     """``(skill_name, skill_dir)`` per SKILL.md under the bundled dir. Exclusions are evaluated
     relative to the bundled tree: the install prefix itself may contain ``venv``/``site-packages``
@@ -410,7 +441,10 @@ def sync_skills(quiet: bool = False) -> dict:
         bundled_skills = [(name, src) for name, src in bundled_skills if name in ESSENTIAL_SKILLS]
     suppressed = _read_suppressed_names()
     external_index = _build_external_skill_index()
-    st = _SyncState(manifest=_read_manifest(), quiet=quiet)
+    # Snapshot of the file as read: the write at the end re-applies only this run's delta so a
+    # concurrent sync's entries are not erased (see _write_manifest_merged).
+    baseline = _read_manifest()
+    st = _SyncState(manifest=dict(baseline), quiet=quiet)
 
     for skill_name, skill_src in bundled_skills:
         # Curator-pruned built-ins must not resurrect on every update; essentials are exempt.
@@ -447,7 +481,7 @@ def sync_skills(quiet: bool = False) -> dict:
     _seed_category_descriptions(
         bundled_dir,
         {_compute_relative_dest(src, bundled_dir).parent for _, src in bundled_skills} if essential_only else None)
-    _write_manifest(st.manifest)
+    _write_manifest_merged(baseline, st.manifest)
     return {
         "copied": st.copied, "updated": st.updated, "skipped": st.skipped, "user_modified": st.user_modified,
         "cleaned": cleaned, "suppressed": st.suppressed, "relocated": st.relocated,

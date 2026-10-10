@@ -269,6 +269,8 @@ def _submit_prompt_to_compute_host(
     rid: str, sid: str, session: dict, text: Any, image_paths: list[str] | None = None,
     queued_prompt_generation: int | None = None, display_kind: str | None = None,
     display_metadata: dict | None = None) -> dict:
+    if (fenced := _attachment_execution_error(rid, session)) is not None:
+        return fenced
     cfg = _load_dashboard_process_isolation_config()
     frame = _compute_host_turn_frame(rid, sid, session, text, image_paths=image_paths,
                                      queued_prompt_generation=queued_prompt_generation,

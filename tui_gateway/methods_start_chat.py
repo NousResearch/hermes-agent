@@ -23,6 +23,7 @@ _start_chat_retry_lock = threading.Lock()
 def _(rid, params: dict) -> dict:
     from tui_gateway.start_chat import _rejected, start_chat
     session, err = _sess_nowait(params, rid)
+    err = err or _attachment_execution_error(rid, session)
     if err:
         return err
     tool_call_id = str(params.get("tool_call_id") or "")

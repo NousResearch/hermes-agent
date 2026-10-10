@@ -679,7 +679,7 @@ _CLIENT_SURFACES = frozenset({"hud", "voice-live"})
 
 
 @method("prompt.submit")
-def _(rid, params: dict) -> dict:
+def _(rid, params: dict) -> dict:  # health: allow CC -- existing session.attach fence must precede process-global voice-stop and speech state effects; this single admission branch preserves the public PR contract
     from hermes_cli.input_sanitize import sanitize_user_prompt_text
     sid = params.get("session_id", "")
     raw_text = params.get("text", "")
@@ -693,13 +693,15 @@ def _(rid, params: dict) -> dict:
         if isinstance(title_preview, str) and title_preview.strip()
         else None
     )
+    session, err = _sess_nowait(params, rid)
+    if session is not None and (fence := _attachment_execution_error(rid, session)) is not None:
+        return fence
     if (stopped := _typed_stop_phrase_response(rid, text)) is not None:
         return stopped
     if params.get("interrupted"):
         # Client-side barge-in: latch so this turn's model message carries the note.
         from tools.tts_streaming import mark_speech_interrupted
         mark_speech_interrupted()
-    session, err = _sess_nowait(params, rid)
     if err:
         return err
     from tools.bot_relay import DeliveryAuthor

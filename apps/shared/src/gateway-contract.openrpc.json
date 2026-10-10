@@ -3139,6 +3139,24 @@
       }
     },
     {
+      "name": "session.attach",
+      "summary": "Attach an exact stored ID/profile without executing or taking ownership. Cold legacy work remains fenced (4091 on execution); history/events/requests have no complete recovery barrier.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SessionAttachParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SessionAttachResult"
+        }
+      }
+    },
+    {
       "name": "session.branch",
       "summary": "Fork a live session into a new stored child that shares the parent's history so far.",
       "params": [
@@ -5493,6 +5511,70 @@
           "attached"
         ],
         "title": "AttachedImageResult",
+        "type": "object"
+      },
+      "AttachmentRecovery": {
+        "additionalProperties": false,
+        "properties": {
+          "complete": {
+            "const": false,
+            "title": "Complete",
+            "type": "boolean"
+          },
+          "history_loaded": {
+            "const": false,
+            "title": "History Loaded",
+            "type": "boolean"
+          },
+          "history_revision": {
+            "title": "History Revision",
+            "type": "null"
+          },
+          "request_lifecycle": {
+            "const": "unknown",
+            "title": "Request Lifecycle",
+            "type": "string"
+          },
+          "request_revision": {
+            "title": "Request Revision",
+            "type": "null"
+          },
+          "replay_epoch": {
+            "title": "Replay Epoch",
+            "type": "string"
+          },
+          "stream_incarnation": {
+            "title": "Stream Incarnation",
+            "type": "null"
+          },
+          "replay_high_water": {
+            "title": "Replay High Water",
+            "type": "null"
+          },
+          "events_complete": {
+            "const": false,
+            "title": "Events Complete",
+            "type": "boolean"
+          },
+          "execution_complete": {
+            "const": false,
+            "title": "Execution Complete",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "complete",
+          "history_loaded",
+          "history_revision",
+          "request_lifecycle",
+          "request_revision",
+          "replay_epoch",
+          "stream_incarnation",
+          "replay_high_water",
+          "events_complete",
+          "execution_complete"
+        ],
+        "title": "AttachmentRecovery",
         "type": "object"
       },
       "AutoContinue": {
@@ -29167,6 +29249,129 @@
           "session_key"
         ],
         "title": "SessionArchiveResult",
+        "type": "object"
+      },
+      "SessionAttachParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Session Id",
+            "type": "string"
+          },
+          "profile": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Profile",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "profile"
+        ],
+        "title": "SessionAttachParams",
+        "type": "object"
+      },
+      "SessionAttachResult": {
+        "additionalProperties": false,
+        "properties": {
+          "requested_session_id": {
+            "title": "Requested Session Id",
+            "type": "string"
+          },
+          "stored_session_id": {
+            "title": "Stored Session Id",
+            "type": "string"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "profile": {
+            "title": "Profile",
+            "type": "string"
+          },
+          "reused_runtime": {
+            "title": "Reused Runtime",
+            "type": "boolean"
+          },
+          "runtime_incarnation": {
+            "title": "Runtime Incarnation",
+            "type": "string"
+          },
+          "owner_incarnation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner Incarnation"
+          },
+          "parent_session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Session Id"
+          },
+          "disposition": {
+            "enum": [
+              "idle",
+              "live",
+              "interrupted",
+              "unknown"
+            ],
+            "title": "Disposition",
+            "type": "string"
+          },
+          "execution_fenced": {
+            "title": "Execution Fenced",
+            "type": "boolean"
+          },
+          "fence_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fence Reason"
+          },
+          "can_submit_prompt": {
+            "title": "Can Submit Prompt",
+            "type": "boolean"
+          },
+          "recovery": {
+            "$ref": "#/components/schemas/AttachmentRecovery"
+          }
+        },
+        "required": [
+          "requested_session_id",
+          "stored_session_id",
+          "session_id",
+          "profile",
+          "reused_runtime",
+          "runtime_incarnation",
+          "owner_incarnation",
+          "parent_session_id",
+          "disposition",
+          "execution_fenced",
+          "fence_reason",
+          "can_submit_prompt",
+          "recovery"
+        ],
+        "title": "SessionAttachResult",
         "type": "object"
       },
       "SessionBranchParams": {

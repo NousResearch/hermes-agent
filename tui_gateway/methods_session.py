@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- rebase of existing session.attach contribution: the two cold-attachment resume/activate fences add four lines at the live reuse chokepoints; preserve upstream module layout and behavior
 """Session / delegation / spawn-tree / billing / pet JSON-RPC handlers.
 
 Bodies are rebound onto server.py's globals at install time (method_ctx.py), so they use server
@@ -884,6 +885,8 @@ def _resume_reuse_live(ctx: _Resume, sid: str, session: dict) -> dict:
 
 def _resume_reuse_live_locked(ctx: _Resume, sid: str, session: dict) -> dict:
     """Reuse with _session_resume_lock already held (including the eager double-check)."""
+    if (fenced := _attachment_execution_error(ctx.rid, session)) is not None:
+        return fenced
     if (refusal := _reattach_refusal(ctx.rid, sid, session)) is not None:
         return refusal
     _cancel_ws_orphan_reap(sid)  # unconditionally: the fast path must never race the reap Timer
@@ -1167,6 +1170,8 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict, session: dict) -> dict:
     """Attach the frontend to a live TUI session without closing the previously focused one."""
     sid = str(params.get("session_id") or "")
+    if (fenced := _attachment_execution_error(rid, session)) is not None:
+        return fenced  # Cold inert records must not masquerade as legacy live/idle snapshots.
     # Only the rebind is atomic with grace expiry; the payload (a DB history read unless
     # ``omit_messages``) must not hold the process-wide resume lock.
     with _session_resume_lock:

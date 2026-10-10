@@ -40,10 +40,17 @@ def _note_user_input(session: dict) -> None:
 
 @method("session.interrupt")
 def _(rid, params: dict) -> dict:
+    # A cold attachment has no turn to interrupt. Refuse before the process-global
+    # TTS cut and wake-resume path so observation cannot affect another session.
+    attached = _sessions.get(str(params.get("session_id") or ""))
+    if attached is not None:
+        if (fenced := _attachment_execution_error(rid, attached)) is not None:
+            return fenced
     _tts_stream_stop()  # keypress barge-in also silences streaming TTS (voice is process-global)
     resume_wake = True
     try:
         session, err = _sess_nowait(params, rid)
+        err = err or _attachment_execution_error(rid, session)
         if err:
             return err
         if expected := _str_param(params, "expected_hosted_task_id"):

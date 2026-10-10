@@ -7,18 +7,20 @@ Extracted from ``hermes_cli.web_server``; app state and helpers are late-bound t
 import asyncio
 import sqlite3
 import time
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 import hermes_yaml as yaml
 from fastapi import APIRouter, HTTPException, Query
 
-from hermes_cli.config import get_config_path, read_raw_config
-from hermes_cli.web_deps import late
+from hermes_cli.config import _deep_merge, get_config_path, read_raw_config, require_readable_config_before_write
+from hermes_cli.usage_budget import month_usage_rows, month_window, read_budgets, summarize_month
+from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_routers._common import corrupt_store_as_status
 from hermes_cli.web_server_profiles import (
     _approval_mode_of, _aux_task_summary, _aux_usage_rows, _broadcast_gateway_session_info, _is_other_profile, _merge_aux_into_by_model,
 )
-from hermes_cli.web_models import RawConfigUpdate
+from hermes_cli.web_models import RawConfigUpdate, UsageBudgetUpdate
 
 router = APIRouter()
 
@@ -27,6 +29,8 @@ _open_session_db_for_profile = late("_open_session_db_for_profile", "hermes_cli.
 _session_db_path_for_profile = late("_session_db_path_for_profile", "hermes_cli.web_server_sessions")
 _profile_scope = late("_profile_scope", "hermes_cli.web_server_profiles")
 save_config = late("save_config", "hermes_cli.config")
+load_config = late("load_config", "hermes_cli.config")
+_CONFIG_MUTATION_LOCK = LateState("_CONFIG_MUTATION_LOCK")
 
 # ── Raw YAML config ──────────────────────────────────────────────────────────
 
@@ -153,6 +157,46 @@ async def get_usage_analytics(
     presets."""
     with corrupt_store_as_status(_session_db_path_for_profile(profile)):
         return await asyncio.to_thread(_get_usage_analytics, days, profile)
+
+
+# ── Month-to-date usage against per-provider budgets ─────────────────────────
+
+def _get_usage_month(profile: Optional[str] = None) -> dict:
+    now = datetime.now().astimezone()
+    db = _open_session_db_for_profile(profile, read_only=True)
+    try:
+        rows = month_usage_rows(db._conn, month_window(now)[0].timestamp())
+    finally:
+        db.close()
+    with _profile_scope(profile):
+        budgets = read_budgets(load_config())
+    return summarize_month(rows, budgets, now)
+
+
+@router.get("/api/analytics/month")
+async def get_usage_month(profile: Optional[str] = None):
+    """This calendar month's usage per billing provider, with each ``usage.budgets`` limit evaluated."""
+    with corrupt_store_as_status(_session_db_path_for_profile(profile)):
+        return await asyncio.to_thread(_get_usage_month, profile)
+
+
+@router.put("/api/analytics/budgets")
+async def put_usage_budget(body: UsageBudgetUpdate, profile: Optional[str] = None):
+    """Set one of ``monthly_tokens`` / ``monthly_usd`` for a provider, or neither to clear its budget.
+
+    Clearing writes explicit nulls: the config writer never deletes a key by omission."""
+    limits = [v for v in (body.monthly_tokens, body.monthly_usd) if v is not None]
+    if len(limits) > 1 or any(v <= 0 for v in limits):
+        raise HTTPException(status_code=400, detail="Set one positive monthly_tokens or monthly_usd, or neither")
+    spec = {"monthly_tokens": body.monthly_tokens, "monthly_usd": body.monthly_usd}
+
+    def _run() -> None:
+        with _profile_scope(profile), _CONFIG_MUTATION_LOCK:
+            existing = require_readable_config_before_write()
+            save_config(_deep_merge(existing, {"usage": {"budgets": {body.provider: spec}}}))
+
+    await asyncio.to_thread(_run)
+    return {"ok": True}
 
 
 _USAGE_KEYS = (

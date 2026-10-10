@@ -524,6 +524,13 @@ class RawConfigUpdate(BaseModel):
     yaml_text: str
     profile: Optional[str] = None
 
+
+class UsageBudgetUpdate(BaseModel):
+    """One provider's monthly budget: tokens or dollars, or neither to clear it."""
+    provider: str
+    monthly_tokens: Optional[int] = None
+    monthly_usd: Optional[float] = None
+
 class ThemeSetBody(BaseModel):
     name: str
 

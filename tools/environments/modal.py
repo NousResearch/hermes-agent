@@ -189,9 +189,10 @@ class ModalEnvironment(BaseEnvironment):
     def _exec(self, cmd: str, *, timeout: int, stdin: str | None = None, fail_label: str | None = None,
               capture: bool = False):
         """Run ``bash -c cmd`` in the sandbox. ``stdin`` is streamed in chunks; ``capture`` returns
-        stdout; ``fail_label`` turns a non-zero exit into RuntimeError (with stderr unless capturing)."""
+        stdout bytes; ``fail_label`` turns a non-zero exit into RuntimeError (with stderr unless capturing)."""
         async def _run():
-            proc = await self._sandbox.exec.aio("bash", "-c", cmd)
+            # Captured output is a tar archive; SDK text mode decodes it as UTF-8 before read() returns.
+            proc = await self._sandbox.exec.aio("bash", "-c", cmd, text=not capture)
             if stdin is not None:
                 await _stream_stdin(proc, stdin, self._STDIN_CHUNK_SIZE)
             data = await proc.stdout.read.aio() if capture else None
@@ -224,7 +225,7 @@ class ModalEnvironment(BaseEnvironment):
         """Download remote .hermes/ as a tar archive (sandboxes run as root, so /root/.hermes)."""
         # --exclude: live sockets cannot be archived ("socket ignored") and must not fail the download.
         data = self._exec("tar cf - --exclude='*.sock' -C / root/.hermes", timeout=120, fail_label="bulk download", capture=True)
-        dest.write_bytes(data.encode() if isinstance(data, str) else data)
+        dest.write_bytes(data)
 
     def _modal_delete(self, remote_paths: list[str]) -> None:
         self._exec(quoted_rm_command(remote_paths), timeout=15)

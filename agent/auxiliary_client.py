@@ -1903,6 +1903,27 @@ def _endpoint_speaks_anthropic_messages(base_url: str) -> bool:
     return hostname == "api.anthropic.com" or bool(hostname == "api.kimi.com" and "/coding" in normalized)
 
 
+def _anthropic_messages_surface_base_url(base_url: str) -> str:
+    """Restore a dual-surface host's ``/anthropic`` surface from its OpenAI ``/v1`` sibling.
+
+    ``_to_openai_base_url`` rewrites ``/anthropic`` → ``/v1`` for the OpenAI wire, and several
+    resolve branches hand that normalized URL (an explicit ``/v1`` base_url, or one stored in
+    the credential pool) on to the wrap decision; ``_base_client_kwargs`` strips the trailing
+    ``/v1`` and the Anthropic SDK appends its own ``/v1/messages``, so a ``/v1`` base still
+    requests the OpenAI surface's ``/v1/messages`` path instead of ``/anthropic`` and 404s
+    (#128830). Only the known dual-surface families are touched, and only at a bare root or
+    ``/v1`` — anything else (an Anthropic-only gateway's path, a proxy prefix) is kept verbatim.
+    """
+    url = str(base_url or "").strip().rstrip("/")
+    if not url or not _is_dual_surface_anthropic_host(url):
+        return url
+    parsed = urlparse(url)
+    if parsed.path.rstrip("/") not in ("", "/v1"):
+        return url
+    suffix = f"?{parsed.query}" if parsed.query else ""
+    return f"{parsed.scheme}://{parsed.netloc}/anthropic{suffix}"
+
+
 def _maybe_wrap_anthropic(
     client_obj: Any, model: str, api_key: str, base_url: str, api_mode: Optional[str] = None
 ) -> Any:
@@ -1933,20 +1954,24 @@ def _maybe_wrap_anthropic(
             base_url,
         )
         return client_obj
+    # ``base_url`` may arrive pre-normalized for the OpenAI wire (``_to_openai_base_url``);
+    # the Anthropic SDK appends its own /v1/messages, so restore the /anthropic surface
+    # of a dual-surface host before building the SDK client (#128830).
+    anthropic_base_url = _anthropic_messages_surface_base_url(base_url)
     try:
-        real_client = build_anthropic_client(api_key, base_url)
+        real_client = build_anthropic_client(api_key, anthropic_base_url)
     except Exception as exc:
         logger.warning(
-            "Failed to build Anthropic client for %s (%s) — falling back to "
-            "OpenAI-wire client.", base_url, exc,
+            "Failed to build an Anthropic client for %s (%s) — falling back to "
+            "OpenAI-wire client.", anthropic_base_url, exc,
         )
         return client_obj
     logger.debug(
         "Auxiliary transport: wrapping client in AnthropicAuxiliaryClient "
         "(model=%s, base_url=%s, api_mode=%s)",
-        model, base_url[:60] if base_url else "", api_mode or "auto-detected",
+        model, anthropic_base_url[:60] if anthropic_base_url else "", api_mode or "auto-detected",
     )
-    return AnthropicAuxiliaryClient(real_client, model, api_key, base_url, is_oauth=False)
+    return AnthropicAuxiliaryClient(real_client, model, api_key, anthropic_base_url, is_oauth=False)
 
 
 def _read_nous_auth() -> Optional[dict]:
@@ -2916,14 +2941,17 @@ def _try_custom_endpoint() -> tuple[Optional[Any], Optional[str]]:
         try:
             from agent.anthropic_adapter import build_anthropic_client
             from agent.anthropic_credentials import anthropic_route_is_oauth
-            real_client = build_anthropic_client(custom_key, custom_base)
+            # ``custom_base`` may carry a dual-surface host's OpenAI ``/v1`` (the documented
+            # shape) — restore its ``/anthropic`` Messages surface before building (#128830).
+            anthropic_base = _anthropic_messages_surface_base_url(custom_base)
+            real_client = build_anthropic_client(custom_key, anthropic_base)
         except ImportError:
             logger.warning(
                 "Custom endpoint declares api_mode=anthropic_messages but the "
                 "anthropic SDK is not installed — falling back to OpenAI-wire."
             )
             return _create_openai_client(api_key=custom_key, base_url=_clean_base, **_extra), model
-        return AnthropicAuxiliaryClient(real_client, model, custom_key, custom_base,
+        return AnthropicAuxiliaryClient(real_client, model, custom_key, anthropic_base,
                                         is_oauth=anthropic_route_is_oauth(custom_base, custom_key)), model
     # URL-based anthropic detection for custom endpoints without explicit api_mode.
     _fallback_client = _create_openai_client(api_key=custom_key, base_url=_clean_base, **_extra)
@@ -5211,13 +5239,14 @@ def _resolve_named_custom_branch(req: _ResolveRequest) -> Optional[_ResolveResul
     logger.debug("resolve_provider_client: named custom provider %r (%s, api_mode=%s)",
                  provider, final_model, entry_api_mode or "chat_completions")
     # anthropic_messages: route via AnthropicAuxiliaryClient (mirrors _try_custom_endpoint);
-    # the Anthropic SDK sees the original (un-rewritten) URL.
-    # Mirrors the anonymous-custom branch in _try_custom_endpoint(). See #15033.
+    # a dual-surface host stored with its OpenAI ``/v1`` base gets the ``/anthropic`` surface
+    # restored (#128830). Mirrors the anonymous-custom branch in _try_custom_endpoint(). See #15033.
     if entry_api_mode == "anthropic_messages":
         try:
             from agent.anthropic_adapter import build_anthropic_client
             from agent.anthropic_credentials import anthropic_route_is_oauth
-            real_client = build_anthropic_client(custom_key, custom_base)
+            anthropic_base = _anthropic_messages_surface_base_url(custom_base)
+            real_client = build_anthropic_client(custom_key, anthropic_base)
             if entry_headers:
                 # Same entry headers as the two OpenAI-wire arms; ``with_options`` merges onto the
                 # beta/credential-Omit headers the builder installed (#109595).
@@ -5227,7 +5256,7 @@ def _resolve_named_custom_branch(req: _ResolveRequest) -> Optional[_ResolveResul
                            "is not installed — falling back to OpenAI-wire.", provider)
             return _route_client(req, _named_custom_openai_wire_client(custom_base, custom_key, entry_headers), final_model)
         return _route_client(
-            req, AnthropicAuxiliaryClient(real_client, final_model, custom_key, custom_base,
+            req, AnthropicAuxiliaryClient(real_client, final_model, custom_key, anthropic_base,
                                           is_oauth=anthropic_route_is_oauth(custom_base, custom_key)), final_model)
     client = _named_custom_openai_wire_client(custom_base, custom_key, entry_headers)
     # codex_responses, or auto-detect via _wrap_transport (which reads the task-level api_mode).

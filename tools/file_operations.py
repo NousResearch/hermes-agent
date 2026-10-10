@@ -234,7 +234,16 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         if stdin_data is not None:
             kwargs['stdin_data'] = stdin_data
         effective_cwd = cwd or getattr(self.env, 'cwd', None) or self.cwd
-        result = self.env.execute(command, cwd=effective_cwd, **kwargs)
+        # Let the env resolve its own cwd instead of pinning the value read above:
+        # execute() recovers a deleted session cwd in _before_execute, and an explicit
+        # stale `cwd=` outranks that recovery, so the wrapper script still cd's into the
+        # removed directory and the command exits 126 (#17558 sibling path). Envs that
+        # do not track cwd keep getting the fallback pinned.
+        env_cwd = getattr(self.env, 'cwd', None)
+        if cwd or not env_cwd:
+            result = self.env.execute(command, cwd=effective_cwd, **kwargs)
+        else:
+            result = self.env.execute(command, **kwargs)
         exit_code = result.get("returncode", 0)
         output = result.get("output", "")
         # The command wrapper's own ``builtin cd -- <cwd> || exit 126`` failed: the

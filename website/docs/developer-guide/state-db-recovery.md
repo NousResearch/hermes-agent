@@ -66,10 +66,20 @@ is still up. Next steps:
 
 ```bash
 hermes gateway stop
+# Quit Desktop/serve, dashboards, cron workers and every other process for this profile.
 HERMES_HOME="$HOME/.hermes" hermes sessions recover --source "$HOME/.hermes/state.db" --inspect-only
-# if recoverable:
-HERMES_HOME="$HOME/.hermes" hermes sessions recover --source "$HOME/.hermes/state.db" --output "$HOME/recovered-state.db"
+# When the report shows a complete recovery and all writers are stopped, install explicitly:
+HERMES_HOME="$HOME/.hermes" hermes sessions recover \
+  --source "$HOME/.hermes/state.db" \
+  --output "$HOME/.hermes/state-recovered.db" \
+  --install
 ```
+
+`--install` accepts only the active profile's `state.db`, reserves backup/work/output headroom
+before copying anything (failing closed on undeterminable usage), preserves the raw source bundle and
+report, refuses partial recovery, and uses the existing repair lock plus exclusive SQLite guard.
+A source-generation change or any remaining writer refuses the install. The standard recovery
+command without `--install` remains non-destructive and writes only its separate candidate.
 
 or restore the newest snapshot from `state-snapshots/`.
 

@@ -241,15 +241,16 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
 
     sessions_recover = sessions_subparsers.add_parser(
         "recover", help="Rebuild canonical session data into a separate clean database",
-        description="Offline, non-destructive recovery for a damaged state.db. The "
-            "source database and its WAL/SHM/rollback-journal sidecars are "
-            "copied before SQLite opens anything. Canonical rows are rebuilt "
-            "into a new output database; derived search indexes are recreated "
-            "and the active database is never replaced automatically.")
+        description="Offline recovery for a damaged state.db. The source database and its sidecars are copied "
+            "before SQLite opens anything. By default the active database is never replaced. The explicit "
+            "--install option installs only a complete, verified candidate, after refusing any live profile "
+            "writer and preserving the source bundle.")
     sessions_recover.add_argument("--source", type=Path, required=True,
         help="Source state.db or preserved backup to inspect/recover")
     sessions_recover.add_argument(
         "--output", type=Path, help="New recovery database path (required unless --inspect-only)")
+    _flag(sessions_recover, "--install",
+        help="Install only a complete, verified candidate into the active profile's state.db; refuses live writers and preserves the source bundle")
     _flag(sessions_recover, "--inspect-only",
         help="Only report canonical table readability; do not create an output database")
     sessions_recover.add_argument("--work-dir", type=Path,

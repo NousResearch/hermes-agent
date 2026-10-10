@@ -66,8 +66,10 @@ def mark_storage_corrupt(db_path, reason: object) -> None:
         _corrupt[key] = str(reason)
     logger.error(
         "state.db at %s is structurally corrupt (%s); session storage is reported as corrupt "
-        "until Hermes restarts on a recovered or restored file. Stop Hermes, then run "
-        "`hermes sessions recover --source %s --inspect-only` or restore a snapshot.",
+        "until Hermes restarts on a recovered or restored file. Stop every writer for this profile, "
+        "then run `hermes sessions recover --source %s --inspect-only`; install only a complete "
+        "verified candidate with `hermes sessions recover --source <state.db> --output "
+        "<recovered-state.db> --install`.",
         db_path, reason, db_path,
     )
 

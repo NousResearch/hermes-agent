@@ -2910,6 +2910,7 @@ export interface Translations extends NoticeTranslations {
       title: string
       body: (profiles: string) => string
       action: string
+      installAction: string
       guide: string
     }
     noFilterMatches: string

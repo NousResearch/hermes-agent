@@ -143,7 +143,7 @@ def _cmd_repair(args):
 
 
 def _cmd_recover(args):
-    """Offline recovery: works on a disposable copy of the source; never touches the active database."""
+    """Offline recovery; active-store installation is an explicit, quiescence-gated opt-in."""
     import sqlite3
     from hermes_cli.session_recovery import (
         SessionRecoveryError, inspect_session_database, recover_session_database, write_recovery_report,
@@ -151,12 +151,15 @@ def _cmd_recover(args):
     source, output = args.source, getattr(args, "output", None)
     inspect_only = bool(getattr(args, "inspect_only", False))
     allow_partial = bool(getattr(args, "allow_partial", False))
+    install = bool(getattr(args, "install", False))
     report_path = getattr(args, "report", None)
     if not inspect_only and output is not None and report_path is None:
         report_path = output.with_name(output.name + ".recovery.json")
     usage_errors = (
         (inspect_only and output is not None, "--output cannot be used with --inspect-only."),
         (inspect_only and allow_partial, "--allow-partial cannot be used with --inspect-only."),
+        (install and inspect_only, "--install cannot be used with --inspect-only."),
+        (install and allow_partial, "--install cannot be combined with --allow-partial; partial candidates are never installed."),
         (not inspect_only and output is None, "--output is required unless --inspect-only is used."),
         (
             report_path is not None and os.path.lexists(report_path.expanduser()),
@@ -171,6 +174,15 @@ def _cmd_recover(args):
     try:
         if inspect_only:
             report = inspect_session_database(source, work_dir=work_dir)
+        elif install:
+            from hermes_cli.session_recovery_install import recover_and_install_session_database
+            print("Recovering a complete candidate; installation will be refused while a profile writer is active…")
+            progress = _RecoveryProgress()
+            report = recover_and_install_session_database(
+                source, output, work_dir=work_dir, chunk_size=getattr(args, "chunk_size", 1000),
+                progress_cb=progress,
+            )
+            progress.finish()
         else:
             print("Recovering canonical session data into a new database…")
             progress = _RecoveryProgress()
@@ -192,7 +204,34 @@ def _cmd_recover(args):
             return 1
     if inspect_only:
         return 0 if report.get("recoverable") else 1
+    if install:
+        return _print_install_recovery_verdict(report, output)
     return _print_recovery_verdict(report, output, allow_partial)
+
+
+def _print_install_recovery_verdict(report, output) -> int:
+    """Say whether the explicit install completed; a promoted but unverified DB is not green."""
+    if report.get("installed") is True:
+        print(
+            f"✓ Recovered database verified and installed at: {report.get('install_target')}\n"
+            f"  Original source bundle preserved at: {report.get('preserved_source_bundle')}\n"
+            f"  Verified candidate retained at: {output}"
+        )
+        return 0
+    if report.get("promoted"):
+        print(
+            "⚠ The candidate was copied into the active database, but final verification failed. "
+            "Do not resume writers; the original source bundle is preserved at "
+            f"{report.get('preserved_source_bundle')}.\n  {report.get('install_error') or report.get('install_refusal')}"
+        )
+        return 1
+    print(
+        "✗ The candidate was not installed. The active database was left unchanged.\n  "
+        f"{report.get('install_refusal') or 'Review the recovery report before retrying.'}"
+    )
+    if report.get("preserved_source_bundle"):
+        print(f"  Preserved source bundle: {report['preserved_source_bundle']}")
+    return 1
 
 
 class _RecoveryProgress:

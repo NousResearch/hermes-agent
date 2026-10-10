@@ -29,13 +29,16 @@ _SURROGATE_RE = re.compile(r'[\ud800-\udfff]')
 _MESSAGE_CORE_KEYS = frozenset({"content", "name", "tool_calls", "role", DB_ROW_SNAPSHOT})
 
 
-def _sanitize_surrogates(text: str) -> str:
+def sanitize_surrogates(text: str) -> str:
     """Replace lone surrogate code points with U+FFFD; no-op when none present."""
     # ``str.isascii`` is an O(1) flag check; surrogates are never ASCII, so the
     # regex scan only runs for the (rare) non-ASCII leaf.
     if text.isascii():
         return text
     return _SURROGATE_RE.sub('\ufffd', text)
+
+
+_sanitize_surrogates = sanitize_surrogates  # original private spelling, kept as an alias
 
 
 # OpenAI / Anthropic / Responses all bound ``function.name`` to this; one poisoned stored name
@@ -466,7 +469,8 @@ __all__ = [
     "close_interrupted_tool_sequence", "coalesce_tool_call_id", "coerce_tool_name",
     "deterministic_call_id", "matches_reasoning_echo_family", "needs_reasoning_echo",
     "normalize_provider_tool_call_ids", "reapply_reasoning_echo", "reasoning_echo_family",
-    "sanitize_outbound_kwargs", "stale_thinking_reaches_wire", "strip_images_for_rejecting_model",
+    "sanitize_outbound_kwargs", "sanitize_surrogates", "stale_thinking_reaches_wire",
+    "strip_images_for_rejecting_model",
     "tool_call_id_variants", "tool_result_id_variants", "uniquify_tool_call_ids",
 ]
 

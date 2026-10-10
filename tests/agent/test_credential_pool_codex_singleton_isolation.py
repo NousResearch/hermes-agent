@@ -104,3 +104,102 @@ def test_same_account_alias_adopts_only_a_newer_singleton(home, monkeypatch):
                  {"access_token": alias_at, "refresh_token": "rt-alias", "last_refresh": _iso(now - 60)})
     synced = load_pool("openai-codex")._sync_entry_from_auth_store(alias)
     assert (synced.access_token, synced.refresh_token) == (fresh_at, "rt-fresh")
+
+
+def test_forced_codex_refresh_adopts_peer_rotation_without_reposting(home, monkeypatch):
+    """A sibling's successful rotation must end a stale-bearer 401 recovery.
+
+    Posting the newly rotated single-use refresh token again can invalidate the
+    sibling's working client and strand both workers in repeated 401s.
+    """
+    now = time.time()
+    old_at = _jwt("acct-A", "user-A", now + 3600)
+    peer_at = _jwt("acct-A", "user-A", now + 7200)
+    _write_store(home, {"access_token": old_at, "refresh_token": "rt-old"}, _iso(now - 3600),
+                 {"access_token": _jwt("acct-B", "user-B", now + 3600),
+                  "refresh_token": "rt-B", "last_refresh": _iso(now - 3600)})
+    stale_pool = load_pool("openai-codex")
+    stale_entry = next(e for e in stale_pool.entries() if e.id == "seeded")
+
+    store = json.loads((home / "auth.json").read_text(encoding="utf-8"))
+    store["providers"]["openai-codex"]["tokens"] = {
+        "access_token": peer_at, "refresh_token": "rt-peer"}
+    store["providers"]["openai-codex"]["last_refresh"] = _iso(now)
+    store["credential_pool"]["openai-codex"][0].update(
+        access_token=peer_at, refresh_token="rt-peer", last_refresh=_iso(now))
+    (home / "auth.json").write_text(json.dumps(store), encoding="utf-8")
+
+    posts = []
+    _stub_refresh(monkeypatch, _jwt("acct-A", "user-A", now + 10800), "rt-extra", posts)
+    adopted = stale_pool.try_refresh_matching(api_key_hint=old_at, credential_id=stale_entry.id)
+
+    assert posts == [], "the peer already rotated: no second refresh POST"
+    assert adopted is not None
+    assert (adopted.access_token, adopted.refresh_token) == (peer_at, "rt-peer")
+
+
+def test_forced_codex_refresh_still_posts_without_peer_rotation(home, monkeypatch):
+    now = time.time()
+    old_at = _jwt("acct-A", "user-A", now + 3600)
+    minted = _jwt("acct-A", "user-A", now + 7200)
+    _write_store(home, {"access_token": old_at, "refresh_token": "rt-old"}, _iso(now - 3600),
+                 {"access_token": _jwt("acct-B", "user-B", now + 3600),
+                  "refresh_token": "rt-B", "last_refresh": _iso(now - 3600)})
+    pool = load_pool("openai-codex")
+    posts = []
+    _stub_refresh(monkeypatch, minted, "rt-new", posts)
+
+    refreshed = pool.try_refresh_matching(api_key_hint=old_at)
+
+    assert posts == ["rt-old"]
+    assert refreshed is not None
+    assert (refreshed.access_token, refreshed.refresh_token) == (minted, "rt-new")
+
+
+def test_forced_codex_refresh_posts_when_only_refresh_token_rotated(home, monkeypatch):
+    """A peer may save the new refresh grant before its new bearer exists."""
+    now = time.time()
+    failed = _jwt("acct-A", "user-A", now + 3600)
+    minted = _jwt("acct-A", "user-A", now + 7200)
+    _write_store(home, {"access_token": failed, "refresh_token": "rt-old"}, _iso(now - 3600),
+                 {"access_token": _jwt("acct-B", "user-B", now + 3600),
+                  "refresh_token": "rt-B", "last_refresh": _iso(now - 3600)})
+    pool = load_pool("openai-codex")
+    store = json.loads((home / "auth.json").read_text(encoding="utf-8"))
+    store["providers"]["openai-codex"]["tokens"] = {
+        "access_token": "", "refresh_token": "rt-peer"}
+    store["providers"]["openai-codex"]["last_refresh"] = _iso(now)
+    (home / "auth.json").write_text(json.dumps(store), encoding="utf-8")
+
+    posts = []
+    _stub_refresh(monkeypatch, minted, "rt-final", posts)
+    recovered = pool.try_refresh_matching(api_key_hint=failed)
+
+    assert posts == ["rt-peer"], "same failed bearer must not be accepted as recovered"
+    assert recovered is not None
+    assert (recovered.access_token, recovered.refresh_token) == (minted, "rt-final")
+
+
+def test_nonforced_codex_refresh_posts_when_adopted_peer_bearer_is_expiring(home, monkeypatch):
+    now = time.time()
+    old_at = _jwt("acct-A", "user-A", now + 60)
+    expiring_peer = _jwt("acct-A", "user-A", now + 61)
+    minted = _jwt("acct-A", "user-A", now + 7200)
+    _write_store(home, {"access_token": old_at, "refresh_token": "rt-old"}, _iso(now - 3600),
+                 {"access_token": _jwt("acct-B", "user-B", now + 3600),
+                  "refresh_token": "rt-B", "last_refresh": _iso(now - 3600)})
+    pool = load_pool("openai-codex")
+    stale = next(e for e in pool.entries() if e.id == "seeded")
+    store = json.loads((home / "auth.json").read_text(encoding="utf-8"))
+    store["providers"]["openai-codex"]["tokens"] = {
+        "access_token": expiring_peer, "refresh_token": "rt-peer"}
+    store["providers"]["openai-codex"]["last_refresh"] = _iso(now)
+    (home / "auth.json").write_text(json.dumps(store), encoding="utf-8")
+
+    posts = []
+    _stub_refresh(monkeypatch, minted, "rt-final", posts)
+    refreshed = pool._refresh_entry(stale, force=False)
+
+    assert posts == ["rt-peer"]
+    assert refreshed is not None
+    assert (refreshed.access_token, refreshed.refresh_token) == (minted, "rt-final")

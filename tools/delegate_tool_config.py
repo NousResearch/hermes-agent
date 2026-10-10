@@ -221,9 +221,8 @@ def _loaded_pool(key: Any):
 
 def _pool_serves_endpoint(pool: Any, provider: Optional[str], base_url: Optional[str]) -> bool:
     """Provider identity AND at least one entry for the child's endpoint; pools without entry metadata pass."""
-    from agent.credential_pool import (
-        credential_pool_entry_serves_endpoint as _entry_serves_endpoint, credential_pool_matches_provider,
-    )
+    from agent.credential_pool import credential_pool_entry_serves_endpoint as _entry_serves_endpoint
+    from agent.credential_pool_identity import credential_pool_matches_provider
     if not credential_pool_matches_provider(pool, provider, base_url=base_url):
         return False
     entries_fn = getattr(pool, "entries", None)

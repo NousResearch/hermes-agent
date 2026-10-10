@@ -441,9 +441,9 @@ def _finalize_routing(agent, api_mode, credential_pool):
     # #63425).
     if credential_pool is not None:
         try:
-            from agent.credential_pool import credential_pool_matches_provider
+            from agent.credential_pool_identity import credential_pool_matches_provider
             if not credential_pool_matches_provider(
-                credential_pool, agent.provider, base_url=agent.base_url,
+                credential_pool, agent.provider, base_url=agent.base_url, requested_provider=agent.requested_provider,
             ):
                 agent._credential_pool = None
         except Exception:

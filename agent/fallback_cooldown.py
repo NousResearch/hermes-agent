@@ -1,5 +1,5 @@
 """Primary rate-limit cooldown arming and per-session model rejection markers, shared by the
-fallback walk (chat_completion_helpers) and restore_primary_runtime (agent_runtime_helpers)."""
+fallback walk (chat_completion_helpers) and restore_primary_runtime (route_binding)."""
 import logging
 import math
 import time

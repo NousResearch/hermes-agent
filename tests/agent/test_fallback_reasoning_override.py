@@ -62,7 +62,7 @@ class TestFallbackReasoningOverride:
         3. Fallback activates → reasoning re-resolved for fallback model
         4. restore_primary_runtime → reasoning_config restored from snapshot
         """
-        from agent.agent_runtime_helpers import restore_primary_runtime
+        from agent.route_binding import restore_primary_runtime
 
         agent = MagicMock()
         # Simulate: _primary_runtime was captured during /model switch

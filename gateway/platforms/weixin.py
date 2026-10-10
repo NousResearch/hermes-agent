@@ -935,7 +935,16 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             data = await _download_and_decrypt_media(
                 self._poll_session, cdn_base_url=self._cdn_base_url, encrypted_query_param=media.get("encrypt_query_param"),
                 aes_key_b64=aes_key_b64, full_url=media.get("full_url"), timeout_seconds=timeout_seconds)
-            return await cache_fn(data, filename), mime
+            try:
+                return await cache_fn(data, filename), mime
+            except ValueError:
+                if item_key != "image_item":
+                    raise
+                # The bytes are not an image despite the item type (the magic-byte
+                # check refused them): keep the file as a document instead of losing it.
+                logger.warning("[%s] image bytes rejected by the image cache; storing as a document", self.name)
+                doc_mime = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+                return await cache_document_from_bytes_async(data, filename), doc_mime
         except Exception as exc:
             logger.warning("[%s] %s download failed: %s", self.name, label, exc)
             return None, mime

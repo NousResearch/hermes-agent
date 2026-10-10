@@ -193,12 +193,17 @@ def guard_claim(conn, task_id, resume, *, reserve=True) -> bool:
 
 
 def _probe_succeeded(conn, circuit):
+    from hermes_cli import kanban_db as kb
     probe = circuit["probe_task"]
     if not probe:
         return False
-    row = conn.execute("SELECT * FROM tasks WHERE id=?", (probe,)).fetchone()
-    return bool(row and row["status"] in {"done", "review"}
-                and identity(row) == (circuit["scope"], circuit["backend"]))
+    run = conn.execute(
+        "SELECT metadata FROM task_runs WHERE task_id=? AND ended_at IS NOT NULL "
+        "AND outcome='completed' AND status='done' ORDER BY id DESC LIMIT 1", (probe,)
+    ).fetchone()
+    pinned = kb._json_dict(run["metadata"]).get("quota_route") if run else None
+    return bool(pinned and (pinned.get("scope"), pinned.get("backend"))
+                == (circuit["scope"], circuit["backend"]))
 
 
 def recover_waits(conn):

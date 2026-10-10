@@ -93,7 +93,7 @@ def test_hard_quota_survives_334_ticks_restart_and_atomic_sibling_claims(lab, mo
             from agent.secret_scope import get_secret
             for name in ('a', 'b', 'a'):
                 with dispatch._worker_profile_scope(str(home / 'profiles' / name)):
-                    assert get_secret('OPENAI_API_KEY') == f'canary-{name}' 
+                    assert get_secret('OPENAI_API_KEY') == f'canary-{name}'
             assert quota.identity(conn.execute('SELECT * FROM tasks WHERE id=?', (tid,)).fetchone()) == a
             assert spawn_failure(conn, tid, monkeypatch).reason == FailoverReason.billing
             # Guard is visible before the dead-worker sweep and from a second connection.
@@ -215,8 +215,12 @@ def test_finite_retry_and_safe_recovery(lab, monkeypatch, recovery):
                 kb.recompute_ready(conn)
                 sibling = kb.create_task(conn, title='one reset probe only', assignee='a')
                 if recovery == 'reset_probe_switch':
-                    assert kb.claim_task(conn, tid) is not None
+                    spawn_failure(conn, tid, monkeypatch, error(429, 'rate_limit_exceeded'))
+                    tick(conn, launched)
                     kb.set_model_override(conn, tid, 'gpt-5', 'openai-codex')
+                    kb.recompute_ready(conn)
+                    assert kb.claim_task(conn, tid) is not None
+                    kb.set_model_override(conn, tid, 'grok', 'xai-oauth')
                     kb.complete_task(conn, tid, summary='finished on switched provider')
                     kb.recompute_ready(conn)
                     assert kb.claim_task(conn, sibling) is None

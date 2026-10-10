@@ -1967,6 +1967,10 @@ def _end_run(
     run_id = _current_run_id(conn, task_id)
     if run_id is None:
         return None
+    # Completion metadata must retain the route reserved at claim time.
+    prior = _json_dict(conn.execute("SELECT metadata FROM task_runs WHERE id=?", (run_id,)).fetchone()[0])
+    if "quota_route" in prior:
+        metadata = dict(metadata or {}, quota_route=prior["quota_route"])
     conn.execute(
         """
         UPDATE task_runs

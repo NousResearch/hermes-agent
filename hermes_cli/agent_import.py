@@ -7,8 +7,10 @@ names (KEY, TOKEN, SECRET, PASSWORD, ...) are stripped and reported so the user 
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
+import os
 import re
 import shutil
 import sys
@@ -398,9 +400,19 @@ class AgentImporter:
                 if destination.exists():
                     backup = destination.with_suffix(f"{destination.suffix}.bak.{int(time.time())}")
                     shutil.copy2(destination, backup)
+                    # ``copy2`` preserves the source's mode bits, so a store left loose by an
+                    # older Hermes would be snapshotted loose as well. The snapshot holds the
+                    # same private notes — the same repair ``profiles._clone_file`` does for
+                    # ``.env``. Suppressed: this hardening must never abort the import.
+                    with contextlib.suppress(OSError):
+                        os.chmod(str(backup), 0o600)
                     details["backup"] = str(backup)
                 step = "write merged"
-                atomic_write_text(destination, ENTRY_DELIMITER.join(merged) + ("\n" if merged else ""))
+                # ``mode=0o600`` (not ``create_mode``): the memory store is the user's private
+                # notes verbatim, and a plain write is 0o666 & ~umask — world-readable at the
+                # common umask 0o022. Forcing the mode also repairs an existing loose file.
+                atomic_write_text(destination, ENTRY_DELIMITER.join(merged) + ("\n" if merged else ""),
+                                  mode=0o600)
             except OSError as exc:
                 return f"Could not {step} memory file: {exc}"
             return None

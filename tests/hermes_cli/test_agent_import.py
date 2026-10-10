@@ -463,6 +463,47 @@ class TestExistingMemoryStorePreserved:
         assert backups[0].read_text(encoding="utf-8") == EXISTING_MEMORY
 
 
+@pytest.mark.platforms("posix")
+class TestImportedMemoryFilePermissions:
+    """The store the importer writes is owner-only, like ``MemoryStore``'s own.
+
+    Regression guard: ``_import_memory_file`` wrote the merged store through
+    ``atomic_write_text`` with no ``mode`` — a NEW ``MEMORY.md`` landed at
+    ``0o666 & ~umask`` (world-readable at the common umask 0o022), and the
+    ``.bak`` snapshot inherited the loose bits through ``copy2``.
+    """
+
+    def test_merged_store_is_owner_only(self, claude_tree, hermes_home):
+        import os
+        import stat
+
+        memory = hermes_home / "memories" / "MEMORY.md"
+        previous_umask = os.umask(0o022)
+        try:
+            run_import("claude-code", claude_tree, hermes_home, execute=True)
+        finally:
+            os.umask(previous_umask)
+
+        assert memory.exists()
+        assert stat.S_IMODE(memory.stat().st_mode) == 0o600
+
+    def test_backup_of_a_loose_store_is_tightened(self, claude_tree, hermes_home):
+        import os
+        import stat
+
+        memory = hermes_home / "memories" / "MEMORY.md"
+        memory.parent.mkdir(parents=True, exist_ok=True)
+        memory.write_text(EXISTING_MEMORY, encoding="utf-8")
+        memory.chmod(0o644)
+
+        run_import("claude-code", claude_tree, hermes_home, execute=True)
+
+        backups = sorted((hermes_home / "memories").glob("MEMORY.md.bak.*"))
+        assert len(backups) == 1
+        assert stat.S_IMODE(backups[0].stat().st_mode) == 0o600
+        assert stat.S_IMODE(memory.stat().st_mode) == 0o600
+
+
 # ---------------------------------------------------------------------------
 # config.yaml preservation (sibling of the MEMORY.md case above)
 # ---------------------------------------------------------------------------

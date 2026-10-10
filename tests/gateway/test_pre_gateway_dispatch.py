@@ -122,6 +122,64 @@ async def test_hook_fires_without_session_store_attribute(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_busy_path_runs_hook_and_honours_skip(monkeypatch):
+    """Messages for an already-running session go through the busy handler — and must see the
+    plugin hook there too.
+
+    Regression: only the cold path (``_hm_admit_event``) ran ``pre_gateway_dispatch``. A message
+    arriving while *its own session* was busy went to ``_handle_active_session_busy_message``,
+    which skipped the hook: a plugin's decision was silently lost and the raw message was
+    injected into the running turn (an approval mid-run reached a model that acted on it).
+    """
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "*")
+
+    seen = []
+
+    async def _hook(name, **kwargs):
+        if name == "pre_gateway_dispatch":
+            seen.append(kwargs["event"].text)
+            return [{"action": "skip", "reason": "plugin-handled"}]
+        return []
+
+    monkeypatch.setattr("hermes_cli.plugins.ainvoke_hook", _hook)
+    monkeypatch.setattr("hermes_cli.lifecycle.ainvoke_hook", _hook)
+
+    runner, adapter = _make_runner(Platform.WHATSAPP)
+    result = await runner._handle_active_session_busy_message(_make_event("hi"), "sess-key")
+
+    assert seen == ["hi"]          # fired exactly once, for this message
+    assert result is True          # "handled": dropped by the plugin, never dispatched
+    adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_busy_path_still_dispatches_when_hook_allows(monkeypatch):
+    """No ``skip`` from the hook ⇒ the busy handler proceeds exactly as before."""
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "*")
+
+    called = []
+
+    async def _hook(name, **kwargs):
+        called.append(name)
+        return []
+
+    monkeypatch.setattr("hermes_cli.plugins.ainvoke_hook", _hook)
+    monkeypatch.setattr("hermes_cli.lifecycle.ainvoke_hook", _hook)
+
+    runner, _adapter = _make_runner(Platform.WHATSAPP)
+
+    def _sentinel(source):
+        raise RuntimeError("reached-authorization-gate")
+
+    runner._is_user_authorized_for_source = _sentinel  # first check after the hook
+    with pytest.raises(RuntimeError, match="reached-authorization-gate"):
+        await runner._handle_active_session_busy_message(_make_event("hi"), "sess-key")
+    assert called == ["pre_gateway_dispatch"]
+
+
+@pytest.mark.asyncio
 async def test_async_hook_callback_is_awaited_on_the_gateway_loop(monkeypatch):
     """An ``async def`` pre_gateway_dispatch callback is awaited on the gateway's own loop.
 

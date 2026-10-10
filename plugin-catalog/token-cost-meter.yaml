@@ -1,0 +1,19 @@
+name: token-cost-meter
+repo: https://github.com/IT-dreamer/token-cost-meter
+sha: REPLACE_WITH_40_CHAR_SHA_AFTER_MERGING_TO_MASTER
+description: Live token usage, model-aware USD cost and prompt-cache savings in the
+  Hermes Desktop status bar, with a persistent per-day ledger that survives restarts.
+maintainer: IT-dreamer
+tier: community
+category: desktop
+version: "1.0.0"
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/IT-dreamer/token-cost-meter#readme
+screenshots:
+  - https://raw.githubusercontent.com/IT-dreamer/token-cost-meter/REPLACE_WITH_40_CHAR_SHA_AFTER_MERGING_TO_MASTER/image/statusbar-chip-en.png
+  - https://raw.githubusercontent.com/IT-dreamer/token-cost-meter/REPLACE_WITH_40_CHAR_SHA_AFTER_MERGING_TO_MASTER/image/session-pane-en.png
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

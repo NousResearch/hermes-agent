@@ -40,7 +40,8 @@ _GATE_PUBLIC_PREFIXES: tuple[str, ...] = (
     "/auth/login", "/auth/callback", "/auth/native/authorize", "/auth/native/token",
     "/auth/native/refresh", "/auth/password-login", "/auth/logout", "/login",
     "/api/auth/providers", "/api/mcp/oauth/callback/",
-    "/assets/", "/dashboard-plugins/", "/favicon.ico", "/ds-assets/", "/fonts/", "/fonts-terminal/")
+    "/assets/", "/dashboard-plugins/", "/favicon.ico", "/manifest.webmanifest", "/icons/",
+    "/ds-assets/", "/fonts/", "/fonts-terminal/")
 
 
 def _path_is_public(path: str) -> bool:

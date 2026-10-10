@@ -183,7 +183,8 @@ def mount_spa(application: FastAPI):
         )
         if prefix:
             # Rewrite absolute asset URLs baked into the Vite build to go through the proxy.
-            for attr in ('href="/assets/', 'src="/assets/', 'href="/favicon.ico"', 'href="/fonts/',
+            for attr in ('href="/assets/', 'src="/assets/', 'href="/favicon.ico"',
+                         'href="/manifest.webmanifest"', 'href="/icons/', 'href="/fonts/',
                          'href="/ds-assets/', 'src="/ds-assets/'):
                 html = html.replace(attr, attr.replace('"/', f'"{prefix}/', 1))
         theme_bootstrap = _render_active_theme_bootstrap_css()
@@ -223,6 +224,31 @@ def mount_spa(application: FastAPI):
     application.mount(
         "/assets", _ImmutableAssetFiles(directory=WEB_DIST / "assets", check_dir=False), name="assets"
     )
+
+    # The static manifest uses root-absolute id/start_url/scope/icon paths; behind
+    # X-Forwarded-Prefix those would escape the proxied path, so rewrite them per request.
+    @application.get("/manifest.webmanifest")
+    async def serve_manifest(request: Request):
+        prefix = _normalise_prefix(request.headers.get("x-forwarded-prefix"))
+        manifest_path = WEB_DIST / "manifest.webmanifest"
+        if not manifest_path.exists():
+            return JSONResponse({"detail": "manifest not found"}, status_code=404)
+        raw = manifest_path.read_text(encoding="utf-8")
+        if prefix:
+            try:
+                data = json.loads(raw)
+                for key in ("id", "start_url", "scope"):
+                    val = data.get(key)
+                    if isinstance(val, str) and val.startswith("/"):
+                        data[key] = prefix + val
+                for icon in data.get("icons") or []:
+                    src = icon.get("src", "")
+                    if isinstance(src, str) and src.startswith("/"):
+                        icon["src"] = prefix + src
+                raw = json.dumps(data, indent=2)
+            except Exception:
+                pass  # serve unmodified on parse error
+        return Response(content=raw, media_type="application/manifest+json")
 
     @application.get("/{full_path:path}")
     async def serve_spa(full_path: str, request: Request):

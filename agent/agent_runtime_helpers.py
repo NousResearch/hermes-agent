@@ -1516,9 +1516,6 @@ def extract_reasoning(agent, assistant_message) -> Optional[str]:
             parts.append(text)
     _add(getattr(assistant_message, "reasoning", None))
     _add(getattr(assistant_message, "reasoning_content", None))
-    if not parts:  # Copilot /chat/completions names its readable reasoning ``reasoning_text``
-        from agent.reasoning_carriers import field
-        _add(field(assistant_message, "reasoning_text"))
     # reasoning_details: [{"type": "reasoning.summary", "summary": "...", ...}, ...]
     for detail in getattr(assistant_message, "reasoning_details", None) or []:
         if isinstance(detail, dict):

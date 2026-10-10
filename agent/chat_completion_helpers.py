@@ -1882,6 +1882,12 @@ def _fallback_api_mode_resolved(agent, fb_provider: str, fb_model: str, fb_base_
         return "anthropic_messages"
     if agent._is_azure_openai_url(fb_base_url):
         return "chat_completions"  # Azure serves gpt-5.x on /chat/completions — no Responses API.
+    if fb_provider == "bedrock":
+        # Same split as the primary and auxiliary resolvers: bare Mantle-served OpenAI ids on Responses
+        # (keeping the Mantle client resolve_provider_client built); us./global. profiles and every
+        # other vendor on Converse.
+        from agent.bedrock_adapter import bedrock_openai_uses_mantle
+        return "codex_responses" if bedrock_openai_uses_mantle(fb_model) else "bedrock_converse"
     # Provider exceptions (Copilot gpt-5-mini) stay inside the requires-responses predicate.
     if agent._is_direct_openai_url(fb_base_url) or agent._provider_model_requires_responses_api(fb_model, provider=fb_provider):
         return "codex_responses"

@@ -57,8 +57,11 @@ def start_turn_worker(self, turn_ctx, run_sync):
         try:
             if reservation is not None:
                 from gateway.chat_execution_recovery import ChatExecutionStore
-                home, reserved_key, reserved_generation = reservation
-                if (reserved_key, reserved_generation) != (session_key, run_generation) or not worker.is_current():
+                from gateway.chat_execution_followup import worker_execution_identity
+                home, reserved_key, reserved_generation = worker_execution_identity(
+                    reservation, session_key, run_generation, actual_session_id,
+                )
+                if not worker.is_current():
                     raise RuntimeError("Durable worker admission is stale")
                 store = ChatExecutionStore(home)
                 if not store.bind_worker_started(reserved_key, reserved_generation, actual_session_id):

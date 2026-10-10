@@ -71,7 +71,7 @@ class ChatExecutionStore:
             db.commit()
             return True
 
-    def reserve(self, session_key, memory_floor, caller_floor):
+    def reserve(self, session_key, memory_floor, caller_floor, *, predecessor=None):
         """Atomically reserve a durable generation before the physical session id exists."""
         if not session_key or type(memory_floor) is not int or type(caller_floor) is not int:
             return None
@@ -82,6 +82,16 @@ class ChatExecutionStore:
                 db.rollback()
                 return None
             latest = db.execute("SELECT MAX(generation) AS g FROM executions WHERE session_key=?", (session_key,)).fetchone()["g"] or 0
+            if predecessor is not None:
+                previous_generation, previous_session_id = predecessor
+                previous = db.execute(
+                    "SELECT session_id,worker,worker_started FROM executions WHERE session_key=? AND generation=?",
+                    (session_key, previous_generation),
+                ).fetchone()
+                if (latest != previous_generation or not previous or not previous_session_id
+                        or tuple(previous) != (previous_session_id, "completed", 1)):
+                    db.rollback()
+                    return None
             generation = max(int(latest), memory_floor, caller_floor) + 1
             db.execute("INSERT INTO executions VALUES (?, ?, '', 'pending', 0, 'unknown', 0)", (session_key, generation))
             db.commit()

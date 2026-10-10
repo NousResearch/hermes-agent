@@ -97,6 +97,7 @@ async def test_recursive_three_turn_chain_then_human(profiles, monkeypatch, diag
                                metadata={"notification_category": "diagnostic"}))
     original_authority = [(e.internal, e.allow_gateway_control) for e in events]
     calls = []
+    body_markers = []
     loop = asyncio.get_running_loop()
 
     class ScriptedAgent:
@@ -104,6 +105,18 @@ async def test_recursive_three_turn_chain_then_human(profiles, monkeypatch, diag
             self.tools = []
 
         def run_conversation(self, message, conversation_history=None, task_id=None, **kwargs):
+            import sqlite3
+            from contextlib import closing
+            from agent.chat_execution_context import observe_tool_before_execution
+            with closing(sqlite3.connect(root / "chat-execution.sqlite3")) as db:
+                marker = db.execute(
+                    "SELECT generation, session_id, worker, worker_started, effects "
+                    "FROM executions WHERE session_key=? AND session_id=? "
+                    "ORDER BY generation DESC LIMIT 1", (key, task_id),
+                ).fetchone()
+            assert marker is not None and marker[2:] == ("pending", 1, "unknown")
+            assert observe_tool_before_execution() is True
+            body_markers.append((marker, runner._current_session_run_generation(key)))
             calls.append(message)
             index = len(calls) - 1
             if index < 2:
@@ -135,6 +148,17 @@ async def test_recursive_three_turn_chain_then_human(profiles, monkeypatch, diag
         assert [row[0] for row in adapter.wire] == expected
         await adapter._process_message_background(events[3], key)
         assert len(calls) == 4
+        generations = [row[0][0] for row in body_markers]
+        assert len(set(generations)) == 4 and generations == sorted(generations)
+        assert len({row[1] for row in body_markers[:3]}) == 1
+        assert body_markers[3][1] == generations[3] > generations[2]
+        from gateway.chat_execution_recovery import ChatExecutionStore
+        store = ChatExecutionStore(root)
+        with store._db() as db:
+            completed = db.execute(
+                "SELECT generation,worker,effects FROM executions WHERE session_key=? ORDER BY generation", (key,),
+            ).fetchall()
+        assert [tuple(row) for row in completed] == [(g, "completed", "unknown") for g in generations]
         assert [row[0] for row in adapter.wire] == expected + ["result-3"]
         assert [(e.internal, e.allow_gateway_control) for e in events] == original_authority
         assert authorized[-1] == "42"  # next human still crosses authorization

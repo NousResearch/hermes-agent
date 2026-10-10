@@ -15,6 +15,12 @@ an ordinary chat turn. The reservation is initially unbound: the actual session 
 when the physical worker starts. A database failure or recovery fence refuses admission; routing
 keys are not substituted for session IDs.
 
+Queued recursive follow-ups keep the logical routing/lease generation of their chat chain, but each
+physical worker gets a fresh journal generation. Reservation atomically requires the exact latest
+predecessor's recorded physical completion and real session identity. The new reservation is still
+unbound until its own worker starts. Stop and stale-result checks continue to use the logical chain
+generation; a later ordinary inbound admission advances beyond the journal's durable floor.
+
 The physical worker records its own completion from its target's `finally`. Stop acknowledgement,
 wrapper cancellation, future completion and gateway restart are not physical completion evidence.
 

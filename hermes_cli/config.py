@@ -3935,7 +3935,7 @@ def _cmd_config_migrate(args):
 
 
 def _cmd_config_check(args):
-    """Non-interactive report of missing and stale configuration."""
+    """Non-interactive report of environment and YAML configuration health."""
     _print_banner("📋 Configuration Status")
 
     current_ver, latest_ver = check_config_version(raise_on_parse_error=True)
@@ -3962,12 +3962,57 @@ def _cmd_config_check(args):
 
     from hermes_cli.config_check_diagnostics import config_check_diagnostics
 
-    diagnostics = config_check_diagnostics(read_raw_config_readonly(), get_env_value)
-    if diagnostics:
+    raw_config = read_raw_config_readonly()
+    structure_issues = validate_config_structure(raw_config)
+    diagnostics = config_check_diagnostics(raw_config, get_env_value)
+    if structure_issues or diagnostics:
         print()
         print(color("  Saved configuration:", Colors.BOLD))
+        for issue in structure_issues:
+            marker = "✗" if issue.severity == "error" else "⚠"
+            print(color(f"    {marker} {issue.message}", Colors.RED if issue.severity == "error" else Colors.YELLOW))
+            if issue.hint:
+                print(f"      Hint: {issue.hint}")
         for diagnostic in diagnostics:
             print(color(f"    ⚠ {diagnostic}", Colors.YELLOW))
+
+    if getattr(args, "profiles", False):
+        from hermes_constants import get_default_hermes_root
+        profiles_root = get_default_hermes_root() / "profiles"
+        current_config_dir = get_config_path().parent.resolve()
+        for profile_dir in sorted(p for p in profiles_root.iterdir() if p.is_dir()) if profiles_root.is_dir() else ():
+            if profile_dir.resolve() == current_config_dir:
+                continue  # Already inspected above, including under --profile.
+            path = profile_dir / "config.yaml"
+            if not path.is_file():
+                continue
+            try:
+                with path.open(encoding="utf-8-sig") as stream:
+                    profile_config = yaml.safe_load(stream)
+            except Exception as exc:
+                profile_issues = [ConfigIssue("error", f"{path}: cannot parse config.yaml ({exc})", "Fix the YAML syntax")]
+            else:
+                if profile_config is None:
+                    profile_config = {}  # Match the default path's empty-document handling.
+                if not isinstance(profile_config, dict):
+                    profile_issues = [ConfigIssue(
+                        "error", f"{path}: config.yaml top-level value must be a mapping, "
+                        f"got {type(profile_config).__name__}",
+                        "Use a YAML mapping at the top level")]
+                else:
+                    profile_issues = validate_config_structure(profile_config)
+                    profile_ver = _coerce_config_version(profile_config.get("_config_version"))
+                    if profile_ver < latest_ver:
+                        profile_issues.insert(0, ConfigIssue(
+                            "warning", f"Config version: {profile_ver} → {latest_ver} (update available)",
+                            f"Run 'hermes --profile {profile_dir.name} config migrate' to update this profile"))
+            if profile_issues:
+                print()
+                print(color(f"  Profile '{profile_dir.name}':", Colors.BOLD))
+                for issue in profile_issues:
+                    print(color(f"    {'✗' if issue.severity == 'error' else '⚠'} {issue.message}", Colors.RED if issue.severity == 'error' else Colors.YELLOW))
+                    if issue.hint:
+                        print(f"      Hint: {issue.hint}")
 
     print()
 

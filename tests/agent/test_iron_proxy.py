@@ -101,6 +101,24 @@ def test_build_proxy_config_custom_allowed_hosts(tmp_path):
     assert "openrouter.ai" in domains  # comes from the mapping
 
 
+def test_normalize_allowed_hosts_drops_unmatchable_entries_with_fix():
+    """iron-proxy globs the port-stripped host, so URL / host:port / path entries can never match
+    (silent 403s). They are dropped with one warning naming the entry and the fix; valid globs, IP
+    literals and case variants survive normalized."""
+    warnings: list[str] = []
+    hosts = ip.normalize_allowed_hosts(
+        ["API.Example.com", "api.example.com", "*.ollama.test", "10.0.0.5", "[::1]",
+         "host.docker.internal:11434", "https://api.example.com/v1", "api.example.com/v1", "", 42],
+        warn=warnings.append,
+    )
+    assert hosts == ["api.example.com", "*.ollama.test", "10.0.0.5", "::1"]
+    assert len(warnings) == 5
+    port_warning = next(w for w in warnings if "host.docker.internal:11434" in w)
+    assert "proxy.extra_allowed_hosts" in port_warning
+    assert 'use the bare host name "host.docker.internal"' in port_warning
+    assert any("not URLs" in w and '"api.example.com"' in w for w in warnings)
+
+
 # ---------------------------------------------------------------------------
 # Default SSRF deny list (regression: docs promise cloud metadata is denied)
 # ---------------------------------------------------------------------------

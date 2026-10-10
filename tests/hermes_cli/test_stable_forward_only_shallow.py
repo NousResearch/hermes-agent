@@ -89,3 +89,15 @@ def test_unchosen_default_follows_main_instead_of_detaching_onto_the_release(his
     chosen = source_releases.resolve_source_target("stable", ["git"], clone, repository="o/r")
     assert chosen.commit == release
 
+
+@pytest.mark.parametrize("url,remote", [
+    ("git@github.com:NousResearch/hermes-agent.git", "https://github.com/NousResearch/hermes-agent.git"),
+    ("ssh://git@github.com/NousResearch/hermes-agent", "https://github.com/NousResearch/hermes-agent.git"),
+    ("https://github.com/NousResearch/hermes-agent.git", "origin"),
+    ("git@github.com:someone/hermes-agent.git", "origin"),  # a fork keeps its own auth
+])
+def test_official_ssh_origin_verifies_the_release_tag_over_https(tmp_path, url, remote):
+    _git(tmp_path, "init", "-q")
+    _git(tmp_path, "remote", "add", "origin", url)
+    repository = source_releases.source_repository(["git"], tmp_path)
+    assert source_releases._tag_remote(["git"], tmp_path, repository) == remote

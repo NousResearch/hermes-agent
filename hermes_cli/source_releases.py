@@ -38,6 +38,22 @@ def source_repository(git_cmd=None, cwd=None) -> str:
     return OFFICIAL_REPOSITORY
 
 
+def _tag_remote(git_cmd, cwd, repository: str) -> str:
+    """Where the release tag is verified: ``origin``, except an SSH origin of the official
+    repository, which is read over public HTTPS (no SSH key, agent or FIDO touch needed)."""
+    from hermes_cli.source_check import source_git_env
+
+    url = subprocess.run(
+        [*git_cmd, "config", "--get", "remote.origin.url"], cwd=cwd, capture_output=True, text=True,
+        encoding="utf-8", errors="replace", timeout=10, stdin=subprocess.DEVNULL, env=source_git_env(),
+    ).stdout.strip()
+    match = _GITHUB_ORIGIN.fullmatch(url)
+    if (match and match[1].lower() == OFFICIAL_REPOSITORY.lower() == repository.lower()
+            and url.lower().startswith(("git@", "ssh://"))):
+        return f"https://github.com/{OFFICIAL_REPOSITORY}.git"
+    return "origin"
+
+
 @dataclass(frozen=True)
 class SourceTarget:
     """A pinned source build or an explicitly declared source-branch delivery."""
@@ -343,7 +359,7 @@ def resolve_source_release(channel: str, git_cmd=None, cwd=None, *, repository=N
 
             ref = f"refs/tags/{tag}"
             result = subprocess.run(
-                [*git_cmd, "ls-remote", "--tags", "origin", ref, ref + "^{}"],
+                [*git_cmd, "ls-remote", "--tags", _tag_remote(git_cmd, cwd, repository), ref, ref + "^{}"],
                 cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace",
                 check=True, timeout=60, stdin=subprocess.DEVNULL,
                 env=source_git_env(),

@@ -20,6 +20,8 @@ cwd side of the same call.
 import os
 import subprocess
 import sys
+import time
+from contextlib import suppress
 from unittest.mock import patch
 
 import pytest
@@ -132,3 +134,58 @@ class TestSpawnChildDescriptors:
             assert witness_fd not in open_fds, (
                 f"child inherited the probe descriptor {witness_fd} ({witness})")
         assert {0, 1, 2} <= open_fds, f"stdio missing from the child fd set {sorted(open_fds)}"
+
+
+class TestSpawnHandleIsPopenShaped:
+    """The foreground handle is ADOPTED by the process registry when a foreground command yields
+    to the background (a user message mid-command — ``terminal_tool_background`` passes it to
+    ``process_registry.adopt_local``), so ``_PosixSpawnProcess`` must satisfy the registry's
+    Popen-shaped contract, not just this module's own drain loop. t_73f1fd2c: it did not, and
+    backgrounding wedged for the life of the process.
+    """
+
+    def test_handle_reports_the_popen_stream_shape(self, tmp_path):
+        proc, _ = _run_bash(str(tmp_path), "echo shape")
+        try:
+            # ``Popen(stdout=PIPE, stderr=STDOUT).stderr`` is None — the wiring the dup2 file
+            # actions reproduce — but the ATTRIBUTE must exist: the registry's teardown reads
+            # every stream of an adopted handle without a guard.
+            assert proc.stderr is None
+        finally:
+            proc.wait(timeout=10)
+
+    def test_adopted_handle_does_not_wedge_later_background_spawns(self, tmp_path, monkeypatch):
+        """The reported symptom: one adopted handle made every later background spawn fail.
+
+        Finishing an adopted session runs ``_release_finished_handles`` on the reader thread,
+        which raised on ``proc.stderr`` for the posix_spawn handle. That killed the reader
+        (the gateway logs it as ``[gateway-crash] thread proc-reader-<id>``) AND left the
+        session in ``_finished``, so ``_track_started`` -> ``_prune_if_needed`` re-raised on
+        it for every subsequent spawn — ``terminal(background=true)`` returned "Failed to start
+        background process: '_PosixSpawnProcess' object has no attribute 'stderr'".
+        """
+        from tools import process_registry as pr
+
+        registry = pr.ProcessRegistry()
+        proc, _ = _run_bash(str(tmp_path), "echo adopted")
+        try:
+            session = registry.adopt_local(proc, command="echo adopted", cwd=str(tmp_path),
+                                           task_id="t_adopt", owner_task_id="t_adopt")
+            # Let the reader finish the adopted session so it lands in the finished set —
+            # the state that poisoned every later prune.
+            deadline = time.time() + 20
+            while session.id in registry._running and time.time() < deadline:
+                time.sleep(0.05)
+            assert session.id in registry._finished, "adopted session never finished"
+
+            # A finished session is only released once it is due (TTL) or over cap, so make
+            # it due and drive the exact path the next background spawn takes.
+            monkeypatch.setattr(pr, "FINISHED_TTL_SECONDS", -1)
+            after = registry.spawn_local(command="echo after", cwd=str(tmp_path),
+                                         task_id="t_after", owner_task_id="t_after")
+            assert after.pid, "the later background spawn never started"
+            assert session.id not in registry._finished, (
+                "the released finished session was left behind to poison the next prune")
+        finally:
+            with suppress(Exception):
+                registry.kill_all()

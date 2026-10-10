@@ -14,7 +14,9 @@ const readDir = vi.fn<(path: string) => Promise<HermesReadDirResult>>()
 const repoStatus = vi.fn<(cwd: string) => Promise<null>>()
 
 function installBridge() {
-  ;(window as unknown as { hermesDesktop: { git: { repoStatus: typeof repoStatus }; readDir: typeof readDir } }).hermesDesktop = {
+  ;(
+    window as unknown as { hermesDesktop: { git: { repoStatus: typeof repoStatus }; readDir: typeof readDir } }
+  ).hermesDesktop = {
     git: { repoStatus },
     readDir
   }
@@ -83,12 +85,8 @@ describe('RightSidebarPane', () => {
     $workspaceCwdOwner.set('main-session')
     setCurrentCwd('/repo-main')
 
-    $sessions.set([
-      { cwd: '/repo-tile', id: 'tile-session' } as any
-    ])
-    $sessionTiles.set([
-      { storedSessionId: 'tile-session', runtimeId: 'rt-tile', workspaceMode: 'sessions' } as any
-    ])
+    $sessions.set([{ cwd: '/repo-tile', id: 'tile-session' } as any])
+    $sessionTiles.set([{ storedSessionId: 'tile-session', runtimeId: 'rt-tile', workspaceMode: 'sessions' } as any])
     $layoutTree.set({
       id: 'grp-1',
       type: 'group',
@@ -114,12 +112,8 @@ describe('RightSidebarPane', () => {
     $workspaceCwdOwner.set('main-session')
     setCurrentCwd('/repo-main')
 
-    $sessions.set([
-      { cwd: '/repo-tile', id: 'tile-session' } as any
-    ])
-    $sessionTiles.set([
-      { storedSessionId: 'tile-session', runtimeId: 'rt-tile', workspaceMode: 'sessions' } as any
-    ])
+    $sessions.set([{ cwd: '/repo-tile', id: 'tile-session' } as any])
+    $sessionTiles.set([{ storedSessionId: 'tile-session', runtimeId: 'rt-tile', workspaceMode: 'sessions' } as any])
     $layoutTree.set({
       id: 'grp-main',
       type: 'group',

@@ -120,6 +120,7 @@ describe('hub pick messages', () => {
     vi.spyOn(AbortSignal, 'timeout').mockImplementation(ms => {
       const controller = new AbortController()
       setTimeout(() => controller.abort(new DOMException('Timed out', 'TimeoutError')), ms)
+
       return controller.signal
     })
     vi.stubGlobal(

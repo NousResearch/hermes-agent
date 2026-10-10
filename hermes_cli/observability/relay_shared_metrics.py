@@ -72,6 +72,29 @@ def _task_parent_handle(session: _MetricsSession, task_id: str) -> Any:
     return session.relay_session.handle
 
 
+# Session sources a Hermes dispatcher stamps on the finite CLI child it spawns: a kanban worker
+# (``kanban_db_dispatch``) and an A2A forward (``--source a2a``). Nobody is at either keyboard.
+_DISPATCHED_SOURCES = frozenset({"a2a", "kanban"})
+
+
+def _with_launch_entrypoint(event: dict[str, Any]) -> dict[str, Any]:
+    """Declare the entrypoint of a finite CLI run (``hermes -z``, ``chat -q`` off a TTY, ``-Q``): the
+    ``HERMES_SINGLE_QUERY_SESSION`` marker those paths set (the same one ``cache_ttl: auto`` and the session
+    source read). ``background`` for a dispatcher-spawned child, else ``one_shot``; the REPL, other surfaces,
+    delegated children and an already-declared entrypoint are untouched."""
+    if (event.get("entrypoint") or event.get("parent_task_id") or event.get("parent_session_id")
+            or contract.execution_surface(event) != "cli"):
+        return event
+    from agent.oneshot_footprint import is_single_query_session
+
+    if not is_single_query_session():
+        return event
+    from gateway.session_context import get_session_env
+
+    source = str(get_session_env("HERMES_SESSION_SOURCE", "") or "").strip().lower()
+    return {**event, "entrypoint": "background" if source in _DISPATCHED_SOURCES else "one_shot"}
+
+
 def _elapsed_ms(started_ns: int) -> int:
     return max(0, (monotonic_ns() - started_ns) // 1_000_000)
 
@@ -228,6 +251,11 @@ class _Runtime:
         # Guards the opt-in send pass: at most one in flight per process.
         self._send_lock = threading.RLock()
         self._send_thread: threading.Thread | None = None
+        # Flushing is a process-wide Relay barrier. Keep it off interactive turn threads while
+        # coalescing concurrent finish hooks into one worker.
+        self._flush_lock = threading.RLock()
+        self._flush_pending = False
+        self._flush_thread: threading.Thread | None = None
         self._snapshot_checked_ns: int | None = None
         self._subscriber_name = f"{SUBSCRIBER_NAME}.{self.host.runtime_id}"
         self.subscriber = SharedMetricsSubscriber(
@@ -319,7 +347,7 @@ class _Runtime:
                     return None
                 self._emit_client_active(session)
                 task_context = session.relay_session.context.copy()
-                start_fields = contract.task_start_fields(event)
+                start_fields = contract.task_start_fields(_with_launch_entrypoint(event))
                 handle = task_context.run(
                     self._with_scope_stack, self.relay.scope.push,
                     TASK_SCOPE, self.relay.ScopeType.Function,
@@ -554,7 +582,7 @@ class _Runtime:
         if retired:
             self.close_session({"session_id": session.session_id})
         elif finished:
-            self._flush_and_export("Hermes shared-metrics task flush failed")
+            self._schedule_flush_and_export("Hermes shared-metrics task flush failed")
 
     def close_session(self, event: dict[str, Any]) -> None:
         session = self._session(event)
@@ -566,16 +594,9 @@ class _Runtime:
         ):
             return
         self._emit_session_summary(session)
-        try:
-            self.relay.subscribers.flush()
-        except Exception as exc:
-            logger.warning(
-                "Hermes shared-metrics session %s closed with errors: subscriber flush failed: %s",
-                session.session_id,
-                exc,
-            )
-        else:
-            self._export()
+        self._schedule_flush_and_export(
+            f"Hermes shared-metrics session {session.session_id} flush failed"
+        )
         with self._sessions_lock:
             _forget(self._sessions, session.session_id, session)
 
@@ -669,6 +690,38 @@ class _Runtime:
         if task is not None:
             return self._run_in_task(task, callback, *args, **kwargs)
         return self.host.run_in_session(session.relay_session, callback, *args, **kwargs)
+
+    def _schedule_flush_and_export(self, failure_message: str) -> None:
+        """Schedule the process-wide Relay flush without blocking the finishing turn.
+
+        ``flush()`` also waits for every managed tool/LLM call in flight in ANY session, so on a
+        turn thread one session finishing stalls behind another session's long tool. One worker
+        per runtime (= per profile); triggers landing while it runs coalesce into one more pass.
+        """
+        from agent.memory_provider import spawn_context_thread
+
+        with self._flush_lock:
+            self._flush_pending = True
+            if self._flush_thread is not None:
+                return
+            # Context copy: the export reads the profile's send/consent config via contextvars.
+            thread = spawn_context_thread(
+                self._run_flush_worker, name="hermes-shared-metrics-flush", args=(failure_message,)
+            )
+            # The worker's first act is taking this lock, so it cannot clear the slot before it is set.
+            thread.start()
+            self._flush_thread = thread
+
+    def _run_flush_worker(self, failure_message: str) -> None:
+        while True:
+            with self._flush_lock:
+                if not self._flush_pending:
+                    # Cleared under the lock that schedulers check: a trigger can never land on a
+                    # worker that has already decided to exit.
+                    self._flush_thread = None
+                    return
+                self._flush_pending = False
+            self._flush_and_export(failure_message)
 
     def _flush_and_export(self, failure_message: str) -> None:
         """Flush the Relay subscriber, then export; a failed flush skips the export."""
@@ -1375,6 +1428,16 @@ def start_task_run(
         "start_task", retry_failed=True, session_id=session_id, task_id=task_id,
         platform=platform, parent_session_id=parent_session_id,
     )
+
+
+def shutdown_runtimes() -> None:
+    """Run each live runtime's exit flush now, for a process that leaves through ``os._exit`` (the
+    ``hermes -z`` exit) and so never reaches the atexit hook that closes sessions and writes
+    ``task_run.finished`` / ``session.count``."""
+    with _RUNTIME_LOCK:
+        runtimes = [runtime for runtime in _RUNTIMES.values() if isinstance(runtime, _Runtime)]
+    for runtime in runtimes:
+        runtime._safe(runtime.shutdown)
 
 
 def close_session_run(session_id: str) -> None:

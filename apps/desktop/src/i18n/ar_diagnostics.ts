@@ -95,7 +95,7 @@ export const arDiagnostics = {
       inputTitleNamed: session => `مطلوب إدخال — ${session}`,
       inputBody: 'ينتظر Hermes ردّك.',
       turnDoneTitle: 'أنهى Hermes',
-      turnDoneBody: '',
+      turnDoneBody: 'اكتملت الرسالة.',
       turnErrorTitle: 'فشلت الجولة',
       backgroundDoneTitle: 'انتهت المهمة في الخلفية',
       backgroundFailedTitle: 'فشلت المهمة في الخلفية'
@@ -107,5 +107,5 @@ export const arDiagnostics = {
     boundaryDesc: 'يمكنك إعادة تحميل النافذة أو فتح السجلات لمعرفة التفاصيل.',
     reloadWindow: 'إعادة تحميل النافذة',
     openLogs: 'فتح السجلات'
-  },
+  }
 } satisfies Pick<TranslationOverrides, 'sendDiagnostics' | 'notifications' | 'errors'>

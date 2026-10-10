@@ -524,6 +524,7 @@ export function initQuickEntryBridge(): () => void {
 
     if (payload && typeof raw === 'object' && raw !== null) {
       const correlationId = (raw as unknown as Record<string, unknown>).correlationId
+
       if (typeof correlationId === 'string') {
         submitHandler?.({ ...payload, correlationId })
       }

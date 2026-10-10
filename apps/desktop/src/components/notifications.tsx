@@ -277,7 +277,7 @@ function NotificationItem({ notification, stack }: { notification: AppNotificati
   return (
     <Alert
       aria-live={!stack.active ? 'off' : notification.kind === 'error' ? 'assertive' : 'polite'}
-      className="grid-cols-[auto_minmax(0,1fr)_auto] border-0 bg-transparent pr-2.5 shadow-none"
+      className="grid-cols-[auto_minmax(0,1fr)_auto] border-0 bg-transparent pr-2.5 text-xs shadow-none"
       role={notification.kind === 'error' ? 'alert' : 'status'}
       variant={styles.variant}
     >

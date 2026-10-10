@@ -33,5 +33,5 @@ export const arConnectors = {
     open: 'فتح في Hermes',
     continue: 'المتابعة في Hermes',
     importError: 'تعذر استيراد هذه المحادثة.'
-  },
+  }
 } satisfies Pick<TranslationOverrides, 'sessionImport'>

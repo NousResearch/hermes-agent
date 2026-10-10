@@ -89,7 +89,6 @@ def _drive(monkeypatch, *, run_result, samples_before_miss):
 
     def fake_deliver(job, content, **kwargs):
         delivered.append(content)
-        return None
 
     monkeypatch.setattr(sched, "heartbeat_fire_claim", hb)
     monkeypatch.setattr(sched, "run_job", fake_run_job)
@@ -254,7 +253,7 @@ def test_confirmed_claim_loss_mid_run_still_yields(temp_home, monkeypatch):
     from cron.executions import get_execution
     from cron.jobs import get_job
 
-    sched, job, hb, delivered, run_cancel = _drive_heartbeat_thread(
+    sched, job, _hb, delivered, run_cancel = _drive_heartbeat_thread(
         monkeypatch, misses=2, steal=True)
 
     assert sched.run_one_job(job) is True

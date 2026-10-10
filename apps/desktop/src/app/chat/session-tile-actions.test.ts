@@ -89,6 +89,7 @@ describe('useSessionTileActions sleep/wake session recovery', () => {
     setSessionTileDelegate({
       archiveSession: vi.fn(async () => undefined),
       branchSession: vi.fn(async () => undefined),
+      branchSessionAtMessage: vi.fn(async () => true),
       deleteSession: vi.fn(async () => undefined),
       executeSlash: vi.fn(async () => undefined),
       interruptSession: vi.fn(async () => undefined),
@@ -246,6 +247,7 @@ describe('useSessionTileActions reloadFromMessage failed-submit rollback (#95745
     setSessionTileDelegate({
       archiveSession: vi.fn(async () => undefined),
       branchSession: vi.fn(async () => undefined),
+      branchSessionAtMessage: vi.fn(async () => true),
       deleteSession: vi.fn(async () => undefined),
       executeSlash: vi.fn(async () => undefined),
       interruptSession: vi.fn(async () => undefined),
@@ -306,14 +308,11 @@ describe('useSessionTileActions reloadFromMessage failed-submit rollback (#95745
       // The refreshed transcript: same shapes, fresh row ids after the remap.
       publishSessionState(
         RUNTIME_SESSION_ID,
-        createClientSessionState(
-          STORED_SESSION_ID,
-          [
-            { id: 'u1-fresh', parts: [textPart('first')], role: 'user' as const, rowId: 501, timestamp: 0 },
-            { id: 'a1-fresh', parts: [textPart('reply')], role: 'assistant' as const, rowId: 502, timestamp: 1 },
-            { id: 'u2-fresh', parts: [textPart('later')], role: 'user' as const, rowId: 503, timestamp: 2 }
-          ] as never
-        )
+        createClientSessionState(STORED_SESSION_ID, [
+          { id: 'u1-fresh', parts: [textPart('first')], role: 'user' as const, rowId: 501, timestamp: 0 },
+          { id: 'a1-fresh', parts: [textPart('reply')], role: 'assistant' as const, rowId: 502, timestamp: 1 },
+          { id: 'u2-fresh', parts: [textPart('later')], role: 'user' as const, rowId: 503, timestamp: 2 }
+        ] as never)
       )
 
       return RUNTIME_SESSION_ID
@@ -323,6 +322,7 @@ describe('useSessionTileActions reloadFromMessage failed-submit rollback (#95745
     setSessionTileDelegate({
       archiveSession: vi.fn(async () => undefined),
       branchSession: vi.fn(async () => undefined),
+      branchSessionAtMessage: vi.fn(async () => true),
       deleteSession: vi.fn(async () => undefined),
       executeSlash: vi.fn(async () => undefined),
       interruptSession: vi.fn(async () => undefined),

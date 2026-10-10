@@ -13,6 +13,7 @@ const reactionTestState = vi.hoisted(() => {
       }
     }
   }
+
   const gateway = { request: vi.fn(async (..._args: any[]) => ({ row_id: 7, reactions: [] })) }
 
   return {

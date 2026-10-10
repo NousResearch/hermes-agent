@@ -26,7 +26,15 @@ const row = (id: string, extra: Partial<SessionInfo> = {}): SessionInfo =>
   ({ id, message_count: 1, source: 'cli', started_at: 0, title: id, ...extra }) as SessionInfo
 
 const profile = (name: string): ProfileInfo =>
-  ({ has_env: false, is_default: name === 'default', model: null, name, path: name, provider: null, skill_count: 0 }) as ProfileInfo
+  ({
+    has_env: false,
+    is_default: name === 'default',
+    model: null,
+    name,
+    path: name,
+    provider: null,
+    skill_count: 0
+  }) as ProfileInfo
 
 const notFound = () => new Error('404: {"detail":"Session not found"}')
 
@@ -213,9 +221,12 @@ describe('__runDeadSessionPrunePass', () => {
     $sessions.set([row('unrelated')])
     $pinnedSessionIds.set(['race-pin'])
     let resolveProbe!: (value: SessionInfo) => void
-    getSessionMock.mockImplementation(() => new Promise(resolve => {
-      resolveProbe = resolve
-    }))
+    getSessionMock.mockImplementation(
+      () =>
+        new Promise(resolve => {
+          resolveProbe = resolve
+        })
+    )
 
     const pass = __runDeadSessionPrunePass()
     // Gateway switch while the probe is in flight.

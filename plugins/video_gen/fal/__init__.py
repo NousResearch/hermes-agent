@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 # the snap/clamp). Extras: audio_native (always on; description line only),
 # duration_int (JSON int, default queue-API string), duration_suffix ("4s"), image_param_key (i2v key when not `image_url`),
 # image_drop_keys (i2v endpoint rejects), audio_param_key (toggle key when not `generate_audio`), resolution_aliases (tool value → endpoint enum), static_payload (always required).
-def _family(display: str, speed: str, tier: str, strengths: str, text: Optional[str], image: str, **caps: Any) -> Dict[str, Any]:
+def _family(display: str, speed: str, tier: str, strengths: str, text: Optional[str], image: str, **caps: Any) -> dict[str, Any]:
     return {"display": display, "speed": speed, "price": tier, "tier": tier, "strengths": strengths, "text_endpoint": text, "image_endpoint": image,
             "aspect_ratios": None, "resolutions": None, "durations": None, "audio": False, "negative": False, "seed": False, **caps}
 
@@ -35,7 +35,7 @@ _H3_ALIASES = {"480p": "768P", "540p": "768P", "720p": "768P", "768p": "768P", "
 _H3_MAX_ALIASES = {"480p": "480P", "540p": "480P", "720p": "768P", "768p": "768P", "1080p": "768P", "2k": "768P", "4k": "768P", "2160p": "768P"}
 _H3_MAX_TURBO_ALIASES = {"480p": "480P", "540p": "480P", "720p": "768P", "768p": "768P", "1080p": "1080P", "2k": "1080P", "4k": "1080P", "2160p": "1080P"}
 
-FAL_FAMILIES: Dict[str, Dict[str, Any]] = {
+FAL_FAMILIES: dict[str, dict[str, Any]] = {
     # ─── Cheap / fast tier ─────────────────────────────────────────────
     "ltx-2.3": _family("LTX 2.3 (22B)", "~30-60s", "cheap", "22B model with native audio generation. Affordable.",  # docs expose no enums
                        "fal-ai/ltx-2.3-22b/text-to-video", "fal-ai/ltx-2.3-22b/image-to-video", audio=True, negative=True, seed=True),
@@ -122,7 +122,7 @@ FAL_FAMILIES: Dict[str, Dict[str, Any]] = {
 DEFAULT_MODEL = "pixverse-v6"  # cheap, both modalities, sane defaults
 
 
-def _clamp_duration(family: Dict[str, Any], duration: Optional[int], resolution: Optional[str] = None) -> Optional[int]:
+def _clamp_duration(family: dict[str, Any], duration: Optional[int], resolution: Optional[str] = None) -> Optional[int]:
     """Snap to the nearest ``duration_enum`` entry when the family declares one, else clamp into the ``durations``
     ``(min, max)`` range; None stays None (endpoint default). A ``duration_cap_by_resolution`` ceiling for the resolved
     *resolution* is applied last (fal rejects LTX 2.5 >10s at 1440p/2160p)."""
@@ -138,7 +138,7 @@ def _clamp_duration(family: Dict[str, Any], duration: Optional[int], resolution:
     return clamped if cap is None else min(clamped, cap)
 
 
-def _modalities(meta: Dict[str, Any]) -> List[str]:
+def _modalities(meta: dict[str, Any]) -> list[str]:
     return [m for m in ("text", "image") if meta[f"{m}_endpoint"]]
 
 
@@ -158,7 +158,7 @@ def _normalize_family_key(c: str) -> Optional[str]:
     return hit[0] if hit else None
 
 
-def _resolve_family(explicit: Optional[str]) -> Tuple[str, Dict[str, Any]]:
+def _resolve_family(explicit: Optional[str]) -> tuple[str, dict[str, Any]]:
     """Decide which FAL family to use. Returns ``(family_id, meta)``."""
     import os
     try:
@@ -177,12 +177,12 @@ def _resolve_family(explicit: Optional[str]) -> Tuple[str, Dict[str, Any]]:
     return DEFAULT_MODEL, FAL_FAMILIES[DEFAULT_MODEL]
 
 
-def _build_payload(family: Dict[str, Any], *, prompt: str, image_url: Optional[str], duration: Optional[int], aspect_ratio: str,
-                   resolution: str, negative_prompt: Optional[str], audio: Optional[bool], seed: Optional[int]) -> Dict[str, Any]:
+def _build_payload(family: dict[str, Any], *, prompt: str, image_url: Optional[str], duration: Optional[int], aspect_ratio: str,
+                   resolution: str, negative_prompt: Optional[str], audio: Optional[bool], seed: Optional[int]) -> dict[str, Any]:
     """Build a family-specific payload, dropping keys the family doesn't declare (unsupported enums → endpoint default)."""
     resolved = (family.get("resolution_aliases") or {}).get((resolution or "").lower(), resolution)
     clamped = _clamp_duration(family, duration, resolved) if family["durations"] else None
-    payload: Dict[str, Any] = {key: value for ok, key, value in (
+    payload: dict[str, Any] = {key: value for ok, key, value in (
         (prompt, "prompt", prompt),
         (image_url, family.get("image_param_key") or "image_url", image_url),
         # Newer endpoints declare no `seed` and the managed gateway forwards whatever we send — gate on the family.
@@ -201,7 +201,7 @@ def _build_payload(family: Dict[str, Any], *, prompt: str, image_url: Optional[s
     return payload
 
 
-def _video_url_from_result(result: Any) -> Tuple[Any, Optional[str]]:
+def _video_url_from_result(result: Any) -> tuple[Any, Optional[str]]:
     """Return ``(video_field, url)`` from a FAL result dict (url None if absent)."""
     video = result.get("video") if isinstance(result, dict) else None
     url = video.get("url") if isinstance(video, dict) else video if isinstance(video, str) else None
@@ -267,7 +267,7 @@ def _get_managed_fal_video_client(managed_gateway):
         return _managed_fal_video_client
 
 
-def _submit_fal_video_request(endpoint: str, arguments: Dict[str, Any]):
+def _submit_fal_video_request(endpoint: str, arguments: dict[str, Any]):
     """Submit via direct credentials or the managed queue gateway; ``.get()`` blocks."""
     client = _load_fal_client()
     headers = {"x-idempotency-key": str(uuid.uuid4())}
@@ -304,13 +304,13 @@ def _upscale_video(video_url: str, source_request_id: Optional[str] = None) -> O
     """Best-effort SeedVR2 upscale; returns the new URL or None (never raises)."""
     try:
         logger.info("Upscaling video with SeedVR2 (%dx)...", UPSCALER_FACTOR)
-        arguments: Dict[str, Any] = {"video_url": video_url, "upscale_mode": "factor", "upscale_factor": UPSCALER_FACTOR}
+        arguments: dict[str, Any] = {"video_url": video_url, "upscale_mode": "factor", "upscale_factor": UPSCALER_FACTOR}
         if _resolve_managed_fal_video_gateway() is not None:
             if not source_request_id:
                 raise RuntimeError("Managed SeedVR upscale requires the source FAL request id")
             arguments["source_request_id"] = source_request_id
         result = _submit_fal_video_request(UPSCALER_ENDPOINT, arguments).get()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning("Video upscale failed: %s", exc)
         return None
     _video, url = _video_url_from_result(result)
@@ -327,7 +327,7 @@ _MODALITY_MISSING_MSG = {
 }
 
 
-def _fal_error(error: str, error_type: str, prompt: str, model: str = "", aspect_ratio: str = "") -> Dict[str, Any]:
+def _fal_error(error: str, error_type: str, prompt: str, model: str = "", aspect_ratio: str = "") -> dict[str, Any]:
     return error_response(error=error, error_type=error_type, provider="fal", model=model, prompt=prompt, aspect_ratio=aspect_ratio)
 
 
@@ -341,10 +341,10 @@ class FALVideoGenProvider(VideoGenProvider):
         # A stored-but-broken selection raises the selection-naming ValueError; report unavailable, never break the picker.
         try:
             return _fal_video_available()
-        except Exception:  # noqa: BLE001
+        except Exception:
             return False
 
-    def list_models(self) -> List[Dict[str, Any]]:
+    def list_models(self) -> list[dict[str, Any]]:
         return [{"id": fid, **{k: meta[k] for k in ("display", "speed", "strengths", "price", "tier")}, "modalities": _modalities(meta),
                  **({"min_duration": min(d), "max_duration": max(d)} if (d := meta["durations"]) else {})}
                 for fid, meta in FAL_FAMILIES.items()]
@@ -352,17 +352,17 @@ class FALVideoGenProvider(VideoGenProvider):
     def default_model(self) -> Optional[str]:
         return DEFAULT_MODEL
 
-    def get_setup_schema(self) -> Dict[str, Any]:
+    def get_setup_schema(self) -> dict[str, Any]:
         return {"name": "FAL", "badge": "paid", "env_vars": [{"key": "FAL_KEY", "prompt": "FAL.ai API key", "url": "https://fal.ai/dashboard/keys"}],
                 "tag": "LTX 2.3/2.5, Pixverse, Seedance 2.0/2.5/Mini, Veo 3.1, MiniMax H3, FLUX 3, Kling 3.0/4K/O3, Wan 3.0, Happy Horse, Grok Imagine, "
                        "Gemini Omni — text-to-video & image-to-video"}
 
-    def capabilities(self) -> Dict[str, Any]:
+    def capabilities(self) -> dict[str, Any]:
         # RESOLVED family's surface so the dynamic tool schema gates params on what the selected model honors; union fallback (never raises).
         try:
             # Falls back to the cross-family union if resolution fails (never raises). See #97057.
             _family_id, family = _resolve_family(None)
-        except Exception:  # noqa: BLE001
+        except Exception:
             family = None
         if family:
             durations = family["durations"] or (1, 1)
@@ -377,10 +377,10 @@ class FALVideoGenProvider(VideoGenProvider):
                 "supports_audio": True, "supports_negative_prompt": True, "supports_seed": True, "supports_upscale": True, "max_reference_images": 0}
 
     def generate(
-        self, prompt: str, *, model: Optional[str] = None, image_url: Optional[str] = None, reference_image_urls: Optional[List[str]] = None,
+        self, prompt: str, *, model: Optional[str] = None, image_url: Optional[str] = None, reference_image_urls: Optional[list[str]] = None,
         duration: Optional[int] = None, aspect_ratio: str = "16:9", resolution: str = "720p", negative_prompt: Optional[str] = None,
         audio: Optional[bool] = None, seed: Optional[int] = None, upscale: Optional[bool] = None, **kwargs: Any,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         try:  # a stored selection that cannot run gets the honest selection-naming error from the strict resolver
             if not _fal_video_available():
                 return _fal_error(_NO_BACKEND_MSG, "auth_required", prompt)
@@ -416,7 +416,7 @@ class FALVideoGenProvider(VideoGenProvider):
         if upscale and not upscaled:
             logger.warning("Video upscale pass failed — returning native-resolution video")
         url = upscaled_url or url
-        extra: Dict[str, Any] = {"endpoint": endpoint, "upscaled": upscaled, **({"upscale_factor": UPSCALER_FACTOR} if upscaled else {})}
+        extra: dict[str, Any] = {"endpoint": endpoint, "upscaled": upscaled, **({"upscale_factor": UPSCALER_FACTOR} if upscaled else {})}
         if isinstance(video, dict):  # native-resolution file_size no longer applies after an upscale
             extra.update({k: video[k] for k in (("content_type",) if upscaled else ("file_size", "content_type")) if video.get(k)})
         return success_response(

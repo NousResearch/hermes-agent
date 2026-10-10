@@ -52,7 +52,7 @@ def _state_endpoint() -> dict | None:
     return {"base_url": base_url, "api_key": state.get("api_key", "")}
 
 
-def managed_root() -> "tuple[str, str] | None":
+def managed_root() -> tuple[str, str] | None:
     """(base_root, api_key) of the managed router, or None. Resolved through the
     ownership-guarded reader, not a raw state-file read: on the shared stable port a foreign
     install's server answers /health for anyone, and a raw read would attach callers to someone
@@ -126,22 +126,24 @@ def _kick_managed_boot(config: dict | None) -> None:
             from hermes_cli.local_runtime.bootstrap import ensure_local_runtime
 
             ensure_local_runtime(_load_config_if_none(config))
-        except Exception:  # noqa: BLE001 — best-effort; resolution falls back
+        except Exception:
             logger.warning("on-demand managed-server boot failed", exc_info=True)
         finally:
             _KICK_LOCK.release()
 
-    threading.Thread(target=_boot, daemon=True,
-                     name="lr-on-demand-boot").start()
+    from agent.memory_provider import spawn_context_thread
+
+    # The caller's profile scope: ``config=None`` resolves (and the boot prices) under it.
+    spawn_context_thread(_boot, name="lr-on-demand-boot").start()
 
 
 def _boot_in_flight(config: dict | None) -> bool:
     """True when the managed runtime is enabled and PM holds an installed engine."""
     with suppress(Exception):
-        config = _load_config_if_none(config)
-        if not ((config or {}).get("local_runtime") or {}).get("enabled"):
+        section = (_load_config_if_none(config) or {}).get("local_runtime") or {}
+        if not section.get("enabled"):
             return False
         from hermes_cli.local_runtime.binaries import installed_engine
 
-        return installed_engine() is not None
+        return installed_engine(section.get("backend") or "auto") is not None
     return False

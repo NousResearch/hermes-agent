@@ -15,11 +15,14 @@ describe('quick-entry submit ack relay', () => {
     const relay = createQuickEntrySubmitRelay({ onSuccess: vi.fn(), timeoutMs: 1000 })
     let correlationId = ''
     let settled = false
-    const pending = relay.begin(id => {
-      correlationId = id
-    }).then(() => {
-      settled = true
-    })
+
+    const pending = relay
+      .begin(id => {
+        correlationId = id
+      })
+      .then(() => {
+        settled = true
+      })
 
     relay.acknowledge('qe-stale', { ok: true })
     await Promise.resolve()
@@ -50,6 +53,7 @@ describe('quick-entry submit ack relay', () => {
     const onLateResult = vi.fn()
     const relay = createQuickEntrySubmitRelay({ onLateResult, onSuccess, timeoutMs: 15000 })
     let correlationId = ''
+
     const pending = relay.begin(id => {
       correlationId = id
     })
@@ -70,6 +74,7 @@ describe('quick-entry submit ack relay', () => {
     const onLateResult = vi.fn()
     const relay = createQuickEntrySubmitRelay({ onLateResult, onSuccess: vi.fn(), timeoutMs: 15000 })
     let correlationId = ''
+
     const pending = relay.begin(id => {
       correlationId = id
     })
@@ -88,6 +93,7 @@ describe('quick-entry submit ack relay', () => {
     const onLateResult = vi.fn()
     const relay = createQuickEntrySubmitRelay({ onLateResult, onSuccess: vi.fn(), timeoutMs: 15000 })
     let correlationId = ''
+
     const pending = relay.begin(id => {
       correlationId = id
     })
@@ -104,11 +110,14 @@ describe('quick-entry submit ack relay', () => {
 
   it('runs hide and primary focus only after an ok acknowledgement', async () => {
     const events: string[] = []
+
     const relay = createQuickEntrySubmitRelay({
       onSuccess: () => events.push('hide-primary-show-focus'),
       timeoutMs: 1000
     })
+
     let correlationId = ''
+
     const pending = relay.begin(id => {
       correlationId = id
       events.push('forward')
@@ -119,10 +128,12 @@ describe('quick-entry submit ack relay', () => {
     expect(events).toEqual(['forward'])
 
     let okCorrelationId = ''
+
     const okPending = relay.begin(id => {
       okCorrelationId = id
       events.push('forward-ok')
     })
+
     relay.acknowledge(okCorrelationId, { ok: true })
     await expect(okPending).resolves.toMatchObject({ ok: true })
     expect(events).toEqual(['forward', 'forward-ok', 'hide-primary-show-focus'])

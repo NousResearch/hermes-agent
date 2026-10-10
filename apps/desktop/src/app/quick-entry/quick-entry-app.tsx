@@ -50,6 +50,7 @@ export function QuickEntryApp() {
       const submitId = submitIdRef.current
       void api?.submit(send).then(result => {
         dispatch(quickEntryResultEvent(result, submitId))
+
         if (!result.ok) {
           requestAnimationFrame(() => inputRef.current?.focus())
         }

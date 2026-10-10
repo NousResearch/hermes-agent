@@ -104,10 +104,7 @@ export { isMacPlatform }
 /** Whether this terminal session should own a global ⌘/Ctrl+L keydown.
  *  `active` gates the fanout: every open tab stays mounted, so an inactive
  *  tab must never claim the press (#76116). */
-export function shouldOwnAddSelectionShortcut(
-  event: KeyboardEvent,
-  opts: { active: boolean; hasSelection: boolean }
-) {
+export function shouldOwnAddSelectionShortcut(event: KeyboardEvent, opts: { active: boolean; hasSelection: boolean }) {
   return opts.active && opts.hasSelection && isComposerChord(event)
 }
 

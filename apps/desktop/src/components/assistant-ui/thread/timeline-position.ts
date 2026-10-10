@@ -22,9 +22,7 @@ export function createTimelinePositionReader(viewport: HTMLElement, indexes: Rea
     invalidate(records: readonly MutationRecord[]) {
       if (
         records.some(
-          record =>
-            record.type === 'attributes' ||
-            [...record.addedNodes, ...record.removedNodes].some(containsMessage)
+          record => record.type === 'attributes' || [...record.addedNodes, ...record.removedNodes].some(containsMessage)
         )
       ) {
         prompts = null

@@ -37,7 +37,10 @@ function deliver(event: GatewayEvent, interrupted: boolean) {
 
 describe('subagent events across an interrupted session', () => {
   beforeEach(() => {
-    deliver(subagentEvent('subagent.start', { status: 'running', subagent_id: 'sa-1', goal: 'audit files', task_index: 0 }), false)
+    deliver(
+      subagentEvent('subagent.start', { status: 'running', subagent_id: 'sa-1', goal: 'audit files', task_index: 0 }),
+      false
+    )
   })
 
   afterEach(() => {
@@ -46,7 +49,10 @@ describe('subagent events across an interrupted session', () => {
   })
 
   it('a terminal subagent.complete still lands after Stop instead of leaving the row running forever', () => {
-    deliver(subagentEvent('subagent.complete', { status: 'completed', subagent_id: 'sa-1', summary: 'done', task_index: 0 }), true)
+    deliver(
+      subagentEvent('subagent.complete', { status: 'completed', subagent_id: 'sa-1', summary: 'done', task_index: 0 }),
+      true
+    )
 
     const row = $subagentsBySession.get()[sid]?.[0]
     expect(row?.status).toBe('completed')
@@ -54,7 +60,15 @@ describe('subagent events across an interrupted session', () => {
   })
 
   it('live progress and non-terminal completions stay suppressed after Stop', () => {
-    deliver(subagentEvent('subagent.progress', { status: 'running', subagent_id: 'sa-1', text: 'still going', task_index: 0 }), true)
+    deliver(
+      subagentEvent('subagent.progress', {
+        status: 'running',
+        subagent_id: 'sa-1',
+        text: 'still going',
+        task_index: 0
+      }),
+      true
+    )
     deliver(subagentEvent('subagent.complete', { status: 'running', subagent_id: 'sa-1', task_index: 0 }), true)
 
     const row = $subagentsBySession.get()[sid]?.[0]

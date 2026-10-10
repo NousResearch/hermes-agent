@@ -43,6 +43,7 @@ describe('captureQuickEntryRequest', () => {
         target: 'current'
       }
     }
+
     const request = captureQuickEntryRequest(original)
 
     original.correlationId = 'qe-other'

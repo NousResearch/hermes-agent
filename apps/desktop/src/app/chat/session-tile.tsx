@@ -206,6 +206,7 @@ function buildTileView(storedSessionId: string): SessionView {
     $busy: computed($state, state => Boolean(state?.busy)),
     $cwd: computed($state, state => state?.cwd ?? ''),
     $fast: computed($state, state => Boolean(state?.fast)),
+    $serviceTier: computed($state, state => state?.serviceTier ?? ''),
     $lastVisibleIsUser: computed($messages, lastVisibleMessageIsUser),
     $messages,
     $messagesEmpty: computed($messages, messages => messages.length === 0),
@@ -407,6 +408,7 @@ function TileChat({
           onAttachDroppedItems={composer.attachDroppedItems}
           onAttachImageBlob={composer.attachImageBlob}
           onAttachPastedText={composer.attachPastedText}
+          onBranchInNewChat={actions.branchInNewChat}
           onCancel={actions.cancelRun}
           onDeleteSelectedSession={noop}
           onDismissError={actions.dismissError}

@@ -24,6 +24,17 @@ export function routeTargetFromToken(token: string): RouteTarget {
   return routeSessionId(pathname) ?? (isNewChatRoute(pathname) ? '__new__' : null)
 }
 
+/**
+ * Whether a resume begun under `startRouteToken` still owns the view. The route
+ * arriving at the resumed session itself is not a switch: create/branch call
+ * navigate(target) and then resume(target) before the token re-renders, so the
+ * token captured at entry can still name the previous chat. Reading that commit
+ * as drift abandoned the branch child's resume and left its pane on the loader.
+ */
+export function resumeRouteStillCurrent(startRouteToken: string, nowRouteToken: string, storedSessionId: string) {
+  return nowRouteToken === startRouteToken || routeTargetFromToken(nowRouteToken) === storedSessionId
+}
+
 interface SessionContextDriftArgs {
   startRouteToken: string
   nowRouteToken: string
@@ -120,6 +131,7 @@ export function sessionContextDrift({
   pinOwner
 }: SessionContextDriftArgs): string | null {
   const activePins = pinOwner ? pinnedStoredSessionIdsForOwner(pinOwner) : NO_PINS
+
   // Composer prong: the composer's loaded scope disagrees with the resolved
   // submit target. Not a start/now comparison like the two prongs below — the
   // composer only hands us one snapshot per submit — but it belongs in the

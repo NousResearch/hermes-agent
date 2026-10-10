@@ -3,12 +3,44 @@ import assert from 'node:assert/strict'
 import { test } from 'vitest'
 
 import {
+  broadcastPowerResume,
   buildInstanceWindowUrl,
   buildSessionWindowUrl,
   chatWindowWebPreferences,
   createSessionWindowRegistry,
   instanceWindowBounds
 } from './session-windows'
+
+test('wake notification reaches every live app peer without touching destroyed windows', () => {
+  const received: string[] = []
+  const errors: string[] = []
+
+  const window = (id: string, destroyed = false, contentsDestroyed = false) => ({
+    isDestroyed: () => destroyed,
+    get webContents() {
+      assert.equal(destroyed, false, 'Never read webContents from a destroyed window')
+
+      return { isDestroyed: () => contentsDestroyed, send: (channel: string) => received.push(`${id}:${channel}`) }
+    }
+  })
+
+  const crashed = {
+    isDestroyed: () => false,
+    webContents: {
+      isDestroyed: () => false,
+      send: () => {
+        throw new Error('frame disposed')
+      }
+    }
+  }
+
+  broadcastPowerResume(
+    [crashed, window('main'), window('hidden-peer'), window('closed', true), window('dead-renderer', false, true)],
+    message => errors.push(message)
+  )
+  assert.deepEqual(received, ['main:hermes:power-resume', 'hidden-peer:hermes:power-resume'])
+  assert.match(errors.join('\n'), /frame disposed/)
+})
 
 // A minimal fake BrowserWindow: tracks listeners + destroyed state and lets a
 // test fire the 'closed' event, mirroring the slice of the Electron API the

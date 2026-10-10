@@ -274,4 +274,24 @@ def finalize_foreground_result(
     for key, value in optional_fields:
         if value is not None:
             result_dict[key] = value
+    if env_type == "local":
+        # DX (#71788): LocalEnvironment builds the child with _make_run_env(self.env).
+        # Remote shells are not modeled; do not claim a credential was scrubbed there.
+        try:
+            from tools.env_passthrough import (
+                format_scrubbed_provider_env_note,
+                list_scrubbed_provider_credentials,
+            )
+            from tools.environments.local import _make_run_env
+
+            local_env = getattr(env, "env", None) or {}
+            note = format_scrubbed_provider_env_note(
+                list_scrubbed_provider_credentials(os.environ, _make_run_env(local_env))
+            )
+            if note:
+                result_dict["credential_scrub_note"] = note
+                if note not in output:
+                    result_dict["output"] = output + ("\n\n" if output else "") + note
+        except Exception:
+            logger.debug("credential scrub note failed", exc_info=True)
     return json.dumps(result_dict, ensure_ascii=False)

@@ -28,7 +28,7 @@ from tools.thread_context import propagate_context_to_thread
 from tools.registry import registry, tool_error
 
 from hermes_time import get_timezone_name
-from tools.code_execution_env import _resolve_child_cwd, _resolve_child_python
+from tools.code_execution_env import _resolve_child_cwd, _resolve_child_python, _scrub_child_env
 from tools.code_execution_rpc import (
     _execute_checked, _private_dirs_cmd, _remote_write, _rpc_poll_loop, tool_errors_since,
 )
@@ -524,6 +524,26 @@ def _with_timeout_notice(stdout_text: str, timeout_msg: str) -> str:
     """Timeout message goes in the output too — an empty result makes models answer as if
     nothing happened, and the gateway drops empty replies."""
     return stdout_text + f"\n\n⏰ {timeout_msg}" if stdout_text else f"⏰ {timeout_msg}"
+
+
+def _local_credential_scrub_note() -> str:
+    """Provider credential names stripped from the local execute_code child (#71788).
+
+    Remote shells are not fully modeled, so callers must not attach this note
+    there. The note is a dedicated result field — never appended to ``output``,
+    which callers parse as the child's stdout.
+    """
+    try:
+        from tools.env_passthrough import (
+            format_scrubbed_provider_env_note,
+            list_scrubbed_provider_credentials,
+        )
+        return format_scrubbed_provider_env_note(
+            list_scrubbed_provider_credentials(os.environ, _scrub_child_env(os.environ))
+        )
+    except Exception:
+        logger.debug("Failed to compute credential scrub note (local path)", exc_info=True)
+        return ""
 
 
 def _error_result(error: str, *, tool_calls_made: int = 0, duration: float = 0,

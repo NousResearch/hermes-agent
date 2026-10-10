@@ -50,6 +50,132 @@ describe('rehydrateLiveSessionStatuses — reaping vanished runtimes', () => {
     expect($workingSessionIds.get()).toEqual([])
   })
 
+  it('settles a retained runtime when the backend reports its turn idle', () => {
+    $activeSessionId.set('runtime-a')
+    rehydrateLiveSessionStatuses({
+      sessions: [{ id: 'runtime-a', session_key: 'stored-a', status: 'working' }]
+    })
+
+    const openTool = {
+      type: 'tool-call',
+      toolCallId: 'call-idle',
+      toolName: 'read_file',
+      args: {},
+      argsText: '{}'
+    } as never
+
+    publishSessionState('runtime-a', {
+      ...$sessionStates.get()['runtime-a'],
+      awaitingResponse: true,
+      sawAssistantPayload: true,
+      turnLive: true,
+      streamId: 'reply-a',
+      messages: [{ id: 'reply-a', role: 'assistant', parts: [openTool], pending: false } as never]
+    })
+    expect($workingSessionIds.get()).toEqual(['stored-a'])
+
+    // The session still EXISTS; only the parent turn ended. No message.complete
+    // arrived on this Desktop socket, but the owner-routed active_list did.
+    rehydrateLiveSessionStatuses({
+      sessions: [{ id: 'runtime-a', session_key: 'stored-a', status: 'idle' }]
+    })
+
+    expect($workingSessionIds.get()).toEqual([])
+    expect($sessionStates.get()['runtime-a']).toMatchObject({
+      busy: false,
+      awaitingResponse: false,
+      turnLive: false,
+      streamId: null
+    })
+
+    const part = $sessionStates.get()['runtime-a'].messages[0].parts[0]
+    expect(part.type).toBe('tool-call')
+
+    if (part.type !== 'tool-call') {
+      throw new Error('Expected a tool call')
+    }
+
+    expect(part.completedAt).toBeDefined()
+    expect(part.result).toBeUndefined() // idle is not proof the tool succeeded
+  })
+
+  it('ignores a stale pre-turn idle snapshot after a newer turn observed its first payload', () => {
+    // Poll issued while the backend was idle: stateAtRequest is the pre-turn
+    // snapshot. It races the submit below, so its `idle` answer is stale the
+    // moment it lands.
+    publishSessionState('runtime-race2', { ...createClientSessionState('stored-race2') })
+    const stateAtRequest = $sessionStates.get()
+
+    // The turn starts and its first payload arrives while the poll is in
+    // flight — sawAssistantPayload is already true, so localSubmitPending is
+    // false and ONLY the request-time reference guard protects it.
+    publishSessionState('runtime-race2', {
+      ...$sessionStates.get()['runtime-race2'],
+      busy: true,
+      awaitingResponse: true,
+      sawAssistantPayload: true,
+      turnLive: true,
+      streamId: 'reply-b'
+    })
+
+    // The old idle response finally arrives.
+    rehydrateLiveSessionStatuses(
+      { sessions: [{ id: 'runtime-race2', session_key: 'stored-race2', status: 'idle' }] },
+      Date.now(),
+      'default',
+      stateAtRequest
+    )
+
+    expect($workingSessionIds.get()).toContain('stored-race2')
+    expect($sessionStates.get()['runtime-race2']).toMatchObject({
+      busy: true,
+      awaitingResponse: true,
+      sawAssistantPayload: true,
+      turnLive: true,
+      streamId: 'reply-b'
+    })
+    expect($unreadFinishedSessionIds.get()).not.toContain('stored-race2')
+
+    // Positive control: a CURRENT idle snapshot (request issued after the same
+    // live state) is not stale and must settle the turn.
+    rehydrateLiveSessionStatuses(
+      { sessions: [{ id: 'runtime-race2', session_key: 'stored-race2', status: 'idle' }] },
+      Date.now(),
+      'default',
+      $sessionStates.get()
+    )
+
+    expect($workingSessionIds.get()).not.toContain('stored-race2')
+    expect($sessionStates.get()['runtime-race2']).toMatchObject({
+      busy: false,
+      awaitingResponse: false,
+      turnLive: false,
+      streamId: null
+    })
+  })
+
+  it('does not settle a just-submitted turn before its first payload', () => {
+    publishSessionState('runtime-new', {
+      ...createClientSessionState('stored-new'),
+      busy: true,
+      awaitingResponse: true,
+      sawAssistantPayload: false,
+      turnLive: true
+    })
+
+    // A poll issued before the backend accepted the turn may report idle.
+    rehydrateLiveSessionStatuses({
+      sessions: [{ id: 'runtime-new', session_key: 'stored-new', status: 'idle' }]
+    })
+
+    expect($workingSessionIds.get()).toEqual(['stored-new'])
+    expect($sessionStates.get()['runtime-new']).toMatchObject({
+      busy: true,
+      awaitingResponse: true,
+      turnLive: true
+    })
+  })
+
   it('fires the unread "your turn" marker for a vanished background session', () => {
     rehydrateLiveSessionStatuses({
       sessions: [{ id: 'runtime-b', session_key: 'stored-b', status: 'working' }]

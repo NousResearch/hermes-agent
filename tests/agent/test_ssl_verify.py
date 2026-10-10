@@ -186,3 +186,120 @@ assert ctx.verify_mode == ssl.CERT_REQUIRED and ctx.check_hostname
 assert ctx.cert_store_stats()['x509_ca'] > 0
 """], capture_output=True, text=True, timeout=30)
     assert child.returncode == 0, child.stderr
+
+
+def test_injected_context_supports_ca_introspection_without_mutating_vendor_class():
+    """#127599: injected contexts work while truststore's shipped class stays untouched."""
+    import subprocess
+    import sys
+
+    pytest.importorskip("truststore")
+    child = subprocess.run([sys.executable, "-c", """
+import ssl
+import truststore
+
+vendor = truststore.SSLContext
+probe = vendor(ssl.PROTOCOL_TLS_CLIENT)
+missing = set()
+for name in ("cert_store_stats", "get_ca_certs"):
+    try:
+        getattr(probe, name)()
+    except NotImplementedError:
+        missing.add(name)
+
+from agent.ssl_verify import install_truststore
+assert install_truststore() is True
+
+if missing:
+    assert truststore.SSLContext is not vendor
+    assert issubclass(truststore.SSLContext, vendor)
+else:
+    assert truststore.SSLContext is vendor
+
+for ctx in (
+    ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT),
+    ssl.create_default_context(),
+    truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT),
+):
+    assert isinstance(ctx.cert_store_stats(), dict)
+    assert isinstance(ctx.get_ca_certs(), list)
+
+if "cert_store_stats" in missing:
+    try:
+        vendor(ssl.PROTOCOL_TLS_CLIENT).cert_store_stats()
+    except NotImplementedError:
+        pass
+    else:
+        raise AssertionError("install mutated truststore's shipped SSLContext")
+"""], capture_output=True, text=True, timeout=30)
+    assert child.returncode == 0, child.stdout + child.stderr
+
+
+def test_introspection_adapter_preserves_methods_a_future_truststore_implements():
+    """Only NotImplementedError surfaces are adapted; upstream behavior wins."""
+    from agent.ssl_verify import _truststore_context_with_ca_introspection
+
+    class Inner:
+        def cert_store_stats(self):
+            return {"x509": 3, "crl": 0, "x509_ca": 2}
+
+        def get_ca_certs(self, binary_form=False):
+            return [b"ca"] if binary_form else ["ca"]
+
+    class FutureContext:
+        def __init__(self, protocol=None):
+            self._ctx = Inner()
+
+        def cert_store_stats(self):
+            return {"upstream": 1}
+
+        def get_ca_certs(self, binary_form=False):
+            raise NotImplementedError
+
+    class FakeTruststore:
+        SSLContext = FutureContext
+
+    adapted = _truststore_context_with_ca_introspection(FakeTruststore)
+    assert adapted is not FutureContext
+    ctx = adapted()
+    assert ctx.cert_store_stats() == {"upstream": 1}
+    assert ctx.get_ca_certs() == ["ca"]
+
+
+def test_partial_truststore_injection_rolls_back_ssl_and_module_aliases():
+    """A failed inject must not leave either ssl or truststore half-patched."""
+    import subprocess
+    import sys
+
+    pytest.importorskip("truststore")
+    child = subprocess.run([sys.executable, "-c", """
+import ssl
+import truststore
+import truststore._api as truststore_api
+from agent import ssl_verify
+
+stdlib = ssl.SSLContext
+public = truststore.SSLContext
+internal = truststore_api.SSLContext
+events = []
+
+def fail_after_ssl_patch():
+    events.append("inject")
+    ssl.SSLContext = truststore_api.SSLContext
+    raise RuntimeError("partial injection")
+
+def extract():
+    events.append("extract")
+    ssl.SSLContext = stdlib
+
+truststore.inject_into_ssl = fail_after_ssl_patch
+truststore.extract_from_ssl = extract
+
+assert ssl_verify.install_truststore() is False
+assert events == ["inject", "extract"]
+assert ssl.SSLContext is stdlib
+assert truststore.SSLContext is public
+assert truststore_api.SSLContext is internal
+"""], capture_output=True, text=True, timeout=30)
+    assert child.returncode == 0, child.stdout + child.stderr
+

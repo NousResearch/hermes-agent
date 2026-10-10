@@ -1793,7 +1793,7 @@ class SlackAdapter(BasePlatformAdapter):
         bot_tokens = _load_slack_bot_tokens(raw_token, quiet=False)
         lock_acquired = False
         try:
-            if not self._acquire_platform_lock("slack-app-token", app_token, "Slack app token"):
+            if not await self._acquire_platform_lock_async("slack-app-token", app_token, "Slack app token"):
                 return False
             lock_acquired = True
             self._running = False

@@ -1478,14 +1478,25 @@ describe('collectUnspokenTurnSpeech', () => {
     expect(speech?.text).toBe('The real reply.')
   })
 
-  it('reports pending from the newest assistant bubble even when it has no text yet', () => {
+  it('reports pending from the last text-bearing bubble, not a text-less tool bubble after it', () => {
     const messages = [assistant('a1', 'Narration done.', { interim: true }), assistant('a2', '', { pending: true })]
 
     const speech = collectUnspokenTurnSpeech(messages, null)
 
     expect(speech?.id).toBe('a1')
     expect(speech?.text).toBe('Narration done.')
-    expect(speech?.pending).toBe(true)
+    // The sealed narration is a committed boundary: the tool bubble that
+    // opened after it has nothing to say and must not mask the seal.
+    expect(speech?.pending).toBe(false)
+  })
+
+  it('reports pending again once the bubble after the narration starts carrying text', () => {
+    const messages = [
+      assistant('a1', 'Narration done.', { interim: true }),
+      assistant('a2', 'The result', { pending: true })
+    ]
+
+    expect(collectUnspokenTurnSpeech(messages, null)?.pending).toBe(true)
   })
 
   it('returns null when everything is spoken or there is no assistant text', () => {

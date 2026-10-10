@@ -70,6 +70,21 @@ export interface ExternalOpenDeps {
 
 const SUPPORTED_WEB = ['http:', 'https:', 'mailto:']
 
+/**
+ * Fail-closed guard for the WSL hand-off (#126939). rundll32 receives the URL
+ * as one argv element, so the only characters that could split or escape that
+ * argument are quotes, whitespace, and control characters. `&`, `|`, `^`, and
+ * `%` are ordinary URL characters for this sink (rundll32 performs no shell
+ * parsing and never expands `%VAR%`), so they must stay allowed — rejecting
+ * them would break every `?a=1&b=2` query string.
+ */
+// eslint-disable-next-line no-control-regex -- deliberately reject control chars in launch arguments
+const WSL_LAUNCH_UNSAFE = /["\s\x00-\x1f\x7f]/
+
+export function isUnsafeWslLaunchArgument(url: string): boolean {
+  return WSL_LAUNCH_UNSAFE.test(url)
+}
+
 export function externalOpenErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
@@ -148,9 +163,21 @@ export async function openExternalUrl(rawUrl: string, deps: ExternalOpenDeps): P
 }
 
 async function openViaWsl(url: string, deps: ExternalOpenDeps): Promise<ExternalOpenResult> {
+  if (isUnsafeWslLaunchArgument(url)) {
+    deps.log(`[link] refusing WSL hand-off: URL contains a character unsafe as a launch argument`)
+
+    return { ok: false, reason: 'invalid' }
+  }
+
   deps.log(`[link] opening via WSL→Windows: ${url}`)
 
-  const proc = deps.spawn('cmd.exe', ['/c', 'start', '""', url], {
+  // rundll32 is not a shell: it never treats `&`, `|`, or `^` as separators
+  // and never expands `%VAR%`, so the URL travels as a single argument no
+  // matter what an agent-produced markdown link contains (#126939). The
+  // previous sink — `cmd.exe /c start "" <url>` — let cmd.exe parse `&` in a
+  // query string as a command separator, which was both an injection risk and
+  // the reason every `?a=1&b=2` URL failed to open on WSL.
+  const proc = deps.spawn('rundll32.exe', ['url.dll,FileProtocolHandler', url], {
     detached: true,
     stdio: 'ignore',
     windowsHide: true
@@ -160,7 +187,7 @@ async function openViaWsl(url: string, deps: ExternalOpenDeps): Promise<External
   // fall back to xdg-open; if that also fails, surface it. The handler runs
   // asynchronously after this function has already resolved.
   proc.on('error', error => {
-    deps.log(`[link] cmd.exe start failed: ${error.message}; falling back to xdg-open`)
+    deps.log(`[link] rundll32 hand-off failed: ${error.message}; falling back to xdg-open`)
 
     deps.openExternal(url).catch(openError => {
       failOpen(deps, url, openError)

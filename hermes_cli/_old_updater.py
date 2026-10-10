@@ -101,6 +101,7 @@ def _historical_context() -> tuple[dict, list[dict], Any]:
         "pre_update_version": found.get("pre_update_version"),
         "gateway_mode": bool(found.get("gateway_mode", "--gateway" in sys.argv)),
         "assume_yes": bool(found.get("assume_yes", "--yes" in sys.argv)),
+        "no_gateway_restart": bool(found.get("no_gateway_restart", "--no-gateway-restart" in sys.argv)),
         "windows_resume": resumes[0] if resumes else None,
         "plan": plan,
         "receipt": receipt if isinstance(receipt, dict) else None,

@@ -2153,6 +2153,19 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
                     },
                     indent=None,
                 )
+        elif not self._restart_requested:
+            # Clean shutdown with no restart requested. Discard a leftover planned-restart marker only
+            # when every currently owed target is already recorded delivered: the marker records an
+            # undelivered obligation, and a supervisor/SIGTERM stop landing before the boot replay
+            # must not erase it — age-based expiry lives only in the boot replay, after reachable
+            # targets have been tried (#127316 follow-up). Unreadable state keeps the marker —
+            # never fail into data loss.
+            with suppress(Exception):
+                _pending_path = _planned_restart_notification_path()
+                if _pending_path.exists():
+                    _pending = json.loads(_pending_path.read_text(encoding="utf-8-sig"))
+                    if self._planned_restart_marker_is_dischargeable(_pending):
+                        _pending_path.unlink(missing_ok=True)
         if self._restart_requested and self._restart_via_service:
             # Exit 75 + ``RestartForceExitStatus=75``: systemd replaces us without a racing helper.
             self._exit_code = GATEWAY_SERVICE_RESTART_EXIT_CODE

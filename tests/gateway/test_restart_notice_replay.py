@@ -7,6 +7,7 @@ See #112109. Runs the real boot pass, marker helpers, home-channel sender and De
 
 import asyncio
 import json
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -24,6 +25,17 @@ def _adapter():
     return SimpleNamespace(
         send_path_degraded=False,
         send=AsyncMock(return_value=SendResult(success=True, message_id="unit-test-notice")),
+    )
+
+
+def _degraded_adapter():
+    """Telegram reconnect publishes the adapter while the send path is degraded.
+
+    ``send()`` short-circuits to ``send_path_degraded`` without contacting Telegram.
+    """
+    return SimpleNamespace(
+        send_path_degraded=True,
+        send=AsyncMock(return_value=SendResult(success=False, error="send_path_degraded", retryable=True)),
     )
 
 
@@ -128,3 +140,95 @@ async def test_partial_delivery_is_persisted_and_not_repeated(boot_notice):
     # Nothing pending: a later reconnect stays silent.
     await _reconnect(recovered, Platform.DISCORD, discord)
     discord.send.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_degraded_transport_is_unreachable_so_aged_marker_expires(boot_notice):
+    """A send-degraded transport must not pin an aged marker (#129707 review).
+
+    ``resolve_delivery_transport`` only proves the adapter is present; a Telegram
+    reconnect publishes it while ``send_path_degraded=True`` and ``send()`` returns
+    ``send_path_degraded`` without contacting Telegram. The replay records no
+    delivery, so the aged unreachable residue must expire instead of lingering
+    until another process restart.
+    """
+    runner, marker = boot_notice
+    adapter = _degraded_adapter()
+    runner.adapters[Platform.DISCORD] = adapter
+    marker.write_text(json.dumps({"requested_at": time.time() - 3900}), encoding="utf-8")
+
+    await runner._replay_pending_planned_restart_notification()
+
+    adapter.send.assert_awaited_once_with("unit-test-home", ONLINE_NOTICE, metadata={"non_conversational": True})
+    assert not marker.exists(), "aged marker with only a send-degraded transport must expire"
+
+
+@pytest.mark.asyncio
+async def test_fresh_marker_survives_degraded_then_recovery_delivers(boot_notice):
+    """A fresh marker survives a degraded send and is delivered after in-place recovery."""
+    runner, marker = boot_notice
+    adapter = _degraded_adapter()
+    runner.adapters[Platform.DISCORD] = adapter
+    marker.write_text(json.dumps({"requested_at": time.time()}), encoding="utf-8")
+
+    await runner._replay_pending_planned_restart_notification()
+
+    adapter.send.assert_awaited_once()
+    assert marker.exists(), "fresh marker must survive a degraded send for the recovery replay"
+
+    # In-place recovery: polling proves the send path and the adapter can send again.
+    adapter.send_path_degraded = False
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="recovered"))
+    await runner._replay_pending_planned_restart_notification()
+
+    adapter.send.assert_awaited_once_with("unit-test-home", ONLINE_NOTICE, metadata={"non_conversational": True})
+    assert not marker.exists(), "recovered transport must deliver the owed notice"
+
+
+def _bare_telegram_adapter_for_recovery():
+    from plugins.platforms.telegram.adapter import TelegramAdapter
+
+    a = TelegramAdapter.__new__(TelegramAdapter)
+    a.platform = Platform.TELEGRAM
+    a._fatal_error_code = None
+    a._fatal_error_message = None
+    a._fatal_error_retryable = True
+    a._polling_teardown_started = False
+    a._polling_progress_accepting = True
+    a._polling_generation = 1
+    a._polling_progress_event = asyncio.Event()
+    a._polling_network_error_count = 0
+    a._polling_conflict_count = 0
+    a._polling_conflict_recovery_generation = None
+    a._send_path_degraded = True
+    a._running = True
+    a._write_runtime_status_safe = Mock()
+    return a
+
+
+@pytest.mark.asyncio
+async def test_record_polling_progress_schedules_restart_replay_on_recovery():
+    """Clearing the degraded flag in place schedules a planned-restart replay.
+
+    Without this, a notice that failed with ``send_path_degraded`` stays pending
+    until another process restart even though polling already recovered.
+    """
+    adapter = _bare_telegram_adapter_for_recovery()
+    schedule = Mock()
+    adapter.gateway_runner = SimpleNamespace(_schedule_planned_restart_replay=schedule)
+
+    assert adapter._record_polling_progress(1) is True
+    assert adapter._send_path_degraded is False
+    schedule.assert_called_once_with()
+
+    # No degraded -> no recovery -> no extra replay.
+    schedule.reset_mock()
+    assert adapter._record_polling_progress(1) is True
+    schedule.assert_not_called()
+
+    # Stale generation never records progress and never schedules.
+    adapter._send_path_degraded = True
+    schedule.reset_mock()
+    assert adapter._record_polling_progress(0) is False
+    schedule.assert_not_called()
+    assert adapter._send_path_degraded is True

@@ -1689,6 +1689,26 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         self._ingress_dispatched_seen = self._ingress_stalled_heartbeats = 0
         return self._polling_generation, self._polling_progress_event
 
+    def _schedule_planned_restart_replay_if_pending(self) -> None:
+        """Replay an owed planned-restart notice after in-place send-path recovery.
+
+        A notice that failed with ``send_path_degraded`` stays pending, but polling can
+        recover without a reconnect (no ``_install_reconnected_adapter`` to schedule the
+        replay). Best-effort: no runner, no scheduler, or no running loop all skip
+        silently; the scheduler itself no-ops when no marker is pending.
+        """
+        runner = getattr(self, "gateway_runner", None)
+        schedule = getattr(runner, "_schedule_planned_restart_replay", None)
+        if not callable(schedule):
+            return
+        try:
+            schedule()
+        except Exception:
+            logger.debug(
+                "[%s] Planned-restart replay schedule after send-path recovery failed",
+                self.name, exc_info=True,
+            )
+
     def _record_polling_progress(self, generation: int) -> bool:
         """Record successful getUpdates I/O for the current generation only; True when accepted."""
         if self._teardown_started or not self._polling_progress_accepting or generation != self._polling_generation:
@@ -1708,11 +1728,15 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         # First proof getUpdates is flowing for this generation: flip a
         # published "retrying" (degraded connect, reconnect stamp, or the
         # mid-session recovery below) back to "connected" (#101391).
-        if self._send_path_degraded and getattr(self, "_running", False) and not self.has_fatal_error:
+        was_degraded = bool(getattr(self, "_send_path_degraded", False))
+        send_capable = getattr(self, "_running", False) and not self.has_fatal_error
+        if was_degraded and send_capable:
             self._write_runtime_status_safe(
                 "connected", platform_state="connected", error_code=None, error_message=None,
             )
         self._send_path_degraded = False
+        if was_degraded and send_capable:
+            self._schedule_planned_restart_replay_if_pending()
         return True
 
     def _observe_polling_request_result(self, request, generation, result):

@@ -7,6 +7,7 @@ every served profile was reached, or the missed channels are lost for good.
 """
 
 import json
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -241,3 +242,195 @@ async def test_a_served_profiles_reconnect_replays_the_owed_notice(multiplex_run
     coder.send.assert_awaited_once()
     assert coder.send.await_args.args[:2] == ("coder-home", ONLINE_NOTICE)
     assert not marker.exists(), "the owed target was reached on reconnect: the obligation is discharged"
+
+
+@pytest.mark.asyncio
+async def test_disabled_platform_home_channel_not_owed_restart_notice(multiplex_runner):
+    """A disabled platform with a home_channel must not be owed a notice or pin the marker (#127316)."""
+    runner, marker = multiplex_runner
+    runner.adapters[Platform.DISCORD] = _adapter()
+    runner._profile_adapters["coder"][Platform.TELEGRAM] = _adapter()
+    # Add a disabled platform with a home channel configured (e.g. platforms.weixin.enabled=False).
+    runner.config.platforms[Platform.WEIXIN] = PlatformConfig(
+        enabled=False,
+        gateway_restart_notification=True,
+        home_channel=HomeChannel(platform=Platform.WEIXIN, chat_id="wx-home", name="wx-home"),
+    )
+    # The disabled platform is excluded from served home configs.
+    configs = list(runner._served_home_channel_configs())
+    assert not any(platform is Platform.WEIXIN for _prof, platform, _cfg in configs)
+
+    # Replay delivers Discord and coder Telegram and immediately clears the marker without Weixin pinning it.
+    await runner._replay_pending_planned_restart_notification()
+    runner.adapters[Platform.DISCORD].send.assert_awaited_once()
+    runner._profile_adapters["coder"][Platform.TELEGRAM].send.assert_awaited_once()
+    assert not marker.exists(), "marker must be unlinked because the disabled platform is not owed"
+
+
+@pytest.mark.asyncio
+async def test_stale_planned_restart_marker_is_expired_and_unlinked(multiplex_runner):
+    """A marker older than _MAX_PLANNED_RESTART_NOTICE_AGE_SECS is discarded (#127316)."""
+    import time
+    runner, marker = multiplex_runner
+    launch = _adapter()
+    runner.adapters[Platform.DISCORD] = launch
+
+    # Marker written 2 hours ago.
+    marker.write_text(
+        json.dumps({
+            "requested_at": time.time() - 7200,
+            "delivered_targets": [["discord", "launch-home", None]],
+        }),
+        encoding="utf-8",
+    )
+
+    await runner._replay_pending_planned_restart_notification()
+
+    launch.send.assert_not_called()
+    assert not marker.exists(), "stale marker must be unlinked and discarded"
+
+
+@pytest.mark.asyncio
+async def test_old_planned_restart_marker_still_notifies_reachable_homes(multiplex_runner):
+    """Backdating the marker past the age bound must not suppress the notice (#127316 follow-up).
+
+    The bound expires the UNDELIVERED RESIDUE, never the whole marker: every reachable home is
+    attempted first, so a healthy channel still hears that the gateway restarted.
+    """
+    runner, marker = multiplex_runner
+    launch, coder = _adapter(), _adapter()
+    runner.adapters[Platform.DISCORD] = launch
+    runner._profile_adapters["coder"][Platform.TELEGRAM] = coder
+    # Marker written 65 minutes ago — older than _MAX_PLANNED_RESTART_NOTICE_AGE_SECS.
+    marker.write_text(json.dumps({"requested_at": time.time() - 3900}), encoding="utf-8")
+
+    await runner._replay_pending_planned_restart_notification()
+
+    launch.send.assert_awaited_once()
+    coder.send.assert_awaited_once()
+    assert not marker.exists(), "every owed target was reachable: the obligation is discharged"
+
+
+@pytest.mark.asyncio
+async def test_old_marker_expires_only_the_unreachable_residue(multiplex_runner):
+    """An aged marker still notifies a reachable home and drops only the channel that never returned."""
+    runner, marker = multiplex_runner
+    launch = _adapter()
+    runner.adapters[Platform.DISCORD] = launch
+    # coder's Telegram adapter is absent, so that target can never be reached.
+    marker.write_text(json.dumps({"requested_at": time.time() - 3900}), encoding="utf-8")
+
+    await runner._replay_pending_planned_restart_notification()
+
+    launch.send.assert_awaited_once()
+    assert launch.send.await_args.args[:2] == ("launch-home", ONLINE_NOTICE)
+    assert not marker.exists(), "the reachable home was reached and the unreachable residue expired"
+
+
+@pytest.mark.asyncio
+async def test_non_restart_stop_keeps_undelivered_restart_obligation(tmp_path, monkeypatch):
+    """A planned restart's marker survives a second, non-restart stop before the boot replay.
+
+    A supervisor/SIGTERM stop landing between the restart write and the boot replay used to hit the
+    clean-shutdown branch and erase a fresh, fully-undelivered obligation, so no channel was ever
+    notified. The marker is discarded only when spent — never just because this stop was
+    not a restart (#127316 follow-up).
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    runner = object.__new__(gateway_run.GatewayRunner)
+    runner.config = _home_config(Platform.DISCORD, "launch-home")
+    runner._profile_configs = {}
+    runner.adapters = {Platform.DISCORD: _adapter()}
+    runner._free_tier_startup_line = Mock(return_value=None)
+    runner._planned_restart_notice_lock = None
+    runner._update_runtime_status = Mock()
+    marker = tmp_path / ".restart_pending.json"
+    ctx = SimpleNamespace(timed_out=False, active_agents={}, elapsed=lambda: 0.1)
+
+    # 1) A planned restart (no chat-command source) records the undelivered obligation.
+    runner._restart_requested = True
+    runner._restart_command_source = None
+    runner._restart_via_service = False
+    runner._restart_detached = False
+    runner._exit_reason = None
+    await runner._stop_persist_exit_state(ctx)
+    assert marker.exists(), "the planned restart must record its obligation"
+
+    # 2) The fresh process is stopped again WITHOUT a restart request, before the boot replay runs.
+    runner._restart_requested = False
+    await runner._stop_persist_exit_state(ctx)
+    assert marker.exists(), "a fully-undelivered obligation must survive a non-restart stop"
+
+    # 3) Next boot delivers the owed notice exactly once.
+    await runner._replay_pending_planned_restart_notification()
+    runner.adapters[Platform.DISCORD].send.assert_awaited_once()
+    assert not marker.exists()
+
+
+@pytest.mark.asyncio
+async def test_aged_undelivered_marker_survives_non_restart_stop_until_replay(tmp_path, monkeypatch):
+    """An aged-but-undelivered marker survives a non-restart stop; expiry runs only in replay.
+
+    Reviewer sequence: a planned restart writes the marker, the host stays down past the 1h
+    age bound, then the new process stops again before the boot replay. Shutdown must not
+    expire the marker from age alone — the next boot replay attempts the reachable home first
+    and only then expires the unreachable residue.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    runner = object.__new__(gateway_run.GatewayRunner)
+    runner.config = _home_config(Platform.DISCORD, "launch-home")
+    runner._profile_configs = {}
+    runner.adapters = {Platform.DISCORD: _adapter()}
+    runner._free_tier_startup_line = Mock(return_value=None)
+    runner._planned_restart_notice_lock = None
+    runner._update_runtime_status = Mock()
+    marker = tmp_path / ".restart_pending.json"
+    # Backdate an undelivered marker by 65 minutes past _MAX_PLANNED_RESTART_NOTICE_AGE_SECS.
+    marker.write_text(json.dumps({"requested_at": time.time() - 3900}), encoding="utf-8")
+    ctx = SimpleNamespace(timed_out=False, active_agents={}, elapsed=lambda: 0.1)
+
+    runner._restart_requested = False
+    runner._restart_command_source = None
+    runner._restart_via_service = False
+    runner._restart_detached = False
+    runner._exit_reason = None
+    await runner._stop_persist_exit_state(ctx)
+    assert marker.exists(), "shutdown must not expire an undelivered marker from age alone"
+    runner.adapters[Platform.DISCORD].send.assert_not_awaited()
+
+    await runner._replay_pending_planned_restart_notification()
+    runner.adapters[Platform.DISCORD].send.assert_awaited_once()
+    assert not marker.exists()
+
+
+@pytest.mark.asyncio
+async def test_clean_shutdown_still_clears_a_spent_leftover_marker(tmp_path, monkeypatch):
+    """A non-restart stop may still discard a marker that owes nothing (every target delivered)."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    marker = tmp_path / ".restart_pending.json"
+    marker.write_text(
+        json.dumps({
+            "requested_at": time.time(),
+            "delivered_targets": [["discord", "launch-home", None]],
+        }),
+        encoding="utf-8",
+    )
+    assert marker.exists()
+
+    runner = object.__new__(gateway_run.GatewayRunner)
+    runner.config = _home_config(Platform.DISCORD, "launch-home")
+    runner._profile_configs = {}
+    runner._restart_requested = False
+    runner._restart_command_source = None
+    runner._restart_via_service = False
+    runner._restart_detached = False
+    runner._exit_reason = None
+    runner._update_runtime_status = Mock()
+
+    ctx = SimpleNamespace(timed_out=False, active_agents={}, elapsed=lambda: 0.1)
+    await runner._stop_persist_exit_state(ctx)
+
+    assert not marker.exists(), "a spent marker owes nothing and is safe to discard"

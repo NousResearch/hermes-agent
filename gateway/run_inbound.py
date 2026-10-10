@@ -744,9 +744,18 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
         self._queue_or_replace_pending_event(_quick_key, event)
         return None
 
-    def _hm_quick_commands(self) -> dict:
-        """User-defined ``quick_commands`` mapping from config (empty dict when unset/malformed)."""
+    def _hm_quick_commands(self, source: Optional[SessionSource] = None) -> dict:
+        """User-defined ``quick_commands`` of the profile that runs *source*'s turn (empty dict when
+        unset/malformed)."""
         cfg = self.config
+        if source is not None and getattr(cfg, "multiplex_profiles", False):
+            # ``self.config`` is the launch profile's alone. Key on the runtime profile, whose scope
+            # the turn (and a ``type: exec`` snippet) runs under, so the lookup and the env agree.
+            from gateway.session_identity import identity_of
+            identity = identity_of(source)
+            profile = identity.runtime_profile if identity is not None else getattr(source, "profile", None)
+            if profile:
+                cfg = (getattr(self, "_profile_configs", None) or {}).get(profile, cfg)
         qc = (cfg.get("quick_commands") if isinstance(cfg, dict) else getattr(cfg, "quick_commands", None)) or {}
         return qc if isinstance(qc, dict) else {}
 
@@ -827,7 +836,7 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
         # --provider openrouter reach the /model handler. Built-ins keep precedence: aliases only
         # need early handling when the typed command is not already known.
         if command and _cmd_def is None:
-            qcmd = self._hm_quick_commands().get(command)
+            qcmd = self._hm_quick_commands(source).get(command)
             if qcmd is not None and qcmd.get("type") == "alias":
                 new_command = self._hm_expand_alias_quick_command(event, qcmd)
                 if new_command is not None:
@@ -1031,7 +1040,9 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
             from tools.environments.local import build_subprocess_env
             proc = await asyncio.create_subprocess_shell(
                 exec_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-                env=build_subprocess_env(),
+                # A routed profile's message runs under its scope, but os.environ is the launch
+                # profile's: drop that residue so the snippet sees the owning profile's own .env.
+                env=build_subprocess_env(strip_launch_profile=True),
             )
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
             output = (stdout or stderr).decode().strip()
@@ -1053,7 +1064,7 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
             return True, t("gateway.busy.drain_rejected_new_work", action=self._status_action_gerund()), command
 
         # User-defined quick commands (bypass agent loop, no LLM call)
-        qcmd = self._hm_quick_commands().get(command) if command else None
+        qcmd = self._hm_quick_commands(source).get(command) if command else None
         if qcmd is not None:
             # Quick commands are slash capabilities too — and type:exec ones run a shell command in
             # the gateway process. They are never in the registry, so the early gate never fires for

@@ -574,8 +574,12 @@ def _dispatch_quick(rid, params, session, name, arg):
     if qc is None:
         return None
     if qc.get("type") == "exec":
-        # Sanitized env: the TUI server process holds every API key in os.environ.
-        env = _tools_mod("tools.environments.local").build_subprocess_env()
+        # Sanitized env: the TUI server process holds every API key in os.environ. That env is the
+        # LAUNCH profile's; the dispatcher binds only the session's home, so bind its secret scope
+        # too and strip the launch profile's .env residue, or a secondary profile's snippet runs
+        # with the launch profile's values instead of its own.
+        with _session_profile_runtime_scope(session or {}):
+            env = _tools_mod("tools.environments.local").build_subprocess_env(strip_launch_profile=True)
         r = subprocess.run(qc.get("command", ""), shell=True, env=env, **_capture_run_kwargs(30))
         output = _joined_output(r)[:4000]
         output = _tools_mod("agent.redact").redact_sensitive_text(output) if output else output

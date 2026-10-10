@@ -18,6 +18,8 @@ def test_json_headers_remain_parseable_without_exposing_credentials():
             assert "opaque-session-secret" not in restored["headers"][name]
             assert restored["model"] == payload["model"]
             assert restored["messages"] == payload["messages"]
+            file_redacted = json.loads(redact_sensitive_text(serialized, force=True, file_read=True, secret_file=True))
+            assert file_redacted["headers"][name].startswith("«redacted")
             assert redact_sensitive_text(serialized, force=True, code_file=True) == serialized
 
 

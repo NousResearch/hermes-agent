@@ -282,12 +282,12 @@ def _launch_elevated_install(force: bool = False, *, start_now: bool | None = No
 
 # ── Paths: where we stash our task script and where Startup lives
 
-def get_task_name() -> str:
-    """Scheduled Task name, scoped per profile."""
+def get_task_name(home: str | Path | None = None) -> str:
+    """Scheduled Task name for *home* (or the active profile when omitted)."""
     _assert_windows()
     from hermes_cli.gateway import _profile_suffix  # local: avoids circular init during boot
 
-    suffix = _profile_suffix()
+    suffix = _profile_suffix(home)
     return f"{_TASK_NAME_DEFAULT}_{suffix}" if suffix else _TASK_NAME_DEFAULT
 
 
@@ -296,13 +296,14 @@ def _sanitize_filename(value: str) -> str:
     return re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", value)
 
 
-def get_task_script_path() -> Path:
+def get_task_script_path(home: Path | None = None) -> Path:
     """The generated ``gateway.cmd`` wrapper under ``<HERMES_HOME>/gateway-service/`` (per-profile
     installs stay self-contained); the VBS launcher lives beside it."""
     _assert_windows()
-    script_dir = _hermes_home() / "gateway-service"
+    script_dir = (home if home is not None else _hermes_home()) / "gateway-service"
     script_dir.mkdir(parents=True, exist_ok=True)
-    return script_dir / f"{_sanitize_filename(get_task_name())}.cmd"
+    task_name = get_task_name(home) if home is not None else get_task_name()
+    return script_dir / f"{_sanitize_filename(task_name)}.cmd"
 
 
 def _startup_dir() -> Path:
@@ -315,19 +316,22 @@ def _startup_dir() -> Path:
     return Path(userprofile).joinpath("AppData", "Roaming", "Microsoft", "Windows", "Start Menu", "Programs", "Startup")
 
 
-def get_startup_entry_path() -> Path:
+def get_startup_entry_path(home: Path | None = None) -> Path:
     _assert_windows()
-    return _startup_dir() / f"{_sanitize_filename(get_task_name())}.vbs"
+    task_name = get_task_name(home) if home is not None else get_task_name()
+    return _startup_dir() / f"{_sanitize_filename(task_name)}.vbs"
 
 
-def _legacy_startup_entry_path() -> Path:
+def _legacy_startup_entry_path(home: Path | None = None) -> Path:
     _assert_windows()
-    return _startup_dir() / f"{_sanitize_filename(get_task_name())}.cmd"
+    task_name = get_task_name(home) if home is not None else get_task_name()
+    return _startup_dir() / f"{_sanitize_filename(task_name)}.cmd"
 
 
-def _startup_staging_path() -> Path:
+def _startup_staging_path(*, home: Path | None = None) -> Path:
     """The Startup-folder staging file; also the debris a pre-fix failed swap left behind (#114093)."""
-    return get_startup_entry_path().with_suffix(".tmp")
+    target = {"home": home} if home is not None else {}
+    return get_startup_entry_path(**target).with_suffix(".tmp")
 
 
 def _stable_gateway_working_dir(project_root: Path) -> str:
@@ -460,12 +464,12 @@ def _build_startup_launcher(script_path: Path) -> str:
     return "\r\n".join(lines) + "\r\n"
 
 
-def _write_task_script() -> Path:
+def _write_task_script(home: Path | None = None) -> Path:
     """Generate the gateway.cmd wrapper (kept as a compatibility artifact) and the console-less .vbs
     launcher used by the Scheduled Task and Startup fallback. Return the .cmd path."""
     _assert_windows()
-    settings = _launcher_settings()
-    script_path = get_task_script_path()
+    settings = _launcher_settings(home)
+    script_path = get_task_script_path(home)
     _atomic_write(script_path, _build_gateway_cmd_script(*settings), script_path.with_suffix(".tmp"))
     # Also render the console-less .vbs launcher used by Scheduled Task and the Startup-folder fallback via
     # wscript.exe (issue #45599 fix A). The .cmd wrapper stays as a generated helper/compatibility artifact.
@@ -595,12 +599,13 @@ def _install_scheduled_task(task_name: str, script_path: Path) -> tuple[bool, st
     return (False, f"schtasks /Create failed (code {last_code}): {last_err.strip()}")
 
 
-def _install_startup_entry(script_path: Path) -> Path:
+def _install_startup_entry(script_path: Path, *, home: Path | None = None) -> Path:
     """Write the Startup-folder fallback launcher. Returns its path."""
-    entry = get_startup_entry_path()
+    target = {"home": home} if home is not None else {}
+    entry = get_startup_entry_path(**target)
     entry.parent.mkdir(parents=True, exist_ok=True)
-    _atomic_write(entry, _build_startup_launcher(script_path), _startup_staging_path())
-    legacy_entry = _legacy_startup_entry_path()
+    _atomic_write(entry, _build_startup_launcher(script_path), _startup_staging_path(**target))
+    legacy_entry = _legacy_startup_entry_path(**target)
     try:
         if legacy_entry.exists():
             legacy_entry.unlink()
@@ -609,15 +614,16 @@ def _install_startup_entry(script_path: Path) -> Path:
     return entry
 
 
-def _remove_startup_entries() -> tuple[list[str], list[str]]:
+def _remove_startup_entries(*, home: Path | None = None) -> tuple[list[str], list[str]]:
     """Unlink the Startup-folder entries (``.vbs`` fallback + legacy ``.cmd``); ``(done, warnings)``.
 
     A failure (file locked, access denied) is reported rather than swallowed so callers warn
     instead of claiming a single autostart mechanism.
     """
+    target = {"home": home} if home is not None else {}
     done: list[str] = []
     warnings: list[str] = []
-    for path in (get_startup_entry_path(), _legacy_startup_entry_path()):
+    for path in (get_startup_entry_path(**target), _legacy_startup_entry_path(**target)):
         try:
             path.unlink()
             done.append(f"Removed redundant Windows login item: {path}")
@@ -628,16 +634,18 @@ def _remove_startup_entries() -> tuple[list[str], list[str]]:
     return done, warnings
 
 
-def redundant_autostart_entries() -> list[Path]:
+def redundant_autostart_entries(*, home: Path | None = None) -> list[Path]:
     """Startup-folder entries that fire the gateway a second time at logon: every entry beside a
     registered Scheduled Task, or a legacy ``.cmd`` beside the ``.vbs`` fallback."""
-    entries = [p for p in (get_startup_entry_path(), _legacy_startup_entry_path()) if p.exists()]
-    if is_task_registered():
+    target = {"home": home} if home is not None else {}
+    paths = (get_startup_entry_path(**target), _legacy_startup_entry_path(**target))
+    entries = [p for p in paths if p.exists()]
+    if is_task_registered(**target):
         return entries
     return entries[1:]
 
 
-def reconcile_autostart_launchers() -> tuple[list[str], list[str]]:
+def reconcile_autostart_launchers(*, home: Path | None = None) -> tuple[list[str], list[str]]:
     """Converge gateway logon persistence to ONE mechanism; returns ``(done, warnings)`` messages.
 
     The Scheduled Task and the Startup-folder entry are alternatives, but a successful task install
@@ -646,11 +654,12 @@ def reconcile_autostart_launchers() -> tuple[list[str], list[str]]:
     task but a legacy ``.cmd``: rewrite it as the console-less ``.vbs`` fallback. File operations
     only (no schtasks mutation, no elevation), so install, update and doctor can all run it.
     """
-    if is_task_registered():
-        return _remove_startup_entries()
-    legacy = _legacy_startup_entry_path()
+    target = {"home": home} if home is not None else {}
+    if is_task_registered(**target):
+        return _remove_startup_entries(**target)
+    legacy = _legacy_startup_entry_path(**target)
     if legacy.exists():
-        entry = _install_startup_entry(_write_task_script())
+        entry = _install_startup_entry(_write_task_script(**target), **target)
         if legacy.exists():  # _install_startup_entry swallows the unlink failure; both would fire at logon
             return [], [f"Could not remove legacy Windows login item: {legacy} (locked or access denied; it still fires at logon beside {entry})"]
         return [f"Migrated legacy Windows login item to: {entry}"], []
@@ -1066,6 +1075,7 @@ def _wait_for_gateway_ready(
 # ---------------------------------------------------------------------------
 
 _START_ATTESTATION_RELATIVE = ("state", "gateway.start-attestation.json")
+_UNMAPPED_START_ATTESTATION_RELATIVE = ("state", "gateway.unmapped-start-attestation.json")
 
 
 def _start_attestation_path(home: Path | None = None) -> Path:
@@ -1097,6 +1107,42 @@ def _write_start_attestation(pids: list[int], via: str, home: Path | None = None
         tmp.replace(path)
     except Exception:
         logger.debug("Failed to write gateway start attestation", exc_info=True)
+
+
+def _write_unmapped_start_attestation(pids: list[int], via: str) -> None:
+    """Persist a diagnostic without assigning an unmapped gateway a profile."""
+    try:
+        path = _hermes_home().joinpath(*_UNMAPPED_START_ATTESTATION_RELATIVE)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "pids": [int(p) for p in pids], "via": via,
+            "ts": datetime.now(timezone.utc).isoformat(), "generation": uuid.uuid4().hex,
+            "identity": "unmapped",
+        }
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(payload), encoding="utf-8")
+        tmp.replace(path)
+    except Exception:
+        logger.debug("Failed to write unmapped gateway start attestation", exc_info=True)
+
+
+def _unmapped_start_attestation_path() -> Path:
+    """A neutral marker for a process that could not be assigned a profile/home."""
+    return _hermes_home().joinpath(*_UNMAPPED_START_ATTESTATION_RELATIVE)
+
+
+def _read_unmapped_start_attestation() -> object | None:
+    try:
+        return json.loads(_unmapped_start_attestation_path().read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return None
+
+
+def _clear_unmapped_start_attestation() -> None:
+    try:
+        _unmapped_start_attestation_path().unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def _clear_start_attestation(home: Path | None = None) -> None:
@@ -1252,6 +1298,41 @@ def check_start_attestation(current_pids: list[int] | None = None) -> str | None
     return _format_attestation_warning(attested, data)
 
 
+def check_unmapped_start_attestation(current_pids: list[int] | None = None) -> str | None:
+    """Surface a one-shot diagnostic for a previously verified unmapped gateway.
+
+    This intentionally does not use a profile's ledger or task hint: an
+    unmapped process has no trustworthy home and must not be represented as
+    the active/default profile.  It is diagnostic-only, unlike profile
+    attestations which can participate in a cold-start plan.
+    """
+    data = _read_unmapped_start_attestation()
+    if not isinstance(data, dict) or data.get("identity") != "unmapped":
+        if data is not None:
+            _clear_unmapped_start_attestation()
+        return None
+    attested = _attested_pids_from(data)
+    if not attested or not _attestation_within_horizon(data):
+        _clear_unmapped_start_attestation()
+        return None
+    if current_pids is None:
+        try:
+            from hermes_cli.gateway import find_gateway_pids
+
+            current_pids = list(find_gateway_pids(all_profiles=True))
+        except Exception:
+            return None
+    _clear_unmapped_start_attestation()
+    if set(attested) & set(current_pids):
+        return None
+    via = data.get("via") or "post-update recovery"
+    ts = data.get("ts") or "unknown time"
+    return (
+        f"⚠ A previously verified unmapped gateway ({via}, {ts}) is no longer running "
+        f"(PID {', '.join(map(str, attested))}). Its profile could not be determined."
+    )
+
+
 def _format_attestation_warning(attested: list[int], data: dict) -> str:
     via = data.get("via") or "direct spawn"
     ts = data.get("ts") or "unknown time"
@@ -1285,9 +1366,15 @@ def _print_task_run_hint(fmt: str) -> None:
 
 
 def _print_start_attestation_warning() -> None:
-    """Print the stale-attestation warning if one is pending. Never raises."""
+    """Print stale profile/unmapped attestation diagnostics once. Never raises."""
     try:
         warning = check_start_attestation()
+    except Exception:
+        warning = None
+    if warning:
+        print(warning)
+    try:
+        warning = check_unmapped_start_attestation()
     except Exception:
         return
     if warning:
@@ -1363,13 +1450,39 @@ def uninstall() -> None:
 
 # ── Status / start / stop / restart
 
-def is_task_registered() -> bool:
-    code, _out, _err = _exec_schtasks(["/Query", "/TN", get_task_name()])
-    return code == 0
+def _task_registration_state(*, home: Path | None = None) -> str:
+    """``registered`` or conservative ``query-failed`` for a task lookup.
+
+    ``schtasks /Query`` uses the same non-zero code for a missing task and
+    several transport failures.  The bool public API remains intentionally
+    lossy, but update recovery must never turn an indeterminate lookup into a
+    claim that no task exists.
+    """
+    task_name = get_task_name(home) if home is not None else get_task_name()
+    code, _out, _err = _exec_schtasks(["/Query", "/TN", task_name])
+    return "registered" if code == 0 else "query-failed"
 
 
-def is_startup_entry_installed() -> bool:
-    return get_startup_entry_path().exists() or _legacy_startup_entry_path().exists()
+def is_task_registered(*, home: Path | None = None) -> bool:
+    return _task_registration_state(home=home) == "registered"
+
+
+def _run_scheduled_task_once(*, home: Path | None = None) -> tuple[int, str, str]:
+    """One-shot ``schtasks /Run`` for post-update Job Object recovery only.
+
+    The Scheduled Task is login persistence; ordinary ``start()`` / ``restart()``
+    stay on ``_spawn_detached``. Only the updater's post-relaunch / cold-start
+    recovery may use this to start the gateway outside the parent Job Object
+    (#107002 / #48820).
+    """
+    task_name = get_task_name(home) if home is not None else get_task_name()
+    return _exec_schtasks(["/Run", "/TN", task_name])
+
+
+def is_startup_entry_installed(*, home: Path | None = None) -> bool:
+    if home is None:
+        return get_startup_entry_path().exists() or _legacy_startup_entry_path().exists()
+    return get_startup_entry_path(home).exists() or _legacy_startup_entry_path(home).exists()
 
 
 def _query_scheduled_task_xml(task_name: str) -> str | None:
@@ -1432,13 +1545,66 @@ def compare_scheduled_task_drift(registered_xml: str, template_xml: str) -> list
     return drift
 
 
-def scheduled_task_drift(task_name: str) -> list[str]:
+def _scheduled_task_template(task_name: str, home: Path | None = None) -> str:
+    script_path = get_task_script_path(home) if home is not None else get_task_script_path()
+    return _build_scheduled_task_xml(
+        task_name, script_path.with_suffix(".vbs"), _resolve_task_user()
+    )
+
+
+def _task_action_is_hermes_managed(
+    registered_xml: str, template_xml: str, *, task_name: str | None = None
+) -> bool:
+    """Only replace a task action when it is exactly the managed launcher.
+
+    Drift repair may update Hermes' own template settings, but an action that
+    points somewhere else is user-owned and must not be overwritten by update.
+    """
+    try:
+        registered_root = ElementTree.fromstring(registered_xml)
+    except ElementTree.ParseError:
+        return False
+    actions_nodes = [
+        child for child in registered_root
+        if child.tag.rsplit("}", 1)[-1] == "Actions"
+    ]
+    if len(actions_nodes) != 1:
+        return False
+    actions = list(actions_nodes[0])
+    if len(actions) != 1 or actions[0].tag.rsplit("}", 1)[-1] != "Exec":
+        return False
+    registered = _task_xml_leaf_values(registered_xml)
+    template = _task_xml_leaf_values(template_xml)
+    if registered is None or template is None:
+        return False
+    command = str(registered.get("Task/Actions/Exec/Command") or "").casefold()
+    arguments = str(registered.get("Task/Actions/Exec/Arguments") or "")
+    wanted_arguments = str(template.get("Task/Actions/Exec/Arguments") or "")
+    # Only support the two launcher forms Hermes itself has emitted: the
+    # older single quoted script, and the current ``//B //Nologo`` form.  A
+    # quoted path elsewhere in a custom argument string (for example a
+    # ``/target:`` value) is not the script that wscript executes.
+    launcher_args = re.compile(
+        r'\s*(?://B\s+//Nologo\s+)?"([^"]+)"\s*', re.IGNORECASE
+    )
+    registered_match = launcher_args.fullmatch(arguments)
+    wanted_match = launcher_args.fullmatch(wanted_arguments)
+    if command not in {"wscript.exe", "wscript"} or not registered_match or not wanted_match:
+        return False
+    # Ownership is target-scoped.  A matching task-shaped suffix in another
+    # home is insufficient evidence that changing its Action is safe.
+    registered_launcher = registered_match.group(1).replace("/", "\\").casefold()
+    wanted_launcher = wanted_match.group(1).replace("/", "\\").casefold()
+    return registered_launcher == wanted_launcher
+
+
+def scheduled_task_drift(task_name: str, home: Path | None = None) -> list[str]:
     """Drift fragments between the registered task and ``_build_scheduled_task_xml``; empty when
     aligned or when the task cannot be queried."""
     registered = _query_scheduled_task_xml(task_name)
     if registered is None:
         return []
-    template = _build_scheduled_task_xml(task_name, get_task_script_path().with_suffix(".vbs"), _resolve_task_user())
+    template = _scheduled_task_template(task_name, home)
     return compare_scheduled_task_drift(registered, template)
 
 
@@ -1451,25 +1617,35 @@ def _print_scheduled_task_drift(task_name: str) -> None:
         print("  Repair: hermes gateway start  (or: hermes gateway install)")
 
 
-def reconcile_scheduled_task(task_name: str) -> bool:
+def reconcile_scheduled_task(task_name: str, *, home: Path | None = None) -> bool:
     """Re-register the task from the current template when it drifts (#113670) — the Windows sibling
     of ``gateway.py::refresh_systemd_unit_if_needed``. Template hardening (``RestartOnFailure``, logon
     ``Delay``) otherwise only ever reaches fresh installs. False when aligned/unqueryable or when
     ``schtasks`` refused (typically Access Denied — the elevating ``hermes gateway install`` is the fallback)."""
-    drift = scheduled_task_drift(task_name)
+    registered = _query_scheduled_task_xml(task_name)
+    if registered is None:
+        return False
+    template = _scheduled_task_template(task_name, home)
+    drift = compare_scheduled_task_drift(registered, template)
     if not drift:
         return False
+    if not _task_action_is_hermes_managed(registered, template, task_name=task_name):
+        print("⚠ Scheduled Task action is not Hermes-managed; leaving it unchanged")
+        return False
     print(f"↻ Repairing outdated Scheduled Task registration ({'; '.join(drift)})")
-    ok, detail = _install_scheduled_task(task_name, _write_task_script())
+    script_path = _write_task_script(home) if home is not None else _write_task_script()
+    ok, detail = _install_scheduled_task(task_name, script_path)
     print(f"{'✓' if ok else '⚠'} {detail}")
     if not ok:
         print("  Repair manually: hermes gateway install")
     return ok
 
 
-def is_installed() -> bool:
+def is_installed(*, home: Path | None = None) -> bool:
     """True when either the schtasks entry or the Startup fallback is present."""
-    return is_task_registered() or is_startup_entry_installed()
+    if home is None:
+        return is_task_registered() or is_startup_entry_installed()
+    return is_task_registered(home=home) or is_startup_entry_installed(home=home)
 
 
 def query_task_status() -> dict[str, str]:
@@ -1687,7 +1863,9 @@ def start() -> None:
         reconcile_scheduled_task(get_task_name())   # like systemd's regenerate-on-stale before a start
 
     # Manual starts use the same console-less direct spawn as restart() and install --start-now;
-    # Scheduled Task / Startup entries are only login persistence.
+    # Scheduled Task / Startup entries are only login persistence. The sole
+    # ``schtasks /Run`` path is post-update Job Object recovery in
+    # ``update_cmd_windows`` (#107002); do not change ordinary start() to /Run.
     pid = _spawn_detached()
     _report_gateway_start("direct spawn")
 

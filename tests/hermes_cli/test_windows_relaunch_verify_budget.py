@@ -73,3 +73,29 @@ def test_verify_budget_covers_the_watchers_own_wait_when_the_old_pid_is_still_al
     # reports "no stable gateway process appeared" before the relaunch could have happened.
     assert pending > GATEWAY_RESTART_WATCHER_TIMEOUT_S
     assert settled < pending
+
+
+@pytest.mark.parametrize("mapped", [True, False])
+def test_target_verification_receives_watcher_budget(monkeypatch, tmp_path, mapped):
+    from gateway import status
+    from hermes_cli import gateway_windows, profiles, update_cmd_windows
+
+    old_pid = 14980
+    entry = {"pid": old_pid, "argv": ["python", "-m", "hermes_cli.main", "gateway", "run"]}
+    selected_profiles = {"beta": old_pid} if mapped else {}
+    replays = [] if mapped else [entry]
+    token = {"profiles": dict(selected_profiles), "unmapped": list(replays)}
+    observed = []
+    monkeypatch.setattr(status, "_pid_exists", lambda pid: pid == old_pid)
+    monkeypatch.setattr(profiles, "get_profile_dir", lambda _name: tmp_path / "beta")
+    monkeypatch.setattr(update_cmd_windows._time, "monotonic", lambda: 10.0)
+
+    def poll(targets, deadline, taken):
+        observed.append(deadline - 10.0)
+        return {key: [4242] for key, _probe, _claim_all in targets}
+
+    monkeypatch.setattr(update_cmd_windows, "_poll_until_ready", poll)
+    monkeypatch.setattr(gateway_windows, "_write_start_attestation", lambda *_a, **_kw: None)
+    monkeypatch.setattr(gateway_windows, "_write_unmapped_start_attestation", lambda *_a: None)
+    update_cmd_windows._verify_relaunched_gateways_alive(token, selected_profiles, replays)
+    assert observed == [GATEWAY_RESTART_WATCHER_TIMEOUT_S + 30.0]

@@ -475,12 +475,15 @@ def _check_npm_audit(should_fix: bool, f: Finding) -> None:
             # See #38772. The WhatsApp bridge may live under a writable HERMES_HOME mirror instead of the
             # (possibly read-only) install tree in Docker — resolve it through the shared helper so we audit
             # the dir that actually holds node_modules. See #49561.
+            # Labels must name the tree that is actually audited: agent-browser is a pm-store native
+            # executable with no npm dependency tree and no lockfile, so the root row must not borrow its
+            # name (#135928) — the count then points at package-lock.json, which really exists.
             from gateway.platforms.whatsapp_common import resolve_whatsapp_bridge_dir
             whatsapp_bridge_dir = resolve_whatsapp_bridge_dir()
         except Exception:
             whatsapp_bridge_dir = PROJECT_ROOT / "scripts" / "whatsapp-bridge"
         for npm_dir, label, audit_extra in (
-            (PROJECT_ROOT, "Browser tools (agent-browser)", ["--workspaces=false"]),
+            (PROJECT_ROOT, "root workspace", ["--workspaces=false"]),
             (PROJECT_ROOT, "web workspace", ["--workspace", "web"]),
             (PROJECT_ROOT, "ui-tui workspace", ["--workspace", "ui-tui"]),
             (whatsapp_bridge_dir, "WhatsApp bridge", []),

@@ -34,7 +34,9 @@ Usage:
     pytest failure. Tokens after ``--`` are never validated.
 
 Environment:
-    HERMES_TEST_WORKERS  Override worker count (default: os.cpu_count())
+    HERMES_TEST_WORKERS  Override worker count (default: os.cpu_count(),
+                         clamped to fit a detected cgroup memory.max cap —
+                         see _default_job_count())
     HERMES_TEST_PATHS    Override discovery roots (colon-sep; on Windows
                          ';' also works and drive letters are handled;
                          default: 'tests')
@@ -157,6 +159,78 @@ _DEFAULT_FILE_RETRIES = 1
 # wall-clock seconds. Used by ``--slice`` to distribute files across
 # CI jobs by estimated total time, so no one job gets all the slow files.
 _DURATIONS_FILE = "test_durations.json"
+
+# Conservative per-worker memory budget: one ``python -m pytest <file>``
+# subprocess commonly peaks at 150-250MB RSS. Used only to clamp the default
+# job count when this process runs inside a cgroup with a finite memory.max
+# (a container memory limit, a CI job limit, a systemd MemoryMax= scope).
+# Without the clamp, cpu_count workers on a many-core host can overrun the
+# cap and the kernel OOM-kills the cgroup's top-level process: the caller,
+# not a test.
+_ASSUMED_WORKER_RSS_BYTES = 300 * 1024 * 1024
+
+
+def _cgroup_memory_max_bytes(
+    proc_cgroup: Path = Path("/proc/self/cgroup"),
+    cgroup_root: Path = Path("/sys/fs/cgroup"),
+) -> "int | None":
+    """Effective cgroup-v2 memory cap of this process, or ``None`` if
+    unavailable/unlimited.
+
+    cgroup-v2 limits are hierarchical: a leaf whose own ``memory.max`` is
+    ``max`` is still bound by any finite ancestor. So walk from this
+    process's cgroup up to the visible root and take the smallest finite
+    ``memory.max``. Levels without the file (the host root) or with ``max``
+    are skipped. Self-contained on purpose: this script runs standalone
+    without importing the package.
+    """
+    try:
+        lines = proc_cgroup.read_text(encoding="utf-8-sig").splitlines()
+    except OSError:
+        return None
+    v2 = next((ln for ln in lines if ln.startswith("0::")), None)
+    if v2 is None:
+        return None
+    parts = [p for p in v2.partition("::")[2].split("/") if p]
+    limits = []
+    for depth in range(len(parts), -1, -1):
+        try:
+            raw_limit = cgroup_root.joinpath(*parts[:depth], "memory.max").read_text(encoding="utf-8-sig").strip()
+        except OSError:
+            continue
+        if raw_limit.isdigit():  # "max" means no cap at this level
+            limits.append(int(raw_limit))
+    return min(limits) if limits else None
+
+
+def _default_job_count() -> int:
+    """Default ``-j`` worker count.
+
+    ``HERMES_TEST_WORKERS`` is an explicit override and is always honored
+    verbatim, uncapped — the caller stated intent. Absent that, the
+    default is ``cpu_count()``, but when this process runs inside a cgroup
+    with a finite ``memory.max``, that default is clamped so the spawned
+    worker fleet fits the cap instead of getting the whole cgroup OOM-killed.
+    """
+    env_override = os.environ.get("HERMES_TEST_WORKERS", "").strip()
+    if env_override:
+        return int(env_override)
+    cpu_default = os.cpu_count() or 4
+    mem_max = _cgroup_memory_max_bytes()
+    if mem_max is None:
+        return cpu_default
+    mem_capped = max(1, mem_max // _ASSUMED_WORKER_RSS_BYTES)
+    if mem_capped >= cpu_default:
+        return cpu_default
+    print(
+        f"⚠ run_tests_parallel: detected a cgroup memory.max={mem_max // (1024 * 1024)}MiB "
+        f"cap — clamping default -j from {cpu_default} to "
+        f"{mem_capped} (~{_ASSUMED_WORKER_RSS_BYTES // (1024 * 1024)}MiB/worker budget) to "
+        "avoid the kernel OOM-killing this process. Pass -j/--jobs or set "
+        "HERMES_TEST_WORKERS explicitly to override.",
+        file=sys.stderr,
+    )
+    return mem_capped
 
 
 def _split_pathspec(value: str) -> list[str]:
@@ -1103,8 +1177,8 @@ def main() -> int:
         "-j",
         "--jobs",
         type=int,
-        default=int(os.environ.get("HERMES_TEST_WORKERS") or (os.cpu_count() or 4)),
-        help="Parallel worker count (default: $HERMES_TEST_WORKERS or cpu_count)",
+        default=_default_job_count(),
+        help="Parallel worker count (default: $HERMES_TEST_WORKERS, else cpu_count capped by cgroup memory.max)",
     )
     parser.add_argument(
         "--paths",

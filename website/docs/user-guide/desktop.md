@@ -454,7 +454,7 @@ Further down the same **Settings → Gateways** page, **Registered gateways** ma
 - **Duplicates are rejected at save time**: only one **local** entry ever; remote and cloud entries are deduplicated on the normalized URL (trimmed, trailing slashes stripped, lowercased — across both kinds); SSH entries on the normalized `user@host:port` plus remote profile.
 - Existing settings are **imported automatically** the first time you run a build with the registry: your current global connection and any legacy per-profile overrides become named entries. The legacy settings file is left untouched, so older builds keep working.
 - Cloud entries come from the Hermes Cloud sign-in/discovery flow above, not from a hand-typed URL.
-- Tokens are stored encrypted with the OS keyring (with an explicit plain-text opt-in on keyring-less Linux).
+- Tokens (remote-gateway session tokens, SSH-adopted dashboard tokens, native sign-in credentials) are stored as owner-only files in the app's user-data directory. Encryption with the OS keychain (Keychain on macOS, DPAPI on Windows, the session keyring on Linux) is **opt-in**: turn on **Settings → Gateways → Encrypt saved secrets with the OS keychain** to re-encrypt existing secrets in place. See [Security notes](./multi-connection-desktop.md#security-notes).
 
 Side-by-side routing is live: each registered gateway dials its own backends and sockets on demand (keyed per connection + profile), the plugin SDK exposes the union agent roster (`host.agents()` / `host.ensureAgent()`), and **Update all instances** on the Gateways page dispatches `hermes update` to every eligible gateway at once — Hermes Cloud entries are skipped (the platform updates them), and each instance reports its own result.
 

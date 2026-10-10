@@ -44,14 +44,14 @@ def reset_accounting_context(token) -> None:
 
 def record_aux_usage(
     response: Any, task: Optional[str], *, provider: Optional[str] = None,
-    base_url: Optional[str] = None,
+    base_url: Optional[str] = None, model: Optional[str] = None,
 ) -> None:
     """Record an auxiliary response's token usage against the ambient session.
 
     Strictly best-effort (accounting must never break an aux call). No-ops outside an
     agent turn, for main-loop-accounted tasks (``_EXCLUDED_TASKS``), or without usage.
-    The model is read from ``response.model`` (accurate after aux provider fallback);
-    *provider*/*base_url* reflect the originally-resolved route.
+    The observed response model takes precedence over the selected request model.
+    Provider and base URL describe the route for this attempt.
     """
     try:
         if not task or task in _EXCLUDED_TASKS:
@@ -73,7 +73,7 @@ def record_aux_usage(
             or usage.reasoning_tokens
         ):
             return
-        model = str(getattr(response, "model", "") or "") or "unknown"
+        model = str(getattr(response, "model", "") or model or "unknown")
         estimated_cost = None
         try:
             cost = estimate_usage_cost(model, usage, provider=provider, base_url=base_url)

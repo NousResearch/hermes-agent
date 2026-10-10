@@ -598,9 +598,10 @@ def _usage_from_metadata(usage_meta: dict[str, Any]) -> SimpleNamespace:
     )
 
 
-def _envelope(model: str, object_: str, choice: SimpleNamespace, usage: Any, cls: type = SimpleNamespace) -> Any:
+def _envelope(model: str | None, object_: str, choice: SimpleNamespace, usage: Any, cls: type = SimpleNamespace,
+              response_id: str | None = None) -> Any:
     """OpenAI chat.completion / chat.completion.chunk envelope around one choice."""
-    return cls(id=f"chatcmpl-{uuid.uuid4().hex[:12]}", object=object_, created=int(time.time()), model=model,
+    return cls(id=response_id, object=object_, created=int(time.time()), model=model,
                choices=[choice], usage=usage)
 
 
@@ -649,19 +650,20 @@ def translate_gemini_response(resp: dict[str, Any], model: str) -> SimpleNamespa
         elif fc := _part_function_call(part):
             tool_calls.append(_tool_call_ns(str(fc["name"]), _dump_call_args(fc), index, _new_call_id(fc), _tool_call_extra_from_part(part)))
     finish_reason = "tool_calls" if tool_calls else _FINISH_REASON_MAP.get(str((cand or {}).get("finishReason") or "").upper(), "stop")
-    usage = _usage_from_metadata((resp.get("usageMetadata") or {}) if cand is not None else {})
+    usage = _usage_from_metadata(metadata) if (metadata := resp.get("usageMetadata")) else None
     reasoning = "".join(pieces[True]) or None
     message = SimpleNamespace(role="assistant", content="".join(pieces[False]) if pieces[False] else ("" if cand is None else None),
                               tool_calls=tool_calls or None, reasoning=reasoning, reasoning_content=reasoning, reasoning_details=None,
                               extra_content=_tool_call_extra_from_part({"thoughtSignature": text_signature}))
-    return _envelope(model, "chat.completion", SimpleNamespace(index=0, message=message, finish_reason=finish_reason), usage)
+    return _envelope(resp.get("modelVersion"), "chat.completion", SimpleNamespace(index=0, message=message, finish_reason=finish_reason),
+                     usage, response_id=resp.get("responseId"))
 
 
 class _GeminiStreamChunk(SimpleNamespace): ...
 
 
 def _make_stream_chunk(
-    *, model: str, content: str = "", tool_call_delta: Optional[dict[str, Any]] = None, finish_reason: Optional[str] = None, reasoning: str = "",
+    *, model: str | None, content: str = "", tool_call_delta: Optional[dict[str, Any]] = None, finish_reason: Optional[str] = None, reasoning: str = "",
     text_signature: Optional[str] = None,
 ) -> _GeminiStreamChunk:
     d = tool_call_delta
@@ -739,9 +741,11 @@ def _tool_call_slot(fc: dict[str, Any], part: dict[str, Any], part_index: int, a
 
 def translate_stream_event(event: dict[str, Any], model: str, tool_call_indices: dict[str, dict[str, Any]]) -> list[_GeminiStreamChunk]:
     candidates = event.get("candidates") or []
-    if not candidates:
+    metadata = event.get("usageMetadata")
+    model = event.get("modelVersion")
+    if not candidates and not (metadata or model or event.get("responseId")):
         return []
-    cand = candidates[0] if isinstance(candidates[0], dict) else {}
+    cand = candidates[0] if candidates and isinstance(candidates[0], dict) else {}
     parts = (cand.get("content") or {}).get("parts") or []
     chunks: list[_GeminiStreamChunk] = []
     for part_index, part in enumerate(parts):
@@ -770,9 +774,13 @@ def translate_stream_event(event: dict[str, Any], model: str, tool_call_indices:
     if finish_reason_raw := str(cand.get("finishReason") or ""):
         finish_reason = "tool_calls" if tool_call_indices else _FINISH_REASON_MAP.get(finish_reason_raw.upper(), "stop")
         finish_chunk = _make_stream_chunk(model=model, finish_reason=finish_reason)
-        if usage_meta := event.get("usageMetadata") or {}:  # rides on the finish chunk so the stream loop records tokens
-            finish_chunk.usage = _usage_from_metadata(usage_meta)
         chunks.append(finish_chunk)
+    if not chunks:
+        chunks.append(_make_stream_chunk(model=model))
+    for chunk in chunks:
+        chunk.id = event.get("responseId")
+    if metadata:
+        chunks[-1].usage = _usage_from_metadata(metadata)
     return chunks
 
 

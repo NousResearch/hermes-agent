@@ -146,7 +146,7 @@ class SamplingHandler:
         logger.log(self.audit_level, "MCP server '%s' sampling response: model=%s, tokens=%s" + suffix,
                    self.server_name, response.model, getattr(getattr(response, "usage", None), "total_tokens", "?"), *args)
 
-    def _build_tool_use_result(self, choice, response):
+    def _build_tool_use_result(self, choice, response, model: str):
         """CreateMessageResultWithTools from a tool_calls response, under ``max_tool_rounds`` (0 disables)."""
         self.metrics["tool_use_count"] += 1
         self._tool_loop_count += 1
@@ -160,14 +160,14 @@ class SamplingHandler:
                           for tc in choice.message.tool_calls]
         self._log_response(response, ", tool_calls=%d", len(content_blocks))
         return _core.CreateMessageResultWithTools(
-            role="assistant", content=content_blocks, model=response.model, stopReason="toolUse")
+            role="assistant", content=content_blocks, model=model, stopReason="toolUse")
 
-    def _build_text_result(self, choice, response):
+    def _build_text_result(self, choice, response, model: str):
         """CreateMessageResult from a normal text response (resets the tool loop)."""
         self._tool_loop_count = 0
         self._log_response(response)
         return _core.CreateMessageResult(
-            role="assistant", model=response.model,
+            role="assistant", model=model,
             content=_core.TextContent(type="text", text=_sanitize_error(choice.message.content or "")),
             stopReason=self._STOP_REASON_MAP.get(choice.finish_reason, "endTurn"))
 
@@ -195,7 +195,7 @@ class SamplingHandler:
                                     f"'{self.server_name}'. Allowed: {', '.join(self.allowed_models)}")
         return resolved_model, None
 
-    def _build_llm_call(self, params, resolved_model: str) -> Callable[[], object]:
+    def _build_llm_call(self, params, resolved_model: str, route_info: dict[str, str]) -> Callable[[], object]:
         """Sampling params -> zero-arg sync ``call_llm`` thunk (run off-loop); server tools are forwarded."""
         from agent.auxiliary_client import call_llm
 
@@ -212,14 +212,16 @@ class SamplingHandler:
         logger.log(self.audit_level, "MCP server '%s' sampling request: model=%s, max_tokens=%d, messages=%d",
                    self.server_name, resolved_model, max_tokens, len(messages))
         return lambda: call_llm(task="mcp", model=resolved_model or None, messages=messages, max_tokens=max_tokens,
-                                temperature=getattr(params, "temperature", None), tools=tools, timeout=self.timeout)
+                                temperature=getattr(params, "temperature", None), tools=tools, timeout=self.timeout,
+                                route_info=route_info)
 
     async def __call__(self, context, params):
         """SDK ``SamplingFnT``: CreateMessageResult, CreateMessageResultWithTools, or ErrorData."""
         resolved_model, err = self._admit(params)
         if err is not None:
             return err
-        sync_call = self._build_llm_call(params, resolved_model)  # outside the try: its errors propagate, not _fail
+        route_info: dict[str, str] = {}
+        sync_call = self._build_llm_call(params, resolved_model, route_info)  # outside the try: its errors propagate, not _fail
         try:
             response = await asyncio.wait_for(asyncio.to_thread(sync_call), timeout=self.timeout)
         except TimeoutError:
@@ -233,9 +235,10 @@ class SamplingHandler:
         self.metrics["requests"] += 1
         total_tokens = getattr(getattr(response, "usage", None), "total_tokens", 0)
         self.metrics["tokens_used"] += total_tokens if isinstance(total_tokens, int) else 0
+        model = getattr(response, "model", None) or route_info.get("model") or resolved_model or "unknown"
         if choice.finish_reason == "tool_calls" and getattr(choice.message, "tool_calls", None):
-            return self._build_tool_use_result(choice, response)
-        return self._build_text_result(choice, response)
+            return self._build_tool_use_result(choice, response, model)
+        return self._build_text_result(choice, response, model)
 
 
 def _format_elicitation_schema_summary(schema: dict, server_name: str) -> str:

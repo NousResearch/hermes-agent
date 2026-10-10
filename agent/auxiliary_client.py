@@ -1592,11 +1592,11 @@ class _CodexCompletionsAdapter:
                 raise RuntimeError("Codex auxiliary Responses stream did not return a final response")
             from agent.auxiliary_codex_response import _parse_codex_final_response
 
-            text_parts, tool_calls_raw, usage, finish_reason = _parse_codex_final_response(
+            response = _parse_codex_final_response(
                 final, issuer_kind=issuer_kind, issuer_model=issuer_model,
             )
             # Undo only the aliases THIS request emitted, before the call reaches Hermes dispatch.
-            for tc in tool_calls_raw or ():
+            for tc in response.choices[0].message.tool_calls or ():
                 if tc.function.name in wire_aliases:
                     tc.function.name = wire_aliases[tc.function.name]
         except Exception as exc:
@@ -1606,13 +1606,7 @@ class _CodexCompletionsAdapter:
             raise
         finally:
             guard.finish()
-        # Shape the result like chat.completions.
-        message = SimpleNamespace(
-            role="assistant", content="".join(text_parts).strip() or None,
-            tool_calls=tool_calls_raw or None,
-        )
-        choice = SimpleNamespace(index=0, message=message, finish_reason=finish_reason)
-        return SimpleNamespace(choices=[choice], model=model, usage=usage)
+        return response
 
 
 class _ChatShim:
@@ -1715,7 +1709,7 @@ class _AnthropicCompletionsAdapter:
 
     def create(self, **kwargs) -> Any:
         from agent.anthropic_adapter import build_anthropic_kwargs, create_anthropic_message
-        from agent.transports import get_transport
+        from agent.auxiliary_anthropic_response import _normalize_anthropic_auxiliary_response
         model = kwargs.get("model", self._model)
         # ZAI's Anthropic endpoint rejects max_tokens on vision models (code 1210);
         # callers signal this via _skip_zai_max_tokens.
@@ -1792,22 +1786,7 @@ class _AnthropicCompletionsAdapter:
             # the fast get_final_message path.
             on_stream_event=(_anthropic_aux_stream_event_hook() if _aux_progress_active() else None),
         )
-        _nr = get_transport("anthropic_messages").normalize_response(response, strip_tool_prefix=self._is_oauth)
-        usage = None
-        if hasattr(response, "usage") and response.usage:
-            prompt_tokens = getattr(response.usage, "input_tokens", 0) or 0
-            completion_tokens = getattr(response.usage, "output_tokens", 0) or 0
-            usage = SimpleNamespace(
-                prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
-                total_tokens=getattr(response.usage, "total_tokens", 0) or (prompt_tokens + completion_tokens),
-            )
-        # ToolCall already duck-types as OpenAI shape via properties.
-        choice = SimpleNamespace(
-            index=0,
-            message=SimpleNamespace(content=_nr.content, tool_calls=_nr.tool_calls, reasoning=_nr.reasoning),
-            finish_reason=_nr.finish_reason,
-        )
-        return SimpleNamespace(choices=[choice], model=model, usage=usage)
+        return _normalize_anthropic_auxiliary_response(response, is_oauth=self._is_oauth)
 
 
 class AnthropicAuxiliaryClient:
@@ -3810,6 +3789,7 @@ def _retry_same_provider_sync(*, resolved_provider: str, resolved_api_mode: Opti
     )
     return _validate_llm_response(
         _relay_sync_completion(retry_client, retry_kwargs, provider=resolved_provider, api_mode=resolved_api_mode), task,
+        provider=resolved_provider, model=retry_kwargs.get("model"), base_url=str(getattr(retry_client, "base_url", "") or ""),
     )
 
 
@@ -3819,7 +3799,7 @@ async def _retry_same_provider_async(*, resolved_provider: str, resolved_api_mod
     )
     return _validate_llm_response(
         await _relay_async_completion(retry_client, retry_kwargs, provider=resolved_provider, api_mode=resolved_api_mode),
-        task,
+        task, provider=resolved_provider, model=retry_kwargs.get("model"), base_url=str(getattr(retry_client, "base_url", "") or ""),
     )
 
 
@@ -4153,7 +4133,7 @@ def _call_fallback_candidate_sync(
                     force_stream=_provider_requires_stream(dest.provider, dest.base_url),
                 ),
             ),
-            task,
+            task, provider=dest.provider, base_url=dest.base_url, model=request_kwargs.get("model"),
         )
     from agent.auxiliary_fallback_recovery import send_with_parameter_rungs
 
@@ -4203,7 +4183,7 @@ async def _call_fallback_candidate_async(
     async def _send(client: Any, request_kwargs: dict[str, Any], dest: _FallbackDestination) -> Any:
         return _validate_llm_response(
             await _relay_async_completion(client, request_kwargs, provider=dest.provider, api_mode=dest.api_mode),
-            task,
+            task, provider=dest.provider, base_url=dest.base_url, model=request_kwargs.get("model"),
         )
     from agent.auxiliary_fallback_recovery import send_with_parameter_rungs_async
 
@@ -6809,16 +6789,12 @@ def _build_call_kwargs(
 
 def _validate_llm_response(
     response: Any, task: Optional[str] = None, provider: Optional[str] = None, base_url: Optional[str] = None,
+    model: Optional[str] = None,
 ) -> Any:
-    """Validate the .choices[0].message shape (fail fast, not a downstream AttributeError).
+    """Validate the response shape and record usage once for a successful auxiliary call.
 
-    Also the single aux-usage accounting chokepoint: every successful non-streaming response
-    passes here exactly once; *provider*/*base_url* are optional hints.
-
-    See #7264.
-    Recording is best-effort and never affects validation. *provider*/*base_url* are optional accounting
-    hints — fallback-path calls omit them and the row keeps the model (read from the response itself) with
-    an empty route. See #23270.
+    Accounting uses the observed model, or the selected attempt route when the
+    provider omits its model. Recording failures do not affect validation.
     """
     if response is None:
         raise RuntimeError(
@@ -6826,7 +6802,7 @@ def _validate_llm_response(
         )
     response = _unwrap_data_envelope(response, task)
     from agent.aux_accounting import record_aux_usage
-    record_aux_usage(response, task, provider=provider, base_url=base_url)
+    record_aux_usage(response, task, provider=provider, base_url=base_url, model=model)
     # Adapter SimpleNamespace responses are fine — they have .choices[0].message.
     try:
         choices = response.choices
@@ -7226,8 +7202,8 @@ class _ChatStreamAccumulator:
         self.reasoning_details: list[Any] = []
         self.tool_calls_acc: dict[int, dict[str, Any]] = {}
         self.finish_reason = self.usage = None
-        self.resp_id = ""
-        self.resp_model = model or ""
+        self.resp_id = None
+        self.resp_model = None
 
     def _check_deadlines(self) -> None:
         """Raise TimeoutError past the total ceiling or the host deadline."""
@@ -8208,7 +8184,7 @@ def _call_llm_impl(
             return client.chat.completions.create(**kwargs)
         return _relay_sync_stream(client, kwargs, provider=request_provider, api_mode=req.resolved_api_mode)
 
-    def _primary(**validate_kw: Any) -> Any:
+    def _primary() -> Any:
         # Retry on the same provider for a transient transport blip (connection reset / streaming-close /
         # incomplete chunked read / 5xx / 408) before the except-chain below escalates to provider/model
         # fallback. A dropped connection shouldn't abandon an otherwise-healthy provider — this especially
@@ -8229,14 +8205,14 @@ def _call_llm_impl(
                         request_provider, req.base_info or req.resolved_base_url),
                 ),
             ),
-            task, **validate_kw,
+            task, model=kwargs.get("model"), provider=request_provider, base_url=req.base_info,
         )
     try:
         # Bounded same-provider retry (exponential backoff, auxiliary.transient_retries) for
         # transient blips before escalating to fallback — a dropped connection shouldn't
         # abandon a healthy provider (matters for pinned MoA advisors).
         try:
-            return _primary(provider=request_provider, base_url=req.base_info)
+            return _primary()
         except Exception as transient_err:
             if not _should_retry_same_provider(task, transient_err, ""):
                 raise
@@ -8259,7 +8235,8 @@ def _call_llm_impl(
         def _perform(step: _LadderStep) -> Any:
             kind, args, kw = _ladder_step_call(step, req, retry_kwargs, candidate_kwargs)
             if kind == "call":
-                return _validate_llm_response(_relay_sync_completion(*args, **kw), task)
+                return _validate_llm_response(_relay_sync_completion(*args, **kw), task,
+                                              provider=kw.get("provider"), base_url=req.base_info, model=args[1].get("model"))
             if kind == "retry":
                 return _retry_same_provider_sync(**kw)
             return _call_fallback_candidate_sync(*args, **kw)
@@ -8386,14 +8363,14 @@ async def _async_call_llm_impl(
         async def _acreate(_kwargs: dict[str, Any]) -> Any:
             return await _acreate_with_progress(client, _kwargs, task, force_stream=_force_stream_async)
 
-        async def _primary(**validate_kw: Any) -> Any:
+        async def _primary() -> Any:
             return _validate_llm_response(
                 await _relay_async_completion(
                     client, kwargs, provider=request_provider, api_mode=req.resolved_api_mode,
                     create=_acreate),
-                task, **validate_kw)
+                task, model=kwargs.get("model"), provider=request_provider, base_url=req.base_info)
         try:
-            return await _primary(provider=request_provider, base_url=req.base_info)
+            return await _primary()
         except Exception as transient_err:
             # The async Codex adapter wraps the sync stream via to_thread: same TimeoutError here.
             if not _should_retry_same_provider(task, transient_err, " (async)"):
@@ -8405,7 +8382,8 @@ async def _async_call_llm_impl(
         async def _perform(step: _LadderStep) -> Any:
             kind, args, kw = _ladder_step_call(step, req, retry_kwargs, candidate_kwargs)
             if kind == "call":
-                return _validate_llm_response(await _relay_async_completion(*args, **kw), task)
+                return _validate_llm_response(await _relay_async_completion(*args, **kw), task,
+                                              provider=kw.get("provider"), base_url=req.base_info, model=args[1].get("model"))
             if kind == "retry":
                 return await _retry_same_provider_async(**kw)
             fb_client, fb_model, fb_label = args

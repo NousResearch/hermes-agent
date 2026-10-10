@@ -390,6 +390,32 @@ async def test_satellite_user_only_route_is_not_a_destination(monkeypatch, tmp_p
 
 
 @pytest.mark.asyncio
+async def test_satellite_disabled_route_is_not_a_destination(monkeypatch, tmp_path):
+    """A disabled route grants nothing: with the sole concrete chat disabled the handoff fails.
+
+    (The profile stays a satellite because an enabled catch-all still targets it; the disabled
+    concrete route must not become the destination.)
+    """
+    sat_home = _write_satellite_home(tmp_path, {"telegram": {"enabled": True}})
+
+    token = set_hermes_home_override(str(sat_home))
+    try:
+        runner, _ = _satellite_runner(monkeypatch)
+        runner.config.profile_routes = [
+            ProfileRoute(name="telegram-fallback", platform="telegram", profile="butler"),
+            ProfileRoute(name="butler-dm", platform="telegram", profile="butler",
+                         chat_id="6719571041", bot_profile=None, enabled=False),
+        ]
+        with pytest.raises(RuntimeError, match="no unambiguous route destination"):
+            await runner._process_handoff(
+                {"id": "cli-session", "title": "work", "handoff_platform": "telegram"},
+                profile_name="butler",
+            )
+    finally:
+        reset_hermes_home_override(token)
+
+
+@pytest.mark.asyncio
 async def test_secondary_profile_keeps_its_own_home_with_real_resolver(monkeypatch, tmp_path):
     """A secondary that OWNS a credential keeps its own adapter and its own home.
 

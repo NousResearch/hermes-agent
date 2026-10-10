@@ -57,6 +57,12 @@ def test_camofox_vnc_memo_is_keyed_by_the_profiles_server_url(two_homes, monkeyp
         def json(self):
             return {"ok": True, "vncPort": self._port}
 
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
     monkeypatch.setattr(cam.requests, "get", lambda url, *a, **k: _Resp(url))
     a, b = two_homes
     with _scoped(a):

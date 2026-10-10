@@ -3822,3 +3822,81 @@ class TestSanitizeToolPairsWhitespace:
         tool_call_ids = [m.get("tool_call_id") for m in out if m.get("role") == "tool"]
         assert "call_orphan" not in tool_call_ids, "genuinely orphaned result must be removed"
         assert " call_orphan " not in tool_call_ids, "original whitespace form must also be gone"
+
+
+class TestSyntheticUserRowBatchedPlumbing:
+    """#126286: the batched plumbing rows a count opens must read as
+    scaffolding, not as the user's words — otherwise the lean verbatim-user
+    quote re-posts them as real speech."""
+
+    @pytest.mark.parametrize("content", [
+        "[IMPORTANT: 3 background processes completed. Treat these results as one batch.]",
+        "[IMPORTANT: 12 background processes completed for this session.",
+        "[IMPORTANT: 2 background subagent delegations completed while the turn was in flight.]",
+        "  [IMPORTANT: 7 background processes completed for this session.",
+        "[IMPORTANT: Background process s-1 completed (exit code 0).",
+        "[IMPORTANT: Background process s-2 matched watch pattern \"error\".",
+        "You've reached the maximum number of tool-calling iterations allowed. "
+        "Please provide a final response.",
+    ])
+    def test_batched_plumbing_rows_are_synthetic(self, content):
+        from agent.context_compressor import _synthetic_user_row
+        assert _synthetic_user_row(content) is True
+
+    @pytest.mark.parametrize("content", [
+        "[IMPORTANT: the human says no]",
+        "You've reached the maximum number of tool-calling iterations my team allows, more context here",
+        "3 background processes completed and I approved them",
+    ])
+    def test_member_words_stay_real(self, content):
+        from agent.context_compressor import _synthetic_user_row
+        assert _synthetic_user_row(content) is False
+
+
+class TestRealUserMessageSharesSyntheticRowDefinition:
+    """The compression-side real-user probe must use the SAME scaffolding definition as
+    ``_synthetic_user_row`` — a stale third copy classified the batched digests as human
+    intent, flipping compression anchors and re-posting plumbing as "User asked" (#126286)."""
+
+    @pytest.mark.parametrize("content", [
+        "[IMPORTANT: 3 background processes completed. Treat these results as one batch.]",
+        "[IMPORTANT: 2 background subagent delegations completed while the turn was in flight.]",
+        "[IMPORTANT: Background process s-1 completed (exit code 0).",
+        "You've reached the maximum number of tool-calling iterations allowed. "
+        "Please provide a final response.",
+        "[System: Your previous response was truncated mid-tool-call]",
+        "[Your active task list was preserved across context compression]",
+    ])
+    def test_scaffolding_rows_are_not_real_user(self, content):
+        from agent.conversation_compression import _is_real_user_message
+
+        assert _is_real_user_message({"role": "user", "content": content}) is False
+
+    @pytest.mark.parametrize("content", [
+        "3 background processes completed and I approved them",
+        "what is the deploy status?",
+    ])
+    def test_member_words_stay_real_user(self, content):
+        from agent.conversation_compression import _is_real_user_message
+
+        assert _is_real_user_message({"role": "user", "content": content}) is True
+
+    def test_flagged_rows_and_empty_text_stay_not_real(self):
+        from agent.conversation_compression import _is_real_user_message
+
+        assert _is_real_user_message(
+            {"role": "user", "content": "anything", "_todo_snapshot_synthetic": True}
+        ) is False
+        assert _is_real_user_message({"role": "user", "content": "   "}) is False
+
+    def test_steer_row_keeps_full_user_authority(self):
+        # The shared list tags the [OUT-OF-BAND wrapper as scaffolding for the compressor's
+        # verbatim picker, but a steer row IS a direct message from the user mid-turn.
+        from agent.conversation_compression import _is_real_user_message
+
+        steer = (
+            "[OUT-OF-BAND USER MESSAGE — a direct message from the user, delivered once "
+            "at this position and replayed from conversation history]\nfocus on the error handling\n"
+            "[/OUT-OF-BAND USER MESSAGE]"
+        )
+        assert _is_real_user_message({"role": "user", "content": steer, "display_kind": "steer"})

@@ -1962,7 +1962,8 @@ def dispatch_once(
     stale_timeout_seconds: int = 0,
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
-    max_in_progress_per_profile: Optional[int] = None,
+    max_in_progress_per_profile: Any = None,
+    auto_assign: Any = None,
     reconcile_orphans: bool = True,
 ) -> DispatchResult:
     """Run one dispatcher tick under the board's single-writer lock.
@@ -1986,6 +1987,7 @@ def dispatch_once(
             board=board,
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            auto_assign=auto_assign,
             reconcile_orphans=reconcile_orphans,
         )
 
@@ -2034,8 +2036,9 @@ def _dispatch_lane_task(
     board: Optional[str],
     failure_limit: int,
     spawn_fn,
-    per_profile_cap: Optional[int],
     per_profile_running: dict[str, int],
+    resolve_cap: Callable[[str], Optional[int]],
+    per_profile_caps_active: bool,
 ) -> bool:
     """Guard, claim, resolve the workspace and spawn one ready/review row.
     Returns True when a spawn slot was consumed (real or ``dry_run``); every
@@ -2065,9 +2068,12 @@ def _dispatch_lane_task(
         return False
     # Per-profile cap: one profile's local model / API quota / browser pool
     # must not be overwhelmed by a fan-out even with global headroom.
-    if per_profile_cap is not None:
+    if per_profile_caps_active:
+        per_profile_cap = resolve_cap(assignee)
+        if per_profile_cap is None:
+            per_profile_cap = 0
         current = per_profile_running.get(assignee, 0)
-        if current >= per_profile_cap:
+        if per_profile_cap and current >= per_profile_cap:
             result.skipped_per_profile_capped.append((task_id, assignee, current))
             return False
     guard_reason = check_respawn_guard(conn, task_id, lane=lane)
@@ -2088,7 +2094,7 @@ def _dispatch_lane_task(
     def _count_spawn(name: str) -> None:
         # Later rows in this tick respect the per-profile cap; subsequent
         # ticks re-query from the DB.
-        if per_profile_cap is not None and name:
+        if per_profile_caps_active and name:
             per_profile_running[name] = per_profile_running.get(name, 0) + 1
 
     if dry_run:
@@ -2151,6 +2157,7 @@ def _dispatch_lane_task(
 
 def _apply_default_assignee(
     conn: sqlite3.Connection, task_id: str, assignee: str, *, dry_run: bool,
+    source: str = "kanban.default_assignee",
 ) -> bool:
     """Persist ``kanban.default_assignee`` on an unassigned ready row.
 
@@ -2169,7 +2176,7 @@ def _apply_default_assignee(
             )
             _kb._append_event(
                 conn, task_id, "assigned",
-                {"assignee": assignee, "source": "kanban.default_assignee"},
+                {"assignee": assignee, "source": source},
             )
     except Exception:
         _kb._log.debug(
@@ -2279,8 +2286,9 @@ def _any_spawnable_review(
     conn: sqlite3.Connection,
     review_rows: list[sqlite3.Row],
     *,
-    per_profile_cap: Optional[int] = None,
     per_profile_running: Optional[dict[str, int]] = None,
+    resolve_cap: Optional[Callable[[str], Optional[int]]] = None,
+    per_profile_caps_active: bool = False,
 ) -> bool:
     """Mirror review dispatch gates before reserving ready-lane capacity.
 
@@ -2300,7 +2308,8 @@ def _any_spawnable_review(
             continue
         if profile_exists is not None and not profile_exists(assignee):
             continue
-        if per_profile_cap is not None and running.get(assignee, 0) >= per_profile_cap:
+        cap = resolve_cap(assignee) if per_profile_caps_active and resolve_cap else None
+        if cap is not None and running.get(assignee, 0) >= cap:
             continue
         if check_respawn_guard(conn, row["id"], lane="review") is None:
             return True
@@ -2322,6 +2331,56 @@ def _resolve_default_assignee(default_assignee: Optional[str]) -> Optional[str]:
     return name
 
 
+def _coerce_positive_int(value: Any) -> Optional[int]:
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        value = int(value)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
+def parse_max_in_progress_per_profile(value: Any) -> Optional[int | dict[str, int]]:
+    """Accept the legacy scalar cap or per-profile caps, failing open."""
+    if isinstance(value, dict):
+        parsed = {name: cap for name, raw in value.items()
+                  if isinstance(name, str) and name and (cap := _coerce_positive_int(raw)) is not None}
+        return parsed or None
+    return _coerce_positive_int(value)
+
+
+def resolve_per_profile_cap(parsed: Any, assignee: str) -> Optional[int]:
+    if isinstance(parsed, dict):
+        return _coerce_positive_int(parsed.get((assignee or "").strip())) or _coerce_positive_int(parsed.get("default"))
+    return _coerce_positive_int(parsed)
+
+
+def parse_auto_assign(value: Any) -> Optional[dict[str, list[str]]]:
+    if not isinstance(value, dict) or value.get("enabled") is not True or value.get("strategy") != "local-first-overflow":
+        return None
+    def pool(raw: Any) -> list[str]:
+        raw = [raw] if isinstance(raw, str) else raw
+        return [name.strip() for name in raw] if isinstance(raw, (list, tuple)) and all(isinstance(name, str) for name in raw) else []
+    return {"local_pool": pool(value.get("local_pool")), "cloud_pool": pool(value.get("cloud_pool"))}
+
+
+def _choose_unassigned_assignee(
+    auto_assign: Optional[dict[str, list[str]]], default_assignee: Optional[str], *,
+    running: Mapping[str, int], cap_for: Callable[[str], Optional[int]],
+) -> tuple[Optional[str], str]:
+    profile_exists = _profile_exists_fn()
+    if auto_assign:
+        for pool in (auto_assign["local_pool"], auto_assign["cloud_pool"]):
+            for name in pool:
+                if profile_exists is not None and not profile_exists(name):
+                    continue
+                cap = cap_for(name)
+                if cap is None or running.get(name, 0) < cap:
+                    return name, "kanban.auto_assign"
+    return default_assignee, "kanban.default_assignee"
+
+
 # The dispatch lock has been released here. Fire the tick observer strictly OUTSIDE the single-writer
 # critical section (#56066 sweeper finding / #64231 disposition): a slow subscriber must never extend the
 # lock hold and stall a sibling dispatcher's tick.
@@ -2337,7 +2396,8 @@ def _dispatch_once_locked(
     stale_timeout_seconds: int = 0,
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
-    max_in_progress_per_profile: Optional[int] = None,
+    max_in_progress_per_profile: Any = None,
+    auto_assign: Any = None,
     reconcile_orphans: bool = True,
 ) -> DispatchResult:
     """One dispatcher tick: reclaim stale/crashed running tasks, promote
@@ -2364,16 +2424,14 @@ def _dispatch_once_locked(
     # skipped_unassigned — "busy, retry later" differs from "needs routing".
     # Resolved BEFORE the review reservation so the reservation can see which
     # review rows the lane loop would refuse this tick.
-    per_profile_cap = max_in_progress_per_profile if (
-        # Per-profile concurrency cap (#21582): when set, track how many workers each assignee already has
-        # in flight, and refuse to spawn when this would push that assignee past the cap. Prevents fan-out
-        # workloads from melting a single profile's local model / API quota / browser pool while leaving
-        # other profiles idle.
-        isinstance(max_in_progress_per_profile, int)
-        and max_in_progress_per_profile > 0
-    ) else None
+    parsed_caps = parse_max_in_progress_per_profile(max_in_progress_per_profile)
+    per_profile_caps_active = parsed_caps is not None
+
+    def resolve_cap(name: str) -> Optional[int]:
+        return resolve_per_profile_cap(parsed_caps, name)
+
     per_profile_running: dict[str, int] = {}
-    if per_profile_cap is not None:
+    if per_profile_caps_active:
         for prow in conn.execute(
             "SELECT assignee, COUNT(*) AS n FROM tasks "
             "WHERE status = 'running' AND assignee IS NOT NULL "
@@ -2387,15 +2445,18 @@ def _dispatch_once_locked(
     ready_budget = spawn_budget
     if spawn_budget is not None and spawn_budget > 0 and _any_spawnable_review(
         conn, review_rows,
-        per_profile_cap=per_profile_cap, per_profile_running=per_profile_running,
+        per_profile_running=per_profile_running, resolve_cap=resolve_cap,
+        per_profile_caps_active=per_profile_caps_active,
     ):
         ready_budget = max(spawn_budget - 1, 0)
     lane_kwargs: dict[str, Any] = dict(
         dry_run=dry_run, ttl_seconds=ttl_seconds, board=board,
         failure_limit=failure_limit, spawn_fn=spawn_fn,
-        per_profile_cap=per_profile_cap, per_profile_running=per_profile_running,
+        per_profile_running=per_profile_running, resolve_cap=resolve_cap,
+        per_profile_caps_active=per_profile_caps_active,
     )
     default_assignee = _resolve_default_assignee(default_assignee)
+    parsed_auto_assign = parse_auto_assign(auto_assign)
     spawned = 0
     for row in ready_rows:
         if ready_budget is not None and spawned >= ready_budget:
@@ -2404,12 +2465,15 @@ def _dispatch_once_locked(
         if not row_assignee:
             # Honour kanban.default_assignee so an unassigned task doesn't
             # park in 'ready' forever.
-            if not default_assignee or not _apply_default_assignee(
-                conn, row["id"], default_assignee, dry_run=dry_run,
+            chosen_assignee, source = _choose_unassigned_assignee(
+                parsed_auto_assign, default_assignee, running=per_profile_running, cap_for=resolve_cap,
+            )
+            if not chosen_assignee or not _apply_default_assignee(
+                conn, row["id"], chosen_assignee, dry_run=dry_run, source=source,
             ):
                 result.skipped_unassigned.append(row["id"])
                 continue
-            row_assignee = default_assignee
+            row_assignee = chosen_assignee
             result.auto_assigned_default.append(row["id"])
         if _dispatch_lane_task(conn, row, row_assignee, result, lane="ready", **lane_kwargs):
             spawned += 1

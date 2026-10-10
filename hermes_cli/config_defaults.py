@@ -2569,12 +2569,10 @@ DEFAULT_CONFIG = {
         # COLLECTED, not the walk's wall clock: a target whose AX surface exceeds the driver's own 20 s
         # walk timeout still fails at every bound (measured; a depth bound does not help there either).
         "ax_max_elements": 200,
-        # Disable cua-driver's cursor overlay, which can peg a core when idle (macOS redraw loop;
-        # Linux/WSL2 idle spin). None = auto (off on macOS + headless/ WSL2 Linux, on elsewhere);
-        # True = always disable; False = always enable.
-        # The overlay shows where agent actions land but can peg a core when idle (macOS vImage redraw loop
-        # #47032; Linux/WSL2 idle spin #28152). cua-driver ≥ 0.6.x supports --no-overlay; Hermes also calls
-        # set_agent_cursor_enabled(false) after start_session when this is on.
+        # Disable cua-driver's cursor overlay, which shows where agent actions land but can peg a core when idle
+        # (macOS vImage redraw loop #47032; Linux/WSL2 idle spin #28152). None = auto (off on macOS + headless/
+        # WSL2 Linux, on elsewhere); True = always disable; False = always enable. cua-driver ≥ 0.6.x supports
+        # --no-overlay; Hermes also calls set_agent_cursor_enabled(false) after start_session when this is on.
         "no_overlay": None,
         # standard = cua-driver's own approval boundary; bounded = no runtime prompts, anything
         # outside capability_manifest fails closed. `unrestricted` is NOT accepted here: it stays on
@@ -2583,6 +2581,8 @@ DEFAULT_CONFIG = {
         # Path (~ ok) to the reviewed manifest for permission_mode bounded; passed as
         # --capability-manifest. See cua.ai/docs/reference/cua-driver/permission-modes
         "capability_manifest": "",
+        # Standard mode only: absolute socket/pipe of an already-running daemon to share; Hermes never stops it.
+        "daemon_socket": "",
         # macOS only: allow an UNSIGNED CuaDriver.app for the private-session daemon. False fails
         # closed unless signed with the official com.trycua.driver identity. Only for local driver
         # development from source.

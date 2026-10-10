@@ -272,9 +272,11 @@ DEFAULT_CONFIG = {
         "local_stream_stale_timeout": 900,
         # How user-attached images reach the main model (gateway, TUI, CLI /attach). "auto" = native
         # when the model reports supports_vision=True AND auxiliary.vision.provider is not
-        # explicitly set, else text; "native" = always attach (non-vision models error at the
-        # provider or get a last-chance text fallback); "text" = always pre-analyze with
-        # vision_analyze and prepend the description. vision_analyze stays a tool regardless.
+        # explicitly set, else text; "prefer_main" = as auto but a named auxiliary.vision backend
+        # does not pre-empt the capability check (it stays the fallback for a text-only or unknown
+        # main model); "native" = always attach (non-vision models error at the provider or get a
+        # last-chance text fallback); "text" = always pre-analyze with vision_analyze and prepend
+        # the description. vision_analyze stays a tool regardless.
         "image_input_mode": "auto",
         "disabled_toolsets": [],
         # Model name (any reasonable spelling) -> effort level; overrides agent.reasoning_effort

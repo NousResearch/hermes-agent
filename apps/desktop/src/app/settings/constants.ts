@@ -232,7 +232,7 @@ export const PROVIDER_GROUPS: ProviderPrefix[] = [
 // Schema-side select overrides for desktop-relevant enum fields whose
 // backend schema only declares a string type.
 export const ENUM_OPTIONS: Record<string, string[]> = {
-  'agent.image_input_mode': ['auto', 'native', 'text'],
+  'agent.image_input_mode': ['auto', 'prefer_main', 'native', 'text'],
   'approvals.mode': ['manual', 'smart', 'off'],
   'code_execution.mode': ['project', 'strict'],
   'context.engine': ['compressor', 'default', 'custom'],

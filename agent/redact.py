@@ -335,6 +335,11 @@ _PASSWORD_KEY_RE = re.compile(r"passwd|password|pass|pw", re.IGNORECASE)
 # A leading ``$(`` is a command substitution (``SSH_AUTH_SOCK=$(gpgconf --list-dirs
 # agent-ssh-socket)``): the value token stops at whitespace, so only ``$(gpgconf`` is seen.
 _SHELL_VAR_REF = r"\$(?:\{[A-Za-z_]\w*[^}]*\}|[A-Za-z_]\w*)"
+_CLI_SECRET_FLAG_RE = re.compile(
+    r'''(?<![\w-])(--(?:api-key|token|password))([ \t]+|=)'''
+    r'''(\\"(?:(?!\\")[^\r\n])*\\"|"(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*'|[^\s"'`;|&<>]+)''',
+    re.IGNORECASE,
+)
 _PATH_OR_VAR_VALUE_RE = re.compile(rf"^(?:{_SHELL_VAR_REF}|\$\(|~|/)(?:[\w./:-]|{_SHELL_VAR_REF})*$")
 # ``$VAR`` / ``$(cmd`` are unambiguous references. A ``/``- or ``~``-led value is a path only
 # while every segment reads like one: a 16+ char segment mixing case and digits with no ``.``
@@ -814,6 +819,22 @@ def _assignment_sub(render, *, check_keyword: bool):
     return _sub
 
 
+def _redact_cli_secret_flags(text: str, *, file_read: bool = False) -> str:
+    """Opaque credentials in argv/command output lack a vendor prefix or assignment."""
+    def replace(match):
+        raw = match.group(3)
+        quote = '\\"' if raw.startswith('\\"') and raw.endswith('\\"') else (
+            raw[0] if raw[:1] in {'"', "'"} else '')
+        value = raw[len(quote):-len(quote)] if quote else raw
+        if (not value or value == '***' or value.startswith('«redacted')
+                or re.fullmatch(_SHELL_VAR_REF, value)
+                or (not quote and value.startswith('--'))):
+            return match.group(0)
+        masked = _mask_token_nonreusable(value) if file_read else '***'
+        return match.group(1) + match.group(2) + quote + masked + quote
+    return _CLI_SECRET_FLAG_RE.sub(replace, text)
+
+
 def _redact_assignments(text: str, *, mask_nonreusable: bool = False) -> str:
     """ENV / config / JSON / YAML assignment passes (skipped for code files). Passes
     that would match ``token=``/``key=`` URL params skip ``://`` text (web-URL query
@@ -936,6 +957,10 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     # ``secret_file`` is authoritative: a caller that classified the source as secret-bearing must not
     # be silently fail-open because another flag (code_file, or file_read implying it) was also set.
     code_file = (code_file or file_read) and not secret_file
+
+    # ps output is code_file=True and opaque CLI values have no known prefix.
+    if '--' in text:
+        text = _redact_cli_secret_flags(text, file_read=file_read)
 
     # Control/zero-width chars can split a token body so _PREFIX_RE alone misses it.
     if _has_known_prefix_substring(text):

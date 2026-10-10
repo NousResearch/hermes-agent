@@ -14,7 +14,7 @@ import {
   useState
 } from 'react'
 
-import { ModelMetrics, modelPriceTitle } from '@/components/model-metrics'
+import { displayPrice, ModelMetrics, modelPriceTitle } from '@/components/model-metrics'
 import { ProviderStatusChip } from '@/components/provider-status-chip'
 import { Badge } from '@/components/ui/badge'
 import { Codicon } from '@/components/ui/codicon'
@@ -53,7 +53,7 @@ import {
   useLocalModelsStatus,
   useLocalRuntimeJobs
 } from '@/store/local-runtime-jobs'
-import { $showModelPricing } from '@/store/model-pricing'
+import { $modelPriceUnit, $showModelPricing } from '@/store/model-pricing'
 import {
   $visibleModels,
   collapseModelFamilies,
@@ -84,6 +84,7 @@ export const ModelMenuCloseContext = createContext<() => void>(() => {})
 function ModelPrice({ pricing }: { pricing: ModelPricing }) {
   const { t } = useI18n()
   const copy = t.shell.modelMenu
+  const unit = useStore($modelPriceUnit)
   // Partial payloads: `_apply_pricing` ships "" for unknown, but a provider
   // can report null — render nothing rather than "null/null" or "—/—".
   const input = pricing.input || null
@@ -110,11 +111,12 @@ function ModelPrice({ pricing }: { pricing: ModelPricing }) {
       title={modelPriceTitle(copy.priceTitle(input ?? '—', output ?? '—', cache ?? ''), pricing, copy)}
     >
       <span>
-        {input ?? '—'}/{output ?? '—'}
+        {displayPrice(input, unit) ?? '—'}/{displayPrice(output, unit) ?? '—'}
+        {unit === '1k' ? copy.perThousandSuffix : null}
       </span>
       {cache ? (
         <span className="text-(--ui-text-quaternary)" title={`${copy.cacheRead} ${cache}/Mtok`}>
-          ·{cache}
+          ·{displayPrice(cache, unit)}
         </span>
       ) : null}
       {discount ? (

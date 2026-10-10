@@ -20,6 +20,11 @@ export const jaModelMenu = {
   maxOutputTitle: (tokens: string) => `最大 ${tokens} トークンまで応答`,
   perThousandTitle: (input: string, output: string) => `1K トークンあたり: 入力 ${input} · 出力 ${output}`,
   tools: 'ツール呼び出しに対応',
+  perThousandSuffix: '/1K',
+  priceUnitTitle: '価格の単位',
+  priceUnitDesc: 'モデル選択の価格を100万トークンあたり、または1000トークンあたりで表示します。',
+  priceUnitPerMillion: '1M あたり',
+  priceUnitPerThousand: '1K あたり',
   localSetup: {
     title: 'ローカルで実行 · 無料・プライベート',
     text: (model: string, size: string) => `${model} はこのマシンで動きます · ${size} をダウンロード`,

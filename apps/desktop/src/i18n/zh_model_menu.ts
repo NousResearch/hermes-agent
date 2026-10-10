@@ -20,6 +20,11 @@ export const zhModelMenu = {
   maxOutputTitle: (tokens: string) => `回复最多 ${tokens} token`,
   perThousandTitle: (input: string, output: string) => `每 1K token：输入 ${input} · 输出 ${output}`,
   tools: '支持工具调用',
+  perThousandSuffix: '/1K',
+  priceUnitTitle: '价格单位',
+  priceUnitDesc: '在模型选择器中按每百万或每千 token 显示价格。',
+  priceUnitPerMillion: '每 1M',
+  priceUnitPerThousand: '每 1K',
   localSetup: {
     title: '本地运行 · 免费、私密',
     text: (model: string, size: string) => `${model} 适合这台电脑 · 下载 ${size}`,

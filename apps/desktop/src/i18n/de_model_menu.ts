@@ -20,6 +20,11 @@ export const deModelMenu = {
   maxOutputTitle: (tokens: string) => `Antworten bis ${tokens} Token`,
   perThousandTitle: (input: string, output: string) => `Pro 1K Token: Eingabe ${input} · Ausgabe ${output}`,
   tools: 'Kann Tools aufrufen',
+  perThousandSuffix: '/1K',
+  priceUnitTitle: 'Preiseinheit',
+  priceUnitDesc: 'Preise in der Modellauswahl pro Million oder pro Tausend Tokens anzeigen.',
+  priceUnitPerMillion: 'Pro 1M',
+  priceUnitPerThousand: 'Pro 1K',
   localSetup: {
     title: 'Lokal ausführen · kostenlos, privat',
     text: (model: string, size: string) => `${model} passt auf diesen Rechner · ${size} Download`,

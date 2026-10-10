@@ -270,6 +270,11 @@ export const zhHantChrome = {
       maxOutputTitle: (tokens: string) => `回覆最多 ${tokens} token`,
       perThousandTitle: (input: string, output: string) => `每 1K token：輸入 ${input} · 輸出 ${output}`,
       tools: '支援工具呼叫',
+      perThousandSuffix: '/1K',
+      priceUnitTitle: '價格單位',
+      priceUnitDesc: '在模型選擇器中按每百萬或每千 token 顯示價格。',
+      priceUnitPerMillion: '每 1M',
+      priceUnitPerThousand: '每 1K',
       localSetup: {
         title: '本機執行 · 免費、私密',
         text: (model: string, size: string) => `${model} 適合這台電腦 · 下載 ${size}`,

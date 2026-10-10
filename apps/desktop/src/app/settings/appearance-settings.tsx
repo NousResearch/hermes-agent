@@ -28,7 +28,6 @@ import {
 } from '@/store/interface-mode'
 import { $introSplash, setIntroSplash } from '@/store/intro-splash'
 import { $fileBrowserOpen, setFileBrowserOpen } from '@/store/layout'
-import { $showModelPricing, setShowModelPricing } from '@/store/model-pricing'
 import { notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
 import { $reactionsEnabled, setReactionsEnabled } from '@/store/reactions-enabled'
@@ -77,6 +76,7 @@ import { $marketplaceInstalls, isUserTheme, removeUserTheme } from '@/themes/use
 import { setHermesConfigCache, useHermesConfigRecord } from '../hooks/use-config-record'
 
 import { AppearanceExtraSlot } from './appearance-contrib'
+import { ModelPricingRows } from './appearance-model-pricing'
 import type { AppearanceSubpageId } from './appearance-subpages'
 import { ChatFontSetting } from './chat-font-setting'
 import { MODE_OPTIONS } from './constants'
@@ -442,7 +442,6 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
   const vibeHeartsEnabled = useStore($vibeHeartsEnabled)
   const backdrop = useStore($backdrop)
   const introSplash = useStore($introSplash)
-  const showModelPricing = useStore($showModelPricing)
   const installs = useStore($marketplaceInstalls)
   const profiles = useStore($profiles)
   const activeProfileKey = normalizeProfileKey(useStore($activeGatewayProfile))
@@ -942,15 +941,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
             />
           )}
 
-          {show('general') && (
-            <ToggleRow
-              checked={showModelPricing}
-              description={a.modelPricingDesc}
-              id={settingElementId(ids.modelPricing)}
-              label={a.modelPricingTitle}
-              onChange={setShowModelPricing}
-            />
-          )}
+          {show('general') && <ModelPricingRows />}
 
           {/* The same state as the titlebar toggle / ⌘J, which persists across
               launches — so this is the file browser's standing default. Simple

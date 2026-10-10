@@ -4,7 +4,7 @@ import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import { type ReactElement, useMemo, useRef, useState } from 'react'
 
-import { ModelMetrics, modelPriceTitle } from '@/components/model-metrics'
+import { displayPrice, ModelMetrics, modelPriceTitle } from '@/components/model-metrics'
 import { useI18n } from '@/i18n'
 import { catalogProviderMatches, modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { currentPickerSelection } from '@/lib/model-status-label'
@@ -20,6 +20,7 @@ import {
   useLocalModelsStatus,
   useLocalRuntimeJobs
 } from '@/store/local-runtime-jobs'
+import { $modelPriceUnit } from '@/store/model-pricing'
 import type { LocalModelLoadProgress, LocalRuntimeJob } from '@/types/hermes'
 
 import type { HermesGateway } from '../hermes'
@@ -521,6 +522,8 @@ function DownloadingModelRow({
 function ModelPrice({ price, isCurrent }: { price?: ModelPricing; isCurrent: boolean }) {
   const { t } = useI18n()
   const copy = t.modelPicker
+  const unit = useStore($modelPriceUnit)
+  const suffix = unit === '1k' ? t.shell.modelMenu.perThousandSuffix : null
 
   if (!price || (!price.input && !price.output)) {
     return null
@@ -572,7 +575,8 @@ function ModelPrice({ price, isCurrent }: { price?: ModelPricing; isCurrent: boo
         </span>
       ) : null}
       <span>
-        {price.input || '?'} / {price.output || '?'}
+        {displayPrice(price.input, unit) || '?'} / {displayPrice(price.output, unit) || '?'}
+        {suffix}
       </span>
       {onSale ? (
         <span
@@ -581,7 +585,8 @@ function ModelPrice({ price, isCurrent }: { price?: ModelPricing; isCurrent: boo
             isCurrent ? 'text-primary-foreground/60' : 'text-muted-foreground/80'
           )}
         >
-          {copy.wasPrice} {price.was_input || '?'} / {price.was_output || '?'}
+          {copy.wasPrice} {displayPrice(price.was_input, unit) || '?'} / {displayPrice(price.was_output, unit) || '?'}
+          {suffix}
         </span>
       ) : null}
     </span>

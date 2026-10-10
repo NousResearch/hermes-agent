@@ -20,6 +20,13 @@ export interface ModelMenuTranslations {
   maxOutputTitle: (tokens: string) => string
   perThousandTitle: (input: string, output: string) => string
   tools: string
+  /** Appended to a picker price shown per 1K tokens, so the unit is never ambiguous. */
+  perThousandSuffix: string
+  /** Settings → Appearance row choosing that unit. */
+  priceUnitTitle: string
+  priceUnitDesc: string
+  priceUnitPerMillion: string
+  priceUnitPerThousand: string
   localSetup: { title: string; text: (model: string, size: string) => string; action: string }
   limited: string
   limitedUntil: (time: string) => string

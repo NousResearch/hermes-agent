@@ -20,6 +20,11 @@ export const esModelMenu = {
   maxOutputTitle: (tokens: string) => `Respuestas de hasta ${tokens} tokens`,
   perThousandTitle: (input: string, output: string) => `Por 1K tokens: entrada ${input} · salida ${output}`,
   tools: 'Puede usar herramientas',
+  perThousandSuffix: '/1K',
+  priceUnitTitle: 'Unidad de precio',
+  priceUnitDesc: 'Muestra los precios del selector por millón o por mil tokens.',
+  priceUnitPerMillion: 'Por 1M',
+  priceUnitPerThousand: 'Por 1K',
   localSetup: {
     title: 'Ejecutar en local · gratis, privado',
     text: (model: string, size: string) => `${model} cabe en este equipo · descarga de ${size}`,

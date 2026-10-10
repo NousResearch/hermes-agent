@@ -20,7 +20,7 @@ import { queryClient } from '@/lib/query-client'
 import { $favoriteModels, favoriteModelKey, toggleFavoriteModel } from '@/store/favorite-models'
 import { $localModelsEnabled } from '@/store/local-models-flag'
 import { localModelsKey, localModelsOwner } from '@/store/local-runtime-jobs'
-import { setShowModelPricing } from '@/store/model-pricing'
+import { setModelPriceUnit, setShowModelPricing } from '@/store/model-pricing'
 import {
   $modelVisibilityOpen,
   $visibleModels,
@@ -589,7 +589,10 @@ describe('the per-row options submenu is discoverable', () => {
 
 describe('the catalog renders per-model pricing', () => {
   beforeEach(() => setShowModelPricing(true))
-  afterEach(() => setShowModelPricing(false))
+  afterEach(() => {
+    setShowModelPricing(false)
+    setModelPriceUnit('mtok')
+  })
 
   it('keeps prices out of the menu until the pricing setting is on', async () => {
     setShowModelPricing(false)
@@ -688,6 +691,27 @@ describe('the catalog renders per-model pricing', () => {
     expect(prices.parentElement?.textContent).toContain('·$0.16')
     // The cached rate carries its own hover label naming it.
     expect(screen.getByTitle('cached read $0.16/Mtok')).not.toBeNull()
+  })
+
+  it('shows every rate per 1K tokens, with the unit named, when that unit is chosen', async () => {
+    setModelPriceUnit('1k')
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        {
+          models: ['anthropic/claude-sonnet-5'],
+          name: 'Nous Portal',
+          slug: 'nous',
+          pricing: {
+            'anthropic/claude-sonnet-5': { input: '$1.60', output: '$8.00', cache: '$0.16', free: false }
+          }
+        }
+      ]
+    })
+
+    renderMenu()
+
+    const prices = await screen.findByText('$0.0016/$0.008/1K')
+    expect(prices.parentElement?.textContent).toContain('·$0.00016')
   })
 
   it('prices a collapsed -fast family from the fast sibling when the base id is unpriced', async () => {

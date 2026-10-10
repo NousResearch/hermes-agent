@@ -5,6 +5,7 @@ import { Codicon } from '@/components/ui/codicon'
 import { useI18n } from '@/i18n'
 import type { ModelMenuTranslations } from '@/i18n/types_model_menu'
 import { cn } from '@/lib/utils'
+import type { ModelPriceUnit } from '@/store/model-pricing'
 
 const compactTokens = new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 })
 
@@ -18,6 +19,15 @@ export function perThousand(perMillion?: null | string): null | string {
   }
 
   return `$${(Number(match[1]) / 1000).toFixed(8).replace(/\.?0+$/, '')}`
+}
+
+/** A backend `$/Mtok` figure in the user's chosen unit; non-dollar values ("free", "?") pass through. */
+export function displayPrice(perMillion: null | string | undefined, unit: ModelPriceUnit): null | string {
+  if (!perMillion) {
+    return null
+  }
+
+  return unit === '1k' ? (perThousand(perMillion) ?? perMillion) : perMillion
 }
 
 /** The price chip's tooltip: its own line, the same price per 1K tokens (derived from the figure

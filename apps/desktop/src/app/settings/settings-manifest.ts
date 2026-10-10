@@ -60,6 +60,11 @@ export const SETTINGS_MANIFEST = {
     },
     introSplash: appearanceSetting('general', ['splash', 'wordmark', 'empty chat', 'new chat'], 'introSplash'),
     modelPricing: appearanceSetting('general', ['price', 'cost', 'tokens', 'model picker', 'cache'], 'modelPricing'),
+    modelPriceUnit: {
+      subpage: 'general',
+      keywords: ['price', 'per 1k', 'per million', 'unit'],
+      copy: t => ({ label: t.shell.modelMenu.priceUnitTitle, description: t.shell.modelMenu.priceUnitDesc })
+    },
     resumeLastSession: appearanceSetting(
       'general',
       ['resume', 'reopen', 'launch', 'startup', 'last chat', 'session'],

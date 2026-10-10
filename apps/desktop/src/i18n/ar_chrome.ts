@@ -370,6 +370,11 @@ export const arChrome = {
       maxOutputTitle: (tokens: string) => `ردود حتى ${tokens} رمز`,
       perThousandTitle: (input: string, output: string) => `لكل 1K رمز: الإدخال ${input} · الإخراج ${output}`,
       tools: 'يمكنه استدعاء الأدوات',
+      perThousandSuffix: '/1K',
+      priceUnitTitle: 'وحدة السعر',
+      priceUnitDesc: 'عرض الأسعار في منتقي النماذج لكل مليون أو لكل ألف رمز.',
+      priceUnitPerMillion: 'لكل 1M',
+      priceUnitPerThousand: 'لكل 1K',
       localSetup: {
         title: 'تشغيل محلي · مجاني وخاص',
         text: (model: string, size: string) => `${model} يناسب هذا الجهاز · تنزيل ${size}`,

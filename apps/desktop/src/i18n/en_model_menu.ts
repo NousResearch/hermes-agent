@@ -22,6 +22,11 @@ export const enModelMenu: Translations['shell']['modelMenu'] = {
   maxOutputTitle: (tokens: string) => `Replies up to ${tokens} tokens`,
   perThousandTitle: (input: string, output: string) => `Per 1K tokens: input ${input} · output ${output}`,
   tools: 'Can call tools',
+  perThousandSuffix: '/1K',
+  priceUnitTitle: 'Price Unit',
+  priceUnitDesc: 'Show picker prices per million tokens or per thousand tokens.',
+  priceUnitPerMillion: 'Per 1M',
+  priceUnitPerThousand: 'Per 1K',
   localSetup: {
     title: 'Run locally · free, private',
     text: (model: string, size: string) => `${model} fits this machine · ${size} download`,

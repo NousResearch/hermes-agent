@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import { enModelMenu } from '@/i18n/en_model_menu'
 
-import { ModelMetrics, modelPriceTitle, perThousand } from './model-metrics'
+import { displayPrice, ModelMetrics, modelPriceTitle, perThousand } from './model-metrics'
 
 const compact = (tokens: number) =>
   new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 }).format(tokens)
@@ -50,6 +50,15 @@ describe('ModelMetrics', () => {
     const { container } = render(<ModelMetrics caps={{ context_window: 0, fast: false, reasoning: true }} />)
 
     expect(container.innerHTML).toBe('')
+  })
+})
+
+describe('displayPrice', () => {
+  it('shows the backend figure per 1M and converts it for per 1K', () => {
+    expect(displayPrice('$0.15', 'mtok')).toBe('$0.15')
+    expect(displayPrice('$0.15', '1k')).toBe('$0.00015')
+    expect(displayPrice('free', '1k')).toBe('free')
+    expect(displayPrice('', 'mtok')).toBeNull()
   })
 })
 

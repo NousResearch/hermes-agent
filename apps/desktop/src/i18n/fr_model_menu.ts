@@ -20,6 +20,11 @@ export const frModelMenu = {
   maxOutputTitle: (tokens: string) => `Réponses de ${tokens} jetons max.`,
   perThousandTitle: (input: string, output: string) => `Pour 1K jetons : entrée ${input} · sortie ${output}`,
   tools: 'Peut appeler des outils',
+  perThousandSuffix: '/1K',
+  priceUnitTitle: 'Unité de prix',
+  priceUnitDesc: 'Affiche les prix du sélecteur par million ou par millier de jetons.',
+  priceUnitPerMillion: 'Par 1M',
+  priceUnitPerThousand: 'Par 1K',
   localSetup: {
     title: 'Exécuter en local · gratuit, privé',
     text: (model: string, size: string) => `${model} tient sur cette machine · téléchargement de ${size}`,

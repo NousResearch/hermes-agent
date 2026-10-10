@@ -20,6 +20,11 @@ export const ruModelMenu = {
   maxOutputTitle: (tokens: string) => `Ответ до ${tokens} токенов`,
   perThousandTitle: (input: string, output: string) => `За 1K токенов: вход ${input} · выход ${output}`,
   tools: 'Может вызывать инструменты',
+  perThousandSuffix: '/1K',
+  priceUnitTitle: 'Единица цены',
+  priceUnitDesc: 'Показывать цены в выборе модели за миллион или за тысячу токенов.',
+  priceUnitPerMillion: 'За 1M',
+  priceUnitPerThousand: 'За 1K',
   localSetup: {
     title: 'Запуск локально · бесплатно, приватно',
     text: (model: string, size: string) => `${model} подходит для этого компьютера · загрузка ${size}`,

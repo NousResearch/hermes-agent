@@ -74,7 +74,7 @@ def _bootstrap(monkeypatch, tmp_path, db):
     from hermes_state import AsyncSessionDB
 
     runner._session_db = AsyncSessionDB(db)
-    runner._recover_telegram_topic_thread_id = lambda _source: None
+    runner._recover_telegram_topic_thread_id = lambda _source, **_kw: None
     runner._cache_session_source = lambda _key, _source: None
     runner._is_session_run_current = lambda _key, _gen: True
     runner._begin_session_run_generation = lambda _key: 1

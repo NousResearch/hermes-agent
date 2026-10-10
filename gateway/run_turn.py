@@ -407,11 +407,16 @@ class GatewayTurnMixin:
         topic-binding heal). Returns ``(source, session_entry, session_key)`` or ``None`` to drop
         the event."""
         # Topic-mode DMs: rewrite a stale/foreign thread_id to the user's last-active topic so a
-        # cross-topic Reply doesn't fragment the conversation.
+        # cross-topic Reply doesn't fragment the conversation. Only REPLY messages get pinned — a
+        # fresh message in the General/"All" lane is the first message of a NEW topic (Telegram
+        # creates the topic but delivers the text to the lobby), and must NOT be hijacked into the
+        # running conversation (#31772).
         event_metadata = getattr(event, "metadata", None) or {}
         expected_session_key = str(event_metadata.get("gateway_session_key") or "").strip()
-        recovered = (await asyncio.to_thread(self._recover_telegram_topic_thread_id, source)
-                     if not expected_session_key else None)
+        is_reply = bool(getattr(event, "reply_to_message_id", None))
+        recovered = (await asyncio.to_thread(
+            self._recover_telegram_topic_thread_id, source, is_reply=is_reply)
+            if not expected_session_key else None)
         if recovered is not None:
             logger.info(
                 "telegram topic recovery: chat=%s user=%s %r -> %s",

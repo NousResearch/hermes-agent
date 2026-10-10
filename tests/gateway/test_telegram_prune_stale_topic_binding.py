@@ -240,8 +240,8 @@ class TestRecoveryAfterPrune:
             chat_id="5595856929",
             user_name="tester",
             chat_type="dm",
-            thread_id="1",  # General/stripped reply — triggers recovery
-        ))
+            thread_id="1",  # General/stripped REPLY — triggers recovery
+        ), is_reply=True)
         assert before == "222"
 
         # User deletes topic 222 in Telegram → adapter prunes.
@@ -259,6 +259,6 @@ class TestRecoveryAfterPrune:
             user_name="tester",
             chat_type="dm",
             thread_id="1",
-        ))
+        ), is_reply=True)
         assert after == "111"
         db.close()

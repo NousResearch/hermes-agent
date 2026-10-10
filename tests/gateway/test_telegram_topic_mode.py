@@ -788,6 +788,34 @@ def test_recover_preserves_unknown_thread_id_for_new_topic(tmp_path):
     assert runner._recover_telegram_topic_thread_id(_make_source(thread_id="9999")) is None
 
 
+def test_recover_does_not_pin_fresh_lobby_message_to_last_topic(tmp_path):
+    # A *fresh* message typed in the General/"All" lane (missing message_thread_id
+    # or thread "1") is the first message of a NEW topic Telegram just created. It
+    # must NOT be hijacked into the running (most-recent) conversation (#31772).
+    db = SessionDB(db_path=tmp_path / "state.db")
+    _seed_two_topic_bindings(db)
+    runner = _make_runner(session_db=db)
+
+    assert runner._recover_telegram_topic_thread_id(_make_source(thread_id=None)) is None
+    assert runner._recover_telegram_topic_thread_id(_make_source(thread_id="1")) is None
+
+
+def test_recover_pins_lobby_reply_to_last_topic(tmp_path):
+    # A lobby-shaped message that actually REPLIES to a prior message keeps the
+    # stripped-reply recovery: it is pinned to the user's last-active bound topic
+    # so a cross-topic Reply doesn't fragment the conversation.
+    db = SessionDB(db_path=tmp_path / "state.db")
+    _seed_two_topic_bindings(db)
+    runner = _make_runner(session_db=db)
+
+    assert runner._recover_telegram_topic_thread_id(
+        _make_source(thread_id="1"), is_reply=True
+    ) == "222"
+    assert runner._recover_telegram_topic_thread_id(
+        _make_source(thread_id=None), is_reply=True
+    ) == "222"
+
+
 
 
 def test_list_telegram_topic_bindings_for_chat_no_table(tmp_path):

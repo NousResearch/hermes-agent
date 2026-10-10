@@ -3912,9 +3912,15 @@ class GatewayRunner(
         which skips that recovery — so the override is stored under a different key than the next message
         turn reads, and the override is silently dropped on Telegram forum topics and after compression
         session splits (#30479).
+
+        Session-scoped command handlers (``/model``, ``/reasoning``, ``/fast``, ``/resume``, ``/sessions``)
+        keep the pre-existing pin: an explicit session-management command typed in the lobby is asking
+        about the user's topics, NOT starting a new conversation — so it resolves to the last-bound topic.
+        The fresh-message no-pin rule applies only to normal message turns (``_hmwa_resolve_session``),
+        which is where typing in General/"All" to start a NEW topic was silently hijacked (#31772).
         """
         try:
-            recovered = self._recover_telegram_topic_thread_id(source)
+            recovered = self._recover_telegram_topic_thread_id(source, is_reply=True)
         except Exception:
             return source
         return source if recovered is None else dataclasses.replace(source, thread_id=recovered)

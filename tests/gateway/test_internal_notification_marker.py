@@ -49,7 +49,7 @@ def _bootstrap(monkeypatch, tmp_path):
     runner._set_session_env = lambda _context: None
     runner._handle_active_session_busy_message = AsyncMock(return_value=False)
     runner._session_db = MagicMock()
-    runner._recover_telegram_topic_thread_id = lambda _source: None
+    runner._recover_telegram_topic_thread_id = lambda _source, **_kw: None
     runner._cache_session_source = lambda _key, _source: None
     runner._is_session_run_current = lambda _key, _gen: True
     runner._begin_session_run_generation = lambda _key: 1

@@ -11,7 +11,7 @@ Hermes has two slash-command surfaces, both driven by a central `COMMAND_REGISTR
 - **Interactive CLI slash commands** — dispatched by `cli.py`, with autocomplete from the registry
 - **Messaging slash commands** — dispatched by `gateway/run.py`, with help text and platform menus generated from the registry
 
-Installed skills are also exposed as dynamic slash commands on both surfaces. (`/plan` used to be one of these; it is now a built-in command — see the Session table below.) A skill whose name matches a built-in command (or one of its aliases) never gets its own `/<name>` — the built-in wins and the skill stays loadable via `/skill <name>`; `/skills list`, `/help skills` and the command palette mark such a skill with `slash command /<name> unavailable — name taken by built-in; use /skill <name>`.
+Installed skills are also exposed as dynamic slash commands on both surfaces. (`/plan` used to be one of these; it is now a built-in command, listed in the Session table below.) A skill whose name matches a built-in command (or one of its aliases) never gets its own `/<name>`, because the built-in command keeps the name. `/skills list`, `hermes skills list` and the classic CLI's `/help skills` mark such a skill with `slash command /<name> unavailable: a built-in command uses that name; to load it, start a session with hermes -s <name>`. In a named profile, or when `hermes profile use` has made another profile sticky, the advice is `hermes -p <profile> -s <name>` so that the launch starts the current profile. The command palette and the messaging gateway's `/commands` and `/help skills` show the note without the `hermes -s` advice. Both gateway listings show it only to admins, and to everyone when slash access is not gated.
 
 ## Permissions and admin/user split
 
@@ -306,7 +306,7 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 | `/update` | Update Hermes Agent to the latest version. |
 | `/restart` | Gracefully restart the gateway after draining active runs. When the gateway comes back online, it sends a confirmation to the requester's chat/thread. |
 | `/debug` | Upload debug report (system info + logs) and get shareable links. |
-| `/help` | Show messaging help. |
+| `/help [skills\|<text>]` | Show messaging help. `/help skills` lists every skill command, and `/help <text>` shows only the commands and skills whose name or description contains the text, ignoring case and treating `_` like `-`. |
 | `/<skill-name>` | Invoke any installed skill by name. |
 
 ## Notes

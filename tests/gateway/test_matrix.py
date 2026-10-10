@@ -476,6 +476,26 @@ class TestMatrixBangCommandAlias:
         )
         assert _normalize_matrix_bang_command("!tasks") == "/tasks"
 
+    def test_every_gateway_registry_name_and_alias_has_bang_alias(self):
+        from hermes_cli.commands import GATEWAY_KNOWN_COMMANDS
+        from plugins.platforms.matrix.adapter import _normalize_matrix_bang_command
+
+        for name in sorted(GATEWAY_KNOWN_COMMANDS):
+            assert _normalize_matrix_bang_command(f"!{name} probe") == f"/{name} probe"
+
+    def test_plugin_bang_command_normalizes(self):
+        import hermes_cli.plugins as plugins_mod
+        from plugins.platforms.matrix.adapter import _normalize_matrix_bang_command
+
+        with patch.object(
+            plugins_mod,
+            "get_plugin_commands",
+            return_value={"plugin-check": {"description": "Test plugin command"}},
+        ):
+            assert (
+                _normalize_matrix_bang_command("!plugin-check value")
+                == "/plugin-check value"
+            )
 
     @pytest.mark.asyncio
     async def test_unknown_bang_text_stays_normal_text(self):
@@ -648,11 +668,89 @@ class TestMatrixMarkdownToHtml:
         assert "<th>Item</th>" in result
         assert "<td>Apples</td>" in result
 
+    @pytest.mark.parametrize(
+        ("text", "html"),
+        [
+            (
+                "Use `!help <text>`, !help <text> or /<file path>.",
+                "Use <code>!help &lt;text&gt;</code>, !help &lt;text&gt; or /&lt;file path&gt;.",
+            ),
+            ("<kbd>under</kbd>, <x> a <x> b </x> and <y/> c", "under, &lt;x&gt; a  b  and  c"),
+            (
+                '<plaintext><a href="javascript:alert(1)">x</a> <b onclick="x">still</b>',
+                "&lt;plaintext&gt;<a>x</a> <b>still</b>",
+            ),
+        ],
+        ids=["unclosed-placeholders", "closed-unknown-elements", "markup-after-raw-text-name"],
+    )
+    def test_unknown_tags_stay_visible_unless_closed(self, text, html):
+        assert self.adapter._markdown_to_html(text) == html
+
+    @pytest.mark.parametrize(
+        "name",
+        ["title", "textarea", "script", "style", "xmp", "iframe", "noembed", "noframes", "plaintext"],
+    )
+    def test_raw_text_element_placeholder_keeps_later_markup(self, name):
+        text = f"Use `<{name}>` or <{name}> now.\n\nThen **bold** & done."
+        html = (
+            f"<p>Use <code>&lt;{name}&gt;</code> or &lt;{name}&gt; now.</p>\n"
+            "<p>Then <strong>bold</strong> &amp; done.</p>"
+        )
+        assert self.adapter._markdown_to_html(text) == html
+
+    @pytest.mark.parametrize("tag", ["script", "style"])
+    @pytest.mark.parametrize(
+        "closing", ["", " extra", None, "nested", "unmatched-repeat"]
+    )
+    def test_html_sanitizer_preserves_placeholders_outside_unsafe_body(
+        self, tag, closing
+    ):
+        from plugins.platforms.matrix.adapter import _sanitize_matrix_html
+
+        if closing == "nested":
+            other = "style" if tag == "script" else "script"
+            text = (
+                f"<x><{tag}>A<{other}>B</x></{other}><{other}>C</{tag}><y>"
+                '<b onclick="x">later</b>'
+            )
+            html = "&lt;x&gt;&lt;y&gt;<b>later</b>"
+        elif closing == "unmatched-repeat":
+            text = f"<{tag}>" * 128 + '<x> visible <b onclick="x">later</b>'
+            html = f"&lt;{tag}&gt;" * 128 + "&lt;x&gt; visible <b>later</b>"
+        elif closing is None:
+            text = f'<x><{tag}>visible <b onclick="x">later</b> <y>'
+            html = f"&lt;x&gt;&lt;{tag}&gt;visible <b>later</b> &lt;y&gt;"
+        else:
+            text = (
+                f"<x><{tag}>hidden </x><b>hidden</b></{tag}{closing}><y>"
+                '<b onclick="x">later</b> <a href="javascript:alert(1)">bad</a> '
+                '<a href="https://example.org" onclick="x">safe</a>'
+            )
+            html = (
+                "&lt;x&gt;&lt;y&gt;<b>later</b> <a>bad</a> "
+                '<a href="https://example.org">safe</a>'
+            )
+
+        assert _sanitize_matrix_html(text) == html
+
+    @pytest.mark.parametrize("tag", ["script", "style"])
+    @pytest.mark.parametrize("closing", ["", " extra", None])
+    def test_markdown_renderer_preserves_placeholders_outside_unsafe_body(
+        self, tag, closing
+    ):
+        if closing is None:
+            text = f"<x><{tag}>visible **later** <y>"
+            html = f"&lt;x&gt;&lt;{tag}&gt;visible <strong>later</strong> &lt;y&gt;"
+        else:
+            text = f"<x><{tag}>hidden </x><b>hidden</b></{tag}{closing}><y> **later** &"
+            html = "&lt;x&gt;&lt;y&gt; <strong>later</strong> &amp;"
+
+        assert self.adapter._markdown_to_html(text) == html
+
 
 # ---------------------------------------------------------------------------
 # Helper: display name extraction
 # ---------------------------------------------------------------------------
-
 
 
 # ---------------------------------------------------------------------------

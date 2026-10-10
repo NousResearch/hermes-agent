@@ -1142,11 +1142,56 @@ function Stage-Products {
     if ($desktop) { Confirm-DesktopArtifact }
 }
 
+function ConvertTo-LauncherPathKey([string]$Path) {
+    # Compare path identity, not spelling: explicit HERMES_HOME values may use
+    # forward slashes while TEMP/TMP use backslashes, and '..' / 8.3 aliases
+    # must not turn an ephemeral home into a persistent one.
+    if ([string]::IsNullOrWhiteSpace($Path)) { return "" }
+    $resolved = ConvertTo-LongPath $Path
+    try { $resolved = [IO.Path]::GetFullPath($resolved) } catch { }
+    return $resolved.Replace('/', '\').TrimEnd('\')
+}
+
+function Test-EphemeralLauncherHome([string]$Path) {
+    $key = ConvertTo-LauncherPathKey $Path
+    if (-not $key) { return $false }
+
+    foreach ($root in @($env:TEMP, $env:TMP)) {
+        $rootKey = ConvertTo-LauncherPathKey $root
+        if (-not $rootKey) { continue }
+        if ($key.Equals($rootKey, [StringComparison]::OrdinalIgnoreCase) -or
+            $key.StartsWith($rootKey + '\', [StringComparison]::OrdinalIgnoreCase)) {
+            return $true
+        }
+    }
+
+    # The smoke harness also names scratch homes hermes_test_home_*; retain
+    # that explicit identity even if a caller points the harness outside TEMP.
+    foreach ($segment in ($key -split '\\')) {
+        if ($segment -match '^hermes_test_home') { return $true }
+    }
+    return $false
+}
+
+# Tiny mutation seams keep regression tests from ever touching HKCU. Production
+# still calls the exact same Environment APIs through these wrappers.
+function Get-LauncherUserPathValue {
+    return [Environment]::GetEnvironmentVariable("Path", "User")
+}
+
+function Set-LauncherUserPathValue([string]$Value) {
+    [Environment]::SetEnvironmentVariable("Path", $Value, "User")
+}
+
 function Set-LauncherUserPath([string]$binDir) {
-    $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+    $userPath = Get-LauncherUserPathValue
     if ($userPath -notlike "*$binDir*") {
-        [Environment]::SetEnvironmentVariable("Path", "$binDir;$userPath", "User")
-        Write-Ok "added $binDir to your user PATH (new shells pick it up)"
+        if (Test-EphemeralLauncherHome $binDir) {
+            Write-Warn "skipped persistent user PATH for ephemeral Hermes home: $binDir"
+        } else {
+            Set-LauncherUserPathValue "$binDir;$userPath"
+            Write-Ok "added $binDir to your user PATH (new shells pick it up)"
+        }
     }
     # The registry write only reaches shells started later. $env:Path is
     # process-wide, so prepending it here makes `hermes` resolve in the

@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 
+from hermes_cli import kanban_db_review as kbr
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_dispatch as kbd
@@ -54,7 +55,7 @@ def _claimed_review(
     )
     implementation = kb.claim_task(conn, task_id, claimer="builder:test")
     assert implementation is not None
-    assert kb.request_review(
+    assert kbr.request_review(
         conn,
         task_id,
         summary="ready for independent review",
@@ -75,7 +76,7 @@ def test_same_card_review_supports_changes_and_approval_without_block_loop(conn)
     implementation = kb.claim_task(conn, task_id, claimer="builder:1")
     assert implementation is not None
 
-    assert kb.request_review(
+    assert kbr.request_review(
         conn,
         task_id,
         reviewer="reviewer",
@@ -122,7 +123,7 @@ def test_same_card_review_supports_changes_and_approval_without_block_loop(conn)
 
     implementation_2 = kb.claim_task(conn, task_id, claimer="builder:2")
     assert implementation_2 is not None
-    assert kb.request_review(
+    assert kbr.request_review(
         conn,
         task_id,
         summary="Fallback regression added.",
@@ -181,7 +182,7 @@ def test_rereview_requires_explicit_reviewer_when_provenance_is_invalid(
 
     implementation = kb.claim_task(conn, task_id, claimer="builder:retry")
     assert implementation is not None
-    assert not kb.request_review(
+    assert not kbr.request_review(
         conn,
         task_id,
         summary="Corrected implementation.",
@@ -192,7 +193,7 @@ def test_rereview_requires_explicit_reviewer_when_provenance_is_invalid(
     assert unchanged.status == "running"
     assert unchanged.assignee == "builder"
 
-    assert kb.request_review(
+    assert kbr.request_review(
         conn,
         task_id,
         reviewer="reviewer",
@@ -219,7 +220,7 @@ def test_review_changes_reapply_parent_gate(conn):
     assert kb.complete_task(conn, parent_id, result="done")
     implementation = kb.claim_task(conn, task_id, claimer="builder:1")
     assert implementation is not None
-    assert kb.request_review(
+    assert kbr.request_review(
         conn,
         task_id,
         reviewer="reviewer",
@@ -255,7 +256,7 @@ def test_parent_reopen_blocks_request_review_until_parent_is_done(conn) -> None:
     assert implementation is not None
     with kb.write_txn(conn):
         conn.execute("UPDATE tasks SET status = 'ready' WHERE id = ?", (parent_id,))
-    assert not kb.request_review(
+    assert not kbr.request_review(
         conn,
         task_id,
         summary="must wait",
@@ -265,7 +266,7 @@ def test_parent_reopen_blocks_request_review_until_parent_is_done(conn) -> None:
     assert still_running is not None
     assert still_running.status == "running"
     assert kb.complete_task(conn, parent_id, result="done")
-    assert kb.request_review(
+    assert kbr.request_review(
         conn,
         task_id,
         summary="parent stable",
@@ -281,7 +282,7 @@ def test_request_changes_fails_closed_on_malformed_review_provenance(
     task_id = kb.create_task(conn, title="Malformed handoff", assignee="builder")
     implementation = kb.claim_task(conn, task_id, claimer="builder:1")
     assert implementation is not None
-    assert kb.request_review(
+    assert kbr.request_review(
         conn,
         task_id,
         reviewer="reviewer",
@@ -435,7 +436,7 @@ def test_review_dependency_wait_reenters_review_after_parent_finishes(conn) -> N
     )
     implementation = kb.claim_task(conn, task_id)
     assert implementation is not None
-    assert kb.request_review(
+    assert kbr.request_review(
         conn,
         task_id,
         summary="ready",
@@ -509,7 +510,7 @@ def test_goal_run_status_is_bound_to_original_run(conn) -> None:
     task_id = kb.create_task(conn, title="Goal handoff race", assignee="builder")
     implementation = kb.claim_task(conn, task_id)
     assert implementation is not None
-    assert kb.request_review(
+    assert kbr.request_review(
         conn,
         task_id,
         summary="ready",
@@ -550,7 +551,7 @@ def test_goal_run_status_is_bound_to_original_run(conn) -> None:
 
 def test_parked_review_approval_without_evidence_still_creates_audit_run(conn) -> None:
     task_id = kb.create_task(conn, title="Manual approval", assignee="reviewer")
-    assert kb.request_review(conn, task_id, summary="implementation handoff")
+    assert kbr.request_review(conn, task_id, summary="implementation handoff")
     assert kb.complete_task(conn, task_id)
     completed_event = _event(kb.list_events(conn, task_id), "completed")
     assert completed_event.run_id is not None
@@ -670,7 +671,7 @@ def test_review_transitions_preserve_consecutive_failures(conn) -> None:
 
     implementation = kb.claim_task(conn, task_id, claimer="builder:1")
     assert implementation is not None
-    assert kb.request_review(
+    assert kbr.request_review(
         conn, task_id, summary="v1", reviewer="reviewer",
         expected_run_id=implementation.current_run_id,
     )
@@ -686,7 +687,7 @@ def test_review_transitions_preserve_consecutive_failures(conn) -> None:
 
     retry = kb.claim_task(conn, task_id, claimer="builder:2")
     assert retry is not None
-    assert kb.request_review(
+    assert kbr.request_review(
         conn, task_id, summary="v2",
         expected_run_id=retry.current_run_id,
     )

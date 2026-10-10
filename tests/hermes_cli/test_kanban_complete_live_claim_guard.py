@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+from hermes_cli import kanban_db_review as kbr
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli import kanban_db_connect as kbc
@@ -82,10 +83,10 @@ def test_request_review_shares_the_live_worker_fence(conn):
     without a live worker process is not a live claim (the human/library flow
     ``claim`` -> ``request_review`` works), a live worker's claim still is."""
     tid, _ = _claimed_running_task(conn, live_worker=False)
-    assert kb.request_review(conn, tid, summary="handoff") is True
+    assert kbr.request_review(conn, tid, summary="handoff") is True
     assert kb.get_task(conn, tid).status == "review"
 
     tid2, run2 = _claimed_running_task(conn)
-    ok, reason = kb.request_review(conn, tid2, summary="steal", with_reason=True)
+    ok, reason = kbr.request_review(conn, tid2, summary="steal", with_reason=True)
     assert ok is False and "live claim" in reason
-    assert kb.request_review(conn, tid2, summary="own", expected_run_id=run2) is True
+    assert kbr.request_review(conn, tid2, summary="own", expected_run_id=run2) is True

@@ -337,6 +337,9 @@ _SPECS = [
         _arg("--summary", help="What was implemented and how it was verified — shown to the reviewer."),
         _arg("--reviewer", help="Optional reviewer profile; reassigns the task before review dispatch."),
         _arg("--metadata", help="JSON object with structured reviewer handoff facts."),
+        _arg("--from-done", action="store_true",
+             help="Explicitly reopen a completed task for review, retaining its completion evidence "
+                  "and invalidating dependent tasks until it is approved again."),
         _arg("--force", action="store_true",
              help="Override the live-claim guard: move a running, claimed "
                   "task to review even without owning its run (clears the worker's claim)."),

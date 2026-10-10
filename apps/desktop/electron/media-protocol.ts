@@ -19,6 +19,82 @@ const FORWARDED_MEDIA_REQUEST_HEADERS = ['accept', 'if-modified-since', 'if-none
 
 export const MEDIA_PROTOCOL = 'hermes-media'
 
+// Remote media rides Chromium's 6-per-host HTTP/1.1 pool together with REST and
+// WS-ticket minting. A <video> stops reading once buffered but keeps its request
+// open, so piping the gateway stream straight through pins a pooled socket for
+// as long as the element lives (or forever, once abandoned); a few clips starve
+// the pool and the gateway becomes unreachable. The renderer still gets one
+// response for the range it asked for (Chromium treats a short 206 as a
+// truncated file), but it is fed from bounded gateway ranges, each read to
+// completion and requested only when the renderer reads on.
+export const REMOTE_MEDIA_CHUNK_BYTES = 2 * 1024 * 1024
+
+const OPEN_OR_CLOSED_RANGE = /^bytes=(\d+)-(\d*)$/
+const CONTENT_RANGE = /^bytes (\d+)-(\d+)\/(\d+)$/
+
+async function remoteMediaInChunks(
+  requestedRange: null | string,
+  fetchRange: (range: string) => Promise<Response>
+): Promise<Response> {
+  const requested = OPEN_OR_CLOSED_RANGE.exec((requestedRange ?? 'bytes=0-').trim())
+
+  // Suffix and multi-range requests cannot be split without the file size.
+  if (!requested) {
+    return fetchRange(requestedRange ?? '')
+  }
+
+  const start = Number(requested[1])
+  const askedEnd = requested[2] === '' ? Infinity : Number(requested[2])
+  const nextRange = (from: number, last: number) => `bytes=${from}-${Math.min(last, from + REMOTE_MEDIA_CHUNK_BYTES - 1)}`
+  const first = await fetchRange(nextRange(start, askedEnd))
+  const served = CONTENT_RANGE.exec(first.headers.get('content-range') ?? '')
+
+  // A gateway that ignored Range answers 200 with the whole file: stream it.
+  if (first.status !== 206 || !served) {
+    return first
+  }
+
+  const size = Number(served[3])
+  const end = Math.min(askedEnd, size - 1)
+  const head = new Uint8Array(await first.arrayBuffer())
+  let next = Number(served[2]) + 1
+
+  const headers = new Headers(first.headers)
+  headers.set('content-range', `bytes ${start}-${end}/${size}`)
+  headers.set('content-length', String(end - start + 1))
+
+  if (next > end) {
+    return new Response(head, { headers, status: 206 })
+  }
+
+  const body = new ReadableStream<Uint8Array>(
+    {
+      start(controller) {
+        controller.enqueue(head)
+      },
+      async pull(controller) {
+        const response = await fetchRange(nextRange(next, end))
+        const chunk = CONTENT_RANGE.exec(response.headers.get('content-range') ?? '')
+
+        if (response.status !== 206 || !chunk || Number(chunk[1]) !== next) {
+          await response.body?.cancel()
+          throw new Error('Remote media range unavailable')
+        }
+
+        controller.enqueue(new Uint8Array(await response.arrayBuffer()))
+        next = Number(chunk[2]) + 1
+
+        if (next > end) {
+          controller.close()
+        }
+      }
+    },
+    { highWaterMark: 0 }
+  )
+
+  return new Response(body, { headers, status: 206 })
+}
+
 type MediaProtocolMode = 'remote' | 'stream'
 
 interface MediaProtocolTarget {
@@ -172,8 +248,20 @@ export function createMediaProtocolHandler(dependencies: MediaProtocolDependenci
         }
       }
 
-      if (connection.authMode === 'oauth') {
-        return await requestWithOauthFallback(connection.baseUrl, {
+      const { token } = connection
+
+      if (connection.authMode !== 'oauth' && !token) {
+        return new Response('Remote media authentication unavailable', { status: 401 })
+      }
+
+      const fetchUpstream = (): Promise<Response> => {
+        if (connection.authMode !== 'oauth') {
+          headers.set('x-hermes-session-token', token as string)
+
+          return dependencies.fetchRemote(endpoint, headers, method)
+        }
+
+        return requestWithOauthFallback(connection.baseUrl, {
           ensureNativeAccessToken: dependencies.ensureRemoteBearer,
           requestWithBearer: bearer => {
             headers.set('authorization', `Bearer ${bearer}`)
@@ -195,13 +283,15 @@ export function createMediaProtocolHandler(dependencies: MediaProtocolDependenci
         })
       }
 
-      if (!connection.token) {
-        return new Response('Remote media authentication unavailable', { status: 401 })
+      if (method === 'HEAD') {
+        return await fetchUpstream()
       }
 
-      headers.set('x-hermes-session-token', connection.token)
+      return await remoteMediaInChunks(headers.get('range'), range => {
+        headers.set('range', range)
 
-      return await dependencies.fetchRemote(endpoint, headers, method)
+        return fetchUpstream()
+      })
     } catch (error) {
       const status = readStatusCode(error)
 

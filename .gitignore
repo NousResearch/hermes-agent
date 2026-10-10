@@ -87,6 +87,9 @@ environments/benchmarks/evals/
 
 # Web UI build output
 hermes_cli/web_dist/
+# withProduct() staging dir (scripts/build/frontend-common.mjs); Windows can
+# leave it behind when cleanup hits a locked file -> spurious dirty tree
+hermes_cli/.web_dist-build-*/
 # Cross-process web UI build lock (flock target, always empty)
 .web_ui_build.lock
 apps/desktop/build/
@@ -162,7 +165,11 @@ models-dev-upstream/
 opencode.json
 config/mcporter.json
 
-hermes_cli/tui_dist/*
+hermes_cli/tui_dist/
+# withProduct() staging dir IF a future --out targets hermes_cli/tui_dist
+# (frontend-common.mjs). No main caller does today (scripts/build/tui.mjs
+# builds the default product); same locked-file residue hazard as web_dist.
+hermes_cli/.tui_dist-build-*/
 hermes_cli/scripts/
 docs/superpowers/*
 # Working directory for the Hermes Agent's session state (~/.hermes/ at runtime;

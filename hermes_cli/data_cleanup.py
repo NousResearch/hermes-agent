@@ -15,15 +15,50 @@ class DataRemovalPlan:
     keep: tuple[Path, ...]
 
 
+def guard_data_removal_home(home: Path, project: Path) -> Path:
+    """Return the canonical data root or refuse an unsafe recursive-delete target.
+
+    Inspect the lexical path before resolving it: resolving first erases the evidence
+    that the configured home (or one of its parents) is a symlink or junction.  Both
+    data-only and code-removing uninstall modes use this single preflight.
+    """
+    lexical_home = home.absolute()
+    for part in (lexical_home, *lexical_home.parents):
+        if part == Path(part.anchor):
+            continue
+        try:
+            mode = part.lstat().st_mode
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise ValueError(f"cannot safely inspect Hermes home path {part}: {exc}") from exc
+        try:
+            linked = stat.S_ISLNK(mode) or is_junction(part)
+        except OSError as exc:
+            raise ValueError(f"cannot safely inspect Hermes home path {part}: {exc}") from exc
+        if linked:
+            raise ValueError(f"refusing to erase a Hermes home reached through a directory link: {part}")
+
+    resolved_home = lexical_home.resolve()
+    user_home = Path.home().resolve()
+    if resolved_home == Path(resolved_home.anchor) or user_home.is_relative_to(resolved_home):
+        raise ValueError(f"refusing to erase an entire filesystem or user home: {resolved_home}")
+
+    resolved_project = project.resolve()
+    if resolved_home == resolved_project or resolved_home.is_relative_to(resolved_project):
+        raise ValueError(
+            f"refusing to erase a Hermes home that aliases the installation directory: {resolved_home}"
+        )
+    return resolved_home
+
+
 def plan_data_removal(home: Path, project: Path, userdata: Path | None = None) -> DataRemovalPlan:
     from hermes_constants import get_default_hermes_root
     from pm.environments import base_venv, installs_root, store_root
     from hermes_cli.steward import is_bundled_payload
     from tools.checkpoint_pruning import store_lock_path
 
-    home = home.resolve()
-    if home == Path(home.anchor) or home == Path.home().resolve():
-        raise ValueError(f"refusing to erase an entire filesystem or user home: {home}")
+    home = guard_data_removal_home(home, project)
     machine = get_default_hermes_root(home=home).resolve()
     protected = {
         project.resolve(), base_venv(project).resolve(), store_root(project).resolve(),

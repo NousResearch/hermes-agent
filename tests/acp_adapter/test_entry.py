@@ -99,3 +99,39 @@ def test_setup_browser_is_one_explicit_package_request(monkeypatch):
     entry.main(["--setup-browser", "--yes"])
 
     assert calls == [("agent-browser", {"explicit": True})]
+
+
+@pytest.mark.parametrize("argv", [[], ["-p", "work"]], ids=["sticky", "flag"])
+def test_console_script_serves_the_selected_profile(tmp_path, argv):
+    """``hermes-acp`` (and ``python -m acp_adapter``) start in ``entry.main()``, not hermes_cli.main:
+    the server must still run under the profile ``hermes acp`` would pick (sticky or ``-p``)."""
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    # The child resolves its root from HOME on POSIX and %LOCALAPPDATA% on Windows; pin both.
+    local_appdata = tmp_path / "AppData" / "Local"
+    root = local_appdata / "hermes" if sys.platform == "win32" else tmp_path / ".hermes"
+    for name in ("work", "other"):
+        (root / "profiles" / name).mkdir(parents=True)
+        (root / "profiles" / name / "config.yaml").write_text("{}\n", encoding="utf-8")
+    (root / "active_profile").write_text("other" if argv else "work", encoding="utf-8")
+    driver = (
+        "import sys, acp\n"
+        "async def fake_run_agent(agent, **kw):\n"
+        "    from hermes_constants import get_hermes_home\n"
+        "    print('SERVED', get_hermes_home())\n"
+        "acp.run_agent = fake_run_agent\n"
+        f"sys.argv = ['hermes-acp', *{argv!r}]\n"
+        "from acp_adapter.entry import main\n"
+        "main()\n"
+    )
+    env = {k: v for k, v in os.environ.items() if k not in ("HERMES_HOME", "HERMES_DATA_DIR_SUFFIX")}
+    env.update(HOME=str(tmp_path), USERPROFILE=str(tmp_path), LOCALAPPDATA=str(local_appdata),
+               PYTHONPATH=str(Path(__file__).resolve().parents[2]), HERMES_ACP_SKIP_CONFIGURED_MCP="1")
+    out = subprocess.run([sys.executable, "-c", driver], env=env, cwd=tmp_path, capture_output=True,
+                         text=True, timeout=120)
+
+    served = [line for line in out.stdout.splitlines() if line.startswith("SERVED ")]
+    assert served == [f"SERVED {root / 'profiles' / 'work'}"], out.stdout + out.stderr

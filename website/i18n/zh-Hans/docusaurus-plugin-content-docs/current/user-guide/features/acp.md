@@ -64,6 +64,8 @@ hermes-acp
 python -m acp_adapter
 ```
 
+三者都使用当前激活的 profile（`hermes profile use`）；加 `-p <name>` 可运行其他 profile，例如 `hermes-acp -p work`。
+
 Hermes 将日志输出到 stderr，以保留 stdout 用于 ACP JSON-RPC 流量。
 
 非交互式检查：

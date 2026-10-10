@@ -33,6 +33,9 @@ from hermes_cli.observability.shared_metrics_loop import record_browser_call
 _BROWSER_PASSTHROUGH_KEYS: tuple[str, ...] = (
     "BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "BROWSER_USE_API_KEY",
     "FIRECRAWL_API_KEY", "FIRECRAWL_API_URL", "FIRECRAWL_BROWSER_TTL",
+    # Non-secret launch settings. The child env is credential-scrubbed, so without
+    # these a user's AGENT_BROWSER_ARGS never reaches the real Chromium command.
+    "AGENT_BROWSER_ARGS", "AGENT_BROWSER_CHROME_FLAGS", "AGENT_BROWSER_IDLE_TIMEOUT_MS",
 )
 
 

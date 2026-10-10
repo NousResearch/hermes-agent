@@ -8,6 +8,7 @@ import base64
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import uuid
@@ -57,11 +58,18 @@ def _needs_chromium_sandbox_bypass() -> bool:
 
 
 def _apply_chromium_sandbox_args(browser_env: dict[str, str]) -> None:
-    """Add required Chromium sandbox flags without overriding user settings."""
-    if ("AGENT_BROWSER_ARGS" not in browser_env and "AGENT_BROWSER_CHROME_FLAGS" not in browser_env
-            and _needs_chromium_sandbox_bypass()):
-        _bt.logger.debug("browser: sandbox bypass needed (root/docker/AppArmor userns) — injecting --no-sandbox")
-        browser_env["AGENT_BROWSER_ARGS"] = ",".join(CHROMIUM_SANDBOX_BYPASS_ARGS)
+    """Append host-required Chromium sandbox flags, keeping any user launch flags."""
+    if not _needs_chromium_sandbox_bypass():
+        return
+    # Only AGENT_BROWSER_ARGS reaches Chromium: agent-browser has no AGENT_BROWSER_CHROME_FLAGS
+    # input, so a flag set only there was never delivered and must not suppress the bypass.
+    existing = browser_env.get("AGENT_BROWSER_ARGS", "")
+    present = set(filter(None, re.split(r"[\s,]+", existing)))
+    missing = [flag for flag in CHROMIUM_SANDBOX_BYPASS_ARGS if flag not in present]
+    if not missing:
+        return
+    _bt.logger.debug("browser: sandbox bypass needed (root/docker/AppArmor userns) — adding %s", ",".join(missing))
+    browser_env["AGENT_BROWSER_ARGS"] = ",".join(part for part in (existing, *missing) if part)
 
 
 def windows_headless_browser_options(browser_env: dict[str, str],

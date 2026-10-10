@@ -1506,6 +1506,12 @@ def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning
         supports_reasoning=agent._supports_reasoning_extra_body(),
         lmstudio_reasoning_options=agent._lmstudio_reasoning_options_cached() if _is_lmstudio else None,
         qwen_session_metadata=_qwen_meta)
+    if agent.provider == "moa":
+        # The request model is a virtual preset; replay sanitization must use
+        # the actual aggregator model that consumes the messages.
+        aggregator = getattr(getattr(agent, "client", None), "last_aggregator_slot", None)
+        if isinstance(aggregator, dict) and aggregator.get("model"):
+            _common["message_target_model"] = aggregator["model"]
     if _profile:
         # Profiles handle per-provider quirks via hooks fed the context above.
         return transport.build_kwargs(provider_profile=_profile, **_common)

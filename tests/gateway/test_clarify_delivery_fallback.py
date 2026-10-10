@@ -66,8 +66,17 @@ def loop():
     thread = threading.Thread(target=loop.run_forever, daemon=True)
     thread.start()
     yield loop
+
+    async def finish_pending():
+        current = asyncio.current_task()
+        pending = [task for task in asyncio.all_tasks() if task is not current]
+        if pending:
+            await asyncio.gather(*pending)
+
+    asyncio.run_coroutine_threadsafe(finish_pending(), loop).result(timeout=5)
     loop.call_soon_threadsafe(loop.stop)
     thread.join(timeout=5)
+    loop.close()
 
 
 def _runner(adapter, loop, monkeypatch, timeout=5):

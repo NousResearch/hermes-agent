@@ -58,6 +58,20 @@ function requestAssetOnActiveSource<T>(bot: RosterRow, method: string, params: R
   return host.request<T>(method, { ...params, name: route ? route.targetProfile || route.profile : bot.name })
 }
 
+/** Attribute-compare instead of interpolating the bot name into a selector:
+ *  a hostile name (quotes, or control chars JSON.stringify spells as `\n`
+ *  that CSS re-reads as a literal "n") must not steer the lookup (#131562).
+ *  Exported for the regression test only. */
+export function findFaceSvg(name: string): Element | null {
+  for (const el of document.querySelectorAll('svg[data-bot-face]')) {
+    if (el.getAttribute('data-bot-face') === name) {
+      return el
+    }
+  }
+
+  return null
+}
+
 /** Backfill: local meta has art the server lacks -> profiles.set_asset.
  *  Server-side avatars power the inter-agent notice pfp (core #85855) and
  *  cross-machine roster art, so local-only images are a bug, not a state. */
@@ -94,7 +108,7 @@ function pushLocalAvatars(roster: RosterRow[]) {
     // Vector shape/color face: no image exists anywhere — rasterize the
     // live SVG (tagged data-bot-face) to a PNG and push that, so the
     // inter-agent notices (core #85855/#85888) can show the real pfp.
-    const svg = document.querySelector('svg[data-bot-face=' + JSON.stringify(bot.name) + ']')
+    const svg = findFaceSvg(bot.name)
 
     if (!svg) {
       continue

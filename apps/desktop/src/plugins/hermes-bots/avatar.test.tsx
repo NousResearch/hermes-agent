@@ -144,6 +144,23 @@ describe('rendering a blob face', () => {
 
     expect(container.querySelector('svg[data-hb-math]')).toBeTruthy()
   })
+
+  it('cannot break out of data-bot-face with a hostile bot name (#131562)', async () => {
+    // The blob markup is injected via dangerouslySetInnerHTML; JSON.stringify
+    // quotes do not escape in HTML parsing, so `x" onmouseover="…` used to
+    // close the attribute early and attach live handlers (stored XSS — bot
+    // names propagate across connections via the gateway roster).
+    const { BotFace } = await import('./avatar')
+    const hostile = 'x" onmouseover="alert(1)"><img src=x onerror=alert(2)'
+    const { container } = render(<BotFace color="#38bdf8" name={hostile} shape="blobatar" size={32} />)
+
+    const svg = container.querySelector('svg')
+
+    expect(svg?.getAttribute('data-bot-face')).toBe(hostile)
+    expect(svg?.hasAttribute('onmouseover')).toBe(false)
+    // The breakout payload must not smuggle in foreign elements either.
+    expect(container.querySelector('img')).toBeNull()
+  })
 })
 
 // Last: re-mocking the SDK re-links the whole avatar graph, so anything after

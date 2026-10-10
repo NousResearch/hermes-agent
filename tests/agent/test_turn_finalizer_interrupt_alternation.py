@@ -10,10 +10,13 @@ user's message before transitioning into the assistant persona.
 ``finalize_turn`` closes the tool-call sequence on interrupt by appending a
 synthetic ``assistant`` message before persistence. ``final_response`` is
 typically empty on an interrupt, so the placeholder text is used rather than
-an empty-content assistant turn.
+an empty-content assistant turn. The synthetic row is hidden from the user
+(``content=""`` + ``display_kind="hidden"``); the placeholder lives in the
+``api_content`` sidecar, substituted at API-build time for the LLM.
 """
 
 
+from agent.agent_runtime_helpers_placeholders import _INTERRUPTED_PLACEHOLDER
 from agent.turn_finalizer import finalize_turn
 
 
@@ -153,9 +156,11 @@ def test_interrupt_after_tool_closes_sequence_with_placeholder():
 
     # Tail must now be an assistant message, not a raw tool result.
     assert messages[-1]["role"] == "assistant"
-    # Empty final_response falls back to the explicit placeholder rather
-    # than persisting an empty-content assistant turn.
-    assert messages[-1]["content"].strip()
+    # Hidden from user: content intentionally empty, display_kind marks it
+    # hidden; placeholder lives in api_content (LLM sees it via sidecar).
+    assert messages[-1]["content"] == ""
+    assert messages[-1]["display_kind"] == "hidden"
+    assert messages[-1]["api_content"] == _INTERRUPTED_PLACEHOLDER
 
     # The persisted snapshot is alternation-safe: appending a new user
     # message would follow an assistant, not an orphan tool.

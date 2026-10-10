@@ -15,7 +15,7 @@ from utils import env_var_enabled, is_truthy_value
 logger = logging.getLogger("tools.approval")
 
 
-def _ctx(name: str, default: "str | None" = "") -> contextvars.ContextVar:
+def _ctx(name: str, default: str | None = "") -> contextvars.ContextVar:
     return contextvars.ContextVar(name, default=default)
 
 
@@ -144,6 +144,15 @@ def _is_unattended_platform_approval_context() -> bool:
     in #37284/#87509.
     """
     return _get_session_platform() in _UNATTENDED_APPROVAL_PLATFORMS
+
+
+# Platforms where a *registered* gateway notify callback still does not mean a human can answer:
+# the generic TurnRunner lane registers one for every inbound turn
+# (``_run_conversation_with_approval`` registers unconditionally, no platform branch), while the
+# adapter renders no ``send_exec_approval``/``/approve`` surface and the inbound lane is a
+# fire-and-forget ``POST -> 202`` with no reader. Notifier presence is only a meaningful
+# "someone can answer" discriminator on api_server, whose turn paths choose whether to register one.
+_NOTIFIER_BLIND_APPROVAL_PLATFORMS = frozenset({"webhook", "msgraph_webhook"})
 
 
 def _is_single_query_approval_context() -> bool:
@@ -311,18 +320,6 @@ def _get_unattended_approval_mode() -> str:
     deny — an unattended session never silently runs a flagged action unless the
     operator explicitly trusts it."""
     return _binary_approval_mode("unattended_mode")
-
-
-def _tirith_fail_open() -> bool:
-    """``security.tirith_fail_open`` (default True; True when config is unreadable).
-    False means the operator opted into fail-closed: an un-importable scanner
-    must not silently grant access."""
-    try:
-        from hermes_cli.config import load_config_readonly
-        _sec = (load_config_readonly() or {}).get("security", {}) or {}
-        return bool(_sec.get("tirith_fail_open", True)) if _sec.get("tirith_enabled", True) else True
-    except Exception:
-        return True
 
 
 def _get_approval_transport_config() -> tuple[str, str | None]:

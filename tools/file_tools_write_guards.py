@@ -24,7 +24,8 @@ from tools.binary_extensions import (
 )
 from tools.file_tools_paths import (
     _expand_tilde, _resolve_path_for_task, _ssh_path_escapes_home, _terminal_env_type_for_task)
-from tools.file_tools_read_tracking import _has_full_write_baseline, _read_mtime_drifted
+from tools.file_tools_read_tracking import _has_full_write_baseline, _is_own_blind_patch, _read_mtime_drifted
+import itertools
 
 # Prefixes matched after realpath. macOS: /private/var mirrors /var — block the
 # sensitive subtrees only; a blanket "/private/var/" refuses every temp-file
@@ -557,9 +558,10 @@ def _stale_overwrite_blocker(filepath: str, resolved: str | None, task_id: str) 
     Refuses BEFORE any disk mutation (the pre-#65604 warning arrived after the
     clobber): a sibling/external/partial-read staleness finding, or an existing
     file with no full-content baseline for this task (never read in full, read
-    redacted, only patched). Net-new files, files this task fully read (in one
-    page or by paging contiguously to the last line) or wrote, unresolvable
-    paths and the file-state kill switch all let the write proceed.
+    redacted, only patched without one). Net-new files, files this task fully read
+    (in one page or by paging contiguously to the last line), wrote, or patched
+    from such a baseline, unresolvable paths and the file-state kill switch all
+    let the write proceed.
     """
     if file_state.guard_disabled():
         return None
@@ -578,9 +580,13 @@ def _stale_overwrite_blocker(filepath: str, resolved: str | None, task_id: str) 
         return None
     if not exists:
         return None
+    if _is_own_blind_patch(resolved, task_id):
+        return (
+            "Your patch changed this file without a full view of its current content. Read the current file "
+            "in full before a whole-file overwrite, or continue with targeted patches.")
     return (
         f"{resolved} exists but this task has not seen its full current content "
-        "(never read, only patched, or only a redacted/partial view). Read the "
+        "(never read, patched without a prior full read, or only a redacted/partial view). Read the "
         "file — every page of it, if it needs offset/limit — or use patch for a "
         "targeted edit; a stale conversation copy must not overwrite the current "
         "disk content.")
@@ -629,7 +635,7 @@ def _looks_like_read_file_line_numbered_content(content: str) -> bool:
             numbered.append(int(prefix))
     if len(numbered) < 2 or len(numbered) / len(lines) < 0.6:
         return False
-    consecutive_pairs = sum(1 for prev, current in zip(numbered, numbered[1:]) if current == prev + 1)
+    consecutive_pairs = sum(1 for prev, current in itertools.pairwise(numbered) if current == prev + 1)
     return consecutive_pairs >= len(numbered) - 1
 
 

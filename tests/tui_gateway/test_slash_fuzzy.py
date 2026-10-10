@@ -187,7 +187,7 @@ def test_repo_file_cache_sweeps_expired_roots_on_write(tmp_path, monkeypatch):
     used to be checked only on read, pinning every worktree listing for the process lifetime."""
     import time
 
-    import tui_gateway.server as server
+    from tui_gateway import server
 
     now = [1000.0]
     monkeypatch.setattr(time, "monotonic", lambda: now[0])

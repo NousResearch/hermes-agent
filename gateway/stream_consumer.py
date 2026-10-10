@@ -150,7 +150,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         # Wall-clock timestamp (time.monotonic) when ``_message_id`` was first assigned from a successful
         # first-send. Used by the fresh-final logic to detect long-lived previews whose edit timestamps
         # would be stale by completion time. Ported from openclaw/openclaw#72038.
-        self._preview_message_ids: "set[str]" = set()
+        self._preview_message_ids: set[str] = set()
         self._already_sent = False
         self._edit_supported = True  # False once progressive edits stop working
         self._last_edit_time = 0.0
@@ -200,7 +200,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         self._fallback_prefix = ""
         # Fallback sends only the missing tail after a partial overflow delivery.
         self._fallback_preserve_partial_messages = False
-        self._segment_preview_message_ids: "set[str]" = set()
+        self._segment_preview_message_ids: set[str] = set()
         # Tool-progress overlay (native only): shown in the bubble until text arrives.
         self._tool_progress_lines: list[str] = []
         self._tool_progress_active: bool = False
@@ -618,7 +618,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
 
     # ── run() collaborators ─────────────────────────────────────────────
 
-    def _resolve_length_budget(self) -> "tuple[Callable[[str], int], int]":
+    def _resolve_length_budget(self) -> tuple[Callable[[str], int], int]:
         """Per-chat length function (relay adapters differ per chat, e.g. utf16) + budget.
         isinstance gate: MagicMock auto-attributes aren't callables; test doubles use len."""
         # Shares the guarded ladder with the fallback path: a git pull while the gateway
@@ -650,7 +650,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             logger.debug("Stream consumer using native-draft transport (chat=%s draft_id=%s)",
                          self.chat_id, self._draft_id)
 
-    def _drain_queue(self) -> "_Tick":
+    def _drain_queue(self) -> _Tick:
         """Drain everything queued so far into one tick.  Control sentinels stop the drain
         (they take effect this tick); _FINAL_TEXT / _TOOL_PROGRESS / text deltas fold into
         state so simultaneous items batch."""
@@ -726,7 +726,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             # Degrade to a single buffered send(), like the approval path.
             self._degrade_native_to_buffered_send()
 
-    def _should_edit(self, tick: "_Tick") -> bool:
+    def _should_edit(self, tick: _Tick) -> bool:
         """Decide whether this tick flushes an edit/frame."""
         if not tick.is_interim:
             return True
@@ -749,7 +749,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         return should_edit and not _is_partial_silence_marker(
             self._clean_for_display(self._accumulated))
 
-    async def _split_first_send(self, tick: "_Tick") -> bool:
+    async def _split_first_send(self, tick: _Tick) -> bool:
         """No message to edit yet and the buffer overflows: seal only the head chunks; the
         tail stays in _accumulated as the active preview later deltas edit in place.
         True when the turn finished here (the run loop returns)."""
@@ -771,7 +771,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             # preview later deltas extend, so a kept indicator ends up embedded mid-reply.
             tail = chunks[-1]
             indicator = f" ({len(chunks)}/{len(chunks)})"
-            self._accumulated = tail[: -len(indicator)] if tail.endswith(indicator) else tail
+            self._accumulated = tail.removesuffix(indicator)
             # Flag BEFORE the tail send: fresh-final replaces every tracked preview
             # with one message, which is only valid while the active message holds
             # the whole answer — deleting sealed heads drops delivered text.
@@ -821,7 +821,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             self._last_sent_text = ""
             self._turn_split_delivery = True
 
-    async def _push_update(self, tick: "_Tick") -> None:
+    async def _push_update(self, tick: _Tick) -> None:
         """Send/edit this tick's visible text (cursor-suffixed unless finalizing)."""
         display_text = self._accumulated
         if tick.is_interim:
@@ -846,7 +846,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         # Lines stay in _tool_progress_lines for the next compose.
         self._tool_progress_active = False
 
-    async def _finalize_turn(self, tick: "_Tick") -> None:
+    async def _finalize_turn(self, tick: _Tick) -> None:
         """got_done: final edit without cursor, or one continuation send if edits failed."""
         if self._accumulated or self._message_id is not None or self._already_sent:
             await self._notify_before_finalize()
@@ -872,7 +872,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         elif self._accumulated:
             await self._finalize_edit_path(tick)
 
-    async def _finalize_edit_path(self, tick: "_Tick") -> None:
+    async def _finalize_edit_path(self, tick: _Tick) -> None:
         """Edit-transport finalize (the non-native got_done branches, in priority order)."""
         if self._fallback_final_send:
             await self._send_fallback_final(self._accumulated)
@@ -919,7 +919,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         if not cumulative:
             self._reset_segment_state()
 
-    async def _end_segment(self, tick: "_Tick") -> None:
+    async def _end_segment(self, tick: _Tick) -> None:
         """Tool boundary: edit-based transports reset so the next chunk is a fresh message.
         Cumulative transports must NOT reset — clearing _accumulated makes the next frame a
         non-prefix snapshot and the connector re-appends the whole answer.  preserve_no_edit:

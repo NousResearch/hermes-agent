@@ -46,7 +46,7 @@ PUBLIC_INDEXES = ("pypi.org", "files.pythonhosted.org", "registry.npmjs.org")
 class Result:
     cp: subprocess.CompletedProcess
     secs: float
-    edge: "Edge | None"
+    edge: Edge | None
 
     @property
     def rc(self) -> int:
@@ -56,7 +56,7 @@ class Result:
     def out(self) -> str:
         return (self.cp.stdout or "") + (self.cp.stderr or "")
 
-    def report(self, inst: "Installed", *extra: str) -> str:
+    def report(self, inst: Installed, *extra: str) -> str:
         parts = [f"exit={self.rc} after {self.secs:.1f}s", I.describe(self.cp)]
         if self.edge is not None:
             parts.append("--- network edge log ---\n" + self.edge.transcript())
@@ -70,7 +70,7 @@ class Result:
 class Edge:
     """The namespace's only egress: a TLS-inspecting proxy plus optional plain-HTTP mirrors."""
 
-    inst: "Installed"
+    inst: Installed
     proxy: N.EdgeProxy
     sites: list[N.HttpSite] = field(default_factory=list)
     use_auth: bool = False
@@ -246,26 +246,20 @@ def _identity(name: str, token: str) -> dict:
             "windowsExecutableName": pascal, "msixAppIdWithOrg": f"NousResearch.{pascal}"}
 
 
-def stable_objects(commit: str, *, version: str = "2099.1.1", build_id: str = "c" * 32,
-                   repository: str = REPOSITORY) -> dict[str, bytes]:
-    """A published stable release pinned at ``commit``: the channel record and its build manifest."""
-    identity = _identity("stable", "5" * 16)
-    prefix = f"releases/channel-builds/{build_id}/"
-    request = {"schema": 1, "buildId": build_id, "channel": "stable", "sequence": 1,
-               "repository": repository, "commit": commit, "sourceVersion": version, "version": version,
-               "windowsVersion": version + ".0", "releaseTag": "v" + version, "identity": identity,
-               "bundleEnv": {}, "publicBase": f"https://{ASSETS}"}
-    manifest = {"schema": 1, "receiverProtocol": 1, "request": request, "packages": [
-        {"platform": "darwin", "arch": "arm64", "variant": "bundled", "identity": identity["appId"],
-         "version": version, "teamId": "ABCDEFGHIJ",
-         "artifact": {"key": prefix + "Hermes.dmg", "sha256": "d" * 64, "size": 100},
-         "feed": {"key": prefix + "stable-mac.yml", "channel": "stable"}}]}
-    body = canonical(manifest)
-    record = {"schema": 1, "name": "stable", "repository": repository, "policy": "stable-release",
-              "state": "active", "revision": 1, "nextSequence": 2, "identity": identity,
-              "head": {"buildId": build_id, "sequence": 1, "manifestKey": prefix + "build.json",
-                       "sha256": hashlib.sha256(body).hexdigest()}}
-    return {"/releases/channels/stable.json": canonical(record), f"/{prefix}build.json": body}
+GITHUB_API = "api.github.com"
+
+
+def stable_release(inst: Installed, commit: str, *, tag: str = "v99.1.1", draft: bool = False,
+                   prerelease: bool = False, api_commit: str | None = None) -> dict[str, bytes]:
+    """A published GitHub release ``tag`` at ``commit``: the tag on origin plus the API objects.
+
+    ``api_commit`` makes GitHub report a different commit than the tag on origin points at.
+    """
+    I.git("tag", "-f", tag, commit, cwd=inst.origin)
+    release = {"tag_name": tag, "draft": draft, "prerelease": prerelease}
+    base = f"/repos/{REPOSITORY}"
+    return {f"{base}/releases/latest": canonical(release), f"{base}/releases/tags/{tag}": canonical(release),
+            f"{base}/commits/{tag}": canonical({"sha": api_commit or commit})}
 
 
 # ---------------------------------------------------------------------------
@@ -279,7 +273,7 @@ def prefetch(url: str, sha256: str, dest: Path) -> Path:
     dest.parent.mkdir(parents=True, exist_ok=True)
     if dest.is_file() and hashlib.sha256(dest.read_bytes()).hexdigest() == sha256:
         return dest
-    with urllib.request.urlopen(url, timeout=120) as resp:  # noqa: S310 - pinned URL + digest
+    with urllib.request.urlopen(url, timeout=120) as resp:
         data = resp.read()
     got = hashlib.sha256(data).hexdigest()
     assert got == sha256, f"prefetched {url} has sha256 {got}, pinned {sha256}"

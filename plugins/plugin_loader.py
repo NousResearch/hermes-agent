@@ -69,7 +69,7 @@ def _module_load_lock(module_name: str) -> threading.RLock:
         return _MODULE_LOAD_LOCKS.setdefault(module_name, threading.RLock())
 
 
-def register_synthetic_package(name: str, search_locations: List[str]) -> None:
+def register_synthetic_package(name: str, search_locations: list[str]) -> None:
     """Register an empty package shell so ``<name>.<child>`` relative imports resolve."""
     if name in sys.modules:
         return
@@ -88,11 +88,11 @@ def user_plugins_dir() -> Optional[Path]:
         return None
 
 
-def iter_plugin_dirs(root: Path) -> List[Path]:
+def iter_plugin_dirs(root: Path) -> list[Path]:
     """Sorted child dirs of *root* that have an ``__init__.py`` (skips ``_``/``.`` names)."""
     if not root.is_dir():
         return []
-    dirs: List[Path] = []
+    dirs: list[Path] = []
     for child in sorted(root.iterdir()):
         if child.name.startswith(("_", ".")):
             continue
@@ -116,7 +116,7 @@ def read_plugin_description(plugin_dir: Path) -> str:
         return ""
 
 
-def _new_module(name: str, file: Path, search_locations: Optional[List[str]] = None) -> Optional[Any]:
+def _new_module(name: str, file: Path, search_locations: Optional[list[str]] = None) -> Optional[Any]:
     """spec -> module -> sys.modules[name] (NOT executed); None if no spec."""
     spec = importlib.util.spec_from_file_location(
         name, str(file), submodule_search_locations=search_locations)
@@ -141,7 +141,7 @@ def _exec(mod: Any, logger: Optional[logging.Logger] = None) -> bool:
         return False
 
 
-def load_plugin_module(module_name: str, plugin_dir: Path, *, parents: Tuple[str, ...],
+def load_plugin_module(module_name: str, plugin_dir: Path, *, parents: tuple[str, ...],
                        logger: logging.Logger, synthetic_namespace: Optional[str] = None) -> Optional[Any]:
     """Import ``plugin_dir/__init__.py`` as *module_name* (reusing sys.modules when loaded).
     Order matters: parents first (relative imports need them), then siblings as ``module_name.<stem>``
@@ -190,7 +190,7 @@ def load_plugin_module(module_name: str, plugin_dir: Path, *, parents: Tuple[str
 
 
 def _load_plugin_module_locked(module_name: str, plugin_dir: Path, init_file: Path,
-                               parents: Tuple[str, ...], logger: logging.Logger,
+                               parents: tuple[str, ...], logger: logging.Logger,
                                synthetic_namespace: Optional[str]) -> Optional[Any]:
     # A synthetic package shell has no __file__; only reuse modules loaded from disk.
     cached = sys.modules.get(module_name)

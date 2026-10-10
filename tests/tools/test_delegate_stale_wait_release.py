@@ -1,5 +1,9 @@
 """A child whose worker never returns after the heartbeat declares it stale must not hold
-the parent forever (#109749: sync delegation in a -Q one-shot kept the Bot Chat lease)."""
+the parent forever (#109749: sync delegation in a -Q one-shot kept the Bot Chat lease).
+
+Also pins the two heartbeat hinges that let a wedged child hide from the stale verdict
+entirely: a parent WITHOUT ``_touch_activity`` (the tick's touch-less early return) and a
+child whose ``get_activity_summary()`` raises every tick (the swallowed summary read)."""
 
 from __future__ import annotations
 
@@ -86,3 +90,67 @@ def test_stale_verdict_under_a_configured_cap_reports_the_stale_threshold_not_th
     assert entry["status"] == "timeout", entry
     assert "stopped making progress" in entry["error"] and "3600" not in entry["error"], entry["error"]
     assert entry["timeout_seconds"] == 2 * 0.01
+
+
+def test_touch_less_parent_still_reaches_the_stale_verdict(monkeypatch):
+    """W2: a parent lacking ``_touch_activity`` must not disarm the stale monitor.
+
+    The tick used to return before any staleness accounting when the parent exposed no
+    activity clock, so the stale verdict could never fire and the child held its run (and
+    registry entry) until the 30s safety valve released the worker."""
+    child = _WedgedAfterFinalAnswer()
+    parent = SimpleNamespace(
+        session_id="parent", _current_task_id=None, _active_children=[child],
+        _active_children_lock=threading.Lock(), _interrupt_requested=False,
+    )  # deliberately NO _touch_activity
+    monkeypatch.setattr(delegate_tool, "_HEARTBEAT_INTERVAL", 0.01)
+    monkeypatch.setattr(delegate_tool, "_HEARTBEAT_STALE_CYCLES_IDLE", 2)
+    monkeypatch.setattr(delegate_tool, "_get_child_timeout", lambda: None)
+    monkeypatch.setattr(delegate_tool, "_get_worktree_isolation", lambda: False)
+    valve = threading.Timer(30.0, child.release.set)
+    valve.daemon = True
+    valve.start()
+    try:
+        entry = delegate_tool._run_single_child(0, "review", child=child, parent_agent=parent)
+    finally:
+        valve.cancel()
+        child.release.set()
+
+    assert entry["status"] == "timeout", entry
+    assert "stopped making progress" in entry["error"], entry["error"]
+    assert child.interrupted.is_set()
+
+
+class _UnreadableSummaryChild(_WedgedAfterFinalAnswer):
+    """Every activity-summary read raises: the tick must still accrue staleness (fail closed)."""
+
+    def get_activity_summary(self):
+        raise RuntimeError("activity summary unavailable")
+
+
+def test_unreadable_activity_summary_reaches_the_stale_verdict(monkeypatch):
+    """W3: a child whose summary read raises every tick must not hide from the stale verdict.
+
+    The read used to be the first statement of the tick's ``try``; its failure was swallowed
+    by ``except Exception: pass`` before the stale counter was ever touched."""
+    child = _UnreadableSummaryChild()
+    parent = SimpleNamespace(
+        session_id="parent", _current_task_id=None, _active_children=[child],
+        _active_children_lock=threading.Lock(), _touch_activity=lambda _d: None, _interrupt_requested=False,
+    )
+    monkeypatch.setattr(delegate_tool, "_HEARTBEAT_INTERVAL", 0.01)
+    monkeypatch.setattr(delegate_tool, "_HEARTBEAT_STALE_CYCLES_IDLE", 2)
+    monkeypatch.setattr(delegate_tool, "_get_child_timeout", lambda: None)
+    monkeypatch.setattr(delegate_tool, "_get_worktree_isolation", lambda: False)
+    valve = threading.Timer(30.0, child.release.set)
+    valve.daemon = True
+    valve.start()
+    try:
+        entry = delegate_tool._run_single_child(0, "review", child=child, parent_agent=parent)
+    finally:
+        valve.cancel()
+        child.release.set()
+
+    assert entry["status"] == "timeout", entry
+    assert "stopped making progress" in entry["error"], entry["error"]
+    assert child.interrupted.is_set()

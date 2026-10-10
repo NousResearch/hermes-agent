@@ -51,8 +51,13 @@ const PARENT_ATTACH_REQUIRED = new Set(['session.branch_stored', 'session.branch
 // Canonical-only identity keys. The legacy `hermes serve` contract refuses an unknown key as
 // version skew (4000), so they are stripped on a non-canonical dial. `prompt.submit` keeps its
 // `submission_id` on purpose: the submit path retries identityless on that exact refusal and
-// records the send as legacy-attempted, which a silent strip here would hide.
-const LEGACY_STRIP: Record<string, string[]> = { 'session.create': ['request_id'], 'session.branch_stored': ['request_id'] }
+// records the send as legacy-attempted, which a silent strip here would hide. A message-level
+// `session.branch` keeps its legacy `count` prefix; only the canonical row boundary is dropped.
+const LEGACY_STRIP: Record<string, string[]> = {
+  'session.create': ['request_id'],
+  'session.branch_stored': ['request_id'],
+  'session.branch': ['through_message_id']
+}
 
 function legacyParams(method: string, params: Record<string, unknown>): Record<string, unknown> {
   const strip = LEGACY_STRIP[method]

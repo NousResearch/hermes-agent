@@ -71,6 +71,39 @@ test('a legacy (non-canonical) dial strips canonical-only identity keys the serv
   }
 })
 
+test('a legacy dial branches from a message with the serve contract\'s count, never the canonical row boundary', async () => {
+  // N20: the legacy `session.branch` contract is closed (extra="forbid"); `through_message_id`
+  // answered 4000 "out of sync", which is not a missing method, so "Branch from here" failed.
+  const wsPackage = 'ws'
+  const { WebSocketServer } = await import(wsPackage)
+  const server = new WebSocketServer({ host: '127.0.0.1', port: 0 })
+  await new Promise<void>(resolve => server.once('listening', resolve))
+  const allowed = new Set(['session_id', 'name', 'count', 'idempotency_key'])
+  server.on('connection', (socket: any) => {
+    socket.on('message', (bytes: Buffer) => {
+      const frame = JSON.parse(bytes.toString())
+      const unknown = Object.keys(frame.params).filter(key => !allowed.has(key))
+
+      socket.send(JSON.stringify(unknown.length
+        ? { jsonrpc: '2.0', id: frame.id, error: { code: 4000, message: `invalid params: ${unknown}` } }
+        : { jsonrpc: '2.0', id: frame.id, result: { session_id: 'child', kept: frame.params.count } }))
+    })
+  })
+  const client = new HermesGateway()
+
+  try {
+    const address = server.address() as { port: number }
+    await client.connect(`ws://127.0.0.1:${address.port}/api/ws?ticket=legacy`)
+    await expect(client.request('session.branch', { session_id: 'parent', idempotency_key: 'k', count: 3, through_message_id: 41 }))
+      .resolves.toMatchObject({ session_id: 'child', kept: 3 })
+  } finally {
+    client.close()
+
+    for (const socket of server.clients) { socket.terminate() }
+    await new Promise<void>(resolve => server.close(() => resolve()))
+  }
+})
+
 test('a compress settle resumes under the caller\'s original timeout and abort signal', async () => {
   // R4: the follow-up `session.resume` must not fall back to the default 120 s deadline
   // and ignore the caller's AbortSignal (a cancelled compress would otherwise hang).

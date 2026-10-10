@@ -1416,6 +1416,30 @@ def load_jobs() -> list[dict[str, Any]]:
         # grant extra runs; normalize it once here so readers can trust a non-negative int.
         # OverflowError: json.loads turns Infinity / 1e999 into float inf, and int(inf) raises.
         rep = job.get("repeat")
+        # A hand-edited "repeat" that is not a dict (null, "banana", 3) would crash every
+        # .get() reader (_advance_after_run, claim_dispatch) with AttributeError/TypeError,
+        # freezing the whole store; normalize it to the empty dict (= infinite repeat), the
+        # same fail-safe shape update_job builds for a missing repeat.
+        if rep is not None and not isinstance(rep, dict):
+            job["repeat"] = {}
+            rep = job["repeat"]
+            repair = repair or "non-object repeat field normalized"
+        if rep is not None and "times" in rep and rep["times"] is not None and (
+                type(rep["times"]) is not int or rep["times"] < 0):
+            # A hand-edited "times" that is not a non-negative int ("3" crashes `times > 0`
+            # with TypeError, Infinity raises in int(), -5 disables the limit) would kill
+            # mark_job_run and every counter reader; None = infinite is the canonical
+            # unreadable-value fallback already used for repeat everywhere else.
+            # None itself is the CREATE form (`repeat: {"times": None, "completed": 0}` for
+            # every recurring job), so it must pass through untouched — flagging it would
+            # set `repair` on every load and rewrite jobs.json on every tick.
+            try:
+                rep["times"] = int(rep["times"])
+                if rep["times"] < 0:
+                    rep["times"] = None
+            except (TypeError, ValueError, OverflowError):
+                rep["times"] = None
+            repair = repair or "invalid repeat.times normalized"
         if isinstance(rep, dict) and "completed" in rep and (
                 type(rep["completed"]) is not int or rep["completed"] < 0):
             try:

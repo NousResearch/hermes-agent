@@ -144,6 +144,24 @@ def test_dotted_model_name_provider_allowlist_host_anchored():
     assert probe._anthropic_preserve_dots() is False
 
 
+def test_custom_anthropic_compatible_endpoint_preserves_dotted_models():
+    from run_agent import AIAgent
+
+    probe = object.__new__(AIAgent)
+    probe.provider = "custom:proxy"
+    probe.base_url = "https://anthropic-compatible.proxy.example/v1"
+    assert probe._anthropic_preserve_dots() is True
+
+
+def test_custom_provider_at_native_anthropic_keeps_dot_conversion():
+    from run_agent import AIAgent
+
+    probe = object.__new__(AIAgent)
+    probe.provider = "custom"
+    probe.base_url = "https://api.anthropic.com/v1"
+    assert probe._anthropic_preserve_dots() is False
+
+
 def test_figma_remote_mcp_host_anchored():
     from tools.mcp_oauth import _is_figma_remote_mcp
 

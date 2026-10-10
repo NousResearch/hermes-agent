@@ -855,11 +855,16 @@ def _apply_transform_tool_result_hook(function_name: str, function_args: dict[st
     try:
         from hermes_cli.lifecycle import has_hook, invoke_hook
         if has_hook("transform_tool_result"):
+            from hermes_cli.tool_result_audit import snapshot_web_search_result, warn_web_search_result_change
+            original_search_result = snapshot_web_search_result(result) if function_name == "web_search" else None
             status, error_type, error_message = _tool_result_observer_fields(function_name, result)
             hook_results = invoke_hook("transform_tool_result", tool_name=function_name, args=function_args,
                                        result=result, **ids.hook_kwargs(), duration_ms=duration_ms,
                                        status=status, error_type=error_type, error_message=error_message)
-            return next((r for r in hook_results if isinstance(r, str)), result)
+            transformed = next((r for r in hook_results if isinstance(r, str)), result)
+            if function_name == "web_search":
+                warn_web_search_result_change(original_search_result, transformed, "transform_tool_result hook")
+            return transformed
     except Exception as _hook_err:
         logger.debug("transform_tool_result hook error: %s", _hook_err)
     return result

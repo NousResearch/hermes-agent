@@ -11,6 +11,8 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List
 
+from hermes_cli.tool_result_audit import snapshot_web_search_result, warn_web_search_result_change
+
 logger = logging.getLogger(__name__)
 
 OBSERVER_SCHEMA_VERSION = "hermes.observer.v1"
@@ -167,9 +169,16 @@ def _run_execution_chain(kind: str, terminal_call: Callable[[Any], Any], **kwarg
     if not callbacks:
         return terminal_call(kwargs[payload_key])
 
+    audit_search = kind == TOOL_EXECUTION_MIDDLEWARE and kwargs.get("tool_name") == "web_search"
+    original_search_result = None
+
     def call_at(index: int, payload: Any) -> Any:
+        nonlocal original_search_result
         if index >= len(callbacks):
-            return terminal_call(payload)
+            result = terminal_call(payload)
+            if audit_search:
+                original_search_result = snapshot_web_search_result(result)
+            return result
 
         callback = callbacks[index]
         next_called = False
@@ -211,4 +220,7 @@ def _run_execution_chain(kind: str, terminal_call: Callable[[Any], Any], **kwarg
                 raise
             return call_at(index + 1, payload)
 
-    return call_at(0, kwargs[payload_key])
+    result = call_at(0, kwargs[payload_key])
+    if audit_search:
+        warn_web_search_result_change(original_search_result, result, "tool_execution middleware")
+    return result

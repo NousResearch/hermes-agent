@@ -1442,6 +1442,7 @@ The canonical list of kinds is `VALID_MIDDLEWARE` in `hermes_cli/middleware.py`:
 - `next_call` in execution middleware is **single-use**. Calling it twice raises, because it would re-run the provider or tool.
 - A middleware callback that raises is logged and skipped; the chain continues. A downstream failure raised after your `next_call` propagates as itself. Middleware can never break the base runtime path.
 - Middleware payloads carry `middleware_schema_version` (`hermes.middleware.v1`) alongside the observer telemetry fields.
+- `tool_execution` middleware that changes a successful `web_search` result, or returns `success: true` without a successful downstream result, emits a content-free operator warning. The replacement remains accepted, including intentional redaction and successful short circuits; JSON formatting/key ordering alone does not warn.
 - Unknown kinds register with a warning instead of failing, so a plugin written against a newer Hermes still loads on an older one.
 
 ### Register CLI commands

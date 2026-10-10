@@ -715,6 +715,7 @@ gateway:
     drain_rejected: "⏳ Az átjáró {action}, és jelenleg nem fogad újabb kört."
     drain_rejected_new_work: "⏳ Az átjáró {action}, és jelenleg nem fogad új munkát."
     demoted_tail: " — az üzeneted sorba került, amíg ez befejeződik (a /stop paranccsal mindent megszakíthatsz)."
+    queue_full: "⚠️ A sor megtelt ({cap} üzenet) — ez az üzenet nem került sorba. Várj a futó feladatra, vagy használd a /stop parancsot."
     elapsed_min: "{minutes} perc telt el"
     running_tool: "fut: {tool}"
     ack_detail_wrap: " ({detail})"

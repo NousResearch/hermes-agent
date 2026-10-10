@@ -826,6 +826,7 @@ gateway:
     drain_rejected: "⏳ Le gateway est {action} et n'accepte pas d'autre tour pour le moment."
     drain_rejected_new_work: "⏳ Le gateway est {action} et n'accepte pas de nouveau travail pour le moment."
     demoted_tail: " — votre message est mis en file jusqu'à ce qu'il termine (utilisez /stop pour tout annuler)."
+    queue_full: "⚠️ La file d'attente est pleine ({cap} messages) — ce message n'a pas été mis en file. Attends la tâche en cours ou utilise /stop."
     elapsed_min: "{minutes} min écoulées"
     running_tool: "en cours : {tool}"
     ack_detail_wrap: " ({detail})"

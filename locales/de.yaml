@@ -705,6 +705,7 @@ gateway:
     drain_rejected: "⏳ Gateway {action} und nimmt gerade keinen weiteren Zug an."
     drain_rejected_new_work: "⏳ Gateway {action} und nimmt gerade keine neue Arbeit an."
     demoted_tail: " — Ihre Nachricht ist eingereiht, bis der Vorgang abgeschlossen ist (mit /stop alles abbrechen)."
+    queue_full: "⚠️ Die Warteschlange ist voll ({cap} Nachrichten) — diese Nachricht wurde nicht eingereiht. Warte auf den laufenden Vorgang oder nutze /stop."
     elapsed_min: "{minutes} Min. vergangen"
     running_tool: "läuft: {tool}"
     ack_detail_wrap: " ({detail})"

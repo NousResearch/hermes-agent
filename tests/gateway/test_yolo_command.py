@@ -66,6 +66,7 @@ async def test_yolo_survives_gateway_restart_and_dies_at_session_boundary(tmp_pa
     conversation boundary (/new, /resume) clears both copies so a restart cannot revive it."""
     from gateway.config import GatewayConfig
     from gateway.session import SessionStore
+    from tools.approval_yolo import restore_session_yolo
 
     def _runner():
         runner = _make_runner()
@@ -81,11 +82,11 @@ async def test_yolo_survives_gateway_restart_and_dies_at_session_boundary(tmp_pa
 
     disable_session_yolo(key)  # a new process starts with an empty in-memory approval set
     second = _runner()
-    second._restore_session_yolo(key, second.session_store.get_or_create_session(event.source))
+    restore_session_yolo(key, second.session_store.get_or_create_session(event.source).yolo)
     assert is_session_yolo_enabled(key) is True
 
     second._clear_session_boundary_security_state(key)
     assert is_session_yolo_enabled(key) is False
     third = _runner()
-    third._restore_session_yolo(key, third.session_store.get_or_create_session(event.source))
+    restore_session_yolo(key, third.session_store.get_or_create_session(event.source).yolo)
     assert is_session_yolo_enabled(key) is False

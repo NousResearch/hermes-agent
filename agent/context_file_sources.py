@@ -34,7 +34,7 @@ _STATUS_DISPLAY = {
 }
 
 
-def _entry(label: str, path: Path, content: str, status: str) -> Dict[str, Any]:
+def _entry(label: str, path: Path, content: str, status: str) -> dict[str, Any]:
     return {
         "label": label, "path": str(path), "chars": len(content), "est_tokens": estimate_tokens_rough(content),
         "loaded": status in ("loaded", "truncated", "flagged"), "status": status,
@@ -59,8 +59,8 @@ def _loaded_status(content: str, rendered_len: int, max_chars: int, user_authore
 
 def list_context_file_sources(
     cwd: Optional[str] = None, context_length: Optional[int] = None, allow_install_tree_fallback: bool = False,
-    home_override: "Path | None" = None, skip_soul: bool = False,
-) -> List[Dict[str, Any]]:
+    home_override: Path | None = None, skip_soul: bool = False,
+) -> list[dict[str, Any]]:
     """One dict per context file Hermes considered, in the builder's priority order.
 
     Same signature semantics as ``build_context_files_prompt`` (``cwd=None`` → launch dir, install-tree guard
@@ -70,7 +70,7 @@ def list_context_file_sources(
     cwd_path = Path(cwd if cwd is not None else os.getcwd()).resolve()
     max_chars = _pb._get_context_file_max_chars(context_length)
     suppressed = _pb._project_context_suppressed(cwd, cwd_path, allow_install_tree_fallback)
-    sources: List[Dict[str, Any]] = []
+    sources: list[dict[str, Any]] = []
     winner: Optional[str] = None
     for kind, label, path, content in _pb.discover_context_files(cwd_path):
         if not content:
@@ -96,7 +96,7 @@ def list_context_file_sources(
     return sources
 
 
-def context_file_sources_for_agent(agent: Any) -> List[Dict[str, Any]]:
+def context_file_sources_for_agent(agent: Any) -> list[dict[str, Any]]:
     """The manifest for a live agent, resolved exactly like ``agent.system_prompt._context_files_part``
     (session cwd, install-tree policy per platform, the agent's own profile home)."""
     if getattr(agent, "skip_context_files", False):
@@ -112,7 +112,7 @@ def context_file_sources_for_agent(agent: Any) -> List[Dict[str, Any]]:
     )
 
 
-def render_context_file_lines(sources: List[Dict[str, Any]]) -> List[str]:
+def render_context_file_lines(sources: list[dict[str, Any]]) -> list[str]:
     """Plain-text ``Context files`` block for ``/context``; [] when nothing was found."""
     if not sources:
         return []
@@ -121,5 +121,5 @@ def render_context_file_lines(sources: List[Dict[str, Any]]) -> List[str]:
     for src in sources:
         glyph, note = _STATUS_DISPLAY.get(str(src.get("status") or ""), ("•", ""))
         suffix = f"  ({note})" if note else ""
-        lines.append(f"{glyph} {str(src.get('label') or ''):<{width}} ~{int(src.get('est_tokens') or 0):>9,} tokens{suffix}")
+        lines.append(f"{glyph} {src.get('label') or ''!s:<{width}} ~{int(src.get('est_tokens') or 0):>9,} tokens{suffix}")
     return lines

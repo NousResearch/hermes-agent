@@ -51,7 +51,7 @@ def _restore_agent_model_runtime(agent, snapshot: dict | None) -> None:
             agent.reasoning_config = snapshot["reasoning_config"]
 
 
-def _profile_runtime_scope_tokens(profile_home, *, hydrate_secrets: bool = True) -> "_TurnScopes":
+def _profile_runtime_scope_tokens(profile_home, *, hydrate_secrets: bool = True) -> _TurnScopes:
     """Bind HERMES_HOME + secret + terminal scope for ``profile_home`` (None = launch profile) and
     return the reset tokens. The launch profile's SECRET scope is always bound — its ``.env`` over
     the launch env (live while single-profile, frozen at activation afterwards; never live
@@ -109,7 +109,7 @@ def _profile_runtime_scope_tokens(profile_home, *, hydrate_secrets: bool = True)
         raise
 
 
-def _release_profile_runtime_scope_tokens(scopes: "_TurnScopes | None") -> None:
+def _release_profile_runtime_scope_tokens(scopes: _TurnScopes | None) -> None:
     """Release terminal → secret → home. Each reset is independent: a failing terminal reset must
     not leave the previous profile's secrets / HERMES_HOME installed for the next body in this
     context (a fail-open scope leak on the teardown path). The first failure is re-raised after
@@ -124,7 +124,7 @@ def _release_profile_runtime_scope_tokens(scopes: "_TurnScopes | None") -> None:
             continue
         try:
             reset(token)
-        except Exception as exc:  # noqa: BLE001 — keep releasing the remaining scopes
+        except Exception as exc:
             first_error = first_error or exc
     if first_error is not None:
         raise first_error

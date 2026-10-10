@@ -459,19 +459,15 @@ def _looks_like_corrupt_image_rejection(error_body: str) -> bool:
 
 
 __all__ = [
-    "_SURROGATE_RE", "close_interrupted_tool_sequence",
-    "_sanitize_surrogates", "_sanitize_structure_surrogates", "_sanitize_messages_surrogates",
-    "coerce_tool_name",
-    "_escape_invalid_chars_in_json_strings", "_repair_tool_call_arguments",
-    "_strip_non_ascii", "_sanitize_messages_non_ascii", "_sanitize_tools_non_ascii",
-    "_strip_images_from_messages", "_sanitize_structure_non_ascii", "sanitize_outbound_kwargs",
-    "strip_images_for_rejecting_model",
-    # call_id policy owners
-    "deterministic_call_id", "coalesce_tool_call_id", "tool_call_id_variants",
-    "tool_result_id_variants", "uniquify_tool_call_ids", "normalize_provider_tool_call_ids",
-    # reasoning_content policy owners
-    "reasoning_echo_family", "matches_reasoning_echo_family", "needs_reasoning_echo",
-    "stale_thinking_reaches_wire", "apply_reasoning_content_policy", "reapply_reasoning_echo",
+    "_SURROGATE_RE", "_escape_invalid_chars_in_json_strings", "_repair_tool_call_arguments",
+    "_sanitize_messages_non_ascii", "_sanitize_messages_surrogates", "_sanitize_structure_non_ascii",
+    "_sanitize_structure_surrogates", "_sanitize_surrogates", "_sanitize_tools_non_ascii",
+    "_strip_images_from_messages", "_strip_non_ascii", "apply_reasoning_content_policy",
+    "close_interrupted_tool_sequence", "coalesce_tool_call_id", "coerce_tool_name",
+    "deterministic_call_id", "matches_reasoning_echo_family", "needs_reasoning_echo",
+    "normalize_provider_tool_call_ids", "reapply_reasoning_echo", "reasoning_echo_family",
+    "sanitize_outbound_kwargs", "stale_thinking_reaches_wire", "strip_images_for_rejecting_model",
+    "tool_call_id_variants", "tool_result_id_variants", "uniquify_tool_call_ids",
 ]
 
 
@@ -669,7 +665,7 @@ def matches_reasoning_echo_family(family: str, provider: Any, model: Any, base_u
     )
 
 
-def reasoning_echo_family(provider: Any, model: Any, base_url: Any) -> "str | None":
+def reasoning_echo_family(provider: Any, model: Any, base_url: Any) -> str | None:
     """``"kimi"`` / ``"deepseek"`` / ``"mimo"`` (first match in table order) when the
     endpoint enforces reasoning_content echo-back, else ``None`` (strip side)."""
     families = (rule[0] for rule in _REASONING_ECHO_RULES)

@@ -119,7 +119,7 @@ async def test_slow_handoff_does_not_block_later_polls(monkeypatch):
     # it must finish once the stuck handoff is released.
     try:
         await asyncio.wait_for(task, timeout=5)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         task.cancel()
         raise AssertionError("watcher did not finish after the handoff was released")
 

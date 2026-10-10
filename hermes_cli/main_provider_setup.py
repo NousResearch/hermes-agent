@@ -639,17 +639,25 @@ def _prompt_reasoning_effort_selection(efforts, current_effort="", *, default_la
     return tail_values[idx - n]
 
 
-def _offer_reasoning_after_pick(model_before: str) -> None:
-    """Post-flow effort step for ``select_provider_and_model``: when a flow saved a different
-    ``model.default`` (every flow persists through ``_save_model_choice``), offer the effort for
-    the new model + provider. A flow that made no change (cancel, "No change.") never prompts."""
+def _model_choice_save_count() -> int:
+    """Snapshot taken by ``select_provider_and_model`` before a flow runs (see below)."""
+    from hermes_cli.auth_model_picker import model_choice_save_count
+    return model_choice_save_count()
+
+
+def _offer_reasoning_after_pick(model_before: str, saves_before: int) -> None:
+    """Post-flow effort step for ``select_provider_and_model``, like the chat ``/model`` picker:
+    every flow persists through ``_save_model_choice``, so whenever one saved a pick (or
+    ``model.default`` changed) offer the effort for the saved model + provider, including a
+    provider switch that keeps the same model ID or a re-pick of the current model. Cancel /
+    "No change." never prompts."""
     from hermes_cli.config import load_config
     model_cfg = load_config().get("model")
     if not isinstance(model_cfg, dict):
         return
     model = str(model_cfg.get("default") or "").strip()
-    if not model or model == model_before:
-        return  # same model re-picked or nothing saved: the "Reasoning effort" row covers that
+    if not model or (model == model_before and _model_choice_save_count() == saves_before):
+        return
     _prompt_main_reasoning_effort(model, str(model_cfg.get("provider") or ""))
 
 

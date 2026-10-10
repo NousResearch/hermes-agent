@@ -18,7 +18,7 @@ method = _registry.method
 
 _voice_sid_lock = threading.Lock()
 _voice_event_sid: str = ""
-_voice_wake_owner: "Optional[Transport]" = None
+_voice_wake_owner: Optional[Transport] = None
 
 
 def _caller_transport():
@@ -142,7 +142,7 @@ def _tts_stream_stop(user_barge: bool = True) -> None:
 
 _fd_listener_lock = threading.Lock()
 _fd_listener_active = False
-_fd_speak_pipelines: "set[tuple[threading.Event, threading.Event]]" = set()
+_fd_speak_pipelines: set[tuple[threading.Event, threading.Event]] = set()
 
 
 def _arm_full_duplex_listener() -> None:
@@ -311,7 +311,7 @@ def _voice_status_payload(**extra) -> dict:
 # wake.detected and the client opens a session + its own capture. The detector yields the mic
 # to voice.record (pause/resume) and to the desktop's browser mic (wake.pause/resume RPCs).
 _wake_lock = threading.Lock()
-_wake_owner_transport: "Optional[Transport]" = None
+_wake_owner_transport: Optional[Transport] = None
 _wake_owner_surface = ""
 
 
@@ -320,7 +320,7 @@ def _wake_owner_snapshot():
         return _wake_owner_transport, _wake_owner_surface
 
 
-def _release_wake_for_transport(transport: "Transport") -> bool:
+def _release_wake_for_transport(transport: Transport) -> bool:
     """Release the wake lease iff ``transport`` is the current gateway owner."""
     global _wake_owner_transport, _wake_owner_surface
     with _wake_lock:
@@ -344,7 +344,7 @@ _wake_resume_retry_lock = threading.Lock()
 _wake_resume_retry_active = False
 
 
-def _wake_resume_if_owner(owner: "Transport", *, retry_seconds: float = 15.0,
+def _wake_resume_if_owner(owner: Transport, *, retry_seconds: float = 15.0,
                           retry_interval: float = 1.0) -> bool:
     """Resume the wake detector for ``owner``, self-healing a busy microphone: reopening right after
     a voice turn can fail while the device is still being released (browser WebRTC tracks release
@@ -784,7 +784,7 @@ def _(rid, params: dict) -> dict:
     if not text:
         return _err(rid, 4020, "text required")
     try:
-        import hermes_cli.voice  # noqa: F401  (a missing module must answer 5026, not die in a thread)
+        import hermes_cli.voice
     except Exception as e:
         return _err(rid, 5026, "voice module not available" if isinstance(e, ImportError) else str(e))
     threading.Thread(target=_speak_text_with_barge, args=(text,), daemon=True).start()

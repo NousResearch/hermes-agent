@@ -20,7 +20,7 @@ _MAX_ENTRIES = 32
 _MAX_CHARS = 4 * 1024 * 1024
 
 _lock = threading.Lock()
-_prefixes: "OrderedDict[str, None]" = OrderedDict()
+_prefixes: OrderedDict[str, None] = OrderedDict()
 
 
 def register_stable_prefix(prefix: str) -> None:

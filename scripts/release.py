@@ -14,7 +14,7 @@ import shutil
 import subprocess
 import sys
 from collections import defaultdict
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from pathlib import Path
 
 # Bootstrap the repo root onto sys.path so this script can import the
@@ -22,11 +22,11 @@ from pathlib import Path
 # is import-light: only os/sys + version constants).
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from hermes_cli.update_channel import (  # noqa: E402
+from hermes_cli.update_channel import (
     _CANARY_TAG_RE, STABLE_TAG_RE, canary_tag_for_date, canary_timestamp,
     is_canary_tag,
 )
-from scripts.releases.authors import resolve_author  # noqa: E402
+from scripts.releases.authors import resolve_author
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -488,7 +488,7 @@ def cmd_canary(args) -> None:
     canary — the skip-if-no-new-commits gate lives HERE, not in workflow
     YAML.
     """
-    date_utc = args.date or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    date_utc = args.date or datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     push_remote = resolve_push_remote(args.remote)
     gh_repo = remote_github_repo(push_remote)
     if not gh_repo:
@@ -576,7 +576,7 @@ def prune_old_canaries(args) -> None:
     """
     push_remote = resolve_push_remote(args.remote)
     gh_repo = remote_github_repo(push_remote)
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=14)).strftime("%Y%m%d")
+    cutoff = (datetime.now(UTC) - timedelta(days=14)).strftime("%Y%m%d")
 
     tags = git("tag", "--list", "v*+canary.*", "--sort=-creatordate")
     doomed = []

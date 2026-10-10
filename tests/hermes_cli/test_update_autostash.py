@@ -7,7 +7,8 @@ from unittest.mock import patch
 import pytest
 
 from hermes_cli import main as hermes_main, update_cmd
-from tests.hermes_cli.test_update_target_identity import git, update_tree  # noqa: F401
+from tests.hermes_cli.test_update_target_identity import git, update_tree
+from datetime import UTC
 
 
 @pytest.mark.parametrize('history,failure,keep', [
@@ -88,7 +89,7 @@ def test_rescue_retention_uses_real_refs(tmp_path, monkeypatch, mode):
     git(tmp_path, 'init', '-q', '-b', 'main')
     git(tmp_path, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
         '-c', 'commit.gpgsign=false', 'commit', '--allow-empty', '-qm', 'base')
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     prefix = 'refs/hermes-update-backups/orphan-main-'
     if mode == 'count':
         refs = [prefix + (now - timedelta(hours=20-i)).strftime('%Y%m%d-%H%M%S') + '-abc'
@@ -373,7 +374,7 @@ def test_restore_stays_parked_when_untracked_baseline_is_unknown(
 ):
     """Unknown cleanup scope must not turn into a destructive empty baseline."""
     from hermes_cli import update_cmd
-    import hermes_cli.update_cmd_stash as update_cmd_stash
+    from hermes_cli import update_cmd_stash
 
     monkeypatch.setattr(update_cmd, "_git_untracked_paths", lambda *_args: None)
     monkeypatch.setattr(update_cmd_stash, "_git_untracked_paths", lambda *_args: None)
@@ -394,7 +395,7 @@ def test_reject_does_not_claim_cleanup_when_git_state_is_unknown(
 ):
     """Cleanup failures must not be reported as a restored clean tree."""
     from hermes_cli import update_cmd
-    import hermes_cli.update_cmd_stash as update_cmd_stash
+    from hermes_cli import update_cmd_stash
 
     monkeypatch.setattr(update_cmd, "_git_untracked_paths", lambda *_args: None)
     monkeypatch.setattr(update_cmd_stash, "_git_untracked_paths", lambda *_args: None)
@@ -690,7 +691,7 @@ def test_untracked_file_replaced_by_the_update_keeps_the_stash(tmp_path, local_s
 def test_untracked_file_the_update_does_not_track_is_never_reported_replaced(tmp_path, capsys):
     """#70127: an untracked file still in the tree after the stash (it could not be deleted) and
     changed since is not the update's file; HEAD does not track it, so the restore completes."""
-    git, stash_ref = _repo_with_stash(tmp_path, "X = 2\n")
+    _git, stash_ref = _repo_with_stash(tmp_path, "X = 2\n")
     # The occupant survived the stash and was edited during the update window.
     (tmp_path / "notes.md").write_text("edited while locked\n", encoding="utf-8")
 

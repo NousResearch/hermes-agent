@@ -5,7 +5,7 @@ import subprocess
 
 import pytest
 
-import hermes_cli.doctor as doctor
+from hermes_cli import doctor
 from hermes_cli.doctor_state import check_legacy_desktop_checkout
 
 

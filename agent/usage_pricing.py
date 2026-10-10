@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, fields, replace
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from decimal import Decimal
 from typing import Any, Dict, Literal, Optional
 
@@ -12,8 +12,8 @@ from utils import base_url_host_matches, base_url_hostname, base_url_origin
 
 logger = logging.getLogger(__name__)
 
-_ZERO = Decimal("0")
-_ONE_MILLION = Decimal("1000000")
+_ZERO = Decimal(0)
+_ONE_MILLION = Decimal(1000000)
 _NOUS_DEFAULT_BASE_URL = "https://inference-api.nousresearch.com/v1"
 # Pay-per-token first-party APIs whose models.dev rate card is the vendor's own
 # list price, keyed by billing-route provider -> API domain. A model missing from
@@ -80,7 +80,7 @@ class CanonicalUsage:
     def total_tokens(self) -> int:
         return self.prompt_tokens + self.output_tokens
 
-    def __add__(self, other: "CanonicalUsage") -> "CanonicalUsage":
+    def __add__(self, other: CanonicalUsage) -> CanonicalUsage:
         """Sum two usage buckets. ``raw_usage`` (single-response detail) is
         dropped; ``request_count`` adds so callers see how many API calls a
         combined figure covers."""
@@ -133,7 +133,7 @@ class CostResult:
     notes: tuple[str, ...] = ()
 
 
-_UTC_NOW = lambda: datetime.now(timezone.utc)
+_UTC_NOW = lambda: datetime.now(UTC)
 _INCLUDED_ENTRY = PricingEntry(
     input_cost_per_million=_ZERO, output_cost_per_million=_ZERO, cache_read_cost_per_million=_ZERO,
     cache_write_cost_per_million=_ZERO, source="none", pricing_version="included-route",
@@ -253,7 +253,7 @@ _SNAPSHOTS: tuple[tuple[str, Optional[str], str, dict], ...] = (
     }),
 )
 
-_OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {}
+_OFFICIAL_DOCS_PRICING: dict[tuple[str, str], PricingEntry] = {}
 for _provider, _url, _version, _rows in _SNAPSHOTS:
     for _models, _rates in _rows.items():
         _entry = _snap(*_rates, version=_version, url=_url)
@@ -299,7 +299,7 @@ del _slug, _inp, _out, _read, _write, _inp_above, _out_above, _read_above, _writ
 # OpenAI Ultrafast (``service_tier: "ultrafast"``): 6x Standard on every bucket, same 272K
 # whole-request tier. Selected by the tier the response reports it was SERVED at (a request asking
 # for Ultrafast can be served at ``default``, and is then billed at Standard).
-_OPENAI_ULTRAFAST_PRICING: Dict[str, PricingEntry] = {
+_OPENAI_ULTRAFAST_PRICING: dict[str, PricingEntry] = {
     "gpt-6-astra": _snap(
         "60.00", "300.00", "6.00", "75.00",
         url="https://developers.openai.com/api/docs/pricing?latest-pricing=ultrafast",
@@ -326,7 +326,7 @@ _OFFICIAL_DOCS_PRICING[("google", "gemini-2.5-pro")] = _snap(
 )
 # Anthropic fast mode (``speed: "fast"``): a premium on the whole context window, with the
 # prompt-caching multipliers applied on top. Selected per response by ``usage.speed``.
-_ANTHROPIC_FAST_MODE_PRICING: Dict[str, PricingEntry] = {
+_ANTHROPIC_FAST_MODE_PRICING: dict[str, PricingEntry] = {
     _model: _snap(*_rates, version="anthropic-fast-mode-2026-09", url=f"{_ANTHROPIC_URL}#fast-mode-pricing")
     for _models, _rates in (
         (("claude-opus-4-8", "claude-opus-5"), ("10.00", "50.00", "1.00", "12.50")),
@@ -342,9 +342,9 @@ del _BEDROCK_URL, _ANTHROPIC_URL, _GOOGLE_URL, _OPUS, _SONNET, _OPUS_5_5
 # The direct Gemini provider emits preview IDs for two models; key the snapshot
 # by both the documented stable name and the emitted ID.
 for _provider, _alias, _canonical in (
-    *((("openai", f"{m}-{suffix}", m)
+    *(("openai", f"{m}-{suffix}", m)
        for m in ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-sol", "gpt-6-luna", "gpt-6.1-sol")
-       for suffix in ("pro", "900k"))),
+       for suffix in ("pro", "900k")),
     ("google", "gemini-3.1-pro-preview", "gemini-3.1-pro"),
     ("google", "gemini-3.1-flash-lite-preview", "gemini-3.1-flash-lite"),
 ):
@@ -504,7 +504,7 @@ def _openrouter_pricing_entry(route: BillingRoute) -> Optional[PricingEntry]:
 
 
 def _pricing_entry_from_metadata(
-    metadata: Dict[str, Dict[str, Any]], model_id: str, *, source_url: str, pricing_version: str
+    metadata: dict[str, dict[str, Any]], model_id: str, *, source_url: str, pricing_version: str
 ) -> Optional[PricingEntry]:
     if model_id not in metadata:
         return None

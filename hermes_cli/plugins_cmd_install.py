@@ -60,7 +60,7 @@ class _ConsentRefusal(str):
     """A refusal reason (user-facing text) carrying its closed extension-install ``failure_class``,
     so publication classifies the refusal without matching the copy."""
 
-    def __new__(cls, text: str, failure_class: str) -> "_ConsentRefusal":
+    def __new__(cls, text: str, failure_class: str) -> _ConsentRefusal:
         refusal = super().__new__(cls, text)
         refusal.failure_class = failure_class
         return refusal
@@ -385,6 +385,15 @@ def _install_plugin_core(
         manifest = _read_manifest_for_install(tmp_target)
         plugin_name = manifest.get("name") or (
             subdir.rstrip("/").rsplit("/", 1)[-1] if subdir else _pc()._repo_name_from_url(git_url))
+        link = plugins_dir / str(plugin_name)
+        from pm.filesystem import is_junction
+        if "/" not in str(plugin_name) and (link.is_symlink() or is_junction(link)):
+            # A provider's own installer (e.g. `mnemosyne-hermes install`) links its package here; the
+            # name is fine, the slot is taken. Say so instead of blaming the manifest.
+            raise _pc().PluginOperationError(
+                f"Plugin '{plugin_name}' is already installed outside the catalog: {link} is a link to "
+                f"{os.path.realpath(link)}. Delete that link to install the catalog version.",
+                failure_class="already_installed")
         try:
             target = _pc()._sanitize_plugin_name(plugin_name, plugins_dir)
         except ValueError as e:
@@ -722,18 +731,14 @@ def _catalog_install_on_disk(catalog_name: str, ref: Optional[str]) -> Optional[
     Like ``hermes plugins enable``, the tree is used at the commit it has; an explicit *ref* only
     matches a tree checked out at that commit."""
     from hermes_cli.plugins_cmd_catalog import catalog_install_record
-    enabled = _pc()._get_enabled_set()
-    for key in _pc()._read_install_metadata():
-        target = _pc()._plugins_dir() / key
-        record = catalog_install_record(target) if target.is_dir() else None
-        if not record or record["catalog_name"] != catalog_name:
-            continue
-        if ref and str(record["sha"]).lower() != ref.lower():
-            return None
-        manifest = _pc()._read_manifest(target)
-        installed_name = manifest.get("name") or target.name
-        return None if {installed_name, target.name} & enabled else (target, manifest, installed_name)
-    return None
+    target = _pc()._catalog_installed_dir(catalog_name)
+    if target is None:
+        return None
+    if ref and str(catalog_install_record(target)["sha"]).lower() != ref.lower():
+        return None
+    manifest = _pc()._read_manifest(target)
+    installed_name = manifest.get("name") or target.name
+    return None if {installed_name, target.name} & _pc()._get_enabled_set() else (target, manifest, installed_name)
 
 
 def _resolve_source(identifier: str, catalog_name: Optional[str]) -> tuple:

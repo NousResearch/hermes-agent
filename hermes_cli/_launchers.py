@@ -647,14 +647,43 @@ def _launcher_python(target: Path) -> Path | None:
         return None
 
 
+def _same_interpreter_file(a: Path | None, b: Path | None) -> bool:
+    """True when two spellings name the same interpreter file.
+
+    Lexical equality first (#122513's compare), then directory+basename
+    resolved: a per-task home whose ``tools`` links back (#123798) spells the
+    store interpreter through the link, so the spellings differ while the
+    file on disk is the one already in front of the user. A full ``resolve()``
+    of both paths would do the same, but comparing the resolved parent plus
+    the basename keeps a venv interpreter a different interpreter from the
+    store tool it links to: it lives in another directory, so it must still
+    re-exec once.
+    """
+    if a is None or b is None:
+        return False
+    a, b = Path(a), Path(b)
+    if os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b)):
+        return True
+    if a.name != b.name:
+        return False
+    try:
+        return a.parent.resolve() == b.parent.resolve()
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
 def _kept_shared_launcher(name: str, local: Path, store: Path, own: Path | None) -> Path | None:
     """Existing checkout launcher already bound outside this root's store.
 
     Checkout launchers are shared by every HERMES_HOME; a launch under one
     data root must never repoint them at another root's interpreter (#123238):
     once that root is deleted, every hermes breaks. Keep the file when it
-    execs a live interpreter outside *store*. Missing launchers, dead
-    interpreters and same-store repins still publish. A launcher whose
+    execs a live interpreter outside *store*, or when it execs this root's
+    own interpreter file under another spelling — a per-task home whose
+    ``tools`` links back spells the same file through the link (#136094),
+    and repinning would rebind the shared launcher to a path that dies with
+    the task home. Missing launchers, dead interpreters and same-store
+    repins of a different interpreter still publish. A launcher whose
     interpreter is gone is never left in front of a kept one: PATHEXT resolves
     the ``.exe`` first, so the kept ``.cmd`` would not be the file that runs."""
     if own is None:
@@ -672,7 +701,7 @@ def _kept_shared_launcher(name: str, local: Path, store: Path, own: Path | None)
         if not present:
             continue
         python = _launcher_python(target)
-        if python is None or python == own:
+        if python is None or _same_interpreter_file(python, own):
             continue
         if not python.is_file():
             dead.append(target)

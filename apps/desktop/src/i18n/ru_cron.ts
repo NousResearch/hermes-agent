@@ -122,6 +122,7 @@ export const ruCron = {
     testDraftKeptDesc:
       'Нажмите Enter, чтобы выполнить промпт. Вернитесь в запланированные задачи, чтобы закончить задачу.',
     backToDraft: 'Вернуться к черновику',
+    runsWithSkills: skills => `Запускается со скиллами: ${skills}`,
     modelLabel: 'Модель',
     modelDefault: 'По умолчанию (глобальная модель)',
     customScheduleLabel: 'Своё расписание',
@@ -141,7 +142,13 @@ export const ruCron = {
     blueprints: {
       tab: 'Шаблоны',
       startFrom: 'Начать с',
-      custom: 'Свой',
+      custom: 'С нуля',
+      recipesGroup: 'Рецепты',
+      copyGroup: 'Копировать задачу',
+      copyName: name => `${name} (копия)`,
+      customize: 'Настроить промпт',
+      customizeHint: 'Открыть рецепт в полном редакторе, чтобы изменить промпт, время и доставку',
+      customizedFrom: title => `Из «${title}». Всё ниже можно изменить.`,
       subtitle: 'Готовые автоматизации',
       dialogDesc: 'Заполните детали и запланируйте.',
       scheduleIt: 'Запланировать',

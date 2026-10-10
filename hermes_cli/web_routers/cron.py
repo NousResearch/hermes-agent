@@ -874,22 +874,37 @@ def _blueprint_for_profile(key: str, profile: Optional[str]):
         return get_blueprint(key)
 
 
+async def _filled_blueprint_spec(body: AutomationBlueprintInstantiate, profile: str) -> dict:
+    """The ``create_job`` kwargs a blueprint's filled slots produce, in ``profile``'s catalog."""
+    from cron.blueprint_catalog import BlueprintFillError, fill_blueprint
+
+    blueprint = await _run_cron_dashboard_io(_blueprint_for_profile, body.blueprint, profile)
+    if blueprint is None:
+        raise HTTPException(status_code=404, detail=f"Unknown blueprint: {body.blueprint}")
+    try:
+        spec = fill_blueprint(blueprint, body.values)
+    except BlueprintFillError as exc:  # field-level error — 422 so the form shows it inline
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    # Blueprint jobs deliver to the dashboard's configured target by default;
+    # the form's deliver slot overrides via spec["deliver"].
+    spec.pop("origin", None)
+    return spec
+
+
+@router.post("/api/cron/blueprints/render")
+async def render_blueprint(body: AutomationBlueprintInstantiate, profile: str = "default"):
+    """The job a blueprint's filled slots would create, without creating it.
+
+    Desktop's "Customize prompt" turns a recipe into an ordinary editable job; rendering through
+    the same fill as instantiate keeps its prompt, schedule, delivery and skills identical."""
+    return await _filled_blueprint_spec(body, profile)
+
+
 @router.post("/api/cron/blueprints/instantiate")
 async def instantiate_blueprint(body: AutomationBlueprintInstantiate, profile: str = "default"):
     """Fill a blueprint's slots and create the cron job (form-submit path)."""
     try:
-        from cron.blueprint_catalog import BlueprintFillError, fill_blueprint
-
-        blueprint = await _run_cron_dashboard_io(_blueprint_for_profile, body.blueprint, profile)
-        if blueprint is None:
-            raise HTTPException(status_code=404, detail=f"Unknown blueprint: {body.blueprint}")
-        try:
-            spec = fill_blueprint(blueprint, body.values)
-        except BlueprintFillError as exc:  # field-level error — 422 so the form shows it inline
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        # Blueprint jobs deliver to the dashboard's configured target by default;
-        # the form's deliver slot overrides via spec["deliver"].
-        spec.pop("origin", None)
+        spec = await _filled_blueprint_spec(body, profile)
         # Off-loop like the siblings; partial keeps **spec keys from colliding
         # with the wrapper's own parameters.
         _create = functools.partial(_call_cron_for_profile, profile, "create_job", **spec)

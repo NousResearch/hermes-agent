@@ -632,12 +632,22 @@ export const arCommandCenter = {
     testDraftKept: 'تم حفظ مسودة cron',
     testDraftKeptDesc: 'اضغط Enter لتشغيل الطلب. عُد إلى المهام المجدولة لإكمال المهمة.',
     backToDraft: 'العودة إلى المسودة',
+    runsWithSkills: skills => `يعمل مع المهارات: ${skills}`,
     customScheduleLabel: 'جدول مخصص',
     customPlaceholder: 'تعبير cron',
     customHint: 'استخدم صيغة cron القياسية.',
     optional: 'اختياري',
     promptScheduleRequired: 'الرسالة والجدول مطلوبان',
     saveChanges: 'حفظ التغييرات',
-    createAction: 'إنشاء'
+    createAction: 'إنشاء',
+    blueprints: {
+      custom: 'فارغ',
+      recipesGroup: 'وصفات',
+      copyGroup: 'نسخ مهمة',
+      copyName: name => `${name} (نسخة)`,
+      customize: 'تخصيص الطلب',
+      customizeHint: 'افتح هذه الوصفة في المحرر الكامل لتغيير الطلب والوقت والتسليم',
+      customizedFrom: title => `من ${title}. كل ما يلي قابل للتعديل.`
+    }
   }
 } satisfies Pick<TranslationOverrides, 'commandCenter' | 'messaging' | 'profiles' | 'cron'>

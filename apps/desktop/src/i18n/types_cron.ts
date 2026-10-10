@@ -81,6 +81,7 @@ export interface CronCopy {
   testDraftKept: string
   testDraftKeptDesc: string
   backToDraft: string
+  runsWithSkills: (skills: string) => string
   modelLabel: string
   modelDefault: string
   customScheduleLabel: string
@@ -101,6 +102,12 @@ export interface CronCopy {
     tab: string
     startFrom: string
     custom: string
+    recipesGroup: string
+    copyGroup: string
+    copyName: (name: string) => string
+    customize: string
+    customizeHint: string
+    customizedFrom: (title: string) => string
     subtitle: string
     dialogDesc: string
     scheduleIt: string

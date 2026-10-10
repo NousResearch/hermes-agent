@@ -32,6 +32,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { Tip } from '@/components/ui/tooltip'
 import {
   type AutomationBlueprint,
+  type AutomationBlueprintJobSpec,
   createCronJob,
   type CronDeliveryTarget,
   type CronJob,
@@ -41,6 +42,7 @@ import {
   getCronJobRuns,
   instantiateAutomationBlueprint,
   pauseCronJob,
+  renderAutomationBlueprint,
   resumeCronJob,
   type SessionInfo,
   updateCronJob
@@ -100,16 +102,13 @@ import { jobState, jobTitle, nextRunOverdueMs, STATE_DOT, truncateText } from '.
 import { openCronRun, reconcileCronRunVerdicts } from './open-cron-run'
 import { SCHEDULE_OPTIONS, scheduleOptionForExpr } from './schedule'
 import { ScheduleFields } from './schedule-fields'
+import { BLANK_START, carriedFields, copyableJobs, StartFromField, startJob } from './start-from'
 
 const DEFAULT_DELIVER = 'local'
 
 // Radix <SelectItem> rejects empty-string values, so the "no override" row in
 // the model picker carries this sentinel and is mapped back to '' on save.
 const MODEL_DEFAULT_VALUE = '__default__'
-
-// "Start from" default: the manual editor (blank cron). Any other value is a
-// blueprint key. Blueprint keys never collide with this sentinel.
-const CUSTOM_TEMPLATE = 'custom'
 
 function cronProfileForScope(scope: string): string {
   return scope === ALL_PROFILES ? 'all' : scope
@@ -558,6 +557,7 @@ export function CronView({
         stale
       } = await mutateAndRefreshCronJobs(profile, () =>
         createCronJob({
+          ...values.carried,
           prompt: values.prompt,
           schedule: values.schedule,
           name: values.name || undefined,
@@ -731,6 +731,7 @@ export function CronView({
       <CronEditorDialog
         blueprintProfile={blueprintProfile}
         editor={editor}
+        jobs={jobs}
         onBlueprintCreate={handleBlueprintCreate}
         onClose={() => setEditor({ mode: 'closed' })}
         onOpenMessaging={handleOpenMessaging}
@@ -1183,6 +1184,7 @@ function editorSeed(editor: EditorState): CronEditorDraftValues {
 
   if (!job) {
     return {
+      carried: {},
       deliver: DEFAULT_DELIVER,
       modelChoice: MODEL_DEFAULT_VALUE,
       name: '',
@@ -1193,6 +1195,7 @@ function editorSeed(editor: EditorState): CronEditorDraftValues {
   }
 
   return {
+    carried: {},
     deliver: jobDeliver(job),
     modelChoice: jobModel(job) ? cronModelChoiceValue(jobProvider(job), jobModel(job)) : MODEL_DEFAULT_VALUE,
     name: jobName(job),
@@ -1202,9 +1205,36 @@ function editorSeed(editor: EditorState): CronEditorDraftValues {
   }
 }
 
+// A new job that runs like `job`: its prompt, schedule, delivery and model in the
+// editor, plus the settings the editor doesn't show.
+function copyOfJob(job: CronJob, c: Translations['cron']): CronEditorDraftValues {
+  return {
+    ...editorSeed({ job, mode: 'edit' }),
+    carried: carriedFields(job),
+    name: c.blueprints.copyName(jobTitle(job))
+  }
+}
+
+// A rendered blueprint as editable form values. Desktop has no origin chat, so
+// an "origin" delivery becomes This desktop, as the blueprint form does.
+function draftFromSpec(spec: AutomationBlueprintJobSpec): CronEditorDraftValues {
+  const deliver = spec.deliver && spec.deliver !== 'origin' ? spec.deliver : DEFAULT_DELIVER
+
+  return {
+    carried: carriedFields(spec),
+    deliver,
+    modelChoice: MODEL_DEFAULT_VALUE,
+    name: spec.name ?? '',
+    prompt: spec.prompt,
+    schedule: spec.schedule,
+    schedulePreset: scheduleOptionForExpr(spec.schedule).value
+  }
+}
+
 function CronEditorDialog({
   blueprintProfile,
   editor,
+  jobs,
   onBlueprintCreate,
   onClose,
   onOpenMessaging,
@@ -1213,6 +1243,8 @@ function CronEditorDialog({
 }: {
   blueprintProfile: string
   editor: EditorState
+  /** Jobs "Start from" can copy. */
+  jobs: readonly CronJob[]
   onBlueprintCreate: (blueprint: AutomationBlueprint, values: Record<string, string>) => Promise<void>
   onClose: () => void
   onOpenMessaging?: (draft: CronEditorDraftValues) => void
@@ -1237,10 +1269,12 @@ function CronEditorDialog({
   // Blueprint fills typed slots (time/enum/weekdays/text) instead of the raw
   // cron fields; the backend renders the prompt + schedule from them.
   const [slotValues, setSlotValues] = useState<Record<string, string>>({})
-  // Create mode can start from a ready-made blueprint instead of a blank cron.
-  // CUSTOM_TEMPLATE (default) = the manual editor; any other value is a
-  // blueprint key that swaps the form for that blueprint's typed slots.
-  const [templateChoice, setTemplateChoice] = useState(CUSTOM_TEMPLATE)
+  // Create mode can start blank, from a blueprint (its typed slots replace the
+  // form until "Customize prompt"), or from a copy of a job (see start-from.tsx).
+  const [templateChoice, setTemplateChoice] = useState(BLANK_START)
+  const [carried, setCarried] = useState<CronEditorDraftValues['carried']>({})
+  // The blueprint title a customized form came from, for the "Start from" hint.
+  const [customizedFrom, setCustomizedFrom] = useState<null | string>(null)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<null | string>(null)
 
@@ -1254,8 +1288,7 @@ function CronEditorDialog({
 
   const blueprintList = blueprintsQuery.data ?? []
 
-  const blueprint =
-    templateChoice === CUSTOM_TEMPLATE ? null : (blueprintList.find(item => item.key === templateChoice) ?? null)
+  const blueprint = blueprintList.find(item => item.key === templateChoice) ?? null
 
   const isBlueprint = blueprint !== null
 
@@ -1282,16 +1315,10 @@ function CronEditorDialog({
       return
     }
 
-    const seed = editorSeed(editor)
-
-    setName(seed.name)
-    setPrompt(seed.prompt)
-    setSchedule(seed.schedule)
-    setSchedulePreset(seed.schedulePreset)
-    setDeliver(seed.deliver)
-    setModelChoice(seed.modelChoice)
+    fillForm(editorSeed(editor))
     setSlotValues({})
-    setTemplateChoice(editor.mode === 'create' ? (editor.blueprintKey ?? CUSTOM_TEMPLATE) : CUSTOM_TEMPLATE)
+    setTemplateChoice(editor.mode === 'create' ? (editor.blueprintKey ?? BLANK_START) : BLANK_START)
+    setCustomizedFrom(null)
     setError(null)
     setSaving(false)
   }, [editor, open])
@@ -1303,7 +1330,52 @@ function CronEditorDialog({
     setError(null)
   }, [blueprint])
 
-  const draftValues = (): CronEditorDraftValues => ({ deliver, modelChoice, name, prompt, schedule, schedulePreset })
+  function fillForm(values: CronEditorDraftValues) {
+    setCarried(values.carried)
+    setDeliver(values.deliver)
+    setModelChoice(values.modelChoice)
+    setName(values.name)
+    setPrompt(values.prompt)
+    setSchedule(values.schedule)
+    setSchedulePreset(values.schedulePreset)
+  }
+
+  const draftValues = (): CronEditorDraftValues => ({
+    carried,
+    deliver,
+    modelChoice,
+    name,
+    prompt,
+    schedule,
+    schedulePreset
+  })
+
+  function chooseStartFrom(value: string) {
+    const job = startJob(value, jobs)
+
+    fillForm(job ? copyOfJob(job, c) : editorSeed({ mode: 'create' }))
+    setCustomizedFrom(null)
+    setTemplateChoice(value)
+  }
+
+  // Open the blueprint, as its slots are filled now, in the full editor.
+  async function customizeBlueprint() {
+    if (!blueprint) {
+      return
+    }
+
+    setError(null)
+
+    try {
+      const spec = await renderAutomationBlueprint({ blueprint: blueprint.key, values: slotValues }, blueprintProfile)
+
+      fillForm(draftFromSpec(spec))
+      setCustomizedFrom(blueprint.title)
+      setTemplateChoice(BLANK_START)
+    } catch (err) {
+      setError(cleanBlueprintFieldError(err instanceof Error ? err.message : String(err)))
+    }
+  }
 
   // Configured providers with at least one available model — mirrors the chat
   // model picker's gate so only actually-selectable models are offered.
@@ -1348,6 +1420,7 @@ function CronEditorDialog({
 
     try {
       await onSave({
+        carried,
         deliver,
         model: override?.model ?? '',
         name: name.trim(),
@@ -1390,24 +1463,15 @@ function CronEditorDialog({
           <DialogDescription>{isEdit ? c.editDesc : c.createDesc}</DialogDescription>
         </DialogHeader>
 
-        {!isEdit && blueprintList.length > 0 && (
-          <Field htmlFor="cron-template" label={c.blueprints.startFrom}>
-            <Select onValueChange={setTemplateChoice} value={templateChoice}>
-              <SelectTrigger className="h-9 rounded-md" id="cron-template">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value={CUSTOM_TEMPLATE}>{c.blueprints.custom}</SelectItem>
-                {blueprintList.map(item => (
-                  <SelectItem key={item.key} value={item.key}>
-                    {item.title}
-                    {item.plugin && <span className="ml-1.5 text-muted-foreground">· {item.plugin}</span>}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            {blueprint?.description && <FieldHint>{blueprint.description}</FieldHint>}
-          </Field>
+        {!isEdit && (
+          <StartFromField
+            blueprints={blueprintList}
+            c={c}
+            customizedFrom={customizedFrom}
+            jobs={copyableJobs(jobs)}
+            onChange={chooseStartFrom}
+            value={templateChoice}
+          />
         )}
 
         {isBlueprint && blueprint ? (
@@ -1445,6 +1509,18 @@ function CronEditorDialog({
             <EditorError error={error} />
 
             <DialogFooter>
+              <Tip label={c.blueprints.customizeHint}>
+                <Button
+                  className="sm:mr-auto"
+                  disabled={saving}
+                  onClick={() => void customizeBlueprint()}
+                  type="button"
+                  variant="ghost"
+                >
+                  <Codicon name="edit" size="0.8rem" />
+                  {c.blueprints.customize}
+                </Button>
+              </Tip>
               <Button disabled={saving} onClick={onClose} type="button" variant="outline">
                 {t.common.cancel}
               </Button>
@@ -1479,6 +1555,7 @@ function CronEditorDialog({
                 placeholder={c.promptPlaceholder}
                 value={prompt}
               />
+              {carried.skills && <FieldHint>{c.runsWithSkills(carried.skills.join(', '))}</FieldHint>}
             </Field>
 
             <ScheduleFields
@@ -1585,6 +1662,7 @@ type EditorState =
   | { blueprintKey?: string; draft?: CronEditorDraftValues; mode: 'create' }
 
 interface EditorValues {
+  carried: CronEditorDraftValues['carried']
   deliver: string
   /** Per-job model override ('' = follow the global default). */
   model: string

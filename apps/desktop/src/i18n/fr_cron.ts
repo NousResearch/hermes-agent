@@ -127,6 +127,7 @@ export const frCron = {
     testDraftKeptDesc:
       'Appuyez sur Entrée pour exécuter le prompt. Revenez aux tâches planifiées pour terminer la tâche.',
     backToDraft: 'Retour au brouillon',
+    runsWithSkills: skills => `S’exécute avec les skills : ${skills}`,
     modelLabel: 'Modèle',
     modelDefault: 'Par défaut (modèle global)',
     customScheduleLabel: 'Planning personnalisé',
@@ -146,7 +147,13 @@ export const frCron = {
     blueprints: {
       tab: 'Plans',
       startFrom: 'Commencer à partir de',
-      custom: 'Personnalisé',
+      custom: 'Vide',
+      recipesGroup: 'Recettes',
+      copyGroup: 'Copier une tâche',
+      copyName: name => `${name} (copie)`,
+      customize: 'Personnaliser le prompt',
+      customizeHint: 'Ouvre cette recette dans l’éditeur complet pour modifier son prompt, son heure et sa livraison',
+      customizedFrom: title => `À partir de ${title}. Tout ce qui suit est modifiable.`,
       subtitle: "Automatismes prêts à l'emploi",
       dialogDesc: 'Remplissez les détails et planifiez-les.',
       scheduleIt: 'Planifiez-le',

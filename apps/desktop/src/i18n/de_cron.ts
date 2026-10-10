@@ -127,6 +127,7 @@ export const deCron = {
     testDraftKeptDesc:
       'Drücke Enter, um den Prompt auszuführen. Kehre zu den geplanten Jobs zurück, um den Job fertigzustellen.',
     backToDraft: 'Zurück zum Entwurf',
+    runsWithSkills: skills => `Läuft mit Skills: ${skills}`,
     modelLabel: 'Modell',
     modelDefault: 'Standard (globales Modell)',
     customScheduleLabel: 'Benutzerdefinierter Zeitplan',
@@ -146,7 +147,13 @@ export const deCron = {
     blueprints: {
       tab: 'Blueprints',
       startFrom: 'Starten von',
-      custom: 'Benutzerdefiniert',
+      custom: 'Leer',
+      recipesGroup: 'Vorlagen',
+      copyGroup: 'Job kopieren',
+      copyName: name => `${name} (Kopie)`,
+      customize: 'Prompt anpassen',
+      customizeHint: 'Öffnet diese Vorlage im vollen Editor, um Prompt, Uhrzeit und Zustellung zu ändern',
+      customizedFrom: title => `Aus ${title}. Alles unten ist bearbeitbar.`,
       subtitle: 'Fertige Automatisierungen',
       dialogDesc: 'Füllen Sie die Details aus und planen Sie den Job ein.',
       scheduleIt: 'Einplanen',

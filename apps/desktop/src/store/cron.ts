@@ -1,6 +1,6 @@
 import { atom } from 'nanostores'
 
-import type { CronJob } from '@/types/hermes'
+import type { CronJob, CronJobCarriedFields } from '@/types/hermes'
 
 // Cron *jobs* (not run sessions) power the sidebar "Cron jobs" section. Listing
 // the job — schedule, state, live next-run countdown — makes the job the
@@ -91,6 +91,8 @@ export const setCronFocusJobId = (id: null | string) => $cronFocusJobId.set(id)
 // The cron editor's unsaved form, as the user left it. Every field is the
 // dialog's own state (modelChoice is its opaque provider/model value).
 export interface CronEditorDraftValues {
+  /** Settings a copied job or a customized recipe keeps without showing them. */
+  carried: CronJobCarriedFields
   deliver: string
   modelChoice: string
   name: string

@@ -581,6 +581,8 @@ gateway:
     channel_join_failed: "加入语音频道失败：{error}"
     channel_deps_missing: "缺少语音依赖（PyNaCl / davey）。请运行：`{hint}`"
     channel_join_permissions: "加入语音频道失败。请检查机器人权限（Connect + Speak）。"
+    channel_joined_voice_only: "已加入语音频道 **{name}**。仅对语音消息使用语音回复。使用 /voice leave 断开连接。"
+    channel_joined_off: "已加入语音频道 **{name}**。回复保持为文字。使用 /voice on 开启语音回复，或使用 /voice leave 断开连接。"
     channel_joined: "已加入语音频道 **{name}**。\n我会用语音播报回复并听取你的发言。使用 /voice leave 断开连接。"
     channel_not_joined: "当前不在语音频道中。"
     channel_left: "已离开语音频道。"

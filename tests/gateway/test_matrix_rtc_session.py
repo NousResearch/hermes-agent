@@ -1,0 +1,417 @@
+"""Phase 2 behaviour contracts: a MatrixRTC transcript becomes a session message.
+
+Fake transcripts only. Nothing here joins an SFU, opens a socket, or needs the LiveKit
+SDK. The dedupe tests run the gateway's *real* ``GatewayVoiceMixin`` method with Matrix
+ids, which is the point: it is reused, not reimplemented.
+"""
+
+import asyncio
+import pytest
+
+from gateway.config import Platform
+from gateway.platforms.event import MessageType
+from gateway.run_voice import GatewayVoiceMixin
+from gateway.session import SessionSource
+from plugins.platforms.matrix.rtc.session import MatrixRTCSessions, split_identity
+from tests.gateway.matrix_rtc_helpers import (
+    call_member_event, call_state, remembered, room_member_event)
+
+ROOM = "!voice:hs.tld"
+ALICE, ALICE_ID = "@alice:hs.tld", "@alice:hs.tld:DEVICEAAA"
+MALLORY_ID = "@mallory:hs.tld:DEVICEZZZ"
+
+
+class _Runner(GatewayVoiceMixin):
+    """The production mixin, subclassed only to pin the authorization verdict."""
+
+    def __init__(self, authorized: bool = True):
+        self.authorized = authorized
+
+    def _is_user_authorized(self, source, **_kw) -> bool:
+        return self.authorized
+
+
+class _FakeAdapter:
+    """Only the adapter surface ``session.py`` actually reaches for."""
+
+    def __init__(self, runner=None, allowed_rooms=(), allowed_users=(ALICE,)):
+        self.gateway_runner = runner
+        self._allowed_rooms = set(allowed_rooms)
+        self._allowed_user_ids = set(allowed_users)
+        self.display_names: dict[str, str] = {}
+        self.handled = []
+        self._rtc_call_state = {ROOM: remembered(call_state(
+            (ALICE, "DEVICEAAA"), ("@bob:hs.tld", "DEVICEBBB"), ("@mallory:hs.tld", "DEVICEZZZ")))}
+
+    def _is_authorized_user(self, user_id: str) -> bool:
+        return user_id in self._allowed_user_ids
+
+    async def _get_display_name(self, room_id: str, user_id: str) -> str:
+        return self.display_names[user_id]  # a miss raises, exercising the fallback
+
+    async def handle_message(self, event) -> None:
+        self.handled.append(event)
+
+
+def room_source(chat_type: str = "group", **kw) -> SessionSource:
+    """The source the room's typed messages already use."""
+    return SessionSource(
+        platform=Platform.MATRIX, chat_id=ROOM, chat_name="Voice Room", chat_type=chat_type,
+        user_id="@owner:hs.tld", user_name="Owner", **kw)
+
+
+def bound(adapter=None, source=None, **adapter_kw):
+    """A ``MatrixRTCSessions`` with ROOM already bound; returns ``(sessions, adapter)``."""
+    adapter = adapter or _FakeAdapter(runner=_Runner(), **adapter_kw)
+    sessions = MatrixRTCSessions(adapter)
+    sessions.bind(ROOM, source or room_source())
+    return sessions, adapter
+
+
+# --------------------------------------------------------------------------- identity
+
+
+class TestSplitIdentity:
+    def test_the_device_suffix_is_stripped_off_the_matrix_user_id(self):
+        """The gateway session is keyed on the user; two devices are one speaker."""
+        assert split_identity(ALICE_ID) == (ALICE, "DEVICEAAA")
+
+    def test_a_user_id_carrying_no_device_survives_whole(self):
+        assert split_identity(ALICE) == (ALICE, "")
+
+    def test_a_homeserver_port_stays_on_the_user_id(self):
+        assert split_identity("@alice:hs.tld:8448:DEVICEAAA") == ("@alice:hs.tld:8448", "DEVICEAAA")
+
+    def test_a_non_matrix_identity_is_not_torn_apart(self):
+        assert split_identity("some-sfu-bot") == ("some-sfu-bot", "")
+
+
+# --------------------------------------------------------------------------- binding
+
+
+class TestRoomBinding:
+    @pytest.mark.asyncio
+    async def test_audio_in_an_unbound_room_reaches_nobody(self):
+        adapter = _FakeAdapter(runner=_Runner())
+        sessions = MatrixRTCSessions(adapter)
+        await sessions.on_transcript(ROOM, ALICE_ID, "hello?")
+        assert adapter.handled == []
+
+    @pytest.mark.asyncio
+    async def test_a_transcript_becomes_a_voice_message_on_the_bound_session(self):
+        sessions, adapter = bound()
+        await sessions.on_transcript(ROOM, ALICE_ID, "what time is it")
+
+        assert len(adapter.handled) == 1
+        event = adapter.handled[0]
+        assert event.text == "what time is it"
+        assert event.message_type == MessageType.VOICE
+        assert event.source.chat_id == ROOM
+        # Top-level sender fields mirror source.*; downstream prompt code reads them.
+        assert event.user_id == event.source.user_id == ALICE
+
+    @pytest.mark.asyncio
+    async def test_the_voice_turn_lands_in_the_room_session_not_a_sibling(self):
+        """The whole reason to bind the room's own source: thread and profile carry over,
+        so speaking continues the conversation the room was already having."""
+        sessions, adapter = bound(source=room_source(thread_id="$root", profile="work"))
+        await sessions.on_transcript(ROOM, ALICE_ID, "carry on")
+
+        source = adapter.handled[0].source
+        assert (source.thread_id, source.profile) == ("$root", "work")
+
+    @pytest.mark.asyncio
+    async def test_the_speaker_is_stamped_without_mutating_the_bind(self):
+        """Two people in one call must not overwrite each other's identity."""
+        original = room_source()
+        sessions, adapter = bound(source=original)
+        await sessions.on_transcript(ROOM, ALICE_ID, "first")
+        await sessions.on_transcript(ROOM, "@bob:hs.tld:DEVICEBBB", "second")
+
+        assert [e.source.user_id for e in adapter.handled] == [ALICE, "@bob:hs.tld"]
+        assert original.user_id == "@owner:hs.tld", "the bound source must stay untouched"
+
+    @pytest.mark.asyncio
+    async def test_audio_after_unbind_is_dropped_not_guessed_at(self):
+        sessions, adapter = bound()
+        sessions.unbind(ROOM)
+        await sessions.on_transcript(ROOM, ALICE_ID, "still there?")
+        assert adapter.handled == []
+
+    def test_unbinding_a_room_that_was_never_bound_is_not_an_error(self):
+        MatrixRTCSessions(_FakeAdapter()).unbind(ROOM)
+
+
+# --------------------------------------------------------------------------- authorization
+
+
+class TestAuthorization:
+    @pytest.mark.parametrize("state, identity, expected", [
+        pytest.param(call_state((ALICE, "DEVICEAAA")), ALICE_ID, True, id="live-member"),
+        pytest.param(None, ALICE_ID, False, id="call-state-unknown"),
+        pytest.param(call_state((ALICE, "DEVICEBBB")), ALICE_ID, False, id="claimed-device-not-in-call"),
+        pytest.param([call_member_event(ALICE), room_member_event(ALICE, "leave")], ALICE_ID, False,
+                     id="left-the-room"),
+        pytest.param([call_member_event(ALICE, age_ms=5 * 60 * 60 * 1000), room_member_event(ALICE)],
+                     ALICE_ID, False, id="membership-expired"),
+    ])
+    def test_a_speaker_needs_a_room_join_and_a_live_membership_for_their_device(
+            self, state, identity, expected):
+        sessions, adapter = bound()
+        adapter._rtc_call_state = {} if state is None else {ROOM: remembered(state)}
+        assert sessions.is_authorized(ROOM, identity) is expected
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("change", ["room", "actor", "session", "closing", "none"])
+    async def test_a_transcript_rechecks_its_receiving_session_after_member_lookup(self, monkeypatch, change):
+        source = room_source()
+        sessions, adapter = bound(source=source)
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def display_name(room_id, user_id):
+            entered.set()
+            await release.wait()
+            return "Alice"
+
+        monkeypatch.setattr(adapter, "_get_display_name", display_name)
+        task = asyncio.create_task(sessions.on_transcript(ROOM, ALICE_ID, "hello"))
+        await asyncio.wait_for(entered.wait(), 2)
+        if change == "room":
+            adapter._allowed_rooms = {"!other:hs.tld"}
+        if change == "actor":
+            adapter.gateway_runner.authorized = False
+        if change == "session":
+            sessions.bind(ROOM, room_source(profile="another"))
+        if change == "closing":
+            adapter._closing = True
+        release.set()
+        await task
+        actual = [(event.text, event.source.chat_id, event.source.user_id,
+                   event.source.user_name, event.source.profile) for event in adapter.handled]
+        assert actual == [("hello", ROOM, ALICE, "Alice", None)] if change == "none" else actual == []
+
+    @pytest.mark.asyncio
+    async def test_an_unauthorized_speaker_never_reaches_handle_message(self):
+        sessions, adapter = bound(adapter=_FakeAdapter(runner=_Runner(authorized=False)))
+        await sessions.on_transcript(ROOM, MALLORY_ID, "delete everything")
+        assert adapter.handled == []
+
+    def test_the_allowlist_verdict_is_available_before_transcription(self):
+        """Done-when #2: the check must be answerable from the identity alone, so an
+        unauthorized participant's audio never reaches Whisper."""
+        sessions, _ = bound()
+        assert sessions.is_authorized(ROOM, ALICE_ID) is True
+
+        denied, _ = bound(adapter=_FakeAdapter(runner=_Runner(authorized=False)))
+        assert denied.is_authorized(ROOM, MALLORY_ID) is False
+
+    def test_an_unbound_room_is_never_authorized(self):
+        sessions = MatrixRTCSessions(_FakeAdapter(runner=_Runner()))
+        assert sessions.is_authorized(ROOM, ALICE_ID) is False
+
+    @pytest.mark.asyncio
+    async def test_a_room_outside_the_room_allowlist_is_silenced(self):
+        sessions, adapter = bound(allowed_rooms={"!other:hs.tld"})
+        await sessions.on_transcript(ROOM, ALICE_ID, "hello")
+        assert adapter.handled == []
+
+    @pytest.mark.asyncio
+    async def test_a_dm_is_exempt_from_the_room_allowlist(self):
+        """Matches the text path: a project-scoped MATRIX_ALLOWED_ROOMS must not silence
+        the operator's own DM."""
+        sessions, adapter = bound(source=room_source(chat_type="dm"),
+                                  allowed_rooms={"!other:hs.tld"})
+        await sessions.on_transcript(ROOM, ALICE_ID, "hello")
+        assert len(adapter.handled) == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("allowed, expected", [
+        ({ALICE, "@owner:hs.tld"}, [ALICE]),
+        ({ALICE}, []),
+    ])
+    async def test_without_a_runner_the_adapter_allowlist_gates_speaker_and_requester(
+            self, allowed, expected):
+        """No runner is no excuse for an open door, and the call's requester must stay allowed."""
+        sessions, adapter = bound(adapter=_FakeAdapter(runner=None, allowed_users=allowed))
+        await sessions.on_transcript(ROOM, MALLORY_ID, "let me in")
+        await sessions.on_transcript(ROOM, ALICE_ID, "and me?")
+        assert [event.source.user_id for event in adapter.handled] == expected
+
+
+# --------------------------------------------------------------------------- dedupe
+
+
+class TestDuplicateSuppression:
+    @pytest.mark.asyncio
+    async def test_the_same_utterance_delivered_twice_runs_once(self):
+        """STT can emit one utterance twice seconds apart -> two queued runs and two
+        spoken replies. The gateway's suppressor takes Matrix ids unchanged."""
+        sessions, adapter = bound()
+        await sessions.on_transcript(ROOM, ALICE_ID, "what is on my calendar today")
+        await sessions.on_transcript(ROOM, ALICE_ID, "what is on my calendar today")
+        assert len(adapter.handled) == 1
+
+    @pytest.mark.asyncio
+    async def test_two_different_utterances_both_get_through(self):
+        sessions, adapter = bound()
+        await sessions.on_transcript(ROOM, ALICE_ID, "what is on my calendar today")
+        await sessions.on_transcript(ROOM, ALICE_ID, "cancel the first meeting")
+        assert len(adapter.handled) == 2
+
+    @pytest.mark.asyncio
+    async def test_two_speakers_saying_the_same_thing_are_not_confused(self):
+        """The suppressor keys on (room, speaker), so agreeing is not deduplication."""
+        sessions, adapter = bound()
+        await sessions.on_transcript(ROOM, ALICE_ID, "yes please do that")
+        await sessions.on_transcript(ROOM, "@bob:hs.tld:DEVICEBBB", "yes please do that")
+        assert len(adapter.handled) == 2
+
+
+# --------------------------------------------------------------------------- display name
+
+
+class TestSpeakerName:
+    @pytest.mark.asyncio
+    async def test_the_room_display_name_labels_the_speaker(self):
+        sessions, adapter = bound()
+        adapter.display_names[ALICE] = "Alice"
+        await sessions.on_transcript(ROOM, ALICE_ID, "hello")
+        assert adapter.handled[0].user_name == adapter.handled[0].source.user_name == "Alice"
+
+    @pytest.mark.asyncio
+    async def test_an_unresolvable_name_costs_the_label_not_the_turn(self):
+        sessions, adapter = bound()  # display_names empty -> _get_display_name raises
+        await sessions.on_transcript(ROOM, ALICE_ID, "hello")
+        assert len(adapter.handled) == 1
+        assert adapter.handled[0].user_name == ALICE
+
+
+# --------------------------------------------------------------------------- pre-STT gate
+
+
+class TestReceiverAuthorizationHook:
+    @staticmethod
+    def _receiver(monkeypatch, **kw):
+        """A receiver whose transcription is a spy, so "was Whisper reached" is assertable."""
+        from plugins.platforms.matrix.rtc import receiver as rcv
+        transcribed, delivered = [], []
+        monkeypatch.setattr(
+            rcv, "transcribe_pcm", lambda pcm, *a, **k: transcribed.append(pcm) or "heard")
+
+        async def on_transcript(identity, transcript):
+            delivered.append((identity, transcript))
+
+        return rcv.MatrixRTCReceiver(on_transcript, **kw), transcribed, delivered
+
+    @pytest.mark.asyncio
+    async def test_rejected_audio_is_discarded_before_it_reaches_whisper(self, monkeypatch):
+        receiver, transcribed, delivered = self._receiver(
+            monkeypatch, is_authorized=lambda identity: identity == ALICE_ID)
+        pcm = b"\x00\x01" * 8000
+        await receiver._emit([(MALLORY_ID, pcm), (ALICE_ID, pcm)])
+
+        assert transcribed == [pcm], "only the allowed speaker is transcribed"
+        assert [identity for identity, _ in delivered] == [ALICE_ID]
+
+    @pytest.mark.asyncio
+    async def test_the_predicate_sees_the_raw_identity_with_its_device_suffix(self, monkeypatch):
+        seen = []
+        receiver, _, _ = self._receiver(
+            monkeypatch, is_authorized=lambda i: bool(seen.append(i)) or True)
+        await receiver._emit([(ALICE_ID, b"\x00\x01" * 8000)])
+        assert seen == [ALICE_ID, ALICE_ID]
+
+    @pytest.mark.asyncio
+    async def test_without_a_predicate_every_speaker_is_still_transcribed(self, monkeypatch):
+        """Phase 1's contract is unchanged for callers that do their own gating."""
+        receiver, transcribed, delivered = self._receiver(monkeypatch)
+        await receiver._emit([(MALLORY_ID, b"\x00\x01" * 8000)])
+        assert len(transcribed) == 1 and len(delivered) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["control", "speaker-route", "requester-route", "physical-home", "home-recreated", "adapter-replaced", "revoked-role"])
+async def test_call_sources_follow_current_route_home_and_authority(tmp_path, monkeypatch, change):
+    from dataclasses import replace
+    from pathlib import Path
+    import shutil
+    from types import SimpleNamespace
+
+    from gateway.config import GatewayConfig, PlatformConfig
+    from gateway.profile_routing import parse_profile_routes
+    from gateway.run import GatewayRunner
+    from gateway.session_identity import canonical_identity, identity_of
+    from plugins.platforms.matrix.adapter import MatrixAdapter
+
+    home = tmp_path / ".hermes"
+    a, b = home / "profiles/a", home / "profiles/b"
+    for directory in (home, a, b):
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "config.yaml").write_text("{}\n")
+        (directory / ".env").write_text(f"GATEWAY_ALLOWED_USERS={ALICE},@owner:hs.tld,@bob:hs.tld\n")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    from hermes_constants import pin_process_hermes_home
+    pin_process_hermes_home(home)
+    monkeypatch.setattr("agent.secret_scope._MULTIPLEX_ACTIVE", True)
+    monkeypatch.setattr("hermes_cli.profiles.profiles_to_serve", lambda **_kwargs: [("default", home), ("a", a), ("b", b)])
+    runner = object.__new__(GatewayRunner)
+    runner._primary_profile_name = "default"
+    runner._profile_adapters = {"a": {}, "b": {}}
+    runner.pairing_stores = {}
+    runner.config = GatewayConfig(multiplex_profiles=True)
+    adapter = MatrixAdapter(PlatformConfig(enabled=True))
+    adapter.gateway_runner = runner
+    adapter._client = SimpleNamespace(api=object())
+    adapter._joined_rooms = {ROOM}
+    adapter._remember_call_state(ROOM, call_state((ALICE, "DEVICEAAA"), ("@bob:hs.tld", "DEVICEBBB")))
+    runner.adapters = {Platform.MATRIX: adapter}
+
+    for profile in ("a", "b", "a"):
+        runner.config.profile_routes = parse_profile_routes([{"name": "room", "platform": "matrix", "chat_id": ROOM, "profile": profile}])
+        source = adapter.build_source(chat_id=ROOM, user_id=ALICE, chat_type="group")
+        source.role_authorized = change == "revoked-role"
+        assert canonical_identity(source, runner=runner, adapter=adapter) is not None
+        source_identity = identity_of(source)
+        assert source_identity is not None
+        sessions = MatrixRTCSessions(adapter)
+        sessions.bind(ROOM, source)
+        expected_home = a if profile == "a" else b
+        speaker = "@bob:hs.tld" if change == "speaker-route" else ALICE
+        if change == "speaker-route":
+            runner.config.profile_routes.insert(0, parse_profile_routes([{"name": "speaker", "platform": "matrix", "chat_id": ROOM, "user_id": speaker, "profile": "b" if profile == "a" else "a"}])[0])
+        if change == "requester-route":
+            runner.config.profile_routes[0] = replace(runner.config.profile_routes[0], profile="b" if profile == "a" else "a")
+        original_home = expected_home.with_name(expected_home.name + "-original")
+        if change == "physical-home":
+            expected_home.rename(original_home)
+            expected_home.symlink_to(b if profile == "a" else a, target_is_directory=True)
+        if change == "home-recreated":
+            expected_home.rename(original_home)
+            shutil.copytree(original_home, expected_home)
+        if change == "adapter-replaced":
+            runner.adapters[Platform.MATRIX] = MatrixAdapter(PlatformConfig(enabled=True))
+        if change == "revoked-role":
+            (home / ".env").write_text("GATEWAY_ALLOWED_USERS=@somebody:hs.tld\n")
+        try:
+            fresh = sessions.source_for(ROOM, speaker)
+            fresh_identity = identity_of(fresh) if fresh is not None else None
+            if fresh is not None:
+                assert fresh_identity is not None
+            authorized = sessions.is_user_authorized(ROOM, speaker, "DEVICEAAA" if speaker == ALICE else "DEVICEBBB")
+            actual = (
+                sessions.current(ROOM), authorized,
+                None if fresh is None or fresh_identity is None else (fresh.user_id, fresh.role_authorized, fresh_identity.runtime_home, fresh_identity.adapter() is adapter),
+                source.user_id, source_identity.runtime_home,
+            )
+            expected_source = (speaker, False, expected_home, True) if change in {"control", "revoked-role"} else None
+            assert actual == (change in {"control", "speaker-route", "revoked-role"}, change == "control", expected_source, ALICE, expected_home)
+        finally:
+            if change == "physical-home":
+                expected_home.unlink()
+                original_home.rename(expected_home)
+            if change == "home-recreated":
+                shutil.rmtree(expected_home)
+                original_home.rename(expected_home)
+            runner.adapters[Platform.MATRIX] = adapter
+            (home / ".env").write_text(f"GATEWAY_ALLOWED_USERS={ALICE},@owner:hs.tld,@bob:hs.tld\n")

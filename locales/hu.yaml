@@ -584,6 +584,8 @@ gateway:
     channel_join_failed: "Nem sikerült csatlakozni a hangcsatornához: {error}"
     channel_deps_missing: "Hiányoznak a hangfüggőségek (PyNaCl / davey). Futtasd: `{hint}`"
     channel_join_permissions: "Nem sikerült csatlakozni a hangcsatornához. Ellenőrizd a bot jogosultságait (Connect + Speak)."
+    channel_joined_voice_only: "Csatlakoztam a(z) **{name}** hangcsatornához. Csak hangüzenetekre válaszolok hanggal. Kilépés: /voice leave."
+    channel_joined_off: "Csatlakoztam a(z) **{name}** hangcsatornához. A válaszok szövegesek maradnak. Hangválaszok: /voice on. Kilépés: /voice leave."
     channel_joined: "Csatlakoztam a(z) **{name}** hangcsatornához.\nFelolvasom a válaszaimat, és hallgatlak. Kilépéshez használd a /voice leave parancsot."
     channel_not_joined: "Nem vagyok hangcsatornában."
     channel_left: "Kiléptem a hangcsatornából."

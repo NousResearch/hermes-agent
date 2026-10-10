@@ -267,7 +267,7 @@ def test_pairing_dm_policy_strict_intake_auth_denies_unknown(
 def test_yuanbao_pairing_dm_intake_denies_blank_principal(monkeypatch, blank_sender):
     """Yuanbao pairing intake must not forward senderless C2C callbacks."""
     _clear_auth_env(monkeypatch)
-    from gateway.platforms.yuanbao import AccessPolicy
+    from gateway.platforms.yuanbao_inbound import (AccessPolicy)
 
     policy = AccessPolicy(
         dm_policy="pairing",

@@ -581,6 +581,8 @@ gateway:
     channel_join_failed: "Beitritt zum Sprachkanal fehlgeschlagen: {error}"
     channel_deps_missing: "Sprach-Abhängigkeiten fehlen (PyNaCl / davey). Führen Sie aus: `{hint}`"
     channel_join_permissions: "Beitritt zum Sprachkanal fehlgeschlagen. Prüfen Sie die Bot-Berechtigungen (Verbinden + Sprechen)."
+    channel_joined_voice_only: "Sprachkanal **{name}** beigetreten. Ich antworte nur auf Sprachnachrichten mit Sprache. Mit /voice leave trennen."
+    channel_joined_off: "Sprachkanal **{name}** beigetreten. Antworten bleiben Text. Mit /voice on Sprachantworten aktivieren oder mit /voice leave trennen."
     channel_joined: "Sprachkanal **{name}** beigetreten.\nIch spreche meine Antworten und höre Ihnen zu. Verwenden Sie /voice leave zum Trennen."
     channel_not_joined: "Nicht in einem Sprachkanal."
     channel_left: "Sprachkanal verlassen."

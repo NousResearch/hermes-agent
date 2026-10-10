@@ -126,3 +126,22 @@ async def test_internal_event_does_not_interrupt_busy_session() -> None:
     adapter._send_with_retry.assert_not_called()
 
 
+@pytest.mark.asyncio
+async def test_external_reaction_followup_queues_while_busy() -> None:
+    runner = _make_runner()
+    runner._busy_input_mode = "interrupt"
+    adapter = _make_adapter()
+    event = _make_internal_event("Matrix reaction by user1: 👍 on reply $target")
+    event.internal = False
+    event.defer_until_idle = True
+    session_key = build_session_key(event.source)
+    parent = _make_running_parent()
+    runner._running_agents[session_key] = parent
+    runner.adapters[event.source.platform] = adapter
+
+    handled = await runner._handle_active_session_busy_message(event, session_key)
+
+    assert handled is True
+    assert adapter._pending_messages[session_key] is event
+    parent.interrupt.assert_not_called()
+    adapter._send_with_retry.assert_not_called()

@@ -581,6 +581,8 @@ gateway:
     channel_join_failed: "فشل الانضمام إلى القناة الصوتية: {error}"
     channel_deps_missing: "اعتماديات الصوت مفقودة (PyNaCl / davey). شغّل: `{hint}`"
     channel_join_permissions: "فشل الانضمام إلى القناة الصوتية. تحقّق من صلاحيات البوت (Connect + Speak)."
+    channel_joined_voice_only: "انضممت إلى القناة الصوتية **{name}**. سأرد بالصوت على الرسائل الصوتية فقط. استخدم /voice leave للمغادرة."
+    channel_joined_off: "انضممت إلى القناة الصوتية **{name}**. ستبقى الردود نصية. استخدم /voice on لتفعيل الردود الصوتية أو /voice leave للمغادرة."
     channel_joined: "انضممت إلى القناة الصوتية **{name}**.\nسأنطق ردودي وأستمع إليك. استخدم /voice leave لقطع الاتصال."
     channel_not_joined: "لست في قناة صوتية."
     channel_left: "خرجت من القناة الصوتية."

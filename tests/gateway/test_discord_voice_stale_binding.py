@@ -91,6 +91,7 @@ async def _voice_join_from(adapter: DiscordAdapter, chat_id: str, tmp_path: Path
     from gateway.run import GatewayRunner
     runner = object.__new__(GatewayRunner)
     runner.adapters, runner._voice_mode = {}, {}
+    runner._voice_call_keys = set()
     runner._VOICE_MODE_PATH = tmp_path / "gateway_voice_mode.json"
     runner._session_db, runner.session_store = None, MagicMock()
     runner._is_user_authorized = MagicMock(return_value=True)
@@ -102,7 +103,11 @@ async def _voice_join_from(adapter: DiscordAdapter, chat_id: str, tmp_path: Path
     event.raw_message = SimpleNamespace(guild_id=_GUILD, guild=None)
     runner.adapters[platform] = adapter
     adapter.get_user_voice_channel = AsyncMock(return_value=SimpleNamespace(name="General"))
-    adapter.join_voice_channel = AsyncMock(return_value=True)
+    async def join(_channel, *, text_channel_id, source):
+        async with adapter._voice_locks.setdefault(_GUILD, asyncio.Lock()):
+            adapter._bind_voice_channel(_GUILD, text_channel_id, source)
+        return True
+    adapter.join_voice_channel = AsyncMock(side_effect=join)
     await runner._handle_voice_channel_join(event)
 
 

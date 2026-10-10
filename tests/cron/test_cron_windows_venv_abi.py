@@ -63,3 +63,26 @@ def test_managed_install_uses_the_committed_generation_not_the_in_tree_venv(
     assert overlay is not None, "the committed generation must supply a site-packages entry"
     assert overlay == committed / "Lib" / "site-packages"
     assert not overlay.is_relative_to(stale)
+
+
+def test_committed_generation_overlay_disables_lazy_installs(tmp_path, monkeypatch):
+    """The managed-store overlay carries HERMES_DISABLE_LAZY_INSTALLS like the POSIX branch
+    (#129100): a cron script importing hermes_bootstrap must not complete a source update and
+    execv onto the bare store Python on Windows either."""
+    from cron import scheduler_script as sched_script
+
+    committed = _write_venv(tmp_path / "installs" / "gen" / "venv")
+    store = tmp_path / "store" / "python.exe"
+    store.parent.mkdir(parents=True)
+    store.write_text("", encoding="utf-8")
+    child = _write_venv(tmp_path / "child")
+
+    monkeypatch.setattr("hermes_cli._launchers.resolve_store_python", lambda _root: store)
+    monkeypatch.setattr("pm.environments.committed_venv", lambda _root: committed)
+
+    _, env_overlay = sched_script._windows_cron_python_invocation(
+        str(child / "Scripts" / "python.exe")
+    )
+
+    assert env_overlay.get("HERMES_DISABLE_LAZY_INSTALLS") == "1"
+    assert _site_packages_in(env_overlay) == committed / "Lib" / "site-packages"

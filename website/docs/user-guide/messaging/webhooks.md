@@ -203,7 +203,7 @@ How it works:
 
 ### Script Filters and Transforms
 
-Use `script` when declarative filters are not enough. Scripts must live under `~/.hermes/scripts/` for the active profile; relative paths resolve there, and path traversal outside that directory is blocked. `.sh` and `.bash` scripts run with bash, and all other extensions run with the current Python interpreter.
+Use `script` when declarative filters are not enough. Scripts must live under `~/.hermes/scripts/` for the active profile; relative paths resolve there, and path traversal outside that directory is blocked. `.sh` and `.bash` scripts run with bash. Python scripts (`.py` and any other extension) run on the same interpreter cron scripts use — on a managed store install that is the dependency environment's Python, so the script can import Hermes and its dependencies — with lazy installs disabled for the script's process tree.
 
 The route payload is sent to stdin as JSON:
 

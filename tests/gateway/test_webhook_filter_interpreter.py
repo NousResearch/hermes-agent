@@ -1,18 +1,23 @@
 """Webhook filter scripts run under the Git-Bash-safe interpreter and log silent failures."""
 import logging
 import stat
+import subprocess
+import sys
+import types
+from pathlib import Path
 
 import pytest
 
+import gateway.platforms.webhook_filters as webhook_filters
 from gateway.platforms.webhook_filters import WebhookRouteProcessor
 from tools.environments import local
 
 
-def _filter_script(body: str):
+def _filter_script(body: str, name: str = "filter.sh"):
     from hermes_constants import get_hermes_home
     scripts = get_hermes_home() / "scripts"
     scripts.mkdir(parents=True, exist_ok=True)
-    filt = scripts / "filter.sh"
+    filt = scripts / name
     filt.write_text(body, encoding="utf-8")
     return filt
 
@@ -51,3 +56,132 @@ def test_silent_nonzero_exit_is_logged_as_warning(tmp_path, monkeypatch, caplog)
     assert accepted is False
     silent = [r for r in caplog.records if "script ignored webhook path=filter.sh" in r.getMessage()]
     assert silent and silent[0].levelno == logging.WARNING
+
+
+@pytest.mark.platforms("posix")  # POSIX store layout (bin/python3); the Windows half is the wine2e receipt
+def test_python_filter_spawns_through_cron_resolver_argv(tmp_path, monkeypatch):
+    """On a store install a .py route script must spawn via cron's ``_script_argv`` (#129100):
+    the dependency venv's interpreter plus the repo bootstrap — never the bare store
+    ``sys.executable``, whose PYTHONPATH ``build_subprocess_env`` strips."""
+    monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)  # conftest seeds it session-wide
+    store = tmp_path / "store" / "bin" / "python3"
+    venv_python = tmp_path / "venv" / "bin" / "python3"
+    for target in (store, venv_python):
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("", encoding="utf-8")  # never executed; the spawn is captured below
+    monkeypatch.setattr("hermes_cli._launchers.resolve_store_python", lambda _root: store)
+    monkeypatch.setattr("pm.environments.project_python", lambda _root: venv_python)
+
+    captured = {}
+
+    class _FakeProc:
+        returncode = 0
+
+        def communicate(self, input=None, timeout=None):
+            return '{"ok": true}', ""
+
+    def spy_popen(argv, **kwargs):
+        captured["argv"] = list(argv)
+        captured["env"] = kwargs["env"]
+        return _FakeProc()
+
+    monkeypatch.setattr(
+        webhook_filters,
+        "subprocess",
+        types.SimpleNamespace(Popen=spy_popen, PIPE=-1, TimeoutExpired=subprocess.TimeoutExpired),
+    )
+
+    filt = _filter_script("pass", name="filter.py")
+    accepted, transformed = WebhookRouteProcessor().run_route_script(str(filt), {"a": 1})
+
+    assert accepted is True and transformed == {"ok": True}
+    assert captured["argv"][0] == str(venv_python)
+    assert "-c" in captured["argv"]  # the repo bootstrap from _posix_cron_script_argv
+    assert captured["env"].get("HERMES_DISABLE_LAZY_INSTALLS") == "1"
+
+
+@pytest.mark.platforms("posix")  # POSIX interpreter spawn; the Windows half is the wine2e receipt
+def test_python_filter_runs_with_lazy_installs_disabled(tmp_path, monkeypatch):
+    """End to end on the non-store path: a plain .py route script still runs, reads its payload
+    from stdin, and gets HERMES_DISABLE_LAZY_INSTALLS in its environment on every OS (#129100)."""
+    monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)  # conftest seeds it session-wide
+    monkeypatch.setattr("hermes_cli._launchers.resolve_store_python", lambda _root: None)
+    body = (
+        "import json, os, sys\n"
+        "payload = json.load(sys.stdin)\n"
+        'print(json.dumps({"lazy": os.environ.get("HERMES_DISABLE_LAZY_INSTALLS"), "a": payload["a"]}))\n'
+    )
+    filt = _filter_script(body, name="filter.py")
+
+    accepted, transformed = WebhookRouteProcessor().run_route_script(str(filt), {"a": 1})
+
+    assert accepted is True
+    assert transformed == {"lazy": "1", "a": 1}
+
+
+@pytest.mark.platforms("posix")  # POSIX store layout; the Windows half is the wine2e receipt
+def test_python_filter_vetoes_when_dependency_env_missing(tmp_path, monkeypatch, caplog):
+    """Store install whose dependency venv disappeared: cron's resolver raises and the route is
+    vetoed with a warning instead of silently running the bare store Python (#129100)."""
+    store = tmp_path / "store" / "bin" / "python3"
+    store.parent.mkdir(parents=True)
+    store.write_text("", encoding="utf-8")
+    monkeypatch.setattr("hermes_cli._launchers.resolve_store_python", lambda _root: store)
+    missing = tmp_path / "venv" / "bin" / "python3"  # deliberately left absent
+    monkeypatch.setattr("pm.environments.project_python", lambda _root: missing)
+
+    filt = _filter_script("print('not json')", name="filter.py")
+    with caplog.at_level(logging.WARNING, logger="gateway.platforms.webhook_filters"):
+        accepted, transformed = WebhookRouteProcessor().run_route_script(str(filt), {})
+
+    assert accepted is False and transformed is None
+    assert any("script ignored webhook" in r.getMessage() for r in caplog.records)
+
+
+
+@pytest.mark.platforms("posix")  # POSIX store argv shape; the Windows half is the wine2e receipt
+def test_python_filter_times_out_on_store_bootstrap_path(tmp_path, monkeypatch, caplog):
+    """Store-path argv (interpreter + cron's repo bootstrap): a hung script must hit the run
+    budget and be tree-killed like cron's runner, not outlive the route (#129100 review)."""
+    import sys as _sys
+    import time as _time
+    from cron.scheduler_script import _POSIX_SCRIPT_BOOTSTRAP
+
+    repo = Path(webhook_filters.__file__).resolve().parents[1]
+    filt = _filter_script("import time; time.sleep(30)\n", name="filter.py")
+
+    def fake_script_argv(path):
+        # The exact store shape _posix_cron_script_argv returns: [venv_python, "-c", bootstrap,
+        # repo, script]. sys.executable stands in for the venv python — the bootstrap is stdlib-only.
+        return (
+            [_sys.executable, "-c", _POSIX_SCRIPT_BOOTSTRAP, str(repo), str(path)],
+            {"HERMES_DISABLE_LAZY_INSTALLS": "1"},
+            None,
+        )
+
+    monkeypatch.setattr("cron.scheduler_script._script_argv", fake_script_argv)
+
+    started = _time.monotonic()
+    with caplog.at_level(logging.WARNING, logger="gateway.platforms.webhook_filters"):
+        accepted, transformed = WebhookRouteProcessor(
+            script_timeout_seconds=1
+        ).run_route_script(str(filt), {"a": 1})
+    elapsed = _time.monotonic() - started
+
+    assert accepted is False and transformed is None
+    assert any("script timed out" in r.getMessage() for r in caplog.records)
+    assert elapsed < 15, f"timeout did not tree-kill the hung script (elapsed {elapsed:.1f}s)"
+
+
+@pytest.mark.platforms("posix")  # import-chain shape is OS-independent; wine2e covers Windows
+def test_python_filter_resolver_import_failure_ignores_route(tmp_path, monkeypatch, caplog):
+    """A broken cron import chain (cron.jobs → hermes_yaml → ruamel.yaml, cron.scheduler →
+    hermes_cli.config/agent.*) must veto this route with a warning, not escape the handler as
+    an HTTP 500 (#129100 review)."""
+    monkeypatch.setitem(sys.modules, "cron.scheduler_script", None)  # import raises ImportError
+    filt = _filter_script("print('never runs')", name="filter.py")
+    with caplog.at_level(logging.WARNING, logger="gateway.platforms.webhook_filters"):
+        accepted, transformed = WebhookRouteProcessor().run_route_script(str(filt), {})
+
+    assert accepted is False and transformed is None
+    assert any("script ignored webhook" in r.getMessage() for r in caplog.records)

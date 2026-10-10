@@ -133,6 +133,7 @@ class _KanbanDispatcher:
         self.kb = kb
         self.settings = settings
         self.disabled_corrupt_boards: dict[str, tuple[tuple[str, int | None, int | None], float]] = {}
+        self.release_cursors: dict[str, int] = {}
 
     def _board_slugs(self) -> list:
         return _board_slugs(self.kb)
@@ -216,6 +217,40 @@ class _KanbanDispatcher:
     def tick_once(self) -> list[tuple[str, Optional[object]]]:
         """Run one dispatch_once per board. Returns (slug, result) pairs."""
         return [(slug, self.tick_once_for_board(slug)) for slug in self._board_slugs()]
+
+    def released_tasks_changed(self) -> bool:
+        """Observe committed releases from worker processes without spawning from them.
+
+        Read only events newer than each physical DB's cursor. Pins can map
+        several board names to one file; baseline a new file without replaying
+        its history. A failed probe leaves the ordinary timed tick as fallback.
+        """
+        from hermes_cli import kanban_db as kb
+
+        changed = False
+        seen: set[str] = set()
+        with kb.pin_first_board_resolution():
+            for slug in self._board_slugs():
+                try:
+                    path = str(kb.kanban_db_path(slug).resolve())
+                    if path in seen:
+                        continue
+                    seen.add(path)
+                    with contextlib.closing(_kbc().connect(board=slug)) as conn:
+                        latest = int(conn.execute("SELECT COALESCE(MAX(id), 0) FROM task_events").fetchone()[0])
+                        previous = self.release_cursors.get(path)
+                        if previous is not None and latest > previous:
+                            released = conn.execute(
+                                "SELECT 1 FROM task_events WHERE id > ? AND id <= ? "
+                                "AND kind IN ('completed', 'blocked', 'dependency_wait', 'review_requested') LIMIT 1",
+                                (previous, latest),
+                            ).fetchone()
+                            changed = changed or released is not None
+                        self.release_cursors[path] = latest
+                except Exception:
+                    logger.debug("kanban release probe failed for board %s", slug, exc_info=True)
+        self.release_cursors = {path: cursor for path, cursor in self.release_cursors.items() if path in seen}
+        return changed
 
     def ready_nonempty(self) -> bool:
         """Is there a ready+assigned+unclaimed task on ANY board the dispatcher would spawn for?

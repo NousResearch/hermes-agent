@@ -164,6 +164,7 @@ def spawn_background_process(
         mounted_host=mounted_host if mounted_host is not None else getattr(env, "host_cwd", None),
         env=env,
     )
+    proc_session = None
     try:
         proc_session = _spawn(
             process_registry, env=env, env_type=env_type, command=command, cwd=effective_cwd,
@@ -215,10 +216,53 @@ def spawn_background_process(
             result_data["watch_patterns"] = proc_session.watch_patterns
         return json.dumps(result_data, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({
-            "output": "", "exit_code": -1,
-            "error": _redact_terminal_error_text(f"Failed to start background process: {e}"),
-        }, ensure_ascii=False)
+        error_data = {
+            "output": "",
+            "exit_code": -1,
+            "error": _redact_terminal_error_text(
+                f"Failed to start background process: {e}"
+            ),
+        }
+        if proc_session is not None:
+            # A sandbox kill reaches only its recorded wrapper PID; the backend
+            # exposes no descendant-death proof. Keep that session tracked rather
+            # than turn an unverifiable kill into a handle-less success receipt.
+            pid_scope = getattr(proc_session, "pid_scope", "host")
+            if pid_scope != "host":
+                cleanup = {
+                    "status": "unconfirmed",
+                    "error": (
+                        f"{pid_scope} process-tree cleanup cannot be verified; "
+                        "the session remains tracked and remote descendants may still be running"
+                    ),
+                }
+            else:
+                # Once _spawn returns, the caller must either receive its handle or
+                # the registry must prove it reaped the local process tree.
+                try:
+                    cleanup = process_registry.kill_process(
+                        proc_session.id,
+                        source="terminal.spawn_setup_failure",
+                        consume_output=True,
+                    )
+                except Exception as cleanup_error:
+                    cleanup = {"status": "error", "error": str(cleanup_error)}
+            if cleanup.get("status") not in {"killed", "already_exited"}:
+                error_data.update(
+                    {
+                        "session_id": proc_session.id,
+                        "pid": proc_session.pid,
+                        "pid_scope": pid_scope,
+                        "cleanup_status": cleanup.get("status", "error"),
+                        "cleanup_error": _redact_terminal_error_text(
+                            str(
+                                cleanup.get("error")
+                                or "spawned process cleanup was not confirmed"
+                            )
+                        ),
+                    }
+                )
+        return json.dumps(error_data, ensure_ascii=False)
 
 
 _SUBAGENT_NOTIFY_NOTE = (

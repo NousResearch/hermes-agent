@@ -17,7 +17,7 @@ from agent.session_activity import (
 from hermes_startup_watchdog import report_startup_progress
 from hermes_state_errors import SessionActiveWriteGuardError
 from hermes_state_common import (
-    _LISTABLE_CHILD_SQL, _RECOVERABLE_END_REASONS,
+    _BRANCH_CHILD_SQL, _COMPRESSION_CHILD_SQL, _LISTABLE_CHILD_SQL, _RECOVERABLE_END_REASONS,
     _RECOVERABLE_END_REASONS_SQL, _RESET_CHILD_SQL, _RESET_END_REASONS, _legacy_reset_child_sql, _non_continuation_child_sql,
     _shape_preview, _sql_preview_raw, QUEUED_PROMPT_METADATA_KEY,
     _sql_in_window, _sql_json_extract, _sql_session_last_active, _sql_session_last_active_by_id,
@@ -215,6 +215,100 @@ def _collect_delegate_child_ids(conn, parent_ids: list[str]) -> list[str]:
                     next_frontier.append(row["id"])
         frontier = next_frontier
     return [sid for sid in found if sid not in seeds]
+
+
+# Compression continuation edge, walked in both directions on delete. The edge predicate is the
+# canonical one the projection and title lineage already use (``_COMPRESSION_CHILD_SQL`` excludes
+# branch / delegate / tool children), so a delete removes exactly the rows the pickers would have
+# projected together. Deleting only the visible tip orphans the compressed ancestors
+# (``parent_session_id`` is NULLed for FK safety) and they resurface in session pickers on the next
+# refresh — the session the user just deleted comes back. The walk widens at every row it
+# reaches: fork-sibling continuations of discovered ancestors and the tree forked under the
+# deleted seed(s) — branch children and their continuations — are part of the lineage too. (#53684)
+_LINEAGE_ANCESTORS_SQL = """
+WITH RECURSIVE lineage(id) AS (
+    SELECT parent_session_id FROM sessions WHERE id IN ({ph}) AND parent_session_id IS NOT NULL
+    UNION
+    SELECT s.parent_session_id FROM sessions s JOIN lineage ON s.id = lineage.id
+    WHERE s.parent_session_id IS NOT NULL AND {parent_edge}
+)
+SELECT DISTINCT id FROM lineage
+"""
+
+
+def _compression_lineage_ids(conn, session_ids: List[str]) -> List[str]:
+    """All ids in the compression-continuation lineages touching *session_ids*, seeds included.
+
+    A seed may sit in the middle of a chain, so the walk goes both up (ancestors) and down
+    (descendants) along the canonical compression-continuation edge, and it widens at every row
+    it reaches: a fork-sibling continuation hanging off a discovered ancestor is part of the
+    same lineage and walks too, and the tree hanging under a seed — branch children forked from
+    the seed and their own continuations — walks with it. Boundaries are the edges themselves:
+    branch children of non-seed lineage rows, and reset / delegate / tool children, are not
+    compression continuations, so they stay behind as accessible orphans instead of being
+    deleted with the lineage (delegate children of doomed rows still cascade separately via
+    ``_delete_delegate_children``).
+    """
+    seeds = {sid for sid in session_ids if isinstance(sid, str) and sid}
+    if not seeds:
+        return []
+    # Canonical continuation child edge — exactly its documented definition (parent ended
+    # 'compression', child is not a branch / reset / delegate / tool row). Branch children join
+    # the walk only under the seeds themselves (see below).
+    comp_child = (
+        f"({_COMPRESSION_CHILD_SQL.format(a='child')}"
+        f" AND NOT ({_BRANCH_CHILD_SQL.format(a='child')})"
+        f" AND NOT ({_RESET_CHILD_SQL.format(a='child')})"
+        f" AND {_delegate_from_json('child.model_config')} IS NULL"
+        f" AND COALESCE(child.source, '') != 'tool')"
+    )
+    branch_child = _BRANCH_CHILD_SQL.format(a="child")
+    parent_edge = (
+        f"EXISTS (SELECT 1 FROM sessions p WHERE p.id = s.parent_session_id"
+        f" AND p.end_reason = 'compression')"
+        f" AND NOT ({_BRANCH_CHILD_SQL.format(a='s')})"
+        f" AND {_delegate_from_json('s.model_config')} IS NULL"
+        f" AND COALESCE(s.source, '') != 'tool'"
+    )
+    found: set[str] = set(seeds)
+    for chunk in _id_chunks(sorted(seeds), _SQL_IN_CHUNK):
+        ph = _session_ids_placeholders(chunk)
+        found.update(sid for sid in (
+            row["id"] for row in conn.execute(
+                _LINEAGE_ANCESTORS_SQL.format(ph=ph, parent_edge=parent_edge), chunk,
+            ).fetchall()
+        ) if sid)
+    # Fixpoint expansion over two frontiers. ``tree`` = rows under a seed: their child tree
+    # walks on BOTH edges (compression continuations and branches forked under the seed).
+    # ``chain`` = rows reached along the lineage: they widen down the compression edge only, so
+    # a fork-sibling continuation of a discovered ancestor joins the walk while branch children
+    # of non-seed rows stay behind as orphans.
+    tree: set[str] = set(seeds)
+    chain: set[str] = found - tree
+    tree_frontier: List[str] = sorted(tree)
+    chain_frontier: List[str] = sorted(chain)
+    while tree_frontier or chain_frontier:
+        next_tree: set[str] = set()
+        next_chain: set[str] = set()
+        for frontier, edge_sql, into in (
+            (tree_frontier, f"({comp_child} OR {branch_child})", next_tree),
+            (chain_frontier, comp_child, next_chain),
+        ):
+            for chunk in _id_chunks(frontier, _SQL_IN_CHUNK):
+                ph = _session_ids_placeholders(chunk)
+                for row in conn.execute(
+                    f"SELECT id FROM sessions child WHERE child.parent_session_id IN ({ph})"
+                    f" AND {edge_sql}",
+                    chunk,
+                ).fetchall():
+                    if row["id"] and row["id"] not in found:
+                        into.add(row["id"])
+        found.update(next_tree, next_chain)
+        tree.update(next_tree)
+        chain.update(next_chain)
+        tree_frontier = sorted(next_tree)
+        chain_frontier = sorted(next_chain)
+    return sorted(found)
 
 
 def _delete_delegate_children(conn, parent_ids: list[str]) -> list[str]:
@@ -1793,10 +1887,12 @@ class SessionSessionsMixin:
 
         With ``include_compression_chain=True``, each selected id is expanded to its full
         compression chain (root + every continuation, including stale sibling continuations)
-        via :meth:`_expand_compression_lineage` — the dashboard rows carry chain-tip ids, so
-        without the expansion a "deleted" conversation resurfaces as the previous chain link on
-        the next list reload (#57543). The returned count still reflects the *requested* rows,
-        not the expanded chain links, so the caller's toast matches the user's selection."""
+        via :func:`_compression_lineage_ids` (a superset of :meth:`_expand_compression_lineage`
+        that also removes branch trees forked under the selected rows) — the dashboard rows
+        carry chain-tip ids, so without the expansion a "deleted" conversation resurfaces as the
+        previous chain link on the next list reload (#57543). The returned count still reflects the
+        *requested* rows, not the expanded chain links, so the caller's toast matches the user's
+        selection."""
         unique_ids = list({sid for sid in session_ids or () if isinstance(sid, str) and sid})
         if not unique_ids:
             return 0
@@ -1839,12 +1935,12 @@ class SessionSessionsMixin:
                     skipped_ids.extend(sorted(active_ids))
                 if not existing:
                     return 0
-                if include_compression_chain:
-                    expanded = self._expand_compression_lineage(conn, existing)
-                else:
-                    expanded = existing
-            removed_ids.extend(_delete_delegate_children(conn, expanded))
-            for chunk in _id_chunks(expanded):
+            # Kill-set expansion, gated so the default stays chain-blind (upstream's pin). The walk
+            # is the two-frontier lineage walk (:func:`_compression_lineage_ids`) — a superset of
+            # the guard-attribution walk :meth:`_expand_compression_lineage` (#53684).
+            kill_ids = _compression_lineage_ids(conn, existing) if include_compression_chain else list(existing)
+            removed_ids.extend(_delete_delegate_children(conn, kill_ids))
+            for chunk in _id_chunks(kill_ids):
                 ph = _session_ids_placeholders(chunk)
                 conn.execute(  # orphan children whose parent is in the kill list (FK)
                     f"UPDATE sessions SET parent_session_id = NULL WHERE parent_session_id IN ({ph})", chunk,
@@ -1852,7 +1948,7 @@ class SessionSessionsMixin:
                 conn.execute(f"DELETE FROM messages WHERE session_id IN ({ph})", chunk)
                 conn.execute(f"DELETE FROM sessions WHERE id IN ({ph})", chunk)
             self._delete_unreferenced_system_prompts(conn)
-            removed_ids.extend(expanded)
+            removed_ids.extend(kill_ids)
             # Count the ids the CALLER asked for, not the expanded chain links —
             # the dashboard toast should say "3 deleted" when the user selected
             # 3 rows, however many physical links those rows had.

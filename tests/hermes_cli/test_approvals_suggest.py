@@ -99,11 +99,13 @@ def isolated_allowlist(monkeypatch):
     store = {"patterns": set(), "saves": 0}
 
     def fake_load():
+        approval_module.load_permanent(set(store["patterns"]))
         return set(store["patterns"])
 
     def fake_save(patterns):
         store["patterns"] = set(patterns)
         store["saves"] += 1
+        approval_module.load_permanent(set(patterns))
 
     monkeypatch.setattr(approval_module, "load_permanent_allowlist", fake_load)
     monkeypatch.setattr(approval_module, "save_permanent_allowlist", fake_save)

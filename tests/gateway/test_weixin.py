@@ -24,6 +24,25 @@ def _make_adapter() -> WeixinAdapter:
     )
 
 
+@pytest.fixture()
+def pairing_dir(tmp_path, monkeypatch):
+    """Isolate the pairing store (and any configured allowlist env) so tests never touch the
+    live approved list."""
+    monkeypatch.setattr("gateway.pairing.PAIRING_DIR", tmp_path)
+    monkeypatch.delenv("WEIXIN_ALLOWED_USERS", raising=False)
+    return tmp_path
+
+
+def _approve_sender_via_pairing(platform: str, user_id: str) -> None:
+    from gateway.pairing import PairingStore
+
+    store = PairingStore()
+    if store.is_approved(platform, user_id):
+        return
+    code = store.generate_code(platform, user_id, user_id)
+    assert code and store.approve_code(platform, code)
+
+
 
 
 class TestWeixinFormatting:
@@ -577,7 +596,10 @@ class TestWeixinContentDedup:
     with different message_ids, bypassing message_id deduplication.
     """
 
-    def test_duplicate_content_with_different_message_ids_is_dropped(self):
+    def test_duplicate_content_with_different_message_ids_is_dropped(self, pairing_dir):
+        # Content-dedup only applies where a turn can happen, so the sender must be
+        # approved for the guard to engage (dm_policy defaults to "pairing").
+        _approve_sender_via_pairing("weixin", "wxid_user1")
         adapter = _make_adapter()
         adapter._poll_session = object()
         adapter.handle_message = AsyncMock()
@@ -605,6 +627,37 @@ class TestWeixinContentDedup:
         assert adapter.handle_message.await_count == 1
         event = adapter.handle_message.await_args[0][0]
         assert event.text == "hello world"
+
+    def test_unapproved_pairing_sender_duplicate_still_reaches_the_pipeline(self, pairing_dir):
+        """#136052: an unapproved DM never turns, so it must not burn its content fingerprint —
+        the sender's first copy of that text after approval would otherwise be swallowed."""
+        adapter = _make_adapter()  # dm_policy defaults to "pairing"
+        adapter._poll_session = object()
+        adapter.handle_message = AsyncMock()
+        adapter._text_batch_delay_seconds = 0.05
+        adapter._text_batch_split_delay_seconds = 0.05
+        base_msg = {
+            "from_user_id": "wxid_pending",
+            "item_list": [{"type": 1, "text_item": {"text": "hello world"}}],
+        }
+
+        async def _drive():
+            await adapter._process_message({**base_msg, "message_id": "msg-1"})
+            await asyncio.sleep(0.2)
+            await adapter._process_message({**base_msg, "message_id": "msg-2"})
+            await asyncio.sleep(0.2)
+
+        asyncio.run(_drive())
+        assert [call[0][0].text for call in adapter.handle_message.await_args_list] == ["hello world"] * 2
+
+    def test_content_dedup_guard_matrix(self, pairing_dir):
+        adapter = _make_adapter()
+        # Unapproved DM under pairing: never suppressed — no turn can happen.
+        assert adapter._content_dedup_applies("wxid_pending", "dm") is False
+        # Groups are authorized by group_policy, not the pairing list.
+        assert adapter._content_dedup_applies("wxid_pending", "group") is True
+        _approve_sender_via_pairing("weixin", "wxid_user1")
+        assert adapter._content_dedup_applies("wxid_user1", "dm") is True
 
 
 class TestWeixinTextDebounce:

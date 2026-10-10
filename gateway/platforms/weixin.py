@@ -868,24 +868,44 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         except Exception as exc:
             logger.error("[%s] unhandled inbound error from=%s: %s", self.name, _safe_id(message.get("from_user_id")), exc, exc_info=True)
 
+    def _content_dedup_applies(self, sender_id: str, chat_type: str) -> bool:
+        """Whether identical text from *sender_id* may be suppressed as an upstream re-send.
+
+        Under ``dm_policy: pairing`` an unapproved DM is admitted at intake but never turns into a
+        reply (the pairing handshake runs downstream), so a re-send suppressed here would only burn
+        the fingerprint the sender's first post-approval copy of that text needs (#136052). Groups
+        are authorized by ``group_policy``, not the pairing list, so they keep the guard. The
+        approved list is consulted read-only — never written.
+        """
+        if chat_type != "dm" or self._dm_policy != "pairing":
+            return True
+        from gateway.pairing import PairingStore
+        return PairingStore().is_approved(Platform.WEIXIN.value, sender_id)
+
     async def _process_message(self, message: dict[str, Any]) -> None:
         assert self._poll_session is not None
         sender_id = str(message.get("from_user_id") or "").strip()
         message_id = str(message.get("message_id") or "").strip()
         if not sender_id or sender_id == self._account_id or (message_id and self._dedup.is_duplicate(message_id)):
             return
-        # Secondary content-fingerprint dedup: upstream re-sends identical text under new message_ids.
         item_list = message.get("item_list") or []
         text = _extract_text(item_list)
-        if text and self._dedup.is_duplicate(f"content:{sender_id}:{hashlib.md5(text.encode()).hexdigest()}"):
-            logger.debug("[%s] Content-dedup: skipping duplicate message from %s", self.name, sender_id)
-            return
         chat_type, effective_chat_id = _guess_chat_type(message, self._account_id)
         if chat_type == "group":
             if not self._is_group_allowed(effective_chat_id):
                 return
         elif not self._is_dm_intake_allowed(sender_id):
             return
+        # Secondary content-fingerprint dedup: upstream re-sends identical text under new message_ids.
+        # It may only consume a fingerprint where a turn can actually happen: an intake-admitted DM
+        # that is dropped downstream (unapproved pairing sender) never turns, and burning its
+        # fingerprint here would swallow the sender's next copy of that text for the whole dedup
+        # TTL right after approval (#136052).
+        if text and self._content_dedup_applies(sender_id, chat_type):
+            fingerprint = f"content:{sender_id}:{hashlib.md5(text.encode()).hexdigest()}"
+            if self._dedup.is_duplicate(fingerprint):
+                logger.debug("[%s] Content-dedup: skipping duplicate message from %s", self.name, sender_id)
+                return
         context_token = str(message.get("context_token") or "").strip()
         if context_token:
             await self._token_store.set(self._account_id, sender_id, context_token)

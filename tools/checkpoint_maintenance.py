@@ -11,7 +11,8 @@ from utils import rmtree_readonly
 from tools.checkpoint_manager import (
     _GIT_TIMEOUT, _LEGACY_PREFIX, _PRUNE_MARKER_NAME, _REFS_PREFIX, _STORE_DIRNAME,
     _dir_size_bytes, _index_path, _list_projects, _pre_v2_shadow_repos,
-    _project_meta_path, _ref_name, _resolve_checkpoint_base, _run_git, _store_path,
+    _project_meta_path, _ref_name, _resolve_checkpoint_base, _run_git, _store_has_head,
+    _store_path,
 )
 
 logger = logging.getLogger(__name__)
@@ -461,7 +462,7 @@ def checkpoint_footprint_notice() -> Optional[str]:
             return None
         # The notice needs no commit counts: full status runs Git for every project.
         store = _store_path(base)
-        project_count = len(_list_projects(store)) if (store / "HEAD").exists() else 0
+        project_count = len(_list_projects(store)) if _store_has_head(store) else 0
         from hermes_cli.sizefmt import format_bytes
         return (f"Filesystem checkpoints (/rollback) are on: {format_bytes(size)} across "
                 f"{project_count} project(s), above the {cap_mb} MB cap (one snapshot per project is "

@@ -35,7 +35,7 @@ def test_notice_only_when_enabled_and_over_cap(tmp_path, monkeypatch):
     monkeypatch.setattr("tools.checkpoint_maintenance._run_git", unexpected_git)
     notice = checkpoint_footprint_notice()
     assert notice
-    assert "1 project(s)" in notice
+    assert "across 1 project(s)" in notice
 
     _write_config(enabled=True, cap_mb=500)  # under the cap: no nag for a healthy store
     assert checkpoint_footprint_notice() is None

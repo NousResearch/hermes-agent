@@ -1,0 +1,15 @@
+name: hermes-live-voice
+repo: https://github.com/Synero/hermes-live-voice
+sha: 88cf7ba465765b2bc40cc855b6f956a91bdf4864
+version: "0.2.5"
+description: "Full-duplex Live Voice for Hermes Desktop — GPT-Live-1 on the ChatGPT/Codex subscription via the local Codex app-server, with live transcript, voice tool calls and task delegation to the user chat. Disclosure — uses your ChatGPT/Codex subscription: reads ~/.codex/auth.json (or $CODEX_HOME), refreshes an expiring token under the Codex CLI's client id and writes it back to that file, and runs codex login --device-auth and codex app-server from the dashboard; its in-panel logout backs up then deletes ~/.codex/auth.json (signing the Codex CLI out too); the usage panel calls the ChatGPT/OpenAI usage endpoints with a codex-cli User-Agent; voice audio goes to OpenAI over WebRTC, and spoken tasks are submitted as messages in your focused chat."
+maintainer: Synero
+tier: community
+category: voice
+docs_url: https://github.com/Synero/hermes-live-voice
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

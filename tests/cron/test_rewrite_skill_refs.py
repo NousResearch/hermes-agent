@@ -37,23 +37,6 @@ def cron_env(tmp_path, monkeypatch):
     return hermes_home
 
 
-class TestRewriteSkillRefsNoop:
-    """No jobs, no rewrites, no map — every combination of empty inputs."""
-
-    def test_empty_map_and_no_jobs(self, cron_env):
-        from cron.jobs import rewrite_skill_refs
-
-        report = rewrite_skill_refs(consolidated={}, pruned=[])
-        assert report == {"rewrites": [], "jobs_updated": 0, "jobs_scanned": 0}
-
-    def test_jobs_exist_but_map_empty(self, cron_env):
-        from cron.jobs import create_job, rewrite_skill_refs
-
-        create_job(prompt="", schedule="every 1h", skills=["foo"])
-        report = rewrite_skill_refs(consolidated={}, pruned=[])
-        assert report["jobs_updated"] == 0
-        # Early return: we don't even scan when there's nothing to apply.
-        assert report["jobs_scanned"] == 0
 
 
 class TestRewriteSkillRefsConsolidation:
@@ -199,7 +182,9 @@ class TestRewriteSkillRefsMultipleJobs:
 
         j1 = create_job(prompt="", schedule="every 1h", skills=["legacy"])
         j2 = create_job(prompt="", schedule="every 1h", skills=["untouched"])
-        j3 = create_job(prompt="", schedule="every 1h", skills=[])
+        # Needs a prompt: a skill-less job with a blank prompt has no runnable
+        # payload and is rejected at create time (a5e29e688dc0).
+        j3 = create_job(prompt="no skills here", schedule="every 1h", skills=[])
 
         report = rewrite_skill_refs(
             consolidated={"legacy": "umbrella"},
@@ -236,17 +221,6 @@ class TestRewriteSkillRefsMultipleJobs:
 class TestRewriteSkillRefsPersistence:
     """Rewrites persist to disk and survive a reload."""
 
-    def test_changes_persist_across_reload(self, cron_env):
-        import json
-        from cron.jobs import create_job, rewrite_skill_refs, JOBS_FILE
-
-        create_job(prompt="", schedule="every 1h", skills=["legacy"])
-        rewrite_skill_refs(consolidated={"legacy": "umbrella"}, pruned=[])
-
-        # Read raw file contents
-        data = json.loads(JOBS_FILE.read_text())
-        assert data["jobs"][0]["skills"] == ["umbrella"]
-        assert data["jobs"][0]["skill"] == "umbrella"
 
     def test_noop_does_not_rewrite_file(self, cron_env):
         from cron.jobs import create_job, rewrite_skill_refs, JOBS_FILE

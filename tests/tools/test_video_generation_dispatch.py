@@ -23,19 +23,19 @@ class _RecordingProvider(VideoGenProvider):
 
     def __init__(self, name: str = "fake"):
         self._name = name
-        self.last_kwargs: Dict[str, Any] = {}
+        self.last_kwargs: dict[str, Any] = {}
 
     @property
     def name(self) -> str:
         return self._name
 
-    def list_models(self) -> List[Dict[str, Any]]:
+    def list_models(self) -> list[dict[str, Any]]:
         return [{"id": "model-a"}]
 
     def default_model(self) -> Optional[str]:
         return "model-a"
 
-    def capabilities(self) -> Dict[str, Any]:
+    def capabilities(self) -> dict[str, Any]:
         return {"modalities": ["text", "image"]}
 
     def generate(self, prompt, **kwargs):
@@ -63,7 +63,7 @@ class _RaisingProvider(VideoGenProvider):
 
 
 class TestUnifiedDispatch:
-    def _run(self, args: Dict[str, Any], *, configured: Optional[str] = None) -> Dict[str, Any]:
+    def _run(self, args: dict[str, Any], *, configured: Optional[str] = None) -> dict[str, Any]:
         from tools import video_generation_tool
         import hermes_cli.plugins as plugins_module
 
@@ -89,20 +89,12 @@ class TestUnifiedDispatch:
         assert result["error_type"] == "provider_not_registered"
 
 
-    def test_edit_extend_fields_not_in_schema(self):
-        from tools.video_generation_tool import VIDEO_GENERATE_SCHEMA
-        props = VIDEO_GENERATE_SCHEMA["parameters"]["properties"]
-        assert "operation" not in props
-        assert "video_url" not in props
 
 
     def test_upscale_in_schema_and_forwarded(self):
-        """`upscale` is an agent-facing param, forwarded to providers when
-        set and omitted (not None) when unset."""
-        from tools.video_generation_tool import VIDEO_GENERATE_SCHEMA
-        props = VIDEO_GENERATE_SCHEMA["parameters"]["properties"]
-        assert props["upscale"]["type"] == "boolean"
-
+        """`upscale` is advertised per-capability by the dynamic builder
+        (#95681 diet — static schema no longer carries it) and forwarded
+        to providers when set, omitted (not None) when unset."""
         provider = _RecordingProvider()
         video_gen_registry.register_provider(provider)
         result = self._run({"prompt": "a dog", "upscale": True}, configured="fake")

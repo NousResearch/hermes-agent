@@ -44,13 +44,19 @@ def test_reconcile_propagates_schema_probe_lock():
         _SingleColumnSchema()._reconcile_columns(cast(sqlite3.Cursor, cursor))
 
 
-def test_reconcile_propagates_database_lock():
+@pytest.mark.parametrize("message", [
+    "database is locked",
+    "Cannot add a NOT NULL column with default value NULL",
+    "duplicate column constraint failure",
+])
+def test_reconcile_propagates_database_lock(message):
     cursor = _ReconcileCursor(
-        alter_error=sqlite3.OperationalError("database is locked")
+        alter_error=sqlite3.OperationalError(message)
     )
 
-    with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+    with pytest.raises(sqlite3.OperationalError) as caught:
         _SingleColumnSchema()._reconcile_columns(cast(sqlite3.Cursor, cursor))
+    assert caught.value is cursor.alter_error
 
 
 def test_reconcile_tolerates_duplicate_column_race():

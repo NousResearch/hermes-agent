@@ -68,8 +68,8 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
-import plugins.platforms.discord.adapter as discord_platform  # noqa: E402
-from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
+import plugins.platforms.discord.adapter as discord_platform
+from plugins.platforms.discord.adapter import DiscordAdapter
 
 
 @pytest.fixture(autouse=True)
@@ -120,26 +120,6 @@ class FakeBot:
         return None
 
 
-class SlowSyncTree(FakeTree):
-    def __init__(self):
-        super().__init__()
-        self.started = asyncio.Event()
-        self.allow_finish = asyncio.Event()
-
-        async def _slow_sync():
-            self.started.set()
-            await self.allow_finish.wait()
-            return []
-
-        self.sync = AsyncMock(side_effect=_slow_sync)
-
-
-class SlowSyncBot(FakeBot):
-    def __init__(self, *, intents, proxy=None):
-        super().__init__(intents=intents, proxy=proxy)
-        self.tree = SlowSyncTree()
-
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "initial_allowed",
@@ -181,6 +161,34 @@ async def test_resolve_allowed_usernames_preserves_wildcard(monkeypatch, initial
         "DISCORD_ALLOWED_USERS env must still contain '*' after resolution; "
         "downstream readers (and any restart-time re-parse) rely on it"
     )
+
+
+def _member(uid, name, *, nick=None, global_name=None):
+    # discord.py's Member.display_name is the server nickname, else the global name, else the username.
+    return SimpleNamespace(
+        id=uid, name=name, display_name=nick or global_name or name, global_name=global_name, discriminator="0",
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("nick, global_name", [("alice", None), (None, "alice")])
+async def test_resolve_allowed_usernames_ignores_display_names(monkeypatch, capsys, nick, global_name):
+    """A member who copies an allowlisted username into their server nickname or display name must not
+    be resolved in its place: those are set by the member, the username is unique."""
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+    adapter._allowed_user_ids = {"alice"}
+    impostor = _member(111, "mallory", nick=nick, global_name=global_name)
+    owner = _member(222, "alice", global_name="Alice W")
+    adapter._client = SimpleNamespace(guilds=[
+        SimpleNamespace(name="g1", members=[impostor], member_count=1),
+        SimpleNamespace(name="g2", members=[owner], member_count=1),
+    ])
+    monkeypatch.setenv("DISCORD_ALLOWED_USERS", "alice")
+
+    await adapter._resolve_allowed_usernames()
+
+    assert adapter._allowed_user_ids == {"222"}
+    assert "display name" not in capsys.readouterr().out
 
 
 @pytest.mark.asyncio
@@ -247,6 +255,51 @@ async def test_reconnect_closes_previous_client_to_prevent_zombie_websocket(monk
 
 
 @pytest.mark.asyncio
+async def test_connect_clears_previous_fatal_error(monkeypatch):
+    """Regression: a successful connect() must clear any prior fatal-error
+    state via _mark_connected(), not just set self._running = True directly.
+
+    Every other platform adapter (Telegram, WeCom, Matrix, ...) calls
+    _mark_connected() on a successful connect, which clears
+    _fatal_error_code/_fatal_error_message/_fatal_error_retryable and
+    rewrites the runtime status file as "connected". DiscordAdapter used to
+    bypass this and set self._running = True directly, so a transient
+    connect failure (e.g. a DNS blip) left the platform reported as
+    permanently "fatal" in the dashboard/gateway_state.json even after the
+    adapter reconnected successfully and was actively serving messages.
+    """
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+
+    monkeypatch.setattr("gateway.status.acquire_scoped_lock", lambda scope, identity, metadata=None: (True, None))
+    monkeypatch.setattr("gateway.status.release_scoped_lock", lambda scope, identity: None)
+
+    intents = SimpleNamespace(
+        message_content=False, dm_messages=False, guild_messages=False,
+        members=False, voice_states=False,
+    )
+    monkeypatch.setattr(discord_platform.Intents, "default", lambda: intents)
+    monkeypatch.setattr(discord_platform.commands, "Bot", FakeBot)
+    monkeypatch.setattr(adapter, "_resolve_allowed_usernames", AsyncMock())
+
+    # Simulate a prior fatal error left over from a transient connect failure.
+    adapter._set_fatal_error("discord_connect_error", "Discord startup failed: boom", retryable=True)
+    assert adapter.has_fatal_error is True
+
+    assert await adapter.connect() is True
+
+    assert adapter.has_fatal_error is False, (
+        "connect() must clear a previously recorded fatal error via "
+        "_mark_connected() so the dashboard doesn't show a stale failure "
+        "forever after a successful reconnect"
+    )
+    assert adapter.fatal_error_code is None
+    assert adapter.fatal_error_message is None
+    assert adapter._running is True
+
+    await adapter.disconnect()
+
+
+@pytest.mark.asyncio
 async def test_connect_timeout_cancels_bot_task(monkeypatch):
     """Regression: connect() timeout must cancel _bot_task so the zombie
     Discord client cannot fire on_message after the adapter is discarded.
@@ -282,7 +335,7 @@ async def test_connect_timeout_cancels_bot_task(monkeypatch):
     )
 
     async def fake_wait_for_ready(ready_event, bot_task, timeout):
-        raise asyncio.TimeoutError()
+        raise TimeoutError()
 
     monkeypatch.setattr(
         discord_platform, "_wait_for_ready_or_bot_exit", fake_wait_for_ready
@@ -440,6 +493,167 @@ async def test_safe_sync_slash_commands_only_mutates_diffs():
 
 
 @pytest.mark.asyncio
+async def test_safe_sync_recreated_upserts_without_delete():
+    """Regression (#104399): the recreated path must not delete before upserting.
+
+    A delete-then-upsert sequence strands the command deleted when Discord's
+    small command-management bucket 429s the upsert (the sync aborts; nothing
+    re-creates the command until a later fully-clean sync). POST-by-name is
+    itself an overwrite (Discord docs: "Creating a command with the same name
+    as an existing command for your application will overwrite the old
+    command"), so a lone upsert recreates the command while it stays available.
+    """
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+
+    class _DesiredCommand:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def to_dict(self, tree):
+            return dict(self._payload)
+
+    class _ExistingCommand:
+        def __init__(self, command_id, payload):
+            self.id = command_id
+            self.name = payload["name"]
+            self.type = SimpleNamespace(value=payload["type"])
+            self._payload = payload
+
+        def to_dict(self):
+            return {
+                "id": self.id,
+                "application_id": 999,
+                **self._payload,
+                "name_localizations": {},
+                "description_localizations": {},
+            }
+
+    desired_model = {
+        "name": "model",
+        "description": "Switch the model",
+        "type": 1,
+        "options": [],
+        "nsfw": False,
+        "dm_permission": True,
+        "default_member_permissions": None,
+    }
+    # Non-patchable field differs from the live command: the safe-sync
+    # "recreated" path (patchable payload equal, canonical payload unequal).
+    existing_model = _ExistingCommand(
+        21,
+        {**desired_model, "dm_permission": False},
+    )
+
+    fake_tree = SimpleNamespace(
+        get_commands=lambda: [_DesiredCommand(desired_model)],
+        fetch_commands=AsyncMock(return_value=[existing_model]),
+    )
+    fake_http = SimpleNamespace(
+        upsert_global_command=AsyncMock(),
+        edit_global_command=AsyncMock(),
+        delete_global_command=AsyncMock(),
+    )
+    adapter._client = SimpleNamespace(
+        tree=fake_tree,
+        http=fake_http,
+        application_id=999,
+        user=SimpleNamespace(id=999),
+    )
+
+    summary = await adapter._safe_sync_slash_commands()
+
+    assert summary == {
+        "total": 1,
+        "unchanged": 0,
+        "updated": 0,
+        "recreated": 1,
+        "created": 0,
+        "deleted": 0,
+    }
+    fake_http.upsert_global_command.assert_awaited_once_with(999, desired_model)
+    # The overwrite already replaced the old command — a trailing delete is
+    # both unnecessary and another rate-limit-consuming mutation.
+    fake_http.delete_global_command.assert_not_awaited()
+    fake_http.edit_global_command.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_safe_sync_recreated_survives_rate_limit_between_mutations():
+    """Regression (#104399): a 429 landing mid-recreate must not leave the
+    command deleted. With delete-first, the delete succeeds and the upsert
+    429s — the command vanishes from the slash picker until a later fully-clean
+    sync. With upsert-first, the 429 leaves the old command live (worst case:
+    stale non-patchable fields) — never deleted."""
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+
+    class _DesiredCommand:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def to_dict(self, tree):
+            return dict(self._payload)
+
+    class _ExistingCommand:
+        def __init__(self, command_id, payload):
+            self.id = command_id
+            self.name = payload["name"]
+            self.type = SimpleNamespace(value=payload["type"])
+            self._payload = payload
+
+        def to_dict(self):
+            return {
+                "id": self.id,
+                "application_id": 999,
+                **self._payload,
+                "name_localizations": {},
+                "description_localizations": {},
+            }
+
+    desired_model = {
+        "name": "model",
+        "description": "Switch the model",
+        "type": 1,
+        "options": [],
+        "nsfw": False,
+        "dm_permission": True,
+        "default_member_permissions": None,
+    }
+    existing_model = _ExistingCommand(21, {**desired_model, "dm_permission": False})
+
+    fake_tree = SimpleNamespace(
+        get_commands=lambda: [_DesiredCommand(desired_model)],
+        fetch_commands=AsyncMock(return_value=[existing_model]),
+    )
+    calls = []
+
+    async def _upsert(app_id, payload):
+        calls.append("upsert")
+        raise RuntimeError("429 Too Many Requests")
+
+    async def _delete(app_id, command_id):
+        calls.append(f"delete:{command_id}")
+
+    fake_http = SimpleNamespace(
+        upsert_global_command=_upsert,
+        edit_global_command=AsyncMock(),
+        delete_global_command=_delete,
+    )
+    adapter._client = SimpleNamespace(
+        tree=fake_tree,
+        http=fake_http,
+        application_id=999,
+        user=SimpleNamespace(id=999),
+    )
+
+    with pytest.raises(RuntimeError, match="429"):
+        await adapter._safe_sync_slash_commands()
+
+    # The only mutation attempted was the upsert — the command is never
+    # deleted, so it remains available despite the aborted sync.
+    assert calls == ["upsert"]
+
+
+@pytest.mark.asyncio
 async def test_post_connect_initialization_retries_fingerprint_after_timeout(tmp_path, monkeypatch):
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
     monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
@@ -487,7 +701,7 @@ async def test_post_connect_initialization_retries_fingerprint_after_timeout(tmp
         "created": 1,
         "deleted": 0,
     }
-    sync = AsyncMock(side_effect=[asyncio.TimeoutError(), summary])
+    sync = AsyncMock(side_effect=[TimeoutError(), summary])
     monkeypatch.setattr(adapter, "_safe_sync_slash_commands", sync)
 
     await adapter._run_post_connect_initialization()
@@ -622,3 +836,111 @@ class TestDiscordUnconfiguredNonRetryable:
         assert adapter.fatal_error_retryable is False
         assert adapter.fatal_error_code == "missing_dependency"
 
+
+# ============================================================================
+# #79430: PrivilegedIntentsRequired → actionable, non-retryable fatal
+# ============================================================================
+
+class PrivilegedIntentsRequired(Exception):
+    """Stand-in for discord.errors.PrivilegedIntentsRequired."""
+
+    def __init__(self, shard_id=None):
+        self.shard_id = shard_id
+        super().__init__(
+            "Shard ID None is requesting privileged intents that have not been "
+            "explicitly enabled in the developer portal."
+        )
+
+
+class TestPrivilegedIntentsRequiredFatal:
+    """Missing Developer Portal intents must not spin reconnect forever."""
+
+
+    def test_needs_members_intent_rules(self):
+        needs = discord_platform._needs_server_members_intent
+        assert needs(set(), set()) is False
+        assert needs({"*"}, set()) is False
+        assert needs({"769524422783664158"}, set()) is False
+        assert needs({"alice"}, set()) is True
+        assert needs(set(), {"111"}) is True
+
+    @pytest.mark.asyncio
+    async def test_connect_sets_non_retryable_fatal(self, monkeypatch):
+        adapter = DiscordAdapter(
+            PlatformConfig(enabled=True, token="test-token", extra={"slash_commands": False})
+        )
+        monkeypatch.setattr(
+            "gateway.status.acquire_scoped_lock",
+            lambda scope, identity, metadata=None: (True, None),
+        )
+        monkeypatch.setattr(
+            "gateway.status.release_scoped_lock",
+            lambda scope, identity: None,
+        )
+
+        intents = SimpleNamespace(
+            message_content=False,
+            dm_messages=False,
+            guild_messages=False,
+            members=False,
+            voice_states=False,
+        )
+        monkeypatch.setattr(discord_platform.Intents, "default", lambda: intents)
+
+        class BoomBot(FakeBot):
+            async def start(self, token):
+                raise PrivilegedIntentsRequired(None)
+
+        monkeypatch.setattr(
+            discord_platform.commands,
+            "Bot",
+            lambda **kwargs: BoomBot(
+                intents=kwargs["intents"],
+                proxy=kwargs.get("proxy"),
+                allowed_mentions=kwargs.get("allowed_mentions"),
+            ),
+        )
+
+        ok = await adapter.connect()
+
+        assert ok is False
+        assert adapter.has_fatal_error is True
+        assert adapter.fatal_error_retryable is False
+        assert adapter.fatal_error_code == "discord_intents_required"
+        assert adapter.fatal_error_message
+        assert adapter._bot_task is None
+
+
+@pytest.mark.asyncio
+async def test_skill_catalog_scan_runs_off_the_event_loop(monkeypatch):
+    """A slow skill scan (#110707) must not block the gateway loop from either Discord site:
+    slash registration inside connect() (every reconnect) and /reload-skills' refresh_skill_group."""
+    import threading
+
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+    monkeypatch.setattr("gateway.status.acquire_scoped_lock", lambda scope, identity, metadata=None: (True, None))
+    monkeypatch.setattr("gateway.status.release_scoped_lock", lambda scope, identity: None)
+    monkeypatch.setattr(discord_platform.Intents, "default", lambda: SimpleNamespace(
+        message_content=False, dm_messages=False, guild_messages=False, members=False, voice_states=False))
+    monkeypatch.setattr(discord_platform.commands, "Bot", lambda **kw: FakeBot(intents=kw["intents"]))
+    monkeypatch.setattr(adapter, "_resolve_allowed_usernames", AsyncMock())
+
+    async def _scan_leaves_loop_free(run_site):
+        scan_started, loop_ticked = threading.Event(), threading.Event()
+
+        def _blocking_scan(*, reserved_names):
+            scan_started.set()
+            # Only a free loop can set loop_ticked while this wait is in progress.
+            return ({}, [("x", "desc", "/x")], 0) if loop_ticked.wait(timeout=1) else ({}, [], 0)
+
+        monkeypatch.setattr("hermes_cli.commands_platforms.discord_skill_commands_by_category", _blocking_scan)
+        task = asyncio.create_task(run_site())
+        await asyncio.to_thread(scan_started.wait, 1)
+        loop_ticked.set()
+        await task
+        return [n for n, _d, _k in adapter._skill_entries] == ["x"]
+
+    assert await _scan_leaves_loop_free(adapter.connect)
+    adapter._skill_entries = []
+    assert await _scan_leaves_loop_free(adapter.refresh_skill_group)
+    await adapter.disconnect()

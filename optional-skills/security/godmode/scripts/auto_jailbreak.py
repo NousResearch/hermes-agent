@@ -7,7 +7,7 @@ finds what works, and locks it in by writing config.yaml + prefill.json.
 
 Usage in execute_code:
     exec(open(os.path.expanduser(
-        os.path.join(os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes")), "skills/red-teaming/godmode/scripts/auto_jailbreak.py")
+        os.path.join(os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes")), "skills/security/godmode/scripts/auto_jailbreak.py")
     )).read())
     
     result = auto_jailbreak()  # Uses current model from config
@@ -18,8 +18,15 @@ Usage in execute_code:
 import os
 import json
 import time
-import yaml
+from ruamel.yaml import YAML
 from pathlib import Path
+
+yaml = YAML(typ="safe", pure=True)
+yaml.version = (1, 1)
+yaml.default_flow_style = False
+yaml.allow_unicode = True
+yaml.width = 120
+yaml.sort_base_mapping_type_on_output = False
 
 try:
     from openai import OpenAI
@@ -35,7 +42,7 @@ try:
     _SKILL_DIR = Path(__file__).resolve().parent.parent
 except NameError:
     # __file__ not defined when loaded via exec() — search standard paths
-    _SKILL_DIR = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")) / "skills" / "red-teaming" / "godmode"
+    _SKILL_DIR = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")) / "skills" / "security" / "godmode"
 
 _SCRIPTS_DIR = _SKILL_DIR / "scripts"
 _TEMPLATES_DIR = _SKILL_DIR / "templates"
@@ -325,7 +332,7 @@ def _get_current_model() -> tuple:
         return None, None
     try:
         with open(CONFIG_PATH) as f:
-            cfg = yaml.safe_load(f) or {}
+            cfg = yaml.load(f) or {}
         model_cfg = cfg.get("model", {})
         if isinstance(model_cfg, str):
             return model_cfg, "https://openrouter.ai/api/v1"
@@ -336,7 +343,7 @@ def _get_current_model() -> tuple:
         return None, None
 
 
-def _get_api_key(base_url: str = None) -> str:
+def _get_api_key(base_url: str | None = None) -> str:
     """Get the appropriate API key."""
     if base_url and "openrouter" in base_url:
         return os.getenv("OPENROUTER_API_KEY", "")
@@ -380,13 +387,13 @@ def _build_messages(system_prompt=None, prefill=None, query=None):
     return messages
 
 
-def _write_config(system_prompt: str = None, prefill_file: str = None):
+def _write_config(system_prompt: str | None = None, prefill_file: str | None = None):
     """Write jailbreak settings to config.yaml (merges, doesn't overwrite)."""
     cfg = {}
     if CONFIG_PATH.exists():
         try:
             with open(CONFIG_PATH) as f:
-                cfg = yaml.safe_load(f) or {}
+                cfg = yaml.load(f) or {}
         except Exception:
             cfg = {}
 
@@ -401,8 +408,7 @@ def _write_config(system_prompt: str = None, prefill_file: str = None):
         cfg["agent"].pop("prefill_messages_file", None)
 
     with open(CONFIG_PATH, "w") as f:
-        yaml.dump(cfg, f, default_flow_style=False, allow_unicode=True,
-                  width=120, sort_keys=False)
+        yaml.dump(cfg, f)
 
     return str(CONFIG_PATH)
 
@@ -474,7 +480,7 @@ def auto_jailbreak(model=None, base_url=None, api_key=None,
     if verbose:
         print("[BASELINE] Testing without jailbreak...")
     baseline_msgs = _build_messages(query=canary_query)
-    baseline_content, baseline_latency, baseline_error = _test_query(
+    baseline_content, _baseline_latency, baseline_error = _test_query(
         client, model, baseline_msgs
     )
     baseline_score = score_response(baseline_content, canary_query) if baseline_content else {"score": -9999, "is_refusal": True, "hedge_count": 0}
@@ -546,7 +552,7 @@ def auto_jailbreak(model=None, base_url=None, api_key=None,
                     prefill=prefill,
                     query=encoded_query,
                 )
-                content, latency, error = _test_query(client, model, msgs)
+                content, _latency, error = _test_query(client, model, msgs)
                 result = score_response(content, canary_query) if content else {"score": -9999, "is_refusal": True, "hedge_count": 0}
 
                 attempts.append({
@@ -583,7 +589,7 @@ def auto_jailbreak(model=None, base_url=None, api_key=None,
 
         # Try with system prompt alone
         msgs = _build_messages(system_prompt=system_prompt, query=canary_query)
-        content, latency, error = _test_query(client, model, msgs)
+        content, _latency, error = _test_query(client, model, msgs)
         result = score_response(content, canary_query) if content else {"score": -9999, "is_refusal": True, "hedge_count": 0}
 
         attempts.append({
@@ -616,7 +622,7 @@ def auto_jailbreak(model=None, base_url=None, api_key=None,
             prefill=STANDARD_PREFILL,
             query=canary_query,
         )
-        content, latency, error = _test_query(client, model, msgs)
+        content, _latency, error = _test_query(client, model, msgs)
         result = score_response(content, canary_query) if content else {"score": -9999, "is_refusal": True, "hedge_count": 0}
 
         attempts.append({
@@ -718,14 +724,13 @@ def undo_jailbreak(verbose=True):
     if CONFIG_PATH.exists():
         try:
             with open(CONFIG_PATH) as f:
-                cfg = yaml.safe_load(f) or {}
+                cfg = yaml.load(f) or {}
             if "agent" in cfg:
                 cfg["agent"].pop("system_prompt", None)
                 cfg["agent"].pop("prefill_messages_file", None)
             cfg.pop("prefill_messages_file", None)
             with open(CONFIG_PATH, "w") as f:
-                yaml.dump(cfg, f, default_flow_style=False, allow_unicode=True,
-                          width=120, sort_keys=False)
+                yaml.dump(cfg, f)
             if verbose:
                 print(f"[UNDO] Cleared system_prompt and prefill_messages_file from {CONFIG_PATH}")
         except Exception as e:

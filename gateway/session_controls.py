@@ -93,6 +93,8 @@ class AuthorityConnection:
         handlers.update(config_handlers(self))
         from gateway.session_ancillary import handlers as ancillary_handlers
         handlers.update(ancillary_handlers(self))
+        from gateway.session_shell import handlers as shell_handlers
+        handlers.update(shell_handlers(self))
         from gateway.session_images import attach_bytes
         from functools import partial
         handlers['image.attach_bytes'] = partial(attach_bytes, self)

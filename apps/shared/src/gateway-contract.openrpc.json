@@ -9815,6 +9815,37 @@
         "title": "CanonicalSessionRef",
         "type": "object"
       },
+      "CanonicalShellExecParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "command": {
+            "title": "Command",
+            "type": "string"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          }
+        },
+        "required": [
+          "session_id",
+          "command"
+        ],
+        "title": "CanonicalShellExecParams",
+        "type": "object"
+      },
       "CanonicalSnapshot": {
         "additionalProperties": false,
         "properties": {
@@ -44369,6 +44400,24 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/CanonicalCorrectionResult"
+        }
+      }
+    },
+    {
+      "name": "shell.exec",
+      "summary": "Ink ``!cmd`` / ``{!cmd}`` on the shared owner: one safe command for a local session, in its frozen launch cwd (``gateway/session_shell.py``).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CanonicalShellExecParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ShellExecResult"
         }
       }
     },

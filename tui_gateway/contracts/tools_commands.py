@@ -11,7 +11,7 @@ from __future__ import annotations
 from pydantic import Field
 
 from .base import JsonValue, Params, Result, WireEnum
-from .registry import method
+from .registry import canonical_method, method
 
 
 class _Open(Result):
@@ -166,6 +166,17 @@ class ShellExecResult(Result):
 
 method("shell.exec", params=ShellExecParams, result=ShellExecResult,
        doc="Run a safe (non-dangerous) shell command captured for ``!cmd`` / inline substitution.")
+
+
+class CanonicalShellExecParams(Params):
+    session_id: str
+    command: str
+    profile: str | None = None
+
+
+canonical_method("shell.exec", params=CanonicalShellExecParams, result=ShellExecResult,
+                 doc="Ink ``!cmd`` / ``{!cmd}`` on the shared owner: one safe command for a local session, in "
+                     "its frozen launch cwd (``gateway/session_shell.py``).")
 
 
 class CliExecParams(Params):

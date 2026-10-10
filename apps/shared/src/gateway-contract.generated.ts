@@ -4426,6 +4426,11 @@ export interface OnboardingCatalogPlugin {
   app_state: CatalogAppState
   sentence: string
 }
+export interface CanonicalShellExecParams {
+  session_id: string
+  command: string
+  profile?: string | null
+}
 export interface PromptReceiptParams {
   session_id: string
   admission_id: string
@@ -6387,6 +6392,8 @@ export interface CanonicalRpcMethods {
   'session.redirect': { params: CanonicalCorrectionParams; result: CanonicalCorrectionResult }
   'session.resume': { params: CanonicalResumeParams; result: CanonicalSnapshot }
   'session.steer': { params: CanonicalCorrectionParams; result: CanonicalCorrectionResult }
+  /** Ink ``!cmd`` / ``{!cmd}`` on the shared owner: one safe command for a local session, in its frozen launch cwd (``gateway/session_shell.py``). */
+  'shell.exec': { params: CanonicalShellExecParams; result: ShellExecResult }
   /** Adopt a registered execution after verifying the live producer claim. */
   'worker.adopt': { params: WorkerScopeParams; result: WorkerExecution }
   /** Sequence-fenced typed persistence write from an adopted worker. */
@@ -6431,6 +6438,7 @@ export const CANONICAL_RPC_METHODS = [
   'session.redirect',
   'session.resume',
   'session.steer',
+  'shell.exec',
   'worker.adopt',
   'worker.persist',
   'worker.register'

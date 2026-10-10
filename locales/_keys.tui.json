@@ -703,6 +703,7 @@
   "secure.vault.unlockTitle",
   "session.approval.approved",
   "session.approval.denied",
+  "session.common.interpolationFailed",
   "session.common.invalidResponse",
   "session.handoff.exitedWithCode",
   "session.handoff.launchError",

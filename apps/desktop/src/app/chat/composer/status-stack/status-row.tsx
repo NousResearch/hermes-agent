@@ -104,7 +104,7 @@ export const StatusItemRow = memo(function StatusItemRow({
     item.type === 'background'
       ? running
         ? onStop && { label: s.stop, onClick: () => onStop(item.id) }
-        : onDismiss && { label: s.dismiss, onClick: () => onDismiss(item.id) }
+        : !item.notificationPending && onDismiss && { label: s.dismiss, onClick: () => onDismiss(item.id) }
       : null
 
   const canOpen = item.type === 'subagent' && !!onOpen

@@ -4,6 +4,7 @@ import { resetLiveRuntimeTracking } from '@/app/contrib/hooks/use-background-syn
 import { resetSidebarBatchCapability } from '@/hermes'
 import { invalidateProfileScopedQueries } from '@/lib/query-client'
 import { clearArtifactRegistry } from '@/store/artifacts'
+import { clearAllSessionBackground } from '@/store/composer-status'
 import { invalidateCronJobsRequests, setCronJobs } from '@/store/cron'
 import { resetDeadSessionPrune } from '@/store/dead-session-prune'
 import { resetSessionsLimit } from '@/store/layout'
@@ -225,6 +226,7 @@ export function wipeSessionListsForGatewaySwitch(): void {
   // session-unread.ts are keyed by durable session id and repaint the rows
   // that are still unread once the next gateway's lists load — so a profile
   // round-trip doesn't swallow green dots.
+  clearAllSessionBackground()
   // Runtime ids can be reused by the next backend. Retire both the live
   // checklist and its review snapshot before any new session is bound.
   clearAllSessionTodos()

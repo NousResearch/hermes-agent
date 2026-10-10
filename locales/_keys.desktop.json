@@ -4318,6 +4318,7 @@
     "sidebar.projects.worktreeStaleBackend",
     "sidebar.results",
     "sidebar.review",
+    "sidebar.row.activity",
     "sidebar.row.ageDay",
     "sidebar.row.ageHour",
     "sidebar.row.ageMin",

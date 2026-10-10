@@ -2653,6 +2653,7 @@ export const ruOverrides = {
       waitingForAnswer: 'Ждёт вашего ответа',
       finishedUnread: 'Завершён — не прочитан',
       backgroundRunning: 'Фоновая задача выполняется',
+      activity: 'Мониторинг',
       draftSession: 'Черновик — ещё ничего не отправлено',
       handoffOrigin: platform => `Передано из ${platform}`,
       ownedByProfile: profile => `Профиль: ${profile}`,

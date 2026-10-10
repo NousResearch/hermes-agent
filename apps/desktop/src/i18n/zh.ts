@@ -3255,6 +3255,7 @@ export const zhOverrides = {
       waitingForAnswer: '正在等待你的回答',
       finishedUnread: '已完成 — 未读',
       backgroundRunning: '后台任务运行中',
+      activity: '监控中',
       draftSession: '草稿 — 尚未发送',
       handoffOrigin: platform => `从 ${platform} 转接`,
       continuationOrigin: '自动延续 — 此对话已压缩并延续',

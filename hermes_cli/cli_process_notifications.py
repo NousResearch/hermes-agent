@@ -48,9 +48,14 @@ class CLIProcessNotificationsMixin:
             if claim is None:
                 continue
             claimed.append((event, text))
-            complete_event_delivery(event, claim)
+            if event.get("type") == "async_delegation":
+                complete_event_delivery(event, claim)
         if self._background_notifications_suppressed():
             # Subagent results are not process notifications: they still land.
+            # Suppressed process notices are a deliberate drop, so settle them now.
+            for event, _text in claimed:
+                if event.get("type") != "async_delegation":
+                    complete_event_delivery(event, "")
             claimed = [(event, text) for event, text in claimed if event.get("type") == "async_delegation"]
         for notifications in group_process_notifications(claimed):
             event, text = notifications[0]
@@ -65,6 +70,9 @@ class CLIProcessNotificationsMixin:
                 if diagnostic_process_event(event) and not isinstance(pending, TimelineNotification):
                     pending = TimelineNotification(text, text, "internal_notification", "diagnostic")
             self._pending_input.put(pending)
+            for event, _text in notifications:
+                if event.get("type") != "async_delegation":
+                    complete_event_delivery(event, "")
 
     def _tui_unwrap_input(self, user_input):
         """Unwrap ``_VoiceInputMessage`` / ``_SeededQueryMessage`` -> ``(text_or_tuple, is_voice_input, is_seeded_query)``."""

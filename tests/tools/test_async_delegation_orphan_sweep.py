@@ -253,7 +253,8 @@ def test_offer_dropped_by_a_session_that_cannot_own_it_is_re_offered_to_the_owne
     delegation_id = _orphan(home)
     later = _row(home, delegation_id)["updated_at"] + ad._ORPHAN_STALE_S + 1
     q = queue.Queue()
-    registry = type("Registry", (), {"completion_queue": q, "is_completion_consumed": lambda self, sid: False})()
+    registry = type("Registry", (), {"completion_queue": q, "is_completion_consumed": lambda self, sid: False,
+                                     "settle_notification": lambda self, evt: None})()
     started = []
     monkeypatch.setattr(server, "_emit", lambda *a, **k: None)
     monkeypatch.setattr(server, "_run_prompt_submit", lambda rid, sid, session, text, **kw: started.append(sid))

@@ -90,6 +90,99 @@ with httpx.Client(verify=resolve_httpx_verify()) as client:
     assert "truststore unavailable" in child.stderr
 
 
+@pytest.mark.parametrize("entry", ["launch", "worker", "desktop"])
+@pytest.mark.parametrize("installed_first", [False, True])
+@pytest.mark.parametrize("available", [False, True])
+def test_entrypoints_share_truststore_state(entry, installed_first, available):
+    """Execute startup through the first downstream boundary in a fresh process.
+
+    Only CLI dispatch, worker FD handoff and desktop worker dispatch are stopped;
+    the entrypoint, shared installer and SSL context construction stay real.
+    """
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    pytest.importorskip("truststore")
+    repo = Path(__file__).resolve().parents[2]
+    child = subprocess.run([sys.executable, "-c", """
+import importlib, os, runpy, ssl, sys, types
+from unittest.mock import patch
+import truststore
+from agent import ssl_verify as verify
+
+entry, installed_first, available = sys.argv[1:]
+installed_first, available = installed_first == 'True', available == 'True'
+original_context = ssl.SSLContext
+injections = []
+real_inject = truststore.inject_into_ssl
+
+def inject():
+    injections.append(1)
+    if not available:
+        raise ImportError('startup unavailable fixture')
+    real_inject()
+
+class BoundaryReached(Exception):
+    pass
+
+boundaries = []
+def boundary(*args, **kwargs):
+    boundaries.append(1)
+    assert verify._installed is available, (entry, verify._installed)
+    assert len(injections) == 1, (entry, injections)
+    assert ssl.SSLContext is (truststore.SSLContext if available else original_context)
+    context_class = ssl.SSLContext
+    real_load = context_class.load_default_certs
+    loads = []
+    def load(context, *a, **kw):
+        loads.append(1)
+        return real_load(context, *a, **kw)
+    with patch.object(context_class, 'load_default_certs', load):
+        context = verify._shared_context(None)
+    assert len(loads) == (0 if available else 1), loads
+    assert context.verify_mode == ssl.CERT_REQUIRED and context.check_hostname
+    assert verify.install_truststore() is available
+    assert len(injections) == 1
+    raise BoundaryReached
+
+with patch.object(truststore, 'inject_into_ssl', inject):
+    # Importing these stdlib-only entry modules must not install platform trust.
+    module_name = {'launch': 'pm.launch', 'worker': 'pm.worker',
+                   'desktop': 'scripts.bundles.desktop_toolchain'}[entry]
+    module = importlib.import_module(module_name)
+    assert verify._installed is None and injections == []
+    if installed_first:
+        assert verify.install_truststore() is available
+    try:
+        if entry == 'launch':
+            cli = types.ModuleType('pm.cli')
+            cli.main = boundary
+            runtime = types.ModuleType('pm.runtime')
+            runtime.lease_current_runtime = lambda: None
+            with patch.dict(sys.modules, {'pm.cli': cli, 'pm.runtime': runtime}):
+                module.main()
+        elif entry == 'worker':
+            # Stop before stdout redirection or any native FD mutation.
+            with patch.object(os, 'dup', boundary):
+                module.main()
+        else:
+            sys.argv = [module.__file__, 'desktop-worker.py', '--worker']
+            def dispatch(path, *, run_name):
+                assert path == 'desktop-worker.py' and run_name == '__main__'
+                assert sys.argv == ['desktop-worker.py', '--worker']
+                boundary()
+            run_entry = runpy.run_path
+            with patch.object(runpy, 'run_path', dispatch):
+                run_entry(module.__file__, run_name='__main__')
+    except BoundaryReached:
+        pass
+    assert boundaries == [1], (entry, boundaries)
+""", entry, str(installed_first), str(available)], cwd=repo,
+        capture_output=True, text=True, timeout=30)
+    assert child.returncode == 0, child.stdout + child.stderr
+
+
 def test_explicit_provider_ca_replaces_platform_trust_on_real_https(tmp_path):
     """A private endpoint trusts only its provider CA, never a global fallback."""
     from datetime import datetime, timedelta, timezone

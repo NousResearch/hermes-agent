@@ -927,9 +927,11 @@ class TestExternalSkillMutations:
         assert not (local / "ext-skill").exists()
 
 
-    def test_background_review_improves_any_skill_but_deletes_only_managed_ones(self, tmp_path):
-        """#134289: the review fork improves every skill it learns from (user-owned with no usage
-        record, pinned, bundled, hub-installed), while delete keeps the ownership/pin guard."""
+    def test_background_review_improves_user_owned_skills_but_not_bundled_ones(self, tmp_path):
+        """#134289 keeps ownership out of CONTENT writes for the skills a user owns — user-owned
+        with no usage record, or pinned — and the fork still improves those. A bundled or
+        hub-installed skill keeps the gate (its local copy IS the upstream copy), and delete keeps
+        the ownership/pin guard as before."""
         from tools.skill_manager_guards import mark_background_review_skill_read
         from tools.skill_provenance import (
             BACKGROUND_REVIEW,
@@ -940,8 +942,8 @@ class TestExternalSkillMutations:
         with _skill_dir(tmp_path), \
              patch("tools.skill_usage.load_usage", return_value={}), \
              patch("tools.skill_usage.get_record", return_value={"pinned": True}), \
-             patch("tools.skill_usage.is_bundled", return_value=True), \
-             patch("tools.skill_usage.is_hub_installed", return_value=True):
+             patch("tools.skill_usage.is_bundled", return_value=False), \
+             patch("tools.skill_usage.is_hub_installed", return_value=False):
             _create_skill("my-skill", VALID_SKILL_CONTENT)
             token = set_current_write_origin(BACKGROUND_REVIEW)
             try:

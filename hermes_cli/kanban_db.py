@@ -27,7 +27,7 @@ import time
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Callable, Iterable, Optional
 
 from hermes_cli.kanban_workflow import DEFAULT_STATUSES as VALID_STATUSES
 from toolsets import get_toolset_names
@@ -525,8 +525,6 @@ def board_exists(board: Optional[str] = None) -> bool:
     return _dir_holds_board(board_dir(slug))
 
 
-
-
 def _explicit_board_slug(board: Optional[str]) -> Optional[str]:
     """Explicit caller intent: a direct ``board=`` argument, else the scoped
     ``--board`` context (CLI ``hermes kanban --board``, dashboard plugin_api);
@@ -566,6 +564,7 @@ def _explicit_board_intent_pinned() -> bool:
 
 def _board_path(
     env_var: Optional[str], board: Optional[str], default_parts: tuple[str, ...], leaf: str,
+    root_for: Optional[Callable[[str], Path]] = None,
 ) -> Path:
     """Shared resolver. An explicit ``board=`` argument — or the scoped
     ``--board`` context (:func:`scoped_current_board`) — outranks the ``env_var``
@@ -574,17 +573,17 @@ def _board_path(
     is honored, but machine flows that enumerate boards (gateway notifier /
     watcher / dispatcher ticks) and dispatched or delegated workers keep
     resolving through the pin. Without explicit intent the ``env_var`` override
-    pins the file, else legacy ``<root>/<default_parts>`` for the ``default``
-    board, else ``board_dir(slug)/leaf``."""
+    pins the file, else ``root_for(slug)`` when given, else legacy
+    ``<root>/<default_parts>`` for ``default``, else ``board_dir(slug)/leaf``."""
     pin = os.environ.get(env_var, "").strip() if env_var else ""
     slug = _explicit_board_slug(board)
     if pin and (slug is None or _explicit_board_intent_pinned()):
         return Path(pin).expanduser()
     if slug is None:
         slug = get_current_board()
-    if slug == DEFAULT_BOARD:
+    if root_for is None and slug == DEFAULT_BOARD:
         return kanban_home().joinpath(*default_parts)
-    return board_dir(slug) / leaf
+    return root_for(slug) if root_for is not None else board_dir(slug) / leaf
 
 
 def kanban_db_path(board: Optional[str] = None) -> Path:
@@ -594,9 +593,9 @@ def kanban_db_path(board: Optional[str] = None) -> Path:
 
 
 def workspaces_root(board: Optional[str] = None) -> Path:
-    """Per-board scratch workspace root (``HERMES_KANBAN_WORKSPACES_ROOT`` wins);
-    ``default`` keeps the legacy ``<root>/kanban/workspaces/``."""
-    return _board_path("HERMES_KANBAN_WORKSPACES_ROOT", board, ("kanban", "workspaces"), "workspaces")
+    """Per-board scratch workspace root (``HERMES_KANBAN_WORKSPACES_ROOT`` wins),
+    else :func:`~hermes_cli.kanban_db_workspace.default_workspaces_root`."""
+    return _board_path("HERMES_KANBAN_WORKSPACES_ROOT", board, (), "", default_workspaces_root)
 
 
 def attachments_root(board: Optional[str] = None) -> Path:
@@ -4434,6 +4433,7 @@ from hermes_cli.kanban_db_workspace import (
     _is_managed_scratch_path,
     _managed_scratch_path_info,
     _scratch_workspace,
+    default_workspaces_root,
 )
 from hermes_cli.kanban_db_dispatch import (
     DEFAULT_FAILURE_LIMIT,

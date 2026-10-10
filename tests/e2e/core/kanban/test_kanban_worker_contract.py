@@ -65,8 +65,12 @@ def _run_one_card(board: Board, tid: str) -> None:
 # artifacts ------------------------------------------------------------------------------------
 
 
+def _scratch_root(board: Board) -> Path:
+    return board.hermes_home.parent / "hermes-workspaces" / "default"
+
+
 def _artifact_location(board: Board, tid: str, where: str) -> Path:
-    workspace = board.hermes_home / "kanban" / "workspaces" / tid
+    workspace = _scratch_root(board) / tid
     return {"inside": workspace / "report.md",
             "outside": board.hermes_home / "scripts" / f"{tid}-deliverable.md"}[where]
 
@@ -108,7 +112,7 @@ def test_declared_artifact_is_attached_or_reported(tmp_path, where: str) -> None
                 _assert_visible_refusal(board, srv, tid, _artifact_location(board, tid, where))
             if attached:
                 assert len(attached) == 1 and stored[0].read_text(encoding="utf-8") == payload, attached
-                assert not stored[0].is_relative_to(board.hermes_home / "kanban" / "workspaces"), stored
+                assert not stored[0].is_relative_to(_scratch_root(board)), stored
         finally:
             board.kill_workers()
 

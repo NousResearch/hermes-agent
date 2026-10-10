@@ -475,8 +475,11 @@ def _gateway_platform_value(platform: Any) -> str:
 
 def _non_conversational_metadata(
     metadata: Optional[dict[str, Any]] = None, *, platform: Any = None) -> Optional[dict[str, Any]]:
-    """Mark Discord lifecycle/status sends without changing other platforms."""
-    if _gateway_platform_value(platform) != "discord":
+    """Mark lifecycle/status sends for the platforms whose registry entry sets
+    ``reads_non_conversational_mark``, and leave other platforms' metadata unchanged."""
+    from gateway.platform_registry import platform_registry
+    entry = platform_registry.get(_gateway_platform_value(platform))
+    if not (entry and entry.reads_non_conversational_mark):
         return metadata
     merged = dict(metadata or {})
     merged["non_conversational"] = True
@@ -4205,9 +4208,10 @@ class GatewayRunner(
         """Set session context variables (contextvars, not os.environ, so concurrent messages can't
         overwrite each other). Returns reset tokens for ``_clear_session_env`` in a ``finally``."""
         from gateway.session_context import set_session_vars
+        from gateway.session_identity import identity_of
         # Async-delivery capability tells async tools whether this channel can wake a later turn. Default
         # True keeps CLI/unknown paths working; stateless adapters (api_server) declare False.
-        _adapter = (getattr(self, "adapters", None) or {}).get(context.source.platform)
+        _adapter = self._delivery_adapter_for(context.source)
         _async_delivery = getattr(_adapter, "supports_async_delivery", True)
         return set_session_vars(
             platform=context.source.platform.value,
@@ -4224,6 +4228,9 @@ class GatewayRunner(
             message_id=str(context.source.message_id) if context.source.message_id else "",
             profile=getattr(context.source, "profile", "") or "",
             async_delivery=_async_delivery,
+            transport_adapter=_adapter,
+            transport_loop=getattr(self, "_gateway_loop", None),
+            routing_identity=identity_of(context.source),
             cron_session="")
 
     def _clear_session_env(self, tokens: list) -> None:

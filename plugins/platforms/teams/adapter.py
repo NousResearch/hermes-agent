@@ -17,6 +17,7 @@ import asyncio
 import importlib.util
 import json
 import logging
+import os
 import re
 import sys
 from collections import deque
@@ -331,6 +332,100 @@ _APPROVAL_LABEL_KEYS = {
 }
 
 
+# FileConsentCard flow (personal chats only): Bot Framework rejects data: URIs
+# for non-image attachments, so a local document is offered with a consent
+# card, uploaded to the user's OneDrive on accept, then shown as a FileInfoCard.
+_FILE_CONSENT_CARD_TYPE = "application/vnd.microsoft.teams.card.file.consent"
+_FILE_INFO_CARD_TYPE = "application/vnd.microsoft.teams.card.file.info"
+_FILE_CONSENT_TTL_SECONDS = 24 * 3600
+# The token round-trips through Teams and becomes a filename on disk;
+# secrets.token_urlsafe(24) yields 32 chars of exactly this charset.
+_FILE_CONSENT_TOKEN_RE = re.compile(r"^[A-Za-z0-9_\-]{16,64}$")
+# OneDrive upload sessions require every chunk but the last to be a multiple
+# of 320 KiB (and at most 60 MiB).
+_FILE_UPLOAD_CHUNK_BYTES = 320 * 1024 * 32
+# The consent upload URL is a OneDrive-for-Business session on the user's
+# SharePoint host (commercial, GCC High, DoD); never PUT a snapshot elsewhere.
+_FILE_UPLOAD_HOST_SUFFIXES = (".sharepoint.com", ".sharepoint.us", ".sharepoint-mil.us")
+
+
+def _is_personal_chat_id(chat_id: str) -> bool:
+    """Fallback when no ConversationReference is cached: Graph 1:1 ids end with
+    ``@unq.gbl.spaces``, Bot Framework personal ids start with ``a:``; group and
+    channel ids are ``19:...@thread.*``."""
+    return chat_id.endswith("@unq.gbl.spaces") or chat_id.startswith("a:")
+
+
+def name_from_offer(claimed: Any) -> str:
+    """File name recorded in a claimed consent offer, or a neutral fallback.
+
+    Read from the claim itself: the decline branch runs before the offer's
+    ``meta`` is parsed, and the member still has to be told *which* file he
+    declined.
+    """
+    with suppress(OSError, ValueError):
+        with open(claimed, encoding="utf-8") as handle:
+            return str(json.loads(handle.read()).get("name") or "file")
+    return "file"
+
+
+def _mime_for(name: str) -> str:
+    """MIME type of a file name, with the fallback Teams expects."""
+    import mimetypes
+    return mimetypes.guess_type(str(name))[0] or "application/octet-stream"
+
+
+def _file_size(path: Any) -> Optional[int]:
+    """Size of a local file, or ``None`` when it cannot be measured."""
+    size: Optional[int] = None
+    with suppress(OSError):
+        size = os.path.getsize(path)
+    return size
+
+
+def _media_facts(source: str, default_mime: str, file_name: Optional[str] = None) -> tuple:
+    """Name, MIME type and byte size of the file the member asked for.
+
+    The name wins over the path the agent wrote (a temp file carries neither the
+    member's file name nor its extension), and its MIME type wins over the
+    guessed one; the MIME we actually sent is the fallback.
+    """
+    import mimetypes
+    if source.startswith(("http://", "https://")):
+        remote = source.split("?")[0]
+        name = file_name or os.path.basename(remote) or source
+        return (name, mimetypes.guess_type(name)[0] or mimetypes.guess_type(remote)[0] or default_mime, None)
+    path = source.removeprefix("file://")
+    name = file_name or os.path.basename(path) or path
+    mime_type = mimetypes.guess_type(name)[0] or mimetypes.guess_type(path)[0] or default_mime
+    return (name, mime_type, _file_size(path))
+
+
+def _http_status(exc: Any) -> Optional[int]:
+    """HTTP status of a rejected Bot Framework call, or ``None`` if it never reached the wire."""
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    return status if isinstance(status, int) else None
+
+
+def _rejection_receipt(exc: Any, name: str, mime_type: Optional[str] = None,
+                       size: Optional[int] = None) -> str:
+    """Name what was being sent and what Bot Framework answered, in one line.
+
+    The response body decides whether the cause is a ``data:`` URI Teams refuses
+    for this MIME type, the regional service URL, or an expired conversation --
+    without it every 400 looks alike. It is truncated, and it is only ever the
+    *response*: the attachment's own bytes are never logged.
+    """
+    response = getattr(exc, "response", None)
+    body = ""
+    with suppress(Exception):
+        body = getattr(response, "text", "") or ""
+    body = " ".join(str(body).split())
+    return (f"file={name} mime={mime_type or _mime_for(name)} "
+            f"size={size if size is not None else '?'} status={_http_status(exc)} "
+            f"body={_truncate(body, 500)!r}")
+
+
 def _truncate(text: str, limit: int) -> str:
     return text[:limit] + "..." if len(text) > limit else text
 
@@ -422,6 +517,10 @@ class TeamsAdapter(BasePlatformAdapter):
                 ctx: ActivityContext[AdaptiveCardInvokeActivity],
             ) -> InvokeResponse[AdaptiveCardActionMessageResponse]:
                 return await self._on_card_action(ctx)
+
+            @self._app.on_file_consent
+            async def _handle_file_consent(ctx: "ActivityContext[FileConsentInvokeActivity]") -> None:
+                await self._on_file_consent(ctx)
 
             self._wire_plugin_handlers(self._app)
             await self._app.initialize()
@@ -732,12 +831,218 @@ class TeamsAdapter(BasePlatformAdapter):
             with suppress(Exception):
                 await self._app.send(chat_id, TypingActivityInput())
 
+    def _is_personal_chat(self, chat_id: str) -> bool:
+        conv_ref = self._conv_refs.get(chat_id)
+        conv_type = getattr(getattr(conv_ref, "conversation", None), "conversation_type", None)
+        if conv_type:
+            return conv_type == "personal"
+        return _is_personal_chat_id(chat_id)
+
+    @staticmethod
+    def _file_consent_dir() -> Any:
+        from pathlib import Path
+        from hermes_constants import get_hermes_home
+        directory = Path(get_hermes_home()) / "teams_file_consents"
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        return directory
+
+    def _drop_file_consent(self, token: str) -> None:
+        directory = self._file_consent_dir()
+        for suffix in (".bin", ".json", ".claimed"):
+            with suppress(FileNotFoundError):
+                (directory / f"{token}{suffix}").unlink()
+
+    def _prune_file_consents(self) -> None:
+        """Drop offers nobody answered within the TTL (their snapshots would otherwise pile up)."""
+        import time
+        cutoff = time.time() - _FILE_CONSENT_TTL_SECONDS
+        for entry in self._file_consent_dir().iterdir():
+            with suppress(OSError):
+                if entry.stat().st_mtime < cutoff:
+                    entry.unlink()
+
+    async def _send_file_consent(
+        self, chat_id: str, path: str, file_name: Optional[str] = None, caption: Optional[str] = None
+    ) -> SendResult:
+        """Offer a local file with a FileConsentCard. The file is snapshotted under
+        ``$HERMES_HOME/teams_file_consents`` because the agent's path may be a temp file that is
+        gone by the time the user accepts; the card context carries only an opaque token."""
+        import secrets
+        import shutil
+        import time
+        from microsoft_teams.api import Attachment, MessageActivityInput
+
+        name = os.path.basename(file_name or path) or "file"
+        directory = self._file_consent_dir()
+        self._prune_file_consents()
+        token = secrets.token_urlsafe(24)
+        blob = directory / f"{token}.bin"
+        try:
+            await asyncio.to_thread(shutil.copyfile, path, blob)
+            os.chmod(blob, 0o600)
+            size = blob.stat().st_size
+            if size <= 0:
+                self._drop_file_consent(token)
+                return SendResult(success=False, retryable=False, error=f"Refusing to offer an empty file: {name}")
+            fd = os.open(directory / f"{token}.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump({"name": name, "size": size, "chat_id": chat_id, "created": time.time()}, f)
+            card = Attachment(
+                content_type=_FILE_CONSENT_CARD_TYPE, name=name,
+                content={
+                    "description": caption or name,
+                    "sizeInBytes": size,
+                    "acceptContext": {"hermes_file_token": token},
+                    "declineContext": {"hermes_file_token": token},
+                })
+            activity = MessageActivityInput().add_attachments(card)
+            result = await self._send_via_conv_ref(chat_id, activity, activity)
+        except Exception as e:
+            failed_name, failed_mime, _ = _media_facts(path, "application/octet-stream", name)
+            receipt = _rejection_receipt(e, failed_name, failed_mime, _file_size(blob))
+            self._drop_file_consent(token)
+            logger.error("[teams] file consent offer failed: %s %s", receipt, e,
+                         exc_info=not _http_status(e))
+            retryable = not isinstance(e, (FileNotFoundError, PermissionError, IsADirectoryError))
+            return SendResult(success=False, error=str(e), retryable=retryable)
+        logger.info("[teams] offered %s (%d bytes) via file consent card", name, size)
+        return SendResult(success=True, message_id=getattr(result, "id", None))
+
+    async def _on_file_consent(self, ctx: "ActivityContext[FileConsentInvokeActivity]") -> None:
+        """Handle the user's Allow / Decline on a FileConsentCard. The invoke must be answered
+        quickly, so the upload runs as a background task; the SDK replies 200 when this returns."""
+        import time
+
+        activity = ctx.activity
+        value = activity.value
+        context = getattr(value, "context", None)
+        token = str(context.get("hermes_file_token") or "") if isinstance(context, dict) else ""
+        if not _FILE_CONSENT_TOKEN_RE.match(token):
+            logger.warning("[teams] file consent invoke without a Hermes token; ignoring")
+            return None
+        conv_id = getattr(activity.conversation, "id", None) or ""
+        if conv_id:
+            self._conv_refs[conv_id] = ctx.conversation_ref
+        directory = self._file_consent_dir()
+        claimed = directory / f"{token}.claimed"
+        try:
+            # Atomic claim: a double click or a Teams retry must not upload twice.
+            os.rename(directory / f"{token}.json", claimed)
+        except FileNotFoundError:
+            logger.info("[teams] file consent %s already answered or expired", token[:8])
+            if conv_id:
+                with suppress(Exception):
+                    await self.send(conv_id, "That file offer has expired or was already answered.")
+            return None
+        action = str(getattr(value.action, "value", value.action) or "")
+        if action != "accept":
+            logger.info("[teams] file consent %s declined", token[:8])
+            declined = name_from_offer(claimed)
+            self._drop_file_consent(token)
+            if conv_id:
+                with suppress(Exception):
+                    await self.send(conv_id, f"⚠️ Could not deliver {declined}: "
+                                             "the file consent card was declined.")
+            return None
+        denied = self._card_action_denied(activity.from_)
+        if denied:
+            self._drop_file_consent(token)
+            if conv_id:
+                with suppress(Exception):
+                    await self.send(conv_id, denied)
+            return None
+        try:
+            meta = json.loads(claimed.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as e:
+            logger.error("[teams] file consent %s metadata unreadable: %s", token[:8], e)
+            self._drop_file_consent(token)
+            return None
+        if meta.get("chat_id") != conv_id:
+            logger.warning(
+                "[teams] file consent %s answered in %s but offered in %s; refusing",
+                token[:8], conv_id, meta.get("chat_id"))
+            self._drop_file_consent(token)
+            return None
+        if float(meta.get("created") or 0) + _FILE_CONSENT_TTL_SECONDS < time.time():
+            self._drop_file_consent(token)
+            with suppress(Exception):
+                await self.send(conv_id, "That file offer has expired; ask me to send it again.")
+            return None
+        task = asyncio.create_task(self._complete_file_consent(conv_id, token, meta, value.upload_info))
+        tasks = self.__dict__.setdefault("_file_consent_tasks", set())
+        tasks.add(task)
+        task.add_done_callback(tasks.discard)
+        return None
+
+    async def _complete_file_consent(self, chat_id: str, token: str, meta: dict, upload_info: Any) -> None:
+        name = str(meta.get("name") or "file")
+        try:
+            upload_url = str(getattr(upload_info, "upload_url", "") or "")
+            if not upload_url.startswith("https://"):
+                raise ValueError("Teams returned no usable upload URL")
+            upload_host = (urlparse(upload_url).hostname or "").lower()
+            if not upload_host.endswith(_FILE_UPLOAD_HOST_SUFFIXES):
+                raise ValueError(f"Upload host {upload_host} is not a SharePoint/OneDrive host")
+            from tools.url_safety import is_safe_url
+            if not await asyncio.to_thread(is_safe_url, upload_url):
+                raise ValueError("Blocked unsafe upload URL (SSRF protection)")
+            await self._upload_to_consent_url(upload_url, self._file_consent_dir() / f"{token}.bin")
+            from microsoft_teams.api import Attachment, MessageActivityInput
+            card = Attachment(
+                content_type=_FILE_INFO_CARD_TYPE,
+                name=getattr(upload_info, "name", None) or name,
+                content_url=getattr(upload_info, "content_url", None),
+                content={
+                    "uniqueId": getattr(upload_info, "unique_id", None),
+                    "fileType": getattr(upload_info, "file_type", None),
+                })
+            activity = MessageActivityInput().add_attachments(card)
+            await self._send_via_conv_ref(chat_id, activity, activity)
+            logger.info("[teams] delivered %s via file consent", name)
+        except Exception as e:
+            logger.error(
+                "[teams] file consent delivery failed: %s %s",
+                _rejection_receipt(e, name, _mime_for(name), meta.get("size")), e,
+                exc_info=not _http_status(e))
+            # httpx errors embed the request URL, which is the pre-authenticated
+            # upload session: the chat gets the type and status, the log the rest.
+            status = _http_status(e)
+            reason = f"{type(e).__name__} (HTTP {status})" if status else type(e).__name__
+            with suppress(Exception):
+                await self.send(chat_id, f"⚠️ Could not deliver {name}: {reason}. Ask me to send it again.")
+        finally:
+            self._drop_file_consent(token)
+
+    async def _upload_to_consent_url(self, upload_url: str, blob: Any) -> None:
+        """PUT the snapshot into the pre-authenticated OneDrive upload session, chunked with
+        Content-Range. The URL carries its own auth; no bearer token is sent."""
+        import httpx
+        total = blob.stat().st_size
+        async with httpx.AsyncClient(timeout=120.0, follow_redirects=False) as client:
+            with open(blob, "rb") as f:
+                start = 0
+                while start < total:
+                    chunk = await asyncio.to_thread(f.read, _FILE_UPLOAD_CHUNK_BYTES)
+                    if not chunk:
+                        raise OSError(f"snapshot shrank during upload at byte {start} of {total}")
+                    end = start + len(chunk) - 1
+                    resp = await client.put(
+                        upload_url, content=chunk,
+                        headers={"Content-Range": f"bytes {start}-{end}/{total}", "Content-Length": str(len(chunk))})
+                    if resp.status_code not in (200, 201, 202):
+                        raise httpx.HTTPStatusError(
+                            f"upload rejected at bytes {start}-{end} ({resp.status_code}): {resp.text}",
+                            request=resp.request, response=resp)
+                    start = end + 1
+
     async def _send_media_attachment(
-        self, chat_id: str, source: str, default_mime: str, caption: Optional[str] = None, media_label: str = "media"
+        self, chat_id: str, source: str, default_mime: str, caption: Optional[str] = None, media_label: str = "media",
+        file_name: Optional[str] = None,
     ) -> SendResult:
         """Send any media file/URL as a Teams attachment (shared by send_image/video/voice/document).
-        Remote ``http(s)://`` URLs are attached by reference; local paths (optional ``file://`` prefix)
-        are base64-encoded into a data URI. MIME is guessed from the path, else ``default_mime``."""
+        Remote ``http(s)://`` URLs are attached by reference and local images as base64 data URIs.
+        Bot Framework rejects data URIs for anything else (HTTP 400), so other local files go
+        through the FileConsentCard flow in personal chats and fail without retry elsewhere."""
         if not self._app:
             return SendResult(success=False, error="Teams app not initialized")
         try:
@@ -751,6 +1056,13 @@ class TeamsAdapter(BasePlatformAdapter):
             else:
                 path = source.removeprefix("file://")
                 mime_type = mimetypes.guess_type(path)[0] or default_mime
+                if not mime_type.startswith("image/"):
+                    if not self._is_personal_chat(chat_id):
+                        return SendResult(
+                            success=False, retryable=False,
+                            error=("Teams accepts local non-image files only in a personal (1:1) chat, "
+                                   "through a file consent card; this conversation is a group chat or channel."))
+                    return await self._send_file_consent(chat_id, path, file_name=file_name, caption=caption)
                 with open(path, "rb") as f:
                     content_url = f"data:{mime_type};base64,{base64.b64encode(f.read()).decode()}"
             activity = MessageActivityInput().add_attachments(Attachment(content_type=mime_type, content_url=content_url))
@@ -759,7 +1071,10 @@ class TeamsAdapter(BasePlatformAdapter):
             result = await self._send_via_conv_ref(chat_id, activity, activity)
             return SendResult(success=True, message_id=getattr(result, "id", None))
         except Exception as e:
-            logger.error("[teams] send_%s failed: %s", media_label, e, exc_info=True)
+            logger.error(
+                "[teams] send_%s failed: %s %s", media_label,
+                _rejection_receipt(e, *_media_facts(source, default_mime, file_name)), e,
+                exc_info=not _http_status(e))
             return SendResult(success=False, error=str(e), retryable=True)
 
     async def send_image(self, chat_id: str, image_url: str, caption: Optional[str] = None, reply_to: Optional[str] = None,
@@ -781,7 +1096,8 @@ class TeamsAdapter(BasePlatformAdapter):
     async def send_document(self, chat_id: str, file_path: str, caption: Optional[str] = None, file_name: Optional[str] = None,
                             reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None, **kwargs) -> SendResult:
         return await self._send_media_attachment(
-            chat_id, file_path, "application/octet-stream", caption=caption, media_label="document")
+            chat_id, file_path, "application/octet-stream", caption=caption, media_label="document",
+            file_name=file_name)
 
     async def get_chat_info(self, chat_id: str) -> dict:
         return {"name": chat_id, "type": "unknown", "chat_id": chat_id}

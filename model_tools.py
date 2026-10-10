@@ -790,7 +790,7 @@ def _pre_dispatch_guards(function_name: str, function_args: dict[str, Any], skip
     # via ContextVar only for ACP sessions, so CLI/gateway paths are unaffected.
     try:
         from acp_adapter.edit_approval import maybe_require_edit_approval
-        edit_block_message = maybe_require_edit_approval(function_name, function_args)
+        edit_block_message = maybe_require_edit_approval(function_name, function_args, task_id=ids.task_id or "default")
         if edit_block_message is not None:
             return function_args, (edit_block_message, "edit_approval_denied", None)
     except Exception as _edit_approval_err:

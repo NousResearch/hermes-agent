@@ -1295,7 +1295,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         return entry
 
     def _sync_entry_from_pool_store(self, entry: PooledCredential) -> PooledCredential:
-        """Adopt a token pair rotated by another pool instance (anthropic, xai-oauth).
+        """Adopt a token pair rotated by another pool instance (anthropic, xai-oauth, Codex manual:*).
 
         Re-reads the exact persisted row from the credential-pool store while
         the shared cross-process auth-store lock is held. Direct integrations
@@ -1308,13 +1308,19 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         a "rotation" — blanking a usable credential. The singleton file, not
         the pool store, is token authority for those sources; a row with no
         token material at all is refused for the same reason.
+
+        Codex: only ``manual:*`` rows (``hermes auth add openai-codex``). They never write back to the
+        singleton (#39236), so their own pool row is where a peer's rotation lands; the singleton-seeded
+        ``device_code`` row keeps following auth.json via ``_sync_entry_from_auth_store``.
         """
-        if self.provider not in ("anthropic", "xai-oauth") and plugin_refresh_hook(self.provider) is None:
+        if self.provider not in ("anthropic", "xai-oauth", "openai-codex") and plugin_refresh_hook(self.provider) is None:
             return entry
         is_anthropic = self.provider == "anthropic"
         is_xai = self.provider == "xai-oauth"
-        display = {"anthropic": "Anthropic", "xai-oauth": "xAI"}.get(self.provider, self.provider)
+        display = {"anthropic": "Anthropic", "xai-oauth": "xAI", "openai-codex": "Codex"}.get(self.provider, self.provider)
         if is_anthropic and is_borrowed_credential_source(entry.source, self.provider):
+            return entry
+        if self.provider == "openai-codex" and not _is_manual_source(entry.source):
             return entry
         try:
             persisted = next(
@@ -1548,7 +1554,9 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         # the winner's rotated token and skips the POST.
         with _auth_store_lock(timeout_seconds=self._single_use_refresh_lock_timeout()):
             if self.provider == "openai-codex":
-                synced = self._sync_entry_from_auth_store(entry)
+                # Pool row first: a peer instance rotates a manual:* row only there, and the
+                # singleton-predates guard must compare against that fresher generation.
+                synced = self._sync_entry_from_auth_store(self._sync_entry_from_pool_store(entry))
                 if synced is not entry and not force and not self._entry_needs_refresh(synced):
                     return synced
                 return self._refresh_entry_impl(synced, force=force)
@@ -1821,7 +1829,10 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                 return None
         elif self.provider in _TOKENS_SINGLETON_PROVIDERS:
             _, display, _, terminal_fn_name = _TOKENS_SINGLETON_PROVIDERS[self.provider]
-            synced = self._sync_entry_from_auth_store(entry)
+            # Codex manual:* rows: a peer's rotation lands in the pool row, never the singleton. Without
+            # this re-read the quarantine's persist below adopts that fresh pair and it is marked DEAD.
+            pooled = self._sync_entry_from_pool_store(entry) if self.provider == "openai-codex" else entry
+            synced = self._sync_entry_from_auth_store(pooled)
             if synced.refresh_token != entry.refresh_token:
                 logger.debug("%s OAuth refresh failed but auth.json has newer tokens — adopting", display)
                 return self._adopt(synced, **_MARK_OK)

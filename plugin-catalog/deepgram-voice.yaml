@@ -11,4 +11,4 @@ capabilities:
   provides_hooks: []
   provides_middleware: []
   requires_env:
-  - name
+  - DEEPGRAM_API_KEY

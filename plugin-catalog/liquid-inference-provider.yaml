@@ -1,17 +1,7 @@
 name: liquid-inference-provider
 repo: https://github.com/architect-xyz/hermes-liquid-inference
 sha: acd120f007367c1f422d3cd6ffe643f916f0b5f7
-description: >-
-  Liquid Inference, an auction exchange for LLM inference, as a Hermes model provider (provider id
-  `liquid`): the exchange sends each request to the eligible offer with the lowest estimated charge,
-  and each request carries a cap on its charge (1 USD by default; set
-  `model.default_headers.x-liquid-cap-usd` to change it). Submitted by Architect, the operator of
-  Liquid Inference. Disclosure — registers one model provider at import and nothing else (no tools,
-  hooks, commands or threads); chat requests and the model list go to
-  https://router.inference.ai.exchange/v1 (or LIQUID_BASE_URL) through Hermes' own client with
-  LIQUID_API_KEY, which Hermes reads; each chat request carries the headers `X-Title: Hermes Agent`
-  and `x-liquid-cap-usd`, and a top-level `reasoning_effort` only when the user selects a level; the
-  plugin itself opens no connections, reads and writes no files and starts no processes.
+description: "Liquid Inference, an auction exchange for LLM inference, as a Hermes model provider (provider id `liquid`): the exchange sends each request to the eligible offer with the lowest estimated charge, and each request carries a cap on its charge (1 USD by default; set `model.default_headers.x-liquid-cap-usd` to change it). Submitted by Architect, the operator of Liquid Inference. Disclosure — registers one model provider at import and nothing else (no tools, hooks, commands or threads). Chat requests (full prompts and tool results), auxiliary tasks (model `liquid.auto`) and the model list go through Hermes's own client to https://router.inference.ai.exchange/v1 (or LIQUID_BASE_URL) with LIQUID_API_KEY. The exchange forwards each request to whichever third-party provider wins its auction. Each request is billed up to its `x-liquid-cap-usd` cap (1 USD by default, set with `model.default_headers.x-liquid-cap-usd`) and carries `X-Title: Hermes Agent`. A top-level `reasoning_effort` is sent only when you select a level."
 maintainer: architect-xyz
 tier: community
 category: models

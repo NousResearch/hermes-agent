@@ -708,7 +708,8 @@ def _spawn_delivery(command: str, label: str, *, dm_file: Optional[str] = None, 
 
         raw = terminal_tool(command, background=True, notify_on_complete=True, task_id=task_id,
                             workdir=str(Path(__file__).resolve().parent.parent), _host_local=True,
-                            _completion_output_chars=REPLY_COMPLETION_CHARS)
+                            _completion_output_chars=REPLY_COMPLETION_CHARS,
+                            persist_on_release=True)
         try:
             parsed = json.loads(raw)
         except (ValueError, TypeError):

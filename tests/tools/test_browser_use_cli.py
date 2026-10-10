@@ -1227,3 +1227,24 @@ class TestTimeoutProcessGroupKill:
         monkeypatch.setattr(bu_cli, "_kill_cli_process_group", lambda proc: None)
         with pytest.raises(subprocess.TimeoutExpired):
             bu_cli._run_cli_killing_process_group(["x"], "code", {}, 5)
+
+
+class TestBlockedPageHint:
+    def test_exec_flags_a_bot_wall_and_carries_the_hint(self, tmp_path, monkeypatch):
+        """A PerimeterX wall comes back as a normal success; browser_exec must name it and say what to do."""
+        cli = _fake_cli(tmp_path, "cat > /dev/null\necho \"{'url': 'https://streeteasy.com/x', 'title': 'Access to this page has been denied'}\"\n")
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+        monkeypatch.setattr(bu_cli, "_read_browser_cfg", lambda: {"blocked_page_hint": "Retry in Aside."})
+
+        result = json.loads(bu_cli.browser_exec("print(1)"))
+
+        assert result["blocked"] == "perimeterx"
+        assert result["blocked_hint"] == "Retry in Aside."
+
+    def test_exec_leaves_normal_pages_alone(self, tmp_path, monkeypatch):
+        cli = _fake_cli(tmp_path, "cat > /dev/null\necho \"{'url': 'https://news.ycombinator.com/', 'title': 'Hacker News'}\"\n")
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+
+        result = json.loads(bu_cli.browser_exec("print(1)"))
+
+        assert "blocked" not in result and "blocked_hint" not in result

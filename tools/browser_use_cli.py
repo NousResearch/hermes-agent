@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from hermes_constants import get_hermes_home
+from tools.browser_use_cli_blocks import blocked_page_hint, detect_block
 from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
@@ -707,6 +708,12 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
         result["workspace"] = workspace
     if session:
         result["session"] = session
+    blocked_by = detect_block(result["output"])
+    if blocked_by:
+        result["blocked"] = blocked_by
+        hint = blocked_page_hint(_read_browser_cfg())
+        if hint:
+            result["blocked_hint"] = hint
     stderr = redact_sensitive_text((proc.stderr or "").strip(), force=True)
     if len(stderr) > _STDERR_CAP_CHARS:
         stderr = stderr[:_STDERR_CAP_CHARS] + "\n… (stderr truncated)"

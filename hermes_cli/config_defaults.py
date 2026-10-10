@@ -474,6 +474,9 @@ DEFAULT_CONFIG = {
         # website/docs/developer-guide/browser-supervisor.md.
         "dialog_policy": "must_respond",  # must_respond | auto_dismiss | auto_accept
         "dialog_timeout_s": 300,  # safety auto-dismiss after N seconds under must_respond
+        # Added to browser_exec results that look like a bot-protection wall (Akamai / PerimeterX /
+        # Cloudflare / DataDome / Imperva). None = built-in hint; "" disables it.
+        "blocked_page_hint": None,
         "camofox": {
             # true = send a stable profile-scoped userId so Camofox maps it to a persistent Firefox
             # profile; false = random ephemeral userId per session.

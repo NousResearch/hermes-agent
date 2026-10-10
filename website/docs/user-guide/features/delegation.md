@@ -566,7 +566,8 @@ Top-level model-facing `delegate_task` calls run in the background automatically
 For **durable execution** that must survive session closure or process restart, use:
 
 - `cronjob` (action=`create`) — schedules a separate agent run; immune to parent-turn interrupts.
-- `terminal(background=True, notify_on_complete=True)` — long-running shell commands that keep running while the agent does other things.
+
+`terminal(background=True, notify_on_complete=True)` is **not** durable execution. A background command keeps running past the turn that started it, and with `persist_on_release=True` it also survives session close/reset, compression, and error recovery — but a graceful gateway shutdown still kills every tracked process, and after a crash the checkpoint may re-adopt a surviving PID as a detached session that cannot reconnect stdout (status and stop only, never the live log). It keeps the agent's own work going, not a restart-proof job queue; anything that must survive a restart belongs in a `cronjob`.
 :::
 
 ## Key Properties

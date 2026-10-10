@@ -5,6 +5,8 @@ import { delimiter, join } from 'node:path'
 
 import { withInkSuspended } from '@hermes/ink'
 
+import { editorChildEnv } from './editor-env.js'
+
 /**
  * Editor fallback chain when neither $VISUAL nor $EDITOR is set. Mirrors
  * prompt_toolkit's `Buffer.open_in_editor()` picker so the classic CLI and
@@ -55,11 +57,12 @@ export async function openInEditor(initial: string, suffix = '.txt'): Promise<nu
   const dir = mkdtempSync(join(tmpdir(), 'hermes-edit-'))
   const file = join(dir, `edit${suffix}`)
   writeFileSync(file, initial)
-  const [cmd, ...args] = resolveEditor()
+  const childEnv = editorChildEnv()
+  const [cmd, ...args] = resolveEditor(childEnv)
   let status: null | number = null
 
   await withInkSuspended(async () => {
-    status = spawnSync(cmd!, [...args, file], { stdio: 'inherit' }).status
+    status = spawnSync(cmd!, [...args, file], { env: childEnv, stdio: 'inherit' }).status
   })
 
   try {

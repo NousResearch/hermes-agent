@@ -525,9 +525,14 @@ class TestRestartWaitsForApiServerPort:
         listener.bind(("127.0.0.1", 0))
         listener.listen(8)
         port = listener.getsockname()[1]
-        threading.Timer(0.3, listener.close).start()
-
-        assert gateway._wait_for_tcp_port_free("127.0.0.1", port, timeout=5.0) is True
+        closer = threading.Timer(0.3, listener.close)
+        closer.start()
+        try:
+            assert gateway._wait_for_tcp_port_free("127.0.0.1", port, timeout=5.0) is True
+        finally:
+            closer.cancel()
+            closer.join(timeout=2.0)
+            listener.close()
 
     def test_wait_targets_the_configured_api_server_port_only_when_enabled(self, monkeypatch):
         import socket
@@ -645,13 +650,14 @@ class TestStopProfileGateway:
         assert gateway.stop_profile_gateway() is True
         assert calls == [(pid, True, 100)]
 
+    @pytest.mark.platforms("posix")
     def test_stop_profile_gateway_keeps_pid_file_when_process_still_running(self, monkeypatch):
         calls = {"kill": 0, "alive_probes": 0, "remove": 0, "reap_calls": 0}
 
         monkeypatch.setattr("gateway.status.get_running_pid", lambda: 12345)
         # Post-#21561: the stop loop sends one SIGTERM via ``os.kill`` then
-        # polls liveness via ``gateway.status._pid_exists`` (safe on
-        # Windows — bpo-14484). Instrument both seams separately.
+        # polls liveness via ``gateway.status._pid_exists``. Windows uses
+        # the marker/drain path instead. Instrument both POSIX seams separately.
         monkeypatch.setattr(
             gateway.os,
             "kill",

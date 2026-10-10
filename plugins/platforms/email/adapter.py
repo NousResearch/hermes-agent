@@ -549,7 +549,8 @@ class EmailAdapter(BasePlatformAdapter):
         self._trim_seen_uids()
 
     def _record_consumed_uid(self, uid) -> None:
-        """Record a UID as consumed and advance the replay boundary."""
+        """Record a terminal outcome, clear its retry exception and advance the replay boundary."""
+        self._pending_fetch_uids.discard(uid)
         try:
             numeric_uid = int(uid)
         except (TypeError, ValueError):
@@ -560,13 +561,19 @@ class EmailAdapter(BasePlatformAdapter):
         if len(self._seen_uids) > self._seen_uids_max:
             self._trim_seen_uids()
 
+    def _record_fetch_failure(self, uid, status, *, stage: str) -> None:
+        """Keep a retry gap below the watermark and report it after partial dispatch."""
+        self._pending_fetch_uids.add(uid)
+        self._last_fetch_failed = True
+        self._last_fetch_error = f"IMAP {stage} FETCH failed for UID {uid!r} with status {status}"
+        logger.warning("[Email] %s", self._last_fetch_error)
+
     @staticmethod
     def _read_uidvalidity(imap) -> Optional[int]:
         """Return the selected mailbox's UIDVALIDITY when advertised, else ``None``."""
-        try:
-            response = imap.response("UIDVALIDITY")
-        except Exception:
-            return None
+        # response() reads cached SELECT metadata. Unexpected errors belong to the outer
+        # probe/poll failure boundary, not the "server did not advertise an epoch" path.
+        response = imap.response("UIDVALIDITY")
         if not isinstance(response, (tuple, list)) or len(response) < 2:
             return None
         values = response[1]
@@ -861,6 +868,7 @@ class EmailAdapter(BasePlatformAdapter):
                             pass
                     header_status, header_data = imap.uid("fetch", uid, _PREAUTH_FETCH)
                     if header_status != "OK":
+                        self._record_fetch_failure(uid, header_status, stage="header")
                         continue
                     raw_headers = _imap_payload(header_data)
                     if raw_headers is None or len(raw_headers) > _MAX_PREAUTH_HEADER_BYTES:
@@ -881,21 +889,13 @@ class EmailAdapter(BasePlatformAdapter):
                     body_fetch = "(BODY.PEEK[])" if self._imap_peek else "(RFC822)"
                     status, msg_data = imap.uid("fetch", uid, body_fetch)
                     if status != "OK":
-                        # Keep this UID as an explicit exception to the watermark and continue,
-                        # so one persistently unfetchable message cannot starve all later mail.
-                        # The failure still surfaces through reconnect/backoff after _check_inbox()
-                        # dispatches any partial results.
-                        self._pending_fetch_uids.add(uid)
-                        self._last_fetch_failed = True
-                        self._last_fetch_error = f"IMAP FETCH failed for UID {uid!r} with status {status}"
-                        logger.warning("[Email] %s", self._last_fetch_error)
+                        self._record_fetch_failure(uid, status, stage="body")
                         continue
                     # Mark seen once a response arrived (even malformed) so garbage is skipped once, not retried forever —
                     # but NOT before the fetch: a connection failure must leave the rest of the batch eligible for the next poll.
                     # IMAP fetch can return unexpected structures (e.g. a single bytes item instead of a
                     # list of tuples). See #80032. Advance the replay boundary only after the server
                     # returned a response; a failed fetch must remain eligible next poll.
-                    self._pending_fetch_uids.discard(uid)
                     self._record_consumed_uid(uid)
                     if (raw_email := _imap_payload(msg_data)) is None:
                         logger.warning("[Email] Unexpected IMAP response structure for UID %s, skipping", uid)

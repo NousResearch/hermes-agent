@@ -2027,6 +2027,8 @@ class BasePlatformAdapter(ABC):
         # the base adapter's whole-file auto-TTS path skips the duplicate. Cleared after the turn completes.
         # See #60671.
         self._streaming_tts_completed_turns: set[str] = set()
+        # One diagnostic per conversation outage, reset after successful synthesis.
+        self._auto_tts_failure_notices: Dict[str, bool] = {}
         # Chats whose typing indicator is paused (approval waits); _keep_typing skips them.
         self._typing_paused: set = set()
         # Per-chat status phrase; the regular _keep_typing refresh renders it (no extra API calls).
@@ -4219,6 +4221,43 @@ class BasePlatformAdapter(ABC):
             logger.warning("[%s] Auto-TTS failed: %s", self.name, tts_err)
         return paths, requested_path
 
+    def _auto_tts_notice_state(self) -> Dict[str, bool]:
+        # Gateway ownership survives transport replacement; standalone adapters own
+        # their local lifecycle. Keys retain the canonical profile/conversation identity.
+        owner = self.gateway_runner if self.gateway_runner is not None else self
+        return _lazy_attr(owner, "_auto_tts_failure_notices", dict)
+
+    async def _notify_auto_tts_failure(
+        self, event: MessageEvent, session_key: str, metadata: Dict[str, Any],
+    ) -> None:
+        """Explain a text-only fallback without exposing provider errors or sealing a stream."""
+        from gateway.platforms.helpers import bounded_put
+
+        delivery_adapter = self._final_delivery_adapter(event.source)
+        notices = self._auto_tts_notice_state()
+        if session_key in notices:
+            return
+        warning_metadata = {**metadata, "_interim_send": True}
+        try:
+            with self._media_delivery_scope(event.source):
+                if not self.warning_notifications_enabled(
+                        chat_id=event.source.chat_id, metadata=warning_metadata):
+                    return
+            bounded_put(notices, session_key, True, 2000)
+            result = await delivery_adapter.send(
+                event.source.chat_id,
+                "Voice reply unavailable; falling back to text. "
+                "Ask the operator to check the configured TTS provider and its dependencies.",
+                reply_to=event.message_id, metadata=warning_metadata)
+            if result is None or not result.success:
+                notices.pop(session_key, None)
+        except asyncio.CancelledError:
+            notices.pop(session_key, None)
+            raise
+        except Exception:
+            notices.pop(session_key, None)
+            logger.debug("[%s] Could not send auto-TTS failure notice", self.name, exc_info=True)
+
     def _wants_auto_tts(self, event: MessageEvent, session_key: str, interrupt_event: asyncio.Event,
                         text_content: str, media_files: list) -> bool:
         """Auto-TTS on voice input (voice-first), gated by /voice or voice.auto_tts;
@@ -4599,9 +4638,13 @@ class BasePlatformAdapter(ABC):
                 # Final content gets notify=True; typing metadata stays unmarked (thread-strict).
                 _final_thread_metadata = _mark_notify_metadata(_thread_metadata)
                 _tts_paths, _tts_requested_path = [], None
+                _auto_tts_failed = False
                 if self._wants_auto_tts(
                         event, session_key, interrupt_event, text_content, media_files):
                     _tts_paths, _tts_requested_path = await self._synthesize_auto_tts(text_content)
+                    _auto_tts_failed = not _tts_paths
+                    if _tts_paths:
+                        self._auto_tts_notice_state().pop(session_key, None)
                 # TTS plays before text; generated files are removed afterwards.
                 _tts_caption_delivered = False
                 for _tts_index, _tts_path in enumerate(_tts_paths):
@@ -4635,6 +4678,8 @@ class BasePlatformAdapter(ABC):
                     event, extracted, _final_thread_metadata,
                     anything_sent=delivery_attempted or _tts_caption_delivered,
                     record_delivery=_record_delivery)
+                if _auto_tts_failed:
+                    await self._notify_auto_tts_failure(event, session_key, _final_thread_metadata)
             await self._release_turn_marker(event)
             processing_ok = delivery_succeeded if delivery_attempted else not bool(response)
             # Clean up the per-turn streaming-TTS flag.

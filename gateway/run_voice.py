@@ -403,12 +403,14 @@ class GatewayVoiceMixin:
         may return one combined file or several separately valid ones (combination unavailable /
         over a platform limit); legacy single-file results keep working."""
         audio_path, actual_paths = None, []
+        voice_failed = False
         try:
             from tools.tts_text_normalize import _strip_markdown_for_tts
             from tools.tts_tool import text_to_speech_tool
             tts_text = _strip_markdown_for_tts(text)
             if not tts_text:
                 return
+            voice_failed = True
             # Platforms whose native voice bubbles require Ogg/Opus (OPUS_VOICE_PLATFORMS) get an
             # explicit .ogg path; the TTS tool's container repair guarantees real Ogg/Opus bytes.
             audio_path = build_auto_tts_output_path(event.source.platform)
@@ -426,13 +428,34 @@ class GatewayVoiceMixin:
                 logger.warning("Auto voice reply TTS failed: %s", result.get("error"))
                 return
             actual_paths = paths
+            # Synthesis recovered. Upload accounting remains the delivery layer's
+            # contract; a transport refusal is not a provider outage.
+            voice_failed = False
+            adapter = self._delivery_adapter_for(event.source)
+            from gateway.session import build_session_key
+            with suppress(Exception):
+                adapter._auto_tts_notice_state().pop(build_session_key(event.source), None)
             await self._deliver_voice_reply(event, actual_paths)
+        except asyncio.CancelledError:
+            voice_failed = False
+            raise
         except Exception as e:
             logger.warning("Auto voice reply failed: %s", e, exc_info=True)
         finally:
             for p in ({audio_path, *actual_paths} - {None}):
                 with suppress(OSError):
                     os.unlink(p)
+            if voice_failed:
+                # Reuse the base-adapter diagnostic policy/state: no raw provider
+                # exception reaches chat, and native streams are never sealed.
+                with suppress(Exception):
+                    from gateway.session import build_session_key
+                    adapter = self._delivery_adapter_for(event.source)
+                    anchor = self._reply_anchor_for_event(event)
+                    metadata = dict(self._thread_metadata_for_source(event.source, anchor) or {})
+                    metadata["notify"] = True
+                    await adapter._notify_auto_tts_failure(
+                        event, build_session_key(event.source), metadata)
 
     async def _deliver_voice_reply(self, event: MessageEvent, audio_paths: list[str]) -> None:
         """Play the files in the connected voice channel, else send them as voice messages."""

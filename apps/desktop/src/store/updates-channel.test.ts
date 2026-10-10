@@ -15,6 +15,7 @@ describe('sourceUpdateChannel', () => {
   it('offers the selector only where the choice is stable or main and can be saved', () => {
     expect(sourceUpdateChannel(status({ channel: 'stable' }))).toBe('stable')
     expect(sourceUpdateChannel(status({ mechanism: 'windows-handoff', branch: 'main' }))).toBe('main')
+
     // Packages bake their channel; a preview channel is not the user's to flip here.
     for (const mechanism of ['electron-updater', 'app-installer', 'microsoft-store', 'external'] as const) {
       expect(sourceUpdateChannel(status({ mechanism, channel: 'stable' }))).toBeNull()

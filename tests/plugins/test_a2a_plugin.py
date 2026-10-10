@@ -155,6 +155,36 @@ class TestPeerIdentity:
         assert security.A2ASecurityContext.capture().authenticate("Bearer shared-tok", "9.8.7.6") == "ip:9.8.7.6"
         assert security.A2ASecurityContext.capture().authenticate("Bearer wrong", "9.8.7.6") is None
 
+    @pytest.mark.parametrize("env", [{"A2A_PEER_TOKENS": "alice:tok-alice"}, {"A2A_BEARER_TOKEN": "topsecret"}],
+                             ids=["peer_token", "shared_token"])
+    def test_non_ascii_token_gets_the_same_401_as_an_unknown_token(self, monkeypatch, env):
+        """``compare_digest`` raises TypeError on a non-ASCII ``str`` and the Authorization header is
+        remote input, so a non-ASCII token must be refused like any wrong one — not crash the handler
+        and drop the connection."""
+        monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
+        monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)
+        for name, value in env.items():
+            monkeypatch.setenv(name, value)
+        adapter, base = _make_live_adapter(monkeypatch)
+
+        def refusal(token):
+            try:
+                _post_json(base + "/", _send_body("x"), {"Authorization": f"Bearer {token}"})
+            except urllib.error.HTTPError as e:
+                return e.code, e.read().decode()
+            raise AssertionError("a wrong token was accepted")
+
+        async def run():
+            assert await adapter.connect() is True
+            try:
+                unknown = await asyncio.to_thread(refusal, "nope")
+                non_ascii = await asyncio.to_thread(refusal, "tökén")
+            finally:
+                await adapter.disconnect()
+            assert unknown[0] == 401 and non_ascii == unknown
+
+        asyncio.run(run())
+
     def test_peer_tokens_beat_shared(self, monkeypatch):
         monkeypatch.setenv("A2A_BEARER_TOKEN", "shared-tok")
         monkeypatch.setenv("A2A_PEER_TOKENS", "carol:tok-c")

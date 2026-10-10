@@ -265,6 +265,14 @@ def test_deliver_callback_rejects_state_mismatch():
     assert "state" in out["error_message"].lower()
 
 
+@pytest.mark.parametrize("state", ["fö", "\ud800"], ids=["non_ascii", "lone_surrogate"])
+def test_deliver_callback_malformed_state_rejected_like_wrong_state(state):
+    """Relay JSON can carry any str (lone surrogates included); it gets the mismatch answer, not a codec error."""
+    _make_session()
+    wrong = deliver_callback_flow("sess-relay-1", "hosp", code="abc", state="WRONG")
+    assert deliver_callback_flow("sess-relay-1", "hosp", code="abc", state=state) == wrong
+
+
 def test_deliver_callback_rejects_replay():
     _make_session()
     first = deliver_callback_flow(

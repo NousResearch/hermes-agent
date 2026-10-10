@@ -531,11 +531,13 @@ class PairingStore:
         with self._lock:
             self._cleanup_expired(platform)
             request_id = str(request_id or "").strip().lower()
-            if not request_id:
+            # Ids are ASCII hex, so non-ASCII (a dashboard JSON body may even hold lone surrogates) can't
+            # match; reject it before compare_digest raises TypeError on non-ASCII str.
+            if not request_id or not request_id.isascii():
                 return None
             pending = self._load_json(self._pending_path(platform))
             for entry_id, entry in pending.items():
-                if _is_hashed_entry(entry) and secrets.compare_digest(str(entry_id).lower(), request_id):
+                if _is_hashed_entry(entry) and secrets.compare_digest(str(entry_id).lower().encode(), request_id.encode()):
                     return self._finish_approval(platform, pending, entry_id, entry)
             return None
 

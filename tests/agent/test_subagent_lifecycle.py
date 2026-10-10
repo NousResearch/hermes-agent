@@ -7,6 +7,7 @@ from unittest.mock import Mock
 import pytest
 
 from agent.subagent_lifecycle import (
+    SubagentHandle,
     SubagentLaunchRequest,
     SubagentLifecycleError,
     SubagentLifecycleService,
@@ -84,6 +85,21 @@ def test_cancel_is_cooperative_and_forged_handle_is_unknown(lifecycle):
     other_parent = SimpleNamespace(session_id="different-parent")
     other_service = SubagentLifecycleService(lambda: other_parent)
     assert other_service.status(handle).state is SubagentState.UNKNOWN
+
+
+@pytest.mark.parametrize(
+    "field,value", [("capability", "fö"), ("capability", "\ud800"), ("subagent_id", "\ud800")],
+    ids=["non_ascii_capability", "surrogate_capability", "surrogate_subagent_id"])
+def test_malformed_handle_text_is_unknown_like_forged_capability(lifecycle, field, value):
+    """A deserialized handle can carry any str; malformed text is an unknown handle, never an exception."""
+    handle = lifecycle.launch(SubagentLaunchRequest(goal="x"))
+    lifecycle.wait(handle, timeout_seconds=1)
+    forged = SubagentHandle.from_dict({**handle.to_dict(), "capability": "forged"})
+    malformed = SubagentHandle.from_dict({**handle.to_dict(), field: value})
+
+    assert lifecycle.status(malformed).state is lifecycle.status(forged).state is SubagentState.UNKNOWN
+    assert lifecycle.result(malformed).error_classification == lifecycle.result(forged).error_classification
+    assert lifecycle.cancel(malformed, reason="x") == lifecycle.cancel(forged, reason="x")
 
 
 def test_cancel_uses_explicit_hard_interrupt(lifecycle):

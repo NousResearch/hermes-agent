@@ -81,6 +81,7 @@ def channel_compare_branch(selected_channel: str, git_cmd: list[str], root: Path
         print(f"✗ Could not resolve the {selected_channel} source channel: {exc}")
         sys.exit(1)
     if not target.commit:
+        _note_main_fallback(selected_channel, target)
         return target.branch
     if target.retired:
         print(f"→ {selected_channel} retired; source destination: {target.channel}")
@@ -197,6 +198,13 @@ def report_rev_list_verdict(git_cmd: list[str], root: Path, compare_branch: str)
     print(f"  Run '{recommended_update_command()}' to install.")
 
 
+def _note_main_fallback(selected: str, target) -> None:
+    """An unchosen stable default that cannot move this checkout forward onto the release."""
+    if selected == "stable" and target.branch == "main":
+        print("→ This checkout is not on the stable release line; following main as before"
+              " (`hermes update --set-channel stable` lands on the release)")
+
+
 def select_apply_target(args, branch: str, request: dict, *, git_cmd, stop) -> tuple:
     """Resolve the update's target before any tree write: ``(target_ref, release_sha,
     target_is_head, repository)``; records branch/expected_sha/retirement on ``request``.
@@ -237,5 +245,6 @@ def select_apply_target(args, branch: str, request: dict, *, git_cmd, stop) -> t
         request["expected_sha"] = target.commit
         return target.commit, target.commit, target.ahead, target.repository
     assert target.branch is not None  # a SourceTarget without a commit names its branch
+    _note_main_fallback(selected, target)
     request["branch"] = target.branch
     return f"origin/{target.branch}", None, False, target.repository

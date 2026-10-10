@@ -1,7 +1,7 @@
 """Resolve promoted source releases, never infer publication from a Git tag."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from html.parser import HTMLParser
 import json
 import logging
@@ -10,7 +10,7 @@ import subprocess
 import urllib.error
 import urllib.request
 
-from hermes_cli.update_channel import STABLE_TAG_RE, is_canary_tag
+from hermes_cli.update_channel import CHANNEL_MAIN, STABLE_TAG_RE, is_canary_tag
 
 logger = logging.getLogger(__name__)
 _PUBLIC_BASE = "https://hermes-assets.nousresearch.com"
@@ -81,43 +81,52 @@ def resolve_source_target(channel: str, git_cmd=None, cwd=None, *, repository=No
                           forward_only: bool = False) -> SourceTarget:
     """Resolve every subscription, including default labels, through R2.
 
-    ``forward_only`` (an unchosen default subscription) pins a checkout that already
-    contains the release to its own HEAD, so the update is a no-op instead of a downgrade.
+    ``forward_only`` (an unchosen default subscription) moves a checkout to the release only
+    when HEAD is proven behind it. A HEAD that already contains the release is pinned to
+    itself (a no-op, never a downgrade); any other relation (diverged local work, or one
+    nothing can establish) keeps following main, as an install did before stable was its
+    default, instead of detaching the user's branch onto the release.
     """
     target = _resolve_source_target(channel, git_cmd, cwd, repository=repository)
     if forward_only and target.commit and git_cmd is not None and cwd is not None:
-        head = _head_containing(git_cmd, cwd, target.commit, target.repository)
-        if head is not None and head != target.commit:
-            from dataclasses import replace
-
+        head, relation = _head_relation(git_cmd, cwd, target.commit, target.repository)
+        if relation == "contains" and head != target.commit:
             return replace(target, commit=head, ahead=True)
+        if relation not in ("contains", "behind"):
+            return replace(target, commit=None, branch=CHANNEL_MAIN, version=None, build_id=None)
     return target
 
 
-def _head_containing(git_cmd, cwd, commit: str, repository: str) -> str | None:
-    """HEAD's sha unless HEAD is PROVEN not to contain ``commit``, then None.
+def _head_relation(git_cmd, cwd, commit: str, repository: str) -> tuple[str | None, str | None]:
+    """``(HEAD sha, relation)``: relation is ``"contains"`` (HEAD is or descends from ``commit``),
+    ``"behind"`` (HEAD is an ancestor of it), ``"diverged"``, or ``None`` when unknown.
 
-    An unchosen default must never move a checkout backward on a guess, so an
-    unknown relation (shallow history, GitHub unreachable) keeps HEAD.
+    Only full history is local proof: a shallow boundary turns ``--is-ancestor`` into a guess.
+    In a full (or blobless) clone every commit HEAD reaches is local, so a missing ``commit``
+    proves HEAD lacks it; whether HEAD is behind it is then GitHub's to say.
     """
+    from hermes_cli._subprocess_compat import windows_hide_flags
     from hermes_cli.source_check import _github_compare, source_git_env
 
     def run(*args):
         return subprocess.run(
             [*git_cmd, *args], cwd=cwd, capture_output=True, text=True, encoding="utf-8",
-            errors="replace", timeout=10, stdin=subprocess.DEVNULL, env=source_git_env())
+            errors="replace", timeout=10, stdin=subprocess.DEVNULL, env=source_git_env(),
+            creationflags=windows_hide_flags())
 
     head = run("rev-parse", "HEAD").stdout.strip()
     if not _SHA.fullmatch(head):
-        return None
-    ancestry = run("merge-base", "--is-ancestor", commit, head).returncode
-    if ancestry == 0:
-        return head
-    # A shallow boundary makes exit 1 a guess; full history makes it proof.
-    if ancestry == 1 and run("rev-parse", "--is-shallow-repository").stdout.strip() == "false":
-        return None
+        return None, None
+    if run("merge-base", "--is-ancestor", commit, head).returncode == 0:
+        return head, "contains"
+    if run("rev-parse", "--is-shallow-repository").stdout.strip() == "false":
+        if run("merge-base", "--is-ancestor", head, commit).returncode == 0:
+            return head, "behind"
+        if run("cat-file", "-e", f"{commit}^{{commit}}").returncode == 0:
+            return head, "diverged"
     status = (_github_compare(commit, head, repository) or {}).get("status")
-    return None if status in ("behind", "diverged") else head
+    return head, {"ahead": "contains", "identical": "contains", "behind": "behind",
+                  "diverged": "diverged"}.get(status)
 
 
 def _resolve_source_target(channel: str, git_cmd=None, cwd=None, *, repository=None) -> SourceTarget:

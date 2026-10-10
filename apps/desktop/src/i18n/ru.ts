@@ -2684,6 +2684,10 @@ export const ruOverrides = {
       working: 'Работает',
       done: 'Готово'
     },
+    resize: {
+      pinnedBoundary: 'Изменить размер разделов «Закреплённые» и «Сеансы»',
+      sessionsBottom: 'Изменить размер раздела «Сеансы»'
+    },
     markAllRead: 'Отметить все как прочитанные'
   },
   handoffTour: {

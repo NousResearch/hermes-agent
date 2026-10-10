@@ -9,6 +9,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+import hermes_bootstrap  # noqa: F401
+
 
 # ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -995,6 +997,11 @@ class TestCodexStreamCallbacks:
 
         agent._run_codex_stream({}, client=mock_client)
         assert "Hello from Codex!" in deltas
+        assert agent._last_api_first_chunk_at is not None
+        assert agent._last_api_ttfb is not None
+        assert agent._last_api_ttfb >= 0
+        assert agent._last_api_ttft is not None
+        assert agent._last_api_ttft >= 0
 
 
     def test_codex_remote_protocol_error_retries_then_raises(self):

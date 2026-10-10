@@ -28,12 +28,20 @@ import {
   Hash,
   Layers3,
   Loader2,
+  Stopwatch,
   Terminal,
   Zap
 } from '@/lib/icons'
 import { type RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { resolveSessionTimerSince } from '@/lib/session-timer-since'
-import { cacheHitLabel, contextBarLabel, LiveDuration, tokensPerSecondLabel, usageContextLabel } from '@/lib/statusbar'
+import {
+  cacheHitLabel,
+  contextBarLabel,
+  LiveDuration,
+  timeToFirstByteLabel,
+  tokensPerSecondLabel,
+  usageContextLabel
+} from '@/lib/statusbar'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { resolveVersionStatus } from '@/lib/version-status'
@@ -336,6 +344,7 @@ export function useStatusbarItems({
   // ticks mid-turn, message.complete after) — no extra RPC, no polling.
   const cacheHit = cacheHitLabel(currentUsage)
   const tokensPerSecond = tokensPerSecondLabel(currentUsage)
+  const timeToFirstByte = timeToFirstByteLabel(currentUsage)
 
   // Dial the viewed profile directly: the ambient `requestGateway` is the
   // session-routed dispatcher, which re-scopes `params.profile` to the FOCUSED
@@ -716,6 +725,14 @@ export function useStatusbarItems({
         label: tokensPerSecond || '—',
         title: copy.tokensPerSecondTitle,
         toggleLabel: copy.toggleTokensPerSecond,
+        variant: 'text'
+      },
+      {
+        icon: <Stopwatch className="size-3" />,
+        id: 'time-to-first-byte',
+        label: timeToFirstByte || '—',
+        title: copy.timeToFirstByteTitle || copy.timeToFirstTokenTitle,
+        toggleLabel: copy.toggleTimeToFirstByte || copy.toggleTimeToFirstToken,
         variant: 'text'
       },
       {

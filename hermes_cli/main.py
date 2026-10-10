@@ -3314,29 +3314,29 @@ def _advertise_agent_env() -> None:
 
 
 def _attach_plugin_cli_command(subparsers, cmd_info) -> None:
-    """Register one plugin-provided top-level command from its descriptor."""
-    plugin_parser = subparsers.add_parser(
-        cmd_info["name"],
-        help=cmd_info["help"],
-        description=cmd_info.get("description", ""),
-        formatter_class=__import__("argparse").RawDescriptionHelpFormatter,
-    )
-    cmd_info["setup_fn"](plugin_parser)
-    if cmd_info.get("handler_fn") is not None:
-        plugin_parser.set_defaults(func=cmd_info["handler_fn"])
+    """Register one plugin-provided command (see ``main_plugin_cli.attach_plugin_cli_command``)."""
+    from hermes_cli.main_plugin_cli import attach_plugin_cli_command
+
+    attach_plugin_cli_command(subparsers, cmd_info, _BUILTIN_SUBCOMMANDS)
 
 
 def _register_plugin_cli_commands(subparsers) -> None:
-    """Register plugin-provided top-level commands (each plugin builds its own argparse tree).
+    """Register plugin-provided commands (each plugin builds its own argparse tree).
 
-    Skipped when the invocation targets a known built-in — eagerly importing
-    every bundled plugin module costs 500-650ms.
+    A manifest-declared command named by argv attaches first and imports only its own plugin.
+    Full discovery is skipped when the invocation targets a known built-in or a declared command
+    — eagerly importing every bundled plugin module costs 500-650ms.
     """
+    from hermes_cli.main_plugin_cli import attach_declared_plugin_cli_command, declared_cli_command_argv
+
+    key = declared_cli_command_argv(subparsers, _BUILTIN_SUBCOMMANDS)
+    if key is not None and attach_declared_plugin_cli_command(subparsers, key, _BUILTIN_SUBCOMMANDS):
+        return
     if not _plugin_cli_discovery_needed():
         return
     try:
         from plugins.memory import discover_plugin_cli_commands
-        from hermes_cli.plugins import discover_plugins, get_plugin_manager
+        from hermes_cli.plugins import cli_command_key, discover_plugins, get_plugin_manager
 
         seen_plugin_commands = set()
         for cmd_info in discover_plugin_cli_commands():
@@ -3349,7 +3349,7 @@ def _register_plugin_cli_commands(subparsers) -> None:
         # See #54678.
         _resolve_deferred_platform_cli_command(_first_positional_argv())
         for cmd_info in get_plugin_manager()._cli_commands.values():
-            if cmd_info["name"] not in seen_plugin_commands:
+            if cli_command_key(cmd_info["name"], cmd_info.get("parent")) not in seen_plugin_commands:
                 _attach_plugin_cli_command(subparsers, cmd_info)
     except Exception as _exc:
         logging.getLogger(__name__).debug("Plugin CLI discovery failed: %s", _exc)
@@ -3442,8 +3442,6 @@ def _build_cli_parser():
     build_bundles_parser(subparsers)
     build_plugins_parser(subparsers, cmd_plugins=cmd_plugins)
 
-    _register_plugin_cli_commands(subparsers)
-
     build_curator_parser(subparsers)
     build_pets_parser(subparsers)
     build_journey_parser(subparsers)
@@ -3472,6 +3470,8 @@ def _build_cli_parser():
     build_gui_parser(subparsers, cmd_gui=cmd_gui)
     build_logs_parser(subparsers, cmd_logs=cmd_logs)
     build_prompt_size_parser(subparsers, cmd_prompt_size=cmd_prompt_size)
+    # Last, so a plugin command can attach under any built-in (``parent=``).
+    _register_plugin_cli_commands(subparsers)
     return parser, subparsers
 
 

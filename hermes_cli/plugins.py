@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- parent= on register_cli_command and the re-export of plugins_declared_cli are the whole growth; the declared-command logic lives in that sibling
 """Hermes Plugin System — discovers, loads, and manages plugins.
 
 Sources, later overriding earlier on key collision: bundled ``<repo>/plugins/<name>/`` (``memory/``
@@ -59,6 +60,7 @@ from hermes_cli.plugins_dispatch import (
     RenderedPluginSystemPromptSection, _EventSubscription, format_system_prompt_sections,
     is_valid_system_prompt_section_id,
 )
+from hermes_cli.plugins_declared_cli import cli_command_key, discover_declared_cli_commands  # noqa: F401
 from hermes_cli.plugins_ledger import PluginLedgerMixin, PluginRegistration
 from hermes_cli.plugins_state import (
     PluginState, _locked_plugin_state, _nested_plugin_mapping, _nested_plugin_value,
@@ -632,16 +634,18 @@ class PluginContext:
     @_serialized_replacement
     def register_cli_command(
         self, name: str, help: str, setup_fn: Callable, handler_fn: Callable | None = None,
-        description: str = "",
+        description: str = "", parent: str | None = None,
     ) -> PluginRegistration:
-        """Register a CLI subcommand (``hermes <name> ...``). *setup_fn* receives the argparse
-        subparser; *handler_fn* becomes ``set_defaults(func=...)``."""
+        """Register a CLI subcommand (``hermes <name> ...``; with *parent*, ``hermes <parent> <name> ...``,
+        reachable only when ``plugin.yaml`` declares it, since built-ins skip plugin discovery).
+        *setup_fn* receives the argparse subparser; *handler_fn* becomes ``set_defaults(func=...)``."""
         entry = {
             "name": name, "help": help, "description": description, "setup_fn": setup_fn,
             "handler_fn": handler_fn, "plugin": self.manifest.name, "plugin_key": self.plugin_id,
+            "parent": parent or None,
         }
-        return self._register_entry("cli_command", name, self._manager._cli_commands, entry,
-                                    "Plugin %s registered CLI command: %s", name)
+        return self._register_entry("cli_command", cli_command_key(name, parent), self._manager._cli_commands,
+                                    entry, "Plugin %s registered CLI command: %s", cli_command_key(name, parent))
 
     @_serialized_replacement
     def register_command(

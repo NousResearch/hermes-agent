@@ -250,8 +250,14 @@ class LSPClient:
         from agent.delegation_context import delegated_child_subprocess_env
         from tools.environments.local import hermes_subprocess_env
         cmd = self._command
-        if sys.platform == "win32" and cmd[0].lower().endswith((".cmd", ".bat")):
-            cmd = ["cmd.exe", "/c", *cmd]  # CreateProcess can't run .cmd/.bat shims directly
+        if sys.platform == "win32":
+            if cmd[0].lower().endswith((".cmd", ".bat")):
+                cmd = ["cmd.exe", "/c", *cmd]  # CreateProcess can't run .cmd/.bat shims directly
+            elif not cmd[0].lower().endswith((".exe", ".com")):
+                for s in (".cmd", ".bat"):
+                    if os.path.exists(cmd[0] + s):
+                        cmd = ["cmd.exe", "/c", cmd[0] + s, *cmd[1:]]
+                        break
         try:
             # start_new_session=True gives the server its own process group; otherwise it inherits
             # the gateway's pgid and mcp_tool's orphan sweeper can killpg() the TUI parent with it.

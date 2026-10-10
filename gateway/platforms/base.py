@@ -2411,7 +2411,8 @@ class BasePlatformAdapter(ABC):
 
     def _is_sender_authorized(self, user_id: Optional[str], chat_type: Optional[str] = None,
                               chat_id: Optional[str] = None, *, is_bot: bool = False,
-                              thread_id: Optional[str] = None) -> Optional[bool]:
+                              thread_id: Optional[str] = None,
+                              telegram_business_connection_id: Optional[str] = None) -> Optional[bool]:
         """True/False from the registered check, or None when no check exists ("trust unknown",
         legacy). ``is_bot``/``thread_id`` are forwarded as keywords only when set so legacy
         three-positional callbacks keep working. Only literal booleans propagate: a truthy
@@ -2423,6 +2424,8 @@ class BasePlatformAdapter(ABC):
             extra["is_bot"] = True
         if thread_id is not None:
             extra["thread_id"] = thread_id
+        if telegram_business_connection_id is not None:
+            extra["telegram_business_connection_id"] = telegram_business_connection_id
         try:
             result = self._authorization_check(user_id, chat_type, chat_id, **extra)
         except Exception:
@@ -4818,7 +4821,8 @@ class BasePlatformAdapter(ABC):
         scope_id: Optional[str] = None, guild_id: Optional[str] = None,
         parent_chat_id: Optional[str] = None, message_id: Optional[str] = None,
         role_authorized: bool = False, auto_thread_created: bool = False,
-        auto_thread_initial_name: Optional[str] = None) -> SessionSource:
+        auto_thread_initial_name: Optional[str] = None,
+        telegram_business_connection_id: Optional[str] = None) -> SessionSource:
         """Build a SessionSource; with ``gateway.profile_routes`` configured the matching
         profile is stamped on ``source.profile`` for per-profile HERMES_HOME isolation."""
         def _opt(value) -> Optional[str]:
@@ -4830,7 +4834,8 @@ class BasePlatformAdapter(ABC):
             chat_topic=(chat_topic or "").strip() or None, user_id_alt=user_id_alt,
             chat_id_alt=chat_id_alt, is_bot=is_bot, scope_id=_opt(scope_id),
             guild_id=_opt(guild_id), parent_chat_id=_opt(parent_chat_id),
-            message_id=_opt(message_id))
+            message_id=_opt(message_id),
+            telegram_business_connection_id=_opt(telegram_business_connection_id))
         # Profile from configured routes, else the owning profile of a dedicated secondary bot (so no
         # later ``source.profile``-less fallback can re-route the message through the default bot's routes).
         owner_profile = getattr(self, "_owner_profile", None)

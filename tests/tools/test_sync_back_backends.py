@@ -173,8 +173,7 @@ class TestSSHCleanup:
             env.control_socket = Path(tmp.name)
 
         def mock_run(cmd, **kwargs):
-            cmd_str = " ".join(cmd)
-            if "-O" in cmd and "exit" in cmd_str:
+            if "-O" in cmd:
                 call_order.append("control_exit")
             return subprocess.CompletedProcess([], 0)
 

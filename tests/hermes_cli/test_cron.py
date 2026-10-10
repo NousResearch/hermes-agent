@@ -272,6 +272,25 @@ class TestCronListStatusRendering:
         assert "[paused]" in out
         assert "No scheduled jobs" not in out
 
+    def test_pause_reason_flag_is_stored_and_listed(self, tmp_cron_dir, capsys, monkeypatch):
+        monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [1])
+        job = create_job(prompt="Outage-sensitive digest", schedule="every 1h")
+
+        rc = cron_command(Namespace(cron_command="pause", job_id=job["id"],
+                                    reason="matrix outage; resume by 2026-10-20"))
+        assert rc in (0, None)
+        assert get_job(job["id"])["paused_reason"] == "matrix outage; resume by 2026-10-20"
+
+        cron_command(Namespace(cron_command="list", all=False))
+        assert "matrix outage; resume by 2026-10-20" in capsys.readouterr().out
+
+    def test_pause_without_reason_still_works(self, tmp_cron_dir, capsys):
+        job = create_job(prompt="Digest", schedule="every 1h")
+        cron_command(Namespace(cron_command="pause", job_id=job["id"]))
+        stored = get_job(job["id"])
+        assert stored["state"] == "paused"
+        assert stored["paused_reason"] is None
+
     def test_delivery_failed_is_not_green_ok(self, tmp_cron_dir, capsys, monkeypatch):
         monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [1])
         # capsys is not a tty, so force colors on to check the paint itself.

@@ -1,18 +1,19 @@
+import { sessionTitle } from '@/lib/chat-runtime'
 import type { SessionInfo } from '@/types/hermes'
 
 /**
- * Index sessions by every id a pin might be stored under.
+ * index sessions by every id a pin might be stored under.
  *
- * The sidebar fetches three independent slices — recents, cron, and messaging
- * — and renders the latter two in self-managed sections. Any of them can be
- * pinned, so all three must be indexed here or the Pinned section can't
- * resolve the pin to a row. A pinned session is also filtered out of its own
- * section, so failing to index it doesn't merely misplace the row: it removes
+ * the sidebar fetches three independent slices - recents, cron, and messaging
+ * - and renders the latter two in self-managed sections. any of them can be
+ * pinned, so all three must be indexed here or the pinned section cannot
+ * resolve the pin to a row. a pinned session is also filtered out of its own
+ * section, so failing to index it does not merely misplace the row: it removes
  * the session from the sidebar entirely.
  *
- * Each session is keyed under both its live id and its lineage root, so a pin
+ * each session is keyed under both its live id and its lineage root, so a pin
  * stored before an auto-compression still resolves to the live continuation
- * tip. Recents are indexed last and win a direct id collision.
+ * tip. recents are indexed last and win a direct id collision.
  */
 export function buildSessionByAnyId(
   visibleSessions: SessionInfo[],
@@ -33,27 +34,33 @@ export function buildSessionByAnyId(
 }
 
 /**
- * Resolve the Pinned section's rows: the locally stored pin ids first (in the
- * user's hand-picked order), then any row the SERVER flags `pinned` that the
- * local set doesn't know about yet.
+ * compare session rows alphabetically by displayed title.
  *
- * The local set (`$pinnedSessionIds` in localStorage) is a UI-ordering hint,
- * not the source of truth — `sessions.pinned` in the backend's state.db is.
- * When the two disagree (cold localStorage after a reload, a pin made from
- * another client, a persist that never landed), every other sidebar list
- * filters the session out as "pinned" while the Pinned section — resolving
- * only local ids — renders empty, so the conversation vanishes from the
- * sidebar entirely (#85969). Falling back to the row flag keeps the invariant:
- * a session the backend says is pinned is always reachable from the Pinned
- * section, whatever the local cache holds. session-pin-sync then adopts the
- * pin into the local set on its next reconcile, restoring ordering control.
- *
- * `unconfirmedPinWrites` is that same module's fence, and the fallback has to
- * respect it. Unpinning drops the id from the local set immediately, but the
- * loaded row keeps saying `pinned: true` until a page issued after the PATCH
- * lands — so an unfenced fallback reads the user's own unpin as a foreign pin
- * and parks the session at the bottom of Pinned for a refresh cycle before it
- * finally moves to Sessions.
+ * uses case-insensitive, accent-insensitive natural ordering (portuguese/multilingual-aware,
+ * numeric: true so "session 2" precedes "session 10"). ties fall back to case-sensitive natural
+ * ordering, and finally the session id for a deterministic total ordering.
+ */
+export function compareSessionTitles(a: SessionInfo, b: SessionInfo): number {
+  const titleA = sessionTitle(a)
+  const titleB = sessionTitle(b)
+
+  const primary = titleA.localeCompare(titleB, undefined, { numeric: true, sensitivity: 'base' })
+  if (primary !== 0) {
+    return primary
+  }
+
+  const secondary = titleA.localeCompare(titleB, undefined, { numeric: true })
+  if (secondary !== 0) {
+    return secondary
+  }
+
+  return a.id.localeCompare(b.id)
+}
+
+/**
+ * resolve the pinned section's rows: collects locally stored pin ids and any row the server flags
+ * pinned that the local set does not know about yet, filtered by in-flight pin writes, and sorts
+ * them automatically by displayed conversation title.
  */
 export function resolvePinnedSessions(
   pinnedSessionIds: readonly string[],
@@ -78,7 +85,7 @@ export function resolvePinnedSessions(
       continue
     }
 
-    // A pin write of ours the row predates — under either identity, since the
+    // a pin write of ours the row predates - under either identity, since the
     // fence is keyed on the durable id and the row may surface as its tip.
     if (
       unconfirmedPinWrites.has(session.id) ||
@@ -91,5 +98,5 @@ export function resolvePinnedSessions(
     out.push(session)
   }
 
-  return out
+  return out.sort(compareSessionTitles)
 }

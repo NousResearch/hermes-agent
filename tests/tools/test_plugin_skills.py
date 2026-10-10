@@ -8,7 +8,6 @@ Covers:
 
 import json
 import logging
-import os
 import sys
 
 import pytest
@@ -204,7 +203,7 @@ class TestSkillViewQualifiedName:
         reference.write_text("API details.")
 
         main = json.loads(skill_view("superpowers:writing-plans"))
-        assert main["linked_files"] == {"references": [os.path.join("references", "api.md")]}
+        assert main["linked_files"] == {"references": ["references/api.md"]}
         result = json.loads(
             skill_view("superpowers:writing-plans", file_path="references/api.md")
         )

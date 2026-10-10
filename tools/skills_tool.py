@@ -598,9 +598,9 @@ def skill_view(
             _parse_tags(hermes_meta.get(k) or frontmatter.get(k, "")) for k in ("tags", "related_skills"))
         linked_files = _skill_linked_files(skill_dir)
         try:
-            rel_path = str(skill_md.relative_to(active_skills_dir))
+            rel_path = skill_md.relative_to(active_skills_dir).as_posix()
         except ValueError:  # external skill — relative to its own parent dir
-            rel_path = str(skill_md.relative_to(skill_md.parent.parent)) if skill_md.parent.parent else skill_md.name
+            rel_path = skill_md.relative_to(skill_md.parent.parent).as_posix() if skill_md.parent.parent else skill_md.name
         skill_name = frontmatter.get("name", skill_md.stem if not skill_dir else skill_dir.name)
         readiness, readiness_extras = _skill_readiness(frontmatter, skill_name)
         rendered_content = content if not preprocess else _preprocess_skill(

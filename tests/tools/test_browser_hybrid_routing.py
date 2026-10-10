@@ -161,6 +161,34 @@ class TestCleanupHybridSessions:
         assert "default" not in browser_tool._last_active_session_key
 
 
+    def test_idle_janitor_keeps_a_sidecar_the_agent_is_still_driving(self, monkeypatch):
+        """The primary and its sidecar keep separate activity clocks: an idle cloud primary is
+        reaped alone, and the live sidecar keeps both its session and the task's binding."""
+        import time
+
+        closed = []
+        provider = Mock()
+        monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: provider)
+        monkeypatch.setattr(
+            bt_session, "_run_browser_command",
+            lambda key, cmd, args, timeout=None: closed.append(key) or {"success": True},
+        )
+        now = time.time()
+        monkeypatch.setattr(browser_tool, "_active_sessions", {
+            "t": {"session_name": "cloud_s", "bb_session_id": "bb-1"},
+            "t::local": {"session_name": "h_local", "bb_session_id": None, "features": {"local": True}},
+        })
+        monkeypatch.setattr(browser_tool, "_session_last_activity", {"t": now - 3600, "t::local": now})
+        monkeypatch.setattr(browser_tool, "_session_owner_homes", {})
+        monkeypatch.setattr(browser_tool, "_last_active_session_key", {"t": "t::local"})
+
+        bt_lifecycle._cleanup_inactive_browser_sessions()
+
+        assert closed == ["t"]
+        provider.close_session.assert_called_once_with("bb-1")
+        assert list(browser_tool._active_sessions) == ["t::local"]
+        assert browser_tool._last_session_key("t") == "t::local"
+
     def test_cleanup_sidecar_directly_keeps_primary(self, monkeypatch):
         """Calling cleanup with a ``::local`` key reaps only the sidecar."""
         reaped = []

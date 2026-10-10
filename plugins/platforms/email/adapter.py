@@ -478,6 +478,16 @@ class EmailAdapter(BasePlatformAdapter):
         self._smtp_tls_verify = tls_verify("EMAIL_SMTP_TLS_VERIFY", "smtp_tls_verify")
         self._poll_interval = _esecret_int("EMAIL_POLL_INTERVAL", 15)
         self._skip_attachments = extra.get("skip_attachments", False)  # platforms.email.skip_attachments
+        # Subject prefixes for machine-generated mail the operator does NOT want answered (a
+        # script/cron reminder loop that mails the agent's own account, etc.). Matched case-insensitively
+        # at PARSE time — before the sender gate, the MessageEvent, and therefore before every reply path
+        # (home-channel notice, auto-TTS/audio diagnostics, and the model's own answer). Empty (default) =
+        # no filtering, so an unconfigured install behaves exactly as before. A prefix match is scoped to
+        # this mailbox's inbound subject only; it is not a sender deny, so the same human's other mail,
+        # and every reply they write, still reach the agent.
+        self._ignored_subject_prefixes = tuple(
+            p.strip().lower() for p in (extra.get("ignore_subject_prefixes") or ()) if str(p).strip()
+        )
         # Require an authenticated From: domain (SPF/DKIM/DMARC) before trusting it for authorization
         # (GHSA-rxqh-5572-8m77). Default ON; opt out via require_authenticated_sender: false / EMAIL_TRUST_FROM_HEADER=true.
         if "require_authenticated_sender" in extra:
@@ -491,6 +501,13 @@ class EmailAdapter(BasePlatformAdapter):
         self._seen_uids_max: int = 2000   # cap to prevent unbounded memory growth
         self._poll_task: Optional[asyncio.Task] = None
         self._last_fetch_failed, self._last_fetch_error = False, ""  # "checked, nothing new" vs "the check itself failed"
+        # A single transient IMAP timeout (Gmail under load, a brief network blip) must NOT escalate
+        # to a fatal adapter error: the fatal hook tears the adapter down and, when it was the last
+        # connected platform, exits the gateway process -- which multiplexes every profile's Bot Chat
+        # relay. Require N consecutive failures before escalating so only a genuinely dead mailbox
+        # triggers reconnect. Tunable via EMAIL_FETCH_FAILURE_THRESHOLD.
+        self._fetch_failure_threshold = _esecret_int("EMAIL_FETCH_FAILURE_THRESHOLD", 3)
+        self._consecutive_fetch_failures = 0
         # chat_id (sender email) -> last subject + message-id for threading
         # Track the last IMAP fetch attempt so the poll loop can distinguish "checked, nothing new" from
         # "the check itself failed" (#80016).
@@ -662,8 +679,28 @@ class EmailAdapter(BasePlatformAdapter):
             # The handler runs in a detached task (gateway/run.py), so awaiting it from our own poll task is
             # safe even though teardown cancels this task. See #80016.
             self._last_fetch_failed = False
+            self._consecutive_fetch_failures += 1
+            if self._consecutive_fetch_failures < self._fetch_failure_threshold:
+                # Transient: log and let the next poll (EMAIL_POLL_INTERVAL, default 15s) retry.
+                # Escalating here would let one slow Gmail read tear down the adapter and, if it is
+                # the last connected platform, exit the gateway that serves every profile.
+                logger.warning(
+                    "[Email] IMAP fetch failed (%d/%d consecutive, threshold not reached): %s",
+                    self._consecutive_fetch_failures, self._fetch_failure_threshold,
+                    self._last_fetch_error or "IMAP fetch failed",
+                )
+                return
+            logger.error(
+                "[Email] IMAP fetch failed %d consecutive times (threshold %d), escalating: %s",
+                self._consecutive_fetch_failures, self._fetch_failure_threshold,
+                self._last_fetch_error or "IMAP fetch failed",
+            )
+            self._consecutive_fetch_failures = 0
             self._set_fatal_error("email_imap_fetch_failed", self._last_fetch_error or "IMAP fetch failed", retryable=True)
             await self._notify_fatal_error()
+        else:
+            # A successful poll clears the streak.
+            self._consecutive_fetch_failures = 0
 
     def _mark_uid_consumed(self, imap: imaplib.IMAP4, uid: Any) -> None:
         """Remember a rejected UID and mark it seen without fetching its MIME body."""
@@ -736,6 +773,14 @@ class EmailAdapter(BasePlatformAdapter):
         if "<" in sender_name:
             sender_name = sender_name.split("<")[0].strip().strip('"')
         subject = _decode_header_value(msg.get("Subject", "(no subject)"))
+        # Operator-configured machine-generated mail (script/cron reminder loops) is dropped HERE, at
+        # parse time: no MessageEvent is built, so the home-channel notice, the auto-TTS/audio
+        # diagnostic and the model's own reply are ALL unreachable for it. Filtering later would leave
+        # the proactive notices already sent. Marked seen by the caller either way, so a dropped message
+        # is never re-fetched.
+        if getattr(self, "_ignored_subject_prefixes", None) and subject.strip().lower().startswith(self._ignored_subject_prefixes):
+            logger.info("[Email] Skipping message with operator-ignored subject prefix: %s", subject)
+            return None
         if _is_automated_sender(sender_addr, dict(msg.items())):
             logger.debug("[Email] Skipping automated sender: %s", sender_addr)
             return None

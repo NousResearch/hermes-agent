@@ -593,6 +593,7 @@ _ENV_STEPS: tuple = (
             # No host default: falsy extra.host lets the adapter's dual-stack DEFAULT_HOST=None bind v4+v6.
             ("host", "WECOM_CALLBACK_HOST"), ("port", "WECOM_CALLBACK_PORT", "", _int_or(8645)),
         ),
+        optional=(("api_base", "WECOM_CALLBACK_API_BASE"),),
     ),
     # Weixin (personal WeChat via iLink Bot API)
     _Cred(

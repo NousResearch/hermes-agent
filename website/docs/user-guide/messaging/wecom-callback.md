@@ -59,6 +59,7 @@ WECOM_CALLBACK_ENCODING_AES_KEY=your-43-char-aes-key
 # WECOM_CALLBACK_HOST=  # optional pin; unset = dual-stack (all interfaces, IPv4+IPv6)
 WECOM_CALLBACK_PORT=8645
 WECOM_CALLBACK_ALLOWED_USERS=user1,user2
+# WECOM_CALLBACK_API_BASE=  # optional; unset = official https://qyapi.weixin.qq.com
 ```
 
 ### 3. Start the Gateway
@@ -85,6 +86,7 @@ Set these in `config.yaml` under `platforms.wecom_callback.extra`, or use enviro
 | `host` | unset (dual-stack: all interfaces, IPv4+IPv6) | Bind address for the HTTP callback server |
 | `port` | `8645` | Port for the HTTP callback server |
 | `path` | `/wecom/callback` | URL path for the callback endpoint |
+| `api_base` | `https://qyapi.weixin.qq.com` | Base URL for the outbound WeCom API (`message/send`, `gettoken`). Point it at a path-preserving reverse proxy (e.g. `https://proxy.example.com`) to pin the egress IP WeCom sees — useful when the gateway runs on a dynamic-IP network and cannot satisfy the app's trusted-IP allowlist. Env: `WECOM_CALLBACK_API_BASE`. |
 
 ## Multi-App Routing
 

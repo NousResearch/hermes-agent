@@ -209,3 +209,6 @@ gateway under the backend, and do NOT "fix" update locks by widening the tree-ki
 assert on hardcoded platform lists or command counts (root: no change-detectors). Session-key and
 guard behaviour are invariants worth a test; platform API quirks belong in connector comments +
 tests, not in prose.
+
+Matrix room identity reads are defined in `plugins/platforms/matrix/context_mixin.py`;
+formatted HTML helpers are defined in `plugins/platforms/matrix/rendering.py`.

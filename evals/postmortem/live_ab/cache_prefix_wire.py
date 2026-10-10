@@ -3,6 +3,7 @@ message prefix between call N and N+1. If Hermes strips prior-turn thinking, cal
 will NOT equal call N's messages (prefix divergence) even though the conversation only grew.
 Also reports cache hit per call. Cost: a handful of calls."""
 import os, sys, re, tempfile, time, json, copy, subprocess
+from pathlib import Path
 # LIVE: makes ~6 real calls to the configured provider (a few cents). Usage:
 #   python cache_prefix_wire.py <repo_root> <A|B> [--hermes-home DIR]   (default HERMES_HOME: the real one, for credentials)
 sys.path.insert(0, sys.argv[1])
@@ -57,7 +58,8 @@ task = (f"Work in {work} (create it). Before EACH tool call, think carefully for
         "5) read it back; then reply DONE.")
 ag.run_conversation(task)
 time.sleep(1)
-log = subprocess.run(f"grep -h '\\[{sid}\\]' ~/.hermes/logs/agent.log | grep 'API call #'", shell=True, capture_output=True).stdout.decode("utf-8", "replace")
+log_path = Path(os.environ["HERMES_HOME"]) / "logs" / "agent.log"
+log = subprocess.run(["grep", "-h", f"[{sid}]", str(log_path)], capture_output=True, text=True).stdout
 rows = re.findall(r"API call #(\d+): .*in=(\d+) out=(\d+) .*cache=(\d+)/(\d+) \((\d+)%\)", log)
 for r in rows: print(f"  call {r[0]:>2} in={int(r[1]):>6} out={int(r[2]):>5} cached={int(r[3]):>6} ({r[5]}%) uncached={int(r[1])-int(r[3])}")
 print(f"ARM {arm}: captured {len(captured)} payloads")
@@ -75,6 +77,11 @@ for i in range(1, len(captured)):
     if not all(same):
         j = same.index(False); div += 1
         print(f"  payload {i}: prefix DIVERGED at message {j}/{k}: prev={sig(prev[j])}  cur={sig(cur[j])}")
+if div == 0:
+    print("PREFIX_STABLE")
+else:
+    print(f"PREFIX_MUTATED: {div} of {len(captured)-1}", file=sys.stderr)
+    sys.exit(1)
 print(f"ARM {arm}: {div} of {len(captured)-1} consecutive payloads had a mutated prefix (thinking blocks in prev assistant msgs: "
       f"{sum(1 for m in captured[-1] if m.get('role')=='assistant' and isinstance(m.get('content'),list) and any(b.get('type')=='thinking' for b in m['content']))} of "
       f"{sum(1 for m in captured[-1] if m.get('role')=='assistant')} assistant msgs in final payload)")

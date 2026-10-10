@@ -38,7 +38,7 @@ PROBES = [
     ("review_probes/credential_identity_probe.py", ["{repo}", "pr"], '"after_sub": "account-A"', False, "#103526"),
     # live (real provider calls, cents each)
     ("live_ab/goal_judge_wait.py", ["{repo}", "3"], "('wait', ", True, "#103534"),
-    ("live_ab/cache_prefix_wire.py", ["{repo}", "B"], "", True, "#103476"),
+    ("live_ab/cache_prefix_wire.py", ["{repo}", "B"], "PREFIX_STABLE", True, "#103476"),
 ]
 
 

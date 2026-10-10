@@ -1168,11 +1168,11 @@ describe('applyBackendUpdate recovery', () => {
     await promise
   })
 
-  it('keeps waiting past the old 45-second cutoff while the update action is running', async () => {
+  it('keeps waiting through a ten-minute source update while the action is running', async () => {
     const actionId = 'f'.repeat(32)
     updateHermesSpy.mockResolvedValue({ action_id: actionId, ok: true, name: 'hermes-update', pid: 1 })
 
-    for (let attempt = 0; attempt < 31; attempt += 1) {
+    for (let attempt = 0; attempt < 400; attempt += 1) {
       getActionStatusSpy.mockResolvedValueOnce({
         exit_code: null,
         lines: ['=== hermes-update started now ===', `step ${attempt}`],
@@ -1191,7 +1191,7 @@ describe('applyBackendUpdate recovery', () => {
     })
 
     const promise = applyBackendUpdate()
-    await vi.advanceTimersByTimeAsync(46500)
+    await vi.advanceTimersByTimeAsync(10 * 60 * 1000)
 
     expect($backendUpdateApply.get().applying).toBe(true)
     expect($backendUpdateApply.get().stage).toBe('pull')
@@ -1417,7 +1417,7 @@ describe('applyBackendUpdate recovery', () => {
     getActionStatusSpy.mockRejectedValueOnce(new Error('ECONNRESET')).mockResolvedValue(running)
 
     const promise = applyBackendUpdate()
-    await vi.advanceTimersByTimeAsync(6 * 60 * 1000 + 1500)
+    await vi.advanceTimersByTimeAsync(9 * 60 * 1000 + 1500)
 
     await expect(promise).resolves.toMatchObject({ error: 'apply-failed', ok: false })
     expect($backendUpdateApply.get().stage).toBe('error')

@@ -790,7 +790,11 @@ export async function applyUpdates(opts: DesktopUpdateApplyOptions = {}): Promis
 }
 
 const BACKEND_ACTION_POLL_MS = 1500
-const BACKEND_ACTION_MAX_MS = 6 * 60 * 1000
+const BACKEND_ACTION_STALL_MS = 6 * 60 * 1000
+// A healthy source update can legitimately exceed six minutes while draining
+// supervised gateways and completing its dependency/build/restart tail.
+// Keep the hard ceiling bounded, but only apply the short deadline to inactivity.
+const BACKEND_ACTION_MAX_MS = 45 * 60 * 1000
 const BACKEND_RETURN_MAX_MS = 4 * 60 * 1000
 
 // C3: a committed update succeeds even when post-commit steps are still owed,
@@ -990,8 +994,9 @@ async function runBackendUpdate(): Promise<DesktopUpdateApplyResult> {
     // Backups, dependency repair, and builds can legitimately take several
     // minutes. Keep the generous cap only as a guard against a stuck action.
     const actionDeadline = Date.now() + BACKEND_ACTION_MAX_MS
-    let deadline = actionDeadline
+    let deadline = Math.min(actionDeadline, Date.now() + BACKEND_ACTION_STALL_MS)
     let reconnecting = false
+    let lastProgress = ''
 
     while (Date.now() < deadline) {
       await new Promise(resolve => globalThis.setTimeout(resolve, BACKEND_ACTION_POLL_MS))
@@ -999,10 +1004,22 @@ async function runBackendUpdate(): Promise<DesktopUpdateApplyResult> {
       try {
         last = await getActionStatus(started.name, 2000)
         ingestBackendActionStatus(last)
+
+        const progress = [
+          last.lines.length,
+          last.lines.at(-1) ?? '',
+          last.receipt?.outcome ?? '',
+          last.receipt?.finished_at ?? ''
+        ].join('\0')
+
+        if (reconnecting || progress !== lastProgress) {
+          lastProgress = progress
+          deadline = Math.min(actionDeadline, Date.now() + BACKEND_ACTION_STALL_MS)
+        }
       } catch {
         if (!reconnecting) {
           reconnecting = true
-          deadline = Date.now() + BACKEND_RETURN_MAX_MS
+          deadline = Math.min(actionDeadline, Date.now() + BACKEND_RETURN_MAX_MS)
           $backendUpdateApply.set({
             ...$backendUpdateApply.get(),
             applying: true,
@@ -1017,7 +1034,6 @@ async function runBackendUpdate(): Promise<DesktopUpdateApplyResult> {
       if (last.running) {
         if (reconnecting) {
           reconnecting = false
-          deadline = actionDeadline
           $backendUpdateApply.set({
             ...$backendUpdateApply.get(),
             applying: true,

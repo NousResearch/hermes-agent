@@ -111,6 +111,10 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
                 for (tid, reason) in res.respawn_guarded
             ],
             "rate_limited": res.rate_limited,
+            "pool_gated": [
+                {"task_id": tid, "assignee": who, "reason": reason}
+                for (tid, who, reason) in res.pool_gated
+            ],
             "skipped_locked": res.skipped_locked,
             "memory_pressure": res.memory_pressure,
         }, ascii=True)
@@ -150,6 +154,13 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         print(f"Guarded ({reason}): {tid}")
     if res.rate_limited:
         print(f"Rate-limited (released to ready, no failure counted): {', '.join(res.rate_limited)}")
+    for tid, who, reason in res.pool_gated:
+        label = (
+            "board-wide rate-limit circuit open"
+            if reason == "rate_limit_circuit"
+            else "relay pool has no eligible upstream"
+        )
+        print(f"Held ({who}, {label}): {tid}")
     if res.skipped_locked:
         print("Skipped: another dispatcher holds this board's lock (no writes this tick)")
     if res.memory_pressure:

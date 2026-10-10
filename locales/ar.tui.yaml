@@ -723,6 +723,7 @@ secure.vault.codeHint: "يُكتب في الصفحة فقط · لا يُعرض �
 session.approval.approved: "تمت الموافقة ({0})"
 session.approval.denied: "مرفوض"
 session.common.invalidResponse: "استجابة غير صالحة: {0}"
+session.common.interpolationFailed: "لم يُرسل: تعذّر تشغيل {!…} ({0}) — تم الاحتفاظ بالإدخال"
 session.handoff.exitedWithCode: "خرج hermes {0} برمز الخروج {1}"
 session.handoff.launchError: "خطأ في تشغيل hermes: {0}"
 session.handoff.launching: "جارٍ تشغيل `hermes {0}`…"

@@ -723,6 +723,7 @@ secure.vault.codeHint: "solo se escribe en la página · nunca se muestra al mod
 session.approval.approved: "aprobado ({0})"
 session.approval.denied: "denegado"
 session.common.invalidResponse: "respuesta inválida: {0}"
+session.common.interpolationFailed: "no enviado: {!…} no se pudo ejecutar ({0}) — entrada conservada"
 session.handoff.exitedWithCode: "hermes {0} salió con código {1}"
 session.handoff.launchError: "error al lanzar hermes: {0}"
 session.handoff.launching: "lanzando `hermes {0}`…"

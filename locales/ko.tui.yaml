@@ -723,6 +723,7 @@ secure.vault.codeHint: "페이지에만 입력됨 · 모델에 표시되지 않�
 session.approval.approved: "승인됨 ({0})"
 session.approval.denied: "거부됨"
 session.common.invalidResponse: "잘못된 응답: {0}"
+session.common.interpolationFailed: "전송 안 됨: {!…} 실행 실패 ({0}) — 입력 유지됨"
 session.handoff.exitedWithCode: "hermes {0}이(가) 코드 {1}로 종료됐어요"
 session.handoff.launchError: "hermes 실행 오류: {0}"
 session.handoff.launching: "`hermes {0}` 실행 중…"

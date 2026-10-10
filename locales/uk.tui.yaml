@@ -723,6 +723,7 @@ secure.vault.codeHint: "вводиться лише на сторінці · м�
 session.approval.approved: "схвалено ({0})"
 session.approval.denied: "відхилено"
 session.common.invalidResponse: "недійсна відповідь: {0}"
+session.common.interpolationFailed: "не надіслано: не вдалося виконати {!…} ({0}) — введення збережено"
 session.handoff.exitedWithCode: "hermes {0} завершився з кодом {1}"
 session.handoff.launchError: "помилка запуску hermes: {0}"
 session.handoff.launching: "запуск `hermes {0}`…"

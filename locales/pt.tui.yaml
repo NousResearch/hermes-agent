@@ -723,6 +723,7 @@ secure.vault.codeHint: "digitado só na página · nunca mostrado ao modelo · E
 session.approval.approved: "aprovado ({0})"
 session.approval.denied: "negado"
 session.common.invalidResponse: "resposta inválida: {0}"
+session.common.interpolationFailed: "não enviado: não foi possível executar {!…} ({0}) — entrada mantida"
 session.handoff.exitedWithCode: "hermes {0} encerrou com código {1}"
 session.handoff.launchError: "erro ao iniciar o hermes: {0}"
 session.handoff.launching: "iniciando `hermes {0}`…"

@@ -723,6 +723,7 @@ secure.vault.codeHint: "clóscríofa sa leathanach amháin · ní thaispeántar 
 session.approval.approved: "ceadaithe ({0})"
 session.approval.denied: "diúltaithe"
 session.common.invalidResponse: "freagra neamhbhailí: {0}"
+session.common.interpolationFailed: "níor seoladh: níorbh fhéidir {!…} a rith ({0}) — ionchur coinnithe"
 session.handoff.exitedWithCode: "scoir hermes {0} le cód {1}"
 session.handoff.launchError: "earráid ag lainseáil hermes: {0}"
 session.handoff.launching: "ag lainseáil `hermes {0}`…"

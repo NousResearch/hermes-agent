@@ -723,6 +723,7 @@ secure.vault.codeHint: "ページにのみ入力されます · モデルには�
 session.approval.approved: "承認 ({0})"
 session.approval.denied: "拒否"
 session.common.invalidResponse: "不正な応答: {0}"
+session.common.interpolationFailed: "未送信: {!…} を実行できませんでした（{0}）— 入力は保持されています"
 session.handoff.exitedWithCode: "hermes {0} が終了コード {1} で終了しました"
 session.handoff.launchError: "hermes の起動エラー: {0}"
 session.handoff.launching: "`hermes {0}` を起動中…"

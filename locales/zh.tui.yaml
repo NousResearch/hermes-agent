@@ -723,6 +723,7 @@ secure.vault.codeHint: "只会输入到网页 · 绝不会显示给模型 · Esc
 session.approval.approved: "已批准（{0}）"
 session.approval.denied: "已拒绝"
 session.common.invalidResponse: "无效响应：{0}"
+session.common.interpolationFailed: "未发送：{!…} 无法运行（{0}）— 输入已保留"
 session.handoff.exitedWithCode: "hermes {0} 已退出，退出码 {1}"
 session.handoff.launchError: "启动 hermes 出错：{0}"
 session.handoff.launching: "正在启动 `hermes {0}`…"

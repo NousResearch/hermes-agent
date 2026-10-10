@@ -723,6 +723,7 @@ secure.vault.codeHint: "net in die bladsy getik · nooit aan die model gewys nie
 session.approval.approved: "goedgekeur ({0})"
 session.approval.denied: "geweier"
 session.common.invalidResponse: "ongeldige antwoord: {0}"
+session.common.interpolationFailed: "nie gestuur nie: {!…} kon nie loop nie ({0}) — invoer behou"
 session.handoff.exitedWithCode: "hermes {0} het met kode {1} afgesluit"
 session.handoff.launchError: "fout met die begin van hermes: {0}"
 session.handoff.launching: "begin `hermes {0}`…"

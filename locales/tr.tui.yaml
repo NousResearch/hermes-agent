@@ -723,6 +723,7 @@ secure.vault.codeHint: "yalnızca sayfaya yazılır · modele asla gösterilmez 
 session.approval.approved: "onaylandı ({0})"
 session.approval.denied: "reddedildi"
 session.common.invalidResponse: "geçersiz yanıt: {0}"
+session.common.interpolationFailed: "gönderilmedi: {!…} çalıştırılamadı ({0}) — girdi korundu"
 session.handoff.exitedWithCode: "hermes {0}, {1} koduyla çıktı"
 session.handoff.launchError: "hermes başlatılırken hata: {0}"
 session.handoff.launching: "`hermes {0}` başlatılıyor…"

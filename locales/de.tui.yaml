@@ -723,6 +723,7 @@ secure.vault.codeHint: "nur in die Seite eingegeben · nie für das Modell sicht
 session.approval.approved: "genehmigt ({0})"
 session.approval.denied: "abgelehnt"
 session.common.invalidResponse: "ungültige Antwort: {0}"
+session.common.interpolationFailed: "nicht gesendet: {!…} konnte nicht ausgeführt werden ({0}) — Eingabe behalten"
 session.handoff.exitedWithCode: "hermes {0} wurde mit Code {1} beendet"
 session.handoff.launchError: "Fehler beim Start von hermes: {0}"
 session.handoff.launching: "starte `hermes {0}`…"

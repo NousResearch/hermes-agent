@@ -723,6 +723,7 @@ secure.vault.codeHint: "saisi uniquement dans la page · jamais montré au modè
 session.approval.approved: "approuvé ({0})"
 session.approval.denied: "refusé"
 session.common.invalidResponse: "réponse invalide : {0}"
+session.common.interpolationFailed: "non envoyé : {!…} n’a pas pu s’exécuter ({0}) — saisie conservée"
 session.handoff.exitedWithCode: "hermes {0} s'est terminé avec le code {1}"
 session.handoff.launchError: "erreur au lancement de hermes : {0}"
 session.handoff.launching: "lancement de `hermes {0}`…"

@@ -17,6 +17,8 @@ import {
 import { notify, notifyError } from '@/store/notifications'
 import { $paneHeightOverride, setPaneHeightOverride } from '@/store/panes'
 
+import { useHubLinks } from '../use-hub-links'
+
 // The REAL Skills Hub page (docs site) embedded as a one-click picker — the
 // same trick the Bot Mode agent editor uses. `?embed=picker` hides the docs
 // chrome and adds a "+ Add to this Agent" button per card, which posts
@@ -87,6 +89,8 @@ export const EmbeddedHubPicker = memo(function EmbeddedHubPicker({
   const open = height > HUB_COLLAPSED_PX
   const [dragging, setDragging] = useState(false)
   const sectionRef = useRef<HTMLElement>(null)
+  const frameRef = useRef<HTMLIFrameElement>(null)
+  useHubLinks(frameRef, typeof profile === 'string' ? profile : (profile?.profile ?? null))
 
   // Top-edge sash: dragging UP grows the hub (shrinking the skills list above,
   // which is the flex-1 sibling). Same gesture as DetailPane / the shell's
@@ -231,6 +235,7 @@ export const EmbeddedHubPicker = memo(function EmbeddedHubPicker({
             }}
           >
             <iframe
+              ref={frameRef}
               sandbox="allow-scripts allow-same-origin"
               src={HUB_PICKER_URL}
               style={{

@@ -421,6 +421,8 @@ export const arChrome = {
       messagingPlatforms: 'منصات المراسلة'
     },
     statusbar: {
+      toggleUsageBudget: 'ميزانية الاستخدام',
+      usageBudgetTitle: 'استخدام هذا الشهر مقارنة بميزانياتك',
       unknown: 'غير معروف',
       restart: 'إعادة تشغيل',
       update: 'تحديث',

@@ -4072,6 +4072,8 @@ export const en: Translations = {
       toggleCacheHitRate: 'Cache hit rate',
       toggleCommandCenter: 'Command Center',
       toggleContextUsage: 'Context meter',
+      toggleUsageBudget: 'Usage budget',
+      usageBudgetTitle: "This month's usage against your budgets",
       toggleRunningTimer: 'Turn timer',
       toggleSessionTimer: 'Session timer',
       toggleTerminal: 'Terminal',

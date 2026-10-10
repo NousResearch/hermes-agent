@@ -4486,6 +4486,8 @@ export const deOverrides = {
       toggleCacheHitRate: 'Cache-Trefferquote',
       toggleCommandCenter: 'Command Center',
       toggleContextUsage: 'Kontext-Anzeige',
+      toggleUsageBudget: 'Nutzungsbudget',
+      usageBudgetTitle: 'Nutzung dieses Monats im Vergleich zu deinen Budgets',
       toggleRunningTimer: 'Runden-Timer',
       toggleSessionTimer: 'Session-Timer',
       toggleTerminal: 'Terminal',

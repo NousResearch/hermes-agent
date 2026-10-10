@@ -333,6 +333,8 @@ export const zhHantChrome = {
       offDescription: '不顯示核准提示，直接執行'
     },
     statusbar: {
+      toggleUsageBudget: '用量預算',
+      usageBudgetTitle: '本月用量與預算對照',
       unknown: '未知',
       restart: '重新啟動',
       update: '更新',

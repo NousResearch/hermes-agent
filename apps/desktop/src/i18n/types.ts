@@ -3522,6 +3522,8 @@ export interface Translations extends NoticeTranslations {
       toggleCacheHitRate: string
       toggleCommandCenter: string
       toggleContextUsage: string
+      toggleUsageBudget: string
+      usageBudgetTitle: string
       toggleRunningTimer: string
       toggleSessionTimer: string
       toggleTerminal: string

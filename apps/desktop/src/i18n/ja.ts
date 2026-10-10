@@ -2971,6 +2971,8 @@ export const jaOverrides = {
       offDescription: '承認プロンプトなしで実行します'
     },
     statusbar: {
+      toggleUsageBudget: '使用量の予算',
+      usageBudgetTitle: '今月の使用量と予算',
       unknown: '不明',
       restart: '再起動',
       update: '更新',

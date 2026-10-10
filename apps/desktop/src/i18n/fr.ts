@@ -4496,6 +4496,8 @@ export const frOverrides = {
       toggleCacheHitRate: 'Taux de cache',
       toggleCommandCenter: 'Centre de commandes',
       toggleContextUsage: 'Jauge de contexte',
+      toggleUsageBudget: "Budget d'utilisation",
+      usageBudgetTitle: 'Utilisation de ce mois par rapport à vos budgets',
       toggleRunningTimer: 'Minuteur de tour',
       toggleSessionTimer: 'Minuteur de session',
       toggleTerminal: 'Terminal',

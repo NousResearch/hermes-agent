@@ -3223,6 +3223,8 @@ export const ruOverrides = {
       toggleCacheHitRate: 'Попадания в кэш',
       toggleCommandCenter: 'Командный центр',
       toggleContextUsage: 'Шкала контекста',
+      toggleUsageBudget: 'Бюджет использования',
+      usageBudgetTitle: 'Использование за этот месяц относительно ваших бюджетов',
       toggleRunningTimer: 'Таймер хода',
       toggleSessionTimer: 'Таймер сеанса',
       toggleTerminal: 'Терминал',

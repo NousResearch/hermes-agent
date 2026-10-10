@@ -18,22 +18,10 @@ import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { useI18n } from '@/i18n'
 import { displayPath, pathLeaf } from '@/lib/display-path'
 import { statusBarGatewayHealth } from '@/lib/gateway-health-pill'
-import {
-  Activity,
-  AlertCircle,
-  Clock,
-  Command,
-  FolderOpen,
-  Globe,
-  Hash,
-  Layers3,
-  Loader2,
-  Terminal,
-  Zap
-} from '@/lib/icons'
+import { Activity, AlertCircle, Clock, Command, FolderOpen, Globe, Hash, Loader2, Terminal } from '@/lib/icons'
 import { type RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { resolveSessionTimerSince } from '@/lib/session-timer-since'
-import { cacheHitLabel, contextBarLabel, LiveDuration, tokensPerSecondLabel, usageContextLabel } from '@/lib/statusbar'
+import { contextBarLabel, LiveDuration, usageContextLabel } from '@/lib/statusbar'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { resolveVersionStatus } from '@/lib/version-status'
@@ -77,6 +65,8 @@ import type { StatusResponse, UsageStats } from '@/types/hermes'
 
 import { CRON_ROUTE, SETTINGS_ROUTE, WEBHOOKS_ROUTE } from '../../routes'
 import type { StatusbarItem } from '../statusbar-controls'
+
+import { cacheHitRateItem, tokensPerSecondItem, useUsageBudgetItem } from './usage-meter-items'
 
 const EMPTY_USAGE: UsageStats = { calls: 0, input: 0, output: 0, total: 0 }
 
@@ -334,8 +324,6 @@ export function useStatusbarItems({
   const contextBar = useMemo(() => contextBarLabel(gaugeUsage), [gaugeUsage])
   // Both ride the same usage payload the context meter does (session.usage
   // ticks mid-turn, message.complete after) — no extra RPC, no polling.
-  const cacheHit = cacheHitLabel(currentUsage)
-  const tokensPerSecond = tokensPerSecondLabel(currentUsage)
 
   // Dial the viewed profile directly: the ambient `requestGateway` is the
   // session-routed dispatcher, which re-scopes `params.profile` to the FOCUSED
@@ -671,6 +659,8 @@ export function useStatusbarItems({
     ]
   )
 
+  const usageBudgetItem = useUsageBudgetItem()
+
   const coreRightStatusbarItems = useMemo<readonly StatusbarItem[]>(
     () => [
       {
@@ -700,24 +690,8 @@ export function useStatusbarItems({
         toggleLabel: copy.toggleContextUsage,
         variant: 'menu'
       },
-      {
-        icon: <Layers3 className="size-3" />,
-        id: 'cache-hit-rate',
-        // Same never-self-hide rule as the context meter: opted in means a
-        // placeholder until the first cached turn reports, not a vanished item.
-        label: cacheHit || '—',
-        title: copy.cacheHitRateTitle,
-        toggleLabel: copy.toggleCacheHitRate,
-        variant: 'text'
-      },
-      {
-        icon: <Zap className="size-3" />,
-        id: 'tokens-per-second',
-        label: tokensPerSecond || '—',
-        title: copy.tokensPerSecondTitle,
-        toggleLabel: copy.toggleTokensPerSecond,
-        variant: 'text'
-      },
+      cacheHitRateItem(copy, currentUsage),
+      tokensPerSecondItem(copy, currentUsage),
       {
         detail: <LiveDuration since={sessionStartedAt} />,
         hidden: !sessionStartedAt,
@@ -745,13 +719,14 @@ export function useStatusbarItems({
         variant: 'action'
       },
       clientVersionItem,
-      ...(backendVersionItem ? [backendVersionItem] : [])
+      ...(backendVersionItem ? [backendVersionItem] : []),
+      usageBudgetItem
     ],
     [
       approvalModeItem,
       backendVersionItem,
+      usageBudgetItem,
       busy,
-      cacheHit,
       chatOpen,
       clientVersionItem,
       contextBar,
@@ -759,13 +734,12 @@ export function useStatusbarItems({
       contextBreakdownLoading,
       contextUsage,
       copy,
-      currentUsage.compressions,
+      currentUsage,
       gaugeUsage,
       sessionStartedAt,
       gatewayState,
       systemResourcesItem,
       terminalShowing,
-      tokensPerSecond,
       turnStartedAt
     ]
   )

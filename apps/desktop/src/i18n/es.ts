@@ -4480,6 +4480,8 @@ export const esOverrides = {
       toggleCacheHitRate: 'Tasa de aciertos de caché',
       toggleCommandCenter: 'Centro de comandos',
       toggleContextUsage: 'Medidor de contexto',
+      toggleUsageBudget: 'Presupuesto de uso',
+      usageBudgetTitle: 'Uso de este mes frente a tus presupuestos',
       toggleRunningTimer: 'Temporizador de turno',
       toggleSessionTimer: 'Temporizador de sesión',
       toggleTerminal: 'Terminal',

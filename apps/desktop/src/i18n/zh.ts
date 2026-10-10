@@ -3938,6 +3938,8 @@ export const zhOverrides = {
       toggleCacheHitRate: '缓存命中率',
       toggleCommandCenter: '命令中心',
       toggleContextUsage: '上下文用量',
+      toggleUsageBudget: '用量预算',
+      usageBudgetTitle: '本月用量与预算对比',
       toggleRunningTimer: '回合计时',
       toggleSessionTimer: '会话计时',
       toggleTerminal: '终端',

@@ -748,27 +748,66 @@ function opensCompleteInlineMath(text: string, openingIndex: number): boolean {
   return /^[\p{L}\p{N}\\{([|+\-=_^]/u.test(body)
 }
 
+function isPostfixCurrencyAt(text: string, index: number): boolean {
+  let cursor = index - 1
+
+  while (/[ \t\u00a0\u202f]/u.test(text[cursor] || '')) {
+    cursor -= 1
+  }
+
+  return /\d/u.test(text[cursor] || '')
+}
+
+function hasExplicitInlineMathSignal(body: string): boolean {
+  // Binary operands have token boundaries; prose word tails and Markdown
+  // emphasis (`and **discount**`, `a **discount**`) are not multiplication.
+  return (
+    /\\[A-Za-z]+|[_^{}]|(?<![\p{L}\p{N}])(?:\p{L}|\p{N}+)\s*[+\-*/=<>]\s*(?=[\p{L}\p{N}\\(])/u.test(body) ||
+    /^\s*\p{L}\s*$/u.test(body)
+  )
+}
+
 /**
- * Escape price openers without corrupting balanced numeric inline math.
+ * Escape prices without corrupting balanced inline math.
  *
  * The upstream helper deliberately treats every `$` followed by a digit as
  * currency. That turns `$4\in A$` into `\$4\in A$`; remark-math then pairs
  * the orphan closing dollar with a later formula and renders the intervening
  * prose as math. We retain the price behavior for `$5 and $10` and `$5-$10`,
- * but preserve balanced, same-line numeric math spans.
+ * but preserve balanced, same-line numeric math spans. A postfix price
+ * (`1 500,00 $`) also follows digits, just like `$x^2$`'s closing delimiter:
+ * consume complete math spans before scanning their closers as prices.
  */
 function escapeCurrencyDollarsPreservingMath(text: string): string {
   let out = ''
   let copiedThrough = 0
 
   for (let cursor = 0; cursor < text.length; cursor += 1) {
-    if (!isCurrencyOpenerAt(text, cursor)) {
+    if (text[cursor] !== '$' || isEscapedAt(text, cursor) || text[cursor - 1] === '$' || text[cursor + 1] === '$') {
       continue
     }
 
+    const currencyOpener = isCurrencyOpenerAt(text, cursor)
+    const postfixCurrency = isPostfixCurrencyAt(text, cursor)
     const closingIndex = findClosingSingleDollar(text, cursor)
 
     if (
+      closingIndex !== -1 &&
+      !currencyOpener &&
+      // A prose number can precede real math (`n=2 $x^2$`). Protect clear
+      // formulas, but not the `+200` or `(tax included), total 1500` between
+      // compact postfix prices.
+      (!postfixCurrency || hasExplicitInlineMathSignal(text.slice(cursor + 1, closingIndex))) &&
+      (opensCompleteInlineMath(text, cursor) ||
+        /^[ \t]+[\p{L}\p{N}\\{([|+\-=_^]/u.test(text.slice(cursor + 1, closingIndex)))
+    ) {
+      cursor = closingIndex
+
+      continue
+    }
+
+    if (
+      currencyOpener &&
       closingIndex !== -1 &&
       // A second amount on the same line is the NEXT opener, never this
       // span's closer: `R$ 12.345 … R$ 98.765` is two prices, not one
@@ -779,6 +818,10 @@ function escapeCurrencyDollarsPreservingMath(text: string): string {
     ) {
       cursor = closingIndex
 
+      continue
+    }
+
+    if (!currencyOpener && !postfixCurrency) {
       continue
     }
 
@@ -969,7 +1012,12 @@ function normalizeProseMath(text: string): string {
   const normalized = splitHuggingDisplayMath(normalizeMathDelimiters(normalizeDisplayMathForMarkdown(text)))
   const cjkEscaped = escapeCjkProseDollars(normalized)
 
-  return escapeCurrencyDollarsPreservingMath(cjkEscaped)
+  // Currency escaping must not add visible backslashes to inline code. Keep
+  // the earlier CJK rewrite's cross-span context, then shield code here.
+  return cjkEscaped
+    .split(INLINE_CODE_SPLIT_RE)
+    .map(segment => (segment.startsWith('`') ? segment : escapeCurrencyDollarsPreservingMath(segment)))
+    .join('')
 }
 
 function extend(out: string[], lines: string[]) {

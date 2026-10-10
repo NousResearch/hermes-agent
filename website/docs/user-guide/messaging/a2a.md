@@ -81,7 +81,7 @@ Interoperability is verified against the official Python `a2a-sdk` (card resolut
 
 Secure by default; every widening step is explicit:
 
-- **No token ⇒ localhost only.** The server binds `127.0.0.1`. Remote exposure requires a bearer token **and** an explicit `A2A_HOST`.
+- **No token ⇒ localhost only.** The server binds `127.0.0.1`. Remote exposure requires a bearer token **and** an explicit `A2A_HOST`. Without a token it also refuses browser-originated POSTs (an `Origin` header, a cross-site `Sec-Fetch-Site`, or a non-JSON `Content-Type`), so a web page open on the same machine cannot send it tasks. Local agents and SDKs that POST JSON are unaffected.
 - **Per-peer tokens** — `A2A_PEER_TOKENS="alice:tok1,bob:tok2"` gives each peer its own credential; the authenticated name drives rate limiting, trust, and audit.
 - **Prompt-injection filtering** — inbound text is filtered and framed as untrusted peer input. Remote peers cannot invoke operator slash commands.
 - **Outbound redaction** — credential-shaped strings (API keys, JWTs, tokens) are scrubbed from replies.

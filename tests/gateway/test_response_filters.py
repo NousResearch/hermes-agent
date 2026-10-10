@@ -19,6 +19,16 @@ def test_autonomous_silence_accepts_marker_with_own_line_note():
     assert is_autonomous_silence_response("[SILENT] No changes detected")
 
 
+def test_autonomous_silence_accepts_whitespace_split_sentinel():
+    """A model can split the sentinel across lines ("[\\n\\nSILENT]"); collapse-all-whitespace
+    whole-response comparison makes these suppress like the intact marker."""
+    assert is_autonomous_silence_response("[\n\nSILENT]")
+    assert is_autonomous_silence_response("[\nSILENT\n]")
+    assert is_autonomous_silence_response("[ SILENT ]")
+    # ...and the collapse must not swallow prose that merely mentions the marker mid-sentence.
+    assert not is_autonomous_silence_response("Nothing new to report [SILENT] but here is the digest...")
+
+
 def test_translated_sentinel_is_silence_in_every_form_the_english_one_is():
     """#110935: a lane that answers the cron instruction in its own language translates the
     sentinel; ``[静默]`` must suppress delivery exactly like ``[SILENT]`` (exact, own-line note,

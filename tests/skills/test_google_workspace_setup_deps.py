@@ -104,3 +104,92 @@ def test_google_anchor_probe_reports_a_missing_module(monkeypatch):
     monkeypatch.setattr(module, "_GOOGLE_ANCHORS", ("googleapiclient", "hermes_absent_anchor"))
 
     assert module._google_deps_importable() is False
+
+
+def test_google_anchor_copy_matches_pm_extras(monkeypatch):
+    # The copy exists because ``pm`` may be unimportable; nothing else ties the
+    # two together, and a partial install must still be refused.
+    module = _load_setup_module(monkeypatch)
+
+    assert set(module._GOOGLE_ANCHORS) == set(pm.extras.ANCHORS["google"])
+    assert len(module._GOOGLE_ANCHORS) == len(pm.extras.ANCHORS["google"])
+
+
+@pytest.mark.parametrize("missing", range(4))
+def test_google_anchor_probe_checks_every_anchor(missing, monkeypatch):
+    module = _load_setup_module(monkeypatch)
+    anchors = list(module._GOOGLE_ANCHORS)
+    importable = set(anchors) - {anchors[missing]}
+
+    def fake_import(name):
+        if name not in importable:
+            raise ImportError(name)
+
+    monkeypatch.setattr("importlib.import_module", fake_import)
+
+    assert module._google_deps_importable() is False
+
+
+def test_install_deps_without_pm_succeeds_when_google_extra_is_importable(monkeypatch, capsys):
+    # ``--install-deps`` is the remediation SKILL.md names; it must not refuse
+    # in the same absent-``pm`` state that _ensure_deps() already accepts.
+    module = _load_setup_module(monkeypatch)
+    monkeypatch.setattr(module, "pm", None)
+    monkeypatch.setattr(module, "_google_deps_importable", lambda: True)
+
+    assert module.install_deps() is True
+    assert "Hermes environment" not in capsys.readouterr().out
+
+
+def test_install_deps_without_pm_and_without_google_extra_refuses(monkeypatch, capsys):
+    module = _load_setup_module(monkeypatch)
+    monkeypatch.setattr(module, "pm", None)
+    monkeypatch.setattr(module, "_google_deps_importable", lambda: False)
+
+    assert module.install_deps() is False
+    output = capsys.readouterr().out
+    assert "Hermes environment" in output
+    assert "hermes setup" in output
+
+
+class _FakeDist:
+    def __init__(self, url):
+        self.url = url
+
+    def read_text(self, name):
+        assert name == "direct_url.json"
+        return json.dumps({"url": self.url, "dir_info": {"editable": True}})
+
+
+def test_pm_is_found_through_the_recorded_checkout(monkeypatch):
+    # A bundled skill is copied out of the checkout, so ``import pm`` misses it;
+    # the venv's direct_url.json still names the tree it was installed from.
+    module = _load_setup_module(monkeypatch)
+    root = Path(pm.__file__).resolve().parents[1]
+    monkeypatch.setattr("importlib.metadata.distribution",
+                        lambda name: _FakeDist(root.as_uri()))
+    monkeypatch.setattr(sys, "path", [p for p in sys.path if Path(p or ".").resolve() != root])
+
+    assert module._import_pm_from_checkout() is pm
+    assert str(root) in sys.path
+
+
+@pytest.mark.parametrize("url", ["https://example.com/hermes.tar.gz", "file:///nonexistent-hermes-root"])
+def test_pm_lookup_ignores_records_without_a_checkout(url, monkeypatch):
+    module = _load_setup_module(monkeypatch)
+    monkeypatch.setattr("importlib.metadata.distribution", lambda name: _FakeDist(url))
+
+    assert module._import_pm_from_checkout() is None
+
+
+def test_pm_lookup_without_an_installed_hermes_returns_none(monkeypatch):
+    from importlib.metadata import PackageNotFoundError
+
+    module = _load_setup_module(monkeypatch)
+
+    def missing(name):
+        raise PackageNotFoundError(name)
+
+    monkeypatch.setattr("importlib.metadata.distribution", missing)
+
+    assert module._import_pm_from_checkout() is None

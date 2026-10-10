@@ -1067,12 +1067,20 @@ const restoreProjects = ({ projects, tree, active }: ProjectsSnapshot): void => 
   $activeProjectId.set(active)
 }
 
-// Await an already-applied optimistic write; restore the snapshot if it throws.
-async function persistOrRollback(snap: ProjectsSnapshot, write: () => Promise<void>): Promise<void> {
+// Await an optimistic write; only its owner may restore the snapshot on failure.
+async function persistOrRollback(
+  context: ActiveProjectsContext,
+  snap: ProjectsSnapshot,
+  write: () => Promise<void>
+): Promise<void> {
   try {
     await write()
   } catch (err) {
-    restoreProjects(snap)
+    // All profiles is a read filter, not the writable owner of this snapshot.
+    if (activeGateway() === context.gateway && normalizeProfileKey($activeGatewayProfile.get()) === context.profile) {
+      restoreProjects(snap)
+    }
+
     throw err
   }
 }
@@ -1226,7 +1234,7 @@ export async function updateProject(
 
   // Backend treats null/undefined as "leave unchanged"; "" clears (stores NULL).
   // Map explicit null → "" so "no color"/"no icon" actually clear.
-  await persistOrRollback(snap, () =>
+  await persistOrRollback(context, snap, () =>
     gatewayRequestOn(
       context.gateway,
       'projects.update',
@@ -1310,7 +1318,7 @@ export async function addProjectFolder(
     }
   }
 
-  await persistOrRollback(snap, () =>
+  await persistOrRollback(context, snap, () =>
     gatewayRequestOn(
       context.gateway,
       'projects.add_folder',
@@ -1358,7 +1366,7 @@ export async function deleteProject(id: string): Promise<void> {
     requestFreshSession()
   }
 
-  await persistOrRollback(snap, async () => {
+  await persistOrRollback(context, snap, async () => {
     applyPayload(
       await gatewayRequestOn<ProjectsPayload>(
         context.gateway,

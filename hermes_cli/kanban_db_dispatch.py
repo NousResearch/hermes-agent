@@ -2489,9 +2489,41 @@ def _rotate_worker_log(
         pass
 
 
+def _isolated_store_python() -> bool:
+    """True when this process is the isolated store interpreter (``python -I``)."""
+    return bool(sys.flags.isolated)
+
+
+def _published_posix_launcher() -> Optional[str]:
+    """Install wrapper that re-inserts the repo on ``sys.path``.
+
+    Isolated store Python does not have ``hermes_cli`` on its default path.
+    Do not import ``hermes_cli._launchers`` here (it pulls ``pm``; this
+    module sits below that). Windows ``.cmd``/``.bat`` wrappers are unsafe
+    as argv[0] with task-derived args — those stay on the ``-m`` form.
+    """
+    shim = Path(__file__).resolve().parents[1] / ".hermes" / "bin" / "hermes"
+    if shim.is_file() and os.access(shim, os.X_OK) and not _is_windows_batch_shim(str(shim)):
+        return str(shim)
+    return None
+
+
 def _module_hermes_argv() -> list[str]:
     """Interpreter-bound Hermes CLI invocation (``hermes_cli.main`` is the
-    console-script target — there is no top-level ``hermes`` package)."""
+    console-script target — there is no top-level ``hermes`` package).
+
+    ``python -m hermes_cli.main`` is correct when this interpreter has the
+    package on its default module path (venv / pip). Isolated store Python
+    (``python -I``, Desktop / launchd launcher) only sees ``hermes_cli``
+    because the published wrapper inserts the install root — a naked ``-m``
+    child then dies with ModuleNotFoundError and the kanban circuit breaker
+    blocks the card. Prefer that wrapper when it exists; never a PATH
+    ``hermes`` (#111569).
+    """
+    if _isolated_store_python():
+        launcher = _published_posix_launcher()
+        if launcher:
+            return [launcher]
     return [sys.executable, "-m", "hermes_cli.main"]
 
 

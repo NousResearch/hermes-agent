@@ -68,6 +68,13 @@ export function cacheHitLabel(usage: UsageStats): string {
   return typeof pct === 'number' && Number.isFinite(pct) ? `${Math.round(pct)}%` : ''
 }
 
+/** Session spend formatted for the compact status line; omitted until pricing is available. */
+export function sessionCostLabel(usage: UsageStats): string {
+  const cost = usage.cost_usd
+
+  return typeof cost === 'number' && Number.isFinite(cost) ? `$${cost.toFixed(4)}` : ''
+}
+
 /** `42 t/s` for the rolling throughput; '' before the first completed call. */
 export function tokensPerSecondLabel(usage: UsageStats): string {
   const tps = usage.avg_tps

@@ -1,7 +1,7 @@
 name: agent-ledger
 repo: https://github.com/ZidoCode/agent-ledger
-sha: 4580387e7b3ecca385b86d58dbe7f08b27b98a2f
-description: Write-ahead ledger for agent side effects. Catches tool calls that were issued but never confirmed (e.g. lost to a compaction turn teardown), then injects a verification prompt so the agent checks the real state instead of silently trusting it.
+sha: dd90932640e2423fbbfa142794e03b6a1386aa92
+description: Write-ahead ledger for agent side effects. Catches tool calls issued but never confirmed (e.g. lost to a compaction turn teardown), injects a verification prompt so the agent checks real state, and scores the agent's activity against the OWASP Top 10 for Agentic Applications 2026 (ASI02/05/08/10/11) with a daily posture audit.
 maintainer: ZidoCode
 tier: community
 requires_hermes: ">=0.19"

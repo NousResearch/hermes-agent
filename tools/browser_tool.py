@@ -465,6 +465,12 @@ from tools import browser_tool_lifecycle as _lifecycle
 # atexit only — NO SIGINT/SIGTERM handlers calling sys.exit(): a SystemExit raised
 # inside a prompt_toolkit key-binding callback corrupts the coroutine state and
 # makes the process unkillable.
+# Registered FIRST so it runs LAST (atexit is LIFO): by then the emergency teardown above has
+# killed our daemons, so a Chromium tree that outlived its daemon is reaped instead of leaking.
+# The sweep runs through ``_best_effort`` like every other teardown: a reaper exception must
+# never abort interpreter shutdown, however late in the exit sequence it fires.
+atexit.register(_lifecycle._best_effort, "Chromium orphan reap on exit",
+                _lifecycle._reap_orphaned_chrome_processes)
 atexit.register(_lifecycle._emergency_cleanup_all_sessions)
 atexit.register(_lifecycle._stop_browser_cleanup_thread)
 

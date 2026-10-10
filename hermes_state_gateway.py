@@ -808,7 +808,9 @@ class SessionGatewayMixin:
         JSON string or parsed dict). Precedence: nested ``gateway_runtime`` (gateway sync /
         CLI ``/model``), then top-level ``provider``/``base_url``/``api_mode`` (TUI), with
         ``billing_provider`` filling a missing provider so sessions that never ran ``/model``
-        still restore the provider that served them. Empty dict on parse failure — resume uses ambient config."""
+        still restore the provider that served them; a bare ``custom`` billing class falls back
+        to its ``billing_base_url`` endpoint for the readers' bare-custom heal (#136323).
+        Empty dict on parse failure — resume uses ambient config."""
         from hermes_state import _BARE_BILLING_PROVIDERS
         raw = (session_meta or {}).get("model_config")
         if isinstance(raw, str):
@@ -826,10 +828,21 @@ class SessionGatewayMixin:
         top_level = {key: raw.get(key) for key in ("provider", "base_url", "api_mode") if raw.get(key)}
         # billing_provider is COALESCE-written on the first accounted API call — the only durable
         # record for sessions that never ran /model. Bare buckets ("auto"/"custom") are not
-        # routable identities; filter them so resume falls back to the ambient default.
+        # routable identities; "auto" is filtered so resume falls back to the ambient default.
         billing_provider = str((session_meta or {}).get("billing_provider") or "").strip()
         if billing_provider and billing_provider.lower() not in _BARE_BILLING_PROVIDERS:
             top_level.setdefault("provider", billing_provider)
+        elif billing_provider.lower() == "custom" and not top_level.get("provider"):
+            # Plain CLI turns persist only the billing class — "custom" — plus the endpoint they
+            # served (billing_base_url, first-accounted overwrite on the row). Surface the pair so
+            # the readers' bare-custom heal (canonical_custom_identity) can recover custom:<name>
+            # from that endpoint instead of resume recombining the stored model with the ambient
+            # default (#136323); an endpoint no longer configured still heals to nothing. "auto"
+            # bills through the router with no attributable endpoint and stays filtered.
+            billing_base_url = str((session_meta or {}).get("billing_base_url") or "").strip()
+            if billing_base_url:
+                top_level.setdefault("base_url", billing_base_url)
+                top_level["provider"] = "custom"
         if top_level:
             return top_level
         if not isinstance(runtime, dict):

@@ -240,7 +240,29 @@ async def test_acp_cancel_publishes_hard_stop_while_holding_runtime_lock():
     assert state.interrupted_prompt_text == "original request"
 
 
+def test_acp_reset_survives_a_reload_when_the_agent_persists_its_own_turns(tmp_path):
+    """The agent flushes its turns to state.db itself, so the save after /reset is the only
+    writer of the cleared transcript: a reloaded session must come back empty, with the
+    cleared turns archived rather than deleted."""
+    from hermes_state import SessionDB
 
+    db = SessionDB(tmp_path / "state.db")
+    live = FakeAgent()
+    live.reset_session_state = lambda: None
+    manager = SessionManager(agent_factory=lambda: live, db=db)
+    state = manager.create_session(cwd=str(tmp_path))
+    # A completed turn, flushed by the agent the way run_conversation does.
+    db.create_session(session_id=state.session_id, source="acp", model="fake-model")
+    for role, content in (("user", "remember apple"), ("assistant", "noted apple")):
+        db.append_message(state.session_id, role, content)
+    state.history = [{"role": "user", "content": "remember apple"},
+                     {"role": "assistant", "content": "noted apple"}]
+    live._session_db, live._session_db_created = db, True
 
+    assert HermesACPAgent(session_manager=manager)._handle_slash_command("/reset", state) == (
+        "Conversation history cleared.")
 
-
+    reloaded = SessionManager(agent_factory=FakeAgent, db=db).get_session(state.session_id)
+    assert reloaded.history == []
+    kept = [m["content"] for m in db.get_messages(state.session_id, include_inactive=True)]
+    assert kept == ["remember apple", "noted apple"]

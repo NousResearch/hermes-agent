@@ -1,13 +1,14 @@
 ---
 name: ponytail-review
 description: Review a diff only for removable complexity.
-version: 1.0.0
+version: 1.1.0
 author: SeoYeonKim (@westkite1201), Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [code-review, simplification, yagni, dependencies, refactor]
+    category: software-development
     related_skills: [ponytail, simplify-code, requesting-code-review]
 ---
 

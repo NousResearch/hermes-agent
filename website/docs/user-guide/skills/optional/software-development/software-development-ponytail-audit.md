@@ -1,15 +1,33 @@
 ---
-name: ponytail-audit
-description: Audit a codebase for removable complexity.
-version: 1.0.0
-author: SeoYeonKim (@westkite1201), Hermes Agent
-license: MIT
-platforms: [linux, macos, windows]
-metadata:
-  hermes:
-    tags: [audit, code-review, simplification, yagni, dependencies, refactor]
-    related_skills: [ponytail, ponytail-review, simplify-code]
+title: "Ponytail Audit — Audit a codebase for removable complexity"
+sidebar_label: "Ponytail Audit"
+description: "Audit a codebase for removable complexity"
 ---
+
+{/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
+
+# Ponytail Audit
+
+Audit a codebase for removable complexity.
+
+## Skill metadata
+
+| | |
+|---|---|
+| Source | Optional — install with `hermes skills install official/software-development/ponytail-audit` |
+| Path | `optional-skills/software-development/ponytail-audit` |
+| Version | `1.1.0` |
+| Author | SeoYeonKim (@westkite1201), Hermes Agent |
+| License | MIT |
+| Platforms | linux, macos, windows |
+| Tags | `audit`, `code-review`, `simplification`, `yagni`, `dependencies`, `refactor` |
+| Related skills | [`ponytail`](../../optional/software-development/software-development-ponytail.md), [`ponytail-review`](../../optional/software-development/software-development-ponytail-review.md), [`simplify-code`](../../bundled/software-development/software-development-simplify-code.md) |
+
+## Reference: full SKILL.md
+
+:::info
+The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+:::
 
 # Ponytail Audit Skill
 
@@ -119,6 +137,20 @@ Never recommend removing these merely to reduce size:
 7. **Separate other defects.** Label incidental correctness, security, or
    performance concerns `normal-review:` and recommend the appropriate review.
    Completion: the Ponytail ranking remains complexity-only.
+
+**Debt ledger mode.** When the user asks what was deferred ("list the
+shortcuts", "ponytail debt"), skip the ranking and collect every deliberate
+shortcut marker instead. Use `search_files` with the regex
+`(#|//|/[*]) ?(shortcut|ponytail):` (or the marker word the user names),
+excluding `.git`, `node_modules` and build output, and write one row per hit,
+grouped by file:
+
+```text
+<file>:<line>, <what was simplified>. ceiling: <the limit named>. upgrade: <the trigger to revisit>.
+```
+
+Skip hits that are not deferrals (a note about a keyboard shortcut). End with
+the total count and the rows whose upgrade trigger has visibly already fired.
 
 Do not implement the findings unless the user explicitly asks for a separate
 cleanup pass.

@@ -1,13 +1,14 @@
 ---
 name: ponytail
 description: Choose the smallest safe implementation that works.
-version: 1.0.0
+version: 1.1.0
 author: SeoYeonKim (@westkite1201), Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [coding, simplification, yagni, minimalism, refactor]
+    category: software-development
     related_skills: [simplify-code, requesting-code-review, test-driven-development]
 ---
 
@@ -91,7 +92,12 @@ particular, do not simplify away:
    type, or build command. Add one focused regression test for non-trivial
    behavior when a test suite exists. Completion: the changed behavior is
    exercised, not merely imported.
-6. **Report the tradeoff.** State what changed, what complexity was skipped,
+6. **Mark deliberate shortcuts.** When the minimal version has a known limit,
+   leave a one-line code comment in the form
+   `shortcut: <the limit>, <when to upgrade>` next to it (older code may use
+   `ponytail:` for the same marker). Completion: every deferral is greppable,
+   so `ponytail-audit` can list it later instead of it becoming permanent.
+7. **Report the tradeoff.** State what changed, what complexity was skipped,
    and the concrete trigger for adding it later. Completion: the user can tell
    when the minimal design would stop being sufficient.
 

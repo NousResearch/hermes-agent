@@ -9,6 +9,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -33,6 +34,9 @@ short = MODEL.split("/")[-1]
 RESULTS = os.path.join(os.environ.get("ABDEFER_RESULTS", os.path.join(HARNESS, "results")), short)
 os.makedirs(RESULTS, exist_ok=True)
 PY = os.environ.get("ABDEFER_PYTHON", sys.executable)
+stop_event = threading.Event()
+active_processes = set()
+active_processes_lock = threading.Lock()
 
 cells = []
 for task_id in task_ids:
@@ -54,27 +58,40 @@ for task_id in task_ids:
 print(f"model={MODEL} cells to run: {len(cells)} (parallel={parallel})", flush=True)
 
 def run_cell(cell):
+    if stop_event.is_set():
+        return (cell, "CANCELLED", "")
     arm, task_id, rep, out = cell
     timeout = taskmod.TASKS_BY_ID[task_id].get("timeout", 600)
     cmd = [PY, os.path.join(HARNESS, "worker.py"), arm, MODEL, task_id, str(rep), out]
     t0 = time.time()
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 60,
-                           env=os.environ.copy())
+        p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                             text=True, env=os.environ.copy())
+        with active_processes_lock:
+            active_processes.add(p)
+        try:
+            stdout, stderr = p.communicate(timeout=timeout + 60)
+        finally:
+            with active_processes_lock:
+                active_processes.discard(p)
         if p.returncode == 3:
-            return (cell, "INFRA_ABORT", p.stderr[-500:])
+            return (cell, "INFRA_ABORT", stderr[-500:])
         if p.returncode != 0 and not os.path.exists(out):
             rec = {"arm": arm, "model": MODEL, "task": task_id, "rep": rep,
                    "score": 0.0, "error": f"worker exit {p.returncode}",
-                   "notes": [p.stderr[-400:]], "api_turns": None,
+                   "notes": [stderr[-400:]], "api_turns": None,
                    "total_tokens": None, "wall_s": round(time.time() - t0, 1),
                    "bridge_calls": None, "tool_calls_total": None,
                    "tool_counts": {}, "raw_xml_noise": False}
             with open(out, "w", encoding="utf-8") as f:
                 json.dump(rec, f, indent=1)
-            return (cell, "WORKER_ERR", p.stderr[-300:])
-        return (cell, "OK", p.stdout.strip().splitlines()[-1] if p.stdout.strip() else "")
+            return (cell, "WORKER_ERR", stderr[-300:])
+        return (cell, "OK", stdout.strip().splitlines()[-1] if stdout.strip() else "")
     except subprocess.TimeoutExpired:
+        p.kill()
+        p.wait()
+        with active_processes_lock:
+            active_processes.discard(p)
         rec = {"arm": arm, "model": MODEL, "task": task_id, "rep": rep,
                "score": 0.0, "error": "wall timeout", "notes": ["hard wall timeout"],
                "api_turns": None, "total_tokens": None,
@@ -96,5 +113,13 @@ with ThreadPoolExecutor(max_workers=parallel) as ex:
             infra_aborts += 1
             if infra_aborts >= 3:
                 print("FATAL: 3 infra aborts — stopping battery", flush=True)
-                sys.exit(3)
+                stop_event.set()
+                for pending in futs:
+                    pending.cancel()
+                with active_processes_lock:
+                    running = tuple(active_processes)
+                for process in running:
+                    process.kill()
+                ex.shutdown(wait=False, cancel_futures=True)
+                raise SystemExit(3)
 print("BATTERY COMPLETE", flush=True)

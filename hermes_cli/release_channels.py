@@ -298,7 +298,7 @@ class ChannelReader:
         try:
             body = retry_network(read) if _RETRY_READS.get() else read()
         except HTTPError as exc:
-            if exc.code == 404:
+            if exc.code in (404, 403):
                 raise ChannelNotFound(f"Channel object not found: {key}") from exc
             raise ChannelError(f"Channel read unavailable: HTTP {exc.code}") from exc
         except (OSError, URLError) as exc:

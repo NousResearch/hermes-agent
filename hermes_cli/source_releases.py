@@ -159,14 +159,30 @@ def _resolve_source_target(channel: str, git_cmd=None, cwd=None, *, repository=N
                         version=request["sourceVersion"], build_id=request["buildId"])
 
 
+# Why the last release lookup returned nothing, so callers name the real cause
+# (a rate limit is not "no release").
+_last_release_failure: dict[str, BaseException] = {}
+
+
+def _describe_release_failure(failure: BaseException | None) -> str:
+    if isinstance(failure, (urllib.error.URLError, TimeoutError)):
+        from hermes_cli.github_api import describe_github_failure, github_token
+
+        return describe_github_failure(failure, authenticated=github_token() is not None)
+    return f"No published stable release could be verified: {failure}" if failure else (
+        "No published stable release could be verified")
+
+
 def _resolve_stable(repository: str, git_cmd=None, cwd=None) -> SourceTarget:
     """Stable IS the repository's latest published GitHub release: the tag a release
     publishes (non-draft, non-prerelease, strict vX.Y.Z), verified against origin.
     No R2 record or pointer is consulted; publishing the release is the only promotion.
     """
+    _last_release_failure.pop("stable", None)
     tag, commit = resolve_source_release("stable", git_cmd, cwd, repository=repository, pointer=False)
     if commit is None:
-        raise ValueError("No published stable release could be verified")
+        failure = _last_release_failure.pop("stable", None)
+        raise ValueError(_describe_release_failure(failure))
     return SourceTarget("stable", "stable", repository, commit=commit, version=str(tag).removeprefix("v"))
 
 
@@ -254,9 +270,14 @@ def _published(release, channel: str) -> bool:
 
 
 def _json(url: str):
-    text = _read(url)
-    assert text is not None
-    return json.loads(text)
+    """GitHub API JSON with the updater's credential ladder (token, gh, anonymous).
+
+    Anonymous api.github.com is 60 requests/hour per address, so an unauthenticated
+    stable lookup fails for everyone behind one office, CI or container exit.
+    """
+    from hermes_cli.source_check import _request
+
+    return json.loads(_request(url))
 
 
 def _published_fallback(channel: str, base: str) -> dict:
@@ -348,4 +369,5 @@ def resolve_source_release(channel: str, git_cmd=None, cwd=None, *, repository=N
         return tag, sha
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         logger.warning("Could not resolve the %s source release: %s", channel, exc)
+        _last_release_failure[channel] = exc
         return None, None

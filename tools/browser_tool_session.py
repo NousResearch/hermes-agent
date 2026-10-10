@@ -693,7 +693,8 @@ def _sandbox_wrap(cmd_parts: list[str], browser_env: dict[str, str], task_socket
                                      user=sandbox_host._user_for(env), interactive=True)
     if wrapped is None:
         raise RuntimeError(f"{type(env).__name__} cannot host the browser")
-    host_env = {"PATH": browser_env.get("PATH", os.environ.get("PATH", "")), "HOME": os.environ.get("HOME", "")}
+    host_env = {"PATH": browser_env.get("PATH", os.environ.get("PATH", "")), "HOME": os.environ.get("HOME", ""),
+                **streams.client_connection_env()}
     return wrapped, host_env
 
 

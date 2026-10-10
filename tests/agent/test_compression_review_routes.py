@@ -80,6 +80,25 @@ def test_pinned_missing_key_names_effective_route(compression_config, monkeypatc
     assert "credential missing" in rendered
     assert "aux-A" not in rendered and "aux.example" not in rendered
     assert not comp._last_aux_call_model
+    assert comp._summary_failure_identity()[:2] == ("groq", "pinned-B")
+    assert comp._aux_route_label({}) == "(provider=groq model=pinned-B)"
+
+
+@pytest.mark.parametrize("endpoint", [
+    "https://aux.example/v1#fragment-secret",
+    "https://aux.example/v1#fragment?key=query-secret",
+    "https://aux.example/v1?key=query-secret#fragment-secret",
+])
+def test_diagnostic_endpoint_omits_query_and_fragment(endpoint):
+    comp = compressor()
+    # The static fallback reaches the sink without the callback's sanitization.
+    comp.base_url = endpoint
+    comp._last_attempt_failure_class = "network"
+    rendered = diagnostic(comp)
+    assert rendered.split("🌐 Endpoint: ", 1)[1] == (
+        "https://aux.example/v1"
+        " (auxiliary.compression is not configured — using main model)"
+    )
 
 
 def test_aux_failure_retries_main_at_wire(compression_config, monkeypatch):
@@ -177,6 +196,7 @@ def test_managed_relay_reports_final_wire_model(tmp_path, monkeypatch, rewrite, 
                     auxiliary_relay._relay_sync_completion(client, kwargs, create=lambda r: create(**r))
         assert wire == [final_model]
         assert route_info == {"provider": "custom", "model": final_model}
+        assert comp._aux_route_label(route_info) == f"(provider=custom model={final_model})"
         comp._last_attempt_failure_class = "other"
         rendered = diagnostic(comp)
         assert f"Model: {final_model}" in rendered

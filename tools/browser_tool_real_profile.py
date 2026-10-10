@@ -7,7 +7,6 @@ through ``_bt`` (resolved per call — never import ``tools.browser_tool`` at im
 """
 
 import os
-import re
 import subprocess
 import sys
 import time
@@ -93,13 +92,6 @@ def _agent_browser_session_cmd(session_name: str, *cmd: str, log_label: str) -> 
         return None
 
 
-def _agent_browser_get_cdp(session_name: str) -> Optional[str]:
-    """HTTP CDP discovery root of an agent-browser session (from its ``ws://`` cdp-url), or None."""
-    proc = _agent_browser_session_cmd(session_name, "get", "cdp-url", log_label="get cdp-url")
-    m = re.search(r"ws://127\.0\.0\.1:(\d+)/", (proc.stdout or "").strip()) if proc is not None else None
-    return f"http://127.0.0.1:{m.group(1)}" if m else None
-
-
 def _read_devtools_port(data_dir: str) -> Optional[str]:
     """First line of Chrome's ``DevToolsActivePort`` in ``data_dir`` (None when unreadable)."""
     try:
@@ -130,15 +122,9 @@ def _surviving_chrome_cdp(data_dir: str) -> Optional[str]:
     return http_cdp if ws_url.endswith(browser_path) else None
 
 
-def _cdp_on_data_dir(http_cdp: str, data_dir: str) -> bool:
-    """True when the CDP endpoint's browser runs on ``data_dir`` (DevToolsActivePort match proves it
-    is our profile copy, not a throwaway temp dir a raced/stale launch fell back to)."""
-    m = re.search(r":(\d+)", http_cdp or "")
-    return bool(m) and _read_devtools_port(data_dir) == m.group(1)
-
-
 def _agent_browser_close_session(session_name: str) -> None:
-    """Best-effort close of an agent-browser session (stale/wrong-dir cleanup)."""
+    """Best-effort close of an agent-browser session. Only detaches the daemon: a browser it was
+    ATTACHED to (``--cdp``) keeps running; one the daemon launched itself is torn down."""
     _agent_browser_session_cmd(session_name, "close", log_label="session close")
 
 
@@ -221,14 +207,20 @@ def _launch_real_profile_chrome(real_binary: str, copy_dir: str) -> tuple[Option
 def _attach_agent_browser_to_real_profile(port: int, copy_dir: str) -> tuple[Optional[str], Optional[str]]:
     """Make agent-browser ATTACH to the running Chrome (never launch its own); returns ``(http_cdp, error)``.
 
-    The daemon may answer with the endpoint of a browser IT spawned (throwaway temp profile);
-    the DevToolsActivePort OUR Chrome wrote is authoritative on disagreement.
+    The endpoint is derived from the port OUR Chrome wrote to ``DevToolsActivePort`` (falling back
+    to ``port``). It is never asked of the daemon: ``agent-browser get cdp-url`` without ``--cdp``
+    makes the daemon launch its own headless Chrome and report THAT, a throwaway browser that
+    lives as long as this process.
     """
     _bt = _origin()
     try:
         browser_cmd = _install._find_agent_browser()
     except FileNotFoundError as e:
         return None, f"{_RP}the local browser engine (agent-browser) is not installed: {e}"
+    # A session left over from an earlier attach ignores a new ``--cdp`` while it is live and fails
+    # the open while its Chrome is dead. Close it first; close never launches a browser and leaves
+    # an attached one running.
+    _agent_browser_close_session(_bt._REAL_PROFILE_SESSION)
     argv = [*_session._agent_browser_argv(browser_cmd), "--session", _bt._REAL_PROFILE_SESSION,
             "--cdp", str(port), "open", "about:blank"]
     try:
@@ -242,13 +234,8 @@ def _attach_agent_browser_to_real_profile(port: int, copy_dir: str) -> tuple[Opt
     if proc.returncode != 0:
         tail = (proc.stderr or proc.stdout or "").strip().splitlines()
         return None, f"{_RP}the real-profile browser failed to start: {tail[-1] if tail else f'exit {proc.returncode}'}"
-    cdp = _agent_browser_get_cdp(_bt._REAL_PROFILE_SESSION)
     our_port = _read_devtools_port(copy_dir)
-    if our_port is not None and (m := re.search(r":(\d+)", cdp or "")) and m.group(1) != our_port:
-        cdp = f"http://127.0.0.1:{our_port}"
-    if not cdp:
-        return None, _RP + "the real-profile browser started without exposing a devtools endpoint. Retry, or turn the toggle off."
-    return cdp, None
+    return f"http://127.0.0.1:{our_port if our_port and our_port.isdigit() else port}", None
 
 
 def _real_profile_cdp() -> tuple:
@@ -304,14 +291,11 @@ def _real_profile_cdp() -> tuple:
 
         # Reuse BEFORE writing anything. CRITICAL: the snapshot overlay (truncates/rewrites
         # Cookies / Login Data) must NOT run while a live copy-browser (maybe from a previous
-        # hermes process) holds the user-data-dir open — that corrupts the databases.
+        # hermes process) holds the user-data-dir open — that corrupts the databases. The probe
+        # reads the copy dir's own DevToolsActivePort; it never asks the agent-browser daemon,
+        # because ``get cdp-url`` without ``--cdp`` makes a daemon with nothing attached launch
+        # a throwaway Chrome.
         copy_dir = real_profile_copy_dir(browser)
-        existing = _agent_browser_get_cdp(_bt._REAL_PROFILE_SESSION)
-        if existing and _cdp_http_ready(existing) and _cdp_on_data_dir(existing, copy_dir):
-            _bt._real_profile_cdp_cache["cdp"] = existing
-            return existing, None
-        if existing:  # stale/wrong-dir session: close it so nothing holds the dir open
-            _agent_browser_close_session(_bt._REAL_PROFILE_SESSION)
         # A Chrome from an earlier hermes process can still hold the copy dir after its attach
         # daemon was reaped (that owner died). Re-attach to it rather than overlay a live profile;
         # if the daemon cannot attach, fail closed — never snapshot over an open profile. Not ours

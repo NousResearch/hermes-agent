@@ -645,6 +645,10 @@ class ChatCompletionsTransport(ProviderTransport):
             provider_data["reasoning_content"] = reasoning_content
         if getattr(msg, "reasoning_details", None):
             provider_data["reasoning_details"] = msg.reasoning_details
+        # Message-level carriers (Gemini text-turn signature, Copilot reasoning): agent/reasoning_carriers.py.
+        for key in ("extra_content", "reasoning_opaque", "reasoning_text"):
+            if (value := _attr_or_model_extra(msg, key)) is not None:
+                provider_data[key] = _dump_extra_content(value)
 
         # OpenAI structured refusal (``message.refusal`` set, ``content`` empty); without
         # promotion the loop retries a deterministic refusal as an empty response.
@@ -677,9 +681,12 @@ class ChatCompletionsTransport(ProviderTransport):
             name = alias_map.get(name, name)
         arguments = getattr(tc_function, "arguments", None)
         extra = _attr_or_model_extra(tc, "extra_content")
+        fn_sig = _attr_or_model_extra(tc_function, "thought_signature")  # Copilot's Gemini 3 variant
+        provider_data = {k: v for k, v in (("extra_content", None if extra is None else _dump_extra_content(extra)),
+                                            ("thought_signature", fn_sig)) if v is not None}
         call = ToolCall(
             id=getattr(tc, "id", None), name=name, arguments="{}" if arguments is None else arguments,
-            provider_data=None if extra is None else {"extra_content": _dump_extra_content(extra)},
+            provider_data=provider_data or None,
         )
         if getattr(tc_function, "args_repaired", False) is True:
             call.args_repaired = True  # stream assembly fixed the JSON; read by tool-call quality metrics

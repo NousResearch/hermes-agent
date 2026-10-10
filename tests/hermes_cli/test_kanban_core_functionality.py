@@ -1365,6 +1365,53 @@ def test_dead_worker_reap_surfaces_the_workers_own_last_output(kanban_home, driv
         conn.close()
 
 
+def test_log_noise_prefixes_are_locale_agnostic(monkeypatch):
+    """Regression for PR #129663 review: the ``Query:`` fallback was an English
+    literal, so a worker running under a non-English locale echoed its own
+    translated query label (e.g. German "Anfrage:") straight into the trimmed
+    output instead of having it stripped as noise."""
+    from agent import i18n
+    from hermes_cli.kanban_db_dispatch import _log_noise_prefixes
+
+    monkeypatch.setenv("HERMES_LANGUAGE", "de")
+    i18n.reset_language_cache()
+    try:
+        prefixes = _log_noise_prefixes()
+        assert "Anfrage:" in prefixes
+        assert "Query:" not in prefixes  # the English literal must no longer be hardcoded
+    finally:
+        monkeypatch.delenv("HERMES_LANGUAGE", raising=False)
+        i18n.reset_language_cache()
+
+
+def test_dead_worker_reap_strips_non_english_query_label(kanban_home, monkeypatch):
+    """Same regression as above, exercised end-to-end through the reap path with a
+    German-locale worker log: the localized ``Anfrage:`` echo line must be trimmed
+    from last_failure_error just like the English ``Query:`` line already is."""
+    from agent import i18n
+    import hermes_cli.kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+
+    monkeypatch.setenv("HERMES_LANGUAGE", "de")
+    i18n.reset_language_cache()
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="handoff", assignee="worker")
+        log_path = kb.worker_log_path(tid)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text(_WORKER_LOG_TAIL.replace("Query: work kanban task", "Anfrage: work kanban task"))
+
+        _drive_protocol_violation(conn, tid, 991101)
+
+        task = kb.get_task(conn, tid)
+        assert "no reassignment operation" in (task.last_failure_error or "")
+        assert "Anfrage:" not in (task.last_failure_error or "")
+    finally:
+        conn.close()
+        monkeypatch.delenv("HERMES_LANGUAGE", raising=False)
+        i18n.reset_language_cache()
+
+
 def test_dead_worker_reap_reads_the_log_of_the_dispatching_board(kanban_home):
     """The reap must read the worker log under the board the tick runs for, not the
     ambient "current" board — otherwise every non-default board silently gets the canned

@@ -408,6 +408,8 @@ export const it: Translations = {
     failedToLoadRaw: "Caricamento configurazione grezza non riuscito",
     configImported: "Configurazione importata — controlla e salva",
     invalidJson: "File JSON non valido",
+    managedFieldHint: "Gestito dal tuo amministratore{source} — sola lettura",
+    managedRejectedToast: "Salvato, ma queste impostazioni sono gestite dal tuo amministratore e non sono state modificate: {keys}",
     categories: {
       general: "Generale",
       agent: "Agente",

@@ -409,6 +409,8 @@ export const uk: Translations = {
     failedToLoadRaw: "Не вдалося завантажити сирий конфіг",
     configImported: "Конфігурацію імпортовано — перегляньте та збережіть",
     invalidJson: "Недійсний файл JSON",
+    managedFieldHint: "Керується адміністратором{source} — лише читання",
+    managedRejectedToast: "Збережено, але цими налаштуваннями керує адміністратор, і вони не були змінені: {keys}",
     categories: {
       general: "Загальне",
       agent: "Агент",

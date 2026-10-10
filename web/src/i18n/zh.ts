@@ -403,6 +403,8 @@ export const zh: Translations = {
     failedToLoadRaw: "加载原始配置失败",
     configImported: "配置已导入 — 请检查后保存",
     invalidJson: "无效的 JSON 文件",
+    managedFieldHint: "由管理员管理{source} — 只读",
+    managedRejectedToast: "已保存，但以下设置由管理员管理，未被更改：{keys}",
     categories: {
       general: "通用",
       agent: "代理",

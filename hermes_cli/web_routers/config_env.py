@@ -24,7 +24,8 @@ from hermes_cli.web_server_profiles import (
     _approval_mode_of, _broadcast_gateway_session_info, _is_other_profile, _parse_model_entries,
 )
 from fastapi import HTTPException, Request
-from hermes_cli.config import DEFAULT_CONFIG, OPTIONAL_ENV_VARS, read_raw_config, require_readable_config_before_write, custom_endpoint_key_env, coerce_provider_id, find_provider_entry, get_compatible_custom_providers, _ENV_REF_RE, _deep_merge
+from hermes_cli import managed_scope
+from hermes_cli.config import DEFAULT_CONFIG, OPTIONAL_ENV_VARS, cfg_get, read_raw_config, require_readable_config_before_write, custom_endpoint_key_env, coerce_provider_id, find_provider_entry, get_compatible_custom_providers, _ENV_REF_RE, _deep_merge
 from hermes_cli.config_providers import _canonical_api_mode, _custom_provider_entry_to_provider_config
 from hermes_cli.web_models import ConfigUpdate, EnvVarUpdate, EnvVarDelete, EnvVarReveal, CustomEndpointUpdate
 from typing import Any, Dict, List, Optional, Tuple
@@ -56,6 +57,37 @@ _CATEGORY_ORDER = [
     "memory", "compression", "security", "browser", "voice",
     "tts", "stt", "logging", "discord", "auxiliary",
 ]
+
+# Sentinel distinguishing "key absent" from a falsy on-disk value when diffing
+# a PUT body against the managed overlay.
+_UNSET = object()
+
+
+def _managed_rejected_keys(incoming: dict[str, Any]) -> list[str]:
+    """Pinned dotted keys whose PUT value differs from the enforced managed one.
+
+    The GET response is the overlay-merged config, so an untouched form always
+    resends managed values verbatim, and Desktop autosaves send a sparse diff
+    where an absent key means "unchanged" — only a value that is present AND no
+    longer matches what the managed layer enforces counts as an attempted edit.
+    A key the admin repinned while the page sat open also lands here (stale
+    display), which is the honest answer: that value was not saved. Must run
+    inside the request's profile scope so ``load_config()`` reads the targeted
+    home.
+    """
+    managed_keys = managed_scope.managed_config_keys()
+    if not managed_keys:
+        return []
+    effective = load_config()
+    rejected: list[str] = []
+    for dotted in sorted(managed_keys):
+        parts = dotted.split(".")
+        sent = cfg_get(incoming, *parts, default=_UNSET)
+        if sent is _UNSET:
+            continue
+        if sent != cfg_get(effective, *parts, default=_UNSET):
+            rejected.append(dotted)
+    return rejected
 
 
 @contextlib.contextmanager
@@ -103,7 +135,17 @@ async def get_schema(profile: Optional[str] = None):
     # start still show up, scoped to the requested profile's config.
     with _config_profile_scope(profile):
         fields = _schema_with_dynamic_provider_options()
-    return {"fields": fields, "category_order": _CATEGORY_ORDER}
+    managed_dir = managed_scope.get_managed_dir()
+    return {
+        "fields": fields,
+        "category_order": _CATEGORY_ORDER,
+        # Managed-scope metadata so Settings surfaces can render pinned leaves
+        # read-only instead of editable-but-silently-dropped (#135859). The
+        # scope is machine-global (/etc/hermes), not profile-scoped, so it is
+        # resolved outside the profile scope above.
+        "managed_keys": sorted(managed_scope.managed_config_keys()),
+        "managed_source": str(managed_dir) if managed_dir is not None else None,
+    }
 
 
 @config_router.get("/api/egress/status")
@@ -120,6 +162,7 @@ async def update_config(
 ):
     def _run():
         approvals_mode_changed = False
+        managed_rejected: list[str] = []
         with _profile_scope(body.profile or profile):
             # The dashboard form is schema-driven; root keys absent from the
             # schema (``custom_providers``, ``agent.personalities``, ...) are not
@@ -131,6 +174,10 @@ async def update_config(
                 existing = require_readable_config_before_write()
                 incoming = _denormalize_config_from_web(body.config)
                 merged = _deep_merge(existing, incoming)
+                # Before save_config strips pinned leaves to a stderr-only
+                # note, name them in the response so the UI can warn instead
+                # of claiming success (#135859).
+                managed_rejected = _managed_rejected_keys(incoming)
                 # Compare normalized approvals.mode across the in-memory
                 # documents, not config blocks and not cache re-reads: the page
                 # PUTs the defaulted GET record while disk holds sparse YAML (a
@@ -150,7 +197,10 @@ async def update_config(
         # different HERMES_HOME than this process's gateway sessions.
         if approvals_mode_changed and not _is_other_profile(body.profile or profile):
             _broadcast_gateway_session_info()
-        return {"ok": True}
+        result: dict[str, Any] = {"ok": True}
+        if managed_rejected:
+            result["managed_rejected"] = managed_rejected
+        return result
 
     with http_failure("PUT /api/config failed", 500, detail="Internal server error"):
         return await asyncio.to_thread(_run)

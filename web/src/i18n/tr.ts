@@ -408,6 +408,8 @@ export const tr: Translations = {
     failedToLoadRaw: "Ham yapılandırma yüklenemedi",
     configImported: "Yapılandırma içe aktarıldı — gözden geçirip kaydedin",
     invalidJson: "Geçersiz JSON dosyası",
+    managedFieldHint: "Yöneticiniz tarafından yönetiliyor{source} — salt okunur",
+    managedRejectedToast: "Kaydedildi, ancak bu ayarlar yöneticiniz tarafından yönetiliyor ve değiştirilmedi: {keys}",
     categories: {
       general: "Genel",
       agent: "Agent",

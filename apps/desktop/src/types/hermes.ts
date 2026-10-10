@@ -20,6 +20,17 @@ export interface ConfigFieldSchema {
 export interface ConfigSchemaResponse {
   category_order?: string[]
   fields: Record<string, ConfigFieldSchema>
+  /** Dotted leaves the managed scope (/etc/hermes) pins — rendered
+   *  read-only by Settings surfaces (#135859). */
+  managed_keys?: string[]
+  /** The managed scope's directory, when one is active. */
+  managed_source?: null | string
+}
+
+export interface ConfigSaveResponse {
+  ok: boolean
+  /** Pinned keys the save refused (value differed from the managed one). */
+  managed_rejected?: string[]
 }
 
 export interface AudioTranscriptionResponse {

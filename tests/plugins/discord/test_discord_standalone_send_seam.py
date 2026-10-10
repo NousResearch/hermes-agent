@@ -42,6 +42,27 @@ def test_seam_identity_every_moved_name(name):
     assert getattr(adapter, name) is getattr(standalone_send, name)
 
 
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        (
+            "request failed: Authorization: Bot abc.def.ghi, retrying",
+            "request failed: Authorization: Bot ***, retrying",
+        ),
+        (
+            "HTTP 401 {Authorization: Bot token-with-punctuation} response",
+            "HTTP 401 {Authorization: Bot ***} response",
+        ),
+        (
+            "AUTHORIZATION:   Bot secret-token\nnext line",
+            "AUTHORIZATION:   Bot ***\nnext line",
+        ),
+    ],
+)
+def test_sanitizer_masks_bot_tokens_without_consuming_delimiters(text, expected):
+    assert standalone_send._standalone_sanitize_error(text) == expected
+
+
 def test_probe_cache_shared_dict_across_namespaces():
     """The mutable probe cache is ONE dict object behind both namespaces."""
     assert adapter._DISCORD_CHANNEL_TYPE_PROBE_CACHE is standalone_send._DISCORD_CHANNEL_TYPE_PROBE_CACHE
@@ -128,6 +149,23 @@ def test_standalone_send_http_error_path(monkeypatch):
         )
 
     assert result == {"error": "Discord API error (403): Forbidden: no perms"}
+
+
+def test_standalone_send_http_error_redacts_bot_token(monkeypatch):
+    monkeypatch.setattr("gateway.channel_directory.lookup_channel_type", _no_channel_type)
+    mock_session, _ = _build_mock_chain(
+        403, response_text="Authorization: Bot secret-token, status=401"
+    )
+    with patch("aiohttp.ClientSession", return_value=mock_session):
+        result = asyncio.run(
+            standalone_send._standalone_send(
+                SimpleNamespace(token="tok"), "111222333", "hello"
+            )
+        )
+
+    assert result["error"].startswith("Discord API error (403): Authorization: Bot ***")
+    assert "secret-token" not in result["error"]
+    assert "status=401" in result["error"]
 
 
 def test_standalone_send_forum_thread_json_path(monkeypatch):

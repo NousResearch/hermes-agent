@@ -51,7 +51,8 @@ from tools.vision_tools_image_prep import (
     _determine_mime_type,
     _image_exceeds_dimension,
     _normalize_to_supported_image,
-    _validate_raster_image_decodable)
+    _validate_raster_image_decodable,
+    upright_image_bytes)
 
 logger = logging.getLogger(__name__)
 
@@ -462,7 +463,11 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
     is_png = (mime_type or _determine_mime_type(image_path)) == "image/png" and not force_jpeg
     pil_format, out_mime = ("PNG", "image/png") if is_png else ("JPEG", "image/jpeg")
     try:
-        img = Image.open(image_path)
+        from PIL import ImageOps
+
+        # Re-encoding drops the EXIF Orientation tag, so bake it into the pixels first or a
+        # portrait phone photo reaches the model sideways.
+        img = ImageOps.exif_transpose(Image.open(image_path))
     except Exception as exc:
         logger.info("Pillow cannot open image for resizing: %s", exc)
         return _raw()
@@ -658,6 +663,13 @@ async def _prepare_image(
             _unlink_quietly(path)
             path = normalized_path
             size_bytes = path.stat().st_size
+        else:
+            # Before the crop: a region is read off the full image as delivered, so both
+            # passes must see the same upright pixels, including the no-resize fast path.
+            upright, mime = await _run_encode_on_cpu_executor(upright_image_bytes, resolved.data, mime)
+            if upright is not resolved.data:
+                await asyncio.to_thread(_write_private_bytes, path, upright)
+                size_bytes = len(upright)
         if validate_decode:
             decode_error = await _run_encode_on_cpu_executor(
                 _validate_raster_image_decodable, path,
@@ -985,7 +997,7 @@ VISION_ANALYZE_SCHEMA = {
                 "maxItems": 4,
                 "description": (
                     "Optional [x1, y1, x2, y2] crop in ORIGINAL-image pixel "
-                    "coordinates, applied before any downscaling — the crop "
+                    "coordinates (upright, as you see the image), applied before any downscaling — the crop "
                     "keeps full resolution. Load the full image first, then "
                     "re-call with a region to zoom into small text or fine "
                     "detail."

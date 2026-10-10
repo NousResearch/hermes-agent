@@ -847,6 +847,34 @@ class TestResizeImageForVision:
             )
             assert result.startswith("data:image/jpeg;base64,"), mode
 
+    def test_resized_photo_keeps_its_display_orientation(self, tmp_path):
+        """A portrait phone photo is stored as a landscape grid plus EXIF Orientation=6. The
+        re-encode drops the tag, so the resized image must already be the one a viewer shows."""
+        try:
+            from PIL import Image, ImageOps
+        except ImportError:
+            pytest.skip("Pillow not installed")
+        from io import BytesIO
+
+        grid = Image.effect_noise((800, 400), 64).convert("RGB")
+        grid.paste((255, 0, 0), (0, 0, 200, 200))  # red block in the stored top-left corner
+        exif = Image.Exif()
+        exif[0x0112] = 6
+        path = tmp_path / "IMG_0001.jpg"
+        grid.save(path, "JPEG", quality=95, exif=exif.tobytes())
+        with Image.open(path) as original:
+            shown = ImageOps.exif_transpose(original)
+
+        result = _resize_image_for_vision(path, mime_type="image/jpeg", max_base64_bytes=48 * 1024)
+
+        with Image.open(BytesIO(base64.b64decode(result.partition(",")[2]))) as out:
+            seen = ImageOps.exif_transpose(out).convert("RGB")
+        assert max(seen.size) < max(shown.size)  # the resize fired
+        assert (seen.size[0] > seen.size[1]) == (shown.size[0] > shown.size[1])
+        # The red corner sits where the viewer of the original sees it (top-right after 90° CW).
+        red_corner = shown.resize(seen.size).getpixel((seen.size[0] - 5, 5))
+        assert seen.getpixel((seen.size[0] - 5, 5))[0] > 200 and red_corner[0] > 200
+
 
 # ---------------------------------------------------------------------------
 # _image_exceeds_dimension — proactive embed-time pixel-cap detector

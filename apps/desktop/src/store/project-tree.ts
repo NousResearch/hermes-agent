@@ -9,3 +9,6 @@ import type { SidebarProjectTree } from '@/app/chat/sidebar/projects/workspace-g
 // suite that partially mocks the gateway. store/projects.ts owns all writes
 // and re-exports the atom so existing call sites keep their import path.
 export const $projectTree = atom<SidebarProjectTree[]>([])
+// The tree is cached across refreshes; expose its owning profile so a fresh
+// session draft never shows a project name from the previous profile.
+export const $projectTreeProfile = atom<null | string>(null)

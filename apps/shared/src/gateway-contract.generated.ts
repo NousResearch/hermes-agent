@@ -810,20 +810,25 @@ export interface ModelOptionProvider {
   usage?: ProviderUsage | null
   [key: string]: unknown
 }
-/** ``hermes_cli/inventory.py::_apply_capabilities``. */
+/** ``hermes_cli/inventory.py::_apply_capabilities``. ``context_window`` is 0 and ``max_output`` / ``supports_vision`` / ``supports_tools`` absent when the models.dev catalog has no entry for a model: a metadata miss must read as unknown, never as "cannot" (#112649), so a renderer shows nothing rather than marking a capable model as text-only. */
 export interface ModelCapabilities {
   fast: boolean
   ultrafast?: boolean
   reasoning: boolean
   can_disable_reasoning?: boolean | null
+  context_window?: number | null
+  max_output?: number | null
+  supports_vision?: boolean | null
+  supports_tools?: boolean | null
 }
-/** ``hermes_cli/inventory.py::_apply_pricing`` — formatted $/Mtok strings (``""`` unknown, ``"free"``); the sale fields are Nous Portal-only. */
+/** ``hermes_cli/inventory.py::_apply_pricing`` — formatted $/Mtok strings (``""`` unknown, ``"free"``); the sale fields are Nous Portal-only. ``source`` is ``"catalog"`` when the price is the models.dev list price ``_apply_capabilities`` filled in for a model the provider did not price. */
 export interface ModelPricing {
   input: string
   output: string
   cache?: string | null
   free: boolean
   discount_percent?: number | null
+  source?: string | null
   was_input?: string | null
   was_output?: string | null
 }

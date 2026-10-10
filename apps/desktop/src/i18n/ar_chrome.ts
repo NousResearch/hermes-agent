@@ -363,6 +363,13 @@ export const arChrome = {
       cacheRead: 'قراءة من الذاكرة المؤقتة',
       priceTitle: (input: string, output: string, cache: string) =>
         `الإدخال ${input}/Mtok · الإخراج ${output}/Mtok` + (cache ? ` · قراءة من الذاكرة المؤقتة ${cache}/Mtok` : ''),
+      catalogPrice: 'سعر القائمة من كتالوج models.dev؛ لم يُبلغ هذا المزوّد عن سعره',
+      contextTitle: (context: string) => `نافذة سياق بحجم ${context} رمز`,
+      vision: 'يقبل الصور',
+      maxOutputLabel: (tokens: string) => `${tokens} إخراج`,
+      maxOutputTitle: (tokens: string) => `ردود حتى ${tokens} رمز`,
+      perThousandTitle: (input: string, output: string) => `لكل 1K رمز: الإدخال ${input} · الإخراج ${output}`,
+      tools: 'يمكنه استدعاء الأدوات',
       localSetup: {
         title: 'تشغيل محلي · مجاني وخاص',
         text: (model: string, size: string) => `${model} يناسب هذا الجهاز · تنزيل ${size}`,

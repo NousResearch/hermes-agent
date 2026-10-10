@@ -13,6 +13,13 @@ export const frModelMenu = {
   cacheRead: 'lecture en cache',
   priceTitle: (input: string, output: string, cache: string) =>
     `Entrée ${input}/Mtok · Sortie ${output}/Mtok` + (cache ? ` · Lecture en cache ${cache}/Mtok` : ''),
+  catalogPrice: 'Prix catalogue de models.dev ; ce fournisseur ne communique pas le sien',
+  contextTitle: (context: string) => `Fenêtre de contexte de ${context} jetons`,
+  vision: 'Accepte les images',
+  maxOutputLabel: (tokens: string) => `${tokens} sortie`,
+  maxOutputTitle: (tokens: string) => `Réponses de ${tokens} jetons max.`,
+  perThousandTitle: (input: string, output: string) => `Pour 1K jetons : entrée ${input} · sortie ${output}`,
+  tools: 'Peut appeler des outils',
   localSetup: {
     title: 'Exécuter en local · gratuit, privé',
     text: (model: string, size: string) => `${model} tient sur cette machine · téléchargement de ${size}`,

@@ -4,6 +4,7 @@ import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import { type ReactElement, useMemo, useRef, useState } from 'react'
 
+import { ModelMetrics, modelPriceTitle } from '@/components/model-metrics'
 import { useI18n } from '@/i18n'
 import { catalogProviderMatches, modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { currentPickerSelection } from '@/lib/model-status-label'
@@ -357,6 +358,7 @@ function ModelResults({
             {models.map(model => {
               const isCurrent = model === currentModel && catalogProviderMatches(provider, currentProvider)
               const price = provider.pricing?.[model]
+              const caps = provider.capabilities?.[model]
               const locked = unavailable.has(model)
               const resetMs = modelResetMs(provider, model)
               const resetLabel = resetMs === null ? null : formatReset(resetMs)
@@ -386,6 +388,10 @@ function ModelResults({
                   <span className={cn('min-w-0 flex-1 truncate', dimmed && !isCurrent && 'text-muted-foreground')}>
                     <HighlightMatches foldSeparators query={search} text={model} />
                   </span>
+                  <ModelMetrics
+                    caps={caps}
+                    className={isCurrent ? 'text-primary-foreground/80' : 'text-muted-foreground'}
+                  />
                   {loadProgress && (
                     <span className="flex shrink-0 items-center gap-1.5" title={copy.loadingIntoMemory}>
                       <span className="h-1 w-16 overflow-hidden rounded-full bg-(--ui-bg-tertiary)">
@@ -553,7 +559,7 @@ function ModelPrice({ price, isCurrent }: { price?: ModelPricing; isCurrent: boo
         'shrink-0 inline-flex items-center gap-1.5 text-[0.66rem] tabular-nums',
         isCurrent ? 'text-primary-foreground/80' : 'text-muted-foreground'
       )}
-      title={copy.priceTitle}
+      title={modelPriceTitle(copy.priceTitle, price, t.shell.modelMenu)}
     >
       {onSale ? (
         <span

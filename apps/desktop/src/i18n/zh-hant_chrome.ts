@@ -263,6 +263,13 @@ export const zhHantChrome = {
       cacheRead: '快取讀取',
       priceTitle: (input: string, output: string, cache: string) =>
         `輸入 ${input}/Mtok · 輸出 ${output}/Mtok` + (cache ? ` · 快取讀取 ${cache}/Mtok` : ''),
+      catalogPrice: 'models.dev 目錄中的定價；此供應商未提供自己的價格',
+      contextTitle: (context: string) => `${context} token 上下文視窗`,
+      vision: '支援圖像輸入',
+      maxOutputLabel: (tokens: string) => `輸出 ${tokens}`,
+      maxOutputTitle: (tokens: string) => `回覆最多 ${tokens} token`,
+      perThousandTitle: (input: string, output: string) => `每 1K token：輸入 ${input} · 輸出 ${output}`,
+      tools: '支援工具呼叫',
       localSetup: {
         title: '本機執行 · 免費、私密',
         text: (model: string, size: string) => `${model} 適合這台電腦 · 下載 ${size}`,

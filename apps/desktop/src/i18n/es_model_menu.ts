@@ -13,6 +13,13 @@ export const esModelMenu = {
   cacheRead: 'lectura en caché',
   priceTitle: (input: string, output: string, cache: string) =>
     `Entrada ${input}/Mtok · Salida ${output}/Mtok` + (cache ? ` · Lectura en caché ${cache}/Mtok` : ''),
+  catalogPrice: 'Precio de lista del catálogo de models.dev; este proveedor no informa el suyo',
+  contextTitle: (context: string) => `Ventana de contexto de ${context} tokens`,
+  vision: 'Acepta imágenes',
+  maxOutputLabel: (tokens: string) => `${tokens} sal.`,
+  maxOutputTitle: (tokens: string) => `Respuestas de hasta ${tokens} tokens`,
+  perThousandTitle: (input: string, output: string) => `Por 1K tokens: entrada ${input} · salida ${output}`,
+  tools: 'Puede usar herramientas',
   localSetup: {
     title: 'Ejecutar en local · gratis, privado',
     text: (model: string, size: string) => `${model} cabe en este equipo · descarga de ${size}`,

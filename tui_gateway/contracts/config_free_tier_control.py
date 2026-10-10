@@ -457,24 +457,35 @@ class ModelOptionsParams(ProfileParams):
 # ``model.save_key``'s ``provider`` — the parent consolidates into contracts/common.py.
 class ModelPricing(Result):
     """``hermes_cli/inventory.py::_apply_pricing`` — formatted $/Mtok strings (``""`` unknown,
-    ``"free"``); the sale fields are Nous Portal-only."""
+    ``"free"``); the sale fields are Nous Portal-only. ``source`` is ``"catalog"`` when the price is
+    the models.dev list price ``_apply_capabilities`` filled in for a model the provider did not price."""
 
     input: str
     output: str
     cache: str | None = None
     free: bool
     discount_percent: int | None = None
+    source: str | None = None
     was_input: str | None = None
     was_output: str | None = None
 
 
 class ModelCapabilities(Result):
-    """``hermes_cli/inventory.py::_apply_capabilities``."""
+    """``hermes_cli/inventory.py::_apply_capabilities``.
+
+    ``context_window`` is 0 and ``max_output`` / ``supports_vision`` / ``supports_tools`` absent when
+    the models.dev catalog has no entry for a model: a metadata miss must read as unknown, never as
+    "cannot" (#112649), so a renderer shows nothing rather than marking a capable model as text-only.
+    """
 
     fast: bool
     ultrafast: bool = False
     reasoning: bool
     can_disable_reasoning: bool | None = None
+    context_window: int | None = None
+    max_output: int | None = None
+    supports_vision: bool | None = None
+    supports_tools: bool | None = None
 
 
 class ProviderLimit(Result):

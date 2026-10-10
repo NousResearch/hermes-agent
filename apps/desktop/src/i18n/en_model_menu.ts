@@ -15,6 +15,13 @@ export const enModelMenu: Translations['shell']['modelMenu'] = {
   cacheRead: 'cached read',
   priceTitle: (input: string, output: string, cache: string) =>
     `Input ${input}/Mtok · Output ${output}/Mtok` + (cache ? ` · Cached read ${cache}/Mtok` : ''),
+  catalogPrice: 'List price from the models.dev catalog; this provider did not report its own',
+  contextTitle: (context: string) => `${context}-token context window`,
+  vision: 'Accepts images',
+  maxOutputLabel: (tokens: string) => `${tokens} out`,
+  maxOutputTitle: (tokens: string) => `Replies up to ${tokens} tokens`,
+  perThousandTitle: (input: string, output: string) => `Per 1K tokens: input ${input} · output ${output}`,
+  tools: 'Can call tools',
   localSetup: {
     title: 'Run locally · free, private',
     text: (model: string, size: string) => `${model} fits this machine · ${size} download`,

@@ -19281,7 +19281,7 @@
       },
       "ModelCapabilities": {
         "additionalProperties": false,
-        "description": "``hermes_cli/inventory.py::_apply_capabilities``.",
+        "description": "``hermes_cli/inventory.py::_apply_capabilities``.\n\n``context_window`` is 0 and ``max_output`` / ``supports_vision`` / ``supports_tools`` absent when\nthe models.dev catalog has no entry for a model: a metadata miss must read as unknown, never as\n\"cannot\" (#112649), so a renderer shows nothing rather than marking a capable model as text-only.",
         "properties": {
           "fast": {
             "title": "Fast",
@@ -19307,6 +19307,54 @@
             ],
             "default": null,
             "title": "Can Disable Reasoning"
+          },
+          "context_window": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Context Window"
+          },
+          "max_output": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Max Output"
+          },
+          "supports_vision": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Supports Vision"
+          },
+          "supports_tools": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Supports Tools"
           }
         },
         "required": [
@@ -19721,7 +19769,7 @@
       },
       "ModelPricing": {
         "additionalProperties": false,
-        "description": "``hermes_cli/inventory.py::_apply_pricing`` \u2014 formatted $/Mtok strings (``\"\"`` unknown,\n``\"free\"``); the sale fields are Nous Portal-only.",
+        "description": "``hermes_cli/inventory.py::_apply_pricing`` \u2014 formatted $/Mtok strings (``\"\"`` unknown,\n``\"free\"``); the sale fields are Nous Portal-only. ``source`` is ``\"catalog\"`` when the price is\nthe models.dev list price ``_apply_capabilities`` filled in for a model the provider did not price.",
         "properties": {
           "input": {
             "title": "Input",
@@ -19758,6 +19806,18 @@
             ],
             "default": null,
             "title": "Discount Percent"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Source"
           },
           "was_input": {
             "anyOf": [

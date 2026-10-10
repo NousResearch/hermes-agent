@@ -13,6 +13,13 @@ export const jaModelMenu = {
   cacheRead: 'キャッシュ読み取り',
   priceTitle: (input: string, output: string, cache: string) =>
     `入力 ${input}/Mtok · 出力 ${output}/Mtok` + (cache ? ` · キャッシュ読み取り ${cache}/Mtok` : ''),
+  catalogPrice: 'models.dev カタログの定価です（このプロバイダーは価格を公開していません）',
+  contextTitle: (context: string) => `コンテキストウィンドウ ${context} トークン`,
+  vision: '画像入力に対応',
+  maxOutputLabel: (tokens: string) => `出力 ${tokens}`,
+  maxOutputTitle: (tokens: string) => `最大 ${tokens} トークンまで応答`,
+  perThousandTitle: (input: string, output: string) => `1K トークンあたり: 入力 ${input} · 出力 ${output}`,
+  tools: 'ツール呼び出しに対応',
   localSetup: {
     title: 'ローカルで実行 · 無料・プライベート',
     text: (model: string, size: string) => `${model} はこのマシンで動きます · ${size} をダウンロード`,

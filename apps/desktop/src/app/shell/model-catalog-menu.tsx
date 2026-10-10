@@ -14,6 +14,7 @@ import {
   useState
 } from 'react'
 
+import { ModelMetrics, modelPriceTitle } from '@/components/model-metrics'
 import { ProviderStatusChip } from '@/components/provider-status-chip'
 import { Badge } from '@/components/ui/badge'
 import { Codicon } from '@/components/ui/codicon'
@@ -106,7 +107,7 @@ function ModelPrice({ pricing }: { pricing: ModelPricing }) {
   return (
     <span
       className="flex shrink-0 items-center gap-1.5 pl-2 text-[0.625rem] tabular-nums text-(--ui-text-tertiary)"
-      title={copy.priceTitle(input ?? '—', output ?? '—', cache ?? '')}
+      title={modelPriceTitle(copy.priceTitle(input ?? '—', output ?? '—', cache ?? ''), pricing, copy)}
     >
       <span>
         {input ?? '—'}/{output ?? '—'}
@@ -1141,6 +1142,7 @@ function ModelFamilyRow({
               {decoration.badge}
             </Badge>
           ) : null}
+          <ModelMetrics caps={caps} />
         </span>
         <ModelResetBadge time={limit.reset} />
         {loadProgress ? (

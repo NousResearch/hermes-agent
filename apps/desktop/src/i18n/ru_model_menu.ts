@@ -13,6 +13,13 @@ export const ruModelMenu = {
   cacheRead: 'чтение из кэша',
   priceTitle: (input: string, output: string, cache: string) =>
     `Вход ${input}/Mtok · Выход ${output}/Mtok` + (cache ? ` · Чтение из кэша ${cache}/Mtok` : ''),
+  catalogPrice: 'Прейскурантная цена из каталога models.dev; этот провайдер не сообщает свою',
+  contextTitle: (context: string) => `Контекстное окно: ${context} токенов`,
+  vision: 'Принимает изображения',
+  maxOutputLabel: (tokens: string) => `${tokens} вывод`,
+  maxOutputTitle: (tokens: string) => `Ответ до ${tokens} токенов`,
+  perThousandTitle: (input: string, output: string) => `За 1K токенов: вход ${input} · выход ${output}`,
+  tools: 'Может вызывать инструменты',
   localSetup: {
     title: 'Запуск локально · бесплатно, приватно',
     text: (model: string, size: string) => `${model} подходит для этого компьютера · загрузка ${size}`,

@@ -12,6 +12,14 @@ export interface ModelMenuTranslations {
   free: string
   cacheRead: string
   priceTitle: (input: string, output: string, cache: string) => string
+  /** Tooltip line when a price is the models.dev list price, not the provider's own. */
+  catalogPrice: string
+  contextTitle: (context: string) => string
+  vision: string
+  maxOutputLabel: (tokens: string) => string
+  maxOutputTitle: (tokens: string) => string
+  perThousandTitle: (input: string, output: string) => string
+  tools: string
   localSetup: { title: string; text: (model: string, size: string) => string; action: string }
   limited: string
   limitedUntil: (time: string) => string

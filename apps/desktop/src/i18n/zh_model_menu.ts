@@ -13,6 +13,13 @@ export const zhModelMenu = {
   cacheRead: '缓存读取',
   priceTitle: (input: string, output: string, cache: string) =>
     `输入 ${input}/Mtok · 输出 ${output}/Mtok` + (cache ? ` · 缓存读取 ${cache}/Mtok` : ''),
+  catalogPrice: 'models.dev 目录中的标价；该提供商未提供自己的价格',
+  contextTitle: (context: string) => `${context} token 上下文窗口`,
+  vision: '支持图像输入',
+  maxOutputLabel: (tokens: string) => `输出 ${tokens}`,
+  maxOutputTitle: (tokens: string) => `回复最多 ${tokens} token`,
+  perThousandTitle: (input: string, output: string) => `每 1K token：输入 ${input} · 输出 ${output}`,
+  tools: '支持工具调用',
   localSetup: {
     title: '本地运行 · 免费、私密',
     text: (model: string, size: string) => `${model} 适合这台电脑 · 下载 ${size}`,

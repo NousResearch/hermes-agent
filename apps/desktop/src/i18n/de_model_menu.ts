@@ -13,6 +13,13 @@ export const deModelMenu = {
   cacheRead: 'Cache-Lesung',
   priceTitle: (input: string, output: string, cache: string) =>
     `Eingabe ${input}/Mtok · Ausgabe ${output}/Mtok` + (cache ? ` · Cache-Lesung ${cache}/Mtok` : ''),
+  catalogPrice: 'Listenpreis aus dem models.dev-Katalog; dieser Anbieter meldet keinen eigenen',
+  contextTitle: (context: string) => `Kontextfenster: ${context} Token`,
+  vision: 'Akzeptiert Bilder',
+  maxOutputLabel: (tokens: string) => `${tokens} Ausg.`,
+  maxOutputTitle: (tokens: string) => `Antworten bis ${tokens} Token`,
+  perThousandTitle: (input: string, output: string) => `Pro 1K Token: Eingabe ${input} · Ausgabe ${output}`,
+  tools: 'Kann Tools aufrufen',
   localSetup: {
     title: 'Lokal ausführen · kostenlos, privat',
     text: (model: string, size: string) => `${model} passt auf diesen Rechner · ${size} Download`,

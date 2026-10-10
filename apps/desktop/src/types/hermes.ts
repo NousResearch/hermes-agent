@@ -1155,6 +1155,14 @@ export interface ProfileDesktopOverlay {
 }
 
 // ── Projects ───────────────────────────────────────────────────────────────
+/** Project-level clocks supplied by projects.tree / projects.project_sessions.
+ * lastActive is the legacy broad activity clock; recent-message ordering uses
+ * ONLY lastMessageAt (max user/assistant timestamp, absent on older servers). */
+export interface ProjectTreeActivity {
+  lastActive?: number
+  lastMessageAt?: null | number
+}
+
 // A first-class, per-profile, human-named workspace spanning one or more
 // folders. Mirrors hermes_cli/projects_db.Project.to_dict().
 export interface ProjectFolder {

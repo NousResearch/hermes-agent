@@ -355,6 +355,7 @@ def _project_node(
         "id": pid, "label": label, "path": path, "color": None, "icon": None,
         "isAuto": False, "isNoProject": False,
         "sessionCount": session_count, "lastActive": last_active,
+        "lastMessageAt": max((float(s.get("last_message_at") or 0) for s in rows), default=0.0),
         # Totals over the same sessions `sessionCount` counts (billed cost, else estimated).
         "totalTokens": sum(
             (s.get("input_tokens") or 0) + (s.get("output_tokens") or 0) for s in rows),

@@ -8,6 +8,7 @@ import platform
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -18,7 +19,7 @@ from pathlib import Path
 
 from hermes_constants import get_process_hermes_home
 from tools.environments.base import BaseEnvironment
-from tools.environments.base_output import _pipe_stdin
+from tools.environments.base_output import ProcessHandle, _pipe_stdin
 from hermes_cli._subprocess_compat import windows_hide_flags
 from tools.environments.local_env_policy import (
     _ALWAYS_STRIP_FOLDED, _ALWAYS_STRIP_KEYS, _HERMES_PROVIDER_ENV_BLOCKLIST, _HERMES_PROVIDER_ENV_FORCE_PREFIX,
@@ -965,6 +966,269 @@ def _kill_process_windows(proc) -> None:
         proc.wait(timeout=2.0)
 
 
+# --- POSIX spawn without fork() ---
+# ``subprocess.Popen`` forks on POSIX: CPython's own posix_spawn fast path is disabled by any
+# of ``start_new_session``/``cwd``/``close_fds``. On Darwin a fork of this process (large-graph
+# heap) stalls in the malloc-zone lock — frames park in ``do_fork_exec`` /
+# ``_xzm_foreach_lock`` — which is what makes a terminal command cost seconds under load.
+# ``os.posix_spawn`` passes argv/env/fds to the kernel and execs directly, so the parent's
+# address space is never copied. Process-group semantics are preserved: the child is its own
+# session (``setsid``) so ``pid == pgid`` and ``_kill_process_group_posix``'s killpg path
+# still applies. ``cwd`` is deliberately NOT a chdir file action — ``_run_bash`` prefixes
+# ``builtin cd -- <quoted> &&`` instead (see there). The third thing the fast path normally
+# costs us, ``close_fds``, is preserved explicitly by ``_inherited_fd_close_actions`` below.
+_SETSID_KWARG_SUPPORTED: bool | None = None  # memoized: False once a runtime rejects the kwarg
+
+# Directories whose entries are this process's own open descriptors, best first.
+_FD_LISTING_DIRS = ("/dev/fd", "/proc/self/fd")
+
+
+def _posix_spawn_detached(argv: list[str], env: dict, file_actions: list) -> int:
+    """``os.posix_spawn`` with a fresh session — ``setsid=True`` is the direct flag, and a
+    runtime whose signature lacks it gets ``POSIX_SPAWN_SETPGROUP`` (``pgroup=0``) instead:
+    same ``pid == pgid`` guarantee, only the session (not the group) is inherited from us."""
+    global _SETSID_KWARG_SUPPORTED
+    if _SETSID_KWARG_SUPPORTED is not False:
+        try:
+            pid = os.posix_spawn(argv[0], argv, env, file_actions=file_actions, setsid=True)
+            _SETSID_KWARG_SUPPORTED = True
+            return pid
+        except TypeError:  # no setsid kwarg on this runtime; parsed before any spawn
+            _SETSID_KWARG_SUPPORTED = False
+    return os.posix_spawn(argv[0], argv, env, file_actions=file_actions, setpgroup=0)
+
+
+def _open_fds_above_stderr() -> list[int]:
+    """The fd numbers above stderr this process currently holds open, as a listing.
+
+    ``/dev/fd`` (``/proc/self/fd`` on a kernel without the fdescfs mount) is O(open fds) —
+    ~190 in the session server — where probing ``RLIMIT_NOFILE`` would be ~2560 ``fcntl``
+    calls on every single command, i.e. a new per-spawn cost of the kind this change exists
+    to delete. The listing's *own* directory handle is part of what it returns and is
+    already closed again by the time the caller reads the result; the guard in
+    ``_inherited_fd_close_actions`` is what makes that harmless."""
+    for listing in _FD_LISTING_DIRS:
+        try:
+            names = os.listdir(listing)
+        except OSError:
+            continue
+        fds = []
+        for name in names:
+            try:
+                fd = int(name)
+            except ValueError:
+                continue
+            if fd > 2:
+                fds.append(fd)
+        return fds
+    logger.debug("neither %s is listable; child fd inheritance is CLOEXEC-only",
+                 " nor ".join(_FD_LISTING_DIRS))
+    return []
+
+
+def _spawn_has_no_fd(fd: int) -> bool:
+    """True when a close action for *fd* would be pointless, or worse, abort the spawn.
+
+    Three reasons, each measured on this host.
+
+    (1) ``F_GETFD`` fails with ``EBADF`` on a descriptor that closed since the listing —
+    the very failure the spawn dies on, so it is left out.
+
+    (2) ``FD_CLOEXEC``: the ``exec`` at the end of the spawn closes it, so a close action
+    adds nothing to the child and only buys a race window. This is where the churn is: a
+    concurrent renderer's pipes and file handles are PEP-446 non-inheritable, so their fd
+    numbers open and close *between* this check and the kernel applying the actions — with
+    them in the list, 149 of 2781 spawns under four-way load aborted on a target that had
+    vanished in exactly that window, each one a silent fall back to ``fork``.
+
+    (3) ``fstat`` reports a kqueue as ``S_IFIFO`` with no permission bits, where a real pipe
+    carries ``0o600``/``0o660``. macOS never hands a kqueue to a spawned child, so there is
+    nothing to close, yet naming one fails the whole spawn like a stale number — and every
+    asyncio event loop, this host's session server included, holds one.
+    """
+    import fcntl  # POSIX-only module; this helper is only reached on POSIX
+
+    try:
+        if fcntl.fcntl(fd, fcntl.F_GETFD) & fcntl.FD_CLOEXEC:
+            return True  # exec drops it regardless, and naming it can only lose a race
+    except OSError:
+        return True
+    try:
+        mode = os.fstat(fd).st_mode
+    except OSError:
+        return True
+    return stat.S_IFMT(mode) == stat.S_IFIFO and stat.S_IMODE(mode) == 0
+
+
+def _inherited_fd_close_actions(keep: frozenset[int]) -> list[tuple]:
+    """``POSIX_SPAWN_CLOSE`` actions for every descriptor above stderr, minus *keep*.
+
+    This is the ``close_fds=True`` half of the ``subprocess.Popen`` semantics this path
+    replaces: without it a bash child inherits everything this process holds — ~190
+    descriptors in the session server, its database and socket handles among them.
+
+    A bare close per fd is NOT safe here, and that is the whole reason this helper exists.
+    The listing yields fd *numbers*, and a number whose descriptor was closed between the
+    listing and the spawn makes ``posix_spawn`` fail the entire spawn with ``EBADF`` rather
+    than start a child (measured on this interpreter: closing 3..199 unguarded raises
+    ``OSError: [Errno 9] Bad file descriptor``). ``/dev/fd`` guarantees at least one such
+    number per call — its own directory handle — so an unguarded list is broken every time,
+    not occasionally. ``_spawn_has_no_fd`` decides which numbers are worth naming at all:
+    the child reaches ``exec`` with stdio either way — from the actions for descriptors that
+    survive ``exec``, from ``exec`` itself for the non-inheritable ones. What is left to
+    close is the small durable set, this process's long-lived handles, the descriptors
+    ``close_fds`` exists to keep out of a child. A number that still goes stale between that
+    check and the kernel applying the actions degrades to the fork+exec fallback in
+    ``_run_bash`` — a working terminal, never a wedged one.
+
+    The pipe ends are expected in *keep*: ``os.pipe`` yields PEP-446 non-inheritable
+    descriptors, so the exec at the end of the spawn drops them whether or not an action
+    names them, while the two that must survive are dup2'd onto 1 and 2 by actions ordered
+    ahead of these closes."""
+    close_actions = []
+    for fd in _open_fds_above_stderr():
+        if fd in keep:
+            continue
+        if _spawn_has_no_fd(fd):
+            continue
+        close_actions.append((os.POSIX_SPAWN_CLOSE, fd))
+    return close_actions
+
+
+class _PosixSpawnProcess:
+    """``subprocess.Popen``-shaped handle for a child spawned with ``os.posix_spawn``.
+
+    Implements the ``ProcessHandle`` duck type ``_wait_for_process`` needs (``poll``, ``kill``,
+    ``wait``, ``stdout``, ``returncode``) and the attributes this module's teardown touches
+    (``pid``, ``args``, ``stdin``, ``_hermes_pgid``). ``stderr`` is present and ``None``, exactly
+    as ``Popen(stdout=PIPE, stderr=STDOUT)`` reports it: the child's stderr is ``dup2``'d onto
+    the stdout pipe, so there is no second stream to hand out — but consumers that duck-type a
+    Popen (``tools/process_registry.py::_release_finished_handles`` releases every stream of an
+    adopted handle) read the attribute unconditionally. Reaping is cached under a lock: the drain
+    thread and the waiter both call ``poll()``. Exit-status handling mirrors ``Popen`` —
+    a child reaped elsewhere (``ChildProcessError``) reads as a 0 exit, any other transient
+    ``OSError`` leaves the code unknown rather than inventing one."""
+
+    def __init__(self, pid: int, args: list[str], stdout, stdin=None):
+        self.pid = pid
+        self.args = list(args)
+        self.stdout = stdout
+        # Folded into stdout by the spawn's dup2 actions; see the class docstring. Never
+        # omitted: an absent attribute here is an AttributeError inside a consumer's
+        # teardown, not a missing stream. ``ProcessHandle`` declares it, so a future
+        # omission fails the type check at the boundary instead of in production.
+        self.stderr = None
+        self.stdin = stdin
+        self._returncode: int | None = None
+        self._reap_lock = threading.Lock()
+
+    @property
+    def returncode(self) -> int | None:
+        return self._returncode
+
+    def poll(self) -> int | None:
+        if self._returncode is not None:
+            return self._returncode
+        with self._reap_lock:
+            if self._returncode is None:
+                try:
+                    pid, status = os.waitpid(self.pid, os.WNOHANG)
+                except ChildProcessError:  # reaped elsewhere; Popen reports 0 here too
+                    pid, status = self.pid, 0
+                except OSError:
+                    return None
+                if pid == self.pid:
+                    self._returncode = os.waitstatus_to_exitcode(status)
+        return self._returncode
+
+    def wait(self, timeout: float | None = None) -> int:
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while True:
+            rc = self.poll()
+            if rc is not None:
+                return rc
+            if deadline is not None and time.monotonic() >= deadline:
+                raise subprocess.TimeoutExpired(self.args, float(timeout or 0.0))
+            time.sleep(0.005)
+
+    def send_signal(self, sig: int) -> None:
+        with contextlib.suppress(ProcessLookupError, OSError):
+            os.kill(self.pid, sig)
+
+    def terminate(self) -> None:
+        self.send_signal(signal.SIGTERM)
+
+    def kill(self) -> None:
+        self.send_signal(signal.SIGKILL)
+
+    def communicate(self, timeout: float | None = None):
+        """Fallback for ``Popen.communicate`` callers: closes stdin, reads stdout to EOF, then
+        waits. The tool path does not use this — it drains ``stdout`` on its own thread and
+        polls — so this exists only to keep the handle drop-in."""
+        if self.stdin is not None:
+            with contextlib.suppress(Exception):
+                self.stdin.close()
+            self.stdin = None
+        out = ""
+        try:
+            if self.stdout is not None:
+                out = self.stdout.read()
+        except Exception:
+            out = ""
+        finally:
+            self._close_streams()
+        return out, None
+
+    def _close_streams(self) -> None:
+        for stream in (self.stdout, self.stderr, self.stdin):
+            if stream is not None:
+                with contextlib.suppress(Exception):
+                    stream.close()
+
+    def __repr__(self) -> str:
+        return f"<posix_spawn process pid={self.pid} returncode={self._returncode}>"
+
+
+def _spawn_bash_posix(argv: list[str], env: dict, stdin_data: str | None = None) -> _PosixSpawnProcess:
+    """Spawn *argv* with ``os.posix_spawn``: stdout is a pipe the caller drains, stderr is folded
+    into it (``dup2`` of the same write end, matching ``stderr=STDOUT``), stdin is a pipe when
+    *stdin_data* is given and /dev/null otherwise — the same wiring ``Popen(..., stdout=PIPE,
+    stderr=STDOUT, stdin=...)`` produced. ``close_fds=True`` is reproduced too: every descriptor
+    above stderr is closed in the child by ``_inherited_fd_close_actions``, so a bash child
+    inherits nothing of this process's own fds — the parent's pipe ends need no help there,
+    ``os.pipe`` being PEP-446 CLOEXEC and the two ends that must survive having been dup2'd onto
+    1 and 2 by actions ordered ahead of the closes."""
+    stdout_r, stdout_w = os.pipe()
+    stdin_r = stdin_w = None
+    if stdin_data is not None:
+        stdin_r, stdin_w = os.pipe()
+    file_actions = [
+        (os.POSIX_SPAWN_DUP2, stdout_w, 1),
+        (os.POSIX_SPAWN_DUP2, stdout_w, 2),
+    ]
+    if stdin_r is not None:
+        file_actions.append((os.POSIX_SPAWN_DUP2, stdin_r, 0))
+    else:
+        file_actions.append((os.POSIX_SPAWN_OPEN, 0, os.devnull, os.O_RDONLY, 0o666))
+    file_actions.extend(_inherited_fd_close_actions(
+        frozenset(fd for fd in (stdout_w, stdin_r, stdin_w) if fd is not None)))
+    try:
+        pid = _posix_spawn_detached(argv, env, file_actions)
+    finally:
+        os.close(stdout_w)
+        if stdin_r is not None:
+            os.close(stdin_r)
+    try:
+        stdout = os.fdopen(stdout_r, "r", encoding="utf-8", errors="replace")
+        stdin = os.fdopen(stdin_w, "wb") if stdin_w is not None else None
+    except Exception:
+        os.close(stdout_r)
+        if stdin_w is not None:
+            os.close(stdin_w)
+        raise
+    return _PosixSpawnProcess(pid, argv, stdout=stdout, stdin=stdin)
+
+
 class LocalEnvironment(BaseEnvironment):
     """Run commands directly on the host: every execute() spawns a fresh bash;
     the session snapshot preserves env vars across calls; CWD persists via the
@@ -1058,7 +1322,15 @@ class LocalEnvironment(BaseEnvironment):
         self.cwd = safe_cwd
 
     def _run_bash(self, cmd_string: str, *, login: bool = False, timeout: int = 120,
-                  stdin_data: str | None = None) -> subprocess.Popen:
+                  stdin_data: str | None = None) -> ProcessHandle:
+        """Spawn bash for *cmd_string* and return the handle the shared drain loop waits on.
+
+        The declared return is the base class's ``ProcessHandle`` contract, not the concrete
+        union built here (``_PosixSpawnProcess`` on POSIX, ``subprocess.Popen`` on the
+        fork+exec fallback and on Windows): a consumer may hand this handle straight to
+        ``process_registry.adopt_local`` when the command yields to the background, so the
+        contract has to name what the registry reads, and an implementation missing a
+        member then fails the type check instead of failing production (t_73f1fd2c)."""
         bash = _find_bash()
         # Login invocations (init_session's env snapshot) source the user's rc /
         # custom init files so nvm/asdf/pyenv land on PATH in the snapshot.
@@ -1066,12 +1338,28 @@ class LocalEnvironment(BaseEnvironment):
             cmd_string = _prepend_shell_init(cmd_string, _resolve_shell_init_files())
         args = [bash, *(["-l"] if login else []), "-c", cmd_string]
         self._recover_cwd()
-        proc = subprocess.Popen(
-            args, text=True, env=_make_run_env(self.env), encoding="utf-8", errors="replace",
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
-            start_new_session=True, cwd=self.cwd,
-            **({"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}))
+        proc = None
+        if not _IS_WINDOWS:
+            # POSIX: spawn straight into bash — no fork of this process's heap. The child leads
+            # its own session (``_posix_spawn_detached``) and the working directory rides on the
+            # command line, since a chdir file action is not worth the spawn-attribute trade.
+            spawn_args = list(args)
+            if self.cwd:
+                spawn_args[-1] = (f"builtin cd -- {self._quote_cwd_for_cd(self.cwd)} && "
+                                  f"{cmd_string}")
+            try:
+                proc = _spawn_bash_posix(spawn_args, _make_run_env(self.env), stdin_data)
+            except OSError as exc:  # a spawn failure must not leave the terminal unusable
+                logger.warning("posix_spawn of %s failed (%s); falling back to fork+exec",
+                               bash, exc)
+                proc = None
+        if proc is None:
+            proc = subprocess.Popen(
+                args, text=True, env=_make_run_env(self.env), encoding="utf-8", errors="replace",
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
+                start_new_session=True, cwd=self.cwd,
+                **({"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}))
         if not _IS_WINDOWS:
             with contextlib.suppress(ProcessLookupError):
                 proc._hermes_pgid = os.getpgid(proc.pid)
@@ -1097,8 +1385,13 @@ class LocalEnvironment(BaseEnvironment):
         """SIGKILL the whole group with no TERM grace or wait: the caller os._exit()s next."""
         if _IS_WINDOWS:  # already a forced tree kill
             return self._kill_process(proc)
+        # A handle with no host pid carries no process group; fall back to the plain kill
+        # path. Every handle this backend spawns has one.
+        pid = proc.pid
+        if pid is None:
+            return self._kill_process(proc)
         with contextlib.suppress(OSError):
-            pgid = getattr(proc, "_hermes_pgid", None) or os.getpgid(proc.pid)
+            pgid = getattr(proc, "_hermes_pgid", None) or os.getpgid(pid)
             # PID-reuse guard (#43044): never SIGKILL a group whose leader's start time
             # no longer matches the spawn-time baseline — the PGID may have been recycled
             # onto an unrelated process group. Comparison is drift-tolerant (#117505);

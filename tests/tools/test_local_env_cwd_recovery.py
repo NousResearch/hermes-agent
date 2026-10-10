@@ -10,6 +10,7 @@ Regression coverage for https://github.com/NousResearch/hermes-agent/issues/1755
 import pytest
 
 import os
+import shlex
 import shutil
 import tempfile
 from unittest.mock import MagicMock, patch
@@ -38,32 +39,61 @@ class TestResolveSafeCwd:
         assert _resolve_safe_cwd("/no/such/deep/dir") == sep
 
 
-def _make_fake_popen(captured: dict, fds: list):
-    """Build a fake ``Popen`` whose ``stdout`` exposes a real OS file
-    descriptor so ``BaseEnvironment._wait_for_process`` can call
-    ``select.select([fd], ...)`` and ``os.read(fd, ...)`` against it without
-    tripping ``TypeError: fileno() returned a non-integer`` from a MagicMock
-    ``fileno()`` (or worse, accidentally reading from the test runner's own
-    stdout).
+def _fake_proc(fds: list):
+    """A fake child handle whose ``stdout`` exposes a real OS file descriptor so
+    ``BaseEnvironment._wait_for_process`` can call ``select.select([fd], ...)`` and
+    ``os.read(fd, ...)`` against it without tripping ``TypeError: fileno() returned a
+    non-integer`` from a MagicMock ``fileno()`` (or worse, accidentally reading from the
+    test runner's own stdout).
 
-    The pipe's write end is closed immediately so the drain loop sees EOF on
-    the first iteration.  Every fd handed out is appended to ``fds`` so the
-    caller can clean up after the test.
+    The pipe's write end is closed immediately so the drain loop sees EOF on the first
+    iteration.  Every fd handed out is appended to ``fds`` so the caller can clean up.
     """
+    read_fd, write_fd = os.pipe()
+    os.close(write_fd)
+    stdout = os.fdopen(read_fd, "rb", buffering=0)
+    fds.append(stdout)
+    proc = MagicMock()
+    proc.poll.return_value = 0
+    proc.returncode = 0
+    proc.stdout = stdout
+    proc.stdin = MagicMock()
+    return proc
+
+
+def _make_fake_popen(captured: dict, fds: list):
+    """Fake ``subprocess.Popen``: records the ``cwd`` kwarg the fork path is handed."""
     def fake_popen(cmd, **kwargs):
         captured["cwd"] = kwargs.get("cwd")
         captured["env"] = kwargs.get("env", {})
-        read_fd, write_fd = os.pipe()
-        os.close(write_fd)
-        stdout = os.fdopen(read_fd, "rb", buffering=0)
-        fds.append(stdout)
-        proc = MagicMock()
-        proc.poll.return_value = 0
-        proc.returncode = 0
-        proc.stdout = stdout
-        proc.stdin = MagicMock()
-        return proc
+        captured["cmd"] = cmd
+        return _fake_proc(fds)
     return fake_popen
+
+
+def _make_fake_spawn(captured: dict, fds: list):
+    """Fake ``_spawn_bash_posix``: the guarded POSIX path carries the working directory on
+    the command line instead of a ``cwd=`` kwarg, so record the argv it was handed."""
+    def fake_spawn(argv, env, stdin_data=None):
+        captured["cwd"] = None
+        captured["env"] = env
+        captured["cmd"] = argv
+        captured["stdin_data"] = stdin_data
+        return _fake_proc(fds)
+    return fake_spawn
+
+
+def _effective_cwd(captured: dict) -> str | None:
+    """The directory the child was actually started in, whichever spawn path ran: the Popen
+    ``cwd=`` kwarg, or the ``builtin cd --`` prefix the posix_spawn path puts on the script."""
+    if captured.get("cwd"):
+        return captured["cwd"]
+    argv = captured.get("cmd") or []
+    script = argv[-1] if isinstance(argv, list) and argv else ""
+    prefix = "builtin cd -- "
+    if isinstance(script, str) and script.startswith(prefix):
+        return shlex.split(script[len(prefix):])[0]
+    return None
 
 
 def _close_fds(fds):
@@ -96,14 +126,16 @@ class TestRunBashCwdRecovery:
         try:
             with patch("tools.environments.local._find_bash", return_value="/bin/bash"), \
                  patch("subprocess.Popen", side_effect=_make_fake_popen(captured, fds)), \
+                 patch("tools.environments.local._spawn_bash_posix",
+                       side_effect=_make_fake_spawn(captured, fds)), \
                  caplog.at_level("WARNING", logger="tools.environments.local"):
                 env.execute("echo hello")
         finally:
             _close_fds(fds)
 
-        # Popen must have been handed a real, existing directory.
-        assert captured["cwd"] == str(tmp_path)
-        assert os.path.isdir(captured["cwd"])
+        # The child must have been started in a real, existing directory.
+        assert _effective_cwd(captured) == str(tmp_path)
+        assert os.path.isdir(_effective_cwd(captured))
 
         # ``self.cwd`` is updated so the next call doesn't re-warn.
         assert env.cwd == str(tmp_path)
@@ -120,12 +152,14 @@ class TestRunBashCwdRecovery:
         try:
             with patch("tools.environments.local._find_bash", return_value="/bin/bash"), \
                  patch("subprocess.Popen", side_effect=_make_fake_popen(captured, fds)), \
+                 patch("tools.environments.local._spawn_bash_posix",
+                       side_effect=_make_fake_spawn(captured, fds)), \
                  caplog.at_level("WARNING", logger="tools.environments.local"):
                 env.execute("echo hello")
         finally:
             _close_fds(fds)
 
-        assert captured["cwd"] == str(tmp_path)
+        assert _effective_cwd(captured) == str(tmp_path)
         assert env.cwd == str(tmp_path)
         assert not any("missing on disk" in rec.message for rec in caplog.records)
 

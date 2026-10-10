@@ -11,10 +11,20 @@
  */
 import {
   SiAirtable,
+  SiAlgolia,
+  SiAlltrails,
   SiAsana,
   SiAtlassian,
+  SiBetterstack,
+  SiBuildkite,
+  SiCalendly,
+  SiCircleci,
+  SiClickup,
+  SiCloudflare,
+  SiCloudinary,
   SiDatadog,
   SiDiscord,
+  SiDropbox,
   SiFigma,
   SiGithub,
   SiGitlab,
@@ -22,25 +32,37 @@ import {
   SiGooglecalendar,
   SiGoogledrive,
   SiGooglesheets,
+  SiGrafana,
   SiHuggingface,
+  SiIndeed,
   SiIntercom,
   SiJira,
   SiLinear,
+  SiMiro,
+  SiMixpanel,
   SiN8n,
   SiNetlify,
   SiNotion,
   SiPaypal,
   SiPostgresql,
+  SiPostman,
+  SiPrisma,
+  SiRailway,
+  SiRobinhood,
   SiSentry,
   SiSpotify,
   SiSquare,
+  SiStrava,
   SiStripe,
   SiSupabase,
   SiTelegram,
   SiTodoist,
+  SiTrivago,
   SiUnrealengine,
   SiVercel,
   SiWebflow,
+  SiWolfram,
+  SiWordpress,
   SiYoutube,
   SiZapier
 } from '@icons-pack/react-simple-icons'
@@ -56,16 +78,46 @@ export interface McpBrand {
   monochrome?: boolean
 }
 
+/**
+ * Keep the source brand component intact and adapt only its rendered wrapper.
+ * This follows the messaging icon treatment for marks whose normalized
+ * 24×24 path is visibly heavier than neighboring marks at chip size.
+ */
+const withOpticalInset = (Icon: ComponentType<SVGProps<SVGSVGElement>>, scale: number) => {
+  const inset = (24 * (1 - scale)) / 2
+
+  return function OpticallyInsetBrandIcon(props: SVGProps<SVGSVGElement>) {
+    return (
+      <svg {...props} viewBox="0 0 24 24">
+        <g transform={`translate(${inset} ${inset}) scale(${scale})`}>
+          <Icon aria-hidden className="size-full" />
+        </g>
+      </svg>
+    )
+  }
+}
+
 export const MCP_BRAND_ICONS: Record<string, McpBrand> = {
   airtable: { Icon: SiAirtable, color: '#18BFFF' },
+  algolia: { Icon: SiAlgolia, color: '#003DFF' },
+  alltrails: { Icon: SiAlltrails, color: '#142800' },
   asana: { Icon: SiAsana, color: '#F06A6A' },
   atlassian: { Icon: SiAtlassian, color: '#0052CC' },
+  betterstack: { Icon: SiBetterstack, color: '#000000', monochrome: true },
+  buildkite: { Icon: SiBuildkite, color: '#14CC80' },
+  calendly: { Icon: withOpticalInset(SiCalendly, 0.92), color: '#006BFF' },
+  circleci: { Icon: withOpticalInset(SiCircleci, 0.9), color: '#343434', monochrome: true },
+  clickup: { Icon: SiClickup, color: '#7B68EE' },
+  cloudflare: { Icon: SiCloudflare, color: '#F38020' },
+  cloudinary: { Icon: SiCloudinary, color: '#3448C5' },
   datadog: { Icon: SiDatadog, color: '#632CA6' },
   discord: { Icon: SiDiscord, color: '#5865F2' },
+  dropbox: { Icon: SiDropbox, color: '#0061FF' },
   figma: { Icon: SiFigma, color: '#F24E1E' },
   github: { Icon: SiGithub, color: '#181717', monochrome: true },
-  gitlab: { Icon: SiGitlab, color: '#FC6D26' },
+  gitlab: { Icon: withOpticalInset(SiGitlab, 0.9), color: '#FC6D26' },
   gmail: { Icon: SiGmail, color: '#EA4335' },
+  grafana: { Icon: SiGrafana, color: '#F46800' },
   // Gateway spelling (connector slugs), plus the hyphenated form MCP server
   // names tend to use.
   googlecalendar: { Icon: SiGooglecalendar, color: '#4285F4' },
@@ -73,34 +125,57 @@ export const MCP_BRAND_ICONS: Record<string, McpBrand> = {
   googledrive: { Icon: SiGoogledrive, color: '#4285F4' },
   'google-drive': { Icon: SiGoogledrive, color: '#4285F4' },
   googlesheets: { Icon: SiGooglesheets, color: '#34A853' },
-  hugging_face: { Icon: SiHuggingface, color: '#FFD21E' },
-  huggingface: { Icon: SiHuggingface, color: '#FFD21E' },
-  intercom: { Icon: SiIntercom, color: '#6AFDEF' },
+  hugging_face: { Icon: withOpticalInset(SiHuggingface, 0.9), color: '#FFD21E' },
+  huggingface: { Icon: withOpticalInset(SiHuggingface, 0.9), color: '#FFD21E' },
+  indeed: { Icon: SiIndeed, color: '#003A9B' },
+  intercom: { Icon: withOpticalInset(SiIntercom, 0.88), color: '#6AFDEF' },
   jira: { Icon: SiJira, color: '#0052CC' },
-  linear: { Icon: SiLinear, color: '#5E6AD2' },
+  linear: { Icon: withOpticalInset(SiLinear, 0.92), color: '#5E6AD2' },
+  miro: { Icon: withOpticalInset(SiMiro, 0.88), color: '#050038', monochrome: true },
+  mixpanel: { Icon: SiMixpanel, color: '#7856FF' },
   n8n: { Icon: SiN8n, color: '#EA4B71' },
   netlify: { Icon: SiNetlify, color: '#00C7B7' },
-  notion: { Icon: SiNotion, color: '#000000', monochrome: true },
+  notion: { Icon: withOpticalInset(SiNotion, 0.9), color: '#000000', monochrome: true },
   paypal: { Icon: SiPaypal, color: '#003087' },
   postgres: { Icon: SiPostgresql, color: '#4169E1' },
   postgresql: { Icon: SiPostgresql, color: '#4169E1' },
+  postman: { Icon: withOpticalInset(SiPostman, 0.88), color: '#FF6C37' },
+  'prisma-postgres': { Icon: SiPrisma, color: '#2D3748', monochrome: true },
+  railway: { Icon: withOpticalInset(SiRailway, 0.88), color: '#0B0D0E', monochrome: true },
+  robinhood: { Icon: SiRobinhood, color: '#CCFF00' },
   sentry: { Icon: SiSentry, color: '#362D59' },
   // simple-icons dropped Slack's mark on a trademark request and the site's
   // favicon is a flat purple square that reads as a blank disc at chip size.
   // Tabler's outline pinwheel is the one recognisable Slack we can ship.
   slack: { Icon: IconBrandSlack as ComponentType<SVGProps<SVGSVGElement>>, color: '#4A154B' },
   spotify: { Icon: SiSpotify, color: '#1DB954' },
-  square: { Icon: SiSquare, color: '#3E4348', monochrome: true },
+  square: { Icon: withOpticalInset(SiSquare, 0.88), color: '#3E4348', monochrome: true },
+  strava: { Icon: SiStrava, color: '#FC4C02' },
   stripe: { Icon: SiStripe, color: '#635BFF' },
   supabase: { Icon: SiSupabase, color: '#3FCF8E' },
   telegram: { Icon: SiTelegram, color: '#26A5E4' },
-  todoist: { Icon: SiTodoist, color: '#E44332' },
+  todoist: { Icon: withOpticalInset(SiTodoist, 0.86), color: '#E44332' },
+  trivago: { Icon: SiTrivago, color: '#E32851' },
   'unreal-engine': { Icon: SiUnrealengine, color: '#0E1128', monochrome: true },
   vercel: { Icon: SiVercel, color: '#000000', monochrome: true },
   webflow: { Icon: SiWebflow, color: '#146EF5' },
+  'wordpress-com': { Icon: SiWordpress, color: '#21759B' },
+  wolfram: { Icon: SiWolfram, color: '#DD1100' },
   youtube: { Icon: SiYoutube, color: '#FF0000' },
-  zapier: { Icon: SiZapier, color: '#FF4A00' }
+  zapier: { Icon: withOpticalInset(SiZapier, 0.84), color: '#FF4A00' }
 }
+
+/** Catalog sources that publish documentation on a code-hosting domain. Use
+ * the product's own public origin for the favicon so the list does not paint
+ * a generic GitHub mark as the MCP's identity. */
+const MCP_FAVICON_SOURCES: Record<string, string> = {
+  'aws-knowledge': 'https://aws.amazon.com',
+  gamma: 'https://developers.gamma.app',
+  globalping: 'https://globalping.io'
+}
+
+export const faviconSourceFor = (name: string, source?: null | string): null | string =>
+  MCP_FAVICON_SOURCES[name] ?? source ?? null
 
 /** Inline-glyph color for a brand: monochrome marks inherit the surrounding
  *  text color; branded marks use the brand color. */

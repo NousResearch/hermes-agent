@@ -9,6 +9,7 @@ import { ToolFallback } from '@/components/assistant-ui/tool/fallback'
 import { Button } from '@/components/ui/button'
 import { ConnectorCard, ConnectorRow, type ConnectorRowMark, ConnectorSummary } from '@/components/ui/connector-card'
 import { useI18n } from '@/i18n'
+import { presentAuthorizationUrl } from '@/lib/authorization-url'
 import {
   connectorAuthorizationUrl,
   connectorIconUrl,
@@ -348,8 +349,8 @@ export function ConnectorOffer({ owner, request }: ConnectorOfferProps) {
                   disabled: (reissuing.size > 0 && !busy) || (phase.verb === 'open' && target.connectUrl === null),
                   label: phase.verb === 'open' ? copy.connect : copy.retry,
                   onClick: () => {
-                    if (phase.verb === 'open' && target.connectUrl && window.hermesDesktop?.openExternal) {
-                      void window.hermesDesktop.openExternal(target.connectUrl)
+                    if (phase.verb === 'open' && target.connectUrl) {
+                      presentAuthorizationUrl(target.connectUrl)
                       setOpened(current => new Set(current).add(target.name))
                     }
 

@@ -1,6 +1,7 @@
 import { capabilityScoped, type ProfileScope } from '@/api/client'
 import { type McpOAuthFlow, mcpOAuthRpc } from '@/api/mcp'
 
+import { authorizationUrlNow, dismissAuthorizationUrl, presentAuthorizationUrl } from './authorization-url'
 import { isMissingRpcMethod } from './gateway-rpc'
 
 interface CompleteOptions {
@@ -144,7 +145,7 @@ export async function completeMcpDesktopOAuth({
         })
     }
 
-    await window.hermesDesktop.openExternal(authUrl)
+    presentAuthorizationUrl(authUrl)
     let pollFailures = 0
 
     for (;;) {
@@ -206,6 +207,10 @@ export async function completeMcpDesktopOAuth({
     throw error
   } finally {
     closed = true
+
+    if (authorizationUrlNow() === authUrl) {
+      dismissAuthorizationUrl()
+    }
 
     // Stop the native waiter first: its synthetic cancellation is NOT a
     // provider callback and must never race cleanup back onto the gateway.

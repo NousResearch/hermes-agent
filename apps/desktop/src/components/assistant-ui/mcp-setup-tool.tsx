@@ -19,6 +19,7 @@ import { Button } from '@/components/ui/button'
 import { ConnectorCard, ConnectorRow, type ConnectorRowAction, ConnectorSummary } from '@/components/ui/connector-card'
 import { SetupFormDialog } from '@/components/ui/setup-form-dialog'
 import { useI18n } from '@/i18n'
+import { presentAuthorizationUrl } from '@/lib/authorization-url'
 import { connectorText, type McpTarget, mcpTargets } from '@/lib/connector-tools'
 import { Loader2 } from '@/lib/icons'
 import { prettyName } from '@/lib/text'
@@ -380,7 +381,7 @@ function McpSetupRow({ action, onReissue, reissueBlocked, reissuing, request, ta
       label: action === 'authorize' ? label : t.connectors.openInBrowser,
       onClick: () => {
         if (target.connectUrl) {
-          void window.hermesDesktop?.openExternal?.(target.connectUrl)
+          presentAuthorizationUrl(target.connectUrl)
         }
       }
     },

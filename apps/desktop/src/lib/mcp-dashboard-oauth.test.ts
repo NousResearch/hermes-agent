@@ -4,6 +4,7 @@ import { setApiRequestConnection, setApiRequestProfile } from '@/api/client'
 import { requestGatewayForAgent } from '@/store/gateway'
 
 import { completeMcpDesktopOAuth, McpOAuthCancelled } from './mcp-dashboard-oauth'
+import * as authorizationUrl from './authorization-url'
 
 vi.mock('@/store/gateway', () => ({ requestGatewayForAgent: vi.fn() }))
 
@@ -82,12 +83,16 @@ describe('Desktop MCP client callback lifecycle', () => {
       setApiRequestProfile('origin-profile')
       const callbackResult = { code: 'code-1', state: 'expected', error: null }
       bridge.wait.mockResolvedValue(callbackResult)
-      openExternal.mockImplementation(async () => {
+      const present = vi.spyOn(authorizationUrl, 'presentAuthorizationUrl').mockImplementation(url => {
         setApiRequestConnection('other-gateway')
         setApiRequestProfile('other-profile')
+
+        return url
       })
       const result = await completeMcpDesktopOAuth({ serverName: 'reports', sleep: async () => {} })
       expect(result).toMatchObject({ status: 'approved', tools })
+      expect(openExternal).not.toHaveBeenCalled()
+      expect(present).toHaveBeenCalledWith(authUrl)
       expect(rpc).toHaveBeenCalledWith(
         connectionId,
         'origin-profile',

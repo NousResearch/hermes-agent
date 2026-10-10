@@ -2,6 +2,7 @@ import type { ConnectionTargetState } from '@hermes/shared'
 import { useEffect, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
+import { CopyButton } from '@/components/ui/copy-button'
 import {
   Dialog,
   DialogContent,
@@ -12,6 +13,7 @@ import {
 } from '@/components/ui/dialog'
 import { FieldHint } from '@/components/ui/field'
 import { type SetupField, SetupFieldList } from '@/components/ui/setup-field-list'
+import { useI18n } from '@/i18n'
 
 interface SetupFormDialogCopy {
   cancel: string
@@ -52,6 +54,7 @@ export function SetupFormDialog({
   status,
   url
 }: SetupFormDialogProps) {
+  const { t } = useI18n()
   const [draft, setDraft] = useState<Record<string, string>>({})
 
   // The backend sends a fresh field list with every frame (and an empty one while an attempt runs).
@@ -87,10 +90,15 @@ export function SetupFormDialog({
 
         {awaitingBrowser ? (
           <div className="grid min-w-0 gap-2">
-            <p className="break-all text-xs text-(--ui-text-secondary)">{url}</p>
-            <Button className="justify-self-start" onClick={onOpenBrowser} size="sm" variant="secondary">
-              {copy.openInBrowser}
-            </Button>
+            <p className="select-text break-all text-xs text-(--ui-text-secondary)">{url}</p>
+            <div className="flex flex-wrap gap-2">
+              <CopyButton label={t.authorizationUrl.copyUrl} text={url ?? ''}>
+                {t.authorizationUrl.copyUrl}
+              </CopyButton>
+              <Button className="justify-self-start" onClick={onOpenBrowser} size="sm" variant="secondary">
+                {copy.openInBrowser}
+              </Button>
+            </div>
           </div>
         ) : null}
 

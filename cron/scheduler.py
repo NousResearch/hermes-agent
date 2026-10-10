@@ -46,8 +46,6 @@ from hermes_cli.config import (
 from hermes_cli.fallback_config import get_fallback_chain, scoped_fallback_chain
 from hermes_time import now as _hermes_now, safe_strftime
 from agent.interrupt_compat import request_hard_interrupt
-from agent.delegation_context import (
-    enter_non_dispatcher_owned_context, exit_non_dispatcher_owned_context)
 from agent.memory_provider import ctx_bound
 from agent.session_activity import AwakeIdleMeter
 from agent.turn_failure_copy import is_max_iteration_handoff
@@ -516,6 +514,7 @@ from cron.jobs import (
     save_job_output, self_removal_delivery_allowed, self_removal_delivery_scope, use_cron_store)
 from cron import store_health
 from cron.execution_identity import enter_cron_execution, exit_cron_execution
+from cron.scheduler_run_scope import _CronRunScope, _resolve_job_workdir
 from cron.executions import (
     _TERMINAL_STATES, HANDOFF_ADOPTION_GRACE_SECONDS, create_execution, finish_execution,
     get_execution, mark_execution_handoff_pending, mark_execution_running,
@@ -1503,17 +1502,6 @@ def _job_doc_header(job_name: str, job_id: str, now_iso: str, mode: str) -> str:
     )
 
 
-def _resolve_job_workdir(job: dict, job_id: str) -> Optional[str]:
-    """Configured job workdir, or None when unset / no longer a directory (logged)."""
-    workdir = (job.get("workdir") or "").strip() or None
-    if workdir and not Path(workdir).is_dir():
-        logger.warning(
-            "Job '%s': configured workdir %r no longer exists — running without it",
-            job_id, workdir)
-        return None
-    return workdir
-
-
 def _run_no_agent_job(
     job: dict, job_id: str, job_name: str, cancel_event,
 ) -> tuple[bool, str, str, Optional[str]]:
@@ -2309,82 +2297,6 @@ def _prepare_job_prompt(
         note_cron_skipped(job)
         return (True, "", SILENT_MARKER, None), None
     return None, prompt
-
-
-_CRON_DELIVERY_VARS = (
-    "HERMES_CRON_AUTO_DELIVER_PLATFORM",
-    "HERMES_CRON_AUTO_DELIVER_CHAT_ID",
-    "HERMES_CRON_AUTO_DELIVER_THREAD_ID")
-
-
-class _CronRunScope:
-    """Per-run ContextVar / tool-cwd scope for ``run_job`` (ContextVars, not os.environ, so
-    parallel jobs don't clobber each other). Construct before the try, ``enter()`` as its first
-    statement, ``exit()`` in the finally — every setter here has a matching reset there.
-
-    HERMES_SESSION_* are deliberately NOT seeded from job["origin"]: it is delivery metadata, not
-    a sender, and terminal/tts/skills/send_message tools would act as if the origin user were
-    driving the agent. Delivery reads job["origin"] / HERMES_CRON_AUTO_DELIVER_* directly.
-    """
-
-    def __init__(self, job: dict, job_id: str, execution_id: Optional[str]):
-        from gateway.session_context import set_session_vars, _VAR_MAP
-        from tools.terminal_tool import record_session_cwd
-
-        self._var_map = _VAR_MAP
-        # Resolve workdir BEFORE set_session_vars so it owns the _SESSION_CWD set/clear.
-        self.workdir = _resolve_job_workdir(job, job_id)
-        self._ctx_tokens = set_session_vars(
-            platform="",
-            chat_id="",
-            chat_name="",
-            # Cron can't receive completions after its turn; async delegation output could
-            # otherwise route to an unrelated chat via the ambient session key => inline delegation.
-            # We clear the HERMES_SESSION_* routing keys just below, so an async delegation's completion
-            # event carries session_key="" — _enrich_async_delegation_routing cannot resolve it and
-            # _inject_watch_notification drops it ("no routing metadata"). And by the time a child finishes,
-            # run_job has already shipped the job's final response via _deliver_result; there is no turn
-            # left to re-enter. (Worse, get_current_session_key() can fall back to the ambient os.environ
-            # HERMES_SESSION_KEY, which risks routing a cron subagent's output into an unrelated user chat.)
-            # Declaring the channel stateless routes delegate_task to its existing inline/synchronous path,
-            # so results return within the job's own turn. See declare_stateless_channel(). Upstream:
-            # #53027, #63142.
-            async_delivery=False,
-            cwd=self.workdir or "",
-        )
-        for name in _CRON_DELIVERY_VARS:
-            _VAR_MAP[name].set("")
-        # Workdir binds to the per-run task id (tool-layer cwd authority) instead of mutating
-        # global TERMINAL_CWD; _SESSION_CWD above remains the prompt/context-file authority.
-        self.task_id = f"cron:{job_id}:{execution_id or job.get('execution_id') or uuid.uuid4().hex}"
-        if self.workdir:
-            record_session_cwd(self.task_id, self.workdir)
-        self._cron_session_var = _VAR_MAP["HERMES_CRON_SESSION"]
-        self._cron_session_token = None
-        self._non_dispatcher_token = None
-
-    def enter(self) -> None:
-        # Scope cron approval policy; exit() RESETS via token (pinning "" would suppress the legacy
-        # os.environ fallback used by standalone entrypoints/tests).
-        self._cron_session_token = self._cron_session_var.set("1")
-        # Mark NOT the kanban worker: a worker's cronjob(action="run") lands here with
-        # HERMES_KANBAN_TASK in env, and an unrelated job could close the worker's task. Must be a
-        # ContextVar, NOT an os.environ clear (env is shared with the worker heartbeat and
-        # concurrent jobs); copy_context() carries it into the agent thread.
-        self._non_dispatcher_token = enter_non_dispatcher_owned_context()
-
-    def exit(self) -> None:
-        from gateway.session_context import clear_session_vars
-        from tools.terminal_tool import clear_session_cwd
-
-        clear_session_cwd(self.task_id)
-        clear_session_vars(self._ctx_tokens)  # also clears _SESSION_CWD
-        if self._cron_session_token is not None:
-            self._cron_session_var.reset(self._cron_session_token)
-        if self._non_dispatcher_token is not None:
-            exit_non_dispatcher_owned_context(self._non_dispatcher_token)
-        for name in _CRON_DELIVERY_VARS:
-            self._var_map[name].set("")
 
 
 def _reload_dotenv_and_publish_delivery_target(job: dict) -> None:

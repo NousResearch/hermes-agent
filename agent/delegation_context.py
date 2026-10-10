@@ -16,6 +16,14 @@ _DELEGATED_CHILD_CONTEXT: ContextVar[bool] = ContextVar("hermes_delegated_child_
 # Any in-process execution that is NOT the dispatcher-owned worker (cron jobs). Kept separate
 # so delegate_task-specific behaviour (subprocess env scrubbing, its error strings) is unchanged.
 _NON_DISPATCHER_OWNED_CONTEXT: ContextVar[bool] = ContextVar("hermes_non_dispatcher_owned_context", default=False)
+# Scope-local mask for the *inherited* half of the child fence. An in-process cron run fired
+# from a session whose os.environ already carries the marker is not a descendant of anything:
+# the marker is contamination and the fence must not be inherited. os.environ is process-global
+# (the worker's claim heartbeat, the gateway watchers and the parallel cron pool all read it),
+# so the mask is a ContextVar — the same reason _NON_DISPATCHER_OWNED_CONTEXT exists.
+_SUPPRESS_INHERITED_CHILD_FENCE: ContextVar[bool] = ContextVar(
+    "hermes_suppress_inherited_child_fence", default=False
+)
 
 DELEGATED_CHILD_ENV_MARKER = "HERMES_DELEGATED_CHILD_CONTEXT"
 
@@ -43,6 +51,38 @@ def delegated_child_context(session_id: str | None = None) -> Iterator[None]:
 def is_delegated_child_context() -> bool:
     """Return True while code is running for a delegate_task child."""
     return bool(_DELEGATED_CHILD_CONTEXT.get())
+
+
+def inherited_child_fence_is_contamination() -> bool:
+    """True when the env marker is inherited pollution rather than a real descendant.
+
+    Only the pair (marker present in ``os.environ``, no live ContextVar) is contamination.
+    A live :func:`delegated_child_context` always wins and is never maskable, which is what
+    separates the predicate's two mutually exclusive trigger sources.
+    """
+    return bool(os.environ.get(DELEGATED_CHILD_ENV_MARKER)) and not _DELEGATED_CHILD_CONTEXT.get()
+
+
+def enter_suppressed_inherited_fence() -> Token[bool]:
+    """Token form of :func:`suppressed_inherited_fence` for long try/finally scopes."""
+    return _SUPPRESS_INHERITED_CHILD_FENCE.set(True)
+
+
+def exit_suppressed_inherited_fence(token: Token[bool]) -> None:
+    """Restore the flag saved by :func:`enter_suppressed_inherited_fence`."""
+    _SUPPRESS_INHERITED_CHILD_FENCE.reset(token)
+
+
+@contextmanager
+def suppressed_inherited_fence() -> Iterator[None]:
+    """Mask the inherited (``os.environ``) half of the child fence for this scope. The mask is
+    a ContextVar rather than an env clear: os.environ is shared with the worker heartbeat and
+    concurrent readers, and the genuine-child half must stay reachable."""
+    token = enter_suppressed_inherited_fence()
+    try:
+        yield
+    finally:
+        exit_suppressed_inherited_fence(token)
 
 
 def enter_non_dispatcher_owned_context() -> Token[bool]:
@@ -105,8 +145,19 @@ def owned_kanban_task() -> str:
 
 
 def is_delegated_child_process_context() -> bool:
-    """Return True in this process or a subprocess spawned by a child."""
-    return bool(_DELEGATED_CHILD_CONTEXT.get()) or bool(os.environ.get(DELEGATED_CHILD_ENV_MARKER))
+    """Return True in this process or a subprocess spawned by a child.
+
+    The live ContextVar is checked FIRST and returns early, so the inherited env half is
+    reachable only when this execution is not itself a delegate child. Masking that half
+    (in-process cron runs, gateway respawns) therefore cannot unfence a real descendant —
+    including a ``delegate_task`` child spawned from inside a masked cron run, whose own
+    :func:`delegated_child_context` re-arms the fence.
+    """
+    if _DELEGATED_CHILD_CONTEXT.get():
+        return True
+    if _SUPPRESS_INHERITED_CHILD_FENCE.get():
+        return False
+    return bool(os.environ.get(DELEGATED_CHILD_ENV_MARKER))
 
 
 def _fenced_kanban_root() -> str:

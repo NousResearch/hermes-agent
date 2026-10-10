@@ -14,6 +14,7 @@ import {
   isTitleFetchable,
   LinkifiedText,
   MarkdownLinkText,
+  normalizeExternalUrl,
   PrettyLink,
   urlSlugTitleLabel
 } from './external-link'
@@ -296,6 +297,17 @@ describe('external link helpers', () => {
     const link = screen.getByRole('link')
     expect(link.getAttribute('href')).toBe(
       'https://expedia.com/things-to-do/puerto-rico-el-yunque-rainforest-adventure'
+    )
+  })
+
+  it('collapses a doubled scheme prefix from model output', () => {
+    // Gemma 4 intermittently emits `httpshttps://…` (#25744).
+    expect(normalizeExternalUrl('httpshttps://github.com/NousResearch/hermes-agent/releases')).toBe(
+      'https://github.com/NousResearch/hermes-agent/releases'
+    )
+    expect(normalizeExternalUrl('httphttp://example.com/page')).toBe('http://example.com/page')
+    expect(normalizeExternalUrl('https://github.com/NousResearch/hermes-agent/releases')).toBe(
+      'https://github.com/NousResearch/hermes-agent/releases'
     )
   })
 

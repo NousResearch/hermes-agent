@@ -7059,6 +7059,7 @@
   "unset": {
    "extra_body": {
     "thinking": {
+     "keep": "all",
      "type": "enabled"
     }
    },
@@ -8880,7 +8881,6 @@
     },
     {
      "content": "",
-     "reasoning_content": " ",
      "role": "assistant",
      "tool_calls": [
       {
@@ -8939,7 +8939,6 @@
     },
     {
      "content": "",
-     "reasoning_content": " ",
      "role": "assistant",
      "tool_calls": [
       {
@@ -8997,7 +8996,6 @@
     },
     {
      "content": "",
-     "reasoning_content": " ",
      "role": "assistant",
      "tool_calls": [
       {
@@ -12187,6 +12185,7 @@
   "high": {
    "extra_body": {
     "thinking": {
+     "clear_thinking": false,
      "type": "enabled"
     }
    },

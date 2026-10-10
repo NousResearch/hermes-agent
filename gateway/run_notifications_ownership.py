@@ -111,7 +111,7 @@ class GatewayNotificationOwnershipMixin:
         return "terminal", session_id, None
 
     async def _resolve_async_delegation_session(
-        self, session_entry: SessionEntry, pinned_session_id: str,
+        self, session_entry: SessionEntry, pinned_session_id: str, proven_session_id: str = "",
     ) -> Optional[SessionEntry]:
         """Resolve an async completion to its verified owning gateway session.
 
@@ -135,6 +135,9 @@ class GatewayNotificationOwnershipMixin:
                 "dropping injection (#55578 fail-closed)."
             )
             return None
+        if proven_session_id and proven_session_id == session_entry.session_id:
+            # Admission already settled the durable claim on this proof; another read could only lose it.
+            return session_entry
         # Snapshot before ownership awaits: a concurrent /stop or /new wins.
         run_generation = self._current_session_run_generation(session_entry.session_key)
         verdict, pinned_session_id, pinned_row = await self._lookup_completion_owner(

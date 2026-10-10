@@ -186,12 +186,52 @@ async def test_claimed_ownership_retries_do_not_spend_the_delivery_budget(
             runner.close_all_session_db_handles()
 
 
+async def _admit_with_session_rows_unreadable(runner, store, entry, monkeypatch, delegation_id, pinned):
+    """Deliver one completion; every session-row read raises once the adapter has accepted it."""
+    async_db = runner._session_db
+    get_session = async_db.get_session
+    admitted_phase = False
+
+    async def lookup_session(sid):
+        if admitted_phase:
+            raise RuntimeError("session rows unreadable after admission")
+        return await get_session(sid)
+
+    monkeypatch.setattr(async_db, "get_session", lookup_session)
+    resolved = []
+
+    async def accept(event):
+        nonlocal admitted_phase
+        admitted_phase = True
+        current = store.lookup_by_session_key(entry.session_key)
+        assert current is not None
+        result = await runner._resolve_async_delegation_session(
+            current, event.metadata["gateway_session_id"],
+            proven_session_id=event.metadata.get("gateway_proven_session_id", ""),
+        )
+        resolved.append(result.session_id if result else None)
+        event._gateway_accepted = True
+
+    runner.adapters[Platform.TELEGRAM] = cast(BasePlatformAdapter, SimpleNamespace(handle_message=accept))
+    event = {
+        "type": "async_delegation", "delegation_id": delegation_id,
+        "session_key": entry.session_key, "parent_session_id": pinned,
+        "dispatched_at": 1.0, "status": "completed", "summary": "completed result",
+    }
+    ad._persist_dispatch(event)
+    ad._persist_completion(event, {"status": "completed", "summary": event["summary"]})
+    assert await runner._deliver_completion_notification("completed result", event) is True
+    delivered = ad.get_durable_delegation(delegation_id)
+    assert delivered is not None and delivered["delivery_state"] == "delivered"
+    return resolved
+
+
 @pytest.mark.asyncio
-async def test_admitted_delegate_completion_reaches_owner_without_rereading_the_chain(
+async def test_admitted_delegate_completion_reaches_owner_without_reading_ownership_again(
     tmp_path, monkeypatch, private_db_probe_cleanup,
 ):
     """Admission acknowledges the durable claim, so the resolver must reach the owner preflight proved
-    even when the delegate chain cannot be read afterwards."""
+    even when no session row can be read afterwards."""
     with _profile_runtime_scope(tmp_path):
         runner = GatewayRunner(GatewayConfig(sessions_dir=tmp_path / "sessions"))
         store = runner.session_store
@@ -203,44 +243,43 @@ async def test_admitted_delegate_completion_reaches_owner_without_rereading_the_
             owner = entry.session_id
             db.create_session("worker", source="subagent", model_config={"_delegate_from": owner})
             db.create_session("nested-worker", source="subagent", model_config={"_delegate_from": "worker"})
-            async_db = runner._session_db
-            get_session = async_db.get_session
-            admitted_phase = False
 
-            async def lookup_session(sid):
-                if admitted_phase and sid in {"worker", "nested-worker"}:
-                    raise RuntimeError("delegate chain unreadable after admission")
-                return await get_session(sid)
+            resolved = await _admit_with_session_rows_unreadable(
+                runner, store, entry, monkeypatch, "owner-admitted", "nested-worker")
 
-            monkeypatch.setattr(async_db, "get_session", lookup_session)
-            resolved = []
-
-            async def accept(event):
-                nonlocal admitted_phase
-                admitted_phase = True
-                current = store.lookup_by_session_key(entry.session_key)
-                assert current is not None
-                result = await runner._resolve_async_delegation_session(
-                    current, event.metadata["gateway_session_id"],
-                )
-                resolved.append(result.session_id if result else None)
-                event._gateway_accepted = True
-
-            runner.adapters[Platform.TELEGRAM] = cast(BasePlatformAdapter, SimpleNamespace(handle_message=accept))
-            event = {
-                "type": "async_delegation", "delegation_id": "owner-admitted",
-                "session_key": entry.session_key, "parent_session_id": "nested-worker",
-                "dispatched_at": 1.0, "status": "completed", "summary": "completed result",
-            }
-            ad._persist_dispatch(event)
-            ad._persist_completion(event, {"status": "completed", "summary": event["summary"]})
-
-            assert await runner._deliver_completion_notification("completed result", event) is True
             assert resolved == [owner]
-            delivered = ad.get_durable_delegation(event["delegation_id"])
-            assert delivered is not None and delivered["delivery_state"] == "delivered"
             current = store.lookup_by_session_key(entry.session_key)
             assert current is not None and current.session_id == owner
+        finally:
+            store.close_all_db_handles()
+            runner.close_all_session_db_handles()
+
+
+@pytest.mark.asyncio
+async def test_admitted_completion_reaches_compressed_owners_tip_without_reading_lineage_again(
+    tmp_path, monkeypatch, private_db_probe_cleanup,
+):
+    """A compressed owner is proven through its live tip before admission; delivery reads no lineage after it."""
+    with _profile_runtime_scope(tmp_path):
+        runner = GatewayRunner(GatewayConfig(sessions_dir=tmp_path / "sessions"))
+        store = runner.session_store
+        try:
+            entry = store.get_or_create_session(SessionSource(
+                platform=Platform.TELEGRAM, chat_id="ownership-compressed", chat_type="dm",
+            ))
+            db = cast(Any, store._db)
+            owner = entry.session_id
+            db.create_session("worker", source="subagent", model_config={"_delegate_from": owner})
+            db.create_session("owner-tip", source="telegram", parent_session_id=owner)
+            db.end_session(owner, end_reason="compression")
+            assert store.advance_compression_session(entry.session_key, owner, "owner-tip") is not None
+
+            resolved = await _admit_with_session_rows_unreadable(
+                runner, store, entry, monkeypatch, "tip-admitted", "worker")
+
+            assert resolved == ["owner-tip"]
+            current = store.lookup_by_session_key(entry.session_key)
+            assert current is not None and current.session_id == "owner-tip"
         finally:
             store.close_all_db_handles()
             runner.close_all_session_db_handles()

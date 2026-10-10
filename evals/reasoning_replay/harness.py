@@ -60,8 +60,8 @@ USER1_OPAQUE = ("A train leaves at 3:47pm and travels 283 km at 91 km/h. At what
                 "Then call get_weather for Paris.")
 PROBE = ("If your earlier reasoning contained a verification word, reply with only that word; "
          "otherwise reply NONE.")
-# xAI's chat/Responses safety layer 403s ("I'm sorry, I can't help with that request.") a user turn
-# that asks about earlier *reasoning*; when the baseline 403s the whole position reruns with this.
+# xAI 403s ("I'm sorry, I can't help with that request.") and Anthropic refuses (content_filter) a
+# user turn that asks about earlier *reasoning*; a refused baseline reruns the position with this.
 PROBE_ALT = "If a verification word was mentioned for this task, reply with only that word; otherwise reply NONE."
 PROBES = {"std": PROBE, "alt": PROBE_ALT}
 TOOL_RESULT = "Paris: 18 C, light rain, wind 12 km/h."
@@ -460,7 +460,7 @@ class Prober:
                     probe = self.a.probe
                     first = self.sample(model, "text", position, "none", params,
                                         self.text_payload(position, "none", probe), probe=probe)
-                    if first[-1]["status"] == 403 and probe == "std":
+                    if _refused(first[-1]) and probe == "std":
                         probe = "alt"
                         self.sample(model, "text", position, "none", params,
                                     self.text_payload(position, "none", probe), probe=probe)
@@ -569,7 +569,7 @@ class Prober:
                     tail[0]["tool_call_id"] = call_id
                     recs = self.sample(model, "opaque", position, variant, params, msgs + tail, probe=probe,
                                        run_id=run_id)
-                    if recs[-1]["status"] != 403 or probe == "alt":
+                    if not _refused(recs[-1]) or probe == "alt":
                         break
                     probe = "alt"
 
@@ -652,6 +652,12 @@ class Prober:
                 contents = _gemini_tail([{"role": "user", "parts": [{"text": USER1_OPAQUE}]}, mturn], position,
                                         PROBES[probe])
                 self.call(model, "opaque", position, variant, params, contents, probe=probe, run_id=run_id)
+
+
+def _refused(rec: dict) -> bool:
+    """Safety-layer refusal of the probe wording: xAI 403s it; Anthropic answers 200 content_filter
+    ("reverse engineering ... model outputs") with no usage block."""
+    return rec["status"] == 403 or (rec["status"] == 200 and rec.get("prompt_tokens") is None)
 
 
 def extract_text(kind: str, j: dict) -> tuple[str, str]:
@@ -751,12 +757,16 @@ def summarize(out: Path) -> list:
     for (route, model), recs in sorted(rows.items()):
         lanes = sorted({r.get("lane") for r in recs if r.get("lane")}) or ["-"]
         # opaque cells are only comparable within one turn-1 capture: keep the newest run per lane
-        latest = {}
+        latest: dict = {}
         for r in recs:
             if r.get("step") == "opaque" and r.get("status") == 200:
-                latest[r.get("lane")] = max(latest.get(r.get("lane"), ""), r.get("run_id", ""))
-        recs = [r for r in recs if r.get("step") != "opaque" or r.get("run_id", "") == latest.get(r.get("lane"), "")
-                or (r.get("lane") not in latest)]
+                k = (r.get("lane"), r.get("position"))
+                latest[k] = max(latest.get(k, ""), r.get("run_id", ""))
+        recs = [r for r in recs if r.get("step") != "opaque" or (r.get("lane"), r.get("position")) not in latest
+                or r.get("run_id", "") == latest[(r.get("lane"), r.get("position"))]]
+        latest_lane = {}
+        for (ln, _pos), rid in latest.items():
+            latest_lane[ln] = max(latest_lane.get(ln, ""), rid)
         tchars = (meta.get((route, model)) or {}).get("trace_chars") or 1800
         trace_tok[(route, model)] = tchars / 4
         for lane in lanes:
@@ -800,7 +810,7 @@ def summarize(out: Path) -> list:
                                 "Y" if r["canary_in_answer"] else ("r" if r["canary_in_reasoning"] else "n"))
             # rejected-on-every-lane errors have lane '-' semantics; fold non-200 rows from any lane
             t1 = [r for r in recs if r.get("step") == "opaque_turn1" and r.get("lane") in (lane, "-")]
-            t1 = [r for r in t1 if r.get("run_id", "") == latest.get(lane)] or t1
+            t1 = [r for r in t1 if r.get("run_id", "") == latest_lane.get(lane)] or t1
             if t1:
                 r = t1[-1]
                 row["turn1"] = {k: r.get(k) for k in ("status", "carriers", "detail_formats", "signed_details",

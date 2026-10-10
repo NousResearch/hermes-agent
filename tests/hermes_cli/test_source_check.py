@@ -110,6 +110,27 @@ def installation(tmp_path, monkeypatch):
     thread.join()
 
 
+def test_github_compare_response_is_not_truncated(monkeypatch):
+    from hermes_cli import source_check
+
+    payload = json.dumps({"ahead_by": 7, "commits": [], "padding": "x" * (2 * 1024 * 1024)})
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return payload.encode()
+
+    monkeypatch.setattr(source_check.urllib.request, "urlopen", lambda *args, **kwargs: Response())
+
+    assert source_check._github_compare_behind("a" * 40, "b" * 40) == 7
+
+
+
 def test_target_worktree_owns_admission_and_fork_comparison(installation, monkeypatch):
     from hermes_cli.source_check import check_for_updates
 

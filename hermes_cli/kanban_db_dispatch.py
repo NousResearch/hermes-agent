@@ -2489,24 +2489,24 @@ def _rotate_worker_log(
         pass
 
 
+def _isolated_store_python() -> bool:
+    """True when this process is the isolated store interpreter (``python -I``)."""
+    return bool(sys.flags.isolated)
+
+
 def _module_hermes_argv() -> list[str]:
-    """Interpreter-bound Hermes CLI invocation (``hermes_cli.main`` is the
-    console-script target — there is no top-level ``hermes`` package)."""
+    """Use this install's launcher/bootstrap when isolated; otherwise its module."""
+    if _isolated_store_python():
+        from hermes_cli._runtime_command import isolated_hermes_argv
+        return isolated_hermes_argv(Path(__file__).resolve().parents[1], python=sys.executable)
     return [sys.executable, "-m", "hermes_cli.main"]
 
 
 def _propagate_module_import_root(cmd: list[str], env: dict[str, str]) -> None:
-    """Put the running install's package root on a module-form worker's path.
+    """Pin source imports for bare module workers (#122299, #122487, #122500).
 
-    ``_resolve_hermes_argv`` proves ``hermes_cli`` importable in THIS process,
-    where a store-python shim has the repo root on ``sys.path`` in-process;
-    the spawned child runs the bare ``sys.executable`` from the task workspace
-    with a scrubbed ``PYTHONPATH`` and cannot import the package the parent
-    just proved importable — it dies before any work and the board
-    auto-blocks (#122299, #122487, #122500). Same-interpreter child, so the
-    root is version-safe to propagate; ``hermes_cli.main``'s own bootstrap
-    then owns dependency activation as usual. A resolved shim path owns its
-    imports and is left alone. Same pin cron's external worker uses (#112729).
+    The parent may have inserted its root in-process; a scrubbed child loses it.
+    Resolved shims own their imports. Cron uses the same pin (#112729).
     """
     if cmd[1:3] != ["-m", "hermes_cli.main"]:
         return
@@ -2574,16 +2574,10 @@ def _hermes_path_argv(path: str) -> list[str]:
 
 
 def _resolve_hermes_argv() -> list[str]:
-    """Resolve the ``hermes`` invocation as argv for ``Popen``: ``$HERMES_BIN``
-    (path-like -> absolute; bare names keep PATH semantics, never a
-    same-directory file), then the running interpreter's ``sys.executable -m
-    hermes_cli.main`` (exactly this install; also covers shim-less cron,
-    systemd ``User=``, launchd), then ``which("hermes")`` (Windows: safe PATH
-    search, batch shims fall back to the module form) only when ``hermes_cli``
-    is not importable. The module argv must win over PATH: a PATH-first lookup
-    lets an attacker-planted ``hermes`` shadow the running install (#111569).
-    Mirrors ``gateway.run._resolve_hermes_bin``; local because ``hermes_cli``
-    sits below ``gateway`` in the dependency order.
+    """Prefer an explicit override, then this interpreter's module/bootstrap, then PATH.
+
+    Bare overrides skip implicit cwd lookup; Windows batch shims use Python.
+    Installation binding prevents PATH shadowing (#111569).
     """
     import importlib.util
     import shutil
@@ -2595,6 +2589,12 @@ def _resolve_hermes_argv() -> list[str]:
         resolved_env_bin = _safe_which_no_cwd(env_bin)
         if resolved_env_bin:
             return _hermes_path_argv(resolved_env_bin)
+        return _module_hermes_argv()
+
+    # An isolated parent already proves this source installation is loaded.
+    # Its bootstrap is the only safe fallback; do not swallow a construction
+    # failure and select an unrelated PATH executable.
+    if _isolated_store_python():
         return _module_hermes_argv()
 
     try:

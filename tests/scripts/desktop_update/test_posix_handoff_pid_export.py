@@ -37,6 +37,6 @@ def test_the_update_child_is_told_the_live_marker_owner(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
     custodian = _custodian(home)
     assert custodian, "the hand-off never named a custodian"
-    handoff_pid, owner = view.read_text(encoding="utf-8").split()
+    handoff_pid, owner = view.read_text(encoding="utf-8-sig").split()
     assert owner == custodian, "line 1 must name the custodian while the update runs"
     assert handoff_pid == owner, "the update child must be told the marker's owner, not the hand-off script"

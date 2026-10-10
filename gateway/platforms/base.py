@@ -4596,8 +4596,10 @@ class BasePlatformAdapter(ABC):
                 extracted = await self._extract_response_content(
                     response, event, session_key, is_ephemeral_response=is_ephemeral_response)
                 text_content, media_files = extracted.text_content, extracted.media_files
-                # Final content gets notify=True; typing metadata stays unmarked (thread-strict).
-                _final_thread_metadata = _mark_notify_metadata(_thread_metadata)
+                # The handler can retarget a queued chain's final reply. Keep typing on the
+                # opener, but resolve final metadata again so stale thread_id cannot override
+                # the terminal message's reply anchor (notably on Slack).
+                _final_thread_metadata = _mark_notify_metadata(_thread_metadata_for_event(event))
                 _tts_paths, _tts_requested_path = [], None
                 if self._wants_auto_tts(
                         event, session_key, interrupt_event, text_content, media_files):

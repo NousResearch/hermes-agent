@@ -185,6 +185,33 @@ def test_iter_skill_index_files_prunes_skill_support_dirs(tmp_path):
     assert is_excluded_skill_path(package / "SKILL.md") is True
 
 
+def test_iter_skill_index_files_prunes_sync_and_backup_artifacts(tmp_path):
+    """Sync/backup tool dirs inside a skills tree are not skill packages.
+
+    Regression for #122613: Syncthing's versioning folder (``.stversions``) and a
+    manually parked archive folder (``_archive``, distinct from the curator's
+    ``.archive``) used to leak stale skill copies into discovery, shadowing the
+    live skill on bare-name lookups.
+    """
+    live = tmp_path / "code-review"
+    live.mkdir()
+    (live / "SKILL.md").write_text("---\nname: code-review\n---\n", encoding="utf-8")
+
+    stale_sync = tmp_path / ".stversions" / "code-review"
+    stale_sync.mkdir(parents=True)
+    (stale_sync / "SKILL.md").write_text("---\nname: code-review\n---\n", encoding="utf-8")
+
+    stale_archive = tmp_path / "_archive" / "code-review"
+    stale_archive.mkdir(parents=True)
+    (stale_archive / "SKILL.md").write_text("---\nname: code-review\n---\n", encoding="utf-8")
+
+    found = list(iter_skill_index_files(tmp_path, "SKILL.md"))
+
+    assert found == [live / "SKILL.md"]
+    assert is_excluded_skill_path(stale_sync / "SKILL.md") is True
+    assert is_excluded_skill_path(stale_archive / "SKILL.md") is True
+
+
 def test_iter_skill_index_files_keeps_support_named_categories(tmp_path):
     """A category named scripts/templates/assets/references is still valid."""
     scripts_skill = tmp_path / "scripts" / "bash-helper"

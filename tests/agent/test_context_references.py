@@ -753,3 +753,76 @@ async def test_composer_paste_outside_workspace_is_attached_but_sibling_dir_is_n
     assert "PASTED-BODY-MARKER" in result.message
     assert "LOOKALIKE-SECRET" not in result.message
     assert "outside the allowed workspace" in "\n".join(result.warnings)
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        ("src/main.py)", "src/main.py"),
+        ("src/main.py))", "src/main.py"),
+        ("(a)", "(a)"),
+        ("((a))", "((a))"),
+        ("(a))", "(a)"),
+        (")(", ")("),
+        ("((", "(("),
+        ("a](b]", "a](b"),
+        ("x.py.", "x.py"),
+        ("", ""),
+        ("))", ""),
+    ],
+)
+def test_strip_trailing_punctuation_drops_only_unbalanced_closers(value, expected):
+    from agent.context_references import _strip_trailing_punctuation
+
+    assert _strip_trailing_punctuation(value) == expected
+
+
+def test_strip_trailing_punctuation_matches_the_per_character_trim():
+    """The one-pass trim must return exactly what the original trim loop returned:
+    drop trailing closers one character at a time while the closer outnumbers its
+    opener in the text that remains."""
+    import random
+
+    from agent.context_references import (
+        _OPENERS,
+        TRAILING_PUNCTUATION,
+        _strip_trailing_punctuation,
+    )
+
+    def per_character_trim(value: str) -> str:
+        stripped = value.rstrip(TRAILING_PUNCTUATION)
+        while stripped.endswith((")", "]", "}")) and stripped.count(stripped[-1]) > stripped.count(
+            _OPENERS[stripped[-1]]
+        ):
+            stripped = stripped[:-1]
+        return stripped
+
+    rng = random.Random(20260928)
+    alphabet = "()[]{}xy.,;!?`'\""
+    samples = [
+        "".join(rng.choice(alphabet) for _ in range(rng.randint(0, 30)))
+        for _ in range(500)
+    ]
+    samples += [
+        ")" * k
+        for k in range(1, 40)
+    ]
+    samples += ["((" + ")" * k for k in range(1, 10)] + ["()" * 20 + ")"]
+
+    for value in samples:
+        assert _strip_trailing_punctuation(value) == per_character_trim(value), value
+
+
+def test_strip_trailing_punctuation_stays_linear_on_closer_runs():
+    """A large closer run catches the quadratic loop with room for CI scheduling noise."""
+    import time
+
+    from agent.context_references import _strip_trailing_punctuation
+
+    token = "x" + ")" * 200_000
+    durations = []
+    for _ in range(3):
+        start = time.perf_counter()
+        assert _strip_trailing_punctuation(token) == "x"
+        durations.append(time.perf_counter() - start)
+    assert min(durations) < 2.0

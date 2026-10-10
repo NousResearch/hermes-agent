@@ -55,7 +55,10 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
     # Mobile inbox: quiet tool_progress / busy-ack, but keep interim commentary and heartbeats so it
     # doesn't look like "typing..." for 30 minutes.
     "telegram": {**_TIER_HIGH, "tool_progress": "off", "busy_ack_detail": False},
-    "discord": {**_TIER_HIGH, "reasoning_style": "subtext"},  # "-# " subtext reads as metadata
+    # Discord is channel-audience-first: the notice would land in front of whoever is watching a
+    # shared channel, so its tier ships the notice OFF and an operator opts in (the per-surface
+    # override or the profile-wide key both win over this row).
+    "discord": {**_TIER_HIGH, "reasoning_style": "subtext", "memory_notifications": "off"},  # "-# " subtext reads as metadata
     # Slack: Bolt posts cannot be edited like CLI; "new"/"all" spam permanent lines.
     "slack": {**_TIER_MEDIUM, "tool_progress": "off", "long_running_notifications": False, "busy_ack_detail": False},
     "mattermost": _TIER_MEDIUM,
@@ -102,11 +105,10 @@ def resolve_memory_notifications(user_config: dict, platform_key: str) -> str:
     """Resolve ``display.memory_notifications`` for ONE surface: ``"off"`` | ``"on"`` | ``"verbose"``.
 
     The per-platform override (``display.platforms.<platform>.memory_notifications``) wins over the
-    profile-wide ``display.memory_notifications`` and the platform default (``"on"``) applies when
-    neither is declared, so a profile that serves both the operator and a client can silence the
-    notice on the client's surface while its sibling surfaces keep reporting. ``"off"`` suppresses
-    the notice's publication only: the background review itself keeps running. Resolution reads the
-    session's configuration and surface — no environment variable takes part.
+    profile-wide ``display.memory_notifications``, which in turn wins over the platform default —
+    ``"off"`` on Discord (a shared, channel-audience-first surface, so the notice there is opt-in
+    and the row that pins it is asserted in the suite) and ``"on"`` everywhere else. Resolution
+    reads the session's configuration and surface — no environment variable takes part.
     """
     value = resolve_display_setting(user_config, platform_key, "memory_notifications", "on")
     if isinstance(value, bool):

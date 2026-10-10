@@ -1262,8 +1262,9 @@ class TurnRunner:
                     pdc[ctx.session_key] = bg_release
         # display.memory_notifications: off | on (generic "💾 Memory updated", default) | verbose.
         # Resolved for THIS session's surface (display.platforms.<platform>.memory_notifications wins
-        # over the profile-wide value, the platform default is "on"), so a profile that serves both the
-        # operator and a client can silence the notice on the client's surface while its sibling
+        # over the profile-wide value, which wins over the platform default — "off" on Discord, a
+        # shared channel-audience-first surface, and "on" elsewhere), so a profile that serves both
+        # the operator and a client can silence the notice on the client's surface while its sibling
         # surfaces keep reporting; "off" suppresses the publication only — the review keeps running.
         from gateway.display_config import resolve_memory_notifications
         agent.memory_notifications = resolve_memory_notifications(

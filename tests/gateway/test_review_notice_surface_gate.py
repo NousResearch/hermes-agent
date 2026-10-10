@@ -43,16 +43,19 @@ from gateway.display_config import OVERRIDEABLE_KEYS, resolve_memory_notificatio
             "discord",
             "off",
         ),
-        # the platform default
-        ({}, "discord", "on"),
-        ({"display": None}, "discord", "on"),
+        # the platform default: Discord is channel-audience-first, so its tier ships the notice off
+        # while every other surface keeps the global default on (the asymmetry is pinned here)
+        ({}, "discord", "off"),
+        ({"display": None}, "discord", "off"),
+        ({}, "telegram", "on"),
         # verbose passes through, normalised
         ({"display": {"platforms": {"discord": {"memory_notifications": " VERBOSE "}}}}, "discord", "verbose"),
         # booleans are accepted the way the rest of the display settings accept them
         ({"display": {"memory_notifications": False}}, "discord", "off"),
+        # an explicit profile-wide value beats the Discord tier default (opt-in still works)
         ({"display": {"memory_notifications": True}}, "discord", "on"),
         # another surface's declaration does not leak into this one
-        ({"display": {"platforms": {"telegram": {"memory_notifications": "off"}}}}, "discord", "on"),
+        ({"display": {"platforms": {"telegram": {"memory_notifications": "off"}}}}, "discord", "off"),
         # a CLI surface resolves too
         ({"display": {"platforms": {"cli": {"memory_notifications": "off"}}}}, "cli", "off"),
     ],

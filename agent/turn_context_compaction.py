@@ -153,6 +153,13 @@ def _idle_compaction(
     _idle_after = getattr(agent, "compression_idle_compact_after_seconds", 0)
     if not (agent.compression_enabled and _idle_after > 0 and messages):
         return
+    # A background-review fork replays the parent's full snapshot as its first
+    # warm-cache request.  Idle compaction must wait for that request just like
+    # threshold preflight does, otherwise the fork can compact the shared parent
+    # before it has even reached its provider.
+    from agent import turn_context as _tc
+    if _tc._review_fork_first_request_pending(agent):
+        return
     _idle_gap = time.time() - getattr(agent, "_last_activity_ts", time.time())
     if _idle_gap < _idle_after:
         return

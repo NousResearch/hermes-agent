@@ -205,6 +205,25 @@ def _profile_author() -> str:
     return current_profile_name("user") or "user"
 
 
+def _verified_origin_session_id() -> Optional[str]:
+    """Stamp a CLI-created card only when its session belongs to this profile."""
+    from gateway.session_context import get_session_env
+    session_id = get_session_env("HERMES_SESSION_ID", "")
+    if not session_id:
+        return None
+    try:
+        from hermes_constants import get_hermes_home
+        from hermes_state import SessionDB
+
+        state = SessionDB(db_path=get_hermes_home() / "state.db", read_only=True)
+        try:
+            return session_id if state.get_session(session_id) else None
+        finally:
+            state.close()
+    except Exception:  # no state.db (or unusable state) must not block board creation
+        return None
+
+
 _DELEGATED_CHILD_DENIED_ACTIONS: frozenset[str] = frozenset({
     "init", "create", "swarm", "assign", "reclaim", "reassign", "link", "unlink",
     "claim", "comment", "attach", "attach-rm", "complete", "edit", "block",
@@ -360,10 +379,19 @@ def _cmd_create(args: argparse.Namespace) -> int:
     if max_retries is not None and max_retries < 1:
         return _err(f"kanban: --max-retries must be >= 1 (got {max_retries}); "
                     "use 1 to trip on the first failure.", 2)
+    creator_task_id = (os.environ.get("HERMES_KANBAN_TASK")
+                       if is_dispatcher_owned_worker_context() else None)
     with kbc.connect_closing() as conn:
+        creator_task = kb.get_task(conn, creator_task_id) if creator_task_id else None
+        # The worker's own short-lived chat is not the mission's durable origin.
+        # Preserve the creator card's source before considering ambient context.
+        origin_session_id = ((creator_task.session_id if creator_task else None)
+                             or _verified_origin_session_id())
         task_id = kb.create_task(
             conn, title=args.title, body=body, assignee=args.assignee,
-            created_by=args.created_by or _profile_author(),
+            created_by=(_profile_author() if creator_task_id or origin_session_id
+                        else (args.created_by or "user")),
+            session_id=origin_session_id,
             workspace_kind=ws_kind, workspace_path=ws_path, branch_name=branch_name,
             project_id=getattr(args, "project", None), tenant=args.tenant, priority=args.priority,
             parents=tuple(args.parent or ()), triage=bool(getattr(args, "triage", False)),
@@ -375,8 +403,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             goal_max_turns=getattr(args, "goal_max_turns", None),
             completion_contract=getattr(args, "completion_contract", None),
             initial_status=getattr(args, "initial_status", "running"),
-            creator_task_id=(os.environ.get("HERMES_KANBAN_TASK")
-                             if is_dispatcher_owned_worker_context() else None),
+            creator_task_id=creator_task_id,
         )
         task = kb.get_task(conn, task_id)
     if getattr(args, "json", False):

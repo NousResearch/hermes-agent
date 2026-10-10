@@ -24,6 +24,54 @@ def kanban_home(tmp_path, monkeypatch):
     return home
 
 
+def test_cli_create_stamps_only_verified_profile_session(kanban_home, monkeypatch, capsys):
+    from hermes_state import SessionDB
+    from gateway.session_context import clear_session_vars, set_session_vars
+
+    state = SessionDB(db_path=kanban_home / "state.db")
+    try:
+        state.create_session(session_id="origin-chat", source="desktop")
+    finally:
+        state.close()
+    parser = argparse.ArgumentParser()
+    kc.build_parser(parser.add_subparsers())
+    tokens = set_session_vars(session_id="origin-chat")
+    try:
+        assert kc.kanban_command(parser.parse_args([
+            "kanban", "create", "with-origin", "--created-by", "forged", "--json"])) == 0
+        first = json.loads(capsys.readouterr().out)
+    finally:
+        clear_session_vars(tokens)
+    tokens = set_session_vars(session_id="foreign-or-missing")
+    try:
+        assert kc.kanban_command(parser.parse_args(["kanban", "create", "without-origin", "--json"])) == 0
+        second = json.loads(capsys.readouterr().out)
+    finally:
+        clear_session_vars(tokens)
+    with kbc.connect_closing() as conn:
+        assert kb.get_task(conn, first["id"]).session_id == "origin-chat"
+        assert kb.get_task(conn, first["id"]).created_by == "default"
+        assert kb.get_task(conn, second["id"]).session_id is None
+        assert kb.get_task(conn, second["id"]).created_by == "user"
+
+
+def test_cli_create_with_session_env_and_missing_state_db_still_succeeds(
+        kanban_home, monkeypatch, capsys):
+    from gateway.session_context import clear_session_vars, set_session_vars
+    parser = argparse.ArgumentParser()
+    kc.build_parser(parser.add_subparsers())
+    tokens = set_session_vars(session_id="stale-session")
+    try:
+        assert kc.kanban_command(parser.parse_args(["kanban", "create", "operator-card", "--json"])) == 0
+        task_id = json.loads(capsys.readouterr().out)["id"]
+    finally:
+        clear_session_vars(tokens)
+    with kbc.connect_closing() as conn:
+        task = kb.get_task(conn, task_id)
+        assert task.session_id is None
+        assert task.created_by == "user"
+
+
 # ---------------------------------------------------------------------------
 # Workspace flag parsing
 # ---------------------------------------------------------------------------
@@ -253,5 +301,3 @@ def test_run_slash_reclaim_running_task(kanban_home):
 # ---------------------------------------------------------------------------
 # /kanban help / no-args / unknown-action UX (issue #21794)
 # ---------------------------------------------------------------------------
-
-

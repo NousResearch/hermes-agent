@@ -844,16 +844,14 @@ def _apply_nous_refreshed_tokens(
     state["scope"] = refreshed.get("scope") or state.get("scope")
     if inference_base_url is not None:
         state["inference_base_url"] = inference_base_url
-    # Read the PRE-refresh obtained_at first: it is the anchor for a state written before
-    # this field existed, and it is overwritten two lines below.
-    granted_at = state.get("grant_obtained_at") or state.get("obtained_at")
     state["obtained_at"] = now.isoformat()
     state["expires_in"] = access_ttl
     state["expires_at"] = _iso_after(now, access_ttl)
-    # Carry the device-code approval time across rotations: it dates the GRANT, not this
-    # access token, so a successful refresh must leave it exactly as the login wrote it.
-    if granted_at:
-        state["grant_obtained_at"] = granted_at
+    # grant_obtained_at is deliberately NOT derived here and NOT re-stamped: it dates the
+    # GRANT, which no access-token refresh can extend or reset. A state that predates the
+    # field stays without one — obtained_at is rewritten by every refresh, so inferring
+    # approval from it would advertise a deadline up to a full grant-period later than reality
+    # (#135518 review). Unknown stays unknown until a device-code login records it.
 
 
 def _healed_nous_inference_url(refreshed: dict[str, Any]) -> str:

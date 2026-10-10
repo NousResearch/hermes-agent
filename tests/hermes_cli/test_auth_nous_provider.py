@@ -1138,15 +1138,34 @@ class TestDeviceCodeGrantLifetime:
         # ...while the access token's own clock does move forward.
         assert state["obtained_at"] != granted_at
 
-    def test_first_refresh_after_upgrade_anchors_the_grant_time(self):
-        """A state written before this field existed must not stay permanently unanchored."""
+    def test_refresh_does_not_infer_the_grant_time_from_obtained_at(self):
+        """A legacy state must NOT acquire a deadline from obtained_at.
+
+        obtained_at is rewritten by every access-token refresh, so it is not the approval
+        time. Adopting it advertises a deadline up to a full grant-period later than reality:
+        approved Sep 10 -> refreshed Oct 9 -> advertised Nov 8, when the grant actually dies
+        Oct 10. That is the false confidence this field exists to remove, so unknown stays
+        unknown until a device-code login records a real approval time.
+        """
         from hermes_cli.auth_nous import _apply_nous_refreshed_tokens
 
-        state = {"obtained_at": "2026-10-01T00:00:00+00:00"}
+        state = {"obtained_at": "2026-10-09T12:00:00+00:00"}  # last hourly refresh, no grant field
         _apply_nous_refreshed_tokens(
             state, {"access_token": "new", "expires_in": 3600}, "r2")
 
-        assert state["grant_obtained_at"] == "2026-10-01T00:00:00+00:00"
+        assert "grant_obtained_at" not in state
+
+    def test_a_known_grant_time_survives_a_refresh(self):
+        """The field IS carried forward when it is real — refresh must not reset the clock."""
+        from hermes_cli.auth_nous import _apply_nous_refreshed_tokens
+
+        state = {"obtained_at": "2026-10-09T12:00:00+00:00",
+                 "grant_obtained_at": "2026-09-10T00:00:00+00:00"}
+        _apply_nous_refreshed_tokens(
+            state, {"access_token": "new", "expires_in": 3600}, "r2")
+
+        assert state["grant_obtained_at"] == "2026-09-10T00:00:00+00:00"
+        assert state["obtained_at"] != "2026-10-09T12:00:00+00:00"  # the token clock did move
 
     def test_grant_expiry_is_thirty_days_after_approval(self):
         from hermes_cli.auth_nous import nous_grant_expires_at

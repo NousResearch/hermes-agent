@@ -536,6 +536,7 @@ hermes peer add <name> --url http://host:port --key <API_SERVER_KEY>
 hermes peer list
 hermes peer dm <peer>[/<agent>] "message"
 hermes peer run <peer>[/<agent>] --idempotency-key <key> "message"
+hermes peer run <peer>[/<agent>] --new --idempotency-key <key> "independent task"
 hermes peer status <peer>[/<agent>] <run_id>
 hermes peer stop <peer>[/<agent>] <run_id>
 hermes peer remove <name>
@@ -557,10 +558,19 @@ its `/p/<profile>/` mirror).
 | `add <name> --url <URL> [--key <KEY>] [--note TEXT]` | Register or update a peer. The URL goes to `config.yaml` (`bot_peers`); the key is stored as `HERMES_PEER_<NAME>_KEY` in `~/.hermes/.env`. |
 | `list` | List peers and whether each has a key configured. |
 | `dm <peer>[/<agent>] [message]` | Message the peer agent's canonical Bot Chat and print the reply (`--json` for machine-readable output; message falls back to stdin). |
-| `run <peer>[/<agent>] [message]` | Start a long canonical Bot Chat turn asynchronously and return its `run_id`, session ID, and idempotency key (`--json` supported). Reuse `--idempotency-key` when retrying the same request. |
+| `run <peer>[/<agent>] [message]` | Start a long canonical Bot Chat turn asynchronously and return its `run_id`, session ID, and idempotency key (`--json` supported). `--new` starts a fresh task session instead. Reuse `--idempotency-key` when retrying the same request. |
 | `status <peer>[/<agent>] <run_id>` | Poll an asynchronous peer run and print its final output when complete (`--json` supported). |
 | `stop <peer>[/<agent>] <run_id>` | Stop the exact asynchronous peer run without targeting another turn (`--json` supported). |
 | `remove <name>` | Remove a peer from the registry (the `.env` key entry is left in place). |
+
+`peer run --new` keeps the addressed profile's identity, memories, skills and provider
+configuration, with a separate persisted transcript and turn lease. It does not inherit
+Bot Chat history or its messaging protocol, and normal gateway concurrency limits still
+apply. The initial output contains the run ID and retry key, but no `session_id`:
+read the resolved session ID with `peer status <peer>[/<agent>] <run_id> --json`.
+Retry with the same target, message, `--new` and explicit `--idempotency-key` to replay
+the original task within the peer's retention window. A new key starts a new task;
+omitting the key generates one. `--new` is available only on `run`.
 
 When at least one peer is registered, the Bot Mode messaging protocol
 (`agent.bot_mode_protocol`) taught to every canonical Bot Chat automatically

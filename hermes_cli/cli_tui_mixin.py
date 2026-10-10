@@ -1495,6 +1495,12 @@ class CLITuiMixin:
             self._should_handle_steer_command_inline(text, has_images=has_images)
             or self._should_handle_background_command_inline(text, has_images=has_images)):
             self.process_command(text)
+        elif not has_images and text.startswith("!") and self.handle_bang_shell(text):
+            # A bang command is a local shell run (zero tokens, never a turn). Queuing it into
+            # _pending_input while the agent is busy made it wait for the whole foreground turn,
+            # so `!hermes-account ...` looked dead during a long run. Dispatch it right here on
+            # the UI thread, busy or idle, exactly like /model and /steer above.
+            pass
         else:
             return False
         event.app.current_buffer.reset(append_to_history=True)

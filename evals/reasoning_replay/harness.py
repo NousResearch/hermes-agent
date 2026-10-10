@@ -55,6 +55,9 @@ ROUTES = {
 
 SYSTEM = "You are a concise assistant. Use tools when they are needed."
 USER1 = "What is the weather in Paris right now? Use the get_weather tool."
+# Step 2 turn 1 must make the model think, or newer models emit no reasoning item at all.
+USER1_OPAQUE = ("A train leaves at 3:47pm and travels 283 km at 91 km/h. At what exact minute does it arrive? "
+                "Then call get_weather for Paris.")
 PROBE = ("If your earlier reasoning contained a verification word, reply with only that word; "
          "otherwise reply NONE.")
 # xAI's chat/Responses safety layer 403s ("I'm sorry, I can't help with that request.") a user turn
@@ -336,6 +339,7 @@ def default_params(route: str, kind: str) -> dict:
 
 
 _PARAM_FIXES = [  # (error substring, mutation) applied to the BASELINE only, never per carrier
+    (r"reasoning_effort to 'none'", lambda p: p.__setitem__("reasoning_effort", "none")),
     (r"temperature", lambda p: p.pop("temperature", None)),
     (r"max_tokens", lambda p: p.__setitem__("max_key", "max_completion_tokens")),
     (r"reasoning_effort|reasoningEffort", lambda p: p.pop("reasoning_effort", None)),
@@ -360,7 +364,7 @@ class Prober:
 
     # --- one call -> normalized record
     def call(self, model: str, step: str, position: str, variant: str, params: dict, payload, attempt=0,
-             extra=None, probe: str = "std") -> dict:
+             extra=None, probe: str = "std", run_id: str = "") -> dict:
         kind = self.c.kind
         if kind == "chat":
             path, body = "/chat/completions", chat_body(model, payload, params, self.a.max_tokens)
@@ -390,7 +394,7 @@ class Prober:
         u = norm_usage(kind, j)
         return self.record({
             "route": self.c.route, "model": model, "step": step, "position": position, "variant": variant,
-            "probe": probe, "attempt": attempt, "status": status, "lane": lane, "id_prefix": prefix,
+            "probe": probe, "run_id": run_id, "attempt": attempt, "status": status, "lane": lane, "id_prefix": prefix,
             "provider": j.get("provider") if isinstance(j, dict) else None,
             "prompt_tokens": u.get("prompt"), "completion_tokens": u.get("completion"),
             "reasoning_tokens": u.get("reasoning"), "cached_tokens": u.get("cached"),
@@ -402,11 +406,11 @@ class Prober:
     def want_direct(self, model: str) -> bool:
         return self.c.route == "nous" and model in self.a.want_direct
 
-    def sample(self, model, step, position, variant, params, payload, extra=None, probe="std") -> list:
+    def sample(self, model, step, position, variant, params, payload, extra=None, probe="std", run_id="") -> list:
         """One call, or up to --lane-attempts calls until a direct-lane 200 for want-direct ids."""
         recs = []
         for attempt in range(self.a.lane_attempts if self.want_direct(model) else 1):
-            r = self.call(model, step, position, variant, params, payload, attempt, extra, probe)
+            r = self.call(model, step, position, variant, params, payload, attempt, extra, probe, run_id)
             recs.append(r)
             if not (r["status"] == 200 and r["lane"] == "openrouter"):
                 break
@@ -527,13 +531,15 @@ class Prober:
 
     def _opaque_chat(self, model, params):
         status, j, lane, prefix = self._turn1(model, params, [{"role": "system", "content": SYSTEM},
-                                                               {"role": "user", "content": USER1}])
+                                                               {"role": "user", "content": USER1_OPAQUE}])
         msg = ((j.get("choices") or [{}])[0].get("message") or {}) if status == 200 else {}
         u = norm_usage("chat", j)
         rtext = msg.get("reasoning_content") or msg.get("reasoning") or ""
         details = msg.get("reasoning_details") or []
         tcs = msg.get("tool_calls") or []
-        t1 = {"route": self.c.route, "model": model, "step": "opaque_turn1", "status": status, "lane": lane,
+        run_id = f"{time.time():.3f}"
+        t1 = {"route": self.c.route, "model": model, "step": "opaque_turn1", "run_id": run_id, "status": status,
+              "lane": lane,
               "id_prefix": prefix, "error": "" if status == 200 else err_text(j),
               "has_tool_call": bool(tcs), "carriers": sorted(k for k in ("reasoning_content", "reasoning",
                                                                           "reasoning_details") if msg.get(k)),
@@ -543,7 +549,7 @@ class Prober:
               "reasoning_chars": len(rtext), "reasoning_sample": rtext[:160], "reasoning_tokens": u.get("reasoning"),
               "completion_tokens": u.get("completion"), "cost": _usage_cost(j), "t": time.time()}
         self.record(t1)
-        if not tcs or not t1["carriers"]:  # nothing to replay: verbatim == stripped
+        if not tcs or not (t1["carriers"] or t1["extra_content"]):  # nothing to replay: verbatim == stripped
             return
         base = {"role": "assistant", "content": msg.get("content") or "",
                 "tool_calls": [{"id": tc["id"], "type": "function", "function": tc["function"]} for tc in tcs[:1]]}
@@ -554,26 +560,38 @@ class Prober:
         if tcs[0].get("extra_content"):
             verb["tool_calls"][0]["extra_content"] = tcs[0]["extra_content"]
         call_id = tcs[0]["id"]
-        probe = self.model_probe.get(model, self.a.probe)
         for position in self.a.positions:
+            probe = self.model_probe.get(model, self.a.probe)
             for variant, asst in (("stripped", base), ("verbatim", verb)):
-                msgs = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": USER1}, asst]
-                tail = _chat_tail([], position, PROBES[probe])
-                tail[0]["tool_call_id"] = call_id
-                self.sample(model, "opaque", position, variant, params, msgs + tail, probe=probe)
+                for _ in range(2):  # retry the cell with the alt wording if the safety layer refuses it
+                    msgs = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": USER1_OPAQUE}, asst]
+                    tail = _chat_tail([], position, PROBES[probe])
+                    tail[0]["tool_call_id"] = call_id
+                    recs = self.sample(model, "opaque", position, variant, params, msgs + tail, probe=probe,
+                                       run_id=run_id)
+                    if recs[-1]["status"] != 403 or probe == "alt":
+                        break
+                    probe = "alt"
 
     def _opaque_responses(self, model, params):
-        body = {"model": model, "instructions": SYSTEM, "input": [{"role": "user", "content": USER1}],
+        body = {"model": model, "instructions": SYSTEM, "input": [{"role": "user", "content": USER1_OPAQUE}],
                 "tools": [{"type": "function", "name": "get_weather", "description": "Current weather for a city.",
                            "parameters": TOOLS[0]["function"]["parameters"]}], "store": False,
                 "max_output_tokens": self.a.turn1_max_tokens, "include": ["reasoning.encrypted_content"]}
         body.update({k: v for k, v in params.items() if k in ("reasoning", "temperature")})
-        status, j, _ = self.c.post("/responses", body, model, "opaque:turn1")
-        out = j.get("output") or [] if status == 200 else []
-        rs = [o for o in out if o.get("type") == "reasoning"]
-        fc = next((o for o in out if o.get("type") == "function_call"), None)
+        status, j, out, rs, fc = 0, {}, [], [], None
+        for effort in ("low", "medium", "high"):  # escalate until turn 1 returns a reasoning item + call
+            if "reasoning" in body:
+                body["reasoning"] = dict(body["reasoning"], effort=effort)
+            status, j, _ = self.c.post("/responses", body, model, f"opaque:turn1:{effort}")
+            out = (j.get("output") or []) if status == 200 else []
+            rs = [o for o in out if o.get("type") == "reasoning" and o.get("encrypted_content")]
+            fc = next((o for o in out if o.get("type") == "function_call"), None)
+            if status != 200 or (rs and fc) or "reasoning" not in body:
+                break
         u = norm_usage("responses", j)
-        self.record({"route": self.c.route, "model": model, "step": "opaque_turn1", "status": status,
+        run_id = f"{time.time():.3f}"
+        self.record({"route": self.c.route, "model": model, "step": "opaque_turn1", "run_id": run_id, "status": status,
                      "lane": "direct", "id_prefix": lane_of(self.c.route, j)[1],
                      "error": "" if status == 200 else err_text(j), "has_tool_call": bool(fc),
                      "carriers": ["reasoning_item"] * len(rs),
@@ -598,12 +616,12 @@ class Prober:
                 p = dict(params)
                 if extra:
                     p["reasoning"] = extra["reasoning"]
-                self.call(model, "opaque", position, variant, p, [{"role": "user", "content": USER1}] + items + tail,
-                          probe=probe)
+                self.call(model, "opaque", position, variant, p, [{"role": "user", "content": USER1_OPAQUE}] + items + tail,
+                          probe=probe, run_id=run_id)
 
     def _opaque_gemini(self, model, params):
         body = {"systemInstruction": {"parts": [{"text": SYSTEM}]}, "contents": [
-            {"role": "user", "parts": [{"text": USER1}]}],
+            {"role": "user", "parts": [{"text": USER1_OPAQUE}]}],
             "tools": [{"functionDeclarations": [{"name": "get_weather", "description": "Current weather.",
                                                  "parameters": TOOLS[0]["function"]["parameters"]}]}],
             "generationConfig": {"maxOutputTokens": self.a.turn1_max_tokens,
@@ -612,7 +630,8 @@ class Prober:
         parts = (((j.get("candidates") or [{}])[0].get("content") or {}).get("parts") or []) if status == 200 else []
         u = norm_usage("gemini", j)
         fcp = next((p for p in parts if "functionCall" in p), None)
-        self.record({"route": self.c.route, "model": model, "step": "opaque_turn1", "status": status,
+        run_id = f"{time.time():.3f}"
+        self.record({"route": self.c.route, "model": model, "step": "opaque_turn1", "run_id": run_id, "status": status,
                      "lane": "direct", "id_prefix": "-", "error": "" if status == 200 else err_text(j),
                      "has_tool_call": bool(fcp), "carriers": sorted({("thought" if p.get("thought") else "part")
                                                                      for p in parts}),
@@ -630,8 +649,9 @@ class Prober:
         probe = self.model_probe.get(model, self.a.probe)
         for position in self.a.positions:
             for variant, mturn in (("stripped", stripped), ("dummy_signature", dummy), ("verbatim", verbatim)):
-                contents = _gemini_tail([{"role": "user", "parts": [{"text": USER1}]}, mturn], position, PROBES[probe])
-                self.call(model, "opaque", position, variant, params, contents, probe=probe)
+                contents = _gemini_tail([{"role": "user", "parts": [{"text": USER1_OPAQUE}]}, mturn], position,
+                                        PROBES[probe])
+                self.call(model, "opaque", position, variant, params, contents, probe=probe, run_id=run_id)
 
 
 def extract_text(kind: str, j: dict) -> tuple[str, str]:
@@ -708,7 +728,9 @@ def price_table(catalog: list) -> dict:
 
 # ---------------------------------------------------------------- report
 
-CONSUMED, DROPPED = 0.5, 25  # delta >= 0.5*trace_tokens => consumed; |delta| < 25 => dropped
+# text: delta >= 0.5*trace_tokens => consumed. opaque: the real carrier can be tiny (grok emits ~20
+# reasoning tokens), so any verbatim-minus-stripped delta >= OPAQUE_MIN tokens counts.
+CONSUMED, OPAQUE_MIN = 0.5, 8
 
 
 def summarize(out: Path) -> list:
@@ -728,6 +750,13 @@ def summarize(out: Path) -> list:
     table = []
     for (route, model), recs in sorted(rows.items()):
         lanes = sorted({r.get("lane") for r in recs if r.get("lane")}) or ["-"]
+        # opaque cells are only comparable within one turn-1 capture: keep the newest run per lane
+        latest = {}
+        for r in recs:
+            if r.get("step") == "opaque" and r.get("status") == 200:
+                latest[r.get("lane")] = max(latest.get(r.get("lane"), ""), r.get("run_id", ""))
+        recs = [r for r in recs if r.get("step") != "opaque" or r.get("run_id", "") == latest.get(r.get("lane"), "")
+                or (r.get("lane") not in latest)]
         tchars = (meta.get((route, model)) or {}).get("trace_chars") or 1800
         trace_tok[(route, model)] = tchars / 4
         for lane in lanes:
@@ -740,12 +769,15 @@ def summarize(out: Path) -> list:
                           and r.get("lane") == lane]
                     base_variant = "none" if step == "text" else "stripped"
                     bases: dict = {}
-                    for r in lr:
-                        if r["variant"] == base_variant and r["status"] == 200 and r.get("prompt_tokens") is not None:
-                            pk = r.get("probe", "std")
-                            bases[pk] = min(bases.get(pk, 1 << 30), r["prompt_tokens"])
+                    for bv in (base_variant, "dummy_signature"):  # Gemini 400s a stripped signature in-loop
+                        for r in lr:
+                            if r["variant"] == bv and r["status"] == 200 and r.get("prompt_tokens") is not None:
+                                pk = r.get("probe", "std")
+                                bases[pk] = min(bases.get(pk, 1 << 30), r["prompt_tokens"])
+                        if bases:
+                            break
                     # a probe whose baseline was refused (403) is superseded by the alt-probe cells
-                    probes_used = {r.get("probe", "std") for r in lr}
+                    probes_used = {r.get("probe", "std") for r in lr if r["status"] == 200}
                     if "alt" in probes_used:
                         lr = [r for r in lr if r.get("probe", "std") == "alt"]
                     for r in lr:
@@ -768,6 +800,7 @@ def summarize(out: Path) -> list:
                                 "Y" if r["canary_in_answer"] else ("r" if r["canary_in_reasoning"] else "n"))
             # rejected-on-every-lane errors have lane '-' semantics; fold non-200 rows from any lane
             t1 = [r for r in recs if r.get("step") == "opaque_turn1" and r.get("lane") in (lane, "-")]
+            t1 = [r for r in t1 if r.get("run_id", "") == latest.get(lane)] or t1
             if t1:
                 r = t1[-1]
                 row["turn1"] = {k: r.get(k) for k in ("status", "carriers", "detail_formats", "signed_details",
@@ -799,8 +832,8 @@ def verdict(row: dict, trace_tokens: float) -> str:
 
     il, ct = row["text"].get("in_loop", {}), row["text"].get("cross_turn", {})
     oil, oct_ = row["opaque"].get("in_loop", {}), row["opaque"].get("cross_turn", {})
-    opaque_cross = [v for v, d in oct_.items() if v.startswith("verbatim") and isinstance(d, int) and d > DROPPED]
-    opaque_in = [v for v, d in oil.items() if v.startswith("verbatim") and isinstance(d, int) and d > DROPPED]
+    opaque_cross = [v for v, d in oct_.items() if v.startswith("verbatim") and isinstance(d, int) and d >= OPAQUE_MIN]
+    opaque_in = [v for v, d in oil.items() if v.startswith("verbatim") and isinstance(d, int) and d >= OPAQUE_MIN]
     if consumed(ct) or opaque_cross:
         return "consumes-all-turns"
     if consumed(il) or opaque_in:

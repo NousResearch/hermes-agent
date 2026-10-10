@@ -16,6 +16,30 @@ from tools.registry import registry
 # that name and log-based tooling filters on it.
 logger = logging.getLogger("model_tools")
 
+# Common alias → canonical parameter-name map. Models trained on other agent
+# ecosystems (e.g. Claude Code's `file_path`) emit alias keys for Hermes tools
+# whose schema uses a different name; the missing required param then falls
+# back to a default (for read_file: the session cwd — a directory), producing
+# a confusing "not a regular file" error. Schema-guided: an alias is applied
+# only when the canonical name exists in the tool's schema, the alias does
+# not, and the canonical value was not supplied.
+_PARAM_ALIASES: Dict[str, str] = {
+    "file_path": "path",
+    "filepath": "path",
+    "filePath": "path",
+    "filename": "path",
+}
+
+
+def _normalize_param_aliases(tool_name: str, args: Dict[str, Any], properties: Dict[str, Any]) -> Dict[str, Any]:
+    """Rename known alias parameter keys to their canonical schema names."""
+    for alias, canonical in _PARAM_ALIASES.items():
+        if alias in args and canonical not in args and canonical in properties and alias not in properties:
+            value = args.pop(alias)
+            args[canonical] = value
+            logger.info("coerce_tool_args: normalized %s.%s → %s (model alias)", tool_name, alias, canonical)
+    return args
+
 
 def coerce_tool_args(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
     """Coerce string-typed args to their JSON-Schema types; originals kept on failure."""
@@ -34,6 +58,8 @@ def coerce_tool_args(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
         args = unrename_tool_args(schema.get("parameters"), args)
     except Exception:  # pragma: no cover — never break dispatch
         pass
+
+    args = _normalize_param_aliases(tool_name, args, properties)
 
     for key, value in list(args.items()):
         prop_schema = properties.get(key)

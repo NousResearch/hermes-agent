@@ -1013,3 +1013,93 @@ class TestConflictMarkerFlag:
         prose.write_text("print('<<<<<<< not a conflict')\n", encoding="utf-8")
         assert "conflict_blocks" not in json.loads(read_file_tool(str(prose)))
 
+
+
+class TestReadFileMissingPathGuard:
+    """#124860 — read_file must degrade to an actionable error when 'path' is
+    absent (usually a wrong parameter name from relay models), NOT read the
+    session cwd and report a baffling 'not a regular file (directory)' error
+    naming a directory that is merely a prefix of the requested path."""
+
+    def test_missing_path_returns_actionable_error(self):
+        from tools.file_tools import _handle_read_file
+
+        result = json.loads(_handle_read_file({}))
+        assert "error" in result
+        assert "'path'" in result["error"]
+        assert "file_path" in result["error"]
+
+    def test_blank_path_returns_actionable_error(self):
+        from tools.file_tools import _handle_read_file
+
+        result = json.loads(_handle_read_file({"path": "   "}))
+        assert "error" in result
+
+    def test_null_path_returns_actionable_error(self):
+        from tools.file_tools import _handle_read_file
+
+        result = json.loads(_handle_read_file({"path": None}))
+        assert "error" in result
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_valid_path_still_dispatches(self, mock_get):
+        from tools.file_tools import _handle_read_file
+
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.to_dict.return_value = {"content": "x"}
+        mock_ops.read_file.return_value = result_obj
+        mock_get.return_value = mock_ops
+
+        _handle_read_file({"path": "/tmp/real.txt"}, task_id="t-default")
+        assert mock_ops.read_file.call_args.args[0] == "/tmp/real.txt"
+
+
+class TestPatchMissingArgsGuard:
+    """#124860 — patch must fail with an actionable message instead of flowing
+    a None path / empty patch payload into the patch machinery."""
+
+    def test_replace_mode_without_path_errors(self):
+        from tools.file_tools import _handle_patch
+
+        result = json.loads(_handle_patch({"mode": "replace", "old_string": "a", "new_string": "b"}))
+        assert "error" in result
+        assert "'path'" in result["error"]
+
+    def test_patch_mode_without_patch_errors(self):
+        from tools.file_tools import _handle_patch
+
+        result = json.loads(_handle_patch({"mode": "patch"}))
+        assert "error" in result
+        assert "'patch'" in result["error"]
+
+
+class TestSearchFilesFallbackGuard:
+    """#124860 — the documented '.' default is legitimate ONLY when the call
+    carries no unknown keys. An unknown key plus a missing 'path' almost always
+    means the search root arrived under a wrong parameter name; silently
+    searching the session cwd would return plausible results from the wrong
+    tree, which is worse than an error."""
+
+    def test_missing_path_with_unknown_key_errors(self):
+        from tools.file_tools import _handle_search_files
+
+        result = json.loads(_handle_search_files({"pattern": "x", "file_path": "/tmp"}))
+        assert "error" in result
+        assert "file_path" in result["error"]
+
+    @patch("tools.file_tools.search_tool")
+    def test_missing_path_without_unknown_keys_uses_default(self, mock_search):
+        from tools.file_tools import _handle_search_files
+
+        mock_search.return_value = "{}"
+        _handle_search_files({"pattern": "x"}, task_id="t-default")
+        assert mock_search.call_args.kwargs["path"] == "."
+
+    @patch("tools.file_tools.search_tool")
+    def test_explicit_path_skips_guard(self, mock_search):
+        from tools.file_tools import _handle_search_files
+
+        mock_search.return_value = "{}"
+        _handle_search_files({"pattern": "x", "path": "/tmp"}, task_id="t-default")
+        assert mock_search.call_args.kwargs["path"] == "/tmp"

@@ -17,6 +17,35 @@ def _is_windows() -> bool:
     return sys.platform == "win32"
 
 
+def is_ephemeral_launcher_home(path) -> bool:
+    """True for test/ephemeral homes whose launchers must never reach the persistent user PATH.
+
+    Python-side twin of install.ps1's ``Test-EphemeralLauncherHome`` (#125614): smoke
+    harnesses install into temporary HERMES_HOMEs under %TEMP% (pytest tmp roots land
+    there too), and a harness killed before cleanup leaves a ``hermes.exe`` shim that
+    shadows the production launcher in new shells. Shared by every persistent-PATH
+    writer — install.ps1 covers fresh installs, the ``hermes update`` tail covers
+    existing ones; keeping one classifier stops the two call sites drifting apart.
+    """
+    import tempfile
+
+    checked = str(Path(path))
+    # realpath both sides BEFORE comparing: macOS reports temp paths as /var/... while
+    # materialized candidates may read /private/var/... (symlinked /var), and a raw
+    # commonpath() would raise ValueError and silently skip the temp-root check.
+    candidate = os.path.normpath(os.path.realpath(checked)).rstrip("\\/")
+    for root in (tempfile.gettempdir(), os.environ.get("TMP") or "", os.environ.get("TEMP") or ""):
+        if not root:
+            continue
+        root = os.path.normpath(os.path.realpath(root)).rstrip("\\/")
+        try:
+            if os.path.commonpath([candidate, root]) == root:
+                return True
+        except ValueError:  # different drives on Windows
+            continue
+    return "hermes_test_home" in os.path.normpath(checked)
+
+
 #: Launcher command names install.ps1's Set-PathVariable exposes from the
 #: managed binary dir (the default Hermes root's ``bin``, next to uv.exe)
 #: on the user PATH. Keep in lockstep with WINDOWS_BIN_LAUNCHERS in
@@ -294,6 +323,13 @@ def migrate_windows_bin_path(
     ensure_windows_bin_launchers(root, windows=windows, user_path_entries=[])
 
     home_bin = home / "bin"
+    if is_ephemeral_launcher_home(home_bin):
+        # Test/ephemeral install: same guard install.ps1's Set-LauncherUserPath applies
+        # (#125614). get_default_hermes_root() honors HERMES_HOME, so a harness home under
+        # %TEMP% EQUALS `home`, passes the managed-clone gate above, and would prepend
+        # home\bin to the persistent user PATH from the hermes update tail — the exact
+        # write the installer guard exists to prevent, reached through a second call site.
+        return False
     if any(
         not ((home_bin / f"{name}.exe").is_file() or (home_bin / f"{name}.cmd").is_file())
         for name in _WINDOWS_BIN_LAUNCHERS

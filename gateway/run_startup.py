@@ -1064,6 +1064,13 @@ class GatewayStartupMixin:
             from hermes_cli.plugins_cmd_remove import sweep_pending_plugin_deletes
             sweep_pending_plugin_deletes()  # trees a previous life still held when they were uninstalled
             discover_plugins()
+        # The import-time config-to-env bridge ran before discovery finished and skipped
+        # plugin auxiliary keys rather than blocking on the sweep; the registry is complete
+        # now, so bridge them (#127729).
+        with _log_suppressed(logging.WARNING, "auxiliary env re-bridge failed at gateway startup",
+                             exc_info=True):
+            from gateway.run import rebridge_auxiliary_config_after_discovery
+            rebridge_auxiliary_config_after_discovery()
         # Relay entrypoints share the effective profile opt-out, including when a
         # deployment injects a URL. No URL or explicitly disabled -> no side effects.
         try:

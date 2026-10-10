@@ -92,7 +92,7 @@ class StreamJsonEmitter:
         if data.get("error"):
             payload["error"] = str(data["error"])
         self._emit(payload)
-        print(f"\nsession_id: {session_id or self._session_id}", file=sys.stderr)  # same stderr contract as -Q
+        print(f"\nsession_id: {session_id or self._session_id}", file=sys.stderr, flush=True)  # same stderr contract as -Q
         return exit_code
 
     def _emit(self, obj: dict) -> None:

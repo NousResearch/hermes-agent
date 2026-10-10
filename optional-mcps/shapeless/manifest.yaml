@@ -4,9 +4,9 @@ manifest_version: 1
 
 name: shapeless
 description: >-
-  Shapeless: AI social media team for founders. Make and publish posts,
+  ShapelessAI: AI social media team for founders. Make and publish posts,
   carousels and short video to LinkedIn, X, Instagram, TikTok, YouTube,
-  Facebook, Threads, Reddit and Bluesky.
+  Facebook, Threads and Bluesky.
 source: https://shapelessai.com/docs/mcp
 
 # Official vendor-hosted remote MCP (URL-only, Hermes never spawns a local
@@ -35,7 +35,7 @@ suggest:
 
 post_install: |
   On first connection Hermes opens a browser to authorize with
-  Shapeless (or run `hermes mcp login shapeless`). Approve access,
+  ShapelessAI (or run `hermes mcp login shapeless`). Approve access,
   then restart the session so tools load.
 
   Connect each social account once at https://shapelessai.com under

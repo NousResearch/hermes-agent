@@ -233,6 +233,7 @@ hermes skills uninstall <skill-name>
 | [**bioinformatics**](../user-guide/skills/optional/research/research-bioinformatics.md) | Gateway to 400+ genomics and computational biology skills. |
 | [**blogwatcher**](../user-guide/skills/optional/research/research-blogwatcher.md) | Monitor blogs and RSS/Atom feeds via blogwatcher-cli tool. |
 | [**darwinian-evolver**](../user-guide/skills/optional/research/research-darwinian-evolver.md) | Evolve prompts/regex/SQL/code with Imbue's evolution loop. |
+| [**deep-researcher**](../user-guide/skills/optional/research/research-deep-researcher.md) | Track research claims and resume evidence dossiers. |
 | [**domain-intel**](../user-guide/skills/optional/research/research-domain-intel.md) | Passive recon of subdomains, SSL certs, WHOIS, and DNS. |
 | [**drug-discovery**](../user-guide/skills/optional/research/research-drug-discovery.md) | Drug discovery: ChEMBL search, drug-likeness, interactions. |
 | [**duckduckgo-search**](../user-guide/skills/optional/research/research-duckduckgo-search.md) | Free keyless web, news, and image search via ddgs. |

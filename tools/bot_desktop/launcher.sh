@@ -52,7 +52,7 @@ fi
 : > "$XAUTHORITY"; chmod 600 "$XAUTHORITY"
 # The cookie goes in on stdin, not argv: a command line is readable by every local user via ps.
 xauth -q -f "$XAUTHORITY" source - <<COOKIE
-add $DISPLAY MIT-MAGIC-COOKIE-1 $(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
+add $DISPLAY MIT-MAGIC-COOKIE-1 $(command -p od -An -N16 -tx1 /dev/urandom | command -p tr -d ' \n')
 COOKIE
 
 # ---- look: dark theme from whatever the host ships (first match wins), Hermes wallpaper ----

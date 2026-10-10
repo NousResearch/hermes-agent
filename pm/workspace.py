@@ -347,6 +347,53 @@ def install_node_sidecar(
     return None
 
 
+def _relocate_lock_sources(lock: bytes, *, base: Path, root: Path) -> bytes:
+    """Anchor a seed lock's external relative sources where they were resolved.
+
+    uv records directory/flat-registry sources — a find-links wheelhouse, a path
+    dependency — as paths relative to the project the lock was resolved in. The
+    seed travels into a generation workspace several levels deeper, where those
+    relative paths silently re-resolve against the new workspace and miss, so
+    ``uv sync --frozen`` on a cold cache fails with "Failed to read from the
+    distribution cache: .../wheels/<name>.whl: No such file or directory".
+    Rewrite the relative sources as absolute paths anchored at *base* (the
+    project the lock was resolved in). Entries that already resolve inside
+    *root* — snapshot members, the project itself — stay workspace-relative.
+    """
+    import tomllib
+
+    try:
+        document = tomllib.loads(lock.decode("utf-8"))
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError):
+        return lock  # uv reports its own parse failure for an invalid seed
+    rewritten = False
+    for package in document.get("package", []):
+        source = package.get("source")
+        if not isinstance(source, dict):
+            continue
+        for key, value in source.items():
+            if key not in ("registry", "directory", "editable", "virtual") or not isinstance(value, str):
+                continue
+            if _externally_anchored(value) or (root / value).exists():
+                continue
+            original = base / value
+            if original.exists():
+                source[key] = original.resolve().as_posix()
+                rewritten = True
+    if not rewritten:
+        return lock
+    # tomli-w is a 3.14+ dependency (pyproject marker); no-op paths above must return the
+    # seed verbatim without touching it, so the import lives below the rewrite decision.
+    import tomli_w
+
+    return tomli_w.dumps(document).encode("utf-8")
+
+
+def _externally_anchored(value: str) -> bool:
+    """A URL or absolute path — no relocation semantics to fix."""
+    return "://" in value or value.startswith(("/", "\\")) or (len(value) >= 2 and value[1] == ":")
+
+
 def lock_and_sync(
     plugin_dirs: list[Path] | Mapping[Path, Path],
     extras: list[str],
@@ -369,7 +416,8 @@ def lock_and_sync(
     if replay is None:
         _generate_pyproject(plugin_dirs, root, source=source)
         if seed_lock is not None:
-            (root / "uv.lock").write_bytes(seed_lock.read_bytes())
+            (root / "uv.lock").write_bytes(
+                _relocate_lock_sources(seed_lock.read_bytes(), base=seed_lock.parent, root=root))
     else:
         if not (replay / "pyproject.toml").is_file() or not (replay / "uv.lock").is_file():
             raise InstallError("venv", f"recorded workspace is missing: {replay}")

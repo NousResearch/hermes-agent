@@ -446,6 +446,51 @@ class TestBuildApiKwargsCodex:
         assert "function" not in tools[0]
 
 
+class TestBuildApiKwargsBedrockConverse:
+    """The agent's reasoning config must reach the Converse wire for Bedrock-hosted OpenAI GPT; before
+    the fix the bedrock_converse branch built kwargs without it, so ``--reasoning`` had no effect."""
+
+    RUNTIME = "https://bedrock-runtime.us-east-1.amazonaws.com"
+
+    def _agent(self, monkeypatch, model, reasoning_config):
+        agent = _make_agent(monkeypatch, "bedrock", api_mode="bedrock_converse", base_url=self.RUNTIME, model=model)
+        agent.reasoning_config = reasoning_config
+        return agent
+
+    @pytest.mark.parametrize("model", ["us.openai.gpt-6-sol", "global.openai.gpt-6-sol"])
+    def test_configured_effort_reaches_additional_model_request_fields(self, monkeypatch, model):
+        for effort in ("low", "high"):
+            agent = self._agent(monkeypatch, model, {"enabled": True, "effort": effort})
+            kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+            assert kwargs["modelId"] == model
+            assert kwargs["additionalModelRequestFields"] == {"reasoning": {"effort": effort}}
+
+    def test_hermes_only_level_is_clamped_before_the_wire(self, monkeypatch):
+        agent = self._agent(monkeypatch, "us.openai.gpt-6-sol", {"enabled": True, "effort": "ultra"})
+        kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+        assert kwargs["additionalModelRequestFields"] == {"reasoning": {"effort": "max"}}
+
+    def test_unset_effort_sends_no_reasoning_field(self, monkeypatch):
+        agent = self._agent(monkeypatch, "us.openai.gpt-6-sol", None)
+        kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+        assert "additionalModelRequestFields" not in kwargs
+
+    def test_non_openai_converse_models_are_unchanged(self, monkeypatch):
+        for model in ("openai.gpt-oss-120b-1:0", "us.amazon.nova-pro-v1:0", "us.anthropic.claude-opus-4-6-v1"):
+            agent = self._agent(monkeypatch, model, {"enabled": True, "effort": "high"})
+            kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+            assert "additionalModelRequestFields" not in kwargs, model
+
+    def test_one_shot_reasoning_off_is_sent_then_the_configured_effort_returns(self, monkeypatch):
+        """The truncation-continuation override disables reasoning for exactly one request."""
+        agent = self._agent(monkeypatch, "us.openai.gpt-6-sol", {"enabled": True, "effort": "high"})
+        agent._ephemeral_reasoning_off = True
+        first = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+        second = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+        assert first["additionalModelRequestFields"] == {"reasoning": {"effort": "none"}}
+        assert second["additionalModelRequestFields"] == {"reasoning": {"effort": "high"}}
+
+
 # ── Message conversion tests ────────────────────────────────────────────────
 
 class TestChatMessagesToResponsesInput:

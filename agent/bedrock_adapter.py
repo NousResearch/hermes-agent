@@ -90,6 +90,9 @@ _BEDROCK_OPENAI_HOST_RE = re.compile(r"^bedrock-mantle\.([a-z0-9-]+)\.api\.aws$"
 # with a hard 400 ("This model doesn't support the temperature field"); reasoning-first, same
 # restriction as Claude Opus 4.6+ but _forbids_sampling_params is Claude-only, so it needs its own gate.
 _BEDROCK_XAI_GROK_NO_SAMPLING_RE = re.compile(r"^(?:[a-z]+\.)?xai\.grok", re.IGNORECASE)
+# Bedrock-hosted frontier OpenAI GPT (gpt-5.x / gpt-6 tiers) under any inference-profile prefix
+# (``us.``/``global.``/bare). GPT-OSS is a different family (flat ``reasoning_effort``) and never matches.
+_BEDROCK_OPENAI_GPT_RE = re.compile(r"^(?:[a-z]+\.)?openai\.(gpt-(?:5|6)[^/]*)$", re.IGNORECASE)
 _MIN_BOTO3_VERSION = (1, 34, 59)
 
 
@@ -193,6 +196,37 @@ def bedrock_openai_uses_mantle(model_id: str) -> bool:
     A geo/global profile ID is a bedrock-runtime ID (Mantle rejects it) and rides Converse."""
     parsed = parse_bedrock_openai_model_id(model_id)
     return parsed is not None and not parsed[1]
+
+
+def bedrock_openai_gpt_model_name(model_id: str) -> Optional[str]:
+    """Bare OpenAI name (``gpt-6-sol``) of a Bedrock-hosted frontier OpenAI GPT id, whatever its
+    inference-profile prefix (``us.``/``global.``/none); None for GPT-OSS, Claude and other vendors."""
+    match = _BEDROCK_OPENAI_GPT_RE.match(str(model_id or "").strip())
+    return match.group(1).lower() if match else None
+
+
+def converse_reasoning_request_fields(model_id: str, reasoning_config: Optional[dict]) -> Optional[dict[str, Any]]:
+    """``additionalModelRequestFields`` carrying Hermes' reasoning effort to a Bedrock-hosted OpenAI GPT
+    on Converse, or None (field omitted → the model's default effort).
+
+    Converse validates the nested ``{"reasoning": {"effort": ...}}`` shape (the flat
+    ``reasoning_effort`` key is ``unknown_parameter``) against the same per-generation vocabulary as
+    OpenAI Responses, so the level is clamped with the shared Codex sets: gpt-5.6/gpt-6 tiers take
+    none..max, gpt-5.5 and older stop at xhigh, Astra has no ``none``; ``minimal`` is rejected by all.
+    An explicit disable sends ``none`` when the model has it (omitting it would leave the default
+    effort on); an unset config sends nothing. GPT-OSS, Claude and other vendors never get the field.
+    """
+    name = bedrock_openai_gpt_model_name(model_id)
+    if name is None or not isinstance(reasoning_config, dict):
+        return None
+    from agent.reasoning_effort import clamp_effort, codex_supported_efforts, requested_effort
+    supported = codex_supported_efforts(name)
+    effort = "none" if reasoning_config.get("enabled") is False else requested_effort(reasoning_config)
+    if effort == "none":
+        return {"reasoning": {"effort": "none"}} if "none" in supported else None
+    clamped = clamp_effort(effort, supported) if effort else None
+    # A bespoke level name clamp_effort passes through verbatim would 400 (invalid_value): omit instead.
+    return {"reasoning": {"effort": clamped}} if clamped in supported else None
 
 
 def merge_bedrock_openai_model_ids(model_ids: list[str]) -> list[str]:
@@ -1032,11 +1066,13 @@ def build_converse_kwargs(
     model: str, messages: list[dict], tools: Optional[list[dict]] = None, max_tokens: Optional[int] = 4096,
     temperature: Optional[float] = None, top_p: Optional[float] = None,
     stop_sequences: Optional[list[str]] = None, guardrail_config: Optional[dict] = None,
+    reasoning_config: Optional[dict] = None,
 ) -> dict[str, Any]:
     """Build kwargs for ``bedrock-runtime.converse()`` / ``converse_stream()``. ``max_tokens=None`` omits
     ``maxTokens`` (model maximum; default stays 4096). cachePoint markers go on system, tools and the
     second-newest message (survives as the tail grows — mirrors Anthropic system_and_3), each only if the
-    model supports caching and Bedrock has not rejected that placement."""
+    model supports caching and Bedrock has not rejected that placement. ``reasoning_config`` reaches the
+    wire only for Bedrock-hosted OpenAI GPT (see :func:`converse_reasoning_request_fields`)."""
     system_prompt, converse_messages = convert_messages_to_converse(messages)
     cache_at = {p for p in CACHE_POINT_PLACEMENTS if cache_point_allowed(model, p)} if _model_supports_prompt_cache(model) else set()
     inference_config: dict[str, Any] = {} if max_tokens is None else {"maxTokens": max_tokens}
@@ -1063,6 +1099,9 @@ def build_converse_kwargs(
             content.append(dict(_CACHE_POINT))
     if guardrail_config:
         kwargs["guardrailConfig"] = guardrail_config
+    reasoning_fields = converse_reasoning_request_fields(model, reasoning_config)
+    if reasoning_fields:
+        kwargs["additionalModelRequestFields"] = reasoning_fields
     if not inference_config:
         del kwargs["inferenceConfig"]  # optional on the wire; don't send {}
     return kwargs
@@ -1072,11 +1111,13 @@ def call_converse(
     region: str, model: str, messages: list[dict], tools: Optional[list[dict]] = None,
     max_tokens: Optional[int] = 4096, temperature: Optional[float] = None, top_p: Optional[float] = None,
     stop_sequences: Optional[list[str]] = None, guardrail_config: Optional[dict] = None,
+    reasoning_config: Optional[dict] = None,
 ) -> SimpleNamespace:
     """Non-streaming Converse call → OpenAI-compatible response. Retries once without a rejected cachePoint
     placement; evicts the cached client on stale-connection errors."""
     client = _get_bedrock_runtime_client(region)
-    kwargs = build_converse_kwargs(model, messages, tools, max_tokens, temperature, top_p, stop_sequences, guardrail_config)
+    kwargs = build_converse_kwargs(model, messages, tools, max_tokens, temperature, top_p, stop_sequences, guardrail_config,
+                                   reasoning_config=reasoning_config)
     try:
         response = client.converse(**kwargs)
     except Exception as exc:

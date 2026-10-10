@@ -3170,6 +3170,23 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             logger.error("[%s] No bot token configured", self.name)
             self._set_fatal_error("missing_credentials", "No bot token configured", retryable=False)
             return False
+        runner_config = getattr(getattr(self, "gateway_runner", None), "config", None)
+        group_sessions_per_user = getattr(
+            runner_config, "group_sessions_per_user", self.config.extra.get("group_sessions_per_user", True))
+        thread_sessions_per_user = getattr(
+            runner_config, "thread_sessions_per_user", self.config.extra.get("thread_sessions_per_user", False))
+        if (
+            self._telegram_observe_unmentioned_group_messages()
+            and self._telegram_explicit_observe_allowed_chats()
+            and (group_sessions_per_user or thread_sessions_per_user)
+        ):
+            reason = (
+                "Telegram observe_allowed_chats requires group_sessions_per_user: false and "
+                "thread_sessions_per_user: false; "
+                "otherwise observed messages and authorized turns use different sessions")
+            logger.error("[%s] %s", self.name, reason)
+            self._set_fatal_error("invalid_configuration", reason, retryable=False)
+            return False
         try:
             if not self._acquire_platform_lock('telegram-bot-token', self.config.token, 'Telegram bot token'):
                 return False
@@ -5804,14 +5821,17 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         """Return Telegram chats authorized at group scope."""
         return self._extra_str_set("group_allowed_chats", "TELEGRAM_GROUP_ALLOWED_CHATS")
 
+    def _telegram_explicit_observe_allowed_chats(self) -> set[str]:
+        """Chats whose messages may be stored without granting their authors bot access."""
+        return _coerce_allow_set(self.config.extra.get("observe_allowed_chats"))
+
     def _telegram_observe_allowed_chats(self) -> set[str]:
-        """Chats where observed group context may use a shared source: ``group_allowed_chats`` ∩
-        ``allowed_chats`` (when set)."""
-        group_allowed = self._telegram_group_allowed_chats()
-        if not group_allowed:
+        """Explicit observation chats, plus the legacy group-granted observation chats."""
+        observe_allowed = self._telegram_group_allowed_chats() | self._telegram_explicit_observe_allowed_chats()
+        if not observe_allowed:
             return set()
         response_allowed = self._telegram_allowed_chats()
-        return group_allowed & response_allowed if response_allowed else group_allowed
+        return observe_allowed & response_allowed if response_allowed else observe_allowed
 
     def _telegram_allowed_topics(self) -> set[str]:
         """Forum topic IDs this bot handles (non-empty: other topics ignored; DMs never filtered; missing
@@ -6143,7 +6163,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             and not self._message_mentions_bot(message)
         )
 
-    def _should_observe_unmentioned_group_message(self, message: Message) -> bool:
+    def _should_observe_unmentioned_group_message(self, message: Message, *, unauthorized: bool = False) -> bool:
         """Return True when a group message should be stored but not dispatched."""
         if self._is_own_message(message) or not self._telegram_observe_unmentioned_group_messages() or not self._is_group_chat(message):
             return False
@@ -6156,6 +6176,10 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         allowed = self._telegram_observe_allowed_chats()
         if not allowed or chat_id_str not in allowed:
             return False
+        if unauthorized:
+            # This independent opt-in only stores the update. It never grants invocation rights,
+            # including when the sender mentions the bot or posts in a free-response topic.
+            return chat_id_str in self._telegram_explicit_observe_allowed_chats()
         # Free-response chats/topics dispatch every message, so they are never observed.
         if chat_id_str in self._telegram_free_response_chats() or self._telegram_is_free_response_topic(message):
             return False
@@ -6203,9 +6227,14 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         if event.message_type == MessageType.COMMAND:
             # Commands keep the original source (user_id) so _check_slash_access can identify the sender.
             return dataclasses.replace(event, channel_prompt=channel_prompt)
+        # In the observation-only mode the gateway must see the real author for its own
+        # authorization check. A shared session is selected by group_sessions_per_user: false.
+        source = event.source
+        if self._chat_id_str(raw_message) in self._telegram_group_allowed_chats():
+            source = self._telegram_group_observe_shared_source(source)
         return dataclasses.replace(
             event, text=self._telegram_group_observe_attributed_text(event),
-            source=self._telegram_group_observe_shared_source(event.source), channel_prompt=channel_prompt)
+            source=source, channel_prompt=channel_prompt)
 
     def _media_message_type(self, msg: Message) -> MessageType:
         """Classify a Telegram media message into a MessageType (first present attachment wins)."""
@@ -6340,6 +6369,10 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         adapter_name = getattr(self, "name", "telegram")
         try:
             event = event or self._build_message_event(message, msg_type, update_id=update_id)
+            if msg_type == MessageType.LOCATION:
+                event.text = self._location_message_text(message, observed=True)
+                if event.text is None:
+                    return
             session_entry = store.get_or_create_session(self._telegram_group_observe_shared_source(event.source))
             entry = {
                 "role": "user", "content": self._telegram_group_observe_attributed_text(event),
@@ -6349,7 +6382,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             self._accept_update()
             store.append_to_transcript(session_entry.session_id, entry)
             logger.info(
-                "[%s] Telegram group message observed (no bot trigger): chat=%s from=%s", adapter_name,
+                "[%s] Telegram group message observed (no dispatch): chat=%s from=%s", adapter_name,
                 getattr(getattr(message, "chat", None), "id", "unknown"), event.source.user_id or "unknown")
         except Exception as exc:
             self._fail_update_preparation()
@@ -6468,9 +6501,13 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         msg = self._effective_update_message(update)
         if not msg or not msg.text:
             return
-        # Auth check first: blocked users must not reach batching, the observed transcript, or the agent.
+        # Authorization always gates dispatch. An explicit observation grant may store the
+        # message first, but it cannot enqueue a turn or invoke a gateway command.
         if not self._is_user_authorized_from_message(msg):
-            self._log_blocked_user(msg)
+            if self._should_observe_unmentioned_group_message(msg, unauthorized=True):
+                self._observe_unmentioned_group_message(msg, MessageType.TEXT, update_id=update.update_id)
+            else:
+                self._log_blocked_user(msg)
             return
         if not self._gate_or_observe(msg, update, MessageType.TEXT):
             return
@@ -6502,12 +6539,25 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         if not msg:
             return
         if not self._is_user_authorized_from_message(msg):
-            self._log_blocked_user(msg)
+            if self._should_observe_unmentioned_group_message(msg, unauthorized=True):
+                self._observe_unmentioned_group_message(msg, MessageType.LOCATION, update_id=update.update_id)
+            else:
+                self._log_blocked_user(msg)
             return
         if not self._gate_or_observe(msg, update, MessageType.LOCATION):
             return
-        venue = getattr(msg, "venue", None)
-        location = getattr(venue, "location", None) if venue else getattr(msg, "location", None)
+        location_text = self._location_message_text(msg)
+        if location_text is None:
+            return
+        event = self._build_message_event(msg, MessageType.LOCATION, update_id=update.update_id)
+        event.text = location_text
+        await self.handle_message(self._apply_telegram_group_observe_attribution(event))
+
+    @staticmethod
+    def _location_message_text(message: Message, *, observed: bool = False) -> Optional[str]:
+        """Render a location for a turn or for data-only observed context."""
+        venue = getattr(message, "venue", None)
+        location = getattr(venue, "location", None) if venue else getattr(message, "location", None)
         if not location:
             return
         lat = getattr(location, "latitude", None)
@@ -6522,12 +6572,10 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
                 parts.append(f"Venue: {title}")
             if address:
                 parts.append(f"Address: {address}")
-        parts += [
-            f"latitude: {lat}", f"longitude: {lon}", f"Map: https://www.google.com/maps/search/?api=1&query={lat},{lon}",
-            "Ask what they'd like to find nearby (restaurants, cafes, etc.) and any preferences."]
-        event = self._build_message_event(msg, MessageType.LOCATION, update_id=update.update_id)
-        event.text = "\n".join(parts)
-        await self.handle_message(self._apply_telegram_group_observe_attribution(event))
+        parts += [f"latitude: {lat}", f"longitude: {lon}", f"Map: https://www.google.com/maps/search/?api=1&query={lat},{lon}"]
+        if not observed:
+            parts.append("Ask what they'd like to find nearby (restaurants, cafes, etc.) and any preferences.")
+        return "\n".join(parts)
 
     # -- Text message aggregation (handles Telegram client-side splits) --
 
@@ -6782,13 +6830,16 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         if not msg:
             return
         if not self._is_user_authorized_from_message(msg):
-            self._log_blocked_user(msg, level=logging.INFO, what="media from unauthorized user")
+            if self._should_observe_unmentioned_group_message(msg, unauthorized=True):
+                _event = self._build_message_event(msg, self._media_message_type(msg), update_id=update.update_id)
+                await self._cache_observed_media(msg, _event)
+                self._observe_unmentioned_group_message(msg, _event.message_type, update_id=update.update_id, event=_event)
+            else:
+                self._log_blocked_user(msg, level=logging.INFO, what="media from unauthorized user")
             return
         if not self._should_process_message(msg):
             if self._should_observe_unmentioned_group_message(msg):
                 _event = self._build_message_event(msg, self._media_message_type(msg), update_id=update.update_id)
-                if msg.caption:
-                    _event.text = self._clean_bot_trigger_text(expand_link_entities(msg))
                 await self._cache_observed_media(msg, _event)
                 self._observe_unmentioned_group_message(msg, _event.message_type, update_id=update.update_id, event=_event)
             return

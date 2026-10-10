@@ -10,10 +10,7 @@ from typing import Optional
 
 from agent.delegation_context import (
     enter_non_dispatcher_owned_context,
-    enter_suppressed_inherited_fence,
     exit_non_dispatcher_owned_context,
-    exit_suppressed_inherited_fence,
-    inherited_child_fence_is_contamination,
 )
 
 logger = logging.getLogger(__name__)
@@ -81,7 +78,6 @@ class _CronRunScope:
         self._cron_session_var = _VAR_MAP["HERMES_CRON_SESSION"]
         self._cron_session_token = None
         self._non_dispatcher_token = None
-        self._inherited_fence_token = None
 
     def enter(self) -> None:
         # Scope cron approval policy; exit() RESETS via token (pinning "" would suppress the legacy
@@ -92,13 +88,13 @@ class _CronRunScope:
         # ContextVar, NOT an os.environ clear (env is shared with the worker heartbeat and
         # concurrent jobs); copy_context() carries it into the agent thread.
         self._non_dispatcher_token = enter_non_dispatcher_owned_context()
-        # A HERMES_DELEGATED_CHILD_CONTEXT inherited from the fenced shell/session that fired
-        # this run is contamination, not lineage — there is no spawn edge at which it could be
-        # scrubbed, and unmasked it fails every Kanban write in the run with PermissionError.
-        # Mask the inherited env half only (a live delegated_child_context stays fenced);
-        # os.environ itself is never touched (shared with the worker heartbeat and concurrent jobs).
-        if inherited_child_fence_is_contamination():
-            self._inherited_fence_token = enter_suppressed_inherited_fence()
+        # A HERMES_DELEGATED_CHILD_CONTEXT present in os.environ is deliberately NOT masked here.
+        # (marker, no live ContextVar) is the state of BOTH a genuinely spawned descendant
+        # (delegate_task child → "hermes cron run" — exactly who the fence is for) and a host
+        # process carrying stale contamination; without a spawn edge the two are indistinguishable,
+        # and masking would unfence the real descendant. Host entry points scrub the marker at
+        # their own startup boundary instead (scrub_delegate_child_env_markers), which is the
+        # positive, trusted-boundary fix; this scope stays fail-closed.
 
     def exit(self) -> None:
         from gateway.session_context import clear_session_vars
@@ -110,7 +106,5 @@ class _CronRunScope:
             self._cron_session_var.reset(self._cron_session_token)
         if self._non_dispatcher_token is not None:
             exit_non_dispatcher_owned_context(self._non_dispatcher_token)
-        if self._inherited_fence_token is not None:
-            exit_suppressed_inherited_fence(self._inherited_fence_token)
         for name in _CRON_DELIVERY_VARS:
             self._var_map[name].set("")

@@ -67,3 +67,33 @@ async def test_editor_answers_canonical_clarify_through_clarify_respond(
                         await asyncio.sleep(.05)
     tool_results = [m for messages in model_peer.requests for m in messages if m["role"] == "tool"]
     assert any("green" in json.dumps(m) for m in tool_results), tool_results
+
+
+@pytest.mark.platforms("linux")
+@pytest.mark.asyncio
+async def test_dismissed_clarify_card_releases_the_turn_with_skip(daemon, tmp_path, model_peer):
+    """A card-only editor that dismisses the question (or answers it ``cancelled`` for its own
+    Stop) sends the Skip a form decline sends; the turn does not sit out ``clarify_timeout``."""
+    from tests.gateway.fixtures.authority_clarify_peer import ModelPeer as ClarifyPeer
+
+    model_peer.RequestHandlerClass = ClarifyPeer
+    async with viewer(daemon) as ws:
+        sid = (await ws.rpc("session.create", request_id="acp-dismiss", source="cli", cwd=str(tmp_path)))["session_id"]
+        async with editor(daemon, tmp_path) as acp:
+            assert "result" in await acp.rpc("initialize", protocolVersion=1, clientCapabilities={})
+            assert "result" in await acp.rpc("session/load", cwd=str(tmp_path), sessionId=sid, mcpServers=[])
+            turn = asyncio.create_task(acp.rpc("session/prompt", sessionId=sid,
+                                               prompt=[{"type": "text", "text": "Ask my color"}]))
+            async with asyncio.timeout(30):
+                while not any(f.get("method") == "session/request_permission" for f in acp.frames):
+                    assert not turn.done(), turn.result()
+                    await asyncio.sleep(.05)
+            request = next(f for f in acp.frames if f.get("method") == "session/request_permission")
+            acp.process.stdin.write(json.dumps({"jsonrpc": "2.0", "id": request["id"],
+                                                "result": {"outcome": {"outcome": "cancelled"}}}).encode() + b"\n")
+            await acp.process.stdin.drain()
+            reply = await asyncio.wait_for(turn, 30)
+            assert reply.get("result", {}).get("stopReason") == "end_turn", reply
+            assert (await ws.rpc("session.resume", session_id=sid))["prompts"] == []
+    (result,) = {m["content"] for messages in model_peer.requests for m in messages if m["role"] == "tool"}
+    assert [r["user_response"] for r in json.loads(result)["responses"]] == [None], result

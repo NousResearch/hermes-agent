@@ -672,12 +672,24 @@ class GatewayACPAgent(acp.Agent):
             return
         key = (session_id, prompt["prompt_id"], prompt["execution_generation"])
         if key not in self._permissions:
-            self._permissions[key] = asyncio.create_task(answer(session_id, prompt))
+            task = asyncio.create_task(answer(session_id, prompt))
+            self._permissions[key] = task
+            task.add_done_callback(lambda done: self._retire_unanswered(key, done))
+
+    def _retire_unanswered(self, key, task):
+        """A card whose response the owner did not accept (editor cancel, transport loss, lost
+        respond RPC) gives up its key, so the next snapshot that still lists the prompt (reattach,
+        ``session/load``) shows a NEW card. An earlier answer is never replayed. An accepted one
+        keeps its key until ``*.settled``, so a replayed request raises no second card."""
+        if self._permissions.get(key) is task and (task.cancelled() or task.exception() is not None
+                                                   or task.result() is not True):
+            del self._permissions[key]
 
     async def _answer_clarify(self, session_id, prompt):
         from acp.schema import AllowedOutcome
         from acp_adapter.elicitation import (
-            ELICITATION_METHOD, build_clarify_elicitation, build_clarify_permission, elicited_answer,
+            ELICITATION_METHOD, SKIP_OPTION, build_clarify_elicitation, build_clarify_permission,
+            elicited_answer,
         )
         editor_id = self._editor_id(session_id)
         try:
@@ -688,16 +700,20 @@ class GatewayACPAgent(acp.Agent):
                 tool_call, options, answers = build_clarify_permission(prompt)
                 response = await self._conn.request_permission(
                     session_id=editor_id, tool_call=tool_call, options=options)
+                # A dismissed card (also what ACP answers for the editor's own Stop) is the Skip a
+                # form decline sends; only an unknown option id is no answer.
                 answer = (answers.get(response.outcome.option_id)
-                          if isinstance(response.outcome, AllowedOutcome) else None)
-            # No answer (transport loss, editor cancel) leaves the canonical waiter to other viewers.
+                          if isinstance(response.outcome, AllowedOutcome) else answers[SKIP_OPTION])
+            # No answer (editor transport loss) leaves the canonical waiter to other viewers.
             if answer is None:
-                return
+                return False
             await self._gateway.rpc("clarify.respond", session_id=session_id, prompt_id=prompt["prompt_id"],
                 execution_generation=prompt["execution_generation"], answer=answer)
+            return True
         except Exception:
             # Boundary: as for approvals, a detached editor or expired prompt is not an answer.
             logger.info("ACP clarify viewer detached or control expired", exc_info=True)
+            return False
 
     async def _answer_permission(self, session_id, prompt):
         from acp.schema import AllowedOutcome
@@ -719,16 +735,18 @@ class GatewayACPAgent(acp.Agent):
             # Transport loss/cancel is not a denial: the canonical waiter belongs
             # to the execution and may still be answered by another viewer.
             if not isinstance(response.outcome, AllowedOutcome):
-                return
+                return False
             if response.outcome.option_id not in {option.option_id for option in options}:
-                return
+                return False
             await self._gateway.rpc("approval.respond", session_id=session_id,
                 prompt_id=prompt["prompt_id"], execution_generation=prompt["execution_generation"],
                 choice=_OPTION_ID_TO_HERMES[response.outcome.option_id])
+            return True
         except Exception:
             # Boundary: a detached viewer or expired control is not a denial; the canonical
             # waiter stays answerable by another viewer, so nothing propagates.
             logger.info("ACP permission viewer detached or control expired", exc_info=True)
+            return False
 
     async def aclose(self):
         for task in self._permissions.values():

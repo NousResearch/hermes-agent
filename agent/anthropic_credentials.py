@@ -314,8 +314,18 @@ def _read_claude_code_keychain_payload() -> Optional[dict[str, Any]]:
     return payload if isinstance(payload, dict) else None
 
 
-def _keychain_mirror_command(account: str, payload: dict[str, Any]) -> tuple[list[str], str]:
-    """``(argv, stdin)`` that updates the Claude Code Keychain item with ``payload``.
+# ``security -i`` reads one command per stdin line and silently truncates a line at 4096 bytes
+# (including the newline): a longer ``-X <hex>`` is stored cut off — invalid JSON, Claude Code logs
+# itself out. Verified against the real tool: 4096-byte lines store intact. There is no continuation
+# syntax and no safe alternative (``-w`` from a pipe stops at 128 bytes, ``-X`` on argv shows in
+# ``ps``, SecItemUpdate from another process leaves the item behind an ACL prompt), so a payload
+# whose line would not fit is not written at all.
+_SECURITY_INTERACTIVE_LINE_LIMIT = 4096
+
+
+def _keychain_mirror_command(account: str, payload: dict[str, Any]) -> tuple[list[str], str] | None:
+    """``(argv, stdin)`` that updates the Claude Code Keychain item with ``payload``, or ``None``
+    when the command line would exceed what ``security -i`` reads intact (see above).
 
     The command line goes to ``security -i`` on stdin, with the secret hex-encoded (``-X``):
     a bare ``-w`` prompts twice on /dev/tty when a terminal exists (hangs the CLI) and, with
@@ -327,6 +337,8 @@ def _keychain_mirror_command(account: str, payload: dict[str, Any]) -> tuple[lis
 
     encoded = json.dumps(payload, separators=(",", ":"), ensure_ascii=True).encode("utf-8").hex()
     line = f"add-generic-password -U -a {quoted(account)} -s {quoted(_CLAUDE_CODE_KEYCHAIN_SERVICE)} -X {encoded}\n"
+    if len(line.encode("utf-8")) > _SECURITY_INTERACTIVE_LINE_LIMIT:
+        return None
     return ["security", "-i"], line
 
 
@@ -595,8 +607,15 @@ def _mirror_claude_code_credentials_to_keychain(
         if not isinstance(oauth, dict) or oauth.get("refreshToken") != spent_refresh_token:
             logger.debug("Keychain mirror skipped: item does not hold the pair that was just rotated")
             return
-        argv, line = _keychain_mirror_command(
-            account, _merge_keychain_credential_payload(existing, access_token, refresh_token, expires_at_ms))
+        merged = _merge_keychain_credential_payload(existing, access_token, refresh_token, expires_at_ms)
+        command = _keychain_mirror_command(account, merged)
+        if command is None:
+            logger.warning(
+                "Keychain mirror skipped: the %r item is too large for a safe write (security -i truncates "
+                "lines at %d bytes); it was left unchanged. Trim its mcpOAuth entries to re-enable the mirror.",
+                _CLAUDE_CODE_KEYCHAIN_SERVICE, _SECURITY_INTERACTIVE_LINE_LIMIT)
+            return
+        argv, line = command
         result = subprocess.run(
             argv, input=line, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
             check=False,

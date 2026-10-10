@@ -259,6 +259,10 @@ def _db_flush_collect(agent, messages: list[dict], conversation_history: Optiona
     batch_rows: list[dict[str, Any]] = []
     batch_msgs: list[dict] = []
     tool_uid_owners: dict = {}  # tool_call_uid_from_history memo; the scanned dicts outlive this loop
+    # Durable-uid re-insert guard lives in resolve_and_repair_transcript_batch (the write transaction):
+    # there it shares the repair path's BEGIN IMMEDIATE, sees only the flushed suffix (not the whole
+    # transcript), and defers to the CAS rewrite for snapshot-carrying dicts — a live edit on a restored
+    # dict still reaches its row. Nothing to probe here.
     for msg_idx in range(_db_flush_scan_start(agent, messages), len(messages)):
         msg = messages[msg_idx]
         # Append-only flush: a mid-turn persist of scaffolding would commit a synthetic turn the end-of-turn

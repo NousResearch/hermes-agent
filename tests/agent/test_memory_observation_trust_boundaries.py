@@ -235,6 +235,26 @@ def test_observation_tuple_subclass_iterator_is_bypassed_and_context_is_kept(
     assert not iterator_called.is_set()
 
 
+def test_mapping_field_scan_is_bounded_and_prefetch_context_is_kept():
+    from agent.memory_manager_prefetch import normalize_prefetch_result
+
+    candidate = {
+        **{f"extra-{index}": index for index in range(2_000)},
+        "source_kind": "recall",
+        "schema": "fixture.context",
+        "version": 1,
+        "payload": {"kept": True},
+    }
+    normalized = normalize_prefetch_result(
+        StructuredMemoryProvider(name="external", result=MemoryPrefetchResult()),
+        {"context": "usable context", "observations": [candidate]},
+        remaining_bytes=64 * 1024,
+    )
+
+    assert normalized.result.context == "usable context"
+    assert normalized.result.observations == ()
+
+
 def test_structured_prefetch_context_subclass_is_normalized_before_spill(
     monkeypatch, tmp_path
 ):

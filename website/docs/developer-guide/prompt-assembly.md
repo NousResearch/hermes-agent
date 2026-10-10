@@ -52,7 +52,13 @@ The runtime boundary follows all project, operator, memory and plugin text, so e
 blocks do not masquerade as the runtime cwd. Model/provider are read before the runtime boundary,
 excluding embedder descriptions. `Platform:` is deliberately not an identity field: a surface switch
 (desktop ↔ TUI) keeps the stored bytes and delivers the current surface's guidance as a one-shot note on
-the per-turn user-message channel (`agent/surface_switch.py`), so the cached prefix survives (#104414). Legacy prompts retain their original
+the per-turn user-message channel (`agent/surface_switch.py`), so the cached prefix survives (#104414). The
+`<available_skills>` index is kept the same way: every turn compares it with the index the session would
+build now (`agent/skills_index_delta.py`, called from `build_turn_context` so long-lived CLI/TUI/Desktop
+agents are covered, not only prompt restores), and a difference (new index rows, removed names) rides
+the same one-shot note channel, sent only when the difference changes. The in-process index cache is
+keyed on the skill files' signatures, so a change written by another process is seen too. The index
+itself converges at the next rebuild boundary (compaction). Legacy prompts retain their original
 host-before-context anchor, so prompts persisted before the reorder still validate.
 
 When `skip_context_files` is set (e.g., subagent delegation), SOUL.md is not loaded and the hardcoded `DEFAULT_AGENT_IDENTITY` is used instead.

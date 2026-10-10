@@ -195,6 +195,17 @@ Tool hooks describe individual tool calls:
 `post_tool_call` is emitted for blocked and cancelled paths so telemetry
 plugins can close spans cleanly.
 
+### Human Input Lifecycle
+
+`on_human_input_request` / `on_human_input_resolved` fire around every point
+where the agent blocks for a person: sudo password prompts (`kind="sudo"`),
+`clarify` questions (`kind="clarify"`) and approval prompts
+(`kind="approval"`) on CLI, TUI/Desktop, ACP and gateway platforms. Fields:
+`kind`, `request_id` (shared by the pair), `session_id`, `session_key`,
+`platform`, and a force-redacted `prompt`; the resolved hook adds `outcome`.
+The typed password or answer is never included. Smart (aux-LLM) approvals do
+not fire it. Source: `tools/human_input_hooks.py`.
+
 ### Approval Lifecycle
 
 Approval hooks describe dangerous-command approval prompts:

@@ -30,9 +30,11 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, TypeVar
 from hermes_state_common import (
     TITLE_SOURCE_DERIVED as _TITLE_SOURCE_DERIVED, TITLE_SOURCE_LLM as _TITLE_SOURCE_LLM,
     TITLE_SOURCE_USER as _TITLE_SOURCE_USER,
-    escape_like as _escape_like, stat_db_file_identity as _stat_db_file_identity,
+    escape_like as _escape_like, _placeholders,
+    stat_db_file_identity as _stat_db_file_identity,
 )
 from hermes_state_holders import read_only_db_uri
+from hermes_state_pidns import holder_pid_checkable
 from hermes_state_health import (
     STORAGE_CORRUPT, mark_storage_corrupt, note_storage_error, storage_corrupt_reason, storage_state,
 )
@@ -64,12 +66,14 @@ from hermes_state_dbfile import (
     RetiredGenerationCaptureError, capture_retired_wal_generation, refuse_deleted_wal_generation,
 )
 from hermes_state_messages import SessionMessagesMixin
+from hermes_state_coverage import SessionCoverageMixin
 from hermes_state_rewind import SessionRewindMixin
 from hermes_state_wal import (
     _WAL_INCOMPAT_MARKERS, _on_disk_journal_mode, apply_database_pragmas, apply_wal_with_fallback,
 )
 from hermes_state_repair import _claim_repair_attempt, preflight_db_writability, repair_state_db_schema
 from hermes_state_titles import SessionTitlesMixin
+from hermes_state_tool_retries import SessionToolRetriesMixin
 from hermes_state_usage import SessionUsageMixin
 from hermes_state_maintenance import SessionMaintenanceMixin
 from hermes_state_gateway import SessionGatewayMixin
@@ -115,7 +119,8 @@ class SessionResumeTooLargeError(ValueError):
         self.scope = scope
         super().__init__(
             f"This session is too long to reload safely ({message_count} messages; limit {limit}). "
-            "Start a fresh chat and use `hermes sessions export` to keep a copy, or raise the limit "
+            "Start a fresh chat and keep a copy with the dashboard Sessions page's Export action or "
+            "`hermes sessions export --format md --session-id <id>` (neither is capped), or raise the limit "
             "with `hermes config set sessions.max_resume_messages 0`."
         )
 
@@ -123,9 +128,11 @@ class SessionResumeTooLargeError(ValueError):
 class SessionExportTooLargeError(ValueError):
     def __init__(self, session_id: str, message_count: int, limit: int = _MAX_SAFE_MESSAGES):
         self.session_id, self.message_count, self.limit = session_id, message_count, limit
+        # User-facing refusal shared by every in-memory JSON/JSONL export (CLI and console).
         super().__init__(
-            f"session '{session_id}' has at least {message_count} active messages; "
-            f"safe in-memory export limit is {limit}"
+            f"Session '{session_id}' has more than {limit:,} exportable messages; the JSON/JSONL "
+            "backup is built in memory and capped per session. Use the dashboard Sessions page's streaming "
+            "Export action, or set sessions.max_export_messages: 0 in config.yaml to disable the guard."
         )
 
 
@@ -133,11 +140,14 @@ def _compression_lock_holder_process_is_dead(holder: str) -> bool:
     """True only when a ``pid=<n>`` lock holder's local PID is provably gone.
     Reclaim on kernel proof only: unstructured/same-process holders (another
     thread's live lease) and any probe doubt keep the lease until TTL expiry
-    (PID reuse must never steal a live lease; a wrongly-kept one self-heals)."""
+    (PID reuse must never steal a live lease; a wrongly-kept one self-heals).
+    Foreign/unstamped PID namespaces defer to TTL: see ``hermes_state_pidns``."""
     match = re.search(r"(?:^|:)pid=(\d+)(?::|$)", holder or "")
     pid = int(match.group(1)) if match else 0
     if pid <= 0 or pid == os.getpid():
         return False
+    if not holder_pid_checkable(holder):
+        return False  # foreign / unknown namespace: defer to TTL
     if psutil is not None:
         try:
             return not psutil.pid_exists(pid)  # recycled PIDs read as alive (conservative)
@@ -195,7 +205,7 @@ def _default_db_path() -> Path:
 # ``hermes_state._STATE_DB_GUARD_BYPASS`` (``@pytest.mark.live_system_guard_bypass`` escape hatch)
 # and ``_EXTRA_DENY_ROOTS`` (the pre-sandbox root, so custom-HERMES_HOME deployments are covered).
 _STATE_DB_GUARD_BYPASS = False
-_STATE_DB_GUARD_EXTRA_DENY_ROOTS: Tuple[Path, ...] = ()
+_STATE_DB_GUARD_EXTRA_DENY_ROOTS: tuple[Path, ...] = ()
 
 
 def _ensure_test_isolation(db_path: Path) -> None:
@@ -297,7 +307,7 @@ _REVIEW_HARNESS_PREFIXES = (
 )
 
 
-def _is_background_review_harness_message(msg: Dict[str, Any]) -> bool:
+def _is_background_review_harness_message(msg: dict[str, Any]) -> bool:
     """Persisted harness prompt (older builds wrote the forked curator's turns
     into real sessions; replaying them hijacks the session)."""
     if not isinstance(msg, dict) or msg.get("role") not in {"user", "system"}:
@@ -306,11 +316,11 @@ def _is_background_review_harness_message(msg: Dict[str, Any]) -> bool:
     return isinstance(content, str) and content.lstrip().startswith(_REVIEW_HARNESS_PREFIXES)
 
 
-def _strip_background_review_harness(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _strip_background_review_harness(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Drop harness messages and the curator-mode assistant reply that immediately followed each."""
     if not messages:
         return messages
-    out: List[Dict[str, Any]] = []
+    out: list[dict[str, Any]] = []
     skip_next_assistant = False
     previous_was_harness = False
     for msg in messages:
@@ -334,7 +344,7 @@ def _strip_background_review_harness(messages: List[Dict[str, Any]]) -> List[Dic
 _STALE_TOOL_CALL_MARKER_RE = re.compile(r"^\[[A-Za-z_][A-Za-z0-9_.-]*\]$")
 
 
-def _is_stale_tool_call_marker_message(msg: Dict[str, Any]) -> bool:
+def _is_stale_tool_call_marker_message(msg: dict[str, Any]) -> bool:
     """Assistant tool-call turn whose content is a bare ``[marker]`` (an older
     conversation_loop persisted a local template's marker as the final response)."""
     if not isinstance(msg, dict) or msg.get("role") != "assistant" or not msg.get("tool_calls"):
@@ -343,7 +353,7 @@ def _is_stale_tool_call_marker_message(msg: Dict[str, Any]) -> bool:
     return isinstance(content, str) and bool(_STALE_TOOL_CALL_MARKER_RE.fullmatch(content.strip()))
 
 
-def _strip_stale_tool_call_markers(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _strip_stale_tool_call_markers(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Blank stale ``[marker]`` assistant content (replaying it teaches the model
     to keep emitting it); tool_call/result pairing stays intact."""
     repaired = 0
@@ -418,7 +428,7 @@ def _close_time_checkpoint_configurable() -> bool:
             and hasattr(sqlite3.Connection, "setconfig"))
 
 
-def divert_session_transcript_jsonl(session_id: str, messages) -> "Optional[Path]":
+def divert_session_transcript_jsonl(session_id: str, messages) -> Optional[Path]:
     """Append pending messages to HERMES_HOME/sessions/<id>.jsonl (state.db was replaced under a
     live process). Returns the path, or None if nothing to write."""
     sid = str(session_id or "").strip()
@@ -437,7 +447,7 @@ def divert_session_transcript_jsonl(session_id: str, messages) -> "Optional[Path
 
 # Process-wide shared SessionDB registry: long-lived in-process callers share ONE writer
 # connection per resolved path via hermes_state_registry.acquire(); one-shots use SessionDB() + close().
-def _foreign_state_db_holders(db_path: Path) -> List[Tuple[int, str]]:
+def _foreign_state_db_holders(db_path: Path) -> list[tuple[int, str]]:
     """Compatibility delegate to the state-holder authority."""
     return _state_holders.foreign_state_db_holders(db_path)
 
@@ -452,7 +462,7 @@ class SessionDB(
     SessionSessionsMixin, SessionFtsSetupMixin, SessionSearchMixin, SessionSchemaMixin,
     SessionPortabilityMixin, SessionTelegramTopicsMixin, SessionCompressionMixin,
     SessionGatewayMixin, SessionMaintenanceMixin, SessionUsageMixin, SessionTitlesMixin,
-    SessionMessagesMixin, SessionRewindMixin, SessionProfileRepairMixin,
+    SessionMessagesMixin, SessionCoverageMixin, SessionRewindMixin, SessionProfileRepairMixin, SessionToolRetriesMixin,
 ):
     """SQLite-backed session storage with FTS5 search; many reader threads, one writer (WAL)."""
 
@@ -460,7 +470,7 @@ class SessionDB(
     # sources have their own lifecycle owners; unknown sources fail closed.
     # See #60609.  `recovered` = placeholders `hermes sessions recover` synthesizes for
     # orphaned messages (no live owner, never stamped ended_at); without it they are immortal.
-    _AUTO_PRUNE_STALE_OPEN_SOURCES: Tuple[str, ...] = (
+    _AUTO_PRUNE_STALE_OPEN_SOURCES: tuple[str, ...] = (
         "cli", "cron", "kanban", "acp", "api_server", "subagent", "tool", "recovered",
     )
 
@@ -518,7 +528,7 @@ class SessionDB(
         )
 
     @staticmethod
-    def _session_row_dict(row: sqlite3.Row) -> Dict[str, Any]:
+    def _session_row_dict(row: sqlite3.Row) -> dict[str, Any]:
         data = dict(row)
         for column in ("system_prompt", "tool_names"):
             if f"_{column}_resolved" in data:
@@ -567,7 +577,7 @@ class SessionDB(
         except Exception as exc:
             logger.warning("%s close failed for %s: %s", label, self.db_path, exc)
 
-    def __init__(self, db_path: Path = None, read_only: bool = False):
+    def __init__(self, db_path: Path | None = None, read_only: bool = False):
         self.db_path = db_path or _default_db_path()
         _ensure_test_isolation(self.db_path)  # before any connection/pragma/mkdir
         self.read_only = read_only
@@ -587,7 +597,7 @@ class SessionDB(
         # Read-path split (WAL only): reads borrow from a BOUNDED read-only pool so they
         # never queue behind writer flushes on self._lock (see _read_ctx); unbounded
         # per-thread connections pinned fds for the process lifetime and hit EMFILE.
-        self._read_pool: "queue.LifoQueue[sqlite3.Connection]" = queue.LifoQueue(maxsize=_READ_POOL_MAX)
+        self._read_pool: queue.LifoQueue[sqlite3.Connection] = queue.LifoQueue(maxsize=_READ_POOL_MAX)
         # Permits bound PEAK descriptors (the pool bounds only the idle set), shared per
         # DATABASE PATH; acquired non-blocking so a permitless reader degrades to the writer lock.
         # One permit per live read connection, held from before the open in _get_read_conn() until after the
@@ -610,7 +620,7 @@ class SessionDB(
         # replace cannot limp through in-place surgery (inode: mv/new-file; application_id: cp).
         self._db_file_identity: Optional[tuple] = None
         self._db_file_application_id: int = 0
-        self._db_sidecar_identity: Dict[str, tuple] = {}
+        self._db_sidecar_identity: dict[str, tuple] = {}
         self._db_replaced = self._db_wal_generation_lost = False
         # Durable capture of a lost WAL generation (see _capture_retired_generation): once per handle.
         self._retired_generation_capture: Optional[Path] = None
@@ -1123,7 +1133,7 @@ class SessionDB(
         """``fetchone()`` of one read-only statement via ``_read_ctx``."""
         return self._read_retrying_ioerr(lambda conn: conn.execute(sql, params).fetchone())
 
-    def _read_all(self, sql: str, params: Any = ()) -> List[sqlite3.Row]:
+    def _read_all(self, sql: str, params: Any = ()) -> list[sqlite3.Row]:
         """``fetchall()`` of one read-only statement via ``_read_ctx``."""
         return self._read_retrying_ioerr(lambda conn: conn.execute(sql, params).fetchall())
 
@@ -1315,7 +1325,7 @@ class SessionDB(
             and classify_persistence_error(exc) == "corrupt"
         )
 
-    def _corrupt_error(self, prefix: str = "") -> "StateDbCorruptError":
+    def _corrupt_error(self, prefix: str = "") -> StateDbCorruptError:
         """Build the quarantine error for this handle (message assembled once)."""
         return StateDbCorruptError(f"{prefix}{_STATE_DB_CORRUPT_MSG} (cause: {self._db_corrupt_reason})")
 
@@ -1438,7 +1448,7 @@ class SessionDB(
         time.sleep(min(jitter, max(deadline - now, 0.001)))
         return True
 
-    def _foreign_state_db_holders(self) -> List[Tuple[int, str]]:
+    def _foreign_state_db_holders(self) -> list[tuple[int, str]]:
         """Foreign processes holding this DB or its WAL sidecars (see hermes_state_holders)."""
         return _foreign_state_db_holders(self.db_path)
 
@@ -1580,7 +1590,7 @@ class SessionDB(
     _TOKEN_DELTA_COST_FIELDS = ("estimated_cost_usd", "actual_cost_usd")
     _TOKEN_DELTA_ROUTE_FIELDS = (
         "model", "cost_status", "cost_source", "pricing_version", "billing_provider", "billing_base_url",
-        "billing_mode", "source",
+        "billing_mode", "source", "task",
     )
 
     MAX_TITLE_LENGTH = 100
@@ -1605,12 +1615,14 @@ class SessionDB(
     #: Reactions live inside ``display_metadata`` so they survive row rewrites.
     REACTIONS_METADATA_KEY = "reactions"
     # Columns every conversation projection decodes; ``active`` rides along so a display read
-    # can split compaction-archived rows without a second query.
+    # can split compaction-archived rows without a second query. Contract: must include every
+    # ``agent.transcript_repair._OWNED_COLUMNS`` column, because replay stamps
+    # ``transcript_row_snapshot(row)`` from these rows (token_count is hashed there, not decoded).
     _CONVERSATION_ROW_COLUMNS = (
         "id, role, content, tool_call_id, tool_calls, tool_name, effect_disposition, "
         "finish_reason, reasoning, reasoning_content, reasoning_details, "
         "codex_reasoning_items, codex_message_items, platform_message_id, observed, "
-        "_compressed_summary, timestamp, active, api_content, display_kind, display_metadata, message_uid, "
+        "_compressed_summary, timestamp, token_count, active, api_content, display_kind, display_metadata, message_uid, "
         "absorbed_message_uids, tool_call_uids, tool_call_uid"
     )
 
@@ -1658,7 +1670,29 @@ class SessionDB(
             return retagged
         return self._execute_write(_do)
 
-    def list_meta_prefix(self, prefix: str) -> List[Tuple[str, str]]:
+    def is_kanban_owned_session(self, session_id: str) -> bool:
+        """True when this session — or any segment of the compression lineage a resume would
+        materialize — belongs to the Kanban dispatcher (``source``/``created_source`` =
+        ``'kanban'``): the transcript of a worker run, not a human conversation (#68779).
+
+        Both columns are checked: ``source`` is live routing state the dispatcher tags
+        (``HERMES_SESSION_SOURCE=kanban``) and the legacy retag rewrites, while immutable
+        ``created_source`` survives later surface flips. The lineage is the VERIFIED
+        compression chain (``_resume_lineage_ids``) — exactly the rows a resume loads — so a
+        worker transcript stays kanban-owned across rotations, while a delegate/branch child
+        of a worker (a DIFFERENT conversation) is not swept in. Plain classification, not a
+        gate: the resume-time guard (``hermes_cli/kanban_resume_guard.py``) owns the decision
+        and the dispatcher-owned exemption."""
+        lineage = self._resume_lineage_ids(session_id)
+        if not lineage:
+            return False
+        rows = self._read_all(
+            f"SELECT 1 FROM sessions WHERE id IN ({_placeholders(lineage)}) "
+            "AND (source = 'kanban' OR created_source = 'kanban') LIMIT 1",
+            tuple(lineage))
+        return bool(rows)
+
+    def list_meta_prefix(self, prefix: str) -> list[tuple[str, str]]:
         """``[(key, value), ...]`` for state_meta keys starting with the literal
         ``prefix`` (LIKE wildcards escaped) — e.g. ``loop:<session_id>`` rows."""
         if not prefix:
@@ -1673,7 +1707,7 @@ class AsyncSessionDB:
     """Async door onto SessionDB: every call runs via asyncio.to_thread so a blocking SQLite call
     never freezes the event loop (no method returns a live cursor)."""
 
-    def __init__(self, db: "SessionDB") -> None:
+    def __init__(self, db: SessionDB) -> None:
         self._db = db
 
     def __getattr__(self, name: str):

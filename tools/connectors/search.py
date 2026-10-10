@@ -10,23 +10,23 @@ from tools.tool_search_catalog import CatalogEntry, _fn, _tokenize
 logger = logging.getLogger(__name__)
 
 
-def connections_in_scope(tool_defs: Iterable[Dict[str, Any]]) -> bool:
+def connections_in_scope(tool_defs: Iterable[dict[str, Any]]) -> bool:
     return any(_fn(td).get("name") == "manage_connections" for td in tool_defs)
 
 
 def connectors_unavailable(failure: str, *, verb: str,
-                           names: Optional[List[str]] = None) -> Dict[str, Any]:
+                           names: Optional[list[str]] = None) -> dict[str, Any]:
     hint = (f"Hosted connector tools could not be {verb} right now. "
             "Do not conclude the app is missing.")
     if failure == SIGN_IN_EXPIRED:
         hint += " The user must sign in to Nous again."
-    field: Dict[str, Any] = {"status": "unavailable", "reason": failure, "hint": hint}
+    field: dict[str, Any] = {"status": "unavailable", "reason": failure, "hint": hint}
     if names:
         field["names"] = names
     return field
 
 
-def _connector_entry(name: str, connector: str, slug: str, schema: Dict[str, Any]) -> CatalogEntry:
+def _connector_entry(name: str, connector: str, slug: str, schema: dict[str, Any]) -> CatalogEntry:
     description = str(schema.get("description") or "")
     input_schema = schema.get("input_schema")
     parameters = input_schema if isinstance(input_schema, dict) else {}
@@ -38,10 +38,10 @@ def _connector_entry(name: str, connector: str, slug: str, schema: Dict[str, Any
 
 
 def connector_entries_by_group(
-    queries: List[str],
+    queries: list[str],
     connector_search: Optional[Any] = None,
-) -> Tuple[List[List[CatalogEntry]], Optional[str]]:
-    per_query: List[List[CatalogEntry]] = [[] for _ in queries]
+) -> tuple[list[list[CatalogEntry]], Optional[str]]:
+    per_query: list[list[CatalogEntry]] = [[] for _ in queries]
     try:
         if connector_search is None:
             from tools.connectors.gateway.bridge import connector_search_hits as connector_search
@@ -60,7 +60,7 @@ def connector_entries_by_group(
             if isinstance(echoed, str) and echoed and echoed != queries[position]:
                 continue
             slugs = group.get("tools") if isinstance(group.get("tools"), list) else []
-            picked: Dict[str, tuple[str, CatalogEntry]] = {}
+            picked: dict[str, tuple[str, CatalogEntry]] = {}
             for slug in slugs:
                 schema = schemas.get(slug)
                 if not isinstance(schema, dict) or not schema.get("connector"):
@@ -88,10 +88,10 @@ def connector_entries_by_group(
 
 
 def remote_schemas_for(
-    names: List[str],
-    current_tool_defs: List[Dict[str, Any]],
+    names: list[str],
+    current_tool_defs: list[dict[str, Any]],
     connector_describe: Optional[Any] = None,
-) -> Tuple[Dict[str, Dict[str, Any]], Optional[str]]:
+) -> tuple[dict[str, dict[str, Any]], Optional[str]]:
     connector_names = [n for n in names if is_connector_name(n)]
     if not connector_names or not connections_in_scope(current_tool_defs):
         return {}, None

@@ -372,6 +372,75 @@ async def test_compression_uncertainty_keeps_durable_completion_retryable(
         assert resolved == ["tip"]
 
 
+def _build_delegate_chain(db, parent, case):
+    """Delegate children of ``parent`` recorded the way delegate_tool records them, plus the case's corruption."""
+    import json
+    import sqlite3
+
+    previous = parent
+    children = []
+    for index in range({"nested": 2, "intermediate_boundary": 2, "limit": 16, "over_limit": 17}.get(case, 1)):
+        child = f"worker-{index}"
+        db.create_session(child, source="telegram" if case == "relabeled" else "subagent",
+                          parent_session_id=previous, model_config={"_delegate_from": previous})
+        children.append(child)
+        previous = child
+    pinned = children[-1]
+    configs = {
+        "missing": {"_delegate_from": "missing-parent"}, "cycle": {"_delegate_from": pinned},
+        "malformed": "{broken", "nonobject": [], "invalid_marker": {"_delegate_from": 7},
+        "empty_marker": {"_delegate_from": ""}, "null_marker": {"_delegate_from": None},
+        "markerless": {}, "null_config": "null", "absent_config": None,
+        "generic_parent": {}, "current_malformed": "{broken",
+    }
+    if case in configs:
+        config = configs[case]
+        raw = config if config is None or isinstance(config, str) else json.dumps(config)
+        with sqlite3.connect(db.db_path) as conn:
+            conn.execute("UPDATE sessions SET model_config=? WHERE id=?", (raw, pinned))
+    if case == "generic_parent":
+        with sqlite3.connect(db.db_path) as conn:
+            conn.execute("UPDATE sessions SET source='telegram' WHERE id=?", (pinned,))
+    return children, pinned
+
+
+def _apply_route_case(store, db, source, entry, parent, pinned, children, case):
+    """Move the route or end sessions as the case describes; ``children`` collects every session created."""
+    if case == "foreground":
+        pinned = parent
+    if case in {"current", "current_malformed", "current_boundary", "child_to_current"}:
+        entry = store.switch_session(entry.session_key, pinned)
+        assert entry is not None
+        if case == "child_to_current":
+            db.create_session("grandchild", source="subagent", model_config={"_delegate_from": pinned})
+            children.append("grandchild")
+            pinned = "grandchild"
+    if case == "current_boundary":
+        db.end_session(pinned, end_reason="session_reset")
+    if case == "parent_boundary":
+        db.end_session(parent, end_reason="session_reset")
+    if case == "child_ended":
+        db.end_session(pinned, end_reason="agent_close")
+    if case == "child_boundary":
+        db.end_session(pinned, end_reason="session_reset")
+    if case == "intermediate_boundary":
+        db.end_session(children[0], end_reason="session_reset")
+    if case in {"child_boundary", "intermediate_boundary"}:
+        # The live ancestor must not override a newer user-selected route.
+        entry = store.get_or_create_session(source, force_new=True)
+        children.append(entry.session_id)
+    if case == "idle":
+        db.end_session(parent, end_reason="idle")
+    if case in {"compression", "compression_foreign"}:
+        db.create_session("continuation", source="telegram", parent_session_id=parent)
+        db.end_session(parent, end_reason="compression")
+        children.append("continuation")
+        if case == "compression_foreign":
+            entry = store.get_or_create_session(source, force_new=True)
+            children.append(entry.session_id)
+    return entry, pinned
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("delivery", ["single", "group"])
 @pytest.mark.parametrize("case", [
@@ -386,8 +455,6 @@ async def test_delegate_completion_preserves_real_route_ownership(
     tmp_path, case, delivery, request, private_db_probe_cleanup,
 ):
     """Real durable admission and route resolution agree before any destructive switch."""
-    import json
-    import sqlite3
     from types import SimpleNamespace
     from typing import Any, cast
 
@@ -406,62 +473,8 @@ async def test_delegate_completion_preserves_real_route_ownership(
         entry = store.get_or_create_session(source)
         db = store._db
         parent = entry.session_id
-        previous = parent
-        children = []
-        for index in range({"nested": 2, "intermediate_boundary": 2, "limit": 16, "over_limit": 17}.get(case, 1)):
-            child = f"worker-{index}"
-            db.create_session(child, source="telegram" if case == "relabeled" else "subagent",
-                              parent_session_id=previous, model_config={"_delegate_from": previous})
-            children.append(child)
-            previous = child
-        pinned = children[-1]
-        configs = {
-            "missing": {"_delegate_from": "missing-parent"}, "cycle": {"_delegate_from": pinned},
-            "malformed": "{broken", "nonobject": [], "invalid_marker": {"_delegate_from": 7},
-            "empty_marker": {"_delegate_from": ""}, "null_marker": {"_delegate_from": None},
-            "markerless": {}, "null_config": "null", "absent_config": None,
-            "generic_parent": {}, "current_malformed": "{broken",
-        }
-        if case in configs:
-            config = configs[case]
-            raw = config if config is None or isinstance(config, str) else json.dumps(config)
-            with sqlite3.connect(db.db_path) as conn:
-                conn.execute("UPDATE sessions SET model_config=? WHERE id=?", (raw, pinned))
-        if case == "generic_parent":
-            with sqlite3.connect(db.db_path) as conn:
-                conn.execute("UPDATE sessions SET source='telegram' WHERE id=?", (pinned,))
-        if case == "foreground":
-            pinned = parent
-        if case in {"current", "current_malformed", "current_boundary", "child_to_current"}:
-            entry = store.switch_session(entry.session_key, pinned)
-            assert entry is not None
-            if case == "child_to_current":
-                db.create_session("grandchild", source="subagent", model_config={"_delegate_from": pinned})
-                children.append("grandchild")
-                pinned = "grandchild"
-        if case == "current_boundary":
-            db.end_session(pinned, end_reason="session_reset")
-        if case == "parent_boundary":
-            db.end_session(parent, end_reason="session_reset")
-        if case == "child_ended":
-            db.end_session(pinned, end_reason="agent_close")
-        if case == "child_boundary":
-            db.end_session(pinned, end_reason="session_reset")
-        if case == "intermediate_boundary":
-            db.end_session(children[0], end_reason="session_reset")
-        if case in {"child_boundary", "intermediate_boundary"}:
-            # The live ancestor must not override a newer user-selected route.
-            entry = store.get_or_create_session(source, force_new=True)
-            children.append(entry.session_id)
-        if case == "idle":
-            db.end_session(parent, end_reason="idle")
-        if case in {"compression", "compression_foreign"}:
-            db.create_session("continuation", source="telegram", parent_session_id=parent)
-            db.end_session(parent, end_reason="compression")
-            children.append("continuation")
-            if case == "compression_foreign":
-                entry = store.get_or_create_session(source, force_new=True)
-                children.append(entry.session_id)
+        children, pinned = _build_delegate_chain(db, parent, case)
+        entry, pinned = _apply_route_case(store, db, source, entry, parent, pinned, children, case)
         before = {sid: db.get_session(sid) for sid in [parent, *children]}
         current = store.lookup_by_session_key(entry.session_key)
         assert current is not None

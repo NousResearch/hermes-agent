@@ -1077,7 +1077,7 @@ class GatewayBusySessionMixin:
                 self._enqueue_fifo(quick_key, MessageEvent(
                     text=steer_text, message_type=MessageType.TEXT, source=event.source,
                     message_id=event.message_id, channel_prompt=event.channel_prompt,
-                    channel_context=event.channel_context,
+                    channel_context=event.channel_context, auto_skill=event.auto_skill,
                 ), adapter)
             return reply
 

@@ -397,6 +397,15 @@ def _disable_hook(monkeypatch):
     )
 
 
+def _enable_external_prefetch_spill(home: Path) -> None:
+    from hermes_cli.config import atomic_config_write
+
+    home.mkdir(parents=True, exist_ok=True)
+    atomic_config_write(
+        home / "config.yaml", {"memory": {"prefetch_spill_enabled": True}}
+    )
+
+
 def _stub_direct_prefetch(monkeypatch):
     """Keep fixture fan-out tests off the external timeout transport path."""
     direct_calls = []
@@ -459,6 +468,7 @@ def test_external_prefetch_spill_matches_legacy_and_structured_context_digest(
     _capture_hook(monkeypatch, events)
     hermes_home = tmp_path / ".hermes"
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    _enable_external_prefetch_spill(hermes_home)
     context = "oversized résumé recall\n" + ("x" * 10_100)
 
     legacy_provider = FakeMemoryProvider(name="external")

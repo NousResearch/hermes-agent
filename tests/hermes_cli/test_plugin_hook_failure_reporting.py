@@ -106,6 +106,8 @@ def test_stream_observer_hook_failure_warns_once(manager, caplog, monkeypatch):
     from agent import plugin_stream_hooks as psh
 
     monkeypatch.setattr("hermes_cli.plugins._plugin_manager", manager)
+    monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+    manager._discovered = True
 
     def on_stream_delta(tool_data, **kwargs):  # core sends delta, never tool_data
         return None

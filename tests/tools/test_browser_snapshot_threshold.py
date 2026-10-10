@@ -1,6 +1,7 @@
 """Behavior tests for config-driven browser snapshot thresholds."""
 
 import json
+import os
 from unittest.mock import Mock
 
 import pytest
@@ -27,10 +28,19 @@ def isolated_snapshot_threshold(tmp_path, monkeypatch):
 
 
 def _write_threshold(hermes_home, value):
-    (hermes_home / "config.yaml").write_text(
+    path = hermes_home / "config.yaml"
+    previous_mtime_ns = path.stat().st_mtime_ns if path.exists() else None
+    path.write_text(
         f"browser:\n  snapshot_threshold: {value}\n",
         encoding="utf-8",
     )
+    if previous_mtime_ns is not None:
+        # An in-place rewrite of the same length keeps size and inode, and two writes
+        # inside one filesystem timestamp tick also share mtime/ctime, so the
+        # read_raw_config() signature cache would serve the previous parse. Force the
+        # mtime forward so every rewrite is a guaranteed cache miss.
+        st = path.stat()
+        os.utime(path, ns=(st.st_atime_ns, max(st.st_mtime_ns, previous_mtime_ns + 1_000_000)))
 
 
 def _long_snapshot(chars: int) -> str:

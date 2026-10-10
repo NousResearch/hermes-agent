@@ -142,6 +142,28 @@ def test_deliver_runs_canonical_bot_chat_lane():
     assert calls["env"][TURN_REPORT_FILE_ENV] == calls["report_path"]
 
 
+def test_no_agent_job_with_no_owner_at_all_defers_instead_of_running_inline():
+    """#126126: a --no-agent job delivering to a profile with NO canonical owner (live or not)
+    must not fall through to the legacy inline CLI turn while the caller's fire claim is held.
+    It defers exactly like the "owner exists but isn't live" case, so the eventual turn runs
+    later from the per-tick drain, outside the claim."""
+    with mock.patch.object(sched_delivery, "_run_bot_chat_turn") as run_turn, \
+         mock.patch.object(sched_delivery.shutil, "which", return_value="/usr/bin/hermes"):
+        err = _deliver_to_bot_chat({"id": "j1", "name": "n", "no_agent": True}, "out", "")
+
+    assert run_turn.called is False, "the inline CLI turn must not run inside the fire claim"
+    assert err is not None and "queued" in err
+
+
+def test_agent_job_with_no_owner_at_all_still_runs_inline():
+    """Control: an ordinary (agent) job with no Bot Chat owner keeps using the legacy inline
+    CLI lane — only ``no_agent`` jobs gain the new deferral."""
+    with mock.patch.object(sched_delivery, "_run_bot_chat_turn", return_value=_completed()) as run_turn, \
+         mock.patch.object(sched_delivery.shutil, "which", return_value="/usr/bin/hermes"):
+        err = _deliver_to_bot_chat({"id": "j1", "name": "n"}, "out", "")
+
+    assert run_turn.called is True
+    assert err is None
 
 
 def test_deliver_failure_reports_both_streams_labeled():

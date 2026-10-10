@@ -126,6 +126,12 @@ _CGNAT_NETWORK = ipaddress.ip_network("100.64.0.0/10")
 # plain address). ``ip.ipv4_mapped`` does not read it; ``_embedded_ipv4`` handles it explicitly.
 _IPV4_TRANSLATED_NETWORK = ipaddress.ip_network("::ffff:0:0:0/96")
 
+# RFC 6052 NAT64 well-known prefix ``64:ff9b::a.b.c.d`` — on DNS64 networks resolvers answer
+# AAAA-less names with the IPv4 embedded there, and ``ipaddress`` flags the whole block
+# ``is_reserved``, which would block every public target behind the prefix. ``_embedded_ipv4``
+# unwraps it so the embedded address's verdict decides (private/CGNAT/metadata keep blocking).
+_NAT64_WELL_KNOWN_NETWORK = ipaddress.ip_network("64:ff9b::/96")
+
 # Address classes a ``security.fake_ip_ranges`` declaration can never excuse: a local proxy owns
 # none of them, and a declaration is trusted like ``allow_private_urls`` for whatever it names,
 # so an entry overlapping one of these (including 0.0.0.0/0 and ::/0) would make real internal
@@ -248,14 +254,15 @@ def _getaddrinfo(hostname: str, port: Optional[int] = None):
 
 
 def _embedded_ipv4(ip: _IPAddress) -> _IPAddress:
-    """The IPv4 address an IPv6 wrapper stands for — IPv4-mapped (``::ffff:x.x.x.x``) or
-    IPv4-translated (``::ffff:0:x.x.x.x``); *ip* unchanged otherwise. ``ipaddress`` reads both
-    wrappers as distinct IPv6 addresses, so every classification must see through them, or a
-    resolver's sentinel / a cloud-metadata answer arrives as unrelated IPv6 space."""
+    """The IPv4 address an IPv6 wrapper stands for — IPv4-mapped (``::ffff:x.x.x.x``),
+    IPv4-translated (``::ffff:0:x.x.x.x``) or NAT64 well-known-prefix (``64:ff9b::x.x.x.x``);
+    *ip* unchanged otherwise. ``ipaddress`` reads these wrappers as distinct IPv6 addresses (it
+    even flags the NAT64 block ``is_reserved``), so every classification must see through them,
+    or a resolver's sentinel / a cloud-metadata answer arrives as unrelated IPv6 space."""
     if isinstance(ip, ipaddress.IPv6Address):
         if ip.ipv4_mapped is not None:
             return ip.ipv4_mapped
-        if ip in _IPV4_TRANSLATED_NETWORK:
+        if ip in _IPV4_TRANSLATED_NETWORK or ip in _NAT64_WELL_KNOWN_NETWORK:
             return ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
     return ip
 

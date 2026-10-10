@@ -2,6 +2,8 @@
 
 from types import SimpleNamespace
 
+import pytest
+
 from tools.patch_parser import (
     OperationType,
     apply_v4a_operations,
@@ -413,6 +415,72 @@ class TestValidationPhase:
         assert "validation failed" in result.error.lower()
 
 
+    def test_validation_and_apply_seek_boilerplate_hunks_from_context_hints(self):
+        """Later boilerplate hunks seek from inert anchors, then fall back when
+        the intended target is before the monotonic cursor."""
+        patch = """\
+*** Begin Patch
+*** Update File: adapter_test.py
+@@ class TestSessions @@
+ class TestSessions:
+@@
+-    self.assertEqual(resp.status_code, 200)
++    self.assertEqual(resp.status_code, 202)
+@@ class TestAuth @@
+ class TestAuth:
+@@
+-    self.assertEqual(resp.status_code, 200)
++    self.assertEqual(resp.status_code, 201)
+*** End Patch"""
+        ops, err = parse_v4a_patch(patch)
+        assert err is None
+
+        original = (
+            "class TestPartials:\n"
+            "    self.assertEqual(resp.status_code, 200)\n\n"
+            "class TestSessions:\n"
+            "    pass\n\n"
+            "class TestBounds:\n"
+            "    self.assertEqual(resp.status_code, 200)\n\n"
+            "class TestAuth:\n"
+            "    pass\n"
+        )
+        file_ops = _DictFileOps({"adapter_test.py": original})
+
+        result = apply_v4a_operations(ops, file_ops)
+
+        assert result.success is True, result.error
+        assert file_ops.files["adapter_test.py"] == original.replace(
+            "class TestPartials:\n    self.assertEqual(resp.status_code, 200)",
+            "class TestPartials:\n    self.assertEqual(resp.status_code, 201)",
+        ).replace(
+            "class TestBounds:\n    self.assertEqual(resp.status_code, 200)",
+            "class TestBounds:\n    self.assertEqual(resp.status_code, 202)",
+        )
+
+    def test_v4a_ambiguity_error_recommends_hunk_context_not_replace_all(self):
+        patch = """\
+*** Begin Patch
+*** Update File: duplicate.py
+@@
+-    self.assertEqual(resp.status_code, 200)
++    self.assertEqual(resp.status_code, 201)
+*** End Patch"""
+        ops, err = parse_v4a_patch(patch)
+        assert err is None
+        file_ops = _DictFileOps({
+            "duplicate.py": (
+                "    self.assertEqual(resp.status_code, 200)\n"
+                "    self.assertEqual(resp.status_code, 200)\n"
+            )
+        })
+
+        result = apply_v4a_operations(ops, file_ops)
+
+        assert result.success is False
+        assert "replace_all" not in result.error
+        assert "unique context lines" in (result.error or "")
+
     def test_validation_error_identifies_hunk_number(self):
         patch = """\
 *** Begin Patch
@@ -819,6 +887,417 @@ class TestDuckTypedWriteFileCompat:
         assert result.success is False
         assert "bug inside" in result.error
         assert calls == ["f.py"]  # not silently retried with 2 args
+
+
+class TestSafeCursorHunkSelection:
+    """Regression coverage for dense repeated V4A search text."""
+
+    def test_first_broad_hunk_seeks_from_top_of_file(self):
+        patch = (
+            "*** Begin Patch\n"
+            "*** Update File: providers.py\n"
+            "@@\n"
+            "-    def available() -> bool:\n"
+            "-        return True\n"
+            "+    def available() -> bool:\n"
+            "+        return has_openai_key()\n"
+            "@@ Edge marker @@\n"
+            "-edge_flag = False\n"
+            "+edge_flag = True\n"
+            "*** End Patch\n"
+        )
+        ops, err = parse_v4a_patch(patch)
+        assert err is None
+        original = (
+            "class OpenAI:\n"
+            "    def available() -> bool:\n"
+            "        return True\n\n"
+            "class Edge:\n"
+            "    def available() -> bool:\n"
+            "        return True\n"
+            "edge_flag = False\n"
+        )
+        fo = _DictFileOps({"providers.py": original})
+
+        result = apply_v4a_operations(ops, fo)
+
+        assert result.success is True, result.error
+        assert fo.files["providers.py"] == original.replace(
+            "        return True", "        return has_openai_key()", 1
+        ).replace("edge_flag = False", "edge_flag = True")
+
+    def test_later_broad_hunk_with_remaining_duplicates_rejects_atomically(self):
+        patch = (
+            "*** Begin Patch\n"
+            "*** Update File: providers.py\n"
+            "@@\n"
+            " class OpenAI:\n"
+            "-    def available() -> bool:\n"
+            "+    def available() -> bool:\n"
+            "+        return has_openai_key()\n"
+            "@@\n"
+            "-    def available() -> bool:\n"
+            "+    def available() -> bool:\n"
+            "+        return has_minimax_key()\n"
+            "*** End Patch\n"
+        )
+        ops, err = parse_v4a_patch(patch)
+        assert err is None
+        original = (
+            "class OpenAI:\n    def available() -> bool:\n        return True\n\n"
+            "class Edge:\n    def available() -> bool:\n        return True\n\n"
+            "class MiniMax:\n    def available() -> bool:\n        return True\n"
+        )
+        fo = _DictFileOps({"providers.py": original})
+
+        result = apply_v4a_operations(ops, fo)
+
+        assert result.success is False
+        assert fo.files["providers.py"] == original
+        assert "hunk 2" in (result.error or "").lower()
+
+    def test_repeated_later_hunks_apply_successive_duplicate_blocks(self):
+        """An explicit sequence of identical later hunks means successive sites.
+
+        A single broad later hunk stays fail-closed; two or more identical hunks
+        explicitly encode the cursor-ordered sequence required by the V4A repro.
+        """
+        patch = (
+            "*** Begin Patch\n"
+            "*** Update File: providers.py\n"
+            "@@ anchor @@\n"
+            "-anchor = old\n"
+            "+anchor = new\n"
+            "@@\n"
+            "-value = old\n"
+            "+value = first\n"
+            "@@\n"
+            "-value = old\n"
+            "+value = second\n"
+            "*** End Patch\n"
+        )
+        ops, err = parse_v4a_patch(patch)
+        assert err is None
+        original = "anchor = old\nvalue = old\nvalue = old\nvalue = old\n"
+        fo = _DictFileOps({"providers.py": original})
+
+        result = apply_v4a_operations(ops, fo)
+
+        assert result.success is True, result.error
+        assert fo.files["providers.py"] == (
+            "anchor = new\nvalue = first\nvalue = second\nvalue = old\n"
+        )
+
+    def test_already_applied_later_hunk_does_not_hide_remaining_source_match(self, monkeypatch):
+        import tools.fuzzy_match as fuzzy_match
+
+        patch = (
+            "*** Begin Patch\n"
+            "*** Update File: providers.py\n"
+            "@@ first @@\n"
+            "-first = old\n"
+            "+first = new\n"
+            "@@ second @@\n"
+            "-value = old\n"
+            "+value = new\n"
+            "*** End Patch\n"
+        )
+        ops, err = parse_v4a_patch(patch)
+        assert err is None
+        original = "first = old\nvalue = new\nvalue = old\n"
+        fo = _DictFileOps({"providers.py": original})
+
+        real_replace = fuzzy_match.fuzzy_find_and_replace
+
+        def return_no_change_when_replacement_is_already_present(
+                content, search_pattern, replacement, replace_all=False):
+            if search_pattern == "value = old":
+                return content, 0, "exact", None
+            return real_replace(content, search_pattern, replacement, replace_all=replace_all)
+
+        monkeypatch.setattr(
+            fuzzy_match, "fuzzy_find_and_replace",
+            return_no_change_when_replacement_is_already_present,
+        )
+
+        result = apply_v4a_operations(ops, fo)
+
+        assert result.success is False
+        assert fo.files["providers.py"] == original
+        assert "hunk 2" in (result.error or "").lower()
+
+
+class _DiskFileOps:
+    """file_ops over real files; ``on_read(path, n)`` runs before the n-th read of ``path``."""
+
+    def __init__(self, root, on_read=None):
+        self.root, self.on_read, self.reads, self.writes = root, on_read, {}, []
+
+    def read_file_raw(self, path):
+        self.reads[path] = self.reads.get(path, 0) + 1
+        if self.on_read:
+            self.on_read(self.root / path, self.reads[path])
+        target = self.root / path
+        if not target.exists():
+            return SimpleNamespace(content=None, error="file not found", not_found=True)
+        return SimpleNamespace(content=target.read_bytes().decode(), error=None)
+
+    def write_file(self, path, content, pre_content=None):
+        self.writes.append(path)
+        (self.root / path).write_bytes(content.encode())
+        return SimpleNamespace(error=None)
+
+
+def _v4a_update(path, *hunks):
+    body = "".join(f"@@\n{h}" for h in hunks)
+    ops, err = parse_v4a_patch(f"*** Begin Patch\n*** Update File: {path}\n{body}*** End Patch")
+    assert err is None
+    return ops
+
+
+class TestHunkSelectionAmbiguity:
+    """A hunk edits a site only when it is the one candidate under the matching that selects it,
+    in validation and again on the source the apply phase actually reads."""
+
+    @pytest.mark.parametrize("source, hunks", [
+        # one hunk; the 8-space search line matches the 2- and 4-space lines only after strip()
+        ("def first():\n  return False\ndef second():\n    return False\n",
+         ["-        return False\n+        return True\n"]),
+        ("def first():\n\treturn False\ndef second():\n    return False\n",
+         ["-        return False\n+        return True\n"]),
+        # trailing whitespace: two rstrip()-equal lines, no raw occurrence of the search text
+        ("a = 1\nb = 2\na = 1 \n", ["-a = 1   \n+a = 9\n"]),
+        # the same ambiguity in a later, unhinted hunk after a valid first edit
+        ("head = 0\ndef first():\n  return False\ndef second():\n    return False\n",
+         ["-head = 0\n+head = 1\n", "-        return False\n+        return True\n"]),
+        ("head = 0\ndef first():\n\treturn False\ndef second():\n    return False\n",
+         ["-head = 0\n+head = 1\n", "-        return False\n+        return True\n"]),
+    ], ids=["lone-indent", "lone-tab", "lone-trailing-ws", "later-indent", "later-tab"])
+    def test_normalized_duplicates_refuse_without_writing(self, tmp_path, source, hunks):
+        (tmp_path / "f.py").write_bytes(source.encode())
+        fo = _DiskFileOps(tmp_path)
+
+        result = apply_v4a_operations(_v4a_update("f.py", *hunks), fo)
+
+        assert result.success is False
+        assert "ambiguous" in (result.error or "").lower()
+        assert fo.writes == []
+        assert (tmp_path / "f.py").read_bytes() == source.encode()
+
+    @pytest.mark.parametrize("intervening", [
+        "owner = B\nvalue = old\nowner = A\nvalue = old\n",  # duplicate before the validated site
+        "owner = A\nvalue = old\nowner = B\nvalue = old\n",  # duplicate after it
+    ], ids=["duplicate-before", "duplicate-after"])
+    def test_apply_refuses_a_source_that_became_ambiguous_after_validation(self, tmp_path, intervening):
+        (tmp_path / "f.py").write_bytes(b"owner = A\nvalue = old\n")
+
+        def concurrent_edit(target, n):
+            if n == 2:  # the apply phase's read; validation's was n == 1
+                target.write_bytes(intervening.encode())
+
+        fo = _DiskFileOps(tmp_path, on_read=concurrent_edit)
+        result = apply_v4a_operations(_v4a_update("f.py", "-value = old\n+value = changed\n"), fo)
+
+        assert fo.reads["f.py"] == 2
+        assert result.success is False
+        assert fo.writes == []
+        assert (tmp_path / "f.py").read_bytes() == intervening.encode()
+
+    def test_unique_whitespace_equivalent_match_still_applies(self, tmp_path):
+        (tmp_path / "f.py").write_bytes(b"def first():\n  return False\ndef second():\n    return 1\n")
+        fo = _DiskFileOps(tmp_path)
+
+        result = apply_v4a_operations(
+            _v4a_update("f.py", "-        return False\n+        return True\n"), fo)
+
+        assert result.success is True, result.error
+        text = (tmp_path / "f.py").read_text()
+        assert "return True" in text and "return False" not in text and "return 1" in text
+
+
+def _apply_body(tmp_path, source, body):
+    """Apply a raw V4A Update body (hunks with their own @@ lines) to f.py on disk."""
+    (tmp_path / "f.py").write_bytes(source.encode())
+    fo = _DiskFileOps(tmp_path)
+    ops, err = parse_v4a_patch(f"*** Begin Patch\n*** Update File: f.py\n{body}\n*** End Patch")
+    assert err is None
+    return apply_v4a_operations(ops, fo), fo, (tmp_path / "f.py").read_bytes().decode()
+
+
+class TestHunkTargetIdentity:
+    """The site a hunk edits, and the cursor the next hunk starts from, are the source sites
+    the patch points at: never the first text that happens to look the same elsewhere."""
+
+    @pytest.mark.parametrize("drift", ["label  = pending", "label\t= pending"])
+    def test_cursor_follows_a_fuzzy_edit_not_an_earlier_copy_of_its_text(self, tmp_path, drift):
+        source = f"label = done\nvalue = old\n{drift}\nvalue = old\nvalue = old\n"
+        body = ("@@\n-label = pending\n+label = done\n"
+                "@@\n-value = old\n+value = one\n@@\n-value = old\n+value = two")
+
+        result, fo, final = _apply_body(tmp_path, source, body)
+
+        assert result.success is True, result.error
+        assert final == "label = done\nvalue = old\nlabel = done\nvalue = one\nvalue = two\n"
+
+    @pytest.mark.parametrize("indent", ["  ", "\t"])
+    def test_raw_and_normalized_hits_at_different_sites_are_two_candidates(self, tmp_path, indent):
+        source = ('note = "        return False"\ndef first():\n' + indent + "return False\n"
+                  '# anchor\nnote = "        return False"\ndef second():\n' + indent + "return False\n")
+        body = "@@\n # anchor\n@@\n-        return False\n+        return True"
+
+        result, fo, final = _apply_body(tmp_path, source, body)
+
+        assert result.success is False
+        assert "ambiguous" in result.error
+        assert fo.writes == [] and final == source
+
+    @pytest.mark.parametrize("gap", [2100, 3000])
+    @pytest.mark.parametrize("spacing", [" = ", "  = "], ids=["line-match", "fuzzy-match"])
+    def test_a_repeated_hint_does_not_pick_its_first_window(self, tmp_path, gap, spacing):
+        block = f"# target\nvalue{spacing}old\n"
+        source = block + "# " + "x" * gap + "\n" + block
+
+        result, fo, final = _apply_body(tmp_path, source, "@@ target @@\n-value = old\n+value = new")
+
+        assert result.success is False
+        assert fo.writes == [] and final == source
+
+    @pytest.mark.parametrize("spacing", [" = ", "  = "], ids=["line-match", "fuzzy-match"])
+    def test_a_unique_hint_still_selects_its_block(self, tmp_path, spacing):
+        source = f"# first\nvalue{spacing}old\n# " + "x" * 3000 + f"\n# target\nvalue{spacing}old\n"
+
+        result, fo, final = _apply_body(tmp_path, source, "@@ target @@\n-value = old\n+value = new")
+
+        assert result.success is True, result.error
+        assert final.startswith(f"# first\nvalue{spacing}old\n") and final.endswith("# target\nvalue = new\n")
+
+    @pytest.mark.parametrize("addition", ["# x", "# " + "x" * 100], ids=["short", "long"])
+    def test_an_insertion_before_the_cursor_keeps_it_on_the_same_site(self, tmp_path, addition):
+        source = "# top\n# first\nvalue = old\n# second\nvalue = old\n# third\nvalue = old\n"
+        body = ("@@\n # second\n@@ # top @@\n+" + addition + "\n"
+                "@@\n-value = old\n+value = one\n@@\n-value = old\n+value = two")
+
+        result, fo, final = _apply_body(tmp_path, source, body)
+
+        assert result.success is True, result.error
+        assert final == ("# top\n" + addition + "\n# first\nvalue = old\n"
+                         "# second\nvalue = one\n# third\nvalue = two\n")
+
+    @pytest.mark.parametrize("indent", ["  ", "\t", "    "], ids=["two-space", "tab", "same-indent"])
+    def test_anchor_scope_wins_over_an_exact_match_before_it(self, tmp_path, indent):
+        source = "def first():\n    return False\ndef second():\n" + indent + "return False\n"
+        body = "@@\n def second():\n@@\n-    return False\n+    return True"
+
+        result, fo, final = _apply_body(tmp_path, source, body)
+
+        assert result.success is True, result.error
+        assert final == "def first():\n    return False\ndef second():\n" + indent + "return True\n"
+
+    def test_a_unique_site_before_the_anchor_is_still_edited(self, tmp_path):
+        source = "def first():\n    return False\ndef second():\n    return 1\n"
+        body = "@@\n def second():\n@@\n-    return False\n+    return True"
+
+        result, fo, final = _apply_body(tmp_path, source, body)
+
+        assert result.success is True, result.error
+        assert final == "def first():\n    return True\ndef second():\n    return 1\n"
+
+
+class TestHunkTargetPrecedence:
+    """What decides a hunk's site when the patch says it more than one way: a unique @@ hint @@
+    over hunk position, the scope after an anchor over an earlier match, and never text an
+    earlier hunk of the same patch has just written."""
+
+    @pytest.mark.parametrize("gap", [600, 1200, 3000])
+    @pytest.mark.parametrize("footer", [False, True], ids=["alone", "with-footer-hunk"])
+    def test_a_unique_hint_keeps_its_site_whatever_hunks_follow(self, tmp_path, gap, footer):
+        source = "value = old\n# " + "x" * gap + "\n# target\nvalue = old\n# footer\nfooter = old\n"
+        body = "@@ target @@\n-value = old\n+value = patched"
+        body += "\n@@ footer @@\n-footer = old\n+footer = new" if footer else ""
+
+        result, fo, final = _apply_body(tmp_path, source, body)
+
+        assert result.success is True, result.error
+        assert final == source.replace("# target\nvalue = old", "# target\nvalue = patched").replace(
+            "footer = old", "footer = new" if footer else "footer = old")
+
+    def test_a_hint_naming_a_site_behind_the_anchor_refuses(self, tmp_path):
+        source = "# target\nvalue = old\n# " + "x" * 3000 + "\n# anchor\nvalue = old\n"
+        body = "@@\n # anchor\n@@ target @@\n-value = old\n+value = new"
+
+        result, fo, final = _apply_body(tmp_path, source, body)
+
+        assert result.success is False
+        assert "target" in (result.error or "")
+        assert fo.writes == [] and final == source
+
+    @pytest.mark.parametrize("later", [
+        "    active  = False", "    active\t= False", "    active =  False",
+    ], ids=["two-space", "tab", "double-right-space"])
+    def test_a_fuzzy_match_after_the_anchor_wins_over_an_exact_one_before_it(self, tmp_path, later):
+        source = "def first():\n    active = False\n# " + "x" * 1000 + "\ndef second():\n" + later + "\n"
+        body = "@@\n def second():\n@@\n-    active = False\n+    active = True"
+
+        result, fo, final = _apply_body(tmp_path, source, body)
+
+        assert result.success is True, result.error
+        assert final == source.replace(later, "    active = True")
+
+    def test_a_unicode_variant_after_the_anchor_wins_too(self, tmp_path):
+        source = 'def first():\n    label = "x"\ndef second():\n    label = \u201cx\u201d\n'
+        body = '@@\n def second():\n@@\n-    label = "x"\n+    label = "y"'
+
+        result, fo, final = _apply_body(tmp_path, source, body)
+
+        assert result.success is True, result.error
+        assert final.startswith('def first():\n    label = "x"\n')
+        assert "\u201cx\u201d" not in final
+
+    def test_two_fuzzy_sites_after_the_anchor_refuse(self, tmp_path):
+        source = ("def first():\n    active = False\ndef second():\n"
+                  "    active  = False\n    active\t= False\n")
+        body = "@@\n def second():\n@@\n-    active = False\n+    active = True"
+
+        result, fo, final = _apply_body(tmp_path, source, body)
+
+        assert result.success is False
+        assert fo.writes == [] and final == source
+
+    @pytest.mark.parametrize("old, first, second", [
+        ("value = 1", "value = 10", "value = 20"),
+        ("tag = on", "tag = one", "tag = only"),
+    ], ids=["number-prefix", "word-prefix"])
+    def test_a_repeated_hunk_never_re_edits_what_the_one_before_it_wrote(
+            self, tmp_path, old, first, second):
+        source = f"head = 0\n{old}\ntail = 0\n"
+        body = f"@@\n-{old}\n+{first}\n@@\n-{old}\n+{second}"
+
+        result, fo, final = _apply_body(tmp_path, source, body)
+
+        assert result.success is False
+        assert fo.writes == [] and final == source
+
+    @pytest.mark.parametrize("old, first, second", [
+        ("value = 1", "value = 10", "value = 20"),
+        ("tag = on", "tag = one", "tag = only"),
+    ], ids=["number-prefix", "word-prefix"])
+    def test_a_repeated_hunk_with_enough_sites_edits_each_once(self, tmp_path, old, first, second):
+        source = f"{old}\nmid = 0\n{old}\n"
+        body = f"@@\n-{old}\n+{first}\n@@\n-{old}\n+{second}"
+
+        result, fo, final = _apply_body(tmp_path, source, body)
+
+        assert result.success is True, result.error
+        assert final == f"{first}\nmid = 0\n{second}\n"
+
+    def test_neighbouring_hunks_may_share_a_context_line(self, tmp_path):
+        source = "a = 0\nb = 0\nc = 0\nd = 0\ne = 0\n"
+        body = "@@\n a = 0\n-b = 0\n+b = 1\n c = 0\n@@\n c = 0\n-d = 0\n+d = 1\n e = 0"
+
+        result, fo, final = _apply_body(tmp_path, source, body)
+
+        assert result.success is True, result.error
+        assert final == "a = 0\nb = 1\nc = 0\nd = 1\ne = 0\n"
 
 
 class TestMoveThenUpdateSameFile:

@@ -71,6 +71,17 @@ describe('renameSessionPreferringRpc', () => {
     expect(result.title).toBe('rpc-title')
   })
 
+  it('renames an active persisted session through its durable REST id after a runtime update', async () => {
+    $selectedStoredSessionId.set(STORED_ID)
+    $activeSessionId.set(RUNTIME_ID)
+    $sessions.set([{ id: STORED_ID, title: null } as never])
+
+    await renameSessionPreferringRpc(STORED_ID, 'Survives update', 'work')
+
+    expect(request).not.toHaveBeenCalled()
+    expect(renameSession).toHaveBeenCalledWith(STORED_ID, 'Survives update', 'work')
+  })
+
   it('resolves the owning profile from $sessions when profile argument is omitted', async () => {
     $selectedStoredSessionId.set('some-other-active-session')
     $sessions.set([{ id: STORED_ID, profile: 'personal', title: 'Own Google Docs document' } as never])

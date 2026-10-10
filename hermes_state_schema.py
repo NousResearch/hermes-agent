@@ -758,10 +758,8 @@ class SessionSchemaMixin:
         source of truth; column additions need no version-gated migration)."""
         expected = self._parse_schema_columns(SCHEMA_SQL)
         for table_name, declared_cols in expected.items():
-            try:
-                rows = cursor.execute(f'PRAGMA table_info("{table_name}")').fetchall()
-            except sqlite3.OperationalError:
-                continue  # Table doesn't exist yet (shouldn't happen after executescript)
+            # Missing tables return no rows; inspection errors must reach the open retry/error path.
+            rows = cursor.execute(f'PRAGMA table_info("{table_name}")').fetchall()
             # PRAGMA table_info rows: (cid, name, type, notnull, dflt_value, pk)
             live_cols = {row[1] for row in rows}
             for col_name, col_type in declared_cols.items():
@@ -771,7 +769,7 @@ class SessionSchemaMixin:
                     cursor.execute(f'ALTER TABLE "{table_name}" ADD COLUMN {_q(col_name)} {col_type}')
                 except sqlite3.OperationalError as exc:
                     message = str(exc).lower()
-                    if "duplicate column" in message:
+                    if "duplicate column name" in message:
                         # A sibling process won the ADD race; store is correct.
                         logger.debug("reconcile %s.%s: %s", table_name, col_name, exc)
                         continue
@@ -783,6 +781,7 @@ class SessionSchemaMixin:
                     logger.warning(
                         "reconcile %s.%s failed; store remains behind SCHEMA_SQL: %s", table_name, col_name, exc,
                     )
+                    raise
 
     @staticmethod
     def _live_pk_columns(cursor: sqlite3.Cursor, table: str) -> Optional[list[str]]:

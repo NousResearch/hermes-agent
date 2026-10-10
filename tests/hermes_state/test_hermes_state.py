@@ -2138,7 +2138,7 @@ class TestReconcileColumnsErrorHandling:
     half-reconciled schema and every session-list read then 500ed with
     "no such column" until an unrelated writable open. The contract now:
     duplicate-column races stay quiet, lock/busy propagates (so the open-time
-    lock patience retries the whole init), everything else warns.
+    lock patience retries the whole init), everything else warns and propagates.
     """
 
     class _FailingAlterCursor:
@@ -2213,8 +2213,8 @@ class TestReconcileColumnsErrorHandling:
             r for r in caplog.records if "reconcile" in r.getMessage()
         ]
 
-    def test_other_alter_failures_warn(self, tmp_path, caplog):
-        """Schema mistakes (e.g. un-ADDable NOT NULL) log at WARNING."""
+    def test_other_alter_failures_warn_and_propagate(self, tmp_path, caplog):
+        """Schema mistakes log at WARNING and cannot leave startup succeeding."""
         import logging
 
         db_path = self._db_missing_column(tmp_path)
@@ -2229,7 +2229,8 @@ class TestReconcileColumnsErrorHandling:
                 ),
             )
             with caplog.at_level(logging.WARNING, logger="hermes_state"):
-                stale._reconcile_columns(cursor)
+                with pytest.raises(sqlite3.OperationalError, match="Cannot add"):
+                    stale._reconcile_columns(cursor)
         finally:
             conn.close()
         warnings = [

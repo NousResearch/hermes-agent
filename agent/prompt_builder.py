@@ -936,7 +936,8 @@ _WINDOWS_BASH_SHELL_HINT = (
     "newline: Enter on a Windows PTY is a carriage return, and a lone `\\n"
     "` is not delivered as a line terminator, so the child's prompt silently never returns. When a CLI offers a "
     "non-interactive path (flags, `--with-token`, config files, an OAuth device flow polled with curl), prefer it over "
-    "driving prompts."
+    "driving prompts. `python`/`python3` under WindowsApps are Microsoft Store aliases, not a real interpreter "
+    "(running one prints 'Python was not found'): prefer `python` and fall back to `py -3` when it fails."
 )
 
 

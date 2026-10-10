@@ -4,6 +4,7 @@
 Usage:
     hermes                     # Interactive chat (default)
     hermes chat / gateway / setup / status / cron / doctor / update / ...
+    hermes start / stop / restart  # Aliases for gateway start / stop / restart
     hermes --version           # Show version and update status
     hermes <cmd> --help        # Per-command help
 """
@@ -2822,7 +2823,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "prompt-size",
         "resume",
         "send", "sessions", "setup",
-        "skin", "skills", "slack", "status", "tools", "uninstall", "update",
+        "skin", "skills", "slack", "start", "stop", "restart", "status", "tools", "uninstall", "update",
         "usage", "vault",
         "webhook", "whatsapp", "whatsapp-cloud", "worktree", "chat", "secrets", "security",
         "browser",

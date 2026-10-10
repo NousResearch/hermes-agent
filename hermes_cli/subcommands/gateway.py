@@ -196,6 +196,43 @@ def build_gateway_parser(
             "reconnects on its own.")
     gateway_enroll.set_defaults(func=cmd_gateway_enroll)
 
+    # Top-level start/stop/restart aliases (#68247). Same cmd_gateway handler and
+    # flag surface as `hermes gateway start|stop|restart` (--system, --all, and
+    # --force on start/restart). Hidden --platform stays start/restart only.
+    def _add_gateway_lifecycle_root_alias(
+        name: str, *, help_text: str, all_help: str, compat_platform: bool, force: bool,
+    ) -> None:
+        alias = subparsers.add_parser(name, help=help_text)
+        _add_system_flag(alias)
+        _flag(alias, "--all", help=all_help)
+        if force:
+            _flag(alias, "--force", help=_FORCE_SERVED_PROFILE_HELP)
+        if compat_platform:
+            _add_compat_platform_flag(alias)
+        alias.set_defaults(func=cmd_gateway, gateway_command=name)
+
+    _add_gateway_lifecycle_root_alias(
+        "start",
+        help_text="Alias for 'hermes gateway start' — start the messaging gateway service",
+        all_help="Kill ALL stale gateway processes across all profiles before starting",
+        compat_platform=True,
+        force=True,
+    )
+    _add_gateway_lifecycle_root_alias(
+        "stop",
+        help_text="Alias for 'hermes gateway stop' — stop the messaging gateway service",
+        all_help="Stop ALL gateway processes across all profiles",
+        compat_platform=False,
+        force=False,
+    )
+    _add_gateway_lifecycle_root_alias(
+        "restart",
+        help_text="Alias for 'hermes gateway restart' — restart the messaging gateway service",
+        all_help="Kill ALL gateway processes across all profiles before restarting",
+        compat_platform=True,
+        force=True,
+    )
+
     # proxy: local OpenAI-compatible proxy attaching the user's OAuth provider credentials,
     # so external apps (Open WebUI, Karakeep, ...) ride a logged-in subscription.
     proxy_parser = subparsers.add_parser(

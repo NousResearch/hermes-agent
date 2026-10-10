@@ -95,6 +95,56 @@ def _hard_stop_config(**overrides) -> dict:
     return cfg
 
 
+@pytest.mark.parametrize("executor", ["_execute_tool_calls_sequential", "_execute_tool_calls_concurrent"])
+@pytest.mark.parametrize("hard_stop", [False, True])
+@pytest.mark.parametrize("name,payload,failed", [
+    ("skill_view", {"success": True, "name": "example", "content": "# Example\n\nUse this skill."}, False),
+    ("web_search", {"data": {"web": [{"title": "Example"}]}}, False),
+    ("web_search", {"success": False, "error": "Synthetic failure"}, True),
+])
+def test_loop_advisories_keep_completed_json_and_model_guidance(executor, hard_stop, name, payload, failed):
+    from tui_gateway import server
+
+    agent = _make_agent(name, config={"tool_loop_guardrails": {
+        "hard_stop_enabled": hard_stop,
+        "hard_stop_after": {"idempotent_no_progress": 3},
+    }})
+    raw = json.dumps(payload)
+    args = {"name": "example"} if name == "skill_view" else {"query": "example"}
+    completed = []
+    agent.tool_progress_callback = lambda event, *a, **kw: (
+        completed.append(kw["result"]) if event == "tool.completed" else None
+    )
+    messages = []
+
+    with patch("model_tools.handle_function_call", return_value=raw) as dispatch:
+        for count in range(3):
+            tc = _mock_tool_call(name, json.dumps(args), f"c-json-{count}")
+            getattr(agent, executor)(SimpleNamespace(content="", tool_calls=[tc]), messages, "task-json")
+
+    assert dispatch.call_count == 3
+    assert [message["role"] for message in messages] == ["tool"] * 3
+    for message, result in zip(messages, completed, strict=True):
+        # The model-facing transcript may have an untrusted-content wrapper.
+        assert result in message["content"]
+        parsed = json.loads(result)
+        assert {key: value for key, value in parsed.items() if key != "guardrail"} == payload
+        assert server._tool_result_needs_user(result) is failed
+        if name == "web_search" and not failed:
+            assert server._tool_summary(name, result, None) == "Did 1 search"
+    warning = json.loads(completed[1])["guardrail"]
+    assert warning["action"] == "warn"
+    assert warning["message"]
+    final = json.loads(completed[2])["guardrail"]
+    assert [advisory["code"] for advisory in final] == [
+        "repeated_exact_failure_warning" if failed else "idempotent_no_progress_warning",
+        *(["identical_call_streak_halt"] if hard_stop else []),
+        "identical_call_streak",
+    ]
+    assert all(advisory["message"] for advisory in final)
+    assert (agent._tool_guardrail_halt_decision is not None) is hard_stop
+
+
 def test_gateway_platform_uses_hard_stop_default_without_cli_opt_in():
     agent = _make_agent("web_search", platform="telegram")
     args = {"query": "same"}

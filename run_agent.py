@@ -134,7 +134,7 @@ from agent.codex_responses_adapter import (
     _split_responses_tool_id as _codex_split_responses_tool_id,
     _summarize_user_message_for_log,
 )
-from agent.tool_guardrails import ToolGuardrailDecision, append_toolguard_guidance, toolguard_synthetic_result
+from agent.tool_guardrails import ToolGuardrailDecision, append_toolguard_advisory, append_toolguard_guidance, toolguard_synthetic_result
 from hermes_cli.observability.shared_metrics_harness import record_guardrail_decision, record_guardrail_warnings
 from utils import base_url_host_matches, base_url_hostname, env_float, model_forces_max_completion_tokens
 
@@ -1280,7 +1280,9 @@ class AIAgent(
                 function_result = append_toolguard_guidance(function_result, streak_halt)
                 self._set_tool_guardrail_halt(streak_halt)
         if stall_notice:
-            function_result = (function_result or "") + "\n\n" + stall_notice
+            function_result = append_toolguard_advisory(function_result, stall_notice, {
+                "action": "warn", "code": stall_kind, "tool_name": tool_name, "message": stall_notice,
+            })
         return function_result
 
     def _stall_guards_enabled(self) -> bool:

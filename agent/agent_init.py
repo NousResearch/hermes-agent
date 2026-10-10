@@ -1831,6 +1831,11 @@ def _resolve_context_length(agent, _agent_cfg, base_url):
 
     _model_cfg = _agent_cfg.get("model", {})
     _model_section = _model_cfg if isinstance(_model_cfg, dict) else {}
+    agent._content_tool_call_fallback_scope = None
+    if _model_section.get("content_tool_calls_from_content") is True and agent.base_url:
+        # Bind the explicit opt-in at initialization; failover and model changes
+        # must not inherit permission to interpret ordinary JSON as tool calls.
+        agent._content_tool_call_fallback_scope = (agent.model, agent.base_url, agent.api_mode)
 
     _config_context_length = _model_section.get("context_length")
     if _config_context_length is not None:

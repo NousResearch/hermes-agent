@@ -524,6 +524,25 @@ _REASONING_PARAM_REJECTION = re.compile(
     r"""|invalid_reasoning_effort"""
 )
 
+# Pydantic-gated aggregators (vLLM behind an OpenAI-compatible proxy, #125279) reject the
+# disable as a literal validation error that names the field only in ``loc`` — no ``param``,
+# no "unsupported", no "mandatory", so both wording rules miss it and the 400 fell through
+# to format_error: the reasoning floor never fired and title generation kept the derived
+# title on every call:
+#   {'type': 'literal_error', 'loc': ('body', 'reasoning_effort'),
+#    'msg': "Input should be 'low', 'medium' or 'high'", 'input': 'none'}
+# stringified body names the loc in whatever quote style the repr picked (``'loc':`` from a
+# JSON dump, ``\'loc\':`` once Python's dict repr escapes the inner quotes).
+_REASONING_LOC_REJECTION = re.compile(
+    r"""\\?['\"]loc\\?['\"]\s*:\s*[\[(][^\])]*"""
+    r"""(?:reasoning_effort|reasoning|thinking_config|thinking_budget|enable_thinking|thinking|think)\b"""
+)
+_REASONING_LITERAL_INPUT = re.compile(
+    r"""\\?['\"]input\\?['\"]\s*:\s*\\?['\"]([^'\"\\]+)\\?['\"]"""
+)
+_REASONING_LITERAL_ACCEPTS_LOW = re.compile(r"""\\?['\"]low\\?['\"]""")
+_REASONING_DISABLED_EFFORTS = frozenset({"none", "off", "disabled", "false", "0"})
+
 
 _REASONING_REQUIRED_MARKERS = (
     "mandatory", "cannot be disabled", "can't be disabled", "must be enabled", "is required",
@@ -536,8 +555,20 @@ def is_reasoning_required_rejection(error_msg: str) -> bool:
     this endpoint and cannot be disabled", the Nous Portal on gpt-6-astra). The opposite of
     ``is_reasoning_field_rejection``: the field is understood, the *disable* is refused, so the right
     reaction is to step the effort up to the lowest level rather than drop the field (a dropped field
-    also works, but tells the caller nothing about the next call)."""
+    also works, but tells the caller nothing about the next call).
+
+    A pydantic ``literal_error`` naming the field in ``loc`` is the same refusal in structured
+    clothing (#125279): the field is understood (it has a literal enum) and the sent value was a
+    disable (``none``); the accepted set always contains ``low``, the floor effort."""
     msg = (error_msg or "").lower()
+    if "literal_error" in msg and _REASONING_LOC_REJECTION.search(msg):
+        input_match = _REASONING_LITERAL_INPUT.search(msg)
+        if (
+            input_match
+            and input_match.group(1).strip() in _REASONING_DISABLED_EFFORTS
+            and _REASONING_LITERAL_ACCEPTS_LOW.search(msg)
+        ):
+            return True
     token = _REASONING_FIELD_TOKEN.search(msg)
     if token is None:
         return False
@@ -1172,7 +1203,8 @@ def _classify_400(c: _Ctx) -> Verdict:
     # OpenRouter) or a chat-only relay that does not accept ``reasoning_effort: none`` at all
     # (#114460). Deterministic for the request shape, but the only bad field is the disable — the
     # loop drops it and retries once. Must precede request-validation, which would abort as format_error.
-    if _REASONING_MANDATORY_PATTERN in msg or is_reasoning_field_rejection(msg):
+    if (_REASONING_MANDATORY_PATTERN in msg or is_reasoning_field_rejection(msg)
+            or is_reasoning_required_rejection(msg)):
         return _V_REASONING_MANDATORY
     # 400 blaming a field this route never sent (Codex OAuth injects then rejects
     # prompt_cache_retention ~20% of the time): transient, retry identical request.

@@ -272,6 +272,18 @@ def _is_terminal_first_party_env(name: str) -> bool:
 # _strip_hermes_owned_pythonpath() which removes only Hermes-owned entries, preserving user-set paths.
 _ACTIVE_VENV_MARKER_VARS = ("VIRTUAL_ENV", "CONDA_PREFIX", "PYTHONHOME")
 
+# Conda's "an environment is active" state is a SET of variables, not just CONDA_PREFIX:
+# CONDA_SHLVL (activation depth), CONDA_DEFAULT_ENV (active env name) and
+# CONDA_PROMPT_MODIFIER (prompt fragment) all survive a CONDA_PREFIX-only strip and leave
+# the child claiming an active env with no prefix. conda's shell hook then trips over the
+# half-state on every interactive bash (conda/conda#16764: _get_deactivate_scripts(None)
+# raises TypeError where only OSError is caught -> full ERROR REPORT + failed base
+# activation). Dropping the prefix must therefore drop its companions too (#125278).
+# CONDA_EXE / _CE_M / _CE_CONDA / CONDA_PYTHON_EXE are NOT companions: the hook re-emits
+# them and ``conda`` must stay runnable in children. VIRTUAL_ENV has no companion vars,
+# so conda is the only marker with this hazard.
+_CONDA_STATE_COMPANIONS = ("CONDA_SHLVL", "CONDA_DEFAULT_ENV", "CONDA_PROMPT_MODIFIER")
+
 
 def _is_hermes_internal_secret(key: str) -> bool:
     """True for Hermes-internal secrets injected under *dynamic* names the static

@@ -19,6 +19,7 @@ import os
 import shutil
 import sys
 import tempfile
+import threading
 from datetime import datetime, timedelta, timezone, UTC
 from pathlib import Path
 
@@ -316,6 +317,88 @@ class TestProtectedDirsNeverRmtreed:
         assert new_att.exists(), "kanban files a call created are never tracked or deleted"
         assert not scratch.exists(), "root-level scratch files are still cleaned up (control)"
         assert dg.load_tracked() == []
+
+
+class TestConcurrentRegistryWrites:
+    """Registry updates must preserve concurrent changes."""
+
+    def test_parallel_track_calls_keep_both_entries(self, _isolate_env, monkeypatch):
+        dg = _load_lib()
+        scratch = _isolate_env / "hermes-test"
+        scratch.mkdir()
+        a, b = scratch / "test_a.txt", scratch / "test_b.txt"
+        for f in (a, b):
+            f.write_text("x")
+
+        first_loaded, second_arrived = threading.Event(), threading.Event()
+        real_load, real_state_file = dg.load_tracked, dg._state_file
+
+        def load_tracked():
+            tracked = real_load()
+            name = threading.current_thread().name
+            if name == "first" and not first_loaded.is_set():
+                first_loaded.set()
+                # Hold the snapshot until the second writer reaches the registry.
+                assert second_arrived.wait(timeout=5), "second writer never reached the registry"
+            elif name == "second":
+                second_arrived.set()
+            return tracked
+
+        def state_file(name):
+            if name == "tracked.json.lock" and threading.current_thread().name == "second":
+                second_arrived.set()
+            return real_state_file(name)
+
+        monkeypatch.setattr(dg, "load_tracked", load_tracked)
+        monkeypatch.setattr(dg, "_state_file", state_file)
+        errors = []
+
+        def run(path):
+            try:
+                dg.track(str(path), "test", silent=True)
+            except Exception as exc:
+                errors.append(exc)
+
+        first = threading.Thread(target=run, args=(a,), name="first")
+        second = threading.Thread(target=run, args=(b,), name="second")
+        first.start()
+        try:
+            assert first_loaded.wait(timeout=5)
+            second.start()
+            first.join(timeout=10)
+            second.join(timeout=10)
+        finally:
+            second_arrived.set()
+            first.join(timeout=10)
+            if second.ident is not None:
+                second.join(timeout=10)
+        assert not first.is_alive() and not second.is_alive()
+        assert errors == []
+        assert sorted(e["path"] for e in real_load()) == sorted([str(a), str(b)])
+
+    def test_registry_changes_made_during_quick_scan_survive_its_save(self, _isolate_env, monkeypatch):
+        dg = _load_lib()
+        scratch = _isolate_env / "hermes-test"
+        scratch.mkdir()
+        old, kept, late = (scratch / name for name in ("test_old.txt", "kept.txt", "test_late.txt"))
+        for f in (old, kept, late):
+            f.write_text("x")
+        assert dg.track(str(old), "test", silent=True)
+        assert dg.track(str(kept), "other", silent=True)
+
+        real_delete = dg._delete_item
+
+        def delete_while_other_workers_update_the_registry(item):
+            dg.track(str(late), "test", silent=True)
+            dg.forget(str(kept))
+            return real_delete(item)
+
+        monkeypatch.setattr(dg, "_delete_item", delete_while_other_workers_update_the_registry)
+        summary = dg.quick()
+
+        assert summary["deleted"] == 1
+        assert not old.exists()
+        assert [e["path"] for e in dg.load_tracked()] == [str(late)]
 
 
 class TestGitWorktreeFilesNeverCleaned:

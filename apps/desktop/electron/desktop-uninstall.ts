@@ -247,6 +247,52 @@ function uninstallArgsForMode(mode: string) {
   return ['-m', 'hermes_cli.uninstall', '--mode', mode]
 }
 
+export interface UninstallInvocation {
+  program: string
+  args: string[]
+  pythonPath: string | null
+}
+
+/**
+ * The program + argv that run `hermes_cli.uninstall` for this install, or null
+ * when there is nothing to run it with.
+ *
+ * A pre-PM checkout has its own venv. A PM-managed checkout has none (PM alone
+ * creates dependency environments, scripts/install.sh), so its installation
+ * launcher runs the same module through `--run-module`: the contract the
+ * updater's state.db pre-flight already uses (#124209). lite/full keep
+ * preferring a system Python + PYTHONPATH when one exists (Finding 3 below).
+ */
+function resolveUninstallInvocation({
+  mode,
+  agentRoot,
+  venvPython,
+  launcher,
+  systemPython
+}: {
+  mode: string
+  agentRoot: string
+  venvPython: string | null
+  launcher: string | null
+  systemPython: string | null
+}): UninstallInvocation | null {
+  const moduleArgs: string[] = uninstallArgsForMode(mode)
+
+  if (!venvPython && !launcher) {
+    return null
+  }
+
+  if (modeRemovesAgent(mode) && systemPython) {
+    return { program: systemPython, args: moduleArgs, pythonPath: agentRoot }
+  }
+
+  if (venvPython) {
+    return { program: venvPython, args: moduleArgs, pythonPath: null }
+  }
+
+  return { program: launcher as string, args: ['--run-module', ...moduleArgs.slice(1)], pythonPath: null }
+}
+
 /** True when `mode` removes the agent code (lite/full), false otherwise. */
 function modeRemovesAgent(mode: string) {
   return mode === 'lite' || mode === 'full'
@@ -434,7 +480,9 @@ function buildWindowsCleanupScript({
     'goto waitloop',
     ':waited_done',
     `cd /d ${q(agentRoot)}`,
-    `${q(pythonExe)} ${uninstallArgs.map(q).join(' ')}`
+    // A .cmd launcher (older PM installs) must be CALLed, or cmd.exe hands this
+    // script over to it and the bundle removal below never runs.
+    `${/\.(cmd|bat)$/i.test(String(pythonExe)) ? 'call ' : ''}${q(pythonExe)} ${uninstallArgs.map(q).join(' ')}`
   )
 
   if (appPath) {
@@ -469,6 +517,7 @@ export {
   nativeRemovalInstructions,
   resolveInstallKind,
   resolveRemovableAppPath,
+  resolveUninstallInvocation,
   shouldRemoveAppBundle,
   UNINSTALL_MODES,
   uninstallArgsForMode

@@ -239,3 +239,41 @@ class TestResumeFlushesBeforeEndSession:
             conversation_history=[{"role": "user", "content": "hello"}, {"role": "assistant", "content": "hi"}],
         )
         cli_obj._session_db.end_session.assert_called_once()
+
+
+class TestResumeListLimit:
+    """display.resume_list_limit sizes the table /resume shows AND the list a bare index resolves against."""
+
+    def _cli_with_sessions(self, tmp_path, monkeypatch, count, limit):
+        import cli as cli_mod
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        for i in range(count):
+            db.create_session(f"sess_{i:03d}", "cli")
+            db.set_session_title(f"sess_{i:03d}", f"Session {i}")
+            db.append_message(f"sess_{i:03d}", role="user", content=f"hello {i}")
+        display = dict(cli_mod.CLI_CONFIG.get("display", {}), resume_list_limit=limit)
+        monkeypatch.setitem(cli_mod.CLI_CONFIG, "display", display)
+        cli_obj = _make_cli()
+        cli_obj._session_db = db
+        return cli_obj, db
+
+    def test_listing_follows_configured_limit(self, tmp_path, monkeypatch):
+        cli_obj, db = self._cli_with_sessions(tmp_path, monkeypatch, count=15, limit=12)
+        try:
+            assert len(cli_obj._list_recent_sessions()) == 12
+            assert len(cli_obj._list_recent_sessions(limit=3)) == 3
+        finally:
+            db.close()
+
+    def test_bare_resume_arms_same_list_the_index_resolves(self, tmp_path, monkeypatch):
+        cli_obj, db = self._cli_with_sessions(tmp_path, monkeypatch, count=15, limit=12)
+        try:
+            cli_obj._handle_resume_command("/resume")
+            armed = cli_obj._pending_resume_sessions
+            assert len(armed) == 12
+            resolved = cli_obj._resolve_resume_target("12")
+            assert resolved is not None and resolved[0] == armed[11]["id"]
+        finally:
+            db.close()

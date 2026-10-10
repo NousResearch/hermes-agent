@@ -216,11 +216,15 @@ def test_commit_icons_are_red_and_print_only_the_actual_seven_digit_prefix(gener
         image = Image.open(first / "apps/desktop/assets" / name).convert("RGB")
         unbadged = Image.open(stable / "apps/desktop/assets" / name).convert("RGB")
         art = (0, 0, 0) if name == "icon.png" else (255, 255, 255)
+        # The badge follows the tile grid of its background, so a glyph cell's
+        # canvas point is the tile-local point pushed through that grid transform.
+        inset, scale = module.BADGE_TILE_GRIDS["-linux-"]
         for digit, rows in enumerate(expected):
             judged = 0
             for y, row in enumerate(rows):
                 for x in range(5):
-                    point = (gx + (digit * 6 + x) * 16 + 8, gy + y * 16 + 8)
+                    point = (inset + (gx + (digit * 6 + x) * 16 + 8) * scale,
+                             inset + (gy + y * 16 + 8) * scale)
                     if unbadged.getpixel(point) == art:
                         continue
                     judged += 1

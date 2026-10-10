@@ -3314,7 +3314,15 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
     path_entries.extend(_build_user_local_paths(user_home, path_entries))
     path_entries.extend(_build_wsl_interop_paths(path_entries))
     path_entries.extend(["/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"])
-    sane_path = ":".join(path_entries)
+    # Preserve managed/FHS precedence while carrying tools from the installer shell.
+    wsl = is_wsl()
+    shell_paths = [p for p in os.environ.get("PATH", "").split(":")
+                   if p.strip() and not (wsl and p.startswith("/mnt/"))]
+    sane_path = ":".join(dict.fromkeys(path_entries + shell_paths))
+    # Environment= uses C escapes and expands % specifiers, even inside quotes.
+    path_escapes = {chr(c): f"\\x{c:02x}" for c in (*range(32), 127)}
+    path_escapes.update({"\\": "\\\\", '"': '\\"', "%": "%%"})
+    sane_path = sane_path.translate(str.maketrans(path_escapes))
     start = installation_command(project_root, [*shlex.split(profile_arg), "gateway", "run"],
                             python=python_path, home=hermes_home)
     cleanup = installation_command(project_root, module="gateway.cgroup_cleanup",
@@ -5775,4 +5783,3 @@ def _pm_runtime_venv_dir(project_root: Path | None = None) -> Path | None:
 
     venv = selected_venv(root)  # a malformed committed selection raises: fail closed
     return venv if venv.is_dir() else None
-

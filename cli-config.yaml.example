@@ -417,6 +417,7 @@ kanban:
 #   - Gateway/messaging/cron: Uses terminal.cwd here; legacy .env cwd values are deprecated
 cron:
   catch_up_missed: true  # False skips past-grace recurring misses after planned downtime.
+  # reasoning_effort: "low"  # Effort for unpinned cron jobs, independent of chat; "" = follow agent config.
 
 terminal:
   backend: "local"

@@ -488,11 +488,15 @@ def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str]:
 
 
 def _resolve_job_reasoning_config(job: dict, cfg: dict, model: str) -> dict | None:
-    """Effective reasoning config for a cron run. A per-job ``reasoning_effort`` pin beats global
-    and per-model config and is model-independent by design (also governs an auth-fallback swap);
-    clamping stays with provider transports. An unparseable pin warns and falls back to config."""
+    """Effective reasoning config for a cron run. Precedence: per-job ``reasoning_effort`` pin >
+    ``cron.reasoning_effort`` (fleet default, model-independent) > ``resolve_reasoning_config``
+    (per-model ``agent.reasoning_overrides``, then global ``agent.reasoning_effort``). The pin and
+    the cron default also govern an auth-fallback model swap; clamping stays with provider
+    transports. Empty cron default is ignored. An unparseable pin or cron default warns and falls
+    through — a bad value never fails the job. ``no_agent`` jobs never reach this."""
     from hermes_constants import parse_reasoning_effort, resolve_reasoning_config
 
+    cfg = cfg if isinstance(cfg, dict) else {}
     pinned = job.get("reasoning_effort")
     if pinned is not None:
         parsed = parse_reasoning_effort(pinned)
@@ -507,7 +511,21 @@ def _resolve_job_reasoning_config(job: dict, cfg: dict, model: str) -> dict | No
             job.get("id", "?"),
             pinned,
             job.get("id", "?"))
-    return resolve_reasoning_config(cfg if isinstance(cfg, dict) else {}, str(model))
+    cron_cfg = cfg.get("cron") if isinstance(cfg.get("cron"), dict) else {}
+    fleet = cron_cfg.get("reasoning_effort")
+    if fleet is not None and str(fleet).strip():
+        parsed = parse_reasoning_effort(fleet)
+        if parsed is not None:
+            logger.info(
+                "Job '%s': using cron.reasoning_effort '%s'", job.get("id", "?"), fleet)
+            return parsed
+        logger.warning(
+            "Job '%s': invalid cron.reasoning_effort %r — ignoring it and falling "
+            "back to config resolution (valid: none, minimal, low, medium, high, "
+            "xhigh, max, ultra).",
+            job.get("id", "?"),
+            fleet)
+    return resolve_reasoning_config(cfg, str(model))
 
 
 from cron.jobs import (

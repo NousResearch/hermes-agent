@@ -101,6 +101,7 @@ import {
   shouldLatchSshClientFailure,
   sshClientFailedError
 } from './backend-start-failure'
+import { createBackgroundWorkTray } from './background-work-tray'
 import { describeBootstrapFailure } from './bootstrap-failure-copy'
 import {
   detectRemoteDisplay,
@@ -1928,7 +1929,18 @@ function registerMediaProtocol(): void {
   protocol.handle(MEDIA_PROTOCOL, handler)
 }
 
-let mainWindow = null
+let mainWindow: BrowserWindow | null = null
+
+const backgroundWorkTray = createBackgroundWorkTray(HERMES_HOME, {
+  showMainWindow: () => {
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      createWindow()
+    } else {
+      focusWindow(mainWindow)
+    }
+  }
+})
+
 const backendConnectionState = createBackendConnectionState<ReturnType<typeof spawn>, any>()
 
 const localBackendLifecycle = createLocalBackendLifecycle<ChildProcess>({
@@ -19361,6 +19373,10 @@ app.whenReady().then(() => {
   // decision lives in the extracted helper.
   enableRendererAccessibility({ appApi: app })
 
+  if (IS_MAC) {
+    backgroundWorkTray.start()
+  }
+
   installMediaPermissions()
   installDownloadHandling()
   registerMediaProtocol()
@@ -19723,6 +19739,7 @@ app.on('before-quit', event => {
   // The always-on-top overlay isn't a "real" app window; close it so a stray
   // pet can't keep the process alive or float over a quit app.
   closePetOverlay()
+  backgroundWorkTray.stop()
   wakeIndicatorController.close()
 
   // Same for the HUD — an always-on-top panel outliving the app would leave a

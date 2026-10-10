@@ -1388,6 +1388,9 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
         # Telegram #58563 fix.
         self._last_overflow_preview: dict[tuple, str] = {}
         self._warned_fail_closed_default = False
+        # Live background-work presence/dashboard publisher; created lazily so the adapter
+        # remains importable without Discord runtime dependencies during unit tests.
+        self._background_activity_publisher: Optional[Any] = None
 
     def _config_value(self, key: str, default: Any, *, env_key: Optional[str] = None) -> Any:
         """Resolve a liveness value from profile config, legacy env, or default."""
@@ -1551,6 +1554,10 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
                 logger.info("[%s] Connected as %s", adapter_self.name, adapter_self._client.user)
                 await adapter_self._resolve_allowed_usernames()
                 adapter_self._ready_event.set()
+                from plugins.platforms.discord.background_activity import DiscordActivityPublisher
+                if adapter_self._background_activity_publisher is None:
+                    adapter_self._background_activity_publisher = DiscordActivityPublisher(adapter_self)
+                adapter_self._background_activity_publisher.start()
                 if adapter_self._post_connect_task and not adapter_self._post_connect_task.done():
                     adapter_self._post_connect_task.cancel()
                 adapter_self._post_connect_task = asyncio.create_task(
@@ -2197,6 +2204,9 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
     async def disconnect(self) -> None:
         """Disconnect from Discord."""
         self._disconnecting = True
+        if self._background_activity_publisher is not None:
+            await self._background_activity_publisher.stop()
+            self._background_activity_publisher = None
         # Cancel the liveness probe first so it can't fire a spurious fatal/reconnect mid-teardown.
         await self._cancel_liveness_task()
         # Leave voice *before* cancelling the bot task: VoiceClient.disconnect() needs the main
@@ -7386,6 +7396,15 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     if "history_backfill" in discord_cfg:
         seeded_extra["history_backfill"] = discord_cfg["history_backfill"]
         _env_default("DISCORD_HISTORY_BACKFILL", str(discord_cfg["history_backfill"]).lower())
+    # background_activity_channel_id: opt-in channel for the pinned background-work
+    # dashboard. Absent/unset means no dashboard is ever posted (presence still works).
+    _bg_activity_channel = (
+        discord_cfg["background_activity_channel_id"] if "background_activity_channel_id" in discord_cfg
+        else platform_extra_cfg.get("background_activity_channel_id")
+    )
+    if _bg_activity_channel is not None:
+        seeded_extra["background_activity_channel_id"] = _bg_activity_channel
+        _env_default("DISCORD_BACKGROUND_ACTIVITY_CHANNEL", str(_bg_activity_channel))
     hbl = discord_cfg.get("history_backfill_limit")
     if hbl is not None:
         seeded_extra["history_backfill_limit"] = hbl

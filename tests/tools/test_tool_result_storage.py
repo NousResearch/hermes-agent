@@ -240,8 +240,10 @@ class TestMaybePersistToolResult:
         assert "tc_456.txt" in result
         assert len(result) < len(content)
 
-    def test_persists_full_content_as_is(self):
-        """Content is persisted verbatim — no JSON extraction."""
+    def test_persists_full_output_via_stdin(self):
+        """The full output reaches the sandbox write through stdin, complete and
+        out of the command string. A terminal-shaped envelope is carried as
+        metadata block + pageable output text (#126444), not dropped or clipped."""
         import json
         env = MagicMock()
         # Readability probe fails -> falls back to the in-sandbox write,
@@ -264,7 +266,9 @@ class TestMaybePersistToolResult:
         assert PERSISTED_OUTPUT_TAG in result
         # Content is delivered through stdin (no longer embedded in the
         # command string — see test_large_content_via_stdin for why).
-        assert env.execute.call_args_list[1][1]["stdin_data"] == content
+        transported = env.execute.call_args_list[1][1]["stdin_data"]
+        assert transported.endswith(raw)
+        assert '"exit_code": 0' in transported
 
     def test_tool_use_id_cannot_escape_storage_dir(self):
         env = MagicMock()
@@ -599,8 +603,10 @@ class TestMcpEnvelopeSpillover:
         assert text == markdown
         assert json.loads(tail.split("\n</mcp-result-metadata>")[0]) == {"structuredContent": {"count": 5_000}}
 
-    def test_non_envelope_json_still_verbatim(self):
-        content = json.dumps({"output": "line\n" * 8_000, "exit_code": 0})
+    def test_unknown_sibling_key_still_verbatim(self):
+        # Opaque JSON that merely leads with "output" is NOT the terminal envelope;
+        # only the recognized shape is rewritten (#126444).
+        content = json.dumps({"output": "line\n" * 8_000, "exit_code": 0, "unexpected_key": 1})
         maybe_persist_tool_result(
             content=content, tool_name="terminal", tool_use_id="tc_json_verbatim",
             env=None, threshold=30_000)
@@ -640,3 +646,95 @@ class TestMcpEnvelopeSpillover:
 
         assert PERSISTED_OUTPUT_TAG in msgs[0]["content"]
         assert (get_spillover_dir() / "tc_budget_mcp.txt").read_text(encoding="utf-8") == markdown
+
+# ── terminal envelope preview (#126444) ───────────────────────────────
+
+class TestTerminalEnvelopePreview:
+    """An oversized terminal result is a JSON envelope that LEADS with `output`, so the head
+    preview of the serialized envelope hid exit_code/error/hint exactly when the result was
+    too big to inline (#126444). The metadata must ride inside the preview window."""
+
+    @pytest.fixture(autouse=True)
+    def _isolated_home(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        import tools.tool_result_storage as trs
+        monkeypatch.setattr(trs, "_spillover_pruned_homes", set())
+        yield
+
+    def test_exit_code_and_hints_surface_in_persisted_preview(self):
+        output = "compiler noise line\n" * 4_000
+        envelope = json.dumps({
+            "output": output, "exit_code": 2, "error": None,
+            "exit_code_meaning": "build failed", "hint": "rerun with -v",
+        }, ensure_ascii=False)
+
+        result = maybe_persist_tool_result(
+            content=envelope, tool_name="terminal", tool_use_id="tc_term_meta",
+            env=None, threshold=30_000)
+
+        assert PERSISTED_OUTPUT_TAG in result
+        assert '"exit_code": 2' in result
+        assert "build failed" in result
+        assert "rerun with -v" in result
+        # Metadata must land BEFORE the output text in the preview: appended after the
+        # text, head truncation would cut it again.
+        assert result.index('"exit_code": 2') < result.index("compiler noise line")
+
+    def test_promoted_foreground_envelope_surfaces_session_in_preview(self):
+        """A promoted spawn result (tools/terminal_tool.py _with_promoted_note) re-serializes
+        the envelope with a ``promoted_from_foreground`` member; the promoted wrapper can
+        carry large foreground output, so session_id/pid must still ride the preview."""
+        output = "promoted poll output line\n" * 4_000
+        envelope = json.dumps({
+            "output": output, "exit_code": 0,
+            "session_id": "sess_123", "pid": 4242,
+            "promoted_from_foreground": "requested 1800s, cap 1800s",
+        }, ensure_ascii=False)
+
+        result = maybe_persist_tool_result(
+            content=envelope, tool_name="terminal", tool_use_id="tc_term_promoted",
+            env=None, threshold=30_000)
+
+        assert PERSISTED_OUTPUT_TAG in result
+        assert '"promoted_from_foreground"' in result
+        assert '"session_id": "sess_123"' in result
+        assert '"pid": 4242' in result
+        assert result.index('"promoted_from_foreground"') < result.index("promoted poll output line")
+
+    def test_error_surfaces_and_spill_keeps_metadata_then_output(self):
+        output = "x" * 40_000 + "\nthe real failure tail\n"
+        envelope = json.dumps(
+            {"output": output, "exit_code": 1, "error": "disk full"}, ensure_ascii=False)
+
+        result = maybe_persist_tool_result(
+            content=envelope, tool_name="terminal", tool_use_id="tc_term_err",
+            env=None, threshold=30_000)
+
+        assert '"error": "disk full"' in result
+        spill = (get_spillover_dir() / "tc_term_err.txt").read_text(encoding="utf-8")
+        # The archived copy is the pageable output with the metadata block up front —
+        # the raw envelope was the only other carrier of exit_code/error.
+        assert '"exit_code": 1' in spill
+        assert spill.index('"exit_code": 1') < spill.index("x" * 100)
+        assert "the real failure tail" in spill
+
+    def test_failing_build_tail_rides_the_preview(self):
+        """The reporter's test scenario on #126532: a failing build's error line sits at the
+        END of a huge output. The metadata block led the preview, but the tail still needed
+        ``read_file`` — the preview now carries a head window AND a tail window, while the
+        spillover file keeps the full output verbatim."""
+        output = "HEAD_MARKER\n" + ("filler line\n" * 4_000) + "Traceback: TAIL_ERROR_MARKER build failed\n"
+        envelope = json.dumps({"output": output, "exit_code": 2}, ensure_ascii=False)
+
+        result = maybe_persist_tool_result(
+            content=envelope, tool_name="terminal", tool_use_id="tc_term_tail",
+            env=None, threshold=30_000)
+
+        assert PERSISTED_OUTPUT_TAG in result
+        assert "HEAD_MARKER" in result
+        assert "TAIL_ERROR_MARKER" in result
+        assert "chars elided" in result
+        # The elision is preview-only: the spilled file keeps every line.
+        persisted = (get_spillover_dir() / "tc_term_tail.txt").read_text(encoding="utf-8")
+        assert "chars elided" not in persisted
+        assert persisted.count("filler line") == 4_000

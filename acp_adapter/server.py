@@ -614,9 +614,14 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         logger.info(log, *log_args)
 
     async def new_session(self, cwd: str, mcp_servers: list | None = None, **kwargs: Any) -> NewSessionResponse:
+        # A client-side branch request carries the session it branched from; ACP's own
+        # schema has no field for it, so it arrives as an extra kwarg.
+        parent_session_id = kwargs.get("parent_session_id") or None
         # Agent construction (config, memory-provider import, SessionDB) is slow and fully
         # blocking; inline it froze the loop serving every JSON-RPC request (#58083).
-        state = await asyncio.to_thread(self.session_manager.create_session, cwd=cwd)
+        state = await asyncio.to_thread(
+            self.session_manager.create_session, cwd=cwd, parent_session_id=parent_session_id
+        )
         await self._attach_session_mcp(state, mcp_servers, "New session %s (cwd=%s)", state.session_id, cwd)
         return NewSessionResponse(session_id=state.session_id, **await self._session_response_fields(state))
 
@@ -905,9 +910,13 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             # Shared with the step callback so a runtime that projects
             # ``tool.completed`` closes each call once, not twice.
             turn_state: dict[str, Any] = {}
+            # Session-owned (not per-call): a ``terminal`` in a later API round can then
+            # diff against the content an earlier ``read_file`` observed.
+            read_snapshots_cache = state.read_snapshots_cache
             policy_getter = lambda: self._edit_approval_policy_for_state(state)
             cbs.tool_progress_cb = make_tool_progress_cb(
-                conn, session_id, loop, tool_call_ids, tool_call_meta, edit_approval_policy_getter=policy_getter,
+                conn, session_id, loop, tool_call_ids, tool_call_meta, read_snapshots_cache,
+                edit_approval_policy_getter=policy_getter,
                 turn_state=turn_state,
             )
             # Per-session allocator: a new turn must never reuse a previous turn's
@@ -916,7 +925,9 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
                 state.message_ids = AssistantMessageIdAllocator()
             state.message_ids.close()  # new turn -> next chunk opens a fresh id
             cbs.reasoning_cb = make_thinking_cb(conn, session_id, loop, state.message_ids)
-            cbs.step_cb = make_step_cb(conn, session_id, loop, tool_call_ids, tool_call_meta, turn_state)
+            cbs.step_cb = make_step_cb(
+                conn, session_id, loop, tool_call_ids, tool_call_meta, turn_state, read_snapshots_cache
+            )
             message_cb = make_message_cb(conn, session_id, loop, state.message_ids)
 
             def stream_delta_cb(text: str) -> None:

@@ -752,6 +752,7 @@ gateway:
     usage_idle: "Verwendung: /steer <prompt>  (kein Agent läuft; wird als normale Nachricht gesendet)"
     queued_starting: "Agent startet noch — /steer für den nächsten Zug eingereiht."
     queued_no_agent: "Kein aktiver Agent — /steer für den nächsten Zug eingereiht."
+    queued_turn_finished: "Der Zug des Agenten ist beendet. /steer für den nächsten Zug eingereiht."
     failed: "⚠️ Steer fehlgeschlagen: {error}"
     rejected_empty: "Steer abgelehnt (leere Nutzlast)."
     target_subagents: "Lauf und seine aktiven Subagenten"

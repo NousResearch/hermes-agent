@@ -485,3 +485,77 @@ def test_runner_release_turn_lease_is_token_scoped_and_bare_safe():
     _run(scenario())
 
 
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("rescued", [False, True], ids=["normal", "rescued"])
+async def test_marker_cleanup_cancellation_releases_turn_ownership(monkeypatch, tmp_path, rescued):
+    from types import SimpleNamespace
+    from gateway.config import Platform
+    from gateway.platforms.base import ProcessingOutcome
+    from tests.gateway.test_duplicate_user_message import _bootstrap, _event
+    from tests.gateway.test_queued_followup_processing_hooks import HookRecordingAdapter
+
+    runner = _bootstrap(monkeypatch, tmp_path)
+    runner._turn_leases = SessionTurnLeaseRegistry()
+    event = _event()
+    key = runner._session_key_for_source(event.source)
+    adapter = HookRecordingAdapter()
+    adapter.gateway_runner = runner
+    runner.adapters[Platform.TELEGRAM] = adapter
+    if rescued:
+        async def park(input_event):
+            assert runner._enqueue_fifo(key, input_event, adapter)
+            runner._session_state(key).conversation.queued_events.append(adapter._pending_messages.pop(key))
+            return None
+
+        adapter.set_message_handler(park)
+        await adapter.handle_message(event)
+        await asyncio.wait_for(asyncio.gather(*adapter._background_tasks), timeout=10)
+        assert (adapter.started, adapter.completed, event._turn_marker_handoff,
+                event._processing_state.awaiting_start) == (["msg-42"], [], False, True)
+        incoming = _event()
+        incoming.message_id = "incoming"
+    else:
+        incoming = event
+    lease = MagicMock()
+    runner._claim_active_session_slot = lambda *_: (lease, None)
+    runner._run_post_turn_hooks = AsyncMock()
+    clearing = asyncio.Event()
+
+    async def clear_marker(session_key, token):
+        clearing.set()
+        await asyncio.Event().wait()
+
+    runner._async_session_store = SimpleNamespace(
+        _store=runner.session_store, clear_turn_active=clear_marker)
+
+    async def run_turn(event, source, session_key, generation):
+        token = await runner._turn_leases.acquire(
+            "sess-dedup", owner_key=session_key, generation=generation, timeout=5)
+        runner._session_state(session_key).turn.lease_tokens[generation] = token
+        event._gateway_active_turn_session_key = session_key
+        event._gateway_active_turn_token = "marker-token"
+        return "completed reply"
+
+    runner._handle_message_with_agent = run_turn
+    task = asyncio.create_task(runner._handle_message(incoming))
+    try:
+        await asyncio.wait_for(clearing.wait(), timeout=10)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    finally:
+        if not task.done():
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+    state = runner._session_state(key)
+    assert (state.turn.agent, state.turn.lease_tokens, lease.release.call_count) == (None, {}, 1)
+    successor = await runner._turn_leases.acquire(
+        "sess-dedup", owner_key=key, generation=2, timeout=5)
+    assert successor is not None
+    assert runner._turn_leases.release(successor)
+    assert (adapter.started, adapter.completed) == (
+        (["msg-42"], [("msg-42", ProcessingOutcome.SUCCESS)]) if rescued else ([], []))

@@ -50,6 +50,7 @@ def _make_runner():
         platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")}
     )
     adapter = MagicMock()
+    adapter._pending_dispatch_reservations = {}
     adapter.send = AsyncMock()
     runner.adapters = {Platform.TELEGRAM: adapter}
     runner._voice_mode = {}
@@ -83,7 +84,7 @@ def _make_runner():
     runner._fallback_model = None
     runner._show_reasoning = False
     runner._is_user_authorized = lambda _source: True
-    runner._set_session_env = lambda _context: None
+    runner._set_session_env = lambda _context: []
     runner._should_send_voice_reply = lambda *_args, **_kwargs: False
     runner._send_voice_reply = AsyncMock()
     runner._capture_gateway_honcho_if_configured = lambda *args, **kwargs: None

@@ -16,6 +16,8 @@ from contextvars import ContextVar
 import logging
 import threading
 import time
+import sys
+import weakref
 from typing import Dict, Any, List, Optional, Tuple
 
 from tools.registry import CHECK_FN_CACHE_BYPASS, check_fn_cache_scope, discover_builtin_tools, registry, tool_error
@@ -80,14 +82,46 @@ def _get_tool_loop():
         return _tool_loop
 
 
-def _get_worker_loop():
+async def _finish_worker_loop() -> None:
+    current = asyncio.current_task()
+    pending = [task for task in asyncio.all_tasks() if task is not current]
+    for task in pending:
+        task.cancel()
+    if pending:
+        await asyncio.gather(*pending, return_exceptions=True)
+
+    await asyncio.get_running_loop().shutdown_asyncgens()
+    if "agent.auxiliary_client" in sys.modules:
+        from agent.auxiliary_client_lifecycle import shutdown_cached_clients_for_current_loop
+
+        await shutdown_cached_clients_for_current_loop()
+
+
+def _close_worker_loop(runner: asyncio.Runner) -> None:
+    if runner.get_loop().is_closed():
+        return
+
+    try:
+        runner.run(_finish_worker_loop())
+    finally:
+        runner.close()
+
+
+class _WorkerLoopOwner:
+    def __init__(self) -> None:
+        self._runner = asyncio.Runner()
+        self.loop = self._runner.get_loop()
+        # A bound owner method would keep this owner alive after thread exit.
+        self._finalizer = weakref.finalize(self, _close_worker_loop, self._runner)
+
+
+def _get_worker_loop() -> asyncio.AbstractEventLoop:
     """Persistent event loop for the current worker thread (thread-local)."""
-    loop = getattr(_worker_thread_local, 'loop', None)
-    if loop is None or loop.is_closed():
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        _worker_thread_local.loop = loop
-    return loop
+    owner = getattr(_worker_thread_local, "owner", None)
+    if owner is None or owner.loop.is_closed():
+        owner = _WorkerLoopOwner()
+        _worker_thread_local.owner = owner
+    return owner.loop
 
 
 def _run_async(coro):
@@ -101,30 +135,24 @@ def _run_async(coro):
         # reference to, so on timeout we can cancel the task inside it
         # (ThreadPoolExecutor.cancel() is a no-op on a running worker).
         import concurrent.futures
+
         worker_loop: Optional[asyncio.AbstractEventLoop] = None
         loop_ready = threading.Event()
 
         def _run_in_worker():
             nonlocal worker_loop
-            worker_loop = asyncio.new_event_loop()
+            runner = asyncio.Runner()
+            worker_loop = runner.get_loop()
             loop_ready.set()
             try:
-                asyncio.set_event_loop(worker_loop)
                 return worker_loop.run_until_complete(coro)
             finally:
-                try:  # drain tasks still pending after an external cancel
-                    pending = asyncio.all_tasks(worker_loop)
-                    for t in pending:
-                        t.cancel()
-                    if pending:
-                        worker_loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
-                except Exception:
-                    pass
-                worker_loop.close()
+                _close_worker_loop(runner)
 
         pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         # Carry profile + approval/sudo context so get_hermes_home() resolves correctly.
         from tools.thread_context import propagate_context_to_thread
+
         future = pool.submit(propagate_context_to_thread(_run_in_worker))
         try:
             return future.result(timeout=300)

@@ -92,6 +92,7 @@ def _make_runner() -> GatewayRunner:
 
 def _make_adapter() -> MagicMock:
     adapter = MagicMock()
+    adapter._pending_dispatch_reservations = {}
     adapter._pending_messages = {}
     adapter._send_with_retry = AsyncMock()
     adapter.config = MagicMock()
@@ -184,7 +185,7 @@ class TestBusyHandlerDemotesInterruptForSubagents:
         runner._running_agents[sk] = parent
         runner.adapters[event.source.platform] = adapter
 
-        with patch("gateway.platforms.base.merge_pending_message_event"):
+        with patch("gateway.platforms.base_pending_merge.merge_pending_message_event"):
             await runner._handle_active_session_busy_message(event, sk)
 
         parent.interrupt.assert_called_once_with("please stop")
@@ -202,7 +203,7 @@ class TestBusyHandlerDemotesInterruptForSubagents:
         runner._running_agents[sk] = parent
         runner.adapters[event.source.platform] = adapter
 
-        with patch("gateway.platforms.base.merge_pending_message_event"):
+        with patch("gateway.platforms.base_pending_merge.merge_pending_message_event"):
             await runner._handle_active_session_busy_message(event, sk)
 
         parent.interrupt.assert_not_called()
@@ -228,7 +229,7 @@ class TestBusyHandlerDemotesInterruptForSubagents:
         runner._running_agents[sk] = parent
         runner.adapters[event.source.platform] = adapter
 
-        with patch("gateway.platforms.base.merge_pending_message_event"):
+        with patch("gateway.platforms.base_pending_merge.merge_pending_message_event"):
             await runner._handle_active_session_busy_message(event, sk)
 
         parent.steer.assert_called_once()

@@ -45,6 +45,9 @@ const CTRL_OFFSET = 96
 const shortModel = (model = '') => model.replace(/^.*\//, '') || messages().pickers.session.modelUnknown
 const ctrlChar = (letter: string) => String.fromCharCode(letter.charCodeAt(0) - CTRL_OFFSET)
 
+// Match the compact source column in the CLI session browser.
+export const sessionSourceLabel = (source?: string) => source?.trim().slice(0, 6) || '—'
+
 export const fixedSessionColumnStyle = () => ({ flexShrink: 0 })
 
 export const activeSessionCountLabel = (count: number) =>
@@ -348,6 +351,9 @@ export function ActiveSessionSwitcher({
   const preferredWidth = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, (stdout?.columns ?? 80) - 6))
   const width = clampOverlayWidth(preferredWidth, maxWidth)
   const promptColumns = Math.max(20, width - 11)
+  // Reuse existing metadata space on narrow terminals so source does not
+  // displace the title; wider overlays retain the full model/count column.
+  const metadataWidth = width < 80 ? 10 : 18
 
   // Rows are [new][live…][history…]: the "+ new" row is pinned first (index 0,
   // always rendered) and the live+history list is windowed below it. `total`
@@ -802,9 +808,15 @@ export function ActiveSessionSwitcher({
                 </Text>
               </Box>
 
-              <Box {...fixedSessionColumnStyle()} width={18}>
+              <Box {...fixedSessionColumnStyle()} width={metadataWidth}>
                 <Text color={rowTextColor ?? t.color.muted} wrap="truncate-end">
                   {S.row.messageCount(h.message_count ?? 0)}
+                </Text>
+              </Box>
+
+              <Box {...fixedSessionColumnStyle()} width={8}>
+                <Text color={rowTextColor ?? t.color.muted} wrap="truncate-end">
+                  {sessionSourceLabel(h.source)}
                 </Text>
               </Box>
 
@@ -866,9 +878,15 @@ export function ActiveSessionSwitcher({
               </Text>
             </Box>
 
-            <Box {...fixedSessionColumnStyle()} width={18}>
+            <Box {...fixedSessionColumnStyle()} width={metadataWidth}>
               <Text color={rowTextColor ?? t.color.muted} wrap="truncate-end">
                 {shortModel(s.model)}
+              </Text>
+            </Box>
+
+            <Box {...fixedSessionColumnStyle()} width={8}>
+              <Text color={rowTextColor ?? t.color.muted} wrap="truncate-end">
+                {sessionSourceLabel(s.source)}
               </Text>
             </Box>
 

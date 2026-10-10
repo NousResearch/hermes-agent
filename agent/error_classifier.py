@@ -531,6 +531,24 @@ _REASONING_REQUIRED_MARKERS = (
 )
 
 
+def is_empty_provider_response(error: Exception) -> bool:
+    """True when ``error`` is a status-less failure carrying the known empty-upstream
+    vocabulary (``_EMPTY_PROVIDER_RESPONSE_PATTERNS``), and nothing else.
+
+    OpenRouter reports a provider-side empty generation as HTTP 200 plus an in-band
+    SSE ``error`` frame, so the OpenAI SDK raises a bare ``APIError`` with no status
+    and no ``Error code`` — the one shape on which a status-keyed retry gate cannot
+    fire. Callers that must NOT key on a status (the streaming non-streaming re-issue
+    probe) consult this instead of adding a second copy of the vocabulary. Matching
+    the message alone keeps the classifier's ``_V_SERVER_ERROR`` mapping the single
+    authority on what an empty response is; a status-bearing error is deliberately
+    still handled by the caller's own status test."""
+    status = _extract_status_code(error)
+    if status is not None:
+        return False
+    return any(p in _build_error_msg(error, _body_of(error)) for p in _EMPTY_PROVIDER_RESPONSE_PATTERNS)
+
+
 def is_reasoning_required_rejection(error_msg: str) -> bool:
     """Provider 400 saying the model's reasoning cannot be switched OFF ("Reasoning is mandatory for
     this endpoint and cannot be disabled", the Nous Portal on gpt-6-astra). The opposite of

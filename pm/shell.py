@@ -1,4 +1,4 @@
-"""pm.shell(): the one place Hermes resolves the shell it runs commands with.
+r"""pm.shell(): the one place Hermes resolves the shell it runs commands with.
 
 Owned by pm because the shell is a bundled tool on Windows (Git for Windows
 carries bash.exe), and the store is the authority on whether it exists.

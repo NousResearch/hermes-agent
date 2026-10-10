@@ -1,7 +1,7 @@
 name: myswarm
 title: MySwarm
 repo: https://github.com/tomkubik/hermes-myswarm
-sha: 8bc4886b14fdb1ae6e0ad0453bab128339dc9c52
+sha: 215ea786550973a238564ad9f05d32f060737bb7
 description: >-
   Discover, visualize, sanitize/export, and safely test community agents.md swarm
   configurations. Outputs abbreviated agent/persona/goal tables, renders PII-pruned

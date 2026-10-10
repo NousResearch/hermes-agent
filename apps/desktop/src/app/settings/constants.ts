@@ -429,7 +429,8 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
   },
   desktop: {
     repoScanEnabled: 'Automatic Repository Discovery',
-    repoScanRoots: 'Repository Discovery Roots',
+    repoScanNested: 'Also Discover Nested Repositories',
+    repoScanRoots: 'Additional Repository Discovery Roots',
     repoScanExcludePaths: 'Excluded Repository Paths'
   },
   agent: {
@@ -615,7 +616,8 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
   },
   desktop: {
     repoScanEnabled: 'Scan local folders for Git repositories to show in Projects.',
-    repoScanRoots: 'Folders to scan. Leave empty to scan your home directory.',
+    repoScanNested: 'Show repositories inside one you already have as subprojects.',
+    repoScanRoots: 'Extra folders to scan. Empty scans your Working Directory.',
     repoScanExcludePaths: 'Folders and their descendants to skip during repository discovery.'
   },
   timezone: 'IANA timezone identifier. Blank uses the system timezone.',
@@ -732,6 +734,7 @@ export const SECTIONS: DesktopConfigSection[] = [
     keys: [
       'terminal.cwd',
       'desktop.repo_scan_enabled',
+      'desktop.repo_scan_nested',
       'desktop.repo_scan_roots',
       'desktop.repo_scan_exclude_paths',
       'code_execution.mode',

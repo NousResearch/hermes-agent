@@ -98,14 +98,6 @@ def _release_db(db) -> None:
         release_or_close(db)
 
 
-def _branch_title(db, parent_key: str) -> str:
-    """Next title in the parent's lineage (mirrors the TUI /branch naming)."""
-    current = db.get_session_title(parent_key) or "branch"
-    if hasattr(db, "get_next_title_in_lineage"):
-        return db.get_next_title_in_lineage(current)
-    return f"{current} (branch)"
-
-
 def _cwd_info(session: dict, cwd: str, branch=None) -> dict:
     """session.info after a cwd change: the full agent view, or the lazy shape."""
     if (agent := session.get("agent")) is not None:
@@ -426,6 +418,7 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
             "active_session_lease": None,  # claimed lazily on the first turn (_ensure_active_session_slot)
             "cols": int(params.get("cols", 80)), "created_at": now, "edit_snapshots": {},
             "explicit_cwd": explicit_cwd,
+            "cwd_chosen": _cwd_chosen(params),
             "history": history, "history_lock": threading.Lock(), "history_version": 0, "image_counter": 0,
             "seeded": bool(history),  # gates _persist_branch_seed: only create-time history is unpersisted
             "cwd": session_cwd, "inflight_turn": None, "last_active": now,

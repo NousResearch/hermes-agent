@@ -42,7 +42,8 @@ describe('filterToSessionBearingProjects (#53004)', () => {
     { ...base, id: 'auto_empty', isAuto: true, sessionCount: 0 },
     { ...base, id: 'auto_active', isAuto: true, sessionCount: 2 },
     { ...base, id: 'explicit_empty', sessionCount: 0 },
-    { ...base, id: 'home', isNoProject: true, sessionCount: 0 }
+    { ...base, id: 'home', isNoProject: true, sessionCount: 0 },
+    { ...base, discovered: true, id: 'scanned_empty', isAuto: true, sessionCount: 0 }
   ]
 
   it('drops auto projects with no sessions but keeps active autos', () => {
@@ -50,6 +51,14 @@ describe('filterToSessionBearingProjects (#53004)', () => {
 
     expect(ids).not.toContain('auto_empty')
     expect(ids).toContain('auto_active')
+  })
+
+  it('keeps a scanned repo before it owns a session', () => {
+    // A discovered repo is one the profile's own workspace holds — that is what the scan was for, so
+    // it renders with zero sessions like any other row the user kept.
+    const ids = filterToSessionBearingProjects(tree).map(project => project.id)
+
+    expect(ids).toContain('scanned_empty')
   })
 
   it('never drops explicit projects or the Home bucket', () => {

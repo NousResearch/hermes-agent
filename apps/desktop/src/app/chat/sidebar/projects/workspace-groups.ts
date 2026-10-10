@@ -61,6 +61,9 @@ export interface SidebarProjectTree {
   // A git repo root promoted automatically (not a user-created projects.db row).
   // Deletable = dismissable.
   isAuto?: boolean
+  // ...and, of those, one the disk scan found (`desktop.repo_scan_*`). It is a repo the user's
+  // workspace actually holds, so it shows before it owns any session; see `project-filter.ts`.
+  discovered?: boolean
   // The synthetic bucket (labeled "Home") holding every session no project
   // claimed. It has no folder, so no repo/worktree structure — its one lane
   // exists only to carry the rows.
@@ -78,6 +81,11 @@ export interface SidebarProjectTree {
   // Every session id the backend assigned to this project — the authoritative
   // owner set the live overlay keys on (complete, unlike `previewSessions`).
   sessionIds?: string[]
+  // The nearest project whose folder strictly contains one of this project's,
+  // set by the backend tree (null/absent = top level). DISPLAY ONLY: the child
+  // keeps its own sessions — a parent never inherits them — so the overview
+  // just indents the row under its parent (`nestProjectsByParent`).
+  parentId?: null | string
 }
 
 /** Path split into segments, ignoring trailing slashes and mixed separators. */
@@ -494,6 +502,28 @@ export function sessionBucketId(
   owners: ReadonlyMap<string, string> = NO_OWNERS
 ): null | string {
   return liveSessionProjectId(session, explicitProjects, owners) ?? (isDetachedSession(session) ? NO_PROJECT_ID : null)
+}
+
+/**
+ * The live rows an ENTERED project may show: its own, plus rows with no resolvable owner (a detached
+ * chat, a kanban-task worktree) — the per-repo overlay still places those by cwd.
+ *
+ * A row another project owns is dropped here, because that overlay re-places every live row it is
+ * handed by path prefix, and a nested project's cwd sits under its parent's path: the backend assigns
+ * a session to exactly ONE project (longest explicit folder wins), and every optimistic overlay has to
+ * keep that, or entering the parent shows the child's chats under the parent's own lanes (#134012).
+ */
+export function liveSessionsForProject(
+  projectId: string,
+  live: SessionInfo[],
+  explicitProjects: ProjectInfo[],
+  owners: ReadonlyMap<string, string> = NO_OWNERS
+): SessionInfo[] {
+  return live.filter(session => {
+    const owner = liveSessionProjectId(session, explicitProjects, owners)
+
+    return !owner || owner === projectId
+  })
 }
 
 /**

@@ -38,6 +38,8 @@ class ProjectInfo(Result):
     color: str | None = None
     board_slug: str | None = None
     primary_path: str | None = None
+    # Nesting override: absent = nest by folder containment, "" = top level, an id = that parent.
+    parent_id: str | None = None
     archived: bool = False
     created_at: int
     folders: list[ProjectFolder] = Field(default_factory=list)
@@ -71,7 +73,9 @@ method("projects.get", params=ProjectIdParams, result=ProjectResult,
 
 
 class ProjectsCreateParams(ProfileParams):
-    """``use`` also activates the new project."""
+    """``use`` also activates the new project. ``parent_id`` nests it from the start — ``''`` for an
+    explicit top level, an absent (or null) value leaves it to folder containment, and an unknown id
+    falls back the same way."""
 
     name: str
     folders: list[str] | None = None
@@ -81,6 +85,7 @@ class ProjectsCreateParams(ProfileParams):
     icon: str | None = None
     color: str | None = None
     board_slug: str | None = None
+    parent_id: str | None = None
     use: bool = False
 
 
@@ -100,6 +105,18 @@ class ProjectsUpdateParams(ProjectIdParams):
 
 method("projects.update", params=ProjectsUpdateParams, result=ProjectResult,
        doc="Patch a project's display fields; answers the refreshed project.")
+
+
+class ProjectsSetParentParams(ProjectIdParams):
+    """``parent_id`` names the project this one nests under in the sidebar; ``''`` moves it to the top
+    level, and an absent (or null) value hands it back to folder containment. Looping moves are
+    refused (5063)."""
+
+    parent_id: str | None = None
+
+
+method("projects.set_parent", params=ProjectsSetParentParams, result=ProjectResult,
+       doc="Nest a project under another, or move it back out; answers the refreshed project.")
 
 
 class ProjectsAddFolderParams(ProjectIdParams):
@@ -169,6 +186,7 @@ class RepoDiscoveryPolicy(Result):
     """``methods_projects._repo_discovery_policy`` — the effective ``desktop.repo_scan_*`` config."""
 
     enabled: bool
+    nested: bool = False
     roots: list[str]
     exclude_paths: list[str]
 
@@ -177,11 +195,13 @@ class RepoDiscoveryPolicyParams(Params):
     """The policy the desktop scanned under (short or ``repo_scan_*`` long keys both accepted)."""
 
     enabled: bool | None = None
+    nested: bool | None = None
     roots: list[str] | None = None
     exclude_paths: list[str] | None = None
     repo_scan_enabled: bool | None = None
     repo_scan_roots: list[str] | None = None
     repo_scan_exclude_paths: list[str] | None = None
+    repo_scan_nested: bool | None = None
 
 
 class DiscoveredRepo(Result):
@@ -267,9 +287,14 @@ class ProjectTreeNode(Result):
     id: str
     label: str
     path: str | None = None
+    # The project this one nests under in the sidebar, or null at the top level. Display grouping:
+    # the row's own folders still decide which project owns a session.
+    parentId: str | None = None
     color: str | None = None
     icon: str | None = None
     isAuto: bool = False
+    # A repo root the disk scan found (`desktop.repo_scan_*`) rather than one inferred from sessions.
+    discovered: bool = False
     isNoProject: bool = False
     sessionCount: int = 0
     lastActive: float = 0.0

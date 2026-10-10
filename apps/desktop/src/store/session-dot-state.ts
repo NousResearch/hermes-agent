@@ -97,6 +97,33 @@ const STATUS_RANK: Record<SessionStatusBucket, number> = {
 /** Loudest first — what ordering by status sorts on. */
 export const sessionStatusRank = (state?: SessionDotState): number => STATUS_RANK[sessionStatusBucket(state)]
 
+/** The loudest status across a set of sessions.
+ *
+ *  This is what a COLLAPSED container row shows instead of its rows: a project (including everything
+ *  nested under it) can report "something in here wants you" while its sessions are folded away.
+ *  `draft` yields — a session that has never run is not something to look at — and an empty set is
+ *  `idle`, so a container with nothing to say paints nothing. */
+export function rollupDotState(
+  byId: Readonly<Record<string, SessionDotState>>,
+  ids: readonly string[]
+): SessionDotState {
+  let loudest: SessionDotState = 'idle'
+
+  for (const id of ids) {
+    const state = byId[id]
+
+    if (!state || state === 'draft') {
+      continue
+    }
+
+    if (sessionStatusRank(state) < sessionStatusRank(loudest)) {
+      loudest = state
+    }
+  }
+
+  return loudest
+}
+
 let dotStates: Readonly<Record<string, SessionDotState>> = {}
 
 export const $sessionDotStateById = computed(

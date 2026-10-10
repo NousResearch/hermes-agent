@@ -332,6 +332,15 @@ class _FolderIndex:
                 return hit
         return None, -1
 
+    def owns_exactly(self, target: str) -> bool:
+        """True when ``target`` IS one of the declared folders — not merely inside one.
+
+        The distinction is a discovered repo a project already covers (its own row) versus one that
+        only happens to live under that project's folder, which is the nested repo its row is for.
+        """
+        segs = _comparison_segments(target or "")
+        return bool(segs) and "/".join(segs) in self._by_path
+
 
 def _project_for_session(
         session: dict, index: _FolderIndex, resolve: Optional[Resolve]) -> Optional[dict]:
@@ -345,11 +354,98 @@ def _project_for_session(
     return max((index.match(t) for t in candidates), key=lambda hit: hit[1])[0]
 
 
+def _node_folders(node: dict) -> list[str]:
+    """Declared folders for a project row, falling back to its single path (auto/discovered rows)."""
+    if node.get("folders"):
+        return [str(f.get("path") or "") for f in node["folders"]]
+    return [str(node.get("path") or "")]
+
+
+def effective_parent_map(rows: list[dict]) -> dict[str, Optional[str]]:
+    """Resolve every project's parent id: a stored ``parent_id`` wins, else folder containment.
+
+    ``parent_id`` is the store's tri-state (``hermes_cli.projects_db``): None means "never moved", so
+    the nearest OTHER row whose folder strictly contains one of this one's becomes the parent; ``""``
+    means the user put it at the top level; anything else is that project.
+
+    DISPLAY GROUPING ONLY. Session ownership stays with ``_FolderIndex``, so a parent never also claims
+    its child's sessions — the duplicate-listing class #109007 / #91932 / #70790 / #114638 were closed
+    against. An explicit parent outside this set (archived, deleted) falls back to the top level, and a
+    chain that comes back to itself is broken (``_break_loops``) rather than rendered as a cycle.
+    """
+    present = {str(row.get("id") or "") for row in rows}
+    keys = {
+        str(row.get("id") or ""): [_comparison_segments(f) for f in _node_folders(row) if f]
+        for row in rows
+    }
+    resolved: dict[str, Optional[str]] = {}
+    for row in rows:
+        row_id = str(row.get("id") or "")
+        explicit = row.get("parent_id")
+        if explicit is not None:
+            parent_id = str(explicit)
+            resolved[row_id] = parent_id if parent_id and parent_id in present else None
+            continue
+        own = keys.get(row_id) or []
+        best_id, best_len = None, -1
+        for other in rows:
+            other_id = str(other.get("id") or "")
+            if other_id == row_id:
+                continue
+            for parent_key in keys.get(other_id) or []:
+                if not parent_key or len(parent_key) <= best_len:
+                    continue
+                if any(len(parent_key) < len(own_key) and own_key[:len(parent_key)] == parent_key
+                       for own_key in own):
+                    best_id, best_len = other_id, len(parent_key)
+        resolved[row_id] = best_id
+    return _break_loops(resolved)
+
+
+def _break_loops(resolved: dict[str, Optional[str]]) -> dict[str, Optional[str]]:
+    """Send any row whose chain comes back to itself back to the top level.
+
+    The store refuses a looping move (``hermes_cli.projects_db._refuse_parent_loop``), but a
+    ``projects.db`` written before that guard can still hold one, and a loop renders every row of the
+    cycle nested inside the next one — in both directions, on every tree build, until some other move
+    happens to repair it.
+    """
+    for row_id in list(resolved):
+        seen = {row_id}
+        cursor = resolved.get(row_id)
+
+        while cursor:
+            if cursor in seen:
+                resolved[row_id] = None
+                break
+            seen.add(cursor)
+            cursor = resolved.get(cursor)
+
+    return resolved
+
+
+def _assign_parent_projects(nodes: list[dict], sources: list[dict]) -> None:
+    """Stamp ``parentId`` onto each wire node (see ``effective_parent_map``).
+
+    ``sources`` are the project rows behind those nodes: a wire node carries only what the renderer
+    needs, so declared folders and the stored ``parent_id`` are read from the row, with the node's own
+    ``path`` covering auto/discovered rows that have no row behind them.
+    """
+    by_id = {str(row.get("id") or ""): row for row in sources}
+    resolved = effective_parent_map([
+        {**by_id.get(str(node.get("id") or ""), {}), "id": node.get("id"), "path": node.get("path")}
+        for node in nodes
+    ])
+    for node in nodes:
+        node["parentId"] = resolved.get(str(node.get("id") or ""))
+
+
 def _project_node(
     pid: str, label: str, path: Optional[str], repos: list[dict], session_count: int,
     last_active: float, preview_sessions: list[dict], sessions: Optional[list[dict]] = None,
     **flags: Any) -> dict:
-    """``flags`` overrides ``color``/``icon``/``isAuto``/``isNoProject``; key order = wire shape."""
+    """``flags`` overrides ``color``/``icon``/``isAuto``/``isNoProject``/``discovered``; key order =
+    wire shape."""
     rows = sessions or []
     node = {
         "id": pid, "label": label, "path": path, "color": None, "icon": None,
@@ -410,6 +506,35 @@ def _home_project(homeless: list[dict], hydrate: bool, previews: list[dict]) -> 
         previews, homeless, isNoProject=True)
 
 
+def _discovered_project_rows(
+        discovered_repos: list[dict], resolve: Optional[Resolve], folder_index: _FolderIndex,
+        is_junk: Callable[[str], bool]) -> list[dict]:
+    """The discovered repos that get a project row, as project-shaped dicts keyed by root.
+
+    A repo that IS a declared project's folder is that project's row already — the one duplicate
+    worth refusing. Anything else is a row, including a repo INSIDE a declared project's folder: a
+    superproject whose submodules live in its own tree is exactly the case discovery exists for.
+    """
+    rows: list[dict] = []
+    seen: set[str] = set()
+    for repo in discovered_repos or []:
+        raw_root = _field(repo, "root")
+        if not raw_root:
+            continue
+        info = resolve(raw_root) if resolve else None
+        root = (info or {}).get("repo_root") or raw_root
+        root_key = _path_key(root)
+        if not root_key or root_key in seen or is_junk(root) or folder_index.owns_exactly(root):
+            continue
+        seen.add(root_key)
+        label = repo.get("label") or base_name(root) or root
+        rows.append({
+            "id": root, "name": label, "path": root,
+            "folders": [{"path": root}], "scan": repo,
+        })
+    return rows
+
+
 def build_tree(
     projects: list[dict], sessions: list[dict], discovered_repos: list[dict],
     resolve: Optional[Resolve] = None, *, preview_limit: int = 3, hydrate: bool = False,
@@ -427,10 +552,16 @@ def build_tree(
     _junk_cwd = is_junk_cwd or (lambda _cwd: False)
     _exists = exists or (lambda _path: True)
     folder_index = _FolderIndex(active_projects)
-    by_project: dict[str, list[dict]] = {}  # explicit project id -> owned rows
+    # A discovered repo is a row of its own (Tier 3 below), and a chat started in one belongs THERE,
+    # not in the superproject whose folder happens to contain it: the user picked that repo. Ownership
+    # therefore considers both, deepest folder first — a declared project keeps a tie, so a row that IS
+    # a declared project's folder stays that project's.
+    discovered_rows = _discovered_project_rows(discovered_repos, resolve, folder_index, _junk)
+    owner_index = _FolderIndex(active_projects + discovered_rows)
+    by_project: dict[str, list[dict]] = {}  # project id (a discovered row keys by its root) -> rows
     unowned: list[dict] = []
     for session in sessions:
-        owner = _project_for_session(session, folder_index, resolve)
+        owner = _project_for_session(session, owner_index, resolve)
         (by_project.setdefault(owner["id"], []) if owner else unowned).append(session)
 
     scoped_ids: list[str] = []
@@ -473,21 +604,28 @@ def build_tree(
             repo_node["sessionCount"], _last_active(auto_sessions), _previews(auto_sessions),
             auto_sessions, isAuto=True))
 
-    # Tier 3: discovered repos with no loaded sessions, folded to their common root.
-    for repo in discovered_repos or []:
-        raw_root = _field(repo, "root")
-        if not raw_root:
-            continue
-        info = resolve(raw_root) if resolve else None
-        root = (info or {}).get("repo_root") or raw_root
+    # Tier 3: discovered repos, each a row of its own, carrying the sessions started inside it.
+    for row in discovered_rows:
+        root, label = row["path"], row["name"]
         root_key = _path_key(root)
-        if root_key in seen or _junk(root) or folder_index.match(root)[0]:
+        if root_key in seen:
             continue
         seen.add(root_key)
-        label = repo.get("label") or base_name(root) or root
+        owned = by_project.get(root, [])
+        _scope(owned)
+        repos = _build_repos(owned, resolve, hydrate) or [_repo_node(root, label)]
+        # A repo INSIDE a declared project's folder keeps its own sessions but no scanned count: the
+        # scan's aggregate is wider than what this row renders, and a badge with an empty drill-in
+        # talks past the parent's own count. Same for a row that loaded its own sessions — it counts
+        # what it shows. Only a repo nothing owns keeps the count the scan saw.
+        nested = bool(folder_index.match(root)[0])
+        scan = row.get("scan") or {}
+        counted = nested or owned
         result.append(_project_node(
-            root, label, root, [_repo_node(root, label)], int(repo.get("sessions") or 0),
-            float(repo.get("last_active") or 0), [], isAuto=True))
+            root, label, root, repos,
+            len(owned) if counted else int(scan.get("sessions") or 0),
+            _last_active(owned) if counted else float(scan.get("last_active") or 0),
+            _previews(owned), owned, isAuto=True, discovered=True))
 
     # Auto-project basename labels can collide; explicit projects keep their user-chosen names.
     _disambiguate_labels([p for p in result if p.get("isAuto")])
@@ -497,5 +635,9 @@ def build_tree(
         homeless.sort(key=_session_time, reverse=True)
         _scope(homeless)
         result.insert(0, _home_project(homeless, hydrate, _previews(homeless)))
+
+    # Display grouping: a stored parent wins, else a project whose folder sits inside another
+    # project's folder renders nested under it. Ownership was decided above, not here.
+    _assign_parent_projects(result, active_projects)
 
     return {"projects": result, "scoped_session_ids": scoped_ids}

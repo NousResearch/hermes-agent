@@ -4,6 +4,8 @@ Pure-data leaf module — must not import from hermes_cli.config. Comments are t
 docs of config.yaml.
 """
 
+from hermes_cli.config_env_vars import _base_url, _env, _msg, _prov, _setting, _skill, _tool
+
 
 #: Image every container terminal backend (docker/modal/daytona/singularity) uses unless the
 #: user pins one. LEGACY_SANDBOX_IMAGES are the plain defaults that preceded the desktop stack
@@ -2626,6 +2628,11 @@ DEFAULT_CONFIG = {
         "repo_scan_enabled": True,
         "repo_scan_roots": [],
         "repo_scan_exclude_paths": [],
+        # Also discover repos NESTED inside a discovered repo, and show each one as a subproject of
+        # the repo containing it. Off by default: a monorepo's internal checkouts are noise for most
+        # people, and the scan costs more when it cannot stop at the first `.git`. Turning this on does
+        # nothing without `repo_scan_enabled`.
+        "repo_scan_nested": False,
         # Extra Electron flags per launch, e.g. ["--ozone-platform=x11"] or GPU workarounds. List of
         # strings; a single string is shell-split.
         "electron_flags": [],
@@ -2720,46 +2727,6 @@ DEFAULT_CONFIG = {
     },
     "_config_version": 50,  # Config schema version - bump this when adding new required fields
 }
-
-
-def _env(description, prompt, **keys):
-    """One OPTIONAL_ENV_VARS entry; keyword order is preserved as dict key order."""
-    return {"description": description, "prompt": prompt, **keys}
-
-
-_OMIT = object()
-
-
-def _category(category, password, advanced):
-    """Entry factory for one category with its usual password/advanced defaults.
-
-    ``url``/``help``/``tools`` are only written when passed; ``password=None`` omits the key;
-    ``advanced`` is only written when true. Key order matches the plain ``_env`` entries.
-    """
-    def make(description, prompt, url=_OMIT, *, help=_OMIT, tools=_OMIT, password=password,
-             advanced=advanced):
-        d = {"description": description, "prompt": prompt}
-        d.update((k, v) for k, v in (("help", help), ("url", url), ("tools", tools)) if v is not _OMIT)
-        if password is not None:
-            d["password"] = password
-        d["category"] = category
-        if advanced:
-            d["advanced"] = True
-        return d
-    return make
-
-
-_prov = _category("provider", password=True, advanced=True)
-_tool = _category("tool", password=True, advanced=False)
-_msg = _category("messaging", password=False, advanced=False)
-_skill = _category("skill", password=True, advanced=True)
-_setting = _category("setting", password=False, advanced=False)
-
-
-def _base_url(name, prompt_name=None):
-    """Provider ``*_BASE_URL`` override entry (advanced, not a secret)."""
-    prompt = f"{prompt_name or name} base URL (leave empty for default)"
-    return _prov(f"{name} base URL override", prompt, None, password=False)
 
 
 # Optional environment variables that enhance functionality. Feeds the dashboard keys page and setup

@@ -14,7 +14,7 @@ import sqlite3
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional
 
 from hermes_cli.sqlite_util import add_column_if_missing as _add_column_if_missing, open_db, write_txn
 from hermes_constants import get_hermes_home
@@ -74,11 +74,16 @@ _BRANCH_SAFE_RE = re.compile(r"[^a-z0-9._-]+")
 _INITIALIZED_PATHS: set[str] = set()
 # TEXT columns added to `projects` after v1; re-applied idempotently on every open so a legacy DB
 # upgrades in place.
-_OPTIONAL_PROJECT_COLUMNS = ("board_slug", "primary_path", "icon", "color")
+_OPTIONAL_PROJECT_COLUMNS = ("board_slug", "primary_path", "icon", "color", "parent_id")
 # Nullable TEXT columns that may be absent from a legacy row.
-_OPTIONAL_ROW_FIELDS = ("description", "icon", "color", "board_slug", "primary_path")
+_OPTIONAL_ROW_FIELDS = ("description", "icon", "color", "board_slug", "primary_path", "parent_id")
 _ACTIVE_META_KEY = "active_id"
 _DISCOVERY_POLICY_META_KEY = "repo_discovery_policy"
+# ``parent_id`` is a tri-state: NULL = no explicit parent, so the sidebar nests the project by folder
+# containment (``tui_gateway.project_tree``); ``""`` = explicitly top level (a project dragged out of
+# its parent); ``"p_xxxx"`` = that project's child. Only a project the user never moved keeps the
+# containment default, so dragging a row out of a nested folder sticks.
+PARENT_TOP_LEVEL = ""
 
 
 def _slugify(name: str) -> str:
@@ -167,6 +172,8 @@ class Project:
     color: Optional[str] = None
     board_slug: Optional[str] = None
     primary_path: Optional[str] = None
+    # Nesting override: None = nest by folder containment, "" = top level, "p_xxxx" = that parent.
+    parent_id: Optional[str] = None
     archived: bool = False
     folders: list[ProjectFolder] = field(default_factory=list)
 
@@ -217,13 +224,120 @@ def find_by_primary_path(conn: sqlite3.Connection, path: str, *, include_archive
     return None
 
 
+def _normalize_parent(conn: sqlite3.Connection, parent_id: Optional[str], *, child_id: Optional[str] = None) -> Optional[str]:
+    """Validate a requested parent and return the value to store.
+
+    ``None`` keeps the containment default; ``""`` is the explicit top-level marker; anything else must
+    name an existing project that is not ``child_id``.
+    """
+    if parent_id is None or not str(parent_id).strip():
+        return None if parent_id is None else PARENT_TOP_LEVEL
+    parent = str(parent_id).strip()
+    if child_id is not None and parent == child_id:
+        raise ValueError("a project cannot be its own parent")
+    if get_project(conn, parent) is None:
+        raise ValueError(f"no such parent project: {parent}")
+    return parent
+
+
+def _comparison_segments(path: str) -> List[str]:
+    """Segments of a folder path, so two spellings of one folder compare equal.
+
+    Mirrors ``tui_gateway.project_tree._comparison_segments``. The store keeps its own copy because the
+    loop guard below has to run where EVERY writer passes, and hermes_cli does not reach into a display
+    module.
+    """
+    normalized = os.path.normpath(os.path.expanduser(str(path or "")))
+    return [segment for segment in re.split(r"[\\/]+", normalized) if segment and segment != "."]
+
+
+def _folder_keys(project: Project) -> List[List[str]]:
+    """The folders the sidebar nests a row by: its declared ones, else its primary path."""
+    paths = [str(folder.path or "") for folder in project.folders] or [str(project.primary_path or "")]
+    return [key for key in (_comparison_segments(path) for path in paths) if key]
+
+
+def _parent_chain(conn: sqlite3.Connection) -> tuple[Dict[str, Optional[str]], Dict[str, List[List[str]]]]:
+    """Every project's explicit parent and folder keys — the picture the effective chain is walked on."""
+    explicit: Dict[str, Optional[str]] = {}
+    keys: Dict[str, List[List[str]]] = {}
+    for project in list_projects(conn, include_archived=True):
+        explicit[project.id] = project.parent_id
+        keys[project.id] = _folder_keys(project)
+    return explicit, keys
+
+
+def _containment_parent(keys: Dict[str, List[List[str]]], project_id: str) -> Optional[str]:
+    """The nearest project whose folder strictly holds one of this one's, deepest first.
+
+    This is the parent the sidebar derives for a row nobody has moved.
+    """
+    own = keys.get(project_id) or []
+    best, best_len = None, -1
+    for other_id, other_keys in keys.items():
+        if other_id == project_id:
+            continue
+        for key in other_keys:
+            if len(key) <= best_len:
+                continue
+            if any(len(key) < len(own_key) and own_key[: len(key)] == key for own_key in own):
+                best, best_len = other_id, len(key)
+    return best
+
+
+def _refuse_parent_loop(
+    explicit: Dict[str, Optional[str]], keys: Dict[str, List[List[str]]], project_id: str,
+    parent_id: Optional[str],
+) -> None:
+    """Raise when the proposed ``parent_id`` already sits under ``project_id``.
+
+    Walks the EFFECTIVE chain — an explicit link where a row has one, folder containment where it has
+    none — because that is what the sidebar renders: a loop hidden on the containment side shows as both
+    rows nested under each other on every tree build, until some later move happens to repair it. A move
+    that holds on both chains is left alone; nesting a project under one of its own folder-children is a
+    loop only while nothing on that side overrides the containment.
+
+    ``parent_id`` None means "back to containment", so the derived parent is the proposal then.
+    """
+    if parent_id is not None and not parent_id:
+        return  # explicitly top level: nothing above it to loop through
+
+    seen = {project_id}
+    cursor = parent_id or _containment_parent(keys, project_id)
+
+    while cursor:
+        if cursor in seen:
+            raise ValueError("that move would nest a project under one of its own descendants")
+        seen.add(cursor)
+        explicit_parent = explicit.get(cursor)
+        cursor = _containment_parent(keys, cursor) if explicit_parent is None else (explicit_parent or None)
+
+
+def set_project_parent(conn: sqlite3.Connection, project_id: str, parent_id: Optional[str]) -> Optional[str]:
+    """Nest ``project_id`` under ``parent_id`` — ``""`` for top level, ``None`` back to containment.
+
+    Returns the stored value. Refuses self-parenting and moves that would put a project under one of its
+    own descendants.
+    """
+    if get_project(conn, project_id) is None:
+        raise ValueError(f"no such project: {project_id}")
+    parent = _normalize_parent(conn, parent_id, child_id=project_id)
+    if parent:
+        explicit, keys = _parent_chain(conn)
+        _refuse_parent_loop(explicit, keys, project_id, parent)
+    _execute_rowcount(conn, "UPDATE projects SET parent_id = ? WHERE id = ?", (parent, project_id))
+    return parent
+
+
 def create_project(
     conn: sqlite3.Connection, *, name: str, slug: Optional[str] = None, folders: Optional[Iterable[str]] = None,
     primary_path: Optional[str] = None, description: Optional[str] = None, icon: Optional[str] = None,
     color: Optional[str] = None, board_slug: Optional[str] = None, allow_duplicate_path: bool = False,
+    parent_id: Optional[str] = None,
 ) -> str:
     """Create a project and return its id. ``folders`` are normalized to absolute paths; ``primary_path``
-    is added to the folder set (if absent) and marked primary, else the first folder becomes primary."""
+    is added to the folder set (if absent) and marked primary, else the first folder becomes primary.
+    ``parent_id`` nests the new project under an existing one (``""`` for an explicit top level)."""
     name = str(name or "").strip()
     if not name:
         raise ValueError("project name must not be empty")
@@ -242,12 +356,20 @@ def create_project(
             f"folder already belongs to project '{existing.slug}' ({existing.id}); "
             "switch to it instead of creating a duplicate"
         )
+    parent = _normalize_parent(conn, parent_id)
+    if parent:
+        # The new project has no row yet, so the walk is handed it from the arguments: a project created
+        # into a folder that holds its declared parent would nest the two under each other.
+        explicit, keys = _parent_chain(conn)
+        explicit[pid] = parent
+        keys[pid] = [key for key in (_comparison_segments(path) for path in folder_paths) if key]
+        _refuse_parent_loop(explicit, keys, pid, parent)
     with write_txn(conn):
         conn.execute(
-            "INSERT INTO projects (id, slug, name, description, icon, color, board_slug,  primary_path, created_at, archived) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
+            "INSERT INTO projects (id, slug, name, description, icon, color, board_slug,  primary_path, created_at, archived, parent_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)",
             (pid, _unique_slug(conn, slug_candidate), name, description, icon, color,
-             normalize_slug(board_slug) if board_slug else None, primary, now),
+             normalize_slug(board_slug) if board_slug else None, primary, now, parent),
         )
         conn.executemany(
             "INSERT INTO project_folders (project_id, path, label, is_primary, added_at) VALUES (?, ?, ?, ?, ?)",
@@ -475,6 +597,25 @@ def project_for_path(conn: sqlite3.Connection, path: str, *, include_archived: b
 
     owners = [row for row in conn.execute(sql).fetchall() if owns(row["folder"])]
     return get_project(conn, max(owners, key=lambda r: len(r["folder"]))["pid"]) if owners else None
+
+
+def is_declared_folder(conn: sqlite3.Connection, path: str, *, include_archived: bool = False) -> bool:
+    """Whether ``path`` IS a declared project folder — equal to one, never a descendant of one (a chat
+    inside a project's repo is a visit, not an address). Covers every declared folder plus each
+    project's ``primary_path``, so a chat parked on a project's own folder still reads as deliberately
+    placed after a restart cleared whatever the process remembered."""
+    if not str(path or "").strip():
+        return False
+    target = _normalize_path(path)
+    sql = ("SELECT pf.path AS folder, p.primary_path AS primary_path "
+           "FROM projects p LEFT JOIN project_folders pf ON pf.project_id = p.id")
+    if not include_archived:
+        sql += " WHERE p.archived = 0"
+    for row in conn.execute(sql).fetchall():
+        for candidate in (row["folder"], row["primary_path"]):
+            if candidate and _normalize_path(candidate) == target:
+                return True
+    return False
 
 
 def branch_name_for(project: Project, task_id: str, *, title: str = "") -> str:

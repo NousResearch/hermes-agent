@@ -25,7 +25,7 @@ import {
   ensureActiveGatewayOpen,
   isActivePrimary
 } from '@/store/gateway'
-import { $sidebarShowAllSessions, setSidebarAgentsGrouped } from '@/store/layout'
+import { $sidebarShowAllSessions, dismissAutoProject, setSidebarAgentsGrouped } from '@/store/layout'
 import { notify } from '@/store/notifications'
 import {
   $activeGatewayProfile,
@@ -161,6 +161,21 @@ export function goToProject(id: string, options?: { newSession?: boolean }): voi
 // you were looking at: after a restart that's the just-resumed session, whose
 // stored cwd is often a home-dir fallback, so every new chat landed there
 // instead of the configured default (#71873, #80213, #77496).
+// The profile's own workspace (`terminal.cwd`), held for the sync callers below: a click resolves a
+// new session's cwd, a config read does not. Filled at gateway open, the way `store/session.ts` keeps
+// the device-level default project dir.
+let profileWorkspaceCwd = ''
+
+export async function syncProfileWorkspaceCwd(profile?: string): Promise<string> {
+  try {
+    profileWorkspaceCwd = defaultRepoScanRoot(await getHermesConfig(profile)) ?? ''
+  } catch {
+    profileWorkspaceCwd = ''
+  }
+
+  return profileWorkspaceCwd
+}
+
 export function resolveNewSessionCwd(): string {
   const scope = $projectScope.get()
 
@@ -178,7 +193,32 @@ export function resolveNewSessionCwd(): string {
     }
   }
 
-  return workspaceCwdForNewSession()
+  // No project in scope: whatever the chat is about, a detached one lands in the sidebar's Home bucket
+  // every time. A configured default dir is the user saying where new chats go, so it still wins; only
+  // when there is none does the project owning the profile workspace — where this session will actually
+  // work — stand in for it (still config, never the focused session's remembered cwd, which stays
+  // deliberately ignored).
+  const configured = workspaceCwdForNewSession()
+
+  if (configured) {
+    return configured
+  }
+
+  return projectOwningProfileWorkspace()
+}
+
+function projectOwningProfileWorkspace(): string {
+  if (!profileWorkspaceCwd) {
+    return ''
+  }
+
+  const owner = projectIdForCwd(profileWorkspaceCwd)
+
+  if (!owner) {
+    return ''
+  }
+
+  return projectRootCwd($projectTree.get().find(node => node.id === owner))
 }
 
 // Entering a project moves the live workspace only when main holds a fresh
@@ -818,6 +858,8 @@ export async function moveSessionToProject(
 
 export interface RepoDiscoveryPolicy {
   enabled: boolean
+  /** Also discover repos nested inside a discovered repo, shown as subprojects. */
+  nested: boolean
   roots: string[]
   exclude_paths: string[]
 }
@@ -830,12 +872,15 @@ export function repoDiscoveryPolicyFromConfig(config: unknown): RepoDiscoveryPol
       ? (desktopValue as {
           repo_scan_enabled?: unknown
           repo_scan_exclude_paths?: unknown
+          repo_scan_nested?: unknown
           repo_scan_roots?: unknown
         })
       : {}
 
   return {
     enabled: desktop.repo_scan_enabled !== false,
+    // Opt-in, and additive: it does nothing without the scan itself.
+    nested: desktop.repo_scan_nested === true,
     roots: Array.isArray(desktop.repo_scan_roots)
       ? desktop.repo_scan_roots.filter((value): value is string => typeof value === 'string')
       : [],
@@ -847,6 +892,33 @@ export function repoDiscoveryPolicyFromConfig(config: unknown): RepoDiscoveryPol
 
 export function repoDiscoveryPolicySignature(policy: RepoDiscoveryPolicy): string {
   return JSON.stringify(policy)
+}
+
+/**
+ * The folder a scan with no configured roots searches: the profile's Working Directory
+ * (`terminal.cwd`) — where its sessions start, so the workspace the sidebar is about.
+ *
+ * A profile that never configured one (`.` or blank) has no workspace to speak of, which keeps the
+ * scan off instead of walking the home directory that #53328 was filed against. `repo_scan_roots` is
+ * how a folder outside the workspace is added.
+ */
+export function defaultRepoScanRoot(config: unknown): null | string {
+  const terminal = config && typeof config === 'object' ? (config as { terminal?: unknown }).terminal : undefined
+
+  const raw =
+    terminal && typeof terminal === 'object' && typeof (terminal as { cwd?: unknown }).cwd === 'string'
+      ? ((terminal as { cwd: string }).cwd || '').trim()
+      : ''
+
+  // `~` is expanded by the scanner, so only the paths that could BE home (or the root) are refused
+  // here; a real folder is passed through untouched.
+  const root = raw.replace(/[/\\]+$/, '')
+
+  if (!root || root === '.' || root === '~' || root === '/' || root === '~/' || root === '/Users' || root === '/home') {
+    return null
+  }
+
+  return root
 }
 
 interface RepoScanState {
@@ -865,61 +937,139 @@ function syncReposScanning(): void {
 
 $gateway.subscribe(syncReposScanning)
 
-export async function scanAndRecordRepos(force = false): Promise<void> {
-  if (isDesktopFsRemoteMode()) {
-    // On a remote backend the desktop can't crawl the host filesystem.
-    // Ask the host to scan its own discovery roots (`projects.discover_repos`
-    // with `scan: true` — added in #81723) so repos with zero Hermes
-    // sessions still surface, then refresh the tree so the sidebar picks up
-    // the merged session-derived + scanned list.
-    try {
-      const context = await activeProjectsContext()
+/**
+ * What a discovery scan did.
+ *
+ * Every way this can come up empty is quiet by construction: nothing configured to walk, a backend that
+ * refused the policy it was sent, a build with no local git bridge. Reported so a caller can say so —
+ * an unpopulated sidebar and a scan that ran and found nothing look identical otherwise.
+ */
+export type RepoScanOutcome =
+  | { found: number; reason: 'ok' }
+  /** `disabled`: the setting is off. `no-roots`: nothing configured to walk. `no-bridge`: no local git
+   *  bridge in this build. `rejected`: the backend holds a different policy. `skipped`: this run was a
+   *  repeat, or a newer scan took over. `failed`: anything else, with the error it threw — the gateway
+   *  names the exact key it refused, so "the scan failed" alone is not worth reporting. */
+  | { detail?: string; reason: 'disabled' | 'failed' | 'no-bridge' | 'no-roots' | 'rejected' | 'skipped' }
 
-      const discovered = await gatewayRequestOn<{
-        repos?: unknown
-        discovery_policy?: unknown
-      }>(context.gateway, 'projects.discover_repos', projectParams({ scan: true }, context.profile))
+// On a remote backend the desktop can't crawl the host filesystem. Ask the host to scan its own
+// discovery roots (`projects.discover_repos` with `scan: true` — added in #81723) so repos with zero
+// Hermes sessions still surface, then refresh the tree so the sidebar picks up the merged
+// session-derived + scanned list.
+async function scanReposOnRemoteHost(): Promise<RepoScanOutcome> {
+  try {
+    const context = await activeProjectsContext()
 
-      // A resolved response must be the discovery shape. Anything else (an
-      // error/`accepted:false` body, or a backend that ignored `scan` and
-      // returned no repo list) means the scan didn't happen — bail out without
-      // touching the tree so the sidebar keeps its last known list instead of
-      // being blanked back to the silent, unpopulated state of #81723.
-      if (discovered?.repos === undefined) {
-        markProjectsRpcFailure(new Error('projects.discover_repos returned no repo list'))
+    const discovered = await gatewayRequestOn<{
+      repos?: unknown
+      discovery_policy?: unknown
+    }>(context.gateway, 'projects.discover_repos', projectParams({ scan: true }, context.profile))
 
-        return
-      }
+    // A resolved response must be the discovery shape. Anything else (an error/`accepted:false`
+    // body, or a backend that ignored `scan` and returned no repo list) means the scan didn't
+    // happen — bail out without touching the tree so the sidebar keeps its last known list instead
+    // of being blanked back to the silent, unpopulated state of #81723.
+    if (discovered?.repos === undefined) {
+      markProjectsRpcFailure(new Error('projects.discover_repos returned no repo list'))
 
-      // Remote scan succeeded: refresh the tree so the merged session-derived +
-      // scanned list surfaces. Skip if the user moved on — a stale scan must
-      // not publish into the newly focused profile.
-      if (stillOnProjectsContext(context)) {
-        await refreshProjectTreeOn(context)
-      }
-    } catch (err) {
-      // Surface the failure (stale backend, RPC error, gateway drop) instead
-      // of swallowing it: a silent return is exactly the "sidebar goes quiet"
-      // symptom `scan:true` was meant to fix (#81723). Keep the old list and
-      // let the sidebar show the error/absent state.
-      markProjectsRpcFailure(err)
+      return { reason: 'failed' }
     }
 
-    return
+    // Remote scan succeeded: refresh the tree so the merged session-derived + scanned list surfaces.
+    // Skip if the user moved on — a stale scan must not publish into the newly focused profile.
+    if (stillOnProjectsContext(context)) {
+      await refreshProjectTreeOn(context)
+    }
+
+    return { found: Array.isArray(discovered.repos) ? discovered.repos.length : 0, reason: 'ok' }
+  } catch (err) {
+    // Surface the failure (stale backend, RPC error, gateway drop) instead of swallowing it: a
+    // silent return is exactly the "sidebar goes quiet" symptom `scan:true` was meant to fix
+    // (#81723). Keep the old list and let the sidebar show the error/absent state.
+    markProjectsRpcFailure(err)
+
+    return { reason: 'failed' }
+  }
+}
+
+/** A scan's resolved inputs: the policy as configured, the roots to walk (the profile workspace
+ *  stands in for an empty list — #53328 is why that stand-in is not `$HOME`), the signature that
+ *  decides whether this run is a repeat, and whether it is one. */
+async function resolveRepoScanPlan(
+  context: ActiveProjectsContext,
+  state: { completedSignature?: string; generation: number; runningSignature?: string },
+  force: boolean
+): Promise<{ policy: RepoDiscoveryPolicy; roots: string[]; signature: string; skip: boolean }> {
+  const config = await getHermesConfig(context.profile)
+  const policy = repoDiscoveryPolicyFromConfig(config)
+  const workspaceRoot = defaultRepoScanRoot(config)
+  const roots = policy.roots.length > 0 ? policy.roots : workspaceRoot ? [workspaceRoot] : []
+  // The workspace belongs in the signature: moving it must re-scan the same way a policy change does.
+  const signature = repoDiscoveryPolicySignature({ ...policy, roots })
+
+  return {
+    policy,
+    roots,
+    signature,
+    skip: !force && (state.completedSignature === signature || state.runningSignature === signature)
+  }
+}
+
+/** Record what a scan found, and report a refusal. `null` means the record landed and the caller
+ *  carries on; a returned outcome is the whole answer for this scan.
+ *
+ *  A scan that never ran — nothing configured to walk — must not be RECORDED either: `record_repos`
+ *  replaces the cache, so the empty list a no-roots scan would send wipes the last real scan. */
+async function recordRepoScanOutcome(
+  context: ActiveProjectsContext,
+  policy: RepoDiscoveryPolicy,
+  repos: readonly unknown[],
+  willScan: boolean
+): Promise<RepoScanOutcome | null> {
+  if (!willScan && policy.enabled) {
+    return null
+  }
+
+  // `accepted: false` is the backend saying the policy the scan ran under is not the one it holds —
+  // its own config moved, or this side's copy is stale. Either way nothing was recorded, which is
+  // worth reporting rather than leaving the caller to look at an unchanged sidebar. Only an enabled
+  // policy can be "refused": with discovery off the backend answers `accepted: false` by design, and
+  // that is the `disabled` outcome, not a rejection.
+  const recorded = await gatewayRequestOn<{ accepted?: unknown }>(
+    context.gateway,
+    'projects.record_repos',
+    projectParams({ discovery_policy: policy, repos }, context.profile)
+  )
+
+  return policy.enabled && recorded?.accepted === false ? { reason: 'rejected' } : null
+}
+
+/** How a finished scan reports itself: discovery off, nothing to walk, or what it found. */
+function repoScanOutcome(policy: RepoDiscoveryPolicy, repos: readonly unknown[], willScan: boolean): RepoScanOutcome {
+  if (!policy.enabled) {
+    return { reason: 'disabled' }
+  }
+
+  return willScan ? { found: repos.length, reason: 'ok' } : { reason: 'no-roots' }
+}
+
+export async function scanAndRecordRepos(force = false): Promise<RepoScanOutcome> {
+  if (isDesktopFsRemoteMode()) {
+    return scanReposOnRemoteHost()
   }
 
   let context: ActiveProjectsContext
 
   try {
     context = await activeProjectsContext()
-  } catch {
-    return
+  } catch (error) {
+    return { detail: error instanceof Error ? error.message : String(error), reason: 'failed' }
   }
 
   const scan = desktopGit()?.scanRepos
 
   if (!scan) {
-    return
+    return { reason: 'no-bridge' }
   }
 
   const state = repoScanStates.get(context.gateway) ?? { generation: 0 }
@@ -927,44 +1077,43 @@ export async function scanAndRecordRepos(force = false): Promise<void> {
   let generation: number | undefined
 
   try {
-    const policy = repoDiscoveryPolicyFromConfig(await getHermesConfig(context.profile))
-    const signature = repoDiscoveryPolicySignature(policy)
+    const { policy, roots, signature, skip } = await resolveRepoScanPlan(context, state, force)
 
-    if (!force && (state.completedSignature === signature || state.runningSignature === signature)) {
-      return
+    if (skip) {
+      return { reason: 'skipped' }
     }
 
     generation = ++state.generation
     state.runningSignature = signature
 
-    if (!policy.enabled) {
-      await gatewayRequestOn(
-        context.gateway,
-        'projects.record_repos',
-        projectParams({ discovery_policy: policy, repos: [] }, context.profile)
-      )
-    } else {
+    // A scan with nothing to walk is not a scan: it would record an empty result as if it had looked
+    // (and record it over the last real one), so it is reported instead of run.
+    const willScan = policy.enabled && roots.length > 0
+    let repos: Awaited<ReturnType<typeof scan>> = []
+
+    if (willScan) {
       scanningGatewayGenerations.set(context.gateway, generation)
       syncReposScanning()
 
-      const repos = await scan(policy.roots, {
+      repos = await scan(roots, {
         enabled: true,
-        excludePaths: policy.exclude_paths
+        excludePaths: policy.exclude_paths,
+        nested: policy.nested
       })
 
       if (state.generation !== generation) {
-        return
+        return { reason: 'skipped' }
       }
-
-      await gatewayRequestOn(
-        context.gateway,
-        'projects.record_repos',
-        projectParams({ discovery_policy: policy, repos }, context.profile)
-      )
     }
 
+    const refused = await recordRepoScanOutcome(context, policy, repos, willScan)
+
     if (state.generation !== generation) {
-      return
+      return { reason: 'skipped' }
+    }
+
+    if (refused) {
+      return refused
     }
 
     state.completedSignature = signature
@@ -976,8 +1125,12 @@ export async function scanAndRecordRepos(force = false): Promise<void> {
     if (stillOnProjectsContext(context)) {
       await refreshProjectTree()
     }
-  } catch {
+
+    return repoScanOutcome(policy, repos, willScan)
+  } catch (error) {
     state.completedSignature = undefined
+
+    return { detail: error instanceof Error ? error.message : String(error), reason: 'failed' }
   } finally {
     state.runningSignature = undefined
 
@@ -999,6 +1152,8 @@ export interface CreateProjectInput {
   color?: string
   boardSlug?: string
   use?: boolean
+  /** Nest the new project under this one — the "New subproject" flow in a project's menu. */
+  parentId?: string
   // Free-text project idea; written to IDEA.md at the primary folder on create.
   idea?: string
   /** Where a "New project" DRAG dropped the project (tab-strip slot / pane
@@ -1093,6 +1248,7 @@ function projectInfoToTreeNode(project: ProjectInfo): SidebarProjectTree {
     color: project.color ?? null,
     icon: project.icon ?? null,
     isAuto: false,
+    parentId: project.parent_id ?? null,
     repos: [],
     sessionCount: 0,
     previewSessions: []
@@ -1125,6 +1281,7 @@ export async function createProject(input: CreateProjectInput): Promise<ProjectI
           icon: input.icon,
           color: input.color,
           board_slug: input.boardSlug,
+          parent_id: input.parentId,
           use: input.use ?? false
         },
         context.profile
@@ -1320,6 +1477,29 @@ export async function addProjectFolder(
   reconcileProjects()
 }
 
+/**
+ * Nest a project under another one — `parentId` names the parent, `""` moves it back out to the top
+ * level.
+ *
+ * Optimistic on the tree node alone: `parentId` is what the sidebar groups by, so the row lands under
+ * its new parent immediately and a failed move rolls the snapshot back.
+ */
+export async function setProjectParent(id: string, parentId: string): Promise<void> {
+  const context = await activeProjectsContext(writableProjectProfile())
+  const snap = snapshotProjects()
+
+  $projectTree.set(snap.tree.map(node => (node.id === id ? { ...node, parentId: parentId || null } : node)))
+
+  await persistOrRollback(snap, () =>
+    gatewayRequestOn(
+      context.gateway,
+      'projects.set_parent',
+      projectParams({ id, parent_id: parentId }, context.profile)
+    )
+  )
+  reconcileProjects()
+}
+
 // True when the session currently open in the main pane belongs to `projectId`.
 // Used so deleting a project you have a session open from kicks you back to the
 // intro draft instead of stranding you in a now-orphaned view.
@@ -1344,6 +1524,14 @@ export async function deleteProject(id: string): Promise<void> {
   // Capture membership BEFORE removal — the project's folders (which determine
   // ownership) are gone once it's dropped from the cache.
   const kickToIntro = openSessionBelongsToProject(id, snap.projects)
+  // And capture the folders themselves: a deleted project leaves its folder unowned, which is
+  // exactly what the auto tiers key on (sessions left in it, and the disk scan), so without this
+  // the row the user just removed comes straight back as an auto-discovered one.
+  const removed = snap.projects.find(project => project.id === id)
+
+  const removedPaths = [removed?.primary_path, ...(removed?.folders ?? []).map(folder => folder.path)].filter(
+    (path): path is string => Boolean(path && path.trim())
+  )
 
   $projects.set(snap.projects.filter(project => project.id !== id))
   $projectTree.set(snap.tree.filter(node => node.id !== id))
@@ -1367,6 +1555,11 @@ export async function deleteProject(id: string): Promise<void> {
       )
     )
   })
+
+  for (const path of removedPaths) {
+    dismissAutoProject(path.replace(/[/\\]+$/, ''))
+  }
+
   void refreshProjectTree()
 }
 
@@ -1390,11 +1583,15 @@ export interface ProjectDialogState {
   mode: 'add-folder' | 'create' | 'rename'
   projectId?: string
   name?: string
+  /** Create mode: nest the new project under this one — "New subproject" in a row's menu. */
+  parentId?: string
+  parentName?: string
 }
 
 export const $projectDialog = atom<null | ProjectDialogState>(null)
 
-export function openProjectCreate(): void {
+/** Open the create dialog; passing a project nests the new one under it. */
+export function openProjectCreate(parent?: { id: string; name: string }): void {
   if ($projectsRpcAvailable.get() === false) {
     notify({
       kind: 'warning',
@@ -1404,7 +1601,7 @@ export function openProjectCreate(): void {
     return
   }
 
-  $projectDialog.set({ mode: 'create' })
+  $projectDialog.set({ mode: 'create', parentId: parent?.id, parentName: parent?.name })
 }
 
 /** Clear the armed "New project" drag placement — on dialog close, so a later

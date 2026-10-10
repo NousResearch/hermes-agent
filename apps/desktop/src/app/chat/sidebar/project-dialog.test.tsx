@@ -24,6 +24,7 @@ vi.mock('@/i18n', () => ({
           ideaPlaceholder: 'What are you building?',
           ideaShuffle: 'Shuffle ideas',
           namePlaceholder: 'Project name',
+          subprojectOf: (name: string) => `Inside ${name}`,
           noFolders: 'No folders yet',
           primaryBadge: 'Primary',
           removeFolder: 'Remove folder'
@@ -46,7 +47,13 @@ const { $newProjectDropPlacement, $projectDialog, addProjectFolders, createProje
     return {
       // Where a "New project" DRAG armed its drop (null = plain click).
       $newProjectDropPlacement: atom<{ anchor: string; before?: null | string; dir: string } | null>(null),
-      $projectDialog: atom<{ mode: 'create' | 'rename' | 'add-folder'; name?: string; projectId?: string } | null>({
+      $projectDialog: atom<{
+        mode: 'create' | 'rename' | 'add-folder'
+        name?: string
+        parentId?: string
+        parentName?: string
+        projectId?: string
+      } | null>({
         mode: 'create'
       }),
       addProjectFolders: vi.fn(),
@@ -181,6 +188,24 @@ describe('ProjectDialog', () => {
     await waitFor(() => expect(createProject).toHaveBeenCalledOnce())
 
     expect(createProject.mock.calls[0]?.[0]).toMatchObject({ dropPlacement: undefined })
+  })
+
+  it('creates under the parent the row menu handed it', async () => {
+    const { createProject } = vi.mocked(await import('@/store/projects'))
+
+    vi.mocked(createProject).mockClear()
+    $projectDialog.set({ mode: 'create', parentId: 'p_dev', parentName: 'Dev' })
+    render(<ProjectDialog />)
+
+    // The dialog says what it will nest under, so "New subproject" isn't silent.
+    expect(screen.getByText('Inside Dev')).toBeTruthy()
+
+    await fillCreateForm()
+    await waitFor(() => expect(createProject).toHaveBeenCalledOnce())
+
+    expect(createProject.mock.calls[0]?.[0]).toMatchObject({ parentId: 'p_dev', name: 'Skunkworks' })
+
+    $projectDialog.set({ mode: 'create' })
   })
 })
 

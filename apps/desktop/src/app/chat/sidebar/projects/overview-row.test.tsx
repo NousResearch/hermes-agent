@@ -3,10 +3,12 @@ import type { ReactNode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { SessionInfo } from '@/hermes'
+import { $projectScope, ALL_PROJECTS } from '@/store/project-scope'
+import { $projectTree } from '@/store/projects'
 import type * as ProjectsStore from '@/store/projects'
 
 import type * as Model from './model'
-import { ProjectOverviewRow } from './overview-row'
+import { ProjectBackRow, ProjectOverviewRow } from './overview-row'
 import type { SidebarProjectTree } from './workspace-groups'
 
 afterEach(cleanup)
@@ -63,6 +65,39 @@ const project = { id: 'p1', label: 'Test D' } as unknown as SidebarProjectTree
 
 const session = (id: string, updated: number): SessionInfo => ({ id, updated_at: updated }) as unknown as SessionInfo
 
+describe('ProjectBackRow', () => {
+  const node = (id: string, parentId = ''): SidebarProjectTree => ({ id, label: id, parentId }) as SidebarProjectTree
+
+  afterEach(() => {
+    $projectTree.set([])
+    $projectScope.set(ALL_PROJECTS)
+  })
+
+  // A project that nests under another was entered from it, so its back row lands on the parent —
+  // a drill-down walks back out one level at a time instead of jumping to the overview.
+  it('steps back into the parent of a nested project', () => {
+    $projectTree.set([node('p_dev'), node('p_child', 'p_dev')])
+    $projectScope.set('p_child')
+    render(<ProjectBackRow label="Back" onExit={vi.fn()} />)
+
+    fireEvent.click(screen.getByText('Back'))
+
+    expect($projectScope.get()).toBe('p_dev')
+  })
+
+  it('hands a top-level project to the caller, which leaves for the overview', () => {
+    $projectTree.set([node('p_dev')])
+    $projectScope.set('p_dev')
+    const onExit = vi.fn()
+    render(<ProjectBackRow label="Back" onExit={onExit} />)
+
+    fireEvent.click(screen.getByText('Back'))
+
+    expect(onExit).toHaveBeenCalledTimes(1)
+    expect($projectScope.get()).toBe('p_dev')
+  })
+})
+
 describe('ProjectOverviewRow', () => {
   afterEach(() => {
     workspaceOpen.value = false
@@ -70,10 +105,37 @@ describe('ProjectOverviewRow', () => {
     projectsStore.projectProfile.mockReset().mockReturnValue('default')
   })
 
+  // The indent follows the row's depth: the overview passes the real one, so a subproject of a
+  // subproject lands one step further in than its parent. A row rendered on its own (no depth) still
+  // indents for its `parentId`, so the nesting can never silently go flat again.
+  it('indents by depth, falling back to the parentId when no depth is passed', () => {
+    const { container } = render(
+      <>
+        <ProjectOverviewRow depth={2} project={{ ...project, id: 'p_deep' } as SidebarProjectTree} />
+        <ProjectOverviewRow project={{ ...project, id: 'p_nested', parentId: 'p_dev' } as SidebarProjectTree} />
+      </>
+    )
+
+    const indent = (id: string) =>
+      container.querySelector<HTMLElement>(`[data-sessions-project="${id}"]`)?.style.paddingLeft
+
+    expect(indent('p_deep')).toBe('1rem')
+    expect(indent('p_nested')).toBe('0.5rem')
+  })
+
   it('does not render the disclosure toggle when there is nothing to preview', () => {
     render(<ProjectOverviewRow project={project} />)
 
     expect(screen.queryByRole('button', { name: 'Show Test D sessions' })).toBeNull()
+  })
+
+  // A parent whose only content is a subproject has no preview rows to fold — but the subprojects
+  // are what the fold is for, and without the control the subtree can never be closed (or reopened).
+  it('renders the disclosure toggle for a parent whose only content is a subproject', () => {
+    render(<ProjectOverviewRow hasNestedProjects project={project} />)
+
+    // Closed by default, so the control offers to show them.
+    expect(screen.getByRole('button', { name: 'Show Test D sessions' }))
   })
 
   // Group by → Projects previews only the 3 most-recent sessions per project;

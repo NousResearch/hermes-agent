@@ -71,6 +71,17 @@ def _activated(proj, task_id: Optional[str]) -> str:
         "primary_path": primary})
 
 
+def _resolve_parent(token: Optional[str]):
+    """The project a nesting action names, or None. Opens its own connection so a create can resolve
+    its parent before it has one of its own."""
+    token = (token or "").strip()
+    if not token:
+        return None
+    from hermes_cli import projects_db as pdb
+    with pdb.connect_closing() as conn:
+        return _resolve(conn, token)
+
+
 def _calling_session_project_id(conn, task_id: Optional[str]) -> tuple[bool, Optional[str]]:
     """``(scoped, project_id)`` for the calling session. The GUI gateway registers each session's
     workspace (``cwd_source``) in the terminal override table; a caller it never registered (CLI,
@@ -98,11 +109,46 @@ def project_list(task_id: Optional[str] = None) -> str:
         "projects": [
             {
                 "id": p.id, "slug": p.slug, "name": p.name,
+                "parent_id": p.parent_id,
                 "primary_path": _primary_path(p), "active": p.id == active}
             for p in projects]})
 
 
-def project_create(name: str, path: Optional[str] = None, task_id: Optional[str] = None) -> str:
+def project_move(project: str, parent: Optional[str] = None, task_id: Optional[str] = None) -> str:
+    """Nest a project under ``parent``, or out to the top level.
+
+    ``parent`` is the parent's name, slug or id; omit it (or pass an empty string) to move the
+    project back to the top level. Same nesting rules as the sidebar: a project cannot become its own
+    ancestor, and a project whose folders sit inside another project's still displays under it unless
+    it is explicitly moved out. Membership of either project's sessions is untouched — nesting is
+    display grouping only.
+    """
+    from hermes_cli import projects_db as pdb
+    with pdb.connect_closing() as conn:
+        proj = _resolve(conn, project)
+        if proj is None:
+            return json.dumps({"success": False, "error": f"no project matching '{project}'"})
+        # An omitted `parent` is the top level; a given one must resolve.
+        found = _resolve(conn, parent) if parent else None
+
+        if parent and found is None:
+            return json.dumps({"success": False, "error": f"no project matching '{parent}'"})
+
+        parent_id = found.id if found else ""
+        try:
+            pdb.set_project_parent(conn, proj.id, parent_id)
+        except ValueError as exc:
+            return json.dumps({"success": False, "error": str(exc)})
+    return json.dumps({
+        "success": True, "id": proj.id, "name": proj.name, "parent_id": parent_id or ""})
+
+
+def project_create(
+    name: str,
+    path: Optional[str] = None,
+    parent: Optional[str] = None,
+    task_id: Optional[str] = None,
+) -> str:
     name = (name or "").strip()
     if not name:
         return json.dumps({"success": False, "error": "name is required"})
@@ -110,6 +156,9 @@ def project_create(name: str, path: Optional[str] = None, task_id: Optional[str]
     folder = (path or "").strip()
     if folder:
         folder = os.path.abspath(os.path.expanduser(folder))
+    found_parent = _resolve_parent(parent) if parent else None
+    if parent and found_parent is None:
+        return json.dumps({"success": False, "error": f"no project matching '{parent}'"})
     try:
         with pdb.connect_closing() as conn:
             existing = pdb.find_by_primary_path(conn, folder) if folder else None
@@ -118,7 +167,9 @@ def project_create(name: str, path: Optional[str] = None, task_id: Optional[str]
                 # a duplicate — duplicated projects render N identical sidebar subtrees (#75820).
                 proj = existing
             else:
-                pid = pdb.create_project(conn, name=name, folders=[folder] if folder else [], primary_path=folder or None)
+                pid = pdb.create_project(
+                    conn, name=name, folders=[folder] if folder else [], primary_path=folder or None,
+                    parent_id=found_parent.id if found_parent else None)
                 proj = pdb.get_project(conn, pid)
             # A live session that moves owns its workspace, so it leaves the profile-global pointer
             # alone (a background chat would otherwise redirect the sidebar). Anything that can't
@@ -147,14 +198,18 @@ def project_switch(project: str, task_id: Optional[str] = None) -> str:
 _ACTIONS = {
     "list": lambda args, tid: project_list(task_id=tid),
     "create": lambda args, tid: project_create(
-        name=args.get("name", ""), path=args.get("path"), task_id=tid),
-    "switch": lambda args, tid: project_switch(project=args.get("name", ""), task_id=tid)}
+        name=args.get("name", ""), path=args.get("path"), parent=args.get("parent"), task_id=tid),
+    "switch": lambda args, tid: project_switch(project=args.get("name", ""), task_id=tid),
+    "move": lambda args, tid: project_move(
+        project=args.get("name", ""), parent=args.get("parent"), task_id=tid)}
 
 
 def _handle_project(args, **kw):
     action = _ACTIONS.get((args.get("action") or "").strip())
     if action is None:
-        return json.dumps({"success": False, "error": "action must be one of: create, switch, list."})
+        return json.dumps({
+            "success": False,
+            "error": "action must be one of: create, switch, move, list."})
     return action(args, kw.get("task_id"))
 
 
@@ -167,18 +222,31 @@ registry.register(
     schema={
         "name": "desktop_project",
         "description": (
-            "Create or switch desktop Projects (named workspaces). create: one and switch "
-            "this chat into it — pass path to anchor it to a repo/folder (the "
-            "chat's workspace moves there, the sidebar follows). switch: move "
-            "this chat into an existing project by name/slug/id — the "
-            "intentional way to move the session, not `cd`. list: all projects + which one this chat is in."
+            "Create, switch, or reorganize desktop Projects (named workspaces). create: one and "
+            "switch this chat into it — pass path to anchor it to a repo/folder (the chat's "
+            "workspace moves there, the sidebar follows); pass parent to make it a subproject of "
+            "another project. switch: move this chat into an existing project by name/slug/id — "
+            "the intentional way to move the session, not `cd`. move: nest an existing project "
+            "under another one, or out to the top level, without moving any session — the sidebar "
+            "groups projects; it does not change what belongs to them. list: all projects, their "
+            "parents, and which one this chat is in."
         ),
         "parameters": {
             "type": "object",
             "properties": {
-                "action": {"type": "string", "enum": ["create", "switch", "list"]},
-                "name": {"type": "string", "description": "create: human name. switch: name, slug, or id."},
+                "action": {"type": "string", "enum": ["create", "switch", "move", "list"]},
+                "name": {
+                    "type": "string",
+                    "description": "create: human name. switch/move: name, slug, or id of the project."
+                },
                 "path": {"type": "string", "description": "create: repo/folder to anchor to."},
+                "parent": {
+                    "type": "string",
+                    "description": (
+                        "create: parent project's name/slug/id, to nest the new one under it. "
+                        "move: the project to nest under; omit (or pass '') to move it out to the "
+                        "top level."),
+                },
             },
             "required": ["action"],
         },

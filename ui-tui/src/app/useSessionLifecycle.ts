@@ -220,7 +220,9 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
       const r = await rpc<SessionCreateResponse>('session.create', {
         cols: colsRef.current,
-        ...(STARTUP_WORKSPACE_CWD ? { cwd: STARTUP_WORKSPACE_CWD } : {})
+        // The dashboard user PICKED this workspace (`/api/pty?cwd=`): say so, or the backend reads the
+        // pick as the app's inherited launch default and a settle may re-home the chat off it (#52589).
+        ...(STARTUP_WORKSPACE_CWD ? { cwd: STARTUP_WORKSPACE_CWD, cwd_explicit: true } : {})
       })
 
       if (!r) {

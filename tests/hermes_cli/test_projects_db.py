@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 
 import pytest
 
@@ -16,6 +17,13 @@ def conn(tmp_path):
         yield c
     finally:
         c.close()
+
+
+def _row(connection, project_id: str) -> pdb.Project:
+    """``get_project`` with the missing-row assertion folded in, so tests can read attributes."""
+    project = pdb.get_project(connection, project_id)
+    assert project is not None
+    return project
 
 
 
@@ -142,5 +150,119 @@ def test_per_profile_isolation(tmp_path):
     finally:
         a.close()
         b.close()
+
+
+def test_create_project_with_a_parent_nests_it(conn):
+    parent = pdb.create_project(conn, name="Dev", folders=["/www/dev"])
+    child = pdb.create_project(
+        conn, name="Align", folders=["/www/dev/m4l/align"], parent_id=parent
+    )
+
+    assert _row(conn, child).parent_id == parent
+    assert _row(conn, parent).parent_id is None
+
+
+def test_create_project_rejects_an_unknown_parent(conn):
+    with pytest.raises(ValueError, match="no such parent"):
+        pdb.create_project(conn, name="Orphan", folders=["/www/o"], parent_id="p_nope")
+
+
+def test_set_project_parent_moves_a_project_in_and_out(conn):
+    parent = pdb.create_project(conn, name="Dev", folders=["/www/dev"])
+    child = pdb.create_project(conn, name="Align", folders=["/www/dev/m4l/align"])
+    # Unset is the containment default, not "top level" — the stored value has to say which.
+    assert _row(conn, child).parent_id is None
+
+    assert pdb.set_project_parent(conn, child, parent) == parent
+    assert _row(conn, child).parent_id == parent
+
+    assert pdb.set_project_parent(conn, child, pdb.PARENT_TOP_LEVEL) == ""
+    assert _row(conn, child).parent_id == ""
+
+    assert pdb.set_project_parent(conn, child, None) is None
+    assert _row(conn, child).parent_id is None
+
+
+def test_set_project_parent_rejects_self_and_descendants(conn):
+    top = pdb.create_project(conn, name="Top", folders=["/www/top"])
+    mid = pdb.create_project(conn, name="Mid", folders=["/www/mid"], parent_id=top)
+    leaf = pdb.create_project(conn, name="Leaf", folders=["/www/leaf"], parent_id=mid)
+
+    with pytest.raises(ValueError, match="own parent"):
+        pdb.set_project_parent(conn, top, top)
+    with pytest.raises(ValueError, match="descendant"):
+        pdb.set_project_parent(conn, top, leaf)
+    with pytest.raises(ValueError, match="descendant"):
+        pdb.set_project_parent(conn, mid, leaf)
+
+    # A refused move writes nothing.
+    assert _row(conn, top).parent_id is None
+    assert _row(conn, mid).parent_id == top
+
+
+def test_set_project_parent_rejects_an_unknown_project(conn):
+    with pytest.raises(ValueError, match="no such project"):
+        pdb.set_project_parent(conn, "p_nope", None)
+
+
+def test_parent_id_round_trips_through_to_dict(conn):
+    parent = pdb.create_project(conn, name="Dev", folders=["/www/dev"])
+    child = pdb.create_project(conn, name="Align", folders=["/www/x"], parent_id=parent)
+
+    payload = _row(conn, child).to_dict()
+
+    assert payload["parent_id"] == parent
+
+
+def test_legacy_db_without_the_parent_column_upgrades_in_place(tmp_path):
+    """The column is additive: opening an old DB must grant it, not crash on the missing field."""
+    path = tmp_path / "legacy.db"
+    legacy = sqlite3.connect(path)
+    legacy.execute(
+        "CREATE TABLE projects (id TEXT PRIMARY KEY, slug TEXT NOT NULL UNIQUE, name TEXT NOT NULL,"
+        " created_at INTEGER NOT NULL, archived INTEGER NOT NULL DEFAULT 0)"
+    )
+    legacy.execute(
+        "INSERT INTO projects (id, slug, name, created_at, archived)"
+        " VALUES ('p_old', 'old', 'Old', 1, 0)"
+    )
+    legacy.commit()
+    legacy.close()
+
+    upgraded = pdb.connect(db_path=path)
+    try:
+        assert _row(upgraded, "p_old").parent_id is None
+        pdb.set_project_parent(upgraded, "p_old", pdb.PARENT_TOP_LEVEL)
+        assert _row(upgraded, "p_old").parent_id == ""
+    finally:
+        upgraded.close()
+
+
+def test_a_move_under_a_project_this_one_contains_is_refused(conn, tmp_path):
+    """Containment is a parent link too.
+
+    B's folder sits inside A's, so the sidebar already nests B under A by folder containment. Moving A
+    under B would leave each one nested under the other — a cycle every tree build then renders in both
+    directions — and a walk over the explicit links alone does not see it.
+    """
+    outer = tmp_path / "a"
+    (outer / "b").mkdir(parents=True)
+    a = pdb.create_project(conn, name="A", folders=[str(outer)])
+    b = pdb.create_project(conn, name="B", folders=[str(outer / "b")])
+
+    with pytest.raises(ValueError):
+        pdb.set_project_parent(conn, a, b)
+
+    assert _row(conn, a).parent_id is None
+
+
+def test_a_new_project_whose_folder_contains_its_parent_is_refused(conn, tmp_path):
+    """The same loop from the other end: a subproject created into a folder that holds its parent."""
+    outer = tmp_path / "a"
+    (outer / "child").mkdir(parents=True)
+    parent = pdb.create_project(conn, name="Child", folders=[str(outer / "child")])
+
+    with pytest.raises(ValueError):
+        pdb.create_project(conn, name="Outer", folders=[str(outer)], parent_id=parent)
 
 

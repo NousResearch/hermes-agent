@@ -752,6 +752,7 @@ gateway:
     usage_idle: "Gebruik: /steer <prompt>  (geen agent loop nie; word as 'n gewone boodskap gestuur)"
     queued_starting: "Agent is nog besig om te begin — /steer in die tou vir die volgende beurt."
     queued_no_agent: "Geen aktiewe agent nie — /steer in die tou vir die volgende beurt."
+    queued_turn_finished: "Die agent se beurt is klaar. /steer in die tou vir die volgende beurt."
     failed: "⚠️ Stuur het misluk: {error}"
     rejected_empty: "Stuur verwerp (leë inhoud)."
     target_subagents: "lopie en sy aktiewe subagent(e)"

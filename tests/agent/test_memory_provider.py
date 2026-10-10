@@ -1215,6 +1215,26 @@ class TestTrivialPromptClassifier:
                   "done???", "ok", "yes.", "k", "", "   ", "/help", "lgtm"):
             assert is_trivial_prompt(t), f"expected trivial: {t!r}"
 
+    @pytest.mark.parametrize("text", [
+        "ок", "Да!", "спасибо.", "понял",          # Russian
+        "sí", "vale", "Gracias!", "obrigado",      # Spanish / Portuguese
+        "ja", "Danke :)", "oui", "merci", "d'accord", "d\u2019accord",  # German / French
+        "好的", "谢谢!", "是", "はい", "ありがとう",    # Chinese / Japanese
+        "ครับ", "ค่ะ", "โอเค", "ขอบคุณ",           # Thai
+    ])
+    def test_multilingual_acknowledgements_are_trivial(self, text):
+        from agent.memory_provider import is_trivial_prompt
+
+        assert is_trivial_prompt(text), f"expected trivial: {text!r}"
+
+    def test_multilingual_substantive_prompts_pass_through(self):
+        from agent.memory_provider import is_trivial_prompt
+
+        # Longer prompts that merely start with an acknowledgement word stay non-trivial.
+        for t in ("danke, aber was ist mit der Datei?", "да, но почему?", "好的，请帮我查一下日志",
+                  "jahresbericht", "sinnvoll", "merchant"):
+            assert not is_trivial_prompt(t), f"expected non-trivial: {t!r}"
+
     def test_substantive_and_prefix_collisions_pass_through(self):
         from agent.memory_provider import is_trivial_prompt
 

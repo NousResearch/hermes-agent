@@ -6,7 +6,7 @@ name: jet-browser
 repo: https://github.com/masakaai/jet-browser
 sha: "1b0b10feb70e52bde844ba4e1cb7c35600af4b35"
 subdir: integrations/hermes
-description: "Verify Jet Browser startup, native input, DOM agreement, and PNG capture inside a network-isolated WPE WebKit container."
+description: "Verify Jet Browser startup, native input, DOM agreement, and PNG capture inside a network-isolated WPE WebKit container. Disclosure — runs `docker run` (Docker access is root-equivalent on the host) on the digest-pinned image ghcr.io/masakaai/jet-browser@sha256:540a1fec…, pulled from GHCR on first use; the container has no network and only SETUID/SETGID capabilities, but runs with AppArmor and systempaths unconfined and a seccomp profile that allows user-namespace and mount syscalls for WebKit's bubblewrap sandbox; the tool takes no arguments and loads only a built-in local test page."
 maintainer: IRONICBo
 tier: community
 category: tools

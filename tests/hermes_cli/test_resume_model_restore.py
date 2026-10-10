@@ -303,6 +303,44 @@ def test_restore_session_model_heals_bare_custom_stored_rows(monkeypatch):
     assert stub.provider == "openrouter"
 
 
+def test_restore_session_model_recovers_route_from_billing_columns(monkeypatch):
+    """#136323 end-to-end: a CLI session that never ran /model has only the model column plus the
+    billing class/endpoint. Resume must run it on the custom entry that endpoint belongs to, not
+    the ambient default."""
+    import hermes_cli.runtime_provider as rp
+    monkeypatch.setattr(rp, "canonical_custom_identity",
+                        lambda base_url=None, model=None: "custom:glm")
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **kw: {"base_url": "http://127.0.0.1:1234/v1", "api_key": "sk-glm"})
+    meta = _row(model="GLM-5.3")
+    meta["billing_provider"] = "custom"
+    meta["billing_base_url"] = "http://127.0.0.1:1234/v1"
+    stub = _make_stub()
+    stub._restore_session_model(meta)
+    assert stub.model == "GLM-5.3"
+    assert stub.provider == "custom:glm"
+    assert stub.requested_provider == "custom:glm"
+    assert stub.base_url == "http://127.0.0.1:1234/v1"
+    assert stub.api_key == "sk-glm"
+
+
+def test_restore_session_model_billing_custom_without_configured_entry_keeps_ambient(monkeypatch):
+    """The billing endpoint no longer matches any configured entry — the heal resolves nothing, so
+    the stored model is restored but the route stays ambient (the first turn surfaces the error)."""
+    import hermes_cli.runtime_provider as rp
+    monkeypatch.setattr(rp, "canonical_custom_identity",
+                        lambda base_url=None, model=None: None)
+    meta = _row(model="GLM-5.3")
+    meta["billing_provider"] = "custom"
+    meta["billing_base_url"] = "http://gone-endpoint/v1"
+    stub = _make_stub()
+    stub._restore_session_model(meta)
+    assert stub.model == "GLM-5.3"
+    assert stub.provider == "openrouter"
+    assert stub.base_url == "https://openrouter.ai/api/v1"
+
+
 def test_restore_session_model_rederives_per_model_wire_for_opencode_rows(monkeypatch):
     """A row persisted while an opencode-go session ran an anthropic_messages model (MiniMax) must not
     pin that wire onto a chat_completions model on resume — api_mode and the relay URL follow the
@@ -427,6 +465,28 @@ def test_session_gateway_runtime_billing_provider_fills_top_level_route_without_
         "provider": "minimax", "base_url": "https://f/v1", "api_mode": "chat_completions"}
     meta["billing_provider"] = "custom"
     assert SessionDB.session_gateway_runtime(meta) == {"base_url": "https://f/v1", "api_mode": "chat_completions"}
+
+
+def test_session_gateway_runtime_bare_custom_falls_back_to_billing_base_url():
+    """#136323: plain CLI turns persist only the billing class + the endpoint they served. The
+    reader surfaces both so the bare-custom heal can recover custom:<name> instead of resume
+    recombining the stored model with the ambient default."""
+    meta = _row()
+    meta["billing_provider"] = "custom"
+    meta["billing_base_url"] = "http://127.0.0.1:1234/v1"
+    assert SessionDB.session_gateway_runtime(meta) == {
+        "provider": "custom", "base_url": "http://127.0.0.1:1234/v1"}
+    # Without an endpoint there is nothing to attribute — stays filtered (ambient resume).
+    del meta["billing_base_url"]
+    assert SessionDB.session_gateway_runtime(meta) == {}
+
+
+def test_session_gateway_runtime_bare_auto_ignores_billing_base_url():
+    """auto bills through the router — no attributable endpoint, stays filtered."""
+    meta = _row()
+    meta["billing_provider"] = "auto"
+    meta["billing_base_url"] = "http://127.0.0.1:1234/v1"
+    assert SessionDB.session_gateway_runtime(meta) == {}
 
 
 def test_restore_session_model_restores_billing_provider_fallback():

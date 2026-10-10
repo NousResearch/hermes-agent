@@ -382,7 +382,14 @@ class SearchMixin:
                 exit_code = 124
                 break
         if proc.poll() is None:
-            _kill_process_group_posix(proc)  # native lane is POSIX-only (gate above)
+            try:
+                _kill_process_group_posix(proc)  # native lane is POSIX-only (gate above)
+            except ProcessLookupError:
+                # rg can exit and be reaped between the ``poll()`` above and the group
+                # TERM — a sibling tool call's ``Popen`` runs ``subprocess._cleanup()``
+                # — so ``os.getpgid`` answers ESRCH. The wrapper is gone: there is
+                # nothing left to signal, and the output already drained is still good.
+                pass
         proc.wait()
         drainer.join()
         proc.stdout.close()

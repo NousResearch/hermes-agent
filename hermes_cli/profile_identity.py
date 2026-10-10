@@ -22,8 +22,122 @@ Checkpoint project state has no live in-memory owner and is rekeyed locally afte
 from __future__ import annotations
 
 import contextlib
+import json
+import re
 import sys
 from pathlib import Path
+
+
+# Keys whose whole value is a profile name. Only an exact match is rewritten.
+_PROFILE_NAME_KEYS = frozenset({"profile", "transport_profile", "target_profile", "profile_name"})
+# Characters that continue a profile name; every rule below refuses a match followed by one, so
+# renaming ``bot`` never touches ``bot2`` / ``bot-dev``.
+_NAME_TAIL = r"(?![A-Za-z0-9_-])"
+
+
+def _profile_reference_rules(old_dir: Path, new_dir: Path):
+    """Anchored (pattern, replacement) pairs for references embedded inside a string value:
+    the absolute profile home (and paths under it), ``agent:<name>:`` session keys, and
+    ``bot-chat:<name>`` delivery tokens (also inside comma-separated ``deliver`` lists)."""
+    old_name, new_name = old_dir.name, new_dir.name
+    # Replacements are callables so a Windows path's backslashes are never read as group escapes.
+    return (
+        (re.compile(re.escape(str(old_dir)) + _NAME_TAIL), lambda m: str(new_dir)),
+        (re.compile(r"(?<![A-Za-z0-9_-])agent:" + re.escape(old_name) + ":"), lambda m: f"agent:{new_name}:"),
+        (re.compile(r"(?<![A-Za-z0-9_-])(bot-chat:)" + re.escape(old_name) + _NAME_TAIL, re.IGNORECASE),
+         lambda m: m.group(1) + new_name),
+    )
+
+
+def _rewrite_reference_text(value: str, rules) -> str:
+    for pattern, replacement in rules:
+        value = pattern.sub(replacement, value)
+    return value
+
+
+def _rewrite_json_references(node, old_name: str, new_name: str, rules):
+    """Rewrite identity fields (exact profile-name values) and embedded references in string
+    values; free text such as a cron ``command`` or a prompt is never searched for the bare name."""
+    if isinstance(node, dict):
+        out = {}
+        for key, value in node.items():
+            if key in _PROFILE_NAME_KEYS and value == old_name:
+                out[key] = new_name
+            else:
+                out[key] = _rewrite_json_references(value, old_name, new_name, rules)
+        return out
+    if isinstance(node, list):
+        return [_rewrite_json_references(item, old_name, new_name, rules) for item in node]
+    if isinstance(node, str):
+        return _rewrite_reference_text(node, rules)
+    return node
+
+
+def _rewrite_yaml_references(text: str, old_name: str, new_name: str, rules) -> str:
+    """Line-level YAML rewrite that keeps comments and layout: ``<identity key>: <old>`` values
+    (optionally quoted, optionally a list item) plus the anchored embedded-reference rules."""
+    keys = "|".join(sorted(_PROFILE_NAME_KEYS))
+    identity = re.compile(
+        rf"^(\s*(?:-\s+)?(?:{keys})\s*:\s*)([\"']?){re.escape(old_name)}\2(?=\s*(?:#.*)?$)",
+        re.MULTILINE)
+    text = identity.sub(lambda m: f"{m.group(1)}{m.group(2)}{new_name}{m.group(2)}", text)
+    return _rewrite_reference_text(text, rules)
+
+
+def _durable_reference_files(new_dir: Path) -> list:
+    """Every file that may durably name the renamed profile: its own cron jobs, config and plugin
+    JSON state; the shared root's config and cron jobs (default-profile jobs can deliver to
+    ``bot-chat:<name>``); and sibling profiles' cron jobs, which can target it the same way."""
+    profiles_root = new_dir.parent
+    hermes_root = profiles_root.parent
+    candidates = [
+        new_dir / "cron" / "jobs.json",
+        new_dir / "config.yaml",
+        hermes_root / "config.yaml",
+        hermes_root / "cron" / "jobs.json",
+    ]
+    if profiles_root.is_dir():
+        candidates.extend(sorted(profiles_root.glob("*/cron/jobs.json")))
+    plugins = new_dir / "plugins"
+    if plugins.is_dir():
+        candidates.extend(sorted(plugins.rglob("*.json")))
+    return list(dict.fromkeys(candidates))
+
+
+def migrate_profile_durable_references(old_dir: Path, new_dir: Path) -> bool:
+    """Rekey durable profile names and absolute homes that the directory move did not carry.
+
+    The directory rename carries files but not values embedded in cron targets, plugin state, or
+    routes. Keep the inventory here rather than growing one-off rename hooks. Only identity
+    fields and anchored references are rewritten (never the bare name in free text), JSON is
+    rewritten structurally and YAML line by line, and writes are atomic, so retries are harmless.
+    """
+    from utils import atomic_write_text
+
+    old_name, new_name = old_dir.name, new_dir.name
+    rules = _profile_reference_rules(old_dir, new_dir)
+    ok = True
+    for path in _durable_reference_files(new_dir):
+        if not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8-sig")
+            if path.suffix == ".json":
+                # Malformed plugin state raises here and is retained untouched.
+                data = json.loads(text)
+                migrated_data = _rewrite_json_references(data, old_name, new_name, rules)
+                if migrated_data == data:
+                    continue
+                migrated = json.dumps(migrated_data, indent=2, ensure_ascii=False) + "\n"
+            else:
+                migrated = _rewrite_yaml_references(text, old_name, new_name, rules)
+                if migrated == text:
+                    continue
+            atomic_write_text(path, migrated)
+        except Exception as exc:
+            ok = False
+            print(f"⚠ Profile reference migration failed for {path}: {type(exc).__name__}: {exc}", file=sys.stderr)
+    return ok
 
 
 def migrate_profile_identity(old_name: str, new_name: str) -> bool:
@@ -190,6 +304,9 @@ def _migrate_profile_identity(old_canon: str, new_canon: str, live_mux: bool) ->
     project identity is always durable-only. Never fatal to the rename, which has already happened
     by this point.
     """
+    from hermes_cli.profiles import get_profile_dir
+    references_migrated = migrate_profile_durable_references(
+        get_profile_dir(old_canon), get_profile_dir(new_canon))
     checkpoint_migrated = _migrate_checkpoint_identity(old_canon, new_canon)
 
     if live_mux:
@@ -202,7 +319,7 @@ def _migrate_profile_identity(old_canon: str, new_canon: str, live_mux: bool) ->
             reason = f"{type(exc).__name__}: {exc}"
         else:
             if isinstance(answer, dict) and answer.get("ok") is True:
-                return checkpoint_migrated
+                return checkpoint_migrated and references_migrated
             reason = _control_answer_failure(answer)
             if answer is None and _gateway_accepts_profile_identity_verb(root):
                 reason += (" — the gateway is running but does not implement "
@@ -214,11 +331,10 @@ def _migrate_profile_identity(old_canon: str, new_canon: str, live_mux: bool) ->
             file=sys.stderr)
         return False
 
-    from hermes_cli.profiles import get_profile_dir
     from hermes_state_registry import acquire, release_or_close
     from hermes_constants import get_default_hermes_root
     root = get_default_hermes_root()
-    migrated = checkpoint_migrated
+    migrated = checkpoint_migrated and references_migrated
     for db_path in (root / "state.db", get_profile_dir(new_canon) / "state.db"):
         if not db_path.exists():
             continue

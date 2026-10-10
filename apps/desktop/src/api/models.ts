@@ -6,7 +6,9 @@ import type {
   MoaConfigResponse,
   ModelAssignmentRequest,
   ModelAssignmentResponse,
-  ModelInfoResponse
+  ModelInfoResponse,
+  UsageBudgetUpdate,
+  UsageMonthResponse
 } from '@/types/hermes'
 
 import { capabilityScoped, hermesApi, type ProfileScope, profileScoped, STARTUP_REQUEST_TIMEOUT_MS } from './client'
@@ -29,6 +31,20 @@ export function getUsageAnalytics(days = 30, profile?: ProfileScope): Promise<An
   return window.hermesDesktop.api<AnalyticsResponse>({
     ...capabilityScoped(profile),
     path: `/api/analytics/usage?days=${Math.max(1, Math.floor(days))}`
+  })
+}
+
+export function getUsageMonth(profile?: ProfileScope): Promise<UsageMonthResponse> {
+  return window.hermesDesktop.api<UsageMonthResponse>({ ...capabilityScoped(profile), path: '/api/analytics/month' })
+}
+
+/** Set one of `monthly_tokens` / `monthly_usd` for a provider, or neither to clear its budget. */
+export function setUsageBudget(update: UsageBudgetUpdate, profile?: ProfileScope): Promise<{ ok: boolean }> {
+  return window.hermesDesktop.api<{ ok: boolean }>({
+    ...capabilityScoped(profile),
+    body: update,
+    method: 'PUT',
+    path: '/api/analytics/budgets'
   })
 }
 

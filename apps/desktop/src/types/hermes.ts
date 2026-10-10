@@ -986,6 +986,43 @@ export interface AnalyticsResponse {
   totals: AnalyticsTotals
 }
 
+/** `usage.budgets` evaluated against this month (`hermes_cli/usage_budget.py::summarize_month`). */
+export interface UsageBudget {
+  kind: 'tokens' | 'usd'
+  limit: number
+  /** Tokens, or estimated dollars, used so far this month. */
+  used: number
+  used_ratio: number
+  /** Where this month ends at the month-to-date pace (1 = exactly the budget). */
+  projected_ratio: number
+  /** ISO date the pace crosses the budget; null when it stays inside. */
+  runs_out_on: null | string
+}
+
+export interface UsageMonthProvider {
+  provider: string
+  tokens: number
+  estimated_cost: number
+  actual_cost: number
+  sessions: number
+  /** Sessions with tokens but no known price: never render their cost as $0. */
+  unpriced_sessions: number
+  budget: null | UsageBudget
+}
+
+export interface UsageMonthResponse {
+  month: string
+  days_in_month: number
+  days_elapsed: number
+  providers: UsageMonthProvider[]
+}
+
+export interface UsageBudgetUpdate {
+  provider: string
+  monthly_tokens?: null | number
+  monthly_usd?: null | number
+}
+
 export interface AnalyticsToolEntry {
   count: number
   percentage: number

@@ -25,7 +25,7 @@ from typing import Mapping
 from typing import Optional
 from typing import TYPE_CHECKING
 
-from hermes_cli.quiet_single_query import KANBAN_WORKER_EXIT_TRAILER
+from hermes_cli.kanban_db_worker_exit import _EXIT_TRAILER_RE, worker_log_exit
 
 if TYPE_CHECKING:
     from hermes_cli.kanban_db import Task
@@ -257,26 +257,8 @@ def _exit_code_kind(code: int) -> tuple[str, int]:
     return ("nonzero_exit", code)
 
 
-_EXIT_TRAILER_RE = re.compile(
-    r"^" + re.escape(KANBAN_WORKER_EXIT_TRAILER) + r"(\d+)\s*$", re.MULTILINE,
-)
-
-
-def _worker_log_exit_code(task_id: str, board: Optional[str] = None) -> Optional[int]:
-    """Exit code from the trailer the worker CLI wrote to its own log; None when absent.
-
-    The durable twin of ``_recent_worker_exits``: written by the worker itself
-    (``hermes_cli.quiet_single_query.exit_single_query``), so it is there whether
-    or not the process running this sweep ever reaped the worker. Last trailer
-    wins — the log is append-mode across re-runs.
-    """
-    try:
-        raw = _kb.read_worker_log(task_id, tail_bytes=4000, board=board)
-    except Exception:
-        return None
-    matches = _EXIT_TRAILER_RE.findall(raw or "")
-    return int(matches[-1]) if matches else None
-
+# Sanity cap on honouring a worker-reported quota reset, so a bogus far-future value cannot park a card.
+_MAX_RESET_HOLD_SECONDS = 7 * 24 * 3600
 
 def reap_worker_zombies() -> list[int]:
     """Reap exited workers without blocking; returns reaped PIDs. POSIX reaps
@@ -1078,9 +1060,10 @@ def _classify_dead_worker_exit(
     epilogue (killed, OOM) leaves no trailer and stays a plain crash.
     """
     kind, code = _classify_worker_exit(pid)
-    if kind == "unknown" and task_id:
-        logged = _worker_log_exit_code(task_id, board=board)
-        if logged is not None:
+    reset_at = None
+    if task_id and (kind == "unknown" or kind == "rate_limited"):
+        logged, reset_at = worker_log_exit(task_id, board=board)
+        if kind == "unknown" and logged is not None:
             kind, code = _exit_code_kind(logged)
     if kind == "clean_exit":
         # rc=0 while still ``running``: usually the work succeeded and only the
@@ -1101,7 +1084,8 @@ def _classify_dead_worker_exit(
             kind, code,
             f"pid {pid} exited rate-limited (quota wall) — requeued without counting a failure",
             "rate_limited",
-            {"pid": pid, "claimer": claimer, "exit_code": code},
+            {"pid": pid, "claimer": claimer, "exit_code": code,
+             **({"reset_at": reset_at} if reset_at else {})},
             rate_limited=True,
         )
     if kind == "terminal_provider":
@@ -1577,6 +1561,11 @@ def check_respawn_guard(
         ended_at = latest_run["ended_at"]
         if ended_at is not None and (now - int(ended_at)) < rl_cooldown:
             return "rate_limit_cooldown"
+        # The provider said when the quota is back: a weekly wall is not worth a spawn every cooldown.
+        reset_at = _kb._json_dict(latest_run["metadata"]).get("reset_at")
+        if isinstance(reset_at, (int, float)) and ended_at is not None:
+            if now < min(int(reset_at), int(ended_at) + _MAX_RESET_HOLD_SECONDS):
+                return "rate_limit_cooldown"
         # Cooldown elapsed — return early so blocker_auth doesn't catch the
         # stamped rate-limit text; this path intentionally retries forever
         # (spaced by the cooldown) until quota returns or a real run supersedes it.

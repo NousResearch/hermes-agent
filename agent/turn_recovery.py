@@ -1121,10 +1121,12 @@ def nonretryable_client_error_result(
     # Billing walls get the same structured recovery descriptor as the max-retries path
     # so every surface renders one consistent signal.
     if classified.reason == FailoverReason.billing:
-        return _billing_failure_result(
+        result = _billing_failure_result(
             classified=classified, summary=_nonretryable_summary, messages=messages,
             api_call_count=api_call_count, provider=provider, base_url=base_url, model=model,
         )
+        _stamp_limit_reset(result, agent, api_error)
+        return result
     if _welcome_hint:
         # A free-tier refusal is fully explained by its own sentence; the raw provider summary
         # (status codes, JSON) is for the log, not for a first-time user's chat.

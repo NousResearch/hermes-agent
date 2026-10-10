@@ -249,16 +249,35 @@ jobs:
       # installers' uv/ripgrep).
       - name: Stage serve repo (main -> ${{ inputs.install-ref }})
         shell: powershell
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests\install\windows-e2e.ps1 -Phase stage -InstallMethod "${{ inputs.install-method }}" -Route "${{ inputs.update-method }}" -InstallRef "${{ inputs.install-ref }}" -UpdateRef "${{ inputs.update-ref }}" -SetupExeUrl ${{ inputs.setup-exe-url }}
+        env:
+          INSTALL_METHOD: ${{ inputs.install-method }}
+          UPDATE_METHOD: ${{ inputs.update-method }}
+          INSTALL_REF: ${{ inputs.install-ref }}
+          UPDATE_REF: ${{ inputs.update-ref }}
+          SETUP_EXE_URL: ${{ inputs.setup-exe-url }}
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File tests\install\windows-e2e.ps1 -Phase stage -InstallMethod $env:INSTALL_METHOD -Route $env:UPDATE_METHOD -InstallRef $env:INSTALL_REF -UpdateRef $env:UPDATE_REF -SetupExeUrl $env:SETUP_EXE_URL
 
       - name: Install ${{ inputs.install-ref }} (${{ inputs.install-method }})
         shell: powershell
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests\install\windows-e2e.ps1 -Phase install -InstallMethod "${{ inputs.install-method }}" -Route "${{ inputs.update-method }}" -InstallRef "${{ inputs.install-ref }}" -SetupExeUrl ${{ inputs.setup-exe-url }}
+        env:
+          INSTALL_METHOD: ${{ inputs.install-method }}
+          UPDATE_METHOD: ${{ inputs.update-method }}
+          INSTALL_REF: ${{ inputs.install-ref }}
+          SETUP_EXE_URL: ${{ inputs.setup-exe-url }}
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File tests\install\windows-e2e.ps1 -Phase install -InstallMethod $env:INSTALL_METHOD -Route $env:UPDATE_METHOD -InstallRef $env:INSTALL_REF -SetupExeUrl $env:SETUP_EXE_URL
 
       - name: Update ${{ inputs.install-ref }} -> ${{ inputs.update-ref }} (${{ inputs.update-method }})
         id: update
         shell: powershell
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests\install\windows-e2e.ps1 -Phase update -InstallMethod "${{ inputs.install-method }}" -Route "${{ inputs.update-method }}" -InstallRef "${{ inputs.install-ref }}" -SetupExeUrl ${{ inputs.setup-exe-url }}
+        env:
+          INSTALL_METHOD: ${{ inputs.install-method }}
+          UPDATE_METHOD: ${{ inputs.update-method }}
+          INSTALL_REF: ${{ inputs.install-ref }}
+          SETUP_EXE_URL: ${{ inputs.setup-exe-url }}
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File tests\install\windows-e2e.ps1 -Phase update -InstallMethod $env:INSTALL_METHOD -Route $env:UPDATE_METHOD -InstallRef $env:INSTALL_REF -SetupExeUrl $env:SETUP_EXE_URL
 
       # After everything, including the new runtime's launch and its smoke
       # checks: the bootstrap marker can complete on a later run than the
@@ -267,7 +286,13 @@ jobs:
       - name: Verify install stamps describe the updated checkout
         if: steps.update.outputs.known_failure == ''
         shell: powershell
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests\install\windows-e2e.ps1 -Phase verify-stamp -InstallMethod "${{ inputs.install-method }}" -Route "${{ inputs.update-method }}" -InstallRef "${{ inputs.install-ref }}" -SetupExeUrl ${{ inputs.setup-exe-url }}
+        env:
+          INSTALL_METHOD: ${{ inputs.install-method }}
+          UPDATE_METHOD: ${{ inputs.update-method }}
+          INSTALL_REF: ${{ inputs.install-ref }}
+          SETUP_EXE_URL: ${{ inputs.setup-exe-url }}
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File tests\install\windows-e2e.ps1 -Phase verify-stamp -InstallMethod $env:INSTALL_METHOD -Route $env:UPDATE_METHOD -InstallRef $env:INSTALL_REF -SetupExeUrl $env:SETUP_EXE_URL
 
       - name: Stage known-failure receipt
         if: steps.update.outputs.known_failure != ''

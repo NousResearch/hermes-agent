@@ -313,6 +313,13 @@ KANBAN_RATE_LIMIT_EXIT_CODE = 75
 # the FIRST occurrence instead of spending ``failure_limit`` identical spawns. 78 == BSD EX_CONFIG.
 KANBAN_TERMINAL_PROVIDER_EXIT_CODE = 78
 
+# Worker launch refused BEFORE the agent starts: the dispatcher-pinned board / task / run / claim
+# coordinates are missing or stale (#77825). Deliberately NOT ``KANBAN_TERMINAL_PROVIDER_EXIT_CODE``
+# — that code parks the card blocked on the FIRST occurrence, which would turn a transient claim
+# race into a card an operator has to unblock by hand (and point them at their API key). 76 == BSD
+# EX_PROTOCOL: the dispatcher counts it as an ordinary failed spawn.
+KANBAN_LAUNCH_CONTEXT_EXIT_CODE = 76
+
 
 def _resolve_crash_grace_seconds() -> int:
     """``HERMES_KANBAN_CRASH_GRACE_SECONDS`` (0 = immediate, for tests) else default."""

@@ -7,6 +7,7 @@ import { parseArgs } from 'node:util'
 import { isMain } from './utils.mjs'
 import { publishPackagingInputs } from './prepared-packaging.mjs'
 import { ensureWindowsBundleTools } from './windows-bundle-tools.mjs'
+import './patch-electron-get-downloads.mjs'
 import { prepareDmgbuild } from './prepare-dmgbuild.mjs'
 
 /** @param {string} source @param {string} name @returns {string} */

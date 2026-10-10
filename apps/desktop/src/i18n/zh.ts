@@ -3284,7 +3284,9 @@ export const zhOverrides = {
     },
     statusDivider: {
       working: '进行中',
-      done: '已完成'
+      blocked: '等待回复',
+      ready: '待查看',
+      inactive: '不活跃'
     },
     markAllRead: '全部标记为已读'
   },

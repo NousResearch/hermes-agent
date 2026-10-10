@@ -25,6 +25,7 @@
 
 import { computed } from 'nanostores'
 
+import { type StatusLane } from '@/lib/session-date-groups'
 import { stableArray, stableRecord } from '@/lib/stable-array'
 
 import { $backgroundRunningSessionIds } from './composer-status'
@@ -96,6 +97,28 @@ const STATUS_RANK: Record<SessionStatusBucket, number> = {
 
 /** Loudest first — what ordering by status sorts on. */
 export const sessionStatusRank = (state?: SessionDotState): number => STATUS_RANK[sessionStatusBucket(state)]
+
+/** The lane the status grouping files a session under. Mirrors Devin's
+ *  Working / Blocked / Ready / Inactive sidebar: a turn parked on the user is
+ *  Blocked, not Working, because it is waiting on you rather than on the model;
+ *  finished work you have not looked at — an unread reply, or a branch whose PR
+ *  is open for review — is Ready; child and background work the turn left
+ *  running keeps the parent Working (its bucket already folds those in). */
+export const sessionStatusLane = (state: SessionDotState | undefined, prOpen = false): StatusLane => {
+  switch (sessionStatusBucket(state)) {
+    case 'needs-input':
+      return 'blocked'
+
+    case 'working':
+      return 'working'
+
+    case 'unread':
+      return 'ready'
+
+    default:
+      return prOpen ? 'ready' : 'inactive'
+  }
+}
 
 let dotStates: Readonly<Record<string, SessionDotState>> = {}
 

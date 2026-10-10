@@ -953,10 +953,11 @@ export function resetSidebarView() {
 
 /** Whether anything on screen needs PR data — the gate on shelling out to
  *  `gh`. Nobody pays for a network call per repo to render a view that would
- *  not show a PR anywhere. */
+ *  not show a PR anywhere. Status grouping counts: its Ready lane files a
+ *  session whose PR is up for review, so the lanes are wrong without it. */
 export const $sidebarPrDataWanted: ReadableAtom<boolean> = computed(
-  [$sidebarRowMeta, $sidebarPrFilter],
-  (rowMeta, prFilter) => rowMeta.includes('pr') || prFilter.length > 0
+  [$sidebarRowMeta, $sidebarPrFilter, $sidebarGrouping],
+  (rowMeta, prFilter, grouping) => rowMeta.includes('pr') || prFilter.length > 0 || grouping === 'status'
 )
 
 // Write an order list only when it actually changed, so an identical drag

@@ -340,6 +340,32 @@ class TestSegmentBreakOnToolBoundary:
 
 
     @pytest.mark.asyncio
+    async def test_post_tool_segment_has_no_leading_blank_lines(self):
+        """The agent prepends a paragraph break to the first post-tool delta and the
+        model's content often opens with its own "\\n\\n"; on a fresh segment
+        message that rendered as blank lines above the answer. Interior blank
+        lines must survive."""
+        adapter = MagicMock()
+        adapter.send = AsyncMock(side_effect=[
+            SimpleNamespace(success=True, message_id=f"msg_{i}") for i in range(3)
+        ])
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True))
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        config = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5, cursor="")
+        consumer = GatewayStreamConsumer(adapter, "chat_123", config)
+
+        consumer.on_delta("Checking.")
+        consumer.on_delta(None)  # tool boundary
+        consumer.on_delta("\n\n")
+        consumer.on_delta("\n\nAll done.\n\nBye")
+        consumer.finish()
+        await consumer.run()
+
+        sent_texts = [call[1]["content"] for call in adapter.send.call_args_list]
+        assert sent_texts == ["Checking.", "All done.\n\nBye"]
+
+    @pytest.mark.asyncio
     async def test_segment_break_clears_failed_edit_fallback_state(self):
         """A tool boundary after edit failure must flush the undelivered tail
         without duplicating the prefix the user already saw (#8124)."""

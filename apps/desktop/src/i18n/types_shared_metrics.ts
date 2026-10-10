@@ -1,8 +1,8 @@
 export interface SharedMetricsTranslations {
   consentTitle: string
+  dialogTitle: string
   consentBody: string
   whatIsCollected: string
-  collectedIntro: string
   collectedActivity: string
   collectedModels: string
   collectedNames: string
@@ -10,13 +10,11 @@ export interface SharedMetricsTranslations {
   collectedReliability: string
   collectedUsage: string
   collectedMachine: string
-  installId: string
-  consentWindow: string
+  sending: string
   readDocs: string
   share: string
   local: string
   off: string
-  changeLater: string
   saveFailed: string
   collectLabel: string
   collectDesc: string

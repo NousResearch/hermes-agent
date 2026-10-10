@@ -34,7 +34,7 @@ _PROFILE_SIGNATURE_FILES = ("config.yaml", ".env")
 _OWN_GATEWAY_PROBE_TIMEOUT_SECS = 5.0
 
 
-def profile_serve_signature(home: "Path") -> tuple:
+def profile_serve_signature(home: Path) -> tuple:
     """Cheap change detector for a served profile's credentials/config: file signature per file."""
     sig = []
     for name in _PROFILE_SIGNATURE_FILES:
@@ -49,8 +49,8 @@ def profile_serve_signature(home: "Path") -> tuple:
 class GatewayProfileReconcileMixin:
     """Runtime reconciliation of the multiplexed served-profile set (hot add / unroute / credential-add)."""
 
-    _served_profile_homes: Optional[Dict[str, "Path"]] = None
-    _served_profile_signatures: Optional[Dict[str, tuple]] = None
+    _served_profile_homes: Optional[dict[str, Path]] = None
+    _served_profile_signatures: Optional[dict[str, tuple]] = None
     _profile_reconcile_lock: Optional[asyncio.Lock] = None
     _profile_own_gateway_warned: Optional[set[str]] = None
     _profile_probe_timeout_warned: Optional[set[str]] = None
@@ -96,12 +96,12 @@ class GatewayProfileReconcileMixin:
 
     # ── reconcile ─────────────────────────────────────────────────────────────────────────────────
 
-    async def reconcile_served_profiles(self, *, reason: str = "request") -> Dict[str, Any]:
+    async def reconcile_served_profiles(self, *, reason: str = "request") -> dict[str, Any]:
         """Diff ``profiles/`` against the served set: start adapters for new profiles, tear down and
         unroute deleted ones, (re)build adapters for served profiles whose config/.env changed. Other
         profiles' adapters are never touched. Returns ``{"added", "removed", "rescanned", "served_profiles"}``."""
         from gateway.run import _multiplex_profile_homes
-        result: Dict[str, Any] = {"added": [], "removed": [], "rescanned": [], "reason": reason}
+        result: dict[str, Any] = {"added": [], "removed": [], "rescanned": [], "reason": reason}
         if not self._multiplex_on():
             return {**result, "multiplex": False, "served_profiles": self.served_profile_names()}
         if not self._running or self._served_profile_homes is None:
@@ -130,7 +130,7 @@ class GatewayProfileReconcileMixin:
                     pid = await asyncio.wait_for(
                         self._run_housekeeping_in_executor(live_gateway_pid_for_home, current[name]),
                         timeout=_OWN_GATEWAY_PROBE_TIMEOUT_SECS)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     # Unprovable is not "own gateway running": skip it this cycle without
                     # warning about (or remembering) a gateway that may not exist. Warn once
                     # per stall; a peer that stays wedged repeats at DEBUG every cycle.
@@ -210,7 +210,7 @@ class GatewayProfileReconcileMixin:
         result["served_profiles"] = self.served_profile_names()
         return result
 
-    def _live_resource_claims(self, active: str) -> Dict[tuple, str]:
+    def _live_resource_claims(self, active: str) -> dict[tuple, str]:
         """Startup's ``claimed`` map rebuilt from what is live now: primary claims plus every connected
         secondary's credential/listener, so a hot-added profile reusing a token is parked, never a
         second poller."""
@@ -239,7 +239,7 @@ class GatewayProfileReconcileMixin:
             except Exception:
                 logger.warning("MCP tool discovery failed for profile '%s'", profile_name, exc_info=True)
 
-    async def _unserve_profile(self, name: str, home: "Path") -> None:
+    async def _unserve_profile(self, name: str, home: Path) -> None:
         """Stop and unroute one profile: cancel its reconnects, tear down its adapters, drop its
         bookkeeping and release this process's handles into its home so the deleter's rmtree succeeds.
         The releasing process is not always the deleter (#130244): under multiplexing THIS gateway
@@ -442,7 +442,7 @@ def migrate_profile_identity_verb(runner):
         acquired = []
         try:
             from hermes_state_registry import acquire, release_or_close
-            db_counts: Dict[str, Dict[str, int]] = {}
+            db_counts: dict[str, dict[str, int]] = {}
             routing_db = getattr(store, "_routing_db", None)
             if routing_db is not None and hasattr(routing_db, "rekey_profile_state"):
                 db_counts["routing"] = routing_db.rekey_profile_state(old, new)
@@ -487,7 +487,7 @@ def purge_profile_identity_verb(runner):
         if store is None:
             return {"ok": False, "error": "live gateway has no session store"}
         try:
-            db_counts: Dict[str, Dict[str, int]] = {}
+            db_counts: dict[str, dict[str, int]] = {}
             routing_db = getattr(store, "_routing_db", None)
             if routing_db is not None and hasattr(routing_db, "purge_profile_state"):
                 db_counts["routing"] = routing_db.purge_profile_state(name)

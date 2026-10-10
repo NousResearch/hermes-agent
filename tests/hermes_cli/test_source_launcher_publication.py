@@ -279,7 +279,7 @@ def test_boot_migrates_legacy_conveniences_to_selected_runtime(tmp_path, monkeyp
 def _command_survives_generation_collection(tmp_path, monkeypatch, surface):
     from hermes_cli.runtime_state import collect_generations
 
-    repo, home, interpreter = fixture_tree(tmp_path, monkeypatch)
+    repo, _home, interpreter = fixture_tree(tmp_path, monkeypatch)
     out = tmp_path / "bin"
     out.mkdir()
     _launchers.ensure_install_launchers(repo, out)
@@ -692,7 +692,7 @@ def test_service_launcher_binds_the_tree_store_despite_inherited_runtime_overrid
 def test_runtime_override_still_selects_the_runtime_python(tmp_path, monkeypatch):
     # The publication split must not mute the override for execution paths:
     # resolving a python to RUN still honors HERMES_RUNTIME_DIR by default.
-    repo, home, interpreter = fixture_tree(tmp_path, monkeypatch)
+    repo, _home, interpreter = fixture_tree(tmp_path, monkeypatch)
     foreign_store = tmp_path / "foreign" / "tools"
     foreign_store.mkdir(parents=True)
     foreign_python = foreign_store / "python-foreign" / "bin" / "python3"

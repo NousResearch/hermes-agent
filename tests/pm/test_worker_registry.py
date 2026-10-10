@@ -17,8 +17,8 @@ import pytest
 
 import pm
 from pm import registry
-from tests.pm._fixtures import isolated_python as worker_python  # noqa: F401
-from tests.pm._range_server import RangeHandler, dl_server, url  # noqa: F401
+from tests.pm._fixtures import isolated_python as worker_python
+from tests.pm._range_server import RangeHandler, dl_server, url
 
 
 @pytest.fixture(autouse=True)

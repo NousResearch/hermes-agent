@@ -556,7 +556,7 @@ def _supports_media_in_tool_results(provider: str, model: str) -> bool:
         return False
 
 
-def _accepts_tool_result_images(provider: str, model: str, cfg: Optional[Dict[str, Any]]) -> bool:
+def _accepts_tool_result_images(provider: str, model: str, cfg: Optional[dict[str, Any]]) -> bool:
     """One gate for both native lanes — the ``vision_analyze`` fast path and the ``computer_use`` capture route
     (#115248): the profile's ``supports_vision_tool_messages=False`` veto first, then either the provider's tool
     results are known to carry media or the per-model capability lookup (config override → catalog incl. the
@@ -569,7 +569,7 @@ def _accepts_tool_result_images(provider: str, model: str, cfg: Optional[Dict[st
     return _lookup_supports_vision(provider, model, cfg) is True
 
 
-def _native_tool_result_images(provider: str, model: str, cfg: Optional[Dict[str, Any]]) -> bool:
+def _native_tool_result_images(provider: str, model: str, cfg: Optional[dict[str, Any]]) -> bool:
     """THE gate for every tool that can hand the main model pixels (``vision_analyze``, browser and
     ``computer_use`` screenshots, MCP ``ImageContent``): image routing resolves to ``native``
     (``agent.image_input_mode``, an explicit ``auxiliary.vision`` backend, the catalog) AND the
@@ -593,7 +593,7 @@ def _should_use_native_vision_fast_path() -> bool:
 def _build_native_vision_tool_result(
     image_url: str, question: str, image_data_url: str, image_size_bytes: int,
     scale_note: Optional[str] = None,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Multimodal tool-result envelope. The text part is intentionally minimal (the model already
     has the question); ``text_summary`` is the fallback for providers without multimodal tool results."""
     text_part = (
@@ -865,7 +865,7 @@ async def _run_analysis(
         debug_call_data.update(success=True, analysis_length=analysis_length)
         return finish(result)
     except Exception as e:
-        error_msg = f"Error analyzing {kind}: {str(e)}"
+        error_msg = f"Error analyzing {kind}: {e!s}"
         logger.error("%s", error_msg, exc_info=True)
         err_str = str(e).lower()
         template = next(
@@ -885,7 +885,7 @@ async def _run_analysis(
 
 
 async def vision_analyze_tool(
-    image_url: str, user_prompt: str, model: str = None,
+    image_url: str, user_prompt: str, model: str | None = None,
     task_id: Optional[str] = None, region: Optional[list] = None) -> str:
     """Describe an image (URL, local path, data: URL) with the auxiliary vision LLM. ``user_prompt``
     is pre-formatted by the caller. Temp images live under $HERMES_HOME/cache/vision/."""
@@ -1009,7 +1009,7 @@ def _configured_aux_model(sections: tuple, env_vars: tuple) -> Optional[str]:
     return next((v for v in (os.getenv(e, "").strip() for e in env_vars) if v), None)
 
 
-async def _handle_vision_analyze(args: Dict[str, Any], **kw: Any) -> str:
+async def _handle_vision_analyze(args: dict[str, Any], **kw: Any) -> str:
     image_url, question, region = args.get("image_url", ""), args.get("question", ""), args.get("region")
     task_id = kw.get("task_id")
     # No concurrency gate around the whole analysis — the CPU burst is bounded inside the
@@ -1119,7 +1119,7 @@ async def _materialize_video(video_url: str, task_id: Optional[str], temp_paths:
 
 
 async def video_analyze_tool(
-    video_url: str, user_prompt: str, model: str = None, task_id: Optional[str] = None) -> str:
+    video_url: str, user_prompt: str, model: str | None = None, task_id: Optional[str] = None) -> str:
     """Analyze a video via multimodal LLM. Returns JSON {success, analysis}."""
     async def stage(prompt: str, debug_call_data: dict, temp_paths: list) -> tuple:
         temp_video_path = await _materialize_video(video_url, task_id, temp_paths)
@@ -1171,7 +1171,7 @@ VIDEO_ANALYZE_SCHEMA = {
 }
 
 
-def _handle_video_analyze(args: Dict[str, Any], **kw: Any) -> Awaitable[str]:
+def _handle_video_analyze(args: dict[str, Any], **kw: Any) -> Awaitable[str]:
     video_url, question = args.get("video_url", ""), args.get("question", "")
     full_prompt = (
         "Fully describe and explain everything happening in this video, "

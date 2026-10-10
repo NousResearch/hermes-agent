@@ -146,7 +146,7 @@ def test_force_restart_keeps_parked_profile_gateway_ownership(homes, monkeypatch
 def test_parked_status_and_topology_keep_roster(homes, monkeypatch, capsys):
     from hermes_cli import gateway as gw, profiles
     from hermes_cli.web_server_gateway import _collect_profile_gateway_topology
-    root, secondary = homes
+    _root, secondary = homes
     (secondary / 'gateway.parked').touch()
     monkeypatch.setenv('HERMES_HOME', str(secondary))
     monkeypatch.setattr(gw, '_current_profile_name', lambda: 'worker')
@@ -239,7 +239,7 @@ def test_default_status_distinguishes_served_and_parked(homes, monkeypatch, caps
 
 def test_parked_status_still_reports_a_forced_gateway(homes, monkeypatch, capsys):
     from hermes_cli import gateway as gw, profiles
-    root, secondary = homes
+    _root, secondary = homes
     (secondary / 'gateway.parked').touch()
     monkeypatch.setenv('HERMES_HOME', str(secondary))
     monkeypatch.setattr(gw, '_current_profile_name', lambda: 'worker')

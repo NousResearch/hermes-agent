@@ -7,7 +7,10 @@ name, the settings it already read, its data directory and tool names, so the mi
 * ``hermes update`` — for every profile home that shares the venv (primary; runs where the venv was
   just rebuilt anyway).
 * agent init — when the configured provider cannot be found at all, once per process (Desktop
-  users update through the app and never run ``hermes update`` by hand).
+  users update through the app and never run ``hermes update`` by hand). After a failed attempt,
+  starts skip it for :data:`STARTUP_RETRY_SECONDS` (``hermes update`` always retries): every
+  ``hermes chat``, cron run and Desktop restart otherwise paid the network round trip again and
+  showed the same failure.
 
 Both install the catalog entry at its reviewed pin through the normal plugin install path (kill
 list, dependency constraints, enable), never a custom source. Every outcome — installed, refused,
@@ -19,6 +22,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import time
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -30,6 +34,29 @@ _attempted: set[tuple[str, str]] = set()
 # accepted the deps when they picked the built-in. Any other catalog plugin named in memory.provider
 # (a synced config, a cloned profile) still needs an explicit install.
 _LEFT_CORE = frozenset({"hindsight", "honcho", "mem0", "supermemory", "openviking", "retaindb", "byterover", "holographic"})
+
+STARTUP_RETRY_SECONDS = 3600.0
+
+
+def _failure_stamp(home: Path, plugin: str) -> Path:
+    """Touched on every failed automatic install; its mtime gates the next startup attempt."""
+    return home / "cache" / f"left-core-{plugin}.failed"
+
+
+def _note_failure(home: Path, plugin: str) -> None:
+    stamp = _failure_stamp(home, plugin)
+    try:
+        stamp.parent.mkdir(parents=True, exist_ok=True)
+        stamp.touch()
+    except OSError as exc:
+        logger.debug("left-core retry stamp not written for %s: %s", home, exc)
+
+
+def _failed_recently(home: Path, plugin: str) -> bool:
+    try:
+        return time.time() - _failure_stamp(home, plugin).stat().st_mtime < STARTUP_RETRY_SECONDS
+    except OSError:
+        return False
 
 
 def configured_provider(home: Path) -> str:
@@ -265,4 +292,11 @@ def recover_at_startup(name: str, *, say: Optional[Callable[[str], None]] = None
                    f"It never shipped with Hermes, so Hermes installs it only when you ask: "
                    f"run `{_install_command(name, home)}`.")
         return False
-    return migrate_home(home, install=_install_into(home, consent=True), say=report) == name
+    if _failed_recently(home, name):
+        report(f"⚠ Memory provider '{name}' is not installed, so external memory is off for this session. "
+               f"Its automatic install failed less than an hour ago: run `{_install_command(name, home)}`.")
+        return False
+    installed = migrate_home(home, install=_install_into(home, consent=True), say=report) == name
+    if not installed:
+        _note_failure(home, name)
+    return installed

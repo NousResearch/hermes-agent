@@ -39,7 +39,7 @@ def real_user_home() -> Path:
     return Path(pwd.getpwuid(os.getuid()).pw_dir).resolve()
 
 
-def hermetic_env(home: Path, extra: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+def hermetic_env(home: Path, extra: Optional[dict[str, str]] = None) -> dict[str, str]:
     home = home.resolve()
     assert home != real_user_home(), home
     env = {k: v for k, v in os.environ.items()
@@ -68,9 +68,9 @@ class Director:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self.scripts: Dict[str, List[Any]] = {}
-        self.turns: Dict[str, int] = {}
-        self.requests: Dict[str, List[dict]] = {}
+        self.scripts: dict[str, list[Any]] = {}
+        self.turns: dict[str, int] = {}
+        self.requests: dict[str, list[dict]] = {}
 
     def script(self, token: str, *responses: Any) -> None:
         with self._lock:
@@ -103,7 +103,7 @@ class Director:
 class GatewayUnderTest:
     """A real ``hermes gateway run`` child on its own fake HOME; SIGTERM stop + restart on the same state."""
 
-    def __init__(self, root: Path, *, llm_base_url: str, config: Dict[str, Any], env: Dict[str, str],
+    def __init__(self, root: Path, *, llm_base_url: str, config: dict[str, Any], env: dict[str, str],
                  ready: Callable[[], bool]) -> None:
         self.root = root
         self.home = root / "home"
@@ -119,15 +119,15 @@ class GatewayUnderTest:
         merged = _deep_merge(_deep_merge(yaml.safe_load(cfg_path.read_text()), base), config)
         cfg_path.write_text(yaml.safe_dump(merged, sort_keys=False), encoding="utf-8")
         self.proc: Optional[subprocess.Popen] = None
-        self.pids: List[int] = []
+        self.pids: list[int] = []
 
     @property
     def db_path(self) -> Path:
         return self.hermes_home / "state.db"
 
-    def start(self, timeout: float = 60.0) -> "GatewayUnderTest":
+    def start(self, timeout: float = 60.0) -> GatewayUnderTest:
         assert self.proc is None or self.proc.poll() is not None
-        log = open(self.log_path, "a", encoding="utf-8")  # noqa: SIM115 - handed to the child
+        log = open(self.log_path, "a", encoding="utf-8")
         self.proc = subprocess.Popen(
             [sys.executable, "-m", "hermes_cli.main", "gateway", "run"], cwd=str(self.home),
             env=hermetic_env(self.home, dict(self._env)), stdin=subprocess.DEVNULL, stdout=log,
@@ -200,10 +200,10 @@ class GatewayUnderTest:
             lines = self.log_path.read_text(errors="replace").splitlines()
         except OSError:
             return ""
-        rx = re.compile(pattern, re.I)
+        rx = re.compile(pattern, re.IGNORECASE)
         return "\n".join([ln for ln in lines if rx.search(ln)][-limit:])
 
-    def user_rows(self, needle: str) -> List[str]:
+    def user_rows(self, needle: str) -> list[str]:
         if not self.db_path.exists():
             return []
         conn = sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True, timeout=30)
@@ -214,7 +214,7 @@ class GatewayUnderTest:
             conn.close()
 
 
-def _deep_merge(a: Dict[str, Any], b: Dict[str, Any]) -> Dict[str, Any]:
+def _deep_merge(a: dict[str, Any], b: dict[str, Any]) -> dict[str, Any]:
     out = dict(a)
     for k, v in b.items():
         out[k] = _deep_merge(out[k], v) if isinstance(v, dict) and isinstance(out.get(k), dict) else v

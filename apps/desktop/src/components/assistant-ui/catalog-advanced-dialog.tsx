@@ -109,10 +109,12 @@ function CatalogAdvancedForm({ entry, fields, kind, onCancel, onInstall }: Catal
   const profiles = useStore($profiles)
   const [agentHalf, setAgentHalf] = useState(true)
   const [desktopHalf, setDesktopHalf] = useState(entry.hasDesktopHalf)
+
   // Empty when the chat's home is no named profile: the install then goes to the chat's own home.
   const [targetProfile, setTargetProfile] = useState(
     entry.targetProfile ? normalizeProfileKey(entry.targetProfile) : ''
   )
+
   const [enable, setEnable] = useState(true)
   const [force, setForce] = useState(false)
   const [pin, setPin] = useState(entry.sha ?? '')

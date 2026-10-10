@@ -347,7 +347,7 @@ def finish_text_response(
     # there, an interrupted turn keeps the raw text.
     from agent.turn_finalizer import apply_llm_output_transform
     _transformed = False
-    if not getattr(agent, "_interrupt_requested", False):
+    if not getattr(agent, "_interrupt_requested", False) and not getattr(agent, "_topic_segmentation_enabled", False):
         final_response, _transformed, _ = apply_llm_output_transform(
             agent, final_response, turn_id=getattr(agent, "_current_turn_id", "") or "", logger=logger,
         )
@@ -360,15 +360,16 @@ def finish_text_response(
     append_message(messages, final_msg)
     # Make the answer durable before leaving the loop (_DB_PERSISTED_MARKER keeps
     # _persist_session idempotent). Failure must NOT abort the turn: finalize retries.
-    try:
-        agent._flush_messages_to_session_db(messages, conversation_history)
-    except Exception:
-        logger.warning(
-            "final text-turn flush failed (session=%s) — reply is "
-            "not yet durable; relying on finalize_turn retry",
-            getattr(agent, "session_id", None) or "none",
-            exc_info=True,
-        )
+    if not getattr(agent, "_topic_segmentation_enabled", False):
+        try:
+            agent._flush_messages_to_session_db(messages, conversation_history)
+        except Exception:
+            logger.warning(
+                "final text-turn flush failed (session=%s) — reply is "
+                "not yet durable; relying on finalize_turn retry",
+                getattr(agent, "session_id", None) or "none",
+                exc_info=True,
+            )
 
     _turn_exit_reason = f"text_response(finish_reason={finish_reason})"
     if not agent.quiet_mode:

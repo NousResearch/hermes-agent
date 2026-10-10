@@ -622,6 +622,46 @@ class SessionMessagesMixin:
 
         return self._execute_write(_do, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
 
+    def retract_topic_turn_messages(
+        self, session_id: str, message_ids: List[int],
+        *, turn_lease_holder: Optional[str] = None,
+    ) -> int:
+        """Atomically retire exact current-session rows after a failed topic transition.
+
+        Reject missing/foreign ids before changing anything. This is an internal
+        cleanup operation, never a suffix or cross-lineage transcript rewind.
+        """
+        ids = list(dict.fromkeys(message_ids))
+        if not ids or any(type(row_id) is not int or row_id <= 0 for row_id in ids):
+            raise ValueError("expected positive current-turn row ids")
+
+        def _do(conn):
+            self._check_transcript_write_guards(
+                conn, session_id, None, turn_lease_holder=turn_lease_holder,
+                reject_active_turn_lease=not bool(turn_lease_holder),
+                reject_active_compression_lock=True,
+            )
+            rows = conn.execute(
+                f"SELECT id, tool_calls FROM messages WHERE session_id = ? "
+                f"AND id IN ({_placeholders(ids)})",
+                (session_id, *ids),
+            ).fetchall()
+            if len(rows) != len(ids):
+                raise LookupError("current-turn message ids are not all in this session")
+            tool_calls = sum(_tool_calls_len(row["tool_calls"], scalar=1) for row in rows)
+            conn.execute(
+                f"DELETE FROM messages WHERE session_id = ? AND id IN ({_placeholders(ids)})",
+                (session_id, *ids),
+            )
+            conn.execute(
+                "UPDATE sessions SET message_count = MAX(0, message_count - ?), "
+                "tool_call_count = MAX(0, tool_call_count - ?) WHERE id = ?",
+                (len(ids), tool_calls, session_id),
+            )
+            return len(ids)
+
+        return self._execute_write(_do, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
+
     def append_delegation_delivery(self, session_id: str, content: str, metadata: Dict[str, Any]) -> int:
         """Record a detached API result once, between client turns, including replay after rotation.
 

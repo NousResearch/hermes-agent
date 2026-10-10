@@ -21,6 +21,17 @@ _TOPIC_LINE_RE = re.compile(
 )
 _TOPIC_WORD_RE = re.compile(r"[a-z0-9]+")
 _MAX_TOPIC_TITLE_CHARS = 64
+TOPIC_SEGMENTATION_RUNTIME_FAILURE_CODE = "topic_segmentation_runtime_failed"
+TOPIC_SEGMENTATION_RUNTIME_FAILURE_MESSAGE = (
+    "Topic segmentation failed safely before the turn could be finalized."
+)
+
+
+class TopicSegmentationRuntimeError(RuntimeError):
+    """A selected-store transition failed; do not publish this candidate."""
+
+    def __init__(self) -> None:
+        super().__init__(TOPIC_SEGMENTATION_RUNTIME_FAILURE_MESSAGE)
 
 
 def _configured_default(config: Any) -> bool:
@@ -175,6 +186,10 @@ def prepare_topic_turn(
     prior = list(messages[:current_turn_user_idx])
     if not getattr(agent, "_topic_segmentation_enabled", False):
         return messages, current_turn_user_idx, prior
+    # An earlier transition failed and exact durable cleanup was not proven.
+    # Do not send a new provider request from this reused agent on that session.
+    if getattr(agent, "_pending_topic_retraction", None):
+        raise TopicSegmentationRuntimeError()
     db = getattr(agent, "_session_db", None)
     session_id = getattr(agent, "session_id", None)
     if db is None or not session_id:
@@ -266,10 +281,10 @@ def process_turn_topic(agent: Any, messages: list[dict[str, Any]], final_respons
     db = getattr(agent, "_session_db", None)
     session_id = getattr(agent, "session_id", None)
     if db is None or not session_id:
-        return
+        raise TopicSegmentationRuntimeError()
     start = getattr(agent, "_persist_user_message_idx", None)
     if not isinstance(start, int) or not (0 <= start < len(messages)):
-        return
+        raise TopicSegmentationRuntimeError()
 
     title = parse_topic_signal(final_response)
     try:
@@ -292,13 +307,12 @@ def process_turn_topic(agent: Any, messages: list[dict[str, Any]], final_respons
             turn_lease_holder=getattr(agent, "_active_session_turn_lease_holder", None),
         )
         topic_id = int(selected["id"])
-    except Exception:
+    except Exception as exc:  # health: allow BLE001 -- durable store faults need a scrubbed failure envelope
         logger.warning(
-            "Topic transition failed for session=%s; keeping the prior active topic",
-            session_id,
-            exc_info=True,
+            "Topic transition failed: operation=activate error_type=%s",
+            type(exc).__name__,
         )
-        return
+        raise TopicSegmentationRuntimeError() from None
 
     agent._active_topic_id = topic_id
     _sync_context_engine_topic(agent)

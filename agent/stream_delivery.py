@@ -60,7 +60,8 @@ class StreamDeliveryMixin:
 
         def deliver(tail: str) -> None:
             if tail:
-                self._deliver_to_stream_callbacks(tail)
+                if not getattr(self, "_topic_segmentation_enabled", False):
+                    self._deliver_to_stream_callbacks(tail)
                 self._record_streamed_assistant_text(tail)
 
         # Flush any benign partial-tag tail held by the think scrubber first (#17924): an innocent '<' at
@@ -187,6 +188,8 @@ class StreamDeliveryMixin:
 
     def _fire_streamed_codex_commentary(self, text: str) -> None:
         """Deliver a completed live Codex commentary message immediately."""
+        if getattr(self, "_topic_segmentation_enabled", False):
+            return
         if getattr(self, "interim_assistant_callback", None) is None or not isinstance(text, str):
             return
         visible = self._visible_commentary(text)
@@ -198,7 +201,7 @@ class StreamDeliveryMixin:
         """Surface a real mid-turn assistant commentary message to the UI layer. Does NOT set
         ``_response_was_previewed`` ("the final response was shown") — the CLI would then suppress a
         different final summary."""
-        if not isinstance(assistant_msg, dict):
+        if getattr(self, "_topic_segmentation_enabled", False) or not isinstance(assistant_msg, dict):
             return
         commentary_parts = self._extract_codex_interim_visible_parts(assistant_msg)
         # Dedup within this message and against earlier deliveries, first occurrence wins.
@@ -293,6 +296,8 @@ class StreamDeliveryMixin:
         self._enqueue_stream_hook("on_stream_start")
 
     def _emit_stream_end(self, *, final_text: str, finished: bool, error: str | None) -> None:
+        if getattr(self, "_topic_segmentation_enabled", False):
+            return
         self._enqueue_stream_hook("on_stream_end", final_text=final_text, finished=finished, error=error)
 
     def _fire_stream_delta(self, text: str) -> None:
@@ -328,6 +333,11 @@ class StreamDeliveryMixin:
                 text = text.lstrip("\n")
         if not text:
             return
+        if getattr(self, "_topic_segmentation_enabled", False):
+            # A delta may already be a final candidate; no callback or plugin
+            # observer can see it until the selected-store transition commits.
+            self._record_streamed_assistant_text(text)
+            return
         delivered = self._deliver_to_stream_callbacks(text)
         self._enqueue_stream_hook("on_stream_delta", delta=text, kind="text")
         if delivered:
@@ -340,6 +350,8 @@ class StreamDeliveryMixin:
         provider reasoning delta and stops inline forwarding for the rest of this model response."""
         if not inline:
             self._native_reasoning_streamed = True
+        if getattr(self, "_topic_segmentation_enabled", False):
+            return
         if self._stream_writer_superseded():
             # Single-writer guard (#65991): fence out a superseded stream's reasoning deltas the same way as
             # content deltas.

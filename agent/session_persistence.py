@@ -262,6 +262,13 @@ def _db_flush_collect(agent, messages: List[Dict], conversation_history: Optiona
     tool_uid_owners: dict = {}  # tool_call_uid_from_history memo; the scanned dicts outlive this loop
     for msg_idx in range(_db_flush_scan_start(agent, messages), len(messages)):
         msg = messages[msg_idx]
+        # Before selection, only the accepted user input may be crash-persisted.
+        # Even an exact-id retraction can fail; never put a candidate assistant
+        # (or its tool/interim chain) in a store that a new process can reopen.
+        if (getattr(agent, "_topic_segmentation_enabled", False)
+                and not getattr(agent, "_topic_turn_publication_allowed", False)
+                and (not isinstance(ov_idx, int) or msg_idx != ov_idx)):
+            continue
         # Append-only flush: a mid-turn persist of scaffolding would commit a synthetic turn the end-of-turn
         # drop cannot un-write. Skip regardless of position.
         if not isinstance(msg, dict) or _is_ephemeral_scaffolding(msg) or msg.get(_DB_PERSISTED_MARKER):

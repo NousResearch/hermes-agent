@@ -5,11 +5,13 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from agent.session_topics import (
     TOPIC_SESSION_CONFIG_KEY,
+    TopicSegmentationRuntimeError,
     initialize_topic_segmentation,
     match_existing_topic,
     merge_topic_prompt_context,
@@ -317,3 +319,155 @@ def test_prompt_context_is_user_tail_only(db: SessionDB):
 
     assert merged.startswith("plugin note\n\n[SESSION TOPICS")
     assert "TOPIC: <short-name>" in merged
+
+
+@pytest.mark.parametrize("retraction_fails", [False, True])
+def test_sqlite_finalizer_rejects_failed_topic_switch_and_reopen(tmp_path: Path, retraction_fails: bool):
+    """A failed selected-topic transition cannot publish even if retraction also fails."""
+    from run_agent import AIAgent
+
+    path = tmp_path / "state.db"
+    candidate = "Candidate must not be published.\nTOPIC: cooking"
+    session_id = "sqlite-topic-failure"
+    store = SessionDB(path)
+    with (
+        patch("model_tools.get_tool_definitions", return_value=[]),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("hermes_cli.config.load_config_readonly", return_value={"session": {"topic_segmentation": {"enabled": True}}}),
+        patch("agent.process_bootstrap.OpenAI"),
+    ):
+        agent = AIAgent(
+            api_key="test-key-1234567890", base_url="http://127.0.0.1/offline",
+            model="oracle/model", quiet_mode=True, skip_context_files=True,
+            skip_memory=True, session_id=session_id, session_db=store,
+        )
+    agent.client = MagicMock()
+    agent.client.chat.completions.create.return_value = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content=candidate, tool_calls=None), finish_reason="stop")],
+        model="oracle/model", usage=None,
+    )
+    # Exercise the real facade's delta callback while the provider is answering.
+    streamed = []
+    agent.stream_delta_callback = streamed.append
+    original_create = agent.client.chat.completions.create.return_value
+    def create_with_delta(**kwargs):
+        agent._fire_stream_delta(candidate)
+        return original_create
+    agent.client.chat.completions.create.side_effect = create_with_delta
+    hook_events = []
+    agent._cached_system_prompt = "You are helpful."
+    agent.compression_enabled = False
+    agent.save_trajectories = False
+    agent.skip_background_review = True
+    assert agent._topic_segmentation_enabled is True
+    with (
+        patch.object(store, "activate_topic_for_messages", side_effect=RuntimeError("sensitive-source-id")),
+        patch("agent.turn_finalizer._invoke_hook_safely", side_effect=lambda name, *a, **kw: hook_events.append(name) or []),
+        patch.object(
+            store, "retract_topic_turn_messages",
+            side_effect=RuntimeError("sensitive-retraction-id"),
+        ) if retraction_fails else patch.object(
+            store, "retract_topic_turn_messages", wraps=store.retract_topic_turn_messages,
+        ),
+    ):
+        result = agent.run_conversation("How do I brew tea?")
+    assert result["completed"] is False and result["failed"] is True
+    assert result["failure_reason"] == (
+        "topic_segmentation_retraction_indeterminate" if retraction_fails
+        else "topic_segmentation_runtime_failed"
+    )
+    assert result.get("durable_quarantine_indeterminate") is (True if retraction_fails else None)
+    assert result["final_response"] is None
+    assert candidate not in repr(result)
+    assert streamed == []
+    assert "transform_llm_output" not in hook_events
+    assert "post_llm_call" not in hook_events
+    assert "sensitive-source-id" not in repr(result)
+    assert "sensitive-retraction-id" not in repr(result)
+    store.close()
+    reopened = SessionDB(path)
+    try:
+        durable = reopened.get_messages_as_conversation(session_id)
+        assert all(row.get("content") != candidate for row in durable)
+        if not retraction_fails:
+            assert durable == []
+            active = reopened.get_active_topic(session_id)
+            assert active is not None and active["title"] != "cooking"
+    finally:
+        reopened.close()
+
+
+def test_retract_topic_turn_messages_checks_exact_session_ids(db: SessionDB):
+    db.create_session("other", source="test", model="test")
+    kept = db.append_message("session", role="user", content="keep")
+    removable = db.append_message("session", role="assistant", content="remove")
+    foreign = db.append_message("other", role="user", content="foreign")
+    with pytest.raises(LookupError):
+        db.retract_topic_turn_messages("session", [removable, foreign])
+    assert [row["content"] for row in db.get_messages_as_conversation("session")] == ["keep", "remove"]
+    assert db.retract_topic_turn_messages("session", [removable]) == 1
+    assert [row["content"] for row in db.get_messages_as_conversation("session")] == ["keep"]
+    assert [row["content"] for row in db.get_messages_as_conversation("other")] == ["foreign"]
+    assert kept != removable != foreign
+
+def test_sqlite_selected_topic_publishes_only_after_transition_and_transform(tmp_path: Path):
+    from run_agent import AIAgent
+
+    store = SessionDB(tmp_path / "state.db")
+    candidate = "Raw response.\nTOPIC: cooking"
+    transformed = "Edited response.\nTOPIC: cooking"
+    with (
+        patch("model_tools.get_tool_definitions", return_value=[]),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("hermes_cli.config.load_config_readonly", return_value={"session": {"topic_segmentation": {"enabled": True}}}),
+        patch("agent.process_bootstrap.OpenAI"),
+    ):
+        agent = AIAgent(api_key="test-key-1234567890", base_url="http://127.0.0.1/offline",
+                        model="oracle/model", quiet_mode=True, skip_context_files=True,
+                        skip_memory=True, session_id="selected-success", session_db=store)
+    agent.client = MagicMock()
+    response = SimpleNamespace(choices=[SimpleNamespace(
+        message=SimpleNamespace(content=candidate, tool_calls=None), finish_reason="stop")],
+        model="oracle/model", usage=None)
+    events = []
+    agent.stream_delta_callback = lambda text: events.append(("stream", text))
+    def create(**kwargs):
+        agent._fire_stream_delta(candidate)
+        assert events == []
+        return response
+    agent.client.chat.completions.create.side_effect = create
+    agent._cached_system_prompt = "You are helpful."
+    agent.compression_enabled = False
+    agent.save_trajectories = False
+    agent.skip_background_review = True
+    original_activate = store.activate_topic_for_messages
+    def activate(*args, **kwargs):
+        assert events == []
+        selected = original_activate(*args, **kwargs)
+        events.append(("activated", selected["id"]))
+        return selected
+    def hooks(name, *args, **kwargs):
+        if name == "transform_llm_output":
+            assert events[0][0] == "activated"
+            events.append(("transform", kwargs["response_text"]))
+            return [transformed]
+        return []
+    with (patch.object(store, "activate_topic_for_messages", side_effect=activate),
+          patch("agent.turn_finalizer._invoke_hook_safely", side_effect=hooks)):
+        result = agent.run_conversation("Make ramen")
+    assert result["completed"] is True
+    assert result["final_response"] == transformed
+    assert events[:2] == [("activated", store.get_active_topic("selected-success")["id"]), ("transform", candidate)]
+    assert events[-1] == ("stream", transformed)
+    assert [row["content"] for row in store.get_messages_as_conversation("selected-success")][-1] == transformed
+    store.close()
+
+
+def test_indeterminate_retraction_blocks_reused_enabled_agent_only(db: SessionDB):
+    agent = _agent(db)
+    agent._pending_topic_retraction = {"session_id": "session", "message_ids": [42]}
+    messages = [{"role": "user", "content": "new turn"}]
+    with pytest.raises(TopicSegmentationRuntimeError):
+        prepare_topic_turn(agent, messages, 0, "new turn")
+    agent._topic_segmentation_enabled = False
+    assert prepare_topic_turn(agent, messages, 0, "new turn")[0] is messages

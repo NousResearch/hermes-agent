@@ -326,6 +326,17 @@ class TestFormatKanbanEventText:
         assert "same failure" in text
         assert "3x" in text
 
+    def test_block_loop_detected_claims_human_decision_only_for_needs_input(self):
+        def text_for(kind):
+            ev = SimpleNamespace(kind="block_loop_detected", payload={"kind": kind, "recurrences": 3})
+            return _format_kanban_event_text(self.SUB, self.TASK, ev, "main")
+
+        assert "human decision" in text_for("needs_input")
+        for kind in ("capability", "transient", None):
+            text = text_for(kind)
+            assert "human decision" not in text
+            assert "orchestration attention" in text
+
     def test_notify_kinds_mirror_gateway_review_lifecycle(self):
         """The TUI poller must claim the same review-lifecycle kinds the gateway
         notifier does, or TUI/Desktop sessions never see review parks (#99436).

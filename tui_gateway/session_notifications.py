@@ -348,7 +348,11 @@ def _kb_changes_requested(task, payload: dict, title: str) -> str:
 def _kb_block_loop_detected(task, payload: dict, title: str) -> str:
     rc = f" (blocked {payload['recurrences']}x for the same cause)" if payload.get("recurrences") else ""
     reason = f": {str(payload.get('reason'))[:160]}" if payload.get("reason") else ""
-    return f" routed to TRIAGE — needs a human decision{rc}{reason}"
+    # Recurrence alone only proves orchestration attention is needed; only a
+    # `needs_input` block carries a concrete question for the owner (mirrors
+    # gateway/kanban_watchers_notifier._fmt_block_loop_detected).
+    why = "needs a human decision" if payload.get("kind") == "needs_input" else "for orchestration attention"
+    return f" routed to TRIAGE — {why}{rc}{reason}"
 
 
 # kind -> (glyph, suffix after "Kanban <id>"); silent kinds (archived/unblocked) are absent → None.

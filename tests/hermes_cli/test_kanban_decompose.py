@@ -265,6 +265,7 @@ def test_decompose_returns_false_when_task_not_triage(kanban_home):
 
 def test_board_orchestrator_overrides_global(kanban_home, monkeypatch):
     """A board's own orchestrator outranks the global kanban.orchestrator_profile."""
+    monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
     monkeypatch.setenv("HERMES_KANBAN_BOARD", "gtm")
     kb.write_board_metadata("gtm", orchestrator_profile="gtm_orchestrator")
     with patch("hermes_cli.config.load_config_readonly",
@@ -280,8 +281,9 @@ def test_board_orchestrator_overrides_global(kanban_home, monkeypatch):
     assert routing.orchestrator == "gtm_orchestrator"
 
 
-def test_board_without_override_uses_global(kanban_home):
+def test_board_without_override_uses_global(kanban_home, monkeypatch):
     """A board that has set nothing keeps the global value exactly."""
+    monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
     with patch("hermes_cli.config.load_config_readonly",
                return_value={"kanban": {"orchestrator_profile": "global_orch"}}):
         patches = _patch_list_profiles(["global_orch"])
@@ -297,6 +299,7 @@ def test_board_without_override_uses_global(kanban_home):
 
 def test_board_override_cleared_falls_back(kanban_home, monkeypatch):
     """An explicitly cleared board override ('') falls back to the global."""
+    monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
     monkeypatch.setenv("HERMES_KANBAN_BOARD", "beta")
     kb.write_board_metadata("beta", orchestrator_profile="")  # clear
     with patch("hermes_cli.config.load_config_readonly",
@@ -314,6 +317,7 @@ def test_board_override_cleared_falls_back(kanban_home, monkeypatch):
 
 def test_board_override_unknown_profile_falls_back(kanban_home, monkeypatch):
     """A board naming a nonexistent profile is ignored, not fatal."""
+    monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
     monkeypatch.setenv("HERMES_KANBAN_BOARD", "beta")
     kb.write_board_metadata("beta", orchestrator_profile="ghost")
     with patch("hermes_cli.config.load_config_readonly",
@@ -337,6 +341,7 @@ def test_board_metadata_defaults_to_none():
 
 def test_set_orchestrator_round_trips(kanban_home, monkeypatch):
     """board.json write then read returns the same value; '' clears it."""
+    monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
     monkeypatch.setenv("HERMES_KANBAN_BOARD", "alpha")
     kb.write_board_metadata("alpha", orchestrator_profile="orch_a")
     assert kb.read_board_metadata("alpha")["orchestrator_profile"] == "orch_a"

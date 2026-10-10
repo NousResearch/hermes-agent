@@ -203,8 +203,12 @@ class LlamaServerSupervisor:
         self._log_handle.write(f"\n# spawn: {cmd}\n")
         self._log_handle.flush()
         # list-args, never a shell: spaced paths (user homes) must survive.
+        # reap_with_owner: POSIX has no Job Object, so a sibling reaper ties this
+        # tree to our lifetime — an owner crash must not strand multi-GB model
+        # children on launchd/systemd (#126631).
         self.proc, self._job = spawn_server(cmd, stdout=self._log_handle, stderr=subprocess.STDOUT,
-                                             cwd=str(exe.parent), env=server_child_env(os.environ))
+                                             cwd=str(exe.parent), env=server_child_env(os.environ),
+                                             reap_with_owner=True)
         logger.info("llama-server router spawned pid=%s port=%s", self.proc.pid, self.port)
         # State goes down at SPAWN, not after health: endpoint resolution treats a
         # live-pid-but-not-yet-healthy server as "starting" rather than "unconfigured", so a

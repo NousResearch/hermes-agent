@@ -271,20 +271,32 @@ messaging = [
 ] # aiohttp 3.14.3: prior CVEs + GHSA-cq5v-8q36-5273/GHSA-mfx4-hv73-q22v/GHSA-mq44-7p77-q5h7
 cron = [] # croniter is now a core dependency; this extra kept for back-compat
 slack = ["slack-bolt==1.30.0", "slack-sdk==3.44.1", "aiohttp==3.14.3"]
-# Matrix gateway deps. `mautrix[encryption]` pulls `python-olm`, whose
-# vendored libolm (archived 2023) cannot build on Windows or modern macOS:
-# no wheels for those targets AND the sdist fails to compile on current
-# clang/MSVC (olm/list.hh const-iterator error) and on CMake >= 4. It is
-# linux-only — gate the whole extra so `uv sync --all-extras` (the bundle
-# build) doesn't try to build python-olm on the win/darwin lanes. The
-# matrix adapter degrades gracefully without mautrix (import stubs).
+# Matrix gateway deps. The adapter runs fine on plain `mautrix` and degrades
+# gracefully without it (import stubs). E2EE is a SEPARATE extra: encryption
+# needs `mautrix[encryption]` → `python-olm`, whose vendored libolm (archived
+# 2023) has no wheels and must compile from source — it fails outright on
+# Windows/macOS and on current clang/MSVC (olm/list.hh const-iterator error)
+# and CMake >= 4. E2EE is OFF by default (MATRIX_E2EE_MODE), so keeping the
+# encryption closure in `matrix` charged every Linux install a 23 MB sdist and
+# a C++ toolchain for a feature that was disabled — and broke the update's
+# dependency step wherever no compiler existed. `matrix` now carries only the
+# plain SDK; the [matrix-e2ee] extra below is installed on demand when E2EE is
+# configured on (pm.extras.ensure_import("matrix-e2ee") from ensure_matrix_deps).
 matrix = [
-  "mautrix[encryption]==0.21.1; sys_platform == 'linux'",
+  "mautrix==0.21.1; sys_platform == 'linux'",
   "aiosqlite==0.22.1; sys_platform == 'linux'",
   "asyncpg==0.31.0; sys_platform == 'linux'",
   "aiohttp-socks==0.11.0; sys_platform == 'linux'",
   "aiohttp==3.14.3; sys_platform == 'linux'",
 ] # aiohttp 3.14.3: prior CVEs + GHSA-cq5v-8q36-5273/GHSA-mfx4-hv73-q22v/GHSA-mq44-7p77-q5h7 (mautrix/aiohttp-socks only cap aiohttp<4 / >=3.10, so pin the patched floor directly)
+
+# Matrix E2EE (Olm/Megolm). linux-only: python-olm ships no wheels and its
+# vendored libolm does not build on Windows or modern macOS, so the whole
+# extra is gated below. Opt-in, never in [all]: it is installed when
+# MATRIX_E2EE_MODE is optional/required, not when encryption is off.
+matrix-e2ee = [
+  "mautrix[encryption]==0.21.1; sys_platform == 'linux'",
+]
 
 # WeCom callback-mode adapter — parses untrusted XML POST bodies from
 # WeCom-controlled callback endpoints, so we use defusedxml (drop-in
@@ -564,7 +576,7 @@ hermes-acp = "acp_adapter.entry:main"
 # build with --all-extras and pass --no-extra for each of these, so their
 # closures never ship. KittenTTS pulls torch, transformers and spaCy through
 # misaki[en]: installed when the user picks it, not preinstalled.
-opt-in-extras = ["kittentts"]
+opt-in-extras = ["kittentts", "matrix-e2ee"]
 
 # Per-extra platform gates (settled 2026-09-02): an extra listed here is
 # only installable on platforms matching the marker. pm consults this
@@ -575,8 +587,12 @@ opt-in-extras = ["kittentts"]
 # single-authority for WHICH extra is supported WHERE.
 
 [tool.hermes.extras-platforms]
-# mautrix[encryption] → python-olm: linux-only wheels, no win/darwin build.
+# [matrix] stays Linux-only: platform policy is unchanged by moving the E2EE
+# closure out (the archived-libolm reason now sits on [matrix-e2ee] below).
+# Relaxing the [matrix] gate to win/darwin is a separate decision.
 matrix = "sys_platform == 'linux'"
+# mautrix[encryption] → python-olm: linux-only wheels, no win/darwin build.
+matrix-e2ee = "sys_platform == 'linux'"
 # grpcio (via google-cloud-pubsub) has no win_arm64 wheel.
 google-chat = "platform_machine != 'ARM64' or sys_platform != 'win32'"
 # Match the engine dependency markers so PM refuses an unsupported install.

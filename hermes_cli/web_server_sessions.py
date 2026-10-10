@@ -265,6 +265,41 @@ def _maybe_auto_archive_for_profile(profile: Optional[str]) -> None:
         _log.debug("opportunistic auto-archive skipped: %s", exc)
 
 
+def _maybe_auto_prune_for_profile(profile: Optional[str]) -> None:
+    """Config-gated ``sessions.auto_prune`` (retention prune, stale-open close, VACUUM when due) for
+    ``profile``; never raises. The CLI runs it at startup and the gateway on its housekeeping tick;
+    ``hermes serve`` runs neither, so a Desktop-only store (and every ``request_dump_*`` file, only
+    removed with its session) was never pruned. Same config source and gateway deferral as
+    :func:`_maybe_auto_archive_for_profile`; the ``min_interval_hours`` throttle and the
+    cross-process lock live in ``maybe_auto_prune_and_vacuum``. Ticker-only, never on a request
+    path: a due VACUUM rewrites the whole store."""
+    try:
+        from hermes_cli.config import load_config as _load_full_config
+        from hermes_cli.profiles import _check_gateway_running
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        profile_home = _session_db_path_for_profile(profile).parent
+        _home_token = set_hermes_home_override(str(profile_home))
+        try:
+            cfg = (_load_full_config().get("sessions") or {})
+        finally:
+            reset_hermes_home_override(_home_token)
+        if not cfg.get("auto_prune", False) or _check_gateway_running(profile_home):
+            return
+        db = _open_session_db_for_profile(profile, read_only=False)
+        try:
+            db.maybe_auto_prune_and_vacuum(
+                retention_days=int(cfg.get("retention_days", 90)),
+                min_interval_hours=int(cfg.get("min_interval_hours", 24)),
+                min_vacuum_interval_days=int(cfg.get("min_vacuum_interval_days", 30)),
+                vacuum=bool(cfg.get("vacuum_after_prune", True)),
+                sessions_dir=profile_home / "sessions")
+        finally:
+            db.close()
+    except Exception as exc:
+        _log.debug("serve auto-prune skipped: %s", exc)
+
+
 def _skill_maintenance_idle_for(started_at: float) -> Optional[float]:
     """Measure chat inactivity, not socket inactivity (Desktop stays connected)."""
     import tui_gateway.server as gateway
@@ -312,6 +347,7 @@ async def _auto_archive_ticker_loop(
 
     def _sweep() -> None:
         _maybe_auto_archive_for_profile(None)
+        _maybe_auto_prune_for_profile(None)
         _maybe_run_skill_maintenance(started_at)
 
     await asyncio.sleep(initial_delay_s)

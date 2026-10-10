@@ -95,6 +95,8 @@ FLAT_INSTALL_RUNTIME_STATE = (
     "backups/2026-09-14T06-00-00-pre-update/state.db",
     "vault.key",
     "vault.json.enc",
+    "tools/uv/bin/uv",
+    "tools/uv/facts.json",
 )
 
 
@@ -137,6 +139,17 @@ def test_flat_install_runtime_state_is_ignored(flat_install_repo):
         flat_install_repo, "status", "--porcelain", "--untracked-files=all"
     )
     assert status.stdout == "", status.stdout
+
+
+def test_new_source_directory_under_tools_remains_visible(flat_install_repo):
+    source = flat_install_repo / "tools" / "new_backend" / "__init__.py"
+    source.parent.mkdir(parents=True)
+    source.write_text("VALUE = 1\n")
+
+    status = _run_git(
+        flat_install_repo, "status", "--porcelain", "--untracked-files=all"
+    )
+    assert status.stdout.splitlines() == ["?? tools/new_backend/__init__.py"]
 
 
 def test_untracked_autostash_cannot_sweep_runtime_state(flat_install_repo):

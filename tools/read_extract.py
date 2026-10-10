@@ -546,9 +546,10 @@ def _cell_value(cell: ET.Element, shared: list[str], s: str) -> str:
     typ = cell.get("t", "")
     if typ == "s":
         try:
-            return shared[int(value)]
-        except (ValueError, IndexError):
+            index = int(value)
+        except ValueError:
             return ""
+        return shared[index] if 0 <= index < len(shared) else ""
     if typ == "inlineStr":
         inline = cell.find(f"{s}is")
         return "" if inline is None else _xlsx_string_text(inline, s)

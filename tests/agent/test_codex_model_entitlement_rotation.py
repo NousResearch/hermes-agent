@@ -100,3 +100,26 @@ def test_all_entries_rejecting_falls_back_to_session_marker(pool):
     ) is None
     assert _mark_entitlement_rejected_model(agent, _entitlement_400()) is True
     assert _is_entitlement_rejected(agent, "openai-codex", MODEL)
+
+
+def test_opencode_go_policy_400_marks_session_unavailable():
+    from agent.fallback_cooldown import _is_entitlement_rejected, _mark_entitlement_rejected_model
+
+    class _Err(Exception):
+        def __init__(self, msg, status_code):
+            super().__init__(msg)
+            self.status_code = status_code
+            self.message = msg
+
+    agent = types.SimpleNamespace(
+        provider="opencode-go",
+        model="muse-spark-1.3-contributor",
+        _credential_pool=None,
+        _buffer_diagnostic_status=lambda *_a, **_k: None,
+    )
+    err = _Err(
+        "This Go model trains on request data. Allow paid endpoints that train on request data.",
+        400,
+    )
+    assert _mark_entitlement_rejected_model(agent, err) is True
+    assert _is_entitlement_rejected(agent, "opencode-go", "muse-spark-1.3-contributor")

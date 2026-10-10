@@ -205,10 +205,10 @@ describe('AppContextMenu', () => {
     expect(screen.getByText('the')).toBeTruthy()
   })
 
-  it('runs edit verbs after the menu closed, with focus back on the editable', async () => {
-    const contextMenuEdit = vi.fn().mockResolvedValue(undefined)
+  it('copies the field selection through the clipboard bridge after the menu closed', async () => {
+    const writeClipboard = vi.fn().mockResolvedValue(true)
 
-    installBridge({ contextMenuEdit: contextMenuEdit as unknown as Window['hermesDesktop']['contextMenuEdit'] })
+    installBridge({ writeClipboard: writeClipboard as unknown as Window['hermesDesktop']['writeClipboard'] })
     mountMenu()
     const host = attach('<textarea>some draft text</textarea>')
     const textarea = host.querySelector('textarea')!
@@ -218,22 +218,18 @@ describe('AppContextMenu', () => {
     fireEvent.contextMenu(textarea)
     fireEvent.click(await screen.findByText('Copy'))
 
-    // The verb waits a frame so the radix focus trap unmounts first —
-    // dispatching while the trap holds focus sent the command to `body`.
-    expect(contextMenuEdit).not.toHaveBeenCalled()
+    // The verb waits a frame so the radix focus trap unmounts first — running
+    // while the trap held focus aimed main's edit command at the menu, not the
+    // field, which is why the item looked dead.
+    expect(writeClipboard).not.toHaveBeenCalled()
 
-    await waitFor(() => expect(contextMenuEdit).toHaveBeenCalledWith('copy'))
+    await waitFor(() => expect(writeClipboard).toHaveBeenCalledWith('some'))
     expect($contextMenu.get()).toBeNull()
     expect(document.activeElement).toBe(textarea)
   })
 
-  it('keeps a modal textarea paste menu inside its dialog and restores focus', async () => {
-    const contextMenuEdit = vi.fn().mockResolvedValue(undefined)
-
-    installBridge({
-      contextMenuEdit: contextMenuEdit as unknown as Window['hermesDesktop']['contextMenuEdit'],
-      readClipboard: vi.fn().mockResolvedValue('clipboard payload')
-    })
+  it('keeps a modal textarea paste menu inside its dialog and pastes into the field', async () => {
+    installBridge({ readClipboard: vi.fn().mockResolvedValue('clipboard payload') })
     render(
       <MemoryRouter>
         <AppContextMenu />
@@ -245,7 +241,7 @@ describe('AppContextMenu', () => {
         </Dialog>
       </MemoryRouter>
     )
-    const textarea = screen.getByLabelText('modal textarea')
+    const textarea = screen.getByLabelText('modal textarea') as HTMLTextAreaElement
 
     fireEvent.contextMenu(textarea)
 
@@ -260,7 +256,7 @@ describe('AppContextMenu', () => {
 
     fireEvent.click(paste)
 
-    await waitFor(() => expect(contextMenuEdit).toHaveBeenCalledWith('paste'))
+    await waitFor(() => expect(textarea.value).toBe('clipboard payload'))
     expect(document.activeElement).toBe(textarea)
   })
 
@@ -300,10 +296,10 @@ describe('AppContextMenu', () => {
     expect(item('Copy').getAttribute('data-disabled')).toBeNull()
   })
 
-  it('select all stays inside the field and never reaches main', async () => {
-    const contextMenuEdit = vi.fn().mockResolvedValue(undefined)
+  it('select all stays inside the field and never reaches the clipboard', async () => {
+    const writeClipboard = vi.fn().mockResolvedValue(true)
 
-    installBridge({ contextMenuEdit: contextMenuEdit as unknown as Window['hermesDesktop']['contextMenuEdit'] })
+    installBridge({ writeClipboard: writeClipboard as unknown as Window['hermesDesktop']['writeClipboard'] })
     mountMenu()
     const host = attach('<textarea>alpha beta gamma</textarea>')
     const textarea = host.querySelector('textarea')!
@@ -311,14 +307,14 @@ describe('AppContextMenu', () => {
     fireEvent.contextMenu(textarea)
     fireEvent.click(await screen.findByText('Select all'))
 
-    // Renderer-side selection scoped to the field: main's selectAll acts on
-    // the focused FRAME and selected the whole transcript when focus
-    // slipped (the edit composer re-parents focus on blur).
+    // Renderer-side selection scoped to the field: a main-side selectAll acts on
+    // the focused FRAME and selected the whole transcript when focus slipped
+    // (the edit composer re-parents focus on blur).
     await waitFor(() => {
       expect(textarea.selectionStart).toBe(0)
       expect(textarea.selectionEnd).toBe('alpha beta gamma'.length)
     })
-    expect(contextMenuEdit).not.toHaveBeenCalled()
+    expect(writeClipboard).not.toHaveBeenCalled()
     expect(document.activeElement).toBe(textarea)
   })
 
@@ -338,12 +334,38 @@ describe('AppContextMenu', () => {
     expect(item('Select all').getAttribute('data-disabled')).not.toBeNull()
   })
 
+  it('routes a paste in the edit composer through the composer insert API', async () => {
+    // The composer is a custom contenteditable with its own sanitize/chip
+    // pipeline, so the menu must not poke the DOM: it hands the text to the
+    // composer's insert API, the same one the preview pane inserts through.
+    installBridge({ readClipboard: vi.fn().mockResolvedValue('from clipboard') })
+    mountMenu()
+    attach(`<div data-slot="aui_edit-composer-root"><div contenteditable="true">draft</div></div>`)
+
+    const editor = document.querySelector('[contenteditable]') as HTMLElement
+
+    // jsdom does not implement the property the resolver checks.
+    Object.defineProperty(editor, 'isContentEditable', { value: true })
+
+    const events: Array<{ text?: string; mode?: string }> = []
+    const listener = (event: Event) => events.push((event as CustomEvent).detail)
+
+    window.addEventListener('hermes:composer-insert', listener)
+    try {
+      fireEvent.contextMenu(editor)
+      fireEvent.click(await screen.findByText('Paste'))
+      await waitFor(() => expect(events.at(-1)?.text).toBe('from clipboard'))
+      expect(events.at(-1)?.mode).toBe('inline')
+    } finally {
+      window.removeEventListener('hermes:composer-insert', listener)
+    }
+  })
+
   it('keeps paste clickable even when the clipboard probe reports empty', async () => {
-    // #91553: the dom paste action runs webContents.paste() in main — the
-    // same path Ctrl+V takes, which resolves the system clipboard itself.
-    // A renderer-side probe that comes back empty (as the Win32
-    // clipboard.readText() bridge can while that path succeeds) must not
-    // gray the item out; pasting on a truly empty clipboard is a no-op.
+    // The paste verb reads the system clipboard through main
+    // (`hermes:readClipboard`, the same bridge the terminal paste uses). A probe
+    // that comes back empty must not gray the item out; pasting on a truly empty
+    // clipboard is a harmless no-op, so the item fails open.
     const readClipboard = vi.fn().mockResolvedValue('')
 
     installBridge({ readClipboard: readClipboard as unknown as Window['hermesDesktop']['readClipboard'] })

@@ -286,6 +286,48 @@ class TestRealProfileCdpLaunch:
         assert "AGENT_BROWSER_IDLE_TIMEOUT_MS" not in captured["env"]
         self._reset()
 
+    def test_launch_applies_chromium_sandbox_bypass_on_restricted_hosts(self, tmp_path):
+        """#135904: on a host where Chromium's sandbox cannot work (root/Docker/AppArmor
+        userns), the real-profile launch must carry the same --no-sandbox bypass the
+        daemon-launched lanes get through AGENT_BROWSER_ARGS — this Chrome is launched
+        by Hermes itself (agent-browser only attaches) and the argv has no user-facing
+        knob that could pass the flag."""
+        import subprocess
+        import tools.browser_tool as bt
+        captured = {}
+
+        class FakeChrome:
+            def poll(self):
+                return None
+
+        def fake_popen(argv, **kw):
+            captured.setdefault("argvs", []).append(list(argv))
+            (tmp_path / "DevToolsActivePort").write_text("41000\n/devtools/browser/x\n")
+            return FakeChrome()
+
+        try:
+            with patch.object(bt_session, "_needs_chromium_sandbox_bypass", return_value=True), \
+                 patch.object(bt_cloud, "_is_headed_mode", return_value=False), \
+                 patch.object(bt, "_build_browser_env", return_value={}), \
+                 patch.object(subprocess, "Popen", side_effect=fake_popen):
+                port, err = bt_real_profile._launch_real_profile_chrome("/usr/bin/chrome", str(tmp_path))
+            assert (port, err) == (41000, None)
+            assert "--no-sandbox" in captured["argvs"][0]
+            assert "--disable-dev-shm-usage" in captured["argvs"][0]
+
+            # Unrestricted host: the bypass flags stay off (a sandboxed Chrome is the default).
+            captured.clear()
+            with patch.object(bt_session, "_needs_chromium_sandbox_bypass", return_value=False), \
+                 patch.object(bt_cloud, "_is_headed_mode", return_value=False), \
+                 patch.object(bt, "_build_browser_env", return_value={}), \
+                 patch.object(subprocess, "Popen", side_effect=fake_popen):
+                port, err = bt_real_profile._launch_real_profile_chrome("/usr/bin/chrome", str(tmp_path))
+            assert (port, err) == (41000, None)
+            assert "--no-sandbox" not in captured["argvs"][0]
+            assert "--disable-dev-shm-usage" not in captured["argvs"][0]
+        finally:
+            bt._real_profile_chrome_procs.clear()
+
     def test_reuses_only_session_on_our_copy_dir(self, tmp_path):
         """A live session on a DIFFERENT dir (stale/throwaway) is closed, not reused."""
         import tools.browser_tool as bt

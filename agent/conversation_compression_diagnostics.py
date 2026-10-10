@@ -143,6 +143,8 @@ def _emit_compression_auth_hint(agent: Any) -> None:
     # compressor.base_url (the MAIN model's URL) raw — and some proxies carry
     # credentials as ?key=... (#72636 review, defect 2). A user-facing
     # diagnostic must never be one forgetful producer away from leaking one.
+    # Fragments are not sent to the provider and may themselves contain ?key=...
+    _aux_base = _aux_base.split("#", 1)[0]
     try:
         from agent.auxiliary_client import _extract_url_query_params
         _aux_base, _ = _extract_url_query_params(_aux_base)

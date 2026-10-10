@@ -314,7 +314,9 @@ def _install_sidecar() -> int:
         # stdout streams to the terminal; stderr is captured so the failure reason can be
         # persisted for check_requirements() to surface later.
         proc = subprocess.run(
-            [npm, verb], stdin=subprocess.DEVNULL, cwd=str(_sidecar_dir()), check=False, stderr=subprocess.PIPE, text=True, env=env)
+            [npm, verb], stdin=subprocess.DEVNULL, cwd=str(_sidecar_dir()), check=False,
+            stderr=subprocess.PIPE, text=True,
+            encoding="utf-8" if sys.platform == "win32" else None, errors="replace", env=env)
         if proc.stderr:
             print(proc.stderr, end="", file=sys.stderr)
         return proc

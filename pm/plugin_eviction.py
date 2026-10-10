@@ -41,7 +41,9 @@ def _interpreter_version() -> str:
     if tools is None:
         raise InstallError("venv", "PM's pinned toolchain is unavailable")
     probe = subprocess.run([native(tools[1]), "-I", "-c", "import platform; print(platform.python_version())"],
-                           capture_output=True, text=True, check=True, timeout=60)
+                           capture_output=True, text=True,
+                           encoding="utf-8" if sys.platform == "win32" else None, errors="replace",
+                           check=True, timeout=60)
     return probe.stdout.strip()
 
 

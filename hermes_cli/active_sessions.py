@@ -117,6 +117,40 @@ SESSION_COORDINATION_UNAVAILABLE = "SESSION_COORDINATION_UNAVAILABLE"
 PER_SESSION_EXCLUSIVE_SUBMIT = True
 
 
+def resolve_session_takeover(config: Any) -> bool:
+    """True when a second live surface may take a session over from the first.
+
+    Exclusivity exists so two writers cannot interleave turns into one
+    transcript. That is the right default, but it also means a chat opened on a
+    desktop refuses the SAME person's phone, tablet or second terminal — with no
+    way to hand the conversation over except closing the original window. When
+    every surface streams the same session in real time, the owner may prefer
+    continuity over the fence, so let them ask for it explicitly.
+
+    Off by default: silently relaxing an ownership guarantee is how concurrent
+    writers get introduced, so the operator has to opt in.
+    """
+    raw: Any = None
+    if isinstance(config, dict):
+        if "allow_session_takeover" in config:
+            raw = config.get("allow_session_takeover")
+        else:
+            session_cfg = config.get("session")
+            if isinstance(session_cfg, dict):
+                raw = session_cfg.get("allow_takeover")
+    else:
+        raw = getattr(config, "allow_session_takeover", None)
+        if raw is None:
+            session_obj = getattr(config, "session", None)
+            if isinstance(session_obj, dict):
+                raw = session_obj.get("allow_takeover")
+            elif session_obj is not None:
+                raw = getattr(session_obj, "allow_takeover", None)
+    if isinstance(raw, str):
+        return raw.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(raw)
+
+
 class ActiveSessionRefusal(str):
     """Refusal message (a ``str``, so callers are untouched) with a machine-readable ``reason``."""
 
@@ -490,10 +524,16 @@ def try_acquire_active_session(
     only when configured. ``registry_home`` lets profile-scoped backends share the owning
     profile's registry. Ownership uncertainty fails CLOSED (SESSION_COORDINATION_UNAVAILABLE).
 
+    ``allow_session_takeover`` keeps the one-owner invariant but changes who wins: the
+    newest surface replaces the previous lease instead of being refused, so a chat can
+    follow the operator from desktop to phone. Uncertainty still fails closed — takeover
+    only applies when a live owner was positively identified.
+
     Liveness tracking keeps richer desktop lifecycle semantics; ``registry_home`` lets profile-scoped
     backends share the owning profile's registry even when launched from another home. See #94595.
     """
     max_sessions = resolve_max_concurrent_sessions(config)
+    takeover = resolve_session_takeover(config)
     lease_id = uuid.uuid4().hex
     key = str(session_id or "")
 
@@ -554,6 +594,19 @@ def try_acquire_active_session(
                     entries[index] = entry
                     _write_entries(state_path, entries)
                     return lease, None
+                if takeover:
+                    # Opted in: the newest surface replaces the active registry
+                    # lease, transferring registry ownership so exactly ONE
+                    # registry entry remains. On a multi-runtime gateway, sibling
+                    # runtimes are evicted and interrupted on claim.
+                    logger.info(
+                        "Session %s taken over from pid=%s surface=%s by surface=%s "
+                        "(allow_session_takeover)",
+                        key, existing.get("pid"), existing.get("surface"), surface,
+                    )
+                    entries[index] = entry
+                    _write_entries(state_path, entries)
+                    return lease, None
                 return refuse(
                     session_already_owned_message(key, existing), SESSION_NOT_OWNED,
                     "Refused active session %s: already held by pid=%s surface=%s",
@@ -572,6 +625,26 @@ def try_acquire_active_session(
         _write_entries(state_path, entries)
 
     return lease, None
+
+
+def active_session_lease_is_current(lease: ActiveSessionLease) -> Optional[bool]:
+    """Whether ``lease`` still owns its registry slot; ``None`` when the registry is unreadable.
+
+    ``allow_session_takeover`` lets another BACKEND PROCESS sharing this registry replace the
+    lease, and nothing signals the old process: its runtime must check before each turn, or
+    two processes write one stored session from two snapshots. Inert tokens (borrowed,
+    unkeyed) and released leases own nothing to lose.
+    """
+    if not lease.enabled or lease.released or not lease.session_id:
+        return True
+    state_path, lock_path = _lease_paths(lease)
+    try:
+        with _FileLock(lock_path):
+            entries = _read_entries(state_path, strict=True)
+    except Exception as exc:
+        logger.debug("Could not verify active-session lease %s: %s", lease.lease_id, exc)
+        return None
+    return any(str(e.get("lease_id") or "") == lease.lease_id for e in entries)
 
 
 def release_active_session(lease: ActiveSessionLease) -> None:

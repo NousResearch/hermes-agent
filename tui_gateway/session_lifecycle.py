@@ -11,6 +11,8 @@ import contextlib
 
 from .method_ctx import bind_module
 
+logger = logging.getLogger(__name__)
+
 
 @contextlib.contextmanager
 def _session_turn_admission(session: dict):
@@ -123,18 +125,91 @@ def _ensure_active_session_slot(sid: str, session: dict) -> str | None:
     do NOT claim: tile paints, reconnect-resumes and abandoned drafts would hold invisible slots (no DB row)
     that starve the messaging gateway sharing the cap. Anything holding a slot must be user-visible. An
     inert borrowed token (see _install_borrowed_lease) also lands here: present = slot held upstream."""
-    if session.get("active_session_lease") is not None:
+    held = session.get("active_session_lease")
+    if held is not None and not _lease_lost_to_another_backend(sid, session, held):
         return None
+    handed_over = held is not None
     key = str(session.get("session_key") or "")
     lease, limit_message = _claim_active_session_slot(
         key, live_session_id=sid, surface=_session_source(session), profile_home=session.get("profile_home"))
     if limit_message is None:
+        if handed_over and not _reload_history_after_handover(sid, session):
+            lease.release()
+            return _SESSION_OWNERSHIP_UNAVAILABLE
+        _evict_other_session_leases(sid, key)
         _attach_lease(session, lease)
         return None
     from hermes_cli.active_sessions import SESSION_NOT_OWNED
     if getattr(limit_message, "reason", None) == SESSION_NOT_OWNED and _take_over_detached_runtime_lease(sid, session, key):
         return None
     return limit_message
+
+
+def _lease_lost_to_another_backend(sid: str, session: dict, lease) -> bool:
+    """True, with the dead lease dropped, when another backend process replaced it.
+
+    ``allow_session_takeover`` lets a second ``hermes serve`` on the same HERMES_HOME (Desktop's
+    child next to an always-on backend, an SSH ``--isolated`` serve) replace this runtime's
+    registry entry, and nothing signals this process. Without the check the in-memory lease kept
+    passing every later turn, so both processes wrote one session from two snapshots. One locked
+    registry read per turn; an unreadable registry keeps the lease (no worse than before)."""
+    from hermes_cli.active_sessions import active_session_lease_is_current
+
+    if active_session_lease_is_current(lease) is not False:
+        return False
+    logger.info("Session %s lost its lease for %s to another backend", sid, session.get("session_key"))
+    with session["history_lock"]:
+        session.pop("active_session_lease", None)
+        session["_lease_taken_over"] = True
+    return True
+
+
+def _reload_history_after_handover(sid: str, session: dict) -> bool:
+    """Continue from the stored transcript the other backend extended, not this runtime's snapshot.
+    False when it cannot be read: replaying the stale snapshot would drop the other side's turns."""
+    history = _load_durable_truncation_history(session)
+    if history is None:
+        logger.warning("Session %s: could not reload the transcript after a handover", sid)
+        return False
+    with session["history_lock"]:
+        session["history"] = history
+        session["history_version"] = int(session.get("history_version", 0)) + 1
+    return True
+
+
+def _evict_other_session_leases(current_sid: str, key: str, sessions_dict: dict | None = None, lock=None) -> None:
+    """When a session claims or takes over a key, evict and interrupt any sibling session in this process
+    holding that key so multiple runtimes cannot concurrently execute turns into one stored session."""
+    if sessions_dict is not None:
+        sessions = sessions_dict
+        sessions_lock = lock if lock is not None else contextlib.nullcontext()
+    else:
+        try:
+            import sys
+            server_mod = sys.modules.get("tui_gateway.server")
+            if server_mod is not None:
+                sessions = getattr(server_mod, "_sessions", {})
+                sessions_lock = getattr(server_mod, "_sessions_lock", contextlib.nullcontext())
+            else:
+                from tui_gateway.server import _sessions as sessions, _sessions_lock as sessions_lock
+        except ImportError:
+            sessions = globals().get("_sessions", {})
+            sessions_lock = globals().get("_sessions_lock", contextlib.nullcontext())
+
+    with sessions_lock:
+        for other_sid, other in list(sessions.items()):
+            if other_sid == current_sid or str(other.get("session_key") or "") != key:
+                continue
+            if other.get("active_session_lease") is not None:
+                del other["active_session_lease"]
+                other["_lease_taken_over"] = True
+                logger.info("Session %s evicted lease for %s from session %s", current_sid, key, other_sid)
+                try:
+                    _interrupt = globals().get("_interrupt_session_turn")
+                    if callable(_interrupt):
+                        _interrupt(other_sid, other, request_id=f"takeover-evict-{current_sid}")
+                except Exception:
+                    logger.exception("takeover interrupt failed sid=%s", other_sid)
 
 
 def _attach_lease(session: dict, lease) -> None:

@@ -73,6 +73,24 @@ def held_archive_coverage(
     return list(dict.fromkeys(covered)), unresolved
 
 
+def durable_rows_behind_tail(session_db: Any, session_id: str, verbatim_tail: Sequence[Any]) -> int:
+    """How many durable rows the ``here N`` exchanges stand for, for the rewind's ``tail_count``.
+
+    A dict the alternation repair merged stands for every row behind it, and ``compress_now`` moves a
+    rewritten copy's own id into ``_absorbed_row_ids`` beside the rows it absorbed. Counted once per
+    dict, the rewind window ends one row short per merge, and the oldest carried original stays
+    compacted=1 beside its live copy: recalled twice. Ids an earlier compaction archived are skipped.
+    """
+    total = 0
+    for message in verbatim_tail or ():
+        ids = set()
+        if isinstance(message, dict):
+            ids = {_positive_id(message.get("_row_id")), *map(_positive_id, message.get(ABSORBED_ROW_IDS) or ())}
+            ids.discard(None)
+        total += max(1, sum(1 for row_id in ids if session_db.get_message_role(session_id, row_id) is not None))
+    return total
+
+
 def newest_exact_held_id(
     messages: Sequence[Any], verbatim_tail: Optional[Sequence[Any]] = None,
 ) -> Optional[int]:

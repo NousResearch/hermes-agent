@@ -97,7 +97,13 @@ class GatewayBusySessionMixin:
         from gateway.trusted_transport import agentcrew_transport
         state = self._peek_session_state(session_key)
         event = state.turn.event if state is not None else None
-        return bool(event is not None and agentcrew_transport(event, event.source, "bound"))
+        source = event.source if event is not None else None
+        profile = str(getattr(source, "profile", "") or "").strip().casefold()
+        return bool(
+            event is not None
+            and profile == "agentcrewm3"
+            and agentcrew_transport(event, source, "bound")
+        )
 
     def _queue_during_drain_enabled(self, busy_input_mode: Optional[str] = None) -> bool:
         # "queue"/"steer" mean messages survive a restart (queued for the new process); "interrupt" drops.
@@ -1056,9 +1062,10 @@ class GatewayBusySessionMixin:
             return t("gateway.queue.usage")
         adapter = self._delivery_adapter_for(source)
         if adapter:
-            self._enqueue_fifo(quick_key, MessageEvent(
+            queued = MessageEvent(
                 text=queued_text, message_type=event.message_type if has_media else MessageType.TEXT,
                 source=event.source, raw_message=event.raw_message, message_id=event.message_id,
+                platform_update_id=event.platform_update_id,
                 media_urls=list(getattr(event, "media_urls", []) or []),
                 media_types=list(getattr(event, "media_types", []) or []),
                 media_text_inlined=list(getattr(event, "media_text_inlined", []) or []),
@@ -1068,7 +1075,9 @@ class GatewayBusySessionMixin:
                 reply_to_is_own_message=event.reply_to_is_own_message, auto_skill=event.auto_skill,
                 channel_prompt=event.channel_prompt, channel_context=event.channel_context,
                 internal=event.internal, timestamp=event.timestamp,
-            ), adapter)
+            )
+            queued._transport_received_at = event._transport_received_at
+            self._enqueue_fifo(quick_key, queued, adapter)
         depth = self._queue_depth(quick_key, adapter=adapter)
         return t("gateway.queue.queued") + (t("gateway.queue.queued_depth", depth=depth) if depth > 1 else "")
 

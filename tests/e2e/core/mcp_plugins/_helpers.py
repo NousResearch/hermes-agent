@@ -193,7 +193,7 @@ class HttpMcpServer:
     def url(self) -> str:
         return f"http://127.0.0.1:{self.port}/mcp"
 
-    def start(self) -> "HttpMcpServer":
+    def start(self) -> HttpMcpServer:
         with contextlib.suppress(FileNotFoundError):
             self.port_file.unlink()
         env = {k: v for k, v in os.environ.items() if k in _PASSTHROUGH_ENV}

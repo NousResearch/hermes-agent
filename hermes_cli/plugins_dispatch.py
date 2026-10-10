@@ -112,7 +112,7 @@ class PluginSystemPromptSection:
     """A plugin-owned section rendered once for each new session."""
 
     id: str
-    content: Union[str, Callable[[Mapping[str, Any]], str]]
+    content: str | Callable[[Mapping[str, Any]], str]
     position: str
     max_chars: int
     plugin: str
@@ -508,7 +508,7 @@ class PluginDispatchMixin:
                     ret = await (asyncio.wait_for(ret, timeout) if use_timeout else ret)
                 if ret is not None:
                     results.append(ret)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logger.warning("Hook '%s' callback %s timed out after %.0fs", hook_name, callback_name, timeout)
                 if fail_closed:  # policy hook: fail closed with a block directive
                     results.append({"action": "block", "message": _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE})

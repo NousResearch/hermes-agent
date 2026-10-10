@@ -126,7 +126,7 @@ def launch_terminal_env() -> dict[str, str]:
     return {k: v for k, v in capture_launch_env().items() if k.startswith("TERMINAL_")}
 
 
-def launch_secret_scope(launch_home: "str | Path") -> dict[str, str]:
+def launch_secret_scope(launch_home: str | Path) -> dict[str, str]:
     """The launch profile's secret mapping: its ``.env`` + external sources over the launch env
     (systemd / ``op run`` injection survives the fail-closed flip; a secondary never sees it because
     its scope is built from its own files only). Bound for EVERY launch-profile body, multiplexing or
@@ -149,7 +149,7 @@ def launch_secret_scope(launch_home: "str | Path") -> dict[str, str]:
 
 
 @contextlib.contextmanager
-def launch_profile_runtime_scope(launch_home: "str | Path") -> Iterator[None]:
+def launch_profile_runtime_scope(launch_home: str | Path) -> Iterator[None]:
     """Bind the launch profile's own runtime scope for one body: HERMES_HOME override naming the
     launch home, ``launch_secret_scope``, and its terminal policy over the frozen launch
     ``TERMINAL_*`` overlay. For hosts whose launch-profile bodies are not RPC sessions (the

@@ -55,7 +55,7 @@ class _HappyEyeballsSyncBackend:
         try:
             sock = _happy_eyeballs_create_connection((host, port), timeout, source_address=source_address,
                                                      socket_options=socket_options or ())
-        except socket.timeout as exc:
+        except TimeoutError as exc:
             raise ConnectTimeout(str(exc)) from exc
         except OSError as exc:
             raise ConnectError(str(exc)) from exc

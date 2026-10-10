@@ -10,7 +10,7 @@ import os
 import re
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from typing import Callable, Iterable, cast
 from urllib.parse import quote, urlparse
 
@@ -150,7 +150,7 @@ def encode_key_path(key: str) -> str:
 
 
 def amz_timestamp() -> str:
-    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
 
 
 class R2RequestError(Exception):
@@ -737,12 +737,12 @@ def parse_list_xml(xml: str) -> dict:
         if "." in text:
             return int(
                 datetime.strptime(text, "%Y-%m-%dT%H:%M:%S.%fZ")
-                .replace(tzinfo=timezone.utc)
+                .replace(tzinfo=UTC)
                 .timestamp()
             )
         return int(
             datetime.strptime(text, "%Y-%m-%dT%H:%M:%SZ")
-            .replace(tzinfo=timezone.utc)
+            .replace(tzinfo=UTC)
             .timestamp()
         )
 

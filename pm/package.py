@@ -140,7 +140,7 @@ class Package:
 
         extract(archive, staged)
 
-    def stage(self, store: "Store", staged: Path, version: str, target: str) -> None:
+    def stage(self, store: Store, staged: Path, version: str, target: str) -> None:
         """Post-unpack fixups inside the scratch dir. Default: nothing."""
 
     def binary(self, entry: Path, target: str) -> Optional[Path]:
@@ -363,7 +363,7 @@ def _missing_reason(binary: Path, entry: Path) -> str:
     return f"{rel} missing under {native(entry)}; {_entry_listing(entry)}"
 
 
-def _probe_reason(binary: Path, proc: "subprocess.CompletedProcess") -> str:
+def _probe_reason(binary: Path, proc: subprocess.CompletedProcess) -> str:
     """Why a --version probe failed: the exit code plus output tail."""
     out = (proc.stdout or b"") + (proc.stderr or b"")
     tail = out.decode(errors="replace").strip()[-300:]

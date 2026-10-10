@@ -146,7 +146,7 @@ def api_get(path: str, token: str, params: dict | None = None,
 def parse_ts(ts: str | None) -> datetime | None:
     if not ts:
         return None
-    return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    return datetime.fromisoformat(ts)
 
 
 def dur_s(started: str | None, completed: str | None) -> float | None:

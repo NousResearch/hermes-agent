@@ -270,7 +270,7 @@ _reset_segments_config_for_tests = _SEGMENTS_CONFIG.reset
 class RelayOperationLease:
     """Keep process-wide Relay plugins alive across a deferred operation."""
 
-    def __init__(self, runtime: "RelayRuntime") -> None:
+    def __init__(self, runtime: RelayRuntime) -> None:
         self._lock, self._runtime = threading.Lock(), runtime
 
     def run_in_session(self, session: RelaySession, callback: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:

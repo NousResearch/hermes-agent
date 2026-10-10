@@ -6,6 +6,7 @@ import subprocess
 import sys
 
 import pytest
+from datetime import UTC
 
 
 _FIRE = """
@@ -167,13 +168,13 @@ def test_completion_before_occurrence_does_not_prove_slot_completed(tmp_path, mo
 
     monkeypatch.setattr(executions, 'EXECUTIONS_FILE', tmp_path / 'executions.db')
     slot = '2026-01-05T00:00:00+00:00'
-    monkeypatch.setattr(executions, '_hermes_now', lambda: datetime(2026, 1, 1, tzinfo=timezone.utc))
+    monkeypatch.setattr(executions, '_hermes_now', lambda: datetime(2026, 1, 1, tzinfo=UTC))
     poisoned = executions.create_execution('job', source='control', scheduled_instant=slot)
     executions.finish_execution(poisoned['id'], success=True)
 
     assert not completed_occurrence({'id': 'job'}, slot)
 
-    monkeypatch.setattr(executions, '_hermes_now', lambda: datetime(2026, 1, 5, tzinfo=timezone.utc))
+    monkeypatch.setattr(executions, '_hermes_now', lambda: datetime(2026, 1, 5, tzinfo=UTC))
     legitimate = executions.create_execution('job', source='builtin', scheduled_instant=slot)
     executions.finish_execution(legitimate['id'], success=True)
 

@@ -47,7 +47,7 @@ def _run_cli(binary: str, *args: str, timeout: float) -> subprocess.CompletedPro
     return subprocess.run([binary, *args], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout,
                           env=_sanitized_cua_env(), stdin=subprocess.DEVNULL)
 
-def _cli_text(binary: str, *args: str, timeout: float, exc_types: tuple[type, ...] = _IO_EXC) -> Union[subprocess.CompletedProcess, BaseException]:
+def _cli_text(binary: str, *args: str, timeout: float, exc_types: tuple[type, ...] = _IO_EXC) -> subprocess.CompletedProcess | BaseException:
     """``_run_cli`` that returns (not raises) any exception in *exc_types*."""
     try:
         return _run_cli(binary, *args, timeout=timeout)

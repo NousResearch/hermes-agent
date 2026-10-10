@@ -41,7 +41,7 @@ def _git(root: Path, *args: str) -> str:
                           text=True, encoding="utf-8").stdout.strip()
 
 
-def _config_values(root: Path, key: str) -> "list[str]":
+def _config_values(root: Path, key: str) -> list[str]:
     proc = subprocess.run(["git", "config", "--get-all", key], cwd=root,
                           capture_output=True, text=True, encoding="utf-8")
     return [line.strip() for line in proc.stdout.splitlines() if line.strip()]

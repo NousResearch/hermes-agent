@@ -396,7 +396,7 @@ def test_passthrough_accepted_before_an_adapter_owns_the_name_stops_forwarding_i
     else:
         home = child_env / "hermes"
         home.mkdir(exist_ok=True)
-        (home / "config.yaml").write_text("terminal:\n  env_passthrough: [%s]\n" % ", ".join(names), encoding="utf-8")
+        (home / "config.yaml").write_text("terminal:\n  env_passthrough: [{}]\n".format(", ".join(names)), encoding="utf-8")
     builders = [lambda: local._make_run_env({}), lambda: local._sanitize_subprocess_env(dict(os.environ)),
                 lambda: _scrub_child_env(dict(os.environ))]
     assert [observe_child(b(), names) for b in builders] == [

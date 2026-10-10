@@ -576,7 +576,7 @@ def _git_program(arg0: str) -> str | None:
     Any directory (``/usr/lib/git-core/git-commit``), either separator, ``.exe`` and case folded:
     Windows runs ``git.exe`` and ``git-commit.exe``."""
     name = re.split(r"[\\/]", arg0.strip())[-1].lower()
-    name = name[:-4] if name.endswith(".exe") else name
+    name = name.removesuffix(".exe")
     return name if name == "git" or name.startswith("git-") else None
 
 

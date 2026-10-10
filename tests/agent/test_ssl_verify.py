@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from agent.ssl_verify import resolve_httpx_verify
+from datetime import UTC
 
 
 @pytest.fixture
@@ -107,7 +108,7 @@ def test_explicit_provider_ca_replaces_platform_trust_on_real_https(tmp_path):
 
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Private provider")])
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     cert = (x509.CertificateBuilder().subject_name(subject).issuer_name(subject)
             .public_key(key.public_key()).serial_number(x509.random_serial_number())
             .not_valid_before(now - timedelta(days=1)).not_valid_after(now + timedelta(days=1))

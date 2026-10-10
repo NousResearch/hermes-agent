@@ -1787,7 +1787,7 @@ class _CompressionActivityHeartbeat:
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name="compression-activity-heartbeat", daemon=True)
 
-    def start(self) -> "_CompressionActivityHeartbeat":
+    def start(self) -> _CompressionActivityHeartbeat:
         # A new compression episode always republishes agent.compression even
         # if a prior timeout/cooldown stamp is still on the agent.
         self._suppressed = False
@@ -1905,7 +1905,7 @@ class _CompressionLockLeaseRefresher:
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name="compression-lock-refresh", daemon=True)
 
-    def start(self) -> "_CompressionLockLeaseRefresher":
+    def start(self) -> _CompressionLockLeaseRefresher:
         self._thread.start()
         return self
 

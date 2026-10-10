@@ -137,7 +137,7 @@ class Home:
         return env
 
     def write(self, config: dict[str, Any], dotenv: dict[str, str] | None = None,
-              auth: dict[str, Any] | None = None) -> "Home":
+              auth: dict[str, Any] | None = None) -> Home:
         self.hermes_home.mkdir(parents=True, exist_ok=True)
         self.project.mkdir(parents=True, exist_ok=True)
         base = {"updates": {"check": False}, "agent": {"api_max_retries": 2},

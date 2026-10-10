@@ -902,7 +902,7 @@ class TestRpcTokenAuthorization(unittest.TestCase):
 
             def accept(self):
                 if self._served:
-                    raise socket.timeout()
+                    raise TimeoutError()
                 self._served = True
                 return self._conn, ("peer", 0)
 

@@ -29,7 +29,7 @@ execution row, no re-dispatch); with the recovery it re-fires and completes.
 from __future__ import annotations
 
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from pathlib import Path
 from unittest import mock
 
@@ -79,7 +79,7 @@ def _setup(cron_env, monkeypatch):
 def _persist_stale_error(J, job_id, *, error_age_minutes=110):
     """Persist the incident wedge state: last_status=error, last_run stale by
     more than a full cadence, next_run_at re-armed into the future."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     J.update_job(
         job_id,
         {
@@ -147,7 +147,7 @@ class TestPersistedStaleErrorRecovery:
         job_id = env["job_id"]
 
         _persist_stale_error(J, job_id, error_age_minutes=110)
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         J.update_job(
             job_id,
             {"fire_claim": {"at": now.isoformat(), "by": "other-host:deadbeef"}},

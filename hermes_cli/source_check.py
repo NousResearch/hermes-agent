@@ -181,7 +181,7 @@ def _commits(payload: dict | None) -> list[dict]:
             continue
         commit = entry.get("commit") or {}
         when = (commit.get("committer") or {}).get("date") or ""
-        at = _quiet(lambda: int(datetime.fromisoformat(when.replace("Z", "+00:00")).timestamp() * 1000), 0)
+        at = _quiet(lambda: int(datetime.fromisoformat(when).timestamp() * 1000), 0)
         rows.append({"sha": entry["sha"], "summary": str(commit.get("message", "")).split("\n", 1)[0],
                      "author": str((commit.get("author") or {}).get("name", "")), "at": at})
     return rows[::-1]

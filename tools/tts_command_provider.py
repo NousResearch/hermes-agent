@@ -180,7 +180,7 @@ def run_command_provider(
     proc = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             text=True, encoding="utf-8", errors="replace", env=delegated_child_subprocess_env(scrubbed),
                             stdin=subprocess.DEVNULL, **group)
-    output_queue: "queue.Queue[tuple[str, Optional[str]]]" = queue.Queue()
+    output_queue: queue.Queue[tuple[str, Optional[str]]] = queue.Queue()
     chunks: dict[str, list[str]] = {"stdout": [], "stderr": []}
     open_streams = {"stdout", "stderr"}
 

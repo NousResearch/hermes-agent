@@ -1,15 +1,15 @@
 name: error-ledger
 repo: https://github.com/olric3015/hermes-plugins
-sha: d8031eacf95a014334e719afbf1eb9c0c28e57c1
+sha: 732cf2268b43b8d99c385912f9a50af149cad0ee
 subdir: error-ledger
-description: "Local ledger of failed provider calls (rate limits, overloads, timeouts, context overflows): /errors shows how many attempts failed per model, provider or cause, how many Hermes could retry, and the most common HTTP status, for the last 24 hours, any number of hours or days, the latest session or everything recorded; /errors recent lists the newest failures and how long ago each happened. Disclosure — writes failed-attempt metadata (ids, provider, model, HTTP status, Hermes's failure class, exception class name, timings; no error message, request or prompt text) to plugin-data/error-ledger/errors.jsonl, trimmed to 5,000 rows past 2 MB; no network"
+description: "Local ledger of failed provider calls (rate limits, overloads, timeouts, context overflows): /errors shows how many attempts failed per model, provider or cause, how many Hermes could retry, and the most common HTTP status, for the last 24 hours, any number of hours or days, the latest session or everything recorded; /errors days puts one day on each line, newest first; /errors recent lists the newest failures and how long ago each happened. Disclosure — writes failed-attempt metadata (ids, provider, model, HTTP status, Hermes's failure class, exception class name, timings; no error message, request or prompt text) to plugin-data/error-ledger/errors.jsonl, trimmed to 5,000 rows past 2 MB; no network"
 maintainer: olric3015
 tier: community
 category: tools
 requires_hermes: ">=0.21.5"
 docs_url: https://github.com/olric3015/hermes-plugins/tree/main/error-ledger
-version: "1.1.0"
-image: https://raw.githubusercontent.com/olric3015/hermes-plugins/d8031eacf95a014334e719afbf1eb9c0c28e57c1/docs/error-ledger-card.png
+version: "1.2.0"
+image: https://raw.githubusercontent.com/olric3015/hermes-plugins/732cf2268b43b8d99c385912f9a50af149cad0ee/docs/error-ledger-card.png
 platforms: []
 capabilities:
   provides_tools: []

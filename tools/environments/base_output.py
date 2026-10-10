@@ -34,7 +34,7 @@ class _BoundedOutputCollector:
     # Hard ceiling on spill file size; protects disk from runaway output.
     _SPILL_CAP_CHARS = 5_000_000
 
-    def __init__(self, max_chars: int, spill_path: "Path | None" = None):
+    def __init__(self, max_chars: int, spill_path: Path | None = None):
         self.max_chars = max(1, int(max_chars))
         self._head_limit = int(self.max_chars * 0.4)
         self._tail_limit = self.max_chars - self._head_limit
@@ -76,7 +76,7 @@ class _BoundedOutputCollector:
             # Disk trouble must never break command execution.
             self._spill_capped = True
 
-    def close_spill(self) -> "str | None":
+    def close_spill(self) -> str | None:
         """Close the spill file and return its path if it was used."""
         with self._lock:
             if self._spill_fh is None:
@@ -339,7 +339,7 @@ class _ThreadedProcessHandle:
 
 
 # --- Stdout drain thread ---
-def _drain_stdout(proc: ProcessHandle, output: _BoundedOutputCollector, stop: "threading.Event | None" = None) -> None:
+def _drain_stdout(proc: ProcessHandle, output: _BoundedOutputCollector, stop: threading.Event | None = None) -> None:
     """Drain ``proc.stdout`` into *output* until EOF or shortly after exit.
     ``for line in proc.stdout`` would block on ``readline()`` until EOF, and a backgrounded
     grandchild (``cmd &``, ``setsid cmd & disown``) inherits the pipe's write end — so the
@@ -471,7 +471,7 @@ def _drain_fd_windows(proc, fd: int, output: _BoundedOutputCollector, decoder, s
 
 
 def _start_drain_thread(
-        proc: ProcessHandle, output: _BoundedOutputCollector, stop: "threading.Event | None" = None,
+        proc: ProcessHandle, output: _BoundedOutputCollector, stop: threading.Event | None = None,
 ) -> threading.Thread:
     """Start the daemon thread running :func:`_drain_stdout`; *stop* ends it early."""
     thread = threading.Thread(target=_drain_stdout, args=(proc, output, stop), daemon=True)

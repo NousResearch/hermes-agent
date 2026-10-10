@@ -806,7 +806,7 @@ class TestLoopTickTcpWitness:
             while not stop.is_set():
                 try:
                     conn, _ = srv.accept()
-                except socket.timeout:
+                except TimeoutError:
                     continue
                 try:
                     conn.sendall(b"1")

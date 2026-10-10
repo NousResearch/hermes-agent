@@ -122,7 +122,7 @@ def verify_stamp(stamp_path: Path, repo: Path, expect_commit: str | None, expect
         _fail(errors, f"completedAt {completed!r} is missing")
     else:
         try:
-            parsed = datetime.fromisoformat(completed.replace("Z", "+00:00"))
+            parsed = datetime.fromisoformat(completed)
             if parsed.utcoffset() is None or parsed.utcoffset().total_seconds() != 0:
                 _fail(errors, f"completedAt {completed!r} is not UTC")
         except ValueError:

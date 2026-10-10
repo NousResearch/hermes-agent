@@ -32,6 +32,9 @@ import time
 from pathlib import Path
 from typing import NoReturn
 
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
 from scripts.releases.versioning import parse_attempt_ref
 
 ARCH = "aarch64"

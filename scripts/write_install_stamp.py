@@ -31,7 +31,7 @@ import os
 import re
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 
 # Bootstrap the repo root onto sys.path so the canary tag shape can come
@@ -255,7 +255,7 @@ def build_stamp(
         "commit": commit,
         "commitDate": commit_date,
         "branch": branch,
-        "builtAt": datetime.now(timezone.utc).isoformat(),
+        "builtAt": datetime.now(UTC).isoformat(),
         "dirty": dirty,
         "source": source,
         "distribution": distribution,

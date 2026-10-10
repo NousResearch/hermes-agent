@@ -302,28 +302,60 @@ def _uv_lock_digest(path: Path) -> bytes:
 _uv_lock_digest_cache: dict[Path, tuple] = {}
 
 
+def _copy_seed_file(src: str | os.PathLike, dst: str | os.PathLike) -> str | os.PathLike:
+    """Copy one payload cache file unless an earlier seed already copied it whole.
+
+    A copy cut short leaves the file in place with too few bytes, so a matching
+    size is what counts as done; a finished file is not rewritten.
+    """
+    try:
+        if os.stat(dst).st_size == os.stat(src).st_size:
+            return dst
+    except FileNotFoundError:
+        pass
+    # Other profiles share this cache: publish only a complete copy, without
+    # truncating the live entry or leaving a failed copy visible to readers.
+    fd, staging = tempfile.mkstemp(prefix=".seed-", dir=Path(dst).parent)
+    os.close(fd)
+    try:
+        shutil.copy2(src, staging)
+        os.replace(staging, dst)
+    finally:
+        Path(staging).unlink(missing_ok=True)
+    return dst
+
+
 def uv_cache_dir() -> Path:
     """The hermes-owned uv cache: machine-scoped and shared (keyed by
     content — two profiles reuse one cache), anchored to the DEFAULT
     hermes root like partials_root(). A bundle ships a seeded copy at
-    the payload root (uv-cache/); the first call on a sealed install
-    copies it out to the writable machine cache (the read-only payload
+    the payload root (uv-cache/); the first call under each uv.lock
+    merges it into the writable machine cache (the read-only payload
     can't serve uv's working cache), and a warm `uv sync --offline`
     from it is near-free (probed: 0.4s vs 1.2s cold) — the blow-away-
     on-update contract depends on it. uv's default cache location is
     per-user/platform-opinionated and never used by pm."""
     from hermes_constants import get_default_hermes_root
 
+    from pm.paths import repo_root, store_root
+
     machine_cache = get_default_hermes_root() / "cache" / "uv"
     marker = machine_cache / ".seeded"
-    if not marker.is_file():
+    # The marker names the lock whose payload was merged. An update ships a new payload cache for
+    # a new lock; a bare "done" marker skipped it forever, so plugin rebuilds fetched the new pins
+    # from the network (and built sdists where the index has no wheel for the target).
+    lock = repo_root() / "uv.lock"
+    seed = _uv_lock_digest(lock).hex() if lock.is_file() else "1"
+    try:
+        current = marker.read_text(encoding="utf-8-sig").strip() == seed
+    except OSError:
+        current = False
+    if not current:
         # Seed from a shipped bundle cache when present (payload root =
         # store_root().parent on a sealed install). Record completion ONLY after a clean copy: a
         # partial seed that marked itself done would never be retried, and every later offline
         # sync that needs the missing entries fails closed.
         try:
-            from pm.paths import store_root
-
             # uv's cache trees run deep; both roots get the long spelling so
             # the copy is not cut at MAX_PATH. The returned path stays ordinary.
             payload_cache = long_root(store_root().parent / "uv-cache")
@@ -334,18 +366,18 @@ def uv_cache_dir() -> Path:
                     if entry.name == ".seeded":
                         continue
                     dest = seeded / entry.name
-                    if not dest.exists():
-                        (
-                            shutil.copytree(entry, dest)
-                            if entry.is_dir()
-                            else shutil.copy2(entry, dest)
-                        )
+                    # Merge into whatever an earlier failed or killed seed left: skipping
+                    # an existing directory would record that partial copy as complete.
+                    if entry.is_dir():
+                        shutil.copytree(entry, dest, dirs_exist_ok=True, copy_function=_copy_seed_file)
+                    else:
+                        _copy_seed_file(entry, dest)
         except OSError as exc:
             LOG.warning("uv cache seed incomplete, retrying on the next install: %s", exc)
         else:
             try:
                 marker.parent.mkdir(parents=True, exist_ok=True)
-                marker.write_text("1", encoding="utf-8")
+                marker.write_text(seed, encoding="utf-8")
             except OSError:
                 pass
     return machine_cache

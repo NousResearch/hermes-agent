@@ -2,8 +2,9 @@
 line-length = 88
 indent-width = 4
 
-# Assume Python 3.14
-target-version = "py314"
+# The oldest Python we support (requires-python): quote-stripping (UP037) and every other
+# version-gated fix must stay valid where annotations are evaluated eagerly (< 3.14).
+target-version = "py311"
 
 [format]
 # Like Black, use double quotes for strings.
@@ -358,41 +359,41 @@ select = [
   "UP004",
   "UP005",
   "UP006",
-  #  "UP007",
+  "UP007",
   "UP008",
   "UP009",
   "UP010",
   "UP011",
   "UP012",
   "UP014",
-  #  "UP017",
+  "UP017",
   "UP018",
   "UP019",
   "UP020",
   "UP021",
-  #  "UP022",
+  "UP022",
   "UP023",
   "UP024",
   "UP025",
   "UP026",
-  #  "UP028",
+  "UP028",
   "UP029",
   "UP030",
-  #  "UP031",
+  "UP031",
   "UP032",
   "UP033",
   "UP034",
   #  "UP035",
   "UP036",
-  #  "UP037",
+  "UP037",
   "UP039",
   "UP040",
-  #  "UP041",
+  "UP041",
   "UP043",
   "UP044",
-  #  "UP045",
-  #  "UP046",
-  #  "UP047",
+  #"UP045",
+  #  "UP046",  # deferred: fix is PEP 695 class syntax (3.12+), project floor is py3.11
+  #  "UP047",  # deferred: fix is PEP 695 generic-callable syntax (3.12+), project floor is py3.11
   "UP049",
   "UP050",
   "FURB105",
@@ -402,7 +403,7 @@ select = [
   "FURB136",
   "FURB157",
   "FURB161",
-  #  "FURB162",
+  "FURB162",
   "FURB163",
   "FURB166",
   "FURB167",
@@ -410,8 +411,8 @@ select = [
   "FURB169",
   "FURB177",
   "FURB181",
-  #  "FURB188",
-  #  "FURB192",
+  "FURB188",
+  "FURB192",
   "RUF007",
   "RUF008",
   "RUF009",

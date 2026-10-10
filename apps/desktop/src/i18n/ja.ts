@@ -2591,11 +2591,6 @@ export const jaOverrides = {
     editingQueuedInComposer: 'コンポーザーでキュー済みターンを編集中',
     restoredDraftNotice: '未送信のメッセージを復元しました',
     restoredDraftUndo: '元に戻す',
-    localSetup: {
-      title: 'このコンピューターで実行できます',
-      text: (model: string) => `${model} はこのマシンで動きます。無料で、チャットはこのコンピューターから出ません。`,
-      action: '見てみる'
-    },
     queueEdit: '編集',
     queueExpand: '展開',
     queueCollapse: '折りたたむ',

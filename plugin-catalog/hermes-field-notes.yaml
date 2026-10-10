@@ -1,17 +1,17 @@
 name: hermes-field-notes
 repo: https://github.com/itpartypattaya/hermes-field-notes
-sha: 36017775f9b2c1a37579c7da3e7878480179d4df
-description: "Field notes for a Hermes install: search known pitfalls before debugging and record new ones with root cause; register every local core edit as a patch note with a declarative checks file, then verify read-only after each hermes update (OK / MISSING / UPSTREAMED / N/A / UNKNOWN with reason) and list core files changed outside the registry. Ships 41 pitfalls and 10 patch recipes verified against 0.21.5. Optional pinned Telegram dashboard edited in place by an hourly no_agent cron job. Portable Agent Plugins v1 package (plugin.json + skills/); no tools, hooks, middleware or env vars; never edits the core or runs patch scripts. Disclosure — its scripts only read the Hermes core (pyproject.toml, read-only git status/diff) and never edit it or run patch scripts; the skill does walk the agent through hand-editing core files from its patch recipes and re-running the owner's re-apply scripts, each only after the user says yes. Network: Telegram Bot API only when the dashboard is enabled (reuses the agent's TELEGRAM_BOT_TOKEN from env or ~/.hermes/.env), and the public GitHub API without credentials (latest release plus compare against the installed commit SHA, cached 12 h; upstream.check=false disables). Writes: the notes store (~/.hermes/field-notes), ~/.hermes/field-notes.json, state and lock files in ~/.hermes/cache, a copy of the cron script in ~/.hermes/scripts when install.py runs (the skill runs it on first use), and one hourly no_agent cron job only when the user runs install_cron.py."
+sha: 69a76ae9861a3de4fcf92777c1ab593e70cfe650
+description: "Field notes for a Hermes install: search known pitfalls before debugging and record new ones with root cause; register every local core edit as a patch note with a declarative checks file, then verify read-only after each hermes update (OK / MISSING / UPSTREAMED / N/A / UNKNOWN with reason) and list core files changed outside the registry. Ships 42 pitfalls and 10 patch recipes checked against 0.21.6. Optional pinned Telegram dashboard edited in place by an hourly no_agent cron job. Portable Agent Plugins v1 package (plugin.json + skills/); no tools, hooks, middleware or env vars; never edits the core or runs patch scripts. Disclosure — its scripts only read the Hermes core (pyproject.toml, read-only git status/diff) and never edit it or run patch scripts; the skill does walk the agent through hand-editing core files from its patch recipes and re-running the owner's re-apply scripts, each only after the user says yes. Network: Telegram Bot API only when the dashboard is enabled (reuses the agent's TELEGRAM_BOT_TOKEN from env or ~/.hermes/.env), and the public GitHub API without credentials (latest release plus compare against the installed commit SHA, cached 12 h; upstream.check=false disables). Writes: the notes store (~/.hermes/field-notes), ~/.hermes/field-notes.json, state and lock files in ~/.hermes/cache, a copy of the cron script in ~/.hermes/scripts when install.py runs (the skill runs it on first use), and one hourly no_agent cron job only when the user runs install_cron.py."
 maintainer: itpartypattaya
 tier: community
 category: tools
 requires_hermes: ">=0.21"
-docs_url: https://github.com/itpartypattaya/hermes-field-notes/blob/36017775f9b2c1a37579c7da3e7878480179d4df/README.md
-version: "1.2.1"
-image: "https://raw.githubusercontent.com/itpartypattaya/hermes-field-notes/36017775f9b2c1a37579c7da3e7878480179d4df/docs/banner.png"
+docs_url: https://github.com/itpartypattaya/hermes-field-notes/blob/69a76ae9861a3de4fcf92777c1ab593e70cfe650/README.md
+version: "1.2.3"
+image: "https://raw.githubusercontent.com/itpartypattaya/hermes-field-notes/69a76ae9861a3de4fcf92777c1ab593e70cfe650/docs/banner.png"
 screenshots:
-- "https://raw.githubusercontent.com/itpartypattaya/hermes-field-notes/36017775f9b2c1a37579c7da3e7878480179d4df/docs/how-it-works.png"
-- "https://raw.githubusercontent.com/itpartypattaya/hermes-field-notes/36017775f9b2c1a37579c7da3e7878480179d4df/docs/patch-lifecycle.png"
+- "https://raw.githubusercontent.com/itpartypattaya/hermes-field-notes/69a76ae9861a3de4fcf92777c1ab593e70cfe650/docs/how-it-works.png"
+- "https://raw.githubusercontent.com/itpartypattaya/hermes-field-notes/69a76ae9861a3de4fcf92777c1ab593e70cfe650/docs/patch-lifecycle.png"
 platforms: []
 capabilities:
   provides_tools: []

@@ -68,7 +68,7 @@ def _spawn(ph: ParityHome, argv: list[str], log_name: str, extra_env: dict[str, 
     return proc
 
 
-def _stdout_pump(proc: subprocess.Popen) -> "queue.Queue[str | None]":
+def _stdout_pump(proc: subprocess.Popen) -> queue.Queue[str | None]:
     lines: queue.Queue[str | None] = queue.Queue()
 
     def pump() -> None:

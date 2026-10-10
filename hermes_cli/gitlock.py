@@ -196,7 +196,7 @@ def _killed_update_owns(lock: Path) -> bool:
     return last.get("outcome") in ("running", "interrupted") and not update_receipt._owner_alive(last)
 
 
-def _windows_git_in_checkout(root: Path) -> "bool | None":
+def _windows_git_in_checkout(root: Path) -> bool | None:
     """Whether any git (``git.exe``, a dashed ``git-<sub>.exe``) works in ``root``; None when unknowable.
 
     Works in: its cwd, a path argument or a ``GIT_DIR``-style variable is inside the checkout or
@@ -462,7 +462,7 @@ class _ShallowLock:
         self._path = shallow_path
         self._lock_path = shallow_path.with_name(shallow_path.name + ".lock")
 
-    def __enter__(self) -> "_ShallowLock":
+    def __enter__(self) -> _ShallowLock:
         try:
             fd = os.open(self._lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         except FileExistsError:
@@ -623,7 +623,7 @@ def prune_stale_shallow_grafts(repo_root: Path) -> int:
         return 0
 
 
-def _partial_clone_filter(repo_root: Path, **run_kwargs) -> "str | None":
+def _partial_clone_filter(repo_root: Path, **run_kwargs) -> str | None:
     """The checkout's own ``remote.origin.partialclonefilter``, or None for a non-partial clone."""
     result = run_git(
         ["git"], ["config", "--get", "remote.origin.promisor"],

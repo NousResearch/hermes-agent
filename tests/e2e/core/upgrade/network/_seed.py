@@ -46,7 +46,7 @@ PUBLIC_INDEXES = ("pypi.org", "files.pythonhosted.org", "registry.npmjs.org")
 class Result:
     cp: subprocess.CompletedProcess
     secs: float
-    edge: "Edge | None"
+    edge: Edge | None
 
     @property
     def rc(self) -> int:
@@ -56,7 +56,7 @@ class Result:
     def out(self) -> str:
         return (self.cp.stdout or "") + (self.cp.stderr or "")
 
-    def report(self, inst: "Installed", *extra: str) -> str:
+    def report(self, inst: Installed, *extra: str) -> str:
         parts = [f"exit={self.rc} after {self.secs:.1f}s", I.describe(self.cp)]
         if self.edge is not None:
             parts.append("--- network edge log ---\n" + self.edge.transcript())
@@ -70,7 +70,7 @@ class Result:
 class Edge:
     """The namespace's only egress: a TLS-inspecting proxy plus optional plain-HTTP mirrors."""
 
-    inst: "Installed"
+    inst: Installed
     proxy: N.EdgeProxy
     sites: list[N.HttpSite] = field(default_factory=list)
     use_auth: bool = False

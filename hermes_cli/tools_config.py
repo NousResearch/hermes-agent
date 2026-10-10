@@ -136,7 +136,7 @@ def _toolset_configuration_platform(ts_key: str, default: str = "cli") -> str:
     """Platform a platform-less configuration UI should target: a toolset restricted away from ``default``
     must be configured on a supported platform, else the save helper drops it and the UI reports a no-op."""
     allowed = _TOOLSET_PLATFORM_RESTRICTIONS.get(ts_key)
-    return default if not allowed or default in allowed else sorted(allowed)[0]
+    return default if not allowed or default in allowed else min(allowed)
 
 
 def _get_effective_configurable_toolsets():

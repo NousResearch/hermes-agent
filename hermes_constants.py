@@ -4,6 +4,7 @@ Import-safe, stdlib-only — importable from anywhere without circular-import ri
 """
 
 import contextlib
+import hashlib
 import os
 import re
 import shutil
@@ -956,14 +957,140 @@ def scratch_dir_usage_bytes(scratch: Path | None = None) -> int:
     return total
 
 
+# --- Session-scoped scratch lanes ---
+# One shared scratch dir cannot attribute a file to the session that wrote it, and concurrent
+# sessions contend on the same lane (a runaway writer fills it for everyone, and a snapshot or a
+# cleanup that touches one session's temp tree touches them all).  When a session id is bound,
+# the scratch dir -- and the ``TMPDIR`` that follows it -- is therefore scoped to
+# ``<scratch>/session-<id>/``.  Lanes are ordinary top-level entries, so the idle pruning above
+# reclaims them individually without knowing about this module.
+SCRATCH_SESSION_PREFIX = "session-"
+# Escape hatch: any of these values in HERMES_SCRATCH_SCOPE restores the shared, unscoped lane
+# (operators who script against one fixed temp dir, and the multi-session-lane workflows above).
+HERMES_SCRATCH_SCOPE_ENV = "HERMES_SCRATCH_SCOPE"
+_SCRATCH_SCOPE_SHARED_VALUES = frozenset({"shared", "flat", "off", "0", "false", "no"})
+# Component budget: session ids are already filesystem-safe, but an imported/custom id must
+# never escape the scratch root, and a deep home still has to leave room for AF_UNIX sockets.
+_SCRATCH_SESSION_COMPONENT_MAX = 64
+# Hex chars of a stable hash of the ORIGINAL session id, appended to the readable prefix so two
+# distinct ids can never sanitize onto the same lane (lossy separator replacement and truncation
+# used to fuse ``a/b`` with ``a_b``, and two long ids sharing the first 64 chars).
+_SCRATCH_SESSION_HASH_LENGTH = 10
+
+
+def scratch_scope_is_shared() -> bool:
+    """True when ``HERMES_SCRATCH_SCOPE`` asks for the unscoped, shared scratch dir."""
+    return os.environ.get(HERMES_SCRATCH_SCOPE_ENV, "").strip().lower() in _SCRATCH_SCOPE_SHARED_VALUES
+
+
+def scratch_session_id() -> str | None:
+    """Session id this process is serving, or ``None`` when no session is bound.
+
+    On an engaged gateway host the task-local ContextVar is authoritative: an unset var means
+    "no session in THIS task", so the shared scratch dir is used instead of borrowing the
+    process env mirror (last-writer-wins, may belong to a concurrent session).  A plain
+    CLI/cron process (context module unavailable or never engaged) falls back to the env
+    mirror.  ``None`` means "no session": callers then use the shared scratch dir rather than
+    guessing one.
+    """
+    try:
+        from gateway.session_context import (get_session_env, session_context_engaged,
+                                              _SESSION_ID, _UNSET)
+        if session_context_engaged():
+            # Engaged gateway: only a bound task-local session counts.  An unset var is "no
+            # session in THIS task" and must NOT borrow the env mirror.
+            bound = _SESSION_ID.get()
+            if bound is _UNSET:
+                return None
+            return (bound or "").strip() or None
+        bound = get_session_env("HERMES_SESSION_ID", "")
+    except Exception:  # noqa: BLE001 — CLI/cron without the gateway context module
+        bound = os.environ.get("HERMES_SESSION_ID", "")
+    return (bound or "").strip() or None
+
+
+def _session_context_engaged() -> bool:
+    """True when the gateway session-context module is present AND engaged.
+
+    A plain CLI/cron process never engages it, so the env mirror (and a child env's explicit
+    ``HERMES_SESSION_ID``) remains authoritative there.  On an engaged host the task-local
+    ContextVar is the only trustworthy source — see :func:`scratch_session_id`.
+    """
+    try:
+        from gateway.session_context import session_context_engaged
+        return bool(session_context_engaged())
+    except Exception:  # noqa: BLE001 — CLI/cron without the gateway context module
+        return False
+
+
+def _scratch_session_component(session_id: str) -> str:
+    """Filesystem-safe directory component for *session_id* (never empty, never a path).
+
+    Two distinct ids can never sanitize onto the same lane: the readable sanitized prefix is
+    kept, then a short stable hash of the *original* id is appended.  The hash is what defeats
+    the three lossy-sanitizer collisions -- ``a/b`` vs ``a_b`` fuse during separator
+    replacement, two long ids sharing the first 64 chars fuse under truncation, and ids that
+    sanitize to nothing all fell back to ``session``.  Total length stays inside
+    :data:`_SCRATCH_SESSION_COMPONENT_MAX` (``54 + 1 + 10`` for the longest prefix).
+    """
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", session_id).strip("._-")
+    prefix = cleaned[:_SCRATCH_SESSION_COMPONENT_MAX - 1 - _SCRATCH_SESSION_HASH_LENGTH] or "session"
+    suffix = hashlib.sha256(session_id.encode("utf-8", errors="surrogatepass")).hexdigest()[: _SCRATCH_SESSION_HASH_LENGTH]
+    return f"{prefix}-{suffix}"
+
+
+def session_scratch_dir(home: str | Path | None = None, session_id: str | None = None,
+                        *, create: bool = True) -> Path | None:
+    """``<scratch>/session-<id>`` for the bound (or given) session, else ``None``.
+
+    ``None`` -- no session bound, or ``HERMES_SCRATCH_SCOPE=shared`` -- leaves every caller on the
+    shared scratch dir, which is also what an unscoped CLI/cron keeps doing.  The lane is created
+    on demand; a lane we cannot create is not reported (the caller falls back to the shared dir).
+    """
+    if scratch_scope_is_shared():
+        return None
+    sid = (session_id or "").strip() or scratch_session_id()
+    if not sid:
+        return None
+    lane = get_scratch_dir(home, prune=False) / (SCRATCH_SESSION_PREFIX + _scratch_session_component(sid))
+    if create:
+        try:
+            lane.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            return None
+    return lane
+
+
+def is_scratch_path(path: object) -> bool:
+    """True when *path* is the scratch root or anything inside it (never raises).
+
+    Used to keep Hermes' own temp tree out of filesystem checkpoints: the prompt sends the model
+    here, so a snapshot of this tree is a snapshot of throwaway files.
+    """
+    try:
+        resolved = Path(str(path)).expanduser().resolve()
+        root = get_scratch_dir(prune=False).resolve()
+    except (OSError, RuntimeError, ValueError):
+        return False
+    return resolved == root or root in resolved.parents
+
+
 def apply_scratch_tmp_env(env: MutableMapping[str, str]) -> bool:
     """Point ``TMPDIR``/``TMP``/``TEMP`` in *env* at the scratch dir of ``env["HERMES_HOME"]``.
 
     A temp var the user (or the OS: macOS ``/var/folders``, Windows ``%TEMP%``) set is
     respected and nothing changes. A value Hermes itself exported earlier — recognisable
     because it equals ``HERMES_SCRATCH_DIR`` — is re-derived, so a child running under another
-    profile's home gets that home's scratch dir rather than its parent's. Returns True when
-    the vars were (re)written.
+    profile's home gets that home's scratch dir rather than its parent's.  The session whose
+    lane is used is the task-local one (see :func:`scratch_session_id`): the gateway's
+    ``os.environ`` mirror is last-writer-wins and may belong to a concurrent session, so a
+    child env copied from it must not be trusted as the session source; only a plain
+    CLI/cron process with no bound session falls back to the child env's explicit
+    ``HERMES_SESSION_ID``.  Everything a session's tools drop in ``$TMPDIR`` therefore stays
+    on the same lane the prompt advertises (see :func:`session_scratch_dir`).  Note this
+    re-derives the CHILD env only: this (host) process keeps whatever ``tempfile`` cached at
+    bootstrap — usually the shared root — and never silently follows a later session binding.
+    Returns True when the vars were (re)written.
     """
     ours = env.get(SCRATCH_DIR_MARKER_ENV, "")
     for key in SCRATCH_TMP_ENV_VARS:
@@ -972,7 +1099,17 @@ def apply_scratch_tmp_env(env: MutableMapping[str, str]) -> bool:
             return False
     home = env.get("HERMES_HOME", "").strip()
     try:
-        scratch = str(get_scratch_dir(_expand_hermes_home(home) if home else get_process_hermes_home()))
+        base = _expand_hermes_home(home) if home else get_process_hermes_home()
+        # The task-local session (ContextVar-first, env mirror as CLI/cron fallback) is
+        # authoritative: the child env is usually a copy of os.environ, whose HERMES_SESSION_ID
+        # mirror is last-writer-wins and can belong to a concurrent gateway session.  When the
+        # gateway is engaged but THIS task has no bound session (ContextVar unset) even the
+        # child env's explicit id must not be borrowed — the child stays on the shared root.
+        session = scratch_session_id()
+        if not session and not _session_context_engaged():
+            session = (env.get("HERMES_SESSION_ID", "") or "").strip() or None
+        lane = session_scratch_dir(base, session) if session else None
+        scratch = str(lane if lane is not None else get_scratch_dir(base))
     except (RuntimeError, OSError):
         # No HERMES_HOME and no resolvable user home (a child env built from nothing on
         # Windows): there is no scratch dir to point at; the child keeps the OS default.
@@ -986,7 +1123,10 @@ def apply_scratch_tmp_env(env: MutableMapping[str, str]) -> bool:
 def export_scratch_tmp_env() -> bool:
     """Boot hook: apply :func:`apply_scratch_tmp_env` to this process and reset ``tempfile``'s
     cached default so ``tempfile.gettempdir()`` follows. Call again after anything that
-    re-homes the process (``--profile`` resolution); a user-set temp var is never overridden."""
+    re-homes the process (``--profile`` resolution); a user-set temp var is never overridden.
+    The export is frozen for THIS process (its ``tempfile`` keeps the bootstrap value, usually
+    the shared root); every later child env re-derives the task-local session's lane via
+    :func:`apply_scratch_tmp_env`."""
     changed = apply_scratch_tmp_env(os.environ)
     if changed:
         import tempfile

@@ -17,6 +17,7 @@ from typing import Any, Dict, Optional
 
 from hermes_constants import (
     get_hermes_home, get_scratch_dir, get_skills_dir, is_wsl, reset_hermes_home_override, set_hermes_home_override,
+    session_scratch_dir,
 )
 
 from agent.model_metadata import CHARS_PER_TOKEN
@@ -1047,9 +1048,17 @@ def _local_host_hints() -> list[str]:
         pass
     # The model reaches for the system temp dir by reflex (tmpfs on most Linux hosts, fills RAM);
     # naming Hermes' scratch dir here is what makes the TMPDIR export a habit rather than a hidden default.
+    # Child processes re-export TMPDIR at spawn time from the task-local session's lane, so the files
+    # a session's tools write stay attributable and a concurrent session's writes never land in the
+    # same tree; the host process itself keeps the bootstrap value (usually the shared root).
     try:
-        host_lines.append(f"Scratch directory: {get_scratch_dir()} (TMPDIR points here; write temporary files "
-                          "and probes there, never under the system temp dir; entries idle for 24h are pruned)")
+        lane = session_scratch_dir()
+        scratch = lane or get_scratch_dir()
+        host_lines.append(
+            f"Scratch directory: {scratch} (TMPDIR points here; write temporary files and probes there, "
+            f"never under the system temp dir; "
+            f"{'subprocess TMPDIR follows the bound session, ' if lane is not None else ''}"
+            "entries idle for 24h are pruned)")
     except OSError:
         pass
     if not (sys.platform == "win32" and not is_wsl()):

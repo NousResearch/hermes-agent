@@ -6,7 +6,9 @@ import path from 'node:path'
 import { test } from 'vitest'
 
 import {
+  assertSpawnableProfileName,
   createDesktopProfilePreferences,
+  requireDesktopProfileName,
   resolveDesktopConnectionRequest,
   resolveDesktopWindowLaunch,
   resolveDesktopWindowRoute
@@ -108,6 +110,73 @@ test('boot and reconnect retain the window route rather than a later global defa
     connectionId: null,
     profile: 'last-used'
   })
+})
+
+// GHSA-84j8-xmx8-jghv: a renderer-supplied profile name reaches `--profile <name>`
+// on a backend spawn that can run with shell: true (Windows .cmd/.bat shims), so
+// the connection path must reject anything that is not a canonical name — not
+// only the persisted profile setter.
+const HOSTILE_PROFILE_NAMES = [
+  'work; calc.exe',
+  'work && whoami',
+  'work | more',
+  'work`whoami`',
+  'work$(whoami)',
+  'work%PATH%',
+  'work > out.txt',
+  'work\nserve',
+  '--profile',
+  '-work',
+  'my profile',
+  'Work',
+  '../default',
+  'a'.repeat(65)
+]
+
+test('requireDesktopProfileName accepts canonical names and treats blank as unset', () => {
+  assert.equal(requireDesktopProfileName('work'), 'work')
+  assert.equal(requireDesktopProfileName('  work  '), 'work')
+  assert.equal(requireDesktopProfileName('default'), 'default')
+  assert.equal(requireDesktopProfileName('a-b_c9'), 'a-b_c9')
+  assert.equal(requireDesktopProfileName(''), null)
+  assert.equal(requireDesktopProfileName('   '), null)
+  assert.equal(requireDesktopProfileName(null), null)
+  assert.equal(requireDesktopProfileName(undefined), null)
+})
+
+test('requireDesktopProfileName rejects shell metacharacters, flags, whitespace and non-strings', () => {
+  for (const name of HOSTILE_PROFILE_NAMES) {
+    assert.throws(() => requireDesktopProfileName(name), /Invalid profile name/, name)
+  }
+
+  for (const value of [42, {}, [], { profile: 'work' }, true]) {
+    assert.throws(() => requireDesktopProfileName(value), /Invalid profile name/)
+  }
+})
+
+test('the connection request path rejects invalid profile names instead of forwarding them', () => {
+  for (const name of HOSTILE_PROFILE_NAMES) {
+    assert.throws(() => resolveDesktopConnectionRequest(name, null, 'last-used'), /Invalid profile name/, name)
+  }
+
+  // Valid names still resolve exactly as before; blank still falls back.
+  assert.deepEqual(resolveDesktopConnectionRequest(' work ', null, 'last-used'), {
+    connectionId: null,
+    profile: 'work'
+  })
+  assert.deepEqual(resolveDesktopConnectionRequest('', null, 'last-used'), {
+    connectionId: null,
+    profile: 'last-used'
+  })
+})
+
+test('assertSpawnableProfileName only passes an exact canonical name through to child argv', () => {
+  assert.equal(assertSpawnableProfileName('work'), 'work')
+  assert.equal(assertSpawnableProfileName('default'), 'default')
+
+  for (const value of [...HOSTILE_PROFILE_NAMES, ' work', 'work ', '', null, undefined, 7]) {
+    assert.throws(() => assertSpawnableProfileName(value), /Refusing to start a backend/, String(value))
+  }
 })
 
 test('an explicit default survives last-used profile writes and app restarts, isolated by desktop home', () => {

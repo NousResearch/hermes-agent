@@ -100,19 +100,71 @@ def _is_bionic_libc() -> bool:
 
 
 def _elf_loader_is_musl(binary: Path) -> bool | None:
-    """Read an ELF's interpreter string without executing foreign bytes."""
+    """Read an ELF's interpreter string without executing foreign bytes.
+
+    Parses the ELF program headers to locate PT_INTERP: modern PIE binaries
+    place the interpreter string far beyond any fixed-size prefix window, so a
+    substring scan of the first N bytes misses it (measured: /bin/ls on Fedora
+    44 carries its interp at offset 102400). A missed interp here wrongly falls
+    through to the /lib/ld-musl glob last resort and misclassifies glibc hosts
+    that merely have the musl loader installed as a secondary toolchain.
+    """
     try:
         with binary.resolve().open("rb") as handle:
-            head = handle.read(8192)
+            head = handle.read(64)
+            if len(head) < 64 or not head.startswith(b"\x7fELF"):
+                return None
+            is64 = head[4] == 2
+            little = head[5] == 1
+            if not little:
+                return None  # big-endian: fall back to the callers' heuristic
+            import struct
+
+            def u16(off):
+                return struct.unpack_from("<H", head, off)[0]
+
+            def u64(off):
+                return struct.unpack_from("<Q", head, off)[0]
+
+            def u32(off):
+                return struct.unpack_from("<I", head, off)[0]
+
+            if is64:
+                phoff = u64(0x20)
+                phentsize = u16(0x36)
+                phnum = u16(0x38)
+            else:
+                phoff = u32(0x1C)
+                phentsize = u16(0x2A)
+                phnum = u16(0x2C)
+            PT_INTERP = 3
+            for i in range(min(phnum, 32)):
+                off = phoff + i * phentsize
+                handle.seek(off)
+                phead = handle.read(phentsize)
+                if len(phead) < phentsize:
+                    break
+                p_type = struct.unpack_from("<I" if is64 else "<I", phead, 0)[0]
+                if p_type != PT_INTERP:
+                    continue
+                if is64:
+                    p_offset = struct.unpack_from("<Q", phead, 0x08)[0]
+                    p_filesz = struct.unpack_from("<Q", phead, 0x20)[0]
+                else:
+                    p_offset = struct.unpack_from("<I", phead, 0x04)[0]
+                    p_filesz = struct.unpack_from("<I", phead, 0x10)[0]
+                if p_filesz == 0 or p_filesz > 4096:
+                    return None
+                handle.seek(p_offset)
+                interp = handle.read(p_filesz)
+                if b"ld-musl-" in interp:
+                    return True
+                if b"ld-linux" in interp or b"/libc.so" in interp:
+                    return False
+                return None
+            return None
     except OSError:
         return None
-    if not head.startswith(b"\x7fELF"):
-        return None
-    if b"ld-musl-" in head:
-        return True
-    if b"ld-linux" in head:
-        return False
-    return None
 
 
 def _native_linux_uses_musl() -> bool | None:

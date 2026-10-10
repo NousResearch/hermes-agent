@@ -1437,6 +1437,185 @@ class TestSafeCopyDb:
         conn.close()
         assert rows == [(42,)]
 
+    def test_wal_copy_finishes_from_one_snapshot_while_writers_continue(
+        self, tmp_path, monkeypatch
+    ):
+        from hermes_cli import backup_sqlite as backup_sqlite_mod
+
+        src = tmp_path / "busy-wal.db"
+        dst = tmp_path / "copy.db"
+        setup = sqlite3.connect(str(src))
+        setup.execute("PRAGMA page_size=4096")
+        assert setup.execute("PRAGMA journal_mode=WAL").fetchone()[0].lower() == "wal"
+        setup.execute("PRAGMA wal_autocheckpoint=0")
+        setup.execute("CREATE TABLE records (id INTEGER PRIMARY KEY, value TEXT)")
+        setup.executemany(
+            "INSERT INTO records VALUES (?, ?)",
+            ((i, "x" * 3200) for i in range(3000)),
+        )
+        setup.execute("UPDATE records SET value='snapshot' WHERE id=0")
+        setup.commit()
+        setup.close()
+
+        writer = sqlite3.connect(str(src), timeout=1.0)
+        writer.execute("PRAGMA wal_autocheckpoint=0")
+        connect = sqlite3.connect
+        real_connect = connect
+        observer = real_connect(str(src), timeout=0.0)
+        progress_calls = 0
+        write_count = 0
+        checkpoint_during_copy = []
+
+        class ProgressInterposingConnection:
+            def __init__(self, connection):
+                self.connection = connection
+
+            def execute(self, *args, **kwargs):
+                return self.connection.execute(*args, **kwargs)
+
+            def backup(self, destination, *, pages, progress, sleep):
+                def progress_and_write(status, remaining, total):
+                    nonlocal progress_calls, write_count
+                    if progress is not None:
+                        progress(status, remaining, total)
+                    if status == sqlite3.SQLITE_OK and remaining > 0:
+                        progress_calls += 1
+                        writer.execute(
+                            "UPDATE records SET value=? WHERE id=0",
+                            (f"write-{progress_calls}",),
+                        )
+                        writer.commit()
+                        write_count += 1
+                        if progress_calls == 1:
+                            checkpoint_during_copy.append(
+                                observer.execute(
+                                    "PRAGMA wal_checkpoint(TRUNCATE)"
+                                ).fetchone()
+                            )
+                        if progress_calls == 32:
+                            raise TimeoutError(
+                                "backup exceeded 32 successful page callbacks"
+                            )
+
+                return self.connection.backup(
+                    destination, pages=pages, progress=progress_and_write, sleep=sleep
+                )
+
+            def close(self):
+                self.connection.close()
+
+        def connect_with_progress_interposer(database, *args, **kwargs):
+            connection = real_connect(database, *args, **kwargs)
+            if kwargs.get("uri") and str(database).startswith(src.resolve().as_uri()):
+                return ProgressInterposingConnection(connection)
+            return connection
+
+        monkeypatch.setattr(
+            backup_sqlite_mod.sqlite3, "connect", connect_with_progress_interposer
+        )
+        try:
+            result = backup_sqlite_mod._safe_copy_db(src, dst)
+            assert write_count > 0
+            assert progress_calls < 32, (
+                "WAL writes restarted the copy beyond its callback bound"
+            )
+            assert result is True
+            busy, log_frames, checkpointed_frames = checkpoint_during_copy[0]
+            assert busy or checkpointed_frames < log_frames
+
+            assert observer.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone() == (
+                0,
+                0,
+                0,
+            )
+
+            copied = real_connect(str(dst))
+            try:
+                assert copied.execute(
+                    "SELECT value FROM records WHERE id=0"
+                ).fetchone() == ("snapshot",)
+            finally:
+                copied.close()
+        finally:
+            observer.close()
+            writer.close()
+
+    def test_non_wal_copy_keeps_writer_available(self, tmp_path, monkeypatch):
+        from hermes_cli import backup_sqlite as backup_sqlite_mod
+
+        src = tmp_path / "busy-delete.db"
+        dst = tmp_path / "copy.db"
+        setup = sqlite3.connect(str(src))
+        assert (
+            setup.execute("PRAGMA journal_mode=DELETE").fetchone()[0].lower()
+            == "delete"
+        )
+        setup.execute("CREATE TABLE records (id INTEGER PRIMARY KEY, value TEXT)")
+        setup.executemany(
+            "INSERT INTO records VALUES (?, ?)",
+            ((i, "x" * 3200) for i in range(3000)),
+        )
+        setup.commit()
+        setup.close()
+
+        writer = sqlite3.connect(str(src), timeout=1.0)
+        connect = sqlite3.connect
+        write_count = 0
+
+        class ProgressInterposingConnection:
+            def __init__(self, connection):
+                self.connection = connection
+
+            def execute(self, *args, **kwargs):
+                return self.connection.execute(*args, **kwargs)
+
+            def backup(self, destination, *, pages, progress, sleep):
+                def progress_and_write(status, remaining, total):
+                    nonlocal write_count
+                    if progress is not None:
+                        progress(status, remaining, total)
+                    if (
+                        status == sqlite3.SQLITE_OK
+                        and remaining > 0
+                        and not write_count
+                    ):
+                        writer.execute(
+                            "UPDATE records SET value='writer-committed' WHERE id=0"
+                        )
+                        writer.commit()
+                        write_count += 1
+
+                return self.connection.backup(
+                    destination, pages=pages, progress=progress_and_write, sleep=sleep
+                )
+
+            def close(self):
+                self.connection.close()
+
+        real_connect = connect
+
+        def connect_with_progress_interposer(database, *args, **kwargs):
+            connection = real_connect(database, *args, **kwargs)
+            if kwargs.get("uri") and str(database).startswith(src.resolve().as_uri()):
+                return ProgressInterposingConnection(connection)
+            return connection
+
+        monkeypatch.setattr(
+            backup_sqlite_mod.sqlite3, "connect", connect_with_progress_interposer
+        )
+        try:
+            assert backup_sqlite_mod._safe_copy_db(src, dst) is True
+            assert write_count == 1
+            copied = real_connect(str(dst))
+            try:
+                assert copied.execute("SELECT COUNT(*) FROM records").fetchone() == (
+                    3000,
+                )
+            finally:
+                copied.close()
+        finally:
+            writer.close()
+
     def test_aborts_when_source_remains_busy_past_deadline(
         self, tmp_path, monkeypatch
     ):
@@ -1447,9 +1626,18 @@ class TestSafeCopyDb:
         src.touch()
         dst.write_bytes(b"partial")
 
-        clock = iter((100.0, 100.5, 101.1))
+        clock = iter((100.0, 100.5, 101.1, 101.6))
 
         class FakeSourceConnection:
+            def execute(self, statement):
+                assert statement == "PRAGMA journal_mode"
+
+                class Cursor:
+                    def fetchone(self):
+                        return ("delete",)
+
+                return Cursor()
+
             def backup(self, _destination, *, pages, progress, sleep):
                 assert pages > 0
                 assert sleep > 0

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any, Callable, Optional
 
 
@@ -17,6 +18,7 @@ def _encode_memory_observation(
         _freeze_memory_observation_payload,
         _thaw_json_value,
     )
+    from agent.memory_manager_prefetch import _builtin_dict_fields
 
     if type(value) is MemoryObservation:
         source_kind = value.source_kind
@@ -24,12 +26,15 @@ def _encode_memory_observation(
         version = value.version
         provider = value.provider
         payload = value.payload
-    elif type(value) is dict:
-        source_kind = dict.get(value, "source_kind")
-        schema = dict.get(value, "schema")
-        version = dict.get(value, "version")
-        provider = dict.get(value, "provider", "")
-        payload = dict.get(value, "payload")
+    elif isinstance(value, dict):
+        fields = _builtin_dict_fields(
+            value, ("source_kind", "schema", "version", "provider", "payload")
+        )
+        source_kind = fields.get("source_kind")
+        schema = fields.get("schema")
+        version = fields.get("version")
+        provider = fields.get("provider", "")
+        payload = fields.get("payload")
     else:
         return encode(_opaque_wire_value(value), refs, depth + 1)
 
@@ -76,15 +81,25 @@ def _encode_memory_prefetch_result(
     value: Any, refs: Optional[Callable], depth: int
 ) -> Any:
     from hermes_cli.plugin_host_wire import encode
+    from agent.memory_manager_prefetch import _builtin_dict_fields
     from agent.memory_provider import (
+        MAX_MEMORY_OBSERVATION_BATCH_BYTES,
         MAX_MEMORY_OBSERVATION_INSPECTED_CANDIDATES,
         MAX_MEMORY_OBSERVATION_OPERATION_NODES,
         MemoryPrefetchResult,
     )
 
-    if type(value) is not MemoryPrefetchResult:
+    if type(value) is MemoryPrefetchResult:
+        context = value.context
+        observations = value.observations
+    elif isinstance(value, dict):
+        fields = _builtin_dict_fields(value, ("context", "observations"))
+        if "context" not in fields:
+            return None
+        context = fields["context"]
+        observations = fields.get("observations", ())
+    else:
         return None
-    observations = value.observations
     if type(observations) is list:
         count = list.__len__(observations)
         get_item = lambda index: list.__getitem__(observations, index)
@@ -96,11 +111,16 @@ def _encode_memory_prefetch_result(
         get_item = lambda _index: None
     count = min(count, MAX_MEMORY_OBSERVATION_INSPECTED_CANDIDATES + 1)
     budget = [MAX_MEMORY_OBSERVATION_OPERATION_NODES]
-    encoded_observations = [
-        _encode_memory_observation(get_item(index), refs, depth + 1, budget)
-        for index in range(count)
-    ]
-    context = value.context
+    remaining_bytes = MAX_MEMORY_OBSERVATION_BATCH_BYTES - 2
+    encoded_observations = []
+    for index in range(count):
+        encoded = _encode_memory_observation(get_item(index), refs, depth + 1, budget)
+        encoded_size = len(json.dumps(encoded, separators=(",", ":")).encode("utf-8"))
+        encoded_size += bool(encoded_observations)  # comma within the observation array
+        if encoded_size > remaining_bytes:
+            break
+        encoded_observations.append(encoded)
+        remaining_bytes -= encoded_size
     if isinstance(context, str):
         context = str.__str__(context)
     else:
@@ -121,6 +141,7 @@ def _encode_memory_observation_tuple(
 ) -> Any:
     from hermes_cli.plugin_host_wire import encode
     from agent.memory_provider import (
+        MAX_MEMORY_OBSERVATION_BATCH_BYTES,
         MAX_MEMORY_OBSERVATION_INSPECTED_CANDIDATES,
         MAX_MEMORY_OBSERVATION_OPERATION_NODES,
         MemoryObservation,
@@ -133,17 +154,36 @@ def _encode_memory_observation_tuple(
         return None
     count = min(count, MAX_MEMORY_OBSERVATION_INSPECTED_CANDIDATES + 1)
     budget = [MAX_MEMORY_OBSERVATION_OPERATION_NODES]
+    remaining_bytes = MAX_MEMORY_OBSERVATION_BATCH_BYTES - 2
+    items = []
+    for index in range(count):
+        encoded = _encode_memory_observation(
+            tuple.__getitem__(value, index), refs, depth + 1, budget
+        )
+        encoded_size = len(json.dumps(encoded, separators=(",", ":")).encode("utf-8"))
+        encoded_size += bool(items)
+        if encoded_size > remaining_bytes:
+            break
+        items.append(encoded)
+        remaining_bytes -= encoded_size
     return {
         "__record__": "MemoryObservationTuple",
-        "fields": {
-            "items": [
-                _encode_memory_observation(
-                    tuple.__getitem__(value, index), refs, depth + 1, budget
-                )
-                for index in range(count)
-            ]
-        },
+        "fields": {"items": items},
     }
+
+
+def encode_memory_prefetch_result(
+    value: Any, refs: Optional[Callable], depth: int
+) -> Any:
+    """Bound a provider's prefetch return before generic dictionary encoding."""
+    from hermes_cli.plugin_host_wire import _opaque_wire_value, encode
+
+    if value is None or isinstance(value, str):
+        return encode(value, refs, depth)
+    encoded = _encode_memory_prefetch_result(value, refs, depth)
+    if encoded is not None:
+        return encoded
+    return encode(_opaque_wire_value(value), refs, depth + 1)
 
 
 def encode_memory_value(value: Any, refs: Optional[Callable], depth: int) -> Any:

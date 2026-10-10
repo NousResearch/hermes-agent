@@ -955,11 +955,21 @@ def scratch_dir_usage_bytes(scratch: Path | None = None) -> int:
     return total
 
 
+def _is_darwin_launchd_tmpdir(key: str, value: str) -> bool:
+    """True for the ``TMPDIR`` launchd hands every macOS login session
+    (``/var/folders/<xx>/<id>/T/``): an OS default, not a user choice. Left in place it is
+    never pruned by Hermes and full verification clones pile up there."""
+    if sys.platform != "darwin" or key != "TMPDIR":
+        return False
+    return re.fullmatch(r"(?:/private)?/var/folders/[^/]+/[^/]+/T", os.path.normpath(value)) is not None
+
+
 def apply_scratch_tmp_env(env: MutableMapping[str, str]) -> bool:
     """Point ``TMPDIR``/``TMP``/``TEMP`` in *env* at the scratch dir of ``env["HERMES_HOME"]``.
 
-    A temp var the user (or the OS: macOS ``/var/folders``, Windows ``%TEMP%``) set is
-    respected and nothing changes. A value Hermes itself exported earlier — recognisable
+    A temp var the user set (or Windows' ``%TEMP%``) is respected and nothing changes. The
+    macOS launchd default ``TMPDIR`` (``/var/folders/…/T``) is an OS default every process
+    inherits, so it is treated as unset. A value Hermes itself exported earlier — recognisable
     because it equals ``HERMES_SCRATCH_DIR`` — is re-derived, so a child running under another
     profile's home gets that home's scratch dir rather than its parent's. Returns True when
     the vars were (re)written.
@@ -967,7 +977,7 @@ def apply_scratch_tmp_env(env: MutableMapping[str, str]) -> bool:
     ours = env.get(SCRATCH_DIR_MARKER_ENV, "")
     for key in SCRATCH_TMP_ENV_VARS:
         value = env.get(key, "").strip()
-        if value and value != ours:
+        if value and value != ours and not _is_darwin_launchd_tmpdir(key, value):
             return False
     home = env.get("HERMES_HOME", "").strip()
     try:

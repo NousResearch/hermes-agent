@@ -219,8 +219,12 @@ _MULTIMODAL_TOOL_CONTENT_PATTERNS = (
     "text is not set", "tool message content must be a string", "tool content must be a string",
     "tool message must be a string", "expected string, got list", "expected string, got array",
     # Console Go / pydantic-v2 relays behind opencode-go (422, param ``messages.N.tool.content.str``, #104731).
+    # Anthropic-style part-type rejections relayed verbatim by OpenAI-compatible relays (opencode-go →
+    # glm-5.3-flash 400, param ``messages``, "tool content: part type \"image_url\" is not supported;
+    # only text is" — observed live 2026-09-22): the relay rejects the multimodal tool result, not the
+    # message shape, so the same strip-and-retry applies.
     "tool_call.content must be string", "tool.content.str", "input should be a valid string",
-    "chatcompletionrequesttoolmessagecontent",
+    "tool content: part type", "chatcompletionrequesttoolmessagecontent",
 )
 
 # Local-inference memory/resource-ceiling rejections (oMLX/MLX memory guard,

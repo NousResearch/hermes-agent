@@ -158,7 +158,8 @@ method("setup.runtime_check", params=SetupRuntimeCheckParams, result=SetupRuntim
 # ── diagnostics.share_nous ────────────────────────────────────────────────────────────────────
 
 
-class DiagnosticsShareNousParams(Params):
+class DiagnosticsShareNousParams(ProfileParams):
+    session_id: str | None = None
     error_context: str | None = None
     extra_files: dict[str, str] | None = None
     log_lines: int | None = None

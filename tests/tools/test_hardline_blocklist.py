@@ -82,6 +82,21 @@ _HARDLINE_BLOCK = [
     "dd if=/dev/zero of=/dev/sda bs=1M",
     "dd if=/dev/urandom of=/dev/nvme0n1",
     "dd if=anything of=/dev/hda",
+    # Raw-disk destruction by positional-operand tools (#102371): same device
+    # class the dd rule already guards, previously uncovered entirely.
+    "shred -n1 -z /dev/sda",
+    "shred /dev/sdb",
+    "sudo shred -n3 /dev/nvme0n1",
+    "wipefs -a /dev/sda",
+    "wipefs /dev/sdb1",
+    "true && wipefs -a /dev/sda",
+    "blkdiscard -f /dev/nvme0n1",
+    "blkdiscard /dev/mmcblk0",
+    "env X=1 blkdiscard /dev/vda",
+    "$(wipefs -a /dev/sda)",
+    "`shred -n1 /dev/sdb`",
+    'sh -c "blkdiscard /dev/sda"',
+    'wipefs -a "/dev/sda"',
     "echo bad > /dev/sda",
     "cat /dev/urandom > /dev/sdb",
     # Fork bomb
@@ -165,6 +180,17 @@ _HARDLINE_ALLOW = [
     # dd to regular files
     "dd if=/dev/zero of=./image.bin",
     "dd if=./data of=./backup.bin",
+    # Secure deletion of a REGULAR file is legitimate (#102371: only a raw block
+    # device operand may trip this floor), and a device mentioned after a shell
+    # separator is a different command.
+    "shred -n1 -z secret.txt",
+    "shred --remove=wipesync ./old.key",
+    "shred -u backup.tar.gz",
+    "wipefs --help",
+    "wipefs -h",
+    "blkdiscard --help",
+    "man shred",
+    "shred -n1 secret.txt && ls /dev/sda",
     # Redirect to regular files / non-block devices
     "echo done > /tmp/flag",
     "echo test > /dev/null",
@@ -365,6 +391,11 @@ _QUOTED_PROSE_ALLOW_93392 = [
     # kill -1
     'echo "kill -1 sends SIGHUP to every process"',
     'gh issue comment 7 --body "the agent must never run kill -1"',
+    # shred / wipefs / blkdiscard (#102371): same quoted-prose contract as mkfs/dd.
+    'echo "wipefs -a /dev/sda destroys the partition table"',
+    'git commit -m "never shred /dev/sda by hand"',
+    'gh pr create --body "this PR gates blkdiscard /dev/nvme0n1"',
+    "grep 'shred -n1 /dev/sda' docs/runbook.md",
     # redirect to block device (positionless rule -> quote-masked)
     'echo "cat file > /dev/sda destroys the disk"',
     "echo 'redirect > /dev/sdb1 is fatal'",

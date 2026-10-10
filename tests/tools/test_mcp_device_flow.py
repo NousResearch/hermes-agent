@@ -38,3 +38,16 @@ def test_device_login_failure_does_not_persist_or_disclose_credentials(mode):
     assert "Authentication failed" in result["output"], result
     assert "fixture-device-secret" not in result["output"], result
     assert "Authenticated" not in result["output"], result
+
+
+@pytest.mark.parametrize("mode", ["offline", "offline_unscoped"])
+def test_device_login_requests_offline_access_when_the_server_advertises_it(mode):
+    result = run_cli(Path(__file__).resolve().parents[2], mode)
+    assert result["token_persisted"], result
+    assert "Authenticated" in result["output"], result
+    device_requests = [row for row in result["wire"] if row["path"] == "/device"]
+    assert len(device_requests) == 1, result
+    requested = (device_requests[0]["data"].get("scope") or "").split()
+    assert "offline_access" in requested, result
+    if mode == "offline":
+        assert "fixture.read" in requested, result

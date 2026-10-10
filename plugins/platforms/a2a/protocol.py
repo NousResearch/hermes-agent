@@ -128,8 +128,13 @@ def new_context_id() -> str:
 
 
 def text_part(text: str) -> dict:
-    """v1.0 text Part (member-presence discriminated, no ``kind``)."""
-    return {"text": text, "mediaType": "text/plain"}
+    """v1.0 text Part (member-presence discriminated, no ``kind``).
+
+    ``mediaType`` belongs on file and data parts. A text part that also
+    sets it is rejected by peers that decide the part kind from which
+    members are present.
+    """
+    return {"text": text}
 
 
 def text_message(role: str, text: str, context_id: str = "") -> dict:

@@ -81,8 +81,8 @@ def _publish_tool_snapshot(
         new_defs, new_names = _drop_session_tools(agent, new_defs, new_names)
         # Record the generation even when unchanged so an in-flight older caller can't clobber.
         agent._tool_snapshot_generation = max(published_gen, snapshot_generation)
-        # Same NAME set: no change for MCP-reload callers. Content-aware callers
-        # (compaction boundary) also diff serialized bytes.
+        # Same name set and unchanged bytes: nothing to publish. content_aware
+        # (explicit reload, compaction) also diffs serialized schema bytes.
         if new_names == current and not (content_aware and _tool_defs_content_changed(agent, new_defs)):
             return None
         agent.tools = new_defs
@@ -109,9 +109,14 @@ def refresh_agent_mcp_tools(
 
     ``preserve_prefix``: for rebuilds inside a live conversation the tool array is a cached
     request prefix and any moved byte re-prefills the whole history — existing tools keep their
-    slot (schemas still refresh), a still-registered tool whose ``check_fn`` merely flapped is
-    carried forward (``check_fn`` gates exposure, never invocation), a deregistered tool is
-    dropped, new tools append at the tail. The caller owns the prompt-cache contract."""
+    slot and the schema bytes already sent (a refreshed description is rendered ahead of the
+    conversation), a still-registered tool whose ``check_fn`` merely flapped is carried forward
+    (``check_fn`` gates exposure, never invocation), a deregistered tool is dropped, new tools
+    append at the tail. The caller owns the prompt-cache contract.
+
+    With ``preserve_prefix`` off (explicit ``/reload-mcp``, and a rebuild before the
+    first turn) a same-name schema change is published. The caller has already
+    accepted the cache break, or nothing has been cached yet."""
     from model_tools import get_tool_definitions
     from tools.registry import registry
     enabled, disabled = _resolve_refresh_toolsets(agent, enabled_override, disabled_override)
@@ -131,6 +136,10 @@ def refresh_agent_mcp_tools(
             prefix_registered = {entry.name for entry in registry.get_all_entries()}
         except Exception:
             pass  # fail open to the plain rebuild
+    else:
+        # Explicit reload and pre-first-turn rebuild. A same-name description
+        # change has to publish; between-turns refresh keeps preserve_prefix.
+        content_aware = True
     added = _publish_tool_snapshot(
         agent, new_defs, new_names, snapshot_generation=snapshot_generation,
         staged_engine_names=staged_engine_names, content_aware=content_aware, prefix_registered=prefix_registered)
@@ -242,25 +251,25 @@ def restore_agent_tool_prefix(agent, saved) -> bool:
 
 def _merge_preserving_prefix(current_defs: list, new_defs: list, registered_names: set) -> tuple[list, set]:
     """Fold a fresh tool snapshot into a live one without moving existing bytes. Ordered by
-    ``current_defs`` (the cached request prefix): a name in both keeps its slot but takes the
-    fresh schema; a name only in the live list is kept if still registered (``check_fn``
-    flapped), else dropped; a name only in the fresh list is appended at the tail.
+    ``current_defs`` (the cached request prefix): a name already sent keeps its slot and the
+    schema bytes already sent; a name only in the live list is kept if still registered
+    (``check_fn`` flapped), else dropped; a name only in the fresh list is appended at the tail.
 
-    The bridge tools keep their BUILT entry, not the fresh one: ``tool_search``'s description
-    is derived from the session (deferred count, listing, whether ``manage_connections`` was
-    present), so a late MCP server or a ``check_fn`` flap would rewrite it every turn. Search
-    reads the live catalog at dispatch, so the stale count costs nothing."""
+    A refreshed schema is not substituted in place. Tool JSON is rendered ahead of the
+    conversation, so one changed description means the next prompt no longer starts with the
+    previous one and a local prefix cache reads the whole prompt again. An explicit reload
+    (``preserve_prefix`` off) still takes the fresh schemas.
+
+    The bridge tools are synthesized by ``assemble_tool_defs``, never registered, and a fresh
+    snapshot omits them when the deferred set shrinks under the activation threshold: they
+    keep their slot regardless (search reads the live catalog at dispatch)."""
     from tools.tool_search_catalog import BRIDGE_TOOL_NAMES
     fresh = {_def_name(entry): entry for entry in new_defs if _def_name(entry)}
     merged = []
     for entry in current_defs:
         name = _def_name(entry)
         replacement = fresh.pop(name, None)
-        if name in BRIDGE_TOOL_NAMES:
-            merged.append(entry)
-        elif replacement is not None:
-            merged.append(replacement)
-        elif name and name in registered_names:
+        if replacement is not None or name in BRIDGE_TOOL_NAMES or (name and name in registered_names):
             merged.append(entry)
     merged.extend(fresh.values())
     return merged, {_def_name(t) for t in merged}

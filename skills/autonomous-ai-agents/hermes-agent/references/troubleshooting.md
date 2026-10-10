@@ -69,6 +69,30 @@ Common gateway problems:
 - **Slack bot only works in DMs**: Must subscribe to `message.channels` event. Without it, the bot ignores public channels.
 - **Windows-specific issues** (`Alt+Enter` newline, WinError 10106, UTF-8 BOM config, line endings): see `references/windows-quirks.md`.
 
+### Bot Desktop screen fails: `Unrecognized option: -rfbport`
+`Xvnc` on PATH is not TigerVNC — another VNC package owns the name (e.g.
+RealVNC Server's `/usr/bin/Xvnc` wins over the tigervnc alternatives link) and
+rejects TigerVNC-only RFB options. The launcher resolves TigerVNC's binary by
+capability; if the error still surfaces, install it:
+`tigervnc-standalone-server` (apt) / `tigervnc-x11-server` (dnf) / `tigervnc`
+(pacman). The launcher log's first line names which binary it ran.
+
+### Local patch disappears after `hermes update`
+An uncommitted edit in the Hermes checkout rides `hermes update`'s autostash
+(re-applied after the pull) and can silently vanish when upstream edits the same
+lines. Re-check after every update: `git -C ~/.hermes/hermes-agent status --short`
+(edited bundled skills: `hermes skills list-modified`). Prefer upstreaming the
+patch over carrying it.
+
+### Companion tool can't see this install's Python environment
+The runtime venv can live out-of-tree
+(`~/.hermes/installs/<id>/environments/<hash>/venv`) — resolve it from
+`~/.hermes/installs/<id>/facts.json` → `packages.venv.environment`. The
+lazy-install launcher re-execs `python -c` probes carrying `PYTHONPATH=<agent dir>`
+with `-I`, dropping that venv's site-packages; set `HERMES_DISABLE_LAZY_INSTALLS=1`
+for such probes. Tool-specific procedure (hermes-webui): see the `hermes-webui`
+skill.
+
 ### Auxiliary models not working
 If `auxiliary` tasks (vision, compression, session_search) fail silently, the `auto` provider can't find a backend. Either set `OPENROUTER_API_KEY` or `GOOGLE_API_KEY`, or explicitly configure each auxiliary task's provider:
 ```bash

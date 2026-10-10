@@ -209,6 +209,7 @@ gateway:
     header: "📖 **Hermes Commands**\n"
     skill_header: "\n⚡ **Skill Commands** ({count} active):"
     more_use_commands: "\n... and {count} more. Use `/commands` for the full paginated list."
+    filtered_by: "\nFiltered by '{query}'. Run `/help` for the full list."
   insights:
     invalid_days: "Invalid --days value: {value}"
     error: "Error generating insights: {error}"
@@ -1149,6 +1150,7 @@ platform:
         description: "Show token usage for this session"
       help:
         description: "Show available commands"
+        arg_query: "Use skills to list skills, or text to filter commands"
       insights:
         arg_days: "Number of days to analyze (default: 7)"
       reload_skills:

@@ -254,13 +254,26 @@ def _maybe_mirror_cron_delivery(
 _THREAD_REPLY_CHAT_TYPE = {"slack": "group", "matrix": "group", "telegram": "group"}
 
 
+def _cron_thread_date() -> str:
+    """Local-date stamp spliced into a handoff thread title. Recurring jobs seed one thread per
+    run with an otherwise identical title, so a reader scrolling a channel cannot tell today's
+    brief from last week's; the date is the only distinguishing part. Local (profile) timezone,
+    not UTC, because the title is read by the human whose morning the job ran in."""
+    from hermes_time import now as _tz_now
+    return _tz_now().strftime("%Y-%m-%d")
+
+
 def _open_continuable_cron_thread(job: dict, adapter, chat_id: str, loop) -> Optional[str]:
     """Open a thread for a continuable cron job via ``adapter.create_handoff_thread``. Returns the
     thread_id, or ``None`` (no thread primitive / failed) = caller falls back to the DM mirror."""
     create_thread = getattr(adapter, "create_handoff_thread", None)
     if not callable(create_thread) or loop is None:
         return None
-    thread_name = f"Hermes — {_cron_display_name(job)}"
+    # Date BEFORE the name: every thread sink caps the title (Discord/Slack ``[:80]``,
+    # relay ``[:100]``) and job names have no upper bound, so a trailing stamp is silently
+    # sliced off — or worse, cut to a half-date that reads the same on two different days.
+    # Leading it means a cap can only ever eat trailing name characters.
+    thread_name = f"Hermes {_cron_thread_date()} — {_cron_display_name(job)}"
     try:
         from agent.async_utils import safe_schedule_threadsafe
         coro = create_thread(str(chat_id), thread_name)

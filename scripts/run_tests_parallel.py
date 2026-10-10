@@ -4,7 +4,7 @@
 The minimum-viable replacement for pytest-xdist + a subprocess-isolation
 plugin. Discovers test files under ``tests/`` (excluding integration/e2e
 unless explicitly requested), then runs one ``python -m pytest <file>``
-subprocess per file, with bounded parallelism (default: ``os.cpu_count()``).
+subprocess per file, with bounded parallelism (default: ``min(os.cpu_count(), 8)``).
 
 Why per-file rather than per-test?
     Per-test spawn overhead (~250ms × 17k tests = 70min CPU minimum)
@@ -34,7 +34,7 @@ Usage:
     pytest failure. Tokens after ``--`` are never validated.
 
 Environment:
-    HERMES_TEST_WORKERS  Override worker count (default: os.cpu_count())
+    HERMES_TEST_WORKERS  Override worker count (default: min(os.cpu_count(), 8))
     HERMES_TEST_PATHS    Override discovery roots (colon-sep; on Windows
                          ';' also works and drive letters are handled;
                          default: 'tests')
@@ -588,6 +588,8 @@ def _run_one_file(
     if rc < 0 or rc == 124:
         retries = 0
     while rc != 0 and attempt < retries:
+        if _is_retryable_timeout_result(rc, output, summary):
+            break
         attempt += 1
         first_output = output
         file, rc, output, summary, subproc_wall2 = _run_one_file_once(
@@ -683,10 +685,7 @@ def _run_one_file_once(
         except subprocess.TimeoutExpired:
             output = "(file timeout exceeded; output unavailable)"
         rc = 124  # de facto convention for "killed by timeout".
-        output = (
-            f"({file_timeout:.0f}s exceeded; "
-            f"process tree SIGKILL'd)\n{output}"
-        )
+        output = _format_timeout_output(output, file_timeout)
     except BaseException:
         # KeyboardInterrupt / runner crash — make sure no zombie
         # grandchildren outlive us.
@@ -697,7 +696,7 @@ def _run_one_file_once(
         # case it left grandchildren behind; already-dead is a no-op.
         _kill_tree(proc, pgid=pgid)
 
-        output +=  "\n"
+        output = (output or "") + "\n"
     finally:
         _kill_detached_leftovers(temproot)
         # Delete the temp root for this attempt. Nothing reads it after the
@@ -1060,6 +1059,148 @@ def _make_stdio_glyph_safe() -> None:
                 pass
 
 
+
+_DEFAULT_MAX_WORKERS = 8
+
+
+def _adaptive_default_jobs(cpu_count: int | None) -> int:
+    """Choose a conservative automatic worker count for import-heavy tests."""
+    return min(cpu_count or 4, _DEFAULT_MAX_WORKERS)
+
+
+def _format_timeout_output(output: str | None, file_timeout: float) -> str:
+    """Render a timeout result even when ``communicate()`` returned ``None``."""
+    captured = output or "(captured output unavailable)"
+    return (
+        f"(timed out after {file_timeout:.0f}s; process tree terminated)\n"
+        f"{captured}"
+    )
+
+
+def _is_retryable_timeout_result(
+    rc: int,
+    output: str,
+    summary: dict[str, int],
+) -> bool:
+    """Return true only for a nonzero, timeout-shaped result without failures."""
+    if rc == 0 or summary.get("failed", 0) > 0:
+        return False
+    lowered = output.lower()
+    return rc == 124 or bool(re.search(r"(?m)^\++ Timeout \++$", output)) or lowered.startswith("(timed out after")
+
+
+def _announce_adaptive_jobs(our_args: list[str], jobs: int) -> None:
+    """Print the adaptive worker choice when neither ``-j`` nor HERMES_TEST_WORKERS set it."""
+    jobs_was_explicit = any(
+        token == "-j"
+        or token.startswith("-j")
+        or token == "--jobs"
+        or token.startswith("--jobs=")
+        for token in our_args
+    )
+    if not jobs_was_explicit and not os.environ.get("HERMES_TEST_WORKERS"):
+        print(
+            "Adaptive worker default: "
+            f"cpu_count={os.cpu_count() or 4}, "
+            f"cap={_DEFAULT_MAX_WORKERS}, selected={jobs}",
+            flush=True,
+        )
+
+
+def _print_run_header(
+    files: list[Path], roots: list[Path], approx_total_tests: int, jobs: int, our_args: list[str], repo_root: Path,
+) -> None:
+    """The run's opening lines: the adaptive worker choice, then what was discovered and at what -j."""
+    _announce_adaptive_jobs(our_args, jobs)
+
+    if roots:
+        roots_str = [str(r.relative_to(repo_root)) if r.is_relative_to(repo_root) else str(r) for r in roots]
+        print(
+            f"Discovered {len(files)} test files (~{approx_total_tests} tests) under "
+            f"{roots_str}; running with -j {jobs}",
+            flush=True,
+        )
+    else:
+        print(
+            f"Running {len(files)} test files (~{approx_total_tests} tests) "
+            f"with -j {jobs}",
+            flush=True,
+        )
+
+
+def _retry_timeouts_in_isolation(
+    failures: list[tuple[Path, str, dict[str, int]]],
+    file_times: list[tuple[Path, float]],
+    pytest_passthrough: list[str],
+    repo_root: Path,
+    file_timeout: float,
+    timeout_durations: dict[str, float],
+) -> dict[str, int]:
+    """Re-run timeout-shaped failures once, serially; mutates ``failures``/``file_times``, returns count deltas."""
+    delta = dict.fromkeys(("pass_count", "fail_count", "passed", "failed", "skipped", "collected"), 0)
+    # A file can trip pytest-timeout only because eight import-heavy subprocesses
+    # are contending at once. Retry timeout-shaped nonzero results exactly once,
+    # serially, after the pool drains. Assertion failures are never retried.
+    retryable = [
+        (file, output, summary)
+        for file, output, summary in failures
+        if _is_retryable_timeout_result(1, output, summary)
+    ]
+    if retryable:
+        print()
+        print(
+            f"Retrying {len(retryable)} timeout-affected file"
+            f"{'s' if len(retryable) != 1 else ''} at 1-worker isolation "
+            "(single bounded retry):",
+            flush=True,
+        )
+    for file, original_output, original_summary in retryable:
+        print(f"  RETRY {_format_file(file, repo_root)}", flush=True)
+        fpath, rc, output, summary, subproc_wall = _run_one_file(
+            file,
+            pytest_passthrough,
+            repo_root,
+            # Never tighter than the contended pool attempt it exists to rescue.
+            _effective_file_timeout(file, repo_root, file_timeout, timeout_durations),
+            # retries=0 on purpose: this IS the retry. The in-pool flake retry
+            # must not stack on top of the isolation re-run.
+            0,
+        )
+        file_times.append((fpath, subproc_wall))
+        failures.remove((file, original_output, original_summary))
+        delta["fail_count"] -= 1
+        delta["passed"] += summary.get("passed", 0)
+        delta["failed"] += summary.get("failed", 0)
+        delta["skipped"] += summary.get("skipped", 0)
+        # The straggler's outcomes count toward collection exactly as the
+        # pool's do. Without this main()'s nothing-ran guard can only ever see
+        # the KILLED first attempt, which by definition collected nothing, and a
+        # file that timed out in the pool and passed at 1-worker isolation would
+        # print "RETRY PASS" followed by "NO TESTS RAN — 0 collected". Same key set
+        # as _on_done, for the same reason: an all-skipped platform-gated file
+        # DID collect.
+        delta["collected"] += sum(
+            summary.get(key, 0)
+            for key in ("passed", "failed", "skipped", "errors", "xfailed", "xpassed")
+        )
+        if rc == 0:
+            delta["pass_count"] += 1
+            print(
+                f"  RETRY PASS {_format_file(fpath, repo_root)} "
+                f"({subproc_wall:.1f}s at 1 worker)",
+                flush=True,
+            )
+        else:
+            delta["fail_count"] += 1
+            failures.append((fpath, output, summary))
+            print(
+                f"  RETRY FAIL {_format_file(fpath, repo_root)} "
+                f"(exit {rc}, {subproc_wall:.1f}s at 1 worker)",
+                flush=True,
+            )
+    return delta
+
+
 def _pytest_flag_error(tokens: list[str]) -> Optional[str]:
     """Return pytest's own complaint about the bare passthrough tokens, if any.
 
@@ -1102,8 +1243,8 @@ def main() -> int:
         "-j",
         "--jobs",
         type=int,
-        default=int(os.environ.get("HERMES_TEST_WORKERS") or (os.cpu_count() or 4)),
-        help="Parallel worker count (default: $HERMES_TEST_WORKERS or cpu_count)",
+        default=int(os.environ.get("HERMES_TEST_WORKERS") or _adaptive_default_jobs(os.cpu_count())),
+        help="Parallel worker count (default: $HERMES_TEST_WORKERS or min(cpu_count, 8))",
     )
     parser.add_argument(
         "--paths",
@@ -1376,19 +1517,7 @@ def main() -> int:
         test_counts = {f: test_counts[f] for f in files if f in test_counts}
         approx_total_tests = sum(test_counts.values())
 
-    if roots:
-        roots_str = [str(r.relative_to(repo_root)) if r.is_relative_to(repo_root) else str(r) for r in roots]
-        print(
-            f"Discovered {len(files)} test files (~{approx_total_tests} tests) under "
-            f"{roots_str}; running with -j {args.jobs}",
-            flush=True,
-        )
-    else:
-        print(
-            f"Running {len(files)} test files (~{approx_total_tests} tests) "
-            f"with -j {args.jobs}",
-            flush=True,
-        )
+    _print_run_header(files, roots, approx_total_tests, args.jobs, our_args, repo_root)
 
     # Capture and print on completion (out-of-order is fine — keeps the
     # terminal clean rather than interleaving N parallel pytest outputs).
@@ -1463,11 +1592,12 @@ def main() -> int:
         sys.path.insert(0, str(repo_root))
     _sweep_killed_run_roots(_runner_scratch_root())
 
+    # Duration cache for the timeout scaler: known-slow files get
+    # proportional headroom instead of a false timeout-kill under CI load
+    # (see _effective_file_timeout). Read once, before the pool, because the
+    # isolation retry below must grant the same bound the pool did.
+    timeout_durations = _load_durations(repo_root)
     with ThreadPoolExecutor(max_workers=args.jobs) as pool:
-        # Duration cache for the timeout scaler: known-slow files get
-        # proportional headroom instead of a false timeout-kill under
-        # CI load (see _effective_file_timeout).
-        timeout_durations = _load_durations(repo_root)
         futures: list[Future] = []
         for file in files:
             t0 = time.monotonic()
@@ -1485,6 +1615,13 @@ def main() -> int:
         # control flow obvious.
         for fut in futures:
             fut.result() if fut.exception() is None else None
+
+    retry = _retry_timeouts_in_isolation(
+        failures, file_times, pytest_passthrough, repo_root, args.file_timeout, timeout_durations,
+    )
+    pass_count, fail_count = pass_count + retry["pass_count"], fail_count + retry["fail_count"]
+    tests_passed, tests_failed = tests_passed + retry["passed"], tests_failed + retry["failed"]
+    tests_skipped, tests_collected = tests_skipped + retry["skipped"], tests_collected + retry["collected"]
 
     elapsed = time.monotonic() - started
     print()

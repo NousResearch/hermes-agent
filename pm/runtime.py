@@ -21,13 +21,17 @@ from pm.package import InstallError
 
 def runtime_environment() -> dict[str, str]:
     """Do not let an activated application or a uv caller select PM's imports."""
-    from hermes_constants import get_hermes_home
+    from hermes_constants import get_hermes_home, get_hermes_home_override, get_process_hermes_home
     from pm.paths import store_root
 
     from pm.environment import _base_environment
 
     env = _base_environment()
-    env["HERMES_HOME"] = str(get_hermes_home())
+    # hermes_bootstrap gets here before the CLI applies `-p`/active_profile, once per process image
+    # (the launcher execs into the store Python). PM state is install-scoped, so name the home as
+    # launched: get_hermes_home()'s sticky-profile check would warn "wrong profile" for a process
+    # that is about to be re-homed and has written nothing profile-scoped.
+    env["HERMES_HOME"] = str(get_hermes_home() if get_hermes_home_override() else get_process_hermes_home())
     env["HERMES_RUNTIME_DIR"] = native(store_root())
     return env
 

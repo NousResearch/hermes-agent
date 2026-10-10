@@ -439,7 +439,10 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
     # interpreter (its own sys.prefix) and must re-exec once.
     same = os.path.normcase(os.path.abspath(python)) == os.path.normcase(os.path.abspath(sys.executable))
     if not current or not same:
-        publish_launchers(root)
+        # A bare interpreter hop (the venv's `hermes` re-execs into the store Python on every
+        # launch) runs before `-p`/active_profile re-home the CLI: repair only the commands we
+        # own, without loading the unresolved home's config.yaml or scaffolding that home.
+        publish_launchers(root, create=not current)
         return python
     if owed_to_cli:
         # Left owed, not dropped: say so (once, in the process that boots) where an

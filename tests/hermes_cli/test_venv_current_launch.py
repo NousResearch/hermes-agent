@@ -32,9 +32,12 @@ def launch(tmp_path, monkeypatch):
     store_python.parent.mkdir(parents=True)
     store_python.write_text("#!/bin/sh\n", encoding="utf-8")
     published = []
-    monkeypatch.setattr(venv_sync, "publish_launchers", published.append)
+    monkeypatch.setattr(venv_sync, "publish_launchers",
+                        lambda root, *, create=True: published.append((root, create)))
 
-    def run(*, store_spelling: Path, executable: Path):
+    def run(*, store_spelling: Path, executable: Path, current: bool = True):
+        monkeypatch.setattr(pm, "venv_is_current", lambda **kw: current)
+        monkeypatch.setattr(venv_sync, "_finish_source_update", lambda *a, **kw: None)
         monkeypatch.setattr(_launchers, "resolve_store_python", lambda _: store_spelling)
         monkeypatch.setattr(sys, "executable", str(executable))
         return venv_sync.prepare_launch(root, []), published
@@ -61,4 +64,14 @@ def test_venv_python_symlinked_to_the_store_binary_still_relaunches(launch):
 
     target, published = run(store_spelling=store_python, executable=venv_python)
     assert target == store_python
-    assert published == [(tmp_path / "checkout").resolve()]
+    # A bare interpreter hop runs before the CLI resolves `-p`: repair owned commands only,
+    # never load the unresolved home's config or scaffold it.
+    assert published == [((tmp_path / "checkout").resolve(), False)]
+
+
+def test_relaunch_after_a_dependency_sync_keeps_creating_exposure(launch):
+    tmp_path, store_python, run = launch
+
+    target, published = run(store_spelling=store_python, executable=store_python, current=False)
+    assert target == store_python
+    assert published == [((tmp_path / "checkout").resolve(), True)]

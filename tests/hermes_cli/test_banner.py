@@ -90,3 +90,31 @@ def test_baked_banner_uses_live_identity(monkeypatch):
 
     monkeypatch.setattr(version_info, "get_code_identity", lambda: {"short_sha": "a1b2c3d4"})
     assert banner._baked_banner_state() == {"upstream": "a1b2c3d4", "local": "a1b2c3d4", "ahead": 0}
+
+
+def test_docker_banner_prefers_installed_image_identity_over_mounted_git(tmp_path, monkeypatch):
+    """A mutable source checkout must not impersonate immutable Docker code."""
+    import subprocess
+    from hermes_cli import version_info
+
+    def git(*args):
+        return subprocess.check_output(["git", *args], cwd=tmp_path, text=True).strip()
+
+    git("init", "-q")
+    git("-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+        "commit", "-q", "--allow-empty", "-m", "source")
+    git("update-ref", "refs/remotes/origin/main", "HEAD")
+    mounted_sha = git("rev-parse", "HEAD")[:8]
+    assert mounted_sha != "12345678"
+
+    image = version_info.VersionInfo("1.0", "1.0", 0, "12345678abcdef01", None,
+                                     "docker", distribution="docker")
+    monkeypatch.setattr(version_info, "get_version_info", lambda: image)
+    monkeypatch.setattr(banner, "_resolve_repo_dir", lambda: tmp_path)
+    assert banner._compute_git_banner_state() == {
+        "upstream": "12345678", "local": "12345678", "ahead": 0,
+    }
+    # An explicit checkout request still reports that checkout.
+    explicit = banner._compute_git_banner_state(tmp_path)
+    assert explicit is not None
+    assert explicit["local"] == mounted_sha

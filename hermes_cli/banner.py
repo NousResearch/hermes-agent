@@ -176,6 +176,12 @@ def _baked_banner_state() -> Optional[dict]:
 
 
 def _compute_git_banner_state(repo_dir: Optional[Path] = None) -> Optional[dict]:
+    if repo_dir is None:
+        from hermes_cli.version_info import get_version_info
+        identity = _quiet(get_version_info)
+        if identity is not None and identity.distribution == "docker" and identity.commit:
+            # A mounted or mutable checkout is not the code baked into this image.
+            return _baked_banner_state()
     repo_dir = repo_dir or _resolve_repo_dir()
     if repo_dir is None:
         return _baked_banner_state()

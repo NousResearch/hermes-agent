@@ -365,8 +365,10 @@ DEFAULT_CONTEXT_LENGTHS = {
 # xAI Grok models that ACCEPT `reasoning.effort` (verified live against
 # /v1/responses). Unlisted Grok models still reason natively but 400 on the
 # parameter, so callers must send no `reasoning` key rather than a default `medium`.
-# grok-4.5/4.6 accept low/medium/high (default high) but REJECT "none", unlike grok-4.3.
-_GROK_EFFORT_CAPABLE_PREFIXES = ("grok-3-mini", "grok-4.20-multi-agent", "grok-4.3", "grok-4.5", "grok-4.6")
+# grok-4.5/4.6/4.7 accept low/medium/high (default high) but REJECT "none", unlike grok-4.3.
+_GROK_EFFORT_CAPABLE_PREFIXES = (
+    "grok-3-mini", "grok-4.20-multi-agent", "grok-4.3", "grok-4.5", "grok-4.6", "grok-4.7",
+)
 
 
 def grok_supports_reasoning_effort(model: str) -> bool:
@@ -394,6 +396,18 @@ def is_grok_46_family(model: str) -> bool:
     """Whether *model* is a Grok 4.6 family identifier."""
     name = (model or "").strip().lower().replace("_", "-").rsplit("/", 1)[-1]
     return name == "grok-4.6" or name.startswith("grok-4.6-")
+
+
+# Grok families that accept the xhigh effort rung AND ``service_tier: "priority"`` on xAI's
+# /v1/responses (verified live: grok-4.7 echoes ``reasoning.effort`` low..xhigh and returns
+# ``service_tier: "priority"``; /v1/language-models lists low/medium/high/xhigh, default high).
+_GROK_PRIORITY_FAMILIES = ("grok-4.6", "grok-4.7")
+
+
+def is_grok_priority_family(model: str) -> bool:
+    """Grok 4.6+ family: xhigh effort rung and Priority Processing on api.x.ai."""
+    name = (model or "").strip().lower().replace("_", "-").rsplit("/", 1)[-1]
+    return any(name == fam or name.startswith(fam + "-") for fam in _GROK_PRIORITY_FAMILIES)
 
 
 # Claude models that accept ``speed: "fast"`` (https://platform.claude.com/docs/en/build-with-claude/fast-mode).

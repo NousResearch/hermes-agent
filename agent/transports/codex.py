@@ -300,10 +300,10 @@ def _resolve_reasoning(model: str, params: dict[str, Any]) -> tuple[Any, bool]:
     # repeatedly leaked internal levels like "ultra" to the wire (#89503 class) or clamped one rung below a
     # model's real ceiling (#87279).
     if params.get("is_xai_responses", False):
-        from agent.model_metadata import is_grok_46_family
+        from agent.model_metadata import is_grok_priority_family
 
-        # Grok 4.6 accepts xhigh; older Grok tops out at high.
-        supported = XAI_GROK46_EFFORTS if is_grok_46_family(model) else XAI_LEGACY_EFFORTS
+        # Grok 4.6+ accepts xhigh; older Grok tops out at high.
+        supported = XAI_GROK46_EFFORTS if is_grok_priority_family(model) else XAI_LEGACY_EFFORTS
     else:
         base_url = params.get("base_url")
         is_codex_backend = params.get("is_codex_backend") is True
@@ -781,13 +781,12 @@ class ResponsesApiTransport(ProviderTransport):
 
         _bound_prompt_cache_key_field(kwargs)
 
-        # Older xAI models reject ``service_tier`` (HTTP 400); only Grok 4.6 accepts Priority Processing.
-        # Grok 4.6 accepts Priority Processing, but continue stripping stale or unsupported tier values on
-        # every other xAI path. See #28490 and #84799.
+        # Older xAI models reject ``service_tier`` (HTTP 400); Grok 4.6+ accepts Priority Processing.
+        # Keep stripping stale or unsupported tier values on every other xAI path. See #28490 and #84799.
         if is_xai_responses:
-            from agent.model_metadata import is_grok_46_family
+            from agent.model_metadata import is_grok_priority_family
 
-            if not (is_grok_46_family(model) and kwargs.get("service_tier") == "priority"):
+            if not (is_grok_priority_family(model) and kwargs.get("service_tier") == "priority"):
                 kwargs.pop("service_tier", None)
 
         # Forward per-request timeout to the SDK (providers.<id>.request_timeout_seconds).

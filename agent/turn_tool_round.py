@@ -178,7 +178,9 @@ def run_tool_round(
         _turn_exit_reason = "guardrail_halt"
         final_response = agent._toolguard_controlled_halt_response(decision)
         agent._emit_diagnostic_status(f"⚠️ Tool guardrail halted {decision.tool_name}: {decision.code}")
-        append_message(messages, {"role": "assistant", "content": final_response})
+        # The user reads the reply; the model reads a harness label in its place.
+        append_message(messages, {"role": "assistant", "content": final_response,
+                                  "api_content": _guardrail_halt_label(decision)})
         # Emit the halt so it isn't mistaken for a crash; the stream callback is still
         # alive, so SSE/TUI clients see the explanation.
         if final_response:
@@ -228,6 +230,18 @@ def run_tool_round(
     # the gateway kills the session before the next activity touch fires (#69559, #69131).
     agent._touch_activity(f"tool results posted, continuing iteration #{api_call_count}")
     return _verdict("continue")
+
+
+def _guardrail_halt_label(decision) -> str:
+    """What the MODEL reads in place of the guardrail halt reply on later turns (``api_content``).
+
+    The reply is first-person prose written by the harness; replayed as an ordinary assistant
+    message the model takes it for an answer of its own and repeats it verbatim on later turns.
+    Same hazard and same remedy as the interrupt placeholder (#132949): a structural label the
+    model has no conversational reason to reproduce, never prose.
+    """
+    return (f"[tool guardrail: previous turn halted after {decision.count} "
+            f"{decision.tool_name or 'tool'} calls without progress]")
 
 
 def stage_tool_call_message(

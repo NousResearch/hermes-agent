@@ -933,6 +933,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
                 cbs.edit_approval_requester = make_acp_edit_approval_requester(
                     conn.request_permission, loop, session_id, auto_approve_getter=policy_getter,
                     send_update=send_update,
+                    session_state=state.edit_approval_state,
                 )
             except Exception:
                 logger.debug("Could not create ACP edit approval requester", exc_info=True)
@@ -1067,6 +1068,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         if normalized_mode not in self._MODES:
             normalized_mode = self._MODE_DEFAULT
         state.mode = normalized_mode
+        state.edit_approval_state.revoke()
         self.session_manager.save_session(session_id)
         logger.info("Session %s: mode switched to %s", session_id, normalized_mode)
         return SetSessionModeResponse()
@@ -1082,6 +1084,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
 
         if str(config_id) == self._EDIT_APPROVAL_POLICY_CONFIG_ID:
             state.mode = self._EDIT_APPROVAL_POLICY_TO_MODE.get(str(value), self._MODE_DEFAULT)
+            state.edit_approval_state.revoke()
         else:
             options = getattr(state, "config_options", None)
             if not isinstance(options, dict):

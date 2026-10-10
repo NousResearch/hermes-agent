@@ -12,8 +12,9 @@ import json
 import logging
 import re
 import tempfile
+import threading
 from contextvars import ContextVar, Token
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from itertools import count
 from pathlib import Path
 from typing import Any, Callable
@@ -34,6 +35,31 @@ class EditProposal:
     # display string for multi-file V4A patches; ``paths`` is the authoritative
     # set for auto-approve checks. Empty means "``path`` alone".
     paths: tuple[str, ...] = ()
+
+
+@dataclass
+class EditApprovalState:
+    """Ephemeral consent owned by one ACP session, not one turn callback."""
+
+    allow_for_session: bool = False
+    generation: int = 0
+    _lock: Any = field(default_factory=threading.Lock, repr=False)
+
+    def snapshot(self) -> tuple[bool, int]:
+        with self._lock:
+            return self.allow_for_session, self.generation
+
+    def grant(self, generation: int) -> bool:
+        with self._lock:
+            if self.generation != generation:
+                return False
+            self.allow_for_session = True
+            return True
+
+    def revoke(self) -> None:
+        with self._lock:
+            self.allow_for_session = False
+            self.generation += 1
 
 
 EditApprovalRequester = Callable[[EditProposal], bool]
@@ -212,8 +238,11 @@ def make_acp_edit_approval_requester(
     request_permission_fn: Callable, loop: asyncio.AbstractEventLoop, session_id: str,
     timeout: float | None = None, auto_approve_getter: Callable[[], tuple[str, str | None]] | None = None,
     send_update: Callable[[object], None] | None = None,
+    *, session_state: EditApprovalState | None = None,
 ) -> EditApprovalRequester:
     """Return a sync requester that bridges edit proposals to ACP permissions."""
+    if session_state is None:
+        session_state = EditApprovalState()
 
     def _requester(proposal: EditProposal) -> bool:
         from acp.schema import PermissionOption
@@ -228,13 +257,27 @@ def make_acp_edit_approval_requester(
             except Exception:
                 logger.debug("ACP edit auto-approval policy check failed", exc_info=True)
 
+        can_grant_session = should_auto_approve_edit(proposal, AUTO_APPROVE_SESSION)
+        allowed, generation = session_state.snapshot()
+        if allowed and can_grant_session:
+            return True
+        options = [PermissionOption(option_id="allow_once", kind="allow_once", name="Allow edit")]
+        if can_grant_session:
+            # ACP has no session kind; the option id defines Hermes' lifetime.
+            options.append(PermissionOption(option_id="allow_session", kind="allow_always",
+                                            name="Allow edits for session"))
+        options.append(PermissionOption(option_id="deny", kind="reject_once", name="Deny"))
         response, _timed_out = await_permission(
             request_permission_fn, loop, session_id, tool_call=build_acp_edit_tool_call(proposal),
-            options=[PermissionOption(option_id="allow_once", kind="allow_once", name="Allow edit"),
-                     PermissionOption(option_id="deny", kind="reject_once", name="Deny")],
+            options=options,
             timeout=resolve_permission_timeout(timeout), what="Edit approval request", send_update=send_update,
         )
         outcome = getattr(response, "outcome", None)
-        return getattr(outcome, "outcome", None) == "selected" and getattr(outcome, "option_id", None) == "allow_once"
+        if getattr(outcome, "outcome", None) != "selected":
+            return False
+        option_id = getattr(outcome, "option_id", None)
+        if option_id == "allow_session" and can_grant_session:
+            return session_state.grant(generation)
+        return option_id == "allow_once"
 
     return _requester

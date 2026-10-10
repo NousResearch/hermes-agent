@@ -4,7 +4,7 @@ Reuse the private native route envelope and FIFO, retaining nonhuman turn semant
 A producer ACK means committed input, not successful inference or outbound delivery.
 """
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 import json
 
 from gateway.config import Platform
@@ -120,7 +120,7 @@ def snapshot_automation(authority, adapter, event, identity):
     # Producer timestamps and platform reply IDs change on retry. Neither belongs
     # in the identity/fingerprint of the same immutable completion.
     envelope = {'source': source, 'route': entry.session_key,
-        'timestamp': datetime.fromtimestamp(0, timezone.utc).isoformat(),
+        'timestamp': datetime.fromtimestamp(0, UTC).isoformat(),
         'event': {'message_id': identity}, 'provenance': provenance,
         'automation': {'identity': identity, 'owner': owner}}
     envelope['automation'].update(notification)
@@ -212,9 +212,9 @@ async def admit_automation(authority, adapter, event, identity):
     sid = (payload.get('local_automation_v1') or payload['native_text_v1']['automation'])['owner']
     ref = SessionRef(authority.profile_id, sid)
     authority.sessions.setdefault(ref.session_id, LiveSession(event.source, entry.session_key))
-    row = admit_session_input(authority.db, epoch=authority.epoch, principal_id='automation:' + entry.session_key,
-        session_id=ref.session_id, request_id=identity, payload=deepcopy(payload))
-    event._gateway_accepted = True
-    authority._publish_pending(ref)
-    authority._schedule(ref)
-    return authority._receipt(row)
+    from functools import partial
+    from gateway.session_runtime_workers import tracked_write
+    return await tracked_write(authority, partial(
+        admit_session_input, authority.db, epoch=authority.epoch, principal_id='automation:' + entry.session_key,
+        session_id=ref.session_id, request_id=identity, payload=deepcopy(payload),
+        _authorize_write=authority._admission_gate()), then=partial(authority._admitted, ref, event), ordered=True)

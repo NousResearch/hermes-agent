@@ -124,8 +124,13 @@ async def test_hosted_head_cancelled_during_preclaim_does_not_let_successor_skip
     monkeypatch.setattr(session_finite, 'execute_finite_admission', execute)
 
     with db:
+        # Both rows are queued before the drain starts (admission commits off-loop, so the
+        # first submit's drain would otherwise take the session lock before B is admitted).
+        schedule, authority._schedule = authority._schedule, lambda ref: None
         head = await _submit(authority, 'hosted:A')
         await _submit(authority, 'hosted:B')
+        authority._schedule = schedule
+        schedule(REF)
         await asyncio.get_running_loop().run_in_executor(None, head_checking.wait, 5)
         await authority.cancel_queued(ACTOR, REF, head.admission_id)
         release_head.set()

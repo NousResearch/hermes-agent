@@ -121,3 +121,57 @@ async def test_cancel_behind_a_held_writer_leaves_the_loop_free_and_still_settle
         cancelled = await asyncio.wait_for(cancel, 10)
         assert (cancelled.status, cancelled.outcome) == ('terminal', 'cancelled')
         assert waiter.done() and receipt.admission_id not in authority.cancel_obligations
+
+
+def _hold_writer(tmp_path):
+    """A second connection holds the state.db write lock for ``_HOLD_S`` (another process)."""
+    released = threading.Event()
+    writer = sqlite3.connect(str(tmp_path / 'state.db'), isolation_level=None, check_same_thread=False)
+    writer.execute('BEGIN IMMEDIATE')
+
+    def release():
+        time.sleep(_HOLD_S)
+        released.set()
+        writer.rollback()
+        writer.close()
+    threading.Thread(target=release, daemon=True).start()
+    return released
+
+
+async def _loop_stays_free(tmp_path, operation):
+    released = _hold_writer(tmp_path)
+    ticks = []
+    asyncio.get_running_loop().call_later(0.05, lambda: ticks.append(released.is_set()))
+    task = asyncio.create_task(operation())
+    await asyncio.sleep(0.3)
+    assert ticks == [False], 'an unrelated 50 ms callback waited for the held writer'
+    return await asyncio.wait_for(task, 10)
+
+
+@pytest.mark.asyncio
+async def test_submit_claim_and_discard_behind_a_held_writer_leave_the_loop_free(tmp_path, monkeypatch):
+    """Admission, the FIFO claim and Discard wait on a held writer in a worker thread, tracked so
+    retirement joins them; the claim's execution stamp still lands with its commit."""
+    from gateway.session_runtime_workers import mutation_tasks
+    from hermes_state_runtime import get_session_admission, recover_session_inputs, begin_runtime_epoch
+    db, authority = _authority(tmp_path, monkeypatch)
+    monkeypatch.setattr(authority, '_schedule', lambda ref: None)
+    live = authority.sessions['s']
+    with db:
+        receipt = await _loop_stays_free(
+            tmp_path, lambda: authority.submit(ACTOR, Submission('work', REF, {'text': 'work'}, 'queue')))
+        assert receipt.status == 'queued' and not mutation_tasks(authority)
+        row, first = await _loop_stays_free(tmp_path, lambda: authority._claim_next(REF, live))
+        assert row['admission_id'] == first['admission_id'] == receipt.admission_id
+        assert live.event_stream.execution == {'authority_epoch': authority.epoch,
+                                               'execution_generation': row['generation'],
+                                               'admission_id': row['admission_id']}
+        # The owner restarts mid-turn; the operator discards the now-unknown turn.
+        authority.epoch = begin_runtime_epoch(db, instance_id='restart')
+        recover_session_inputs(db, epoch=authority.epoch)
+        live.event_stream.execution = {}
+        resolved = await _loop_stays_free(
+            tmp_path, lambda: authority.resolve_unknown(ACTOR, REF, receipt.admission_id, row['generation']))
+        assert (resolved.status, resolved.outcome) == ('terminal', 'interrupted')
+        assert get_session_admission(db, admission_id=receipt.admission_id)['status'] == 'terminal'
+        assert not mutation_tasks(authority)

@@ -149,9 +149,13 @@ def list_session_admissions(db, *, session_id: str, pending_only: bool = True) -
         return [_row(row) for row in conn.execute(sql, (session_id,))]
 
 
-def claim_session_input(db, *, epoch: int, session_id: str) -> dict | None:
+def claim_session_input(db, *, epoch: int, session_id: str, _guard=None) -> dict | None:
+    """Claim the FIFO head. ``_guard(conn)`` (owner admission gate) raises to refuse inside the
+    write transaction, so a drain that began while this waited on the writer still wins."""
     def write(conn):
         _epoch(conn, epoch)
+        if _guard is not None:
+            _guard(conn)
         session = _session(conn, session_id)
         blocked = conn.execute("SELECT status FROM session_admissions WHERE target_session_id=? AND status IN ('started','unknown')", (session_id,)).fetchall()
         if any(row[0] == 'unknown' for row in blocked):

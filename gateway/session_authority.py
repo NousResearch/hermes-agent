@@ -120,6 +120,15 @@ class SessionAuthority:
         if self.runner._draining or self.retiring:
             raise RuntimeStoreError('runtime_draining')
 
+    def _admission_gate(self, authorize=None):
+        """The admission gate re-checked inside an off-loop write transaction (with the caller's
+        own guard), so a drain that began while the write waited on the writer still refuses it."""
+        def guard(conn):
+            self._require_admission_open()
+            if authorize is not None:
+                authorize(conn)
+        return guard
+
     def logical_owner(self, session_id):
         """The FIFO/admission identity of a route: the root of its compression lineage.
         Compression advances the physical transcript, never the admission identity. A session this
@@ -293,13 +302,25 @@ class SessionAuthority:
         ref = self.register(source)
         identity = json.dumps([source.profile, source.platform.value, source.chat_id,
                                source.thread_id, source.user_id], separators=(',', ':'))
+        from gateway.session_runtime_workers import tracked_write
         request_id = str(payload['native_text_v1']['event']['message_id'] or uuid.uuid4().hex)
+        return await tracked_write(self, partial(
+            self._admit_native_write, principal_id='messaging:' + identity, session_id=ref.session_id,
+            request_id=request_id, payload=payload, authorize=self._admission_gate()),
+            then=partial(self._admitted, ref, event), ordered=True)
+
+    def _admit_native_write(self, *, principal_id, session_id, request_id, payload, authorize):
+        # Off the loop and in admission order: the redelivery reconcile reads the ledger it decides
+        # against, so a concurrent first delivery of the same message cannot slip between them.
         from gateway.session_ingress_media import reconcile_native_retry
-        payload = reconcile_native_retry(self.db, principal_id='messaging:' + identity, session_id=ref.session_id,
+        payload = reconcile_native_retry(self.db, principal_id=principal_id, session_id=session_id,
                                          request_id=request_id, payload=payload)
-        row = admit_session_input(self.db, epoch=self.epoch, principal_id='messaging:' + identity,
-                                  session_id=ref.session_id, request_id=request_id, payload=payload)
-        event._gateway_accepted = True
+        return admit_session_input(self.db, epoch=self.epoch, principal_id=principal_id, session_id=session_id,
+                                   request_id=request_id, payload=payload, _authorize_write=authorize)
+
+    def _admitted(self, ref, event, row):
+        if event is not None:
+            event._gateway_accepted = True
         self._publish_pending(ref)
         self._schedule(ref)
         return self._receipt(row)
@@ -383,17 +404,17 @@ class SessionAuthority:
             payload['local_operator_v1'] = {
                 'profile_id': self.profile_id, 'session_id': request.ref.session_id,
                 'principal_id': actor.subject}
-        try:
-            row = admit_session_input(self.db, epoch=self.epoch, principal_id=actor.subject,
-                                      session_id=request.ref.session_id, request_id=request.request_id,
-                                      payload=payload, intent=request.intent,
-                                      _authorize_write=_authorize_write)
-        except Exception:
-            self._release_refused_capture(request, payload)
-            raise
-        self._publish_pending(request.ref)
-        self._schedule(request.ref)
-        return self._receipt(row)
+        def admit():
+            try:
+                return admit_session_input(self.db, epoch=self.epoch, principal_id=actor.subject,
+                                           session_id=request.ref.session_id, request_id=request.request_id,
+                                           payload=payload, intent=request.intent,
+                                           _authorize_write=self._admission_gate(_authorize_write))
+            except Exception:
+                self._release_refused_capture(request, payload)
+                raise
+        from gateway.session_runtime_workers import tracked_write
+        return await tracked_write(self, admit, then=partial(self._admitted, request.ref, None), ordered=True)
 
     def _release_refused_capture(self, request, payload):
         """A refused submission's captured bytes have no owner unless another admission holds the
@@ -499,9 +520,15 @@ class SessionAuthority:
         # claimed with the discarded text left open to be merged into its request. With a captured
         # result the answer is normally already the transcript tail, so the closer is a no-op.
         from gateway.session_results import close_discarded_turn
-        row = resolve_unknown_session_input(self.db, epoch=self.epoch, admission_id=admission_id,
-                                            generation=generation, _captured=prepared,
-                                            _terminal_write=lambda conn, lost: close_discarded_turn(self.db, conn, lost))
+        from gateway.session_runtime_workers import tracked_write
+        row = await tracked_write(self, partial(
+            resolve_unknown_session_input, self.db, epoch=self.epoch, admission_id=admission_id,
+            generation=generation, _captured=prepared,
+            _terminal_write=lambda conn, lost: close_discarded_turn(self.db, conn, lost)),
+            then=partial(self._resolved_unknown, ref, admission_id, prepared, captured))
+        return self._receipt(row)
+
+    async def _resolved_unknown(self, ref, admission_id, prepared, captured, row):
         self.pending_results.pop(admission_id, None)
         if prepared is not None and row['owner_epoch'] == self.epoch:
             # The captured result committed: viewers told the turn is unknown get its completion,
@@ -516,14 +543,14 @@ class SessionAuthority:
         # Its own write txn + unlink, so it runs after the resolution commits; a discarded image
         # would otherwise stay on disk forever (the drain releases only settled turns).
         from gateway.session_ingress_media import release_admission_media
-        release_admission_media(self.db, admission_id)
+        await asyncio.to_thread(release_admission_media, self.db, admission_id)
         # Before the successor can run: a committed captured answer reaches the chat it was
         # owed to (a turn fenced unknown already released its delivery waiter), exactly once.
         from gateway.session_ingress import deliver_resolved
         await deliver_resolved(self, admission_id, owed=prepared is not None and row['owner_epoch'] == self.epoch)
         self._publish_pending(ref)
         self._schedule(ref)
-        return self._receipt(row)
+        return row
 
     async def interrupt(self, actor, ref, generation):
         self.authorize(actor, ref, 'session:control')
@@ -655,8 +682,23 @@ class SessionAuthority:
                 from gateway.session_api_turn import check_api_turn
                 check_api_turn(self, ref, first['payload'])
             self._require_admission_open()
-            row = claim_session_input(self.db, epoch=self.epoch, session_id=ref.session_id)
+            from gateway.session_runtime_workers import tracked_write
+            row = await tracked_write(self, partial(claim_session_input, self.db, epoch=self.epoch,
+                                                    session_id=ref.session_id, _guard=self._admission_gate()),
+                                      then=partial(self._stamp_claim, ref, live))
             return row, first
+
+    def _stamp_claim(self, ref, live, row):
+        """The claim's execution stamp, in the same tracked task as its commit: no observer (or
+        retirement's join) ever sees a committed claim that no execution stamp names."""
+        if row is not None:
+            with live.event_stream.lock:
+                live.event_stream.execution = {
+                    'authority_epoch': self.epoch, 'execution_generation': row['generation'],
+                    'admission_id': row['admission_id']}
+                live.event_stream.publish(ref.session_id, {}, event_type='message.start')
+                self._publish_pending(ref)
+        return row
 
     async def _drain(self, ref):
         from gateway.session_finite import execute_finite_admission
@@ -700,12 +742,6 @@ class SessionAuthority:
                 end_idle_acp_session(self, ref.session_id)
                 return
             admission_id = row['admission_id']
-            with live.event_stream.lock:
-                live.event_stream.execution = {
-                    'authority_epoch': self.epoch, 'execution_generation': row['generation'],
-                    'admission_id': admission_id}
-                live.event_stream.publish(ref.session_id, {}, event_type='message.start')
-                self._publish_pending(ref)
             try:
                 response = await execute_finite_admission(self, ref, row)
                 outcome = 'completed'

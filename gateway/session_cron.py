@@ -139,12 +139,13 @@ async def operation(authority, name, params, actor=None):
         # The job id, jobs file and gateway config belong to the OWNING profile.
         with owner_scope(authority):
             ref, request_id = _create(authority, actor, params)
-        row = admit_session_input(authority.db, epoch=authority.epoch, principal_id=actor.subject,
-                                  session_id=ref.session_id, request_id=request_id,
-                                  payload={'text': params['extra_prompt'] or ''})
-        authority._publish_pending(ref)
-        authority._schedule(ref)
-        return {'session_id': ref.session_id, 'admission_id': row['admission_id']}
+        from functools import partial
+        from gateway.session_runtime_workers import tracked_write
+        receipt = await tracked_write(authority, partial(
+            admit_session_input, authority.db, epoch=authority.epoch, principal_id=actor.subject,
+            session_id=ref.session_id, request_id=request_id, payload={'text': params['extra_prompt'] or ''},
+            _authorize_write=authority._admission_gate()), then=partial(authority._admitted, ref, None), ordered=True)
+        return {'session_id': ref.session_id, 'admission_id': receipt.admission_id}
     if set(params) != {'session_id', 'admission_id'} or name not in {'status', 'cancel'}:
         raise RuntimeStoreError('invalid_params')
     ref = SessionRef(authority.profile_id, params['session_id'])

@@ -242,6 +242,7 @@ def _relocate_imported_rows(conn: sqlite3.Connection, slug: str) -> tuple[dict[s
     warnings: list[str] = []
     now = int(time.time())
     attachments_dir = kb.attachments_root(slug)
+    contained_root = attachments_dir.resolve()
 
     with kb.write_txn(conn):
         _scrub_local_state(conn)
@@ -249,7 +250,9 @@ def _relocate_imported_rows(conn: sqlite3.Connection, slug: str) -> tuple[dict[s
         dropped = rehomed = 0
         for row in conn.execute("SELECT id, task_id, stored_path FROM task_attachments").fetchall():
             landed = attachments_dir / row["task_id"] / Path(row["stored_path"]).name
-            if landed.is_file():
+            # task_id comes from the untrusted archive: '../..' would re-home the row onto any
+            # existing host file, which "remove attachment" then unlinks. Only this board's tree.
+            if landed.is_file() and landed.resolve().is_relative_to(contained_root):
                 conn.execute("UPDATE task_attachments SET stored_path = ? WHERE id = ?", (str(landed), row["id"]))
                 rehomed += 1
             else:

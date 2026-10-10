@@ -4869,6 +4869,8 @@ export interface CanonicalSubmitParams {
   voice_context?: string | null
   interrupted?: boolean
   voice_turn?: boolean
+  display_kind?: 'hidden' | null
+  title_preview?: string | null
 }
 export interface CanonicalAttachment {
   path: string

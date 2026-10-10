@@ -10143,6 +10143,31 @@
             "default": false,
             "title": "Voice Turn",
             "type": "boolean"
+          },
+          "display_kind": {
+            "anyOf": [
+              {
+                "const": "hidden",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Display Kind"
+          },
+          "title_preview": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Title Preview"
           }
         },
         "required": [

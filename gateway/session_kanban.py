@@ -213,8 +213,9 @@ def run_worker_turns(agent, frame, history):
 def _run_worker_turns(agent, frame, history):
     context = json.loads(frame['policy'].get('kanban_json') or 'null')
     if context is None:
+        from gateway.session_display import worker_display_kwargs
         author = frame.get('turn_author')
-        return agent.run_conversation(frame['text'], conversation_history=history,
+        return agent.run_conversation(frame['text'], conversation_history=history, **worker_display_kwargs(),
                                       **({'turn_author': author} if author is not None else {}))
     from hermes_cli.turn_exit import credential_failure_flags, turn_exit_code
     code, last_output = 1, ''

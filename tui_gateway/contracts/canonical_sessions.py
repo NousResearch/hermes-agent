@@ -149,6 +149,11 @@ class CanonicalSubmitParams(CanonicalSessionParams):
     voice_context: str | None = None
     interrupted: bool = False
     voice_turn: bool = False
+    # Desktop composer presentation, committed per admission (``display_v1``): a hidden widget
+    # intent persists ``display_kind=hidden`` (never a user bubble); a large paste's preview is
+    # titler input only, never model input.
+    display_kind: Literal['hidden'] | None = None
+    title_preview: str | None = None
 
 
 class CanonicalControlParams(CanonicalSessionParams):

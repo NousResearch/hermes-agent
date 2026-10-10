@@ -750,6 +750,87 @@ class TestSendDocument:
 class TestSendVoice:
     """MP3 voice with ffmpeg present -> opus; without ffmpeg -> MP3 fallback."""
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("upload_fails", [False, True])
+    async def test_transcoded_voice_preserves_user_files(self, tmp_path, monkeypatch, upload_fails):
+        import subprocess
+        import tempfile
+        from pathlib import Path
+        from gateway.platforms import whatsapp_cloud as wac
+
+        if not wac._FFMPEG_PATH:
+            pytest.skip("ffmpeg is required for real voice transcoding")
+        audio_dir = tmp_path / "audio"
+        audio_dir.mkdir()
+        monkeypatch.setattr(tempfile, "tempdir", str(audio_dir))
+        source = audio_dir / "recording.mp3"
+        sibling = source.with_suffix(".ogg")
+        sibling.write_bytes(b"unrelated recording")
+        await asyncio.to_thread(
+            subprocess.run,
+            [wac._FFMPEG_PATH, "-v", "error", "-f", "lavfi", "-i",
+             "sine=frequency=440:duration=0.1", str(source)],
+            check=True, capture_output=True,
+        )
+        original = source.read_bytes()
+        uploaded = []
+
+        async def post(url, **kwargs):
+            if "files" in kwargs:
+                _, stream, mime = kwargs["files"]["file"]
+                uploaded.append(Path(stream.name))
+                assert mime == "audio/ogg; codecs=opus"
+                assert stream.read().startswith(b"OggS")
+                if upload_fails:
+                    raise OSError("upload failed")
+                return _mock_upload_response("voice_id")
+            return _mock_message_response()
+
+        adapter = _make_adapter()
+        adapter._http_client = MagicMock()
+        adapter._http_client.post = AsyncMock(side_effect=post)
+        result = await adapter.send_voice("15551234567", str(source))
+
+        assert result.success is not upload_fails
+        assert source.read_bytes() == original
+        assert sibling.read_bytes() == b"unrelated recording"
+        assert uploaded and uploaded[0] not in {source, sibling}
+        assert not uploaded[0].exists()
+        assert set(audio_dir.iterdir()) == {source, sibling}
+
+    @pytest.mark.asyncio
+    async def test_failed_transcode_preserves_user_files(self, tmp_path, monkeypatch):
+        import tempfile
+        from gateway.platforms import whatsapp_cloud as wac
+
+        if not wac._FFMPEG_PATH:
+            pytest.skip("ffmpeg is required for real voice transcoding")
+        audio_dir = tmp_path / "audio"
+        audio_dir.mkdir()
+        monkeypatch.setattr(tempfile, "tempdir", str(audio_dir))
+        source = audio_dir / "recording.mp3"
+        source.write_bytes(b"invalid MP3")
+        sibling = source.with_suffix(".ogg")
+        sibling.write_bytes(b"unrelated recording")
+
+        async def post(url, **kwargs):
+            if "files" in kwargs:
+                _, stream, mime = kwargs["files"]["file"]
+                assert mime == "audio/mpeg"
+                assert stream.read() == source.read_bytes()
+                return _mock_upload_response("voice_id")
+            return _mock_message_response()
+
+        adapter = _make_adapter()
+        adapter._http_client = MagicMock()
+        adapter._http_client.post = AsyncMock(side_effect=post)
+        result = await adapter.send_voice("15551234567", str(source))
+
+        assert result.success
+        assert source.read_bytes() == b"invalid MP3"
+        assert sibling.read_bytes() == b"unrelated recording"
+        assert set(audio_dir.iterdir()) == {source, sibling}
+
 
     @pytest.mark.asyncio
     async def test_send_voice_ffmpeg_present_uses_opus(self):

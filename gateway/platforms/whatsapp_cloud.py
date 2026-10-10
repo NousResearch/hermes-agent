@@ -623,14 +623,14 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                         chat_id, opus_path, "audio", caption=caption, reply_to=reply_to, mime_type="audio/ogg; codecs=opus",
                     )
                 finally:
-                    with contextlib.suppress(OSError):  # the .ogg is a transient artifact next to the source MP3
+                    with contextlib.suppress(OSError):  # only the owned conversion tempfile is transient
                         os.unlink(opus_path)
             # No ffmpeg (warn-once logged in _convert_to_opus) → MP3 attachment.
             mime_type = "audio/mpeg"
         return await self._send_media_from_path_or_link(chat_id, audio_path, "audio", caption=caption, reply_to=reply_to, mime_type=mime_type)
 
     async def _convert_to_opus(self, mp3_path: str) -> Optional[str]:
-        """MP3 → ``audio/ogg; codecs=opus`` sibling file; None if ffmpeg is missing or fails. The
+        """MP3 → ``audio/ogg; codecs=opus`` tempfile; None if ffmpeg is missing or fails. The
         missing-ffmpeg warning fires once per adapter: it is an install hint, not a per-message error."""
         if not _FFMPEG_PATH:
             if not self._warned_no_ffmpeg:
@@ -641,7 +641,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     "Windows `winget install Gyan.FFmpeg`, macOS `brew install ffmpeg`, Linux package manager."
                 )
             return None
-        return await asyncio.to_thread(transcode_to_ogg_opus, mp3_path, output_path=mp3_path.rsplit(".", 1)[0] + ".ogg")
+        return await asyncio.to_thread(transcode_to_ogg_opus, mp3_path)
 
     # ------------------------------------------------------------------ inbound media
     async def _graph_get(self, url: str, headers: dict[str, str], what: str, media_id: str) -> Any:

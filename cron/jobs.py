@@ -2814,6 +2814,30 @@ def heartbeat_fire_claim(job_id: str, *, expected_owner: str) -> bool:
     return _with_job(job_id, apply, False)
 
 
+def adopt_fire_claim_owner(job_id: str, *, expected_owner: str) -> bool:
+    """Stamp the adopting restart-safe worker's pid into the claim; True iff it still holds it.
+
+    ``claim_job_for_fire`` stamps ``by`` with the dispatching gateway's pid, so once that gateway
+    restarts, ``_claim_owner_is_dead`` declares the claim stale while the restart-safe worker it
+    spawned is still running — the replacement gateway re-fires the job and the live worker's
+    result is discarded (#136188). The adopting worker therefore records its own machine id in
+    ``adopted_by`` (liveness tracks the worker, not the dead gateway) while ``by`` — the CAS
+    token every heartbeat, fence and terminal write already keys on — stays untouched. A claim
+    already re-taken by a replacement gateway fails the CAS and is never adopted back (fail
+    closed, at-most-once wins). The stamp always refreshes ``at``; a fresh claim is checked in,
+    not trusted."""
+    def apply(jobs, _i, job):
+        claim = job.get("fire_claim")
+        if not isinstance(claim, dict) or claim.get("by") != expected_owner:
+            return False
+        claim["at"] = _hermes_now().isoformat()
+        claim["adopted_by"] = _machine_id()
+        save_jobs(jobs)
+        return True
+
+    return _under_fire_fence(job_id, lambda: _with_job(job_id, apply, False))
+
+
 # Completed one-shots are retained in jobs.json (final status stays inspectable) and pruned by
 # _sweep_completed_oneshots once they age out.
 COMPLETED_ONESHOT_RETENTION_DAYS = 7

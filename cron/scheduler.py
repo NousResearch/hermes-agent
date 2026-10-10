@@ -511,9 +511,10 @@ def _resolve_job_reasoning_config(job: dict, cfg: dict, model: str) -> dict | No
 
 
 from cron.jobs import (
-    _ensure_cron_dir, advance_next_runs, claim_dispatch, claim_job_for_fire, fire_claim_fence,
-    clear_run_claim, get_due_jobs, heartbeat_fire_claim, heartbeat_run_claim, mark_job_run,
-    save_job_output, self_removal_delivery_allowed, self_removal_delivery_scope, use_cron_store)
+    _ensure_cron_dir, advance_next_runs, adopt_fire_claim_owner, claim_dispatch,
+    claim_job_for_fire, fire_claim_fence, clear_run_claim, get_due_jobs, heartbeat_fire_claim,
+    heartbeat_run_claim, mark_job_run, save_job_output, self_removal_delivery_allowed,
+    self_removal_delivery_scope, use_cron_store)
 from cron import store_health
 from cron.execution_identity import enter_cron_execution, exit_cron_execution
 from cron.executions import (
@@ -2702,6 +2703,9 @@ def _run_with_fire_claim_heartbeat(job: dict, run) -> bool:
             return
         try:
             finish_execution(execution_id, success=False, error=error)
+            # A claim the run never got to hold is still a lost occurrence; record it like
+            # every other failure so the operator sees it outside the ledger (#136188).
+            _upsert_incident_for_failure(job, error)
         except Exception:
             logger.warning(
                 "Job '%s': failed to close unstarted execution ledger row",
@@ -2894,9 +2898,11 @@ def _record_fire_ownership_lost(
         )
         finish_execution(execution_id, success=False, error=_OWNERSHIP_LOST_INTERRUPTED)
     else:
-        finish_execution(
-            execution_id, success=False,
-            error="Fire claim ownership lost; stale result was discarded.")
+        discard_error = "Fire claim ownership lost; stale result was discarded."
+        finish_execution(execution_id, success=False, error=discard_error)
+        # Completed agent work was thrown away; without an incident row the loss is visible
+        # only in the executions ledger (#136188).
+        _upsert_incident_for_failure(job, discard_error)
 
 
 def _classify_delivery_outcome(
@@ -3930,6 +3936,26 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
                     execution_id,
                 )
                 return False
+            # The gateway stamped the fire claim with its own pid; after a gateway restart the
+            # owner probe sees a dead pid and a replacement gateway re-fires this job while the
+            # worker keeps running (#136188). Record this worker as the claim's live owner
+            # before any side effect: the CAS loses to a replacement gateway that already
+            # re-claimed (this worker then refuses to run), and wins against everything else.
+            gateway_owner = (
+                str(job["fire_claim"].get("by") or "")
+                if isinstance(job.get("fire_claim"), dict) else ""
+            )
+            if gateway_owner and not adopt_fire_claim_owner(
+                    str(job["id"]), expected_owner=gateway_owner):
+                logger.error(
+                    "Cron external worker refused execution %s: fire claim ownership "
+                    "could not be adopted from %s",
+                    execution_id, gateway_owner,
+                )
+                finish_execution(
+                    execution_id, success=False,
+                    error="Fire claim ownership lost before the worker started.")
+                return False
             try:
                 ack_path.parent.mkdir(parents=True, exist_ok=True)
                 # Publish via write-to-temp + atomic rename. Writing ack_path in place
@@ -4253,8 +4279,11 @@ def _process_due_job(job: dict, adapters, loop, verbose: bool) -> bool:
             job["execution_id"], job["id"], f"Fire claim failed: {type(exc).__name__}: {exc}")
         raise
     if not claimed:
-        finish_execution(
-            job["execution_id"], success=False, error="Fire claim lost; execution was not started.")
+        claim_lost_error = "Fire claim lost; execution was not started."
+        finish_execution(job["execution_id"], success=False, error=claim_lost_error)
+        # The occurrence was consumed by whoever holds the claim (e.g. a manual run overlapping
+        # the tick) while this fire's delivery was dropped; surface it as an incident (#136188).
+        _upsert_incident_for_failure(job, claim_lost_error)
         return True
     # CAS returns the persisted record; bool fallback only for older test doubles.
     claimed_job = dict(claimed) if isinstance(claimed, dict) else dict(job)

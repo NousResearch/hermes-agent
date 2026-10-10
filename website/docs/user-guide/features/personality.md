@@ -229,6 +229,25 @@ Then switch to it with:
 
 Your selection is stored as a name in `display.personality`. Personalities never touch `agent.system_prompt` — that field is reserved for a manual system prompt you write yourself, and it applies only when no personality is selected.
 
+## Channel-specific personalities
+
+Messaging gateways can reuse a named style without changing the global selection:
+
+```yaml
+platforms:
+  discord:
+    channel_overrides:
+      "123456789012345678":
+        personality: concise
+        system_prompt: "Return a JSON review for this project."
+```
+
+The named personality is followed by the channel `system_prompt`, so the more specific
+channel instructions come last. Resolution uses the active profile's personality registry;
+no runner-global selection is changed. Existing channel/thread/parent lookup order is
+unchanged. Unknown names warn and fall back to the raw channel prompt, or the global
+overlay if no raw prompt exists. See [channel overrides](../messaging/index.md#per-channel-model--system-prompt-overrides).
+
 ## Resetting to the default
 
 To cancel the active personality overlay and return to base behavior (your `SOUL.md` persona, plus `agent.system_prompt` if you set one), use any of:

@@ -453,13 +453,18 @@ def checkpoint_footprint_notice() -> Optional[str]:
         if not cfg.get("enabled", False):
             return None
         cap_mb = int(cfg.get("max_total_size_mb", 500) or 0)
-        status = store_status()
-        size = int(status["total_size_bytes"])
-        if cap_mb <= 0 or size < cap_mb * 1024 * 1024:
+        if cap_mb <= 0:
             return None
+        base = _resolve_checkpoint_base()
+        size = _dir_size_bytes(base)
+        if size < cap_mb * 1024 * 1024:
+            return None
+        # The notice needs no commit counts: full status runs Git for every project.
+        store = _store_path(base)
+        project_count = len(_list_projects(store)) if (store / "HEAD").exists() else 0
         from hermes_cli.sizefmt import format_bytes
         return (f"Filesystem checkpoints (/rollback) are on: {format_bytes(size)} across "
-                f"{status['project_count']} project(s), above the {cap_mb} MB cap (one snapshot per project is "
+                f"{project_count} project(s), above the {cap_mb} MB cap (one snapshot per project is "
                 f"always kept). Not using /rollback? `hermes config set checkpoints.enabled false` then "
                 f"`hermes checkpoints clear`; or lower `checkpoints.retention_days`.")
     except Exception as exc:

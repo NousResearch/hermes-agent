@@ -201,3 +201,21 @@ class TestRewriteIsValidBash:
         )
         assert result.returncode == 0
         assert "SECOND_RAN" in result.stdout
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")
+@pytest.mark.parametrize("opener", ["<<'EOF'", "<<EOF"])
+def test_heredoc_body_is_written_byte_exact(tmp_path, opener):
+    """A heredoc body is data: the file written through the real foreground path holds exactly
+    what was sent, even when a body line looks like ``A && B &``."""
+    from tools.environments.local import LocalEnvironment
+
+    body = "#!/usr/bin/env bash\nredis-server --daemonize no && node server.js &\nwait\n"
+    env = LocalEnvironment(cwd=str(tmp_path), timeout=30)
+    try:
+        result = env.execute(f"cat > start.sh {opener}\n{body}EOF")
+    finally:
+        env.cleanup()
+
+    assert result["returncode"] == 0
+    assert (tmp_path / "start.sh").read_text() == body

@@ -160,10 +160,10 @@ def _handle_video_generate(args: dict[str, Any], **_kw: Any) -> str:
     reference_image_urls = _normalize_reference_images(args.get("reference_image_urls"))
     task_id = _kw.get("task_id")
 
-    # Confinement chokepoint (mirrors image_generate): non-local backends hand providers data: URLs.
+    # Confinement chokepoint (mirrors image_generate): local paths reach every provider as data: URLs.
     from tools.image_generation_tool import _confine_source_images
     image_url, reference_image_urls, confine_error = _confine_source_images(
-        image_url, reference_image_urls, task_id)
+        image_url, reference_image_urls, task_id, inline_on_local=True)
     if confine_error is not None:
         return confine_error
     # Coerced BEFORE validation (ordering parity: a bad value raises before a missing prompt).
@@ -328,7 +328,7 @@ def _build_dynamic_video_schema() -> dict[str, Any]:
         properties["image_url"] = {
             "type": "string",
             "description": (
-                "Public HTTPS URL of a still image to animate "
+                "HTTPS URL or local file path of a still image to animate "
                 "(image-to-video). Omit for text-to-video.")}
         max_refs = int(caps.get("max_reference_images") or 0)
         if max_refs > 0:
@@ -337,7 +337,7 @@ def _build_dynamic_video_schema() -> dict[str, Any]:
                 "items": {"type": "string"},
                 "maxItems": max_refs,
                 "description": (
-                    f"Up to {max_refs} public HTTPS reference image URLs "
+                    f"Up to {max_refs} reference images (HTTPS URLs or local file paths) "
                     "(style or character refs).")}
     min_duration = model_meta.get("min_duration", caps.get("min_duration"))
     max_duration = model_meta.get("max_duration", caps.get("max_duration"))

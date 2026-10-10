@@ -1,10 +1,16 @@
 import { describe, expect, it } from 'vitest'
 
-import { collidesWithWorkspace, skillHit, skillPattern } from './skill'
+import type { ChatMessage } from '@/lib/chat-messages'
+
+import { collidesWithWorkspace, skillHit, skillPattern, skillTouchedInMessages, stripSlashTokens } from './skill'
 
 // skillHit is the provider's real predicate: a whole-word match that the user
 // has finished typing (at least one character follows it).
 const hits = (name: string, draft: string) => skillHit(skillPattern(name), draft.toLowerCase())
+
+// Exercises the provider's real haystack sanitizer, not a copy of it.
+const hitsAfterSanitize = (name: string, draft: string) =>
+  skillHit(skillPattern(name), stripSlashTokens(draft).toLowerCase())
 
 describe('skillPattern + skillHit', () => {
   it('matches the exact name as a completed whole word', () => {
@@ -60,5 +66,88 @@ describe('collidesWithWorkspace', () => {
 
   it('never collides when detached (empty cwd)', () => {
     expect(collidesWithWorkspace('hermes-agent', '')).toBe(false)
+  })
+})
+
+// -- skillTouchedInMessages ---------------------------------------------------
+
+const toolCall = (toolName: string, args?: unknown, argsText = ''): ChatMessage => ({
+  id: 't',
+  role: 'assistant',
+  parts: [{ args: args as never, argsText, toolCallId: 'x', toolName, type: 'tool-call' }]
+})
+
+const userText = (text: string): ChatMessage => ({
+  id: 'u',
+  role: 'user',
+  parts: [{ text, type: 'text' }]
+})
+
+describe('skillTouchedInMessages', () => {
+  it('detects a skill_view load of the skill', () => {
+    expect(skillTouchedInMessages('pr-ready', [toolCall('skill_view', { name: 'pr-ready' })])).toBe(true)
+  })
+
+  it('detects a skill_manage touch of the skill', () => {
+    expect(skillTouchedInMessages('pr-ready', [toolCall('skill_manage', { action: 'patch', name: 'pr-ready' })])).toBe(
+      true
+    )
+  })
+
+  it('matches qualified skill names (category/name, plugin:name)', () => {
+    expect(
+      skillTouchedInMessages('hermes-agent-dev', [toolCall('skill_view', { name: 'github/hermes-agent-dev' })])
+    ).toBe(true)
+    expect(
+      skillTouchedInMessages('writing-plans', [toolCall('skill_view', { name: 'superpowers:writing-plans' })])
+    ).toBe(true)
+  })
+
+  it('falls back to argsText when args were not parsed', () => {
+    expect(skillTouchedInMessages('pr-ready', [toolCall('skill_view', undefined, '{"name":"pr-ready"}')])).toBe(true)
+  })
+
+  it('detects the user loading the skill via its slash command', () => {
+    expect(skillTouchedInMessages('pr-ready', [userText('/pr-ready check this branch')])).toBe(true)
+    expect(skillTouchedInMessages('pr-ready', [userText('/pr-ready')])).toBe(true)
+  })
+
+  it('ignores touches of OTHER skills and non-skill tools', () => {
+    expect(skillTouchedInMessages('pr-ready', [toolCall('skill_view', { name: 'clean' })])).toBe(false)
+    expect(skillTouchedInMessages('pr-ready', [toolCall('read_file', { path: 'pr-ready' })])).toBe(false)
+    // Slash prefix must be exact — /pr-ready-extra is a different command.
+    expect(skillTouchedInMessages('pr-ready', [userText('/pr-ready-extra go')])).toBe(false)
+    // Merely mentioning the name in prose is not a load.
+    expect(skillTouchedInMessages('pr-ready', [userText('is pr-ready any good?')])).toBe(false)
+  })
+
+  it('is case-insensitive on the stored arg', () => {
+    expect(skillTouchedInMessages('pr-ready', [toolCall('skill_view', { name: 'PR-Ready' })])).toBe(true)
+  })
+
+  it('empty transcript touches nothing', () => {
+    expect(skillTouchedInMessages('pr-ready', [])).toBe(false)
+  })
+})
+
+describe('draft haystack sanitization (slash-prefixed skills, #91626)', () => {
+  it('strips slash commands mid-message before scanning', () => {
+    // The bug: "please run /github-auth on this" re-fired the "Use skill:
+    // github-auth" pill because skillHit matched "github-auth" inside the
+    // slash command the user had already typed.
+    expect(hitsAfterSanitize('github-auth', 'please run /github-auth on this')).toBe(false)
+    expect(hitsAfterSanitize('vault', 'When I trigger /vault and /github-auth please')).toBe(false)
+  })
+
+  it('preserves URL fragments mid-prose (no leading whitespace)', () => {
+    // https://example.com/api/v1 is not stripped: the regex only removes
+    // whitespace-bounded slash tokens.
+    expect(hitsAfterSanitize('api', 'visit https://example.com/api/v1 for api docs ')).toBe(true)
+  })
+
+  it('a real prose mention after a slash command still hits', () => {
+    // Stripping the slash token must not blind the provider to a genuine
+    // prose mention elsewhere in the draft.
+    expect(hitsAfterSanitize('github-auth', '/github-auth loaded. Is github-auth any good? ')).toBe(true)
   })
 })

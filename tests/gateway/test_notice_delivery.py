@@ -42,7 +42,10 @@ async def test_deliver_platform_notice_uses_private_delivery_when_configured():
         "C123",
         "U123",
         "hello",
-        metadata={"thread_id": "111.222"},
+        # user_id rides along since the R3-5 per-turn identity stamp (Slack
+        # sources carry their author in thread metadata for the connector's
+        # chat.startStream recipient fields). Additive and harmless here.
+        metadata={"thread_id": "111.222", "user_id": "U123"},
     )
     adapter.send.assert_not_awaited()
 

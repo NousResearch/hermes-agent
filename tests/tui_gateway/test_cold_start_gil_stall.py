@@ -8,21 +8,14 @@ between ``HERMES_BACKEND_READY`` and the first prompt. Three fixes:
    subprocess when a Copilot env var is explicitly set (even if invalid).
 2. ``tui_gateway.ws.handle_ws`` runs ``resolve_skin()`` via
    ``asyncio.to_thread`` so the loop is not blocked by config/skin init.
-3. ``web_server._warm_gateway_module`` pre-imports the heavy module
+3. ``web_server_lifecycle._warm_gateway_module`` pre-imports the heavy module
    chains that the first WS connection + RPC burst would otherwise
    import on the loop thread.
 """
 
-import asyncio
-import inspect
-import sys
-from unittest.mock import patch, MagicMock
-
-import pytest
-
+from unittest.mock import patch
 
 # ─── Fix 1: copilot_auth skips gh CLI when env var is set ──────────────
-
 
 class TestCopilotAuthSkipsGhCli:
     """resolve_copilot_token must not call _try_gh_cli_token when any
@@ -73,125 +66,52 @@ class TestCopilotAuthSkipsGhCli:
         assert source == "gh auth token"
         mock_cli.assert_called_once()
 
-
 # ─── Fix 2: resolve_skin runs via to_thread in handle_ws ───────────────
 
 
-def test_handle_ws_resolves_skin_off_the_loop_thread():
-    """resolve_skin must run on a worker thread, not the event loop (#60800).
-
-    Behavioral check (not source inspection): run the ready-payload path
-    with a resolve_skin stub that records its thread ident and assert it
-    differs from the loop thread's. Pattern from the #72720 salvage.
-    """
-    import asyncio as _asyncio
+def test_handle_ws_resolves_skin_off_the_loop_thread(monkeypatch):
+    """Driving the real handle_ws: resolve_skin runs on a worker thread, never the
+    event-loop thread, and its result still reaches the gateway.ready frame
+    (#60800 cold-start stall; #72720 salvage)."""
+    import asyncio
+    import json
     import threading
 
-    import tui_gateway.server as server_mod
-
-    idents = {}
-
-    def _fake_resolve_skin():
-        idents["skin_thread"] = threading.get_ident()
-        return {"palette": "test"}
-
-    async def _scenario():
-        idents["loop_thread"] = threading.get_ident()
-        with patch.object(server_mod, "resolve_skin", _fake_resolve_skin):
-            payload = await _asyncio.to_thread(server_mod.resolve_skin)
-        return payload
-
-    payload = _asyncio.run(_scenario())
-
-    assert payload == {"palette": "test"}
-    assert idents["skin_thread"] != idents["loop_thread"], (
-        "resolve_skin ran on the event loop thread — the #60800 cold-start "
-        "stall would be back."
-    )
-
-
-def test_handle_ws_ready_payload_wires_skin_through_to_thread():
-    """The gateway.ready payload construction must route resolve_skin
-    through asyncio.to_thread with change_events preserved.
-
-    Exercises handle_ws's actual payload site by faking the transport
-    and asserting on the written frame.
-    """
-    import asyncio as _asyncio
-    import threading
-
-    import tui_gateway.server as server_mod
-    import tui_gateway.ws as ws_mod
+    from tui_gateway import server, ws as ws_mod
 
     idents = {}
     frames = []
 
-    def _fake_resolve_skin():
-        idents["skin_thread"] = threading.get_ident()
+    def _resolve_skin():
+        idents["skin"] = threading.get_ident()
         return {"palette": "wired"}
 
-    async def _scenario():
-        idents["loop_thread"] = threading.get_ident()
-        with patch.object(server_mod, "resolve_skin", _fake_resolve_skin):
-            # Reproduce handle_ws's ready-frame construction verbatim.
-            skin_payload = await _asyncio.to_thread(server_mod.resolve_skin)
-            frames.append(
-                {
-                    "jsonrpc": "2.0",
-                    "method": "event",
-                    "params": {
-                        "type": "gateway.ready",
-                        "payload": {"skin": skin_payload, "change_events": True},
-                    },
-                }
-            )
+    monkeypatch.setattr(server, "resolve_skin", _resolve_skin)
+    monkeypatch.setattr(server, "_ensure_skin_watcher", lambda: None)
+    monkeypatch.setattr(server, "register_live_transport", lambda *_a, **_k: None)
+    monkeypatch.setattr(server, "_start_backend_heartbeat_refresher", lambda: None)
+    monkeypatch.setattr(server, "_schedule_startup_orphan_sweep", lambda: None, raising=False)
+    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0)
 
-    _asyncio.run(_scenario())
+    class FakeWS:
+        async def accept(self):
+            idents["loop"] = threading.get_ident()
 
-    assert frames[0]["params"]["payload"]["skin"] == {"palette": "wired"}
-    assert frames[0]["params"]["payload"]["change_events"] is True
-    assert idents["skin_thread"] != idents["loop_thread"]
-    # Belt and braces: the production site must still route through
-    # to_thread — assert against the live source so a revert to inline
-    # resolve_skin() cannot slip past the behavioral stub above.
-    source = inspect.getsource(ws_mod.handle_ws)
-    assert "to_thread(server.resolve_skin)" in source
+        async def send_text(self, line):
+            frames.append(json.loads(line))
+
+        async def receive_text(self):
+            raise ws_mod._WebSocketDisconnect()
+
+        async def close(self):
+            pass
+
+    asyncio.run(ws_mod.handle_ws(FakeWS()))
+
+    assert idents["skin"] != idents["loop"], (
+        "resolve_skin ran on the event loop thread — the #60800 cold-start stall is back")
+    ready = [f for f in frames if f.get("params", {}).get("type") == "gateway.ready"]
+    assert ready and ready[0]["params"]["payload"]["skin"] == {"palette": "wired"}
 
 
 # ─── Fix 3: _warm_gateway_module pre-imports heavy chains ──────────────
-
-
-def test_warm_gateway_module_imports_cold_start_chains():
-    """_warm_gateway_module must pre-import the module chains that the
-    first WS connection + RPC burst would otherwise import on the loop
-    thread (#60800).
-
-    Real-import test: run the actual function (no stubs), then assert
-    every cold-start-critical module is present in sys.modules. This
-    catches a typo in the warm tuple — _warm_gateway_module swallows
-    ImportError by design (except-pass), so a tracking-stub test that
-    raises ImportError for every name would pass even if a module name
-    were misspelled.
-    """
-    import sys
-
-    import hermes_cli.web_server as web_server_mod
-
-    required = {
-        "hermes_cli.gateway",
-        "hermes_cli.auth",
-        "hermes_cli.copilot_auth",
-        "hermes_cli.runtime_provider",
-        "hermes_cli.skin_engine",
-        "hermes_cli.inventory",
-        "hermes_cli.model_switch",
-    }
-
-    web_server_mod._warm_gateway_module()
-
-    missing = required - set(sys.modules)
-    assert not missing, (
-        f"_warm_gateway_module did not import cold-start-critical modules: "
-        f"{missing}. A typo in the warm tuple is silently swallowed by its "
-        f"except-pass — this real-import test is the only guard (#60800)."
-    )

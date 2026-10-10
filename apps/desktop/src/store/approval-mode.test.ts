@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { deferred } from '../test/deferred'
+
 import {
   $approvalModes,
   approvalModeForProfile,
@@ -7,18 +9,6 @@ import {
   setApprovalModeForProfile,
   syncApprovalModeForProfile
 } from './approval-mode'
-
-function deferred<T>() {
-  let resolve!: (value: T) => void
-  let reject!: (error: unknown) => void
-
-  const promise = new Promise<T>((res, rej) => {
-    resolve = res
-    reject = rej
-  })
-
-  return { promise, reject, resolve }
-}
 
 describe('profile-scoped approval mode cache', () => {
   beforeEach(() => $approvalModes.set({}))
@@ -29,8 +19,32 @@ describe('profile-scoped approval mode cache', () => {
     const request = vi.fn(async () => ({ value: 'manual' }))
     await syncApprovalModeForProfile(request, 'default')
 
-    expect(request).toHaveBeenCalledWith('config.get', { key: 'approvals.mode' })
+    expect(request).toHaveBeenCalledWith('config.get', { key: 'approvals.mode', profile: 'default' })
     expect(approvalModeForProfile('default')).toBe('manual')
+  })
+
+  it('scopes reads and writes to the named profile so a non-launch profile is not misrouted', async () => {
+    const readWork = vi.fn(async () => ({ value: 'off' }))
+    await syncApprovalModeForProfile(readWork, 'work')
+    expect(readWork).toHaveBeenCalledWith('config.get', { key: 'approvals.mode', profile: 'work' })
+
+    const writeWork = vi.fn(async () => ({ value: 'manual' }))
+    await setApprovalModeForProfile(writeWork, 'work', 'manual')
+    expect(writeWork).toHaveBeenCalledWith('config.set', {
+      key: 'approvals.mode',
+      value: 'manual',
+      profile: 'work'
+    })
+  })
+
+  it('omits the profile param for a blank profile so the backend keeps its launch scope', async () => {
+    const request = vi.fn(async () => ({ value: 'smart' }))
+    await syncApprovalModeForProfile(request, '   ')
+    expect(request).toHaveBeenCalledWith('config.get', { key: 'approvals.mode' })
+
+    const write = vi.fn(async () => ({ value: 'off' }))
+    await setApprovalModeForProfile(write, '', 'off')
+    expect(write).toHaveBeenCalledWith('config.set', { key: 'approvals.mode', value: 'off' })
   })
 
   it('keeps profile values isolated', async () => {

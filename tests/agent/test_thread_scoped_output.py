@@ -7,11 +7,13 @@ context.  This is the property the old process-global
 ``contextlib.redirect_stdout(devnull)`` violated (issue #55769 / #55925).
 """
 
+import contextlib
 import io
 import sys
 import threading
 import time
 
+import agent.thread_scoped_output as thread_output
 from agent.thread_scoped_output import thread_scoped_silence
 
 
@@ -94,3 +96,73 @@ def test_repeated_contexts_never_write_to_a_closed_sink():
             sys.stdout.fileno()
     finally:
         sys.stdout = original
+
+
+def test_temporary_global_redirects_do_not_allocate_new_sinks(monkeypatch):
+    """A displaced proxy is temporary, not a reason to leak another FD pair."""
+    opened_sinks = []
+
+    def fake_open(*_args, **_kwargs):
+        sink = io.StringIO()
+        opened_sinks.append(sink)
+        return sink
+
+    monkeypatch.setattr(thread_output, "_installed", {})
+    monkeypatch.setattr(thread_output, "_sinks", {}, raising=False)
+    monkeypatch.setattr(thread_output, "open", fake_open, raising=False)
+    original_stdout, original_stderr = sys.stdout, sys.stderr
+    sys.stdout, sys.stderr = io.StringIO(), io.StringIO()
+    try:
+        with thread_scoped_silence():
+            pass
+        assert len(opened_sinks) == 2
+        original_proxies = dict(thread_output._installed)
+
+        for _ in range(20):
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                with thread_scoped_silence():
+                    print("hidden")
+
+        with thread_scoped_silence():
+            pass
+        assert len(opened_sinks) == 2
+        assert thread_output._installed == original_proxies
+    finally:
+        sys.stdout, sys.stderr = original_stdout, original_stderr
+
+
+def test_silence_survives_redirect_restoring_an_older_proxy(monkeypatch):
+    """Silencing is stream-wide, even when a redirect swaps proxy generations."""
+    monkeypatch.setattr(thread_output, "_installed", {})
+    monkeypatch.setattr(thread_output, "_sinks", {}, raising=False)
+    original_stdout, original_stderr = sys.stdout, sys.stderr
+    passthrough = io.StringIO()
+    sys.stdout = passthrough
+    entered = threading.Event()
+    release = threading.Event()
+
+    try:
+        with thread_scoped_silence():
+            pass
+
+        def worker():
+            with thread_scoped_silence():
+                entered.set()
+                assert release.wait(timeout=10)
+                print("must-stay-silenced")
+
+        redirected = io.StringIO()
+        with contextlib.redirect_stdout(redirected):
+            thread = threading.Thread(target=worker)
+            thread.start()
+            assert entered.wait(timeout=10)
+
+        release.set()
+        thread.join(timeout=10)
+
+        assert not thread.is_alive()
+        assert "must-stay-silenced" not in passthrough.getvalue()
+        assert "must-stay-silenced" not in redirected.getvalue()
+    finally:
+        release.set()
+        sys.stdout, sys.stderr = original_stdout, original_stderr

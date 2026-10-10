@@ -58,6 +58,45 @@ class TestFetchModelsBaseUrlOverride:
         finally:
             server.shutdown()
 
+    def test_custom_base_url_beats_models_url(self):
+        """A caller base_url differing from the profile default overrides
+        models_url — a user-configured proxy must win over the profile's
+        hardcoded catalog endpoint (Discord report: CommandCode picker)."""
+        server, port = _start_server([{"id": "proxy-model-b"}])
+        try:
+            profile = ProviderProfile(
+                name="test",
+                base_url="http://127.0.0.1:1",
+                models_url="http://127.0.0.1:1/models",  # unreachable
+            )
+            result = profile.fetch_models(
+                api_key="test-key",
+                base_url=f"http://127.0.0.1:{port}",
+            )
+            assert result == ["proxy-model-b"]
+        finally:
+            server.shutdown()
+
+    def test_default_base_url_does_not_shadow_models_url(self):
+        """Callers pass base_url unconditionally (profile default when the
+        user configured nothing). Equality with self.base_url means "not
+        customised" and must keep models_url as the endpoint."""
+        server, port = _start_server([{"id": "catalog-model"}])
+        try:
+            profile = ProviderProfile(
+                name="test",
+                base_url="http://127.0.0.1:1",  # inference URL, unreachable
+                models_url=f"http://127.0.0.1:{port}/models",
+            )
+            # Caller echoes the profile default back — models_url must win.
+            result = profile.fetch_models(
+                api_key="test-key",
+                base_url="http://127.0.0.1:1/",  # same default, trailing slash
+            )
+            assert result == ["catalog-model"]
+        finally:
+            server.shutdown()
+
 
 
 
@@ -171,3 +210,16 @@ class TestModelPickerBaseUrlIntegration:
             mock_profile.fetch_models.assert_called_once()
             call_kwargs = mock_profile.fetch_models.call_args
             assert call_kwargs.kwargs.get("base_url") == "https://custom.proxy.com"
+
+
+def test_profiles_without_model_listing_never_hit_the_network():
+    """SDK-backed profiles (bedrock, vertex) still carry a base_url the generic fetch_models
+    would happily GET ``/models`` against; the flag must short-circuit first."""
+    from providers import list_providers
+
+    flagged = [p for p in list_providers() if not p.supports_model_listing]
+    assert {p.name for p in flagged} >= {"bedrock", "vertex"}
+    with patch("hermes_cli.urllib_security.open_credentialed_url") as opener:
+        for profile in flagged:
+            assert profile.fetch_models(api_key="k", base_url=profile.base_url) is None, profile.name
+    opener.assert_not_called()

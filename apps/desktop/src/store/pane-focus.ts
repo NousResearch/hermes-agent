@@ -1,5 +1,8 @@
 import { setTerminalTakeover } from '@/app/right-sidebar/store'
+import { isLayoutNode, type LayoutNode } from '@/components/pane-shell/tree/model'
+import { applyLayoutPreset, LAYOUTS_AREA } from '@/components/pane-shell/tree/presets'
 import { revealTreePane } from '@/components/pane-shell/tree/store'
+import { registry } from '@/contrib/registry'
 
 import { setFileBrowserOpen, setSidebarOpen } from './layout'
 import { openReview } from './review'
@@ -16,6 +19,17 @@ const PANE_REVEALERS: Record<string, () => void> = {
   terminal: () => setTerminalTakeover(true)
 }
 
+// The store setters above are same-value no-ops: `$open` already reads true
+// while the pane sits in a zone the user minimized from its chevron, so the
+// listener never fires and the tool reported success over an invisible pane
+// (#106009). An explicit reveal also un-minimizes and fronts the tree pane.
+const TREE_PANE_OF: Record<string, string> = {
+  files: 'files',
+  review: 'review',
+  sessions: 'sessions',
+  terminal: 'terminal'
+}
+
 /** Reveal a desktop pane by name. Returns false for an unknown pane. */
 export function revealDesktopPane(pane: string): boolean {
   const reveal = PANE_REVEALERS[pane]
@@ -25,6 +39,35 @@ export function revealDesktopPane(pane: string): boolean {
   }
 
   reveal()
+
+  const treePane = TREE_PANE_OF[pane]
+
+  if (treePane) {
+    revealTreePane(treePane)
+  }
+
+  return true
+}
+
+/** Apply a layout preset by id, resolved against the layouts contribution
+ *  registry — the SAME list the layout picker renders, so core presets
+ *  (default/focus/terminal-deck/quad), plugin presets, and user-saved presets
+ *  are all addressable by the backend `apply_layout` tool. Returns false for
+ *  an unknown id. */
+export function applyDesktopLayoutPreset(preset: string): boolean {
+  if (!preset) {
+    return false
+  }
+
+  const entry = registry
+    .getArea(LAYOUTS_AREA)
+    .find(candidate => candidate.id === preset && isLayoutNode(candidate.data))
+
+  if (!entry) {
+    return false
+  }
+
+  applyLayoutPreset(entry.id, entry.data as LayoutNode)
 
   return true
 }

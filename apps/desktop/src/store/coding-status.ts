@@ -3,14 +3,8 @@ import { atom, computed, type ReadableAtom } from 'nanostores'
 import type { HermesGitWorktree, HermesRepoStatus } from '@/global'
 import { desktopGit } from '@/lib/desktop-git'
 
-import {
-  $projectScope,
-  $projectTree,
-  $worktreeDialog,
-  $worktreeRefreshToken,
-  ALL_PROJECTS,
-  projectRootCwd
-} from './projects'
+import { $projectScope, ALL_PROJECTS } from './project-scope'
+import { $projectTree, $worktreeDialog, $worktreeRefreshToken, projectRootCwd } from './projects'
 import {
   $busy,
   $currentCwd,
@@ -94,8 +88,9 @@ export function repoStatusForCwd(cwd?: null | string): ReadableAtom<HermesRepoSt
  * Is this path a git repo? This function reads the probe cache, and probes on
  * demand when the cache has no entry for the path. Use it to validate any repo
  * that was picked out of candidate FOLDERS: a path in a project row is not
- * evidence that git can branch from it. False on a remote backend, because
- * there is no local git truth to probe.
+ * evidence that git can branch from it. On a remote gateway the probe is
+ * backend-routed (`desktopGit()` returns the REST mirror), so a VPS path is
+ * judged by the VPS's git — not by this machine's filesystem (#81724).
  */
 export async function isGitRepoPath(cwd: string): Promise<boolean> {
   const key = normalizeCwd(cwd)
@@ -138,20 +133,24 @@ export function repoWorktreesForCwd(cwd?: null | string): ReadableAtom<HermesGit
 export type RepoChangeKind = 'added' | 'conflicted' | 'modified'
 
 // Absolute file path → its git change kind, for VS Code-style file-tree tinting.
-// Reuses the same bounded $repoStatus probe (capped file list); git reports
-// repo-root-relative paths, so we join them onto the active cwd. Deletions never
-// appear — the file is gone from disk, so there's no tree row to tint.
-export const $repoChangeByPath = computed([$repoStatus, $currentCwd], (status, cwd) => {
+// Reuses the bounded per-CWD repo-status probes (capped file list); git reports
+// repo-root-relative paths, so we join them onto their corresponding probed cwd.
+// Deletions never appear — the file is gone from disk, so there's no tree row to tint.
+export const $repoChangeByPath = computed([$repoStatusByCwd], byCwd => {
   const map = new Map<string, RepoChangeKind>()
-  const root = (cwd || '').replace(/[/\\]+$/, '')
 
-  if (!status || !root) {
-    return map
-  }
+  for (const [cwd, status] of Object.entries(byCwd)) {
+    const root = (cwd || '').trim().replace(/[/\\]+$/, '')
 
-  for (const file of status.files) {
-    const kind: RepoChangeKind = file.conflicted ? 'conflicted' : file.untracked ? 'added' : 'modified'
-    map.set(`${root}/${file.path}`, kind)
+    if (!status || !root) {
+      continue
+    }
+
+    for (const file of status.files) {
+      const cleanPath = (file.path || '').replace(/^[/\\]+/, '')
+      const kind: RepoChangeKind = file.conflicted ? 'conflicted' : file.untracked ? 'added' : 'modified'
+      map.set(`${root}/${cleanPath}`, kind)
+    }
   }
 
   return map
@@ -160,9 +159,36 @@ export const $repoChangeByPath = computed([$repoStatus, $currentCwd], (status, c
 /**
  * Per-row Git decoration subscription. A visible file row reads one scalar, so
  * a fresh repo-status map only re-renders that row when its own kind changed.
+ * Supports directory inheritance for untracked folders under `--untracked-files=normal`.
  */
 export function repoChangeKindForPath(path: string): ReadableAtom<RepoChangeKind | undefined> {
-  return computed($repoChangeByPath, changes => changes.get(path))
+  return computed($repoChangeByPath, changes => {
+    const direct = changes.get(path)
+
+    if (direct) {
+      return direct
+    }
+
+    // Check if an ancestor directory is marked 'added' (untracked directory).
+    let parent = path.replace(/[/\\]+$/, '')
+
+    while (true) {
+      const lastSlash = Math.max(parent.lastIndexOf('/'), parent.lastIndexOf('\\'))
+
+      if (lastSlash <= 0) {
+        break
+      }
+
+      parent = parent.slice(0, lastSlash)
+      const parentKind = changes.get(parent)
+
+      if (parentKind === 'added') {
+        return 'added'
+      }
+    }
+
+    return undefined
+  })
 }
 
 // Cwds whose rails are on screen right now (refcounted — two tiles in one

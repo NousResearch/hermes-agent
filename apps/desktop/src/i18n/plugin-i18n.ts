@@ -16,8 +16,9 @@ import { atom } from 'nanostores'
 import { useCallback } from 'react'
 
 import { useI18n } from './context'
-import { getRuntimeI18nLocale, translateFrom } from './runtime'
-import type { Locale } from './types'
+import { type AppLocaleRegistration, registerAppLocale } from './registry'
+import { getRuntimeI18nLocale, subscribeRuntimeI18nLocale, translateFrom } from './runtime'
+import type { BundledLocale, Locale } from './types'
 
 /** A leaf message: a literal or an interpolator (`n => `${n} left``). */
 export type PluginMessageValue = string | ((...args: never[]) => string)
@@ -28,9 +29,12 @@ export interface PluginMessages {
   [key: string]: PluginMessages | PluginMessageValue
 }
 
-/** Locale → messages. Keyed by the app's locales so autocomplete guides you;
- *  a bundle for a locale the app can't select is simply never resolved. */
-export type PluginLocaleBundles = Partial<Record<Locale, PluginMessages>>
+/** Locale → messages. The bundled ids autocomplete; any other id (a language
+ *  a pack plugin registered with `registerAppLocale`) is accepted too. A
+ *  bundle for a locale the app can't select is simply never resolved. */
+export type PluginLocaleBundles = Partial<Record<BundledLocale, PluginMessages>> & {
+  [locale: Locale]: PluginMessages | undefined
+}
 
 /** Resolve `key` for this plugin against `args`; falls back to English, then
  *  the raw key. */
@@ -43,6 +47,17 @@ export interface PluginI18n {
   /** Module-level translator against the app's active locale (mirrors
    *  `translateNow`). Non-reactive — in React prefer `usePluginI18n`. */
   t: PluginTranslate
+  /** Observe locale changes (not initial registration) to rebuild static labels.
+   *  Returns an unsubscribe function; also disposed on plugin unload. */
+  onLocaleChange: (listener: () => void) => () => void
+  /** Add (or extend) a language for the WHOLE app — a language pack. The
+   *  strings are a partial of the app catalog (nested, or flat dotted keys)
+   *  merged over the bundled catalog for that id, or English for a new
+   *  language; a string where English has a function becomes a positional
+   *  `{0}`/`{1}` formatter. Attributed to this plugin and dropped on unload;
+   *  the returned disposer drops it early. Registering never changes the
+   *  active language. */
+  registerAppLocale: (id: string, registration: AppLocaleRegistration) => () => void
 }
 
 const registry = new Map<string, Map<Locale, PluginMessages>>()
@@ -96,6 +111,8 @@ export function translatePlugin(pluginId: string, locale: Locale, key: string, a
 export function createPluginI18n(pluginId: string, track: (dispose: () => void) => () => void): PluginI18n {
   return {
     register: bundles => track(registerPluginLocales(pluginId, bundles)),
+    onLocaleChange: listener => track(subscribeRuntimeI18nLocale(listener)),
+    registerAppLocale: (id, registration) => track(registerAppLocale(id, registration, `plugin:${pluginId}`)),
     t: (key, ...args) => translatePlugin(pluginId, getRuntimeI18nLocale(), key, args)
   }
 }
@@ -104,13 +121,15 @@ export function createPluginI18n(pluginId: string, track: (dispose: () => void) 
  *  late bundle registration. Pass your plugin id (your default export's `id`). */
 export function usePluginI18n(pluginId: string): PluginTranslate {
   const { locale } = useI18n()
+  const version = useStore($version)
 
-  // Subscribe so a bundle registered after mount repaints; `translatePlugin`
-  // reads the live registry, so the memoized closure needs only id + locale.
-  useStore($version)
-
+  // `version` is the registry's change token and must key the translator's
+  // identity: memoized consumers (React.memo, React Compiler output) cache
+  // render slices on `t` itself, so a stable `t` over a mutated registry
+  // serves stale strings after a late bundle registration.
   return useCallback(
     (key: string, ...args: unknown[]) => translatePlugin(pluginId, locale, key, args),
-    [pluginId, locale]
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [pluginId, locale, version]
   )
 }

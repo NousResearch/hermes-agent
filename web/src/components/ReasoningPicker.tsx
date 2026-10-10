@@ -77,20 +77,12 @@ export function ReasoningPicker({
       const prev = effort;
       setEffort(next); // optimistic
       setSaving(true);
-      // Read-modify-write the whole config — the dashboard's single-key save
-      // pattern — so we never clobber sibling keys. `saveConfig` PUTs the full
-      // object the agent boots from.
+      // Sparse patch: PUT /api/config deep-merges onto disk, so sending only
+      // the edited key never clobbers sibling keys — and never echoes a
+      // default-expanded snapshot back over values another surface changed
+      // meanwhile (a CLI-pinned auxiliary slot would come back as "auto").
       void api
-        .getConfig(profile)
-        .then((cfg) => {
-          const base = (cfg ?? {}) as Record<string, unknown>;
-          const agent =
-            base.agent && typeof base.agent === "object"
-              ? { ...(base.agent as Record<string, unknown>) }
-              : {};
-          agent.reasoning_effort = next;
-          return api.saveConfig({ ...base, agent }, profile);
-        })
+        .saveConfig({ agent: { reasoning_effort: next } }, profile)
         .then(() => {
           onChanged?.(next);
         })

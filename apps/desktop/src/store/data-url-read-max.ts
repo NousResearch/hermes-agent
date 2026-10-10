@@ -2,28 +2,21 @@
  * Max size for local files Desktop loads as data URLs (composer attach, image
  * previews, etc.). Main owns the real cap + its JSON under userData — this
  * atom only mirrors it for Settings → Chat. See electron/main.ts
- * (`hermes:data-url-read-max:*`) and the default/clamp in electron/hardening.ts.
+ * (`hermes:data-url-read-max:*`). The default and the clamp are shared with
+ * main via apps/shared so the two ends cannot drift.
  */
 
+import {
+  clampDataUrlReadMaxMb,
+  DATA_URL_READ_DEFAULT_MAX_MB,
+  DATA_URL_READ_MAX_MAX_MB,
+  DATA_URL_READ_MIN_MAX_MB
+} from '@hermes/shared'
 import { atom } from 'nanostores'
 
 import { notifyError } from '@/store/notifications'
 
-/** Ship default; must match DATA_URL_READ_DEFAULT_MAX_MB in hardening.ts. */
-export const DATA_URL_READ_DEFAULT_MAX_MB = 16
-export const DATA_URL_READ_MIN_MAX_MB = 1
-/** Typo / absurd-value guard only — large values can still OOM the app. */
-export const DATA_URL_READ_MAX_MAX_MB = 4096
-
-export function clampDataUrlReadMaxMb(value: unknown): number {
-  const parsed = Number(value)
-
-  if (!Number.isFinite(parsed)) {
-    return DATA_URL_READ_DEFAULT_MAX_MB
-  }
-
-  return Math.min(DATA_URL_READ_MAX_MAX_MB, Math.max(DATA_URL_READ_MIN_MAX_MB, Math.round(parsed)))
-}
+export { clampDataUrlReadMaxMb, DATA_URL_READ_DEFAULT_MAX_MB, DATA_URL_READ_MAX_MAX_MB, DATA_URL_READ_MIN_MAX_MB }
 
 export const $dataUrlReadMaxMb = atom<number>(DATA_URL_READ_DEFAULT_MAX_MB)
 

@@ -1,26 +1,33 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+import { rememberDesktopCommandsCatalog } from '@/lib/desktop-slash-commands'
 
 import { insertInlineRefsIntoEditor } from './inline-refs'
 import {
+  caretOffsetInEditor,
+  caretRevealScrollTop,
   composerPlainText,
   deleteSelectionInEditor,
   insertComposerContentsAtCaret,
   normalizeComposerEditorDom,
+  placeCaretAtOffset,
+  placeCaretEnd,
   refChipElement,
   renderComposerContents,
   replaceBeforeCaret,
   RICH_INPUT_SLOT
 } from './rich-editor'
+import { placeCaretAtEnd } from './test-utils'
 
-const caretIn = (editor: HTMLElement) => {
-  const range = document.createRange()
-  const selection = window.getSelection()!
+beforeEach(() => {
+  rememberDesktopCommandsCatalog({
+    commands: { '/goal': { argument_mode: 'mixed', desktop: null } }
+  })
+})
 
-  range.selectNodeContents(editor)
-  range.collapse(false)
-  selection.removeAllRanges()
-  selection.addRange(range)
-}
+afterEach(() => {
+  rememberDesktopCommandsCatalog(undefined)
+})
 
 describe('renderComposerContents', () => {
   it('renders refs and raw text without interpreting user text as HTML', () => {
@@ -121,6 +128,62 @@ describe('replaceBeforeCaret across split text nodes', () => {
 })
 
 describe('normalizeComposerEditorDom', () => {
+  it.each([
+    [6, 6],
+    [2, 12],
+    [12, 2]
+  ])('preserves selection %i → %i inside a native block wrapper', (anchor, focus) => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    editor.contentEditable = 'true'
+    const wrapper = document.createElement('div')
+    const text = document.createTextNode('still typing here')
+    wrapper.append(text)
+    editor.append(wrapper)
+    document.body.append(editor)
+    const selection = window.getSelection()!
+    selection.setBaseAndExtent(text, anchor, text, focus)
+
+    try {
+      normalizeComposerEditorDom(editor)
+
+      expect(composerPlainText(editor)).toBe('still typing here')
+      expect(selection.anchorNode).toBe(text)
+      expect(selection.anchorOffset).toBe(anchor)
+      expect(selection.focusNode).toBe(text)
+      expect(selection.focusOffset).toBe(focus)
+    } finally {
+      editor.remove()
+    }
+  })
+
+  it('leaves another editor’s selection alone when normalizing a background draft', () => {
+    const foreground = document.createElement('div')
+    const text = document.createTextNode('foreground draft')
+    foreground.append(text)
+    const background = document.createElement('div')
+    background.dataset.slot = RICH_INPUT_SLOT
+    const wrapper = document.createElement('p')
+    wrapper.textContent = 'background draft'
+    background.append(wrapper)
+    document.body.append(foreground, background)
+    const selection = window.getSelection()!
+    selection.setBaseAndExtent(text, 10, text, 3)
+
+    try {
+      normalizeComposerEditorDom(background)
+
+      expect(composerPlainText(background)).toBe('background draft')
+      expect(selection.anchorNode).toBe(text)
+      expect(selection.anchorOffset).toBe(10)
+      expect(selection.focusNode).toBe(text)
+      expect(selection.focusOffset).toBe(3)
+    } finally {
+      foreground.remove()
+      background.remove()
+    }
+  })
+
   it('unwraps a single insertHTML wrapper div so plain text stays one line', () => {
     const editor = document.createElement('div')
     editor.dataset.slot = RICH_INPUT_SLOT
@@ -142,6 +205,38 @@ describe('normalizeComposerEditorDom', () => {
     expect(composerPlainText(editor)).toBe('@file:`src/foo.ts`')
     expect(editor.querySelector('br')).toBeNull()
   })
+
+  it('preserves a live caret anchored in an empty direct text node', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    editor.contentEditable = 'true'
+    document.body.append(editor)
+
+    const leadingLitter = document.createTextNode('')
+    const caretContainer = document.createTextNode('')
+    const trailingLitter = document.createTextNode('')
+    editor.append(leadingLitter, refChipElement('file', '`src/foo.ts`'), caretContainer, trailingLitter)
+
+    const caret = document.createRange()
+    caret.setStart(caretContainer, 0)
+    caret.collapse(true)
+
+    const selection = window.getSelection()!
+    selection.removeAllRanges()
+    selection.addRange(caret)
+
+    normalizeComposerEditorDom(editor)
+
+    expect(leadingLitter.isConnected).toBe(false)
+    expect(trailingLitter.isConnected).toBe(false)
+    expect(caretContainer.isConnected).toBe(true)
+    expect(editor.contains(selection.getRangeAt(0).startContainer)).toBe(true)
+    expect(selection.getRangeAt(0).startContainer).toBe(caretContainer)
+    expect(composerPlainText(editor)).toBe('@file:`src/foo.ts`')
+
+    selection.removeAllRanges()
+    editor.remove()
+  })
 })
 
 describe('insertInlineRefsIntoEditor', () => {
@@ -160,7 +255,7 @@ describe('insertInlineRefsIntoEditor', () => {
     editor.dataset.slot = RICH_INPUT_SLOT
     editor.append(document.createTextNode('review'))
     document.body.append(editor)
-    caretIn(editor)
+    placeCaretAtEnd(editor)
 
     expect(insertInlineRefsIntoEditor(editor, ['@file:`src/a.ts`'])).toBe('review @file:`src/a.ts` ')
 
@@ -172,7 +267,7 @@ describe('insertInlineRefsIntoEditor', () => {
     editor.dataset.slot = RICH_INPUT_SLOT
     editor.append(document.createTextNode('review '))
     document.body.append(editor)
-    caretIn(editor)
+    placeCaretAtEnd(editor)
 
     expect(insertInlineRefsIntoEditor(editor, ['@file:`src/a.ts`'])).toBe('review @file:`src/a.ts` ')
 
@@ -185,7 +280,7 @@ describe('insertComposerContentsAtCaret', () => {
     const editor = document.createElement('div')
     editor.dataset.slot = RICH_INPUT_SLOT
     document.body.append(editor)
-    caretIn(editor)
+    placeCaretAtEnd(editor)
 
     insertComposerContentsAtCaret(editor, 'one\ntwo\nthree')
 
@@ -221,7 +316,7 @@ describe('insertComposerContentsAtCaret', () => {
     const editor = document.createElement('div')
     editor.dataset.slot = RICH_INPUT_SLOT
     document.body.append(editor)
-    caretIn(editor)
+    placeCaretAtEnd(editor)
 
     insertComposerContentsAtCaret(editor, 'read @url:`https://example.dev/a` now')
 
@@ -237,7 +332,7 @@ describe('insertComposerContentsAtCaret', () => {
     const editor = document.createElement('div')
     editor.dataset.slot = RICH_INPUT_SLOT
     document.body.append(editor)
-    caretIn(editor)
+    placeCaretAtEnd(editor)
 
     insertComposerContentsAtCaret(editor, '/some-skill')
 
@@ -253,7 +348,7 @@ describe('insertComposerContentsAtCaret', () => {
     const editor = document.createElement('div')
     editor.dataset.slot = RICH_INPUT_SLOT
     document.body.append(editor)
-    caretIn(editor)
+    placeCaretAtEnd(editor)
 
     insertComposerContentsAtCaret(editor, 'clean @file:`a.ts` with /some-skill then ship')
 
@@ -268,7 +363,7 @@ describe('insertComposerContentsAtCaret', () => {
     const editor = document.createElement('div')
     editor.dataset.slot = RICH_INPUT_SLOT
     document.body.append(editor)
-    caretIn(editor)
+    placeCaretAtEnd(editor)
 
     insertComposerContentsAtCaret(editor, 'see /usr/local/bin and /goal ship it')
 
@@ -283,7 +378,7 @@ describe('insertComposerContentsAtCaret', () => {
     editor.dataset.slot = RICH_INPUT_SLOT
     editor.textContent = 'foo'
     document.body.append(editor)
-    caretIn(editor)
+    placeCaretAtEnd(editor)
 
     insertComposerContentsAtCaret(editor, '/some-skill')
 
@@ -298,7 +393,7 @@ describe('insertComposerContentsAtCaret', () => {
     editor.dataset.slot = RICH_INPUT_SLOT
     editor.append(refChipElement('file', '`a.ts`'))
     document.body.append(editor)
-    caretIn(editor)
+    placeCaretAtEnd(editor)
 
     insertComposerContentsAtCaret(editor, '/some-skill')
 
@@ -378,5 +473,167 @@ describe('deleteSelectionInEditor', () => {
     expect(deleteSelectionInEditor(editor)).toBe(false)
 
     editor.remove()
+  })
+})
+
+describe('caret placement on a detached editor', () => {
+  it('leaves the document selection alone instead of selecting into a detached node', () => {
+    const attached = document.createElement('div')
+    attached.textContent = 'visible composer'
+    document.body.append(attached)
+    placeCaretAtEnd(attached)
+
+    const detached = document.createElement('div')
+    detached.dataset.slot = RICH_INPUT_SLOT
+    detached.textContent = 'unmounted composer'
+
+    const selection = window.getSelection()
+    const before = selection?.getRangeAt(0).startContainer
+
+    expect(() => placeCaretEnd(detached)).not.toThrow()
+    expect(() => placeCaretAtOffset(detached, 3)).not.toThrow()
+    expect(selection?.rangeCount).toBe(1)
+    expect(selection?.getRangeAt(0).startContainer).toBe(before)
+    expect(detached.contains(selection?.anchorNode ?? null)).toBe(false)
+
+    attached.remove()
+  })
+})
+
+describe('normalizeComposerEditorDom — caret preservation', () => {
+  it('re-establishes a caret anchored inside a removed phantom tail block', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    editor.contentEditable = 'true'
+    editor.tabIndex = 0
+    document.body.append(editor)
+    editor.focus()
+
+    expect(document.activeElement).toBe(editor)
+
+    const text = document.createTextNode('hi')
+    const tailBlock = document.createElement('div')
+
+    tailBlock.append(document.createElement('br'))
+    editor.append(text, tailBlock)
+
+    const caret = document.createRange()
+    caret.setStart(tailBlock, 0)
+    caret.collapse(true)
+    const selection = window.getSelection()!
+    selection.removeAllRanges()
+    selection.addRange(caret)
+
+    normalizeComposerEditorDom(editor)
+
+    expect(tailBlock.isConnected).toBe(false)
+    expect(selection.isCollapsed).toBe(true)
+
+    const range = selection.getRangeAt(0)
+    expect(editor.contains(range.startContainer)).toBe(true)
+    expect(range.startContainer).toBe(text)
+    expect(range.startOffset).toBe(2)
+
+    editor.remove()
+  })
+
+  it('leaves a still-valid selection untouched', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    editor.contentEditable = 'true'
+    editor.tabIndex = 0
+    document.body.append(editor)
+    editor.focus()
+
+    const br = document.createElement('br')
+    editor.append(refChipElement('file', '`a.ts`'), br)
+
+    const caret = document.createRange()
+    caret.setStart(editor, 1)
+    caret.collapse(true)
+    const selection = window.getSelection()!
+    selection.removeAllRanges()
+    selection.addRange(caret)
+
+    const offsetBefore = caretOffsetInEditor(editor)
+
+    normalizeComposerEditorDom(editor)
+
+    // The trailing <br> after a chip is gone — normalization did mutate — but
+    // the selection was valid, so it must come through untouched.
+    expect(editor.contains(br)).toBe(false)
+
+    const range = selection.getRangeAt(0)
+    expect(range.startContainer).toBe(editor)
+    expect(range.startOffset).toBe(1)
+    expect(caretOffsetInEditor(editor)).toBe(offsetBefore)
+
+    editor.remove()
+  })
+})
+
+describe('caretRevealScrollTop', () => {
+  const viewport = { top: 100, bottom: 200 }
+
+  it('leaves a visible caret alone', () => {
+    expect(caretRevealScrollTop({ top: 120, bottom: 140 }, viewport, 50)).toBeNull()
+  })
+
+  it('scrolls down just far enough to show a caret below the viewport', () => {
+    expect(caretRevealScrollTop({ top: 400, bottom: 420 }, viewport, 50)).toBe(270)
+  })
+
+  it('scrolls up just far enough to show a caret above the viewport', () => {
+    expect(caretRevealScrollTop({ top: 60, bottom: 80 }, viewport, 50)).toBe(10)
+  })
+})
+
+describe('caret reveal after programmatic inserts', () => {
+  // jsdom has no layout: give the editor a 100px viewport and put every other
+  // element (the caret probe) at `caretTop`, as a long insert would.
+  function overflowingEditor(caretTop: number) {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    document.body.append(editor)
+
+    Object.defineProperty(editor, 'clientHeight', { configurable: true, value: 100 })
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      const [top, bottom] = this === editor ? [0, 100] : [caretTop, caretTop + 20]
+
+      return { bottom, height: bottom - top, left: 0, right: 0, top, width: 0, x: 0, y: top, toJSON: () => ({}) }
+    })
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation(callback => {
+      callback(0)
+
+      return 0
+    })
+
+    return editor
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+    document.body.replaceChildren()
+  })
+
+  it('scrolls a long paste so the caret after it is visible', () => {
+    const editor = overflowingEditor(480)
+    placeCaretAtEnd(editor)
+
+    insertComposerContentsAtCaret(editor, Array.from({ length: 30 }, (_, i) => `line ${i}`).join('\n'))
+
+    expect(editor.scrollTop).toBe(400)
+    expect(editor.querySelectorAll('span').length).toBe(0)
+    expect(composerPlainText(editor)).toContain('line 29')
+  })
+
+  it('scrolls to the caret when a repaint parks it at the end (voice transcript)', () => {
+    const editor = overflowingEditor(300)
+
+    renderComposerContents(editor, Array.from({ length: 30 }, (_, i) => `said ${i}`).join('\n'))
+    placeCaretEnd(editor)
+
+    expect(editor.scrollTop).toBe(220)
+    expect(composerPlainText(editor)).toContain('said 29')
   })
 })

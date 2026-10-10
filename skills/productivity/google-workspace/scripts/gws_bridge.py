@@ -7,7 +7,7 @@ import json
 import os
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 
 # Ensure sibling modules (_hermes_home) are importable when run standalone.
@@ -46,6 +46,13 @@ def refresh_token(token_data: dict) -> dict:
         "client_id": token_data["client_id"],
         "client_secret": token_data["client_secret"],
         "refresh_token": token_data["refresh_token"],
+        # The refresh token goes in BOTH the body and the ``x-nous-refresh-token`` header. Portal's token
+        # endpoint requires ``refresh_token`` in the body (its request schema rejects a header-only request
+        # as ``invalid_request``), and additionally reconciles the header against the body — sending both
+        # lets Portal keep the value out of body-access-logs while still satisfying the schema. The header
+        # name must match Portal's ``REFRESH_TOKEN_HEADER`` exactly (``x-nous-refresh- token``); any other
+        # name is silently ignored. (Verified against the NAS #293 preview deploy: header-only → 400
+        # invalid_request; body → accepted.)
         "grant_type": "refresh_token",
     }).encode()
 
@@ -64,8 +71,8 @@ def refresh_token(token_data: dict) -> dict:
 
     token_data["token"] = result["access_token"]
     token_data["expiry"] = datetime.fromtimestamp(
-        datetime.now(timezone.utc).timestamp() + result["expires_in"],
-        tz=timezone.utc,
+        datetime.now(UTC).timestamp() + result["expires_in"],
+        tz=UTC,
     ).isoformat()
 
     get_token_path().write_text(
@@ -85,8 +92,8 @@ def get_valid_token() -> str:
 
     expiry = token_data.get("expiry", "")
     if expiry:
-        exp_dt = datetime.fromisoformat(expiry.replace("Z", "+00:00"))
-        now = datetime.now(timezone.utc)
+        exp_dt = datetime.fromisoformat(expiry)
+        now = datetime.now(UTC)
         if now >= exp_dt:
             token_data = refresh_token(token_data)
 

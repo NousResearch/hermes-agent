@@ -1,0 +1,1933 @@
+"""Desktop (Electron) app: build/stamp, stage-and-swap pack, exe integrity gate, macOS signing, Linux sandbox, launch (hermes gui/desktop).
+
+Split out of ``hermes_cli/main.py``. Names that still live in main (``PROJECT_ROOT``, ...)
+are imported lazily inside the functions that use them (avoids an import cycle).
+"""
+
+import logging
+import contextlib
+import argparse
+import hashlib
+import json
+import os
+import platform
+import re
+import shlex
+import shutil
+import stat
+import subprocess
+import sys
+import time as _time_mod
+
+from pathlib import Path
+from typing import Callable, Optional
+from hermes_cli.desktop_console import desktop_console_output, desktop_launch_notice
+from hermes_platform.host import facts
+
+# Log-record parity with the origin module.
+logger = logging.getLogger("hermes_cli.main")
+
+_PREVIOUS_APP_KEPT = "  ↩ The previous desktop app was left untouched and still works."
+
+
+def _desktop_dist_exists(desktop_dir: Path) -> bool:
+    """Return True when a local desktop renderer build is present."""
+    return (desktop_dir / "dist" / "index.html").exists()
+
+
+def _renderer_bundle_dir(desktop_dir: Path, *, source_mode: bool) -> Optional[Path]:
+    """The renderer ``dist`` a launch loads: ``apps/desktop/dist`` in source mode, else the
+    ``app.asar.unpacked/dist`` copy (the only real directory, and the one an interrupted replace tears)."""
+    if source_mode:
+        return desktop_dir / "dist"
+
+    resources = _packaged_resources_dir(desktop_dir)
+    return None if resources is None else resources / "app.asar.unpacked" / "dist"
+
+
+def _packaged_resources_dir(desktop_dir: Path) -> Optional[Path]:
+    """The packaged app's ``resources`` dir (renderer bundle, baked ``install-stamp.json``)."""
+    executable = _desktop_packaged_executable(desktop_dir)
+    if executable is None:
+        return None
+    # macOS: …/Hermes.app/Contents/MacOS/Hermes → …/Contents/Resources
+    return executable.parent.parent / "Resources" if sys.platform == "darwin" else executable.parent / "resources"
+
+
+# The module files the renderer fetches before any app code runs: Vite emits
+# them as `<script type="module" src>` plus `<link rel="modulepreload" href>`.
+_HTML_TAG_WITH_URL = re.compile(r"""<(?:script|link)\b[^>]*\b(?:src|href)=["']([^"']+)["'][^>]*>""", re.IGNORECASE)
+
+_MODULE_TAG = re.compile(r"""\btype=["']module["']|\brel=["']modulepreload["']""", re.IGNORECASE)
+
+
+def _renderer_bundle_torn(dist_dir: Path) -> bool:
+    """True when ``index.html`` names hashed module chunks that aren't there.
+
+    A replace interrupted by locked files leaves index and ``assets/`` from
+    different generations; the app dies on its first lazy import while the
+    SOURCE-tree stamp still matches, so no rebuild fixes it. Conservative: an
+    unreadable index or one naming nothing checkable is NOT torn.
+    """
+    try:
+        html = (dist_dir / "index.html").read_text(encoding="utf-8-sig", errors="replace")
+    except OSError:
+        return False
+
+    for match in _HTML_TAG_WITH_URL.finditer(html):
+        href = match.group(1)
+        # Absolute/CDN URLs aren't part of this bundle's generation.
+        if not _MODULE_TAG.search(match.group(0)) or re.match(r"^[a-z]+:|^//", href, re.IGNORECASE):
+            continue
+        rel = href.split("?", 1)[0].split("#", 1)[0].lstrip("./")
+        if rel and not (dist_dir / rel).exists():
+            return True
+
+    return False
+
+
+def _packaged_node_pty_missing(dist_dir: Path) -> bool:
+    """True when the packaged node-pty has no native binary for this OS.
+
+    The main process requires node-pty at startup, so such a package dies
+    before any window opens while the source stamp still matches (#62462).
+    Same places node-pty's loader and stage-native-deps.mjs look. Conservative:
+    a package without node-pty at all is not judged here.
+    """
+    root = dist_dir / "node_modules" / "node-pty"
+    if not (root / "package.json").is_file():
+        return False
+
+    native_dirs = [root / "build" / "Release", *(root / "prebuilds").glob(f"{sys.platform}-*")]
+    return not any(next(d.rglob("*.node"), None) for d in native_dirs if d.is_dir())
+
+
+def _desktop_build_needed(desktop_dir: Path, project_root: Path, *, source_mode: bool) -> bool:
+    """True when the desktop build output is stale, missing, torn, or built in the other mode."""
+    if source_mode:
+        if not _desktop_dist_exists(desktop_dir):
+            return True
+    elif _desktop_packaged_executable(desktop_dir) is None:
+        return True
+
+    # A torn bundle is stale no matter what the stamp says: the hash describes
+    # the intact SOURCE tree, not the half-replaced output.
+    dist_dir = _renderer_bundle_dir(desktop_dir, source_mode=source_mode)
+    if dist_dir is not None and _renderer_bundle_torn(dist_dir):
+        print(f"  ⚠ A previous update left the desktop bundle incomplete ({dist_dir}); rebuilding it")
+        return True
+
+    if not source_mode and dist_dir is not None and _packaged_node_pty_missing(dist_dir):
+        print("  ⚠ The packaged desktop app has no node-pty native binary; rebuilding it")
+        return True
+
+    from hermes_cli.source_build import source_product_current
+
+    return dist_dir is None or not source_product_current(project_root, "desktop", dist_dir)
+
+
+def _packaged_desktop_current_for_head(desktop_dir: Path, project_root: Path) -> bool:
+    """True when the packaged app was built from HEAD and none of its inputs changed since.
+
+    Freshness alone cannot answer this for an update: the baked ``install-stamp.json`` is a
+    desktop input that only the build itself rewrites, so after a pull that touched no other
+    desktop input the receipt still reads current while the app names the previous commit.
+    The commit the packaged app actually ships is the missing half; anything unreadable
+    means "build".
+    """
+    resources = _packaged_resources_dir(desktop_dir)
+    if resources is None:
+        return False
+    from hermes_cli.steward import read_install_stamp
+    from hermes_cli.version_info import _run_git
+
+    commit = read_install_stamp(resources).get("commit")
+    if not isinstance(commit, str) or commit != _run_git(project_root, "rev-parse", "HEAD"):
+        return False
+    return not _desktop_build_needed(desktop_dir, project_root, source_mode=False)
+
+
+def _desktop_packaged_executable(desktop_dir: Path) -> Optional[Path]:
+    """Return the current platform's unpacked Electron app executable."""
+    return _desktop_packaged_executable_in(desktop_dir / "release")
+
+
+def _desktop_packaged_executable_in(release_dir: Path) -> Optional[Path]:
+    """The unpacked Electron app executable under *release_dir* (live ``release`` or a staging dir).
+
+    *release_dir* is electron-builder's ``directories.output`` — the live ``apps/desktop/release`` or a
+    stage-and-swap staging dir (#86443).
+    """
+    if sys.platform == "darwin":
+        candidates = list(release_dir.glob("mac*/Hermes.app/Contents/MacOS/Hermes"))
+    elif sys.platform == "win32":
+        candidates = [
+            release_dir / d / "Hermes.exe" for d in ("win-unpacked", "win-ia32-unpacked", "win-arm64-unpacked")
+        ]
+    else:
+        candidates = [
+            release_dir / d / n for d in ("linux-unpacked", "linux-arm64-unpacked") for n in ("hermes", "Hermes")
+        ]
+
+    existing = [p for p in candidates if p.exists()]
+    if not existing:
+        return None
+    if sys.platform == "win32" and len(existing) > 1:
+        # A stale win-arm64-unpacked next to the real win-unpacked: picking by
+        # mtime can hand a wrong-architecture Hermes.exe to the launcher. Prefer
+        # candidates whose PE machine matches the host; mtime when none parse.
+        # Multiple unpacked trees can coexist (e.g. a stale win-arm64-unpacked left behind by a cross-arch
+        # experiment next to the real win-unpacked). Picking purely by mtime can then hand a
+        # wrong-architecture Hermes.exe to the launcher, which Windows rejects with "This app can't run on
+        # your computer" (#69179).
+        expected = _expected_windows_pe_machines()
+        matching = [p for p in existing if _pe_machine_or_none(p) in expected]
+        if matching:
+            existing = matching
+    return max(existing, key=lambda p: p.stat().st_mtime)
+
+
+# ─── Desktop stage-and-swap pack (#86443) ─────────────────────────────────── electron-builder packs IN
+# PLACE: before-pack.mjs wipes ``release/<platform>- unpacked`` (or the mac ``Hermes.app``) and the Electron
+# unpack + asar + rename then rebuild it. Any failure after that wipe — corrupt cached zip, blocked
+# download, missing dep, disk full — leaves the user with NO app, and ``hermes update`` used to report
+# "partially complete" over an empty release/. Fix the class, not the predicate: build into a STAGING output
+# dir next to release/, verify the staged result, and only then swap it over the live tree with renames. On
+# any failure the live app is untouched.
+_DESKTOP_STAGING_PREFIX = ".staging-"
+
+_DESKTOP_PREVIOUS_SUFFIX = ".previous"
+
+# A real-time file scanner (AV/EDR) holds a short exclusive handle on a freshly packed
+# release/win-unpacked tree; the promotion rename then fails with a sharing violation
+# (WinError 32 / 5 -> PermissionError) and succeeds a moment later on identical input (#112544).
+# Only PermissionError is retried: EXDEV/ENOENT-class failures are permanent.
+_DESKTOP_SWAP_RENAME_RETRY_DELAYS_S = (0.5, 1.0, 1.0, 1.0)
+
+
+def _rename_riding_out_file_lock(src: Path, dst: Path) -> None:
+    """``os.rename`` that retries a transient PermissionError with bounded backoff; re-raises the last one."""
+    for attempt, delay in enumerate(_DESKTOP_SWAP_RENAME_RETRY_DELAYS_S, start=1):
+        try:
+            os.rename(src, dst)
+            return
+        except PermissionError as exc:
+            logger.warning(
+                "desktop promotion rename %s -> %s hit a file lock (attempt %d/%d), retrying in %.1fs: %s",
+                src.name, dst.name, attempt, len(_DESKTOP_SWAP_RENAME_RETRY_DELAYS_S) + 1, delay, exc,
+            )
+            _time_mod.sleep(delay)
+    os.rename(src, dst)
+
+
+def _desktop_staging_dir(desktop_dir: Path) -> Path:
+    """Fresh staging dir ``apps/desktop/.staging-<pid>-<ts>``: a sibling of ``release/`` (same fs → the
+    swap is a rename) but not inside it, so ``release/*-unpacked`` globs never see it. Sweeps leftovers."""
+    for stale in desktop_dir.glob(f"{_DESKTOP_STAGING_PREFIX}*"):
+        shutil.rmtree(stale, ignore_errors=True)
+    return desktop_dir / f"{_DESKTOP_STAGING_PREFIX}{os.getpid()}-{int(_time_mod.time())}"
+
+
+def _desktop_unpacked_root(exe: Path, release_dir: Path) -> Path:
+    """The dir directly under *release_dir* holding *exe* (electron-builder's ``appOutDir``, swapped whole)."""
+    unpacked = exe
+    while unpacked.parent != release_dir:
+        if unpacked.parent == unpacked:
+            raise ValueError(f"{exe} is not under {release_dir}")
+        unpacked = unpacked.parent
+    return unpacked
+
+
+def _recover_interrupted_swap(live: Path, aside: Path) -> None:
+    """Finish a swap that died between its two renames before starting a new one: a missing
+    ``live`` with its ``aside`` copy present means the previous app was moved out and nothing
+    moved in, so put it back; otherwise ``aside`` is leftover. Deleting ``aside`` first (as the
+    swappers used to) destroyed the only remaining copy of the app."""
+    if not live.exists() and aside.is_dir():
+        try:
+            aside.rename(live)
+            logger.warning("restored %s from an interrupted desktop app swap", live)
+            return
+        except OSError as exc:
+            logger.warning("could not restore %s from %s: %s", live, aside, exc)
+            return
+    shutil.rmtree(aside, ignore_errors=True)
+
+
+def _swap_staged_desktop_app(desktop_dir: Path, staging_dir: Path) -> Optional[Path]:
+    """Promote a VERIFIED staged pack over ``release/`` by two renames (live → ``.previous``, staged →
+    live); a failure between them rolls back. Returns the live exe or None (live app kept). Never raises."""
+    staged_exe = _desktop_packaged_executable_in(staging_dir)
+    if staged_exe is None:
+        shutil.rmtree(staging_dir, ignore_errors=True)
+        return None
+    release_dir = desktop_dir / "release"
+    try:
+        staged_root = _desktop_unpacked_root(staged_exe, staging_dir)
+        live_root = release_dir / staged_root.name
+        previous = release_dir / (staged_root.name + _DESKTOP_PREVIOUS_SUFFIX)
+        release_dir.mkdir(parents=True, exist_ok=True)
+        _recover_interrupted_swap(live_root, previous)
+        moved_aside = live_root.exists()
+        if moved_aside:
+            # A Desktop may have reopened during the long packaging step (Windows lock) or
+            # never exited at all (a manual `hermes update`/`hermes desktop` run does not
+            # wait for it — only the update hand-offs do). Either way a renderer alive
+            # past the rename below keeps fetching its old hashed chunks from disk and
+            # dies on the next lazy import, so stop it on every platform (#109643).
+            stopped = _stop_desktop_processes_locking_build(desktop_dir, also_posix=True)
+            if stopped:
+                logger.info("stopped desktop processes before staged app promotion: %s", stopped)
+            _rename_riding_out_file_lock(live_root, previous)
+        try:
+            _rename_riding_out_file_lock(staged_root, live_root)
+        except OSError:
+            if moved_aside:
+                _rename_riding_out_file_lock(previous, live_root)  # restore; live app back as it was
+            raise
+        if moved_aside:
+            shutil.rmtree(previous, ignore_errors=True)
+    except (OSError, ValueError) as exc:
+        logger.warning("desktop stage-and-swap failed, live app kept: %s", exc)
+        return None
+    finally:
+        shutil.rmtree(staging_dir, ignore_errors=True)
+    return live_root / staged_exe.relative_to(staged_root)
+
+
+def _discard_desktop_staging(staging_dir: Path) -> None:
+    shutil.rmtree(staging_dir, ignore_errors=True)
+
+
+# ─── Desktop exe integrity gate (#69179) ──────────────────────────────────── The desktop self-update chain
+# (Desktop → hermes-setup --update → `hermes update` → `hermes desktop --build-only` → relaunch) rebuilds
+# Hermes.exe on the end user's machine and used to verify only that the file EXISTS before declaring
+# success. A corrupt cached Electron zip whose extraction produced a truncated electron.exe, an interrupted
+# rcedit resource rewrite, a disk-full pack, or a wrong-arch unpacked tree therefore shipped a broken binary
+# that Windows refuses to load ("This app can't run on your computer" / 此应用无法在你的电脑上运行). These helpers parse
+# the PE header — no signature infrastructure required — so a structurally broken or wrong-architecture
+# Hermes.exe is caught BEFORE the updater replaces the working app, and the previous build can be restored
+# from the .bak tree that apps/desktop/scripts/before-pack.mjs now preserves.
+_PE_MACHINE_I386 = 0x014C
+_PE_MACHINE_AMD64 = 0x8664
+_PE_MACHINE_ARM64 = 0xAA64
+
+_PE_MACHINE_NAMES = {
+    _PE_MACHINE_I386: "x86 (32-bit)", _PE_MACHINE_AMD64: "x64 (AMD64)", _PE_MACHINE_ARM64: "ARM64",
+}
+
+_PE_MACHINE_TO_NAME = {_PE_MACHINE_ARM64: "ARM64", _PE_MACHINE_AMD64: "AMD64", _PE_MACHINE_I386: "X86"}
+
+# MACHINE_ATTRIBUTES bits (processthreadsapi.h). UserEnabled means the host
+# can run user-mode code of that machine type — natively or under emulation.
+_MACHINE_ATTRIBUTE_USER_ENABLED = 0x00000001
+
+
+def _kernel32():
+    import ctypes
+    return ctypes.WinDLL("kernel32", use_last_error=True)
+
+
+def _windows_user_runnable_pe_machines() -> Optional[set]:
+    """PE machines this host runs in user mode via GetMachineTypeAttributes (the only API reporting
+    AMD64-on-ARM64 emulation); None when unavailable (pre-Win11 22000) so callers fall back."""
+    import ctypes
+    from ctypes import wintypes
+    kernel32 = _kernel32()
+    kernel32.GetMachineTypeAttributes.argtypes = [wintypes.USHORT, ctypes.POINTER(ctypes.c_int)]
+    kernel32.GetMachineTypeAttributes.restype = ctypes.c_long
+
+    runnable = set()
+    for machine in (_PE_MACHINE_ARM64, _PE_MACHINE_AMD64, _PE_MACHINE_I386):
+        attributes = ctypes.c_int(0)
+        # HRESULT: zero is success, any nonzero value is a failure.
+        if kernel32.GetMachineTypeAttributes(machine, ctypes.byref(attributes)):
+            continue
+        if attributes.value & _MACHINE_ATTRIBUTE_USER_ENABLED:
+            runnable.add(machine)
+    return runnable or None
+
+
+def _windows_native_machine() -> str:
+    """Return the native Windows machine name in upper-case PE vocabulary."""
+    if sys.platform == "win32":
+        return {"arm64": "ARM64", "amd64": "AMD64", "x86": "X86"}.get(
+            facts.native_arch(), (platform.machine() or "").upper()
+        )
+    return (platform.machine() or "").upper()
+
+
+def _expected_windows_pe_machines() -> set:
+    """PE machines this Windows host can load: ``GetMachineTypeAttributes``, else by name (AMD64 → x64+x86,
+    ARM64 → ARM64+x64, x86 → x86). Unknown hosts get the full set so the gate can never brick launch."""
+    if sys.platform == "win32":
+        try:
+            runnable = _windows_user_runnable_pe_machines()
+        except (OSError, AttributeError, TypeError, ValueError):
+            runnable = None
+        if runnable:
+            return runnable
+    machine = _windows_native_machine().upper()
+    if machine in ("AMD64", "X86_64", "X64"):
+        return {_PE_MACHINE_AMD64, _PE_MACHINE_I386}
+    if machine in ("ARM64", "AARCH64"):
+        return {_PE_MACHINE_ARM64, _PE_MACHINE_AMD64}
+    if machine in ("X86", "I386", "I486", "I586", "I686"):
+        return {_PE_MACHINE_I386}
+    return {_PE_MACHINE_AMD64, _PE_MACHINE_ARM64, _PE_MACHINE_I386}
+
+
+def _parse_pe_machine(path: Path) -> int:
+    """COFF machine field of the PE at ``path``; ``ValueError`` with a readable reason when it is not a
+    structurally complete PE (bad magic, truncated header, section data past EOF). Header walk only."""
+    import struct
+    try:
+        file_size = path.stat().st_size
+    except OSError as exc:
+        raise ValueError(f"unreadable: {exc}")
+    if file_size < 512:
+        raise ValueError(f"file is only {file_size} bytes — far too small to be a Windows executable")
+    with path.open("rb") as fh:
+        head = fh.read(64)
+        if len(head) < 64 or head[:2] != b"MZ":
+            raise ValueError(
+                "missing MZ header — not a Windows executable (a truncated or non-binary file saved as .exe?)"
+            )
+        e_lfanew = struct.unpack_from("<I", head, 0x3C)[0]
+        if e_lfanew <= 0 or e_lfanew + 24 > file_size:
+            raise ValueError("corrupt DOS header: PE header offset points past end of file")
+        fh.seek(e_lfanew)
+        pe_head = fh.read(24)
+        if len(pe_head) < 24 or pe_head[:4] != b"PE\x00\x00":
+            raise ValueError("missing PE signature — corrupt executable header")
+        machine, n_sections = struct.unpack_from("<HH", pe_head, 4)
+        size_of_optional = struct.unpack_from("<H", pe_head, 20)[0]
+        fh.seek(e_lfanew + 24 + size_of_optional)
+        max_section_end = 0
+        for _ in range(n_sections):
+            section = fh.read(40)
+            if len(section) < 40:
+                raise ValueError("truncated PE section table")
+            size_of_raw, pointer_to_raw = struct.unpack_from("<II", section, 16)
+            max_section_end = max(max_section_end, pointer_to_raw + size_of_raw)
+        if file_size < max_section_end:
+            raise ValueError(
+                f"truncated executable: file is {file_size} bytes but its PE sections extend to {max_section_end} bytes"
+            )
+    return machine
+
+
+def _pe_machine_or_none(path: Path) -> Optional[int]:
+    try:
+        return _parse_pe_machine(path)
+    except ValueError:
+        return None
+
+
+def _desktop_exe_integrity_error(path: Path) -> Optional[str]:
+    """Why ``path`` cannot run on this Windows host, or None when it parses as a loadable PE."""
+    try:
+        machine = _parse_pe_machine(path)
+    except ValueError as exc:
+        return str(exc)
+    if machine not in _expected_windows_pe_machines():
+        got = _PE_MACHINE_NAMES.get(machine, f"unknown machine 0x{machine:04X}")
+        return (
+            f"architecture mismatch: built a {got} executable but this is a "
+            f"{_windows_native_machine()} Windows host"
+        )
+    return None
+
+
+def _electron_dir(project_root: Path) -> Path:
+    """The installed Electron package dir: workspace-local ``apps/desktop/node_modules/electron`` (where
+    ``electronDist`` points) when present, else the root hoist npm sometimes uses instead."""
+    desktop_local = project_root / "apps" / "desktop" / "node_modules" / "electron"
+    if desktop_local.exists():
+        return desktop_local
+    return project_root / "node_modules" / "electron"
+
+
+def _runs_from(proc, release_dir: Path) -> bool:
+    """True when *proc*'s executable lives inside *release_dir* (False when it cannot be read)."""
+    try:
+        return release_dir in Path(proc.exe()).resolve().parents
+    except Exception:
+        return False
+
+
+def _desktop_ancestor_in(desktop_dir: Path) -> Optional[int]:
+    """PID of a Desktop from this build's ``release`` tree that is one of OUR ancestors, else None.
+
+    That Desktop is running this process (its backend's launch-time update tail, or a
+    `hermes update` it spawned). On Windows it holds the exe lock the promotion rename
+    needs, and it cannot be stopped without killing this process first. Never raises."""
+    try:
+        import psutil
+        release_dir = (desktop_dir / "release").resolve()
+        ancestors = list(psutil.Process(os.getpid()).parents())
+    except Exception:
+        return None
+    for parent in ancestors:
+        if _runs_from(parent, release_dir):
+            return int(parent.pid)
+    return None
+
+
+def _stop_desktop_processes_locking_build(desktop_dir: Path, *, also_posix: bool = False) -> list[int]:
+    """Terminate a running desktop app whose exe lives INSIDE this build's ``release`` tree.
+
+    Windows needs it everywhere: the exe lock makes the pack die with ``Access is denied``.
+    POSIX can rename a running app's files away, so the pack itself needs no stop — but a
+    renderer left alive through the stage-and-swap promotion keeps fetching its OLD hashed
+    chunks by path after the swap and dies on the next lazy import (#109643), so the swap
+    point passes ``also_posix=True``. Never raises; returns the PIDs asked to stop."""
+    if sys.platform != "win32" and not also_posix:
+        return []
+    try:
+        import psutil
+        release_dir = (desktop_dir / "release").resolve()
+    except Exception:
+        return []
+    if not release_dir.is_dir():
+        return []
+
+    me = os.getpid()
+    # Never stop a Desktop that is one of OUR ancestors, on any platform: this
+    # process lives in its tree. A historical Desktop (v2026.7.1 Linux in-app
+    # update) runs `hermes update` as a child with piped stdout/stderr and owns
+    # the post-update rebuild and relaunch. Killing it breaks those pipes (EPIPE
+    # fails the update) and leaves nobody to relaunch. On Windows the same holds
+    # for the launch-time tail a Desktop's own backend runs
+    # (venv_sync._finish_source_update): stopping that Desktop took the whole
+    # tree down with it before the tail could clear its markers, so every
+    # launch repeated it (#123499). The exe lock that stop was meant to free
+    # cannot be freed by the process that holds it alive; build_prepared_desktop
+    # skips that doomed build instead (_desktop_ancestor_in).
+    #
+    # Spare that Desktop's whole process tree, not just its main process. Its
+    # zygote, renderer, GPU and network-service helpers run the same release
+    # exe but are siblings of us, not ancestors. Stopping them leaves a main
+    # process with no renderer. It cannot draw its update overlay, relaunch, or
+    # quit, so it outlives the update forever. (That is the v2026.7.1 Linux
+    # in-app update E2E: the receipt succeeds and then the app hangs.)
+    spared: set[int] = set()
+    try:
+        ancestors = list(psutil.Process(me).parents())
+    except Exception:
+        ancestors = []
+    for parent in ancestors:
+        spared.add(parent.pid)
+        # Only a Desktop ancestor's descendants. Every process descends from
+        # init, so sparing all ancestors' trees would spare everything.
+        if not _runs_from(parent, release_dir):
+            continue
+        with contextlib.suppress(Exception):
+            spared.update(child.pid for child in parent.children(recursive=True))
+    victims = []
+    try:
+        proc_iter = psutil.process_iter(["pid", "exe"])
+    except Exception:
+        return []
+    for proc in proc_iter:
+        try:
+            info = proc.info
+            pid = info.get("pid")
+            exe = info.get("exe")
+            if not exe or pid is None or pid == me or pid in spared:
+                continue
+            exe_path = Path(exe).resolve()
+        except Exception:
+            continue
+        if release_dir in exe_path.parents:
+            victims.append(proc)
+
+    stopped: list[int] = []
+    for proc in victims:
+        try:
+            proc.terminate()
+            stopped.append(int(proc.pid))
+        except Exception:
+            continue
+    if stopped:
+        # Wait for the handles (and thus the file locks) to actually release.
+        with contextlib.suppress(Exception):
+            _, alive = psutil.wait_procs(victims, timeout=5)
+            killed = []
+            for proc in alive:
+                try:
+                    proc.kill()
+                    killed.append(proc)
+                except Exception:
+                    continue
+            if killed:
+                psutil.wait_procs(killed, timeout=5)
+    return stopped
+
+
+def _desktop_macos_bundle_id(bundle: Path) -> Optional[str]:
+    """Return a bundle/framework CFBundleIdentifier for local macOS signing."""
+    import plistlib
+    info = bundle / "Contents" / "Info.plist"
+    if not info.exists() and bundle.suffix == ".framework":
+        candidates = list(bundle.glob("Versions/*/Resources/Info.plist")) + list(
+            bundle.glob("Resources/Info.plist"))
+        if candidates:
+            info = candidates[0]
+    if not info.exists():
+        return None
+    try:
+        data = plistlib.loads(info.read_bytes())
+    except Exception:
+        return None
+    ident = data.get("CFBundleIdentifier")
+    return str(ident) if ident else None
+
+
+def _desktop_macos_local_signing_identity() -> Optional[str]:
+    """``desktop.macos_signing_identity`` — a persistent (even self-signed) code-signing cert anchors
+    the Designated Requirement and keeps TCC grants stable across rebuilds. Unset → ad-hoc."""
+    if sys.platform != "darwin":
+        return None
+    try:
+        from hermes_cli.config import load_config
+        desktop = load_config().get("desktop", {})
+        if not isinstance(desktop, dict):
+            return None
+        identity = desktop.get("macos_signing_identity")
+        if not isinstance(identity, str):
+            return None
+        return identity.strip() or None
+    except Exception as exc:
+        print(
+            "  (warning: could not load desktop.macos_signing_identity: "
+            f"{exc}; falling back to ad-hoc signing)"
+        )
+        return None
+
+
+def _codesign_verify(codesign: str, app: Path, **kwargs) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [codesign, "--verify", "--deep", "--strict", str(app)], capture_output=True, **kwargs)
+
+
+def _macos_signature_summary(codesign: str, app: Path) -> Optional[dict]:
+    """Best-effort signing identity of a ``.app`` bundle: ``{team, identifier, verified}``.
+
+    ``None`` when the bundle has no readable signature (``codesign -dv`` fails — e.g. an
+    unsigned bundle). ``team``/``identifier`` are ``None`` when the signature lacks them
+    (ad-hoc signatures report ``TeamIdentifier=not set``); ``verified`` is the strict
+    ``--verify --deep --strict`` result. Never raises.
+    """
+    try:
+        info = subprocess.run(
+            [codesign, "-dv", str(app)], check=False, capture_output=True,
+            text=True, encoding="utf-8", errors="replace")
+    except Exception:
+        return None
+    output = f"{info.stdout}\n{info.stderr}"
+    if info.returncode != 0:
+        return None
+
+    def field(key: str) -> Optional[str]:
+        for line in output.splitlines():
+            if line.startswith(f"{key}="):
+                return line[len(key) + 1:].strip() or None
+        return None
+
+    team = field("TeamIdentifier")
+    return {
+        "team": None if team in (None, "not set") else team,
+        "identifier": field("Identifier"),
+        "verified": _codesign_verify(codesign, app, check=False).returncode == 0,
+    }
+
+
+def _macos_signing_downgrade_error(installed: dict, rebuilt: Optional[dict]) -> Optional[str]:
+    """Reason to refuse swapping a publisher-signed installed app for ``rebuilt``, or None.
+
+    #123748: replacing a Developer ID (Team ID) installation with a locally signed or
+    ad-hoc rebuild — or any bundle whose signing identity or bundle identifier differs —
+    invalidates the code-hash-bound keychain ACLs the app's safeStorage credentials are
+    encrypted under and resets TCC grants. Ad-hoc-to-ad-hoc replacement (the local
+    development flow) is untouched. ``installed`` is a ``_macos_signature_summary`` dict;
+    ``rebuilt`` is None when the rebuilt bundle has no readable signature.
+    """
+    if not installed["team"]:
+        return None
+    if rebuilt is None or not rebuilt["team"]:
+        return (f"publisher-signed app (Team ID {installed['team']}) would be replaced by a "
+                "locally signed or unreadable build; kept the existing app. To update it, "
+                "sign the rebuild with the publisher identity (CSC_LINK / "
+                "APPLE_SIGNING_IDENTITY) and update again.")
+    if rebuilt["team"] != installed["team"]:
+        return (f"publisher Team ID {installed['team']} does not match rebuilt "
+                f"{rebuilt['team']}; kept the existing app. Check the signing identity "
+                f"in desktop.macos_signing_identity and update again.")
+    if (installed["identifier"] and rebuilt["identifier"]
+            and installed["identifier"] != rebuilt["identifier"]):
+        return (f"bundle identifier {installed['identifier']!r} does not match rebuilt "
+                f"{rebuilt['identifier']!r}; kept the existing app. Align the build's "
+                f"bundle identifier and update again.")
+    if not rebuilt["verified"]:
+        return ("rebuilt bundle failed strict signature verification; kept the existing "
+                "app. Re-run the build; if it persists, inspect with `codesign -vvv`.")
+    return None
+
+
+def _desktop_macos_has_valid_real_signature(app: Path) -> bool:
+    """True when the bundle has an intact Team-ID signature, so the fixup never clobbers a notarized
+    build with ad-hoc (resets TCC). A STALE real signature fails --verify → False → repairable."""
+    codesign = shutil.which("codesign")
+    if not codesign:
+        return False
+    try:
+        info = subprocess.run(
+            [codesign, "-dv", str(app)], check=False, capture_output=True, text=True, encoding="utf-8", errors="replace")
+        output = f"{info.stdout}\n{info.stderr}"
+        if info.returncode != 0 or "TeamIdentifier=" not in output or "TeamIdentifier=not set" in output:
+            return False
+        return _codesign_verify(codesign, app, check=False).returncode == 0
+    except Exception:
+        return False
+
+
+def _desktop_macos_local_codesign(app: Path, *, desktop_dir: Path, identity: str = "-") -> bool:
+    """Sign a local build inside-out (Mach-O files, nested frameworks/helpers, main bundle) with the
+    repo's entitlements and an identifier-pinned DR when ad-hoc — a plain ``--deep --sign -`` gives
+    a cdhash-only DR (TCC re-prompts every rebuild) and strips the JIT/mic entitlements.
+    Raises on signing failure; True after strict verification."""
+    codesign = shutil.which("codesign")
+    if not codesign:
+        return False
+
+    ent_main = desktop_dir / "electron" / "entitlements.mac.plist"
+    ent_inherit = desktop_dir / "electron" / "entitlements.mac.inherit.plist"
+    if not (ent_main.exists() and ent_inherit.exists()):
+        # Hardened-runtime restrictions apply to ad-hoc signatures too; signing
+        # with --options runtime but WITHOUT allow-jit would leave Electron/V8
+        # crashing on launch. Bail so the caller falls back to the legacy sign.
+        raise FileNotFoundError(f"desktop entitlement plists missing under {desktop_dir / 'electron'}")
+
+    def sign_path(
+        path: Path, *, entitlements: Optional[Path] = None, identifier: Optional[str] = None,
+        runtime: bool = True) -> None:
+        args = [codesign, "--force", "--sign", identity, "--timestamp=none"]
+        if runtime:
+            args += ["--options", "runtime"]
+        if entitlements is not None and entitlements.exists():
+            args += ["--entitlements", str(entitlements)]
+        if identifier and identity == "-":
+            # Ad-hoc signatures get a cdhash-only DR by default; pin an
+            # identifier-based DR so TCC has something stable to persist.
+            args += ["--requirements", f'=designated => identifier "{identifier}"']
+        args.append(str(path))
+        subprocess.run(args, check=True, capture_output=True)
+
+    # 1) Standalone Mach-O files (native modules, dylibs, crashpad handler),
+    #    compared relative to the app root — the absolute path always contains
+    #    the outer Hermes.app component.
+    contents = app / "Contents"
+    standalone: list[Path] = []
+    for root, _dirs, files in os.walk(contents):
+        root_path = Path(root)
+        if any(part.endswith(".app") for part in root_path.relative_to(app).parts):
+            continue  # nested helper apps are signed as bundles below
+        for name in files:
+            fp = root_path / name
+            if name in {"chrome_crashpad_handler", "spawn-helper"} or fp.suffix in {".node", ".dylib"}:
+                standalone.append(fp)
+    for fp in sorted(standalone, key=lambda p: len(p.parts), reverse=True):
+        sign_path(fp, runtime=False)
+
+    # 2) Nested frameworks and helper apps, deepest first.
+    bundles: set[Path] = set()
+    frameworks_dir = contents / "Frameworks"
+    if frameworks_dir.exists():
+        for root, _dirs, _files in os.walk(frameworks_dir):
+            p = Path(root)
+            if p.suffix in {".framework", ".app"}:
+                bundles.add(p)
+    for bundle in sorted(bundles, key=lambda p: len(p.parts), reverse=True):
+        # Every nested bundle takes the inherit plist, frameworks included: under the hardened
+        # runtime Electron Framework needs allow-jit in its own signature, and signing it with
+        # no entitlements strips what electron-builder's afterSign step applies in a real build.
+        sign_path(bundle, entitlements=ent_inherit, identifier=_desktop_macos_bundle_id(bundle))
+
+    # 3) The main bundle, with the app's own entitlements.
+    sign_path(app, entitlements=ent_main, identifier=_desktop_macos_bundle_id(app))
+    _codesign_verify(codesign, app, check=True)
+    return True
+
+
+def _macos_legacy_adhoc_resign(codesign: str, app: Path) -> bool:
+    """Legacy deep ad-hoc re-sign; NEVER deletes the safeStorage keychain item (that would orphan every
+    credential under it, and there is no verified successor identity here — the "Always Allow"
+    prompt is recoverable, deletion is not)."""
+    try:
+        result = subprocess.run(
+            [codesign, "--force", "--deep", "--sign", "-", str(app)], check=False, capture_output=True, text=True, encoding="utf-8", errors="replace"
+        )
+        if result.returncode != 0:
+            print(
+                f"  (warning: legacy ad-hoc re-sign failed (exit {result.returncode}); "
+                "leaving safeStorage keychain item untouched)"
+            )
+            return False
+        if _codesign_verify(codesign, app, check=False, text=True, encoding="utf-8", errors="replace").returncode != 0:
+            print(
+                "  (warning: legacy ad-hoc re-sign did not pass strict verification; "
+                "leaving safeStorage keychain item untouched)"
+            )
+            return False
+        print("  → macOS desktop re-signed (legacy ad-hoc); safeStorage keychain item left untouched")
+        return True
+    except Exception as exc:
+        print(f"  (warning: macOS relaunch fixup skipped: {exc})")
+    return False
+
+
+def _desktop_macos_relaunchable_fixup(
+    desktop_dir: Path, *, publisher_signing_configured: Optional[bool] = None,
+    release_dir: Optional[Path] = None) -> bool:
+    """Re-sign a locally-built macOS app so in-place self-update doesn't reset TCC grants.
+
+    A rebuilt ad-hoc bundle (new cdhash, no stable Designated Requirement) reports
+    "Hermes is damaged" and loses every grant. Clear quarantine xattrs, then sign
+    with ``desktop.macos_signing_identity`` or identifier-pinned ad-hoc, keeping
+    entitlements. When a configured identity fails (#121857): over a locally-signed
+    install, retry identifier-pinned ad-hoc before the cdhash-only legacy sign;
+    over a publisher-signed (Team ID) install, refuse — the weaker signature would
+    orphan the keychain ACLs and TCC grants the update was asked to preserve
+    (#123748). No-op with a publisher identity (CSC_LINK / APPLE_SIGNING_IDENTITY;
+    callers may pass the decision so a later dotenv load can't reverse it) or an
+    intact Developer ID signature. ``release_dir`` signs the STAGED bundle before
+    promotion. Never raises.
+    """
+    if sys.platform != "darwin":
+        return True
+    if publisher_signing_configured is None:
+        publisher_signing_configured = bool(
+            os.environ.get("CSC_LINK") or os.environ.get("APPLE_SIGNING_IDENTITY"))
+    if publisher_signing_configured:
+        return True
+    # ``release_dir`` (stage-and-swap, #86443): sign the STAGED bundle before it is promoted, so the live
+    # app is never touched mid-sign.
+    exe = _desktop_packaged_executable_in(release_dir or (desktop_dir / "release"))
+    if exe is None:
+        return True
+    # exe = .../Hermes.app/Contents/MacOS/Hermes  ->  app bundle = .../Hermes.app
+    app = exe.parents[2]
+    if not str(app).endswith(".app") or not app.is_dir():
+        return True
+    codesign = shutil.which("codesign")
+    if not codesign:
+        return False
+    if _desktop_macos_has_valid_real_signature(app):
+        return True
+    subprocess.run(["xattr", "-cr", str(app)], check=False)
+    configured = _desktop_macos_local_signing_identity()
+    identity = configured or "-"
+    # The existing bundle this build's new signature replaces: the live release bundle the
+    # staged pack is promoted over (``_swap_staged_desktop_app`` swaps by the same root
+    # name), or the bundle being re-signed in place when no staging is involved. Its signing
+    # class decides the fallback policy below; None when this is the first build.
+    if release_dir is None:
+        replaces = app
+    else:
+        try:
+            replaces = desktop_dir / "release" / exe.relative_to(release_dir)
+        except ValueError:
+            replaces = None
+        if not str(replaces).endswith(".app") or not replaces.is_dir():
+            replaces = None
+    try:
+        if _desktop_macos_local_codesign(app, desktop_dir=desktop_dir, identity=identity):
+            label = "keychain identity" if configured else "stable ad-hoc identity"
+            print(f"  → macOS desktop signed with {label}; TCC grants persist across rebuilds")
+            return True
+    except Exception as exc:
+        if configured:
+            target_sig = _macos_signature_summary(codesign, replaces) if replaces else None
+            if target_sig and target_sig["team"]:
+                # #123748: a publisher-signed (Team ID) install must never be degraded to a
+                # locally signed or ad-hoc build — the weaker signature changes the anchor
+                # the keychain ACLs and TCC grants are bound against, orphaning safeStorage
+                # credentials. Keep the existing bundle and name the remedy.
+                print(
+                    f"  ✗ macOS signing identity {configured!r} did not produce a verified "
+                    f"signature, and the installed app is publisher-signed (Team ID "
+                    f"{target_sig['team']}); keeping it (no ad-hoc fallback). Fix the identity "
+                    "(e.g. `hermes desktop --setup-tcc-identity` or edit "
+                    "desktop.macos_signing_identity in config.yaml) and update again."
+                )
+                return False
+            # A configured cert can fail while the login keychain is locked (an SSH
+            # update, #121857). For a locally-signed install, identifier-pinned ad-hoc
+            # still keeps the designated requirement and entitlements — TCC re-prompts
+            # once — where the cdhash-only ``--deep --sign -`` would reset every grant
+            # on each rebuild.
+            print(
+                f"  (warning: configured macOS signing identity failed: {identity!r} ({exc}); "
+                "falling back to identifier-pinned ad-hoc — TCC grants may need one "
+                "re-prompt; run the update from the logged-in session to keep the "
+                "certificate anchor)"
+            )
+            try:
+                if _desktop_macos_local_codesign(app, desktop_dir=desktop_dir, identity="-"):
+                    print(
+                        "  → macOS desktop signed with stable ad-hoc identity; "
+                        "TCC grants persist across rebuilds"
+                    )
+                    return True
+            except Exception as adhoc_exc:
+                exc = adhoc_exc
+        print(f"  (warning: stable macOS signing failed ({exc}); using legacy ad-hoc sign)")
+    return _macos_legacy_adhoc_resign(codesign, app)
+
+
+def _app_asar_hash(app_path: Path) -> str | None:
+    """Return the SHA-256 hex digest of an app bundle's app.asar, or None."""
+    asar = app_path / "Contents" / "Resources" / "app.asar"
+    if not asar.is_file():
+        return None
+    h = hashlib.sha256()
+    try:
+        with open(asar, "rb") as f:
+            for chunk in iter(lambda: f.read(65536), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    except OSError:
+        return None
+
+
+def _swap_in_new_macos_bundle(tmp: Path, target: Path, old: Path) -> None:
+    """Move a staged macOS bundle into place without losing the old bundle."""
+    moved_old = False
+    if target.exists():
+        try:
+            target.rename(old)
+        except OSError:
+            shutil.rmtree(tmp, ignore_errors=True)
+            raise
+        moved_old = True
+
+    try:
+        tmp.rename(target)
+    except OSError as install_error:
+        rollback_error: OSError | None = None
+        if moved_old:
+            try:
+                old.rename(target)
+            except OSError as exc:
+                rollback_error = exc
+        shutil.rmtree(tmp, ignore_errors=True)
+        if rollback_error is not None:
+            raise OSError(
+                f"installing the staged bundle failed and rollback remains at {old}: "
+                f"{rollback_error}"
+            ) from install_error
+        raise
+
+    shutil.rmtree(old, ignore_errors=True)
+
+
+def _running_macos_app_bundles() -> set[Path]:
+    """``.app`` bundles of every live Hermes Desktop process. A running bundle is never swapped
+    under: Electron loads ``app.asar`` chunks and helper apps lazily, so renaming its bundle away
+    and deleting the old tree crashes the live app (the detached updater waits for it to exit)."""
+    import psutil
+    bundles: set[Path] = set()
+    for proc in psutil.process_iter(["exe"]):
+        exe = proc.info.get("exe") or ""
+        if exe.endswith("/Contents/MacOS/Hermes"):
+            bundles.add(Path(exe).resolve().parents[2])
+    return bundles
+
+
+def _stage_macos_bundle_copy(src: Path, dst: Path) -> None:
+    """``ditto`` copies a bundle with its signature, xattrs and symlinks intact (``shutil`` drops
+    the resource-fork metadata codesign verifies)."""
+    subprocess.run(["/usr/bin/ditto", str(src), str(dst)], check=True, capture_output=True)
+
+
+def _install_rebuilt_desktop_app(desktop_dir: Path, candidates: list[Path]) -> tuple[list[Path], list[str]]:
+    """Copy the rebuilt macOS bundle into every stale or missing installed ``Hermes.app`` in
+    *candidates* (``_installed_desktop_apps()``) (#52339).
+
+    ``hermes desktop --build-only`` (what ``hermes update`` runs) packages into
+    ``apps/desktop/release/`` only. Finder, the Dock and Spotlight launch the copy in
+    ``/Applications`` (or ``~/Applications``), so without this step every update leaves the
+    installed shell one build behind the backend it boots. The detached Desktop updater swaps
+    only the bundle it was launched from, so an app running from ``release/`` never refreshed
+    the installed copy either.
+
+    Returns ``(installed, problems)``: bundles that were (re)installed, and one user-facing line per
+    bundle that could not be (running, copy or swap failure). Both empty means every installed
+    copy was already current.
+    """
+    if sys.platform != "darwin":
+        return [], []
+    rebuilt_exe = _desktop_packaged_executable(desktop_dir)
+    if rebuilt_exe is None:
+        return [], []
+    # .../Hermes.app/Contents/MacOS/Hermes -> .../Hermes.app
+    return _install_rebuilt_macos_bundles(
+        rebuilt_exe.parents[2], candidates, running=_running_macos_app_bundles())
+
+
+def _refresh_installed_desktop_apps(desktop_dir: Path) -> None:
+    """Install the rebuilt bundle over stale or missing installed copies, report each outcome, and
+    record which copies this update keeps current."""
+    if not _owns_installed_desktop_apps():
+        return
+    owned = _installed_desktop_apps()
+    missing = {app for app in owned if not app.exists()}
+    installed, problems = _install_rebuilt_desktop_app(desktop_dir, owned)
+    for app in installed:
+        if app in missing:
+            print(f"  ✓ Reinstalled the Desktop app at {app}: it had been removed, so Finder, "
+                  "the Dock and Spotlight could not find Hermes")
+        else:
+            print(f"  ✓ Installed the rebuilt Desktop app at {app}")
+    for problem in problems:
+        print(f"  ⚠ {problem}")
+    from hermes_cli.gui_uninstall import desktop_install_record
+    from utils import atomic_json_write, read_json_or_empty
+    # A copy that failed to reinstall stays recorded, so the next update retries it. Every
+    # `hermes desktop` launch lands here: write only when the set changed.
+    apps = [str(app) for app in owned]
+    if read_json_or_empty(desktop_install_record()).get("apps", []) == apps:
+        return
+    try:
+        atomic_json_write(desktop_install_record(), {"apps": apps})
+    except OSError as exc:
+        print(f"  ⚠ Could not record the installed Desktop app ({exc})")
+
+
+def _update_owned_macos_bundles(candidates: list[Path]) -> list[Path]:
+    """The existing bundles in *candidates* that only ``hermes update`` keeps current (#52339).
+
+    Ownership comes from the bundle's own ``install-stamp.json``. ``updateMechanism: self`` is a
+    bootstrap build (a local pack or the bootstrap download), and stamps older than the field
+    predate every self-updating kind. Bundled/light releases update themselves and commit builds
+    are external, so a local build must never be copied over them. No readable stamp, no claim.
+    """
+    owned = []
+    for app in candidates:
+        try:
+            stamp = json.loads((app / "Contents" / "Resources" / "install-stamp.json").read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(stamp, dict) and stamp.get("updateMechanism", "self") == "self":
+            owned.append(app)
+    return owned
+
+
+def _owns_installed_desktop_apps() -> bool:
+    """A packaged app runs the checkout under the default Hermes home, so only that checkout (on
+    macOS) may build for it: a bundle from any other tree (a dev worktree) would split shell from
+    backend."""
+    if sys.platform != "darwin":
+        return False
+    from hermes_cli.main import PROJECT_ROOT
+    from hermes_constants import get_default_hermes_root
+    return Path(PROJECT_ROOT).resolve() == (get_default_hermes_root() / "hermes-agent").resolve()
+
+
+def _installed_desktop_apps() -> list[Path]:
+    """Installed macOS ``Hermes.app`` bundles this checkout's update owns.
+
+    When no owned copy is left, a recorded one that has gone missing still counts: its ownership
+    stamp left with the bundle, and without the record nothing would ever put it back (Finder, the
+    Dock and Spotlight lose Hermes for good). A copy moved to the other Applications folder keeps
+    its stamp, so it is found instead of doubled. Hermes' GUI uninstall deletes the record.
+    """
+    if not _owns_installed_desktop_apps():
+        return []
+    from hermes_cli.gui_uninstall import desktop_install_record, packaged_gui_app_paths
+    from utils import read_json_or_empty
+    candidates = packaged_gui_app_paths()
+    if owned := _update_owned_macos_bundles(candidates):
+        return owned
+    recorded = read_json_or_empty(desktop_install_record()).get("apps")
+    if not isinstance(recorded, list):
+        return []
+    return [app for app in candidates if str(app) in recorded and not app.exists()]
+
+
+def _installed_desktop_launch_target(desktop_dir: Path, packaged_executable: Path) -> Path:
+    """The executable ``hermes desktop`` launches: the installed app once it IS the checkout build.
+
+    Finder, the Dock and Spotlight open the installed ``Hermes.app``; launching the ``release/``
+    bundle beside it ran the same app from a second path while the installed copy went stale
+    (#52339). Refresh the installed copies, then launch the first one that matches the checkout
+    build. The checkout bundle stays the fallback: nothing installed, or a copy that is running
+    or could not be replaced.
+    """
+    if sys.platform != "darwin":
+        return packaged_executable
+    _refresh_installed_desktop_apps(desktop_dir)
+    rebuilt_hash = _app_asar_hash(packaged_executable.parents[2])
+    for app in _installed_desktop_apps():
+        if rebuilt_hash is not None and _app_asar_hash(app) == rebuilt_hash:
+            return app / "Contents" / "MacOS" / "Hermes"
+    return packaged_executable
+
+
+def _install_rebuilt_macos_bundles(
+        rebuilt_app: Path, candidates: list[Path], *, running: set[Path]) -> tuple[list[Path], list[str]]:
+    """Stage-and-swap ``rebuilt_app`` into each bundle path in ``candidates`` that is missing or
+    whose ``app.asar`` differs. The rebuilt bundle already carries the stable local signing identity and no
+    quarantine xattr (``_desktop_macos_relaunchable_fixup``); ``ditto`` preserves both, so nothing
+    is re-signed here and TCC grants survive. A publisher-signed (Team ID) installation is never
+    replaced by a locally signed build or a different signing/bundle identity — the swap is
+    refused and reported instead (#123748)."""
+    rebuilt_hash = _app_asar_hash(rebuilt_app)
+    if rebuilt_hash is None:
+        return [], []
+    codesign = shutil.which("codesign")
+    rebuilt_sig = _macos_signature_summary(codesign, rebuilt_app) if codesign else None
+    installed: list[Path] = []
+    problems: list[str] = []
+    for app in candidates:
+        # Either swapper (this one or the Desktop hand-off's posix.sh ``.old``) may have died
+        # between its renames; recover before judging what is installed.
+        _recover_interrupted_swap(app, app.parent / f"{app.name}.hermes-update-old")
+        _recover_interrupted_swap(app, app.parent / f"{app.name}.old")
+        if app.is_dir() and _app_asar_hash(app) == rebuilt_hash:
+            continue
+        if app.resolve() in running:
+            problems.append(
+                f"{app} is running and was not refreshed; quit Hermes Desktop and run "
+                "`hermes update` again (or update from inside the app)")
+            continue
+        if codesign:
+            installed_sig = _macos_signature_summary(codesign, app)
+            if installed_sig is not None:
+                downgrade = _macos_signing_downgrade_error(installed_sig, rebuilt_sig)
+                if downgrade:
+                    problems.append(f"{app} not refreshed: {downgrade}")
+                    continue
+        tmp = app.parent / f"{app.name}.hermes-update-new"
+        old = app.parent / f"{app.name}.hermes-update-old"
+        shutil.rmtree(tmp, ignore_errors=True)
+        try:
+            _stage_macos_bundle_copy(rebuilt_app, tmp)
+            _swap_in_new_macos_bundle(tmp, app, old)
+        except (OSError, subprocess.CalledProcessError) as exc:
+            shutil.rmtree(tmp, ignore_errors=True)
+            kept = "; the previous app was kept" if app.exists() else ""
+            problems.append(f"{app} could not be installed ({exc}){kept}")
+            continue
+        installed.append(app)
+    return installed, problems
+
+
+def _force_adhoc_macos_signing(env: dict, *, source_mode: bool) -> bool:
+    """Force ad-hoc signing for the local packaged rebuild: with ``CSC_IDENTITY_AUTO_DISCOVERY`` on,
+    electron-builder grabs any personal keychain cert and stalls the sign step or clobbers a
+    notarized signature. No-op for source runs, off-macOS, with a real identity, or when pinned."""
+    if sys.platform != "darwin" or source_mode:
+        return False
+    if env.get("CSC_LINK") or env.get("APPLE_SIGNING_IDENTITY") or "CSC_IDENTITY_AUTO_DISCOVERY" in env:
+        return False
+    env["CSC_IDENTITY_AUTO_DISCOVERY"] = "false"
+    return True
+
+
+def _desktop_linux_needs_no_sandbox() -> bool:
+    """True when Electron should run ``--no-sandbox``: Ubuntu 23.10+ ``apparmor_restrict_unprivileged_userns``
+    breaks the userns sandbox without a root-owned 4755 helper. Deliberately NOT True for root —
+    Electron as root without a sandbox must stay an explicit choice."""
+    if os.environ.get("ELECTRON_DISABLE_SANDBOX", 0) == "1":
+        return True
+
+    if sys.platform != "linux":
+        return False
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        return False
+    try:
+        with open("/proc/sys/kernel/apparmor_restrict_unprivileged_userns", encoding="utf-8") as f:
+            return f.read().strip() == "1"
+    except OSError:
+        return False
+
+
+def _desktop_linux_userns_sandbox_available() -> bool:
+    """True when the unprivileged userns sandbox works (probed with ``unshare``, fails closed) — then
+    the setuid ``chrome-sandbox`` helper is never consulted and no sudo prompt is needed."""
+    if sys.platform != "linux":
+        return False
+    unshare = shutil.which("unshare")
+    if not unshare:
+        return False
+    try:
+        return (
+            subprocess.run(
+                [unshare, "--user", "--map-root-user", "true"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5, check=False,
+            ).returncode
+            == 0)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def _sandbox_helper_lstat(packaged_executable: Path) -> tuple[Path, Optional[os.stat_result]]:
+    """``(chrome-sandbox path, lstat or None)`` — lstat so a symlink is inspected, not followed."""
+    sandbox = packaged_executable.parent / "chrome-sandbox"
+    try:
+        return sandbox, sandbox.lstat()
+    except OSError:
+        return sandbox, None
+
+
+def _sandbox_helper_is_setuid_root(st: os.stat_result) -> bool:
+    return st.st_uid == 0 and stat.S_IMODE(st.st_mode) == 0o4755
+
+
+def _desktop_linux_sandbox_helper_is_regular_file(packaged_executable: Path) -> bool:
+    """Return True when ``chrome-sandbox`` exists as a regular file."""
+    if sys.platform != "linux":
+        return False
+    _sandbox, st = _sandbox_helper_lstat(packaged_executable)
+    return st is not None and stat.S_ISREG(st.st_mode)
+
+
+def _desktop_linux_sandbox_fixup(packaged_executable: Path) -> bool:
+    """Configure Electron's Linux SUID sandbox helper when required."""
+    if sys.platform != "linux":
+        return True
+
+    sandbox, st = _sandbox_helper_lstat(packaged_executable)
+    if not sandbox.exists():
+        print(f"✗ Hermes Desktop is missing Electron's Linux sandbox helper: {sandbox}")
+        return False
+    # Reject symlinks — chown/chmod must not follow an attacker-controlled link.
+    if st is None:
+        print(f"✗ Cannot stat Electron's Linux sandbox helper: {sandbox}")
+        return False
+    if not stat.S_ISREG(st.st_mode):
+        print(f"✗ Electron's Linux sandbox helper is not a regular file: {sandbox}")
+        return False
+
+    if _sandbox_helper_is_setuid_root(st):
+        return True
+
+    if _desktop_linux_userns_sandbox_available():
+        print("✓ Using Chromium's user-namespace sandbox (setuid helper not needed).")
+        return True
+
+    sudo = shutil.which("sudo")
+    if not sudo:
+        print("✗ Hermes Desktop requires sudo to configure Electron's Linux sandbox helper.")
+        return False
+
+    print("→ Configuring Electron Linux sandbox helper (sudo required)...")
+    # A .desktop/autostart/detached launch has no TTY, so a sudo password prompt could never be
+    # answered — without -n the launch hangs indefinitely instead of failing (#123927). Terminal
+    # launches keep the interactive prompt.
+    # ponytail: fail-fast only, no GUI askpass fallback; add one if TTY-less hosts need password sudo.
+    # ``sys.stdin`` is None when the process has no stdin at all (detached launch, GUI spawn that
+    # closed it) and a closed stream raises on ``isatty()``; both are no-TTY cases and neither may
+    # escape as a traceback that skips the ``--no-sandbox`` fallback (#123927 review).
+    try:
+        non_interactive = sys.stdin is None or not sys.stdin.isatty()
+    except ValueError:  # stdin closed under us
+        non_interactive = True
+    for command in ([sudo, "chown", "root:root", str(sandbox)], [sudo, "chmod", "4755", str(sandbox)]):
+        if non_interactive:
+            command.insert(1, "-n")
+        try:
+            completed = subprocess.run(
+                command,
+                stdin=subprocess.DEVNULL if non_interactive else None,
+                timeout=60 if non_interactive else None,
+                check=False,
+            )
+            ok = completed.returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            ok = False
+        if not ok:
+            print(f"✗ Failed to configure Electron's Linux sandbox helper: {sandbox}")
+            return False
+    return True
+
+
+def _desktop_linux_needs_disable_setuid_sandbox(packaged_executable: Path) -> bool:
+    """True when a present, non-setuid ``chrome-sandbox`` would make Chromium abort with
+    ``setuid_sandbox_host`` despite a working userns sandbox (call after the fixup's userns path)."""
+    if sys.platform != "linux":
+        return False
+    _sandbox, st = _sandbox_helper_lstat(packaged_executable)
+    return st is not None and stat.S_ISREG(st.st_mode) and not _sandbox_helper_is_setuid_root(st)
+
+
+_LINUX_PASSWORD_STORES = frozenset({"gnome-libsecret", "kwallet", "kwallet5", "kwallet6", "basic"})
+
+_GPU_FLAG_WORDS = {**dict.fromkeys(("1", "true", "yes", "on"), "1"), **dict.fromkeys(("0", "false", "no", "off"), "0")}
+
+
+def _detect_linux_password_store() -> str | None:
+    """Chromium password-store backend for this Linux session (KDE env → GNOME Keyring socket → D-Bus
+    ping of org.freedesktop.secrets), or None. Chromium's own detection fails under the launcher
+    env, and safeStorage then reports encryption unavailable."""
+    kde_version = os.environ.get("KDE_SESSION_VERSION", "").strip()
+    if kde_version:
+        return {"6": "kwallet6", "5": "kwallet5"}.get(kde_version, "kwallet")
+    if os.environ.get("KDE_FULL_SESSION"):
+        return "kwallet"
+    if os.environ.get("GNOME_KEYRING_CONTROL"):
+        return "gnome-libsecret"
+    with contextlib.suppress(Exception):
+        result = subprocess.run(
+            [
+                "dbus-send", "--session", "--print-reply", "--reply-timeout=2000",
+                "--dest=org.freedesktop.secrets",
+                "/org/freedesktop/secrets",
+                "org.freedesktop.DBus.Peer.Ping",
+            ],
+            capture_output=True,
+            timeout=5)
+        if result.returncode == 0:
+            return "gnome-libsecret"
+    return None
+
+
+_A11Y_OFF_WORDS = frozenset(("0", "false", "no", "off", "disabled"))
+
+
+def _desktop_launch_options() -> tuple[list[str], str, str, str, bool]:
+    """``desktop.*`` launch options: ``(electron_flags, disable_gpu "auto"/"1"/"0", password_store,
+    ozone_hint "auto"/"x11"/"wayland", renderer_accessibility bool)``; unknown values and config
+    errors yield "auto"/[]/True so a malformed config never blocks the launch."""
+    flags: list[str] = []
+    disable_gpu = password_store = ozone_hint = "auto"
+    renderer_accessibility = True
+    try:
+        from hermes_cli.config import load_config
+        desktop_cfg = (load_config() or {}).get("desktop") or {}
+    except Exception:
+        return flags, disable_gpu, password_store, ozone_hint, renderer_accessibility
+
+    raw_flags = desktop_cfg.get("electron_flags")
+    if isinstance(raw_flags, str):
+        flags = shlex.split(raw_flags, posix=(os.name != "nt"))
+    elif isinstance(raw_flags, (list, tuple)):
+        flags = [str(f) for f in raw_flags if str(f).strip()]
+
+    def _choice(key: str, allowed) -> str:
+        raw = desktop_cfg.get(key, "auto")
+        low = raw.strip().lower() if isinstance(raw, str) else ""
+        return low if low in allowed else "auto"
+
+    raw_gpu = desktop_cfg.get("disable_gpu", "auto")
+    if isinstance(raw_gpu, bool):
+        disable_gpu = "1" if raw_gpu else "0"
+    elif isinstance(raw_gpu, str):
+        disable_gpu = _GPU_FLAG_WORDS.get(raw_gpu.strip().lower(), "auto")
+    password_store = _choice("password_store", _LINUX_PASSWORD_STORES)
+    ozone_hint = _choice("ozone_platform_hint", ("auto", "x11", "wayland"))
+    raw_a11y = desktop_cfg.get("renderer_accessibility", True)
+    if isinstance(raw_a11y, bool):
+        renderer_accessibility = raw_a11y
+    elif isinstance(raw_a11y, (int, float)):
+        # YAML resolves a bare `0`/`0.0` to int/float, not str — the unquoted
+        # off-switch a user actually writes must not silently keep the ON
+        # default. Checked after bool: bool is an int subclass in Python.
+        renderer_accessibility = bool(raw_a11y)
+    elif isinstance(raw_a11y, str):
+        renderer_accessibility = raw_a11y.strip().lower() not in _A11Y_OFF_WORDS
+    return flags, disable_gpu, password_store, ozone_hint, renderer_accessibility
+
+
+def _register_linux_desktop_entry(defer: bool = False):
+    """Install the XDG desktop entry for Hermes Desktop (Linux only, best-effort).
+
+    ``Exec`` and ``Icon`` are absolute so the entry works outside a login shell.
+    ``hermes uninstall --gui`` removes it.
+
+    ``defer=True`` (app-grid launch) returns a ``DeferredDesktopEntryInstall`` that writes the
+    entry only once the Electron window is on screen (#111906); ``None`` when nothing is
+    pending. Terminal, detached and ``--build-only`` launches install synchronously.
+    """
+    from hermes_cli.main import PROJECT_ROOT
+    try:
+        from hermes_cli.linux_desktop_entry import DeferredDesktopEntryInstall, install_desktop_entry, is_supported
+        if not is_supported():
+            return None
+        if defer:
+            deferred = DeferredDesktopEntryInstall(PROJECT_ROOT)
+            deferred.start()
+            return deferred
+        entry = install_desktop_entry(PROJECT_ROOT)
+        if entry:
+            print(f"✓ Desktop launcher entry installed: {entry}")
+    except Exception as exc:  # never block a launch on launcher plumbing
+        print(f"⚠ Could not install the desktop launcher entry: {exc}")
+    return None
+
+
+def _promote_staged_desktop_app(
+    desktop_dir: Path, staging_dir: Path, *,
+    integrity_check: Optional[Callable[[Path], Optional[str]]] = None,
+) -> Path:
+    """Sign and verify before swapping; the default integrity check is Windows PE validation."""
+    staged_executable = _desktop_packaged_executable_in(staging_dir)
+    # Locally-built apps are ad-hoc signed; make them relaunchable after an
+    # in-place self-update. Signs the STAGED bundle so the live app is never
+    # half-signed. No-op on non-macOS and on real-identity builds.
+    if not _desktop_macos_relaunchable_fixup(desktop_dir, release_dir=staging_dir):
+        # #123748: the fixup refused to sign (configured identity failed, codesign
+        # missing). Promoting would replace the live app with a bundle whose
+        # signature was never established — fold the refusal into the same
+        # previous-app-kept error path the integrity check uses.
+        _discard_desktop_staging(staging_dir)
+        print("✗ The rebuilt desktop app could not be signed with a stable identity; "
+              "not promoting it.")
+        raise RuntimeError(f"Desktop signing refused the staged build. {_PREVIOUS_APP_KEPT}")
+
+    # Validate only staging. The swap owns live-app rollback; raw in-place
+    # pack backups are not part of this transaction.
+    if integrity_check is None and sys.platform == "win32":
+        integrity_check = _desktop_exe_integrity_error
+    error = (
+        integrity_check(staged_executable)
+        if staged_executable is not None and integrity_check is not None else None
+    )
+    if staged_executable is None or error is not None:
+        _discard_desktop_staging(staging_dir)
+        if staged_executable is None:
+            print(f"✗ Desktop build produced no launchable app in {staging_dir}")
+        else:
+            print(f"✗ The built {staged_executable.name} failed its integrity check: {error}\n"
+                  f"    at: {staged_executable}")
+        raise RuntimeError(f"Desktop build produced no launchable app. {_PREVIOUS_APP_KEPT}")
+    packaged_executable = _swap_staged_desktop_app(desktop_dir, staging_dir)
+    if packaged_executable is None:
+        print(f"✗ Could not install the rebuilt desktop app into {desktop_dir / 'release'}")
+        raise RuntimeError(f"Could not publish the desktop build. {_PREVIOUS_APP_KEPT}")
+    return packaged_executable
+
+
+def _diagnose_esbuild_ignore_scripts(output: Optional[str]) -> None:
+    """Print an actionable hint when a desktop build failed because esbuild's platform
+    binary was never staged (`ignore-scripts=true` skips esbuild's postinstall, so the
+    ``@esbuild/<platform>`` optional dependency is absent) — #53082. Best-effort: only
+    adds context, never masks the original error."""
+    text = output or ""
+    if not ("@esbuild/" in text and "could not be found" in text) and "ignore-scripts" not in text:
+        return
+    print("  ⚠ This looks like esbuild's native binary is missing — commonly caused by")
+    print("    `ignore-scripts=true` in your npm config, which skips esbuild's postinstall")
+    print("    that stages the @esbuild/<platform> package.")
+    print("    Fix: run `npm config get ignore-scripts` — if true, either set it to false")
+    print("    (`npm config set ignore-scripts false`), then reinstall: `npm ci` in the repo root,")
+    print("    or stage the binary directly: `node node_modules/esbuild/install.js` in apps/desktop.")
+
+
+def build_prepared_desktop(desktop_dir: Path, *, source_mode: bool, npm: str, env: dict,
+                           icons: Path | None = None) -> Optional[Path]:
+    """Build prepared desktop sources, then publish the verified staged app."""
+    from hermes_cli.source_build import run_in_custody  # npm writes the checkout: update custody
+
+    if not source_mode and sys.platform == "win32" and (ancestor := _desktop_ancestor_in(desktop_dir)):
+        # The Desktop running this build holds the exe lock the promotion rename needs,
+        # and stopping it would kill this process first (#123499). Packing would only
+        # produce a build that cannot be installed; leave the app as it is. Its content
+        # stamp stays stale, so `hermes desktop` run outside the app rebuilds it
+        # (_desktop_build_needed), and the in-app update completes with desktop=True.
+        print(f"  ⚠ Skipped rebuilding the desktop app: this update is running inside it (pid {ancestor}),")
+        print("    and Windows locks a running app's files. Quit Hermes Desktop and run `hermes desktop`")
+        print("    from a terminal, or use Update now in Settings → About, to rebuild and reopen it.")
+        return None
+    build_label = "source build" if source_mode else "packaged app"
+    build_env = dict(env)
+    if sys.platform == "win32":
+        # The installer stages pinned Git in its own PowerShell process. Product
+        # builds run later, often with every system git removed from PATH; the
+        # desktop stamp must still resolve this checkout's real HEAD.
+        import pm
+        build_env = pm.ensure("git", base_env=build_env).env
+    if _force_adhoc_macos_signing(build_env, source_mode=source_mode):
+        print("  → No Developer ID configured; ad-hoc signing this local rebuild "
+              "(CSC_IDENTITY_AUTO_DISCOVERY=false)")
+    build_args = ["--icons", str(icons)] if icons else []
+    build_cmd = [npm, "run", "build", "--", *build_args]
+    staging_dir = None if source_mode else _desktop_staging_dir(desktop_dir)
+    if staging_dir is not None:
+        # electron-builder packs in place; only the verified staging tree may
+        # replace the running app, never a failed or incomplete build.
+
+        stopped = _stop_desktop_processes_locking_build(desktop_dir)
+        if stopped:
+            print(f"  ⚠ Stopped running desktop app to free the build output (pid {', '.join(map(str, stopped))})")
+    try:
+        run_in_custody(desktop_dir.parents[1], build_cmd, f"Building desktop {build_label}", cwd=desktop_dir, env=build_env)
+        if staging_dir is not None:
+            run_in_custody(desktop_dir.parents[1], [npm, "run", "builder", "--", "--dir", "--publish", "never",
+                           f"-c.directories.output={staging_dir}"], "Packaging the desktop app",
+                           cwd=desktop_dir, env=build_env)
+        packaged_executable = (
+            _promote_staged_desktop_app(desktop_dir, staging_dir) if staging_dir is not None else None
+        )
+        return packaged_executable
+    except subprocess.CalledProcessError as exc:
+        _diagnose_esbuild_ignore_scripts(exc.output)
+        raise
+    finally:
+        if staging_dir is not None:
+            _discard_desktop_staging(staging_dir)
+
+
+_WSL_DXG_DEVICE = Path("/dev/dxg")
+_WSL_D3D12_DRIVERS = (
+    Path("/usr/lib/x86_64-linux-gnu/dri/d3d12_dri.so"),
+    Path("/usr/lib/aarch64-linux-gnu/dri/d3d12_dri.so"),
+    Path("/usr/lib64/dri/d3d12_dri.so"),
+    Path("/usr/lib/dri/d3d12_dri.so"),
+)
+_MESA_DRIVER_OVERRIDES = ("GALLIUM_DRIVER", "MESA_LOADER_DRIVER_OVERRIDE", "LIBGL_ALWAYS_SOFTWARE", "LIBGL_DRIVERS_PATH")
+
+
+def _prefer_wsl_d3d12(env: dict) -> None:
+    """Under WSLg, /dev/dxg alone does not make Mesa pick the GPU: Chromium still lands on
+    llvmpipe unless GALLIUM_DRIVER selects d3d12, and it must be set before Electron spawns
+    its GPU process (setting it from JS is too late). Explicit Mesa choices win; hosts without
+    the driver are left alone."""
+    from hermes_constants import is_wsl
+    if any(key in env for key in _MESA_DRIVER_OVERRIDES):
+        return
+    if is_wsl() and _WSL_DXG_DEVICE.exists() and any(driver.is_file() for driver in _WSL_D3D12_DRIVERS):
+        env["GALLIUM_DRIVER"] = "d3d12"
+
+
+# Chromium's ProcessSingleton binds $TMPDIR/scoped_dirXXXXXX/SingletonSocket (33 bytes after
+# TMPDIR, measured on Electron 40); sun_path holds 107 bytes plus the NUL.
+_ELECTRON_TMPDIR_MAX_BYTES = 107 - len("/scoped_dirXXXXXX/SingletonSocket")
+_DESKTOP_TMPDIR_ENV = "HERMES_DESKTOP_TMPDIR"
+
+
+def _desktop_launch_env(args: argparse.Namespace) -> tuple[dict, list[str]]:
+    """Electron child env + config-supplied extra flags. ``desktop.*`` config is bridged to env vars
+    Electron already reads; an explicit env var wins over config (and over keychain detection)."""
+    from hermes_constants import socket_safe_tmpdir, with_hermes_node_path
+    # with_hermes_node_path() copies os.environ when called with no arg.
+    env = with_hermes_node_path()
+    tmpdir = env.get("TMPDIR", "")
+    if sys.platform == "linux" and len(os.fsencode(tmpdir)) > _ELECTRON_TMPDIR_MAX_BYTES:
+        # A longer TMPDIR hangs requestSingleInstanceLock(). Only Chromium's socket dir moves:
+        # Electron main hands the real TMPDIR back to the backend and its other children.
+        env[_DESKTOP_TMPDIR_ENV] = tmpdir
+        env["TMPDIR"] = socket_safe_tmpdir()
+    _prefer_wsl_d3d12(env)
+    for attr, key in (
+        ("fake_boot", "HERMES_DESKTOP_BOOT_FAKE"), ("ignore_existing", "HERMES_DESKTOP_IGNORE_EXISTING")):
+        if getattr(args, attr, False):
+            env[key] = "1"
+    if getattr(args, "hermes_root", None):
+        env["HERMES_DESKTOP_HERMES_ROOT"] = str(Path(args.hermes_root).expanduser().resolve())
+    cwd = getattr(args, "cwd", None)
+    env["HERMES_DESKTOP_CWD"] = str(Path(cwd).expanduser().resolve()) if cwd else os.getcwd()
+
+    config_electron_flags, config_disable_gpu, config_password_store, config_ozone_hint, config_renderer_a11y = (
+        _desktop_launch_options())
+    if config_disable_gpu != "auto" and "HERMES_DESKTOP_DISABLE_GPU" not in os.environ:
+        env["HERMES_DESKTOP_DISABLE_GPU"] = config_disable_gpu
+    if config_ozone_hint != "auto" and "ELECTRON_OZONE_PLATFORM_HINT" not in os.environ:
+        env["ELECTRON_OZONE_PLATFORM_HINT"] = config_ozone_hint
+
+    # Renderer accessibility tree (composer exposure to OS dictation/IME
+    # tools, #118271/#92607) defaults to ON inside the app; bridge only the
+    # explicit opt-out so the default never depends on the launcher path.
+    if not config_renderer_a11y and "HERMES_DESKTOP_RENDERER_ACCESSIBILITY" not in os.environ:
+        env["HERMES_DESKTOP_RENDERER_ACCESSIBILITY"] = "0"
+
+    # Without --password-store safeStorage.isEncryptionAvailable() is often
+    # false and the desktop app refuses to persist remote gateway tokens.
+    if sys.platform == "linux" and "HERMES_DESKTOP_PASSWORD_STORE" not in os.environ:
+        password_store = (
+            config_password_store if config_password_store != "auto" else _detect_linux_password_store()
+        )
+        if password_store:
+            env["HERMES_DESKTOP_PASSWORD_STORE"] = password_store
+    return env, config_electron_flags
+
+
+def _check_desktop_skip_build(
+    desktop_dir: Path, project_root: Path, *, source_mode: bool, packaged_executable: Optional[Path]
+) -> None:
+    """Validate the pre-built artifact ``--skip-build`` promised; exit with a hint when it's missing."""
+    if source_mode:
+        if not _desktop_dist_exists(desktop_dir):
+            print(f"✗ --skip-build --source was passed but no desktop dist found at: {desktop_dir / 'dist'}")
+            print("  Pre-build first:  cd apps/desktop && npm run build")
+            print("  Or drop --skip-build to install dependencies and build automatically.")
+            sys.exit(1)
+        if not (_electron_dir(project_root) / "package.json").exists():
+            print("✗ --skip-build --source requires existing desktop workspace dependencies.")
+            print(f"  Install first:  cd {project_root} && npm ci")
+            print("  Or drop --skip-build to install dependencies and build automatically.")
+            sys.exit(1)
+        print(f"→ Skipping desktop source build (--skip-build --source); using dist at {desktop_dir / 'dist'}")
+    elif packaged_executable is None:
+        print(f"✗ --skip-build was passed but no packaged desktop app was found at: {desktop_dir / 'release'}")
+        print("  Pre-build first:  cd apps/desktop && npm run pack")
+        print("  Or drop --skip-build to package automatically.")
+        sys.exit(1)
+    else:
+        desktop_launch_notice(f"→ Skipping desktop package build (--skip-build); using {packaged_executable}")
+
+
+def _packaged_desktop_launch_command(packaged_executable: Path) -> list[str]:
+    """``[exe, *sandbox flags]`` after the Linux sandbox fixup; exits when the sandbox can't be configured."""
+    launch_command = [str(packaged_executable)]
+    if not _desktop_linux_sandbox_fixup(packaged_executable):
+        if _desktop_linux_needs_no_sandbox() and _desktop_linux_sandbox_helper_is_regular_file(packaged_executable):
+            print("⚠ Falling back to --no-sandbox because this Linux host restricts unprivileged user namespaces and the Electron sandbox helper could not be configured.")
+            launch_command.append("--no-sandbox")
+        else:
+            sys.exit(1)
+    elif _desktop_linux_needs_disable_setuid_sandbox(packaged_executable):
+        launch_command.append("--disable-setuid-sandbox")
+    return launch_command
+
+
+def _site_packages_install_kind(project_root: Path) -> Optional[str]:
+    """The package manager owning a non-editable install at *project_root*, or None.
+
+    A package-manager install (Homebrew, pip, distro packaging) places this
+    code in a ``site-packages``/``dist-packages`` tree. Such a tree ships no
+    ``apps/desktop`` source, so the build ladder below can never run — the
+    caller must not treat it like a broken checkout. A Homebrew formula lives
+    under a ``Cellar`` directory; any other site-packages owner is reported
+    generically as pip.
+    """
+    parts = Path(project_root).parts
+    if "site-packages" in parts or "dist-packages" in parts:
+        return "homebrew" if "Cellar" in parts else "pip"
+    return None
+
+
+def _launch_installed_macos_desktop_app() -> bool:
+    """Launch a separately installed ``/Applications/Hermes.app``, if present.
+
+    Returns True only when the app bundle exists and a detached launch was
+    started — the caller then exits without touching the build ladder.
+    """
+    if sys.platform != "darwin":
+        return False
+    executable = Path("/Applications/Hermes.app/Contents/MacOS/Hermes")
+    if not executable.is_file():
+        return False
+    from hermes_cli.bundled_app import launch_detached
+
+    pid = launch_detached([str(executable)], cwd=executable.parent)
+    print(f"→ Launched the installed Hermes Desktop app: {executable} (pid {pid})")
+    return True
+
+
+def cmd_gui(args: argparse.Namespace):
+    """Build and launch the native Electron desktop GUI."""
+    from hermes_cli.main import PROJECT_ROOT
+    from hermes_cli.source_build import prepare_source_dependencies, source_build_env
+    desktop_dir = PROJECT_ROOT / "apps" / "desktop"
+    # A bundled install IS the app: no source tree, no build, and the
+    # launcher is a sibling of this payload rather than something we
+    # produce. Every rung below assembles a checkout build, so the sealed
+    # shape leaves here with the env it just built.
+    from hermes_cli.steward import is_bundled_payload
+
+    bundled = is_bundled_payload(PROJECT_ROOT)
+    if not bundled and not (desktop_dir / "package.json").exists():
+        # A package-manager install (Homebrew, pip, ...) ships no desktop
+        # source tree, so building here is impossible by construction (#61056).
+        # Prefer the separately installed desktop app; otherwise explain the
+        # packaging shape instead of the generic missing-source error.
+        install_kind = _site_packages_install_kind(PROJECT_ROOT)
+        if install_kind is not None and _launch_installed_macos_desktop_app():
+            sys.exit(0)
+        print(f"Desktop GUI source not found at: {desktop_dir}")
+        if install_kind == "homebrew":
+            print(
+                "  This Hermes came from Homebrew, which does not ship the desktop app's\n"
+                "  source tree, so it cannot be built from this install.\n"
+                "  Install the desktop app from https://hermes-agent.nousresearch.com,\n"
+                "  or run `hermes desktop` from a source checkout."
+            )
+        sys.exit(1)
+
+    with contextlib.suppress(Exception):
+        from hermes_logging import setup_logging as _setup_logging_gui
+        _setup_logging_gui(mode="gui")
+
+    env, config_electron_flags = _desktop_launch_env(args)
+
+    source_mode = getattr(args, "source", False)
+    skip_build = getattr(args, "skip_build", False)
+    force_build = getattr(args, "force_build", False)
+
+    # macOS-only one-shot: create a self-signed code-signing identity so TCC
+    # grants survive rebuilds, then exit without building/launching.
+    if getattr(args, "setup_tcc_identity", False):
+        from hermes_cli.main_desktop_tcc import _desktop_macos_setup_tcc_identity
+        identity = getattr(args, "identity", None) or "Hermes Local Signing"
+        sys.exit(0 if _desktop_macos_setup_tcc_identity(identity) else 1)
+
+    if bundled:
+        _launch_bundled_desktop(args, env, config_electron_flags)
+
+    packaged_executable = _desktop_packaged_executable(desktop_dir)
+
+    # The mutable preflight (freshness check → npm install → pack) mutates
+    # checkout-scoped node_modules and apps/desktop/release. Serialize it
+    # across processes so a manual `hermes desktop` racing `hermes update`'s
+    # rebuild cannot corrupt either (#93940). The lock lives outside the
+    # checkout, keyed by the resolved checkout path.
+    from hermes_cli.desktop_build_lock import DesktopBuildLock
+
+    build_lock: DesktopBuildLock | None = None
+    if not bundled and not skip_build:
+        build_lock = DesktopBuildLock(PROJECT_ROOT)
+        try:
+            acquired = build_lock.acquire()
+        except OSError as exc:
+            print(f"✗ Could not create the desktop build lock: {exc}")
+            print("  Refusing to run npm without serialization; check the checkout permissions and retry.")
+            sys.exit(1)
+        if not acquired:
+            print("✗ A Hermes update or another desktop dependency install or build is already running.")
+            print("  Wait for it to finish, then retry.")
+            sys.exit(2)
+
+    needs_build = not skip_build and (
+        force_build or _desktop_build_needed(desktop_dir, PROJECT_ROOT, source_mode=source_mode)
+    )
+    npm = None
+    try:
+        if needs_build:
+            build_env = source_build_env(env, explicit=force_build or getattr(args, "build_only", False))
+            npm = shutil.which("npm", path=build_env["PATH"])
+            env["PATH"] = build_env["PATH"]
+        if skip_build:
+            _check_desktop_skip_build(
+                desktop_dir, PROJECT_ROOT, source_mode=source_mode, packaged_executable=packaged_executable
+            )
+        elif needs_build:
+            prepare_source_dependencies(PROJECT_ROOT, ("ui-tui", "web", "apps/desktop"), env=build_env,
+                                        explicit=force_build or getattr(args, "build_only", False))
+            built = build_prepared_desktop(desktop_dir, source_mode=source_mode, npm=npm, env=build_env)
+            if not source_mode:
+                # None only when the build was skipped under its own Desktop: reopen the app it kept.
+                packaged_executable = built or packaged_executable
+        else:
+            build_label = "source build" if source_mode else "packaged app"
+            desktop_launch_notice(f"✓ Desktop {build_label} is up to date (content stamp matches)", source_mode=source_mode)
+    except (OSError, subprocess.SubprocessError, RuntimeError) as exc:
+        print(f"✗ Desktop GUI build failed: {exc}")
+        if build_lock is not None:
+            build_lock.release()
+        raise SystemExit(1) from exc
+
+    # Best-effort and idempotent; a failure must never stop the app from launching.
+    # An app-grid launch (DESKTOP_STARTUP_ID) must not write its own entry while the
+    # shell still has the app in STARTING, so it defers the write until Electron
+    # reports the window on screen (#111906). --build-only spawns no app: write now.
+    from hermes_cli.linux_desktop_entry import launched_from_shell
+    build_only = bool(getattr(args, "build_only", False))
+    deferred_entry = _register_linux_desktop_entry(defer=launched_from_shell() and not build_only)
+
+    # --build-only: produce the artifact but do NOT launch. The installer's
+    # --update flow drives the rebuild headlessly and launches the desktop
+    # itself (detached, after the old exe has exited); launching here would
+    # block the installer. Verify the artifact exists so a silent "built
+    # nothing" can't slip past.
+    if build_only:
+        if source_mode:
+            if not _desktop_dist_exists(desktop_dir):
+                print(f"✗ --build-only --source produced no dist at: {desktop_dir / 'dist'}")
+                sys.exit(1)
+            print(f"✓ Desktop source build ready at {desktop_dir / 'dist'} (not launching; --build-only)")
+        elif packaged_executable is None:
+            print(f"✗ --build-only produced no launchable app at: {desktop_dir / 'release'}")
+            print("  Expected an unpacked Electron app for the current OS.")
+            sys.exit(1)
+        else:
+            print(f"✓ Desktop packaged app ready: {packaged_executable} (not launching; --build-only)")
+        if build_lock is not None:
+            build_lock.release()
+        return
+
+    if source_mode:
+        print("→ Launching Hermes Desktop from source build...")
+        # Launch only the prepared runtime. npm exec can provision a missing
+        # Electron package, including when --skip-build was requested.
+        electron = _electron_dir(PROJECT_ROOT)
+        try:
+            executable = electron / "dist" / (electron / "path.txt").read_text(encoding="utf-8-sig").strip()
+            if not executable.is_file():
+                raise FileNotFoundError(executable)
+        except OSError as exc:
+            print(f"✗ Prepared Electron runtime is missing: {exc}")
+            raise SystemExit(1) from exc
+        launch_command = [str(executable), "."]
+    else:
+        if packaged_executable is None:
+            print(f"✗ Desktop package build completed but no launchable app was found at: {desktop_dir / 'release'}")
+            print("  Expected an unpacked Electron app for the current OS.")
+            sys.exit(1)
+        launch_command = _packaged_desktop_launch_command(
+            _installed_desktop_launch_target(desktop_dir, packaged_executable))
+        launch_command.extend(config_electron_flags)
+    if getattr(args, "local", False):
+        launch_command.append("--local")
+    # Out-of-band preview escape hatch (#97213): a fullscreened preview pane
+    # owns all input, and Wayland has no xdotool/wmctrl to break out from a
+    # terminal. `hermes desktop --close-preview` rides the single-instance
+    # argv so a second CLI invocation unlocks the running app.
+    if getattr(args, "close_preview", False):
+        launch_command.append("--close-preview")
+    launch_command.extend(_explicit_profile_args())
+    if not source_mode:
+        desktop_launch_notice(f"→ Launching packaged Hermes Desktop: {' '.join(launch_command)}")
+    # The launch target is ready; the fixups above finished mutating the
+    # packaged tree. Electron is the long-lived handoff, so release the build
+    # lock now — an open Desktop window must never block a future rebuild.
+    if build_lock is not None:
+        build_lock.release()
+    pass_fds: tuple[int, ...] = ()
+    if deferred_entry is not None:
+        env = deferred_entry.child_env(env)
+        pass_fds = deferred_entry.pass_fds
+    if not source_mode and sys.platform == "win32":
+        # Windows: detach the packaged Desktop from the parent console + process
+        # group, then return immediately (#58275). A console-inheriting
+        # subprocess.run dies with the launching shell (CTRL_CLOSE_EVENT fans
+        # out to the process group) and floods the parent terminal — under
+        # cp936, mojibake — with Electron/Node stdout. Mirrors the bundled
+        # launcher (_launch_bundled_desktop) and gateway_windows._spawn_detached.
+        # macOS/Linux keep the foreground run below: those launches are
+        # expected to stay attached to the terminal, and the desktop_console
+        # drain is a Windows-only concern.
+        from hermes_cli._subprocess_compat import (
+            windows_detach_flags,
+            windows_detach_flags_without_breakaway,
+        )
+
+        popen_kwargs = dict(
+            cwd=desktop_dir,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+        )
+        try:
+            subprocess.Popen(launch_command, creationflags=windows_detach_flags(), **popen_kwargs)
+        except OSError as exc:
+            # Only recover from a denied job breakaway (the parent's job object
+            # lacks JOB_OBJECT_LIMIT_BREAKAWAY_OK), which surfaces as
+            # ERROR_ACCESS_DENIED (winerror == 5). Re-raise every other spawn
+            # failure (bad argv/env, missing exe) so it stays a clear, single
+            # error instead of being masked by a doomed second attempt.
+            if getattr(exc, "winerror", None) != 5:
+                raise
+            subprocess.Popen(
+                launch_command,
+                creationflags=windows_detach_flags_without_breakaway(),
+                **popen_kwargs,
+            )
+        if deferred_entry is not None:
+            deferred_entry.finish()
+        desktop_launch_notice("✓ Hermes Desktop launched in a detached window; you can close this shell.")
+        sys.exit(0)
+    with desktop_console_output(source_mode=source_mode) as streams:
+        try:
+            launch_result = subprocess.run(
+                launch_command, cwd=desktop_dir, env=env, check=False, pass_fds=pass_fds, **streams
+            )
+        except KeyboardInterrupt:
+            # Ctrl-C in the terminal the launcher is attached to is the user
+            # closing the Desktop, not a launcher crash. Exit cleanly instead
+            # of dumping a KeyboardInterrupt traceback from subprocess.run
+            # (#59848).
+            print("\n✓ Hermes Desktop closed.")
+            sys.exit(0)
+    if deferred_entry is not None:
+        deferred_entry.finish()
+    sys.exit(launch_result.returncode)
+
+
+def _explicit_profile_args() -> list[str]:
+    """``--profile <name>`` for Electron when ``-p``/``--profile`` was on argv.
+
+    Explicit flag only. A bare `hermes desktop` must not forward the sticky CLI
+    profile — Electron would persist it over the stored desktop one.
+    """
+    from hermes_cli.main import explicit_cli_profile
+
+    profile = explicit_cli_profile()
+    return ["--profile", profile] if profile else []
+
+
+def _launch_bundled_desktop(
+    args: argparse.Namespace, env: dict, electron_flags: list[str]
+) -> None:
+    """Start the desktop app this CLI ships inside, then exit.
+
+    A bundled install has no source tree to build: the app is a signed,
+    read-only artifact and this Python is a passenger in its resources.
+    So the whole build ladder below is skipped and the launcher is started
+    DETACHED — the user ran a CLI command, and the app must outlive the
+    terminal it was typed into. The app's own single-instance lock turns a
+    second run into "focus the running window".
+
+    Never returns.
+    """
+    from hermes_cli.bundled_app import NotBundledApp, launch_detached, resolve_bundle_layout
+    from hermes_cli.main import PROJECT_ROOT
+
+    refused = [
+        flag
+        for flag, name in (
+            ("--source", "source"),
+            ("--build-only", "build_only"),
+            ("--force-build", "force_build"),
+        )
+        if getattr(args, name, False)
+    ]
+    if refused:
+        print(f"✗ {', '.join(refused)} cannot apply to a bundled Hermes install.")
+        print("  This app ships prebuilt and has no desktop source tree to build.")
+        sys.exit(2)
+
+    try:
+        layout = resolve_bundle_layout(PROJECT_ROOT)
+    except NotBundledApp as exc:
+        # The stamp says bundled, so a tree that is not one is a damaged or
+        # mispackaged install. Report it — degrading to the build ladder
+        # would run npm inside the app's own resources.
+        print(f"✗ This Hermes is stamped as a bundled desktop install, but {exc}.")
+        print("  The install is damaged — reinstall Hermes from the website.")
+        sys.exit(1)
+
+    if layout.launcher is None:
+        print(f"✗ Found no Hermes Desktop launcher in {layout.app_root}.")
+        print("  The install is damaged — reinstall Hermes from the website.")
+        sys.exit(1)
+
+    launch_command = [str(layout.launcher)]
+    if not _desktop_linux_sandbox_fixup(layout.launcher):
+        if _desktop_linux_needs_no_sandbox() and _desktop_linux_sandbox_helper_is_regular_file(layout.launcher):
+            print("⚠ Falling back to --no-sandbox because this Linux host restricts unprivileged user namespaces and the Electron sandbox helper could not be configured.")
+            launch_command.append("--no-sandbox")
+        else:
+            sys.exit(1)
+
+    launch_command.extend(electron_flags)
+    launch_command.extend(_explicit_profile_args())
+    pid = launch_detached(launch_command, env=env, cwd=layout.app_root)
+    print(f"→ Launched Hermes Desktop: {' '.join(launch_command)} (pid {pid})")
+    sys.exit(0)
+
+

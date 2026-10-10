@@ -148,6 +148,8 @@ class DispatchResult:
     skipped_locked: bool = False
     """True when another process held the board's dispatch lock: this tick did
     no DB writes; the lock holder is making progress on the same board."""
+    paused: bool = False
+    """True when the ESTOP sentinel is engaged: this tick did no work and returned early."""
     memory_pressure: Optional[str] = None
     """Memory pressure that restricted this tick: ``"critical"`` (no new
     workers), ``"elevated"`` (at most one), ``None`` (no restriction).
@@ -1973,6 +1975,16 @@ def dispatch_once(
     ``skipped_locked=True`` and writes nothing; the lock is keyed on the
     resolved DB path so unrelated boards tick in parallel.
     """
+    try:
+        import logging
+        from agent.estop import check_paused
+        # Fail OPEN on ImportError: an unimportable estop must not wedge the dispatcher.
+        # Fail SAFE (paused) on stat errors is handled inside check_paused/is_engaged.
+        if check_paused("kanban", logging.getLogger(__name__)):
+            return DispatchResult(paused=True)
+    except ImportError:
+        pass
+
     def _locked_tick() -> DispatchResult:
         return _dispatch_once_locked(
             conn,

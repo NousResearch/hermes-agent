@@ -18,7 +18,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 
 # fcntl is Unix-only; Windows uses msvcrt
 try:
@@ -565,7 +565,7 @@ _parallel_pools: dict[str, concurrent.futures.ThreadPoolExecutor] = {}
 _parallel_pool_max_workers: dict[str, Optional[int]] = {}
 
 
-def _inflight_key(job_id: str, home: Optional[Union[Path, str]] = None) -> tuple:
+def _inflight_key(job_id: str, home: Optional[Path | str] = None) -> tuple:
     """``(home key, job id)`` — the identity of one in-flight cron run.
 
     ONE gateway process ticks every profile, so a job id alone is not unique: two profiles
@@ -659,7 +659,7 @@ class _CombinedCancelEvent:
     ``lost_ownership`` + per-transport events). Workers only call is_set()/set(), so no pump thread.
     """
 
-    def __init__(self, *events: Optional["_CancelEventLike"]) -> None:
+    def __init__(self, *events: Optional[_CancelEventLike]) -> None:
         self._events = [event for event in events if event is not None]
 
     def is_set(self) -> bool:
@@ -670,7 +670,7 @@ class _CombinedCancelEvent:
             event.set()
 
 
-def get_running_job_ids() -> "frozenset[str]":
+def get_running_job_ids() -> frozenset[str]:
     """Thread-safe snapshot of executing job IDs (dispatch until ``_process_job`` returns). Read by
     the gateway shutdown drain, otherwise blind to cron work (runs outside ``_running_agents``).
 
@@ -697,7 +697,7 @@ def get_running_job_details() -> list[dict]:
         ]
 
 
-def get_wedged_job_ids() -> "frozenset[str]":
+def get_wedged_job_ids() -> frozenset[str]:
     """In-flight job IDs older than their stale-inflight allowance (``max(2 * interval,
     cron.inflight_max_minutes)``) — the scheduler's own definition of a claim that can no longer be
     making progress. ``sweep_stale_inflight`` cannot release these while the worker thread is still
@@ -707,7 +707,7 @@ def get_wedged_job_ids() -> "frozenset[str]":
     return frozenset(key[1] for key in _wedged_inflight_keys())
 
 
-def _wedged_inflight_keys() -> "frozenset[tuple]":
+def _wedged_inflight_keys() -> frozenset[tuple]:
     """In-flight keys behind :func:`get_wedged_job_ids`, before the projection to bare job IDs."""
     now = time.time()
     with _running_lock:
@@ -771,7 +771,7 @@ def get_restart_wait_cron_counts() -> dict:
     }
 
 
-def is_job_running(job_id: str, home: Optional[Union[Path, str]] = None) -> bool:
+def is_job_running(job_id: str, home: Optional[Path | str] = None) -> bool:
     """True when THIS process has an in-flight run of ``job_id`` FOR ``home`` (default: the active
     cron scope's home).
 
@@ -834,7 +834,7 @@ def try_register_running_job(job_id: str, *, owner=None, future=_FUTURE_PENDING)
 
 
 def release_running_job(
-    job_id: str, home: Optional[Union[Path, str]] = None, *, owner=None,
+    job_id: str, home: Optional[Path | str] = None, *, owner=None,
 ) -> None:
     """Remove the registration unless an explicit ``owner`` has been replaced.
 
@@ -1257,7 +1257,7 @@ def _usage_audit_path() -> Path:
 
 def _utcnow_iso_ms() -> str:
     """RFC3339 UTC timestamp with millisecond precision and 'Z' suffix."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     return now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}Z"
 
 
@@ -3243,7 +3243,7 @@ def _deliver_crash_failure(
 
 
 
-def _install_fire_secret_scope() -> "tuple[contextvars.Token, Optional[contextvars.Token]]":
+def _install_fire_secret_scope() -> tuple[contextvars.Token, Optional[contextvars.Token]]:
     """Install the firing profile's secret scope for the span ``_run_one_job_body`` runs, delivery
     included, and return the tokens ``_reset_fire_secret_scope`` needs.
 
@@ -3270,7 +3270,7 @@ def _install_fire_secret_scope() -> "tuple[contextvars.Token, Optional[contextva
     return scope_token, context_token
 
 
-def _reset_fire_secret_scope(tokens: "tuple[contextvars.Token, Optional[contextvars.Token]]") -> None:
+def _reset_fire_secret_scope(tokens: tuple[contextvars.Token, Optional[contextvars.Token]]) -> None:
     """Undo ``_install_fire_secret_scope`` — the context first, so multiplex semantics never
     outlive the scope they depend on."""
     from agent.secret_scope import reset_multiplex_context, reset_secret_scope
@@ -3291,7 +3291,7 @@ def _fire_secret_scope():
         _reset_fire_secret_scope(tokens)
 
 
-def _start_owned_run(job: dict, execution_id: str) -> "Optional[contextvars.Token]":
+def _start_owned_run(job: dict, execution_id: str) -> Optional[contextvars.Token]:
     """Win the run's ``claimed`` → ``running`` CAS and bind its cron identity; ``None`` when the run
     lost ownership first. A restart-safe worker already won it by adopting the row."""
     if os.environ.get("_HERMES_CRON_EXTERNAL_WORKER") == execution_id:

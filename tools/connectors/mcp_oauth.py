@@ -216,7 +216,7 @@ def _validate_client_redirect_uri(uri: str) -> str:
     return f"http://{'[' + host + ']' if ':' in host else host}:{parsed.port}{parsed.path or '/callback'}"
 
 
-def _start_loopback_receiver(flow) -> "http.server.HTTPServer":
+def _start_loopback_receiver(flow) -> http.server.HTTPServer:
     """Bind the single backend-hosted one-shot receiver and feed its callback into ``flow``."""
     from tools.mcp_oauth import _parse_redirect_query
 

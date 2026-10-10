@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 import json
 import os
 import time
@@ -281,7 +281,7 @@ def test_doctor_reports_persisted_dispatch_health(served_root, capsys, dispatch)
     else:
         records = jobs.load_jobs()
         delay = timedelta(hours=5) if dispatch == "catch_up" else timedelta(minutes=6)
-        records[0]["next_run_at"] = (datetime.now(timezone.utc) - delay).isoformat()
+        records[0]["next_run_at"] = (datetime.now(UTC) - delay).isoformat()
         jobs.save_jobs(records)
         assert len(jobs.get_due_jobs()) == 1
         persisted = jobs.get_job(job["id"])
@@ -300,7 +300,7 @@ def test_doctor_reports_persisted_dispatch_health(served_root, capsys, dispatch)
         assert cron_doctor() == 1
         capsys.readouterr()
         records = jobs.load_jobs()
-        records[0]["next_run_at"] = datetime.now(timezone.utc).isoformat()
+        records[0]["next_run_at"] = datetime.now(UTC).isoformat()
         jobs.save_jobs(records)
         assert len(jobs.get_due_jobs()) == 1
         persisted = jobs.get_job(job["id"])

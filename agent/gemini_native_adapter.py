@@ -745,7 +745,7 @@ def translate_stream_event(event: dict[str, Any], model: str, tool_call_indices:
             last_arguments = slot["last_arguments"]
             slot["last_arguments"] = args_str
             delta = {"index": slot["index"], "id": slot["id"], "name": name, "extra_content": _tool_call_extra_from_part(part),
-                     "arguments": args_str[len(last_arguments):] if args_str.startswith(last_arguments) else args_str}
+                     "arguments": args_str.removeprefix(last_arguments)}
             chunks.append(_make_stream_chunk(model=model, tool_call_delta=delta))
     if finish_reason_raw := str(cand.get("finishReason") or ""):
         finish_reason = "tool_calls" if tool_call_indices else _FINISH_REASON_MAP.get(finish_reason_raw.upper(), "stop")
@@ -850,7 +850,7 @@ class GeminiNativeClient:
         return {"Content-Type": "application/json", "Accept": "application/json", **self._auth_headers(),
                 "User-Agent": f"{_API_CLIENT} (gemini-native)", "X-Goog-Api-Client": _API_CLIENT, **self._default_headers}
 
-    def _http_error(self, response: httpx.Response, body_text: Optional[str] = None) -> "GeminiAPIError":
+    def _http_error(self, response: httpx.Response, body_text: Optional[str] = None) -> GeminiAPIError:
         return gemini_http_error(response, body_text=body_text, api_key=self.api_key, base_url=self.base_url)
 
     @staticmethod

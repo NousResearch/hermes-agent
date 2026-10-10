@@ -69,7 +69,7 @@ def _select_entry_point_group(entry_points: Any, group: str) -> list:
     return [ep for ep in entry_points if ep.group == group]
 
 
-def discover_entrypoint_manifests() -> list["PluginManifest"]:
+def discover_entrypoint_manifests() -> list[PluginManifest]:
     """Return metadata-only manifests for installed entry-point plugins. Kind comes from an import-free source
     scan (memory/model providers route to their own discovery). Capabilities come from the companion
     ``hermes_agent.plugin_capabilities`` group (``<plugin-id>.<capability-id>`` entries pointing at the same

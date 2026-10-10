@@ -230,7 +230,7 @@ S6_SERVICE_PREFIX = "gateway-"
 
 def _profile_from_service(name: str) -> str:
     """Strip the ``gateway-`` prefix back off (matches what the user typed via ``-p``)."""
-    return name[len(S6_SERVICE_PREFIX):] if name.startswith(S6_SERVICE_PREFIX) else name
+    return name.removeprefix(S6_SERVICE_PREFIX)
 
 
 def _profile_dir_for_gateway_service(name: str) -> Path:

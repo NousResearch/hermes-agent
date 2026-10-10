@@ -1575,7 +1575,7 @@ class UpdateLock:
             self.acquired = self._claimed = False
             self._drop_checkout()
 
-    def __enter__(self) -> "UpdateLock":
+    def __enter__(self) -> UpdateLock:
         self.acquire()
         return self
 

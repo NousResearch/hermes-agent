@@ -69,10 +69,7 @@ class GatewayNotice:
 
 # Explicit union (not a marker base class) so a missing ``case`` in an
 # exhaustive match is a visible type error rather than a silent fall-through.
-StreamEvent = Union[
-    MessageChunk, MessageStop, Commentary,
-    ToolCallChunk, ToolCallFinished, LongToolHint, GatewayNotice,
-]
+StreamEvent = MessageChunk | MessageStop | Commentary | ToolCallChunk | ToolCallFinished | LongToolHint | GatewayNotice
 
 __all__ = [
     "Commentary",

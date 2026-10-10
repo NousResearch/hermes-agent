@@ -384,10 +384,22 @@ def _units_of(batch: _Batch) -> list[_Batch]:
         members.setdefault(key, []).append((i, t, c))
     return [replace(batch, children=ch, group=(key[1] if key[0] == "g" else None)) for key, ch in members.items()]
 
+def _child_route_metadata(children: list[tuple]) -> list[dict[str, Any]]:
+    """Only public labels from constructed children, never their credential bundles."""
+    return [{key: value if isinstance(value := getattr(child, key, None), str) else None
+             for key in ("model", "provider")} for _, _, child in children]
+
+
 def _dispatch_unit(unit: _Batch, unit_id: Optional[str], slot_key: Optional[str], routing: dict) -> dict:
     """Hand ONE unit to the async registry; the runner joins on that unit's children only."""
     from tools.async_delegation import dispatch_async_delegation_batch
     child_agents = [c for (_, _, c) in unit.children]
+    from tools.delegate_tool import _task_has_route_pin
+    from tools.delegation_live_log import batch_route_metadata
+    # Untouched calls retain the original shared-route metadata contract.
+    model = unit.creds["model"]
+    if any(_task_has_route_pin(task) for task in unit.task_list):
+        model = batch_route_metadata(_child_route_metadata(unit.children))["model"]
 
     def _interrupt():
         for c in child_agents:
@@ -397,7 +409,7 @@ def _dispatch_unit(unit: _Batch, unit_id: Optional[str], slot_key: Optional[str]
         # Call-wide goals: completion formatting indexes them by task_index.
         goals=[t["goal"] for t in unit.task_list], context=unit.context,
         toolsets=None,  # metadata for the completion block only; subagents inherit the parent's toolsets
-        role=unit.top_role, model=unit.creds["model"],
+        role=unit.top_role, model=model,
         runner=lambda: _execute_and_aggregate(unit, honor_parent_interrupt=False),
         interrupt_fn=_interrupt, delegation_id=unit_id, slot_key=slot_key,
         task_indexes=[i for (i, _, _) in unit.children] if len(unit.children) < len(unit.task_list) else None,

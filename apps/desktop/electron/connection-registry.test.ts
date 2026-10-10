@@ -915,20 +915,34 @@ test('roster: source profile metadata follows the connection-qualified row', () 
 
 test('rememberSshEnumeration: live list wins, cache then seed default', () => {
   assert.deepEqual(rememberSshEnumeration({ profiles: ['bob', 'kai'] }, ['stale'], 'ssh'), {
-    profiles: ['bob', 'kai']
+    profiles: ['bob', 'kai'],
+    inventoryComplete: true
   })
   assert.deepEqual(
     rememberSshEnumeration({ profiles: null, error: 'connect-on-demand' }, ['bob', 'kai', 'rook'], 'ssh'),
-    { profiles: ['bob', 'kai', 'rook'], error: 'connect-on-demand' }
+    { profiles: ['bob', 'kai', 'rook'], error: 'connect-on-demand', inventoryComplete: false }
   )
   assert.deepEqual(rememberSshEnumeration({ profiles: null, error: 'connect-on-demand' }, null, 'ssh'), {
     profiles: ['default'],
-    error: 'connect-on-demand'
+    error: 'connect-on-demand',
+    inventoryComplete: false
   })
   assert.deepEqual(rememberSshEnumeration({ profiles: null, error: 'connect-on-demand' }, null, 'remote'), {
     profiles: null,
-    error: 'connect-on-demand'
+    error: 'connect-on-demand',
+    inventoryComplete: false
   })
+})
+
+test('rememberSshEnumeration: only a fresh answer from the source is inventoryComplete', () => {
+  // F1: `reachable` is `profiles !== null`, and every fallback below returns a
+  // non-null list — the remembered cache, the undialed-ssh `default` seed and
+  // (for local) an empty answer. Only the live branch describes what the source
+  // actually has, so only it may be read as "anything missing was deleted".
+  // A consumer keying absence off `reachable` dropped live bots from a cache.
+  assert.equal(rememberSshEnumeration({ profiles: ['default', 'ceo'] }, null, 'ssh').inventoryComplete, true)
+  assert.equal(rememberSshEnumeration({ profiles: [], error: 'boom' }, ['default'], 'ssh').inventoryComplete, false)
+  assert.equal(rememberSshEnumeration({ profiles: null, error: 'boom' }, ['default'], 'local').inventoryComplete, false)
 })
 
 test('rememberSshEnumeration: a bounced remote source keeps its last-known roster (4-bots-show-as-2)', () => {
@@ -937,19 +951,21 @@ test('rememberSshEnumeration: a bounced remote source keeps its last-known roste
   // silently drop that source's bots mid-outage.
   assert.deepEqual(
     rememberSshEnumeration({ profiles: null, error: 'unreachable' }, ['default', 'ceo', 'accounter'], 'remote'),
-    { profiles: ['default', 'ceo', 'accounter'], error: 'unreachable' }
+    { profiles: ['default', 'ceo', 'accounter'], error: 'unreachable', inventoryComplete: false }
   )
   // Never-seen remote source: no seed — an unreachable URL is not evidence a
   // backend exists there.
   assert.deepEqual(rememberSshEnumeration({ profiles: null, error: 'unreachable' }, null, 'remote'), {
     profiles: null,
-    error: 'unreachable'
+    error: 'unreachable',
+    inventoryComplete: false
   })
   // Local enumeration failures never reuse a cache (the local runtime answers
   // authoritatively or not at all).
   assert.deepEqual(rememberSshEnumeration({ profiles: null, error: 'boom' }, ['default'], 'local'), {
     profiles: null,
-    error: 'boom'
+    error: 'boom',
+    inventoryComplete: false
   })
 })
 

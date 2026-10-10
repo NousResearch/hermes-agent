@@ -226,6 +226,104 @@ class TestSyncBackNewRemoteFile:
         assert expected_host_path.read_bytes() == new_remote_content
 
 
+def _local_ssh_sync(tmp_path, monkeypatch):
+    """Exercise SSH's production sync wiring with a local filesystem transport."""
+    import shutil
+    from tools.environments import ssh
+
+    remote = tmp_path / "remote"
+    remote.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    monkeypatch.setattr(ssh, "_ensure_ssh_available", lambda: None)
+    for method in ("_establish_connection", "_ensure_remote_dirs", "init_session", "cleanup"):
+        monkeypatch.setattr(ssh.SSHEnvironment, method, lambda self: None)
+    monkeypatch.setattr(ssh.SSHEnvironment, "_detect_remote_home", lambda self: "/home/sandbox")
+
+    def upload(self, files):
+        for host, target in files:
+            dest = remote / target.lstrip("/")
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(host, dest)
+
+    def download(self, dest):
+        with tarfile.open(dest, "w") as archive:
+            archive.add(remote / "home", arcname="home")
+
+    monkeypatch.setattr(ssh.SSHEnvironment, "_ssh_bulk_upload", upload)
+    monkeypatch.setattr(ssh.SSHEnvironment, "_ssh_bulk_download", download)
+    class LocalSSH(ssh.SSHEnvironment):
+        def __del__(self):
+            pass  # no connection to close after monkeypatch restores the real transport
+
+    env = LocalSSH(host="unused", user="unused")
+    return env._sync_manager, remote / "home/sandbox/.hermes"
+
+
+def test_sync_back_preserves_new_siblings_in_permitted_roots(tmp_path, monkeypatch):
+    import json
+
+    home = tmp_path / "profile"
+    external = tmp_path / "external"
+    project = tmp_path / "project"
+    (project / ".git").mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("TERMINAL_CWD", str(project))
+    monkeypatch.chdir(project)
+    roots = {
+        "skills": home / "skills",
+        "external_skills/0": external,
+        "project_skills/0": project / ".hermes/skills",
+        "cache/documents": home / "document_cache",
+    }
+    for root in roots.values():
+        _write_file(root / "old/SKILL.md", b"original")
+    _write_file(home / "config.yaml", json.dumps({"skills": {
+        "external_dirs": [str(external)], "trusted_project_dirs": [str(project)],
+    }}).encode())
+    manager, remote = _local_ssh_sync(tmp_path, monkeypatch)
+    for namespace in roots:
+        for relative in ("old/extra.txt", "new/SKILL.md"):
+            _write_file(remote / namespace / relative, namespace.encode())
+
+    manager.sync_back()
+
+    for namespace, root in roots.items():
+        for relative in ("old/extra.txt", "new/SKILL.md"):
+            assert (root / relative).read_bytes() == namespace.encode()
+    assert not (home / "external_skills").exists()
+    assert not (home / "project_skills").exists()
+    assert not (home / "cache/documents").exists()  # legacy cache stays canonical
+
+
+def test_sync_back_new_files_do_not_expand_write_authority(tmp_path, monkeypatch):
+    home = tmp_path / "profile"
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    _write_file(home / "skills/old/SKILL.md", b"original")
+    credentials = ("service/token.json", "skills/old/token.json")
+    for relative in credentials:
+        _write_file(home / relative, b"host credential")
+    _write_file(home / "config.yaml", (
+        "terminal:\n  credential_files:\n" +
+        "".join(f"    - {relative}\n" for relative in credentials)
+    ).encode())
+    manager, remote = _local_ssh_sync(tmp_path, monkeypatch)
+    rejected = (".env", "skills-other/new.txt", "service/new.json",
+                "cache/unlisted/new.txt", "external_skills/9/new/SKILL.md",
+                "project_skills/9/new/SKILL.md")
+    for relative in (*rejected, *credentials, "skills/new/SKILL.md"):
+        _write_file(remote / relative, b"remote bytes")
+
+    manager.sync_back()
+
+    for relative in rejected:
+        assert not (home / relative).exists()
+    for relative in credentials:
+        assert (home / relative).read_bytes() == b"host credential"
+    assert (home / "skills/new/SKILL.md").read_bytes() == b"remote bytes"
+
+
 class TestSyncBackConflict:
     """Host AND remote both changed since push -- warning logged, remote wins."""
 

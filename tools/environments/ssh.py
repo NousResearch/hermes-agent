@@ -14,7 +14,7 @@ from typing import Iterable
 from tools.environments.base import BaseEnvironment, EnvironmentConnectionError
 from tools.environments.base_output import _popen_bash
 from tools.environments.file_sync import (
-    FileSyncManager, iter_sync_files, quoted_mkdir_command, quoted_rm_command, unique_parent_dirs)
+    FileSyncManager, iter_sync_files, iter_sync_roots, quoted_mkdir_command, quoted_rm_command, unique_parent_dirs)
 from tools.environments.remote_common import (
     bash_argv, client_env_with, load_hermes_env_vars, prepend_unset, resolve_passthrough_env, run_capture)
 
@@ -83,6 +83,7 @@ class SSHEnvironment(BaseEnvironment):
             self._ensure_remote_dirs()
             self._sync_manager = FileSyncManager(
                 get_files_fn=lambda: iter_sync_files(f"{self._remote_home}/.hermes"),
+                get_sync_roots_fn=lambda: iter_sync_roots(f"{self._remote_home}/.hermes"),
                 upload_fn=self._scp_upload, delete_fn=self._ssh_delete,
                 bulk_upload_fn=self._ssh_bulk_upload, bulk_download_fn=self._ssh_bulk_download)
             self._sync_manager.sync(force=True)

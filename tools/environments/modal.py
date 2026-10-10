@@ -15,7 +15,7 @@ from hermes_constants import get_hermes_home
 from tools.environments.base import BaseEnvironment, _load_json_store, _save_json_store
 from tools.environments.base_output import _ThreadedProcessHandle
 from tools.environments.file_sync import (
-    FileSyncManager, iter_sync_files, quoted_mkdir_command, quoted_rm_command, unique_parent_dirs)
+    FileSyncManager, iter_sync_files, iter_sync_roots, quoted_mkdir_command, quoted_rm_command, unique_parent_dirs)
 from tools.environments.remote_common import bash_argv, ensure_lazy_dep
 
 logger = logging.getLogger(__name__)
@@ -181,6 +181,7 @@ class ModalEnvironment(BaseEnvironment):
         logger.info("Modal: sandbox created (task=%s)", self._task_id)
         self._sync_manager = FileSyncManager(
             get_files_fn=lambda: iter_sync_files("/root/.hermes"),
+            get_sync_roots_fn=lambda: iter_sync_roots("/root/.hermes"),
             upload_fn=self._modal_upload, delete_fn=self._modal_delete,
             bulk_upload_fn=self._modal_bulk_upload, bulk_download_fn=self._modal_bulk_download)
         self._sync_manager.sync(force=True)

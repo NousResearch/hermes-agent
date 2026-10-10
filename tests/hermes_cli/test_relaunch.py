@@ -1,6 +1,9 @@
 """Tests for hermes_cli.relaunch — unified self-relaunch utility."""
 
+import os
+import subprocess
 import sys
+import venv
 
 import pytest
 
@@ -15,22 +18,22 @@ class TestResolveHermesBin:
         monkeypatch.setattr(relaunch_mod.os, "access", lambda p, mode: p == fake)
         assert relaunch_mod.resolve_hermes_bin() == fake
 
-    def test_resolves_relative_argv0(self, monkeypatch, tmp_path):
+    def test_does_not_resolve_bare_argv0_from_workspace_cwd(self, monkeypatch, tmp_path):
         fake = tmp_path / "hermes"
         fake.write_text("#!/bin/sh\n")
         fake.chmod(0o755)
-        monkeypatch.setattr(sys, "argv", [str(fake.name)])
+        monkeypatch.setattr(sys, "argv", [fake.name])
         monkeypatch.chdir(tmp_path)
-        # Ensure we don't accidentally match a real 'hermes' on PATH
-        monkeypatch.setattr(relaunch_mod.shutil, "which", lambda _name: None)
-        assert relaunch_mod.resolve_hermes_bin() == str(fake)
+        monkeypatch.setenv("PATH", str(tmp_path))
+        assert relaunch_mod.resolve_hermes_bin() is None
 
-    def test_falls_back_to_path_which(self, monkeypatch):
-        monkeypatch.setattr(sys, "argv", ["-c"])  # not a real path
-        monkeypatch.setattr(
-            relaunch_mod.shutil, "which", lambda name: "/usr/bin/hermes" if name == "hermes" else None
-        )
-        assert relaunch_mod.resolve_hermes_bin() == "/usr/bin/hermes"
+    def test_does_not_resolve_hermes_from_path(self, monkeypatch, tmp_path):
+        fake = tmp_path / "hermes"
+        fake.write_text("#!/bin/sh\n")
+        fake.chmod(0o755)
+        monkeypatch.setattr(sys, "argv", ["-c"])
+        monkeypatch.setenv("PATH", str(tmp_path))
+        assert relaunch_mod.resolve_hermes_bin() is None
 
 
 class TestExtractInheritedFlags:
@@ -83,6 +86,45 @@ class TestBuildRelaunchArgv:
         )
         assert "--tui" not in argv
         assert argv == ["/usr/bin/hermes", "--resume", "abc"]
+
+    def test_fallback_uses_current_installation_command(self, monkeypatch):
+        from hermes_cli import _launchers
+
+        monkeypatch.setattr(relaunch_mod, "resolve_hermes_bin", lambda: None)
+        monkeypatch.setattr(_launchers, "current_installation_command", lambda: ["/install/bin/hermes"])
+        argv = relaunch_mod.build_relaunch_argv(["--version"], preserve_inherited=False)
+        assert argv == ["/install/bin/hermes", "--version"]
+
+    def test_isolated_import_failure_recovers_from_foreign_workspace_cwd(self, monkeypatch, tmp_path):
+        """The old ``python -I -m hermes_cli.main`` fallback cannot see source installed outside
+        site-packages. The replacement's install-bound bootstrap reaches the real CLI from a
+        workspace CWD with PATH, PYTHONPATH, and HERMES_BIN deliberately unavailable.
+        """
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        clean_env = {
+            key: value for key, value in os.environ.items()
+            if key not in {"HERMES_BIN", "PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV"}
+        }
+        clean_env.update({"PATH": "/usr/bin:/bin", "HOME": str(tmp_path / "home"),
+                          "HERMES_HOME": str(tmp_path / "hermes-home")})
+        isolated = tmp_path / "isolated-python"
+        venv.EnvBuilder(with_pip=False, system_site_packages=False).create(isolated)
+        isolated_python = isolated / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
+        legacy = subprocess.run(
+            [str(isolated_python), "-I", "-m", "hermes_cli.main", "--version"],
+            cwd=workspace, env=clean_env, capture_output=True, text=True, timeout=30,
+        )
+        assert legacy.returncode != 0
+        assert "No module named 'hermes_cli'" in legacy.stderr
+
+        monkeypatch.setattr(relaunch_mod, "resolve_hermes_bin", lambda: None)
+        argv = relaunch_mod.build_relaunch_argv(["--version"], preserve_inherited=False)
+        launched = subprocess.run(
+            argv, cwd=workspace, env=clean_env, capture_output=True, text=True, timeout=90,
+        )
+        assert launched.returncode == 0, launched.stderr
+        assert launched.stdout.strip(), launched.stderr
 
 
 class TestRelaunch:
@@ -183,33 +225,21 @@ class TestResolveHermesBinWindowsPyGuard:
     """
 
     @pytest.mark.platforms("windows")
-    def test_windows_rejects_py_argv0_falls_through_to_path(self, monkeypatch, tmp_path):
-        """On Windows, if sys.argv[0] is a .py file, we must skip the
-        argv[0] fast-path and fall through to PATH / python -m."""
-        # Build a fake .py script that "passes" the isfile + X_OK checks.
+    def test_windows_rejects_py_argv0_uses_installation_fallback(self, monkeypatch, tmp_path):
+        """A .py argv0 is rejected; callers then use the install-bound command, never PATH."""
         script = tmp_path / "main.py"
         script.write_text("# stub")
-
+        wrapper = tmp_path / "bin" / "hermes.exe"
+        wrapper.parent.mkdir()
+        wrapper.write_text("executable stub")
         monkeypatch.setattr(relaunch_mod.sys, "argv", [str(script), "chat"])
-        # Force PATH lookup to return a hermes.exe so the test doesn't
-        # exercise the None-fallback path (that's a separate test).
-        monkeypatch.setattr(
-            relaunch_mod.shutil, "which",
-            lambda name: r"C:\venv\Scripts\hermes.exe" if name == "hermes" else None,
-        )
+        monkeypatch.setenv("PATH", str(wrapper.parent))
+        assert relaunch_mod.resolve_hermes_bin() is None
 
-        bin_path = relaunch_mod.resolve_hermes_bin()
-        # Must NOT be the .py — must be the hermes.exe PATH entry.
-        assert bin_path == r"C:\venv\Scripts\hermes.exe"
-
-    def test_posix_python_launcher_falls_through_to_path(self, monkeypatch, tmp_path):
-        """A Python source launcher must not be re-executed through its shebang.
-
-        The git installer invokes ``hermes`` with the venv interpreter while the
-        source launcher's shebang uses ``/usr/bin/env python3``.  Re-executing
-        that source file directly can therefore escape the venv and lose core
-        dependencies such as PyYAML.
-        """
+    def test_posix_python_launcher_falls_through_to_installation_bootstrap(
+        self, monkeypatch, tmp_path
+    ):
+        """A source launcher with a foreign shebang is not exec'd or looked up on PATH."""
         if sys.platform == "win32":
             pytest.skip("POSIX semantics")
         script = tmp_path / "hermes"
@@ -220,31 +250,10 @@ class TestResolveHermesBinWindowsPyGuard:
         wrapper.write_text("#!/usr/bin/env bash\n")
         wrapper.chmod(0o755)
         monkeypatch.setattr(relaunch_mod.sys, "argv", [str(script), "chat"])
-        monkeypatch.setattr(
-            relaunch_mod.shutil, "which",
-            lambda name: str(wrapper) if name == "hermes" else None,
-        )
-        assert relaunch_mod.resolve_hermes_bin() == str(wrapper)
-
-    def test_posix_python_launcher_on_path_falls_back_to_current_python(
-        self, monkeypatch, tmp_path
-    ):
-        """PATH must not re-select the Python launcher rejected from argv[0]."""
-        if sys.platform == "win32":
-            pytest.skip("POSIX semantics")
-        script = tmp_path / "hermes"
-        script.write_text("#!/usr/bin/env python3\n")
-        script.chmod(0o755)
-        monkeypatch.setattr(relaunch_mod.sys, "argv", [str(script), "chat"])
-        monkeypatch.setattr(
-            relaunch_mod.shutil,
-            "which",
-            lambda name: str(script) if name == "hermes" else None,
-        )
-
+        monkeypatch.setenv("PATH", str(wrapper.parent))
         assert relaunch_mod.resolve_hermes_bin() is None
 
-        # A console script pinned to the running interpreter keeps the venv: still exec-able.
+        # A console script pinned to the running interpreter remains a safe absolute executable.
         pinned = tmp_path / "pinned" / "hermes"
         pinned.parent.mkdir()
         pinned.write_text(f"#!{sys.executable}\n")
@@ -254,13 +263,8 @@ class TestResolveHermesBinWindowsPyGuard:
 
     @pytest.mark.platforms("windows")
     def test_windows_py_argv0_with_no_hermes_on_path_returns_none(self, monkeypatch, tmp_path):
-        """Bulletproof fallback: if argv0 is .py on Windows AND hermes.exe
-        isn't on PATH, return None so the caller falls back to
-        python -m hermes_cli.main."""
+        """If argv0 is .py, return None so relaunch uses the installation bootstrap."""
         script = tmp_path / "main.py"
         script.write_text("# stub")
-
         monkeypatch.setattr(relaunch_mod.sys, "argv", [str(script), "chat"])
-        monkeypatch.setattr(relaunch_mod.shutil, "which", lambda name: None)
-
         assert relaunch_mod.resolve_hermes_bin() is None

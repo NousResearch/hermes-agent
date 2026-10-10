@@ -3,7 +3,6 @@ across process replacement so ``hermes sessions browse`` / post-setup relaunch k
 
 import os
 import pathlib
-import shutil
 import sys
 from typing import Optional, Sequence
 
@@ -60,13 +59,14 @@ def _extract_inherited_flags(argv: Sequence[str]) -> list[str]:
 
 
 def resolve_hermes_bin() -> Optional[str]:
-    """Hermes entry point: ``sys.argv[0]`` if a real executable, else ``which hermes``, else ``None``
-    (caller falls back to ``python -m hermes_cli.main``).
+    """Return an absolute, safe ``sys.argv[0]`` executable, or ``None``.
 
+    ``None`` makes relaunch use :func:`hermes_cli._launchers.current_installation_command`,
+    which is independent of the current directory and inherited PATH/Python paths.
     Python launchers are never returned: on Windows a ``.py`` can't be exec'd directly, and on
     POSIX the git installer runs the extensionless source launcher under the managed venv
     interpreter while its ``#!/usr/bin/env python3`` shebang would pick the system Python and
-    lose the venv. Falling through to ``sys.executable -m hermes_cli.main`` keeps the venv.
+    lose the venv.
     """
     argv0 = sys.argv[0]
     _is_windows = sys.platform == "win32"
@@ -83,28 +83,27 @@ def resolve_hermes_bin() -> Optional[str]:
 
         return _needs_interpreter(pathlib.Path(p))
 
-    # Absolute executable (nix store, venv wrappers, …), then relative-to-CWD, then PATH.
+    # Never interpret a bare argv[0] relative to the worker CWD: that directory
+    # is often an unrelated Kanban worktree which may contain its own `hermes`.
     if (
         os.path.isabs(argv0) and os.path.isfile(argv0) and os.access(argv0, os.X_OK)
         and not _is_unsafe_python_launcher(argv0)
     ):
         return argv0
-    if not argv0.startswith("-") and os.path.isfile(argv0):
-        abs_path = os.path.abspath(argv0)
-        if os.access(abs_path, os.X_OK) and not _is_unsafe_python_launcher(abs_path):
-            return abs_path
-    path_bin = shutil.which("hermes")
-    if path_bin and not _is_unsafe_python_launcher(path_bin):
-        return path_bin
     return None
 
 
 def build_relaunch_argv(
     extra_args: Sequence[str], *, preserve_inherited: bool = True, original_argv: Optional[Sequence[str]] = None
 ) -> list[str]:
-    """Construct an argv list for replacing the current process with hermes."""
+    """Construct an argv list for replacing the current process with this Hermes installation."""
     bin_path = resolve_hermes_bin()
-    argv = [bin_path] if bin_path else [sys.executable, "-m", "hermes_cli.main"]
+    if bin_path:
+        argv = [bin_path]
+    else:
+        from hermes_cli._launchers import current_installation_command
+
+        argv = current_installation_command()
     src = list(original_argv) if original_argv is not None else list(sys.argv[1:])
     if preserve_inherited:
         argv.extend(_extract_inherited_flags(src))
@@ -129,12 +128,12 @@ def relaunch(
         except KeyboardInterrupt:
             sys.exit(130)
         except OSError as exc:
-            # Raw ``[Errno 8] Exec format error`` is cryptic; usual causes are ``hermes`` not on
-            # PATH yet (install hasn't propagated User PATH into this shell) or a stale shim.
+            # A missing install-bound launcher or a damaged runtime bootstrap is more likely than PATH
+            # here: managed relaunches no longer depend on ambient command discovery.
             print(
                 f"\nHermes relaunch failed: {exc}\n"
                 f"Command: {' '.join(new_argv)}\n"
-                f"Fix: open a new terminal so PATH picks up, then re-run hermes.",
+                f"Fix: repair the Hermes installation, then re-run the command.",
                 file=sys.stderr,
             )
             sys.exit(1)

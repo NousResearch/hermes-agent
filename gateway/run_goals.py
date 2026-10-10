@@ -195,6 +195,9 @@ class GatewayGoalsMixin:
                 watch = getattr(self, "_heartbeat_watch", None)
                 if watch:
                     await self._heartbeat_poll_once(watch)
+                parked = getattr(self, "_parked_goal_watch", None)
+                if parked:
+                    await self._parked_goal_poll_once(parked)
 
         try:
             task = self._heartbeat_poll_task = asyncio.create_task(_poll_loop())
@@ -207,6 +210,79 @@ class GatewayGoalsMixin:
                 task.add_done_callback(_bg.discard)
         except Exception:
             logger.debug("Failed to start heartbeat poller", exc_info=True)
+
+    # ── parked /goal resume (gateway counterpart of CLI _maybe_resume_parked_goal) ──
+    def _register_parked_goal_watch(self, quick_key: str, source: Any, session_id: str) -> None:
+        """Watch a session whose /goal is parked so the poller resumes it once the barrier lifts.
+
+        The CLI idle tick does this; the gateway only re-judged on the next turn, so a timed park
+        with nothing else arriving (the judge waiting out an announced ETA, a pid without notify)
+        stayed parked until a user message or a delegation result happened to start a turn.
+        """
+        watch = getattr(self, "_parked_goal_watch", None)
+        if watch is None:
+            watch = self._parked_goal_watch = {}
+        watch[quick_key] = (source, session_id)
+        self._start_heartbeat_poller()
+
+    async def _parked_goal_poll_once(self, watch: dict) -> None:
+        for quick_key, (source, session_id) in list(watch.items()):
+            try:
+                with self._profile_scope_for_source(source):
+                    await self._parked_goal_poll_watch(watch, quick_key, source, session_id)
+            except Exception as exc:
+                logger.debug("parked goal poll for %s failed: %s", quick_key, exc, exc_info=True)
+
+    async def _parked_goal_poll_watch(self, watch, quick_key, source, session_id):
+        store = getattr(self, "session_store", None)
+        if store is not None:
+            current = store.peek_session_id(quick_key)
+            if not current:
+                watch.pop(quick_key, None)
+                return
+            session_id = current
+        adapter = self._delivery_adapter_for(source)
+        if adapter is None or not adapter._message_handler:
+            return
+        if (
+            self._is_session_running(quick_key)
+            or quick_key in adapter._active_sessions
+            or self._queue_depth(quick_key, adapter=adapter) > 0
+        ):
+            return  # that turn's post-turn hook re-judges the goal
+        from agent.estop import check_paused
+
+        if check_paused("goal", logger):
+            return
+        await self._warm_goals_session_db("parked goal poll")
+        still_parked, prompt = await self._run_in_executor_with_context(self._lifted_goal_prompt, session_id)
+        if still_parked:
+            return
+        watch.pop(quick_key, None)
+        if not prompt:
+            return
+        logger.info("goal %s: wait barrier lifted while idle; resuming", session_id)
+        event = self._synthetic_prompt_event(source, prompt)
+        event.metadata["gateway_session_key"] = quick_key
+        await adapter.handle_message(event)
+
+    def _lifted_goal_prompt(self, session_id: str) -> tuple:
+        """``(still_parked, continuation_prompt)`` for the session's goal (sync: DB reads/writes)."""
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id=session_id, default_max_turns=self._goal_max_turns_from_config())
+        state = mgr.state
+        if state is None or state.status != "active":
+            return False, None
+        if state.waiting_on_pid is None and state.waiting_on_session is None and not state.waiting_until:
+            return False, None  # not parked: an ordinary turn already owns the continuation
+        if state.waiting_on_delegations and time.time() < state.waiting_until:
+            # A returning delegation delivers its own result turn; resuming now would race it.
+            # The deadline stays the fallback if that delivery never comes.
+            return True, None
+        if mgr.is_waiting():
+            return True, None
+        return False, mgr.next_continuation_prompt()
 
     def _goal_notice_adapter(self, source: Any):
         adapter = self._delivery_adapter_for(source)
@@ -307,6 +383,9 @@ class GatewayGoalsMixin:
         # Deferred until the visible final response is delivered, else "✓ Goal achieved" precedes it.
         if msg and source is not None:
             await self._defer_goal_status_notice_after_delivery(source, msg)
+        if decision.get("verdict") in ("wait", "waiting") and source is not None:
+            with suppress(Exception):
+                self._register_parked_goal_watch(self._session_key_for_source(source), source, mgr.session_id)
         prompt = decision.get("continuation_prompt") or ""
         if not decision.get("should_continue") or not prompt or source is None:
             return

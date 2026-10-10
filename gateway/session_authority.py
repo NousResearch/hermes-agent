@@ -698,8 +698,11 @@ class SessionAuthority:
             self._require_admission_open()
             from gateway.session_runtime_workers import tracked_write
             live.rescan = False  # a _schedule from here on may not be visible to this claim's read
+            # The row these checks validated, never whichever is first when the write runs: a
+            # cancellation commits from a worker thread and can advance the FIFO at any point.
             row = await tracked_write(self, partial(claim_session_input, self.db, epoch=self.epoch,
-                                                    session_id=ref.session_id, _guard=self._admission_gate()),
+                                                    session_id=ref.session_id, _guard=self._admission_gate(),
+                                                    head=first['admission_id'] if first is not None else None),
                                       then=partial(self._stamp_claim, ref, live))
             # Input scheduled while this claim's transaction ran may postdate its read: re-read
             # instead of letting the drain exit idle over a committed admission.
@@ -708,7 +711,7 @@ class SessionAuthority:
     def _stamp_claim(self, ref, live, row):
         """The claim's execution stamp, in the same tracked task as its commit: no observer (or
         retirement's join) ever sees a committed claim that no execution stamp names."""
-        if row is not None:
+        if row:  # None or False (the head changed under the write) claimed nothing
             with live.event_stream.lock:
                 live.event_stream.execution = {
                     'authority_epoch': self.epoch, 'execution_generation': row['generation'],

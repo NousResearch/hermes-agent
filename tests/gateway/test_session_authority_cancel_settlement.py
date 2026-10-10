@@ -142,6 +142,59 @@ async def test_hosted_head_cancelled_during_preclaim_does_not_let_successor_skip
     assert statuses == {'hosted:A': 'terminal', 'hosted:B': 'queued'}
 
 
+@pytest.mark.asyncio
+async def test_head_cancelled_after_its_last_preclaim_check_does_not_hand_the_claim_to_its_successor(
+        tmp_path, monkeypatch):
+    """Cancellation commits from a worker thread, so it can land after the head passed every preclaim
+    check (and was re-read as queued) while the off-loop claim waits for the writer: the claim takes
+    the validated head or nothing, never the successor."""
+    import threading
+    from gateway import session_authority, session_finite, session_hosted_transport, session_local_recovery
+    from gateway.config import Platform
+
+    db, authority = _authority(tmp_path, monkeypatch, platform=Platform.LOCAL)
+    monkeypatch.setattr(session_local_recovery, 'restore_local_session', lambda authority, sid: None)
+    monkeypatch.setattr(session_local_recovery, 'reopen_local_session', lambda authority, ref: None)
+    validated, executed = [], []
+    claim_waiting, head_cancelled = threading.Event(), threading.Event()
+
+    def check_remote_hosted_admission(authority, ref, row):
+        validated.append(row['request_id'])
+        if row['request_id'] == 'hosted:B':
+            raise RuntimeStoreError('permission_denied')  # B's own source binding is revoked
+        return True
+    monkeypatch.setattr(session_hosted_transport, 'check_remote_hosted_admission', check_remote_hosted_admission)
+    claim = session_authority.claim_session_input
+
+    def claim_behind_the_cancellation(*args, **kwargs):
+        if not head_cancelled.is_set():
+            claim_waiting.set()
+            head_cancelled.wait(5)
+        return claim(*args, **kwargs)
+    monkeypatch.setattr(session_authority, 'claim_session_input', claim_behind_the_cancellation)
+
+    async def execute(authority, ref, row):
+        executed.append(row['request_id'])
+        return 'done'
+    monkeypatch.setattr(session_finite, 'execute_finite_admission', execute)
+
+    with db:
+        schedule, authority._schedule = authority._schedule, lambda ref: None
+        head = await _submit(authority, 'hosted:A')
+        await _submit(authority, 'hosted:B')
+        authority._schedule = schedule
+        schedule(REF)
+        assert await asyncio.get_running_loop().run_in_executor(None, claim_waiting.wait, 5)
+        await authority.cancel_queued(ACTOR, REF, head.admission_id)
+        head_cancelled.set()
+        await asyncio.wait_for(authority.sessions['s'].task, 5)
+
+    assert executed == [], 'the successor reached execution without its own hosted validation'
+    assert validated == ['hosted:A', 'hosted:B']
+    statuses = {r['request_id']: r['status'] for r in list_session_admissions(db, session_id='s', pending_only=False)}
+    assert statuses == {'hosted:A': 'terminal', 'hosted:B': 'queued'}
+
+
 def _wire_turn_agent(authority, generation, agent):
     """Run the real per-turn agent wiring with this authority as the turn's approval owner."""
     from gateway.run_turn_runner import TurnRunner

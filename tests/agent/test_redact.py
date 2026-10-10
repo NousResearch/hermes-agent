@@ -898,6 +898,7 @@ class TestLowercaseDottedConfigKeys:
         ("api_key: 'process.env.OPENAI_API_KEY'", "api_key: 'process.env.OPENAI_API_KEY'"),
         ('password: "os.environ[\'PASSWORD\']"', 'password: "os.environ[\'PASSWORD\']"'),
         ("api_key: '$ENV{OPENAI_API_KEY}'", "api_key: '$ENV{OPENAI_API_KEY}'"),
+        ('5|  api_key: "os.getenv(\'OPENAI_API_KEY\')"', '5|  api_key: "os.getenv(\'OPENAI_API_KEY\')"'),
         ('Secretary: "J. Smith"', 'Secretary: "J. Smith"'),
     ])
     def test_yaml_quoted_scalar(self, text, expected):
@@ -906,6 +907,7 @@ class TestLowercaseDottedConfigKeys:
     @pytest.mark.parametrize("mode,masked", [
         ("default", True), ("env", True), ("cat", False),
         ("code_file", False), ("file_read", False),
+        ("secret_file_read", True), ("secret_cat", True),
     ])
     def test_yaml_quoted_output_scope(self, mode, masked):
         from agent.redact import redact_terminal_output
@@ -913,6 +915,13 @@ class TestLowercaseDottedConfigKeys:
         text = 'password: "shortsecret"'
         if mode in {"env", "cat"}:
             result = redact_terminal_output(text, "env" if mode == "env" else "cat config.yaml")
+        elif mode == "secret_cat":
+            result = redact_terminal_output(text, "cat ~/.hermes/config.yaml")
+        elif mode == "secret_file_read":
+            assert redact_sensitive_text(
+                '5|  password: "shortsecret"', force=True, file_read=True, secret_file=True,
+            ) == '5|  password: "«redacted-secret»"'
+            return
         else:
             kwargs = {mode: True} if mode != "default" else {}
             result = redact_sensitive_text(text, **kwargs)

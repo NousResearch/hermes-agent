@@ -220,3 +220,52 @@ async def test_adapterless_platform_heals_once_its_adapter_appears(monkeypatch, 
         assert "Retrying" not in status["error_message"]
     finally:
         await runner.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["healthy", "parked", "retrying"])
+@pytest.mark.parametrize("fail_wiring", [False, True])
+async def test_serving_state_waits_for_startup_wiring(monkeypatch, tmp_path, mode, fail_wiring):
+    """An awaited restore must finish before observers can retire startup debt."""
+    if mode == "parked":
+        runner = _runner_with_one_parked_platform(monkeypatch, tmp_path)
+    else:
+        runner = _runner(
+            monkeypatch, tmp_path,
+            {Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")},
+            lambda *_: _HealthyAdapter() if mode == "healthy" else None,
+        )
+    finish_wiring = runner._start_finish_wiring
+    restore = runner._finish_startup_restore
+    observed = []
+
+    async def check_starting():
+        assert await flush_runtime_status_async()
+        state = read_runtime_status()["gateway_state"]
+        observed.append(state)
+        assert state == "starting"
+
+    async def gated_restore():
+        await check_starting()
+        await restore()
+
+    async def gated_wiring(count):
+        await check_starting()
+        await finish_wiring(count)
+        await check_starting()
+        if fail_wiring:
+            raise RuntimeError("startup wiring failed")
+
+    monkeypatch.setattr(runner, "_finish_startup_restore", gated_restore)
+    monkeypatch.setattr(runner, "_start_finish_wiring", gated_wiring)
+    try:
+        if fail_wiring:
+            with pytest.raises(RuntimeError, match="startup wiring failed"):
+                await runner.start()
+        else:
+            assert await runner.start()
+        expected = "starting" if fail_wiring else "degraded" if mode == "parked" else "running"
+        assert read_runtime_status()["gateway_state"] == expected
+        assert observed == ["starting"] * 3
+    finally:
+        await runner.stop()

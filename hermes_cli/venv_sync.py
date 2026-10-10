@@ -110,6 +110,13 @@ def sync(project_root: Path | None = None, *, check: bool = False) -> dict:
         return {"state": "failed", "ok": False, "detail": f"no pyproject.toml under {root}"}
     try:
         import pm
+        from pm.environments import runtime_facts_path, selected_venv
+
+        # A committed selection is an authority record, not a hint. If it
+        # names a vanished/broken environment, fail closed instead of letting
+        # sync silently replace the evidence and report success.
+        if not check and runtime_facts_path(root).is_file():
+            selected_venv(root)
 
         if pm.venv_is_current(project_root=root):
             if not check:

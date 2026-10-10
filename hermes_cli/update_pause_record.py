@@ -898,6 +898,9 @@ def merge_into(token: dict | None, adopted: dict) -> dict:
         token["cold_start_if_installed"] = True
         if "attested_generation" in adopted:
             token.setdefault("attested_generation", adopted["attested_generation"])
+    supervisors = token.setdefault("supervisor_paused_profiles", {})
+    for name, home in (adopted.get("supervisor_paused_profiles") or {}).items():
+        supervisors.setdefault(name, home)
     if adopted.get("platform"):  # a POSIX set (update_cmd_posix_pause): its supervised units ride along
         token["platform"] = adopted["platform"]
         units = token.setdefault("posix_units", [])
@@ -913,7 +916,8 @@ def merge_into(token: dict | None, adopted: dict) -> dict:
 
 def _has_work(token: dict) -> bool:
     return bool(token.get("profiles") or any(u.get("argv") for u in token.get("unmapped") or [])
-                or token.get("services") or token.get("posix_units") or token.get("cold_start_if_installed") or token.get("cold_start_profiles"))
+                or token.get("services") or token.get("posix_units") or token.get("cold_start_if_installed")
+                or token.get("cold_start_profiles") or token.get("supervisor_paused_profiles"))
 
 
 def _resume_claimed(claim_path: Path, body: dict) -> None:

@@ -1411,7 +1411,6 @@ class GatewayStartupMixin:
         a gateway with no API server at all look healthy for half an hour (api_server lost the bind
         race against the gateway it was replacing, and nothing retried).
         """
-        from gateway.run import _write_runtime_status_quiet
         if connected_count != 0:
             if startup_nonretryable_errors:
                 # Parked fatal failures never heal on their own, so the platforms still serving must
@@ -1457,7 +1456,6 @@ class GatewayStartupMixin:
                 "Gateway started with no connected platforms — %d platform(s) queued for retry: %s",
                 len(startup_retryable_errors), "; ".join(startup_retryable_errors),
             )
-            _write_runtime_status_quiet(gateway_state="degraded", exit_reason=None)
         # No adapter for any enabled platform: fleet nodes share one config.yaml but hold a subset of
         # credentials, so degrade gracefully.
         logger.warning(
@@ -1671,11 +1669,13 @@ class GatewayStartupMixin:
         self._wire_teams_pipeline_runtime()
         self._running = True
         self._install_plugin_message_injector()
+        await self._start_finish_wiring(connected_count)
+        if await self._abort_startup_if_shutdown_requested():
+            return True
         # A boot that could not start every configured platform is not a normal run: stamp ``degraded``
         # so ``gateway status`` / /api/status / the health snapshot surface it, instead of only a log
         # line next to "Gateway running with N platform(s)".
         self._update_runtime_status(self._serving_state())
-        await self._start_finish_wiring(connected_count)
         self._start_spawn_background_watchers()
         from hermes_cli.observability.shared_metrics_startup import record_process_ready
         record_process_ready("gateway_boot", background=True)

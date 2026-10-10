@@ -1,8 +1,8 @@
 """Windows gateway service backend (Scheduled Task + Startup-folder fallback).
 
 Mirrors the ``launchd_*`` / ``systemd_*`` contract. ``schtasks /Create ... /RL LIMITED`` runs at the
-CURRENT USER's next logon without elevation. Manual starts and ``install --start-now`` use the direct
-hidden-console launcher instead of ``schtasks /Run`` so start/restart behavior is consistent.
+CURRENT USER's next logon without elevation. An installed Task owns its gateway lifecycle; manual
+starts without one retain the direct hidden-console launcher.
 """
 
 from __future__ import annotations
@@ -55,8 +55,11 @@ _LAST_SPAWN_BREAKAWAY_FALLBACK: dict = {"fallback": False}
 _TASK_NAME_DEFAULT = "Hermes_Gateway"
 _TASK_DESCRIPTION = "Hermes Agent Gateway - Messaging Platform Integration"
 _TASK_LOGON_DELAY = "PT30S"
-_TASK_RESTART_INTERVAL = "PT1M"
-_TASK_RESTART_COUNT = 999
+# The Scheduled Task owns one wrapper. The wrapper, not Task Scheduler, owns
+# bounded child recovery so restart budgets cannot stack across two supervisors.
+_GATEWAY_SUPERVISOR_RESTART_DELAY_MS = 5000
+_GATEWAY_SUPERVISOR_FAILURE_WINDOW_S = 300
+_GATEWAY_SUPERVISOR_MAX_CONSECUTIVE_EXITS = 3
 
 _GATEWAY_ENV = (("PYTHONIOENCODING", "utf-8"), ("HERMES_GATEWAY_DETACHED", "1"), ("HERMES_SUPERVISED_CHILD", "1"))
 
@@ -113,6 +116,132 @@ def _hermes_home() -> Path:
     from hermes_cli.config import get_hermes_home
 
     return Path(get_hermes_home())
+
+
+def _supervisor_stop_marker_path() -> Path:
+    """Owner-scoped stop request consumed only by the active Windows wrapper."""
+    return _hermes_home() / "gateway-service" / "supervisor.stop"
+
+
+def _supervisor_stop_ack_path() -> Path:
+    """Acknowledgement written by the lock-owning wrapper before it exits."""
+    return _hermes_home() / "gateway-service" / "supervisor.stop.ack"
+
+
+def _supervisor_owner_lock_path() -> Path:
+    """File held open exclusively for the full lifetime of the active VBS wrapper."""
+    return _hermes_home() / "gateway-service" / "supervisor.owner"
+
+
+def _arm_supervisor_stop_marker() -> Path:
+    marker = _supervisor_stop_marker_path()
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    _supervisor_stop_ack_path().unlink(missing_ok=True)
+    marker.write_text(f"{uuid.uuid4().hex}\n", encoding="utf-8")
+    return marker
+
+
+def _clear_supervisor_stop_marker() -> None:
+    for path in (_supervisor_stop_marker_path(), _supervisor_stop_ack_path()):
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _supervisor_stop_acknowledged(token: str) -> bool:
+    try:
+        return _supervisor_stop_ack_path().read_text(encoding="utf-8-sig").strip() == token
+    except OSError:
+        return False
+
+
+
+def _process_matches_gateway_supervisor(
+    name: str, argv: list[str], *, home: Path, launcher: Path,
+) -> bool:
+    """Pure exact-identity predicate for one profile's Windows supervisor.
+
+    Never substring-match paths: the default home is a prefix of every named
+    profile home, and profile names may themselves be prefixes ("work" /
+    "work2"). The Python owner is recognized only by an exact "-m" module
+    pair plus an exact "--home" argument; VBS launchers match one complete
+    argv element after Windows path normalization.
+    """
+    proc_name = str(name or "").casefold()
+    normalized = [_normalize_windows_path(str(arg)) for arg in argv]
+    launcher_key = _normalize_windows_path(str(launcher))
+    if proc_name in {"wscript.exe", "cscript.exe"}:
+        # WScript accepts engine switches before the script. The first
+        # non-switch argument is the script position; a later occurrence is
+        # merely an argument to another script.
+        script = next((arg for arg in normalized[1:] if arg.casefold() not in {"//b", "//nologo"}), "")
+        return bool(launcher_key) and script == launcher_key
+
+    if proc_name not in {"python.exe", "pythonw.exe"}:
+        return False
+    from hermes_cli.gateway_windows_supervisor import python_supervisor_home
+    observed_home = python_supervisor_home(argv)
+    return observed_home is not None and _normalize_windows_path(observed_home) == _normalize_windows_path(str(home))
+
+
+def _gateway_supervisor_pids() -> list[int]:
+    """Exact launcher/supervisor PIDs for this profile and no sibling profile."""
+    try:
+        import psutil
+    except ImportError:
+        return []
+    launcher = _supervisor_launcher_path(get_task_script_path())
+    home = _hermes_home()
+    pids: list[int] = []
+    for proc in psutil.process_iter(["pid", "name", "cmdline"]):
+        try:
+            name = str(proc.info.get("name") or "")
+            argv = list(map(str, proc.info.get("cmdline") or []))
+            if _process_matches_gateway_supervisor(name, argv, home=home, launcher=launcher):
+                pids.append(int(proc.info["pid"]))
+        except (psutil.Error, OSError, ValueError, TypeError):
+            continue
+    return sorted(set(pids))
+
+
+def _terminate_gateway_supervisors(pids: list[int]) -> int:
+    """Terminate only exact launcher/supervisor PIDs captured for this profile."""
+    try:
+        import psutil
+    except ImportError:
+        return 0
+    allowed = set(_gateway_supervisor_pids())
+    killed = 0
+    for pid in sorted(set(pids) & allowed):
+        try:
+            psutil.Process(pid).kill()
+            killed += 1
+        except (psutil.Error, OSError, ValueError):
+            continue
+    return killed
+
+
+
+def pause_supervisor_for_update(*, before_stop=None) -> str | None:
+    """Arm the active external owner before update force-stop can kill its child."""
+    if not _gateway_supervisor_pids():
+        return None
+    if before_stop is not None:
+        before_stop()
+    marker = _arm_supervisor_stop_marker()
+    return marker.read_text(encoding="utf-8-sig").strip()
+
+
+def wait_for_supervisor_pause(token: str, *, timeout: float = 10.0) -> None:
+    """Wait for the stop owner to acknowledge and exit before mutating its code."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if _supervisor_stop_acknowledged(token) and not _gateway_supervisor_pids():
+            return
+        time.sleep(0.1)
+    raise RuntimeError("Windows gateway supervisor did not stop before update; code mutation is unsafe")
+
 
 
 def hermes_service_roots() -> tuple[str, ...]:
@@ -397,38 +526,53 @@ def _build_gateway_cmd_script(python_path: str, working_dir: str, hermes_home: s
     return "\r\n".join(lines) + "\r\n"
 
 
+def _supervisor_launcher_path(script_path: Path) -> Path:
+    """Versioned supervisor launcher path; distinct from the legacy detached .vbs.
+
+    Keeping the replacement at a new path means a failed Scheduled Task migration
+    cannot activate the new restart policy under the old task registration.
+    """
+    return script_path.with_suffix(".supervisor.vbs")
+
+
 def _build_gateway_vbs_script(python_path: str, working_dir: str, hermes_home: str, profile_arg: str) -> str:
-    """Build the hidden-console ``gateway.vbs`` launcher (CRLF-terminated).
+    """Build the hidden-console VBS launcher for the Python single-owner supervisor.
 
-    Run via ``wscript.exe``, not ``cmd.exe``: at logon Windows broadcasts CTRL_CLOSE_EVENT to console
-    groups, killing a cmd-hosted gateway with STATUS_CONTROL_C_EXIT, which Task Scheduler treats as a
-    user cancel (``RestartOnFailure`` never fires). wscript has no console; python.exe runs with window
-    style 0 so descendants inherit one hidden console instead of flashing their own (#54220/#56747).
-
-    Why: issue #45599 root cause #1.
-    ``wscript.exe`` is a GUI-subsystem executable with no console, so this launcher receives no console
-    control events. It ``Run``s the console ``python.exe`` with window style 0 (hidden): the gateway owns a
-    single hidden console — never shown, never CTRL_CLOSE'd at logon, and inherited by every
-    console-subsystem descendant (git, gh, node, …) so none of them allocate a visible flashing conhost
-    (#54220/#56747; the previous console-less pythonw.exe gateway forced exactly that per-descendant flash).
-    No cmd.exe anywhere in the chain. Mirrors ``_build_gateway_cmd_script`` (same env + argv via
-    ``_resolve_detached_python``).
+    VBS stays deliberately dumb: the Python supervisor owns the OS file lock,
+    nonce acknowledgement and bounded retry policy. Duplicate VBS launchers may
+    exist briefly, but only one supervisor can acquire authority or spawn a
+    gateway child.
     """
     python_exe_path, venv_dir, extra_pythonpath = _resolve_detached_python(python_path)
-    # list2cmdline gives CreateProcess-correct quoting for WScript.Shell.Run.
-    command_line = subprocess.list2cmdline(_gateway_run_argv(python_exe_path, profile_arg))
+    gateway_argv = _gateway_run_argv(python_exe_path, profile_arg)
+    supervisor_argv = [
+        python_exe_path,
+        "-m",
+        "hermes_cli.gateway_windows_supervisor",
+        "--home",
+        hermes_home,
+        "--restart-delay-ms",
+        str(_GATEWAY_SUPERVISOR_RESTART_DELAY_MS),
+        "--failure-window-s",
+        str(_GATEWAY_SUPERVISOR_FAILURE_WINDOW_S),
+        "--max-failures",
+        str(_GATEWAY_SUPERVISOR_MAX_CONSECUTIVE_EXITS),
+        "--",
+        *gateway_argv,
+    ]
+    command_line = subprocess.list2cmdline(supervisor_argv)
     static_pythonpath = os.pathsep.join(_launcher_pythonpath_entries(extra_pythonpath))
     q = _quote_vbs_string
     lines = [
         f"' {_TASK_DESCRIPTION}",
         "Option Explicit",
-        "Dim sh, env, existing_pp",
+        "Dim sh, env, existing_pp, rc",
         'Set sh = CreateObject("WScript.Shell")',
         'Set env = sh.Environment("PROCESS")',
         f"env.Item({q('HERMES_HOME')}) = {q(hermes_home)}",
         *[f"env.Item({q(k)}) = {q(v)}" for k, v in _GATEWAY_ENV],
+        f"env.Item({q('HERMES_GATEWAY_EXTERNAL_SUPERVISOR')}) = {q('1')}",
         f"env.Item({q('VIRTUAL_ENV')}) = {q(_preserve_hermes_home_path(venv_dir))}",
-        # Mirror the cmd wrapper's ``PYTHONPATH=<static>;%PYTHONPATH%`` at runtime.
         f"existing_pp = env.Item({q('PYTHONPATH')})",
         "If Len(existing_pp) > 0 Then",
         f"  env.Item({q('PYTHONPATH')}) = {q(static_pythonpath + os.pathsep)} & existing_pp",
@@ -436,8 +580,8 @@ def _build_gateway_vbs_script(python_path: str, working_dir: str, hermes_home: s
         f"  env.Item({q('PYTHONPATH')}) = {q(static_pythonpath)}",
         "End If",
         f"sh.CurrentDirectory = {q(working_dir)}",
-        # Window style 0 = hidden; bWaitOnReturn False = detached/async.
-        f"sh.Run {q(command_line)}, 0, False",
+        f"rc = sh.Run({q(command_line)}, 0, True)",
+        "WScript.Quit rc",
     ]
     return "\r\n".join(lines) + "\r\n"
 
@@ -445,7 +589,7 @@ def _build_gateway_vbs_script(python_path: str, working_dir: str, hermes_home: s
 def _build_startup_launcher(script_path: Path) -> str:
     """The tiny Startup-folder .vbs that chains hidden. Quits silently if the target is gone so a
     stale entry doesn't error on every login."""
-    target = str(script_path.with_suffix(".vbs"))
+    target = str(_supervisor_launcher_path(script_path))
     command = subprocess.list2cmdline(["wscript.exe", target])
     lines = [
         f"' {_TASK_DESCRIPTION}",
@@ -467,9 +611,10 @@ def _write_task_script() -> Path:
     settings = _launcher_settings()
     script_path = get_task_script_path()
     _atomic_write(script_path, _build_gateway_cmd_script(*settings), script_path.with_suffix(".tmp"))
-    # Also render the console-less .vbs launcher used by Scheduled Task and the Startup-folder fallback via
-    # wscript.exe (issue #45599 fix A). The .cmd wrapper stays as a generated helper/compatibility artifact.
-    vbs_path = script_path.with_suffix(".vbs")
+    # Render the restart-capable supervisor at a path distinct from the legacy
+    # detached .vbs. A failed task migration therefore leaves the old task's
+    # launcher untouched instead of stacking old Scheduler retries on new logic.
+    vbs_path = _supervisor_launcher_path(script_path)
     _atomic_write(vbs_path, _build_gateway_vbs_script(*settings), vbs_path.with_name(vbs_path.name + ".tmp"))
     return script_path
 
@@ -546,10 +691,6 @@ def _build_scheduled_task_xml(task_name: str, launcher_path: Path, user: str | N
     <WakeToRun>false</WakeToRun>
     <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
     <Priority>7</Priority>
-    <RestartOnFailure>
-      <Interval>{_TASK_RESTART_INTERVAL}</Interval>
-      <Count>{_TASK_RESTART_COUNT}</Count>
-    </RestartOnFailure>
   </Settings>
   <Actions Context="Author">
     <Exec>
@@ -572,10 +713,9 @@ def _install_scheduled_task(task_name: str, script_path: Path) -> tuple[bool, st
         return (False, f"schtasks /Delete failed (code {delete_code}): {delete_detail}")
     # Other /Delete failures are non-fatal: /Create /F may still replace it; keep the detail.
     user = _resolve_task_user()
-    launcher_path = script_path.with_suffix(".vbs")   # the task launches the console-less .vbs
+    launcher_path = _supervisor_launcher_path(script_path)
     xml_path = launcher_path.with_suffix(".task.xml")
     xml_path.write_text(_build_scheduled_task_xml(task_name, launcher_path, user), encoding="utf-16", newline="")
-    # Immediate manual starts use _spawn_detached(). See #45599.
     base = ["/Create", "/F", "/TN", task_name, "/XML", str(xml_path)]
     variants = [[*base, "/RU", user, "/NP", "/IT"], base] if user else [base]
     last_code, last_err = 1, ""
@@ -973,7 +1113,9 @@ def install(
         for message in warnings:
             print(f"⚠ {message}")
         if start_now:
-            _start_or_report_running()
+            # The Task's wrapper owns exit-75 recovery. Do not create a direct
+            # child beside it merely because this is the install-time start.
+            start()
         else:
             print("ℹ Gateway not started now.")
             print("  Start manually with: hermes gateway start")
@@ -1346,7 +1488,9 @@ def uninstall() -> None:
     for path, label in (
         (get_startup_entry_path(), "Windows login item"), (_legacy_startup_entry_path(), "legacy Windows login item"),
         (_startup_staging_path(), "Windows login item staging file"),
-        (script_path, "Task script"), (script_path.with_suffix(".vbs"), "Task launcher"),
+        (script_path, "Task script"),
+        (script_path.with_suffix(".vbs"), "legacy Task launcher"),
+        (_supervisor_launcher_path(script_path), "Task supervisor launcher"),
     ):
         try:
             path.unlink()
@@ -1407,9 +1551,13 @@ def _task_xml_leaf_values(xml: str) -> dict[str, str] | None:
 # template (#113670). Never a full-leaf compare: schtasks exports <UserId> as a SID while the template
 # writes DOMAIN\user, so equality would flag every healthy registration.
 _TASK_DRIFT_LEAVES = {
-    "Task/Settings/RestartOnFailure/Interval": "RestartOnFailure",
     "Task/Triggers/LogonTrigger/Delay": "LogonTrigger Delay",
     "Task/Actions/Exec/Arguments": "launcher arguments",
+}
+_TASK_DRIFT_FORBIDDEN_LIVE_LEAVES = {
+    # The VBS wrapper is now the bounded restart owner. Leaving the old
+    # Scheduler retry policy installed would reset that budget indefinitely.
+    "Task/Settings/RestartOnFailure/Interval": "RestartOnFailure",
 }
 
 
@@ -1423,10 +1571,13 @@ def compare_scheduled_task_drift(registered_xml: str, template_xml: str) -> list
         return []
     missing = [label for path, label in _TASK_DRIFT_LEAVES.items() if path in want and path not in live]
     differs = [label for path, label in _TASK_DRIFT_LEAVES.items() if path in want and path in live and live[path] != want[path]]
+    obsolete = [label for path, label in _TASK_DRIFT_FORBIDDEN_LIVE_LEAVES.items() if path in live]
     drift = []
     if missing:
         drift.append(f"missing: {', '.join(missing)}")
     drift.extend(f"{label} differs" for label in differs)
+    if obsolete:
+        drift.append(f"obsolete: {', '.join(obsolete)}")
     if live["Task@version"] != want["Task@version"]:
         drift.append(f"version {live['Task@version']} vs {want['Task@version']}")
     return drift
@@ -1438,7 +1589,7 @@ def scheduled_task_drift(task_name: str) -> list[str]:
     registered = _query_scheduled_task_xml(task_name)
     if registered is None:
         return []
-    template = _build_scheduled_task_xml(task_name, get_task_script_path().with_suffix(".vbs"), _resolve_task_user())
+    template = _build_scheduled_task_xml(task_name, _supervisor_launcher_path(get_task_script_path()), _resolve_task_user())
     return compare_scheduled_task_drift(registered, template)
 
 
@@ -1453,7 +1604,7 @@ def _print_scheduled_task_drift(task_name: str) -> None:
 
 def reconcile_scheduled_task(task_name: str) -> bool:
     """Re-register the task from the current template when it drifts (#113670) — the Windows sibling
-    of ``gateway.py::refresh_systemd_unit_if_needed``. Template hardening (``RestartOnFailure``, logon
+    of ``gateway.py::refresh_systemd_unit_if_needed``. Template lifecycle hardening (bounded wrapper ownership, logon
     ``Delay``) otherwise only ever reaches fresh installs. False when aligned/unqueryable or when
     ``schtasks`` refused (typically Access Denied — the elevating ``hermes gateway install`` is the fallback)."""
     drift = scheduled_task_drift(task_name)
@@ -1654,7 +1805,7 @@ def status(deep: bool = False) -> None:
 
 
 def start() -> None:
-    """Start the gateway using the canonical detached Windows launch path."""
+    """Start through the installed service owner, or directly for manual starts."""
     _assert_windows()
     _print_start_attestation_warning()   # once: the LAST start's ✓ turned out to be false
     running_pids = _gateway_pids()
@@ -1684,11 +1835,34 @@ def start() -> None:
             return
         print("ℹ Login auto-start not installed; add it later with: hermes gateway install")
     elif is_task_registered():
-        reconcile_scheduled_task(get_task_name())   # like systemd's regenerate-on-stale before a start
+        task_name = get_task_name()
+        drift = scheduled_task_drift(task_name)
+        if drift and not reconcile_scheduled_task(task_name):
+            raise RuntimeError(
+                "Scheduled Task migration did not complete; refusing to activate "
+                "the new Windows supervisor beside the legacy restart policy. "
+                "Run: hermes gateway install"
+            )
 
-    # Manual starts use the same console-less direct spawn as restart() and install --start-now;
-    # Scheduled Task / Startup entries are only login persistence.
-    pid = _spawn_detached()
+    supervisor_pids = _gateway_supervisor_pids()
+    if supervisor_pids:
+        print(f"✓ Gateway supervisor already running (PID: {', '.join(map(str, supervisor_pids))})")
+        return
+
+    # A previous stop arms a one-shot wrapper marker. Any explicit start means
+    # the user wants service again, so stale marker state must not suppress it.
+    _clear_supervisor_stop_marker()
+
+    if is_task_registered():
+        code, out, err = _exec_schtasks(["/Run", "/TN", get_task_name()])
+        if code != 0:
+            raise RuntimeError(f"schtasks /Run failed (code {code}): {(err or out).strip()}")
+        _report_gateway_start("Scheduled Task supervisor")
+        return
+
+    # A Startup entry is login persistence only; without a registered task a
+    # deliberate manual start keeps its existing detached/no-service semantics.
+    _spawn_detached()
     _report_gateway_start("direct spawn")
 
 
@@ -1780,37 +1954,73 @@ def _collect_gateway_stop_pids(primary_pid: int | None = None) -> list[int]:
 
 
 def stop() -> None:
-    """Stop the gateway: planned-stop marker first so it can drain in-flight agents and persist
-    ``resume_pending`` (Windows asyncio can't receive SIGTERM — the marker is our only IPC), then
-    ``schtasks /End``, then a bounded hard-kill of known PIDs."""
+    """Stop one gateway and its exact persistent Windows supervisor, if any.
+
+    The stop request is owner-scoped by the supervisor's exclusive file handle:
+    duplicate wrappers cannot enter the lifecycle loop or consume the marker.
+    The marker is cleared only after acknowledgement or confirmed wrapper death.
+    """
     _assert_windows()
     from gateway.status import get_running_pid
 
-    # A user-initiated stop is a planned death: don't later report it as a silent crash.
     _clear_start_attestation()
+    supervisor_pids = _gateway_supervisor_pids()
+    marker: Path | None = None
+    stop_token: str | None = None
+    if supervisor_pids:
+        marker = _arm_supervisor_stop_marker()
+        stop_token = marker.read_text(encoding="utf-8-sig").strip()
+    else:
+        # No owner can acknowledge a stale request. Direct/manual gateway stops
+        # do not pay a six-second supervisor wait and leave no login poison pill.
+        _clear_supervisor_stop_marker()
 
     pid = get_running_pid()
     stop_pids = _collect_gateway_stop_pids(pid)
-    # Fingerprint before the drain: the kill below must refuse a PID recycled during the wait.
     identities = _gateway_pid_identities(stop_pids)
     drained = pid is not None and _drain_gateway_pid(pid, _windows_stop_drain_timeout())
-
     stopped_any = drained
-    if is_task_registered():
-        code, _out, err = _exec_schtasks(["/End", "/TN", get_task_name()])
-        # schtasks returns nonzero when the task isn't currently running — not an error.
-        if code == 0:
-            stopped_any = True
-        elif "not running" not in (err or "").lower():
-            print(f"⚠ schtasks /End returned code {code}: {err.strip()}")
 
-    # No generic process sweep: starts are profile-scoped and stop must stay bounded even if wedged.
-    late_pids = [pid for pid in _collect_gateway_stop_pids() if pid not in identities]
+    # Let the child return to the wrapper before escalating. The wrapper checks
+    # the stop token immediately on return and acknowledges it before exit.
+    late_pids = [candidate for candidate in _collect_gateway_stop_pids() if candidate not in identities]
     identities.update(_gateway_pid_identities(late_pids))
     killed = _force_terminate_known_gateway_pids(identities)
     if killed:
         stopped_any = True
         print(f"✓ Killed {killed} gateway process(es)")
+
+    if supervisor_pids:
+        deadline = time.monotonic() + 6.0
+        while time.monotonic() < deadline:
+            if stop_token and _supervisor_stop_acknowledged(stop_token) and not _gateway_supervisor_pids():
+                break
+            if not _gateway_supervisor_pids():
+                break
+            time.sleep(0.1)
+
+        remaining = _gateway_supervisor_pids()
+        if remaining:
+            _terminate_gateway_supervisors(remaining)
+            kill_deadline = time.monotonic() + 3.0
+            while _gateway_supervisor_pids() and time.monotonic() < kill_deadline:
+                time.sleep(0.1)
+
+    if is_task_registered():
+        code, _out, err = _exec_schtasks(["/End", "/TN", get_task_name()])
+        if code == 0:
+            stopped_any = True
+        elif "not running" not in (err or "").lower():
+            print(f"⚠ schtasks /End returned code {code}: {err.strip()}")
+
+    # Never erase the only stop authority while a matching wrapper still lives.
+    if _gateway_supervisor_pids():
+        raise RuntimeError(
+            "Windows gateway supervisor is still running after bounded stop; "
+            "leaving the stop request armed to prevent a respawn."
+        )
+    _clear_supervisor_stop_marker()
+
     if stopped_any:
         print("✓ Gateway stopped (drained cleanly)" if drained else "✓ Gateway stopped")
     else:

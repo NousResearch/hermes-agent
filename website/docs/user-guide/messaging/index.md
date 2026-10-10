@@ -704,20 +704,15 @@ hermes gateway stop                  # Drain and stop the service
 hermes gateway status                # Check status, including registration drift
 ```
 
-The Scheduled Task runs `wscript.exe` on a generated `.vbs` launcher under `%USERPROFILE%\.hermes\gateway-service\`. The launcher starts `python.exe -m hermes_cli.main gateway run` with a hidden window and **exits immediately** — by design: `wscript.exe` has no console, so at logon it never receives the `CTRL_CLOSE_EVENT` that kills a `cmd.exe`-hosted gateway, and the gateway inherits one hidden console instead of every subprocess flashing its own (see `hermes_cli/gateway_windows.py::_build_gateway_vbs_script`).
+The Scheduled Task runs `wscript.exe` on a generated `.supervisor.vbs` launcher under `%USERPROFILE%\.hermes\gateway-service\`. That launcher stays attached to a small stdlib-only Python supervisor (`hermes_cli.gateway_windows_supervisor`) which owns exactly one gateway child at a time. The supervisor takes an OS byte-range lock scoped to the exact `HERMES_HOME`, so a duplicate Task/Startup launch exits before it can spawn another child or consume another profile's stop request.
 
-:::warning RestartOnFailure covers the launcher, not the gateway
-Because the launcher returns as soon as the gateway is spawned, Task Scheduler only ever sees the launcher's exit code. The `<RestartOnFailure>` policy in the registered task therefore fires only when `wscript.exe` itself fails to start the gateway — it does **not** restart a gateway that crashes or is killed later. Gateway auto-restart on Windows relies on the gateway's own in-process restart path (`/restart`, updates, and the `hermes gateway restart` command); a gateway killed from outside stays down until `hermes gateway start` or `schtasks /Run /TN <task>`.
-:::
+Task Scheduler itself has **no** `<RestartOnFailure>` policy for current installs. There is one restart authority: the Python supervisor. Retryable non-zero exits -- including the service-restart code `75` used by watchdog and transient ownership paths -- share one bounded failure budget. Clean exit `0` and fatal configuration exit `78` stop the supervisor. A child that remains healthy beyond the configured failure window resets the consecutive-failure counter.
 
-`hermes gateway install` writes the task from the current template; a task registered by an older build would otherwise keep its old settings (no `RestartOnFailure`, no logon `Delay`, an older launcher command line) indefinitely. `hermes gateway status` compares the registered task with the current template and warns when it predates it:
+`hermes gateway stop` writes a nonce-scoped stop request for the exact profile. Only the lock-owning supervisor can acknowledge it; acknowledgement is persisted before the marker is removed. If the gateway must be force-killed, the owner observes that same nonce and exits instead of respawning it. The CLI clears the request only after the matching supervisor is gone (or leaves it armed if bounded shutdown cannot prove that).
 
-```
-⚠ Scheduled Task registration predates the current template (missing: RestartOnFailure, LogonTrigger Delay; version 1.3 vs 1.4)
-  Repair: hermes gateway start  (or: hermes gateway install)
-```
+Current installs use a `.supervisor.vbs` path distinct from the historical detached `.vbs`. That separation is deliberate migration safety: if Windows refuses replacement of an older Scheduled Task, Hermes does not rewrite the executable path that the legacy task still owns and `hermes gateway start` refuses to activate the replacement supervisor beside the old retry policy. Re-run `hermes gateway install` and approve elevation if required.
 
-`hermes gateway start` and `hermes update` run the same comparison and re-register a drifted task from the current template automatically (like the systemd unit refresh on Linux); when `schtasks` refuses without elevation, re-run `hermes gateway install`, which can request administrator approval. The check is silent when the task cannot be queried, and it only inspects a few settings Hermes owns (task version, `RestartOnFailure`, the logon trigger delay and the launcher arguments), so deliberate local edits elsewhere in the task are not flagged.
+`hermes gateway status` compares the registered task with the current template. It flags an obsolete Scheduler `RestartOnFailure`, an older logon delay/template version, or launcher arguments that do not point at the current `.supervisor.vbs`. `hermes gateway start` and `hermes update` attempt the same reconciliation; if migration cannot be completed, start fails closed instead of creating a second restart authority.
 
 ## Platform-Specific Toolsets
 

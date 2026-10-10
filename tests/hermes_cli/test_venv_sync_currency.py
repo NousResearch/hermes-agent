@@ -85,6 +85,30 @@ def test_check_uses_real_pm_selection_and_keeps_invalid_evidence(admission_env, 
     marker.write_bytes(marker_bytes)
     check('current')
 
+    # A committed record is a completion marker, not a hint: an intact cfg
+    # cannot certify a generation whose interpreter or import tree vanished.
+    interpreter = selected / ('Scripts/python.exe' if os.name == 'nt' else 'bin/python')
+    missing_interpreter = interpreter.with_name(interpreter.name + '.missing')
+    interpreter.rename(missing_interpreter)
+    check('would-sync')
+    failure = venv_sync.sync(core)
+    assert failure['state'] == 'failed'
+    assert facts_path.read_bytes() == pristine
+    missing_interpreter.rename(interpreter)
+    check('current')
+
+    packages = selected / ('Lib/site-packages' if os.name == 'nt' else next(
+        path.relative_to(selected) for path in selected.glob('lib/python*/site-packages')
+    ))
+    missing_packages = packages.with_name('site-packages.missing')
+    packages.rename(missing_packages)
+    check('would-sync')
+    failure = venv_sync.sync(core)
+    assert failure['state'] == 'failed'
+    assert facts_path.read_bytes() == pristine
+    missing_packages.rename(packages)
+    check('current')
+
     outside = root / 'foreign-environment'
     outside.mkdir()
     (outside / 'pyvenv.cfg').write_bytes(marker_bytes)

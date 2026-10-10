@@ -313,7 +313,7 @@ def _recorded_venv(project_root: Path) -> Path | None:
         raise RuntimeError("invalid dependency environment path")
     environment = Path(value).resolve()
     generations = install_state_dir(project_root) / "environments"
-    if not environment.is_relative_to(generations.resolve()) or not (environment / "pyvenv.cfg").is_file():
+    if not environment.is_relative_to(generations.resolve()) or not _usable_venv(environment):
         raise RuntimeError(f"dependency environment is missing or outside this install: {environment}")
     return environment
 
@@ -331,6 +331,15 @@ def venv_python(venv: Path, *, windows: bool | None = None) -> Path:
     """The interpreter inside *venv* (may not exist)."""
     bin_dir = venv_bin_dir(venv, windows=windows)
     return bin_dir / ("python.exe" if bin_dir.name == "Scripts" else "python")
+
+
+def _usable_venv(venv: Path) -> bool:
+    """Whether a committed generation has the minimum runnable venv layout."""
+    return (
+        (venv / "pyvenv.cfg").is_file()
+        and venv_python(venv).is_file()
+        and site_packages(venv).is_dir()
+    )
 
 
 def project_python(project_root: Path) -> Path:

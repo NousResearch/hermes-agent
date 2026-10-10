@@ -24,6 +24,7 @@ from pathlib import Path
 from xml.etree import ElementTree
 from xml.sax.saxutils import escape
 
+from agent.deadline import poll_until
 from hermes_cli._subprocess_compat import (
     _WINDOWS_GATEWAY_BREAKAWAY_ENV,
     windows_detach_flags,
@@ -1707,12 +1708,7 @@ def _drain_gateway_pid(pid: int, drain_timeout: float) -> bool:
     except Exception:
         pass   # best-effort; caller escalates to a hard kill
 
-    deadline = time.monotonic() + max(drain_timeout, 1.0)
-    while time.monotonic() < deadline:
-        if not _pid_exists(pid):
-            return True
-        time.sleep(0.5)
-    return False
+    return poll_until(lambda: not _pid_exists(pid), max(drain_timeout, 1.0), 0.5)
 
 
 def _windows_stop_drain_timeout() -> float:
@@ -1825,12 +1821,7 @@ def _wait_for_gateway_absent(timeout_s: float = 30.0, interval_s: float = 0.5) -
     def _absent() -> bool:
         return get_running_pid() is None and not _gateway_pids()
 
-    deadline = time.monotonic() + max(timeout_s, interval_s)
-    while time.monotonic() < deadline:
-        if _absent():
-            return True
-        time.sleep(interval_s)
-    return _absent()
+    return poll_until(_absent, max(timeout_s, interval_s), interval_s)
 
 
 def restart() -> None:

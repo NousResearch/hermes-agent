@@ -3,7 +3,8 @@ from __future__ import annotations
 
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
-import time
+
+from agent.deadline import poll_until
 
 
 _OWNER_STOP_HINTS = {
@@ -40,14 +41,13 @@ def _drain_manual_gateway(home: Path) -> None:
         response.get("pausing") or response.get("already_stopping")
     ):
         raise RuntimeError(f"gateway refused to drain for {home}")
-    deadline = time.monotonic() + min(120.0, max(5.0, float(response.get("drain_timeout", 30.0)) + 5.0))
-    while time.monotonic() < deadline:
+    def _gone() -> bool:
         current = get_process_start_time(pid)
         original_gone = not _pid_exists(pid) or (current is not None and current != start)
-        if original_gone and identify_gateway(home) is None and get_running_pid_identity_strict(home / "gateway.pid") is None:
-            return
-        time.sleep(0.05)
-    raise RuntimeError(f"gateway did not exit for {home}; no data removed")
+        return original_gone and identify_gateway(home) is None and get_running_pid_identity_strict(home / "gateway.pid") is None
+
+    if not poll_until(_gone, min(120.0, max(5.0, float(response.get("drain_timeout", 30.0)) + 5.0)), 0.05):
+        raise RuntimeError(f"gateway did not exit for {home}; no data removed")
 
 
 def _refuse_backend_writers(home: Path) -> None:

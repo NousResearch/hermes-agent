@@ -26,6 +26,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from agent.deadline import poll_until
 from agent.proxy_bypass import is_loopback_host
 from hermes_constants import get_hermes_home
 
@@ -617,11 +618,8 @@ def close_browser_holding_profile(src: str, timeout: float = 15.0) -> tuple[bool
     psutil.wait_procs(alive, timeout=3.0)
     # The lock releases slightly after the process exits on Windows; poll.
     source_profile = _resolve_source_profile(src)[0] or _last_used_profile(src)
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if not _profile_is_locked(src, source_profile):
-            return True, "closed the browser and the profile lock released."
-        time.sleep(0.5)
+    if poll_until(lambda: not _profile_is_locked(src, source_profile), timeout, 0.5):
+        return True, "closed the browser and the profile lock released."
     return False, (
         "closed the browser processes but the profile is still locked — "
         "another instance may have relaunched (background/tray mode).")

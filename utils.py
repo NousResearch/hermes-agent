@@ -252,6 +252,25 @@ def fsync_directory(path: str | Path) -> None:
         os.close(fd)
 
 
+def unlink_files_older_than(directory: str | Path, pattern: str, max_age_seconds: float, *,
+                            now: float | None = None) -> int:
+    """Delete regular files in *directory* matching *pattern* whose mtime is more than
+    *max_age_seconds* before *now* (default: the current time); return how many were removed.
+
+    The one age-based cache sweep. Never raises: a missing directory, or an entry that cannot be
+    stat'ed or unlinked, is skipped (the next sweep retries it).
+    """
+    cutoff = (time.time() if now is None else now) - max_age_seconds
+    removed = 0
+    with suppress(OSError):
+        for path in Path(directory).glob(pattern):
+            with suppress(OSError):
+                if path.is_file() and path.stat().st_mtime < cutoff:
+                    path.unlink()
+                    removed += 1
+    return removed
+
+
 def rmtree_readonly(path: str | Path, *, ignore_errors: bool = False) -> None:
     """``shutil.rmtree`` that can also delete read-only trees.
 

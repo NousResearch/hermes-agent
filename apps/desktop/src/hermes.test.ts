@@ -480,7 +480,7 @@ describe('Hermes REST helpers', () => {
     // when the provider backend is unreachable (#63214).
     const call = api.mock.calls[0]?.[0] as { path: string; timeoutMs?: number }
     expect(call.path).toBe('/api/model/info')
-    expect(call.timeoutMs).toBe(5_000)
+    expect(call.timeoutMs).toBe(30_000)
   })
 
   // Explicit profile/connection writes (deleting a profile) carry the foreground

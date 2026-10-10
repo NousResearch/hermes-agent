@@ -424,7 +424,9 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Any, Callable, Awaitable
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.helpers import fence_state_after
+from gateway.platforms.helpers import (
+    after_carried_fence_close, fence_state_after, split_outside_inline_code,
+    without_trailing_open_fence)
 from gateway.platforms.base_exec_approval import (
     approval_timeout_seconds, ea_action_labels, ea_default_reason_text, ea_header_text,
     ea_reason_label_text, ea_smart_deny_line_text, format_approval_deadline_line)
@@ -4884,6 +4886,9 @@ class BasePlatformAdapter(ABC):
         remaining = content
         carry_lang: Optional[str] = None  # language tag ("" ok) when previous chunk ended mid-fence
         while remaining:
+            if carry_lang is not None and (rest := after_carried_fence_close(remaining)) is not None:
+                carry_lang, remaining = None, rest  # the previous chunk's synthetic close ended it
+                continue
             prefix = f"```{carry_lang}\n" if carry_lang is not None else ""
             # Body budget after prefix/fence/indicator; floored so a tiny max_length can't stall.
             headroom = max_length - INDICATOR_RESERVE - _len(prefix) - _len(FENCE_CLOSE)
@@ -4908,23 +4913,15 @@ class BasePlatformAdapter(ABC):
                 # wider than the utf16 budget) would never shrink ``remaining``; overshooting beats
                 # a hang.
                 split_at = max(1, _cp_limit)
-            # Don't split inside an inline code span: an unpaired backtick breaks MarkdownV2.
-            candidate = remaining[:split_at]
-            backtick_count = candidate.count("`") - candidate.count("\\`")
-            if backtick_count % 2 == 1:
-                last_bt = candidate.rfind("`")
-                while last_bt > 0 and candidate[last_bt - 1] == "\\":
-                    last_bt = candidate.rfind("`", 0, last_bt)
-                if last_bt > 0:
-                    safe_split = max(
-                        candidate.rfind(" ", 0, last_bt), candidate.rfind("\n", 0, last_bt))
-                    if safe_split > _cp_limit // 4:
-                        split_at = safe_split
+            split_at = split_outside_inline_code(remaining, split_at, _cp_limit)
             chunk_body = remaining[:split_at]
-            remaining = remaining[split_at:].lstrip()
-            full_chunk = prefix + chunk_body
             # Walk only chunk_body (not the prepended prefix) for the fence state.
             in_code, lang = fence_state_after(chunk_body, carry_lang is not None, carry_lang or "")
+            if in_code and (trimmed := without_trailing_open_fence(chunk_body)) is not None:
+                # A fence opening on the chunk's last line moves to the next chunk whole.
+                split_at, chunk_body, in_code, lang = len(trimmed), trimmed.rstrip("\n"), False, ""
+            remaining = remaining[split_at:].lstrip()
+            full_chunk = prefix + chunk_body
             carry_lang = lang if in_code else None
             # Close the orphaned fence so the chunk stands alone.
             chunks.append(full_chunk + FENCE_CLOSE if in_code else full_chunk)

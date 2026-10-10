@@ -71,6 +71,7 @@ class TestAuxiliaryLedger:
             # This run: aux billed to the id the turn started with; compression mints a child id.
             db.record_auxiliary_usage("root", "title_generation", model="t", input_tokens=40, output_tokens=8,
                                       estimated_cost_usd=0.001)
+            db.end_session("root", "compression")
             db.create_session("child", "cli", model="main", parent_session_id="root")
             result = _result(session_id="child")
             _attach_auxiliary_usage(result, db, before)
@@ -114,3 +115,33 @@ class TestAuxiliaryLedger:
         finally:
             db.close()
         assert result["auxiliary_usage"]["title_generation"]["api_calls"] == 1
+
+    @pytest.mark.parametrize("parent_end, source, marker, expected", [
+        ("compression", "cli", None, 305),  # continuation: the turn's aux billed to the id it started with
+        ("session_reset", "cli", "_reset_from", 5),
+        ("session_reset", "cli", None, 5),  # reset child written before the marker existed
+        (None, "subagent", "_delegate_from", 5),
+        (None, "cli", "_branched_from", 5),
+    ])
+    def test_run_delta_counts_parent_rows_only_across_compression(self, tmp_path, parent_end, source, marker,
+                                                                   expected):
+        """A reset child, a delegate run and a branch are their own conversations: aux billed to the
+        parent while a one-shot runs in the child is someone else's spend, not this run's."""
+        from hermes_cli.oneshot import _auxiliary_usage, _attach_auxiliary_usage
+        from hermes_state import SessionDB
+
+        db = SessionDB(tmp_path / "state.db")
+        try:
+            db.create_session("parent", "cli", model="main")
+            if parent_end:
+                db.end_session("parent", parent_end)
+            db.create_session("child", source, model="main", parent_session_id="parent",
+                              model_config={marker: "parent"} if marker else None)
+            before = _auxiliary_usage(db, "child")
+            db.record_auxiliary_usage("child", "vision", model="v", input_tokens=5)
+            db.record_auxiliary_usage("parent", "vision", model="v", input_tokens=300)
+            result = _result(session_id="child")
+            _attach_auxiliary_usage(result, db, before)
+        finally:
+            db.close()
+        assert result["auxiliary_usage"]["vision"]["input_tokens"] == expected

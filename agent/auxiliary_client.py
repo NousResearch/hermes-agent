@@ -6802,9 +6802,16 @@ def _build_call_kwargs(
         ):
             kwargs["_reasoning_config"] = dict(reasoning_config)
     # Conversation affinity (OpenCode relay, opt-in custom-provider header) — same key as the main
-    # turn so compression/title/vision calls stay on the conversation's warm backend.
-    from agent.opencode_affinity import merge_session_affinity_headers
-    return merge_session_affinity_headers(kwargs, provider, base_url, _runtime_main_value("session_id") or None)
+    # turn so compression/title/vision calls stay on the conversation's warm backend. Only a
+    # conversation-bound chain may borrow the process-wide last-main-turn key: the goal judge runs on
+    # a thread that inherits no runtime context, so the explicit ``session_id`` above is empty there
+    # (#115000). A stateless call (commit message, cron summary, standalone prompt) has no
+    # conversation identity and keeps its own fresh ``oneshot-`` key (#131047 review).
+    from agent.opencode_affinity import CONVERSATION_BOUND_AUX_TASKS, merge_session_affinity_headers
+    return merge_session_affinity_headers(
+        kwargs, provider, base_url, _runtime_main_value("session_id") or None,
+        reuse_cached_key=task in CONVERSATION_BOUND_AUX_TASKS,
+    )
 
 
 def _validate_llm_response(

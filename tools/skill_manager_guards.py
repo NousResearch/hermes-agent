@@ -221,12 +221,79 @@ def _background_review_read_before_write_guard(
         _read_before_write_required=True)
 
 
-def _background_review_preflight(action: str, name: str) -> Optional[dict[str, Any]]:
-    if action != "delete":
+def _bundled_writes_allowed() -> bool:
+    """``auxiliary.background_review.bundled_writes: allow`` re-opens CONTENT writes to
+    bundled/hub skills for the review fork. Default ``deny``."""
+    try:
+        from hermes_cli.config import cfg_get, load_config_readonly
+        value = cfg_get(load_config_readonly(), "auxiliary", "background_review", "bundled_writes")
+    except Exception:
+        logger.debug("bundled_writes lookup failed; keeping the gate closed", exc_info=True)
+        return False
+    return str(value or "").strip().lower() == "allow"
+
+
+# The write arguments a content action carries — also what the upstream patch is rendered from.
+CONTENT_WRITE_ARG_KEYS = ("content", "file_path", "file_content", "old_string", "new_string",
+                          "replace_all")
+_CONTENT_WRITE_ACTIONS = ("edit", "patch", "write_file", "remove_file")
+
+
+def _background_review_content_guard(name: str, skill_dir: Path, action: str,
+                                     write_args: Dict[str, Any]) -> Optional[dict[str, Any]]:
+    """Refuse autonomous CONTENT writes to a skill Hermes does not own (bundled / hub-installed).
+
+    ``e3d2e57c9e`` (#134289) deliberately let the review fork improve every skill it learns from,
+    and that holds for the skills a user owns. It does not hold for a bundled or hub-installed
+    skill: the local copy IS the upstream copy, matched by an exact directory hash
+    (``tools/skills_sync._dir_hash``), so one write strands the skill as ``user_modified`` for
+    good. The lesson is kept rather than dropped — the write is staged as an upstream patch by
+    ``tools.skill_upstream_pending``. Gated on ``is_bundled``/``is_hub_installed`` and NOT on
+    ``created_by``: a bundled skill's ``created_by`` is ``null``, which is also what an
+    unrecorded user skill looks like (#67140).
+    """
+    if not _is_background_review() or _bundled_writes_allowed():
         return None
+    try:
+        from tools import skill_usage
+        label = ("bundled" if skill_usage.is_bundled(name)
+                 else "hub-installed" if skill_usage.is_hub_installed(name) else "")
+    except Exception:
+        logger.warning("bundled/hub ownership lookup failed for %s", name, exc_info=True)
+        return None
+    if not label:
+        return None
+    patch_path = None
+    try:
+        from tools.skill_upstream_pending import stage_write_as_upstream_patch
+        patch_path = stage_write_as_upstream_patch(name, action, skill_dir, label=label, **write_args)
+    except Exception:
+        logger.warning("could not stage the upstream patch for %s", name, exc_info=True)
+    if patch_path is not None:
+        note = (f" The change was staged as an upstream patch ({patch_path}) rather than dropped: "
+                f"submit it upstream and it reaches every install.")
+        extra: Dict[str, Any] = {"_upstream_patch": str(patch_path)}
+    else:
+        note = " Nothing was written, and the change could not be staged as an upstream patch."
+        extra = {}
+    return _refusal(
+        f"Refusing background curator {action} for {label} skill '{name}': the local copy of a "
+        f"{label} skill IS the upstream copy, and it is matched by an exact hash — a write here "
+        f"strands the skill as user_modified for every later update.{note} Set "
+        f"`auxiliary.background_review.bundled_writes: allow` to write the local copy anyway.",
+        **extra)
+
+
+def _background_review_preflight(action: str, name: str, **write_args: Any) -> Optional[dict[str, Any]]:
+    """Ownership gate for the autonomous review fork: delete is judged by the delete guard,
+    a CONTENT write (edit/patch/write_file/remove_file) by the bundled/hub content guard."""
     from tools import skill_manager_tool as _smt
     existing = _smt._find_skill(name)
-    return _background_review_delete_guard(name, existing["path"]) if existing else None
+    if action == "delete":
+        return _background_review_delete_guard(name, existing["path"]) if existing else None
+    if not existing or action not in _CONTENT_WRITE_ACTIONS:
+        return None
+    return _background_review_content_guard(name, existing["path"], action, write_args)
 
 
 def _curator_consolidation_delete_guard(

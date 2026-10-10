@@ -772,7 +772,9 @@ def skill_manage(
     if operations is not None:
         return _skill_manage_batch(
             operations, default_name=name or None, task_id=task_id, session_id=session_id)
-    if (preflight := _background_review_preflight(action, name)) is not None:
+    if (preflight := _background_review_preflight(
+            action, name, content=content, file_path=file_path, file_content=file_content,
+            old_string=old_string, new_string=new_string, replace_all=replace_all)) is not None:
         return json.dumps(preflight, ensure_ascii=False)
     # Approval gate: skills are too large to review inline, so they always stage regardless
     # of origin; bypassed when replaying an approved staged write.

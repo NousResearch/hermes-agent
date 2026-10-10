@@ -583,3 +583,29 @@ class TestBlueBubblesGateBeforeDownload:
         assert response.status == 200
         assert download.await_count == downloads
         assert len(handled) == handled_count
+
+
+@pytest.mark.asyncio
+async def test_first_reply_to_a_new_handle_delivers_every_bubble_into_the_new_chat(monkeypatch):
+    """The first message to an address with no chat creates the chat with bubble 1; the reply's other
+    paragraphs must follow into that chat, even while the server's chat index does not list it yet."""
+    adapter = _make_adapter(monkeypatch)
+    adapter._private_api_enabled = True
+    calls = []
+
+    async def fake_api_post(path, payload):
+        calls.append((path, payload))
+        if path == "/api/v1/chat/query":
+            return {"data": []}
+        if path == "/api/v1/chat/new":
+            return {"status": 200, "data": {"guid": "iMessage;-;+15550001111"}}
+        return {"status": 200, "data": {"guid": f"msg-{len(calls)}"}}
+    monkeypatch.setattr(adapter, "_api_post", fake_api_post)
+
+    result = await adapter.send("+15550001111", "first paragraph\n\nsecond paragraph\n\nthird paragraph")
+
+    sends = [(path, payload) for path, payload in calls if path != "/api/v1/chat/query"]
+    assert result.success
+    assert [payload["message"] for _, payload in sends] == ["first paragraph", "second paragraph", "third paragraph"]
+    assert [path for path, _ in sends].count("/api/v1/chat/new") == 1
+    assert all(payload["chatGuid"] == "iMessage;-;+15550001111" for _, payload in sends[1:])

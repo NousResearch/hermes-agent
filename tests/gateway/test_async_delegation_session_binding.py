@@ -349,9 +349,7 @@ async def test_compression_uncertainty_keeps_durable_completion_retryable(
         assert await runner._deliver_completion_notification("completed result", event) is False
         row = ad.get_durable_delegation(event["delegation_id"])
         assert row is not None
-        assert (row["delivery_state"], row["delivery_attempts"]) == (
-            "pending", 0 if phase == "readiness" else 1,
-        )
+        assert (row["delivery_state"], row["delivery_attempts"]) == ("pending", 0)
         import sqlite3
         with sqlite3.connect(ad._db_path()) as conn:
             assert conn.execute("SELECT delivery_claim FROM async_delegations WHERE delegation_id=?",

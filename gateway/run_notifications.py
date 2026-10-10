@@ -173,6 +173,7 @@ class GatewayNotificationsMixin(GatewayNotificationOwnershipMixin):
         claim_id: str = ""
         proceed: bool = True
         early_result: Optional[bool] = None
+        defer: bool = False  # unadmitted retry: settle without spending a delivery attempt
 
     async def _deliver_platform_notice(self, source, content: str) -> None:
         """Deliver a setup/operational notice using platform-specific privacy rules."""
@@ -1401,10 +1402,8 @@ class GatewayNotificationsMixin(GatewayNotificationOwnershipMixin):
                 )
             claim.proceed = False
         elif verdict == "retry":
-            # Transient uncertainty: tell the watcher to re-poll rather than drop or misroute.
-            if claim.claim_id:
-                self._settle_durable_claim("release", claim.delegation_id, claim.claim_id)
-            claim.proceed, claim.early_result = False, False
+            # Transient uncertainty before admission: re-poll without spending a delivery attempt.
+            claim.proceed, claim.early_result, claim.defer = False, False, True
         return claim
 
     def _completion_event_scope(self, evt: dict):
@@ -1475,7 +1474,7 @@ class GatewayNotificationsMixin(GatewayNotificationOwnershipMixin):
             if identity_claimed and not accepted:
                 with self._completion_delivery_lock:
                     self._completion_deliveries_inflight.discard(identity)
-            operation = "complete" if accepted else "defer" if refused else "release"
+            operation = "complete" if accepted else "defer" if refused or claim.defer else "release"
             if claim.claim_id:
                 self._settle_durable_claim(operation, claim.delegation_id, claim.claim_id)
             for sibling, claim_id in sibling_claims:

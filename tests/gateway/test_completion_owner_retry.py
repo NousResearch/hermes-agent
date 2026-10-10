@@ -87,8 +87,7 @@ async def test_transient_ownership_ancestor_failure_retries_durable_delivery_onc
             assert walk_count == (1 if phase == "readiness" else 2)
             pending = ad.get_durable_delegation(event["delegation_id"])
             assert pending is not None
-            attempts = 0 if phase == "readiness" else 1
-            assert (pending["delivery_state"], pending["delivery_attempts"]) == ("pending", attempts)
+            assert (pending["delivery_state"], pending["delivery_attempts"]) == ("pending", 0)
             with sqlite3.connect(ad._db_path()) as conn:
                 assert conn.execute(
                     "SELECT delivery_claim FROM async_delegations WHERE delegation_id=?",
@@ -103,7 +102,7 @@ async def test_transient_ownership_ancestor_failure_retries_durable_delivery_onc
             assert await runner._deliver_completion_notification("completed result", event) is True
             delivered = ad.get_durable_delegation(event["delegation_id"])
             assert delivered is not None
-            assert (delivered["delivery_state"], delivered["delivery_attempts"]) == ("delivered", attempts + 1)
+            assert (delivered["delivery_state"], delivered["delivery_attempts"]) == ("delivered", 1)
             assert admitted == [owner]
             assert await runner._deliver_completion_notification("completed result", event) is None
 
@@ -122,5 +121,66 @@ async def test_transient_ownership_ancestor_failure_retries_durable_delivery_onc
             if replay_runner is not None:
                 replay_runner.session_store.close_all_db_handles()
                 replay_runner.close_all_session_db_handles()
+            store.close_all_db_handles()
+            runner.close_all_session_db_handles()
+
+
+@pytest.mark.asyncio
+async def test_claimed_ownership_retries_do_not_spend_the_delivery_budget(
+    tmp_path, monkeypatch, private_db_probe_cleanup,
+):
+    """More transient owner-read failures than the attempt budget leave the result pending; recovery admits it once."""
+    with _profile_runtime_scope(tmp_path):
+        runner = GatewayRunner(GatewayConfig(sessions_dir=tmp_path / "sessions"))
+        store = runner.session_store
+        try:
+            entry = store.get_or_create_session(SessionSource(
+                platform=Platform.TELEGRAM, chat_id="ownership-budget", chat_type="dm",
+            ))
+            owner = entry.session_id
+            cast(Any, store._db).create_session("worker", source="subagent", model_config={"_delegate_from": owner})
+            async_db = runner._session_db
+            get_session = async_db.get_session
+            walks = 0
+            failing = True
+
+            async def lookup_session(sid):
+                nonlocal walks
+                if sid == "worker":
+                    walks += 1
+                # Each delivery walks twice, readiness then the claimed preflight; only the second fails.
+                if failing and sid == owner and walks % 2 == 0:
+                    raise RuntimeError("temporary owner lookup failure")
+                return await get_session(sid)
+
+            monkeypatch.setattr(async_db, "get_session", lookup_session)
+            admitted = []
+
+            async def accept(event):
+                admitted.append(event.metadata["gateway_session_id"])
+                event._gateway_accepted = True
+
+            runner.adapters[Platform.TELEGRAM] = cast(BasePlatformAdapter, SimpleNamespace(handle_message=accept))
+            event = {
+                "type": "async_delegation", "delegation_id": "owner-budget",
+                "session_key": entry.session_key, "parent_session_id": "worker",
+                "dispatched_at": 1.0, "status": "completed", "summary": "completed result",
+            }
+            ad._persist_dispatch(event)
+            ad._persist_completion(event, {"status": "completed", "summary": event["summary"]})
+
+            for _ in range(ad._MAX_DELIVERY_ATTEMPTS + 1):
+                assert await runner._deliver_completion_notification("completed result", event) is False
+            pending = ad.get_durable_delegation(event["delegation_id"])
+            assert pending is not None
+            assert (pending["delivery_state"], pending["delivery_attempts"]) == ("pending", 0)
+            assert admitted == []
+
+            failing = False
+            assert await runner._deliver_completion_notification("completed result", event) is True
+            assert len(admitted) == 1
+            delivered = ad.get_durable_delegation(event["delegation_id"])
+            assert delivered is not None and delivered["delivery_state"] == "delivered"
+        finally:
             store.close_all_db_handles()
             runner.close_all_session_db_handles()

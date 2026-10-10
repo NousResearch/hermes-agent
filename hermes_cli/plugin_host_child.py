@@ -229,8 +229,15 @@ class HostRuntime:
             return asyncio.run_coroutine_threadsafe(_on_behalf_of(result, serving_request()), self.loop).result()
         return result
 
-    def _encode_result(self, plugin_key: str, value: Any) -> Any:
-        return encode(value, functools.partial(self.ref_for, plugin_key, allow_objects=False))
+    def _encode_result(
+        self, plugin_key: str, value: Any, *, memory_prefetch: bool = False
+    ) -> Any:
+        refs = functools.partial(self.ref_for, plugin_key, allow_objects=False)
+        if memory_prefetch:
+            from hermes_cli.plugin_host_wire_memory import encode_memory_prefetch_result
+
+            return encode_memory_prefetch_result(value, refs, 0)
+        return encode(value, refs)
 
     def _decode_args(self, params: dict[str, Any]):
         return decode(params.get("args") or [], None), decode(params.get("kwargs") or {}, None)
@@ -347,7 +354,15 @@ class HostRuntime:
         if method.startswith("_"):
             raise AttributeError(method)
         args, kwargs = self._decode_args(params)
-        return self._encode_result(self.owners.get(ref, ""), self._run(getattr(obj, method)(*args, **kwargs)))
+        value = self._run(getattr(obj, method)(*args, **kwargs))
+        memory_prefetch = False
+        if method == "prefetch":
+            from agent.memory_provider import MemoryProvider
+
+            memory_prefetch = isinstance(obj, MemoryProvider)
+        return self._encode_result(
+            self.owners.get(ref, ""), value, memory_prefetch=memory_prefetch
+        )
 
     def op_obj_getattr(self, params: dict[str, Any]) -> Any:
         obj = self.refs.get(int(params["ref"]))

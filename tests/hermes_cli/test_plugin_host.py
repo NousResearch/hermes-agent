@@ -5,6 +5,7 @@ import os
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 import hermes_yaml as yaml
 import pytest
@@ -376,6 +377,95 @@ def test_plugin_host_wire_bounds_memory_observations_before_encoding():
     assert len(json.dumps(wire, separators=(",", ":"))) < 100_000
 
 
+def test_plugin_host_wire_bounds_raw_dict_prefetch_before_generic_encoding():
+    from agent.memory_provider import (
+        MAX_MEMORY_OBSERVATION_BATCH_BYTES,
+        MAX_MEMORY_OBSERVATION_INSPECTED_CANDIDATES,
+        MemoryProvider,
+        MemoryPrefetchResult,
+    )
+    from hermes_cli.plugin_host_child import HostRuntime
+    from hermes_cli.plugin_host_wire import decode
+
+    candidate = {
+        "source_kind": "recall",
+        "schema": "memprobe.recall",
+        "version": 1,
+        "payload": {"kept": True},
+        "provider": "",
+        **{f"extra-{index}": index for index in range(2_000)},
+    }
+    raw_result = {
+        "context": "usable context",
+        "observations": [candidate]
+        + [
+            {
+                "source_kind": "recall",
+                "schema": "memprobe.recall",
+                "version": 1,
+                "payload": {"index": index},
+            }
+            for index in range(1_000)
+        ],
+    }
+
+    class Provider(MemoryProvider):
+        @property
+        def name(self):
+            return "fixture"
+
+        def is_available(self):
+            return True
+
+        def initialize(self, session_id, **kwargs):
+            pass
+
+        def get_tool_schemas(self):
+            return []
+
+        def prefetch(self, query="", *, session_id="") -> Any:
+            return raw_result
+
+    runtime = HostRuntime.__new__(HostRuntime)
+    runtime.refs = {1: Provider()}
+    runtime.owners = {1: "fixture"}
+    wire = runtime.op_obj_invoke({"ref": 1, "method": "prefetch"})
+    result = decode(wire)
+
+    assert type(result) is MemoryPrefetchResult
+    assert result.context == "usable context"
+    assert len(result.observations) <= MAX_MEMORY_OBSERVATION_INSPECTED_CANDIDATES + 1
+    assert result.observations[0].payload == {"kept": True}
+    assert len(json.dumps(wire, separators=(",", ":")).encode()) < (
+        MAX_MEMORY_OBSERVATION_BATCH_BYTES + 4_096
+    )
+
+
+def test_plugin_host_wire_enforces_aggregate_observation_bytes():
+    from agent.memory_provider import (
+        MAX_MEMORY_OBSERVATION_BATCH_BYTES,
+        MAX_MEMORY_OBSERVATION_INSPECTED_CANDIDATES,
+        MemoryObservation,
+        MemoryPrefetchResult,
+    )
+    from hermes_cli.plugin_host_wire import encode
+
+    result = MemoryPrefetchResult(
+        context="context stays intact",
+        observations=tuple(
+            MemoryObservation("recall", "memprobe.recall", 1, {"text": "x" * 3_500})
+            for _ in range(MAX_MEMORY_OBSERVATION_INSPECTED_CANDIDATES + 1)
+        ),
+    )
+
+    wire = encode(result)
+
+    assert wire["fields"]["context"] == "context stays intact"
+    assert len(json.dumps(wire, separators=(",", ":")).encode()) <= (
+        MAX_MEMORY_OBSERVATION_BATCH_BYTES + 2_048
+    )
+
+
 def test_plugin_host_wire_does_not_run_tuple_subclass_iteration():
     from agent.memory_provider import MemoryObservation, MemoryPrefetchResult
     from hermes_cli.plugin_host_wire import encode
@@ -482,3 +572,54 @@ def test_unload_profile_manager_stops_live_plugin_host_process(tmp_path, monkeyp
     finally:
         if process.poll() is None:
             host.shutdown()
+
+
+def test_profile_manager_retires_observers_before_clearing_plugin_modules(
+    tmp_path, monkeypatch
+):
+    import threading
+
+    from agent import plugin_stream_hooks as psh
+    from hermes_cli import plugins
+    from hermes_cli.plugins_lifecycle import unload_plugin_manager_for_home
+
+    home = (tmp_path / "profile").resolve()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    manager = PluginManager(scope_key=str(home))
+    manager._discovered = True
+    monkeypatch.setattr(plugins, "_plugin_managers_by_home", {home: manager})
+    monkeypatch.setattr(plugins, "_plugin_manager", manager)
+
+    running = threading.Event()
+    release_running = threading.Event()
+    state_closed = threading.Event()
+    pending_ran_after_close = threading.Event()
+
+    def observer(event_id):
+        if event_id == "running":
+            running.set()
+            release_running.wait(timeout=5.0)
+        elif event_id == "pending" and state_closed.is_set():
+            pending_ran_after_close.set()
+
+    plugins.PluginContext(
+        plugins.PluginManifest(name="teardown-observer"), manager
+    ).register_hook("memory_prefetch", observer)
+
+    assert psh.enqueue_plugin_observer_hook("memory_prefetch", event_id="running")
+    assert running.wait(timeout=5.0)
+    dispatcher = psh._dispatchers_for("memory_prefetch")[0]
+    assert psh.enqueue_plugin_observer_hook("memory_prefetch", event_id="pending")
+
+    def clear_modules(_manager):
+        state_closed.set()
+        release_running.set()
+        dispatcher.events.join()
+
+    monkeypatch.setattr(plugins, "_clear_plugin_submodules", clear_modules)
+    try:
+        assert unload_plugin_manager_for_home(home)
+        assert not pending_ran_after_close.is_set()
+    finally:
+        release_running.set()
+        psh.shutdown_plugin_observer_dispatcher(timeout=5.0)

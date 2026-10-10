@@ -327,6 +327,23 @@ def _default_profile_secret_scope():
         reset_secret_scope(token)
 
 
+def _log_tick_yields(results: Optional[list]) -> bool:
+    """Log a REFUSED (skew-yielded) tick; returns whether any board yielded.
+
+    The gate logs its own refusal loudly, with the non-green status record's path; this is the
+    GATEWAY-level surface, so an operator reading the gateway log cannot see a run of silent ticks
+    and read them as a healthy idle loop (ruling ``t_8fed34c8``: never a silent/false green).
+    """
+    yielded = False
+    for slug, res in (results or []):
+        reason = getattr(res, "tick_yielded", "") if res is not None else ""
+        if not reason:
+            continue
+        yielded = True
+        logger.warning("kanban dispatcher [%s]: tick REFUSED (non-green): %s", slug, reason)
+    return yielded
+
+
 def _log_spawn_results(results: Optional[list]) -> bool:
     """Log per-board spawn summaries; returns whether any board spawned."""
     any_spawned = False

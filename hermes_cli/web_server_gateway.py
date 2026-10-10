@@ -13,7 +13,7 @@ import time
 import urllib.request
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-from hermes_cli._subprocess_compat import windows_detach_flags
+from hermes_cli._subprocess_compat import windows_detach_flags, windows_detach_flags_without_breakaway
 from hermes_cli.config import get_hermes_home
 
 # Same logger the code used before extraction (record parity).
@@ -516,11 +516,33 @@ def _spawn_hermes_action(
     # Named-profile actions get a scrubbed, pinned environment so the child cannot inherit the
     # dashboard profile's credentials; see _profile_action_environment (also drops _HERMES_GATEWAY).
     action_env = _profile_action_environment(subcommand, env_overrides)
-    detach = {"creationflags": windows_detach_flags()} if sys.platform == "win32" else {"start_new_session": True}
-    proc = subprocess.Popen(
-        cmd, cwd=str(PROJECT_ROOT), stdin=subprocess.DEVNULL, stdout=log_file, stderr=subprocess.STDOUT,
-        env=action_env, **detach,
-    )
+    if sys.platform == "win32":
+        # A dashboard whose parent owns a Job Object that forbids breakaway (service, Task
+        # Scheduler, some RDP/console hosts) makes CreateProcess reject CREATE_BREAKAWAY_FROM_JOB
+        # outright: the whole spawn fails with ERROR_ACCESS_DENIED (winerror 5) and the button
+        # reports "Failed to start update: [WinError 5] Access is denied." without starting
+        # anything. gateway.py and main_desktop.py already retry without the flag (see
+        # _subprocess_compat.windows_detach_flags); this spawn must do the same, keeping the
+        # child's own process group and hidden console.
+        try:
+            proc = subprocess.Popen(
+                cmd, cwd=str(PROJECT_ROOT), stdin=subprocess.DEVNULL, stdout=log_file,
+                stderr=subprocess.STDOUT, env=action_env, creationflags=windows_detach_flags(),
+            )
+        except OSError as exc:
+            if getattr(exc, "winerror", None) != 5:
+                log_file.close()
+                raise
+            proc = subprocess.Popen(
+                cmd, cwd=str(PROJECT_ROOT), stdin=subprocess.DEVNULL, stdout=log_file,
+                stderr=subprocess.STDOUT, env=action_env,
+                creationflags=windows_detach_flags_without_breakaway(),
+            )
+    else:
+        proc = subprocess.Popen(
+            cmd, cwd=str(PROJECT_ROOT), stdin=subprocess.DEVNULL, stdout=log_file, stderr=subprocess.STDOUT,
+            env=action_env, start_new_session=True,
+        )
     log_file.close()  # child holds its own dup'd fd; keeping ours leaks one per action
     _ACTION_RESULTS.pop(name, None)
     _ACTION_COMMANDS[name] = tuple(subcommand)

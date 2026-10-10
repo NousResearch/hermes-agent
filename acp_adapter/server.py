@@ -251,9 +251,11 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
     _MODE_TO_EDIT_APPROVAL_POLICY = {mode: spec[0] for mode, spec in _MODES.items()}
     _EDIT_APPROVAL_POLICY_TO_MODE = {spec[0]: mode for mode, spec in _MODES.items()}
 
-    def __init__(self, session_manager: SessionManager | None = None):
+    def __init__(self, session_manager: SessionManager | None = None, *, async_delivery: bool = True):
         super().__init__()
         self.session_manager = session_manager or SessionManager()
+        # Host launch policy, not a model/tool or mutable ACP session setting.
+        self._async_delivery = async_delivery
         self._conn: Optional[acp.Client] = None
 
     # ---- Connection lifecycle -----------------------------------------------
@@ -774,6 +776,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
 
                 tokens = set_session_vars(
                     session_key=session_id, session_id=session_id, cwd=state.cwd, cron_session="",
+                    async_delivery=self._async_delivery,
                 )
                 return lambda: clear_session_vars(tokens)
 

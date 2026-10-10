@@ -1488,7 +1488,7 @@ class SessionDB(
         except Exception as exc:
             logger.warning("WAL checkpoint (PASSIVE) failed: %s", exc)
 
-    def __enter__(self) -> SessionDB:
+    def __enter__(self) -> "SessionDB":
         """``with SessionDB(path) as db:`` closes on exit; owners must release deterministically.
 
         Ownership of a SessionDB should be released explicitly. Historically an instance with a started

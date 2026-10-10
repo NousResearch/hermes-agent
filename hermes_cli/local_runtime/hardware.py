@@ -419,7 +419,7 @@ def _gpu_engine_runs_the_model() -> bool:
     return False
 
 
-def _windows_igpu_bytes(device: "dict | None") -> int | None:
+def _windows_igpu_bytes(device: dict | None) -> int | None:
     """What Windows lets the integrated GPU allocate (Task Manager's GPU memory), or None.
 
     The adapter is the one the engine named, else the only non-NVIDIA hardware adapter when a

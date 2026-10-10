@@ -2143,7 +2143,7 @@ class BasePlatformAdapter(ABC):
         return t("gateway.progress.tool_preview", emoji=emoji, tool=tool, preview=self.format_tool_preview(prepared))
 
 
-    def format_tool_preview(self, preview: ToolPreview) -> str:
+    def format_tool_preview(self, preview: "ToolPreview") -> str:
         """Platform-native formatting of a compact tool preview; rich-text adapters may use
         the preview's metadata (e.g. a URL shortened for display)."""
         return preview.text
@@ -2163,7 +2163,7 @@ class BasePlatformAdapter(ABC):
         return chat_id in self._auto_tts_enabled_chats or (
             chat_id not in self._auto_tts_disabled_chats and bool(self._auto_tts_default))
 
-    def set_fatal_error_handler(self, handler: Callable[[BasePlatformAdapter], Awaitable[None] | None]) -> None:
+    def set_fatal_error_handler(self, handler: "Callable[[BasePlatformAdapter], Awaitable[None] | None]") -> None:
         self._fatal_error_handler = handler
 
     #: Published when an adapter is installed and running but its receive
@@ -3636,7 +3636,7 @@ class BasePlatformAdapter(ABC):
             logger.debug("[%s] Failed to resolve media delivery scope", self.name, exc_info=True)
             return contextlib.nullcontext()
 
-    def _final_delivery_adapter(self, source: Optional[SessionSource]) -> BasePlatformAdapter:
+    def _final_delivery_adapter(self, source: Optional[SessionSource]) -> "BasePlatformAdapter":
         """The runner's CURRENT adapter for a new final-response send: a reconnect can swap the
         registry adapter mid-task; an unsent final response belongs on the replacement transport,
         while message IDs, edits and deletes stay owned by the old one (nothing is migrated)."""
@@ -4252,7 +4252,7 @@ class BasePlatformAdapter(ABC):
 
     async def _record_delivery_obligation(
         self, event: MessageEvent, session_key: str, text_content: str,
-        delivery_adapter: BasePlatformAdapter, is_ephemeral_response: bool) -> Optional[str]:
+        delivery_adapter: "BasePlatformAdapter", is_ephemeral_response: bool) -> Optional[str]:
         """Ledger the final response BEFORE the send so a crash before platform ACK redelivers on
         next boot; best-effort, skips slash-command and ephemeral replies. Returns the obligation id
         or None."""
@@ -4286,7 +4286,7 @@ class BasePlatformAdapter(ABC):
 
     async def _finalize_delivery_obligation(
         self, obligation_id: str, result: Any, event: MessageEvent,
-        delivery_adapter: BasePlatformAdapter) -> None:
+        delivery_adapter: "BasePlatformAdapter") -> None:
         """Mark the ledger row delivered/failed (best-effort). On ``send_path_degraded`` with a
         replacement adapter live, trigger another redelivery sweep (the watcher's may have run
         before this failure landed; atomic claiming keeps it idempotent). On any other rejection arm

@@ -54,7 +54,7 @@ def _launch_cwd_for_session(source: str) -> Optional[str]:
         return None
 
 
-def _gateway_origin_json(agent: AIAgent) -> Optional[str]:
+def _gateway_origin_json(agent: "AIAgent") -> Optional[str]:
     """Gateway routing ``origin_json`` for a session row; None when the agent carries no gateway identity.
 
     Mirrors ``SessionSource.to_dict()`` so state.db consumers see the same fields ``record_gateway_session_peer`` writes.

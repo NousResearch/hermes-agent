@@ -147,7 +147,7 @@ class SessionSource:
         return d
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> SessionSource:
+    def from_dict(cls, data: dict[str, Any]) -> "SessionSource":
         plain = {
             name: data.get(name)
             for name in cls._ALWAYS_FIELDS[1:] + cls._OPTIONAL_PRE_SCOPE + cls._OPTIONAL_POST_SCOPE + cls._OPTIONAL_TAIL
@@ -580,7 +580,7 @@ class SessionEntry:
         return result
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> SessionEntry:
+    def from_dict(cls, data: dict[str, Any]) -> "SessionEntry":
         origin = data.get("origin")
         origin = SessionSource.from_dict(origin) if isinstance(origin, dict) else None
         platform = None
@@ -767,7 +767,7 @@ class _RouteDecision:
 class AsyncSessionStore:
     """Async boundary for the synchronous, thread-safe SessionStore."""
 
-    def __init__(self, store: SessionStore) -> None:
+    def __init__(self, store: "SessionStore") -> None:
         self._store = store
 
     def __getattr__(self, name: str):

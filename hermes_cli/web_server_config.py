@@ -477,7 +477,7 @@ def _normalize_main_model_assignment(provider: str, model: str) -> tuple[str, st
 
 def _validated_main_model_selection(
     cfg: dict, provider: str, model: str, base_url: str = "", api_key: str = ""
-) -> ModelSwitchResult:
+) -> "ModelSwitchResult":
     """Route a dashboard main-slot pick through ``switch_model`` (catalog/alias/credential
     validation) seeded with the configured route, exactly like a ``/model <model> --provider
     <provider> --global``. A bare ``custom`` target carries the submitted endpoint as the current
@@ -510,7 +510,7 @@ def _validated_main_model_selection(
     return result
 
 
-def _apply_main_model_assignment(model_cfg: Any, result: ModelSwitchResult, api_key: str = "") -> dict:
+def _apply_main_model_assignment(model_cfg: Any, result: "ModelSwitchResult", api_key: str = "") -> dict:
     """Apply a main-slot selection to a ``model`` config dict via the canonical /model shape
     (``hermes_cli.model_switch.apply_model_selection``). An explicit key for a custom endpoint is
     the one inline credential the runtime reads (``model.api_key``); the legacy ``api`` alias is
@@ -739,7 +739,7 @@ def _provider_entry(cfg: dict, provider: str) -> Any:
     return providers_cfg.get(provider) if isinstance(providers_cfg, dict) else None
 
 
-def _prepare_main_assignment(cfg: dict, provider: str, model: str, base_url: str, api_key: str) -> tuple[str, ModelSwitchResult]:
+def _prepare_main_assignment(cfg: dict, provider: str, model: str, base_url: str, api_key: str) -> "tuple[str, ModelSwitchResult]":
     """Validation half of a main-slot assignment: ``(effective base_url, switch result)``.
     ``switch_model`` fetches catalogs / probes endpoints, so callers run this BEFORE taking
     ``_CONFIG_MUTATION_LOCK``; it writes nothing."""
@@ -753,7 +753,7 @@ def _prepare_main_assignment(cfg: dict, provider: str, model: str, base_url: str
 
 
 def _apply_main_assignment_sync(cfg: dict, provider: str, model: str, base_url: str, api_key: str,
-                                prepared: Optional[tuple[str, ModelSwitchResult]] = None) -> dict:
+                                prepared: "Optional[tuple[str, ModelSwitchResult]]" = None) -> dict:
     from hermes_cli.config import save_config
     from hermes_cli.free_tier_bootstrap import reconcile_record
     base_url, result = prepared or _prepare_main_assignment(cfg, provider, model, base_url, api_key)
@@ -888,7 +888,7 @@ def _apply_aux_assignment_sync(cfg: dict, provider: str, model: str, task: str, 
 
 def _apply_model_assignment_sync(
     scope: str, provider: str, model: str, task: str, base_url: str, api_key: str = "",
-    reasoning_effort: Optional[str] = _UNSET, prepared: Optional[tuple[str, ModelSwitchResult]] = None,
+    reasoning_effort: Optional[str] = _UNSET, prepared: "Optional[tuple[str, ModelSwitchResult]]" = None,
 ):
     """Synchronous body of POST /api/model/set.
 

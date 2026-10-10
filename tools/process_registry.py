@@ -516,14 +516,14 @@ def _not_found(session_id: str) -> dict:
     return {"status": "not_found", "error": f"No process with ID {session_id}"}
 
 
-def _output_tail(session: ProcessSession, n: int) -> str:
+def _output_tail(session: "ProcessSession", n: int) -> str:
     """Last *n* chars of the session output with ANSI sequences stripped."""
     from tools.ansi_strip import strip_ansi
 
     return strip_ansi(session.output_buffer[-n:])
 
 
-def _completion_output(session: ProcessSession) -> dict:
+def _completion_output(session: "ProcessSession") -> dict:
     """``output`` sized by the session's ``completion_output_chars`` plus ``output_cut`` when trimmed.
 
     Shared by the completion notification AND the wait/poll/kill snapshots: a bot in an api_server

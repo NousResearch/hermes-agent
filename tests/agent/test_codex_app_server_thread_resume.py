@@ -22,7 +22,7 @@ class _WireClient:
     id (or refuses ids in ``dead``), and records every JSON-RPC method it saw."""
 
     dead: set[str] = set()
-    instances: list[_WireClient] = []
+    instances: "list[_WireClient]" = []
     counter = 0
 
     def __init__(self, **kwargs):

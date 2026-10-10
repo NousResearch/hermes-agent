@@ -25,7 +25,7 @@ DEFAULT_MAX_LEASES = 512
 DEFAULT_LEASE_WAIT = 5.0
 
 
-def _holder_desc(holder: Optional[TurnLeaseToken]) -> tuple:
+def _holder_desc(holder: "Optional[TurnLeaseToken]") -> tuple:
     return (holder.owner_key, holder.generation) if holder else ("?", "?")
 
 
@@ -45,7 +45,7 @@ class TurnLeaseToken:
 
     __slots__ = ("generation", "lease", "owner_key", "released", "session_id")
 
-    def __init__(self, session_id: str, owner_key: str, generation: int, lease: _SessionLease) -> None:
+    def __init__(self, session_id: str, owner_key: str, generation: int, lease: "_SessionLease") -> None:
         self.session_id, self.owner_key, self.generation = session_id, owner_key, generation
         self.released = False
         # The concrete lease, so release resolves by identity even after a rotation re-aliases

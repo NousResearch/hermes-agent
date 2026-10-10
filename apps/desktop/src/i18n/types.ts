@@ -3047,7 +3047,6 @@ export interface Translations extends NoticeTranslations {
     restoredDraftNotice: string
     restoredDraftUndo: string
     /** The local-setup offer above the input after the first finished task. */
-    localSetup: { title: string; text: (model: string) => string; action: string }
     queueEdit: string
     queueExpand: string
     queueCollapse: string

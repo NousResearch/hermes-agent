@@ -275,7 +275,7 @@ def _reserve_callback_port() -> int:
     return _bind_reserved(0)  # type: ignore[return-value]  # port 0 never returns None
 
 
-def _cached_client_info(storage: HermesTokenStorage | None) -> dict | None:
+def _cached_client_info(storage: "HermesTokenStorage | None") -> dict | None:
     """The on-disk client registration for *storage*, or None."""
     try:
         info = _read_json(storage._client_info_path()) if storage is not None else None
@@ -286,7 +286,7 @@ def _cached_client_info(storage: HermesTokenStorage | None) -> dict | None:
     return info if isinstance(info, dict) else None
 
 
-def _cached_redirect(storage: HermesTokenStorage | None) -> tuple[str | None, int | None]:
+def _cached_redirect(storage: "HermesTokenStorage | None") -> tuple[str | None, int | None]:
     """``(https proxy URI, loopback callback port)`` from the cached client registration (None when
     absent): a DCR ``client_id`` is bound to its registered redirect URI, so a new random port under
     it gets ``redirect_uri does not match any registered URIs``."""
@@ -483,11 +483,11 @@ class HermesTokenStorage:
         self.loaded_issuer = data.pop("hermes_issuer", None)
         self._rebase_expires_in(data)
 
-    async def get_tokens(self) -> OAuthToken | None:
+    async def get_tokens(self) -> "OAuthToken | None":
         self.loaded_issuer = None
         return self._load_model(self._tokens_path(), "OAuthToken", "tokens", self._fixup_loaded_tokens)
 
-    async def set_tokens(self, tokens: OAuthToken) -> None:
+    async def set_tokens(self, tokens: "OAuthToken") -> None:
         payload = _model_json(tokens)
         # Absolute ``expires_at``: see _rebase_expires_in.
         if payload.get("expires_in") is not None:
@@ -545,7 +545,7 @@ class HermesTokenStorage:
             return True
         return False
 
-    async def get_client_info(self) -> OAuthClientInformationFull | None:
+    async def get_client_info(self) -> "OAuthClientInformationFull | None":
         coerced: list[bool] = []
         info = self._load_model(
             self._client_info_path(), "OAuthClientInformationFull", "client info",
@@ -554,19 +554,19 @@ class HermesTokenStorage:
             _write_json(self._client_info_path(), _model_json(info))  # persist so later flows skip the coercion
         return info
 
-    async def set_client_info(self, client_info: OAuthClientInformationFull) -> None:
+    async def set_client_info(self, client_info: "OAuthClientInformationFull") -> None:
         data = _model_json(client_info)
         self._coerce_secret_auth_method(data)
         _write_json(self._client_info_path(), data)
         logger.debug("OAuth client info saved for %s", self._server_name)
 
-    def save_oauth_metadata(self, metadata: OAuthMetadata) -> None:
+    def save_oauth_metadata(self, metadata: "OAuthMetadata") -> None:
         """Persist server metadata so a restarted process can refresh without re-discovery;
         otherwise the SDK guesses ``{server_url}/token`` (404) and forces re-auth."""
         _write_json(self._meta_path(), _model_json(metadata))
         logger.debug("OAuth metadata saved for %s", self._server_name)
 
-    def load_oauth_metadata(self) -> OAuthMetadata | None:
+    def load_oauth_metadata(self) -> "OAuthMetadata | None":
         return self._load_model(self._meta_path(), "OAuthMetadata", "OAuth metadata")
 
     def mark_cimd_rejected(self) -> None:
@@ -1119,7 +1119,7 @@ def apply_oauth_provider_defaults(cfg: dict, *, server_name: str = "", server_ur
     return cfg
 
 
-def _build_client_metadata(cfg: dict) -> OAuthClientMetadata:
+def _build_client_metadata(cfg: dict) -> "OAuthClientMetadata":
     """Build OAuthClientMetadata; requires ``_configure_callback_port`` first."""
     port = cfg.get("_resolved_port")
     if port is None:
@@ -1175,7 +1175,7 @@ def _invalidate_tokens_on_client_change(
             storage._server_name, old_client_id, new_client_id, storage._server_name)
 
 
-def _maybe_preregister_client(storage: HermesTokenStorage, cfg: dict, client_metadata: OAuthClientMetadata) -> None:
+def _maybe_preregister_client(storage: HermesTokenStorage, cfg: dict, client_metadata: "OAuthClientMetadata") -> None:
     """If cfg has a pre-registered client_id, persist it to storage."""
     client_id = cfg.get("client_id")
     if not client_id:
@@ -1231,7 +1231,7 @@ def humanize_oauth_registration_error(
         "API-key / local server instead.")
 
 
-def build_oauth_auth(server_name: str, server_url: str, oauth_config: dict | None = None) -> OAuthClientProvider | None:
+def build_oauth_auth(server_name: str, server_url: str, oauth_config: dict | None = None) -> "OAuthClientProvider | None":
     """``httpx.Auth`` OAuth handler for an MCP server; None if the SDK lacks OAuth. Legacy API — new code
     uses :func:`tools.mcp_oauth_manager.get_manager` so state is shared across config-time, runtime and reconnect paths."""
     global HermesOAuthClientProvider

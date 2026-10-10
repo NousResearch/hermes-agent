@@ -105,3 +105,38 @@ def test_live_reattach_reports_the_sessions_own_model_not_the_profile_default(li
     info = out["result"]["info"]
     assert (info["model"], info["provider"]) == expected
     assert info["lazy"] is True
+
+
+# ---------------------------------------------------------------------------
+# Liveness on the reattach reply
+# ---------------------------------------------------------------------------
+# The lazy/unpersisted reattach is the ONLY reply a brand-new chat gets: create
+# writes no state.db row, so the client comes straight back here. Clients gate
+# their turn controls on `running` and read an absent key as "this gateway cannot
+# report liveness at all" — Conduit banners the chat ("Update this Hermes
+# gateway") and hides send/stop on a draft that is simply idle.
+
+def test_reattach_reports_an_idle_draft_as_not_running(live_lazy_session):
+    _sid, record = live_lazy_session
+    out = _resume({"profile": "ops", "session_id": record["session_key"], "omit_messages": True})
+    assert "error" not in out, out
+    assert out["result"]["running"] is False
+
+
+def test_reattach_reports_a_turn_already_in_flight(live_lazy_session):
+    _sid, record = live_lazy_session
+    record["running"] = True
+    out = _resume({"profile": "ops", "session_id": record["session_key"], "omit_messages": True})
+    assert "error" not in out, out
+    assert out["result"]["running"] is True
+
+
+def test_reattach_reports_a_child_run_on_an_agentless_watch_session(live_lazy_session, monkeypatch):
+    """A Bot Chat session has no agent until it is upgraded; the subagent registry is then
+    the only liveness signal, so the reply must consult it rather than assume idle."""
+    _sid, record = live_lazy_session
+    assert "agent" not in record
+    monkeypatch.setattr(srv, "_child_run_active", lambda child_key, profile_home: True)
+    out = _resume({"profile": "ops", "session_id": record["session_key"], "omit_messages": True})
+    assert "error" not in out, out
+    assert out["result"]["running"] is True

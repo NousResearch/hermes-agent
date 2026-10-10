@@ -265,6 +265,8 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAcc
         while self._running:
             try:
                 await self._read_events()
+                if self._running:
+                    raise RuntimeError("WeCom websocket read loop exited unexpectedly")
                 backoff_idx = 0
             except asyncio.CancelledError:
                 return

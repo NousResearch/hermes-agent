@@ -142,7 +142,8 @@ tts:
 
 Eleven v4 supports only `stability` and `similarity_boost`. Hermes rejects enabled
 `use_speaker_boost` and non-default `style` or `speed` values before making a request; neutral
-values are omitted. Older ElevenLabs models retain their existing behavior.
+values are omitted. Older ElevenLabs models retain their existing behavior; their `speed` is clamped
+into the ElevenLabs 0.7–1.2 band, and non-numeric or non-finite values fail before the request.
 
 KittenTTS is not available on Intel macOS or Windows ARM64: its dependencies publish no `onnxruntime` or PyTorch wheels for those platforms. Selecting it there reports the provider unavailable.
 

@@ -49,8 +49,8 @@ def subagent_listing_scope(
     return True, [s for s in excluded if s != SUBAGENT_SOURCE] or None
 
 
-def parse_session_listing_args(raw_args: str) -> tuple[bool, bool, str, str | None]:
-    """Parse `/sessions`-style args into ``(include_all_sources, include_unnamed, target, search_query)``.
+def parse_session_listing_args(raw_args: str) -> tuple[bool, bool, str, str | None, int]:
+    """Parse `/sessions`-style args into ``(include_all_sources, include_unnamed, target, search_query, limit)``.
 
     ``all`` widens source scope, ``full`` keeps unnamed sessions, ``search``/``find`` makes the rest
     a query (``None`` = not requested, ``""`` = requested with no terms). Flags are honored only
@@ -59,19 +59,34 @@ def parse_session_listing_args(raw_args: str) -> tuple[bool, bool, str, str | No
     """
     parts = shlex.split(raw_args or "")
     flags = {"all": False, "full": False}
+    limit = 50  # Default: show up to 50 sessions
     target_parts: list[str] = []
-    for i, part in enumerate(parts):
+    i = 0
+    while i < len(parts):
+        part = parts[i]
         lower = part.strip().lower()
         if not target_parts:
             if lower in _LIST_WORDS:
+                i += 1
                 continue
             if lower in {"all", "--all", "full", "--full"}:
                 flags[lower.lstrip("-")] = True
+                i += 1
                 continue
             if lower in _SEARCH_WORDS:
-                return flags["all"], flags["full"], "", " ".join(parts[i + 1:]).strip()
+                return flags["all"], flags["full"], "", " ".join(parts[i + 1:]).strip(), limit
+            if lower in {"--limit", "-n"}:
+                if i + 1 < len(parts):
+                    try:
+                        limit = int(parts[i + 1])
+                        i += 2
+                        continue
+                    except (ValueError, IndexError):
+                        i += 2
+                        continue
         target_parts.append(part)
-    return flags["all"], flags["full"], " ".join(target_parts).strip(), None
+        i += 1
+    return flags["all"], flags["full"], " ".join(target_parts).strip(), None, limit
 
 
 def query_session_listing(

@@ -974,20 +974,37 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         if getattr(self, "_agent_running", False):
             return _cp(f"  {_t('shared.agent_busy', command='/resume')}")
         from cli import _sync_process_session_id
-        target = _command_arg(cmd_original)
+
+        # Support the same `--limit` / `-n` surface as gateway `/resume`
+        limit = 50
+        target = ""
+        try:
+            args = shlex.split(_command_arg(cmd_original))
+        except ValueError:
+            args = _command_arg(cmd_original).split()
+        i = 0
+        while i < len(args):
+            arg = args[i]
+            if arg in {"--limit", "-n"} and i + 1 < len(args):
+                try:
+                    limit = int(args[i + 1])
+                except (ValueError, IndexError):
+                    pass
+                i += 2
+                continue
+            target = f"{target} {arg}" if target else arg
+            i += 1
+        target = target.strip()
+
         # Users copy the help text's placeholder brackets/quotes verbatim (``/resume <abc123>``).
         if len(target) >= 2 and target[0] + target[-1] in {"<>", "[]", '""', "''"}:
             target = target[1:-1].strip()
         if not target:
             _cp(f"  {_t('resume.usage')}")
-            if self._show_recent_sessions(reason="resume"):
+            if self._show_recent_sessions(reason="resume", limit=limit):
                 # Arm a one-shot bare-number selection; must be the same list the table showed
-                # and the numbered branch resolves (all use _list_recent_sessions(limit=10)).
-                # Arm a one-shot pending-resume selection so the user can type just the number (`3`) on the
-                # next line instead of having to retype `/resume 3`. The list here must match the one shown
-                # by _show_recent_sessions and used for index resolution below — all three go through
-                # _list_recent_sessions(limit=10). See #34584.
-                self._pending_resume_sessions = self._list_recent_sessions(limit=10)
+                # and the numbered branch resolves (all use _list_recent_sessions(limit=<limit>)).
+                self._pending_resume_sessions = self._list_recent_sessions(limit=limit)
                 return
             return _cp(f"  {_t('resume.tip_find_sessions')}")
         # Any explicit /resume <target> supersedes a previously-armed bare numbered prompt.
@@ -1043,10 +1060,10 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
 
     def _resolve_resume_target(self, target: str):
         """``(session_id, meta)`` for a numbered selection, title, or id; None after printing why
-        it could not be resolved. An empty compression-chain head redirects to the descendant
-        that actually holds the transcript."""
+        it could not be resolved. An empty compression-chain head redirects to the descendant that
+        actually holds the transcript."""
         if target.isdigit():
-            sessions = self._list_recent_sessions(limit=10)
+            sessions = self._list_recent_sessions(limit=50)
             index = int(target)
             if index < 1 or index > len(sessions):
                 return _cp(*_lines(_gt("resume.out_of_range", index=index)))

@@ -106,7 +106,21 @@ def _branch_row(msg: dict) -> dict:
 def _strip_resume_name(parts: list[str]) -> str:
     """Join the non-flag /resume tokens; strip literal ``<...>``/``[...]``/quotes typed from the
     usage hint (mirrors the CLI)."""
-    name = " ".join(p for p in parts if p not in {"--all", "--cross-room"}).strip()
+    # Filter out known flags including --limit and its value
+    filtered = []
+    i = 0
+    while i < len(parts):
+        p = parts[i]
+        if p in {"--all", "--cross-room", "--limit"}:
+            # Skip --limit and its value
+            if p == "--limit" and i + 1 < len(parts):
+                i += 2
+                continue
+            i += 1
+            continue
+        filtered.append(p)
+        i += 1
+    name = " ".join(filtered).strip()
     if len(name) >= 2 and (name[0], name[-1]) in {("<", ">"), ("[", "]"), ('"', '"'), ("'", "'")}:
         name = name[1:-1].strip()
     return name
@@ -819,22 +833,22 @@ class GatewaySessionCommandsMixin:
 
     # -------------------------------------------------------------- /resume, /sessions
 
-    async def _list_titled_sessions(self, source, session_key: str, allow_all: bool) -> list[dict]:
+    async def _list_titled_sessions(self, source, session_key: str, allow_all: bool, limit: int = 50) -> list[dict]:
         """Titled sessions visible to the caller (origin-scoped unless admin ``--all``)."""
         widen = allow_all and self._resume_caller_is_admin(source)
         # Rank by lineage activity, not root started_at: a lineage compressed for days is projected
         # onto its live tip and must sit where the user last touched it (#114271).
         sessions = await self._session_db.list_sessions_rich(
             source=source.platform.value if source.platform else None,
-            session_key=None if widen else session_key, limit=10, order_by_last_active=True)
-        titled = [s for s in sessions if s.get("title")][:10]
+            session_key=None if widen else session_key, limit=limit, order_by_last_active=True)
+        titled = [s for s in sessions if s.get("title")][:limit]
         return [s for s in titled if await self._resume_row_visible(source, s, allow_all)]
 
-    async def _resolve_resume_target(self, source, session_key: str, name: str, allow_all: bool):
+    async def _resolve_resume_target(self, source, session_key: str, name: str, allow_all: bool, limit: int = 50):
         """``(target_id, name)`` for a numbered choice, session id or title; else the error reply."""
         if name.isdigit():
             try:
-                titled = await self._list_titled_sessions(source, session_key, allow_all)
+                titled = await self._list_titled_sessions(source, session_key, allow_all, limit)
             except Exception as e:
                 logger.debug("Failed to list titled sessions for numeric resume: %s", e)
                 return t("gateway.resume.list_failed", error=e)
@@ -884,16 +898,27 @@ class GatewaySessionCommandsMixin:
             return t("gateway.resume.parse_error", error=exc)
         allow_all = "--all" in parts
         allow_cross_room = "--cross-room" in parts
+        # Parse --limit N flag
+        limit = 50  # Default: show up to 50 sessions
+        try:
+            if "--limit" in parts:
+                limit_idx = parts.index("--limit")
+                if limit_idx + 1 < len(parts):
+                    limit = int(parts[limit_idx + 1])
+                    # Remove the --limit and its value from parts for name parsing
+                    parts = parts[:limit_idx] + parts[limit_idx + 2:]
+        except (ValueError, IndexError):
+            pass
         name = _strip_resume_name(parts)
         if not name:
             try:
-                titled = await self._list_titled_sessions(source, session_key, allow_all)
-                return self._resume_listing_reply(source, titled, allow_all)
+                titled = await self._list_titled_sessions(source, session_key, allow_all, limit)
+                return self._resume_listing_reply(source, titled, allow_all, limit)
             except Exception as e:
                 logger.debug("Failed to list titled sessions: %s", e)
                 return t("gateway.resume.list_failed", error=e)
 
-        resolved = await self._resolve_resume_target(source, session_key, name, allow_all)
+        resolved = await self._resolve_resume_target(source, session_key, name, allow_all, limit)
         if isinstance(resolved, str):
             return resolved
         target_id, name = resolved
@@ -939,7 +964,7 @@ class GatewaySessionCommandsMixin:
             return t("gateway.resume.resumed_one", title=title, count=msg_count)
         return t("gateway.resume.resumed_many", title=title, count=msg_count)
 
-    def _resume_listing_reply(self, source, titled: list[dict], allow_all: bool) -> str:
+    def _resume_listing_reply(self, source, titled: list[dict], allow_all: bool, limit: int = 50) -> str:
         """Numbered /resume list; a non-admin ``--all`` falls back to same-origin scoping and says so
         (sibling of the /sessions notice)."""
         scope_note = None
@@ -951,7 +976,7 @@ class GatewaySessionCommandsMixin:
             base = t("gateway.resume.no_named_sessions")
             return f"{base}\n{scope_note}" if scope_note else base
         lines = [t("gateway.resume.list_header")]
-        for idx, s in enumerate(titled[:10], start=1):
+        for idx, s in enumerate(titled[:limit], start=1):
             title = s["title"]
             if source.platform == Platform.MATRIX and allow_all:
                 origin = self._gateway_session_origin_for_id(str(s.get("id") or ""))
@@ -972,7 +997,7 @@ class GatewaySessionCommandsMixin:
         from hermes_cli.session_listing import (
             format_gateway_session_listing, parse_session_listing_args, query_session_listing)
         try:
-            include_all, include_unnamed, target, search_query = parse_session_listing_args(
+            include_all, include_unnamed, target, search_query, limit = parse_session_listing_args(
                 event.get_command_args().strip())
         except ValueError as exc:
             return t("gateway.resume.parse_error", error=exc)
@@ -997,10 +1022,10 @@ class GatewaySessionCommandsMixin:
             include_all_sources=cross_origin, include_unnamed=include_unnamed,
             search_query=search_query,
             # Search filters in SQL: over-fetch so origin-invisible matches don't consume the page.
-            limit=50 if search_query else 10, exclude_sources=["tool"])
+            limit=limit, exclude_sources=["tool"])
         if not cross_origin:
             rows = [row for row in rows if await self._resume_row_visible(source, row, allow_all=False)]
-        rows = rows[:10]
+        rows = rows[:limit]
         if search_query:
             title = t("gateway.sessions.title_matching", query=search_query)
         else:

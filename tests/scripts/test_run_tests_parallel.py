@@ -4,10 +4,8 @@ Setup
 -----
 A test in this file spawns a long-lived Python grandchild that writes
 its PID + a nonce to a tempfile, then exits without cleaning up.
-With the old ``subprocess.run`` runner, that grandchild would orphan
-and outlive the test (and the whole runner). With the current Popen +
-``start_new_session`` + ``_kill_tree`` runner, the grandchild gets
-SIGKILL'd via process-group kill when its file's pytest exits.
+The runner starts each pytest process in a new session, terminates its
+process group after pytest exits, and then reaps the pytest process.
 
 The leaker test always passes — its only job is to spawn a grandchild
 and walk away. The verifier runs the runner over the leaker file in a

@@ -49,6 +49,8 @@ import fnmatch
 import json
 import os
 import re
+import selectors
+import signal
 import shutil
 import subprocess
 import sys
@@ -402,58 +404,246 @@ def _discover_files(roots: list[Path]) -> list[Path]:
     return sorted(out)
 
 
-def _kill_tree(proc: subprocess.Popen, pgid: int | None = None) -> None:
-    """Kill the pytest subprocess and every descendant it spawned.
+class _OwnedProcessTerminationUnverified(RuntimeError):
+    def __init__(
+        self,
+        pid: int,
+        original_error: BaseException,
+        cleanup_errors: tuple[BaseException, ...] = (),
+    ) -> None:
+        self.original_error = original_error
+        self.cleanup_errors = cleanup_errors
+        super().__init__(
+            f"Could not verify termination of child {pid} and its process group"
+        )
 
-    A test run can spin up uvicorn servers, async runtimes, or other
-    long-running grandchildren that survive the pytest subprocess exit
-    if we don't kill the whole tree. ``subprocess.Popen.kill()`` only
-    targets the immediate child; grandchildren reparent to PID 1
-    (Linux) / get adopted by services.exe (Windows) and leak.
+    def retain_outputs(self, path: str) -> None:
+        self.args = (f"{self.args[0]}; temporary outputs retained at {path}",)
 
-    POSIX: the caller must pass ``pgid`` — the process group id captured
-    immediately after Popen (via ``os.getpgid(proc.pid)``). We can't
-    look it up here in the happy path because by the time we get
-    called the leader process has already been reaped and its pid is
-    gone from the kernel's process table, even though descendants in
-    the group are still alive. SIGKILL'ing the captured pgid takes out
-    everything in that group atomically.
 
-    Windows: ``taskkill /F /T /PID`` walks the recorded ppid chain and
-    terminates the whole tree, even when the root has already exited.
+def _darwin_group_is_dead(pgid: int) -> bool:
+    import ctypes
+    import struct
 
-    Why not psutil: psutil walks the parent-child tree, but in the
-    happy path the root has already been reaped so ``psutil.Process(pid)``
-    can't find it; grandchildren reparented to PID 1 are also
-    unreachable by tree walk at that point. The platform-native
-    primitives (process groups / taskkill) handle both cases correctly
-    without an extra abstraction layer.
-    """
+    lib = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+    lib.proc_listpids.argtypes = [
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+        ctypes.c_int,
+    ]
+    lib.proc_listpids.restype = ctypes.c_int
+    lib.proc_pidinfo.argtypes = [
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_uint64,
+        ctypes.c_void_p,
+        ctypes.c_int,
+    ]
+    lib.proc_pidinfo.restype = ctypes.c_int
+
+    def members() -> tuple[int, ...] | None:
+        ctypes.set_errno(0)
+        size = lib.proc_listpids(2, pgid, None, 0)
+        if size <= 0 or size % ctypes.sizeof(ctypes.c_int):
+            return None
+        buffer = (ctypes.c_int * (size // ctypes.sizeof(ctypes.c_int)))()
+        ctypes.set_errno(0)
+        count = lib.proc_listpids(2, pgid, buffer, size)
+        if count <= 0 or count >= size or count % ctypes.sizeof(ctypes.c_int):
+            return None
+        pids = tuple(sorted(buffer[: count // ctypes.sizeof(ctypes.c_int)]))
+        if pgid not in pids or any(pid <= 0 for pid in pids):
+            return None
+        return pids
+
+    def exited_identity(pid: int) -> tuple[int, int] | None:
+        # Darwin requires the complete proc_bsdinfo buffer, including unused fields.
+        info = ctypes.create_string_buffer(136)
+        if lib.proc_pidinfo(pid, 3, 1, info, ctypes.sizeof(info)) != ctypes.sizeof(
+            info
+        ):
+            return None
+        status = struct.unpack_from("=I", info.raw, 4)[0]
+        actual_pid = struct.unpack_from("=I", info.raw, 12)[0]
+        actual_pgid = struct.unpack_from("=I", info.raw, 100)[0]
+        if (actual_pid, actual_pgid, status) != (pid, pgid, 5):
+            return None
+        return struct.unpack_from("=QQ", info.raw, 120)
+
+    pids = members()
+    if pids is None:
+        return False
+    identities = {pid: exited_identity(pid) for pid in pids}
+    if any(identity is None for identity in identities.values()):
+        return False
+    if members() != pids:
+        return False
+    return all(exited_identity(pid) == identity for pid, identity in identities.items())
+
+
+def _communicate_owned_posix(
+    proc: subprocess.Popen[str], timeout: float
+) -> tuple[str, int]:
+    from io import TextIOWrapper
+
+    stdout = proc.stdout
+    assert isinstance(stdout, TextIOWrapper)
+    encoding = stdout.encoding
+    errors = stdout.errors
+    assert errors is not None
+    chunks: list[bytes] = []
+    group_cleanup_attempted = False
+    group_cleanup_complete = False
+    identity_reserved = True
+    deadline = time.monotonic() + timeout
+    cleanup_deadline: float | None = None
+    expired = False
+    output_drained = False
+    observed_code: int | None = None
+
+    def cleanup_group() -> None:
+        nonlocal group_cleanup_attempted, group_cleanup_complete, cleanup_deadline
+        if group_cleanup_attempted or not identity_reserved:
+            return
+
+        group_cleanup_attempted = True
+        cleanup_deadline = time.monotonic() + 10
+        kill_group = getattr(os, "killpg", None)
+        kill_signal = getattr(signal, "SIGKILL", None)
+        if kill_group is None or kill_signal is None:
+            raise RuntimeError("The file runner requires POSIX process-group signals")
+        try:
+            kill_group(proc.pid, kill_signal)
+        except ProcessLookupError:
+            pass
+        except PermissionError:
+            if sys.platform != "darwin" or not _darwin_group_is_dead(proc.pid):
+                raise
+        group_cleanup_complete = True
+
+    def collect() -> None:
+        nonlocal identity_reserved, observed_code, expired, output_drained
+        with selectors.DefaultSelector() as selector:
+            selector.register(stdout, selectors.EVENT_READ)
+            while selector.get_map() or observed_code is None:
+                if observed_code is None:
+                    try:
+                        state = os.waitid(
+                            os.P_PID, proc.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT
+                        )
+                    except ChildProcessError:
+                        identity_reserved = False
+                        raise
+                    if state is not None and state.si_pid:
+                        assert state.si_pid == proc.pid
+                        if state.si_code == os.CLD_EXITED:
+                            observed_code = state.si_status
+                        elif state.si_code in (os.CLD_KILLED, os.CLD_DUMPED):
+                            observed_code = -state.si_status
+                        else:
+                            raise RuntimeError("Unexpected child exit observation")
+                        cleanup_group()
+
+                now = time.monotonic()
+                if cleanup_deadline is None and now >= deadline:
+                    expired = True
+                    cleanup_group()
+                if cleanup_deadline is not None and now >= cleanup_deadline:
+                    raise subprocess.TimeoutExpired(proc.args, timeout)
+
+                remaining = (
+                    cleanup_deadline if cleanup_deadline is not None else deadline
+                ) - time.monotonic()
+                if not selector.get_map():
+                    time.sleep(min(0.05, max(0, remaining)))
+                    continue
+
+                for key, _ in selector.select(min(0.05, max(0, remaining))):
+                    chunk = os.read(key.fd, 32768)
+                    if chunk:
+                        chunks.append(chunk)
+                        continue
+                    output_drained = True
+                    selector.unregister(key.fileobj)
+
+    def finish(failure: BaseException | None) -> int:
+        nonlocal identity_reserved
+        if not identity_reserved:
+            assert failure is not None
+            raise _OwnedProcessTerminationUnverified(proc.pid, failure) from failure
+
+        previous_exception = sys.exception()
+        try:
+            cleanup_group()
+        finally:
+            cleanup_error = sys.exception()
+            cleanup_errors = (
+                (cleanup_error,)
+                if cleanup_error is not None and cleanup_error is not previous_exception
+                else ()
+            )
+            original_error = (
+                failure
+                if failure is not None
+                else (cleanup_errors[0] if cleanup_errors else None)
+            )
+            assert cleanup_deadline is not None
+            try:
+                code = proc.wait(timeout=max(0, cleanup_deadline - time.monotonic()))
+            except BaseException as wait_error:
+                raise _OwnedProcessTerminationUnverified(
+                    proc.pid,
+                    original_error if original_error is not None else wait_error,
+                    (*cleanup_errors, wait_error),
+                ) from wait_error
+            identity_reserved = False
+
+            if not group_cleanup_complete or (
+                isinstance(failure, subprocess.TimeoutExpired) and not output_drained
+            ):
+                assert original_error is not None
+                raise _OwnedProcessTerminationUnverified(
+                    proc.pid, original_error, cleanup_errors
+                ) from original_error
+        return code
+
+    try:
+        try:
+            collect()
+        except BaseException as failure:
+            finish(failure)
+            raise
+        code = finish(None)
+        if code != observed_code:
+            raise RuntimeError("Child exit changed between observation and reap")
+    finally:
+        stdout.close()
+
+    output = (
+        b""
+        .join(chunks)
+        .decode(encoding, errors)
+        .replace("\r\n", "\n")
+        .replace("\r", "\n")
+    )
+    if expired:
+        return f"({timeout:.0f}s exceeded; process tree SIGKILL'd)\n{output}", 124
+    return output, code
+
+
+def _kill_windows_tree(proc: "subprocess.Popen") -> None:
     if proc.pid is None:
         return
-
-    if sys.platform == "win32":
-        try:
-            
-            subprocess.run(
-                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=10,
-            )  # windows-footgun: ok
-        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-            pass
-    else:
-        # POSIX: kill the captured pgid. Local-import signal so the
-        # SIGKILL attribute is never referenced on Windows.
-        if pgid is not None:
-            try:
-                import signal as _signal
-                os.killpg(pgid, _signal.SIGKILL)  # windows-footgun: ok
-            except (ProcessLookupError, PermissionError, OSError):
-                pass
-
-    # Belt-and-suspenders: ensure subprocess.communicate() sees the exit.
+    try:
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=10,
+        )  # windows-footgun: ok
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        pass
     try:
         proc.kill()
     except (ProcessLookupError, OSError):
@@ -647,6 +837,10 @@ def _run_one_file_once(
     env["TMPDIR"] = temproot
 
     subproc_start = time.monotonic()
+    if sys.platform != "win32" and signal.getsignal(signal.SIGCHLD) != signal.SIG_DFL:
+        _rmtree_force(temproot)
+        raise RuntimeError("The file runner requires exclusive child reaping")
+
     # launch the pytest process
     proc = subprocess.Popen(
         cmd,
@@ -655,56 +849,52 @@ def _run_one_file_once(
         stderr=subprocess.STDOUT,
         text=True, encoding="utf-8", errors="replace",
         env=env,
-        # POSIX: place the child at the head of its own process group so
-        # _kill_tree can SIGKILL the group atomically.
-        # Windows: this maps to CREATE_NEW_PROCESS_GROUP in CPython 3.12+;
-        # _kill_tree handles the Windows path via taskkill /F /T.
         start_new_session=True,
     )
 
-    # Capture the pgid NOW, before the leader can exit and be reaped. Once
-    # the leader is reaped, os.getpgid(proc.pid) raises ProcessLookupError
-    # even though grandchildren in that group are still alive — defeating
-    # the whole cleanup. None on Windows where the pgid concept doesn't apply.
-    pgid: int | None = None
-    if sys.platform != "win32":
-        try:
-            pgid = os.getpgid(proc.pid)
-        except (ProcessLookupError, PermissionError):
-            pgid = None
-
+    remove_temproot = True
     try:
-        output, _ = proc.communicate(timeout=file_timeout)
-        rc = proc.returncode
-    except subprocess.TimeoutExpired:
-        _kill_tree(proc, pgid=pgid)
-        try:
-            output, _ = proc.communicate(timeout=10)
-        except subprocess.TimeoutExpired:
-            output = "(file timeout exceeded; output unavailable)"
-        rc = 124  # de facto convention for "killed by timeout".
-        output = (
-            f"({file_timeout:.0f}s exceeded; "
-            f"process tree SIGKILL'd)\n{output}"
-        )
-    except BaseException:
-        # KeyboardInterrupt / runner crash — make sure no zombie
-        # grandchildren outlive us.
-        _kill_tree(proc, pgid=pgid)
+        if sys.platform != "win32":
+            try:
+                output, rc = _communicate_owned_posix(proc, file_timeout)
+            except subprocess.TimeoutExpired:
+                output = f"({file_timeout:.0f}s exceeded; output unavailable after group cleanup)"
+                rc = 124
+            else:
+                output += "\n"
+        else:
+            try:
+                output, _ = proc.communicate(timeout=file_timeout)
+                rc = proc.returncode
+            except subprocess.TimeoutExpired:
+                _kill_windows_tree(proc)
+                try:
+                    output, _ = proc.communicate(timeout=10)
+                except subprocess.TimeoutExpired:
+                    output = "(file timeout exceeded; output unavailable)"
+                rc = 124
+                output = (
+                    f"({file_timeout:.0f}s exceeded; "
+                    f"process tree SIGKILL'd)\n{output}"
+                )
+            except BaseException:
+                _kill_windows_tree(proc)
+                raise
+            else:
+                _kill_windows_tree(proc)
+                output += "\n"
+    except _OwnedProcessTerminationUnverified as exc:
+        remove_temproot = False
+        exc.retain_outputs(temproot)
         raise
-    else:
-        # Happy path: pytest exited on its own. Kill the group anyway in
-        # case it left grandchildren behind; already-dead is a no-op.
-        _kill_tree(proc, pgid=pgid)
-
-        output +=  "\n"
     finally:
         _kill_detached_leftovers(temproot)
         # Delete the temp root for this attempt. Nothing reads it after the
         # subprocess exits. More than 3000 of them fill the disk of the
         # runner over one suite. Permission fixtures leave read-only dirs
         # behind; make them writable and retry instead of skipping them.
-        _rmtree_force(temproot)
+        if remove_temproot:
+            _rmtree_force(temproot)
 
     if rc not in (0, 5) and not output.strip():
         output = f"pytest child exited {rc} (0x{rc & 0xffffffff:08x}) with no output: {file}\n"

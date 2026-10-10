@@ -33,7 +33,9 @@ def envelope_tool_part_cache_markers_supported(provider: str | None, base_url: s
 
 
 def _text_part(text: str, cache_marker: dict | None = None) -> dict:
-    part: dict = {"type": "text", "text": text}
+    # Plain str on the wire: the static prefix may arrive as a str subclass carrying its
+    # stable boundary, and that attribute must never leak into request payloads.
+    part: dict = {"type": "text", "text": str(text)}
     if cache_marker is not None:
         part["cache_control"] = cache_marker
     return part
@@ -163,6 +165,7 @@ def effective_cache_ttl(ttl: str | None, *, model: str = "", provider: str = "")
 def _apply_system_cache_markers(
     message: dict, cache_marker: dict, static_system_prefix: str | None, *,
     native_anthropic: bool, mark_suffix: bool = True, fallback_to_whole: bool = True,
+    stable_system_prefix: str | None = None,
 ) -> int:
     """Mark the static system prefix (and optionally the full prompt); returns markers applied.
 
@@ -173,6 +176,25 @@ def _apply_system_cache_markers(
     """
     content = message.get("content")
     if isinstance(static_system_prefix, str) and static_system_prefix and isinstance(content, str) and content.startswith(static_system_prefix):
+        if (
+            isinstance(stable_system_prefix, str)
+            and stable_system_prefix
+            and stable_system_prefix != static_system_prefix
+            and static_system_prefix.startswith(stable_system_prefix)
+        ):
+            context_head = content[len(stable_system_prefix):len(static_system_prefix)]
+            suffix = content[len(static_system_prefix):]
+            if context_head.strip():
+                # Three blocks, two markers: stable (cross-session hit, #70990) and context head
+                # (byte-stable across compaction). The volatile suffix is never marked here so
+                # the system side spends the same two breakpoints as the two-part split and the
+                # transcript keeps its two; the suffix is rewritten on compaction by design.
+                message["content"] = [
+                    _text_part(stable_system_prefix, cache_marker),
+                    _text_part(context_head, cache_marker),
+                    *([_text_part(suffix)] if suffix.strip() else []),
+                ]
+                return 2
         suffix = content[len(static_system_prefix):]
         if suffix.strip():
             message["content"] = [_text_part(static_system_prefix, cache_marker),
@@ -193,7 +215,7 @@ def strip_anthropic_cache_control(api_messages: list[dict[str, Any]]) -> list[di
 
     Used before re-decorating after a mid-turn failover. Flattening to a string is restricted
     to the exact shapes :func:`apply_anthropic_cache_control` produces from string content
-    (single text part, two-part system split, two-part skill split) so the ``""``-join is
+    (single text part, two- or three-part system split, two-part skill split) so the ``""``-join is
     byte-exact. Marker removal is copy-on-write on part dicts: parts can alias caller-held
     lists and stripping must never rewrite the stored transcript.
     """
@@ -224,7 +246,7 @@ def strip_anthropic_cache_control(api_messages: list[dict[str, Any]]) -> list[di
         # An UNMARKED split (outside the marker window) only the registry tells from a genuine
         # two-part user message.
         skill_split = first_part_marked or (user_pair and find_stable_prefix(joined) == content[0]["text"])
-        if len(content) == 1 or (role == "system" and len(content) == 2) or skill_split:
+        if len(content) == 1 or (role == "system" and len(content) in (2, 3)) or skill_split:
             msg["content"] = joined
     return api_messages
 
@@ -313,13 +335,23 @@ def build_prompt_cache_plan(
     messages = _strip_prior_decoration(list(api_messages or []))
     marker = _build_marker(cache_ttl)
     if messages and isinstance(messages[0], dict) and messages[0].get("role") == "system":
-        # Tool-cache layout: only the static prefix carries a system-side marker; the
-        # volatile suffix's budget is spent on the tools array.
+        # Preserve mainline copy-on-write request planning while carrying the PR's
+        # stable/context split into the direct-native cache layout.
         messages[0] = copy.deepcopy(messages[0])
-        _apply_system_cache_markers(messages[0], marker, static_system_prefix,
-                                    native_anthropic=True, mark_suffix=False, fallback_to_whole=False)
-    planned_tools[-1]["cache_control"] = dict(marker)
-    for endpoint in _completed_transaction_endpoint_indexes(messages, native_anthropic=True)[-2:]:
+        system_markers = _apply_system_cache_markers(
+            messages[0], marker, static_system_prefix,
+            native_anthropic=True, mark_suffix=False, fallback_to_whole=False,
+            stable_system_prefix=getattr(static_system_prefix, "stable_prefix", None),
+        )
+    else:
+        system_markers = 0
+    # A two-tier system layout already pins the tools array in Anthropic's ordered
+    # prefix. Spending another marker there would leave only one completed-turn
+    # endpoint and lose the shared endpoint on tool-heavy consecutive turns.
+    if system_markers < 2:
+        planned_tools[-1]["cache_control"] = dict(marker)
+    transaction_budget = 3 - system_markers if system_markers < 2 else 2
+    for endpoint in _completed_transaction_endpoint_indexes(messages, native_anthropic=True)[-transaction_budget:]:
         messages[endpoint] = copy.deepcopy(messages[endpoint])
         _apply_cache_marker(messages[endpoint], marker, native_anthropic=True)
     _split_unmarked_scaffolds(messages)
@@ -349,8 +381,9 @@ def apply_anthropic_cache_control(
     breakpoints_used = 0
     if messages[0].get("role") == "system":
         messages[0] = copy.deepcopy(messages[0])
-        breakpoints_used = _apply_system_cache_markers(messages[0], marker, static_system_prefix,
-                                                       native_anthropic=native_anthropic)
+        breakpoints_used = _apply_system_cache_markers(
+            messages[0], marker, static_system_prefix, native_anthropic=native_anthropic,
+            stable_system_prefix=getattr(static_system_prefix, "stable_prefix", None))
 
     non_sys = [i for i, m in enumerate(messages) if m.get("role") != "system"
                and _can_carry_marker(m, native_anthropic=native_anthropic, tool_part_markers=tool_part_markers)]

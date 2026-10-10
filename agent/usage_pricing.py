@@ -532,15 +532,19 @@ def _pricing_entry_from_metadata(
 
 
 
+def direct_first_party_origin(provider: Optional[str], base_url: Optional[str]) -> bool:
+    """HTTPS:443 to ``_MODELS_DEV_DIRECT_HOSTS[provider]`` (or empty base_url, the provider default)."""
+    domain = _MODELS_DEV_DIRECT_HOSTS.get((provider or "").strip().lower())
+    if not domain or not (base_url or "").strip():
+        return bool(domain)
+    scheme, host, port = base_url_origin(base_url or "")
+    return (scheme, port) == ("https", 443) and (host == domain or host.endswith("." + domain))
+
+
 def _models_dev_pricing_entry(route: BillingRoute) -> Optional[PricingEntry]:
     """models.dev list price for a direct first-party route (see ``_MODELS_DEV_DIRECT_HOSTS``)."""
-    domain = _MODELS_DEV_DIRECT_HOSTS.get(route.provider)
-    if not domain or not route.model:
+    if not route.model or not direct_first_party_origin(route.provider, route.base_url):
         return None
-    if route.base_url:
-        scheme, host, port = base_url_origin(route.base_url)
-        if (scheme, port) != ("https", 443) or not (host == domain or host.endswith("." + domain)):
-            return None
     from agent.models_dev import get_model_info
 
     model_info = get_model_info(route.provider, route.model)
@@ -673,7 +677,7 @@ def estimate_usage_cost(
 ) -> CostResult:
     from providers import get_provider_profile
     profile = get_provider_profile(provider or '')
-    reported = profile.get_usage_cost(model_name, usage) if profile else None
+    reported = profile.get_usage_cost(model_name, usage, base_url=base_url) if profile else None
     if reported is not None:
         return reported
     route = resolve_billing_route(model_name, provider=provider, base_url=base_url)

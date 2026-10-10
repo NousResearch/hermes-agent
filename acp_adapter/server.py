@@ -35,7 +35,7 @@ from acp_adapter.events import (
 from acp_adapter.model_catalog import build_model_state, encode_model_choice
 from acp_adapter.permissions import make_approval_callback
 from acp_adapter.provenance import session_provenance_meta
-from acp_adapter.session import SessionManager, SessionState, _expand_acp_enabled_toolsets
+from acp_adapter.session import SessionManager, SessionState, _expand_acp_enabled_toolsets, apply_reasoning_effort
 from acp_adapter.tools import build_tool_complete, build_tool_start, coerce_tool_args
 from agent.context_compressor import (COMPRESSED_SUMMARY_METADATA_KEY, ContextCompressor)
 from agent.interrupt_compat import request_hard_interrupt
@@ -400,7 +400,10 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         )
         # Assign only after the rebuild succeeded so a failed switch leaves the session on its
         # working model instead of a model/agent mismatch that persists via save_session.
-        state.agent, state.model = agent, new_model
+        # Under runtime_lock so an effort change racing the rebuild lands on the new agent.
+        with state.runtime_lock:
+            apply_reasoning_effort(agent, state.reasoning_effort)
+            state.agent, state.model = agent, new_model
         self.session_manager.save_session(state.session_id)
         from hermes_cli.observability.shared_metrics_events import record_model_switch
 
@@ -1128,7 +1131,9 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
 
         ``model`` goes through ``_switch_model`` (the same path as the dashboard picker), and
         ``reasoning_effort`` writes ``agent.reasoning_config`` — the field every transport reads
-        and ``SessionManager._make_agent`` seeds from config."""
+        and ``SessionManager._make_agent`` seeds from config — and records the level on the
+        session so it is persisted and survives restore and model switches. It applies from the
+        next model request, so it does not need the model switch's idle-only exclusion."""
         state = await asyncio.to_thread(self.session_manager.get_session, session_id)
         if state is None:
             logger.warning("Session %s: config update requested for missing session", session_id)
@@ -1143,7 +1148,9 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             parsed = parse_reasoning_effort(str(value))
             if parsed is None:
                 raise acp.RequestError.invalid_params({"details": f"Unknown reasoning effort '{value}'"})
-            state.agent.reasoning_config = parsed
+            with state.runtime_lock:
+                state.reasoning_effort = "none" if parsed.get("enabled") is False else parsed["effort"]
+                state.agent.reasoning_config = parsed
         elif config_id == self._MODEL_CONFIG_ID:
             # Same exclusion + off-loop switch as ``session/set_model``: the picker swaps the
             # agent wholesale, so it must not race a running turn.

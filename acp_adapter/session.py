@@ -117,6 +117,17 @@ def _parse_model_config(mc: Any) -> dict:
     return meta if isinstance(meta, dict) else {}
 
 
+def apply_reasoning_effort(agent: Any, effort: str | None) -> None:
+    """Pin an explicit session effort onto ``agent.reasoning_config``; no-op for ``None``/unknown."""
+    if not effort:
+        return
+    from hermes_constants import parse_reasoning_effort
+
+    parsed = parse_reasoning_effort(effort)
+    if parsed is not None:
+        agent.reasoning_config = parsed
+
+
 def _session_info(sid: str, cwd: str, model: Any, history_len: int, title: Any, preview: Any,
                   updated_at: Any) -> dict[str, Any]:
     return {"session_id": sid, "cwd": cwd, "model": model, "history_len": history_len,
@@ -151,6 +162,10 @@ class SessionState:
     # Per-session allocator for ACP assistant messageIds (lazily created by
     # the server so streamed chunks group into distinct assistant replies).
     message_ids: Any = None
+    # Explicit reasoning effort picked via ``session/set_config_option`` (an ``EFFORT_LADDER``
+    # level or ``"none"``); ``None`` follows config. Persisted in model_config and re-applied
+    # by ``apply_reasoning_effort`` whenever the agent is rebuilt (restore, fork, model switch).
+    reasoning_effort: str | None = None
 
 
 class SessionManager:
@@ -203,7 +218,8 @@ class SessionManager:
         new_id = str(uuid.uuid4())
         agent = self._make_agent(session_id=new_id, cwd=cwd, model=original.model or None)
         model = getattr(agent, "model", original.model) or original.model
-        state = self._install_state(new_id, agent, cwd, model, copy.deepcopy(original.history))
+        state = self._install_state(new_id, agent, cwd, model, copy.deepcopy(original.history),
+                                    reasoning_effort=original.reasoning_effort)
         logger.info("Forked ACP session %s -> %s", session_id, new_id)
         return state
 
@@ -304,10 +320,13 @@ class SessionManager:
     # ---- persistence via SessionDB ------------------------------------------
 
     def _install_state(self, session_id: str, agent: Any, cwd: str, model: str,
-                       history: list[dict[str, Any]], *, persist: bool = True) -> SessionState:
+                       history: list[dict[str, Any]], *, persist: bool = True,
+                       reasoning_effort: str | None = None) -> SessionState:
         """Build a SessionState, register it in memory, bind its cwd for tools, optionally persist."""
+        apply_reasoning_effort(agent, reasoning_effort)
         state = SessionState(session_id=session_id, agent=agent, cwd=cwd, model=model,
-                             history=history, cancel_event=threading.Event())
+                             history=history, cancel_event=threading.Event(),
+                             reasoning_effort=reasoning_effort)
         with self._lock:
             self._sessions[session_id] = state
         _register_task_cwd(session_id, cwd)
@@ -352,6 +371,8 @@ class SessionManager:
             value = getattr(state.agent, key, None)
             if isinstance(value, str) and value.strip():
                 session_meta[key] = value.strip()
+        if state.reasoning_effort:
+            session_meta["reasoning_effort"] = state.reasoning_effort
 
         try:
             if db.get_session(state.session_id) is None:
@@ -484,8 +505,10 @@ class SessionManager:
         except Exception:
             logger.warning("Failed to recreate agent for ACP session %s", session_id, exc_info=True)
             return None
+        effort = meta.get("reasoning_effort")
         state = self._install_state(session_id, agent, cwd, model or getattr(agent, "model", "") or "",
-                                    history, persist=False)
+                                    history, persist=False,
+                                    reasoning_effort=effort if isinstance(effort, str) and effort else None)
         logger.info("Restored ACP session %s from DB (%d messages)", session_id, len(history))
         return state
 

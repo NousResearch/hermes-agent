@@ -1361,6 +1361,7 @@ def _current_session_platform_hint() -> str:
 def build_skills_system_prompt(
     available_tools: set[str] | None = None, available_toolsets: set[str] | None = None,
     compact_categories: frozenset[str] | None = None, skills_dir_override: Path | None = None,
+    bound_skills: list[str] | None = None,
 ) -> str:
     """Compact skill index for the system prompt.
 
@@ -1383,7 +1384,7 @@ def build_skills_system_prompt(
         if not skills_dir.exists() and not extra_roots:
             return ""
         return _build_skills_system_prompt_inner(
-            skills_dir, extra_roots, available_tools, available_toolsets, compact_categories)
+            skills_dir, extra_roots, available_tools, available_toolsets, compact_categories, bound_skills=bound_skills)
     finally:
         if _home_token is not None:
             reset_hermes_home_override(_home_token)
@@ -1503,10 +1504,19 @@ def _oneshot_prompt_variant() -> bool:
 def _build_skills_system_prompt_inner(
     skills_dir: Path, extra_roots: list[tuple[int, Path]], available_tools: set[str] | None,
     available_toolsets: set[str] | None, compact_categories: frozenset[str] | None,
+    bound_skills: list[str] | None = None,
 ) -> str:
     # The resolved platform is part of the key: per-platform disabled-skill lists need distinct cache entries.
     _platform_hint = _current_session_platform_hint()
     disabled = get_disabled_skill_names(_platform_hint or None)
+    # Scope the index to an explicit skill allow-list (cron jobs with
+    # ``skills=[...]``). ``None`` = unrestricted (show everything); a list
+    # (even empty) activates filtering. Keep None and [] DISTINCT in both the
+    # filter and the cache key: ``None`` means "no scoping" while ``[]`` means
+    # "scope to nothing", and collapsing them would let an unrestricted prompt
+    # and a scope-to-nothing prompt collide on one cache entry.
+    bound_set = None if bound_skills is None else set(bound_skills)
+    _bound_cache_key = None if bound_skills is None else tuple(sorted(bound_set))
     # Plugin-registered skills (ctx.register_skill) are registry state, not files under any scanned
     # root — the snapshot manifest can't see them change, so they participate in the cache key.
     plugin_rows = _plugin_skill_prompt_rows(disabled, available_tools, available_toolsets, _platform_hint or None)
@@ -1521,7 +1531,7 @@ def _build_skills_system_prompt_inner(
         tuple(sorted(str(t) for t in (available_tools or set()))),
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
         _platform_hint, tuple(sorted(disabled)), tuple(sorted(compact_categories or ())),
-        _oneshot_prompt_variant(), tuple(plugin_rows),
+        _oneshot_prompt_variant(), tuple(plugin_rows), _bound_cache_key,
     )
     snapshot = _load_skills_snapshot(skills_dir, manifest)
     app_gated = snapshot is not None and any(
@@ -1533,9 +1543,10 @@ def _build_skills_system_prompt_inner(
             _SKILLS_PROMPT_CACHE.move_to_end(cache_key)
             return cached
 
-    def hides(skill_name: str, conditions: dict) -> bool:
+    def hides(frontmatter_name: str, skill_name: str, conditions: dict) -> bool:
         """Per-build visibility rule shared by every skill source (snapshot, scan, project, external)."""
         return (skill_name in disabled
+                or (bound_set is not None and frontmatter_name not in bound_set and skill_name not in bound_set)
                 or not _skill_should_show(conditions, available_tools, available_toolsets, _platform_hint or None))
 
     skills_by_category: dict[str, list[tuple[str, str]]] = {}
@@ -1567,7 +1578,7 @@ def _build_skills_system_prompt_inner(
             category_descriptions.setdefault(cat, cat_desc)
     resolved = resolve_skill_catalog([
         {**entry, "name": _entry_name(entry), "path": entry["root"] / entry["rel"],
-         "visible": ok and not hides(entry.get("skill_name") or "", entry.get("conditions") or {})}
+         "visible": ok and not hides(_entry_name(entry), entry.get("skill_name") or "", entry.get("conditions") or {})}
         for entry, ok in rows])
     visible_entries = [e for e in resolved
                        if e["visible"] and e["status"] != "shadowed" and not is_disabled_entry(e, disabled)]

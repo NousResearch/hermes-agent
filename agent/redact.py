@@ -259,11 +259,15 @@ _ENV_LOOKUP_VALUE_RE = re.compile(r"^(?:os\.(?:getenv|environ)|process\.env|\$EN
 # NOTE(perf): possessive quantifiers (nested ``(?:[...]+\.)+`` backtracked
 # exponentially); the ``*`` runs bordering {_SECRET_CFG_NAMES} must stay
 # backtrackable (``app.api.key=``). The lookbehind anchors each attempt to a key
-# run start so re.sub is not quadratic; the match set is unchanged.
+# run start so re.sub is not quadratic; the match set is unchanged. The key is
+# always the whole run up to ``=``, so the possessive lookahead rejects a run
+# that does not end in ``=`` in one pass (a keyword-dense run with no ``=`` used
+# to backtrack cubically: 14 KB took ~60 s), and the second branch only needs
+# the earliest keyword, so it is taken atomically instead of retrying each one.
 _CFG_DOTTED_RE = re.compile(
-    rf"(?<![A-Za-z0-9_.\-])"
+    rf"(?<![A-Za-z0-9_.\-])(?=[A-Za-z0-9_.\-]*+=)"
     rf"([A-Za-z0-9_\-]++\.[A-Za-z0-9_.\-]*{_SECRET_CFG_NAMES}[A-Za-z0-9_.\-]*+"
-    rf"|[A-Za-z0-9_.\-]*{_SECRET_CFG_NAMES}[A-Za-z0-9_.\-]*\.[A-Za-z0-9_.\-]++)"
+    rf"|(?>[A-Za-z0-9_.\-]*?{_SECRET_CFG_NAMES})[A-Za-z0-9_.\-]*\.[A-Za-z0-9_.\-]++)"
     rf"={_CFG_VALUE}",
     re.IGNORECASE,
 )

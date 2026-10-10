@@ -19,6 +19,8 @@ const { isDesktopFsRemoteMode, notifyError, openPreview } = vi.hoisted(() => ({
 
 vi.mock('@/lib/desktop-fs', () => ({
   isDesktopFsRemoteMode,
+  isSessionWorkspaceOrigin: (origin?: { fileScope?: string; sessionId?: string } | null) =>
+    Boolean(origin && origin.fileScope !== 'host' && (origin.fileScope === 'session' || origin.sessionId)),
   readDesktopDir: vi.fn(),
   readDesktopFileDataUrl: vi.fn(),
   readDesktopFileText: vi.fn()
@@ -152,5 +154,24 @@ describe('PreviewAttachment local target classification (#101683)', () => {
 
     expect(notifyError).toHaveBeenCalled()
     expect(openPreview).not.toHaveBeenCalled()
+  })
+
+  it('opens a session-workspace file that is absent on the host', async () => {
+    const { $selectedStoredSessionId } = await import('@/store/session')
+    $selectedStoredSessionId.set('delivery-smoke')
+    mountDesktopStub(() => fileTarget('/workspace/report.md', 'missing'))
+
+    render(<PreviewAttachment target="/workspace/report.md" />)
+
+    const preview = await screen.findByRole('button', { name: 'Open preview' })
+    expect(screen.queryByRole('button', { name: 'Preview unavailable' })).toBeNull()
+
+    await act(async () => {
+      fireEvent.click(preview)
+    })
+
+    expect(notifyError).not.toHaveBeenCalled()
+    expect(openPreview).toHaveBeenCalled()
+    $selectedStoredSessionId.set(null)
   })
 })

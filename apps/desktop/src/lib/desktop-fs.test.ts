@@ -10,6 +10,7 @@ import {
   DesktopFileMissingError,
   desktopFsCacheKey,
   desktopGitRoot,
+  isSessionWorkspaceOrigin,
   readDesktopDir,
   readDesktopFileDataUrl,
   readDesktopFileDataUrlLocalFirst,
@@ -372,5 +373,15 @@ describe('desktop filesystem facade', () => {
     })
 
     await expect(readDesktopFileText('/gone.txt')).rejects.toBeInstanceOf(DesktopFileMissingError)
+  })
+
+  it('treats session and backend origins as workspace files and host origins as host paths', () => {
+    expect(isSessionWorkspaceOrigin({ sessionId: 'delivery-smoke', connectionId: 'local' } as never)).toBe(true)
+    expect(isSessionWorkspaceOrigin({ fileScope: 'session', profile: 'docker' } as never)).toBe(true)
+    expect(isSessionWorkspaceOrigin({ fileScope: 'host' })).toBe(false)
+    expect(isSessionWorkspaceOrigin({ fileScope: 'host', sessionId: 'delivery-smoke' })).toBe(false)
+    expect(isSessionWorkspaceOrigin({ profile: 'docker' } as never)).toBe(false)
+    expect(isSessionWorkspaceOrigin(undefined)).toBe(false)
+    expect(isSessionWorkspaceOrigin(null)).toBe(false)
   })
 })

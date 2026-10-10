@@ -1091,6 +1091,30 @@ class TestCustomProviderCompatibility:
         # custom_providers removed by migration — runtime reads via compat layer
         assert "custom_providers" not in raw
 
+    def test_converted_legacy_entry_resolves_to_the_same_runtime(self, tmp_path):
+        """The v12 conversion (migration and the dashboard's activate) must carry every field the
+        runtime reads from a legacy row; ``capabilities`` gates native compaction."""
+        from hermes_cli.config import migrate_config
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(yaml.safe_dump({
+            "model": {"provider": "custom:my-proxy", "default": "gpt-5.5"},
+            "custom_providers": [{
+                "name": "My Proxy", "base_url": "http://127.0.0.1:9/v1", "api_key": "fake-key",
+                "model": "gpt-5.5", "capabilities": {"openai_native_compaction": True}}],
+        }), encoding="utf-8")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            before = resolve_runtime_provider(requested="custom:my-proxy")
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+            after = resolve_runtime_provider(requested="custom:my-proxy")
+
+        assert "custom_providers" not in raw and "my-proxy" in raw["providers"]
+        assert before["capabilities"] == {"openai_native_compaction": True}
+        assert after.get("capabilities") == before["capabilities"]
+
     def test_v11_upgrade_preserves_custom_provider_model_metadata(self, tmp_path):
         config_path = tmp_path / "config.yaml"
         model_map = {

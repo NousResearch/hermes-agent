@@ -111,6 +111,26 @@ class TestNousProfile:
         assert "tags" in body
 
 
+class TestOpenRouterPreset:
+
+    def test_preset_id_keeps_its_server_side_pin_and_ignores_routing_prefs(self):
+        """An ``@preset/<slug>`` model id is a FULL user-authored pin, resolved server-side by
+        OpenRouter (its own ``provider.only``/``allow_fallbacks``). Hermes must not also send a
+        request-level ``provider`` body there: OpenRouter gives that body precedence over the
+        preset's policy, so a leftover ``provider_routing`` block (e.g. ``data_collection:
+        deny``, which excludes the preset's pinned data-collecting endpoint) silently reroutes
+        the request off the pin — the control plane still reads back "correct" (#94589)."""
+        p = get_provider_profile("openrouter")
+        prefs = {"require_parameters": True, "data_collection": "deny"}
+        for model in ("@preset/hermes-primary", "deepseek/deepseek-v4-pro@preset/hermes-primary"):
+            body = p.build_extra_body(model=model, provider_preferences=prefs)
+            assert "provider" not in body, model
+        # Without the conflict there is nothing to suppress: a plain slug still routes.
+        assert p.build_extra_body(model="openai/gpt-5.6-sol", provider_preferences=prefs)["provider"] == prefs
+        # A preset with no prefs configured sends no body either way.
+        assert "provider" not in p.build_extra_body(model="@preset/hermes-primary")
+
+
 class TestQwenProfile:
 
     def test_prepare_messages_protects_nested_image_url_retry_mutation(self):

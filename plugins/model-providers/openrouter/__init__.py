@@ -7,6 +7,7 @@ from agent.portal_tags import get_affinity_scope, get_conversation_context
 from agent.prompt_cache_scope import GROK_AGGREGATOR_MODEL_PREFIXES, is_fork_cache_scope
 from agent.reasoning_effort import codex_supported_efforts
 from agent.transports.codex import _cache_scope_from_session_id
+from hermes_constants import is_openrouter_preset_model
 from providers import register_provider
 from providers.base import ProviderProfile
 
@@ -55,6 +56,16 @@ _SPEED_TIERED_BASES = ("openai/gpt-6-astra", "openai/gpt-6-astra-pro")
 OPENROUTER_ENDPOINT_PINS: dict[str, tuple[str, tuple[str, ...]]] = {
     base + suffix: (base, tags) for base in _SPEED_TIERED_BASES for suffix, tags in _SPEED_TIER_ENDPOINTS.items()
 }
+
+# ``@preset/<slug>`` is a FULL server-side routing pin, authored by the user in OpenRouter's
+# control plane and referenced verbatim on the wire (see hermes_cli/models_validate.py
+# _parse_openrouter_preset — the whole id, suffix included, goes to OpenRouter). A request-level
+# ``provider`` body takes precedence over that policy, so sending both lets a leftover
+# ``provider_routing`` block silently reroute a preset off the endpoint it pins — with the control
+# plane still reading back "correct" (#94589). Same shape as the Nous profile, which drops
+# caller prefs outright: the pin is the stronger, more specific intent. The predicate itself
+# lives in hermes_constants so the profile-less legacy branch (agent/transports/chat_completions.py)
+# applies the same rule; it can reach the wire without ever loading this profile.
 
 
 class OpenRouterProfile(ProviderProfile):
@@ -131,6 +142,9 @@ class OpenRouterProfile(ProviderProfile):
         if sticky_key:
             body["session_id"] = sticky_key
         prefs = context.get("provider_preferences")
+        if is_openrouter_preset_model(context.get("model")):
+            # The preset IS the pin; a request-level body would override it (#94589).
+            prefs = None
         pin = OPENROUTER_ENDPOINT_PINS.get(context.get("model") or "")
         # The tier pin owns ``only`` (ignore/sort/... still apply) — except on the BASE slug, where the pin
         # merely keeps default routing off flex/fast and an explicit user ``only`` is the stronger intent.

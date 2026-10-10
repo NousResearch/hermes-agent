@@ -39,9 +39,7 @@ describe('MarkdownLink filesystem hrefs', () => {
     // CommonMark requires `<...>` destinations for paths with spaces; the
     // old FILE_LINK_RE charset `[^\)\s]*` couldn't match them, so the link
     // fell through to harden and rendered as "label [blocked]".
-    render(
-      <MarkdownTextContent isRunning={false} text={'See [notes](<~/My Notes/todo with spaces.md>)'} />
-    )
+    render(<MarkdownTextContent isRunning={false} text={'See [notes](<~/My Notes/todo with spaces.md>)'} />)
 
     await screen.findByText('todo with spaces.md')
     expect(screen.getByRole('button', { name: 'Open preview' })).toBeTruthy()
@@ -52,9 +50,7 @@ describe('MarkdownLink filesystem hrefs', () => {
     // Markdown renderers emit the href percent-encoded; the renderer keeps
     // the encoded form in the card label, and the electron side retries the
     // decoded on-disk path when the file is opened.
-    render(
-      <MarkdownTextContent isRunning={false} text={'See [notes](~/My%20Notes/todo%20with%20spaces.md)'} />
-    )
+    render(<MarkdownTextContent isRunning={false} text={'See [notes](~/My%20Notes/todo%20with%20spaces.md)'} />)
 
     await screen.findByText('todo%20with%20spaces.md')
     expect(screen.getByRole('button', { name: 'Open preview' })).toBeTruthy()

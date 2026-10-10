@@ -22,6 +22,7 @@ from agent.context_compressor import (
 from agent.compression_marker import _COMPRESSION_MARKER_PREFIX
 from hermes_state import SessionDB
 from agent.auxiliary_client import CODEX_STREAM_STALL_MARKER
+import itertools
 
 _REQ = httpx.Request("POST", "http://x")
 
@@ -224,6 +225,68 @@ class TestSummarizeToolResultSkillTools:
         assert _summarize_tool_result("skill_view", json.dumps({"name": "github"}), "x" * 100) == "[skill_view] name=github (100 chars)"
 
 
+class TestSummarizeToolResultOutcome:
+    """A compaction stub must carry the outcome of the call (#131244): a refused ``read_file``, a
+    rate-limited ``web_search``, a dead cron run, a non-zero process exit or a failed MCP tool used to
+    compress into the same stub as the success it never was, and the post-compaction agent reported
+    the success."""
+
+    @staticmethod
+    def _stub(tool_name, args, payload):
+        return _summarize_tool_result(tool_name, json.dumps(args), json.dumps(payload))
+
+    @pytest.mark.parametrize("tool_name, args, payload, expected", [
+        ("read_file", {"path": "gone.py", "offset": 1}, {"error": "File not found: gone.py"},
+         "[read_file] read gone.py from line 1 (36 chars) FAILED: File not found: gone.py"),
+        ("web_search", {"query": "hermes"}, {"error": "rate limited"},
+         "[web_search] query='hermes' (25 chars result) FAILED: rate limited"),
+        ("memory", {"action": "add", "target": "a note"}, {"error": "unknown action"},
+         "[memory] add on a note FAILED: unknown action"),
+        ("text_to_speech", {}, {"error": "no voice available"},
+         "[text_to_speech] generated audio (31 chars) FAILED: no voice available"),
+        ("cronjob_manage", {"action": "create"}, {"success": False}, "[cronjob] create FAILED"),
+        ("cronjob_manage", {"action": "run"},
+         {"success": True, "job": {"execution_success": False, "execution_error": "agent exited with code 1"}},
+         "[cronjob] run FAILED: agent exited with code 1"),
+        ("process_manage", {"action": "poll", "session_id": "p1"},
+         {"status": "exited", "exit_code": 1, "completion_reason": "nonzero_exit"},
+         "[process] poll session=p1 FAILED: exit code 1"),
+        # Every MCP/plugin tool falls through to the generic stub.
+        ("some_mcp_tool", {"a": 1}, {"error": "boom"}, "[some_mcp_tool] a=1 (17 chars result) FAILED: boom"),
+        ("delegate_task", {"goal": "ship it"}, {"error": "Unknown action"},
+         "[delegate_task] 'ship it' (27 chars result) FAILED: Unknown action"),
+        # The stale-write guard refused: nothing was written, so the stub must not say "wrote to".
+        ("write_file", {"path": "a.md", "content": "line 1\nline 2"},
+         {"error": "Refusing to overwrite a.md: stale", "stale_write_blocked": True},
+         "[write_file] a.md FAILED: Refusing to overwrite a.md: stale"),
+    ])
+    def test_failed_call_stub_is_marked_failed(self, tool_name, args, payload, expected):
+        assert self._stub(tool_name, args, payload) == expected
+
+    @pytest.mark.parametrize("tool_name, args, payload, expected", [
+        ("web_search", {"query": "hermes"}, {"results": [{"title": "hit"}]},
+         "[web_search] query='hermes' (31 chars result)"),
+        ("write_file", {"path": "a.md", "content": "line 1\nline 2"}, {"bytes_written": 13},
+         "[write_file] wrote to a.md (2 lines)"),
+        ("text_to_speech", {}, {"success": True, "path": "/tmp/out.wav"}, "[text_to_speech] generated audio (41 chars)"),
+        # ``job`` carries stored state from earlier runs; only this call's outcome may mark the stub.
+        ("cronjob_manage", {"action": "poll"},
+         {"success": True, "job": {"error": "last run failed", "execution_success": True}}, "[cronjob] poll"),
+        ("process_manage", {"action": "poll", "session_id": "p1"}, {"status": "exited", "exit_code": 0},
+         "[process] poll session=p1"),
+        ("process_manage", {"action": "poll", "session_id": "p1"}, {"status": "running", "pid": 4242},
+         "[process] poll session=p1"),
+        # The agent's own kill and a run the scheduler is already firing are not failures.
+        ("process_manage", {"action": "poll", "session_id": "p1"},
+         {"status": "exited", "exit_code": -15, "completion_reason": "killed"}, "[process] poll session=p1"),
+        ("cronjob_manage", {"action": "run"},
+         {"success": True, "job": {"execution_skipped": "Already being fired by the scheduler; not run again."}},
+         "[cronjob] run SKIPPED: Already being fired by the scheduler; not run again."),
+    ])
+    def test_successful_call_stub_is_not_marked(self, tool_name, args, payload, expected):
+        assert self._stub(tool_name, args, payload) == expected
+
+
 class TestSummarizeToolResultClarify:
     def test_preserves_resolved_user_response_without_metadata(self):
         content = json.dumps({"responses": [{
@@ -378,6 +441,78 @@ class TestSummarizeToolResultClarify:
         assert "Answer one" in summary
         assert "Choice A" in summary
         assert "Choice B" in summary
+
+
+def _refusals():
+    """Refused-call results from the real producers: the approval gate messages in their terminal
+    envelope, the write guard's raw ``BLOCKED:`` text, the workdir guard's ``status`` "blocked"
+    envelope (its error reads "Blocked:", not "BLOCKED"), a pending gateway approval, and a
+    successful kanban_block (``status`` "blocked" with no error, which is not a refusal). ``expected`` lists substrings the summary must
+    contain; empty means it must not read as refused."""
+    from tools import approval
+    from tools.kanban_tools import _ok
+    from tools.terminal_tool import _error_json
+    from tools.terminal_tool_guards import _validate_workdir
+
+    gate = approval._COMMAND_GATE
+    no_consent = ["BLOCKED, not run", "did NOT consent"]
+    return [
+        pytest.param("terminal", {"command": "rm -rf build"},
+                     _error_json(gate.cli_denied.format(description="", breaker=""), status="blocked"),
+                     no_consent, id="cli_denied"),
+        pytest.param("terminal", {"command": "rm -rf build"},
+                     _error_json(gate.transport_denied.format(breaker=""), status="blocked"),
+                     no_consent, id="transport_denied"),
+        pytest.param("terminal", {"command": "rm -rf build"},
+                     _error_json(gate.cli_timeout.format(breaker=""), status="blocked"),
+                     no_consent, id="cli_timeout"),
+        pytest.param("write_file", {"path": "AGENTS.md", "content": "a\nb"},
+                     "BLOCKED: write to protected agent-instruction file(s) (AGENTS.md) was denied "
+                     "by the user. The user has NOT consented to this write. Do NOT retry it or "
+                     "attempt the same edit via another path (terminal, execute_code, etc.).",
+                     no_consent, id="write_guard"),
+        pytest.param("terminal", {"command": "ls"},
+                     _error_json(_validate_workdir("a;b"), status="blocked"),
+                     ["BLOCKED, not run"], id="workdir_guard"),
+        pytest.param("terminal", {"command": "rm -rf build"},
+                     _error_json("", status="pending_approval"),
+                     ["awaiting the user's approval, not run"], id="pending_approval"),
+        pytest.param("kanban_block", {"reason": "need creds"},
+                     _ok(task_id="t_1", run_id=None, status="blocked", block_kind="needs_input"),
+                     [], id="kanban_block_ok"),
+    ]
+
+
+class TestSummarizeToolResultRefusals:
+    """A refused call must not be summarized as done ("ran ...", "wrote to ..."): that turns the
+    user's denial into a record of the action and drops the do-not-retry instruction."""
+
+    @pytest.mark.parametrize("tool_name,args,content,expected", _refusals())
+    def test_denial_summary_keeps_not_run_and_no_consent(self, tool_name, args, content, expected):
+        summary = _summarize_tool_result(tool_name, json.dumps(args), content)
+
+        assert all(part in summary for part in expected), summary
+        assert ("not run" in summary) == bool(expected), summary
+        assert "ran `" not in summary and "wrote to" not in summary
+        assert len(summary) <= _PRUNE_MIN_CHARS - 1
+
+    def test_prune_keeps_denial_across_passes(self, compressor):
+        tool_name, args, content, _ = _refusals()[0].values
+        assert len(content) > _PRUNE_MIN_CHARS
+        messages = [
+            {"role": "assistant", "tool_calls": [{"id": "t1", "type": "function",
+             "function": {"name": tool_name, "arguments": json.dumps(args)}}]},
+            {"role": "tool", "tool_call_id": "t1", "content": content},
+            {"role": "user", "content": "recent request"},
+            {"role": "assistant", "content": "recent response"},
+        ]
+
+        pruned, count = compressor._prune_old_tool_results(messages, protect_tail_count=2)
+        summary = pruned[1]["content"]
+
+        assert count == 1 and "BLOCKED, not run" in summary and "did NOT consent" in summary
+        pruned_again, _ = compressor._prune_old_tool_results(pruned, protect_tail_count=2)
+        assert pruned_again[1]["content"] == summary
 
 
 class TestShouldCompress:
@@ -1257,8 +1392,8 @@ class TestSummaryFallbackToMainModel:
         assert mock_call.call_count == 2
         # First call used the misconfigured aux model
         assert mock_call.call_args_list[0].kwargs.get("model") == "broken-aux-model"
-        # Second call used the main model (no model kwarg → call_llm uses main)
-        assert "model" not in mock_call.call_args_list[1].kwargs
+        # Second call names the main model: an omitted model would re-resolve auxiliary.compression
+        assert mock_call.call_args_list[1].kwargs.get("model") == "main-model"
         assert result is not None
         assert "summary via main model" in result
         # Aux-model failure is recorded even though retry succeeded — this is
@@ -1292,7 +1427,7 @@ class TestSummaryFallbackToMainModel:
 
         assert mock_call.call_count == 2
         assert mock_call.call_args_list[0].kwargs.get("model") == "flaky-aux-model"
-        assert "model" not in mock_call.call_args_list[1].kwargs
+        assert mock_call.call_args_list[1].kwargs.get("model") == "main-model"
         assert result is not None
         assert "summary via main model after empty aux" in result
         assert c._last_aux_model_failure_model == "flaky-aux-model"
@@ -1355,7 +1490,7 @@ class TestSummaryFallbackToMainModel:
 
         assert mock_call.call_count == 2
         assert mock_call.call_args_list[0].kwargs.get("model") == "aux-via-broken-proxy"
-        assert "model" not in mock_call.call_args_list[1].kwargs
+        assert mock_call.call_args_list[1].kwargs.get("model") == "main-model"
         assert result is not None
         assert "summary via main model" in result
         # Aux-model failure recorded so /usage / gateway warnings can surface it
@@ -3183,7 +3318,7 @@ class TestSummaryPromptBounding:
         assert coverage["sampled_record_count"] == len(shown)
         # At least one initial gap was closed: fewer markers than the n-1 the n slices started with.
         assert sampled.count("chars elided") < ContextCompressor._SAMPLED_INPUT_SLICES - 1
-        for a, b in zip(shown, shown[1:]):
+        for a, b in itertools.pairwise(shown):
             if b == a + 1:
                 assert f"{records[a]}\n\n{records[b]}" in sampled, (a, b)
             else:
@@ -3551,8 +3686,6 @@ class TestPreLlmFeasibilityCheck:
         mock_gen.assert_called_once()
         assert compressor._prellm_skip_count == 0
 
-
-
     def test_skip_fires_on_fat_tail_small_middle(self, compressor):
         """The target scenario from #60451: a tool-heavy transcript whose
         protected tail already holds most of the tokens, leaving a tiny
@@ -3591,9 +3724,8 @@ class TestPreLlmFeasibilityCheck:
         skip path sets _last_summary_fallback_used, which the boundary
         wrapper (conversation_compression.py) records via
         record_completed_compaction(used_fallback=True) — incrementing
-        _fallback_compression_streak, whose second occurrence blocks
-        automatic compression. Two deliberate skips must NOT trip that
-        breaker."""
+        _fallback_compression_streak. A deliberate skip must not count as
+        a failed summary-model attempt."""
         compressor._ineffective_compression_count = 1
         msgs = self._make_messages()
 
@@ -3612,10 +3744,7 @@ class TestPreLlmFeasibilityCheck:
 
         assert compressor._prellm_skip_count == 2
         assert compressor._fallback_compression_streak == 0
-        assert not compressor._automatic_compression_blocked_locally(), (
-            "two deliberate feasibility skips must not disable automatic "
-            "compression via the fallback-streak breaker"
-        )
+        assert not compressor._automatic_compression_blocked_locally()
 
     def test_boundary_accounting_skip_does_not_reset_fallback_streak(self, compressor):
         """A skip proves nothing about the summary model's health: an

@@ -159,7 +159,8 @@ function releaseEpoch(tag, gitRoot) {
     return Number(supplied)
   }
   const claim = process.env.RELEASE_CLAIM_TAG
-  if (claim && claim !== `${tag}-rc`) throw new Error('Stable claim tag differs from its payload tag')
+  // Attempt refs read `rc.<N>-vX.Y.Z` (scripts/releases/versioning.py::parse_attempt_ref).
+  if (claim && !new RegExp(`^rc\\.[1-9]\\d*-${tag.replaceAll('.', '\\.')}$`).test(claim)) throw new Error('Stable claim tag differs from its payload tag')
   const claimObject = process.env.RELEASE_CLAIM_OBJECT
   let timestamp
   let timestampTag = tag

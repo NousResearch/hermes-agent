@@ -115,7 +115,35 @@ export const arAssistant = {
       placeholder: 'اكتب إجابتك...',
       skip: 'تخطي',
       confirmAndContinueLabel: 'تأكيد ومتابعة',
+      singleSelectHint: 'اختر واحدا',
+      multiSelectHint: 'حدد كل ما ينطبق',
+      oneQuestion: 'سؤال واحد',
       questionProgress: (answered, total) => `تمت الإجابة على ${answered} من ${total}`
+    },
+    setupChoose: {
+      kinds: {
+        accent: 'لون التمييز',
+        connectors: 'التطبيقات',
+        layout: 'التخطيط',
+        plugins: 'الإضافات',
+        theme: 'المظهر'
+      },
+      loading: 'جار تحميل الخيارات...',
+      unavailable: 'هذه القائمة غير متاحة الآن. رد في المحادثة بدلا من ذلك.',
+      findApp: 'ابحث عن تطبيق',
+      customColor: 'لون مخصص',
+      plugin: 'إضافة',
+      startsLater: 'سنُعِدّ هذه عندما تبدأ.'
+    },
+    startChat: {
+      starting: title => `جار بدء "${title}"...`,
+      startingUntitled: 'جار بدء محادثة...',
+      untitled: 'محادثة جديدة',
+      notStarted: 'تعذر بدء هذه المحادثة.',
+      retry: 'إعادة المحاولة',
+      inProfile: profile => `في ${profile}`,
+      open: 'فتح',
+      openFailed: 'تعذر فتح المحادثة'
     },
     tool: {
       copyCode: 'نسخ الكود',
@@ -180,6 +208,8 @@ export const arAssistant = {
         runningTool: action => `جار تشغيل ${action.toLowerCase()}`
       },
       titles: {
+        setup_choose: { done: 'طرح سؤال إعداد', pending: 'يطرح سؤال إعداد', pendingAction: 'يسأل' },
+        start_chat: { done: 'بدأ محادثة', pending: 'يبدأ محادثة', pendingAction: 'يبدأ' },
         browser_click: {
           done: 'تم النقر على عنصر الصفحة',
           pending: 'جار النقر على عنصر الصفحة',
@@ -297,5 +327,5 @@ export const arAssistant = {
         }
       }
     }
-  },
+  }
 } satisfies Pick<TranslationOverrides, 'assistant'>

@@ -107,7 +107,9 @@ describe('desktop slash command curation', () => {
     // render a refusal message instead of reaching the wire, and a bare
     // /skills never execs into the interactive hub from the desktop.
     expect(desktopSubcommandUnavailableMessage('/skills', 'search')).toContain('not available in the desktop app')
-    expect(desktopSubcommandUnavailableMessage('/skills', 'install gif-search')).toContain('not available in the desktop app')
+    expect(desktopSubcommandUnavailableMessage('/skills', 'install gif-search')).toContain(
+      'not available in the desktop app'
+    )
     expect(desktopSubcommandUnavailableMessage('/skills', 'audit')).toContain('not available in the desktop app')
     expect(desktopSubcommandUnavailableMessage('/skills', '')).toContain('needs a subcommand here')
     expect(desktopSubcommandUnavailableMessage('/skills', '   ')).toContain('needs a subcommand here')
@@ -115,20 +117,24 @@ describe('desktop slash command curation', () => {
 
     // Completion never suggests a subcommand the gate would refuse.
     const subs = (items: readonly { text?: string }[]) => items.map(item => item.text)
-    expect(subs(filterDesktopSubcommandCompletions(
-      '/skills ', [{ text: 'pending review' }, { text: 'install demo' }], { isArgCompletion: true })
-    )).toEqual(['pending review'])
-    expect(subs(filterDesktopSubcommandCompletions(
-      '/skills ap', [{ text: 'approval on' }], { isArgCompletion: true })
-    )).toEqual(['approval on'])
+    expect(
+      subs(
+        filterDesktopSubcommandCompletions('/skills ', [{ text: 'pending review' }, { text: 'install demo' }], {
+          isArgCompletion: true
+        })
+      )
+    ).toEqual(['pending review'])
+    expect(
+      subs(filterDesktopSubcommandCompletions('/skills ap', [{ text: 'approval on' }], { isArgCompletion: true }))
+    ).toEqual(['approval on'])
     // Value completion for a blocked hub mutation stays empty.
-    expect(filterDesktopSubcommandCompletions(
-      '/skills install ', [{ text: 'demo' }], { isArgCompletion: true })
+    expect(
+      filterDesktopSubcommandCompletions('/skills install ', [{ text: 'demo' }], { isArgCompletion: true })
     ).toEqual([])
     // Command-token completions pass through untouched.
-    expect(subs(filterDesktopSubcommandCompletions(
-      '/sk', [{ text: '/skills' }], { isArgCompletion: false })
-    )).toEqual(['/skills'])
+    expect(subs(filterDesktopSubcommandCompletions('/sk', [{ text: '/skills' }], { isArgCompletion: false }))).toEqual([
+      '/skills'
+    ])
   })
 
   it('groups complete.slash rows by backend kind, not the desktop table', () => {

@@ -144,13 +144,15 @@ describe('wordEraseFocusedTerminal', () => {
   it('routes the close chord to the focused interactive terminal and reports it consumed', () => {
     const { host, scope } = mountScope('interactive')
     const wordErase = vi.fn(() => true)
-    cleanups.push(registerTerminalContextMenu(host, {
-      getSelection: () => '',
-      paste: () => undefined,
-      reload: () => {},
-      selectAll: () => undefined,
-      wordErase
-    }))
+    cleanups.push(
+      registerTerminalContextMenu(host, {
+        getSelection: () => '',
+        paste: () => undefined,
+        reload: () => {},
+        selectAll: () => undefined,
+        wordErase
+      })
+    )
 
     scope.tabIndex = -1
     scope.focus()
@@ -162,13 +164,15 @@ describe('wordEraseFocusedTerminal', () => {
   it('keys the registry by the [data-terminal] scope, not the nested host', () => {
     const { host } = mountScope('interactive')
     const wordErase = vi.fn(() => true)
-    cleanups.push(registerTerminalContextMenu(host, {
-      getSelection: () => '',
-      paste: () => undefined,
-      reload: () => {},
-      selectAll: () => undefined,
-      wordErase
-    }))
+    cleanups.push(
+      registerTerminalContextMenu(host, {
+        getSelection: () => '',
+        paste: () => undefined,
+        reload: () => {},
+        selectAll: () => undefined,
+        wordErase
+      })
+    )
 
     // The resolver walks up from a focus point INSIDE the host, exactly like
     // the real xterm textareaFocus.
@@ -182,13 +186,15 @@ describe('wordEraseFocusedTerminal', () => {
 
   it('keeps the read-only agent mirror closeable (null wordErase)', () => {
     const { host, scope } = mountScope('readonly')
-    cleanups.push(registerTerminalContextMenu(host, {
-      getSelection: () => '',
-      paste: null,
-      reload: () => {},
-      selectAll: () => undefined,
-      wordErase: null
-    }))
+    cleanups.push(
+      registerTerminalContextMenu(host, {
+        getSelection: () => '',
+        paste: null,
+        reload: () => {},
+        selectAll: () => undefined,
+        wordErase: null
+      })
+    )
 
     scope.tabIndex = -1
     scope.focus()
@@ -198,13 +204,15 @@ describe('wordEraseFocusedTerminal', () => {
 
   it('reports not consumed when the terminal has no live session', () => {
     const { host, scope } = mountScope('interactive')
-    cleanups.push(registerTerminalContextMenu(host, {
-      getSelection: () => '',
-      paste: () => undefined,
-      reload: () => {},
-      selectAll: () => undefined,
-      wordErase: () => false
-    }))
+    cleanups.push(
+      registerTerminalContextMenu(host, {
+        getSelection: () => '',
+        paste: () => undefined,
+        reload: () => {},
+        selectAll: () => undefined,
+        wordErase: () => false
+      })
+    )
 
     scope.tabIndex = -1
     scope.focus()
@@ -215,13 +223,15 @@ describe('wordEraseFocusedTerminal', () => {
 
   it('reports not consumed when focus is elsewhere', () => {
     const { host } = mountScope('interactive')
-    cleanups.push(registerTerminalContextMenu(host, {
-      getSelection: () => '',
-      paste: () => undefined,
-      reload: () => {},
-      selectAll: () => undefined,
-      wordErase: () => true
-    }))
+    cleanups.push(
+      registerTerminalContextMenu(host, {
+        getSelection: () => '',
+        paste: () => undefined,
+        reload: () => {},
+        selectAll: () => undefined,
+        wordErase: () => true
+      })
+    )
 
     const elsewhere = document.createElement('textarea')
     document.body.append(elsewhere)
@@ -233,6 +243,7 @@ describe('wordEraseFocusedTerminal', () => {
   it('stops routing after the handle unregisters (idempotent remove)', () => {
     const { host, scope } = mountScope('interactive')
     const wordErase = vi.fn(() => true)
+
     const unregister = registerTerminalContextMenu(host, {
       getSelection: () => '',
       paste: () => undefined,

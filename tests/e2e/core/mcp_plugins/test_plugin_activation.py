@@ -324,3 +324,30 @@ def test_same_name_plugin_collision_is_reported(name_collision: dict[str, Any], 
     with known_gate(KNOWN, request.node.name, raises=KnownSymptom):
         symptom(named_both, f"two user plugin dirs declare the same name 'foo' ({live} and {backup}) but no "
                             f"user-visible surface names both: {', '.join(surfaces)}")
+
+
+# A portable package's own trust request ------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("trust", ["untrusted", None])
+def test_portable_package_trust_request_gates_write_tools_before_the_rpc(tmp_path: Path, trust: str | None) -> None:
+    """A package that marks its server ``trust: untrusted`` (plugin.json Hermes extension) gets the same gate as a
+    config.yaml server: a destructive tool is refused BEFORE the RPC in an unattended ``chat -q`` turn, while a
+    read-only one still runs. Without the request the destructive call reaches the server (default trust)."""
+    servers_ext = {"com.nousresearch.hermes": {"servers": {"pkg": {"trust": trust}}}} if trust else None
+    log = tmp_path / "pkg.jsonl"
+    with provider(script((tool_name("pkg", "ro_probe"), {"nonce": "r"}),
+                         (tool_name("pkg", "rw_probe"), {"nonce": "w"}))) as srv:
+        eh = _build_home(tmp_path, srv.base_url, extra={"plugins": {"enabled": ["trusty"]}})
+        write_portable_plugin(eh, "trusty", {"pkg": portable_stdio(log, eh.tag, MCPE2E_CANARY="CANARY-T")},
+                              extensions=servers_ext)
+        try:
+            proc = run_chat_q(eh, "Use both pkg tools.")
+        finally:
+            reap_tagged(eh)
+        assert proc.returncode == 0 and FINAL in proc.stdout, (proc.returncode, proc.stdout[-800:], proc.stderr[-2000:])
+    assert calls_received(log, "ro_probe"), "the read-only tool never reached the package's server"
+    if trust:
+        assert not calls_received(log, "rw_probe"), "a destructive tool on a package marked untrusted ran unapproved"
+    else:
+        assert calls_received(log, "rw_probe"), "default-trust package server never received the destructive call"

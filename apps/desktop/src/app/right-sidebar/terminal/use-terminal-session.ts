@@ -20,6 +20,7 @@ import { terminalLinkHandler, terminalWebLinksAddon } from './links'
 import {
   isMacPlatform,
   resolveSurfaceColor,
+  shouldOwnAddSelectionShortcut,
   terminalSelectionAnchor,
   terminalSelectionLabel,
   terminalTheme
@@ -473,12 +474,26 @@ export function useTerminalSession({
     triggerHaptic('selection')
   }, [])
 
-  // Always listen — gating on the React selection state misses selections the
-  // TUI redraw races. Only swallow ⌘/Ctrl+L when there's text to send, else it
-  // must reach the shell as clear-screen.
+  // Only the active tab owns the global ⌘/Ctrl+L listener. Every open tab
+  // stays mounted, so registering the capture handler on every session
+  // fired N identical add-selection calls for a single keypress (#76116).
+  // Still do not gate on React selection state — TUI redraw races can
+  // clear that while xterm / window still have live text.
+  // Only swallow ⌘/Ctrl+L when there's text to send; otherwise it must
+  // reach the shell as clear-screen.
   useEffect(() => {
+    if (!active) {
+      return
+    }
+
     const onKeyDown = (event: KeyboardEvent) => {
-      if (!isComposerChord(event) || !readSelection().trim()) {
+      if (!isComposerChord(event)) {
+        return
+      }
+
+      const hasSelection = Boolean(readSelection().trim())
+
+      if (!shouldOwnAddSelectionShortcut(event, { active: true, hasSelection })) {
         return
       }
 
@@ -490,7 +505,7 @@ export function useTerminalSession({
     window.addEventListener('keydown', onKeyDown, { capture: true })
 
     return () => window.removeEventListener('keydown', onKeyDown, { capture: true })
-  }, [addSelectionToChat, readSelection])
+  }, [active, addSelectionToChat, readSelection])
 
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
@@ -940,6 +955,11 @@ export function useTerminalSession({
               // false — running closeTerminal here would wipe the persisted tabs
               // right before relaunch restores them.
               if (!disposed && !appTearingDown) {
+                // Release the main-side session explicitly instead of relying
+                // on the unmount cleanup's timing — the exit→unmount hop is
+                // async, and a teardown in between would skip dispose and leak
+                // the PTY (#128942). The cleanup's later dispose is a no-op.
+                void terminalApi.dispose(session.id)
                 closeTerminal(id)
               }
             })

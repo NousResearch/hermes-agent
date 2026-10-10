@@ -34,6 +34,7 @@ on:
   pull_request:
     paths:
       - 'pm/**'
+      - '!pm/**/*.md'
       - 'scripts/bundles/**'
       - 'scripts/ci/desktop_build_cache.py'
       - '.github/actions/desktop-build-cache/**'

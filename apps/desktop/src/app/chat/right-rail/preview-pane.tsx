@@ -12,7 +12,7 @@ import { PanelEmpty } from '@/app/overlays/panel'
 import { isElementInHiddenPane } from '@/components/pane-shell/pane-visibility'
 import { Tip } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
-import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
+import { isDesktopFsRemoteMode, isReadFileErrorResult } from '@/lib/desktop-fs'
 import { guardGuestPointers } from '@/lib/guest-pointer-guard'
 import { isLoopbackPreviewUrl, openPreviewTargetInBrowser, remoteHtmlPreviewDocument } from '@/lib/local-preview'
 import { isRemoteGateway } from '@/lib/media'
@@ -70,6 +70,7 @@ import {
 import { type ConsoleEntry } from './preview-console-state'
 import { previewConsoleState } from './preview-console-store'
 import { LocalFilePreview, PreviewEmptyState, PreviewModeSwitcher } from './preview-file'
+import { usePreviewGuestOffscreen } from './preview-guest-offscreen'
 import { type PreviewInputEvent, registerPreviewInput, toWebviewInputSpace } from './preview-input'
 import { PREVIEW_BROWSER_ATTR, registerPreviewNav } from './preview-nav'
 import { registerPreviewPageReader } from './preview-reader'
@@ -275,6 +276,7 @@ export function PreviewPane({
   const lastRestartEventRef = useRef('')
   const previewContentRef = useRef<HTMLDivElement | null>(null)
   const webviewRef = useRef<PreviewWebview | null>(null)
+  const noteGuestReady = usePreviewGuestOffscreen(webviewRef, tabId)
   const previewServerRestart = useStore($previewServerRestart)
   const consoleHeight = useStore(consoleState.$height)
   const consoleOpen = useStore(consoleState.$open)
@@ -1066,6 +1068,13 @@ export function PreviewPane({
     void window.hermesDesktop
       .watchPreviewFile(target.url)
       .then(watch => {
+        // The file was already gone when the watch was requested (a restored
+        // tab probing a deleted path): structured data, not a rejection. The
+        // read below surfaces the tombstone; nothing to watch.
+        if (isReadFileErrorResult(watch)) {
+          return
+        }
+
         if (!active) {
           void window.hermesDesktop?.stopPreviewFileWatch?.(watch.id)
 
@@ -1216,12 +1225,15 @@ export function PreviewPane({
       const detail = event as Event & {
         errorCode?: number
         errorDescription?: string
+        isMainFrame?: boolean
         validatedURL?: string
       }
 
       const errorCode = detail.errorCode
 
-      if (errorCode === -3) {
+      // Electron emits did-fail-load for subframes too. A blocked ad or
+      // tracking iframe must not replace an otherwise healthy top-level page.
+      if (detail.isMainFrame === false || errorCode === -3) {
         return
       }
 
@@ -1352,6 +1364,7 @@ export function PreviewPane({
     webview.addEventListener('page-title-updated', notePage)
     // #101880: never let a guest reach the native print panel.
     webview.addEventListener('dom-ready', armPrintGuard)
+    webview.addEventListener('dom-ready', noteGuestReady)
     host.appendChild(webview)
     webviewRef.current = webview
 
@@ -1369,10 +1382,11 @@ export function PreviewPane({
       webview.removeEventListener('did-stop-loading', onStop)
       webview.removeEventListener('page-title-updated', notePage)
       webview.removeEventListener('dom-ready', armPrintGuard)
+      webview.removeEventListener('dom-ready', noteGuestReady)
       webview.remove()
       setAnnotate(session => (session.mode ? { ...endAnnotateMode(session), stack: emptyAnnotateStack() } : session))
     }
-  }, [appendConsoleEntry, consoleState, copy, isRemoteHtml, isWebPreview, tabId, target.kind])
+  }, [appendConsoleEntry, consoleState, copy, isRemoteHtml, isWebPreview, noteGuestReady, tabId, target.kind])
 
   // Steers the LIVE guest when the session opens a new URL (#120265): loadURL
   // keeps the webview instance (JS state, cookies, form data, scroll, refs,

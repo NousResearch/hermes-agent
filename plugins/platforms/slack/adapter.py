@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import re
+import string
 import time
 import unicodedata
 from dataclasses import dataclass, field
@@ -3192,19 +3193,55 @@ class SlackAdapter(BasePlatformAdapter):
             inner = re.sub(r"\*\*(.+?)\*\*", r"\1", m.group(1).strip())
             return _ph(f"*{inner}*")
 
+        # Slack only opens/closes an emphasis or code span when the delimiter is adjacent
+        # to WHITESPACE (or a string boundary). Two failures follow:
+        #   (a) a closing * immediately preceded by a non-word char (), ], .) silently
+        #       truncates the rest of the message;
+        #   (b) a delimiter flush against ANY non-space character leaves the marker
+        #       unparsed and the literal * visible. Latin prose hides (b) because words
+        #       are space-separated; unspaced scripts (Japanese/Chinese/Thai) hit it
+        #       constantly, including against CJK punctuation: "*ゼロ*。" renders raw
+        #       while "*ゼロ*\u200b。" bolds.
+        # Pad with U+200B OUTSIDE each delimiter when the adjacent char exists and is
+        # neither whitespace nor ASCII punctuation (which Slack already accepts as a
+        # boundary, e.g. "*bold*..."), and INSIDE before the closing * for case (a).
+        # A \x00 neighbour is an earlier placeholder (code span, link, entity), which
+        # restores to a delimiter Slack already treats as a boundary.
+        def needs_pad(ch):
+            return (bool(ch) and ch != "\x00" and not ch.isspace()
+                    and ch not in string.punctuation)
+
+        def _pads(m):
+            start, end = m.start(), m.end()
+            prev_ch = text[start - 1] if start > 0 else ""
+            next_ch = text[end] if end < len(text) else ""
+            return ("\u200b" if needs_pad(prev_ch) else "",
+                    "\u200b" if needs_pad(next_ch) else "")
+
+        def _convert_inline_code(m):
+            lead, trail = _pads(m)
+            return _ph(f"{lead}{m.group(0)}{trail}")
+
         def _convert_bold(m):
-            # Slack misses a closing * after a non-word char and silently truncates the
-            # message; insert U+200B before it.
             inner = m.group(1)
+            lead, trail = _pads(m)
             zw = "\u200b" if inner and not (inner[-1].isalnum() or inner[-1] == "_") else ""
-            return _ph(f"*{inner}{zw}*")
+            return _ph(f"{lead}*{inner}{zw}*{trail}")
+
+        def _convert_italic(m):
+            lead, trail = _pads(m)
+            return _ph(f"{lead}_{m.group(1)}_{trail}")
+
+        def _convert_strike(m):
+            lead, trail = _pads(m)
+            return _ph(f"{lead}~{m.group(1)}~{trail}")
 
         # Ordered passes: protect code/links/entities/quotes, escape, then convert emphasis.
         # Escaping unescapes first in ONE regex pass (sequential replaces would decode
         # "&amp;lt;" twice). ``None`` marks the escape step.
         passes = (
             (r"(```(?:[^\n]*\n)?[\s\S]*?```)", _protect_fence, 0),
-            (r"(`[^`]+`)", lambda m: _ph(m.group(0)), 0),
+            (r"(`[^`]+`)", _convert_inline_code, 0),
             (r"(?<!!)\[([^\]]+)\]\(([^()]*(?:\([^()]*\)[^()]*)*)\)", _convert_markdown_link, 0),
             (r"(<(?:[@#!]|(?:https?|mailto|tel):)[^>\n]+>)", lambda m: _ph(m.group(1)), 0),
             (r"^(>+\s)", lambda m: _ph(m.group(0)), re.MULTILINE),
@@ -3213,8 +3250,8 @@ class SlackAdapter(BasePlatformAdapter):
             (r"\*\*\*(.+?)\*\*\*", lambda m: _ph(f"*_{m.group(1)}_*"), 0),
             (r"\*\*(.+?)\*\*", _convert_bold, 0),
             # *text* → _text_ only when non-whitespace touches both delimiters ("a * b * c" stays).
-            (r"(?<!\*)\*(\S(?:[^*\n]*?\S)?)\*(?!\*)", lambda m: _ph(f"_{m.group(1)}_"), 0),
-            (r"~~(.+?)~~", lambda m: _ph(f"~{m.group(1)}~"), 0))
+            (r"(?<!\*)\*(\S(?:[^*\n]*?\S)?)\*(?!\*)", _convert_italic, 0),
+            (r"~~(.+?)~~", _convert_strike, 0))
         for step in passes:
             if step is None:
                 text = _SLACK_HTML_ENTITY_RE.sub(lambda m: _SLACK_HTML_ENTITIES[m.group(1)], text)

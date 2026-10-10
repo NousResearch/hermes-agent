@@ -66,6 +66,10 @@ Rules worth knowing:
 - **Test** probes the connection's own HTTP *and* WebSocket legs, so a pass
   (the *"Reachable"* toast) means chat will actually work — not just that the
   host pinged.
+- Once **Test** (or the roster poll) has read a gateway's `/api/status`, its
+  row wears a **Container** or **Native** pill for the runtime that backend
+  reports. Gateways older than the field show no pill: absence means unknown,
+  never native.
 - **Duplicates are rejected when you save**: there is only ever one **local**
   entry; **remote** and **cloud** entries are deduplicated on the normalized
   URL (trimmed, trailing slashes stripped, lowercased — and across both

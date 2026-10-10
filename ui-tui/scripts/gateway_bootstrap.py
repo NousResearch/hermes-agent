@@ -34,11 +34,14 @@ def bootstrap(start: bool, recover: bool = False) -> dict:
     from hermes_cli.gateway_runtime_discovery import connect_private
 
     home = get_hermes_home().resolve()
-    # Launch policy travels in session.create, not into daemon-wide defaults.
+    # Launch policy travels in session.create, not into daemon-wide defaults. That includes the
+    # Kanban board `hermes --tui` pins at launch (_pin_kanban_board_env): a daemon started from
+    # here would otherwise resolve every later chat's, Desktop window's and cron job's board to
+    # this terminal's launch-time board instead of the profile's `kanban/current`.
     for key in ("HERMES_MODEL", "HERMES_INFERENCE_MODEL", "HERMES_TUI_PROVIDER",
                 "HERMES_INFERENCE_PROVIDER", "HERMES_TUI_TOOLSETS", "HERMES_TUI_SKILLS",
                 "HERMES_CWD", "TERMINAL_CWD", "HERMES_YOLO", "HERMES_ACCEPT_HOOKS",
-                "HERMES_TUI_CHECKPOINTS", "HERMES_TUI_PASS_SESSION_ID"):
+                "HERMES_TUI_CHECKPOINTS", "HERMES_TUI_PASS_SESSION_ID", "HERMES_KANBAN_BOARD"):
         os.environ.pop(key, None)
     receipt = (ensure_gateway_runtime(home, timeout=30, idle_exit=True) if start
                else discover_gateway_endpoint(home, timeout=5))

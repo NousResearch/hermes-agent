@@ -1,9 +1,9 @@
 """Tests for Codex auth — tokens stored in Hermes auth store (~/.hermes/auth.json)."""
 
+import base64
 import json
 from pathlib import Path
 from types import SimpleNamespace
-
 import pytest
 
 from hermes_cli.auth import (
@@ -464,3 +464,113 @@ def test_pool_only_force_refresh_rotates_the_pool_entry(tmp_path, monkeypatch):
     assert resolved["api_key"] == "pool-fresh"
     assert resolved["source"] == "credential_pool"
     assert hints == ["pool-revoked"]
+
+
+def _expired_codex_jwt() -> str:
+    """Codex access-token shape with an ``exp`` far in the past, so resolution wants a refresh."""
+    payload = base64.urlsafe_b64encode(json.dumps({"exp": 1000000000}).encode()).decode().rstrip("=")
+    return f"header.{payload}.sig"
+
+
+def _deny_singleton_refresh(monkeypatch, *, relogin: bool = True) -> None:
+    """Make the singleton refresh fail like the wire would: terminally (invalid_grant, relogin)
+    or transiently (a 429 throttle whose stored token is still valid)."""
+    from hermes_cli.auth import CODEX_RATE_LIMITED_CODE
+
+    def _fail(access_token, refresh_token, *, timeout_seconds=20.0, **_kwargs):
+        raise AuthError(
+            "Codex token refresh failed: Invalid refresh token." if relogin
+            else "OpenAI is rate-limiting Codex login requests (HTTP 429).",
+            provider="openai-codex",
+            code="codex_invalid_grant" if relogin else CODEX_RATE_LIMITED_CODE,
+            relogin_required=relogin)
+    monkeypatch.setattr("hermes_cli.auth.refresh_codex_oauth_pure", _fail)
+
+
+def _codex_singleton_state(access_token, refresh_token) -> dict:
+    """The ``providers.openai-codex`` block of an auth store carrying the given singleton."""
+    return {"openai-codex": {
+        "tokens": {"access_token": access_token, "refresh_token": refresh_token},
+        "last_refresh": "2026-01-01T00:00:00Z", "auth_mode": "chatgpt"}}
+
+
+def _codex_pool_row(row_id, source, access_token, refresh_token) -> dict:
+    """A credential_pool row; dummy non-secret values come from the callers' fixtures."""
+    return {"id": row_id, "source": source, "auth_type": "oauth",
+            "access_token": access_token, "refresh_token": refresh_token, "last_status": "ok"}
+
+
+def test_terminal_singleton_refresh_failure_uses_healthy_pool_row(tmp_path, monkeypatch):
+    """Regression for #136151 — a rejected singleton refresh must fall back to an eligible
+    independent pool row (skipping the dead singleton's mirror) before the error reaches the
+    gateway and switches providers."""
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    dead = _expired_codex_jwt()
+    survivor = "healthy" + "-pool" + "-token"  # dummy fixture value, not a real credential
+    mirror = _codex_pool_row("mirror", "device_code", dead, "rejected" + "-rt")
+    healthy = _codex_pool_row("healthy", "manual:device_code", survivor, "healthy" + "-rt")
+    (hermes_home / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "providers": _codex_singleton_state(dead, "rejected" + "-rt"),
+        "credential_pool": {"openai-codex": [mirror, healthy]},
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "no-codex-cli"))
+    _deny_singleton_refresh(monkeypatch, relogin=True)
+
+    resolved = resolve_codex_runtime_credentials()
+    assert resolved["api_key"] == survivor
+    assert resolved["source"] == "credential_pool"
+    assert resolved["base_url"]  # routed per the row/host rule, not left empty
+
+    # Resolution is read-only for the dead grant: no overwrite, no blanket quarantine.
+    on_disk = json.loads((hermes_home / "auth.json").read_text())
+    assert on_disk["providers"]["openai-codex"]["tokens"]["access_token"] == dead
+    assert [e["id"] for e in on_disk["credential_pool"]["openai-codex"]] == ["mirror", "healthy"]
+
+
+def test_terminal_singleton_refresh_failure_without_survivors_keeps_error(tmp_path, monkeypatch):
+    """No eligible survivor (only the dead singleton's mirror row) — the original relogin error
+    propagates so existing provider-fallback behavior is preserved."""
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    dead = _expired_codex_jwt()
+    mirror = _codex_pool_row("mirror", "device_code", dead, "rejected" + "-rt")
+    (hermes_home / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "providers": _codex_singleton_state(dead, "rejected" + "-rt"),
+        "credential_pool": {"openai-codex": [mirror]},
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "no-codex-cli"))
+    _deny_singleton_refresh(monkeypatch, relogin=True)
+
+    with pytest.raises(AuthError) as exc_info:
+        resolve_codex_runtime_credentials()
+    assert exc_info.value.code == "codex_invalid_grant"
+    assert exc_info.value.relogin_required is True
+
+
+def test_transient_singleton_refresh_failure_does_not_use_pool(tmp_path, monkeypatch):
+    """A transient refresh failure (429 throttle) means the stored grant is still valid — the
+    pool fallback is only for terminal rejections, so the error surfaces unchanged even when a
+    healthy independent row exists."""
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    healthy = _codex_pool_row(
+        "healthy", "manual:device_code", "healthy" + "-pool" + "-token", "healthy" + "-rt")
+    (hermes_home / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "providers": _codex_singleton_state(_expired_codex_jwt(), "still" + "-valid" + "-rt"),
+        "credential_pool": {"openai-codex": [healthy]},
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "no-codex-cli"))
+    _deny_singleton_refresh(monkeypatch, relogin=False)
+
+    with pytest.raises(AuthError) as exc_info:
+        resolve_codex_runtime_credentials()
+    from hermes_cli.auth import CODEX_RATE_LIMITED_CODE
+    assert exc_info.value.code == CODEX_RATE_LIMITED_CODE
+    assert exc_info.value.relogin_required is False

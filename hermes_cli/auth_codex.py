@@ -685,7 +685,26 @@ def resolve_codex_runtime_credentials(
             data = _read_codex_tokens(_lock=False)
             tokens = dict(data["tokens"])
             if _should_refresh(_stripped(tokens.get("access_token"))):
-                tokens = _refresh_codex_auth_tokens(tokens, refresh_timeout_seconds)
+                try:
+                    tokens = _refresh_codex_auth_tokens(tokens, refresh_timeout_seconds)
+                except AuthError as exc:
+                    if not getattr(exc, "relogin_required", False):
+                        raise
+                    # Terminal singleton refresh failure — CLI adoption already failed inside
+                    # _refresh_codex_auth_tokens. Before the error propagates and the gateway
+                    # swaps providers, try an eligible independent pool credential, skipping the
+                    # row mirroring this dead singleton (its token is equally expired). The
+                    # singleton itself is left for the next explicit login (#136151).
+                    dead_token = _stripped(tokens.get("access_token"))
+                    pool_token, pool_base = _pool_codex_credential(exclude_access_token=dead_token)
+                    if pool_token:
+                        logger.warning(
+                            "Codex singleton token refresh failed (%s) — resolving a healthy "
+                            "credential_pool entry instead.", exc)
+                        return _codex_runtime_result(
+                            pool_token, source="credential_pool", last_refresh=None,
+                            base_url=_codex_pool_route_base_url(pool_base))
+                    raise
             access_token = _stripped(tokens.get("access_token"))
     return _codex_runtime_result(
         access_token, source="hermes-auth-store", last_refresh=data.get("last_refresh"))
@@ -918,10 +937,14 @@ def _pool_entries(auth_store: dict[str, Any], provider_id: str) -> Optional[list
     return entries if isinstance(entries, list) else None
 
 
-def _pool_codex_credential() -> tuple[str, str]:
+def _pool_codex_credential(exclude_access_token: str = "") -> tuple[str, str]:
     """``(access_token, row base_url)`` of the first pool entry with a non-empty access_token that is
     not in an exhaustion cooldown window, so the caller routes the token to the host that row belongs
     to; ``("", "")`` when none is usable.
+
+    ``exclude_access_token`` skips the entry mirroring a dead singleton: after a terminal singleton
+    refresh failure that row carries the same expired token, so returning it would replay the
+    failure instead of finding a healthy survivor (#136151).
 
     Fallback for ``resolve_codex_runtime_credentials`` when the singleton has no creds; reads
     through ``read_credential_pool`` so a profile inherits the global-root pool (#34143)."""
@@ -935,6 +958,8 @@ def _pool_codex_credential() -> tuple[str, str]:
             reset_at = _parse_absolute_timestamp(entry.get("last_error_reset_at"))
             in_cooldown = reset_at is not None and reset_at > time.time()
             if _nonempty_str(token) and not in_cooldown:
+                if exclude_access_token and token.strip() == exclude_access_token:
+                    continue
                 return token.strip(), _stripped(entry.get("base_url"))
     except Exception:
         logger.debug("Codex pool fallback lookup failed", exc_info=True)

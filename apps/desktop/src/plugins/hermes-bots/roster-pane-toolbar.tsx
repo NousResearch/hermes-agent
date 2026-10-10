@@ -13,6 +13,7 @@ import {
 
 import { botSourceStatus } from './data'
 import type { useBots } from './i18n'
+import { canImportBots, importBot } from './profile-ops'
 import { setActivityToasts } from './roster-actions'
 import { GatewayKindGlyph } from './roster-sections'
 import type { rosterGatewayOptions } from './roster-sections'
@@ -104,6 +105,12 @@ export function renderRosterToolbar({
                 <Codicon className="mr-1.5" name="hubot" />
                 {b.bot.newTitle}
               </DropdownMenuItem>
+              {canImportBots() && (
+                <DropdownMenuItem onSelect={() => void importBot()}>
+                  <Codicon className="mr-1.5" name="cloud-download" />
+                  {b.bot.importMenu}
+                </DropdownMenuItem>
+              )}
               {/* Same selectable set as CreateGroupChatDialog: one local bot plus a
                   remote-connection bot is a valid room (#101543). */}
               <DropdownMenuItem

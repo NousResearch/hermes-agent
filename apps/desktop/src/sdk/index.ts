@@ -78,6 +78,7 @@ import {
   setActiveProfile,
   setShowAllProfiles
 } from '@/store/profile'
+import { runExportProfileFlow, runImportProfileFlow } from '@/store/profile-share'
 import {
   $activeSessionId,
   $connection,
@@ -878,6 +879,17 @@ export const host = {
       setActiveProfile('default')
     }
   },
+
+  /** Save a profile as a portable `.tar.gz` (config, skills, SOUL.md, cron,
+   *  avatar, Bot Mode metadata — credentials excluded) through the same native
+   *  save dialog + toasts as the core "Export profile…" menu. Resolves to the
+   *  archive path, or null when the user cancelled or the export failed. */
+  exportProfile: (profile: string): Promise<null | string> => runExportProfileFlow(profile),
+
+  /** Pick a profile archive and import it as a new profile, WITHOUT switching
+   *  the app into it. Resolves to the new profile name, or null when the user
+   *  cancelled or the import failed (already toasted). */
+  importProfile: (): Promise<null | string> => runImportProfileFlow({ select: false }),
 
   // ── Multi-source agents (the Bot Mode door) ───────────────────────────────
 

@@ -671,10 +671,27 @@ async function driveAction(
 
   const { hit, ...result } = after.result as PreviewActResult & { hit?: { tag: string; trusted: boolean } | null }
 
-  // The witness the locate trip armed. No record means the input never reached
-  // the document, which the agent must hear about — every other signal here
-  // travels on the script channel and would report success regardless.
+  // The witness the locate trip armed. A full-page navigation destroys that
+  // page's window (and its witness), but the fresh inventory gives us the new
+  // URL. Treat that observable transition as success; otherwise keep the
+  // conservative failure when the URL did not change or could not be read.
   if (!hit && CLICKS.indexOf(action.kind) !== -1) {
+    const navigated =
+      typeof found.url === 'string' &&
+      found.url.length > 0 &&
+      typeof result.url === 'string' &&
+      result.url.length > 0 &&
+      result.url !== found.url
+
+    if (navigated) {
+      return {
+        ...result,
+        acted,
+        note: 'The page navigated to a new document; its pointer witness was lost.',
+        success: true
+      }
+    }
+
     return {
       ...result,
       error: 'The pointer input never reached the page, so nothing was ' + acted.split(' ')[0] + '.',

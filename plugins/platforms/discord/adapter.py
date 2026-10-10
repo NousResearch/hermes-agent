@@ -445,6 +445,9 @@ def _load_opus_codec() -> None:
     bundled_opus = _find_discord_windows_bundled_opus(discord)
     if bundled_opus:
         opus_candidates.append(bundled_opus)
+    env_opus = os.environ.get("HERMES_OPUS_LIBRARY")
+    if env_opus:
+        opus_candidates.append(env_opus)
     opus_path = ctypes.util.find_library("opus")
     if opus_path:
         opus_candidates.append(opus_path)

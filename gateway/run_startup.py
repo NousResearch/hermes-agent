@@ -1595,6 +1595,11 @@ class GatewayStartupMixin:
         # Drain-control watcher: reconciles new-turn acceptance with the dashboard's ``.drain_request.json``
         # marker (prior-instantiation markers are ignored via epoch).
         self._spawn_supervised(self._drain_control_watcher, "drain_control_watcher")
+        # Resume-control watcher — applies pending ".miniapp_resume_requests.json" entries (the
+        # Telegram Mini App's "make this the active session" button) by performing the same switch
+        # /resume does, in-process.
+        from gateway.resume_control import watch_resume_requests
+        self._spawn_supervised(lambda: watch_resume_requests(self), "resume_control_watcher")
 
     @staticmethod
     async def _start_flush_runtime_status() -> None:

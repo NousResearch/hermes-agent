@@ -58,6 +58,8 @@ except ImportError:
             "Run hermes pm repair, then restart Hermes."
         )
 
+from pydantic import BaseModel
+
 WEB_DIST = Path(os.environ["HERMES_WEB_DIST"]) if "HERMES_WEB_DIST" in os.environ else Path(__file__).parent / "web_dist"
 _log = logging.getLogger(__name__)
 
@@ -850,6 +852,136 @@ async def _dashboard_selftest_loop() -> None:
         await _dashboard_selftest_once()
 
 
+def _machine_env_mtime() -> Optional[int]:
+    """Epoch mtime of the machine-default ``~/.hermes/.env``, or ``None``.
+
+    Bypasses any active per-request profile-scope override, same rationale
+    as ``plugins/dashboard_auth/telegram_miniapp/tiers.py``'s
+    ``_machine_hermes_home()``: the Telegram allowlist vars this drives a
+    restart-needed comparison for are process-global (one Telegram gateway
+    per machine, not one per profile — see that module's docstring), so this
+    must reflect the same ``.env`` the gateway process itself reads, not
+    whatever profile this status request happens to be scoped to via
+    ``?profile=``.
+
+    Deliberately a bare ``os.stat`` -- no dotenv parse, no sanitize pass, no
+    external-secret-source pull. Only the mtime is needed, and
+    ``os.replace()`` (the write path every ``.env`` writer in this codebase
+    uses) already gives the file a fresh mtime on every write with zero
+    extra code. The Mini App's "env change pending restart" banner relies on it.
+    """
+    override_free = os.environ.get("HERMES_HOME", "").strip()
+    if override_free:
+        home = Path(override_free)
+    else:
+        from hermes_constants import _get_platform_default_hermes_home
+
+        home = _get_platform_default_hermes_home()
+    try:
+        return int((home / ".env").stat().st_mtime)
+    except OSError:
+        return None
+
+
+def _dashboard_requester_scope(request: Request) -> Tuple[Optional[str], Optional[str]]:
+    """Derive ``(scope, requester_user_id)`` for DM-ownership scoping.
+
+    Returns ``(None, None)`` for a non-token (cookie/session) caller — the
+    existing single-owner dashboard login already implies full access, so
+    this scoping only ever activates for a bearer-token (Mini App) caller.
+
+    Returns ``("admin", None)`` when the verified principal carries the
+    ``dashboard:admin`` scope (the fail-closed admin tier) — same
+    unrestricted access as the desktop dashboard.
+
+    Returns ``("own", "<telegram-user-id>")`` for a recognised
+    ``telegram-miniapp`` principal without admin scope (the default
+    "paired" tier).
+
+    Returns ``("own", None)`` for any other token-authed caller that isn't
+    admin-scoped and isn't a recognised ``telegram-miniapp`` principal (e.g.
+    a future token provider this scoping logic doesn't know how to map to a
+    Telegram user id). Callers must treat this as "deny", not fall through
+    to an unscoped query — it deliberately does NOT resolve to a usable
+    ``requester_user_id``.
+    """
+    principal_obj = getattr(request.state, "token_principal", None)
+    if principal_obj is None:
+        return None, None
+    scopes = getattr(principal_obj, "scopes", ()) or ()
+    if "dashboard:admin" in scopes:
+        return "admin", None
+    if getattr(principal_obj, "provider", "") != "telegram-miniapp":
+        return "own", None
+    principal = getattr(principal_obj, "principal", "") or ""
+    _, _, user_id = principal.partition(":")
+    return "own", (user_id or None)
+
+
+def _enforce_session_ownership(request: Request, session: dict) -> None:
+    """Raise 404 unless *request*'s caller may see this single *session* row.
+
+    The single-row counterpart to the DM-scope filter applied to
+    ``GET /api/sessions`` — same trust classification
+    (``_dashboard_requester_scope``, reused here rather than re-derived),
+    but a different SHAPE of decision: a query-filter there restricts which
+    rows come back at all; this restricts access to one already-fetched
+    row by id.
+
+    Auth-path-aware by construction, because it is built on
+    ``_dashboard_requester_scope``: a cookie/session-authenticated caller
+    (scope ``None``) and a token-authed admin (scope ``"admin"``) are
+    unrestricted, matching the desktop dashboard operator's existing
+    unconditional access — this check only ever activates for a non-admin
+    ``telegram-miniapp`` token principal (scope ``"own"``).
+
+    404, not 403, on a mismatch: matches ``_resume_target_allowed``'s
+    (``gateway/slash_commands.py``) fail-closed IDOR precedent of not
+    distinguishing "doesn't exist" from "exists but isn't yours" via status
+    code — a Mini App caller probing another session id learns nothing
+    beyond what they already know (the id itself).
+    """
+    scope, requester_user_id = _dashboard_requester_scope(request)
+    if scope in (None, "admin"):
+        return
+    from hermes_state_session_scope import session_row_is_own_dm
+
+    if not session_row_is_own_dm(session, requester_user_id):
+        raise HTTPException(status_code=404, detail="Session not found")
+
+
+def _require_dashboard_admin(request: Request) -> None:
+    """Raise 403 unless *request*'s caller is unrestricted or admin-tier.
+
+    The gate for every Mini App action that mutates instance-wide state
+    (cron pause/resume/trigger, skill toggle, session archive/delete, the
+    Telegram allowlist, gateway restart/update) — none of these have a
+    per-row ownership shape like ``_enforce_session_ownership``'s sessions;
+    a non-admin paired caller gets none of it, full stop, so this is a flat
+    admin-or-nothing check rather than a scoped-query or per-row one.
+
+    Reuses ``_dashboard_requester_scope`` rather than re-deriving trust
+    classification here — same reason as ``_enforce_session_ownership``:
+    this is the third handler-level admin check in this file, and a fourth
+    independent reimplementation of "is this caller admin" is exactly the
+    pattern that produced every tier-boundary bug found while building this
+    Mini App feature.
+
+    403, not 404: unlike a session id (which an IDOR probe could use to
+    enumerate existence), there is nothing to hide the existence of here —
+    the caller already knows the action exists from the UI/API docs, they
+    just aren't allowed to perform it. A cookie/session-authenticated
+    caller (scope ``None``) and an admin-scoped Mini App token (scope
+    ``"admin"``) both pass unconditionally, matching the desktop dashboard
+    operator's existing unconditional access. A non-admin paired Mini App
+    token (scope ``"own"``) is rejected — this is the ONLY tier that must
+    never reach any endpoint gated by this function, regardless of what the
+    frontend does or doesn't render.
+    """
+    scope, _ = _dashboard_requester_scope(request)
+    if scope in (None, "admin"):
+        return
+    raise HTTPException(status_code=403, detail="Admin access required")
 
 
 # Action registries/spawner are owned by web_server_gateway; routers and tests reach them
@@ -1067,6 +1199,7 @@ _mount_plugin_api_routes()
 from hermes_cli.dashboard_auth.routes import router as _dashboard_auth_router
 
 app.include_router(_dashboard_auth_router)
+
 mount_spa(app)
 
 

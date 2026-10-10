@@ -1,0 +1,35 @@
+name: desktop-clarify-telegram
+repo: https://github.com/metamindedu/hermes-telegram-bridge
+sha: 1a76ed54ccf8a279d4dc4d9bfe1553b90d81d5ca
+subdir: plugins/desktop-clarify-telegram
+title: Desktop Telegram Replies and Approvals
+description: >-
+  Optional inbound companion to session-complete-telegram: clarify-card answers,
+  queued completion-card followups and Allow Once / Deny for eligible live Desktop
+  dangerous-command approvals. Disclosure — attaches handlers to the user's
+  existing default-home Telegram Gateway Application, never starts a competing
+  update poller. Uses the configured user's bot/private home, authenticates the
+  exact private owner and original bot message, and binds each interaction to the
+  current Desktop route/session/request. It uses the companion's local plaintext
+  SQLite inboxes and retained replay-rejection tombstones; no token copying,
+  rotation, arbitrary callback command execution, permanent approval, self-update
+  or author telemetry. Approval decisions are one-attempt and ambiguous results
+  are not retried; generic/plugin-rule/compute-host approvals remain Desktop-only.
+maintainer: metamindedu
+tier: community
+category: platform
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/metamindedu/hermes-telegram-bridge
+version: "1.6.1"
+readme: true
+platforms: []
+known_issues:
+  - Requires session-complete-telegram at the same pin, installed in the default home; this companion is not a standalone Telegram bot.
+  - Activate matching handlers through a safe existing-Gateway restart after updates; plugin rediscovery alone is not a resident-handler upgrade.
+  - Messages are primarily Korean. Local inbox directories must be owner-restricted, and Windows ACLs are not automatically audited.
+  - Only eligible native in-process command approvals offer buttons; delivery of a decision does not prove command completion.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

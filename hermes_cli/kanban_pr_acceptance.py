@@ -115,7 +115,7 @@ def collect_acceptance(contract: str, published_pr: str | None,
         declared = _PR.fullmatch(contract)
         url = contract if declared else published_pr
         match = _PR.fullmatch(url or "")
-        if not match or (not declared and match[1] != contract) or (declared and published_pr and published_pr != contract):
+        if not match or (not declared and match[1] != contract) or (declared and published_pr != contract):
             receipt["detail"] = "Supply metadata.published_pr matching the persisted completion contract."
             return receipt
         repo, number = match[1], int(match[2])
@@ -127,6 +127,10 @@ def collect_acceptance(contract: str, published_pr: str | None,
             # A private repo the login cannot read resolves to null, not an error.
             raise _GateAuthError(f"HTTP 404 on graphql {repo}")
         pr = repository["pullRequest"]
+        if pr["state"] == "CLOSED":
+            receipt.update(classification="closed", merged=False,
+                           detail="PR was closed without merging.")
+            return receipt
         sha, branch = pr["headRefOid"], pr["baseRefName"]
         receipt["head_sha"] = sha
         if not re.fullmatch(r"[0-9a-f]{40}", sha) or pr["state"] not in {"OPEN", "MERGED"}:
@@ -175,6 +179,7 @@ def collect_acceptance(contract: str, published_pr: str | None,
         if current["head"]["sha"] != sha or current["base"]["ref"] != branch or (current["state"] == "closed" and not current.get("merged")):
             receipt.update(classification="stale", detail="PR head/base changed while collecting evidence; retry.")
             return receipt
+        receipt["merged"] = pr["state"] == "MERGED" and current.get("merged") is True
         receipt["classification"] = next((x for x in outcomes if x != "success"), "missing" if not outcomes else "success")
         receipt["ok"] = receipt["classification"] == "success"
         return receipt

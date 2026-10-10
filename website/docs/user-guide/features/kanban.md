@@ -52,9 +52,28 @@ Declare PR work at creation with `--completion-contract OWNER/REPO` (or an exact
 accepts the same `completion_contract`. Use `local-only` for intentionally local
 work; existing and undeclared cards retain that default. Prose URLs are not policy.
 
-After publishing, pass `metadata.published_pr` to completion. The first matching
-URL binds the card permanently; retries cannot substitute a green sibling PR.
-CLI `show --json` and `kanban_show` expose the persisted contract.
+After publishing, pass `metadata.published_pr` to completion or the review handoff.
+If completion omits that key, Hermes reuses saved run evidence, newest first.
+An explicit invalid or conflicting value blocks fallback, including an explicit
+null. The first accepted matching URL binds the card permanently; retries cannot
+substitute a green sibling PR. CLI `show --json` and `kanban_show` expose the
+persisted contract.
+
+The dispatcher also reconciles unclaimed `review` cards with PR contracts.
+It takes the PR URL only from saved `review_requested` handoffs. A newer handoff
+that omits the key inherits prior evidence; an explicit invalid or mismatched
+value stops reconciliation. A verified merged PR with successful required checks
+completes the card through the same acceptance gate. Open and closed-unmerged PRs
+stay in review. Other task statuses and `local-only` cards are not auto-completed.
+
+Polling runs outside the board dispatch lock, with at most 20 PR lookups per tick.
+Receipts are cached for 60 seconds across ticks; authentication and infrastructure
+failures back off to at most 15 minutes. The cache is bounded to 256 entries and
+separates boards and profile identities. Dry runs do not poll or change the cache.
+Before completion, Hermes rechecks the exact saved handoff inside the completion
+transaction, so a replacement handoff cannot inherit an earlier poll's acceptance.
+Failed polls leave the card and event history unchanged. Dispatch results expose
+`completed_merged_prs` and sanitized `pr_reconciliation` diagnostics.
 
 The shared `complete_task` boundary covers worker tools, CLI, review approval and
 dashboard completion. It reads classic branch protection and active ruleset

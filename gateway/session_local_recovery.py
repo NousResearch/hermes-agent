@@ -84,6 +84,11 @@ def restore_local_session(authority, sid):
             current = store._entries.get(route)
             if current is not None and current.session_id != target:
                 raise RuntimeStoreError('admission_conflict')
+            # The receipt is the creation copy; a persisted entry for the same target keeps the
+            # route's explicit ``/yolo`` toggle (an OFF over a ``--yolo`` launch must survive a
+            # cold restore). An untoggled entry stays None and keeps following the launch policy.
+            if current is not None:
+                entry.yolo = current.yolo
             entry.origin = source
             store._entries[route] = entry
         adapter.policies[chat_id] = policy

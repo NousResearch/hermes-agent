@@ -566,6 +566,74 @@ async def test_refresh_400_still_clears_when_disk_is_same_token(tmp_path, monkey
 
 
 @pytest.mark.asyncio
+async def test_refresh_invalid_grant_removes_dead_tokens_and_stops_reconnects(tmp_path, monkeypatch):
+    """A rejected grant left on disk is reloaded and re-POSTed by every later flow and process."""
+    from tools.mcp_oauth import OAuthNonInteractiveError
+    from tools.mcp_oauth_manager import get_manager, reset_manager_for_tests
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    reset_manager_for_tests()
+    _set_interactive_stdin(monkeypatch)
+    provider = get_manager().get_or_build_provider("srv", "https://mcp.example.com", {})
+    provider.context.oauth_metadata = SimpleNamespace(token_endpoint="https://idp.example.com/oauth/token")
+    provider.context.current_tokens = _token("A1", "R1")
+    await provider.context.storage.set_tokens(_token("A1", "R1"))
+    client_file = tmp_path / "mcp-tokens" / "srv.client.json"
+    client_file.write_text('{"client_id": "cid"}', encoding="utf-8")
+
+    resp = _fake_response(
+        400, "https://idp.example.com/oauth/token", b'{"error":"invalid_grant"}'
+    )
+    assert await provider._handle_refresh_response(resp) is False
+
+    assert not (tmp_path / "mcp-tokens" / "srv.json").exists()
+    assert client_file.exists()
+    _set_interactive_stdin(monkeypatch, is_tty=False)
+    with pytest.raises(OAuthNonInteractiveError, match="hermes mcp login srv"):
+        get_manager().get_or_build_provider("srv", "https://mcp.example.com", {})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status, body", [
+    (503, b"upstream unavailable"),
+    (429, b'{"error":"slow_down"}'),
+    (403, b"<html>Request blocked</html>"),
+    (401, b'{"error":"invalid_client"}'),
+])
+async def test_refresh_failure_without_invalid_grant_keeps_disk_tokens(tmp_path, monkeypatch, status, body):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    provider = _provider_with_token_endpoint(
+        tmp_path, {}, "https://idp.example.com/oauth/token", monkeypatch
+    )
+    provider.context.current_tokens = _token("A1", "R1")
+    await provider.context.storage.set_tokens(_token("A1", "R1"))
+
+    await provider._handle_refresh_response(
+        _fake_response(status, "https://idp.example.com/oauth/token", body)
+    )
+
+    assert (await provider.context.storage.get_tokens()).refresh_token == "R1"
+
+
+@pytest.mark.asyncio
+async def test_refresh_invalid_grant_keeps_newer_pair_written_by_peer(tmp_path, monkeypatch):
+    """A peer's rotated pair is not adopted once its access token expired, but it is not ours to delete."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    provider = _provider_with_token_endpoint(
+        tmp_path, {}, "https://idp.example.com/oauth/token", monkeypatch
+    )
+    provider.context.current_tokens = _token("A1", "R1")
+    await provider.context.storage.set_tokens(_token("A2", "R2", expires_in=-60))
+
+    resp = _fake_response(
+        400, "https://idp.example.com/oauth/token", b'{"error":"invalid_grant"}'
+    )
+    assert await provider._handle_refresh_response(resp) is False
+
+    assert (await provider.context.storage.get_tokens()).refresh_token == "R2"
+
+
+@pytest.mark.asyncio
 async def test_refresh_400_does_not_recover_expired_disk_token(tmp_path, monkeypatch):
     """A *different* but already-expired disk token is not a recovery."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))

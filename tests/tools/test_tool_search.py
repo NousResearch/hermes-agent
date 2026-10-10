@@ -20,7 +20,7 @@ if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
 
-def _td(name: str, description: str = "", properties: Dict[str, Any] | None = None) -> Dict[str, Any]:
+def _td(name: str, description: str = "", properties: dict[str, Any] | None = None) -> dict[str, Any]:
     return {
         "type": "function",
         "function": {
@@ -352,7 +352,7 @@ class TestBridgeDispatch:
         assert "error" in json.loads(result)
 
     def test_tool_search_rejects_empty_and_overcap_queries(self):
-        import tools.tool_search as tool_search
+        from tools import tool_search
 
         cfg = tool_search.ToolSearchConfig.from_raw({})
         assert "error" in json.loads(tool_search.dispatch_tool_search(
@@ -396,7 +396,7 @@ class TestBridgeDispatch:
 
     def test_resolve_underlying_call_parses_object_args(self):
         from tools.tool_search import resolve_underlying_call
-        name, args, err = resolve_underlying_call({
+        _name, _args, err = resolve_underlying_call({
             "name": "unknown_xxx",
             "arguments": {"foo": "bar"},
         })
@@ -407,7 +407,7 @@ class TestBridgeDispatch:
     def test_resolve_underlying_call_rejects_recursion(self):
         """tool_call cannot invoke tool_call itself."""
         from tools.tool_search import resolve_underlying_call, TOOL_CALL_NAME
-        name, args, err = resolve_underlying_call({
+        _name, _args, err = resolve_underlying_call({
             "name": TOOL_CALL_NAME,
             "arguments": {},
         })

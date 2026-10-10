@@ -580,6 +580,7 @@ export const arCommandCenter = {
     last: 'آخر تشغيل',
     next: 'التالي',
     noRuns: 'لا توجد تشغيلات',
+    queuedRun: 'تشغيل في قائمة الانتظار',
     manage: 'إدارة',
     showRuns: 'إظهار التشغيلات',
     hideRuns: 'إخفاء التشغيلات',

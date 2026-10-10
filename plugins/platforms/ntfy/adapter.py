@@ -14,7 +14,7 @@ import json
 import logging
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from typing import Any, Dict, List, Optional
 
 try:
@@ -50,7 +50,7 @@ _ECHO_TAG = "hermes-agent"  # tag added to outgoing messages for echo-loop preve
 _MARKDOWN_TRUTHY = ("1", "true", "yes")
 
 
-def _build_auth_header(token: str) -> Dict[str, str]:
+def _build_auth_header(token: str) -> dict[str, str]:
     """``Authorization`` header from an ntfy token; ``{}`` when unset.
 
     Tokens are whitespace-stripped (pasted tokens often carry newlines that
@@ -65,7 +65,7 @@ def _build_auth_header(token: str) -> Dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
-def _publish_headers(token: str, markdown: bool, *, auth_first: bool = True) -> Dict[str, str]:
+def _publish_headers(token: str, markdown: bool, *, auth_first: bool = True) -> dict[str, str]:
     """Headers for a publish POST: auth (if any), plain-text body, echo tag, optional X-Markdown.
 
     ``auth_first`` pins the header order each call site has always sent on the wire.
@@ -95,7 +95,7 @@ def _response_message_id(resp) -> str:
         return uuid.uuid4().hex[:12]
 
 
-def _server_url(extra: Dict[str, Any]) -> str:
+def _server_url(extra: dict[str, Any]) -> str:
     return _extra_or_secret(extra, "server", "NTFY_SERVER_URL", DEFAULT_SERVER).rstrip("/")
 
 
@@ -127,7 +127,7 @@ class NtfyAdapter(BasePlatformAdapter):
         self._publish_topic: str = _extra_or_secret(extra, "publish_topic", "NTFY_PUBLISH_TOPIC") or self._topic
         self._token: str = _extra_or_secret(extra, "token", "NTFY_TOKEN")
         self._stream_task: Optional[asyncio.Task] = None
-        self._http_client: Optional["httpx.AsyncClient"] = None
+        self._http_client: Optional[httpx.AsyncClient] = None
         self._dedup = MessageDeduplicator(max_size=DEDUP_MAX_SIZE, ttl_seconds=DEDUP_WINDOW_SECONDS)
 
     # -- Connection lifecycle -----------------------------------------------
@@ -197,7 +197,7 @@ class NtfyAdapter(BasePlatformAdapter):
         self._set_fatal_error(code, detail, retryable=False)
         raise _FatalStreamError(reason)
 
-    async def _consume_stream(self, url: str, headers: Dict[str, str]) -> None:
+    async def _consume_stream(self, url: str, headers: dict[str, str]) -> None:
         """Open an HTTP streaming connection and dispatch events."""
         # poll=false keeps a persistent streaming connection alive with keepalive events
         async with self._http_client.stream(
@@ -238,7 +238,7 @@ class NtfyAdapter(BasePlatformAdapter):
 
     # -- Inbound message processing -----------------------------------------
 
-    async def _on_message(self, event: Dict[str, Any]) -> None:
+    async def _on_message(self, event: dict[str, Any]) -> None:
         """Process an incoming ntfy message event."""
         msg_id = event.get("id") or uuid.uuid4().hex
         if self._dedup.is_duplicate(msg_id):
@@ -256,9 +256,9 @@ class NtfyAdapter(BasePlatformAdapter):
         topic = event.get("topic") or self._topic
         source = self.build_source(
             chat_id=topic, chat_name=topic, chat_type="dm", user_id=topic, user_name=topic, message_id=msg_id)
-        unix_ts, timestamp = event.get("time"), datetime.now(tz=timezone.utc)
+        unix_ts, timestamp = event.get("time"), datetime.now(tz=UTC)
         try:
-            timestamp = datetime.fromtimestamp(int(unix_ts), tz=timezone.utc) if unix_ts else timestamp
+            timestamp = datetime.fromtimestamp(int(unix_ts), tz=UTC) if unix_ts else timestamp
         except (ValueError, OSError, TypeError):
             pass
         message_event = MessageEvent(
@@ -270,7 +270,7 @@ class NtfyAdapter(BasePlatformAdapter):
     # -- Outbound messaging -------------------------------------------------
 
     async def send(
-        self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
+        self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """Publish a message to the configured publish topic."""
         publish_topic = (metadata or {}).get("publish_topic") or self._publish_topic or chat_id
@@ -296,10 +296,10 @@ class NtfyAdapter(BasePlatformAdapter):
             logger.error("[%s] Send error: %s", self.name, e)
             return SendResult(success=False, error=str(e))
 
-    async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
+    async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         return {"name": chat_id, "type": "dm"}
 
-    def _auth_headers(self) -> Dict[str, str]:
+    def _auth_headers(self) -> dict[str, str]:
         return _build_auth_header(self._token)
 
 
@@ -322,8 +322,8 @@ def _env_enablement() -> dict | None:
 
 async def _standalone_send(
     pconfig, chat_id: str, message: str, *,
-    thread_id: Optional[str] = None, media_files: Optional[List[str]] = None, force_document: bool = False,
-) -> Dict[str, Any]:
+    thread_id: Optional[str] = None, media_files: Optional[list[str]] = None, force_document: bool = False,
+) -> dict[str, Any]:
     """Out-of-process publish for cron / send_message_tool when no gateway adapter is live.
 
     ``thread_id``/``media_files`` are signature parity only (ntfy has no thread

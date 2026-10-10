@@ -779,6 +779,8 @@ gateway:
   plan:
     ack_task: "Pianificazione: {task}"
     ack_conversation: "Pianificazione dal contesto di questa conversazione…"
+  initiate_setup:
+    ack: "Avvio della configurazione…"
   init:
     start_failed: "Impossibile avviare /init — riprova."
     ack_update: "Aggiornamento di AGENTS.md da una scansione del progetto…"
@@ -1556,6 +1558,8 @@ slash:
     description: "Riesegui un prompt a intervalli ricorrenti in questa sessione"
   plan:
     description: "Scrivi un piano di implementazione in markdown in .hermes/plans/ senza eseguire nulla"
+  initiate-setup:
+    description: "Avvia la configurazione iniziale: conoscerti e adattare Hermes a te"
   moa:
     description: "Esegui un prompt con il preset Mixture of Agents predefinito, poi ripristina il tuo modello"
   subgoal:
@@ -2914,6 +2918,8 @@ cli:
     plan:
       planning: "📋 Pianificazione: {task}"
       from_conversation: "📋 Pianificazione dal contesto di questa conversazione..."
+    initiate_setup:
+      starting: "🧭 Avvio della configurazione..."
     init:
       updating: "⚡ Aggiornamento di AGENTS.md da una scansione del progetto..."
       generating: "⚡ Generazione di AGENTS.md da una scansione del progetto..."

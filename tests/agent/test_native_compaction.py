@@ -445,11 +445,11 @@ class TestAgentInitConfig:
             skip_memory=True,
             enabled_toolsets=[],
         )
-        compressor = getattr(agent, "context_compressor")
+        compressor = agent.context_compressor
         compressor.threshold_tokens = 765_000
         kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
 
-        assert getattr(agent, "codex_responses_compact_threshold") == configured
+        assert agent.codex_responses_compact_threshold == configured
         assert kwargs["context_management"] == [
             {"type": "compaction", "compact_threshold": resolved}
         ]

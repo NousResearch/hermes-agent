@@ -50,7 +50,7 @@ class StoredRoomLink:
     updated_at: float
 
     @classmethod
-    def from_mapping(cls, value: Mapping[str, Any]) -> "StoredRoomLink":
+    def from_mapping(cls, value: Mapping[str, Any]) -> StoredRoomLink:
         _link_fields(value)
         room_id = _short_string(value["room_id"], "room_id")
         member_id = _short_string(value["member_id"], "member_id")
@@ -76,7 +76,7 @@ class StoredRoomLink:
             status=status, updated_at=updated_at)
 
     @classmethod
-    def from_record(cls, value: Mapping[str, Any]) -> "StoredRoomLink":
+    def from_record(cls, value: Mapping[str, Any]) -> StoredRoomLink:
         try:
             catalog = json.loads(str(value["catalog_json"]))
         except Exception as exc:

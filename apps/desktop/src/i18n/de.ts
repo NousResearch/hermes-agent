@@ -5,7 +5,10 @@ import { deBoot } from './de_boot'
 import { deLocalModels } from './de_local_models'
 import { deModelMenu } from './de_model_menu'
 import { deNotices } from './de_notices'
+import { deOnboarding } from './de_onboarding'
+import { deProjects } from './de_projects'
 import { deSharedMetrics } from './de_shared_metrics'
+import { deUpdateChannel } from './de_update_channel'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introDe } from './intro-de'
 
@@ -1556,9 +1559,7 @@ export const deOverrides = {
       screenRecording: 'Bildschirmaufnahme',
       driverHealth: 'Treiberstatus'
     },
-    about: {
-      updates: 'Updates'
-    },
+    about: { updates: 'Updates', channel: deUpdateChannel },
     config: {
       minimizeToTrayTitle: 'In den Infobereich minimieren',
       minimizeToTrayDesc:
@@ -1596,7 +1597,13 @@ export const deOverrides = {
         'Wie groß eine lokale Datei sein darf, die Desktop für Vorschauen und Bildanhänge lädt, in MB. Standard ist 16. Remote-Anhänge ohne Bild verwenden ein eigenes Limit von 256 MB. Ein sehr hoher Wert lädt die gesamte Datei in den Speicher, was die App einfrieren oder abstürzen lassen kann.',
       attachmentSizeUnit: 'MB',
       attachmentSizeLabel: 'Maximale Vorschau-/Bildladegröße in Megabyte',
-      showOptions: 'Optionen anzeigen'
+      showOptions: 'Optionen anzeigen',
+      developerTitle: 'Entwickler',
+      resetOnboardingTitle: 'Onboarding zurücksetzen',
+      resetOnboardingDesc:
+        'Löscht die Einrichtungs-Chats, baut das Einrichtungsprofil neu auf und startet die Ersteinrichtung erneut. Ihre eigenen Profile, Chats und Plugins bleiben erhalten.',
+      resetOnboardingAction: 'Zurücksetzen',
+      resetOnboardingFailed: 'Onboarding konnte nicht zurückgesetzt werden'
     },
     hudModifier: {
       title: 'Tippen, um das HUD aufzurufen',
@@ -3546,6 +3553,7 @@ export const deOverrides = {
     next: 'Als Nächstes:',
     overdueSince: 'Überfällig seit:',
     noRuns: 'Noch keine Ausführungen',
+    queuedRun: 'Ausführung in der Warteschlange',
     manage: 'Verwalten',
     showRuns: 'Ausführungen anzeigen',
     hideRuns: 'Ausführungen ausblenden',
@@ -3757,87 +3765,7 @@ export const deOverrides = {
       guide: 'Wiederherstellungsanleitung'
     },
     noFilterMatches: 'Keine Sessions passen zu diesen Filtern',
-    projects: {
-      showAllSessions: 'Alle Sessions anzeigen',
-      sectionLabel: 'Projekte',
-      home: 'Start',
-      autoDiscovered: 'Automatisch erkannt',
-      newButton: 'Neues Projekt',
-      createTitle: 'Neues Projekt',
-      createDesc: 'Geben Sie dem Workspace einen Namen und fügen Sie einen oder mehrere Ordner hinzu.',
-      renameTitle: 'Projekt umbenennen',
-      addFolderTitle: 'Ordner hinzufügen',
-      namePlaceholder: 'z. B. Skunkworks',
-      foldersLabel: 'Ordner',
-      ideaLabel: 'Idee',
-      ideaPlaceholder: 'Worum geht es in diesem Projekt? (gespeichert in IDEA.md)',
-      ideaGenerate: 'Idee generieren',
-      ideaGenerating: 'Wird generiert…',
-      ideaShuffle: 'Vorlagen mischen',
-      noFolders: 'Noch keine Ordner hinzugefügt.',
-      addFolder: 'Ordner hinzufügen',
-      primaryBadge: 'primär',
-      removeFolder: 'Entfernen',
-      create: 'Erstellen',
-      menu: 'Aktionen',
-      menuRename: 'Umbenennen…',
-      menuAppearance: 'Aussehen',
-      noColor: 'Keine Farbe',
-      menuAddFolder: 'Ordner hinzufügen',
-      menuSetActive: 'Als aktiv festlegen',
-      menuDelete: 'Löschen',
-      moveToProject: 'In Projekt verschieben',
-      movedTo: name => `In ${name} verschoben`,
-      moveFailed: 'Session konnte nicht verschoben werden',
-      moveNoFolder: 'Dieses Projekt hat keinen Ordner, in den verschoben werden kann',
-      moveNoProjects: 'Keine anderen Projekte',
-      reveal: 'Im Ordner anzeigen',
-      copyPath: 'Pfad kopieren',
-      removeFromSidebar: 'Aus der Sidebar ausblenden',
-      createdInPreviousContext:
-        'Das Projekt wurde auf der vorherigen Verbindung oder im vorherigen Profil erstellt. Wechsle zurück; IDEA.md wurde nicht geschrieben.',
-      createFailed: 'Projekt konnte nicht erstellt werden',
-      staleBackend:
-        'Aktualisieren Sie das Hermes-Backend, um Projekte zu erstellen – Ihr Backend ist älter als diese Desktop-App (Einstellungen → Updates → Backend).',
-      deleteConfirm:
-        'Das entfernt das gespeicherte Projekt aus Hermes. Dateien, Git-Repos und Worktrees bleiben unberührt.',
-      startWork: 'Neuer Worktree',
-      newWorktreeTitle: 'Neuer Worktree',
-      newWorktreeDesc: 'Benennen Sie den Branch für diesen Worktree.',
-      branchPlaceholder: 'z. B. my-feature',
-      branchOff: () => ({ after: '', before: 'abzweigen von ' }),
-      baseBranchPlaceholder: 'Branches durchsuchen…',
-      baseBranchNone: 'Keine Branches gefunden',
-      startWorkFailed: 'Worktree konnte nicht erstellt werden',
-      worktreeStaleBackend:
-        'Aktualisieren Sie das Hermes-Backend, um Worktrees über diese Remote-Verbindung zu erstellen – es ist älter als die Git-Worktree-API.',
-      worktreeProjectLabel: 'Projekt',
-      worktreeProjectPlaceholder: 'Projekte durchsuchen…',
-      worktreeProjectNone: 'Keine Projekte mit Ordner',
-      convertBranch: 'Einen Branch konvertieren…',
-      convertBranchTitle: 'Einen Branch konvertieren',
-      convertBranchDesc: 'Ausgecheckte Branches öffnen oder einen Worktree für einen freien Branch erstellen.',
-      convertBranchPlaceholder: 'Branches durchsuchen…',
-      convertBranchInstead: 'Einen bestehenden Branch konvertieren',
-      branchOpenExisting: 'öffnen',
-      branchSwitchHome: 'Start wechseln',
-      branchCreateWorktree: 'neuer Worktree',
-      branchTrackRemote: 'Remote verfolgen',
-      branchesLoading: 'Branches werden geladen…',
-      noBranches: 'Keine Branches gefunden',
-      removeWorktree: 'Worktree entfernen',
-      removeWorktreeFailed: 'Worktree konnte nicht entfernt werden (nicht committete Änderungen?)',
-      removeWorktreeConfirm:
-        'Aus Git entfernen (löscht das Worktree-Verzeichnis; der Branch bleibt), oder einfach die Lane aus der Sidebar ausblenden und den Worktree auf der Festplatte belassen.',
-      removeWorktreeDirty:
-        'Dieser Worktree hat nicht committete Änderungen. Kraftvoll entfernen (verwirft diese Änderungen), oder einfach die Lane ausblenden und ihn auf der Festplatte behalten.',
-      forceRemove: 'Kraftvoll entfernen',
-      enter: label => `${label} öffnen`,
-      reorder: label => `${label} neu anordnen`,
-      toggle: (label, open) => `${open ? 'Anzeigen' : 'Ausblenden'} ${label} Sessions`,
-      showAllCount: (count: number) => `Alle ${count} Sessions anzeigen`,
-      back: 'Alle Projekte'
-    },
+    projects: deProjects,
     newSessionIn: label => `Neue Session in ${label}`,
     showMoreIn: (count, label) => `Noch ${count} mehr in ${label} anzeigen`,
     loading: 'Wird geladen…',
@@ -4483,6 +4411,9 @@ export const deOverrides = {
     }
   },
   handoffTour: {
+    localTitle: 'Dieser Rechner kann Modelle lokal ausführen',
+    localText: (model: string) =>
+      `${model} passt zu Ihrer Hardware. Es läuft kostenlos, und Chats verlassen Ihren Computer nie. Wählen Sie es jederzeit hier im Modellmenü.`,
     profileTitle: 'Ihre erste Aufgabe läuft im Standardprofil',
     profileText:
       'Diese Leiste wechselt die Profile. Das jetzt hervorgehobene ist „Standard", wo die Aufgaben-Session lebt. Das andere ist das Einrichtungsprofil, wo der Willkommens-Chat lebt.',
@@ -4492,10 +4423,6 @@ export const deOverrides = {
     stayTitle: 'Hermes ist einen Klick entfernt',
     stayText:
       'Wechseln Sie ins Einrichtungsprofil und öffnen Sie „Willkommen bei Hermes“, wenn Sie Hilfe brauchen. Es bleibt dort.'
-  },
-  guidedGreeting: {
-    line: 'Hallo und willkommen. Ich bin Hermes. Geben Sie mir zwei Minuten, um alles für Sie einzurichten, dann setzen wir mich auf etwas an, das Sie wirklich erledigt haben möchten.\\n\\nAber zuerst: Wie soll ich Sie nennen?',
-    nameSuggestion: name => `(Ich kann Sie auch einfach ${name} nennen, wenn Ihnen das lieber ist.)`
   },
   install: {
     stageStates: {
@@ -4575,104 +4502,7 @@ export const deOverrides = {
     reloadRetry: 'Neu laden und erneut versuchen',
     openLogs: 'Logs öffnen'
   },
-  onboarding: {
-    headerTitle: 'Hermes Agent für Sie einrichten',
-    headerDesc:
-      'Verbinden Sie einen Modell-Anbieter, um mit dem Chatten zu beginnen. Die meisten Optionen brauchen nur einen Klick.',
-    preparingInstall:
-      'Hermes schließt die Installation ab. Das dauert beim ersten Start normalerweise unter einer Minute.',
-    starting: 'Hermes wird gestartet…',
-    lookingUpProviders: 'Anbieter werden gesucht...',
-    collapse: 'Einklappen',
-    otherProviders: 'Andere Anbieter',
-    haveApiKey: 'Ich habe bereits einen API-Key',
-    chooseLater: 'Ich wähle später einen Anbieter',
-    recommended: 'Empfohlen',
-    connected: 'Verbunden',
-    featuredPitch: 'Ein Abo, 300+ Frontier-Modelle – die empfohlene Art, Hermes zu nutzen',
-    fireworksPitch: 'Direkte Model-API – Fireworks-gehostete Frontier-Modelle',
-    localModelsTitle: 'Modelle lokal ausführen',
-    localModelsPitch: 'Kein Konto nötig – laden Sie ein Modell herunter und führen Sie es auf diesem Rechner aus',
-    openRouterPitch: 'Ein Key, hunderte Modelle – ein solider Standard',
-    apiKeyOptions: {
-      fireworks: {
-        short: 'direkte Model-API',
-        description: 'Direkter Zugriff auf Modelle, die von Fireworks AI gehostet werden.'
-      },
-      openrouter: {
-        short: 'ein Key, viele Modelle',
-        description: 'Hostet hunderte Modelle hinter einem einzigen Key. Guter Standard für neue Installationen.'
-      },
-      openai: {
-        short: 'GPT-Klasse-Modelle',
-        description: 'Direkter Zugriff auf OpenAI-Modelle.'
-      },
-      gemini: {
-        short: 'Gemini-Modelle',
-        description: 'Direkter Zugriff auf Google-Gemini-Modelle.'
-      },
-      xai: {
-        short: 'Grok-Modelle',
-        description: 'Direkter Zugriff auf xAI-Grok-Modelle.'
-      },
-      local: {
-        short: 'selbst gehostet',
-        description:
-          'Verbinden Sie Hermes mit einem lokalen oder selbst gehosteten OpenAI-kompatiblen Endpunkt (vLLM, llama.cpp, Ollama usw.).'
-      }
-    },
-    backToSignIn: 'Zurück zur Anmeldung',
-    getKey: 'Einen Key holen',
-    replaceCurrent: 'Aktuellen Wert ersetzen',
-    pasteApiKey: 'API-Key einfügen',
-    localApiKeyPlaceholder: 'API-Key (optional – nur falls Ihr Endpunkt einen benötigt)',
-    localModelNamePlaceholder: 'Modellname (z. B. command-a-plus-05-2026)',
-    couldNotSave: 'Anmeldedaten konnten nicht gespeichert werden.',
-    connecting: 'Verbinden',
-    update: 'Aktualisieren',
-    flowSubtitles: {
-      pkce: 'Öffnet Ihren Browser zur Anmeldung und fährt dann hier fort',
-      device_code: 'Öffnet eine Verifizierungsseite in Ihrem Browser – Hermes verbindet sich automatisch',
-      external: 'Melden Sie sich einmal in Ihrem Terminal an und kehren Sie dann zum Chatten zurück'
-    },
-    startingSignIn: provider => `Anmeldung für ${provider} wird gestartet...`,
-    verifyingCode: provider => `Ihr Code wird mit ${provider} überprüft…`,
-    connectedProvider: provider => `${provider} verbunden`,
-    connectedPicking: provider => `${provider} verbunden. Standardmodell wird ausgewählt...`,
-    signInFailed: 'Anmeldung fehlgeschlagen. Versuchen Sie es erneut.',
-    signInExpired:
-      'Die Anmeldung ist beim Warten auf die Autorisierung abgelaufen. Meist bedeutet das, dass die Anmeldeseite im geöffneten Tab hängen geblieben ist (serverseitiges Problem) – schließen Sie die Anmeldung dort ab und versuchen Sie es dann erneut. Wenn es weiterhin fehlschlägt, verwenden Sie stattdessen einen API-Key oder die CLI als Alternative.',
-    signInDidNotFinish: provider =>
-      `Die Anmeldung bei ${provider} wurde nicht abgeschlossen. Prüfen Sie Ihre Internetverbindung und versuchen Sie es erneut, oder wählen Sie einen anderen Anbieter.`,
-    tryAgain: 'Erneut versuchen',
-    useApiKeyInstead: 'API-Key verwenden',
-    errorDetails: 'Details',
-    pickDifferentProvider: 'Einen anderen Anbieter wählen',
-    signInWith: provider => `Mit ${provider} anmelden`,
-    openedBrowser: provider => `Wir haben ${provider} in Ihrem Browser geöffnet.`,
-    authorizeThere: 'Autorisieren Sie Hermes dort.',
-    copyAuthCode: 'Kopieren Sie den Autorisierungscode und fügen Sie ihn unten ein.',
-    pasteAuthCode: 'Autorisierungscode einfügen',
-    reopenAuthPage: 'Autorisierungsseite erneut öffnen',
-    autoBrowser: provider =>
-      `Wir haben ${provider} in Ihrem Browser geöffnet. Autorisieren Sie Hermes dort, und Sie werden automatisch verbunden – nichts zu kopieren oder einzufügen.`,
-    reopenSignInPage: 'Anmeldeseite erneut öffnen',
-    waitingAuthorize: 'Warten auf Ihre Autorisierung…',
-    externalPending: provider =>
-      `${provider} meldet sich über seine eigene CLI an. Führen Sie diesen Befehl in einem Terminal aus, kehren Sie dann zurück und wählen Sie „Ich habe mich angemeldet“:`,
-    signedIn: 'Ich habe mich angemeldet',
-    deviceCodeOpened: provider => `Wir haben ${provider} in Ihrem Browser geöffnet. Geben Sie dort diesen Code ein:`,
-    reopenVerification: 'Verifikationsseite erneut öffnen',
-    copy: 'Kopieren',
-    defaultModel: 'Standardmodell',
-    freeTier: 'Free-Tier',
-    pro: 'Pro',
-    free: 'Kostenlos',
-    price: (input, output) => `${input} rein / ${output} raus pro Mtok`,
-    change: 'Ändern',
-    startChatting: 'Loslegen',
-    docs: provider => `${provider}-Doku`
-  },
+  onboarding: deOnboarding,
   freeTier: {
     providerRowTitle: 'Nous · Gratis-Tarif',
     providerRowPitch: 'Melden Sie sich mit einem Nous-Konto an, um mehr Modelle und Tools freizuschalten.',
@@ -4720,6 +4550,12 @@ export const deOverrides = {
       'Hermes konnte den Nous-Dienst nicht erreichen, um Ihre Anmeldung abzuschließen. Prüfen Sie Ihre Internetverbindung und versuchen Sie es erneut. Ihre Session bleibt erhalten.',
     alreadySignedInHeading: 'Bereits angemeldet.',
     alreadySignedInBody: 'Dieses Hermes ist bereits mit einem Nous-Konto angemeldet.',
+    offer: {
+      heading: 'Mit Hermes weitermachen',
+      body: 'Sie nutzen das kostenlose Kontingent. Wenn Sie Hermes weiter verwenden, stoßen Sie bald an Grenzen. Melden Sie sich mit einem kostenlosen Nous-Konto an, um ein größeres Kontingent zu erhalten.',
+      signIn: 'Anmelden',
+      notNow: 'Nicht jetzt'
+    },
     setupFailed: {
       gateClosed:
         'Diese Hermes-Version kann ohne Nous-Konto nicht starten. Melden Sie sich an oder legen Sie eines an – kostenlos und in einer Minute erledigt.',
@@ -5459,9 +5295,35 @@ export const deOverrides = {
       confirmAndContinueLabel: 'Bestätigen und fortfahren',
       singleSelectHint: 'Eines auswählen',
       multiSelectHint: 'Alle Treffer auswählen',
+      oneQuestion: '1 Frage',
       questionProgress: (answered, total) => `${answered} von ${total} beantwortet`,
       notDelivered:
         'Diese Frage hat die App nicht erreicht und kann hier nicht beantwortet werden. Klicken Sie auf Stopp, um den Durchgang zu beenden, und antworten Sie dann im Chat.'
+    },
+    setupChoose: {
+      kinds: {
+        accent: 'Akzentfarbe',
+        connectors: 'Apps',
+        layout: 'Layout',
+        plugins: 'Plugins',
+        theme: 'Erscheinungsbild'
+      },
+      loading: 'Optionen werden geladen…',
+      unavailable: 'Diese Liste ist gerade nicht verfügbar. Antworten Sie stattdessen im Chat.',
+      findApp: 'App suchen',
+      customColor: 'Eigene Farbe',
+      plugin: 'Plugin',
+      startsLater: 'Wir richten sie ein, wenn Sie loslegen.'
+    },
+    startChat: {
+      starting: title => `„${title}“ wird gestartet…`,
+      startingUntitled: 'Chat wird gestartet…',
+      untitled: 'Neuer Chat',
+      notStarted: 'Der Chat wurde nicht gestartet',
+      inProfile: profile => `In ${profile}`,
+      open: 'Öffnen',
+      openFailed: 'Der Chat konnte nicht geöffnet werden',
+      retry: 'Erneut versuchen'
     },
     catalogInstall: {
       preparing: 'Installation wird vorbereitet…',
@@ -5663,6 +5525,12 @@ export const deOverrides = {
           pending: 'Durchsucht Session-Verlauf',
           pendingAction: 'Durchsucht'
         },
+        setup_choose: {
+          done: 'Einrichtungsfrage gestellt',
+          pending: 'Stellt eine Einrichtungsfrage',
+          pendingAction: 'Fragt'
+        },
+        start_chat: { done: 'Chat gestartet', pending: 'Startet einen Chat', pendingAction: 'Startet' },
         terminal: {
           done: 'Befehl ausgeführt',
           pending: 'Führt Befehl aus',
@@ -5871,11 +5739,6 @@ export const deOverrides = {
         title: 'Ein Update für die lokale Engine ist verfügbar',
         text: 'Aktualisieren Sie die Engine, die Ihre lokalen Modelle ausführt. Laufende lokale Anfragen können unterbrochen werden.',
         action: 'Jetzt aktualisieren'
-      },
-      'local-setup': {
-        title: 'Dieses Gerät kann Modelle lokal ausführen',
-        text: 'Ihre Hardware kann ein lokales Modell ausführen. Chats bleiben auf Ihrem Computer und kosten nichts.',
-        action: 'Einrichten'
       },
       'right-pane': {
         title: 'Der Arbeitsbereich',

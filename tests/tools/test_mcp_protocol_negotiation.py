@@ -153,7 +153,7 @@ class _EchoingStatelessSession(_Session):
 
     async def send_request(self, request, result_type):
         self.calls.append(("send_request", request.method))
-        import mcp.types as types
+        from mcp import types
         return types.InitializeResult(
             protocolVersion="2026-07-28", capabilities=types.ServerCapabilities(tools=types.ToolsCapability()),
             serverInfo=types.Implementation(name="StatelessServer", version="ESF"))

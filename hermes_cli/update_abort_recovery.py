@@ -91,7 +91,7 @@ def _qualified_serve_skips(skip_units) -> list[dict]:
 
 def _run_fresh_recovery_process(
     profiles, candidates, *, gateway_mode: bool, recover_serve: bool, skip_units
-) -> "subprocess.CompletedProcess | None":
+) -> subprocess.CompletedProcess | None:
     """Spawn ``hermes_cli.update_restart_recovery --stdin`` detached from this process; None when it
     could not run (no systemd-run in gateway mode, OSError, timeout) — the caller fails closed."""
     command = [sys.executable, "-m", "hermes_cli.update_restart_recovery", "--stdin"]

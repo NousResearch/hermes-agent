@@ -419,7 +419,7 @@ def _state_db_stats(issues: list, state_db_path: Path) -> None:
 def _state_db_wal(f: Finding, should_fix: bool, state_db_path: Path) -> None:
     """WAL file size (unbounded growth indicates missed checkpoints)."""
     wal_path = state_db_path.parent / "state.db-wal"
-    wal_size = lambda: wal_path.stat().st_size if wal_path.exists() else 0  # noqa: E731
+    wal_size = lambda: wal_path.stat().st_size if wal_path.exists() else 0
     with warn_on_error(""):
         size = wal_size()
         if size > 50 * 1024 * 1024:  # 50 MB

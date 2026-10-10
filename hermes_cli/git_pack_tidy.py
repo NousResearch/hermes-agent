@@ -102,11 +102,11 @@ class _Index:
         self._map.close()  # Windows refuses to unlink a mapped file
 
 
-def _git_env() -> Dict[str, str]:
+def _git_env() -> dict[str, str]:
     return {**noninteractive_git_env(), **NO_LAZY_FETCH_ENV}
 
 
-def _promisor_packs(pack_dir: Path) -> List[Path]:
+def _promisor_packs(pack_dir: Path) -> list[Path]:
     return [p for p in pack_dir.glob("pack-*.pack")
             if p.with_suffix(".promisor").exists() and p.with_suffix(".idx").exists()]
 
@@ -203,7 +203,7 @@ def _save_state(pack_dir: Path, state: dict) -> None:
         logger.debug("could not record pack tidy state in %s", pack_dir, exc_info=True)
 
 
-def _is_redundant(oids: Iterable[bytes], others: List[_Index], deadline: float) -> Optional[bool]:
+def _is_redundant(oids: Iterable[bytes], others: list[_Index], deadline: float) -> Optional[bool]:
     """Whether every oid is in one of ``others``; None when the deadline passed first."""
     hit = 0
     for n, oid in enumerate(oids):
@@ -222,8 +222,8 @@ def _is_redundant(oids: Iterable[bytes], others: List[_Index], deadline: float) 
 
 def _erase_redundant_packs(pack_dir: Path, deadline: float, result: TidyResult, state: dict) -> None:
     cutoff = time.time() - _MIN_PACK_AGE_SECONDS
-    sizes: Dict[Path, int] = {}
-    candidates: List[Path] = []
+    sizes: dict[Path, int] = {}
+    candidates: list[Path] = []
     for pack in _promisor_packs(pack_dir):
         try:
             st = pack.stat()
@@ -234,7 +234,7 @@ def _erase_redundant_packs(pack_dir: Path, deadline: float, result: TidyResult, 
             candidates.append(pack)
     if not candidates:
         return
-    indexes: Dict[str, _Index] = {}
+    indexes: dict[str, _Index] = {}
     try:
         for pack in sizes:
             try:
@@ -266,7 +266,7 @@ def _erase_redundant_packs(pack_dir: Path, deadline: float, result: TidyResult, 
             index.close()
 
 
-def _merge_git(repo_root: Path, staging: Path, batch: List[Path], timeout: float):
+def _merge_git(repo_root: Path, staging: Path, batch: list[Path], timeout: float):
     """``git pack-objects --stdin-packs`` over *batch* into *staging*, in the update's custody (a
     mutator: it holds the checkout lock fd, and inside an update it is job-bound on Windows).
 

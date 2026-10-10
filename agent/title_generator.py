@@ -530,7 +530,14 @@ def generate_title(
             reasoning_config={"enabled": False},
         )
         message = response.choices[0].message
-        title = _clean_title(_extract_title_text(message.content or "") or _title_from_reasoning(message))
+        # Segmented (list) content from OpenAI-compatible relays: flatten before
+        # extraction — the old `or ""` passed the truthy list into
+        # _extract_title_text's content.strip(), the except swallowed the
+        # AttributeError, and the session was never titled.
+        from agent.message_content import flatten_message_text
+        title = _clean_title(
+            _extract_title_text(flatten_message_text(message.content)) or _title_from_reasoning(message)
+        )
         # Answer-shaped output guard: titling is a 3-7 word task, so a title with many words is a model that
         # ignored the task and answered the user's message instead ("I don't have context on X — that's not
         # something I recognize..."). Truncating would store half an assistant blob as the session title,

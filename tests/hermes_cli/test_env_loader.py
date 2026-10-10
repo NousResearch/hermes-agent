@@ -1,7 +1,37 @@
 import codecs
 import os
+import subprocess
+import sys
 
 from hermes_cli.env_loader import load_hermes_dotenv
+
+
+def test_cli_resolves_dotenv_reference_before_config_import(tmp_path):
+    """Cold CLI startup must not inspect config refs before loading its .env."""
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / ".env").write_text("TEST_STARTUP_BEARER=private-value\n", encoding="utf-8")
+    (home / "config.yaml").write_text(
+        "a2a_agents:\n  sample:\n    auth:\n      token: ${env:TEST_STARTUP_BEARER}\n",
+        encoding="utf-8",
+    )
+    env = os.environ.copy()
+    env["HERMES_HOME"] = str(home)
+    env.pop("TEST_STARTUP_BEARER", None)
+    result = subprocess.run(
+        [sys.executable, "-m", "hermes_cli.main", "profile", "list"],
+        env=env, capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "TEST_STARTUP_BEARER is not set" not in result.stderr
+    assert "private-value" not in result.stdout + result.stderr
+    (home / ".env").unlink()
+    missing = subprocess.run(
+        [sys.executable, "-m", "hermes_cli.main", "profile", "list"],
+        env=env, capture_output=True, text=True, timeout=30,
+    )
+    assert missing.returncode == 0, missing.stderr
+    assert "TEST_STARTUP_BEARER is not set" in missing.stderr
 
 
 def test_recovered_update_retry_skips_external_secret_sources(tmp_path, monkeypatch):

@@ -18,6 +18,7 @@ from agent.error_classifier import FailoverReason
 from agent.message_metadata import append_message
 from agent.message_sanitization import close_interrupted_tool_sequence
 from agent.repetition_guard import is_repetition_dominated
+from agent.think_scrubber import THINK_TAG_NAMES
 from agent.turn_api_call import stop_thinking_spinner
 from agent.turn_failure_copy import content_policy_copy, provider_label_for, site_copy, stamp_failure
 from agent.turn_retry_state import TurnRetryState
@@ -30,7 +31,10 @@ logger = logging.getLogger("agent.conversation_loop")
 # max_output_tokens (turn_response_check.py::_derive_finish_reason); text truncation stays on
 # the Codex incomplete continuation, so the text branch below never double-continues it.
 _CONTINUABLE_MODES = {"chat_completions", "bedrock_converse", "anthropic_messages", "codex_responses"}
-_THINK_TAG_RE = re.compile(r'<(?:think|thinking|reasoning|REASONING_SCRATCHPAD)[^>]*>', re.IGNORECASE)
+# Derived from the one think-tag list so a tag added there (e.g. MiniMax-M3's CJK tags)
+# is recognized here too; a literal list here silently missed them and the thinking-budget
+# abort below never fired for those models.
+_THINK_TAG_RE = re.compile(r'<(?:' + '|'.join(THINK_TAG_NAMES) + r')[^>]*>', re.IGNORECASE)
 _TRUNCATED_FINAL = site_copy("truncated")
 _FIRST_TRUNCATED_FINAL = _TRUNCATED_FINAL
 # #106260: a stream that died on a context-overflow error after partial delivery must not seed a

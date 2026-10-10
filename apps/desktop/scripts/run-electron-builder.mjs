@@ -25,7 +25,11 @@ const HEAP_FLAG = '--max-old-space-size=16384'
  * @param {string} [inherited] @returns {string}
  */
 export function builderNodeOptions(inherited = process.env.NODE_OPTIONS ?? '') {
-  return `${inherited} ${HEAP_FLAG}`.trim()
+  // Node uses its bundled CA set by default. On Windows that misses roots
+  // installed in the OS trust store (including managed HTTPS inspection roots),
+  // which makes Electron artifact fetches fail with UNABLE_TO_VERIFY_LEAF_SIGNATURE.
+  const systemCaFlag = process.platform === 'win32' ? '--use-system-ca ' : ''
+  return `${inherited} ${systemCaFlag}${HEAP_FLAG}`.trim()
 }
 
 /** @param {string[]} args @param {string} name @returns {string | undefined} */

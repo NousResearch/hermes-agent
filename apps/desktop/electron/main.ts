@@ -14,6 +14,7 @@ import {
   clipboard,
   crashReporter,
   dialog,
+  nativeImage as electronNativeImage,
   net as electronNet,
   webContents as electronWebContents,
   globalShortcut,
@@ -128,6 +129,7 @@ import {
 import { CHALLENGE_PARTITION } from './challenge-window'
 import { registerChallengeWindowIpc } from './challenge-window-ipc'
 import { provisionCliLinks } from './cli-provision'
+import { registerClipboardImageIpc } from './clipboard-image-ipc'
 import { closeStopFailureMessage, finishWindowsCloseStop, type RuntimeLock } from './close-stop-kill'
 import { shouldAttemptCloudBootCascade } from './cloud-boot-cascade'
 import { discoverWithTeamFallback } from './cloud-discovery'
@@ -17897,8 +17899,8 @@ ipcMain.handle('hermes:selectPaths', async (_event, options: any = {}) => {
   return result.filePaths
 })
 
-ipcMain.handle('hermes:writeClipboard', (_event, text) => {
-  clipboard.writeText(String(text || ''))
+ipcMain.handle('hermes:writeClipboard', async (_event, text) => {
+  await clipboard.writeText(String(text || ''))
 
   return true
 })
@@ -17923,7 +17925,7 @@ ipcMain.handle('hermes:selectSavePath', async (_event, options: any = {}) => {
 // navigator.clipboard.readText() throws "Document is not focused" whenever a
 // portaled overlay has focus, and there's no way to route a read through the
 // canvas. The main process has no such gate.
-ipcMain.handle('hermes:readClipboard', () => clipboard.readText())
+ipcMain.handle('hermes:readClipboard', async () => clipboard.readText())
 
 ipcMain.handle('hermes:saveGatewayFile', (_event, payload) => saveGatewayFile(payload))
 
@@ -18009,25 +18011,13 @@ ipcMain.handle('hermes:savePastedText', async (_event, payload) => {
   return writeComposerPaste(HERMES_HOME, text)
 })
 
-ipcMain.handle('hermes:saveClipboardImage', async () => {
-  const image = clipboard.readImage()
-
-  if (image && !image.isEmpty()) {
-    return writeComposerImage(image.toPNG(), '.png')
-  }
-
-  // WSL2/WSLg doesn't bridge clipboard *images* from the Windows host to the
-  // Linux clipboard Electron reads, so a host screenshot looks empty above.
-  // Pull it straight off the Windows clipboard via PowerShell as a fallback.
-  if (IS_WSL) {
-    const png = readWslWindowsClipboardImage()
-
-    if (png) {
-      return writeComposerImage(png, '.png')
-    }
-  }
-
-  return ''
+registerClipboardImageIpc({
+  ipcMain,
+  clipboard,
+  nativeImage: electronNativeImage,
+  isWsl: IS_WSL,
+  readWslWindowsClipboardImage,
+  writeComposerImage
 })
 
 ipcMain.handle('hermes:normalizePreviewTarget', (_event, target, baseDir) =>

@@ -51,3 +51,13 @@ def test_starlette_server_pins_and_lock_exclude_cve_2026_48710():
     assert len(pins) == 1 and pins[0].operator == "==" and Version(pins[0].version) >= floor
     versions = [Version(row["version"]) for row in lock["package"] if row["name"] == "starlette"]
     assert versions and all(version >= floor for version in versions)
+
+
+def test_lock_multidict_floor_excludes_cve_2026_104874():
+    # GHSA-54p9-h82j-f925: items-view union/subtraction reference leak in the
+    # C extension (6.7.0–6.9.0), fixed in 6.9.1. multidict is transitive-only
+    # (via aiohttp/yarl/grpclib), so the lock is the only place to guard.
+    floor = Version("6.9.1")
+    lock = tomllib.loads((REPO_ROOT / "uv.lock").read_text(encoding="utf-8"))
+    versions = [Version(row["version"]) for row in lock["package"] if row["name"] == "multidict"]
+    assert versions and all(version >= floor for version in versions)

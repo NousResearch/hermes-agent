@@ -1,0 +1,52 @@
+name: hermes-call-ledger
+repo: https://github.com/skappafrost/hermes-call-ledger
+sha: c37f8835519812cb4ed944f37bbf46258e86fcc5
+description: >-
+  Per-call cost ledger for Hermes Desktop, one route with seven tabs. Every model call Hermes makes is
+  recorded from the observer hooks (provider, model, tokens, duration, outcome), then paired with the
+  charge the billing provider actually took, so each row says whether its money came from the local log,
+  from the invoice, or from a match of the two — and a day's total is the sum of real charges rather than
+  a rate applied afterwards. English or Vietnamese through a plugin-scoped setting; dong or dollars.
+  Works with no billing account at all: every call still lands, priced by Hermes' own estimate where the
+  price book knows the model. Disclosure — the three API-call hooks see per-call metadata for every
+  profile in the install (session id, platform, task, provider, model, token counts, duration, finish
+  reason, context length) and never a prompt, response or tool-argument text. Writes one SQLite ledger at
+  plugin-data/call-ledger/calls.sqlite under the install root, shared by the profile homes so one page
+  shows all of them, plus an FX cache at plugin-data/call-ledger/usd-vnd.json in the active home; no other
+  path is written. Disclosure — network is GET-only, to three endpoints readable in the source:
+  https://vilao.ai/api/v2 (wallet balance, per-request usage ledger, consumer keys) against the account
+  whose token you configure, https://vilao.ai/api/v1/llm/marketplace/models fetched with no credential
+  attached because that page asks for none, and https://open.er-api.com/v6/latest/USD for the dollar rate.
+  VILAO_PAT is read through Hermes' own secret scope, attached as an Authorization header only after the
+  request host has been checked against the console's own two hosts, never placed in a URL or query
+  string, never returned by a route, and never written to config.yaml (the settings route drops the key by
+  name, and it is declared type: secret so it lands in .env instead). vilao issues one full-scope token
+  per account including wallet writes, so this plugin restricts itself to reads by design and no write
+  endpoint is named anywhere in it. Disclosure — nothing runs in the plugin host between requests: there
+  is no daemon thread, no scheduled job and no self-triggered refresh, so while the page is closed the
+  plugin makes no call at all. While the page is open its twelve query hooks poll the plugin's own routes
+  on a 5-minute base interval, the price list at 30 times that with a 10-minute staleTime, and the billing
+  pull behind the Vilao view is rate-limited server-side to one per 45 seconds however fast the reader
+  changes filters. No self-updating code, no telemetry, no bundled or downloaded binaries. The desktop
+  half is one plain JavaScript file that stays inside the plugin SDK, taking four surfaces: one route, one
+  sidebar nav entry, one palette command and one keybinding (the last only when the running Desktop
+  exposes it). Derived from hermes-resetwatch (Adolanium, MIT) — this started as that listed plugin's
+  installed directory and was rewritten around a different data source: Hermes' own call hooks paired to
+  the reader's invoice, instead of probing vendor quota endpoints. Measured against their pinned commit
+  d460334, 35 of the 5,107 non-trivial code lines here coincide (0.7%), and they are imports, one-line
+  idioms and SDK registration scaffolding; their copyright is retained in LICENSE.
+maintainer: skappafrost
+tier: community
+category: desktop
+docs_url: https://github.com/skappafrost/hermes-call-ledger#readme
+version: "1.0.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - post_api_request
+    - post_auxiliary_call
+    - api_request_error
+  provides_middleware: []
+  requires_env:
+    - VILAO_PAT

@@ -594,6 +594,76 @@ def test_private_guard_inactive_does_not_probe(monkeypatch, cdp_server):
     assert result["result"]["result"]["value"] == "ok"
 
 
+def test_frame_id_timeout_is_clamped_to_schema_max(monkeypatch):
+    """frame_id used to forward the raw timeout. The schema max is 300s."""
+    seen = {}
+
+    monkeypatch.setattr(bt_eval_policy, "_eval_ssrf_guard_active", lambda task_id: False)
+
+    def fake_supervisor_route(**kwargs):
+        seen.update(kwargs)
+        return json.dumps({"success": True, "result": {}})
+
+    monkeypatch.setattr(browser_cdp_tool, "_browser_cdp_via_supervisor", fake_supervisor_route)
+    browser_cdp_tool.browser_cdp(
+        method="Runtime.evaluate",
+        params={"expression": "1"},
+        frame_id="oopif",
+        timeout=1000,
+        task_id="task-1",
+    )
+    assert seen["timeout"] == 300.0
+
+
+def test_frame_id_result_is_redacted_like_the_stateless_path(monkeypatch):
+    """A secret-shaped string from an OOPIF must not come back unmasked."""
+    import concurrent.futures
+    from types import SimpleNamespace
+
+    from tools import browser_supervisor
+
+    token = "ghp_" + ("a" * 36)
+    fut = concurrent.futures.Future()
+    fut.set_result({"result": {"result": {"type": "string", "value": token}}})
+
+    supervisor = SimpleNamespace(
+        snapshot=lambda: SimpleNamespace(frame_tree={
+            "top": {"frame_id": "top", "session_id": "top-sid"},
+            "children": [{"frame_id": "oopif", "session_id": "child-sid"}],
+        }),
+        _state_lock=threading.Lock(),
+        _frames={},
+        _loop=SimpleNamespace(is_running=lambda: True),
+    )
+
+    async def _cdp(*_a, **_k):
+        return None
+
+    supervisor._cdp = _cdp
+
+    class _Reg:
+        def get(self, task_id):
+            return supervisor if task_id == "task-1" else None
+
+    def fake_schedule(coro, loop):
+        if asyncio.iscoroutine(coro):
+            coro.close()
+        return fut
+
+    monkeypatch.setattr(browser_supervisor, "SUPERVISOR_REGISTRY", _Reg())
+    monkeypatch.setattr("agent.async_utils.safe_schedule_threadsafe", fake_schedule)
+
+    result = json.loads(browser_cdp_tool._browser_cdp_via_supervisor(
+        task_id="task-1", frame_id="oopif", method="Runtime.evaluate",
+        params={"expression": "1"}, timeout=30.0,
+    ))
+    assert result["success"] is True
+    visible = result["result"]["result"]["value"]
+    assert visible != token
+    assert "..." in visible
+    assert token not in json.dumps(result)
+
+
 # ---------------------------------------------------------------------------
 # check_fn gating
 # ---------------------------------------------------------------------------

@@ -227,10 +227,11 @@ def _known_provider_ids(cfg: dict) -> tuple[set, list, object, object, object]:
 
 
 # Vendor/model slugs are valid on aggregators and any custom provider; Fireworks' native IDs are slash-form
-# (accounts/fireworks/models/...) and DeepInfra's catalog is exclusively vendor/model.
+# (accounts/fireworks/models/...) and DeepInfra's catalog is exclusively vendor/model. Vertex needs the
+# google/ publisher prefix, and Novita and GMI serve vendor/model IDs (see _PROVIDER_MODELS).
 _VENDOR_SLUG_PROVIDERS = {
     "openrouter", "auto", "ai-gateway", "kilocode", "opencode-zen", "huggingface", "lmstudio", "nous", "nvidia",
-    "fireworks", "deepinfra",
+    "fireworks", "deepinfra", "vertex", "novita", "gmi",
 }
 
 

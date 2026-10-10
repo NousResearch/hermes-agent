@@ -227,7 +227,7 @@ class ModalEnvironment(BaseEnvironment):
         dest.write_bytes(data.encode() if isinstance(data, str) else data)
 
     def _modal_delete(self, remote_paths: list[str]) -> None:
-        self._exec(quoted_rm_command(remote_paths), timeout=15)
+        self._exec(quoted_rm_command(remote_paths), timeout=15, fail_label="delete")
 
     def _before_execute(self) -> None:
         self._sync_manager.sync()  # rate-limited internally

@@ -5,6 +5,7 @@ import threading
 
 import pytest
 
+from agent.secret_scope import get_secret, reset_secret_scope, set_secret_scope
 from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
 from tui_gateway import methods_voice
 
@@ -16,6 +17,7 @@ def test_streaming_tts_worker_keeps_routed_profile_context(tmp_path, monkeypatch
     launch_home.mkdir()
     served_home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(launch_home))
+    monkeypatch.setenv("VOICE_TTS_PROFILE_TEST_TOKEN", "launch-only")
 
     # methods_voice is normally rebound onto server.py globals; provide only the small
     # process-global pieces this focused spawn-boundary regression needs.
@@ -35,15 +37,18 @@ def test_streaming_tts_worker_keeps_routed_profile_context(tmp_path, monkeypatch
 
     def fake_stream(_text_queue, _stop_event, tts_done_event, **_kwargs):
         seen["home"] = str(get_hermes_home())
+        seen["secret"] = get_secret("VOICE_TTS_PROFILE_TEST_TOKEN")
         tts_done_event.set()
         observed.set()
 
     monkeypatch.setattr(speaker, "stream_tts_to_speaker", fake_stream)
 
     token = set_hermes_home_override(served_home)
+    secret_token = set_secret_scope({"VOICE_TTS_PROFILE_TEST_TOKEN": "served-only"})
     try:
         text_queue = methods_voice._tts_stream_begin()
     finally:
+        reset_secret_scope(secret_token)
         reset_hermes_home_override(token)
 
     assert text_queue is not None
@@ -52,6 +57,7 @@ def test_streaming_tts_worker_keeps_routed_profile_context(tmp_path, monkeypatch
         "streaming-TTS worker must keep the routed profile Context instead of "
         "falling back to the launch HERMES_HOME"
     )
+    assert seen["secret"] == "served-only", "stream worker must not read launch-profile credentials"
 
 
 @pytest.mark.parametrize("active", [True, False])

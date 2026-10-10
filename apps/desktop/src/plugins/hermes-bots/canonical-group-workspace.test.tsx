@@ -140,3 +140,21 @@ it('reads back retry on the same authority and sends only through the group driv
   expect(screen.getByText('Owner reply')).toBeTruthy()
   expect(request.mock.calls.every(c => c[1].startsWith('groups.'))).toBe(true)
 })
+
+// Review 5475590057 P3: another window won the room's one intent slot after this one restored.
+// Send converges on that durable winner (4149282e49) but this window's typed text is kept, not lost.
+it('a Send that converges on another window\'s pending intent keeps this window\'s draft', async () => {
+  const binding = { connectionId: 'remote', profile: 'team', roomId: 'two-windows' }
+  request.mockImplementation(async (_route, method) => method === 'groups.state'
+    ? { room: { name: 'Room' }, driver_status: {} } : method === 'groups.log' ? { events: [] } : {})
+  render(<CanonicalGroupWorkspace binding={binding} />)
+  await screen.findByText('Room')
+  await waitFor(() => expect((screen.getByRole('textbox') as HTMLTextAreaElement).disabled).toBe(false))
+  const other = await prepareCanonicalGroupSend(binding, { text: 'from the other window', attachments: [] })
+  fireEvent.change(screen.getByRole('textbox'), { target: { value: 'typed here' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+  await waitFor(async () => expect(await readCanonicalGroupSend(binding)).toBeUndefined())
+  expect(request.mock.calls.filter(c => c[1] === 'groups.send').map(c => c[2])).toEqual([{ ...other.params, profile: 'team' }])
+  await waitFor(() => expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('typed here'))
+  expect((screen.getByRole('textbox') as HTMLTextAreaElement).disabled).toBe(false)
+})

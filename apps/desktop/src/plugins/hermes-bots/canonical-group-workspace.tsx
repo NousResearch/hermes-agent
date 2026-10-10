@@ -13,6 +13,9 @@ type RoomEvent = CanonicalGroupEvent
 interface Attachment { attachment_id?: string; event_id?: string; kind: string; name: string; mime: string; size?: number }
 interface RoomState { room: { name: string }; driver_status?: { pending_actions?: CanonicalPendingAction[] } }
 
+const sameGroupPayload = (payload: Record<string, unknown>, text: string, attachments: Attachment[]) =>
+  payload.text === text && JSON.stringify(payload.attachments ?? []) === JSON.stringify(attachments)
+
 export function CanonicalGroupWorkspace({ binding, visible = true, onBack }: {
   binding: CanonicalGroupBinding; visible?: boolean; onBack?: () => void
 }) {
@@ -38,6 +41,8 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
   const alive = useRef(true)
   const [discard, setDiscard] = useState<CanonicalPendingAction | null>(null)
   const revision = useRef(0)
+  // This window's typed draft while it sends the room's one pending intent another window prepared.
+  const heldDraft = useRef<{ text: string; attachments: Attachment[] } | null>(null)
 
   // eslint-disable-next-line no-restricted-syntax -- journal hydration and mounted lifetime, not a reactive store mirror
   useEffect(() => {
@@ -123,13 +128,25 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
       const exact = pending ?? await prepareCanonicalGroupSend(binding, { text: draft, attachments })
 
       if (!alive.current) {return}
+
+      // Another window won the room's slot: send its intent first, keep this window's words.
+      if (!pending && !sameGroupPayload(exact.params.payload, draft, attachments)) {
+        heldDraft.current = { text: draft, attachments }
+      }
+
       setPending(exact)
       setDraft(String(exact.params.payload.text ?? ''))
       setAttachments((exact.params.payload.attachments as Attachment[] | undefined) ?? [])
       await canonicalGroupRequest(exact.binding, 'groups.send', exact.params)
       await retireCanonicalGroupSend(exact.binding, exact.params.event_id)
 
-      if (alive.current) {setPending(null); setDraft(''); setAttachments([])}
+      if (alive.current) {
+        const held = heldDraft.current
+        heldDraft.current = null
+        setPending(null)
+        setDraft(held?.text ?? '')
+        setAttachments(held?.attachments ?? [])
+      }
     })
   }
 

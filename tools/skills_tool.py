@@ -27,6 +27,7 @@ from tools.skills_tool_plugin import (
 from tools.skills_tool_dedup import (
     _check_skill_view_dedup, _record_skill_view, reset_skill_view_dedup)
 from tools.skill_provenance import is_background_review
+from tools.file_operations_common import normalize_read_pagination
 
 logger = logging.getLogger(__name__)
 
@@ -548,12 +549,19 @@ def _log_security_warnings(name: str, skill_md: Path, content: str, all_dirs, ac
 
 
 def skill_view(
-    name: str, file_path: str | None = None, task_id: str | None = None, preprocess: bool = True) -> str:
+    name: str, file_path: str | None = None, task_id: str | None = None, preprocess: bool = True,
+    offset: int | None = None, limit: int | None = None) -> str:
     """View a skill (SKILL.md) or a file within its directory, as JSON. ``name`` is a skill name
     or path ("axolotl", "03-fine-tuning/axolotl"); "plugin:skill" resolves plugin-provided
     skills. ``preprocess`` applies the configured SKILL.md template / inline shell rendering;
-    slash/preload callers render the message themselves."""
+    slash/preload callers render the message themselves. Omitting ``offset``/``limit`` returns
+    the full content exactly as before; passing them serves a 1-indexed line slice with
+    ``next_offset`` continuation metadata so each result stays under the tool-result spill
+    threshold (#135980)."""
     try:
+        # Page request detection: either param present means "serve a slice";
+        # both absent keeps the historical full-content response untouched.
+        page_request = (offset, limit) if (offset is not None or limit is not None) else None
         # Validate before the ':' dispatch so a Windows drive path (C:\skills\foo) can't be
         # reinterpreted as a plugin namespace.
         if lookup_error := _skill_lookup_path_error(name):
@@ -642,6 +650,31 @@ def skill_view(
             # Internal: absolute source path for the repeat-view dedup fingerprint.
             "_source_path": str(skill_md),
             **readiness_extras}
+        # ── content paging (#135980) ─────────────────────────────────
+        # The write cap (skill_manager_tool.MAX_SKILL_CONTENT_CHARS) and the
+        # tool-result spill threshold (budget_for_context_window) are
+        # independent budgets: on smaller context windows the spill threshold
+        # is far below the write cap, so a legally-written skill produces a
+        # skill_view result dispatch spills to disk — the curator cannot read
+        # (let alone remediate) it. ``offset``/``limit`` mirror read_file's
+        # line pagination so each served page stays small; the default (no
+        # params) keeps the historical full-content response byte-identical.
+        if page_request and rendered_content:
+            offset_n, limit_n = normalize_read_pagination(*page_request)
+            total_lines = len(rendered_content.split("\n"))
+            if offset_n > 1 or limit_n < total_lines:
+                if offset_n > total_lines:
+                    return _fail(
+                        f"offset {offset_n} is past the end of the skill content "
+                        f"({total_lines} lines).")
+                end = offset_n + limit_n - 1
+                page_text = "\n".join(rendered_content.split("\n")[offset_n - 1:end])
+                result["content"] = page_text
+                result["content_total_lines"] = total_lines
+                if end < total_lines:
+                    result["next_offset"] = end + 1
+                else:
+                    result["content_note"] = "end of skill content reached"
         if deps_note:
             result["deps_note"] = deps_note
         _mark_background_review_read(skill_md)
@@ -683,6 +716,16 @@ SKILL_VIEW_SCHEMA = {
                 "type": "string",
                 "description": "OPTIONAL: Path to a linked file within the skill (e.g., 'references/api.md', 'templates/config.yaml', 'scripts/validate.py'). Omit to get the main SKILL.md content.",
             },
+            "offset": {
+                "type": "integer",
+                "description": "Line number to start reading the SKILL.md content from (1-indexed, default: 1). Use with limit to page through skills too large to load in one result.",
+                "default": 1, "minimum": 1,
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Maximum number of SKILL.md content lines to read (default: full content). Reads are additionally capped like read_file. The response carries next_offset to continue.",
+                "minimum": 1,
+            },
         },
         "required": ["name"],
     },
@@ -700,18 +743,28 @@ def _skill_view_with_bump(args, **kw):
     session returns a short stub (cache cleared on context compression)."""
     name = args.get("name", "")
     task_id = kw.get("task_id")
+    page_args = None
+    if args.get("offset") is not None or args.get("limit") is not None:
+        page_args = (args.get("offset"), args.get("limit"))
+    # Paged views never enter the dedup registry (the record below is skipped
+    # for them): a page must never stub a different page, and a page record
+    # must never stub a whole-content load. The composite key here is defense
+    # in depth on the check side only.
+    dedup_key = name if page_args is None else (name, f"page:{page_args}")
     # The background-review fork shares the parent's task_id (prefix-cache parity). A stub there
     # (a) skips the read-mark its read-before-write guard requires and (b) lets it patch from a
     # possibly-pruned transcript copy (#95976). No dedup in the fork; None also keeps its views
     # out of the parent's bucket.
     dedup_task_id = None if is_background_review() else task_id
-    if (stub := _check_skill_view_dedup(dedup_task_id, name, args.get("file_path"))) is not None:
+    if (stub := _check_skill_view_dedup(dedup_task_id, dedup_key, args.get("file_path"))) is not None:
         return stub
-    result = skill_view(name, file_path=args.get("file_path"), task_id=task_id)
+    result = skill_view(name, file_path=args.get("file_path"), task_id=task_id,
+                        offset=args.get("offset"), limit=args.get("limit"))
     with suppress(Exception):
         parsed = json.loads(result)
         if isinstance(parsed, dict) and parsed.get("success"):
-            _record_skill_view(dedup_task_id, name, args.get("file_path"), parsed)
+            if page_args is None:  # paged views skip dedup registration (see key note above)
+                _record_skill_view(dedup_task_id, name, args.get("file_path"), parsed)
             if resolved := parsed.get("name") or name:  # qualified forms return the canonical name
                 from tools.skill_usage import bump_use, bump_view
                 bump_view(str(resolved))

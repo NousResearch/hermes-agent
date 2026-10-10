@@ -9,6 +9,50 @@ import pm
 from tools import checkpoint_manager, working_diff
 
 
+@pytest.fixture(autouse=True)
+def managed_git_available(monkeypatch):
+    # Exercise acquisition on this POSIX test host without changing its OS.
+    from pm.registry import get_package
+    from hermes_cli import _subprocess_compat as compat
+
+    monkeypatch.setattr(compat, "_git_fallback_env_cache", {})
+    monkeypatch.setattr(get_package("git"), "gaps", {})
+
+
+@pytest.mark.parametrize("target", [
+    "linux-x64", "linux-arm64", "linux-x64-musl", "linux-arm64-musl",
+    "darwin-x64", "darwin-arm64",
+])
+def test_platform_gap_skips_worker_even_with_changing_environment(monkeypatch, target):
+    from hermes_cli import _subprocess_compat as compat
+    from pm.registry import get_package
+    from pm import store
+    import pm.client
+
+    package = get_package("git")
+    monkeypatch.setattr(package, "gaps", type(package).gaps)
+    assert package.missing_reason(target) is not None
+    monkeypatch.setattr(store, "current_target", lambda: target)
+    calls = []
+    acquire = pm.ensure
+
+    def ensure(*args, **kwargs):
+        calls.append(True)
+        return acquire(*args, **kwargs)
+
+    def request(*args, **kwargs):
+        raise RuntimeError("a platform gap must not spawn a worker")
+
+    monkeypatch.setattr(pm, "ensure", ensure)
+    monkeypatch.setattr(pm.client, "_request", request)
+    for turn in range(110):
+        base = {"PATH": "/usr/bin", "TURN": str(turn)}
+        selected = compat.selected_git_env(base)
+        assert selected == base
+        assert selected is not base
+    assert calls == []
+
+
 @pytest.mark.platforms("posix")
 def test_checkpoint_and_diff_follow_selected_git_environment(tmp_path, monkeypatch):
     git = shutil.which("git")
@@ -89,3 +133,39 @@ def test_git_consumers_fall_back_to_system_git(tmp_path, monkeypatch, consumer, 
         assert result["success"] is True
         assert "+system git content" in result["diff"]
     assert calls
+
+
+def test_failed_git_environment_lookup_is_retried_after_bounded_cache(monkeypatch):
+    compat = importlib.import_module("hermes_cli._subprocess_compat")
+    selected_git_env = compat.selected_git_env
+
+    calls = []
+    now = [100.0]
+    base = {"PATH": "/missing", "HERMES_GIT_CACHE_TEST": "unique"}
+
+    def unavailable_once(name, *, base_env):
+        calls.append(name)
+        if len(calls) < 3:
+            raise RuntimeError("managed Git unavailable")
+        return pm.Runner(name, {**base_env, "PATH": "/managed"})
+
+    monkeypatch.setattr(pm, "ensure", unavailable_once)
+    monkeypatch.setattr(compat.time, "monotonic", lambda: now[0])
+
+    first = selected_git_env(base)
+    second = selected_git_env(base)
+    assert calls == ["git"]
+    assert first == base
+    assert second == base
+    assert second is not first
+
+    now[0] += compat._GIT_FALLBACK_CACHE_TTL
+    third = selected_git_env(base)
+    assert calls == ["git", "git"]
+    assert third == base
+
+    now[0] += compat._GIT_FALLBACK_CACHE_TTL
+    recovered = selected_git_env(base)
+    assert calls == ["git", "git", "git"]
+    assert recovered["PATH"] == "/managed"
+    assert recovered is not third

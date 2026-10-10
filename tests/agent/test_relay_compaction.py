@@ -299,3 +299,38 @@ def test_a_post_turn_micro_compaction_in_a_rotated_child_is_marked_on_the_turn(r
     assert child != "rotating-session"
     micro = [event for event in fake.scope.events if event["data"]["kind"] == "micro_summarize"]
     assert [(mark["data"]["session_id"], mark["handle"]) for mark in micro] == [(child, turn.handle)]
+
+
+def test_attempt_mark_is_published_after_the_session_compression_lock_is_released(relay, tmp_path, monkeypatch):
+    """A stalled Relay scope may delay a mark by up to its timeout; that delay must not hold the session's
+    compression lock, which other agents and gateway hygiene wait on."""
+    from hermes_state import SessionDB
+    from run_agent import AIAgent
+
+    fake, runtime, coordinator = relay
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    db = SessionDB(db_path=tmp_path / "state.db")
+    agent = AIAgent(
+        api_key="test-key", base_url="https://openrouter.ai/api/v1", model="test/model", quiet_mode=True,
+        session_db=db, session_id="lock-session", skip_context_files=True, skip_memory=True,
+    )
+    agent.context_compressor.tail_token_budget = 10
+    coordinator.acquire_conversation(profile_key=runtime.profile_key, session_id="lock-session", platform="cli")
+    holders: list[Any] = []
+    original_event = fake.scope.event
+
+    def _event(name: str, **kwargs: Any) -> None:
+        holders.append(db.get_compression_lock_holder("lock-session"))
+        original_event(name, **kwargs)
+
+    monkeypatch.setattr(fake.scope, "event", _event)
+    try:
+        with patch.object(agent.context_compressor, "_generate_summary", return_value="SANITIZED SUMMARY"):
+            agent._compress_context(
+                [{"role": "system", "content": "sys"}, *_transcript(0)], "sys", approx_tokens=80_000,
+                trigger="turn_start_threshold",
+            )
+    finally:
+        agent.close()
+
+    assert holders and all(holder is None for holder in holders)

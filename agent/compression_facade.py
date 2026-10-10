@@ -238,6 +238,7 @@ class CompressionFacadeMixin:
         # provider request it was meant to prevent. The typed helper upgrades the simple attribute to
         # thread-local state guarded by a per-agent lock so overlapping automatic/manual entrypoints cannot
         # clobber each other's outcome (#98741).
+        from agent.compaction_events import deferred_publication
         from agent.conversation_compression import (
             CompressionCommitFence, compress_context, reset_context_compression_timeout_outcome,
             resolve_context_compression_timeouts,
@@ -277,14 +278,16 @@ class CompressionFacadeMixin:
                 self._active_compression_commit_fence = active_fence
 
             def _run(fence=None, target_messages=None, same_turn_fallback_recovery=False):
-                return compress_context(
-                    self, target_messages if target_messages is not None else messages, system_message,
-                    approx_tokens=approx_tokens, task_id=task_id, focus_topic=focus_topic, force=force,
-                    bypass_cooldown=bypass_cooldown or same_turn_fallback_recovery,
-                    defer_context_engine_notification=(defer_context_engine_notification), commit_fence=fence,
-                    verbatim_tail=verbatim_tail, trigger=trigger, snapshot_is_current=snapshot_is_current,
-                    overflow_reason=overflow_reason,
-                )
+                # Relay marks go out after compress_context has released its lease and commit fence.
+                with deferred_publication():
+                    return compress_context(
+                        self, target_messages if target_messages is not None else messages, system_message,
+                        approx_tokens=approx_tokens, task_id=task_id, focus_topic=focus_topic, force=force,
+                        bypass_cooldown=bypass_cooldown or same_turn_fallback_recovery,
+                        defer_context_engine_notification=(defer_context_engine_notification), commit_fence=fence,
+                        verbatim_tail=verbatim_tail, trigger=trigger, snapshot_is_current=snapshot_is_current,
+                        overflow_reason=overflow_reason,
+                    )
 
             # Callers that already own a progress-aware wait (gateway session
             # hygiene) pass commit_fence and must not be double-wrapped.

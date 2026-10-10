@@ -11,10 +11,13 @@ path text. Publishing never raises into compaction.
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import functools
 import logging
 import threading
 import uuid
+from collections.abc import Iterator
 from typing import Any
 
 from agent.model_metadata import estimate_messages_tokens_rough
@@ -90,6 +93,9 @@ _ATTEMPT_INTS = {
 
 _warned_lock = threading.Lock()
 _warned = False
+# Set while ``compress_context`` runs under the facade: attempt marks queue here and publish only after the
+# attempt has released its session lease and commit fence, so a stalled Relay scope never extends either.
+_deferred: contextvars.ContextVar[list[Any] | None] = contextvars.ContextVar("hermes_compaction_deferred", default=None)
 
 
 @functools.cache
@@ -235,6 +241,19 @@ def provider_native_payload(*, session_id: str, compression_count: Any = None) -
     )
 
 
+@contextlib.contextmanager
+def deferred_publication() -> Iterator[None]:
+    """Hold attempt marks published inside the block and send them, in order, when it exits."""
+    queued: list[Any] = []
+    token = _deferred.set(queued)
+    try:
+        yield
+    finally:
+        _deferred.reset(token)
+        for publish in queued:
+            publish()
+
+
 def _publish(
     build: Any, *args: Any, turn_session_id: str | None = None, require_target_session_id: str | None = None,
     **kwargs: Any,
@@ -272,10 +291,19 @@ def _turn_session_id(agent: Any) -> str | None:
 
 def publish_attempt(agent: Any, record: dict[str, Any]) -> None:
     """Publish one ``compress_context`` attempt record (the attempt telemetry seam calls this)."""
-    if _publishes_for(agent):
-        _publish(lambda: attempt_payload(
-            record, compression_count=getattr(getattr(agent, "context_compressor", None), "compression_count", None),
-        ), turn_session_id=_turn_session_id(agent))
+    if not _publishes_for(agent):
+        return
+    # Snapshot agent state now: the mark must describe the attempt as it ended, not as it is at flush time.
+    compression_count = getattr(getattr(agent, "context_compressor", None), "compression_count", None)
+    record = dict(record)
+    publish = functools.partial(
+        _publish, attempt_payload, record, compression_count=compression_count, turn_session_id=_turn_session_id(agent),
+    )
+    queued = _deferred.get()
+    if queued is None:
+        publish()
+    else:
+        queued.append(publish)
 
 
 def publish_micro(record: dict[str, Any], *, turn_session_id: str | None = None) -> None:

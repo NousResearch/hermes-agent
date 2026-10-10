@@ -2008,6 +2008,7 @@ export interface Translations extends NoticeTranslations {
       toolsetOn: (name: string, profile: string) => string
       toolsetOff: (name: string, profile: string) => string
       toolsetToggleFailed: (name: string) => string
+      toolsetRowAbsent: (name: string) => string
       legacyBackend: string
       portableBadge: string
       serverStates: {

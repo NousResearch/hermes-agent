@@ -292,13 +292,14 @@ class TestRecordedHostCwdDiscardedOnContainers:
         )
         assert cwd == "/workspace/subdir"
 
-    def test_host_record_kept_for_local_backend(self):
-        terminal_tool.record_session_cwd("sess-1", "/home/me/project")
+    def test_host_record_kept_for_local_backend(self, tmp_path):
+        project = str(tmp_path)
+        terminal_tool.record_session_cwd("sess-1", project)
         cwd = terminal_tool._resolve_command_cwd(
             workdir=None, default_cwd="/anything",
             session_key="sess-1", env_type="local",
         )
-        assert cwd == "/home/me/project"
+        assert cwd == project
 
     def test_explicit_workdir_still_wins(self):
         terminal_tool.record_session_cwd("sess-1", "/workspace/a")

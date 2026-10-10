@@ -65,8 +65,12 @@ def test_late_registration_keeps_file_execution_in_backend_namespace(
 
 @pytest.mark.parametrize("env_type, raw_cwd, backend_cwd", CASES)
 def test_recorded_session_cwd_is_coerced_without_changing_explicit_remote_workdir(
-    env_type, raw_cwd, backend_cwd
+    env_type, raw_cwd, backend_cwd, monkeypatch
 ):
+    # Namespace coercion only: the local backend also drops a recorded cwd that
+    # is not an enterable directory on this host (#107156), so treat the
+    # synthetic host path as live here.
+    monkeypatch.setattr("tools.environments.local._cwd_usable", lambda _path: True)
     task_id = "session-example"
     terminal_tool.record_session_cwd(task_id, raw_cwd)
 

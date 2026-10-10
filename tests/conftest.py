@@ -75,7 +75,7 @@ _NATIVE_HERMES_PARENT = _get_platform_default_hermes_home().parent
 
 
 def _hermes_home_points_at_production(value: str) -> bool:
-    """True when a pre-set HERMES_HOME resolves to the real production root.
+    """True when a pre-set HERMES_HOME resolves to a real production root.
 
     Gateway-launched shells (and developer shells that ``export
     HERMES_HOME=~/.hermes``) hand pytest the PRODUCTION home. Historically
@@ -86,6 +86,9 @@ def _hermes_home_points_at_production(value: str) -> bool:
     scopes) in the live state.db and flipped its journal mode under the
     WAL-mode gateway writer. Only a genuinely custom (non-production)
     HERMES_HOME is honored now.
+
+    Fails safe: anything unparseable is treated as production, so the
+    sandbox is applied rather than skipped.
     """
     if not value:
         return True
@@ -94,16 +97,18 @@ def _hermes_home_points_at_production(value: str) -> bool:
         # ``%LOCALAPPDATA%\hermes``, and a dev shell exporting that path used to be honored as
         # "custom", pinning import-time paths (``tui_gateway.server._hermes_home``) to the live
         # install so the state.db guard tripped on every store-touching test (#112692).
-        from hermes_state_guard import _real_platform_state_root
+        from hermes_state_guard import _real_platform_state_roots
 
         resolved = Path(value).expanduser().resolve()
-        real_root = _real_platform_state_root() or (Path.home() / ".hermes").resolve()
     except Exception:
         return True
-    if resolved == real_root:
-        return True
-    # Profile home directly under the production root: <root>/profiles/<name>
-    return resolved.parent.name == "profiles" and resolved.parent.parent == real_root
+    for real_root in _real_platform_state_roots():
+        if resolved == real_root:
+            return True
+        # Profile home directly under a production root: <root>/profiles/<name>
+        if resolved.parent.name == "profiles" and resolved.parent.parent == real_root:
+            return True
+    return False
 
 
 # ``import hermes_bootstrap`` (transitively: any entry-point module) runs
@@ -625,8 +630,13 @@ def _capture_real_kanban_root() -> Path:
         from hermes_constants import get_default_hermes_root
         return get_default_hermes_root().resolve()
     # No pre-existing HERMES_HOME: the real root is the platform default,
-    # NOT the sandbox tempdir now sitting in the env.
-    return (Path.home() / ".hermes").resolve()
+    # NOT the sandbox tempdir now sitting in the env. Uses the shared
+    # root-shape rule so a remapped HOME (profile mode) maps back to the
+    # real root instead of yielding <home>/.hermes, which does not exist.
+    from hermes_state_guard import _real_platform_state_roots
+
+    roots = _real_platform_state_roots()
+    return roots[0] if roots else (Path.home() / ".hermes").resolve()
 
 
 _REAL_KANBAN_ROOT = _capture_real_kanban_root()
@@ -675,7 +685,13 @@ def _kanban_write_guard(_hermetic_environment, monkeypatch):
         try:
             resolved.relative_to(_REAL_KANBAN_ROOT)
         except ValueError:
-            # Resolved path is NOT under the real root — safe to write.
+            # Resolved path is NOT under the real root by the pre-sandbox env.
+            # That env is wrong under a remapped HOME, so consult the module
+            # guard, which resolves the root from HERMES_REAL_HOME, before
+            # treating the path as safe.
+            _module_guard = getattr(_kdbc, "_ensure_not_live_board", None)
+            if _module_guard is not None:
+                _module_guard(resolved)
             return _orig_connect(db_path, *args, **kwargs)
         raise RuntimeError(
             f"kanban_write_guard: kanban DB path resolved to {resolved}, "

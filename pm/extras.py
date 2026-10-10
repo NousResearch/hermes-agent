@@ -216,7 +216,17 @@ def ensure_import(extra: str) -> None:
             raise InstallError("venv", f"installation of extra {extra!r} declined")
     from pm.client import sync_venv
 
-    sync_venv([extra])
+    # The first PM generation replaces the payload venv wholesale, so a lazy
+    # extra must carry what that venv already shipped (the Docker image's
+    # mcp) the way venv_sync's migration does — otherwise the gateway's lazy
+    # install builds an environment that silently drops configured features
+    # (#136015).
+    from pm.paths import repo_root, runtime_facts_path
+
+    selection = [extra]
+    if not runtime_facts_path().is_file():
+        selection = sorted({*legacy_selection(repo_root()), extra})
+    sync_venv(selection)
     # The sync published a new generation. Swap this process onto it when nothing
     # already imported would change underneath it (adopt_selected); otherwise only
     # a restart can load it.

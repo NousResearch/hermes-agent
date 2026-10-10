@@ -23,6 +23,8 @@ _FAST_LIMIT_HEADERS = ("anthropic-fast-input-tokens-limit", "anthropic-fast-outp
 #: Tiers sent on every request of the session (OpenAI ``service_tier`` values; ``priority`` also
 #: selects Anthropic/xAI fast mode). Ultrafast is OpenAI-only and gated per model.
 STATIC_TIERS = frozenset({"priority", "ultrafast"})
+# Codex app-server names for wire tiers it accepts (turn/start.serviceTier); a tier missing here is not sent.
+CODEX_TIER_WORDS: dict[str, str] = {"priority": "fast"}
 NORMAL_TIER_WORDS = frozenset({"", "normal", "default", "standard", "off", "none"})
 # User/config word -> agent.service_tier. The single table every surface (config loaders, /fast
 # on CLI / gateway / TUI) parses through, so a new tier is one edit.
@@ -36,6 +38,15 @@ def parse_service_tier(raw: Any) -> str | None:
     """``agent.service_tier`` for a user/config word; None for normal and for unknown words."""
     value = str(raw or "").strip().lower()
     return None if value in NORMAL_TIER_WORDS else SERVICE_TIER_WORDS.get(value)
+
+
+def parse_exact_service_tier(raw: Any) -> str:
+    """Strict :func:`parse_service_tier` for an explicit client pick: ``""`` pins normal, an unknown
+    word raises ``ValueError`` instead of silently reading as normal."""
+    value = str(raw or "").strip().lower()
+    if value not in NORMAL_TIER_WORDS and value not in SERVICE_TIER_WORDS:
+        raise ValueError(f"unknown service tier: {value}")
+    return parse_service_tier(value) or ""
 
 
 def service_tier_word(tier: Any) -> str:

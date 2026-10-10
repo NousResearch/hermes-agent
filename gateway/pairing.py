@@ -406,7 +406,7 @@ class PairingStore:
         with self._lock:
             return bool(_matching_ids(platform, self._load_approved(platform), user_id))
 
-    def list_approved(self, platform: str = None) -> list:
+    def list_approved(self, platform: str | None = None) -> list:
         """List approved users, optionally filtered by platform."""
         return [
             {"platform": p, "user_id": uid, **info}
@@ -539,7 +539,7 @@ class PairingStore:
                     return self._finish_approval(platform, pending, entry_id, entry)
             return None
 
-    def list_pending(self, platform: str = None) -> list:
+    def list_pending(self, platform: str | None = None) -> list:
         """List pending requests (codes are never returned; each exposes a ``request_id``
         for :meth:`approve_request`; legacy pre-hash entries report an empty id)."""
         results = []
@@ -559,7 +559,7 @@ class PairingStore:
                     })
         return results
 
-    def clear_pending(self, platform: str = None) -> int:
+    def clear_pending(self, platform: str | None = None) -> int:
         """Clear all pending requests. Returns count removed."""
         with self._lock:
             count = 0

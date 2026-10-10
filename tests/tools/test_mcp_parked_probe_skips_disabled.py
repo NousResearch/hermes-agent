@@ -111,7 +111,7 @@ def test_parked_self_probe_skips_disabled_or_deleted_entry(monkeypatch, tmp_path
         task._reconnect_event.set()
         try:
             await asyncio.wait_for(run_task, timeout=15)
-        except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+        except (TimeoutError, asyncio.CancelledError, Exception):
             run_task.cancel()
 
     asyncio.run(_scenario())

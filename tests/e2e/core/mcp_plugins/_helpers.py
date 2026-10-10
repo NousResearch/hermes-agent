@@ -37,9 +37,28 @@ TURN_TIMEOUT = 240.0
 _SECRET_ENV_SUFFIXES = ("_API_KEY", "_TOKEN", "_SECRET", "_ACCESS_KEY")
 _PASSTHROUGH_ENV = frozenset({"PATH", "LANG", "LANGUAGE", "USER", "LOGNAME", "SHELL", "TMPDIR", "TZ"})
 
-__all__ = ["FINAL", "E2EHome", "HttpMcpServer", "KnownSymptom", "build_home", "stdio_server",
-           "http_server_cfg", "script", "call_tool", "run_chat_q", "inbound", "calls_received", "tool_results",
-           "tool_name", "tool_names", "payload", "symptom", "kill_tagged", "tagged_pids", "wait_until"]
+__all__ = [
+    "FINAL",
+    "E2EHome",
+    "HttpMcpServer",
+    "KnownSymptom",
+    "build_home",
+    "call_tool",
+    "calls_received",
+    "http_server_cfg",
+    "inbound",
+    "kill_tagged",
+    "payload",
+    "run_chat_q",
+    "script",
+    "stdio_server",
+    "symptom",
+    "tagged_pids",
+    "tool_name",
+    "tool_names",
+    "tool_results",
+    "wait_until",
+]
 
 
 def tool_name(server: str, tool: str) -> str:
@@ -64,7 +83,7 @@ def symptom(ok: Any, message: str) -> None:
 
 def payload(result: str) -> dict[str, Any]:
     """The JSON object inside a tool result's untrusted-content wrapper."""
-    match = re.search(r"^\{.*\}$", result, re.M | re.S)
+    match = re.search(r"^\{.*\}$", result, re.MULTILINE | re.DOTALL)
     assert match, f"no JSON payload in tool result: {result!r}"
     return json.loads(match.group(0))
 
@@ -174,7 +193,7 @@ class HttpMcpServer:
     def url(self) -> str:
         return f"http://127.0.0.1:{self.port}/mcp"
 
-    def start(self) -> "HttpMcpServer":
+    def start(self) -> HttpMcpServer:
         with contextlib.suppress(FileNotFoundError):
             self.port_file.unlink()
         env = {k: v for k, v in os.environ.items() if k in _PASSTHROUGH_ENV}

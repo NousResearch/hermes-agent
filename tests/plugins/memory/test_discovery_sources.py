@@ -109,12 +109,12 @@ def test_bundled_still_wins_over_project(tmp_path, monkeypatch):
     PluginManager's later-wins order. A provider is activated by name, so a
     directory dropped into the working tree must not be able to shadow a
     shipped one and silently redirect the agent's memory."""
-    _write_provider_dir(tmp_path / ".hermes" / "plugins", "honcho")
+    _write_provider_dir(tmp_path / ".hermes" / "plugins", "holographic")
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("HERMES_ENABLE_PROJECT_PLUGINS", "1")
 
-    resolved = memory_plugins.find_provider_dir("honcho")
-    assert resolved == Path(memory_plugins.__file__).parent / "honcho"
+    resolved = memory_plugins.find_provider_dir("holographic")
+    assert resolved == Path(memory_plugins.__file__).parent / "holographic"
 
 
 # ---------------------------------------------------------------------------
@@ -219,6 +219,18 @@ def test_activation_is_not_gated_on_plugins_enabled(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
     assert memory_plugins.load_memory_provider("gatedmem") is not None
+
+
+def test_provider_registered_past_the_first_8kb_is_discovered(tmp_path, monkeypatch):
+    """A long module docstring must not push the registration out of discovery's view."""
+    provider = tmp_path / "plugins" / "longdoc"
+    provider.mkdir(parents=True)
+    docstring = '"""' + "Plain prose about storage.\n" * 400 + '"""\n'  # ~10.8 KB, no contract tokens
+    (provider / "__init__.py").write_text(docstring + PROVIDER_SOURCE.format(name="longdoc"), encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    assert "longdoc" in memory_plugins.list_memory_provider_names()
+    assert memory_plugins.find_provider_dir("longdoc") == provider
 
 
 def test_unreadable_user_plugin_does_not_abort_memory_discovery(tmp_path, monkeypatch):

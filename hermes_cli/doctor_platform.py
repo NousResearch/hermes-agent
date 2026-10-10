@@ -221,7 +221,7 @@ def _report_host_gateway_slot(mgr, issues: list[str]) -> None:
                       "hermes --profile default gateway migrate --multiplex")
 
 
-def check_certificates(should_fix: bool = False, issues: "list | None" = None) -> None:
+def check_certificates(should_fix: bool = False, issues: list | None = None) -> None:
     """Verify the actual TLS policy is usable before the first HTTPS call tracebacks.
 
     The policy is ``agent.ssl_verify``: the platform verifier (truststore) is
@@ -405,7 +405,7 @@ def _check_security_advisories(should_fix: bool, f: Finding) -> None:
             check_warn(f"{h.package}=={h.installed_version} still installed (advisory {h.advisory.id} acknowledged)")
 
 
-def _staged_venv_dir() -> "Path | None":
+def _staged_venv_dir() -> Path | None:
     """pm's provisioned runtime venv, or None when nothing is staged.
 
     ``pm.packages.Venv().venv_dir()`` is pm's public authority for where
@@ -416,7 +416,7 @@ def _staged_venv_dir() -> "Path | None":
     doctor must not read an empty directory as staged dependencies.
     """
     try:
-        import pm  # noqa: F401 — imports pm.packages, registering the definitions
+        import pm
         from pm.packages import Venv
 
         venv_dir = Venv().venv_dir()

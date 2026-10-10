@@ -108,6 +108,18 @@ class TestUniquifyToolCallIds:
         uniquify_tool_call_ids(tcs)
         assert tcs[2]["id"] == "z_d3"
 
+    def test_id_used_earlier_in_the_session_is_renamed_and_history_is_not(self):
+        # Providers that name every call "call_0" turn after turn: the session's
+        # earlier ids stay as stored (prompt cache); the incoming call moves.
+        taken = {"call_0", "call_0_d2"}
+        tcs = [
+            {"id": "call_0", "function": {"name": "f", "arguments": "{}"}},
+            {"id": "call_fresh", "function": {"name": "g", "arguments": "{}"}},
+        ]
+        uniquify_tool_call_ids(tcs, taken=taken)
+        assert [tc["id"] for tc in tcs] == ["call_0_d3", "call_fresh"]
+        assert taken == {"call_0", "call_0_d2"}
+
     def test_blank_and_non_string_ids_skipped(self):
         tcs = [
             {"id": "", "function": {"name": "a", "arguments": "{}"}},
@@ -151,6 +163,12 @@ class TestReasoningEchoFamily:
         ("xiaomi", None, "https://x", "mimo"),
         ("custom", "MiMo-7B", "https://x", "mimo"),
         ("custom", None, "https://api.xiaomimimo.com/v1", "mimo"),
+        ("ollama-cloud", "kimi-k3", "https://x", "ollama"),
+        ("custom", "kimi-k3", "https://ollama.com/v1", "ollama"),
+        ("custom", "kimi-k3:cloud", "http://127.0.0.1:11434/v1", "ollama"),
+        ("custom", "gpt-oss:120b-cloud", "http://127.0.0.1:11434/v1", "ollama"),
+        ("gmi", "gmi-cloud", "https://x", None),
+        ("custom", "qwen3:8b", "http://127.0.0.1:11434/v1", None),
         ("openai", "gpt-5", "https://api.openai.com/v1", None),
         ("mistral", "mistral-large", "https://api.mistral.ai/v1", None),
         (None, None, None, None),
@@ -411,3 +429,27 @@ class TestPerProviderReasoningEcho:
         # Flag should be restored from snapshot
         assert agent._reasoning_echo_flag is True
         assert agent.model == "glm-5.2"
+
+
+from agent.message_sanitization import normalize_provider_tool_call_ids
+
+def test_normalize_provider_parallel_ids_is_deterministic_and_preserves_composite():
+    calls = [
+        {"id": "chatcmpl-tool-alpha|item-a", "call_id": "chatcmpl-tool-alpha|item-a"},
+        {"id": "chatcmpl-tool-beta", "call_id": "chatcmpl-tool-beta"},
+    ]
+    normalize_provider_tool_call_ids(calls)
+    first = [c.copy() for c in calls]
+    normalize_provider_tool_call_ids(calls)
+    assert calls == first
+    assert calls[0]["id"].endswith("|item-a")
+    assert all(c["id"].startswith("call_") for c in calls)
+
+def test_normalize_provider_ids_leaves_single_and_mixed_batches_unchanged():
+    for calls in [
+        [{"id": "chatcmpl-tool-alpha"}],
+        [{"id": "chatcmpl-tool-alpha"}, {"id": "call_1"}],
+    ]:
+        before = [c.copy() for c in calls]
+        normalize_provider_tool_call_ids(calls)
+        assert calls == before

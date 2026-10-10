@@ -1,4 +1,5 @@
 """An unchosen default channel never moves a checkout backward on a guess."""
+import os
 import subprocess
 
 import pytest
@@ -21,6 +22,7 @@ def history(tmp_path):
         _git(origin, "add", "f")
         _git(origin, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", str(n))
         shas.append(_git(origin, "rev-parse", "HEAD"))
+    _git(origin, "config", "uploadpack.allowFilter", "true")  # else --filter=blob:none clones full
     return origin, shas  # shas[0] is the "release", HEAD (shas[2]) is ahead of it
 
 
@@ -62,6 +64,10 @@ def test_full_clone_missing_a_newer_release_is_never_called_ahead(history, tmp_p
     origin, shas = history
     clone = tmp_path / "clone"
     _git(tmp_path, "clone", "-q", *(["--filter=blob:none"] if blobless else []), f"file://{origin}", str(clone))
+    old_blob = _git(clone, "rev-parse", f"{shas[0]}:f")
+    missing = subprocess.run(["git", "cat-file", "-e", old_blob], cwd=clone, capture_output=True,
+                             env={**os.environ, "GIT_NO_LAZY_FETCH": "1"}).returncode != 0
+    assert missing == blobless  # the blobless case really is a partial clone
     (origin / "f").write_text("release")
     _git(origin, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qam", "release")
     release = _git(origin, "rev-parse", "HEAD")

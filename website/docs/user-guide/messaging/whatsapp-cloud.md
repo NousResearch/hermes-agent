@@ -10,7 +10,7 @@ Python dependency commands on this page use a
 [PM-prepared source checkout](../../reference/package-management.md#developer-workflow).
 After a dependency change, reactivate the checkout and restart Hermes.
 
-Hermes can connect to WhatsApp through Meta's **official** WhatsApp Business Cloud API. This is the production-grade path: no Node.js bridge subprocess, no QR codes, no account-ban risk.
+Hermes can connect to WhatsApp through Meta's **official** WhatsApp Business Cloud API. This route uses a business number and HTTPS webhooks, without a Node.js phone bridge or Linked Devices QR. API access remains subject to the [WhatsApp Business Messaging Policy](https://whatsappbusiness.com/policy/), including restrictions for policy violations.
 
 In exchange:
 
@@ -19,11 +19,13 @@ In exchange:
 - The Hermes gateway needs a **public HTTPS URL** so Meta can deliver inbound messages via webhook.
 - Replies more than 24 hours after the user's last message require a pre-approved **template** (this is Meta's "customer service window" rule, not a Hermes limit).
 
-If those constraints don't work for your use case, the [Baileys bridge integration](./whatsapp.md) is the alternative — personal account, no public URL needed, but unofficial and ban-prone.
+If you have an API key for an agent created in **WhatsApp → Settings → Agents**, use the separate [WhatsApp Agent Platform guide](./whatsapp-agent-platform.md). It uses a community plugin for Meta's Agent API, with long polling and no public webhook. To link a phone account instead, use the [Baileys bridge](./whatsapp.md#two-modes).
 
-:::tip Which one should I use?
-- **Cloud API (this guide)** — running a real business bot, want stability, fine with the Meta verification + template paperwork
-- **[Baileys bridge](./whatsapp.md)** — personal projects, quick demos, single-user setups, willing to risk the bot phone number's account
+:::tip Choose by account and credentials
+- **Cloud API (this guide)** — a business number, Meta Business API credentials, and a public webhook.
+- **[Agent Platform](./whatsapp-agent-platform.md)** — an agent chat and its Agent API key; currently replies to the creator.
+- **[Baileys bridge](./whatsapp.md#two-modes)** — a phone account linked with a QR, for a dedicated bot or Message Yourself.
+See the [three-route chooser](./whatsapp.md#choose-your-integration) before starting setup.
 :::
 
 ---
@@ -37,6 +39,8 @@ hermes whatsapp-cloud
 The wizard walks you through every credential, validates each one as you paste it (catches the #1 setup trap — pasting a phone number into the Phone Number ID field), and prints exact follow-up instructions for the parts that need to happen outside the wizard (starting cloudflared, configuring Meta's webhook dashboard).
 
 The rest of this page is the manual reference.
+
+Use the same backend and profile throughout setup. Run `hermes config path` and `hermes config env-path` to find its settings files; Windows, named profiles, and `HERMES_HOME` overrides can use a different home from `~/.hermes`. In this guide, `HERMES_HOME` means the active profile's home. For a named profile, use commands such as `hermes -p work whatsapp-cloud` and `hermes -p work gateway status`. In Desktop, select that backend/profile in Messaging, save the Business Cloud credentials, enable the platform, and restart the existing gateway when requested; complete the webhook steps below separately.
 
 ---
 
@@ -84,7 +88,7 @@ Temporary access tokens expire after **24 hours**, which means a token generated
    - `whatsapp_business_messaging`
    - `whatsapp_business_management`
 5. Set **token expiration: Never**.
-6. Copy the token → update `WHATSAPP_CLOUD_ACCESS_TOKEN` in `~/.hermes/.env` → restart the gateway.
+6. Copy the token → update `WHATSAPP_CLOUD_ACCESS_TOKEN` in the credential file printed by `hermes config env-path` → restart the gateway.
 
 System User tokens don't expire unless you explicitly revoke them.
 
@@ -146,7 +150,7 @@ Once your tunnel is running:
    ```bash
    python -c "import secrets; print(secrets.token_urlsafe(32))"
    ```
-   Save it as `WHATSAPP_CLOUD_VERIFY_TOKEN` in `~/.hermes/.env`.
+   Save it as `WHATSAPP_CLOUD_VERIFY_TOKEN` in the active profile's `.env`.
 3. Start the Hermes gateway: `hermes gateway`.
 4. In the Meta App Dashboard → **WhatsApp → Configuration** (or **Use cases → Customize → Configuration** depending on UI version) → click **Edit** on the Webhook section.
 5. Fill in:
@@ -184,7 +188,7 @@ Up to 5 numbers in dev mode.  Going to App Review removes this limit.
 
 ## Allowlist (Hermes-side)
 
-In addition to Meta's recipient whitelist, Hermes has its own per-platform allowlist that controls **which incoming messages the agent processes**.  Add to `~/.hermes/.env`:
+In addition to Meta's recipient whitelist, Hermes has its own per-platform allowlist that controls **which incoming messages the agent processes**. Add to the active profile's `.env` (locate it with `hermes config env-path`):
 
 ```bash
 # Comma-separated phone numbers, country code, no '+' / spaces / dashes
@@ -217,7 +221,7 @@ The `hermes whatsapp-cloud` wizard prints these links at the end of setup. None 
 
 ## Configuration reference
 
-All settings live in `~/.hermes/.env`.  Required values are in **bold**.
+The variables below are read from the active profile's `.env`; locate it with `hermes config env-path`. Required values are in **bold**. Keep credentials in that file and use `config.yaml` for supported behavior settings.
 
 | Variable | Default | Description |
 |---|---|---|
@@ -332,7 +336,7 @@ Meta's default throughput is **80 messages/second per business phone number**, w
 Almost always one of:
 
 - **Tunnel URL is wrong or stale** — cloudflared quick tunnels rotate.  Get a fresh URL and update both `.env` and Meta's dashboard.
-- **Verify token mismatch** — the token in `~/.hermes/.env`'s `WHATSAPP_CLOUD_VERIFY_TOKEN` must match exactly what you typed into Meta's dashboard.  Run the curl probe above to confirm the gateway's verify handshake works locally first.
+- **Verify token mismatch** — the active profile's `WHATSAPP_CLOUD_VERIFY_TOKEN` must match exactly what you typed into Meta's dashboard. Run the curl probe above to confirm the gateway's verify handshake works locally first.
 - **Gateway not running** — check `hermes gateway` is up.
 - **App Secret not set** — without it, Hermes refuses inbound POSTs with 503.  Meta interprets that as "can't validate."
 
@@ -399,7 +403,7 @@ This uses your Nous Portal access token instead of needing a separate OpenAI key
 | Dependencies | Node.js + npm | Pure Python (httpx + aiohttp) |
 | Process | Managed Node subprocess | aiohttp webhook server |
 | Public URL needed? | No | Yes |
-| Account ban risk | Yes (unofficial API) | No (officially supported) |
+| Support and enforcement | Unofficial bridge; restrictions possible | Official API; policy enforcement still applies |
 | Inbound | Polling Node bridge | Webhook POST from Meta |
 | Outbound | Local bridge → Baileys | HTTPS to graph.facebook.com |
 | Groups | Full support | DMs only (v1) |
@@ -410,7 +414,7 @@ This uses your Nous Portal access token instead of needing a separate OpenAI key
 | Interactive buttons | Text fallback only | Native (clarify, approval, slash-confirm) |
 | Production use | Risky (Meta can ban) | Designed for it |
 
-Most users running Hermes for personal projects prefer Baileys. Most users running customer-facing bots prefer Cloud API.
+This comparison covers the two phone-number routes. For a personal agent created in WhatsApp, see [Agent Platform](./whatsapp-agent-platform.md#features-and-limits); its API key, creator scope, and limits are different.
 
 ---
 
@@ -418,4 +422,5 @@ Most users running Hermes for personal projects prefer Baileys. Most users runni
 
 - [Meta's official WhatsApp Business Cloud API docs](https://developers.facebook.com/documentation/business-messaging/whatsapp/) — authoritative reference for the underlying platform, pricing, App Review, and Meta-side rate limits.
 - [WhatsApp (Baileys bridge) Setup](whatsapp.md) — the alternative integration for personal projects.
+- [WhatsApp Agent Platform Setup](whatsapp-agent-platform.md) — connect a created agent with its API key, from the terminal or Desktop.
 - [Messaging Platforms overview](index.md) — all messaging integrations at a glance.

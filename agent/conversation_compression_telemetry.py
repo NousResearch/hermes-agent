@@ -83,6 +83,10 @@ def _log_attempt_record(payload: dict[str, Any]) -> None:
     logger.info("context compression attempt telemetry: %s", json.dumps(payload, sort_keys=True, separators=(",", ":")))
 
 
+# Fields describing the rewritten transcript; the input-side counts (messages_before, tokens_before) stay.
+_CANDIDATE_EFFECT_FIELDS = ("messages_after", "tokens_after", "tokens_reclaimed", "items_dropped")
+
+
 def _emit_compression_attempt_telemetry(
     agent: Any, *, started_at: float, commit_status: str, split_status: str, failure_class: str | None = None,
     commit_started_at: float | None = None, include_last_telemetry: bool = True,
@@ -116,6 +120,10 @@ def _emit_compression_attempt_telemetry(
         )
         if history_rewritten is not None:
             payload["history_rewritten"] = history_rewritten
+        if commit_status != "committed" and not history_rewritten:
+            # A refused or rolled-back candidate never reached the transcript: report no effect it did not have.
+            for key in _CANDIDATE_EFFECT_FIELDS:
+                payload.pop(key, None)
         if commit_started_at is not None:
             telemetry["commit_ms"] = payload["commit_ms"] = max(0, int((time.monotonic() - commit_started_at) * 1000))
         # Defer only to THIS attempt's class: an abort restore can put the previous attempt's telemetry back.

@@ -130,6 +130,9 @@ def test_background_command_prefers_recorded_session_cwd_over_init_time_cwd(monk
             self.calls = []
             self.pending_watchers = []
 
+        def _write_checkpoint(self):
+            pass
+
         def spawn_local(self, **kwargs):
             self.calls.append(kwargs)
             return SimpleNamespace(id="proc_test", pid=1234)
@@ -180,6 +183,9 @@ def test_host_local_background_command_bypasses_configured_backend(tmp_path, mon
 
     class FakeRegistry:
         pending_watchers = []
+
+        def _write_checkpoint(self):
+            pass
 
         def spawn_local(self, **kwargs):
             calls.append(("local", kwargs))

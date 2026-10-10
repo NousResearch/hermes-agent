@@ -127,3 +127,67 @@ def test_direct_warning_delivery_keeps_failure_state(tmp_path, monkeypatch, enab
     assert len(adapter.sent) == (2 if enabled else 0)
     assert gateway._send_home_channel_message.await_count == int(enabled)
     assert gateway._session_db_init_error == "database is locked"
+
+
+@pytest.mark.parametrize("suppress", [False, True])
+def test_discord_lease_wait_respects_warning_suppression(tmp_path, monkeypatch, suppress):
+    """The real lease callback reaches the gateway's diagnostic presentation rail (#134288)."""
+    from agent.turn_facade_lease import admit_durable_turn_lease
+    from agent import turn_liveness
+    from gateway import run
+
+    monkeypatch.setattr(turn_liveness, "resolve_turn_liveness_settings", lambda config: (None, None))
+
+    (tmp_path / "config.yaml").write_text(
+        "display:\n  platforms:\n    discord:\n"
+        f"      suppress_warning_notifications: {str(suppress).lower()}\n"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(run, "_hermes_home", tmp_path)
+    config = _load_gateway_config()
+    adapter = RecordingAdapter()
+    source = SessionSource(platform=Platform.DISCORD, chat_id="channel", chat_type="thread", thread_id="thread")
+    gateway = object.__new__(GatewayRunner)
+    gateway._delivery_adapter_for = lambda source: adapter
+    gateway._thread_metadata_for_source = lambda source: {"thread_id": source.thread_id}
+    ctx = TurnContext(
+        source=source, user_config=config, _run_still_current=lambda: True,
+        _status_adapter=adapter, _status_chat_id=source.chat_id,
+        _status_thread_metadata=gateway._thread_metadata_for_source(source),
+    )
+    turn = TurnRunner(gateway, ctx)
+    monkeypatch.setattr(run, "safe_schedule_threadsafe", lambda coro, *a, **k: asyncio.run(coro))
+
+    class LeaseDB:
+        def acquire_session_turn_lease(self, session_id, holder, **kwargs):
+            kwargs["on_wait"](0)
+            kwargs["on_wait"](15)
+            return True
+
+        def get_session(self, session_id):
+            return {"id": session_id}
+
+        def resolve_resume_session_id(self, session_id):
+            return session_id
+
+        def get_messages_as_conversation(self, session_id, **kwargs):
+            return []
+
+        def release_session_turn_lease(self, session_id, holder):
+            return None
+
+    emitter = Emitter()
+    emitter._session_db = LeaseDB()
+    emitter.session_id = "session"
+    emitter._notification_config = config
+    emitter._notification_platform = Platform.DISCORD
+    emitter.status_callback = turn._status_callback_sync
+    admission = admit_durable_turn_lease(
+        emitter, session_id="session", relay_turn_id="turn",
+        task_context={"platform": "discord", "session_id": "session"}, conversation_history=[],
+    )
+    assert admission.lease is not None
+    assert len(adapter.sent) == (0 if suppress else 3)
+    emitter._emit_status("ordinary lifecycle")
+    asyncio.run(adapter.send(source.chat_id, "direct reply"))
+    assert len(adapter.sent) == (2 if suppress else 5)

@@ -59,6 +59,27 @@ def _is_path_unsafe(value: object, *, strict: bool = True) -> bool:
     return len(s) >= 2 and s[0].isalpha() and s[1] == ":"
 
 
+def is_internal_subagent_row(row: Optional[dict[str, Any]]) -> bool:
+    """A delegate's execution transcript is never a human conversation route.
+
+    ``source`` can be overwritten by an older gateway peer write. ``created_source`` is
+    immutable, and the delegation marker covers rows first inserted by that peer writer.
+    Parent lineage alone is insufficient: compression and branches also have parents.
+    """
+    if not isinstance(row, dict):
+        return False
+    if any(str(row.get(field) or "").strip().lower() in {"subagent", "delegate"}
+           for field in ("source", "created_source")):
+        return True
+    raw_config = row.get("model_config")
+    if isinstance(raw_config, str):
+        try:
+            raw_config = json.loads(raw_config)
+        except (ValueError, TypeError):
+            return False
+    return isinstance(raw_config, dict) and bool(str(raw_config.get("_delegate_from") or "").strip())
+
+
 _CHAT_TYPE_PREFIX = {"group": "group: ", "channel": "channel: "}
 
 
@@ -944,6 +965,8 @@ class SessionStore(
         with self._lock:
             self._ensure_loaded_locked()
             observed = self._entries.get(session_key)
+        if observed is not None:
+            observed = self._reconcile_poisoned_delegate_route(session_key, observed, source)
         # Phase 1b (no lock): compression tip + stale check + explicit suspension.
         checks = None
         if not force_new and observed is not None:
@@ -1256,6 +1279,23 @@ class SessionStore(
         Prompt pins follow non-boundary repoints by default; /resume opts out explicitly because it
         starts a different conversation on the same routing key.
         """
+        db = self._db_for_key(session_key)
+        if db is not None:
+            try:
+                target_row = db.get_session(target_session_id)
+            except Exception:
+                logger.warning(
+                    "Session switch for %s refused: target provenance lookup failed for %s",
+                    session_key, target_session_id, exc_info=True,
+                )
+                return None
+            if is_internal_subagent_row(target_row):
+                logger.warning(
+                    "Session switch for %s refused: %s is a delegate execution session",
+                    session_key, target_session_id,
+                )
+                return None
+
         with self._lock:
             old_entry = self._entry_locked(session_key)
             if old_entry is None:

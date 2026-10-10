@@ -10,13 +10,16 @@ import asyncio
 import json
 import queue
 from collections import OrderedDict
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import Platform
+from gateway.config import GatewayConfig, Platform
 from gateway.run import GatewayRunner
+from gateway.session import SessionEntry, SessionSource, SessionStore
+from hermes_constants import get_hermes_home
 from tools.process_registry import ProcessRegistry, ProcessSession
 
 
@@ -41,14 +44,34 @@ def isolated_registry(tmp_path, monkeypatch):
     return registry
 
 
-def _runner(adapter, *, origins=None):
+def _owner_id(session_key):
+    return f"owner-{session_key.replace(':', '-')}"
+
+
+def _runner(adapter, *, routes=()):
     runner = object.__new__(GatewayRunner)
     runner._running = True
     runner.adapters = {Platform.TELEGRAM: adapter}
-    runner.session_store = SimpleNamespace(
-        _ensure_loaded=lambda: None,
-        _entries=origins or {},
-    )
+    runner.config = GatewayConfig(multiplex_profiles=True)
+    store = runner.session_store = SessionStore(get_hermes_home() / "sessions", runner.config)
+    store._ensure_loaded()
+    for key in ("agent:main:telegram:dm:123", "agent:main:telegram:dm:12345:678", *routes):
+        _, namespace, platform, chat_type, chat_id, *thread = key.split(":")
+        profile = "default" if namespace == "main" else namespace
+        if profile != "default":
+            profile_home = get_hermes_home() / "profiles" / profile
+            profile_home.mkdir(parents=True, exist_ok=True)
+            store._profile_home_cache[profile] = profile_home
+        source = SessionSource(
+            platform=Platform(platform), chat_id=chat_id, chat_type=chat_type,
+            thread_id=thread[0] if thread else None, profile=profile,
+        )
+        now = datetime.now(timezone.utc)
+        store._entries[key] = SessionEntry(
+            session_key=key, session_id=_owner_id(key), created_at=now, updated_at=now,
+            origin=source, platform=source.platform,
+        )
+        store._db_for_key(key).create_session(_owner_id(key), platform, session_key=key)
     runner._session_source_cache = {}
     runner._completion_delivery_lock = __import__("threading").Lock()
     runner._completion_deliveries_inflight = set()
@@ -63,6 +86,7 @@ def _async_event(delegation_id="deleg_duplicate"):
         "type": "async_delegation",
         "delegation_id": delegation_id,
         "session_key": "agent:main:telegram:dm:12345:678",
+        "parent_session_id": _owner_id("agent:main:telegram:dm:12345:678"),
         "goal": "Investigate flaky test",
         "status": "completed",
         "summary": "Found it",
@@ -82,6 +106,7 @@ def _completion_event(*, started_at, session_id="proc_reused"):
         "type": "completion",
         "session_id": session_id,
         "session_key": "agent:main:telegram:dm:123",
+        "parent_session_id": _owner_id("agent:main:telegram:dm:123"),
         "platform": "telegram",
         "chat_type": "dm",
         "chat_id": "123",
@@ -246,6 +271,7 @@ def test_explicit_kill_returns_output_before_consuming_notification(monkeypatch)
         "session_id": session.id,
         "check_interval": 0,
         "session_key": "agent:main:telegram:dm:123",
+        "parent_session_id": _owner_id("agent:main:telegram:dm:123"),
         "platform": "telegram",
         "chat_type": "dm",
         "chat_id": "123",
@@ -316,6 +342,7 @@ def test_autonomous_completion_redacts_real_command_and_output_secrets(monkeypat
         "session_id": session.id,
         "check_interval": 0,
         "session_key": "agent:main:telegram:dm:123",
+        "parent_session_id": _owner_id("agent:main:telegram:dm:123"),
         "platform": "telegram",
         "chat_type": "dm",
         "chat_id": "123",
@@ -349,6 +376,7 @@ def test_concurrent_process_watchers_coalesce_one_session_completion_turn(monkey
             "session_id": session.id,
             "check_interval": 0,
             "session_key": "agent:main:telegram:dm:123",
+            "parent_session_id": _owner_id("agent:main:telegram:dm:123"),
             "platform": "telegram",
             "chat_type": "dm",
             "chat_id": "123",
@@ -411,11 +439,12 @@ def test_completion_arriving_during_batch_delivery_schedules_next_flush():
 
 def test_completion_batches_do_not_cross_conversation_routes():
     adapter = SimpleNamespace(handle_message=AdmittingHandler())
-    runner = _runner(adapter)
+    runner = _runner(adapter, routes=("agent:main:telegram:dm:456",))
 
     first = _completion_event(started_at=1.0, session_id="proc_route_a")
     second = _completion_event(started_at=2.0, session_id="proc_route_b")
     second["session_key"] = "agent:main:telegram:dm:456"
+    second["parent_session_id"] = _owner_id(second["session_key"])
     second["chat_id"] = "456"
 
     async def _exercise():
@@ -698,8 +727,9 @@ def test_successful_batch_releases_all_lifecycle_task_references():
     assert runner._background_tasks == set()
 
 
-def test_shutdown_cancels_overlapping_flushes_for_same_route():
+def test_shutdown_cancels_overlapping_flushes_for_same_route(monkeypatch):
     delivery_entered = asyncio.Event()
+    second_flush_started = asyncio.Event()
 
     async def _blocked_delivery(_event):
         delivery_entered.set()
@@ -708,6 +738,14 @@ def test_shutdown_cancels_overlapping_flushes_for_same_route():
     adapter = SimpleNamespace(handle_message=AdmittingHandler(side_effect=_blocked_delivery))
     runner = _runner(adapter)
     runner._completion_notification_batch_window = 0
+    flush_batch = runner._flush_process_completion_batch
+
+    async def _observe_flush(key):
+        if runner._completion_notification_batch_window == 3600:
+            second_flush_started.set()
+        await flush_batch(key)
+
+    monkeypatch.setattr(runner, "_flush_process_completion_batch", _observe_flush)
     first_event = _completion_event(started_at=1.0, session_id="proc_old_flush")
     second_event = _completion_event(started_at=2.0, session_id="proc_new_flush")
 
@@ -725,8 +763,7 @@ def test_shutdown_cancels_overlapping_flushes_for_same_route():
         second = asyncio.create_task(
             runner._enqueue_process_completion_notification("second", second_event)
         )
-        await asyncio.sleep(0)
-        await asyncio.sleep(0)
+        await asyncio.wait_for(second_flush_started.wait(), timeout=3.0)
         flush_tasks = set(runner._completion_notification_batch_flush_tasks)
         assert len(flush_tasks) == 2
 
@@ -751,6 +788,7 @@ def test_shutdown_cancels_overlapping_flushes_for_same_route():
 def _distinct_async_event(delegation_id, session_key="agent:main:telegram:dm:12345:678"):
     event = _async_event(delegation_id)
     event["session_key"] = session_key
+    event["parent_session_id"] = _owner_id(session_key)
     event["summary"] = f"Result for {delegation_id}"
     return event
 
@@ -801,7 +839,7 @@ def test_same_tick_async_events_for_different_sessions_do_not_coalesce(
     ))
 
     adapter = SimpleNamespace(handle_message=AdmittingHandler())
-    runner = _runner(adapter)
+    runner = _runner(adapter, routes=("agent:main:telegram:dm:99999:678",))
     _stop_after_sleeps(monkeypatch, runner, count=2)
 
     asyncio.run(runner._async_delegation_watcher(interval=0))
@@ -906,8 +944,7 @@ def test_unavailable_delivery_preserves_budget_across_restarts(tmp_path, unavail
     for event in events:
         if raw:
             event["session_key"] = "opaque-client-session"
-        if unavailable == "owner_db":
-            event["parent_session_id"] = "parent-session"
+            event.pop("parent_session_id")
         _persist_pending_completion(event)
 
     adapter = SimpleNamespace(handle_message=AdmittingHandler())
@@ -917,6 +954,7 @@ def test_unavailable_delivery_preserves_budget_across_restarts(tmp_path, unavail
         runner.adapters = {Platform.API_SERVER: api} if unavailable == "api_db" else {}
         if unavailable == "owner_db":
             runner.adapters = {Platform.TELEGRAM: adapter}
+            runner._session_db = None
         assert asyncio.run(runner._deliver_async_delegation_group(events)) is False
         for event in events:
             row = async_delegation.get_durable_delegation(event["delegation_id"])
@@ -929,8 +967,6 @@ def test_unavailable_delivery_preserves_budget_across_restarts(tmp_path, unavail
             db.create_session("opaque-client-session", "api_server")
             api._ensure_session_db = lambda: db
             runner.adapters = {Platform.API_SERVER: api}
-        if unavailable == "owner_db":
-            runner._session_db = SimpleNamespace(get_session=AsyncMock(return_value={"ended_at": None}))
         assert asyncio.run(runner._deliver_async_delegation_group(events)) is True
         for event in events:
             row = async_delegation.get_durable_delegation(event["delegation_id"])
@@ -950,14 +986,19 @@ def test_unavailable_delivery_preserves_budget_across_restarts(tmp_path, unavail
 def test_completion_profile_transport_never_falls_back(monkeypatch, isolated_registry, available):
     primary = SimpleNamespace(handle_message=AdmittingHandler(), send=AsyncMock())
     secondary = SimpleNamespace(handle_message=AdmittingHandler(), send=AsyncMock())
-    runner = _runner(primary)
+    key = "agent:research:telegram:dm:12345"
+    runner = _runner(primary, routes=(key,))
     runner._profile_adapters = {"research": {Platform.TELEGRAM: secondary}} if available else {}
-    evt = dict(_completion_event(started_at=1), session_key="agent:research:telegram:dm:12345")
+    evt = dict(_completion_event(started_at=1), session_key=key, parent_session_id=_owner_id(key))
+    runner._watcher_message_route_owned = AsyncMock(return_value=True)
     result = asyncio.run(runner._inject_watch_notification("private result", evt))
     assert result is available
-    asyncio.run(runner._send_watcher_message("telegram", "12345", None, "raw result", evt))
+    asyncio.run(runner._send_watcher_message(
+        "telegram", "12345", None, "raw result", evt, SimpleNamespace(session_key=evt["session_key"]),
+    ))
     primary.send.assert_not_awaited()
     assert secondary.send.await_count == int(available)
+    assert runner._watcher_message_route_owned.await_count == int(available)
     primary.handle_message.assert_not_awaited()
     assert secondary.handle_message.await_count == int(available)
     if available:
@@ -969,6 +1010,7 @@ def test_completion_profile_transport_never_falls_back(monkeypatch, isolated_reg
 def test_idle_watch_drain_respects_notify_mode(monkeypatch, isolated_registry, event_type, mode):
     adapter = SimpleNamespace(handle_message=AdmittingHandler())
     runner = _runner(adapter)
+    runner._watch_event_route_verdict = AsyncMock(return_value="owned")
     runner._load_background_notifications_mode = lambda: mode
     evt = dict(_completion_event(started_at=1), type=event_type,
                pattern="READY", output="READY", message="Watch patterns disabled")
@@ -982,6 +1024,7 @@ def test_idle_watch_drain_respects_notify_mode(monkeypatch, isolated_registry, e
 def test_watch_drain_retries_transport_failure(monkeypatch, isolated_registry):
     adapter = SimpleNamespace(handle_message=AdmittingHandler(side_effect=[RuntimeError("offline"), None]))
     runner = _runner(adapter)
+    runner._watch_event_route_verdict = AsyncMock(return_value="owned")
     runner._load_background_notifications_mode = lambda: "concise"
     evt = dict(_completion_event(started_at=1), type="watch_match", pattern="READY", output="READY")
     isolated_registry.completion_queue.put(evt)

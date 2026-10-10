@@ -32,7 +32,9 @@ from typing import Any, Dict, List, Literal, NamedTuple, Optional
 
 from hermes_cli.config import get_hermes_home
 
-from tools.process_registry_notifications import format_process_notification
+from tools.process_registry_notifications import (
+    format_process_notification, is_child_process_notification, should_surface_notification,
+)
 from tools.process_registry_checkpoint import ProcessCheckpointMixin
 from tools.process_registry_termination import ProcessTerminationMixin
 from tools.process_registry_results import load_completed_results, save_completed_result
@@ -653,7 +655,7 @@ _CHECKPOINT_FIELDS = (
     "started_at", "task_id", "owner_task_id", "session_key",
     *(f"watcher_{k}" for k in _WATCHER_ROUTE_KEYS), "watcher_interval",
     "parent_session_id", "notify_on_complete", "completion_output_chars", "watch_patterns",
-    "heartbeat_seconds", "persist_on_release")
+    "heartbeat_seconds", "persist_on_release", "handoff_note")
 _CHECKPOINT_DEFAULTS = {
     f.name: ([] if f.name == "watch_patterns" else f.default)
     for f in ProcessSession.__dataclass_fields__.values()
@@ -911,7 +913,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
         """Session identity + watcher routing fields shared by every watch event."""
         return {
             "session_id": session.id,
-            "session_key": session.session_key,
+            "session_key": session.session_key, "parent_session_id": session.parent_session_id,
             "task_id": session.task_id,
             "owner_task_id": session.owner_task_id,
             "command": session.command,
@@ -1887,17 +1889,13 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
             if evt.get("type") == "completion" and self._drain_should_skip(
                 _evt_sid, skip_poll_observed=skip_poll_observed):
                 continue
-            # Subagent-owned process notifications are suppressed by default — the
-            # child's delegation result is the deliverable. Judge ownership on
-            # owner_task_id (RAW spawning id; task_id is the container key, collapsed
-            # by _resolve_container_task_id). Dropped, NOT requeued: children never
-            # drain, so a requeue would pin the event forever. 'async_delegation'
-            # is the result itself and is NEVER suppressed.
+            # Drop raw child process noise here; children never drain requeued notices.
+            # Real delegation and work-closeout results remain deliverable.
             _evt_task_id = str(evt.get("owner_task_id") or evt.get("task_id") or "")
-            if not is_async_delegation and _evt_task_id.startswith("sa-"):
+            if is_child_process_notification(evt):
                 if surface_child is None:
                     surface_child = self._surface_child_process_notifications()
-                if not surface_child:
+                if not should_surface_notification(evt, surface_child=surface_child):
                     logger.debug(
                         "Suppressed subagent-owned process notification "
                         "(delegation.surface_child_process_notifications=false): "
@@ -2490,7 +2488,8 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
                     and s.id not in self._completion_consumed and s.id not in self._poll_observed]
 
     def transfer_ownership(self, session_id: str, *, from_owner: str, to_owner: str, to_task_id: str,
-                           to_session_key: str, note: str = "") -> Optional[ProcessSession]:
+                           to_session_key: str, note: str = "",
+                           to_parent_session_id: str = "") -> Optional[ProcessSession]:
         """Move a RUNNING process from one owner to another under the registry lock. Ownership is the ``owner_task_id``
         field: completion notices are stamped from it at exit time and teardown kills by it, so flipping it here is the
         whole transfer. Returns the session, or None when it is unknown, already exited, or not owned by ``from_owner``
@@ -2501,8 +2500,15 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
                 return None
             session.owner_task_id = to_owner
             session.task_id = to_task_id
-            session.session_key = to_session_key
+            if to_session_key and not (
+                session.session_key.startswith("agent:") and not to_session_key.startswith("agent:")
+            ):
+                session.session_key = to_session_key
+            if to_parent_session_id:
+                session.parent_session_id = to_parent_session_id
             session.handoff_note = note
+            if not session.watch_patterns:
+                session.notify_on_complete = True
             return session
 
     def has_active_for_session(self, session_key: str, max_active_age: Optional[float] = None) -> bool:
@@ -2687,8 +2693,9 @@ def _redact_process_result(result: dict) -> dict:
         if isinstance(value := result.get(key), str) and value:
             value = transform_process_output(value, command=command, returncode=result.get("exit_code"), task_id=task_id)
             result[key] = redact_terminal_output(value, command)
-    if isinstance(command, str) and command:
-        result["command"] = redact_sensitive_text(command, code_file=True)
+    for key in ("command", "handoff_note"):
+        if isinstance(value := result.get(key), str) and value:
+            result[key] = redact_sensitive_text(value, code_file=True)
     return result
 
 
@@ -2719,47 +2726,6 @@ _SESSION_ACTIONS = {
 }
 
 
-def _handoff_process(session_id: str, args: dict, task_id: Optional[str]) -> dict:
-    """Subagent-only: transfer a running background process to the parent agent so its completion is delivered THERE
-    (child-owned process notices are suppressed and child teardown kills what it owns). Validated against the live spawn
-    tree: the caller must be a registered child and must own the process; anything else is an error, never a silent
-    no-op, so a PID mentioned in prose can't masquerade as a transfer."""
-    from tools.delegate_tool_registry import _active_subagents, _active_subagents_lock
-    from tools.terminal_tool import _resolve_container_task_id
-    with _active_subagents_lock:
-        record = _active_subagents.get(str(task_id or ""))
-    child = record.get("agent") if record else None
-    parent_ref = getattr(child, "_delegate_parent_ref", None)
-    parent = parent_ref() if callable(parent_ref) else None
-    if parent is None:
-        return {"error": "handoff is only available to a running subagent with a live parent; you are not one."}
-    parent_owner = str(getattr(parent, "_current_task_id", "") or getattr(parent, "session_id", "") or "")
-    if not parent_owner:
-        return {"error": "parent has no process owner id yet; retry after the parent's turn has started."}
-    handed = getattr(child, "_handed_off_processes", None)
-    if handed is None:
-        handed = child._handed_off_processes = []
-    if len(handed) >= _MAX_HANDOFFS_PER_CHILD:
-        return {"error": f"handoff cap reached ({_MAX_HANDOFFS_PER_CHILD} per subagent); wait on or kill the rest yourself."}
-    note = str(args.get("data") or "").strip()
-    if not note:
-        return {"error": "handoff requires `data`: one sentence saying what the process is for and what the parent should do with its result."}
-    session = process_registry.transfer_ownership(
-        session_id, from_owner=str(task_id or ""), to_owner=parent_owner,
-        to_task_id=_resolve_container_task_id(parent_owner),
-        to_session_key=str(getattr(parent, "session_id", "") or ""), note=note)
-    if session is None:
-        return {"error": f"cannot hand off {session_id}: not a running process you own (already exited? read its result "
-                         "with poll/log and report it instead)."}
-    handed.append({"session_id": session.id, "command": session.command, "note": note})
-    return {"status": "handed_off", "session_id": session.id, "command": session.command,
-            "note": "Your parent now owns this process and will receive its completion; you will not. Mention the handoff "
-                    "in your final answer."}
-
-
-_MAX_HANDOFFS_PER_CHILD = 3
-
-
 def _handle_process(args, **kw):
     action = args.get("action", "")
     # Coerce to string — some models send session_id as an integer
@@ -2769,6 +2735,7 @@ def _handle_process(args, **kw):
     if action == "handoff":
         if not session_id:
             return tool_error("session_id is required for handoff")
+        from tools.terminal_tool_background import _handoff_process
         return json.dumps(_handoff_process(session_id, args, kw.get("task_id")), ensure_ascii=False)
     if action in _SESSION_ACTIONS:
         if not session_id:

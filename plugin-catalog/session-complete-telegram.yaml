@@ -1,0 +1,36 @@
+name: session-complete-telegram
+repo: https://github.com/metamindedu/hermes-telegram-bridge
+sha: "13c08c022965a589e87fe7198ab1a93201539d7e"
+subdir: desktop-plugins/session-complete-telegram
+title: "Hermes Telegram Bridge"
+description: >-
+  One package for Hermes Desktop Telegram notifications, optional live-card
+  replies and Allow Once / Deny command approvals. Uses the existing Gateway,
+  public SDK and fixed native CLI; no core patch, second poller, self-updater
+  or author telemetry. Reads local profile session titles, persisted final
+  responses and pending requests under the same default home. Sends redacted
+  final previews (up to 1,200 characters) and request text to api.telegram.org
+  using your existing default-home Telegram bot/private destination. Cards are
+  copyable/forwardable. Stores plaintext expiring inbox content and retained
+  deduplication/tombstone identifiers. Only exact private-owner live-request
+  command approvals are actionable; no session/permanent permission is granted.
+maintainer: metamindedu
+tier: community
+category: desktop
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/metamindedu/hermes-telegram-bridge/blob/main/docs/public-install.md
+version: "1.7.0"
+# Immutable source docs were frozen before release; use current setup docs.
+readme: false
+platforms: []
+known_issues:
+  - "If Gateway/plugin handlers fail to initialize, old-card text replies may become ordinary Telegram chat. Bridge readiness and approvals remain denied; use Desktop and recover Gateway normally."
+  - "Uses your existing default-home Telegram bot/private owner. Replies and approvals are independent opt-ins, both off by default; old companion enablement requires explicit migration and restart."
+  - "Cards are copyable/forwardable. Preview redaction is bounded, not absolute. Local inbox/ledger storage is plaintext; protect the home with owner-only permissions."
+  - "Current message cards are primarily Korean. No full localization, physical macOS or every newer Hermes core compatibility is claimed."
+  - "Unsupported or unsafe approval reviews remain Desktop-only; a delivered decision is not command-completion evidence."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

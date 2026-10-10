@@ -1572,6 +1572,9 @@ def _(rid, params: dict) -> dict:
     from agent.pet.render import PetRenderer
     pet_cfg = _pet_display_cfg()
     pet = None
+    # render_mode is terminal-only: the desktop draws from pet.info, so "off" leaves its pet alone.
+    if str(pet_cfg.get("render_mode", "") or "").lower() == "off":
+        return _ok(rid, {"enabled": False})
     if is_truthy_value(pet_cfg.get("enabled"), default=False):
         pet = store.resolve_active_pet(str(pet_cfg.get("slug", "") or ""))
     if pet is None or not pet.exists:

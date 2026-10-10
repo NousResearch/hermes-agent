@@ -171,6 +171,61 @@ for sock in /var/run/docker.sock /run/docker.sock; do
     break
 done
 
+# --- DRI render/video group membership (GPU video acceleration) ---
+# When the host GPU is passed in (`docker run --device /dev/dri:/dev/dri`,
+# or the "pass through available GPUs" toggle on TrueNAS/unRAID) the device
+# nodes arrive owned by the host's `video` and `render` groups, mode 0660.
+# Those GIDs are host facts that vary by distro (render is 107 on Debian,
+# 987 on Arch) and the matching group usually does not exist in this image
+# at all, so the supervised hermes user cannot open /dev/dri/renderD* and
+# every VAAPI/QSV ffmpeg invocation EACCES'es back to a software encode.
+#
+# This is the same initgroups() trap as the Docker socket above, for the
+# same reason: `--group-add 107` alone does NOT survive the s6-setuidgid
+# privilege drop, because initgroups() rebuilds the supplementary list from
+# /etc/group and silently discards the kernel-granted GID. The device's GID
+# must have a matching /etc/group entry that includes hermes. See the Docker
+# socket block for the full rationale.
+#
+# Handles the same corner cases: GID already named in the image (reuse that
+# name rather than creating a duplicate — `video` is 44 in Debian base),
+# GID unnamed (create it), hermes already a member (idempotent restart),
+# and groupadd/usermod failure under rootless containers (non-fatal — the
+# GPU simply stays unavailable, exactly as it is today).
+#
+# A root-owned (GID 0) node is deliberately skipped: joining group root to
+# reach a render node would hand hermes every other root-group file in the
+# image, which is a far larger grant than the GPU it was asked for.
+for dri_dev in /dev/dri/renderD* /dev/dri/card*; do
+    [ -c "$dri_dev" ] || continue
+    dri_gid=$(stat -c '%g' "$dri_dev" 2>/dev/null) || continue
+    [ -n "$dri_gid" ] || continue
+    [ "$dri_gid" != "0" ] || continue
+    # Already a member? Nothing to do (also dedupes multi-GPU nodes that
+    # share one GID, since usermod below updates /etc/group immediately).
+    if id -G hermes 2>/dev/null | tr ' ' '\n' | grep -qx "$dri_gid"; then
+        continue
+    fi
+    # Resolve or create a group name for this GID.
+    dri_group=$(getent group "$dri_gid" 2>/dev/null | cut -d: -f1)
+    if [ -z "$dri_group" ]; then
+        case "$dri_dev" in
+            */renderD*) dri_group="hostrender" ;;
+            *) dri_group="hostvideo" ;;
+        esac
+        if ! groupadd -g "$dri_gid" "$dri_group" 2>/dev/null; then
+            echo "[stage2] Warning: groupadd -g $dri_gid $dri_group failed; skipping GPU group setup for $dri_dev"
+            continue
+        fi
+        echo "[stage2] Created group $dri_group (GID $dri_gid) for $dri_dev"
+    fi
+    if usermod -aG "$dri_group" hermes 2>/dev/null; then
+        echo "[stage2] Added hermes to group $dri_group (GID $dri_gid) for $dri_dev"
+    else
+        echo "[stage2] Warning: usermod -aG $dri_group hermes failed; GPU encode may fall back to software"
+    fi
+done
+
 # --- Fix ownership of data volume ---
 # When HERMES_UID is remapped or the top-level $HERMES_HOME isn't owned by
 # the runtime hermes UID, restore ownership to hermes — but ONLY for the

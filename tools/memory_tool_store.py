@@ -403,6 +403,40 @@ class MemoryStore:
               matched_entry: Optional[str] = None) -> dict[str, Any]:
         """Locked replace (``new_content`` set) or remove (None) of the entry matching *old_text*."""
         def _apply(entries, limit):
+            # Ambiguous substring replace whose new_content already exists as a
+            # separate entry (not one of the match texts) must not look like a
+            # reason to add() a duplicate. new_content that IS a match stays the
+            # generic "Be more specific" error (#60089).
+            if new_content is not None and matched_entry is None:
+                match_idxs = (
+                    [i for i, entry in enumerate(entries) if entry == old_text]
+                    or _substring_matches(entries, old_text)
+                )
+                unique_texts = {entries[i] for i in match_idxs}
+                if (
+                    len(unique_texts) > 1
+                    and new_content in entries
+                    and new_content not in unique_texts
+                ):
+                    snippet = next(iter(unique_texts))[:80]
+                    return _error(
+                        (
+                            f"Multiple entries matched '{old_text}', and "
+                            f"new_content already exists as its own entry "
+                            f"(no change needed if you meant a no-op). "
+                            f"To replace one matched entry with different "
+                            f"text, retry with a more specific old_text "
+                            f"(e.g. a longer unique substring of that "
+                            f"entry such as '{snippet}…'); "
+                            f"apply_batch requires non-empty operations."
+                        ),
+                        "ambiguous",
+                        matches=[
+                            entries[i][:80] + ("..." if len(entries[i]) > 80 else "")
+                            for i in match_idxs
+                        ],
+                        current_entries=list(entries),
+                    )
             idx = self._locate(entries, old_text, "replace" if new_content else "remove", matched_entry)
             if isinstance(idx, dict):
                 return idx

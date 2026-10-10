@@ -808,6 +808,14 @@ class TestNativeScreenshots:
         shot.write_bytes(b"\x89PNG fake")
         return str(shot)
 
+    def test_find_screenshot_accepts_quoted_path_with_apostrophe(self, tmp_path):
+        shot = tmp_path / "O'Brien" / "shot.png"
+        shot.parent.mkdir()
+        shot.write_bytes(b"\x89PNG fake")
+        out = f'Browser output: "{shot}"\n'
+
+        assert bu_cli._find_screenshot(out, since=time.time() - 5) == str(shot)
+
     def test_find_screenshot_returns_last_fresh_path(self, tmp_path):
         a, b = self._shot(tmp_path), str(tmp_path / "b.png")
         (tmp_path / "b.png").write_bytes(b"\x89PNG fake2")

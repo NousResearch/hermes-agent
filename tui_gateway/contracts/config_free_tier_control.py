@@ -580,6 +580,8 @@ class ImageGenerateParams(Params):
     aspect_ratio: str | None = None
     probe: JsonValue | None = None  # truthy word/flag: availability check only
     max_bytes: int | None = None
+    profile: str | None = None  # routed profile; defaults to the launch profile
+    session_id: str | None = None  # routes to the session's profile
 
 
 class ImageGenerateResult(Result):

@@ -33,6 +33,11 @@ logger = logging.getLogger(__name__)
 # cua-driver's anonymous PostHog telemetry gate ("0" disables; absent => ON upstream).
 _CUA_TELEMETRY_ENV_VAR = "CUA_DRIVER_RS_TELEMETRY_ENABLED"
 _CUA_NATIVE_WAYLAND_ENV_VAR = "CUA_DRIVER_RS_ENABLE_WAYLAND"
+# Endpoints that actually configure the spawned driver when the native-Wayland bridge is on; DISPLAY stays in
+# the set because XWayland targets still route through it. Keys outside this set must not invalidate a cached
+# backend (#132877).
+_NATIVE_DESKTOP_ENDPOINT_FIELDS = ("DISPLAY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS",
+                                   "AT_SPI_BUS_ADDRESS")
 
 
 def _computer_use_cfg() -> dict[str, Any]:
@@ -125,8 +130,17 @@ def _computer_use_max_image_dimension() -> Optional[int]:
 def desktop_identity(env: Optional[dict[str, str]] = None) -> str:
     """The screen a backend spawned from ``env`` acts on: its DISPLAY (``''`` when none). Recorded next to the
     cached backend so a Bot Desktop that starts (or restarts on another number) AFTER the backend was cached is
-    noticed — the cached cua-driver still points at the old seat or at no display at all."""
-    return str((cua_driver_child_env(env) if env is None else env).get("DISPLAY") or "")
+    noticed — the cached cua-driver still points at the old seat or at no display at all.
+
+    Under the native-Wayland bridge the driver is configured by the session endpoints, not by DISPLAY alone: a
+    nested desktop can restart its compositor/session/accessibility buses while keeping the same X DISPLAY
+    string, so the identity there covers the endpoint fields the spawn actually uses (#132877). Ordinary
+    X11/Bot Desktop environments — including an empty DISPLAY — keep the DISPLAY-only value."""
+    spawn_env = cua_driver_child_env(env) if env is None else env
+    if sys.platform == "linux" and spawn_env.get("WAYLAND_DISPLAY") and (
+            spawn_env.get(_CUA_NATIVE_WAYLAND_ENV_VAR) == "1" or bool(_computer_use_cfg().get("native_wayland", False))):
+        return "\x1f".join(f"{key}={spawn_env.get(key) or ''}" for key in _NATIVE_DESKTOP_ENDPOINT_FIELDS)
+    return str(spawn_env.get("DISPLAY") or "")
 
 
 def backend_display_stale(recorded: str, current: str) -> bool:

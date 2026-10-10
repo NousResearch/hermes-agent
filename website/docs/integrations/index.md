@@ -32,7 +32,7 @@ The `web_search` and `web_extract` tools support eight backend providers, config
 |---------|---------|--------|---------|-------|
 | **Firecrawl** (default) | `FIRECRAWL_API_KEY` | ✔ | ✔ | ✔ |
 | **SearXNG** | `SEARXNG_URL` | ✔ | — | — |
-| **Brave** (free tier) | `BRAVE_SEARCH_API_KEY` | ✔ | — | — |
+| **Brave** | `BRAVE_SEARCH_API_KEY` | ✔ | — | — |
 | **DuckDuckGo** (ddgs) | _(none)_ | ✔ | — | — |
 | **Exa** | `EXA_API_KEY` | ✔ | ✔ | — |
 | **Parallel** | `PARALLEL_API_KEY` | ✔ | ✔ | — |

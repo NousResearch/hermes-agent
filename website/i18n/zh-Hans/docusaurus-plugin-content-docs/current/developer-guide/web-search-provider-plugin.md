@@ -6,7 +6,7 @@ description: "如何为 Hermes Agent 构建网页搜索/提取/爬取后端插�
 
 # 构建网页搜索提供商插件
 
-网页搜索提供商插件注册一个后端，用于处理 `web_search`、`web_extract` 以及（可选的）深度爬取工具调用。内置提供商——Firecrawl、SearXNG、Tavily、Exa、Parallel、Brave Search（免费层）和 DDGS——均以插件形式存放于 `plugins/web/<name>/` 目录下。你可以在该目录旁新建一个目录来添加新提供商，或覆盖已有的内置提供商。
+网页搜索提供商插件注册一个后端，用于处理 `web_search`、`web_extract` 以及（可选的）深度爬取工具调用。内置提供商——Firecrawl、SearXNG、Tavily、Exa、Parallel、Brave Search 和 DDGS——均以插件形式存放于 `plugins/web/<name>/` 目录下。你可以在该目录旁新建一个目录来添加新提供商，或覆盖已有的内置提供商。
 
 :::tip
 网页搜索是 Hermes 支持的多种**后端插件**之一。其他插件（各有其 ABC）包括：[图像生成提供商插件](./image-gen-provider-plugin.md)、[视频生成提供商插件](./video-gen-provider-plugin.md)、[记忆提供商插件](./memory-provider-plugin.md)、[上下文引擎插件](./context-engine-plugin.md)和[模型提供商插件](./model-provider-plugin.md)。通用工具/hook/CLI 插件请参阅[构建 Hermes 插件](./plugins/index.md)。
@@ -211,7 +211,7 @@ Hermes 根据 `supports_*` 标志将调用路由至正确的提供商。一种�
 ```yaml
 # ~/.hermes/config.yaml
 web:
-  search_backend: "brave-free"     # 纯搜索，速度快，每月免费 2k 次
+  search_backend: "brave-free"     # 纯搜索，速度快，每月 $5 免费额度
   extract_backend: "firecrawl"     # 提取 + 爬取，付费配额
 ```
 

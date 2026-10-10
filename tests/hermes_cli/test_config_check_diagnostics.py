@@ -113,6 +113,36 @@ def test_delivery_diagnostic_catches_common_unsafe_globs(pattern: str) -> None:
     assert diagnostics[0].startswith("WARNING:")
 
 
+@pytest.mark.parametrize(
+    "pattern",
+    [
+        "gh pr merge 999 --repo owner/repo",
+        "gh pr merge * --admin",
+        "/opt/bin/gh issue close * --repo owner/repo",
+        "\"/opt/bin/gh\" pr merge 777 --repo owner/repo --squash",
+        "/opt/bin/gh* issue close 42 --repo owner/repo",
+        "gh pr review 999 --repo owner/repo --approve",
+    ],
+)
+def test_delivery_diagnostic_structurally_detects_specific_quoted_and_suffixed_effects(pattern: str) -> None:
+    diagnostics = _delivery_policy_diagnostics({"command_allowlist": [pattern]})
+    assert len(diagnostics) == 1
+    assert "unsafe permanent approval pattern" in diagnostics[0]
+
+
+@pytest.mark.parametrize(
+    "pattern",
+    [
+        "gh pr view 999 --repo owner/repo",
+        "/opt/bin/gh issue list --repo owner/repo",
+        "python -m pytest tests/test_merge_word.py",
+        "printf 'gh pr merge 999'",
+    ],
+)
+def test_delivery_diagnostic_avoids_unrelated_command_false_positives(pattern: str) -> None:
+    assert _delivery_policy_diagnostics({"command_allowlist": [pattern]}) == []
+
+
 def test_invalid_delivery_policy_config_is_blocking() -> None:
     diagnostics = _delivery_policy_diagnostics({"delegation": {"require_delivery_role": "true"}})
     assert diagnostics == [
@@ -144,6 +174,18 @@ def test_prefill_diagnostic_targets_delivery_policy_not_legitimate_few_shot_use(
     assert "fabricated dialogue" in diagnostics[0]
     assert len(_delivery_policy_diagnostics({"prefill_messages_file": "merger.json"})) == 1
     assert _delivery_policy_diagnostics({"prefill_messages_file": "generic.json"}) == []
+
+
+def test_oversized_prefill_emits_non_content_diagnostic(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    oversized = tmp_path / "oversized.json"
+    oversized.write_bytes(b"secret-not-for-diagnostics" + b"x" * 1_000_000)
+    diagnostics = _delivery_policy_diagnostics({"prefill_messages_file": "oversized.json"})
+    assert diagnostics == [
+        "WARNING: prefill_messages_file exceeds the 1,000,000-byte diagnostic scan limit; "
+        "software-delivery policy in it could not be inspected."
+    ]
+    assert "secret-not-for-diagnostics" not in diagnostics[0]
 
 
 def test_config_check_exits_nonzero_for_blocking_delivery_hazard(tmp_path, monkeypatch, capsys) -> None:

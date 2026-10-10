@@ -1371,8 +1371,7 @@ DEFAULT_CONFIG = {
         # Subagent effort: "ultra" | "max" | "xhigh" | "high" | "medium" | "low" | "minimal" |
         # "none" (empty = inherit)
         "reasoning_effort": "",
-        # Max parallel children per batch AND max concurrent background delegation units; async
-        # dispatches beyond it run synchronously. Floor 1, no ceiling.
+        # Max parallel children per batch/background delegation units; excess async dispatches run synchronously.
         "max_concurrent_children": 10,
         # Background fan-outs return as ONE message when the whole call finishes. true = each task
         # (or `group`) returns on its own as it finishes — more new turns for the orchestrator.
@@ -1380,6 +1379,7 @@ DEFAULT_CONFIG = {
         "max_spawn_depth": 1,  # 1 = flat, 2 = orchestrator→leaf, 3+ = deeper
         "orchestrator_enabled": True,  # kill switch for role="orchestrator"
         "require_delivery_role": False,  # true makes every delegated task declare an immutable delivery role
+        "delivery": {"verification_image": "", "acceptance": {"command": [], "image": ""}},  # immutable server-owned runners; empty means unavailable
         # Total subagents a finite one-shot run (hermes chat -q / --oneshot) may spawn; 0 = unlimited.
         # Each child re-pays a cold system prompt and re-explores the repo, and one-shot spawns are mostly
         # "review my own work" rather than parallel work (agent/oneshot_footprint.py).

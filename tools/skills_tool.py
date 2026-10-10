@@ -8,6 +8,7 @@ import hashlib
 import json
 import logging
 import os
+import stat
 import time
 from contextlib import suppress
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -578,7 +579,30 @@ def _delivery_regular_file(path: Path, root: Path, error: str) -> Path:
     return resolved
 
 
-def read_delivery_skill(name: str, file_path: str | None = None) -> dict[str, Any]:
+def _read_delivery_text(path: Path, *, max_bytes: int | None) -> str:
+    """Read a no-follow regular file, enforcing the byte cap during the read."""
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(path, flags)
+        with os.fdopen(fd, "rb") as stream:
+            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                raise ValueError("delivery skill content is not a regular file")
+            if max_bytes is None:
+                payload = stream.read()
+            else:
+                payload = stream.read(max_bytes + 1)
+                if len(payload) > max_bytes:
+                    raise ValueError("delivery skill content exceeds the configured byte limit")
+    except ValueError:
+        raise
+    except OSError as exc:
+        raise ValueError("delivery skill content is unreadable") from exc
+    return payload.decode("utf-8-sig", "replace")
+
+
+def read_delivery_skill(
+    name: str, file_path: str | None = None, *, max_bytes: int | None = None,
+) -> dict[str, Any]:
     """Read a local delivery-role skill without activation or mutable side effects."""
     if lookup_error := _skill_lookup_path_error(name):
         raise ValueError(lookup_error)
@@ -596,9 +620,17 @@ def read_delivery_skill(name: str, file_path: str | None = None) -> dict[str, An
         skill_md, owner,
         f"Required delivery skill {name!r} does not resolve to a regular file inside its skill root",
     )
+    if max_bytes is not None:
+        if isinstance(max_bytes, bool) or not isinstance(max_bytes, int) or max_bytes < 0:
+            raise ValueError("Delivery skill byte limit is invalid")
+        try:
+            if skill_md.stat().st_size > max_bytes:
+                raise ValueError(f"Required delivery skill {name!r} exceeds the configured byte limit")
+        except OSError as exc:
+            raise ValueError(f"Required delivery skill {name!r} is unreadable") from exc
     try:
-        content = _read_skill_text(skill_md)
-    except (OSError, UnicodeError) as exc:
+        content = _read_delivery_text(skill_md, max_bytes=max_bytes)
+    except (OSError, UnicodeError, ValueError) as exc:
         raise ValueError(f"Required delivery skill {name!r} is unreadable: {exc}") from exc
     try:
         frontmatter = _parse_frontmatter(content)[0]
@@ -617,8 +649,8 @@ def read_delivery_skill(name: str, file_path: str | None = None) -> dict[str, An
             "Delivery skill file_path must identify a regular file inside the skill directory",
         )
         try:
-            content = _read_skill_text(target)
-        except (OSError, UnicodeError) as exc:
+            content = _read_delivery_text(target, max_bytes=max_bytes)
+        except (OSError, UnicodeError, ValueError) as exc:
             raise ValueError(f"Delivery skill file is unreadable: {exc}") from exc
     return {
         "success": True,

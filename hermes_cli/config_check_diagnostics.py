@@ -7,6 +7,7 @@ import fnmatch
 import json
 from pathlib import Path
 import re
+import shlex
 from typing import Any
 
 
@@ -45,28 +46,59 @@ def _delivery_policy_diagnostics(config: dict[str, Any]) -> list[str]:
         )
     allowlist = config.get("command_allowlist") or []
 
-    delivery_effect_probes = (
-        "gh pr merge 123 --repo owner/repo",
-        "gh pr merge 123 --squash",
-        "gh pr review 123 --approve --repo owner/repo",
-        "gh issue close 123 --repo owner/repo",
-        "/usr/bin/gh pr merge 123 --repo owner/repo",
-        "/usr/local/bin/gh issue close 123 --repo owner/repo",
-        "git push origin HEAD",
-    )
-
     def _unsafe_permanent_approval(pattern: Any) -> bool:
-        """Mirror runtime permanent-approval exact/fnmatchcase behavior."""
+        """Conservatively classify command patterns that can authorize delivery effects.
+
+        This is deliberately structural rather than a sample-command fnmatch.  Permanent
+        approvals may pin any PR/issue number, quote an executable, use an arbitrary
+        absolute path, or add flags/suffix globs; all still authorize the same effect.
+        """
         if not isinstance(pattern, str):
             return False
         normalized = pattern.strip()
         if not normalized:
             return False
-        return any(
-            normalized == command
-            or (any(ch in normalized for ch in "*?[") and fnmatch.fnmatchcase(command, normalized))
-            for command in delivery_effect_probes
-        )
+        try:
+            tokens = shlex.split(normalized, posix=True)
+        except ValueError:
+            # Broken quoting can still be interpreted by fnmatch at approval time.
+            tokens = re.findall(r"[^\s'\"]+", normalized)
+
+        def _program(token: str, name: str) -> bool:
+            # Glob suffixes on the executable (``/opt/bin/gh*``) can include it.
+            basename = token.replace("\\", "/").rsplit("/", 1)[-1]
+            return basename == name or (
+                any(char in basename for char in "*?[")
+                and fnmatch.fnmatchcase(name, basename)
+            )
+
+        for index, token in enumerate(tokens):
+            if _program(token, "gh") and index + 1 < len(tokens):
+                group = tokens[index + 1]
+                # A broad trailing glob can absorb every remaining delivery subcommand.
+                if index + 2 >= len(tokens) and (
+                    fnmatch.fnmatchcase("pr", group) or fnmatch.fnmatchcase("issue", group)
+                ):
+                    return True
+                if index + 2 >= len(tokens):
+                    continue
+                verb = tokens[index + 2]
+                if fnmatch.fnmatchcase("pr", group) and (
+                    fnmatch.fnmatchcase("merge", verb)
+                    or (
+                        fnmatch.fnmatchcase("review", verb)
+                        and any(arg == "--approve" for arg in tokens[index + 3:])
+                    )
+                ):
+                    return True
+                if fnmatch.fnmatchcase("issue", group) and fnmatch.fnmatchcase("close", verb):
+                    return True
+            if (
+                _program(token, "git") and index + 1 < len(tokens)
+                and fnmatch.fnmatchcase("push", tokens[index + 1])
+            ):
+                return True
+        return False
 
     if isinstance(allowlist, list) and any(
         _unsafe_permanent_approval(pattern) for pattern in allowlist
@@ -87,7 +119,12 @@ def _delivery_policy_diagnostics(config: dict[str, Any]) -> list[str]:
             path = Path(configured).expanduser()
             if not path.is_absolute():
                 path = get_hermes_home() / path
-            if path.is_file() and path.stat().st_size <= 1_000_000:
+            if path.is_file() and path.stat().st_size > 1_000_000:
+                diagnostics.append(
+                    "WARNING: prefill_messages_file exceeds the 1,000,000-byte diagnostic scan limit; "
+                    "software-delivery policy in it could not be inspected."
+                )
+            elif path.is_file():
                 payload = json.loads(path.read_text(encoding="utf-8-sig"))
                 text = json.dumps(payload, ensure_ascii=False).lower()
                 explicit_contract = "immutable delivery role" in text

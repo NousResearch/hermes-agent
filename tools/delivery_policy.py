@@ -13,6 +13,8 @@ from __future__ import annotations
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
+import hashlib
+import json
 import re
 from pathlib import Path
 from typing import Any, Iterator, Mapping, Optional
@@ -22,6 +24,9 @@ DELIVERY_ROLES = ("implementer", "reviewer", "merger", "closure_controller")
 _ROLE_SET = frozenset(DELIVERY_ROLES)
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 _REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+_IMMUTABLE_IMAGE_RE = re.compile(
+    r"^[A-Za-z0-9._-]+(?::[0-9]+)?(?:/[A-Za-z0-9._-]+)+@sha256:[0-9a-f]{64}$"
+)
 
 # Deliberately small.  Generic tools are not a security boundary when they can
 # start subprocesses or reach arbitrary network services under the Hermes OS
@@ -53,7 +58,9 @@ _ROLE_CONTRACT = {
     ),
     "closure_controller": (
         "You may request only the policy-bound structured close operation. The server verifies that the merged commit "
-        "is on the repository default branch and that post-merge acceptance passes before closing the bound issue."
+        "is on the repository default branch and runs the server-bound post-merge acceptance recipe before closing "
+        "the bound issue. The recipe argv, immutable image digest, and attestation identity cannot be selected or "
+        "overridden by this worker."
     ),
 }
 
@@ -63,19 +70,78 @@ _CURRENT_POLICY: ContextVar[Optional["DeliveryPolicy"]] = ContextVar(
 
 
 def normalize_delivery_role(value: Any) -> Optional[str]:
-    """Return a canonical delivery role; reject malformed values fail-closed."""
+    """Accept only exact canonical role values; explicit aliases fail closed."""
     if value is None:
         return None
     if not isinstance(value, str):
         raise ValueError("delivery_role must be a string when provided")
-    normalized = value.strip().lower().replace("-", "_").replace(" ", "_")
-    if not normalized:
-        return None
-    if normalized not in _ROLE_SET:
+    if value not in _ROLE_SET:
         raise ValueError(
             f"Invalid delivery_role {value!r}; expected one of {', '.join(DELIVERY_ROLES)}"
         )
-    return normalized
+    return value
+
+
+@dataclass(frozen=True)
+class AcceptanceRecipe:
+    """Server-owned acceptance runner bound into a closure policy before spawn."""
+
+    argv: tuple[str, ...]
+    image: str
+    identity: str
+
+
+def _immutable_image(value: Any, field: str, *, required: bool = False) -> str:
+    if value in (None, "") and not required:
+        return ""
+    if not isinstance(value, str) or not _IMMUTABLE_IMAGE_RE.fullmatch(value):
+        raise ValueError(
+            f"delegation.delivery.{field} must be an immutable image reference ending in "
+            "@sha256:<64 lowercase hex>"
+        )
+    return value
+
+
+def _trusted_runtime_config(
+    role: str, value: Optional[Mapping[str, Any]],
+) -> tuple[str, Optional[AcceptanceRecipe]]:
+    """Validate server config and freeze it into the per-child policy."""
+    config = value or {}
+    if not isinstance(config, Mapping):
+        raise ValueError("delegation.delivery must be a mapping")
+    unknown = sorted(set(config) - {"verification_image", "acceptance"})
+    if unknown:
+        raise ValueError(f"delegation.delivery contains unsupported field(s): {', '.join(unknown)}")
+    image = _immutable_image(config.get("verification_image"), "verification_image")
+    acceptance = config.get("acceptance") or {}
+    if not isinstance(acceptance, Mapping):
+        raise ValueError("delegation.delivery.acceptance must be a mapping")
+    unknown_acceptance = sorted(set(acceptance) - {"command", "image"})
+    if unknown_acceptance:
+        raise ValueError(
+            "delegation.delivery.acceptance contains unsupported field(s): " + ", ".join(unknown_acceptance)
+        )
+    if role != "closure_controller":
+        return image, None
+    argv = acceptance.get("command")
+    if (
+        not isinstance(argv, list) or not argv
+        or not all(isinstance(item, str) and item and "\x00" not in item for item in argv)
+        or len(argv) > 128 or sum(len(item.encode("utf-8")) for item in argv) > 32_768
+    ):
+        raise ValueError("delegation.delivery.acceptance.command must be a non-empty bounded argv array")
+    acceptance_image = _immutable_image(
+        acceptance.get("image"), "acceptance.image", required=True,
+    )
+    canonical = json.dumps(
+        {"argv": argv, "image": acceptance_image},
+        sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+    ).encode("utf-8")
+    recipe = AcceptanceRecipe(
+        argv=tuple(argv), image=acceptance_image,
+        identity="sha256:" + hashlib.sha256(canonical).hexdigest(),
+    )
+    return image, recipe
 
 
 def _positive_int(value: Any, field: str) -> int:
@@ -115,6 +181,8 @@ class DeliveryPolicy:
     exact_sha: str = ""
     merged_sha: str = ""
     workspace: str = ""
+    verification_image: str = ""
+    acceptance_recipe: Optional[AcceptanceRecipe] = None
 
     @property
     def allowed_tools(self) -> Optional[frozenset[str]]:
@@ -139,9 +207,10 @@ class DeliveryPolicy:
 
 
 def build_delivery_policy(
-    role: Any, evidence: Optional[Mapping[str, Any]] = None
+    role: Any, evidence: Optional[Mapping[str, Any]] = None,
+    *, trusted_runtime: Optional[Mapping[str, Any]] = None,
 ) -> DeliveryPolicy:
-    """Validate role evidence without accepting human-authored text as proof."""
+    """Validate caller evidence and bind separately sourced server runtime policy."""
     normalized = normalize_delivery_role(role)
     if normalized is None:
         if evidence:
@@ -151,6 +220,7 @@ def build_delivery_policy(
         evidence = {}
     if not isinstance(evidence, Mapping):
         raise ValueError("delivery_evidence must be an object")
+    verification_image, acceptance_recipe = _trusted_runtime_config(normalized, trusted_runtime)
 
     # Unknown fields are rejected so old free-form evidence cannot appear to
     # authorize an operation after a schema typo or downgrade.
@@ -167,13 +237,13 @@ def build_delivery_policy(
         )
 
     if normalized == "implementer":
-        return DeliveryPolicy(role=normalized)
+        return DeliveryPolicy(role=normalized, verification_image=verification_image)
 
     if normalized == "reviewer":
         if not evidence:
             # /review also supports non-repository artifact/conversation review.
             # It gets no live filesystem or generic execution capability.
-            return DeliveryPolicy(role=normalized)
+            return DeliveryPolicy(role=normalized, verification_image=verification_image)
         required = ("repository", "pull_request", "exact_sha")
         missing = [field for field in required if evidence.get(field) in (None, "")]
         if missing:
@@ -185,6 +255,7 @@ def build_delivery_policy(
             repository=_repository(evidence["repository"]),
             pull_request=_positive_int(evidence["pull_request"], "pull_request"),
             exact_sha=_sha(evidence["exact_sha"], "exact_sha"),
+            verification_image=verification_image,
         )
 
     if normalized == "merger":
@@ -199,6 +270,7 @@ def build_delivery_policy(
             repository=_repository(evidence["repository"]),
             pull_request=_positive_int(evidence["pull_request"], "pull_request"),
             exact_sha=_sha(evidence["exact_sha"], "exact_sha"),
+            verification_image=verification_image,
         )
 
     required = ("repository", "issue", "merged_sha")
@@ -212,6 +284,8 @@ def build_delivery_policy(
         repository=_repository(evidence["repository"]),
         issue=_positive_int(evidence["issue"], "issue"),
         merged_sha=_sha(evidence["merged_sha"], "merged_sha"),
+        verification_image=verification_image,
+        acceptance_recipe=acceptance_recipe,
     )
 
 

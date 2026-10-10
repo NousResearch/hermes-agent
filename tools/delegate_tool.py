@@ -140,15 +140,29 @@ def _resolve_required_delivery_skills(
     from tools.skills_tool import read_delivery_skill
 
     resolved: list[dict[str, Any]] = []
+    total_bytes = 0
     for name in names:
         try:
-            skill = read_delivery_skill(name)
+            skill = read_delivery_skill(name, max_bytes=_REQUIRED_SKILL_MAX_BYTES)
         except Exception as exc:
             if isinstance(exc, ValueError):
                 raise
-            raise ValueError(f"Required delivery skill {name!r} failed to load: {exc}") from exc
-        if not skill.get("success") or not isinstance(skill.get("content"), str):
+            raise ValueError(f"Required delivery skill {name!r} failed to load") from exc
+        content = skill.get("content")
+        if not skill.get("success") or not isinstance(content, str):
             raise ValueError(f"Required delivery skill {name!r} failed to load")
+        size = len(content.encode("utf-8"))
+        if size > _REQUIRED_SKILL_MAX_BYTES:
+            raise ValueError(
+                f"Required delivery skill {name!r} exceeds the per-skill byte limit "
+                f"({_REQUIRED_SKILL_MAX_BYTES} bytes)"
+            )
+        total_bytes += size
+        if total_bytes > _REQUIRED_SKILLS_TOTAL_MAX_BYTES:
+            raise ValueError(
+                "Required delivery skills exceed the aggregate byte limit "
+                f"({_REQUIRED_SKILLS_TOTAL_MAX_BYTES} bytes)"
+            )
         resolved.append(dict(skill))
     return resolved
 
@@ -159,6 +173,8 @@ def _apply_delivery_capabilities(child, role_or_policy) -> None:
 
 
 DEFAULT_MAX_ITERATIONS = 250
+_REQUIRED_SKILL_MAX_BYTES = 256 * 1024
+_REQUIRED_SKILLS_TOTAL_MAX_BYTES = 512 * 1024
 _HEARTBEAT_INTERVAL = 30  # seconds between parent activity heartbeats during delegation
 # Stale-heartbeat thresholds (cycles of _HEARTBEAT_INTERVAL with no progress). Progress = iteration, current_tool OR
 # last_activity_ts advancing; an in-flight model wait refreshes last_activity_ts, so slow models are not "idle". Idle
@@ -487,7 +503,12 @@ def _build_children(
         if _task_schema is not None:
             _child_context = append_output_contract(_child_context, _task_schema)
         try:
-            delivery_policy = build_delivery_policy(t.get("delivery_role"), t.get("delivery_evidence"))
+            delivery_policy = t.get("bound_delivery_policy")
+            if delivery_policy is None:
+                delivery_policy = build_delivery_policy(
+                    t.get("delivery_role"), t.get("delivery_evidence"),
+                    trusted_runtime=(routing_cfg or {}).get("delivery"),
+                )
             if delivery_policy.role is not None:
                 delivery_policy = delivery_policy.bound_to_workspace(_resolve_workspace_hint(parent_agent))
                 needs_workspace = (
@@ -639,7 +660,10 @@ def delegate_task(
                 task["resolved_required_skills"] = _resolve_required_delivery_skills(
                     task["required_skills"], task["delivery_role"]
                 )
-                build_delivery_policy(task["delivery_role"], task.get("delivery_evidence"))
+                task["bound_delivery_policy"] = build_delivery_policy(
+                    task["delivery_role"], task.get("delivery_evidence"),
+                    trusted_runtime=cfg.get("delivery"),
+                )
                 if require_role and task["delivery_role"] is None:
                     raise ValueError("delivery_role is required by delegation.require_delivery_role")
             except ValueError as exc:

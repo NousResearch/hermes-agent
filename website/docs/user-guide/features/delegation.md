@@ -54,18 +54,29 @@ delegate_task(tasks=[
 
 ## Immutable software-delivery roles
 
-Delegation topology (`leaf` or depth-derived `orchestrator`) is separate from software-delivery authority. A task may set exactly one `delivery_role`: `implementer`, `reviewer`, `merger`, or `closure_controller`. Omitting it preserves ordinary non-delivery delegation. Set `delegation.require_delivery_role: true` only for installations where every delegated task is delivery work; an omitted or invalid role then fails closed.
+Delegation topology (`leaf` or depth-derived `orchestrator`) is separate from software-delivery authority. A task may set exactly one `delivery_role`: `implementer`, `reviewer`, `merger`, or `closure_controller`. These are exact, case-sensitive values; whitespace, case, and hyphen aliases are rejected. Omitting it preserves ordinary non-delivery delegation. Set `delegation.require_delivery_role: true` only for installations where every delegated task is delivery work; an omitted or invalid role then fails closed.
 
 The runtime injects the role and acceptance contract into the child system prompt, filters every effective/restored tool snapshot, and checks calls before plugin or MCP middleware. Delivery workers have no generic terminal, `execute_code`, connector, browser, or MCP capability. This is an effect/credential boundary rather than command-text filtering:
 
 - **implementer** — gets workspace-confined file tools and the structured `delivery_action` operations needed to inspect/stage/commit, push without force, open a PR, and run a verification command in a networkless container over a read-only mount. It cannot delegate, review/approve, merge, close, or issue arbitrary host/API commands;
-- **reviewer** — gets `skill_view`'s side-effect-free delivery reader and structured exact-SHA PR inspection/search/verification. Source is read from the bound Git object, and tests run against a securely materialized exact-SHA Git archive mounted read-only in a disposable networkless container; checkout filters and repository hooks never run on the host. If that sandbox is unavailable, verification fails closed; images must already exist locally because pulling is disabled;
-- **merger** — gets only the structured merge operation and side-effect-free skill reads. Immediately before merge the server queries the policy-bound PR head, current independent GitHub approval for that exact head, and required CI. The fixed squash merge uses `--match-head-commit`; admin/delete-branch flags, caller-selected repository/PR, GraphQL, and arbitrary commands are rejected;
-- **closure_controller** — gets only structured issue closure and side-effect-free skill reads. The server verifies that the bound merged SHA is on the repository default branch, runs post-merge acceptance in the exact-SHA sandbox, confirms the bound issue is open, and only then closes it.
+- **reviewer** — gets `skill_view`'s side-effect-free delivery reader and structured exact-SHA PR inspection/search/verification. Source is read from the bound Git object, and tests run against a securely materialized exact-SHA Git archive mounted read-only in a disposable networkless container; checkout filters and repository hooks never run on the host. Gitlinks fail closed as unsupported rather than appearing as empty directories. If that sandbox is unavailable, verification fails closed; its server-configured image must be content-addressed and already exist locally because pulling is disabled;
+- **merger** — gets only the structured merge operation and side-effect-free skill reads. Immediately before merge the server queries the policy-bound PR head, current independent GitHub approval for that exact head, required CI, and branch/ruleset protection that enforces stale-review dismissal, independent last-push approval, strict required checks, and administrator enforcement. The fixed squash merge uses `--match-head-commit`; admin/delete-branch flags, caller-selected repository/PR, GraphQL, and arbitrary commands are rejected;
+- **closure_controller** — gets only structured issue closure and side-effect-free skill reads. The server verifies that the bound merged SHA is on the repository default branch, runs its immutable server-configured post-merge acceptance recipe in the exact-SHA sandbox, and rechecks containment immediately afterward and just before closing. A retry that verifies the same conditions for an already-closed bound issue returns an explicit already-complete result without closing again. The worker cannot supply or override acceptance argv or image.
 
 `delivery_evidence` identifies machine-verifiable targets; it does not accept prose as proof. Reviewer and merger repository work uses `repository`, `pull_request`, and a full `exact_sha`. Closure uses `repository`, `issue`, and a full `merged_sha`. GitHub state and required checks are fetched by the structured operation itself.
 
-`acceptance_ledger` is authoritative system content. Every `required_skills` entry is resolved before child creation with the side-effect-free reader; unavailable, disabled, ambiguous, or unreadable skills abort the spawn. The resolved content and digest are placed immutably in the system prompt. Restricted reads never preprocess shell, install dependencies, activate plugins, or mutate skill usage state. Delivery-role children do not inherit configured prefill dialogue.
+`acceptance_ledger` is authoritative system content. Every `required_skills` entry is resolved before child creation with the side-effect-free reader; unavailable, disabled, ambiguous, unreadable, over-256-KiB individual skills, or an over-512-KiB aggregate abort the spawn before any child starts. The resolved content and digest are placed immutably in the system prompt. Restricted reads never preprocess shell, install dependencies, activate plugins, or mutate skill usage state. Delivery-role children do not inherit configured prefill dialogue.
+
+Verification and closure runners are server policy, not task input. Configure immutable image references and closure argv under `delegation.delivery`; mutable tags and bare local image names fail closed:
+
+```yaml
+delegation:
+  delivery:
+    verification_image: ghcr.io/example/hermes-verifier@sha256:<64-lowercase-hex-digest>
+    acceptance:
+      command: ["python", "-m", "pytest", "-q"]
+      image: ghcr.io/example/hermes-verifier@sha256:<64-lowercase-hex-digest>
+```
 
 ```python
 delegate_task(tasks=[{

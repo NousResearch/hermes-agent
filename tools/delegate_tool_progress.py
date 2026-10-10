@@ -203,6 +203,15 @@ def _build_child_system_prompt(
         supplied = [f"- {label}: {value}" for label, value in evidence if value]
         if supplied:
             parts.append("\n## MACHINE-BOUND DELIVERY TARGET\n" + "\n".join(supplied))
+        recipe = getattr(delivery_policy, "acceptance_recipe", None)
+        if recipe is not None:
+            parts.append(
+                "\n## SERVER-BOUND ACCEPTANCE ATTESTATION\n"
+                f"- Recipe identity: {recipe.identity}\n"
+                f"- Immutable image: {recipe.image}\n"
+                f"- Argv digest covers {len(recipe.argv)} server-configured argument(s).\n"
+                "The closure action accepts no command or image override."
+            )
         if acceptance_ledger.strip():
             parts.append("\n## AUTHORITATIVE ACCEPTANCE LEDGER\n" + acceptance_ledger.strip())
         if required_skills:

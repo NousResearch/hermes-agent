@@ -31,6 +31,11 @@ from tools.delivery_policy import (
 )
 
 SHA = "a" * 40
+IMAGE = "registry.example/hermes/verify@sha256:" + "1" * 64
+TRUSTED_RUNTIME = {
+    "verification_image": IMAGE,
+    "acceptance": {"command": ["python", "-m", "pytest", "-q"], "image": IMAGE},
+}
 MERGER_TARGET = {"repository": "owner/repo", "pull_request": 17, "exact_sha": SHA}
 CLOSURE_TARGET = {"repository": "owner/repo", "issue": 18, "merged_sha": SHA}
 REVIEWER_TARGET = {"repository": "owner/repo", "pull_request": 17, "exact_sha": SHA}
@@ -47,7 +52,7 @@ def _policy(role: str, workspace: Path | None = None) -> DeliveryPolicy:
         else REVIEWER_TARGET if role == "reviewer"
         else None
     )
-    policy = build_delivery_policy(role, evidence)
+    policy = build_delivery_policy(role, evidence, trusted_runtime=TRUSTED_RUNTIME)
     return policy.bound_to_workspace(str(workspace)) if workspace else policy
 
 
@@ -90,14 +95,19 @@ def _delegation_validation_result(*, config: dict | None = None, **kwargs) -> di
 
 
 @pytest.mark.parametrize(
-    ("raw", "expected"),
-    [(None, None), ("", None), (" Reviewer ", "reviewer"), ("closure-controller", "closure_controller")],
+    ("raw", "expected"), [(None, None), *[(role, role) for role in DELIVERY_ROLES]],
 )
 def test_role_normalization_and_no_role_compatibility(raw, expected) -> None:
     assert _normalize_delivery_role(raw) == expected
     definitions = [_definition("terminal"), _definition("write_file")]
     assert effective_tool_definitions(definitions, None) == definitions
     assert validate_delivery_terminal_command("anything", None) is None
+
+
+@pytest.mark.parametrize("raw", ["", " Reviewer ", "Reviewer", "closure-controller", "MERGER"])
+def test_delivery_role_aliases_fail_closed_at_direct_production_seam(raw: str) -> None:
+    with pytest.raises(ValueError, match="Invalid delivery_role"):
+        _normalize_delivery_role(raw)
 
 
 def test_schema_preserves_topology_and_delivery_role_separation() -> None:
@@ -185,7 +195,8 @@ def test_required_skills_are_normalized_and_resolved_before_spawn(monkeypatch) -
     assert _normalize_required_skills([" github ", "github", "release"]) == ["github", "release"]
     calls: list[str] = []
 
-    def read(name: str) -> dict:
+    def read(name: str, *, max_bytes: int | None = None) -> dict:
+        assert max_bytes is not None
         calls.append(name)
         return {
             "success": True,
@@ -207,7 +218,7 @@ def test_required_skills_are_normalized_and_resolved_before_spawn(monkeypatch) -
 
 @pytest.mark.parametrize("failure", ["unavailable", "disabled", "unreadable"])
 def test_required_skill_failure_aborts_resolution(monkeypatch, failure: str) -> None:
-    def fail(_name: str):
+    def fail(_name: str, **_kwargs):
         raise ValueError(f"Required delivery skill is {failure}")
 
     monkeypatch.setattr("tools.skills_tool.read_delivery_skill", fail)
@@ -216,11 +227,52 @@ def test_required_skill_failure_aborts_resolution(monkeypatch, failure: str) -> 
 
 
 def test_required_skill_unexpected_load_failure_is_fail_closed(monkeypatch) -> None:
-    monkeypatch.setattr("tools.skills_tool.read_delivery_skill", lambda _name: (_ for _ in ()).throw(RuntimeError("boom")))
+    monkeypatch.setattr(
+        "tools.skills_tool.read_delivery_skill",
+        lambda _name, **_kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
     with pytest.raises(ValueError, match="failed to load"):
         _resolve_required_delivery_skills(["broken"], "reviewer")
     with pytest.raises(ValueError, match="requires a delivery_role"):
         _resolve_required_delivery_skills(["skill"], None)
+
+
+def test_required_skill_per_skill_boundary_and_aggregate_limit(monkeypatch) -> None:
+    monkeypatch.setattr("tools.delegate_tool._REQUIRED_SKILL_MAX_BYTES", 8)
+    monkeypatch.setattr("tools.delegate_tool._REQUIRED_SKILLS_TOTAL_MAX_BYTES", 12)
+
+    def read(name: str, *, max_bytes: int) -> dict:
+        content = "x" * (9 if name == "oversized" else 8)
+        return {
+            "success": True, "name": name, "path": name, "content": content,
+            "content_sha256": "1" * 64, "immutable_delivery_read": True,
+        }
+
+    monkeypatch.setattr("tools.skills_tool.read_delivery_skill", read)
+    assert len(_resolve_required_delivery_skills(["boundary"], "reviewer")[0]["content"]) == 8
+    with pytest.raises(ValueError, match="per-skill byte limit"):
+        _resolve_required_delivery_skills(["oversized"], "reviewer")
+    with pytest.raises(ValueError, match="aggregate byte limit"):
+        _resolve_required_delivery_skills(["one", "two"], "reviewer")
+
+
+def test_required_skill_limit_aborts_before_any_child_spawn(monkeypatch) -> None:
+    monkeypatch.setattr("tools.delegate_tool._REQUIRED_SKILL_MAX_BYTES", 4)
+    monkeypatch.setattr(
+        "tools.skills_tool.read_delivery_skill",
+        lambda name, **_kwargs: {
+            "success": True, "name": name, "path": name, "content": "12345",
+            "content_sha256": "1" * 64, "immutable_delivery_read": True,
+        },
+    )
+    monkeypatch.setattr("tools.delegate_tool._build_children", lambda *_a, **_k: pytest.fail("child spawned"))
+    result = _delegation_validation_result(
+        config={"delegation": {"delivery": TRUSTED_RUNTIME}},
+        delivery_role="reviewer",
+        delivery_evidence=REVIEWER_TARGET,
+        required_skills=["too-large"],
+    )
+    assert "per-skill byte limit" in result["error"]
 
 
 def test_effective_surfaces_remove_generic_execution_and_inject_structured_action() -> None:
@@ -407,15 +459,19 @@ def test_reviewer_verification_container_is_read_only_networkless_and_uncredenti
         captured.append((list(argv), kwargs))
         return subprocess.CompletedProcess(argv, 0, "ok", "")
 
-    monkeypatch.setattr("tools.delivery_action._run", run)
-    monkeypatch.setattr("tools.delivery_action.shutil.which", lambda _name: "/usr/bin/docker")
-    result = json.loads(_docker_verify(
-        _policy("implementer", tmp_path), ["python", "-m", "pytest", "-q"], "python:3.12"
-    ))
+    monkeypatch.setattr("tools.delivery_action.run_bounded", run)
+    monkeypatch.setattr("tools.delivery_action._cleanup_stale_verification_state", lambda _docker: None)
+    monkeypatch.setattr("tools.delivery_action._run", lambda argv, **_kwargs: subprocess.CompletedProcess(argv, 0, "", ""))
+    monkeypatch.setattr("tools.delivery_action._docker_path", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(
+        "tools.delivery_action._workspace_source", lambda _policy, root: root / "checkout",
+    )
+    result = json.loads(_docker_verify(_policy("implementer", tmp_path), ["python", "-m", "pytest", "-q"]))
     assert result["ok"] is True
     argv, kwargs = captured[0]
     assert argv[argv.index("--network") + 1] == "none"
     assert argv[argv.index("--pull") + 1] == "never"
+    assert argv[argv.index("--entrypoint") + 1] == ""
     assert "--read-only" in argv
     assert argv[argv.index("--user") + 1] == "65534:65534"
     assert argv[argv.index("--cap-drop") + 1] == "ALL"
@@ -428,7 +484,7 @@ def test_reviewer_verification_container_is_read_only_networkless_and_uncredenti
     assert Path(source) != tmp_path.resolve()
     assert (destination, mode) == ("/workspace", "ro")
     assert set(kwargs["env"]) == {"PATH"}
-    assert captured[1][0][1:3] == ["rm", "--force"]
+    assert IMAGE in argv
 
 
 def test_reviewer_mutation_attempt_cannot_touch_host_checkout(monkeypatch, tmp_path: Path) -> None:
@@ -436,22 +492,23 @@ def test_reviewer_mutation_attempt_cannot_touch_host_checkout(monkeypatch, tmp_p
     marker.write_text("original", encoding="utf-8")
 
     def run(argv, **_kwargs):
-        if argv[1] == "run":
-            assert "--read-only" in argv
-            mount = argv[argv.index("-v") + 1]
-            source, destination, mode = mount.rsplit(":", 2)
-            assert Path(source) != tmp_path.resolve()
-            assert (destination, mode) == ("/workspace", "ro")
-            return subprocess.CompletedProcess(argv, 1, "", "Read-only file system")
-        assert argv[1:3] == ["rm", "--force"]
-        return subprocess.CompletedProcess(argv, 0, "", "")
+        assert "--read-only" in argv
+        mount = argv[argv.index("-v") + 1]
+        source, destination, mode = mount.rsplit(":", 2)
+        assert Path(source) != tmp_path.resolve()
+        assert (destination, mode) == ("/workspace", "ro")
+        return subprocess.CompletedProcess(argv, 1, "", "Read-only file system")
 
-    monkeypatch.setattr("tools.delivery_action._run", run)
-    monkeypatch.setattr("tools.delivery_action.shutil.which", lambda _name: "/usr/bin/docker")
+    monkeypatch.setattr("tools.delivery_action.run_bounded", run)
+    monkeypatch.setattr("tools.delivery_action._cleanup_stale_verification_state", lambda _docker: None)
+    monkeypatch.setattr("tools.delivery_action._run", lambda argv, **_kwargs: subprocess.CompletedProcess(argv, 0, "", ""))
+    monkeypatch.setattr("tools.delivery_action._docker_path", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(
+        "tools.delivery_action._workspace_source", lambda _policy, root: root / "checkout",
+    )
     result = json.loads(_docker_verify(
         _policy("implementer", tmp_path),
         ["python", "-c", "open('/workspace/source.py','w').write('owned')"],
-        "python:3.12",
     ))
     assert result["ok"] is False
     assert marker.read_text(encoding="utf-8") == "original"
@@ -499,7 +556,20 @@ def test_merger_queries_bound_head_review_and_required_ci_immediately_before_mer
         calls.append(("api", endpoint, paginate))
         if "/reviews" in endpoint:
             return [{"state": "APPROVED", "commit_id": SHA, "user": {"login": "reviewer"}}]
-        return {"head": {"sha": SHA}, "user": {"login": "author"}, "state": "open", "draft": False}
+        if endpoint.endswith("/protection"):
+            return {
+                "required_pull_request_reviews": {
+                    "required_approving_review_count": 1,
+                    "dismiss_stale_reviews": True,
+                    "require_last_push_approval": True,
+                },
+                "required_status_checks": {"strict": True, "checks": [{"context": "test"}]},
+                "enforce_admins": {"enabled": True},
+            }
+        return {
+            "head": {"sha": SHA}, "base": {"ref": "main"},
+            "user": {"login": "author"}, "state": "open", "draft": False,
+        }
 
     def run(argv, **_kwargs):
         calls.append(("run", tuple(argv)))
@@ -508,7 +578,7 @@ def test_merger_queries_bound_head_review_and_required_ci_immediately_before_mer
         return subprocess.CompletedProcess(argv, 0, "merged", "")
 
     monkeypatch.setattr("tools.delivery_action._gh_json", gh_json)
-    monkeypatch.setattr("tools.delivery_action._run", run)
+    monkeypatch.setattr("tools.delivery_action._gh", run)
     from model_tools import handle_function_call
     with delivery_role_context(_policy("merger")):
         payload = json.loads(handle_function_call("delivery_action", {"action": "merge"}))
@@ -517,8 +587,8 @@ def test_merger_queries_bound_head_review_and_required_ci_immediately_before_mer
     assert "--match-head-commit" in merge_call
     assert merge_call[merge_call.index("--match-head-commit") + 1] == SHA
     assert "--admin" not in merge_call and "--delete-branch" not in merge_call
-    assert calls[-2][0] == "run" and "checks" in calls[-2][1]
     assert calls[-1][0] == "run" and "merge" in calls[-1][1]
+    assert any(call[0] == "api" and call[1].endswith("/protection") for call in calls)
 
 
 @pytest.mark.parametrize(
@@ -545,7 +615,10 @@ def test_merger_rejects_stale_or_forged_approval(monkeypatch) -> None:
     def gh_json(endpoint: str, *, paginate: bool = False):
         if "/reviews" in endpoint:
             return [{"state": "APPROVED", "commit_id": "b" * 40, "user": {"login": "reviewer"}}]
-        return {"head": {"sha": SHA}, "user": {"login": "author"}, "state": "open", "draft": False}
+        return {
+            "head": {"sha": SHA}, "base": {"ref": "main"},
+            "user": {"login": "author"}, "state": "open", "draft": False,
+        }
 
     monkeypatch.setattr("tools.delivery_action._gh_json", gh_json)
     monkeypatch.setattr("tools.delivery_action._run", lambda *_a, **_k: pytest.fail("CI or merge ran"))
@@ -562,6 +635,7 @@ def test_closure_binds_default_branch_acceptance_and_tracker_before_close(monkey
     merged_sha = _init_repo(repo, remote=True)
     policy = build_delivery_policy(
         "closure_controller", {"repository": "owner/repo", "issue": 18, "merged_sha": merged_sha},
+        trusted_runtime=TRUSTED_RUNTIME,
     ).bound_to_workspace(str(repo))
     endpoints: list[str] = []
     close_calls: list[list[str]] = []
@@ -580,7 +654,10 @@ def test_closure_binds_default_branch_acceptance_and_tracker_before_close(monkey
     monkeypatch.setattr("tools.delivery_action._gh_json", gh_json)
     monkeypatch.setattr(
         "tools.delivery_action._docker_verify",
-        lambda _policy, _command, _image, *, exact_sha="": json.dumps({"ok": exact_sha == merged_sha}),
+        lambda _policy, command, *, exact_sha="", acceptance=False: json.dumps({
+            "ok": command is None and exact_sha == merged_sha and acceptance,
+            "attestation": {"image": IMAGE, "recipe_identity": _policy.acceptance_recipe.identity},
+        }),
     )
     monkeypatch.setattr(
         "tools.delivery_action._gh",
@@ -590,15 +667,15 @@ def test_closure_binds_default_branch_acceptance_and_tracker_before_close(monkey
         ),
     )
     with delivery_role_context(policy):
-        payload = json.loads(handle_function_call(
-            "delivery_action", {"action": "close_issue", "command": ["python", "-m", "pytest"]},
-        ))
+        payload = json.loads(handle_function_call("delivery_action", {"action": "close_issue"}))
     assert payload["ok"] is True
+    assert policy.acceptance_recipe is not None
     assert f"repos/owner/repo/compare/{merged_sha}...main" in endpoints
-    assert endpoints[-1] == "repos/owner/repo/issues/18"
+    assert endpoints.count(f"repos/owner/repo/compare/{merged_sha}...main") == 3
+    assert "repos/owner/repo/issues/18" in endpoints
     assert close_calls == [[
         "issue", "close", "18", "--repo", "owner/repo",
-        "--comment", f"Post-merge acceptance passed for {merged_sha}.",
+        "--comment", f"Post-merge acceptance passed for {merged_sha} ({policy.acceptance_recipe.identity}).",
     ]]
 
 
@@ -609,6 +686,7 @@ def test_closure_never_closes_when_post_merge_acceptance_fails(monkeypatch, tmp_
     merged_sha = _init_repo(repo, remote=True)
     policy = build_delivery_policy(
         "closure_controller", {"repository": "owner/repo", "issue": 18, "merged_sha": merged_sha},
+        trusted_runtime=TRUSTED_RUNTIME,
     ).bound_to_workspace(str(repo))
     monkeypatch.setattr(
         "tools.delivery_action._gh_json",
@@ -622,8 +700,6 @@ def test_closure_never_closes_when_post_merge_acceptance_fails(monkeypatch, tmp_
     )
     monkeypatch.setattr("tools.delivery_action._gh", lambda *_args, **_kwargs: pytest.fail("issue was closed"))
     with delivery_role_context(policy):
-        payload = json.loads(handle_function_call(
-            "delivery_action", {"action": "close_issue", "command": ["python", "-m", "pytest"]},
-        ))
+        payload = json.loads(handle_function_call("delivery_action", {"action": "close_issue"}))
     assert payload["ok"] is False
     assert "acceptance failed" in payload["error"]

@@ -15,24 +15,38 @@ import os
 from pathlib import Path, PurePosixPath
 import re
 import shutil
+import stat
 import subprocess
 import tarfile
 import tempfile
+import time
 import uuid
 from typing import Any, Mapping, Optional
 from urllib.parse import urlparse
 
+import psutil
+from hermes_platform.resolver import LookupContext, locate_command
 from tools.delivery_policy import DeliveryPolicy, current_delivery_policy
+from tools.delivery_action_runtime import (
+    DeliveryRuntimeError, require_free_disk, run_bounded, stream_to_file_bounded,
+)
 from tools.registry import registry
 
 
 logger = logging.getLogger(__name__)
 _SAFE_REF = re.compile(r"^[A-Za-z0-9._/-]+$")
-_SAFE_IMAGE = re.compile(r"^[A-Za-z0-9._/@:-]+$")
 _MAX_OUTPUT = 100_000
 _GIT_TIMEOUT = 120
 _NETWORK_TIMEOUT = 120
 _VERIFY_TIMEOUT = 1800
+_VERIFY_OUTPUT_LIMIT = 2 * 1024 * 1024
+_TREE_OUTPUT_LIMIT = 32 * 1024 * 1024
+_ARCHIVE_MAX_BYTES = 512 * 1024 * 1024
+_EXTRACTED_MAX_BYTES = 1024 * 1024 * 1024
+_SOURCE_MAX_FILES = 100_000
+_DISK_RESERVE_BYTES = 64 * 1024 * 1024
+_STALE_SECONDS = 60 * 60
+_GH_PATH: Optional[str] = None
 
 
 class DeliveryActionError(RuntimeError):
@@ -50,37 +64,20 @@ def _trim(value: str) -> str:
 
 
 def _run(
-    argv: list[str], *, cwd: Optional[str] = None, timeout: int, env: Optional[dict[str, str]] = None
+    argv: list[str], *, cwd: Optional[str] = None, timeout: int, env: Optional[dict[str, str]] = None,
+    output_limit: int = _MAX_OUTPUT,
 ) -> subprocess.CompletedProcess[str]:
     logger.info("delivery_action exec program=%s argc=%d cwd=%s", argv[0], len(argv), cwd)
     try:
-        return subprocess.run(
-            argv,
-            cwd=cwd,
-            env=env,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            errors="replace",
-            timeout=timeout,
-            check=False,
+        return run_bounded(
+            argv, cwd=cwd, env=env, timeout=timeout, output_limit=output_limit,
         )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise DeliveryActionError(f"structured operation failed to start or timed out: {exc}") from exc
+    except DeliveryRuntimeError as exc:
+        raise DeliveryActionError(str(exc)) from exc
 
 
-def _git(policy: DeliveryPolicy, args: list[str], *, timeout: int = _GIT_TIMEOUT) -> subprocess.CompletedProcess[str]:
-    if not policy.workspace:
-        raise DeliveryActionError("this operation requires a policy-bound workspace")
-    from tools.environments.local import served_profile_child_env
-    env = served_profile_child_env(inherit_credentials=True)
-    env.update({
-        "GIT_CONFIG_NOSYSTEM": "1",
-        "GIT_TERMINAL_PROMPT": "0",
-        "GIT_OPTIONAL_LOCKS": "0",
-    })
-    argv = [
+def _git_argv(args: list[str]) -> list[str]:
+    return [
         "git",
         "-c", "core.hooksPath=/dev/null",
         "-c", "core.fsmonitor=false",
@@ -90,7 +87,25 @@ def _git(policy: DeliveryPolicy, args: list[str], *, timeout: int = _GIT_TIMEOUT
         "--literal-pathspecs",
         *args,
     ]
-    return _run(argv, cwd=policy.workspace, timeout=timeout, env=env)
+
+
+def _git_env(*, credentials: bool = True) -> dict[str, str]:
+    from tools.environments.local import served_profile_child_env
+    env = served_profile_child_env(inherit_credentials=credentials)
+    env.update({
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_OPTIONAL_LOCKS": "0",
+    })
+    return env
+
+
+def _git(policy: DeliveryPolicy, args: list[str], *, timeout: int = _GIT_TIMEOUT) -> subprocess.CompletedProcess[str]:
+    if not policy.workspace:
+        raise DeliveryActionError("this operation requires a policy-bound workspace")
+    return _run(
+        _git_argv(args), cwd=policy.workspace, timeout=timeout, env=_git_env(credentials=True),
+    )
 
 
 def _git_ok(policy: DeliveryPolicy, args: list[str], *, timeout: int = _GIT_TIMEOUT) -> str:
@@ -100,17 +115,52 @@ def _git_ok(policy: DeliveryPolicy, args: list[str], *, timeout: int = _GIT_TIME
     return _trim(proc.stdout)
 
 
-def _gh(args: list[str]) -> subprocess.CompletedProcess[str]:
-    if shutil.which("gh") is None:
+def _trusted_gh_path() -> str:
+    """Resolve gh once from a server-controlled search path, never a caller PATH."""
+    global _GH_PATH
+    if _GH_PATH is not None:
+        return _GH_PATH
+    search_path = os.pathsep.join(("/usr/local/bin", "/usr/bin", "/bin"))
+    resolution = locate_command("gh", LookupContext(path=search_path))
+    if not resolution.command:
         raise DeliveryActionError("GitHub CLI is unavailable; refusing the structured remote operation")
-    from tools.environments.local import served_profile_child_env
-    env = served_profile_child_env(inherit_credentials=True)
-    env.update({"GH_PROMPT_DISABLED": "1", "GH_PAGER": "cat", "PAGER": "cat"})
-    return _run(["gh", *args], timeout=_NETWORK_TIMEOUT, env=env)
+    candidate = resolution.command[0]
+    resolved = str(Path(candidate).resolve(strict=True))
+    try:
+        mode = os.stat(resolved).st_mode
+    except OSError as exc:
+        raise DeliveryActionError("trusted GitHub CLI path is unavailable") from exc
+    if not Path(resolved).is_absolute() or not stat.S_ISREG(mode) or not os.access(resolved, os.X_OK):
+        raise DeliveryActionError("trusted GitHub CLI path is not an executable regular file")
+    _GH_PATH = resolved
+    return resolved
+
+
+def _github_env() -> dict[str, str]:
+    """Minimal github.com-only environment with the active profile's token."""
+    from agent.secret_scope import get_secret
+
+    token = get_secret("GH_TOKEN") or get_secret("GITHUB_TOKEN")
+    if not token:
+        raise DeliveryActionError(
+            "the served profile has no GH_TOKEN or GITHUB_TOKEN for structured GitHub operations"
+        )
+    return {
+        "GH_TOKEN": token,
+        "GH_HOST": "github.com",
+        "GH_PROMPT_DISABLED": "1",
+        "GH_PAGER": "cat",
+        "PAGER": "cat",
+        "LANG": "C.UTF-8",
+    }
+
+
+def _gh(args: list[str]) -> subprocess.CompletedProcess[str]:
+    return _run([_trusted_gh_path(), *args], timeout=_NETWORK_TIMEOUT, env=_github_env())
 
 
 def _gh_json(endpoint: str, *, paginate: bool = False) -> Any:
-    args = ["api", "--method", "GET", endpoint]
+    args = ["api", "--hostname", "github.com", "--method", "GET", endpoint]
     if paginate:
         args.append("--paginate")
         args.extend(["--slurp"])
@@ -217,13 +267,69 @@ def _assert_pr_head(policy: DeliveryPolicy) -> dict[str, Any]:
     return payload
 
 
-def _extract_git_archive(archive: Path, destination: Path) -> None:
-    """Materialize an archive without following repository-controlled links."""
+def _extract_archive_member(
+    bundle: tarfile.TarFile, member: tarfile.TarInfo, destination: Path,
+    relative: PurePosixPath, deadline: float,
+) -> None:
+    target = destination.joinpath(*relative.parts)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    cursor = destination
+    for part in relative.parts[:-1]:
+        cursor /= part
+        if cursor.is_symlink():
+            raise DeliveryActionError("exact-SHA archive traverses a symbolic link")
+    if member.isdir():
+        if target.exists() and not target.is_dir():
+            raise DeliveryActionError("exact-SHA archive has conflicting entries")
+        target.mkdir(exist_ok=True)
+        return
+    if member.issym():
+        link = PurePosixPath(member.linkname)
+        if link.is_absolute() or any(part == ".." for part in link.parts):
+            raise DeliveryActionError("exact-SHA archive contains an escaping symbolic link")
+        try:
+            target.symlink_to(member.linkname)
+        except OSError as exc:
+            raise DeliveryActionError("exact-SHA archive contains an invalid symbolic link") from exc
+        return
+    if not member.isfile():
+        raise DeliveryActionError(
+            "exact-SHA archive contains an unsupported special or hard-linked entry"
+        )
+    source = bundle.extractfile(member)
+    if source is None:
+        raise DeliveryActionError("exact-SHA archive contains an unreadable file")
+    try:
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+        fd = os.open(target, flags, 0o555 if member.mode & 0o111 else 0o444)
+    except OSError as exc:
+        raise DeliveryActionError("exact-SHA archive has conflicting file entries") from exc
+    with source, os.fdopen(fd, "wb") as output:
+        remaining = member.size
+        while remaining:
+            if time.monotonic() >= deadline:
+                raise DeliveryActionError("exact-SHA archive extraction timed out")
+            chunk = source.read(min(64 * 1024, remaining))
+            if not chunk:
+                raise DeliveryActionError("exact-SHA archive file ended before its declared size")
+            output.write(chunk)
+            remaining -= len(chunk)
+
+
+def _extract_git_archive(
+    archive: Path, destination: Path, *, timeout: int = _GIT_TIMEOUT,
+) -> None:
+    """Materialize an archive without following links and under hard quotas."""
     if not hasattr(os, "O_NOFOLLOW"):
         raise DeliveryActionError("safe exact-SHA materialization is unavailable on this platform")
     seen: set[PurePosixPath] = set()
+    extracted_bytes = 0
+    file_count = 0
+    deadline = time.monotonic() + timeout
     with tarfile.open(archive, mode="r:") as bundle:
         for member in bundle:
+            if time.monotonic() >= deadline:
+                raise DeliveryActionError("exact-SHA archive extraction timed out")
             relative = PurePosixPath(member.name)
             if (
                 not member.name or relative.is_absolute()
@@ -232,47 +338,54 @@ def _extract_git_archive(archive: Path, destination: Path) -> None:
             ):
                 raise DeliveryActionError("exact-SHA archive contains an unsafe or duplicate path")
             seen.add(relative)
-            target = destination.joinpath(*relative.parts)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            cursor = destination
-            for part in relative.parts[:-1]:
-                cursor /= part
-                if cursor.is_symlink():
-                    raise DeliveryActionError("exact-SHA archive traverses a symbolic link")
-            if member.isdir():
-                if target.exists() and not target.is_dir():
-                    raise DeliveryActionError("exact-SHA archive has conflicting entries")
-                target.mkdir(exist_ok=True)
-            elif member.isfile():
-                source = bundle.extractfile(member)
-                if source is None:
-                    raise DeliveryActionError("exact-SHA archive contains an unreadable file")
-                try:
-                    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
-                    fd = os.open(target, flags, 0o555 if member.mode & 0o111 else 0o444)
-                except OSError as exc:
-                    raise DeliveryActionError("exact-SHA archive has conflicting file entries") from exc
-                with source, os.fdopen(fd, "wb") as output:
-                    shutil.copyfileobj(source, output)
-            elif member.issym():
-                link = PurePosixPath(member.linkname)
-                if link.is_absolute() or any(part == ".." for part in link.parts):
-                    raise DeliveryActionError("exact-SHA archive contains an escaping symbolic link")
-                try:
-                    target.symlink_to(member.linkname)
-                except OSError as exc:
-                    raise DeliveryActionError("exact-SHA archive contains an invalid symbolic link") from exc
-            else:
-                raise DeliveryActionError(
-                    "exact-SHA archive contains an unsupported special or hard-linked entry"
-                )
+            file_count += 1
+            if file_count > _SOURCE_MAX_FILES:
+                raise DeliveryActionError("exact-SHA archive exceeds the source-file quota")
+            if member.size < 0 or member.size > _EXTRACTED_MAX_BYTES - extracted_bytes:
+                raise DeliveryActionError("exact-SHA archive exceeds the extracted-size quota")
+            extracted_bytes += member.size
+            try:
+                require_free_disk(destination, member.size, reserve=_DISK_RESERVE_BYTES)
+            except DeliveryRuntimeError as exc:
+                raise DeliveryActionError(str(exc)) from exc
+            _extract_archive_member(bundle, member, destination, relative, deadline)
+
+
+def _assert_no_gitlinks(policy: DeliveryPolicy, exact_sha: str = "") -> None:
+    args = ["ls-tree", "-r", "--full-tree", exact_sha] if exact_sha else ["ls-files", "--stage"]
+    try:
+        tree = run_bounded(
+            _git_argv(args), cwd=policy.workspace, env=_git_env(credentials=False),
+            timeout=_GIT_TIMEOUT, output_limit=_TREE_OUTPUT_LIMIT,
+        )
+    except DeliveryRuntimeError as exc:
+        raise DeliveryActionError(str(exc)) from exc
+    if tree.returncode:
+        label = "exact-SHA tree" if exact_sha else "workspace index"
+        raise DeliveryActionError(_trim(tree.stderr.strip() or f"{label} inspection failed"))
+    if any(line.startswith("160000 ") for line in tree.stdout.splitlines()):
+        raise DeliveryActionError(
+            "delivery verification does not support git submodules; refusing gitlink materialization"
+        )
 
 
 def _exact_sha_source(policy: DeliveryPolicy, exact_sha: str, temp_root: Path) -> Path:
-    """Export exact git objects without checkout filters or host-side repo hooks."""
+    """Stream exact git objects under quota; gitlinks fail closed as unsupported."""
     _assert_workspace_is_repository_root(policy)
+    _assert_no_gitlinks(policy, exact_sha)
+    try:
+        require_free_disk(temp_root, 0, reserve=_DISK_RESERVE_BYTES)
+    except DeliveryRuntimeError as exc:
+        raise DeliveryActionError(str(exc)) from exc
     archive = temp_root / "source.tar"
-    proc = _git(policy, ["archive", "--format=tar", f"--output={archive}", exact_sha])
+    try:
+        proc = stream_to_file_bounded(
+            _git_argv(["archive", "--format=tar", exact_sha]), archive,
+            cwd=policy.workspace, env=_git_env(credentials=False), timeout=_GIT_TIMEOUT,
+            byte_limit=_ARCHIVE_MAX_BYTES, disk_reserve=_DISK_RESERVE_BYTES,
+        )
+    except DeliveryRuntimeError as exc:
+        raise DeliveryActionError(str(exc)) from exc
     if proc.returncode:
         raise DeliveryActionError(_trim(proc.stderr.strip() or "exact-SHA archive failed"))
     source = temp_root / "checkout"
@@ -285,62 +398,172 @@ def _exact_sha_source(policy: DeliveryPolicy, exact_sha: str, temp_root: Path) -
     return source
 
 
-def _copy_workspace_tree(source: Path, destination: Path) -> None:
-    """Copy the live tree without VCS metadata, following no repository links."""
+def _copy_workspace_file(
+    entry: os.DirEntry[str], target: Path, destination: Path,
+    quota: list[int], deadline: float,
+) -> None:
+    if time.monotonic() >= deadline:
+        raise DeliveryActionError("workspace snapshot timed out")
+    metadata = entry.stat(follow_symlinks=False)
+    if metadata.st_size < 0 or metadata.st_size > _EXTRACTED_MAX_BYTES - quota[0]:
+        raise DeliveryActionError("workspace snapshot exceeds the source-size quota")
+    try:
+        require_free_disk(destination, metadata.st_size, reserve=_DISK_RESERVE_BYTES)
+    except DeliveryRuntimeError as exc:
+        raise DeliveryActionError(str(exc)) from exc
+    fd = os.open(entry.path, os.O_RDONLY | os.O_NOFOLLOW)
+    mode = 0o555 if metadata.st_mode & 0o111 else 0o444
+    with os.fdopen(fd, "rb") as input_file:
+        out_fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode)
+        with os.fdopen(out_fd, "wb") as output_file:
+            while chunk := input_file.read(64 * 1024):
+                if time.monotonic() >= deadline:
+                    raise DeliveryActionError("workspace snapshot timed out")
+                if len(chunk) > _EXTRACTED_MAX_BYTES - quota[0]:
+                    raise DeliveryActionError("workspace snapshot exceeds the source-size quota")
+                try:
+                    require_free_disk(destination, len(chunk), reserve=_DISK_RESERVE_BYTES)
+                except DeliveryRuntimeError as exc:
+                    raise DeliveryActionError(str(exc)) from exc
+                quota[0] += len(chunk)
+                output_file.write(chunk)
+
+
+def _copy_workspace_tree(
+    source: Path, destination: Path, quota: list[int], deadline: float,
+) -> None:
+    """Copy the live tree without VCS metadata, following no links and under quota."""
     destination.mkdir(mode=0o755)
     try:
-        entries = list(os.scandir(source))
+        entries = os.scandir(source)
     except OSError as exc:
         raise DeliveryActionError(f"workspace snapshot is unreadable: {exc}") from exc
-    for entry in entries:
-        if entry.name == ".git":
-            continue
-        target = destination / entry.name
-        try:
-            if entry.is_symlink():
-                target.symlink_to(os.readlink(entry.path))
-            elif entry.is_dir(follow_symlinks=False):
-                _copy_workspace_tree(Path(entry.path), target)
-            elif entry.is_file(follow_symlinks=False):
-                flags = os.O_RDONLY | os.O_NOFOLLOW
-                fd = os.open(entry.path, flags)
-                mode = 0o555 if entry.stat(follow_symlinks=False).st_mode & 0o111 else 0o444
-                with os.fdopen(fd, "rb") as input_file:
-                    out_fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode)
-                    with os.fdopen(out_fd, "wb") as output_file:
-                        shutil.copyfileobj(input_file, output_file)
-            else:
-                raise DeliveryActionError("workspace contains an unsupported special file")
-        except DeliveryActionError:
-            raise
-        except OSError as exc:
-            raise DeliveryActionError(f"workspace snapshot failed at {entry.name!r}: {exc}") from exc
+    with entries:
+        for entry in entries:
+            if time.monotonic() >= deadline:
+                raise DeliveryActionError("workspace snapshot timed out")
+            if entry.name == ".git":
+                continue
+            quota[1] += 1
+            if quota[1] > _SOURCE_MAX_FILES:
+                raise DeliveryActionError("workspace snapshot exceeds the source-file quota")
+            target = destination / entry.name
+            try:
+                if entry.is_symlink():
+                    target.symlink_to(os.readlink(entry.path))
+                elif entry.is_dir(follow_symlinks=False):
+                    _copy_workspace_tree(Path(entry.path), target, quota, deadline)
+                elif entry.is_file(follow_symlinks=False):
+                    _copy_workspace_file(entry, target, destination, quota, deadline)
+                else:
+                    raise DeliveryActionError("workspace contains an unsupported special file")
+            except DeliveryActionError:
+                raise
+            except OSError as exc:
+                raise DeliveryActionError(f"workspace snapshot failed at {entry.name!r}: {exc}") from exc
 
 
 def _workspace_source(policy: DeliveryPolicy, temp_root: Path) -> Path:
     if not hasattr(os, "O_NOFOLLOW"):
         raise DeliveryActionError("safe workspace materialization is unavailable on this platform")
+    try:
+        require_free_disk(temp_root, 0, reserve=_DISK_RESERVE_BYTES)
+    except DeliveryRuntimeError as exc:
+        raise DeliveryActionError(str(exc)) from exc
+    _assert_workspace_is_repository_root(policy)
+    _assert_no_gitlinks(policy)
     source = temp_root / "checkout"
-    _copy_workspace_tree(Path(policy.workspace), source)
+    _copy_workspace_tree(
+        Path(policy.workspace), source, [0, 0], time.monotonic() + _GIT_TIMEOUT,
+    )
     return source
 
 
-def _docker_verify(policy: DeliveryPolicy, command: Any, image: Any, *, exact_sha: str = "") -> str:
-    if not isinstance(command, list) or not command or not all(isinstance(item, str) and item for item in command):
-        raise DeliveryActionError("command must be a non-empty array of argv strings")
-    if len(command) > 128 or sum(len(item) for item in command) > 32_768:
-        raise DeliveryActionError("verification command is too large")
-    image_name = str(image or "python:3.11-slim").strip()
-    if not _SAFE_IMAGE.fullmatch(image_name):
-        raise DeliveryActionError("image is not a safe container image reference")
-    if shutil.which("docker") is None:
+def _docker_path() -> str:
+    search_path = os.pathsep.join(("/usr/local/bin", "/usr/bin", "/bin"))
+    resolution = locate_command("docker", LookupContext(path=search_path))
+    if not resolution.command:
         raise DeliveryActionError(
             "sandboxed delivery verification requires Docker; refusing to run against the live checkout"
         )
+    candidate = resolution.command[0]
+    try:
+        resolved = str(Path(candidate).resolve(strict=True))
+        mode = os.stat(resolved).st_mode
+    except OSError as exc:
+        raise DeliveryActionError("trusted Docker executable path is unavailable") from exc
+    if not Path(resolved).is_absolute() or not stat.S_ISREG(mode) or not os.access(resolved, os.X_OK):
+        raise DeliveryActionError("trusted Docker path is not an executable regular file")
+    return resolved
+
+
+def _pid_is_live(pid: int) -> bool:
+    return psutil.pid_exists(pid)
+
+
+def _cleanup_stale_verification_state(docker: str) -> None:
+    """Reap interrupted prior runs without touching a concurrent live verifier."""
+    temp = Path(tempfile.gettempdir())
+    now = time.time()
+    uid_reader = getattr(os, "getuid", None)
+    current_uid = uid_reader() if uid_reader is not None else None
+    for entry in temp.glob("hermes-delivery-review-*-*"):
+        try:
+            if (
+                not entry.is_dir() or entry.is_symlink()
+                or (current_uid is not None and entry.stat().st_uid != current_uid)
+            ):
+                continue
+            match = re.fullmatch(r"hermes-delivery-review-([0-9]+)-.+", entry.name)
+            stale = now - entry.stat().st_mtime >= _STALE_SECONDS
+            if stale or (match and not _pid_is_live(int(match.group(1)))):
+                shutil.rmtree(entry)
+        except OSError:
+            logger.warning("delivery verification stale temp cleanup failed for %s", entry)
+    try:
+        listed = _run(
+            [docker, "ps", "-a", "--filter", "label=com.hermes.delivery",
+             "--format", '{{.ID}} {{.Label "com.hermes.delivery.pid"}}'],
+            timeout=30, env={"PATH": "/usr/bin:/bin"},
+        )
+        for line in listed.stdout.splitlines():
+            parts = line.split()
+            if len(parts) == 2 and parts[1].isdigit() and not _pid_is_live(int(parts[1])):
+                _run(
+                    [docker, "rm", "--force", parts[0]], timeout=30,
+                    env={"PATH": "/usr/bin:/bin"},
+                )
+    except DeliveryActionError as exc:
+        logger.warning("delivery verification stale container cleanup failed: %s", exc)
+
+
+def _docker_verify(
+    policy: DeliveryPolicy, command: Any, *, exact_sha: str = "", acceptance: bool = False,
+) -> str:
+    recipe = policy.acceptance_recipe if acceptance else None
+    if acceptance:
+        if recipe is None:
+            raise DeliveryActionError("closure policy has no server-bound acceptance recipe")
+        command = list(recipe.argv)
+        image_name = recipe.image
+    else:
+        image_name = policy.verification_image
+    if not isinstance(command, list) or not command or not all(
+        isinstance(item, str) and item and "\x00" not in item for item in command
+    ):
+        raise DeliveryActionError("command must be a non-empty array of argv strings")
+    if len(command) > 128 or sum(len(item.encode("utf-8")) for item in command) > 32_768:
+        raise DeliveryActionError("verification command is too large")
+    if not image_name:
+        raise DeliveryActionError(
+            "verification is unavailable until delegation.delivery.verification_image is configured"
+        )
+    docker = _docker_path()
+    _cleanup_stale_verification_state(docker)
     if not policy.workspace:
         raise DeliveryActionError("verification requires a policy-bound workspace")
 
-    temp_root = Path(tempfile.mkdtemp(prefix="hermes-delivery-review-"))
+    temp_root = Path(tempfile.mkdtemp(prefix=f"hermes-delivery-review-{os.getpid()}-"))
     try:
         source = (
             _exact_sha_source(policy, exact_sha, temp_root)
@@ -352,7 +575,10 @@ def _docker_verify(policy: DeliveryPolicy, command: Any, image: Any, *, exact_sh
 
     container_name = f"hermes-delivery-{uuid.uuid4().hex}"
     docker_args = [
-        "docker", "run", "--rm", "--name", container_name, "--pull", "never",
+        docker, "run", "--rm", "--name", container_name,
+        "--label", "com.hermes.delivery=verification",
+        "--label", f"com.hermes.delivery.pid={os.getpid()}",
+        "--pull", "never", "--entrypoint", "",
         "--network", "none", "--read-only", "--user", "65534:65534",
         "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
         "--pids-limit", "256", "--memory", "4g", "--memory-swap", "4g", "--cpus", "2",
@@ -364,17 +590,29 @@ def _docker_verify(policy: DeliveryPolicy, command: Any, image: Any, *, exact_sh
         "-v", f"{source}:/workspace:ro", "-w", "/workspace", image_name, *command,
     ]
     try:
-        proc = _run(docker_args, timeout=_VERIFY_TIMEOUT, env={"PATH": os.environ.get("PATH", "")})
+        try:
+            proc = run_bounded(
+                docker_args, timeout=_VERIFY_TIMEOUT, output_limit=_VERIFY_OUTPUT_LIMIT,
+                env={"PATH": "/usr/bin:/bin"},
+            )
+        except DeliveryRuntimeError as exc:
+            raise DeliveryActionError(str(exc)) from exc
         return _result(
             ok=proc.returncode == 0,
             action="verify",
             exit_code=proc.returncode,
-            stdout=_trim(proc.stdout),
-            stderr=_trim(proc.stderr),
+            stdout=proc.stdout,
+            stderr=proc.stderr,
             exact_sha=exact_sha or None,
+            attestation={
+                "image": image_name,
+                "recipe_identity": recipe.identity if recipe is not None else None,
+                "entrypoint": "neutralized",
+            },
             sandbox={
                 "network": "none", "checkout": "read-only", "host_credentials": "not forwarded",
                 "capabilities": "dropped", "image_pull": "disabled",
+                "output_limit_bytes": _VERIFY_OUTPUT_LIMIT,
             },
         )
     finally:
@@ -383,13 +621,12 @@ def _docker_verify(policy: DeliveryPolicy, command: Any, image: Any, *, exact_sh
         # the bounded verification call.
         try:
             _run(
-                ["docker", "rm", "--force", container_name], timeout=30,
-                env={"PATH": os.environ.get("PATH", "")},
+                [docker, "rm", "--force", container_name], timeout=30,
+                env={"PATH": "/usr/bin:/bin"},
             )
         except DeliveryActionError as exc:
             logger.warning("delivery verification container cleanup failed: %s", exc)
-        if temp_root:
-            shutil.rmtree(temp_root, ignore_errors=True)
+        shutil.rmtree(temp_root, ignore_errors=True)
 
 
 def _implementer(policy: DeliveryPolicy, action: str, args: Mapping[str, Any]) -> str:
@@ -458,8 +695,8 @@ def _implementer(policy: DeliveryPolicy, action: str, args: Mapping[str, Any]) -
             raise DeliveryActionError(_trim(proc.stderr.strip() or "pull-request creation failed"))
         return _result(ok=True, action=action, url=proc.stdout.strip())
     if action == "verify":
-        _only(args, {"action", "command", "image"})
-        return _docker_verify(policy, args.get("command"), args.get("image"))
+        _only(args, {"action", "command"})
+        return _docker_verify(policy, args.get("command"))
     raise DeliveryActionError(f"action {action!r} is not available to implementer")
 
 
@@ -497,10 +734,94 @@ def _reviewer(policy: DeliveryPolicy, action: str, args: Mapping[str, Any]) -> s
             raise DeliveryActionError(_trim(proc.stderr.strip() or "git search failed"))
         return _result(ok=True, action=action, exact_sha=policy.exact_sha, matches=_trim(proc.stdout))
     if action == "verify":
-        _only(args, {"action", "command", "image"})
+        _only(args, {"action", "command"})
         _assert_pr_head(policy)
-        return _docker_verify(policy, args.get("command"), args.get("image"), exact_sha=policy.exact_sha)
+        return _docker_verify(policy, args.get("command"), exact_sha=policy.exact_sha)
     raise DeliveryActionError(f"action {action!r} is not available to reviewer")
+
+
+def _classic_protection_receipt(protection: Any) -> Optional[dict[str, Any]]:
+    if not isinstance(protection, dict):
+        return None
+    reviews = protection.get("required_pull_request_reviews")
+    checks = protection.get("required_status_checks")
+    admins = protection.get("enforce_admins")
+    if not isinstance(reviews, dict) or not isinstance(checks, dict):
+        return None
+    required_checks = checks.get("checks") or checks.get("contexts") or []
+    admin_enforced = admins.get("enabled") if isinstance(admins, dict) else admins
+    if not (
+        isinstance(reviews.get("required_approving_review_count"), int)
+        and not isinstance(reviews.get("required_approving_review_count"), bool)
+        and reviews["required_approving_review_count"] >= 1
+        and reviews.get("dismiss_stale_reviews") is True
+        and reviews.get("require_last_push_approval") is True
+        and checks.get("strict") is True
+        and isinstance(required_checks, list) and required_checks
+        and admin_enforced is True
+    ):
+        return None
+    return {"kind": "branch_protection", "required_checks": len(required_checks)}
+
+
+def _ruleset_protection_receipt(repository: str, branch: str) -> Optional[dict[str, Any]]:
+    try:
+        rules = _gh_json(
+            f"repos/{repository}/rules/branches/{branch}?per_page=100", paginate=True,
+        )
+    except DeliveryActionError:
+        return None
+    if not isinstance(rules, list):
+        return None
+    pull_rules = [r for r in rules if isinstance(r, dict) and r.get("type") == "pull_request"]
+    check_rules = [r for r in rules if isinstance(r, dict) and r.get("type") == "required_status_checks"]
+    pull_ok = any(
+        isinstance(rule.get("parameters"), dict)
+        and isinstance(rule["parameters"].get("required_approving_review_count"), int)
+        and not isinstance(rule["parameters"].get("required_approving_review_count"), bool)
+        and rule["parameters"]["required_approving_review_count"] >= 1
+        and rule["parameters"].get("dismiss_stale_reviews_on_push") is True
+        and rule["parameters"].get("require_last_push_approval") is True
+        for rule in pull_rules
+    )
+    checks_ok = any(
+        isinstance(rule.get("parameters"), dict)
+        and bool(rule["parameters"].get("required_status_checks"))
+        and rule["parameters"].get("strict_required_status_checks_policy") is True
+        for rule in check_rules
+    )
+    ids = {
+        rule.get("ruleset_id") for rule in (*pull_rules, *check_rules)
+        if isinstance(rule.get("ruleset_id"), int)
+    }
+    if not pull_ok or not checks_ok or not ids:
+        return None
+    for ruleset_id in ids:
+        details = _gh_json(f"repos/{repository}/rulesets/{ruleset_id}")
+        if (
+            not isinstance(details, dict) or details.get("enforcement") != "active"
+            or details.get("bypass_actors") != []
+        ):
+            return None
+    return {"kind": "ruleset", "rulesets": len(ids)}
+
+
+def _assert_merge_protection(repository: str, branch: str) -> dict[str, Any]:
+    """Prove GitHub itself will enforce the exact-review/check contract."""
+    classic = None
+    try:
+        classic = _classic_protection_receipt(
+            _gh_json(f"repos/{repository}/branches/{branch}/protection")
+        )
+    except DeliveryActionError:
+        pass
+    receipt = classic or _ruleset_protection_receipt(repository, branch)
+    if receipt is None:
+        raise DeliveryActionError(
+            "repository protection does not provably enforce stale-review dismissal, independent last-push approval, "
+            "strict required checks, and administrator enforcement"
+        )
+    return receipt
 
 
 def _merger(policy: DeliveryPolicy, action: str, args: Mapping[str, Any]) -> str:
@@ -510,6 +831,9 @@ def _merger(policy: DeliveryPolicy, action: str, args: Mapping[str, Any]) -> str
     pr = _assert_pr_head(policy)
     if pr.get("state") != "open" or pr.get("draft"):
         raise DeliveryActionError("pull request must be open and non-draft")
+    base_branch = str((pr.get("base") or {}).get("ref") or "")
+    if not base_branch:
+        raise DeliveryActionError("pull request base branch is unavailable")
 
     reviews = _gh_json(f"repos/{policy.repository}/pulls/{policy.pull_request}/reviews?per_page=100", paginate=True)
     if not isinstance(reviews, list):
@@ -552,8 +876,13 @@ def _merger(policy: DeliveryPolicy, action: str, args: Mapping[str, Any]) -> str
     if failing:
         raise DeliveryActionError(f"required CI is not passing: {', '.join(failing)}")
 
-    # Required checks are the final query. GitHub atomically rejects a head race
-    # at merge time via --match-head-commit.
+    protection = _assert_merge_protection(policy.repository, base_branch)
+    # Re-read the target after every evidence query. GitHub also atomically
+    # rejects a head race at merge time via --match-head-commit.
+    _assert_pr_head(policy)
+    # Keep repository-side enforcement as the final remote observation too;
+    # if it changed during evidence collection, fail before issuing merge.
+    protection = _assert_merge_protection(policy.repository, base_branch)
     merge_proc = _gh([
         "pr", "merge", str(policy.pull_request), "--repo", policy.repository,
         "--squash", "--match-head-commit", policy.exact_sha,
@@ -568,19 +897,12 @@ def _merger(policy: DeliveryPolicy, action: str, args: Mapping[str, Any]) -> str
         exact_sha=policy.exact_sha,
         required_checks=len(checks),
         independent_approvals=len(approvals),
+        protection=protection,
         output=_trim(merge_proc.stdout),
     )
 
 
-def _closure(policy: DeliveryPolicy, action: str, args: Mapping[str, Any]) -> str:
-    if action != "close_issue":
-        raise DeliveryActionError("closure controller may request only close_issue")
-    _only(args, {"action", "command", "image"})
-    if not policy.repository or policy.issue is None or not policy.merged_sha:
-        raise DeliveryActionError("closure policy is missing repository, issue, or merged SHA")
-    _assert_workspace_is_repository_root(policy)
-    _assert_configured_repository(policy, policy.repository)
-
+def _assert_merged_on_default(policy: DeliveryPolicy) -> str:
     repository = _gh_json(f"repos/{policy.repository}")
     if not isinstance(repository, dict) or not repository.get("default_branch"):
         raise DeliveryActionError("GitHub returned malformed repository metadata")
@@ -590,28 +912,63 @@ def _closure(policy: DeliveryPolicy, action: str, args: Mapping[str, Any]) -> st
     )
     if not isinstance(comparison, dict) or comparison.get("status") not in {"ahead", "identical"}:
         raise DeliveryActionError("merged SHA is not present on the repository default branch")
+    return default_branch
 
+
+def _closure(policy: DeliveryPolicy, action: str, args: Mapping[str, Any]) -> str:
+    if action != "close_issue":
+        raise DeliveryActionError("closure controller may request only close_issue")
+    _only(args, {"action"})
+    if not policy.repository or policy.issue is None or not policy.merged_sha:
+        raise DeliveryActionError("closure policy is missing repository, issue, or merged SHA")
+    if policy.acceptance_recipe is None:
+        raise DeliveryActionError("closure policy is missing its server-bound acceptance recipe")
+    _assert_workspace_is_repository_root(policy)
+    _assert_configured_repository(policy, policy.repository)
+
+    _assert_merged_on_default(policy)
     verification = json.loads(
-        _docker_verify(policy, args.get("command"), args.get("image"), exact_sha=policy.merged_sha)
+        _docker_verify(policy, None, exact_sha=policy.merged_sha, acceptance=True)
     )
     if not verification.get("ok"):
         raise DeliveryActionError("post-merge acceptance failed; refusing closure")
+    # Containment is time-sensitive: revalidate immediately after acceptance.
+    default_branch = _assert_merged_on_default(policy)
 
     issue = _gh_json(f"repos/{policy.repository}/issues/{policy.issue}")
-    if not isinstance(issue, dict) or issue.get("state") != "open" or "pull_request" in issue:
-        raise DeliveryActionError("policy-bound work item is not an open issue")
+    if not isinstance(issue, dict) or "pull_request" in issue:
+        raise DeliveryActionError("policy-bound work item is not an issue")
+    if issue.get("state") == "closed":
+        return _result(
+            ok=True, action=action, already_complete=True,
+            repository=policy.repository, issue=policy.issue,
+            merged_sha=policy.merged_sha, default_branch=default_branch,
+            acceptance=verification.get("attestation"),
+        )
+    if issue.get("state") != "open":
+        raise DeliveryActionError("policy-bound work item has an unsupported state")
+
+    # The issue query can take time; make containment the final read before close.
+    default_branch = _assert_merged_on_default(policy)
+    recipe = policy.acceptance_recipe
     proc = _gh([
         "issue", "close", str(policy.issue), "--repo", policy.repository,
-        "--comment", f"Post-merge acceptance passed for {policy.merged_sha}.",
+        "--comment", (
+            f"Post-merge acceptance passed for {policy.merged_sha} "
+            f"({recipe.identity})."
+        ),
     ])
     if proc.returncode:
         raise DeliveryActionError(_trim(proc.stderr.strip() or "issue closure failed"))
     return _result(
         ok=True,
         action=action,
+        already_complete=False,
         repository=policy.repository,
         issue=policy.issue,
         merged_sha=policy.merged_sha,
+        default_branch=default_branch,
+        acceptance=verification.get("attestation"),
         output=_trim(proc.stdout),
     )
 
@@ -619,7 +976,6 @@ def _closure(policy: DeliveryPolicy, action: str, args: Mapping[str, Any]) -> st
 def delivery_action(
     action: str,
     command: Optional[list[str]] = None,
-    image: Optional[str] = None,
     paths: Optional[list[str]] = None,
     staged: Optional[bool] = None,
     message: Optional[str] = None,
@@ -635,7 +991,7 @@ def delivery_action(
 ) -> str:
     supplied = {
         key: value for key, value in {
-            "action": action, "command": command, "image": image, "paths": paths,
+            "action": action, "command": command, "paths": paths,
             "staged": staged, "message": message, "remote": remote, "branch": branch,
             "repository": repository, "base": base, "title": title, "body": body,
             "draft": draft, "path": path, "pattern": pattern,
@@ -676,7 +1032,6 @@ DELIVERY_ACTION_SCHEMA = {
                 ],
             },
             "command": {"type": "array", "items": {"type": "string"}},
-            "image": {"type": "string"},
             "paths": {"type": "array", "items": {"type": "string"}},
             "staged": {"type": "boolean"},
             "message": {"type": "string"},
@@ -697,6 +1052,15 @@ DELIVERY_ACTION_SCHEMA = {
 
 def delivery_action_handler(args: Mapping[str, Any], **_kwargs: Any) -> str:
     """Registry adapter kept explicit so the public operation remains keyword-only."""
+    if not isinstance(args, Mapping):
+        return json.dumps({"ok": False, "error": "delivery_action arguments must be an object"})
+    supported = set(DELIVERY_ACTION_SCHEMA["parameters"]["properties"])
+    unknown = sorted(set(args) - supported)
+    if unknown:
+        return json.dumps({
+            "ok": False,
+            "error": "unsupported argument(s): " + ", ".join(unknown),
+        })
     return delivery_action(**dict(args))
 
 

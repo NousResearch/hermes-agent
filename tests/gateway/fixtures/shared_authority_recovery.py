@@ -70,7 +70,11 @@ async def prepare_crash(runner, adapter, source, peer):
                 'blocked': rows(authority, sid), 'safe': rows(authority, accepted.ref.session_id)}
     assert evidence['safe'][-1]['status'] == 'queued'
     assert any(r['status'] == 'started' for r in evidence['blocked'])
-    Path(os.environ['HERMES_HOME'], 'crash-ready.json').write_text(json.dumps(evidence))
+    # Published by rename: the parent SIGKILLs this process the moment the file EXISTS, so a plain
+    # write_text (create+truncate, then write) could be killed between the two and leave an empty file.
+    ready = Path(os.environ['HERMES_HOME'], 'crash-ready.json')
+    ready.with_suffix('.tmp').write_text(json.dumps(evidence))
+    os.replace(ready.with_suffix('.tmp'), ready)
     threading.Event().wait(60)
     raise AssertionError('parent did not kill the actual owner')
 

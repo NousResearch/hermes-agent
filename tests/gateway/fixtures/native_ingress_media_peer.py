@@ -110,7 +110,9 @@ async def probe(mode, peer):
         assert claim_session_input(authority.db, epoch=authority.epoch, session_id=unknown.ref.session_id)
         evidence = dict(sid=receipt.ref.session_id, saved=saved, unknown_sid=unknown.ref.session_id,
                         retained=str(retained), unknown=rows(unknown.ref.session_id))
-        (state / 'accepted.json').write_text(json.dumps(evidence))
+        # Published by rename: the parent SIGKILLs this process the moment the file exists.
+        (state / 'accepted.tmp').write_text(json.dumps(evidence))
+        os.replace(state / 'accepted.tmp', state / 'accepted.json')
         threading.Event().wait(60)
         raise AssertionError('parent failed to kill owner')
 

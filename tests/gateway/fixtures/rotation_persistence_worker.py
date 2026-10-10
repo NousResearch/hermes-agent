@@ -10,6 +10,13 @@ from agent.runtime_session_store import RuntimeSessionStore, WorkerRPC
 from tests.gateway.fixtures.agent_persistence_worker import writable_fds
 
 
+def _publish(path, text):
+    """Create the receipt by rename: the parent polls for EXISTENCE, then reads it at once."""
+    tmp = Path(str(path) + '.tmp')
+    tmp.write_text(text)
+    os.replace(tmp, path)
+
+
 def main():
     command = json.loads(sys.stdin.readline())
     home = Path(command['home'])
@@ -49,14 +56,14 @@ def main():
         assert agent.tools == frozen_tools
         restart_proof = {}
         if command.get('restart'):
-            Path(command['ready']).write_text(json.dumps(dict(session_id=agent.session_id, epoch=store.scope['epoch'])))
+            _publish(command['ready'], json.dumps(dict(session_id=agent.session_id, epoch=store.scope['epoch'])))
             assert sys.stdin.readline().strip() == 'outage'
             try:
                 store.touch_session_activity(agent.session_id, description='surviving rotated worker')
                 raise AssertionError('owner outage accepted a mutation')
             except Exception:
                 assert len(store.journal['pending']) == 1
-            Path(command['outage']).write_text('pending')
+            _publish(command['outage'], 'pending')
             assert sys.stdin.readline().strip() == 'adopt'
             try:
                 store.retry_pending()
@@ -73,7 +80,7 @@ def main():
         assert not result.get('failed'), result
         history = store.get_messages_as_conversation(agent.session_id, include_row_ids=True)
         store.finish()
-        Path(command['receipt']).write_text(json.dumps(dict(before=before, after=agent.session_id,
+        _publish(command['receipt'], json.dumps(dict(before=before, after=agent.session_id,
             history=history, compressed_count=len(compressed), input_count=len(messages), opens=opens,
             fds=writable_fds(), negatives={}, result=result['final_response'], restart=restart_proof)))
     finally:

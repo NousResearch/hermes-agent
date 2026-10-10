@@ -3,11 +3,32 @@ import assert from 'node:assert/strict'
 import { test } from 'vitest'
 
 import { resolveTerminalConnection, resolveTerminalConnectionForSender } from './connection-apply'
+import { scrubBackendPythonEnv } from './terminal-ipc'
 
 const ssh = {
   host: 'registry-box.test',
   user: 'hermes'
 }
+
+test('terminal shells do not inherit backend Python or conda activation state', () => {
+  const env: Record<string, string | undefined> = {
+    PYTHONPATH: 'C:\\hermes\\site-packages',
+    PythonHome: 'C:\\hermes\\python',
+    VIRTUAL_ENV: 'C:\\hermes\\.venv',
+    CONDA_PREFIX: 'C:\\miniconda',
+    CONDA_SHLVL: '1',
+    _CE_M: '',
+    PATH: 'C:\\Windows\\System32',
+    HERMES_HOME: 'C:\\Users\\user\\.hermes'
+  }
+
+  scrubBackendPythonEnv(env)
+
+  assert.deepEqual(env, {
+    PATH: 'C:\\Windows\\System32',
+    HERMES_HOME: 'C:\\Users\\user\\.hermes'
+  })
+})
 
 test('terminal start preserves the selected SSH target and scope', async () => {
   const target = {

@@ -877,14 +877,15 @@ class SessionSearchMixin:
     def _or_relaxed_query(query: str) -> Optional[str]:
         """The sanitized implicit-AND query rewritten as an any-term OR query, or ``None`` when
         relaxation does not apply: fewer than two searchable units (a single term cannot relax)
-        or explicit ``OR``/``NOT`` (the caller expressed exact semantics). Quoted phrases stay
-        whole units: ``"docker networking" tls`` -> ``"docker networking" OR tls``."""
+        or upper-case ``OR``/``NOT`` (the caller expressed exact semantics — FTS5 operators are
+        upper-case only, so lower-case "or"/"not" are ordinary filler words, dropped like "and"
+        rather than disabling the relaxation). Quoted phrases stay whole units:
+        ``"docker networking" tls`` -> ``"docker networking" OR tls``."""
         units: list[str] = []
         for raw_token in _LIKE_TOKEN_RE.findall(query):
-            upper = raw_token.upper()
-            if upper in {"OR", "NOT"}:
+            if raw_token in {"OR", "NOT"}:
                 return None
-            if upper != "AND":
+            if raw_token.upper() not in {"AND", "OR", "NOT"}:
                 units.append(raw_token)
         return " OR ".join(units) if len(units) >= 2 else None
 

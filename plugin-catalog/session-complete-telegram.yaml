@@ -1,0 +1,37 @@
+name: session-complete-telegram
+repo: https://github.com/metamindedu/hermes-telegram-bridge
+sha: 1a76ed54ccf8a279d4dc4d9bfe1553b90d81d5ca
+subdir: desktop-plugins/session-complete-telegram
+title: Desktop Telegram Bridge
+description: >-
+  Settled Hermes Desktop completion cards, clarify replies and eligible command
+  approval buttons through the user's existing Telegram private home. Disclosure
+  — opt-in Desktop component reads local profile session titles, persisted final
+  answers and pending requests under the same default Hermes home; sends redacted
+  final previews (up to 1,200 characters) and request text to api.telegram.org
+  using the user's existing default-home TELEGRAM_BOT_TOKEN and
+  TELEGRAM_HOME_CHANNEL. Cards are copyable/forwardable. Uses a fixed native CLI
+  helper, no arbitrary renderer shell commands, no self-updater and no telemetry
+  to the author. Stores local plaintext expiring request/receipt content and
+  retained deduplication/tombstone identifiers under plugin-data. The companion
+  desktop-clarify-telegram package is needed for inbound replies and Allow Once /
+  Deny; only exact private-owner, live-request native in-process command approvals
+  are actionable, never session/permanent grants or generic/compute-host approval.
+maintainer: metamindedu
+tier: community
+category: desktop
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/metamindedu/hermes-telegram-bridge
+version: "1.6.1"
+readme: true
+platforms: []
+known_issues:
+  - Install both companion packages at the same pin in the default profile; configure your own Telegram private home and keep Desktop connected.
+  - User-facing messages are primarily Korean; physical macOS Desktop testing is not included in the Windows/Ubuntu contract tests.
+  - Unsupported or unsafe approval reviews remain Desktop-only; a delivered decision is not command-completion evidence.
+  - Local bridge storage must be owner-restricted; this release does not automatically audit Windows ACLs.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -24,11 +24,13 @@ from __future__ import annotations
 import io
 import stat
 import sys
+import tarfile
 import zipfile
 from pathlib import Path
 
 import pytest
 
+from pm import store
 from pm.store import extract
 
 def _add_symlink(zf: zipfile.ZipFile, member: str, target: str) -> None:
@@ -179,3 +181,81 @@ def test_plain_zip_unchanged(tmp_path: Path) -> None:
         assert (dest / "bin/tool").stat().st_mode & 0o111
     assert (dest / "bin/tool").read_bytes() == b"#!"
     assert (dest / "README").read_bytes() == b"r"
+
+
+def test_windows_zip_extraction_uses_extended_length_destination(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(store.os, "name", "nt")
+
+    result = store._windows_long_path(tmp_path / "deep" / "out")
+
+    assert isinstance(result, str)
+    assert result.startswith("\\\\?\\")
+
+
+def test_zip_extraction_passes_extended_destination_to_zipfile(
+    monkeypatch, tmp_path: Path
+) -> None:
+    archive = _write_zip(tmp_path / "a.zip", lambda zf: _add_file(zf, "README", b"r"))
+    dest = tmp_path / "deep" / "out"
+    extended = r"\\?\C:\deep\out"
+    seen = []
+
+    def fake_extract(zf, info, path=None, pwd=None):
+        seen.append(path)
+        written = dest / info.filename
+        written.parent.mkdir(parents=True, exist_ok=True)
+        written.write_bytes(zf.read(info))
+        return str(written)
+
+    monkeypatch.setattr(store, "_windows_long_path", lambda path: extended)
+    monkeypatch.setattr(zipfile.ZipFile, "extract", fake_extract)
+
+    extract(archive, dest)
+
+    assert seen == [extended]
+
+
+def test_zip_symlink_extraction_passes_extended_destination(
+    monkeypatch, tmp_path: Path
+) -> None:
+    archive = _write_zip(
+        tmp_path / "a.zip", lambda zf: _add_symlink(zf, "lib/data", "../share/data")
+    )
+    dest = tmp_path / "deep" / "out"
+    extended = r"\\?\C:\deep\out"
+    seen = []
+
+    monkeypatch.setattr(store, "_windows_long_path", lambda path: extended)
+    monkeypatch.setattr(
+        store,
+        "_zip_symlink",
+        lambda member, target, link_dest: seen.append((member, target, link_dest)),
+    )
+
+    extract(archive, dest)
+
+    assert seen == [("lib/data", "../share/data", extended)]
+
+
+def test_tar_extraction_passes_extended_destination(
+    monkeypatch, tmp_path: Path
+) -> None:
+    archive = tmp_path / "a.tar.gz"
+    with tarfile.open(archive, "w:gz") as tf:
+        info = tarfile.TarInfo("README")
+        info.size = 1
+        tf.addfile(info, io.BytesIO(b"r"))
+
+    dest = tmp_path / "deep" / "out"
+    extended = r"\\?\C:\deep\out"
+    seen = []
+
+    def fake_extractall(tf, path, **kwargs):
+        seen.append(path)
+
+    monkeypatch.setattr(store, "_windows_long_path", lambda path: extended)
+    monkeypatch.setattr(tarfile.TarFile, "extractall", fake_extractall)
+
+    extract(archive, dest)
+
+    assert seen == [extended]

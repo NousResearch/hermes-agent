@@ -814,7 +814,21 @@ def _register_windows_user_path(entry: Path) -> str:
     Preserves the stored value type: install.ps1 writes expandable entries
     (``%LOCALAPPDATA%\\...``), and rewriting the value as a plain string would
     freeze those.
+
+    Inert under test isolation: pytest redirects ``HERMES_HOME`` to a sandbox,
+    so ``entry`` is a throwaway ``<tmp>\\...\\hermes_test\\bin`` -- but this
+    function writes the operator's REAL persisted PATH, and nothing ever removes
+    the entry. One leaked entry per test that reaches here, growing the
+    environment block towards its 32,767-character limit (2026-10-10:
+    17 -> 235 entries / 723 -> 29,601 chars in nine minutes, ~310 chars/min).
+    ``HERMES_TEST_ISOLATION`` is the hermetic conftest's subprocess-surviving
+    marker (honoured the same way by ``hermes_state_guard``), so this also
+    covers tests that re-run the updater in a child process -- the child
+    inherits the marker and stays inert.
     """
+    if os.environ.get("HERMES_TEST_ISOLATION"):
+        return "present"
+
     import winreg  # type: ignore
 
     with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment", 0,

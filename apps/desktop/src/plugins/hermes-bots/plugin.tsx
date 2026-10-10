@@ -571,6 +571,9 @@ export default {
         $botsPaneVisible.set(Boolean(visible))
 
         if (visible) {
+          // The roster's faces parked while the pane was a hidden keep-alive
+          // layer; wake the clock rather than rely on them re-rendering.
+          startFaceClock()
           restoreDismissedOnRegister = true
 
           const group = $groupChatWorkspace.get()

@@ -801,6 +801,12 @@ export function startFaceClock() {
   // Fed from IntersectionObserver entries, whose `target` is a plain Element.
   const visibleFaces = new Set<Element>()
   const observedFaces = new Set<SVGSVGElement>()
+  // What the clock actually paints: candidates that are also not
+  // `visibility: hidden`. An inactive keep-alive tab (the Bots roster behind
+  // Sessions) keeps its box, so the observer still reports its faces as
+  // intersecting; only the computed visibility tells them apart.
+  let shownFaces: Element[] = []
+  let hiddenRecheck = 0
 
   const observer =
     typeof IntersectionObserver === 'function'
@@ -816,12 +822,22 @@ export function startFaceClock() {
             }
           }
 
+          refreshShownFaces()
+
           // A parked clock (no visible faces) resumes when one scrolls in.
           if (becameVisible) {
             window.__hbFaceClock?.wake()
           }
         })
       : null
+
+  const refreshShownFaces = () => {
+    shownFaces = [...(observer ? visibleFaces : faces)].filter(
+      svg =>
+        svg.isConnected &&
+        (typeof svg.checkVisibility !== 'function' || svg.checkVisibility({ visibilityProperty: true }))
+    )
+  }
 
   const scanFaces = () => {
     faces = walkMathFaces(document, [])
@@ -848,40 +864,51 @@ export function startFaceClock() {
     }
   }
 
-  // Shared painting body for both scheduling paths: 1Hz document rescans,
-  // paint only visible faces (all cached faces when IO is unavailable).
+  // Shared painting body for both scheduling paths: 1Hz document rescans
+  // (which also re-check visibility — it only changes on a tab switch, so a
+  // per-frame check would just risk forced style recalcs), paint only shown
+  // faces (all cached faces when IO is unavailable).
   const paint = (now: number) => {
     if (now - lastScan > 1000) {
       scanFaces()
+      refreshShownFaces()
       lastScan = now
+
+      // Revealing a keep-alive tab changes neither intersection nor, under a
+      // memoised host, the face's render, so nothing would wake a parked
+      // clock. While faces intersect but are all hidden, look again in a
+      // second instead of parking for good.
+      if (shownFaces.length === 0 && (observer ? visibleFaces.size : faces.length) > 0 && !hiddenRecheck) {
+        hiddenRecheck = window.setTimeout(() => {
+          hiddenRecheck = 0
+          window.__hbFaceClock?.wake()
+        }, 1000)
+      }
     }
 
     const t = (now - t0) / 1000
-    const facesToPaint = observer ? visibleFaces : faces
 
-    for (const svg of facesToPaint) {
-      if (svg.isConnected) {
-        // Both caches only ever hold nodes matched by `svg[data-hb-math]`.
-        paintMathFace(svg as SVGSVGElement, t)
-      }
+    // Both caches only ever hold nodes matched by `svg[data-hb-math]`.
+    for (const svg of shownFaces) {
+      paintMathFace(svg as SVGSVGElement, t)
     }
   }
 
   // Nothing worth animating: no faces mounted (BotFace wakes us on the next
-  // mount) or none visible (the observer wakes us when one scrolls in).
-  // TODO(bot-mode-types): with faces mounted and IntersectionObserver absent
-  // this returns the null observer rather than false — `observer &&`
-  // short-circuits to the observer itself. createBudgetedLoop declares
-  // idleWhen as `() => boolean`; null is falsy so the loop keeps running as
-  // intended today. Hence the assertion at the idleWhen call below.
-  const idle = () => faces.length === 0 || (observer && visibleFaces.size === 0)
+  // mount), none intersecting (the observer wakes us when one scrolls in), or
+  // all of them in a hidden keep-alive pane (the 1 Hz recheck above, or the
+  // Bots pane-visibility listener, wakes us when one is shown again).
+  const idle = () => shownFaces.length === 0
 
   const teardownCaches = () => {
     if (observer) {
       observer.disconnect()
     }
 
+    window.clearTimeout(hiddenRecheck)
+    hiddenRecheck = 0
     visibleFaces.clear()
+    shownFaces = []
     observedFaces.clear()
     faces = []
     delete window.__hbFaceClock
@@ -893,7 +920,7 @@ export function startFaceClock() {
   if (typeof createBudgetedLoop === 'function' && createBudgetedLoop) {
     const loop = createBudgetedLoop(paint, {
       fps: 15,
-      idleWhen: idle as () => boolean
+      idleWhen: idle
     })
 
     window.__hbFaceClock = {

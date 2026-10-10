@@ -15,7 +15,7 @@ from agent.transports import get_transport
 
 @pytest.fixture
 def transport():
-    import agent.transports.chat_completions  # noqa: F401
+    import agent.transports.chat_completions
     return get_transport("chat_completions")
 
 class TestEmptyToolCallsStripping:

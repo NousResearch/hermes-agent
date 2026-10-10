@@ -1,0 +1,280 @@
+#!/usr/bin/env python3
+"""Run every blocking lint check CI runs, locally, with the same pinned tools: the lint
+workflow's guards, ruff and the code-health ratchet, plus the case-collision, lazy-deps and
+profile-archive guards that CI runs in workflows of their own.
+
+    python scripts/check                # everything, against the merge-base with origin/main
+    python scripts/check --only health  # just the code-health ratchet
+    python scripts/check --staged       # judge the index (the pre-commit hook runs this)
+    python scripts/check --commit REV   # judge one commit (the pre-push hook runs this)
+    python scripts/check --install-hook [pre-commit|pre-push]   # run it automatically
+    python scripts/check --uninstall-hook
+
+CI runs the same command (``.github/workflows/lint.yml``), so a green local run means a green
+lint lane. Hooks are skippable (``--no-verify``); CI is not. The code-health part honours the
+``ENFORCEMENT`` switch in ``scripts/code_health/config.py`` (blocking / advisory / off).
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import subprocess
+import sys
+import tempfile
+from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
+from dataclasses import dataclass
+from pathlib import Path
+
+# Before the engine imports: they need 3.11 (tomllib), and an older python3 first on PATH would
+# otherwise die in a traceback on every hooked commit or push.
+if sys.version_info < (3, 11):
+    print(f"scripts/check needs Python 3.11+, this is {'.'.join(map(str, sys.version_info[:3]))};"
+          " run it with the repo's virtualenv (.venv/bin/python scripts/check)", file=sys.stderr)
+    raise SystemExit(2)
+
+REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO))
+
+from scripts.code_health import gitio  # noqa: E402
+from scripts.code_health.ruff_runner import resolve_ruff  # noqa: E402
+
+_HOOK_MARK = "# hermes-agent scripts/check hook"
+# Hooks are shared by every worktree of the clone, so the checked-out branch decides nothing:
+# each candidate (the index being committed, the tip of each pushed branch) is materialized and
+# judged by its own scripts/check, and a candidate that predates scripts/check is not judged.
+_HOOK_HEAD = f"""#!/usr/bin/env bash
+{_HOOK_MARK} (`scripts/check --install-hook`; skip once with --no-verify)
+""" + r"""repo="$(git rev-parse --show-toplevel)" || exit 1
+git_dir="$(git rev-parse --absolute-git-dir)" || exit 1
+# The repo's virtualenv first (this worktree's, then the main checkout's): a bare python3 on
+# PATH may predate the 3.11 that scripts/check needs.
+common="$(cd "$(git rev-parse --git-common-dir)/.." && pwd)"
+py=
+for root in "$repo" "$common"; do
+  for rel in .venv/bin/python venv/bin/python .venv/Scripts/python.exe venv/Scripts/python.exe; do
+    if [ -z "$py" ] && [ -x "$root/$rel" ]; then py="$root/$rel"; fi
+  done
+done
+[ -n "$py" ] || py="$(command -v python3 || command -v python)" || {
+  echo "scripts/check hook: no python3 or python on PATH" >&2; exit 1; }
+judge() {  # judge TREE-ISH ARGS...: check out TREE-ISH alone and run its own scripts/check ARGS
+  local tree=$1 tmp dir rc
+  shift
+  tmp="$(mktemp -d)" || return 1
+  # Git for Windows: native git and python get this path verbatim when MSYS path conversion
+  # is off (MSYS_NO_PATHCONV=1, as Hermes' terminal sets it), so hand them C:/... spelling.
+  dir="$tmp"
+  if command -v cygpath >/dev/null 2>&1; then dir="$(cygpath -m "$tmp")" || dir="$tmp"; fi
+  GIT_INDEX_FILE="$dir/index" git read-tree "$tree" &&
+    GIT_INDEX_FILE="$dir/index" git checkout-index -a -f --prefix="$dir/tree/" &&
+    GIT_DIR="$git_dir" "$py" "$dir/tree/scripts/check" "$@" </dev/null
+  rc=$?
+  rm -rf "$tmp"
+  return $rc
+}
+"""
+_HOOKS = {
+    # git may export a relative GIT_INDEX_FILE, and the checker runs from another directory.
+    "pre-commit": _HOOK_HEAD + """\
+index="$(git rev-parse --path-format=absolute --git-path index)" || exit 1
+export GIT_INDEX_FILE="$index"
+tree="$(git write-tree)" || exit 1
+git cat-file -e "$tree:scripts/check" 2>/dev/null || exit 0
+judge "$tree" --staged
+""",
+    # stdin: "<local ref> <local sha> <remote ref> <remote sha>" per pushed ref; an all-zero
+    # local sha is a deletion. Each pushed branch tip is judged, as CI judges the PR as a whole;
+    # intermediate commits are not judged one by one.
+    "pre-push": _HOOK_HEAD + """status=0
+while read -r _ local_sha _ _; do
+  case "$local_sha" in *[!0]*) ;; *) continue ;; esac
+  git cat-file -e "$local_sha:scripts/check" 2>/dev/null || continue
+  judge "$local_sha" --commit "$local_sha" </dev/null || status=1
+done
+exit $status
+""",
+}
+
+# name -> argv (relative to the repo root); mirrors the blocking steps in lint.yml, plus the
+# unconditional guards CI runs in their own workflows (case-collision-check.yml,
+# lazy-deps-guard.yml, profile-artifact-check.yml).
+_GUARDS = {
+    "footguns": ["scripts/check-windows-footguns.py", "--all"],
+    "shebangs": ["scripts/check_bash_shebangs.py"],
+    "no-tmp": ["scripts/check_no_tmp_literals.py"],
+    "config-writers": ["scripts/check_config_yaml_writers.py"],
+    "os-marker-fakes": ["scripts/ci/check_os_marker_fakes.py"],
+    "agents-md": ["scripts/ci/check_agents_md_size.py"],
+    "case-collisions": ["scripts/check-case-collisions.py"],
+    "lazy-deps": ["scripts/ci/check_lazy_deps_imports.py"],
+    "profile-archives": ["scripts/ci/check_profile_archive_boundary.py"],
+}
+_CHECKS = (*_GUARDS, "ruff", "health")
+
+
+@dataclass
+class _Job:
+    argv: list[str]
+    cwd: Path = REPO
+    env: dict[str, str] | None = None
+
+
+def _run(job: _Job) -> tuple[int, str]:
+    proc = subprocess.run(
+        job.argv, cwd=job.cwd, env=job.env, capture_output=True, text=True, encoding="utf-8",
+        errors="replace", stdin=subprocess.DEVNULL, timeout=900, check=False,
+    )
+    return proc.returncode, (proc.stdout + proc.stderr).strip()
+
+
+def _git_in(env: dict[str, str], *args: str) -> None:
+    proc = subprocess.run(["git", *args], cwd=REPO, env=env, capture_output=True, text=True,
+                          stdin=subprocess.DEVNULL, timeout=300, check=False)
+    if proc.returncode != 0:
+        raise RuntimeError(f"git {' '.join(args)} failed: {proc.stderr.strip()}")
+
+
+@contextmanager
+def _tree_snapshot(tree: str) -> Iterator[tuple[Path, dict[str, str]]]:
+    """``tree`` checked out on its own, plus git env that sees exactly that tree.
+
+    The user's worktree and index are never touched (no stash, no checkout): the tree is read
+    into a private index and written to a temp dir. Always a snapshot, even when the worktree
+    looks clean: ignored files (scratch, build output) are invisible to git status but not to
+    the guards that walk the disk.
+    """
+    git_dir = gitio.git(REPO, "rev-parse", "--absolute-git-dir").strip()
+    with tempfile.TemporaryDirectory(prefix="hermes-check-tree-") as tmp:
+        root = Path(tmp) / "tree"
+        root.mkdir()
+        env = {**os.environ, "GIT_DIR": git_dir, "GIT_WORK_TREE": str(root),
+               "GIT_INDEX_FILE": str(Path(tmp) / "index")}
+        _git_in(env, "read-tree", tree)
+        # -f: on a case-insensitive filesystem paths that differ only by case are one file, and
+        # without it the second one aborts the snapshot before the case-collision guard runs
+        # (the guards read the index, which keeps both).
+        _git_in(env, "checkout-index", "-a", "-f")
+        yield root, env
+
+
+def _jobs(names: list[str], base: str | None, head: str | None,
+          root: Path = REPO, env: dict[str, str] | None = None) -> dict[str, _Job]:
+    jobs: dict[str, _Job] = {}
+    for name in names:  # built only when selected: `--only shebangs` needs no ruff
+        if name in _GUARDS:
+            jobs[name] = _Job([sys.executable, *_GUARDS[name]], root, env)
+        elif name == "ruff":
+            jobs[name] = _Job([*resolve_ruff(root), "check", "."], root, env)
+        else:
+            # The ratchet reads both sides from git. It runs from `root` like every other job, so
+            # in a snapshot its engine, rules and policy files (profile_scope_patterns.json, the
+            # ruff pin) are the judged artifact's own, never unstaged working-tree bytes.
+            health = [sys.executable, "-m", "scripts.code_health"]
+            health += ["--base", base] if base else []
+            health += ["--head", head] if head else []
+            jobs[name] = _Job(health, root, env)
+    return jobs
+
+
+def _run_jobs(jobs: dict[str, _Job]) -> dict[str, tuple[int, str]]:
+    with ThreadPoolExecutor(max_workers=len(jobs) or 1) as pool:
+        return dict(zip(jobs, pool.map(_run, jobs.values()), strict=True))
+
+
+def _run_all(args: argparse.Namespace) -> dict[str, tuple[int, str]]:
+    if not (args.staged or args.commit):
+        return _run_jobs(_jobs(args.only, args.base, None))
+    # Hooks judge the bytes being committed or pushed, never the working tree. Without --base the
+    # ratchet derives the base from the head (a commit's own merge-base) and the switch from main.
+    if args.staged:
+        tree = head = gitio.git(REPO, "write-tree").strip()
+    else:
+        head = gitio.resolve_rev(REPO, args.commit)
+        tree = gitio.resolve_tree(REPO, head)
+    with _tree_snapshot(tree) as (root, env):
+        return _run_jobs(_jobs(args.only, args.base, head, root, env))
+
+
+def _hooks_dir() -> Path:
+    return Path(gitio.git(REPO, "rev-parse", "--path-format=absolute", "--git-path", "hooks").strip())
+
+
+def _ours(target: Path) -> bool:
+    return _HOOK_MARK in target.read_text(encoding="utf-8-sig", errors="replace")
+
+
+def install_hook(kind: str) -> int:
+    hooks = _hooks_dir()
+    target = hooks / kind
+    if target.exists() and not _ours(target):
+        print(f"scripts/check: {target} exists and is not ours; add `python scripts/check` to it")
+        return 1
+    hooks.mkdir(parents=True, exist_ok=True)
+    target.write_text(_HOOKS[kind], encoding="utf-8", newline="\n")
+    os.chmod(target, 0o755)  # windows-footgun: ok — chmod +x is a no-op on Windows, harmless
+    print(f"scripts/check: {kind} hook installed at {target} (every worktree of this clone)")
+    return 0
+
+
+def uninstall_hooks() -> int:
+    removed = [t for t in (_hooks_dir() / k for k in _HOOKS) if t.exists() and _ours(t)]
+    for target in removed:
+        target.unlink()
+        print(f"scripts/check: removed {target}")
+    if not removed:
+        print("scripts/check: no scripts/check hooks installed")
+    return 0
+
+
+def _selected(parser: argparse.ArgumentParser, only: str | None) -> list[str]:
+    """Every check, or exactly the named ones. A typo must not turn into an empty green run."""
+    if only is None:
+        return list(_CHECKS)
+    wanted = {name.strip() for name in only.split(",")} - {""}
+    unknown = sorted(wanted - set(_CHECKS))
+    if not wanted or unknown:
+        parser.error(f"--only {only!r}: unknown or no check name ({', '.join(unknown) or 'empty'});"
+                     f" valid: {', '.join(_CHECKS)}")
+    return [name for name in _CHECKS if name in wanted]
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="scripts/check", description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--only", help=f"comma list of: {', '.join(_CHECKS)}")
+    parser.add_argument("--base", help="base revision for the code-health ratchet")
+    target = parser.add_mutually_exclusive_group()
+    target.add_argument("--staged", action="store_true",
+                        help="check the index (what `git commit` records), not the working tree")
+    target.add_argument("--commit", metavar="REV", help="check one commit's tree (pre-push)")
+    parser.add_argument("--install-hook", nargs="?", const="pre-commit", choices=sorted(_HOOKS),
+                        help="run on every commit (default) or every push")
+    parser.add_argument("--uninstall-hook", action="store_true", help="remove our git hooks")
+    args = parser.parse_args(argv)
+    args.only = _selected(parser, args.only)
+    if args.install_hook:
+        return install_hook(args.install_hook)
+    if args.uninstall_hook:
+        return uninstall_hooks()
+    try:
+        results = _run_all(args)
+    except RuntimeError as exc:
+        print(f"scripts/check: {exc}", file=sys.stderr)
+        return 2
+    failed = [name for name, (code, _) in results.items() if code != 0]
+    # A passing health run still carries advisories and comment-allowed findings that the
+    # reviewer must see, so its report is always shown.
+    for name, (code, output) in results.items():
+        if code != 0 or name == "health":
+            label = "failed" if code != 0 else "ok"
+            print(f"\n=== {name} ({label}) ===\n{output.rstrip()}")
+    status = "FAILED: " + ", ".join(failed) if failed else "ok"
+    print(f"\nscripts/check: {len(results)} checks, {status}")
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

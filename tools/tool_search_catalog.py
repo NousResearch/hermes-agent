@@ -29,10 +29,10 @@ class CatalogEntry:
 
     name: str
     description: str
-    schema: Dict[str, Any]  # the full {"type":"function", "function": {...}} entry
+    schema: dict[str, Any]  # the full {"type":"function", "function": {...}} entry
     source: str  # "mcp" | "plugin" | "other"
     source_name: str  # toolset name, e.g. "mcp-github" or "kanban"
-    _tokens: List[str] = field(default_factory=list)  # pre-tokenized for BM25
+    _tokens: list[str] = field(default_factory=list)  # pre-tokenized for BM25
 
 
 _TOKEN_RE = re.compile(r"[A-Za-z0-9]+")
@@ -49,13 +49,13 @@ def _stem(token: str) -> str:
     return _thread_local.stemmer.stemWord(token)
 
 
-def _tokenize(text: str) -> List[str]:
+def _tokenize(text: str) -> list[str]:
     """Lowercase alphanumeric tokens, Snowball-stemmed (English); shared by the index and
     query paths so "issues" matches ``create_issue``."""
     return [_stem(token.lower()) for token in _TOKEN_RE.findall(text)] if text else []
 
 
-def _fn(td: Dict[str, Any]) -> Dict[str, Any]:
+def _fn(td: dict[str, Any]) -> dict[str, Any]:
     """The ``function`` block of a tool-def (``{}`` when absent/None)."""
     return td.get("function") or {}
 
@@ -76,22 +76,21 @@ def _registry_toolset(name: str) -> Optional[str]:
     return toolset if isinstance(toolset, str) else None
 
 
-def _entry_search_text(td: Dict[str, Any], source_label: str = "") -> str:
+def _entry_search_text(td: dict[str, Any], source_label: str = "") -> str:
     """Search-text blob: split name words + source label + description + top-level parameter
     names (schema bodies are noise with no recall gain). The ``mcp__`` prefix is dropped — it
     is in every MCP document, so its IDF is ~0. The source label lets a service-name query
     ("linear") reach a tool whose own name omits the vendor."""
     fn = _fn(td)
     name = fn.get("name", "")
-    if name.startswith("mcp__"):
-        name = name[len("mcp__"):]
+    name = name.removeprefix("mcp__")
     name_words = re.sub(r"[_.:-]", " ", name)
     extra = source_label if source_label and source_label not in name_words.split() else ""
     param_names = " ".join(((fn.get("parameters") or {}).get("properties") or {}).keys())
     return f"{name_words} {extra} {fn.get('description', '') or ''} {param_names}"
 
 
-def _classify_source(name: str) -> Tuple[str, str]:
+def _classify_source(name: str) -> tuple[str, str]:
     """Return (source_kind, source_name) for a registered tool name."""
     toolset = _registry_toolset(name)
     if toolset is None:
@@ -99,9 +98,9 @@ def _classify_source(name: str) -> Tuple[str, str]:
     return ("mcp" if toolset.startswith("mcp-") else "plugin", toolset)
 
 
-def build_catalog(tool_defs: List[Dict[str, Any]]) -> List[CatalogEntry]:
+def build_catalog(tool_defs: list[dict[str, Any]]) -> list[CatalogEntry]:
     """Build the deferred-tool catalog from the deferrable subset of tool-defs."""
-    catalog: List[CatalogEntry] = []
+    catalog: list[CatalogEntry] = []
     for td in tool_defs:
         fn = _fn(td)
         name = fn.get("name", "")
@@ -116,8 +115,8 @@ def build_catalog(tool_defs: List[Dict[str, Any]]) -> List[CatalogEntry]:
     return catalog
 
 
-def _bm25_score(query_tokens: List[str], doc_tokens: List[str], doc_lengths: List[int],
-                avg_dl: float, doc_freq: Dict[str, int], n_docs: int, k1: float = 1.5,
+def _bm25_score(query_tokens: list[str], doc_tokens: list[str], doc_lengths: list[int],
+                avg_dl: float, doc_freq: dict[str, int], n_docs: int, k1: float = 1.5,
                 b: float = 0.75) -> float:
     """Standard BM25 for one query against one document (inlined; the catalog is bounded —
     typically < 500 tools — so a dependency is not worth it)."""
@@ -132,10 +131,10 @@ def _bm25_score(query_tokens: List[str], doc_tokens: List[str], doc_lengths: Lis
     return score
 
 
-_CorpusStats = Tuple[List[int], float, Dict[str, int], int]  # doc_lengths, avg_dl, df, n_docs
+_CorpusStats = tuple[list[int], float, dict[str, int], int]  # doc_lengths, avg_dl, df, n_docs
 
 
-def _corpus_stats(catalog: List[CatalogEntry]) -> _CorpusStats:
+def _corpus_stats(catalog: list[CatalogEntry]) -> _CorpusStats:
     """Compute the BM25 statistics shared by every query over a catalog."""
     doc_lengths = [len(entry._tokens) for entry in catalog]
     avg_dl = sum(doc_lengths) / max(len(doc_lengths), 1)
@@ -143,7 +142,7 @@ def _corpus_stats(catalog: List[CatalogEntry]) -> _CorpusStats:
     return doc_lengths, avg_dl, dict(doc_freq), len(catalog)
 
 
-def _gate_token(query_tokens: List[str], doc_freq: Dict[str, int], n_docs: int) -> str:
+def _gate_token(query_tokens: list[str], doc_freq: dict[str, int], n_docs: int) -> str:
     """The query token with the highest IDF: the word that names the intent. ``send``,
     ``read``, ``create`` sit in dozens of tool documents and separate nothing; ``gmail``,
     ``github``, ``incident`` sit in a few and separate everything. A document without this
@@ -174,8 +173,8 @@ def _required_term_coverage(answerable_term_count: int) -> int:
     return math.ceil(answerable_term_count * MIN_QUERY_TERM_COVERAGE)
 
 
-def search_catalog(catalog: List[CatalogEntry], query: str, limit: int = 5, *,
-                   corpus_stats: Optional[_CorpusStats] = None) -> List[CatalogEntry]:
+def search_catalog(catalog: list[CatalogEntry], query: str, limit: int = 5, *,
+                   corpus_stats: Optional[_CorpusStats] = None) -> list[CatalogEntry]:
     """Top-``limit`` catalog entries for ``query`` by BM25 (exact name match ranks first).
 
     Admission is by the query's rarest token (:func:`_gate_token`), not by ``score > 0``:
@@ -230,20 +229,20 @@ def _short_desc(description: str, max_chars: int = 60) -> str:
 def _listing_group_label(source_name: str) -> str:
     """Human-facing group heading for a toolset, e.g. ``mcp-github`` -> ``github``."""
     label = source_name or "other"
-    return label[4:] if label.startswith("mcp-") else label
+    return label.removeprefix("mcp-")
 
 
-def hidden_declared_sources() -> List[Dict[str, Any]]:
+def hidden_declared_sources() -> list[dict[str, Any]]:
     """Return deterministic summaries for declared MCP servers hidden by their check."""
     from hermes_platform import declaration
     from tools.mcp_liveness import unavailable_details
     from tools.registry import registry
 
-    grouped: Dict[str, List[Any]] = {}
+    grouped: dict[str, list[Any]] = {}
     for entry in registry.get_all_entries():
         if entry.toolset.startswith("mcp-"):
             grouped.setdefault(entry.toolset[4:], []).append(entry)
-    rows: List[Dict[str, Any]] = []
+    rows: list[dict[str, Any]] = []
     for server_name in sorted(grouped):
         if declaration.lookup(server_name) is None:
             continue
@@ -259,14 +258,14 @@ def hidden_declared_sources() -> List[Dict[str, Any]]:
 
 
 def build_catalog_listing_with_form(
-    deferrable: List[Dict[str, Any]], *, max_tokens: int = 4000) -> Tuple[Optional[str], str]:
+    deferrable: list[dict[str, Any]], *, max_tokens: int = 4000) -> tuple[Optional[str], str]:
     """Render the deferred-catalog manifest: ``- name: short desc`` lines grouped per source.
     Returns ``(text, form)``; form is ``"full"``, ``"names"``, ``"mixed"`` (oversized servers
     collapsed to a name + count line), ``"groups"`` (every server summarized) or ``"none"``
     (over budget even summarized -> text is None). Ordering is deterministic (sorted groups
     and tools) so the block is byte-stable — the request prefix stays cacheable. Degradation
     is PER SERVER, largest first: one huge server must not cost a small one its listing."""
-    groups: Dict[str, List[Tuple[str, str]]] = {}
+    groups: dict[str, list[tuple[str, str]]] = {}
     for td in deferrable:
         fn = _fn(td)
         name = fn.get("name", "")
@@ -294,7 +293,7 @@ def build_catalog_listing_with_form(
     header = ("Deferred tool catalog (call schemas via "
               f"`{TOOL_DESCRIBE_NAME}`, invoke via `{TOOL_CALL_NAME}`):")
 
-    def assemble_if_fits(modes: Dict[str, str]) -> Optional[str]:
+    def assemble_if_fits(modes: dict[str, str]) -> Optional[str]:
         available_blocks = {label: render_group(label, modes[label]) for label in groups}
         unavailable_blocks = {
             row["name"]: (

@@ -438,8 +438,8 @@ def _kill_pids_windows(pids: list[int], killed: list[int], failed: list[tuple[in
                 failed.append((pid, "not hermes-owned or process identity changed"))
             else:
                 result = subprocess.run(
-                    ["taskkill", "/PID", str(pid), "/F"], stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE, stdin=subprocess.DEVNULL, text=True, encoding="utf-8",
+                    ["taskkill", "/PID", str(pid), "/F"], capture_output=True,
+                    stdin=subprocess.DEVNULL, text=True, encoding="utf-8",
                     errors="replace", timeout=10, creationflags=windows_hide_flags())
                 if result.returncode == 0:
                     killed.append(pid)
@@ -588,7 +588,7 @@ def _kill_pids_posix(pids: list[int], killed: list[int], failed: list[tuple[int,
 
 def _kill_stale_dashboard_processes(
     reason: str = "the running backend no longer matches the updated frontend", *,
-    restart_managed: bool = False, already_restarted_units: "set[str] | None" = None,
+    restart_managed: bool = False, already_restarted_units: set[str] | None = None,
     scope_home: str | None = None,
 ) -> dict[str, list]:
     """Kill running ``hermes dashboard`` / ``hermes serve`` processes (update end, ``--stop``).
@@ -829,6 +829,7 @@ def _process_ppid(pid: int) -> int | None:
 _LOCKFILE_SCHEMA_VERSION = 2
 _PROTOCOL_VERSION = 1
 _REMOTE_LOCK_SUBDIR = "desktop-ssh"
+BACKEND_LOCK_NAME = "backend.lock.json"
 _HEX32 = set("0123456789abcdef")
 
 
@@ -886,7 +887,6 @@ def _remote_lock_roots(base_dir: Path | None) -> list[Path]:
 def _lock_owned_serve_pids(base_dir: Path | None = None) -> set[int]:
     """PIDs claimed by valid ``{hermes_home}/desktop-ssh/<ownershipId>/backend.lock.json`` records
     (best-effort: a bad record contributes no PID; never raises)."""
-    import json
     owned: set[int] = set()
     entries: list[Path] = []
     for root in _remote_lock_roots(base_dir):
@@ -895,20 +895,28 @@ def _lock_owned_serve_pids(base_dir: Path | None = None) -> set[int]:
         except OSError:
             continue
     for entry in entries:
-        ownership_id = entry.name
-        lock_path = entry / "backend.lock.json"
-        try:  # validateOwnershipId(): exactly 32 lowercase hex chars
-            if not entry.is_dir() or not _is_hex(ownership_id, 32) or not lock_path.is_file():
-                continue
-            data = lock_path.read_bytes()
-            if len(data) > 65536:
-                continue
-            parsed = json.loads(data)
-        except (OSError, UnicodeDecodeError, ValueError):
-            continue
-        if _valid_lockfile_payload(parsed, ownership_id):
-            owned.add(parsed["pid"])  # validated as int above
+        lock = read_valid_backend_lock(entry / BACKEND_LOCK_NAME)
+        if lock is not None:
+            owned.add(lock["pid"])  # validated as int
     return owned
+
+
+def read_valid_backend_lock(lock_path: Path) -> dict | None:
+    """The validated body of one ``desktop-ssh/<ownershipId>/backend.lock.json``, or None when it is
+    missing, unreadable, oversized or does not match the writer's schema (never raises)."""
+    import json
+    ownership_id = lock_path.parent.name
+    try:  # validateOwnershipId(): exactly 32 lowercase hex chars
+        if not _is_hex(ownership_id, 32) or not lock_path.is_file():
+            return None
+        with lock_path.open("rb") as f:  # bounded: this runs on every owner-watchdog poll
+            data = f.read(65537)
+        if len(data) > 65536:
+            return None
+        parsed = json.loads(data)
+    except (OSError, UnicodeDecodeError, ValueError):
+        return None
+    return parsed if _valid_lockfile_payload(parsed, ownership_id) else None
 
 
 # Covers the gap between process start and the Desktop client writing backend.lock.json.

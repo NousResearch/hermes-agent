@@ -30,7 +30,7 @@ def _member_ignored(directory, names):
 # The uv failure classifier lives beside the uv runner (stdlib-only imports): the bootstrap
 # runner streams uv output from a pre-3.11 system python where this module's tomllib import
 # cannot load. Workspace callers keep reaching it from here.
-from pm.environment import ResolutionConflict, classify_uv_failure  # noqa: E402,F401
+from pm.environment import ResolutionConflict, classify_uv_failure
 
 
 def member_sources(plugin_dirs) -> dict[Path, Path]:

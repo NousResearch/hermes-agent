@@ -202,7 +202,7 @@ def _cos_sign(
     sign_key = _hmac_sha1_hex(secret_key, q_sign_time)  # SignKey = HMAC-SHA1(SecretKey, q-sign-time)
     sorted_params = _sorted_kv(params)
     sorted_headers = _sorted_kv(headers)
-    kv = lambda pairs: "&".join(f"{k}={v}" for k, v in pairs)  # noqa: E731
+    kv = lambda pairs: "&".join(f"{k}={v}" for k, v in pairs)
     http_string = "\n".join([method.lower(), path, kv(sorted_params), kv(sorted_headers), ""])
     string_to_sign = "\n".join(["sha1", q_sign_time, hashlib.sha1(http_string.encode("utf-8")).hexdigest(), ""])
     return (

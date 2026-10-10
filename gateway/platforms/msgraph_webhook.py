@@ -36,7 +36,7 @@ DEFAULT_PORT = 8646
 DEFAULT_WEBHOOK_PATH = "/msgraph/webhook"
 DEFAULT_MAX_SEEN_RECEIPTS = 5000
 DEFAULT_MAX_BODY_BYTES = 1_048_576
-NotificationScheduler = Callable[[Dict[str, Any], MessageEvent], Awaitable[None] | None]
+NotificationScheduler = Callable[[dict[str, Any], MessageEvent], Awaitable[None] | None]
 _TEMPLATE_KEY_RE = re.compile(r"\{([a-zA-Z0-9_.]+)\}")
 
 
@@ -79,7 +79,7 @@ def _prefix_match(resource: str, prefix: str) -> bool:
     return resource == prefix or resource.startswith(f"{prefix}/")
 
 
-def _render_template(template: str, payload: Dict[str, Any]) -> str:
+def _render_template(template: str, payload: dict[str, Any]) -> str:
     """Substitute ``{dotted.key}`` placeholders from *payload*; unknown keys stay literal."""
 
     def _resolve(match: re.Match[str]) -> str:
@@ -160,21 +160,21 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
         self._mark_disconnected()
 
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None,
-                   metadata: Optional[Dict[str, Any]] = None) -> SendResult:
+                   metadata: Optional[dict[str, Any]] = None) -> SendResult:
         logger.info("[msgraph_webhook] Response for %s: %s", chat_id, content[:200])
         return SendResult(success=True)
 
-    async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
+    async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         return {"name": chat_id, "type": "webhook"}
 
-    async def _handle_health(self, request: "web.Request") -> "web.Response":
+    async def _handle_health(self, request: web.Request) -> web.Response:
         if not self._source_ip_allowed(request):
             return web.Response(status=403)
         return web.json_response({
             "status": "ok", "platform": self.platform.value, "webhook_path": self._webhook_path,
             "accepted": self._accepted_count, "duplicates": self._duplicate_count})
 
-    async def _handle_validation(self, request: "web.Request") -> "web.Response":
+    async def _handle_validation(self, request: web.Request) -> web.Response:
         """Graph subscription validation handshake: echo ``validationToken`` verbatim as text/plain. Bare GETs
         are rejected so the endpoint can't be enumerated."""
         if not self._source_ip_allowed(request):
@@ -203,7 +203,7 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
         self._schedule_notification(notification, self._build_message_event(notification, receipt_key))
         return "accepted"
 
-    async def _handle_notification(self, request: "web.Request") -> "web.Response":
+    async def _handle_notification(self, request: web.Request) -> web.Response:
         if not self._source_ip_allowed(request):
             return web.Response(status=403)
         # Graph never sends validationToken on POST, but tolerate clients replaying it in-band.
@@ -224,7 +224,7 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
             return web.Response(status=403)
         return web.Response(status=400)
 
-    async def _read_notifications(self, request: "web.Request") -> tuple[int, list]:
+    async def _read_notifications(self, request: web.Request) -> tuple[int, list]:
         """Read and validate the POST body; returns (error_status, []) or (0, notifications)."""
         try:
             content_length = request.content_length
@@ -245,7 +245,7 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
         notifications = body.get("value") if isinstance(body, dict) else None
         return (0, notifications) if isinstance(notifications, list) else (400, [])
 
-    def _source_ip_allowed(self, request: "web.Request") -> bool:
+    def _source_ip_allowed(self, request: web.Request) -> bool:
         """Loopback-only binds may omit ``allowed_source_cidrs`` (local proxies, dev tunnels);
         network-accessible binds fail closed without one."""
         if self._source_allowlist_required_but_missing():
@@ -269,7 +269,7 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
                 return True
         return False
 
-    def _verify_client_state(self, notification: Dict[str, Any]) -> bool:
+    def _verify_client_state(self, notification: dict[str, Any]) -> bool:
         """Timing-safe compare of the Graph-supplied clientState against the configured shared secret
         (``openssl rand -hex 32`` in the setup guide)."""
         expected = self._client_state
@@ -285,7 +285,7 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
         while len(self._seen_receipt_order) > self._max_seen_receipts:
             self._seen_receipts.discard(self._seen_receipt_order.popleft())
 
-    def _build_message_event(self, notification: Dict[str, Any], receipt_key: Optional[str]) -> MessageEvent:
+    def _build_message_event(self, notification: dict[str, Any], receipt_key: Optional[str]) -> MessageEvent:
         message_id = receipt_key or f"sha1:{sha1(json.dumps(notification, sort_keys=True).encode('utf-8')).hexdigest()}"
         source = self.build_source(
             chat_id=f"msgraph:{notification.get('subscriptionId', 'unknown')}", chat_name="msgraph/webhook",
@@ -294,7 +294,7 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
             text=self._render_prompt(notification), message_type=MessageType.TEXT, source=source,
             raw_message=notification, message_id=message_id, internal=True)
 
-    def _render_prompt(self, notification: Dict[str, Any]) -> str:
+    def _render_prompt(self, notification: dict[str, Any]) -> str:
         template = self.config.extra.get("prompt", "")
         if template:
             return _render_template(template, {
@@ -304,7 +304,7 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
         rendered = json.dumps(notification, indent=2, sort_keys=True)[:4000]
         return f"Microsoft Graph change notification:\n\n```json\n{rendered}\n```"
 
-    def _schedule_notification(self, notification: Dict[str, Any], event: MessageEvent) -> None:
+    def _schedule_notification(self, notification: dict[str, Any], event: MessageEvent) -> None:
         scheduler = self._notification_scheduler
         if scheduler is None:
             coro = self.handle_message(event)

@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-import cron.incidents as incidents
+from cron import incidents
 import cron.jobs as cron_jobs
 import cron.scheduler as sched
 from hermes_time import now as _hermes_now
@@ -50,7 +50,6 @@ def _tick_failing(job, tmp_path, deliveries, error="boom unrelated"):
 
     def fake_deliver(jb, content, adapters=None, loop=None, **kwargs):
         deliveries.append(content)
-        return None
 
     with cron_jobs.use_cron_store(tmp_path), \
          patch("cron.scheduler._hermes_home", tmp_path), \
@@ -260,7 +259,7 @@ def test_repeat_failure_alerts_once_then_reminds_after_cooldown(monkeypatch, tmp
         assert len(deliveries) == 1, "an alerted signature must not re-ping on every run"
         rows = inc.list_incidents()
         assert len(rows) == 1 and rows[0]["state"] == "alerted" and rows[0]["alerted_at"]
-        stored = [j for j in cron_jobs.load_jobs() if j["id"] == job["id"]][0]
+        stored = next(j for j in cron_jobs.load_jobs() if j["id"] == job["id"])
         assert stored["last_status"] == "error", "the withheld run is still recorded"
 
         # Cooldown elapsed: exactly one reminder, then silent again.

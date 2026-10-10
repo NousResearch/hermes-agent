@@ -606,7 +606,7 @@ class TestShallowCloneDeepening:
         """Sanity: without deepening, the primitive misreports unpushed."""
         import cli
 
-        _, clone, wt = self._stuck_worktree(tmp_path)
+        _, _clone, wt = self._stuck_worktree(tmp_path)
         assert cli._worktree_has_unpushed_commits(str(wt)), (
             "expected the shallow disconnect to look like unpushed commits — "
             "if this stops reproducing, the fixture no longer exercises the bug"

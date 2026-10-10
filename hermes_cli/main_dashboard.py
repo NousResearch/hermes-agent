@@ -315,7 +315,7 @@ def _loaded_launchd_backend_jobs(
 
 def _launchd_job_owning_backend(
     pid: int, cmdline: list[str] | None, jobs: list[tuple[str, str, list[str], int | None]],
-    ancestors: "list[int] | tuple[int, ...]" = (),
+    ancestors: list[int] | tuple[int, ...] = (),
 ) -> tuple[str, str, int | None] | None:
     """``(domain, label, live_pid)`` of the loaded launchd job that owns *pid*: launchd reports *pid*
     (or one of its *ancestors* — a plist may wrap the backend in ``/bin/sh -c …`` without ``exec``)
@@ -406,7 +406,7 @@ def _respawn_dashboard_processes(commands: list[list[str]]) -> list[list[str]]:
     """
     from hermes_constants import get_hermes_home
     respawned: list[list[str]] = []
-    spawned: list[tuple[list[str], list[str], "subprocess.Popen"]] = []
+    spawned: list[tuple[list[str], list[str], subprocess.Popen]] = []
     failed: list[tuple[list[str], list[str], str]] = []
     log_path = get_hermes_home() / "logs" / "dashboard-restart.log"
     with contextlib.suppress(OSError):
@@ -515,10 +515,11 @@ def _install_hangup_protection(gateway_mode: bool = False):
 
     # Any failure here is non-fatal; we just skip the wrap.
     try:
-        # Late-bound import so tests can monkeypatch
-        # hermes_cli.config.get_hermes_home to simulate setup failure.
-        from hermes_cli.config import get_hermes_home as _get_hermes_home
-        logs_dir = _get_hermes_home() / "logs"
+        # Late-bound import so tests can monkeypatch it to simulate setup failure. The ROOT
+        # home, never a sticky profile's: the update mutates the shared checkout, and the
+        # Desktop and the hand-off scripts read <root>/logs/update.log.
+        from hermes_constants import get_default_hermes_root as _get_root_home
+        logs_dir = _get_root_home() / "logs"
         logs_dir.mkdir(parents=True, exist_ok=True)
         log_file = open(logs_dir / "update.log", "a", buffering=1, encoding="utf-8")
 
@@ -926,7 +927,9 @@ def _attach_to_host_backend(args, headless_backend: bool) -> None:
     except Exception:
         profile = "default"
     wanted = getattr(args, "open_profile", "") or profile
-    url = f"http://{hr.dial_host(record)}:{record.port}/?profile={wanted}"
+    from hermes_cli.url_utils import format_url_host
+
+    url = f"http://{format_url_host(hr.dial_host(record))}:{record.port}/?profile={wanted}"
 
     kind = "backend" if headless_backend else "dashboard"
     print(f"Hermes {kind} already running on this host: PID {record.pid}, port {record.port}.")

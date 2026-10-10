@@ -469,6 +469,69 @@ def launchd_plist_is_current() -> bool:
     return norm(installed) == norm(_gw().generate_launchd_plist())
 
 
+def launchd_plist_is_bootable(plist_text: str) -> bool:
+    """Whether the launcher in *plist_text* can activate a dependency environment, without running it.
+
+    Decode the plist, osascript wrapper and shell quoting before reading either the launcher
+    shim path or the bootstrap's literal ``sys.path`` anchor. Paths may contain spaces or quotes.
+    Launchers on roots without a committed dependency environment refuse at exec ("no dependency
+    environment is committed for this install"; see ``activate_dependencies`` ->
+    ``_require_own_dependencies``) and launchd would then crash-loop the job instead of serving.
+    Static parse only -- no process is started, and the launcher file itself need not exist yet
+    (``_prepare_service_launcher`` publishes it later in the write flow). Unparsed shapes count as
+    bootable so ordinary writes are never blocked; a bootstrap that would keep a venv interpreter's own
+    packages is conservatively treated as non-bootable when nothing is committed -- the guard then
+    keeps the installed definition, which still boots.
+    """
+    import ast
+    import plistlib
+
+    root: Path | None = None
+    try:
+        arguments = plistlib.loads(plist_text.encode("utf-8"))["ProgramArguments"]
+        script = arguments[arguments.index("-e") + 1]
+        if "JavaScript" in arguments and "$.system(" in script:
+            shell, _ = json.JSONDecoder().raw_decode(script.split("$.system(", 1)[1])
+        elif script.startswith("do shell script "):
+            shell = json.loads(script.removeprefix("do shell script "))
+        else:
+            return True
+        command = shlex.split(shell)
+        if command[0] != "exec":
+            return True
+        if command[1].endswith("/.hermes/bin/hermes"):
+            root = Path(command[1]).parents[2]
+        elif "-c" in command:
+            for node in ast.walk(ast.parse(command[command.index("-c") + 1])):
+                match node:
+                    case ast.Call(
+                        func=ast.Attribute(
+                            value=ast.Attribute(value=ast.Name(id="sys"), attr="path"), attr="insert"
+                        ),
+                        args=[ast.Constant(value=0), ast.Constant(value=str() as anchor)],
+                    ):
+                        root = Path(anchor)
+                        break
+    except (ValueError, TypeError, KeyError, IndexError, AttributeError, SyntaxError, plistlib.InvalidFileException):
+        return True
+    if root is None:
+        return True
+    try:
+        from pm.environments import committed_venv
+
+        return committed_venv(root) is not None
+    except Exception:  # a broken probe must never block a refresh
+        return True
+
+
+def _replacement_breaks_a_booting_service(plist_path: Path, new_plist: str) -> bool:
+    """True when writing *new_plist* over *plist_path* would trade a booting launcher for one that
+    cannot activate a dependency environment (see ``launchd_plist_is_bootable``). Static only."""
+    if not plist_path.exists():
+        return False
+    return _gw().launchd_plist_is_bootable(plist_path.read_text(encoding="utf-8")) and not _gw().launchd_plist_is_bootable(new_plist)
+
+
 def _spawn_deferred_launchd_reload(
     *, domain: str, label: str, target: str, plist_path: Path, gateway_pid: int
 ) -> bool:
@@ -550,6 +613,21 @@ def refresh_launchd_plist_if_needed() -> bool:
 
     new_plist = _gw().generate_launchd_plist()
     if gateway_service_owner.refuse_temp_home_service_write(new_plist, "launchd plist"):
+        return False
+
+    # A definition whose launcher cannot activate a dependency environment refuses at exec
+    # ("no dependency environment is committed for this install"), leaving launchd to retry
+    # forever while the gateway never runs. The regenerated definition can target a different
+    # root than the installed one (a PM-env CLI's code tree can be a workspace with no committed
+    # state); never replace an installed definition that still boots with one that cannot (both
+    # write paths share the predicate). The check is static (no process started; the regenerated
+    # launcher file is published by _prepare_service_launcher() below, after this decision).
+    if _replacement_breaks_a_booting_service(plist_path, new_plist):
+        _gw().logger.warning(
+            "launchd definition refresh skipped: the regenerated definition targets a launcher "
+            "that cannot activate a dependency environment; keeping the installed definition (%s)",
+            plist_path,
+        )
         return False
 
     _gw()._prepare_service_launcher()
@@ -640,6 +718,21 @@ def launchd_install(force: bool = False, *, start_now: bool = True, force_unit_p
     plist_path.parent.mkdir(parents=True, exist_ok=True)
     new_plist = _gw().generate_launchd_plist()
     if gateway_service_owner.refuse_temp_home_service_write(new_plist, "launchd plist"):
+        return
+    # Same guard as the refresh path: a forced reinstall must not trade a booting definition for
+    # one that cannot activate a dependency environment (the reload failure message recommends
+    # this very command).
+    if _replacement_breaks_a_booting_service(plist_path, new_plist):
+        _gw().logger.warning(
+            "launchd install skipped: the regenerated definition targets a launcher that cannot "
+            "activate a dependency environment; keeping the installed definition (%s)",
+            plist_path,
+        )
+        print(
+            "\u26a0 The regenerated service definition cannot activate a dependency environment, "
+            "and the installed one still boots: keeping it. Run 'hermes pm repair' from this install "
+            "and retry if you meant to repoint the service."
+        )
         return
     print(f"Installing launchd service to: {plist_path}")
     _gw()._prepare_service_launcher()

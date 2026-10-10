@@ -7187,7 +7187,9 @@ async def _standalone_send(
         else:
             # Forum channels (type 15) reject POST /messages — create a thread post.
             if await _standalone_is_forum(aiohttp, chat_id, json_headers, _sess_kw, _req_kw):
-                thread_name = _derive_forum_thread_name(message)
+                # Captioned media arrives as message="" + caption=<full text>; the thread
+                # name must come from the same text the starter body shows, not "New Post".
+                thread_name = _derive_forum_thread_name(caption or message)
                 thread_url = f"https://discord.com/api/v10/channels/{chat_id}/threads"
                 # Filter readable media first to pick JSON vs multipart before opening a session.
                 valid_media = []
@@ -7222,9 +7224,11 @@ async def _standalone_send(
                             return send_error(f"Discord forum thread upload failed: {e}")
                     else:
                         # No media: JSON POST creates the thread with the text starter.
+                        # All-vanished media keeps the caption as the body — message is ""
+                        # once _media_caption_split moved the whole text into the caption.
                         async with session.post(
                             thread_url, headers=json_headers,
-                            json={"name": thread_name, "message": {"content": message}}, **_req_kw,
+                            json={"name": thread_name, "message": {"content": (caption or message)}}, **_req_kw,
                         ) as resp:
                             data, err = await _standalone_response_json_or_error(resp, "Discord forum thread creation error")
                             if err:

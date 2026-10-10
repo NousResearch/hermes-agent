@@ -725,6 +725,17 @@ def test_every_vault_tool_is_in_the_browser_toolset():
 
 
 class TestTwoFactor:
+    def test_google_authenticator_code_field_is_detected(self):
+        from agent.vault_login_classifier import LoginControl, classify_otp_controls
+
+        # Google's real 2FA field: <input type=tel name=totpPin id=totpPin
+        # autocomplete=off aria-label="Enter code">. It lacks one-time-code autocomplete.
+        control = LoginControl("off", None, 0, "Enter code", "totpPin totpPin", "tel", None)
+        matched = classify_otp_controls([control])
+        assert [item.control.index for item in matched] == [0]
+        unrelated = LoginControl("off", None, 1, "Discount code", "promoCode", "text", None)
+        assert classify_otp_controls([unrelated]) == []
+
     def test_totp_matches_rfc6238_vector_and_seed_normalisation(self):
         from agent.vault_store import VaultError, normalize_otp_secret, totp_now
 

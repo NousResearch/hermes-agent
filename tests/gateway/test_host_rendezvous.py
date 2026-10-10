@@ -5,6 +5,7 @@ import json
 import os
 import signal
 import socket
+from types import SimpleNamespace
 import subprocess
 import sys
 import time
@@ -49,6 +50,26 @@ def host_dir(tmp_path, monkeypatch):
 
 def _tree() -> str:
     return str(Path(__file__).resolve().parents[2])
+
+
+def test_foreign_parent_warning_reports_both_owners(host_dir, monkeypatch, caplog):
+    path = hr.record_path(hr.ROLE_GATEWAY)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{}", encoding="utf-8")
+    file_stat = SimpleNamespace(st_uid=10000)
+    parent_stat = SimpleNamespace(st_uid=0)
+    original_stat = Path.stat
+
+    def fake_stat(self):
+        return file_stat if self == path else parent_stat
+
+    monkeypatch.setattr(hr.os, "getuid", lambda: 10000)
+    monkeypatch.setattr(Path, "stat", fake_stat)
+    with caplog.at_level("WARNING", logger=hr.logger.name):
+        assert hr._record_is_own(path) is False
+
+    assert "file uid 10000, parent uid 0 (expected 10000)" in caplog.text
+    monkeypatch.setattr(Path, "stat", original_stat)
 
 
 def test_two_homes_take_their_own_per_home_lock_but_only_one_host_lock(host_dir, monkeypatch):

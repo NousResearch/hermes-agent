@@ -564,7 +564,7 @@ def _usage_and_cost(response: Any, *, provider: str, model: str, base_url: str, 
 
 def _start_root_trace(task_key: str, *, task_id: str, session_id: str, platform: str, provider: str, model: str,
                       api_mode: str, messages: Any, client: Langfuse,
-                      turn_id: str = "", api_request_id: str = "") -> TraceState:
+                      turn_id: str = "", api_request_id: str = "", user_id: str = "") -> TraceState:
     trace_id = client.create_trace_id(seed=f"{session_id or 'sessionless'}::{task_id or task_key}")
     last_user = next((m for m in reversed(messages) if isinstance(m, dict) and m.get("role") == "user"), None) \
         if isinstance(messages, list) else None
@@ -574,8 +574,11 @@ def _start_root_trace(task_key: str, *, task_id: str, session_id: str, platform:
         "platform": platform, "provider": provider, "model": model, "api_mode": api_mode,
         "capture_mode": _capture_mode(),
     }
-    # session_id must be in trace_context for Langfuse session grouping.
-    trace_ctx: dict[str, Any] = {"trace_id": trace_id, **({"session_id": session_id} if session_id else {})}
+    # session_id/user_id must be in trace_context for Langfuse session/user grouping.
+    trace_ctx: dict[str, Any] = {
+        "trace_id": trace_id, **({"session_id": session_id} if session_id else {}),
+        **({"user_id": user_id} if user_id else {}),
+    }
 
     def open_root():
         ctx = client.start_as_current_observation(trace_context=trace_ctx, name="Hermes turn", as_type="chain",
@@ -585,8 +588,8 @@ def _start_root_trace(task_key: str, *, task_id: str, session_id: str, platform:
     root_ctx = root_span = None
     if propagate_attributes is not None:
         try:
-            with propagate_attributes(session_id=session_id or task_key, trace_name="Hermes turn",
-                                      tags=["hermes", "langfuse"]):
+            with propagate_attributes(session_id=session_id or task_key, user_id=user_id or None,
+                                      trace_name="Hermes turn", tags=["hermes", "langfuse"]):
                 root_ctx, root_span = open_root()
         except Exception:
             root_ctx = None
@@ -786,7 +789,7 @@ def on_pre_llm_request(*, task_id: str = "", session_id: str = "", platform: str
                        request_messages: Any = None, messages: Any = None, message_count: int = 0,
                        approx_input_tokens: int = 0, conversation_history: Any = None,
                        user_message: Any = None, turn_id: str = "", api_request_id: str = "",
-                       request: Any = None, system_prompt: Any = None, **_: Any) -> None:
+                       request: Any = None, system_prompt: Any = None, user_id: str = "", **_: Any) -> None:
     client, task_key = _client_and_key(task_id, session_id, turn_id, api_request_id)
     if client is None:
         return
@@ -807,7 +810,8 @@ def on_pre_llm_request(*, task_id: str = "", session_id: str = "", platform: str
     with _STATE_LOCK:
         state = _get_or_start_state_locked(
             task_key, task_id=task_id, session_id=session_id, platform=platform, provider=provider, model=model,
-            api_mode=api_mode, messages=input_messages, client=client, turn_id=turn_id, api_request_id=api_request_id)
+            api_mode=api_mode, messages=input_messages, client=client, turn_id=turn_id, api_request_id=api_request_id,
+            user_id=user_id)
         previous = state.generations.pop(req_key, None)
         if previous is not None:
             _end_observation(previous)

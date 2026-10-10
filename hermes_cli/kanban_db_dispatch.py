@@ -2022,6 +2022,45 @@ def _call_spawn_fn(spawn_fn, task: Task, workspace: str, board: Optional[str]) -
         return spawn_fn(task, workspace)
 
 
+def _route_review_task(task: "Task", conn: sqlite3.Connection) -> None:
+    """Apply optional independent model routing to an in-memory review claim."""
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.profiles import resolve_profile_env
+
+        profile_home = resolve_profile_env(task.assignee)
+        with (_worker_profile_scope(profile_home) if profile_home else contextlib.nullcontext()):
+            cfg = load_config() or {}
+        routing = (cfg.get("kanban") or {}).get("review_routing") or {}
+        if not isinstance(routing, dict) or not routing.get("reviewer_model"):
+            return
+        implementer_model = task.model_override
+        implementer_provider = task.provider_override
+        if not implementer_model:
+            model_cfg = cfg.get("model") or {}
+            implementer_model = model_cfg.get("default") or model_cfg.get("model")
+            implementer_provider = implementer_provider or model_cfg.get("provider")
+        reviewer_provider = routing.get("reviewer_provider")
+        if reviewer_provider and reviewer_provider == implementer_provider:
+            reviewer_model = routing.get("alt_reviewer_model")
+            reviewer_provider = routing.get("alt_reviewer_provider")
+        else:
+            reviewer_model = routing.get("reviewer_model")
+        if not reviewer_model:
+            return
+        task.model_override = reviewer_model
+        task.provider_override = reviewer_provider
+        if routing.get("reasoning_effort"):
+            task.reasoning_effort = routing["reasoning_effort"]
+        _kb._append_event(conn, task.id, "review_routed", {
+            "reviewer_model": reviewer_model, "reviewer_provider": reviewer_provider,
+            "implementer_model": implementer_model, "implementer_provider": implementer_provider,
+        })
+    except Exception as exc:
+        _kb._log.debug("kanban review routing skipped: %s", exc)
+
+
+
 def _dispatch_lane_task(
     conn: sqlite3.Connection,
     row: sqlite3.Row,
@@ -2117,6 +2156,7 @@ def _dispatch_lane_task(
         _kbw.set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
     _kbw._maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
     if lane == "review":
+        _route_review_task(claimed, conn)
         # Force-load sdlc-review; the kanban lifecycle is already in every
         # worker's system prompt via KANBAN_GUIDANCE.
         claimed.skills = list(dict.fromkeys([*(claimed.skills or []), "sdlc-review"]))

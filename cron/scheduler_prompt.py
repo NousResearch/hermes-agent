@@ -156,7 +156,17 @@ def _inject_context_from(job: dict, prompt: str) -> tuple[str, bool]:
             )
             latest_output = ""
             for output_file in output_files:
-                candidate = output_file.read_text(encoding="utf-8-sig")
+                try:
+                    candidate = output_file.read_text(encoding="utf-8-sig")
+                except UnicodeDecodeError as e:
+                    # Binary strays (e.g. macOS AppleDouble `._*.md` xattr files) match the
+                    # `*.md` glob but are not UTF-8. Skip the file like an unreadable one and
+                    # fall through to older archives instead of killing the run (#105582 class).
+                    logger.warning(
+                        "context_from: skipping undecodable output %s for job %r: %s",
+                        output_file, source_job_id, e,
+                    )
+                    continue
                 # Only the run header describes suppression; script/agent payloads can
                 # quote these markers. Keep error documents useful for recovery context.
                 header = candidate.split("\n---\n", 1)[0].split("\n## Prompt", 1)[0]
@@ -184,7 +194,7 @@ def _inject_context_from(job: dict, prompt: str) -> tuple[str, bool]:
                     latest_output,
                 )
             injected = True
-        except (OSError, PermissionError) as e:
+        except (OSError, PermissionError, UnicodeDecodeError) as e:
             # silent skip — never put error text into the prompt
             logger.warning("context_from: failed to read output for job %r: %s", source_job_id, e)
     return prompt, injected

@@ -25,6 +25,7 @@ _IS_WINDOWS = platform.system() == "Windows"
 # (not merely "not Windows") so macOS and other POSIX platforms never touch systemd.
 # See #70716.
 _IS_LINUX = platform.system() == "Linux"
+from tools.environments.base_output import ProcessHandle
 from tools.environments.local import _find_shell, _resolve_safe_cwd, _sanitize_subprocess_env
 from hermes_cli._subprocess_compat import windows_hide_flags
 from dataclasses import dataclass, field
@@ -545,7 +546,10 @@ class ProcessSession:
                                                 # checks must use this, not task_id
     session_key: str = ""                       # Gateway session key (reset protection)
     pid: Optional[int] = None
-    process: Optional[subprocess.Popen] = None  # Popen handle (local only)
+    process: Optional[ProcessHandle] = None     # the tracked handle (local sessions only): a
+                                                # Popen, or the posix_spawn handle the local
+                                                # environment returns when the foreground
+                                                # command yields to the background
     env_ref: Any = None                         # Environment object (sandbox spawns)
     cwd: Optional[str] = None
     started_at: float = 0.0                     # time.time() of spawn
@@ -1268,14 +1272,19 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
             proc.wait(timeout=5)
 
     def adopt_local(
-        self, proc: subprocess.Popen, *, command: str, cwd: Optional[str], task_id: str = "",
+        self, proc: ProcessHandle, *, command: str, cwd: Optional[str], task_id: str = "",
         session_key: str = "", owner_task_id: str = "", output_so_far: str = "",
         notify_on_complete: bool = True) -> ProcessSession:
-        """Take over a still-running foreground Popen as a tracked background session
+        """Take over a still-running foreground handle as a tracked background session
         (yield-to-background: the user sent a message while the command was running).
         The caller has stopped its own drain thread; the registry's reader continues from
         the pipe's current position and ``output_so_far`` seeds the buffer so nothing
-        already captured is lost."""
+        already captured is lost.
+
+        Typed as the ``ProcessHandle`` contract, not ``subprocess.Popen``: the local
+        environment's POSIX path hands over ``_PosixSpawnProcess``, and a Popen-only
+        parameter is what let that handle reach this registry's teardown unchecked
+        (t_73f1fd2c)."""
         session = self._new_session(command, task_id, owner_task_id, session_key, cwd)
         session.process = proc
         session.pid = proc.pid
@@ -2285,7 +2294,10 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
         elif session.process:
             # Tree kill: on Windows Popen.terminate() only kills the shell wrapper and
             # leaves Git Bash descendants behind.
-            self._terminate_host_pid(session.process.pid, session.host_start_time)
+            # A handle with no host pid (an SDK adapter, pid None) has no host tree to
+            # signal; every local handle carries one, so this stays the same in practice.
+            if session.process.pid is not None:
+                self._terminate_host_pid(session.process.pid, session.host_start_time)
         elif session.env_ref and session.pid:
             session.env_ref.execute(f"kill {session.pid} 2>/dev/null", timeout=5)
         elif session.detached and session.pid_scope == "host" and session.pid:

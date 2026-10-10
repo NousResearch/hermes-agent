@@ -19,7 +19,7 @@ from pathlib import Path
 
 from hermes_constants import get_process_hermes_home
 from tools.environments.base import BaseEnvironment
-from tools.environments.base_output import _pipe_stdin
+from tools.environments.base_output import ProcessHandle, _pipe_stdin
 from hermes_cli._subprocess_compat import windows_hide_flags
 from tools.environments.local_env_policy import (
     _ALWAYS_STRIP_FOLDED, _ALWAYS_STRIP_KEYS, _HERMES_PROVIDER_ENV_BLOCKLIST, _HERMES_PROVIDER_ENV_FORCE_PREFIX,
@@ -1115,7 +1115,8 @@ class _PosixSpawnProcess:
         self.stdout = stdout
         # Folded into stdout by the spawn's dup2 actions; see the class docstring. Never
         # omitted: an absent attribute here is an AttributeError inside a consumer's
-        # teardown, not a missing stream.
+        # teardown, not a missing stream. ``ProcessHandle`` declares it, so a future
+        # omission fails the type check at the boundary instead of in production.
         self.stderr = None
         self.stdin = stdin
         self._returncode: int | None = None
@@ -1321,7 +1322,15 @@ class LocalEnvironment(BaseEnvironment):
         self.cwd = safe_cwd
 
     def _run_bash(self, cmd_string: str, *, login: bool = False, timeout: int = 120,
-                  stdin_data: str | None = None) -> "_PosixSpawnProcess | subprocess.Popen":
+                  stdin_data: str | None = None) -> ProcessHandle:
+        """Spawn bash for *cmd_string* and return the handle the shared drain loop waits on.
+
+        The declared return is the base class's ``ProcessHandle`` contract, not the concrete
+        union built here (``_PosixSpawnProcess`` on POSIX, ``subprocess.Popen`` on the
+        fork+exec fallback and on Windows): a consumer may hand this handle straight to
+        ``process_registry.adopt_local`` when the command yields to the background, so the
+        contract has to name what the registry reads, and an implementation missing a
+        member then fails the type check instead of failing production (t_73f1fd2c)."""
         bash = _find_bash()
         # Login invocations (init_session's env snapshot) source the user's rc /
         # custom init files so nvm/asdf/pyenv land on PATH in the snapshot.
@@ -1376,8 +1385,13 @@ class LocalEnvironment(BaseEnvironment):
         """SIGKILL the whole group with no TERM grace or wait: the caller os._exit()s next."""
         if _IS_WINDOWS:  # already a forced tree kill
             return self._kill_process(proc)
+        # A handle with no host pid carries no process group; fall back to the plain kill
+        # path. Every handle this backend spawns has one.
+        pid = proc.pid
+        if pid is None:
+            return self._kill_process(proc)
         with contextlib.suppress(OSError):
-            pgid = getattr(proc, "_hermes_pgid", None) or os.getpgid(proc.pid)
+            pgid = getattr(proc, "_hermes_pgid", None) or os.getpgid(pid)
             # PID-reuse guard (#43044): never SIGKILL a group whose leader's start time
             # no longer matches the spawn-time baseline — the PGID may have been recycled
             # onto an unrelated process group. Comparison is drift-tolerant (#117505);

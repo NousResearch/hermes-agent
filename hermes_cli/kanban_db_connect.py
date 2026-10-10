@@ -936,6 +936,11 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
                 _add_column_if_missing(conn, "task_runs", name, ddl)
         _backfill_legacy_inflight_runs(conn)
 
+    if _table_exists(conn, "provider_circuits") and "probe_run_id" not in _column_names(conn, "provider_circuits"):
+        # Legacy reservations cannot prove which run was authorized; leave NULL
+        # rather than guessing from a task's historical or successor attempts.
+        _add_column_if_missing(conn, "provider_circuits", "probe_run_id", "probe_run_id INTEGER")
+
     # One-shot event-kind rename: old names still worked but were awkward on
     # the wire. Fires once per DB — after the UPDATE no rows match.
     for old, new in (

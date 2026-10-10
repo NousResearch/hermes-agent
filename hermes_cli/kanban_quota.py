@@ -15,7 +15,7 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS provider_circuits (
     scope TEXT NOT NULL, backend TEXT NOT NULL,
     retry_at REAL, attempts INTEGER NOT NULL DEFAULT 1,
-    probe_task TEXT, PRIMARY KEY(scope, backend)
+    probe_task TEXT, probe_run_id INTEGER, PRIMARY KEY(scope, backend)
 );
 CREATE TABLE IF NOT EXISTS task_provider_waits (
     task_id TEXT PRIMARY KEY, scope TEXT NOT NULL, backend TEXT NOT NULL,
@@ -140,8 +140,10 @@ def arm(conn, row, evidence, metadata):
     existing = conn.execute("SELECT * FROM provider_circuits WHERE scope=? AND backend=?", (scope, backend)).fetchone()
     if existing is None:
         conn.execute("INSERT INTO provider_circuits(scope,backend,retry_at) VALUES(?,?,?)", (scope, backend, reset))
-    elif existing["probe_task"] == row["id"]:
-        conn.execute("UPDATE provider_circuits SET attempts=attempts+1,retry_at=NULL,probe_task=NULL WHERE scope=? AND backend=?", (scope, backend))
+    elif (existing["probe_run_id"] is not None
+          and existing["probe_run_id"] == row["current_run_id"]
+          and existing["probe_task"] == row["id"]):
+        conn.execute("UPDATE provider_circuits SET attempts=attempts+1,retry_at=NULL,probe_task=NULL,probe_run_id=NULL WHERE scope=? AND backend=?", (scope, backend))
     # Other workers already in flight belong to the initial failure wave; they
     # must neither extend its reset nor spend its single recovery probe.
 
@@ -159,7 +161,7 @@ def park(conn, row, scope, backend, resume, *, route_backend=None, automatic=Tru
                      "retry_status": resume, "error": "Provider spending quota exhausted; task parked."})
 
 
-def guard_claim(conn, task_id, resume, *, reserve=True) -> bool:
+def guard_claim(conn, task_id, resume, *, reserve=True, pinned=None) -> bool:
     """Caller holds BEGIN IMMEDIATE: gate check and claim share one transaction."""
     if reserve:
         adopt_legacy_limits(conn)
@@ -170,7 +172,8 @@ def guard_claim(conn, task_id, resume, *, reserve=True) -> bool:
     latest = conn.execute("SELECT metadata FROM task_runs WHERE task_id=? ORDER BY id DESC LIMIT 1", (task_id,)).fetchone()
     from hermes_cli import kanban_db as kb
     meta = kb._json_dict(latest[0]) if latest else {}
-    scope, backend = identity(row)
+    pinned = pinned or route(row)
+    scope, backend = pinned["scope"], pinned["backend"]
     until = _finite(meta.get("retry_at"))
     if until is not None and until > time.time() and meta.get("retry_backend", backend) == backend and meta.get("retry_scope", scope) == scope:
         return False
@@ -182,7 +185,8 @@ def guard_claim(conn, task_id, resume, *, reserve=True) -> bool:
             conn.execute("DELETE FROM provider_circuits WHERE scope=? AND backend=?", (scope, backend))
         return True
     until = circuit["retry_at"]
-    if until is not None and until <= time.time():
+    if (until is not None and until <= time.time()
+            and circuit["probe_task"] is None and circuit["probe_run_id"] is None):
         if reserve:
             conn.execute("UPDATE provider_circuits SET retry_at=NULL, probe_task=? WHERE scope=? AND backend=?", (task_id, scope, backend))
         return True
@@ -191,15 +195,23 @@ def guard_claim(conn, task_id, resume, *, reserve=True) -> bool:
     return False
 
 
+def bind_probe_run(conn, task_id, run_id, pinned):
+    """Bind the reservation before the claim/open-run transaction can commit."""
+    conn.execute(
+        "UPDATE provider_circuits SET probe_run_id=? "
+        "WHERE scope=? AND backend=? AND probe_task=? AND probe_run_id IS NULL",
+        (run_id, pinned["scope"], pinned["backend"], task_id),
+    )
+
 
 def _probe_succeeded(conn, circuit):
     from hermes_cli import kanban_db as kb
     probe = circuit["probe_task"]
-    if not probe:
+    if not probe or circuit["probe_run_id"] is None:
         return False
     run = conn.execute(
-        "SELECT metadata FROM task_runs WHERE task_id=? AND ended_at IS NOT NULL "
-        "AND outcome='completed' AND status='done' ORDER BY id DESC LIMIT 1", (probe,)
+        "SELECT metadata FROM task_runs WHERE id=? AND task_id=? AND ended_at IS NOT NULL "
+        "AND outcome='completed' AND status='done'", (circuit["probe_run_id"], probe)
     ).fetchone()
     pinned = kb._json_dict(run["metadata"]).get("quota_route") if run else None
     return bool(pinned and (pinned.get("scope"), pinned.get("backend"))
@@ -219,11 +231,14 @@ def recover_waits(conn):
         scope, backend = identity(row)
         if not wait["automatic"]:
             continue
-        circuit = conn.execute("SELECT retry_at FROM provider_circuits WHERE scope=? AND backend=?", (wait["scope"], wait["backend"])).fetchone()
+        circuit = conn.execute("SELECT retry_at,probe_task,probe_run_id FROM provider_circuits WHERE scope=? AND backend=?", (wait["scope"], wait["backend"])).fetchone()
         if (scope, backend) == (wait["scope"], wait["route_backend"]):
             if not wait["hard"]:
                 continue
-            if circuit is not None and (circuit[0] is None or circuit[0] > time.time()):
+            if circuit is not None and (
+                circuit["probe_task"] is not None or circuit["probe_run_id"] is not None
+                or circuit["retry_at"] is None or circuit["retry_at"] > time.time()
+            ):
                 continue
         if not wait["hard"]:
             clear_wait(conn, row["id"])

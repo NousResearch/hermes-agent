@@ -2231,8 +2231,12 @@ def _claim_and_open_run(
 ) -> Optional[int]:
     """CAS ``source_status -> running``, open a run row, emit ``claimed``; None
     when the CAS lost. Caller holds the txn."""
-    from hermes_cli.kanban_quota import guard_claim
-    if not guard_claim(conn, task_id, source_status):
+    from hermes_cli.kanban_quota import bind_probe_run, guard_claim, route
+    route_row = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
+    if route_row is None or route_row["status"] != source_status or route_row["claim_lock"] is not None:
+        return None
+    pinned = route(route_row)
+    if not guard_claim(conn, task_id, source_status, pinned=pinned):
         return None
     cur = conn.execute(
         f"""
@@ -2267,9 +2271,8 @@ def _claim_and_open_run(
         ),
     )
     run_id = run_cur.lastrowid
-    from hermes_cli.kanban_quota import route
-    route_row = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
-    conn.execute("UPDATE task_runs SET metadata=? WHERE id=?", (_json_or_null({"quota_route": route(route_row)}), run_id))
+    conn.execute("UPDATE task_runs SET metadata=? WHERE id=?", (_json_or_null({"quota_route": pinned}), run_id))
+    bind_probe_run(conn, task_id, run_id, pinned)
     conn.execute("UPDATE tasks SET current_run_id = ? WHERE id = ?", (run_id, task_id))
     _append_event(
         conn, task_id, "claimed",

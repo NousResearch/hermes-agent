@@ -336,6 +336,10 @@ def test_route_and_recovery_interleavings(lab, monkeypatch, case):
                     return kb.claim_task(connection, candidate) is not None
             with ThreadPoolExecutor(2) as pool:
                 assert sorted(pool.map(claim, candidates)) == [False, True]
+            circuit = conn.execute('SELECT * FROM provider_circuits').fetchone()
+            claimed = kb.get_task(conn, circuit['probe_task'])
+            assert circuit['probe_run_id'] == claimed.current_run_id
+            assert kb.get_run(conn, circuit['probe_run_id']).status == 'running'
         elif case == 'switch_during_run':
             task = kb.claim_task(conn, tid)
             kb.set_model_override(conn, tid, 'gpt-5', 'openai-codex')
@@ -370,3 +374,157 @@ def test_route_and_recovery_interleavings(lab, monkeypatch, case):
             assert dispatch.check_respawn_guard(conn, tid) is None
             task = kb.claim_task(conn, tid)
             assert task is not None
+
+
+@pytest.mark.parametrize('lane', ['ready', 'review'])
+@pytest.mark.parametrize('recovery', ['direct', 'restart_recompute'])
+@pytest.mark.parametrize('result', ['genuine', 'scope', 'backend', 'missing_route',
+                                   'unended', 'nonterminal', 'failed', 'successor', 'hard_failure'])
+def test_reserved_probe_run_is_the_only_recovery_witness(lab, monkeypatch, lane, recovery, result):
+    """Regression for PR136166: historical/successor successes cannot prove a probe."""
+    home, clock = lab
+    db_path = home / 'board.db'
+    claim = kb.claim_review_task if lane == 'review' else kb.claim_task
+    with kbc.connect_closing() as conn:
+        tid = kb.create_task(conn, title='historical success then quota', assignee='a')
+        historical = kb.claim_task(conn, tid)
+        assert kb.complete_task(conn, tid, summary='historical success')
+        # Seed the supported done -> ready/review reopening state.
+        with kb.write_txn(conn):
+            conn.execute('UPDATE tasks SET status=?,completed_at=NULL WHERE id=?', (lane, tid))
+        failed = claim(conn, tid)
+        exc = error(retry=900)
+        verdict = classify_api_error(exc, provider='xai-oauth')
+        evidence = quota.failure_evidence(SimpleNamespace(provider='xai-oauth'), verdict, exc)
+        assert evidence['hard_quota']
+        monkeypatch.setenv('HERMES_KANBAN_TASK', tid)
+        monkeypatch.setenv('HERMES_KANBAN_RUN_ID', str(failed.current_run_id))
+        monkeypatch.setenv('HERMES_KANBAN_CLAIM_LOCK', failed.claim_lock)
+        quota.record_worker_result({'provider_failure': evidence})
+        with kb.write_txn(conn):
+            conn.execute('UPDATE tasks SET worker_pid=?,started_at=1 WHERE id=?', (900021, tid))
+        dispatch._record_worker_exit(900021, 75 << 8)
+        dispatch.detect_crashed_workers(conn)
+        assert kb.get_task(conn, tid).status == 'blocked'
+        clock[0] += 900
+        kb.recompute_ready(conn)
+        assert kb.get_task(conn, tid).status == lane
+        if result == 'genuine':
+            # Failure after opening/binding must roll back the entire reservation.
+            append = kb._append_event
+            def fail_claim_event(connection, task_id, kind, *args, **kwargs):
+                if kind == 'claimed':
+                    raise RuntimeError('claim event failure')
+                return append(connection, task_id, kind, *args, **kwargs)
+            with monkeypatch.context() as patch:
+                patch.setattr(kb, '_append_event', fail_claim_event)
+                with pytest.raises(RuntimeError, match='claim event failure'):
+                    claim(conn, tid)
+            with kbc.connect_closing() as observer:
+                circuit = observer.execute('SELECT * FROM provider_circuits').fetchone()
+                assert circuit['retry_at'] == clock[0] and circuit['probe_task'] is None
+                assert circuit['probe_run_id'] is None
+                assert kb.get_task(observer, tid).status == lane
+                assert len(kb.list_runs(observer, tid)) == 2
+        probe = claim(conn, tid)
+        assert probe is not None
+        probe_id = probe.current_run_id
+        assert historical.current_run_id < failed.current_run_id < probe_id
+
+    def check_gate(expect_open):
+        # Reopen through full schema initialization to mimic a fresh dispatcher.
+        if recovery == 'restart_recompute':
+            kbc._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+        with kbc.connect_closing() as connection:
+            candidate = kb.create_task(connection, title='same route candidate', assignee='a')
+            if lane == 'review':
+                with kb.write_txn(connection):
+                    connection.execute("UPDATE tasks SET status='review' WHERE id=?", (candidate,))
+            if recovery == 'restart_recompute':
+                kb.recompute_ready(connection)
+            assert (claim(connection, candidate) is not None) == expect_open
+            circuit = connection.execute('SELECT * FROM provider_circuits').fetchone()
+            if expect_open:
+                assert circuit is None
+            else:
+                assert circuit['probe_task'] == tid
+                assert circuit['probe_run_id'] == probe_id
+
+    # The previous head opens this gate using the historical completed run.
+    check_gate(False)
+    with kbc.connect_closing() as conn:
+        run = kb.get_run(conn, probe_id)
+        assert run.outcome is None and run.ended_at is None and run.status == 'running'
+        if result == 'hard_failure':
+            monkeypatch.setenv('HERMES_KANBAN_RUN_ID', str(probe_id))
+            monkeypatch.setenv('HERMES_KANBAN_CLAIM_LOCK', probe.claim_lock)
+            quota.record_worker_result({'provider_failure': evidence})
+            circuit = conn.execute('SELECT * FROM provider_circuits').fetchone()
+            assert circuit['attempts'] == 2 and circuit['retry_at'] is None
+            assert circuit['probe_task'] is None and circuit['probe_run_id'] is None
+            kb.recompute_ready(conn)
+            candidate = kb.create_task(conn, title='failed hard probe stays closed', assignee='a')
+            assert kb.claim_task(conn, candidate) is None
+            return
+        with kb.write_txn(conn):
+            metadata = kb._json_dict(conn.execute('SELECT metadata FROM task_runs WHERE id=?', (probe_id,)).fetchone()[0])
+            if result in {'scope', 'backend'}:
+                metadata['quota_route'][result] += '-different'
+            elif result == 'missing_route':
+                metadata.pop('quota_route')
+            conn.execute('UPDATE task_runs SET metadata=? WHERE id=?', (kb._json_or_null(metadata), probe_id))
+            # Complete through the production end-run primitive so completion's
+            # eager recompute cannot release the gate before each witness is tested.
+            kb._end_run(conn, tid, outcome='crashed' if result in {'failed', 'successor'} else 'completed',
+                        status='running' if result == 'nonterminal' else 'done')
+            conn.execute("UPDATE tasks SET status='done',claim_lock=NULL,claim_expires=NULL WHERE id=?", (tid,))
+            if result == 'unended':
+                conn.execute('UPDATE task_runs SET ended_at=NULL WHERE id=?', (probe_id,))
+            elif result == 'successor':
+                # Even a later same-task, same-route terminal success cannot substitute.
+                successor = conn.execute("INSERT INTO task_runs(task_id,profile,status,outcome,started_at,ended_at,metadata) "
+                                         "SELECT task_id,profile,'done','completed',started_at,ended_at,metadata "
+                                         "FROM task_runs WHERE id=?", (probe_id,)).lastrowid
+                # A hard failure attributed to that successor must not consume
+                # the original reservation either (same task is insufficient).
+                row = dict(conn.execute('SELECT * FROM tasks WHERE id=?', (tid,)).fetchone())
+                row['current_run_id'] = successor
+                quota.arm(conn, row, evidence, metadata)
+                circuit = conn.execute('SELECT * FROM provider_circuits').fetchone()
+                assert circuit['attempts'] == 1 and circuit['probe_run_id'] == probe_id
+    check_gate(result == 'genuine')
+
+
+@pytest.mark.parametrize('legacy_retry', [None, 'elapsed'])
+def test_legacy_reserved_circuit_migration_never_infers_a_probe_run(lab, legacy_retry):
+    home, clock = lab
+    db_path = home / 'board.db'
+    with kbc.connect_closing() as conn:
+        tid = kb.create_task(conn, title='old successful reservation', assignee='a')
+        success = kb.claim_task(conn, tid)
+        assert kb.complete_task(conn, tid, summary='old success')
+        row = conn.execute('SELECT * FROM tasks WHERE id=?', (tid,)).fetchone()
+        scope, backend = quota.identity(row)
+        # Recreate only the previous circuit schema; all ledger/wait data remains real.
+        conn.execute('DROP TABLE provider_circuits')
+        conn.execute('CREATE TABLE provider_circuits(scope TEXT NOT NULL,backend TEXT NOT NULL,'
+                     'retry_at REAL,attempts INTEGER NOT NULL DEFAULT 1,probe_task TEXT,PRIMARY KEY(scope,backend))')
+        retry_at = None if legacy_retry is None else clock[0] - 1
+        conn.execute('INSERT INTO provider_circuits VALUES(?,?,?,?,?)', (scope, backend, retry_at, 1, tid))
+        sibling = kb.create_task(conn, title='legacy waiter', assignee='a')
+        with kb.write_txn(conn):
+            quota.park(conn, conn.execute('SELECT * FROM tasks WHERE id=?', (sibling,)).fetchone(), scope, backend, 'ready')
+        before = dict(conn.execute('SELECT * FROM provider_circuits').fetchone())
+    # The real initialization/migration path, repeated to prove idempotence.
+    for _ in range(2):
+        kb.init_db(db_path)
+        with kbc.connect_closing() as conn:
+            circuit = conn.execute('SELECT * FROM provider_circuits').fetchone()
+            assert {key: circuit[key] for key in before} == before
+            assert circuit['probe_run_id'] is None
+            assert kb.get_run(conn, success.current_run_id).outcome == 'completed'
+            kb.recompute_ready(conn)
+            assert kb.get_task(conn, sibling).status == 'blocked'
+            candidate = kb.create_task(conn, title='no inferred legacy recovery', assignee='a')
+            assert kb.claim_task(conn, candidate) is None
+            assert conn.execute('SELECT probe_run_id FROM provider_circuits').fetchone()[0] is None

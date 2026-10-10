@@ -295,8 +295,17 @@ class TurnRunner:
                     # Code entity"). Escape backticks inside the args instead, keeping the
                     # fence fixed at 3 (MarkdownV2 requires \` escaped inside pre; the
                     # Telegram formatter's _protect_fenced does this at send time).
+                    # JSON's single-line dump renders every newline as the literal two-char
+                    # sequence ``\n``, which MarkdownV2 <pre> shows as backslash-n glyphs
+                    # rather than line breaks (the shredded-looking bubble). Turn the JSON
+                    # escapes back into REAL newlines/tabs so the fenced payload reads as
+                    # code. ``(?<!\\)`` keeps a genuine literal backslash-n in the content
+                    # (json.dumps doubles it to ``\\n``) from being rewritten.
                     code = t("gateway.progress.tool_verbose_fenced", emoji=emoji, tool=tool_name,
-                             keys=list(args.keys()), args=args_str.replace("`", "\\`"))
+                             keys=list(args.keys()),
+                             args=re.sub(r"(?<!\\)\\t", "\t",
+                                re.sub(r"(?<!\\)\\n", "\n",
+                                       args_str.replace("`", "\\`"))))
                 else:
                     code = t("gateway.progress.tool_verbose", emoji=emoji, tool=tool_name,
                              keys=list(args.keys()), args=args_str)

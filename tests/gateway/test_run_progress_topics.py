@@ -2265,3 +2265,60 @@ class TestSlackReplyInThreadProgressRouting:
             event_message_id="evt-trigger-001",
             reply_in_thread=True,
         ) == "evt-trigger-001"
+
+
+class NewlineArgsAgent(FenceToolAgent):
+    """Emits args whose JSON contains newlines, tabs and backticks — the regression
+    where the verbose Telegram bubble showed literal ``\\n`` glyphs instead of real
+    line breaks (json.dumps renders newlines as an escaped two-char sequence that
+    MarkdownV2 <pre> does not interpret)."""
+
+    ARGS = {"code": "line1\nline2 `tick`\n\tindented  \t", "note": "a\tb"}
+
+
+@pytest.mark.asyncio
+async def test_verbose_args_json_newlines_rendered_real_on_markdown_adapters(
+    monkeypatch, tmp_path,
+):
+    """Verbose tool-args progress on a markdown-capable adapter must render the JSON
+    string escapes as REAL newlines/tabs inside the code fence (the JSON dump's single
+    line otherwise reaches Telegram as literal backslash-n glyphs — the shredded
+    bubble). Backtick escaping is unchanged: the runner escapes the ticks and the
+    platform formatter adds its own pre-escaping on top."""
+    config = {"display": {"tool_progress": "verbose", "tool_preview_length": 0}}
+
+    fenced_adapter, _ = await _run_with_agent(
+        monkeypatch, tmp_path, NewlineArgsAgent,
+        session_id="sess-verbose-newlines", config_data=config,
+        adapter_cls=FenceCaptureAdapter,
+    )
+    fenced = " ".join(c["content"] for c in fenced_adapter.sent) + " ".join(
+        c["content"] for c in fenced_adapter.edits)
+
+    # The wrapper fence is present and exactly 3 backticks.
+    assert "```\n" in fenced
+    assert not re.search(r"`{4,}", fenced)
+
+    # JSON string escapes became REAL newlines/tabs inside the fence body, so the
+    # payload reads as code, not escaped glyphs.
+    assert "line1\nline2" in fenced          # \n → real newline
+    assert "\tindented" in fenced            # \t → real tab
+    # The inline backtick is still escaped (unchanged behavior), and no 4+ run.
+    assert "\\`tick\\`" in fenced
+    # No literal backslash-n/backslash-t survives in the fence body (the shred).
+    fence_body = fenced.split("```\n", 1)[1]
+    fence_body = fence_body.rsplit("\n```", 1)[0]
+    assert "\\n" not in fence_body
+    assert "\\t" not in fence_body.replace("\\`", "")
+
+    # Non-markdown adapter: unescaped, unfenced payload keeps the raw JSON escapes
+    # (the fence branch is markdown-only).
+    plain_adapter, _ = await _run_with_agent(
+        monkeypatch, tmp_path, NewlineArgsAgent,
+        session_id="sess-verbose-newlines-plain", config_data=config,
+        adapter_cls=ProgressCaptureAdapter,
+    )
+    plain = " ".join(c["content"] for c in plain_adapter.sent) + " ".join(
+        c["content"] for c in plain_adapter.edits)
+    assert "```" not in plain
+    assert "line1" in plain

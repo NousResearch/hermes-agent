@@ -12,6 +12,8 @@ forever. The fix gives ``block_task`` a typed ``kind`` and a persistent
 * ``needs_input`` / ``capability`` / un-typed blocks land in ``blocked``;
   each same-cause re-block after an unblock increments ``block_recurrences``,
   and at ``BLOCK_RECURRENCE_LIMIT`` the task routes to ``triage`` for a human.
+* ``superseded`` (the card itself is obsolete/replaced) also lands in
+  ``blocked``: a bookkeeping close that reporting must not read as a failure.
 * ``unblock_task`` deliberately does NOT reset ``block_recurrences`` (the
   amnesia that let the loop run unbounded).
 * A successful ``complete_task`` resets the loop memory.
@@ -198,3 +200,24 @@ def test_dependency_block_with_open_parent_stays_parked_across_dispatch_tick(
 # ---------------------------------------------------------------------------
 
 
+def test_superseded_kind_records_a_bookkeeping_close(kanban_home: Path) -> None:
+    """``superseded`` — the card itself is obsolete or was replaced — lands in
+    ``blocked`` with the kind kept, so whoever reads the board can tell a
+    deliberate close from a card that is genuinely stuck. Without it the only
+    way to stop such a card was an un-typed block, which reads as a failure."""
+    with kbc.connect_closing() as conn:
+        tid = _running_task(conn)
+        assert kb.block_task(conn, tid, reason="replaced by t_000000", kind="superseded")
+        task = kb.get_task(conn, tid)
+        assert (task.status, task.block_kind) == ("blocked", "superseded")
+
+
+def test_kanban_block_schema_offers_every_routable_kind() -> None:
+    """The model-facing ``kanban_block`` enum is a second copy of the kind
+    vocabulary (``VALID_BLOCK_KINDS`` is the first). An orchestrator can only
+    pass a kind the schema offers, so a kind added to one copy and missed in
+    the other is unreachable — pin the two together."""
+    from tools.kanban_tools_schemas import KANBAN_BLOCK_SCHEMA
+
+    enum = KANBAN_BLOCK_SCHEMA["parameters"]["properties"]["kind"]["enum"]
+    assert set(enum) == kb.VALID_BLOCK_KINDS

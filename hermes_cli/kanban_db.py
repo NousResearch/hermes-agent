@@ -665,6 +665,7 @@ class Task:
     block_kind: Optional[str] = None
     block_recurrences: int = 0               # unblock-loop counter, see BLOCK_RECURRENCE_LIMIT
     completion_contract: Optional[str] = None
+    next_eligible_at: Optional[int] = None   # scheduled-card timed wake; NULL = none
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> Task:
@@ -694,7 +695,7 @@ _TASK_REQUIRED_COLUMNS = (
 _TASK_OPTIONAL_COLUMNS = (
     "branch_name", "project_id", "tenant", "result", "idempotency_key", "worker_pid",
     "max_runtime_seconds", "last_heartbeat_at", "current_run_id", "workflow_template_id",
-    "current_step_key", "max_retries", "session_id", "completion_contract",
+    "current_step_key", "max_retries", "session_id", "completion_contract", "next_eligible_at",
 )
 # Text columns where "" is stored/read as "not set".
 _TASK_EMPTY_IS_NULL_COLUMNS = (
@@ -899,7 +900,11 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    -- Timed wake for a ``scheduled`` card (``set_schedule_wake``): the
+    -- dispatcher returns it to ready on its first tick at/after this epoch.
+    -- NULL = no timed exit (waits on a named event). Cleared on unblock.
+    next_eligible_at     INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -3509,9 +3514,14 @@ def promote_task(
         return False, f"task {task_id} not found"
 
     if cur_status not in ("todo", "blocked"):
+        hint = (
+            f" (a scheduled card wakes with `hermes kanban unblock {task_id}`"
+            f" or `hermes kanban schedule {task_id} --now|--at TS`)"
+            if cur_status == "scheduled" else ""
+        )
         return False, (
             f"task {task_id} is {cur_status!r}; promote only applies to "
-            f"'todo' or 'blocked'"
+            f"'todo' or 'blocked'{hint}"
         )
 
     # No override: claim_task demotes ready -> todo on an undone parent whichever
@@ -3604,7 +3614,11 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         # is a fresh start for the retry budget.
         cur = conn.execute(
             "UPDATE tasks SET status = ?, current_run_id = NULL, "
-            "consecutive_failures = 0, last_failure_error = NULL "
+            "consecutive_failures = 0, last_failure_error = NULL, "
+            # A scheduled card's timed-wake stamp must not outlive the card
+            # leaving ``scheduled`` (a later re-schedule would wake at once).
+            "next_eligible_at = CASE WHEN status = 'scheduled' "
+            "THEN NULL ELSE next_eligible_at END "
             "WHERE id = ? AND status IN ('blocked', 'scheduled')", (new_status, task_id),
         )
         if cur.rowcount != 1:
@@ -3911,6 +3925,59 @@ def schedule_task(
         )
         _append_event(conn, task_id, "scheduled", {"reason": reason}, run_id=run_id)
         return True
+
+
+def set_schedule_wake(
+    conn: sqlite3.Connection, task_id: str, *, wake_at: int, actor: str,
+    reason: Optional[str] = None,
+) -> tuple[bool, Optional[str]]:
+    """Give a ``scheduled`` card a timed wake: the dispatcher returns it to
+    ``ready`` (``todo`` while parents are open) on its first tick at or after
+    ``wake_at`` (see :func:`wake_due_scheduled`). Without this a card parked
+    on a date has no exit until someone remembers to ``unblock`` it.
+    Returns ``(ok, reason)``."""
+    with write_txn(conn):
+        status = _task_status(conn, task_id)
+        if status is None:
+            return False, f"task {task_id} not found"
+        if status != "scheduled":
+            return False, (
+                f"task {task_id} is {status!r}; a wake time only applies to "
+                f"'scheduled' tasks"
+            )
+        if conn.execute(
+            "UPDATE tasks SET next_eligible_at = ? WHERE id = ? AND status = 'scheduled'",
+            (int(wake_at), task_id),
+        ).rowcount != 1:
+            return False, f"task {task_id} changed state concurrently; retry"
+        _append_event(
+            conn, task_id, "schedule_wake_set",
+            {"actor": actor, "reason": reason, "wake_at": int(wake_at)},
+        )
+    return True, None
+
+
+def wake_due_scheduled(conn: sqlite3.Connection, *, now: Optional[int] = None) -> list[str]:
+    """Unblock every ``scheduled`` card whose timed wake has passed (same parent
+    re-gate as the operator verb) and record a ``schedule_elapsed`` event.
+    Cards with no wake stamp are never touched. Returns the woken ids."""
+    now = int(time.time()) if now is None else int(now)
+    due = conn.execute(
+        "SELECT id, next_eligible_at FROM tasks WHERE status = 'scheduled' "
+        "AND next_eligible_at IS NOT NULL AND next_eligible_at <= ? "
+        "ORDER BY next_eligible_at, id", (now,),
+    ).fetchall()
+    woken: list[str] = []
+    for row in due:
+        if not unblock_task(conn, row["id"]):
+            continue
+        with write_txn(conn):
+            _append_event(
+                conn, row["id"], "schedule_elapsed",
+                {"wake_at": int(row["next_eligible_at"]), "woken_at": now},
+            )
+        woken.append(row["id"])
+    return woken
 
 
 # --- Worker context builder (what a spawned worker sees) ---

@@ -737,6 +737,40 @@ def _rule_stranded_in_ready(task, events, runs, now, cfg) -> list[Diagnostic]:
 
 
 # Order matters: earlier rules render first on severity ties.
+def _rule_scheduled_without_wake(task, events, runs, now, cfg) -> list[Diagnostic]:
+    """``scheduled`` with no timed wake (``next_eligible_at`` NULL) for >=
+    cfg["scheduled_unwoken_hours"] (default 24). Nothing in the dispatcher
+    moves such a card — it waits on an event only a human/automation acts on —
+    so without this it rots silently past its gate. Parked-since is the latest
+    ``scheduled`` event, else ``created_at``."""
+    hours = float(cfg.get("scheduled_unwoken_hours", 24))
+    if _task_field(task, "status") != "scheduled":
+        return []
+    if _task_field(task, "next_eligible_at") is not None:
+        return []
+    parked_ts = _latest_event_ts(events, {"scheduled"}) or int(
+        _task_field(task, "created_at", default=0) or 0)
+    if parked_ts == 0:
+        return []
+    age_hours = (now - parked_ts) / 3600.0
+    if age_hours < hours:
+        return []
+    task_id = _task_field(task, "id")
+    return [Diagnostic(
+        kind="scheduled_without_wake", severity="warning",
+        title=f"Scheduled for {int(age_hours)}h with no wake time",
+        detail=f"This task was parked in scheduled {int(age_hours)}h ago with no timed wake, so the "
+               f"dispatcher will never return it to ready. If its date or event has passed, wake it "
+               f"now; otherwise give it a wake time.",
+        actions=[
+            _cli_hint("Wake it now", f"hermes kanban unblock {task_id}", suggested=True),
+            _cli_hint("Set a wake time", f"hermes kanban schedule {task_id} --at <ISO-8601|epoch>"),
+        ],
+        first_seen_at=parked_ts, last_seen_at=parked_ts, count=1,
+        data={"scheduled_at": parked_ts, "age_hours": round(age_hours, 1)},
+    )]
+
+
 _RULES: list[RuleFn] = [
     _rule_hallucinated_cards,
     _rule_triage_aux_unavailable,
@@ -748,6 +782,7 @@ _RULES: list[RuleFn] = [
     _rule_stuck_in_blocked,
     _rule_block_unblock_cycling,
     _rule_stranded_in_ready,
+    _rule_scheduled_without_wake,
 ]
 
 
@@ -762,6 +797,7 @@ DEFAULT_CONFIG = {
     # Below 30 min the signal is dominated by tasks about to be claimed on
     # the next dispatcher tick.
     "stranded_threshold_seconds": 30 * 60,
+    "scheduled_unwoken_hours": 24,
 }
 
 

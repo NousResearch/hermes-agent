@@ -475,8 +475,11 @@ def _gateway_platform_value(platform: Any) -> str:
 
 def _non_conversational_metadata(
     metadata: Optional[dict[str, Any]] = None, *, platform: Any = None) -> Optional[dict[str, Any]]:
-    """Mark Discord lifecycle/status sends without changing other platforms."""
-    if _gateway_platform_value(platform) != "discord":
+    """Mark lifecycle/status sends for the platforms whose registry entry sets
+    ``reads_non_conversational_mark``, and leave other platforms' metadata unchanged."""
+    from gateway.platform_registry import platform_registry
+    entry = platform_registry.get(_gateway_platform_value(platform))
+    if not (entry and entry.reads_non_conversational_mark):
         return metadata
     merged = dict(metadata or {})
     merged["non_conversational"] = True
@@ -2168,6 +2171,7 @@ from gateway.delivery import DeliveryRouter
 from gateway.turn_lease import SessionTurnLeaseRegistry
 from gateway.session_state import SessionState, legacy_dict_property, legacy_lease_token_property
 from gateway.authz_mixin import GatewayAuthorizationMixin
+from gateway.run_source_profiles import GatewaySourceProfilesMixin
 from gateway.kanban_watchers import GatewayKanbanWatchersMixin
 from gateway.slash_commands import GatewaySlashCommandsMixin
 from gateway.run_voice import GatewayVoiceMixin
@@ -2503,23 +2507,6 @@ def _event_media_is_stt_input(event, index: int) -> bool:
 
 def _event_media_is_video(event, index: int) -> bool:
     return _event_media_kind_is(event, index, "video/", frozenset({MessageType.VIDEO}))
-
-
-def _build_media_placeholder(event) -> str:
-    """Text placeholder for media-only events (later replaced by vision enrichment).
-    Queued media is dequeued via .text only, so a caption-less event would otherwise be lost."""
-    parts = []
-    media_urls = getattr(event, "media_urls", None) or []
-    for i, url in enumerate(media_urls):
-        if _event_media_is_image(event, i):
-            parts.append(f"[User sent an image: {url}]")
-        elif _event_media_is_audio(event, i):
-            parts.append(f"[User sent audio: {url}]")
-        elif _event_media_is_video(event, i):
-            parts.append(f"[User sent a video: {url}]")
-        else:
-            parts.append(f"[User sent a file: {url}]")
-    return "\n".join(parts)
 
 
 def _build_document_context_note(
@@ -3351,7 +3338,7 @@ def _instantiate_builtin_adapter(platform: Platform, config: Any) -> Optional[Ba
 
 
 class GatewayRunner(
-    GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin,
+    GatewayAuthorizationMixin, GatewaySourceProfilesMixin, GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin,
     GatewayVoiceMixin, GatewayAdapterLifecycleMixin, GatewayTopicThreadsMixin, GatewayTurnMixin,
     GatewayShutdownMixin, GatewayBusySessionMixin, GatewayConfigLoadersMixin, GatewayStartupMixin,
     GatewaySessionWatchersMixin, GatewayNotificationsMixin, GatewayInboundMixin, GatewayGoalsMixin,
@@ -4205,9 +4192,10 @@ class GatewayRunner(
         """Set session context variables (contextvars, not os.environ, so concurrent messages can't
         overwrite each other). Returns reset tokens for ``_clear_session_env`` in a ``finally``."""
         from gateway.session_context import set_session_vars
+        from gateway.session_identity import identity_of
         # Async-delivery capability tells async tools whether this channel can wake a later turn. Default
         # True keeps CLI/unknown paths working; stateless adapters (api_server) declare False.
-        _adapter = (getattr(self, "adapters", None) or {}).get(context.source.platform)
+        _adapter = self._delivery_adapter_for(context.source)
         _async_delivery = getattr(_adapter, "supports_async_delivery", True)
         return set_session_vars(
             platform=context.source.platform.value,
@@ -4221,9 +4209,13 @@ class GatewayRunner(
             scope_id=str(getattr(context.source, "scope_id", "") or ""),
             parent_chat_id=str(getattr(context.source, "parent_chat_id", "") or ""),
             session_key=context.session_key,
+            session_id=context.session_id,
             message_id=str(context.source.message_id) if context.source.message_id else "",
             profile=getattr(context.source, "profile", "") or "",
             async_delivery=_async_delivery,
+            transport_adapter=_adapter,
+            transport_loop=getattr(self, "_gateway_loop", None),
+            routing_identity=identity_of(context.source),
             cron_session="")
 
     def _clear_session_env(self, tokens: list) -> None:
@@ -4233,14 +4225,17 @@ class GatewayRunner(
 
     @_contextmanager
     def _session_env_scope(self, context: SessionContext):
-        """Bind session context variables for the duration of the block, e.g. a plugin command
-        handler invoked outside the normal agent-turn path (``_set_session_env`` is otherwise only
-        reached there). Always cleared on exit, including on exception."""
-        tokens = self._set_session_env(context)
+        """Bind tool context for one activity and restore the enclosing activity on exit."""
+        from agent.runtime_cwd import reset_session_cwd, scoped_session_cwd, set_session_cwd
+        cwd_token = set_session_cwd(scoped_session_cwd())
+        tokens = []
         try:
+            tokens = self._set_session_env(context)
             yield
         finally:
-            self._clear_session_env(tokens)
+            for token in reversed(tokens):
+                token.var.reset(token)
+            reset_session_cwd(cwd_token)
 
     async def _run_in_executor_with_context(self, func, *args):
         """Run blocking work in the thread pool while preserving session contextvars."""
@@ -4432,41 +4427,6 @@ class GatewayRunner(
             getattr(source, "thread_id", None), getattr(source, "parent_chat_id", None))
         return None
 
-    def _resolve_profile_home_for_source(self, source: SessionSource) -> Path:
-        """Resolve which profile's HERMES_HOME serves this source: the pinned identity's runtime
-        home, else ``source.profile``, then ``_profile_name_for_source`` (sources bypassing
-        ``build_source``), then the active profile."""
-        from gateway.profile_routing import ProfileRouteRejected
-        from gateway.session_identity import identity_of
-        from hermes_cli.profiles import get_active_profile_name, get_profile_dir, profile_exists
-        from hermes_constants import get_hermes_home
-        identity = identity_of(source)
-        if identity is not None:
-            return identity.runtime_home
-        explicit_profile = None  # explicitly requested (source or routing) vs. default fallback
-        try:
-            name = (source.profile or "").strip() or self._profile_name_for_source(source)
-            explicit_profile = name or None
-            if not name:
-                name = get_active_profile_name() or "default"
-            profile_dir = get_profile_dir(name)
-            if explicit_profile and not profile_exists(name):
-                logger.warning(
-                    "Profile %r does not exist for source %s/%s (guild_id=%s), "
-                    "falling back to global HERMES_HOME",
-                    explicit_profile, source.platform.value, source.chat_id,
-                    getattr(source, "guild_id", None))
-                return get_hermes_home()
-            return profile_dir
-        except ProfileRouteRejected:
-            raise
-        except Exception:
-            logger.warning(
-                "Failed to resolve profile directory for source %s/%s (guild_id=%s), "
-                "falling back to global HERMES_HOME: %s",
-                source.platform.value, source.chat_id, getattr(source, "guild_id", None),
-                explicit_profile or "(no profile)", exc_info=True)
-            return get_hermes_home()
 
     @dataclasses.dataclass
     class _RunAgentDisplay:

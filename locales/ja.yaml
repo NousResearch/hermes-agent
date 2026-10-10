@@ -752,6 +752,7 @@ gateway:
     usage_idle: "使い方: /steer <プロンプト>  (実行中のエージェントがないため、通常のメッセージとして送信します)"
     queued_starting: "エージェントはまだ起動中です — /steer を次のターンにキューしました。"
     queued_no_agent: "アクティブなエージェントがありません — /steer を次のターンにキューしました。"
+    queued_turn_finished: "エージェントのターンが終了しました。/steer を次のターンにキューしました。"
     failed: "⚠️ ステアに失敗しました: {error}"
     rejected_empty: "ステアを拒否しました (ペイロードが空です)。"
     target_subagents: "実行とそのアクティブなサブエージェント"

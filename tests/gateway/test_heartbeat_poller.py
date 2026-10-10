@@ -8,6 +8,7 @@ import pytest
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent
+from gateway.platforms.base_pending import release_pending_dispatch
 from gateway.response_filters import INTERNAL_NOTIFICATION_DISPLAY_KIND, display_kind_for_event
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource, build_session_key
@@ -59,6 +60,7 @@ async def test_idle_wake_coalesces_intervals_while_adapter_owns_turn(poller):
 
     async def handler(event):
         event._heartbeat_execution_started = True  # fake agent execution boundary
+        release_pending_dispatch(adapter, key, event, claimed=True)
         received.append(event)
         started.set()
         await release.wait()

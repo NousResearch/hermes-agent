@@ -34,7 +34,7 @@ def _running_turn(runner, key, receiver):
     opening = MessageEvent(text="What is the weather in Shanghai?", source=source, message_id="A")
     ctx = TurnContext(session_key=key, event_message_id="A", inbound_message_id="A")
     turn = runner._session_state(key).turn
-    turn.agent, turn.event, turn.ctx = receiver, opening, ctx
+    turn.agent, turn.event, turn.processing_event, turn.ctx = receiver, opening, opening, ctx
     redirecting = MessageEvent(text="What day is tomorrow?", source=source, message_id="B")
     return opening, ctx, redirecting, source
 

@@ -61,6 +61,9 @@ def _unbound_voice_adapter() -> AsyncMock:
     adapter = AsyncMock()
     adapter._voice_text_channels, adapter._voice_sources = {111: 123}, {}
     adapter._client = MagicMock()
+    adapter._resolve_channel_prompt = MagicMock(return_value=None)
+    adapter._resolve_channel_skills = MagicMock(return_value=None)
+    adapter._guild_channel_labels = MagicMock(return_value=None)
     adapter.handle_message = AsyncMock()
     adapter._thread_id_and_chat_for_channel = MagicMock(return_value=(None, "123"))
     adapter.build_source = MagicMock(side_effect=lambda **kw: SessionSource(platform=Platform.DISCORD, **kw))
@@ -538,6 +541,7 @@ class TestVoiceChannelCommands:
         """Voice input creates synthetic event and calls handle_message."""
         from gateway.config import Platform
         mock_adapter = _unbound_voice_adapter()
+        mock_adapter._resolve_channel_prompt = MagicMock(return_value=None)
         mock_channel = AsyncMock()
         mock_adapter._client.get_channel = MagicMock(return_value=mock_channel)
         runner.adapters[Platform.DISCORD] = mock_adapter
@@ -567,7 +571,12 @@ class TestVoiceChannelCommands:
             lambda _config: [("team-bot", None), ("first", None), ("second", None)],
         )
         mock_adapter = AsyncMock()
+        mock_adapter._resolve_channel_prompt = MagicMock(return_value=None)
+        mock_adapter._resolve_channel_skills = MagicMock(return_value=None)
+        mock_adapter._guild_channel_labels = MagicMock(return_value=None)
         mock_adapter._owner_profile = "team-bot"
+        mock_adapter._resolve_channel_skills = MagicMock(return_value=None)
+        mock_adapter._guild_channel_labels = MagicMock(return_value=None)
         mock_adapter._voice_text_channels = {111: 123}
         mock_adapter._voice_sources = {111: SessionSource(
             platform=Platform.DISCORD, chat_id="123", chat_type="channel",
@@ -617,6 +626,9 @@ class TestVoiceChannelCommands:
         )
 
         mock_adapter = AsyncMock()
+        mock_adapter._resolve_channel_prompt = MagicMock(return_value=None)
+        mock_adapter._resolve_channel_skills = MagicMock(return_value=None)
+        mock_adapter._guild_channel_labels = MagicMock(return_value=None)
         mock_adapter._voice_text_channels = {111: 123}
         mock_adapter._voice_sources = {111: bound_source.to_dict()}
         mock_channel = AsyncMock()
@@ -848,6 +860,7 @@ class TestCallbackWiringOrder:
         )
         mock_adapter.get_user_voice_channel = AsyncMock(return_value=mock_channel)
         mock_adapter._voice_input_callback = None
+        mock_adapter.discard_pending_voice_input = MagicMock()
 
         event = _make_event("/voice channel")
         event.raw_message = SimpleNamespace(guild_id=111, guild=None)

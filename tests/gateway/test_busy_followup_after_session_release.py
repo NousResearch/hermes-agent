@@ -23,8 +23,13 @@ import pytest
 
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.platforms.event import MessageEvent
+from gateway.run import GatewayRunner
+from gateway.run_inbound import GatewayInboundMixin
 from gateway.session import build_session_key
-from tests.gateway.test_active_session_text_merge import _make_adapter, _make_event
+from gateway.session_state import SessionState
+from tests.gateway.test_active_session_text_merge import (
+    _make_adapter, _make_event, _make_initialized_adapter,
+)
 
 
 class _TurnSim:
@@ -131,3 +136,81 @@ async def test_followup_still_queues_when_the_session_stays_active():
     assert session_key in adapter._active_sessions  # guard untouched
     pending = adapter._pending_messages.get(session_key)
     assert pending is not None and pending.text == "still busy here"
+
+
+class _QueueRunner(GatewayRunner):
+    """The runner's FIFO, its post-turn chain and its idle-path orphan rescue."""
+
+    _BUSY_QUEUE_MAX_PENDING = 32
+    _hm_rescue_orphaned_fifo = GatewayInboundMixin._hm_rescue_orphaned_fifo
+
+    def __init__(self, adapter: BasePlatformAdapter):
+        self.adapter = adapter
+        self.states: dict[str, SessionState] = {}
+
+    def _delivery_adapter_for(self, source):
+        return self.adapter
+
+    def _session_state(self, session_key: str) -> SessionState:
+        return self.states.setdefault(session_key, SessionState())
+
+    def _peek_session_state(self, key):
+        return self.states.get(key)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("busy_text_mode", ["interrupt", "queue"])
+async def test_followups_arriving_during_final_delivery_keep_arrival_order(
+    busy_text_mode,
+):
+    """The runner has drained its queue and the adapter is still delivering the answer when two
+    people send follow-ups. The adapter's post-turn drain starts the first; the second must not
+    overtake it through the runner's orphan rescue."""
+    adapter = _make_initialized_adapter()
+    adapter._busy_text_mode = busy_text_mode
+    adapter._busy_text_debounce_seconds = 5.0
+    adapter._busy_text_hard_cap_seconds = 10.0
+    runner = _QueueRunner(adapter)
+    adapter.gateway_runner = runner
+    adapter._event_session_key = lambda event: "shared"  # type: ignore[method-assign]
+    delivering, all_ran = asyncio.Event(), asyncio.Event()
+    ran: list[str] = []
+
+    async def runner_handle_message(event):
+        event, _, _ = runner._hm_rescue_orphaned_fifo(
+            event, event.source, False, "shared"
+        )
+        ran.append(event.text)
+        while (
+            queued := runner._promote_queued_event(
+                "shared", adapter, adapter._pending_messages.pop("shared", None)
+            )
+        ) is not None:
+            ran.append(queued.text)
+        if event.text == "first":
+            await delivering.wait()
+        if len(ran) == 3:
+            all_ran.set()
+        return None
+
+    async def busy_handler(event, session_key):
+        if busy_text_mode == "queue":
+            return False
+        runner._queue_or_replace_pending_event(session_key, event)
+        return True
+
+    adapter.set_message_handler(runner_handle_message)
+    adapter.set_busy_session_handler(busy_handler)
+    await adapter.handle_message(
+        _make_event("first", chat_type="group", user_id="alice")
+    )
+    await asyncio.sleep(0)
+    for text, sender in [("from bob", "bob"), ("from carol", "carol")]:
+        await adapter.handle_message(
+            _make_event(text, chat_type="group", user_id=sender)
+        )
+    delivering.set()
+    await asyncio.wait_for(all_ran.wait(), 2.0)
+    await asyncio.wait_for(asyncio.gather(*list(adapter._background_tasks)), 2.0)
+
+    assert ran == ["first", "from bob", "from carol"]

@@ -130,47 +130,52 @@ async def test_requeued_busy_event_does_not_hot_loop(rewrite_hook, message_id, b
 
 
 @pytest.mark.asyncio
-async def test_requeued_event_runs_once_the_agent_finishes():
-    """The back-off must defer, not drop: once the running agent is gone the event is processed.
-    And it must key on the runner's demotion, not on ``None``: every streamed turn returns None,
-    so chained genuine follow-ups after it must each dispatch immediately."""
+async def test_requeued_event_runs_once_the_agent_finishes(monkeypatch):
+    """Cancellation preserves the backed-off head, and genuine follow-ups dispatch without back-off."""
     adapter = RestartTestAdapter()
     runner, agent, sk = _runner_with_running_agent(adapter, compression_in_flight=True)
-    handled, starts, ends = [], [], []
+    handled, dispatches = [], []
+    backoff_started = asyncio.Event()
+    backoff_release = asyncio.Event()
+    all_handled = asyncio.Event()
     real_handle = runner._handle_message
+    real_drain = adapter._drain_after
+
+    async def drain(pending_event, session_key, delay, guard):
+        dispatches.append((pending_event.text, delay > 0))
+        if delay > 0:
+            backoff_started.set()
+            await backoff_release.wait()
+        await real_drain(pending_event, session_key, delay, guard)
+
+    monkeypatch.setattr(adapter, "_drain_after", drain)
 
     async def handler(event):
-        if sk not in runner._running_agents:
-            handled.append(event.text)
-            starts.append(time.monotonic())
-            runner._running_agents[sk] = agent  # a real turn owned by this adapter
-            await asyncio.sleep(0.02)
-            nxt = {"queued msg": "f1", "f1": "f2", "f2": "f3"}.get(event.text)
-            if nxt:  # a genuine follow-up reaches the runner mid-turn and is queued behind it
-                await real_handle(MessageEvent(text=nxt, source=_source(), message_id=nxt))
-            await asyncio.sleep(0.03)
-            runner._running_agents.pop(sk, None)
-            ends.append(time.monotonic())
-            return None  # streamed turn: the body was already delivered
-        return await real_handle(event)
+        if sk in runner._running_agents:
+            return await real_handle(event)
+
+        handled.append(event.text)
+        runner._running_agents[sk] = agent
+        nxt = {"queued msg": "f1", "f1": "f2", "f2": "f3"}.get(event.text)
+        if nxt:
+            await real_handle(MessageEvent(text=nxt, source=_source(), message_id=nxt))
+        runner._running_agents.pop(sk, None)
+        if event.text == "f3":
+            all_handled.set()
+        return None
 
     adapter.set_message_handler(handler)
-    await adapter.handle_message(MessageEvent(text="queued msg", source=_source(), message_id="m2"))
-    # Wait for a real back-off (not a fixed sleep: a cold first dispatch can take >1s under load).
-    for _ in range(2000):
-        if adapter._requeue_counts.get(sk, 0) >= 2 and sk in adapter._pending_messages:
-            break
-        await asyncio.sleep(0.01)
-    # A cancel during the back-off (e.g. /stop) must not lose the queued event: it stays pending.
-    await adapter.cancel_session_processing(sk, discard_pending=False)
-    assert adapter._pending_messages[sk].text == "queued msg"
-    runner._running_agents.pop(sk)  # the long turn finishes
-    await adapter._drain_pending_after_session_command(sk, asyncio.Event())  # /stop tail replays it
-    for _ in range(2000):
-        if len(ends) >= 4:
-            break
-        await asyncio.sleep(0.01)
-    await adapter.cancel_background_tasks()
-    assert handled == ["queued msg", "f1", "f2", "f3"]
-    gaps = [starts[i] - ends[i - 1] for i in range(1, len(starts))]
-    assert all(g < 0.1 for g in gaps), f"genuine follow-ups backed off: {gaps}"
+    try:
+        await adapter.handle_message(MessageEvent(text="queued msg", source=_source(), message_id="m2"))
+        await asyncio.wait_for(backoff_started.wait(), timeout=5)
+        await adapter.cancel_session_processing(sk, discard_pending=False)
+        assert adapter._pending_messages[sk].text == "queued msg"
+        runner._running_agents.pop(sk)
+        await adapter._drain_pending_after_session_command(sk, asyncio.Event())
+        await asyncio.wait_for(all_handled.wait(), timeout=5)
+        assert (handled, dispatches) == (
+            ["queued msg", "f1", "f2", "f3"],
+            [("queued msg", False), ("queued msg", True), ("f1", False), ("f2", False), ("f3", False)],
+        )
+    finally:
+        await adapter.cancel_background_tasks()

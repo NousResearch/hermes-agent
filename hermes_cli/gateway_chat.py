@@ -34,9 +34,24 @@ _RELOCATED = {
 _SAFE_MODE_EXAMPLE = 'hermes chat --safe-mode --provider openrouter --model anthropic/claude-sonnet-4 -q "hello"'
 
 
+# The documented environment equivalents of creation flags (the set Ink's localCreationOptions
+# maps). The auto-started owner no longer inherits them (R14 scrub), so they only take effect
+# by riding THIS session's session.create; a resume keeps the frozen route.
+_ENV_LAUNCH_FLAGS = (("yolo", "HERMES_YOLO_MODE"), ("ignore_rules", "HERMES_IGNORE_RULES"),
+                     ("safe_mode", "HERMES_SAFE_MODE"), ("ignore_user_config", "HERMES_IGNORE_USER_CONFIG"),
+                     ("accept_hooks", "HERMES_ACCEPT_HOOKS"))
+
+
+def env_launch_flags() -> dict:
+    from utils import is_truthy_value
+    return {field: True for field, name in _ENV_LAUNCH_FLAGS if is_truthy_value(os.environ.get(name))}
+
+
 def bypass_launch(args) -> bool:
-    """--safe-mode / --ignore-user-config: the owner freezes code defaults, the client reads no profile."""
-    return bool(getattr(args, "safe_mode", False) or getattr(args, "ignore_user_config", False))
+    """--safe-mode / --ignore-user-config (or their env opt-ins): the owner freezes code defaults,
+    the client reads no profile."""
+    env = env_launch_flags()
+    return any(getattr(args, name, False) or env.get(name) for name in ("safe_mode", "ignore_user_config"))
 
 
 def continue_title(args):
@@ -67,8 +82,11 @@ def validate_options(args):
             f"Unsupported gateway CLI options: {flags}. No local fallback or policy changes were made.{where}")
     # Creation flags repeated on resume are checked against the frozen route once the snapshot is
     # back (`check_resume_policy`): the same flags again are fine, a different value is refused.
-    if bypass_launch(args) and not getattr(args, "model", None):
-        raise GatewayClientError("--safe-mode / --ignore-user-config read no profile default: pass --model explicitly."
+    # A resume reuses the frozen route and reads no default (the TUI launcher's rule too).
+    resuming = getattr(args, "resume", None) or getattr(args, "continue_last", None)
+    if bypass_launch(args) and not getattr(args, "model", None) and not resuming:
+        raise GatewayClientError("--safe-mode / --ignore-user-config (or HERMES_SAFE_MODE / HERMES_IGNORE_USER_CONFIG) "
+                                 "read no profile default: pass --model explicitly."
                                  f"\n  Example: {_SAFE_MODE_EXAMPLE}")
 
 
@@ -157,10 +175,7 @@ async def run_gateway_chat(args, emitter=None):
             policy.pop("source", None)
             if create_if_missing:
                 policy["title"] = title
-            # The documented `HERMES_ACCEPT_HOOKS=1` opt-in, as the in-process CLI read it; a
-            # creation flag of THIS session only (a resume keeps the frozen route's consent).
-            if os.environ.get("HERMES_ACCEPT_HOOKS", "").strip().lower() in {"1", "true", "yes", "on"}:
-                policy["accept_hooks"] = True
+            policy.update(env_launch_flags())
             cwd = await asyncio.to_thread(_caller_cwd, args)
             if "cwd" in parameters:
                 policy["cwd"] = cwd

@@ -192,3 +192,45 @@ def test_one_letter_alias_refusal_names_a_flag_the_user_can_type(monkeypatch, ca
     assert gateway_chat.launch_from_args(argparse.Namespace(w=True)) == 2
     err = capsys.readouterr().err
     assert "options: -w." in err and "\n  -w: use `hermes --tui -w`" in err and "--w" not in err
+
+
+@pytest.mark.asyncio
+async def test_documented_env_opt_ins_ride_the_classic_create_and_bypass_needs_a_model(monkeypatch, tmp_path, capsys):
+    """N24: the auto-started owner no longer inherits the environment, so HERMES_YOLO_MODE /
+    HERMES_IGNORE_RULES / HERMES_SAFE_MODE / HERMES_IGNORE_USER_CONFIG / HERMES_ACCEPT_HOOKS
+    must ride session.create (Ink's localCreationOptions set), and an env bypass without -m is
+    refused before connecting, exactly as the flag is."""
+    from contextlib import asynccontextmanager
+    from hermes_cli import gateway_chat
+    from hermes_cli.gateway_chat_view import GatewayChatView
+    flags = ["yolo", "ignore_rules", "safe_mode", "ignore_user_config", "accept_hooks"]
+    created = []
+
+    class Peer:
+        async def rpc(self, method, **params):
+            if method == "runtime.describe":
+                return {"session_create": {"sources": ["cli"], "parameters": [
+                    "cwd", "model", "request_id", "source", *flags]}}
+            created.append(params)
+            return {"stored_session_id": "stored"}
+
+    @asynccontextmanager
+    async def connected():
+        yield Peer()
+
+    async def rendered(self, query, *, oneshot):
+        return 0
+
+    monkeypatch.setattr(gateway_chat, "connect_gateway", connected)
+    monkeypatch.setattr(GatewayChatView, "run", rendered)
+    monkeypatch.chdir(tmp_path)
+    for name in ("HERMES_YOLO_MODE", "HERMES_IGNORE_RULES", "HERMES_SAFE_MODE", "HERMES_ACCEPT_HOOKS"):
+        monkeypatch.setenv(name, "1")
+    monkeypatch.setenv("HERMES_IGNORE_USER_CONFIG", "true")
+    assert await gateway_chat.run_gateway_chat(argparse.Namespace(query="q", quiet=True, model="m")) == 0
+    assert all(created[0].get(flag) is True for flag in flags), created[0]
+    monkeypatch.setattr(gateway_chat, "connect_gateway", lambda: pytest.fail("connected"))
+    for name in ("HERMES_YOLO_MODE", "HERMES_IGNORE_RULES", "HERMES_SAFE_MODE", "HERMES_ACCEPT_HOOKS"):
+        monkeypatch.delenv(name)
+    assert gateway_chat.launch_from_args(argparse.Namespace(query="q")) == 1
+    assert "--model" in capsys.readouterr().err

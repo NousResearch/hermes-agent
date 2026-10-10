@@ -928,6 +928,17 @@ class TestTitleSystemPrompt:
         assert call.call_args.kwargs["extra_body"]["response_format"] == _TITLE_RESPONSE_FORMAT
         assert _TITLE_RESPONSE_FORMAT["json_schema"]["strict"] is True
 
+    def test_real_config_file_custom_prompt(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(
+            "auxiliary:\n  title_generation:\n    system_prompt: Name legal matters precisely.\n",
+            encoding="utf-8",
+        )
+        with patch("agent.title_generator.call_llm") as call:
+            call.return_value.choices[0].message.content = '{"title": "Smith v Jones filing"}'
+            assert generate_title("file the Smith motion") == "Smith v Jones filing"
+        assert call.call_args.kwargs["messages"][0]["content"] == "Name legal matters precisely."
+
     def test_empty_means_default_template(self):
         with patch("hermes_cli.config.load_config_readonly", return_value=self._cfg("")):
             assert _title_system_prompt() == ""

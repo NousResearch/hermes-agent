@@ -595,6 +595,7 @@ class TestMemoryBatch:
         ]
         result = store.apply_batch("memory", ops, expected_entries=reviewed)
         assert result["success"] is False
+        assert result["failure_class"] == "stale_source"
         assert "changed since the reviewed snapshot" in result["error"]
         persisted = MemoryStore(memory_char_limit=500, user_char_limit=300)
         persisted.load_from_disk()

@@ -288,6 +288,12 @@ lock; otherwise the entire batch aborts without writing. Omit the parameter
 explicit precondition. This avoids overriding `MemoryStore._mutate` to guard
 against concurrent additions between preview and apply.
 
+Import the supported store class from `tools.memory_tool_store`:
+
+```python
+from tools.memory_tool_store import MemoryStore
+```
+
 ### Deprecation policy
 
 A documented native plugin behavior may be deprecated only with all of the

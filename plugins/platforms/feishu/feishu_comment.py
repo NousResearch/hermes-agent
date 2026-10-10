@@ -463,7 +463,11 @@ def _resolve_model_and_runtime() -> tuple[str, dict]:
 
 
 def _session_key(file_type: str, file_token: str) -> str:
-    return f"comment-doc:{file_type}:{file_token}"
+    """Per-profile cache key: one gateway process serves every profile, and two profiles commenting
+    on the same document must not share one history cache (``hermes_home_key()`` is the canonical
+    home slot; resolved per call, never cached at import)."""
+    from hermes_constants import hermes_home_key
+    return f"comment-doc:{hermes_home_key()}:{file_type}:{file_token}"
 
 
 def _load_session_history(key: str) -> list[dict[str, Any]]:

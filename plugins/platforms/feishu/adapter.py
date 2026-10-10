@@ -2157,11 +2157,20 @@ class FeishuAdapter(BasePlatformAdapter):
 
     def _on_drive_comment_event(self, data: Any) -> None:
         """drive.notice.comment_add_v1 → feishu_comment.handle_drive_comment_event on the adapter loop."""
+        from gateway.run import _async_profile_runtime_scope
         from plugins.platforms.feishu.feishu_comment import handle_drive_comment_event
-        self._submit_if_ready(
-            "drive comment event",
-            lambda: handle_drive_comment_event(self._client, data, self_open_id=self._bot_open_id),
-        )
+
+        async def _run_comment_event() -> None:
+            # The comment handler builds its own AIAgent and resolves provider credentials, so it needs
+            # the whole-handler profile scope the message path gets from the runner. A secondary
+            # adapter's WS thread already carries its profile override; the PRIMARY adapter connects
+            # outside any profile scope, so that hop arrives with an empty context and multiplex's
+            # fail-closed secret read kills the turn (UnscopedSecretError). Resolve the home from this
+            # coroutine's own context: the routed profile when one was carried, else the launch profile.
+            async with _async_profile_runtime_scope(get_hermes_home()):
+                await handle_drive_comment_event(self._client, data, self_open_id=self._bot_open_id)
+
+        self._submit_if_ready("drive comment event", _run_comment_event)
 
     def _on_meeting_invited_event(self, data: Any) -> None:
         """vc.bot.meeting_invited_v1 → feishu_meeting_invite.handle_meeting_invited_event."""

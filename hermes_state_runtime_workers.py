@@ -39,3 +39,23 @@ def discard_orphan_workers_on_reset(conn, session_ids):
     for sid in session_ids:
         conn.execute("UPDATE worker_executions SET status='terminal' WHERE session_id=? AND status='unknown' "
                      "AND execution_id NOT LIKE 'admission-worker:%'", (sid,))
+
+
+RETIRED_RECEIPT = {'retired': True}
+
+
+def compact_terminal_receipts(conn, execution_id):
+    """Once an execution is terminal its read receipts are dead weight: a ``compression.history``
+    read stores the whole transcript and a context read a full session row, so keeping them leaves
+    one full-history copy per managed turn and ``state.db`` grows quadratically. They shrink to a
+    marker in the closing transaction (an exact late replay is refused ``stale_generation``, as
+    after retirement); ``payload_digest`` stays, so a late duplicate with other content still
+    conflicts. Mutation acknowledgements (counts, row annotations, assignments) stay replayable."""
+    conn.execute("UPDATE worker_receipts SET result_json=? WHERE execution_id=? AND json_valid(result_json) "
+                 "AND (json_type(result_json, '$.messages') IS NOT NULL "
+                 "OR json_type(result_json, '$.session') IS NOT NULL)",
+                 (json.dumps(RETIRED_RECEIPT), execution_id))
+
+
+def retired_receipt(result_json):
+    return json.loads(result_json) == RETIRED_RECEIPT

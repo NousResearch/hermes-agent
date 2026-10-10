@@ -235,6 +235,18 @@ _YIELDED_NOTE = (
     "process(action='poll'|'wait'|'log', session_id=...) to check on this command."
 )
 
+# Explicit detach (``display.background_key`` / ``/detach``): no user message rides along, so the
+# model must not wait for one. Anti-polling wording mirrors OpenCode's shell handoff (#48041).
+_DETACHED_NOTE = (
+    "The user moved this command to the background on purpose (detach key or /detach). It was NOT "
+    "killed and is still running; you will be notified automatically when it exits "
+    "(notify_on_complete), with its output. Do NOT poll for completion: repeatedly sleeping or "
+    "calling process(action='poll'|'log') while waiting is polling, not useful work. Keep working on "
+    "anything that does not depend on its result; if nothing is left, end your response and you "
+    "will be resumed when it finishes. process(action='wait'|'kill', session_id=...) remain "
+    "available if the user asks."
+)
+
 
 def yield_to_background_handler(
     *, command: str, env_type: str, cwd: Optional[str], effective_task_id: str,

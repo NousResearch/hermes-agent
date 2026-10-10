@@ -26,6 +26,7 @@
   "/curator": "advanced",
   "/debug": null,
   "/deny": "messaging",
+  "/detach": null,
   "/diff": null,
   "/egress": null,
   "/exit": "terminal",

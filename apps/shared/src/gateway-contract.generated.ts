@@ -2502,6 +2502,7 @@ export interface ProjectTreeNode {
   isNoProject?: boolean
   sessionCount?: number
   lastActive?: number
+  lastMessageAt?: number
   totalTokens?: number
   totalCostUsd?: number
   repos?: ProjectTreeRepo[]

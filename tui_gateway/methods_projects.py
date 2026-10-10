@@ -348,6 +348,12 @@ def _project_tree_inputs(
         include_children=False, exclude_sources=_PROJECT_TREE_EXCLUDED_SOURCES,
         include_archived=False, compact_rows=True)
     sessions = [_project_tree_row(r) for r in rows]
+    # Drill-in uses the selected clock; overview replaces it with a complete
+    # project clock below, so avoid fetching the same message timestamps twice.
+    if not include_discovered:
+        message_times = db.last_user_assistant_message_times(rows)
+        for session in sessions:
+            session["last_message_at"] = message_times.get(session["id"], 0.0)
     # Parallel-warm the git cache so build_tree's resolver doesn't cold-probe each cwd in turn.
     git_probe.warm_roots(s["cwd"] for s in sessions if s.get("cwd"))
     from hermes_cli import projects_db as pdb
@@ -395,6 +401,19 @@ def _build_project_tree(
         projects, sessions, discovered, git_probe.resolve, preview_limit=preview_limit,
         hydrate=hydrate, is_junk_root=_is_repo_junk, is_junk_cwd=_is_session_cwd_junk,
         exists=_dir_exists_cached)
+    # Overview payload/sessionIds stay bounded; its project header clocks do not.
+    # Reuse the authoritative placement builder on compact, uncapped lineages, then
+    # copy only the clock (never counts, previews, lanes or membership).
+    if include_discovered:
+        all_rows = db.all_project_message_clock_rows(_PROJECT_TREE_EXCLUDED_SOURCES)
+        git_probe.warm_roots(s.get('cwd') for s in all_rows if s.get('cwd'))
+        complete = project_tree.build_tree(
+            projects, all_rows, [], git_probe.resolve, preview_limit=0,
+            hydrate=False, is_junk_root=_is_repo_junk, is_junk_cwd=_is_session_cwd_junk,
+            exists=_dir_exists_cached)
+        clocks = {p['id']: p['lastMessageAt'] for p in complete['projects']}
+        for node in tree['projects']:
+            node['lastMessageAt'] = clocks.get(node['id'], 0.0)
     return tree, active_id
 
 

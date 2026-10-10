@@ -709,6 +709,7 @@ def _merge_profile_tree(
         for total_key in ("sessionCount", "totalTokens", "totalCostUsd"):
             existing[total_key] = (existing.get(total_key) or 0) + (project.get(total_key) or 0)
         existing["lastActive"] = max(existing.get("lastActive") or 0, project.get("lastActive") or 0)
+        existing["lastMessageAt"] = max(existing.get("lastMessageAt") or 0, project.get("lastMessageAt") or 0)
         previews = (existing.get("previewSessions") or []) + (project.get("previewSessions") or [])
         previews.sort(key=_recency, reverse=True)
         existing["previewSessions"] = previews[:preview_limit]

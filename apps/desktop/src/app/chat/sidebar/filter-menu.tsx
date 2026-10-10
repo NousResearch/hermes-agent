@@ -21,6 +21,7 @@ import {
 import { useI18n } from '@/i18n'
 import { desktopGit } from '@/lib/desktop-git'
 import { cn } from '@/lib/utils'
+import { $activeConnectionId } from '@/store/connections'
 import { $showsAdvancedChrome } from '@/store/interface-mode'
 import {
   $sidebarCardRows,
@@ -31,6 +32,7 @@ import {
   $sidebarPrFilter,
   $sidebarProfileFilter,
   $sidebarProjectFilter,
+  $sidebarProjectRecentScopes,
   $sidebarRowMeta,
   $sidebarShowAllSessions,
   $sidebarShowArchived,
@@ -41,6 +43,7 @@ import {
   setSidebarCardRows,
   setSidebarGrouping,
   setSidebarOrdering,
+  setSidebarProjectSortMode,
   setSidebarShowAllSessions,
   setSidebarShowArchived,
   setWorkspaceNodesOpen,
@@ -56,6 +59,7 @@ import {
 } from '@/store/layout'
 import {
   $profiles,
+  $profileScope,
   $showAllProfiles,
   normalizeProfileKey,
   requestProfileCreate,
@@ -68,6 +72,8 @@ import type { PullRequestBucket } from '@/store/pull-requests'
 import { $unreadFinishedSessionIds, markAllSessionsRead } from '@/store/session'
 import type { SessionStatusBucket } from '@/store/session-dot-state'
 import { $sessionsHaveCost } from '@/store/sidebar-archive'
+
+import { type ProjectSortMode, projectSortModeForScope, projectSortScopeKey } from './projects/activity-sort'
 
 interface Option<T extends string = string> {
   /** A status dot's full className, from the row's own vocabulary. */
@@ -110,6 +116,37 @@ function OptionRadio({ option }: { option: Option }) {
       <OptionGlyph option={option} />
       {option.label}
     </DropdownMenuRadioItem>
+  )
+}
+
+function ProjectOrderSubmenu() {
+  const { t } = useI18n()
+  const f = t.sidebar.filter
+  const connectionId = useStore($activeConnectionId)
+  const profileScope = useStore($profileScope)
+  const mode = projectSortModeForScope(useStore($sidebarProjectRecentScopes), connectionId, profileScope)
+
+  if (!connectionId) {
+    return null
+  }
+
+  return (
+    <DropdownMenuSub>
+      <DropdownMenuSubTrigger>
+        {f.project} {f.ordering}
+      </DropdownMenuSubTrigger>
+      <DropdownMenuSubContent>
+        <DropdownMenuRadioGroup
+          onValueChange={value =>
+            setSidebarProjectSortMode(projectSortScopeKey(connectionId, profileScope), value as ProjectSortMode)
+          }
+          value={mode}
+        >
+          <OptionRadio option={{ id: 'manual', label: f.manual, icon: 'list-ordered' }} />
+          <OptionRadio option={{ id: 'recent', label: t.shell.gatewayMenu.recentActivity, icon: 'clock' }} />
+        </DropdownMenuRadioGroup>
+      </DropdownMenuSubContent>
+    </DropdownMenuSub>
   )
 }
 
@@ -287,6 +324,8 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
               </DropdownMenuRadioGroup>
             </DropdownMenuSubContent>
           </DropdownMenuSub>
+
+          {grouping === 'project' && <ProjectOrderSubmenu />}
 
           {showsAdvancedChrome && (
             <DropdownMenuSub>

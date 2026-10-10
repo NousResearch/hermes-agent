@@ -306,7 +306,7 @@ protected built-in skills, which have an owner other than you.
 
 Skills that ARE agent-created follow the full lifecycle:
 
-- `active` → (30d unused) `stale` → (90d unused) `archived`
+- `active` → (14d unused) `stale` → (30d unused) `archived`
 - Pinned skills bypass all auto-transitions
 - Archives are recoverable via `hermes curator restore <name>`
 

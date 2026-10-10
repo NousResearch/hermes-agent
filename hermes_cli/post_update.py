@@ -66,6 +66,7 @@ def step_migrate_config() -> dict:
     No-op when the on-disk version is current (the 99% case).
     """
     from hermes_cli.config import (
+        _read_config_version_stamp,
         check_config_version,
         get_config_path,
         get_env_path,
@@ -76,12 +77,15 @@ def step_migrate_config() -> dict:
         support_floor_message,
     )
 
-    current_ver, latest_ver = check_config_version()
+    stamp, latest_ver = _read_config_version_stamp()
+    current_ver = 0 if stamp is None else stamp
     if current_ver >= latest_ver:
         return {"ok": True, "skipped": "up-to-date"}
-    if current_ver < SUPPORT_FLOOR_VERSION:
+    if stamp is not None and current_ver < SUPPORT_FLOOR_VERSION:
         # migrate_config() refuses sub-floor configs and leaves the file
-        # untouched; warn instead of failing the boot.
+        # untouched; warn instead of failing the boot. A config with no
+        # _config_version is not below the floor: migrate_config() gives it
+        # the legacy-key steps and stamps it.
         logger.warning("config migration skipped: %s", support_floor_message())
         return {"ok": True, "skipped": "below-support-floor"}
 

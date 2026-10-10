@@ -162,6 +162,11 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         self._in_think_block = False  # think-tag filter state (mirrors CLI _stream_delta)
         self._think_buffer = ""
         self._before_finalize_notified = False
+        # A __no_edit__ segment break happened, and the offset into _accumulated where the
+        # latest segment began: lets _send_fallback_final deliver only the last segment
+        # to adapters that opt in (GUEST_MODE_DROPS_PRIOR_SEGMENTS).
+        self._had_no_edit_segment_break = False
+        self._no_edit_segment_text_start = 0
         self._reset_message_state()
 
         # Transports, resolved in run().  Draft: animated frames via adapter.send_draft;
@@ -450,6 +455,10 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
 
     def _reset_segment_state(self, *, preserve_no_edit: bool = False) -> None:
         if preserve_no_edit and self._message_id == "__no_edit__":
+            # Track where this segment begins so adapters that deliver only the final
+            # segment (Telegram guest mode) can drop earlier inter-tool narration.
+            self._had_no_edit_segment_break = True
+            self._no_edit_segment_text_start = len(self._accumulated)
             return
         # Retain the segment's visible text so has_delivered_text still matches.
         finalized = self._clean_for_display(self._last_sent_text).strip()
@@ -703,6 +712,8 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             if final_payload and final_payload != self._clean_for_display(self._accumulated):
                 self._accumulated = final_raw
                 self._stream_ledger = final_raw
+                # The segment offset indexed the replaced text; the final is the last segment.
+                self._no_edit_segment_text_start = 0
             return
         ledger = self._stream_ledger
         if ledger and final_raw.startswith(ledger) and len(final_raw) > len(ledger):

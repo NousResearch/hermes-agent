@@ -92,6 +92,7 @@ class TestTelegramSendVoiceTranscode(unittest.TestCase):
         adapter._thread_kwargs_for_send = lambda *a, **k: {}
         adapter._notification_kwargs = lambda *_: {}
         adapter._missing_media_path_error = lambda kind, p: f"missing {p}"
+        adapter._is_guest_chat = lambda *_: False
 
         fd, mp3 = tempfile.mkstemp(suffix=".mp3")
         os.write(fd, b"ID3fakebytes")

@@ -12,6 +12,8 @@ Every layer may be partial. Language resolution: explicit ``lang=`` > ``HERMES_L
 ``display.language`` > ``en``; any id that some layer supplies is accepted, so a pack-only language
 (``pl``) works the moment its plugin loads. ``t()`` is a hot path: one cached merged dict per
 ``(home, lang)``, invalidated by :func:`reset_language_cache` (which every pack registration calls).
+Parsed bundled files are cached by file identity and reused across homes and language-cache resets.
+The pure-Python YAML parse takes hundreds of milliseconds and ``t()`` runs on the gateway's event loop.
 """
 
 from __future__ import annotations
@@ -65,8 +67,12 @@ _LANGUAGE_ALIASES: dict[str, str] = {
 
 # (home, lang) -> merged catalog (packs over overlay over bundled). home -> supported tuple.
 _catalog_cache: dict[tuple[str, str], dict[str, str]] = {}
+# (path, st_dev, st_ino, mtime_ns, size) -> one parsed bundled file. Not cleared by reset_language_cache.
+_bundled_cache: dict[tuple[str, int, int, int, int], dict[str, str]] = {}
 _supported_cache: dict[str, tuple[str, ...]] = {}
 _catalog_lock = threading.Lock()
+# Incremented by reset_language_cache. A fill stores its result only if no reset ran while it was building.
+_cache_generation = 0
 
 
 def _locales_dir() -> Path:
@@ -96,13 +102,15 @@ def supported_languages(home: str | None = None) -> tuple[str, ...]:
     packs, ``en`` first then sorted. Cached until :func:`reset_language_cache`."""
     home = home or _current_home()
     with _catalog_lock:
+        generation = _cache_generation
         cached = _supported_cache.get(home)
         if cached is not None:
             return cached
     langs = set(SUPPORTED_LANGUAGES) | i18n_layers.layered_languages(home)
     result = (DEFAULT_LANGUAGE, *sorted(langs - {DEFAULT_LANGUAGE}))
     with _catalog_lock:
-        _supported_cache[home] = result
+        if generation == _cache_generation:
+            _supported_cache[home] = result
     return result
 
 
@@ -128,16 +136,26 @@ def _normalize_lang(value: Any, home: str | None = None) -> str:
 
 
 def _load_bundled(lang: str) -> dict[str, str]:
-    """One bundled locale YAML flattened to dotted keys (empty dict on any failure — never crashes)."""
+    """One bundled locale YAML flattened to dotted keys (empty dict on any failure; never crashes).
+    The result is shared by every caller, so callers must not mutate it."""
     path = _locales_dir() / f"{lang}.yaml"
     if not path.is_file():
         logger.debug("i18n catalog missing for %s at %s", lang, path)
         return {}
     try:
-        return i18n_layers.parse_locale_file(path)
+        stat = path.stat()
+        key = (str(path), stat.st_dev, stat.st_ino, stat.st_mtime_ns, stat.st_size)
+        with _catalog_lock:
+            cached = _bundled_cache.get(key)
+        if cached is not None:
+            return cached
+        parsed = i18n_layers.parse_locale_file(path)
     except Exception as exc:
         logger.warning("Failed to load i18n catalog %s: %s", path, exc)
         return {}
+    with _catalog_lock:
+        _bundled_cache[key] = parsed
+    return parsed
 
 
 def _flatten_into(node: Any, prefix: str, out: dict[str, str]) -> None:
@@ -150,14 +168,16 @@ def _load_catalog(lang: str, home: str | None = None) -> dict[str, str]:
     home = home or _current_home()
     key = (home, lang)
     with _catalog_lock:
+        generation = _cache_generation
         cached = _catalog_cache.get(key)
         if cached is not None:
             return cached
-    merged = _load_bundled(lang)
+    merged = dict(_load_bundled(lang))
     merged.update(i18n_layers.overlay_layer(home, lang))
     merged.update(i18n_layers.pack_layer(lang))
     with _catalog_lock:
-        _catalog_cache[key] = merged
+        if generation == _cache_generation:
+            _catalog_cache[key] = merged
     return merged
 
 
@@ -197,11 +217,15 @@ def reset_language_cache() -> None:
     """Invalidate cached language resolution, merged catalogs and every layer view (call after
     ``save_config`` changes ``display.language``, after a pack registers/unregisters, or after editing
     an overlay file)."""
+    global _cache_generation
     _config_language_cached.cache_clear()
+    # Clear the layer views first. A build that starts after the generation below changes must not
+    # find a layer view from before this reset.
+    i18n_layers.clear_cache()
     with _catalog_lock:
         _catalog_cache.clear()
         _supported_cache.clear()
-    i18n_layers.clear_cache()
+        _cache_generation += 1
 
 
 def _resolve_language(home: str) -> str:
@@ -218,6 +242,20 @@ def get_language() -> str:
     per-profile ``.env`` value, so it is read through the secret scope: under multiplexing a raw
     environ read would impose the default profile's language on every other profile."""
     return _resolve_language(_current_home())
+
+
+def warm_catalog() -> str:
+    """Load the current profile's catalog for its active language and the English fallback; return the
+    language.
+
+    The gateway calls ``t()`` on its event loop. It runs this on a worker thread under each served
+    profile's scope before that profile serves, so the loop finds the bundled files already parsed."""
+    home = _current_home()
+    lang = _resolve_language(home)
+    _load_catalog(lang, home)
+    if lang != DEFAULT_LANGUAGE:
+        _load_catalog(DEFAULT_LANGUAGE, home)
+    return lang
 
 
 def t(key: str, lang: str | None = None, **format_kwargs: Any) -> str:
@@ -253,4 +291,5 @@ __all__ = [
     "supported_languages",
     "surface_catalog",
     "t",
+    "warm_catalog",
 ]

@@ -1839,6 +1839,93 @@ class TestIsProviderEnabled:
         assert is_provider_enabled("oops") is True
 
 
+class TestEnabledKeyNormalizationWarning:
+    """``enabled`` is applied by is_provider_enabled() on the ORIGINAL entry, one
+    step before _normalize_custom_provider_entry() runs; the normalized copy
+    intentionally drops it. Warning "unknown config keys ignored: enabled" on
+    every load made a working key read as broken (#127727, misread as #104322)."""
+
+    def test_enabled_key_is_silent_and_dropped(self, caplog):
+        from hermes_cli.config_providers import _normalize_custom_provider_entry
+
+        entry = {"base_url": "https://x.example/v1", "enabled": True, "models": ["m1"]}
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.config"):
+            out = _normalize_custom_provider_entry(entry, provider_key="enabledwarn1")
+
+        assert out is not None
+        assert "enabled" not in out, "normalized copy intentionally drops the flag"
+        assert not [r for r in caplog.records if "unknown config keys" in r.getMessage()]
+
+    def test_genuinely_unknown_keys_still_warn(self, caplog):
+        from hermes_cli.config_providers import _normalize_custom_provider_entry
+
+        entry = {"base_url": "https://x.example/v1", "totally_bogus": 1}
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.config"):
+            _normalize_custom_provider_entry(entry, provider_key="enabledwarn2")
+
+        assert any(
+            "unknown config keys ignored: totally_bogus" in r.getMessage()
+            for r in caplog.records)
+
+    def test_full_providers_dict_path_is_silent_for_enabled_entries(self, caplog):
+        from hermes_cli.config_providers import providers_dict_to_custom_providers
+
+        providers = {
+            "on": {"base_url": "https://x.example/v1", "enabled": True},
+            "off": {"base_url": "https://y.example/v1", "enabled": False},
+        }
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.config"):
+            names = [e.get("name") for e in providers_dict_to_custom_providers(providers)]
+
+        assert names == ["on"], "disabled entry is skipped before normalization"
+        assert not [r for r in caplog.records if "unknown config keys" in r.getMessage()]
+
+    def test_legacy_list_path_gates_disabled_entries(self):
+        from hermes_cli.config_providers import get_compatible_custom_providers
+
+        config = {"custom_providers": [
+            {"name": "legacy-on", "base_url": "https://x.example/v1"},
+            {"name": "legacy-off", "base_url": "https://y.example/v1", "enabled": False},
+        ]}
+        names = [e.get("name") for e in get_compatible_custom_providers(config)]
+
+        assert names == ["legacy-on"], "legacy custom_providers list must honour enabled: false"
+
+    def test_legacy_list_path_keeps_enabled_and_flagless_entries(self):
+        from hermes_cli.config_providers import get_compatible_custom_providers
+
+        config = {"custom_providers": [
+            {"name": "legacy-on", "base_url": "https://x.example/v1", "enabled": True},
+            {"name": "legacy-plain", "base_url": "https://z.example/v1"},
+        ]}
+        names = [e.get("name") for e in get_compatible_custom_providers(config)]
+
+        assert names == ["legacy-on", "legacy-plain"]
+
+    def test_disabled_legacy_entry_no_longer_masks_enabled_twin(self):
+        from hermes_cli.config_providers import get_compatible_custom_providers
+
+        config = {
+            "custom_providers": [
+                {"name": "twin", "base_url": "https://t.example/v1", "enabled": False},
+            ],
+            "providers": {"twin": {"base_url": "https://t.example/v1"}},
+        }
+        entries = get_compatible_custom_providers(config)
+
+        assert len(entries) == 1, "disabled legacy twin is gated; the enabled keyed entry wins"
+
+    def test_legacy_list_string_enabled_flag_is_honoured(self):
+        from hermes_cli.config_providers import get_compatible_custom_providers
+
+        config = {"custom_providers": [
+            {"name": "quoted-off", "base_url": "https://q.example/v1", "enabled": "false"},
+        ]}
+        names = [e.get("name") for e in get_compatible_custom_providers(config)]
+
+        assert names == [], "string 'false' (quoted YAML) must disable a legacy entry too"
+
+
 class TestProviderEnabledRuntimeGate:
     """Verify ``resolve_runtime_provider`` honours ``enabled: false`` for
     both custom-defined and built-in provider names. Smoke test only —

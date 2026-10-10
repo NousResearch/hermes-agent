@@ -10,7 +10,7 @@ description: >-
   trusted_users is set a direct chat with anyone not listed is read-only too; Hermes' unattended
   background review may not touch the owner profile. Block, ask through Hermes' approval prompt or just
   log, and undo edits and deletions from snapshots.
-  Disclosure: no network calls, credentials, shell commands or background processes. One pre_tool_call hook
+  Disclosure — no network calls, credentials, shell commands or background processes. One pre_tool_call hook
   reads the turn's platform, chat type, chat id and name, sender id and name and the cron flag
   (gateway.session_context) and whether the run is Hermes' unattended review
   (tools.skill_provenance.is_unattended_review), checks memory tool calls, and checks write_file, patch,

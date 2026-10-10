@@ -38,6 +38,28 @@ export function previewTargetFromMarkdownHref(href?: string): string | null {
   }
 }
 
+// A filesystem path the agent linked mid-sentence (`[report](/tmp/report.md)`).
+// Distinct from `#preview/` (a delivery card): this door renders as inline
+// link text so the sentence around it still reads as a sentence. Same
+// hardening-safe hash-href trick; the path resolves at click time.
+const FILE_LINK_HREF_PREFIX = '#file/'
+
+export function fileLinkMarkdownHref(path: string): string {
+  return `${FILE_LINK_HREF_PREFIX}${encodeURIComponent(path)}`
+}
+
+export function fileLinkPathFromMarkdownHref(href?: string): string | null {
+  if (!href?.startsWith(FILE_LINK_HREF_PREFIX)) {
+    return null
+  }
+
+  try {
+    return decodeURIComponent(href.slice(FILE_LINK_HREF_PREFIX.length)) || null
+  } catch {
+    return null
+  }
+}
+
 export function previewName(target: string): string {
   // `new URL('C:\\...')` would read the drive letter as a URL scheme.
   if (isWindowsAbsolutePath(target)) {

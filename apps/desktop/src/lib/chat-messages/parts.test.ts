@@ -10,7 +10,10 @@ const CARD = `[File: Morten - Nobly Kickoff - Opening and cue cards EN.docx](#me
 describe('renderMediaTags with interior spaces', () => {
   it('keeps the whole spaced path in one card on every surface that reads MEDIA tags', () => {
     expect(renderMediaTags(`MEDIA:${SPACED}`)).toBe(CARD)
-    expect(renderMediaTags(`Here you go: MEDIA:${SPACED} — enjoy`)).toBe(`Here you go: ${CARD} — enjoy`)
+    // Mid-sentence it is the same whole path, as inline link text (no card).
+    expect(renderMediaTags(`Here you go: MEDIA:${SPACED} — enjoy`)).toBe(
+      `Here you go: [${SPACED.split('/').pop()}](#file/${encodeURIComponent(SPACED)}) — enjoy`
+    )
     expect(renderMediaTags('MEDIA:C:\\Users\\Morten\\My Report.docx')).toBe(
       '[File: My Report.docx](#media:C%3A%5CUsers%5CMorten%5CMy%20Report.docx)'
     )
@@ -34,18 +37,20 @@ describe('renderMediaTags with interior spaces', () => {
 
 describe('inline-code MEDIA paths', () => {
   const card = (path: string) => `[File: ${path.split(/[/\\]/).pop()}](#media:${encodeURIComponent(path)})`
+  // Mid-sentence documents render as inline link text, not a card.
+  const link = (path: string) => `[${path.split(/[/\\]/).pop()}](#file/${encodeURIComponent(path)})`
 
   it('does not swallow a trailing backtick on relative or unknown-extension paths', () => {
     expect(mediaTagValues('MEDIA:report.md` prose')).toEqual(['report.md'])
     expect(mediaTagValues('MEDIA:/tmp/file.unknown` prose')).toEqual(['/tmp/file.unknown'])
     expect(mediaTagValues('`MEDIA:notes.log` prose')).toEqual(['notes.log'])
     expect(mediaTagValues('MEDIA:draft.md`，打开复制')).toEqual(['draft.md'])
-    expect(renderMediaTags('MEDIA:report.md` prose')).toBe(`${card('report.md')} prose`)
-    expect(renderMediaTags('MEDIA:/tmp/file.unknown`，打开')).toBe(`${card('/tmp/file.unknown')}，打开`)
+    expect(renderMediaTags('MEDIA:report.md` prose')).toBe(`${link('report.md')} prose`)
+    expect(renderMediaTags('MEDIA:/tmp/file.unknown`，打开')).toBe(`${link('/tmp/file.unknown')}，打开`)
     expect(renderMediaTags('MEDIA:report.md`')).toBe(card('report.md'))
     expect(renderMediaTags('`MEDIA:/tmp/file.unknown`')).toBe(card('/tmp/file.unknown'))
     expect(mediaTagValues("MEDIA:/tmp/john's.unknown x")).toEqual(["/tmp/john's.unknown"])
-    expect(renderMediaTags('MEDIA:"/tmp/a b.md" x')).toBe(`${card('/tmp/a b.md')} x`)
+    expect(renderMediaTags('MEDIA:"/tmp/a b.md" x')).toBe(`${link('/tmp/a b.md')} x`)
     expect(mediaTagValues('MEDIA:/tmp/file.unknown" prose')).toEqual(['/tmp/file.unknown'])
   })
 
@@ -55,7 +60,7 @@ describe('inline-code MEDIA paths', () => {
     expect(mediaTagValues('`MEDIA:/Users/a/report.md` prose')).toEqual(['/Users/a/report.md'])
     expect(renderMediaTags('`MEDIA:/dir with space/f.md`')).toBe(card('/dir with space/f.md'))
     expect(mediaTagValues("MEDIA:/tmp/john's.md x")).toEqual(["/tmp/john's.md"])
-    expect(renderMediaTags("MEDIA:'/tmp/a b.md' x")).toBe(`${card('/tmp/a b.md')} x`)
+    expect(renderMediaTags("MEDIA:'/tmp/a b.md' x")).toBe(`${link('/tmp/a b.md')} x`)
     expect(renderMediaTags('MEDIA:/tmp/a.png')).toBe('[Image: a.png](#media:%2Ftmp%2Fa.png)')
   })
 })

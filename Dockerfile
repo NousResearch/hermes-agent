@@ -190,6 +190,10 @@ WORKDIR /opt/hermes
 # PM alone resolves the pinned uv for dependency preparation; build consumers
 # receive Python environments, never an installer executable.
 #
+# agent-browser, the CLI the built-in browser_* tools drive Chromium through,
+# is staged here too: the readiness check only looks for an installed CLI, so
+# without it the tools are never offered and PM's lazy install never runs.
+#
 # Full Chromium supports both headed and headless sessions. It is staged
 # here rather than by `npx playwright install`,
 # which fetched whatever revision the npm-resolved playwright wanted,
@@ -209,7 +213,7 @@ COPY hermes_constants.py hermes_constants.py
 COPY hermes_cli/__init__.py hermes_cli/runtime_state.py hermes_cli/
 COPY scripts/bundles/payload.py scripts/bundles/payload.py
 RUN set -eu; \
-    python3 -c 'from pm import ensure; [ensure(name, explicit=True) for name in ("uv", "chromium", "npm", "ffmpeg", "ripgrep")]'; \
+    python3 -c 'from pm import ensure; [ensure(name, explicit=True) for name in ("uv", "chromium", "npm", "ffmpeg", "ripgrep", "agent-browser")]'; \
     python3 -c 'from pathlib import Path; from pm import installed_package; [Path("/usr/local/bin", command).symlink_to(installed_package(package).binary) for command, package in (("python3", "python"), ("node", "node"), ("npm", "npm"), ("ffmpeg", "ffmpeg"), ("rg", "ripgrep"))]; Path("/usr/local/bin/ffprobe").symlink_to(installed_package("ffmpeg").binary.with_name("ffprobe"))'; \
     ffmpeg -version >/dev/null; ffprobe -version >/dev/null; rg --version >/dev/null; \
     python3 -c 'import shutil; from pathlib import Path; from pm import env_for; Path("/usr/local/bin/npx").symlink_to(shutil.which("npx", path=env_for("npm", base_env={})["PATH"]))'; \
@@ -217,6 +221,7 @@ RUN set -eu; \
     browser_bin="$(python3 -c 'from pm import installed_package; print(installed_package("chromium").binary)')"; \
     test -n "$browser_bin"; \
     "$browser_bin" --version; \
+    "$(python3 -c 'from pm import installed_package; print(installed_package("agent-browser").binary)')" --version; \
     mkdir -p /etc/hermes; \
     printf '%s' "$browser_bin" > /etc/hermes/agent-browser-executable-path
 

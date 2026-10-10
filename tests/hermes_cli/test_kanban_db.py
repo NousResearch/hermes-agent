@@ -1109,6 +1109,11 @@ class TestSharedBoardPaths:
 
 
 
+    # "any": only the Windows reap polls _live_worker_procs, so without a
+    # platforms gate the OS lanes' -m filter deselected this test exactly
+    # where its registry-scoping pin matters. Must run before the
+    # dispatch_once tests below in the same per-file subprocess.
+    @pytest.mark.platforms("any")
     def test_dispatcher_spawn_injects_kanban_paths_without_stale_session(
         self, tmp_path, monkeypatch
     ):
@@ -1138,6 +1143,10 @@ class TestSharedBoardPaths:
                 self.pid = 4242
 
         monkeypatch.setattr("subprocess.Popen", _FakePopen)
+        # _default_spawn registers the fake in the module-global live-worker
+        # registry; on Windows a later dispatch_once's reap polls every entry
+        # and dies on the missing poll(). Scope the registry to this test.
+        monkeypatch.setattr(kbd, "_live_worker_procs", {})
 
         task = kb.Task(
             id="t_dispatch_env",
@@ -1710,6 +1719,9 @@ def test_default_spawn_pins_repo_root_on_module_worker_pythonpath(tmp_path, monk
 # ---------------------------------------------------------------------------
 
 
+# "any": downstream victim of the spawn test's registry — see the marker
+# rationale on test_dispatcher_spawn_injects_kanban_paths_without_stale_session.
+@pytest.mark.platforms("any")
 def test_dispatch_max_in_progress_blocks_review_when_at_limit(
     kanban_home, all_assignees_spawnable,
 ):

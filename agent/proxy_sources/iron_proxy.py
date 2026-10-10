@@ -39,6 +39,8 @@ _STARTUP_GRACE_SECONDS = 5
 # setup (0600 at <proxy>/management.token), injected under this env name; empty => daemon refuses to start.
 _MGMT_API_KEY_ENV = "HERMES_IRON_PROXY_MGMT_KEY"
 _MGMT_PORT_OFFSET = 2  # tunnel_port is CONNECT/MITM, +1 is plain-HTTP forward, +2 is management
+# Every request method except CONNECT (the tunnel handshake, which never carries the proxy token).
+_SECRET_RULE_METHODS = ("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "TRACE")
 _MGMT_RELOAD_TIMEOUT = 15
 
 # HTTPS_PROXY semantics use a single CONNECT tunnel, so only the tunnel listener is exposed.
@@ -444,14 +446,16 @@ def build_proxy_config(
     deny_cidrs = list(_DEFAULT_UPSTREAM_DENY_CIDRS if upstream_deny_cidrs is None else upstream_deny_cidrs)
     # Query scan covers ``?key=<token>`` SDKs; body inspection deliberately off.  ``require`` fails
     # closed: an allowlisted-host request WITHOUT the proxy token is rejected, so a real key sent
-    # directly can't cross the boundary.
+    # directly can't cross the boundary.  Rules name the inner HTTP methods explicitly: a host-only
+    # rule also matches the synthetic CONNECT the tunnel listener evaluates before any inner request
+    # exists, and that CONNECT never carries the token, so ``require`` refused every HTTPS call.
     secrets_rules = [{
         "source": {"type": "env", "var": m.real_env_name},
         "replace": {
             "proxy_value": m.proxy_token, "match_headers": list(m.match_headers or ("Authorization",)),
             "match_query": True, "match_body": False, "require": True,
         },
-        "rules": [{"host": h} for h in m.upstream_hosts],
+        "rules": [{"host": h, "methods": list(_SECRET_RULE_METHODS)} for h in m.upstream_hosts],
     } for m in mappings]
     # ONE string per listener field.  tunnel_listen is the CONNECT+MITM listener sandboxes reach via
     # HTTPS_PROXY (a CONNECT to http_listen is forwarded upstream and 400s); http_listen is plain-HTTP

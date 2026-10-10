@@ -78,6 +78,10 @@ class SessionAuthority:
         # Stop can land on the session's reusable cached agent after that turn's finalizer
         # cleared it; the next generation's adopt_agent drops it instead of starting interrupted.
         self.delivered_stops = {}
+        # session -> generation whose turn adopted its agent. Until then the resident
+        # agent is the previous turn's cached one, which pre-turn compression or a changed agent
+        # config replaces, so a Stop that only reached it would let the rebuilt agent run the turn.
+        self.adopted = {}
         # Queued admissions whose cancellation may have committed before its observers settled.
         self.cancel_obligations = set()
         # Set by profile retirement (unserve): the drain claims no successor after its running turn.
@@ -527,11 +531,19 @@ class SessionAuthority:
             if agent is not None:
                 agent.interrupt()
                 self.delivered_stops[ref.session_id] = generation
-            else:
-                # Accepted for this exact claim; the turn must not construct its agent
-                # afterwards and run the work as if no Stop had arrived.
+            if self.adopted.get(ref.session_id) != generation and not self._runs_own_agent(ref):
+                # Accepted for this exact claim before its turn adopted an agent: whatever agent
+                # the turn adopts for this generation must not run the work as if no Stop arrived.
                 self.pending_stops[ref.session_id] = generation
         return self._handle(ref)
+
+    def _runs_own_agent(self, ref):
+        """The route's running slot holds a real agent (not the claim's pending sentinel), so the
+        Stop above reached the turn's own agent, not a cached one it may still replace."""
+        from gateway.run import _AGENT_PENDING_SENTINEL
+        running = getattr(self.runner, '_running_agents', None) or {}
+        agent = running.get(self.sessions[ref.session_id].route)
+        return agent is not None and agent is not _AGENT_PENDING_SENTINEL
 
     def adopt_agent(self, session_id, generation, agent):
         """The turn installs its agent for the running claim; a Stop latched while there
@@ -539,6 +551,7 @@ class SessionAuthority:
         delivered to the cached agent for an earlier generation may have landed after that
         turn's finalizer cleared it, so it is dropped rather than cancelling this turn. A managed
         worker is a fresh process per turn and carries no earlier flag to drop."""
+        self.adopted[session_id] = generation
         clear = getattr(agent, 'clear_interrupt', None)
         if self.delivered_stops.pop(session_id, generation) != generation and clear is not None:
             clear()
@@ -696,6 +709,7 @@ class SessionAuthority:
                 with live.event_stream.lock:
                     live.event_stream.execution = {}
                 self.pending_stops.pop(ref.session_id, None)
+                self.adopted.pop(ref.session_id, None)
                 self._pause(ref, 'unknown_execution')
                 return
             except Exception:
@@ -766,6 +780,7 @@ class SessionAuthority:
                 with live.event_stream.lock:
                     live.event_stream.execution = {}
                 self.pending_stops.pop(ref.session_id, None)
+                self.adopted.pop(ref.session_id, None)
                 if settled is None:
                     # Uncommitted (unknown or discarded): the user is not told an answer the FIFO lost.
                     self.pending_deliveries.pop(admission_id, None)

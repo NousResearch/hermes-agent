@@ -3480,6 +3480,14 @@ class ContextCompressor(
             # Shared post-commit stamp site with the in-place commit and micro-compaction sync.
             # See #98450.
             stamp_db_persisted_markers(pruned_msgs)
+            # The commit rewrites the transcript as a new generation (every row gets a new
+            # rowid), so it must be visible: counts let operators track archive bloat
+            # rate per session (fixes #124102 visibility; delta-only writes are follow-up).
+            logger.info(
+                "Proactive tool-result prune committed for session %s: reclaimed=%d tokens, "
+                "rows=%d, pruned=%d, next_rearm=%d tokens",
+                session_id, reclaimed, len(pruned_msgs), pruned_count, next_rearm_tokens,
+            )
         self._proactive_prune_rearm_tokens = next_rearm_tokens
         # Reclamation just ran: let a future lockout warn again.
         self._last_reclaim_block_warn = None

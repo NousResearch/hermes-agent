@@ -73,6 +73,26 @@ class TestZeroMatchProbe:
         assert local_file.name in warning
         assert dependency_file.name not in warning
 
+    def test_every_probe_keeps_the_protected_dir_boundary(self, proj, monkeypatch):
+        """A 0-match search rooted above a macOS-protected dir must not let any
+        follow-up probe walk into it (that triggers an unattended TCC prompt)."""
+        from tools.file_operations_search import SearchMixin
+
+        monkeypatch.setattr(SearchMixin, "_macos_search_exclusions", lambda self, path: ["Documents"])
+        seen = []
+        real = SearchMixin._run_rg_bounded
+
+        def spy(self, words, *a, **k):
+            seen.append(" ".join(str(w) for w in words))
+            return real(self, words, *a, **k)
+
+        monkeypatch.setattr(SearchMixin, "_run_rg_bounded", spy)
+        json.loads(search_tool("NO_SUCH_TOKEN_ANYWHERE", path=str(proj), task_id="t-zm-protected"))
+
+        probes = [cmd for cmd in seen if "--count-matches" in cmd]
+        assert probes, "zero-match probes should have run"
+        assert all("!Documents/**" in cmd for cmd in probes), probes
+
     def test_hidden_probe_prunes_explicit_dependency_root(self, proj):
         d = proj / "proj"
         dependency = d / "node_modules" / "package" / ".hidden"

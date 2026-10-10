@@ -6,7 +6,7 @@ depend on:
 
 - load_picker_context() reproduces the inline 17-LOC config-slice exactly.
 - with_overrides() is truthy-only (empty agent attrs must not clobber).
-- build_models_payload() returns a stable {providers, model, provider}
+- build_models_payload() returns {providers, model, provider, preferred_models}
   shape and delegates curation to list_authenticated_providers (does not
   call provider_model_ids per row).
 - canonical_order keys on slug membership, not is_user_defined — section
@@ -25,6 +25,7 @@ from unittest.mock import patch
 from hermes_cli.inventory import (
     ConfigContext,
     build_models_payload,
+    configured_model_order,
     load_picker_context,
 )
 
@@ -38,6 +39,69 @@ def _cfg(model=None, providers=None, custom_providers=None) -> dict:
         "providers": providers if providers is not None else {},
         "custom_providers": custom_providers if custom_providers is not None else [],
     }
+
+
+def test_load_picker_context_records_primary_then_fallback_model_order():
+    config = _cfg(
+        model={"provider": "openai-codex", "default": "gpt-5.6-sol"},
+    )
+    config["fallback_providers"] = [
+        {"provider": "openai-codex", "model": "gpt-5.6-sol"},
+        {"provider": "anthropic", "model": "claude-opus-5"},
+        {"provider": "grok-oauth", "model": "grok-4.6"},
+        {"provider": "kimi-coding", "model": "k3-256k"},
+        {"provider": "", "model": "must-be-ignored"},
+        {"provider": "alibaba", "model": "qwen3.8-max"},
+    ]
+
+    with (
+        patch("hermes_cli.config.load_config", return_value=config),
+        patch("hermes_cli.config.get_compatible_custom_providers", return_value=[]),
+    ):
+        ctx = load_picker_context()
+
+    assert ctx.preferred_models == (
+        ("openai-codex", "gpt-5.6-sol"),
+        ("anthropic", "claude-opus-5"),
+        ("xai-oauth", "grok-4.6"),
+        ("kimi-coding", "k3-256k"),
+        ("alibaba", "qwen3.8-max"),
+    )
+
+
+def test_models_payload_aliases_keep_api_and_oauth_providers_distinct():
+    rows = [
+        {"slug": "openai", "name": "OpenAI", "models": ["api-model"]},
+        {"slug": "xai-oauth", "name": "Grok OAuth", "models": ["oauth-model"]},
+        {"slug": "openai-codex", "name": "OpenAI Codex", "models": ["codex-model"]},
+    ]
+    config = _cfg(model={"provider": " ChatGPT-Codex ", "default": "codex-model"})
+    config["fallback_providers"] = [
+        {"provider": "grok-oauth", "model": "oauth-model"},
+        {"provider": "openai", "model": "api-model"},
+        {"provider": "openai-codex", "model": "codex-model"},
+    ]
+    with (
+        patch("hermes_cli.config.load_config", return_value=config),
+        patch("hermes_cli.config.get_compatible_custom_providers", return_value=[]),
+        patch("hermes_cli.config.read_raw_config", return_value={}),
+        _list_auth_returning(rows),
+    ):
+        payload = build_models_payload(load_picker_context())
+
+    # This is the canonical wire consumed by Desktop, not a second alias table.
+    assert payload["preferred_models"] == [
+        {"provider": "openai-codex", "model": "codex-model"},
+        {"provider": "xai-oauth", "model": "oauth-model"},
+        {"provider": "openai", "model": "api-model"},
+    ]
+    assert [row["slug"] for row in payload["providers"]] == [
+        "openai-codex", "xai-oauth", "openai",
+    ]
+
+
+def test_configured_model_order_does_not_infer_a_missing_primary_provider():
+    assert configured_model_order({"model": {"default": "providerless-model"}}) == ()
 
 
 def test_load_picker_context_coerces_numeric_yaml_provider():
@@ -130,12 +194,83 @@ def test_build_models_payload_returns_expected_shape():
         patch("hermes_cli.config.load_config", return_value=raw_config),
     ):
         payload = build_models_payload(ctx)
-    assert set(payload.keys()) == {"providers", "model", "provider"}
+    assert set(payload.keys()) == {"providers", "model", "provider", "preferred_models"}
+    assert payload["preferred_models"] == []
     assert payload["model"] == "m1"
     assert payload["provider"] == "openrouter"
     assert payload["providers"][0]["slug"] == "moa"
     assert payload["providers"][0]["models"] == ["default"]
     assert payload["providers"][1:] == rows
+
+
+def test_models_payload_prioritizes_primary_then_fallback_models():
+    rows = [
+        {
+            "slug": "anthropic",
+            "name": "Anthropic",
+            "models": ["claude-opus-5"],
+            "total_models": 1,
+        },
+        {
+            "slug": "alibaba",
+            "name": "Alibaba",
+            "models": ["deepseek-v4-pro", "qwen3.8-max", "deepseek-v4-flash-0731"],
+            "total_models": 3,
+        },
+        {
+            "slug": "openai-codex",
+            "name": "OpenAI Codex",
+            "models": ["gpt-5.6-sol"],
+            "total_models": 1,
+        },
+        {
+            "slug": "gemini",
+            "name": "Gemini",
+            "models": ["gemini-3.7-flash"],
+            "total_models": 1,
+        },
+    ]
+    ctx = ConfigContext(
+        current_provider="openai-codex",
+        current_model="gpt-5.6-sol",
+        current_base_url="",
+        user_providers={},
+        custom_providers=[],
+        preferred_models=(
+            ("openai-codex", "gpt-5.6-sol"),
+            ("anthropic", "claude-opus-5"),
+            ("alibaba", "qwen3.8-max"),
+            ("alibaba", "deepseek-v4-flash-0731"),
+            ("alibaba", "deepseek-v4-pro"),
+        ),
+    )
+
+    with _list_auth_returning(rows):
+        payload = build_models_payload(ctx, canonical_order=True)
+
+    configured_slugs = [
+        row["slug"] for row in payload["providers"] if row["slug"] != "moa"
+    ]
+    assert configured_slugs == [
+        "openai-codex",
+        "anthropic",
+        "alibaba",
+        "gemini",
+    ]
+    alibaba = next(row for row in payload["providers"] if row["slug"] == "alibaba")
+    assert alibaba["models"] == [
+        "qwen3.8-max",
+        "deepseek-v4-flash-0731",
+        "deepseek-v4-pro",
+    ]
+    assert payload["preferred_models"] == [
+        {"provider": "openai-codex", "model": "gpt-5.6-sol"},
+        {"provider": "anthropic", "model": "claude-opus-5"},
+        {"provider": "alibaba", "model": "qwen3.8-max"},
+        {"provider": "alibaba", "model": "deepseek-v4-flash-0731"},
+        {"provider": "alibaba", "model": "deepseek-v4-pro"},
+    ]
+
 
 
 def test_build_models_payload_hides_moa_without_raw_preset():

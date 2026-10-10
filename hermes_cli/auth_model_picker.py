@@ -150,6 +150,19 @@ class _ModelPickerRows:
         return title
 
 
+def _configured_picker_model_ids(model_ids: list[str], provider: str) -> list[str]:
+    from hermes_cli.config import load_config
+    from hermes_cli.inventory import configured_model_order, order_models_for_provider
+
+    try:
+        return order_models_for_provider(
+            model_ids, provider, configured_model_order(load_config()),
+        )
+    except (OSError, ValueError, TypeError):
+        logger.debug("Could not apply configured model order for %s", provider, exc_info=True)
+        return model_ids
+
+
 def _prompt_model_selection(
     model_ids: list[str], current_model: str = "",
     pricing: Optional[dict[str, dict[str, str]]] = None,
@@ -183,6 +196,11 @@ def _prompt_model_selection(
         except (EOFError, KeyboardInterrupt):
             return None
         return _confirmed_selection(custom) if custom else None
+
+    # Reorder the catalog from the configured primary/fallback chain first.
+    # The current-model pin below remains the final interaction affordance.
+    if confirm_provider:
+        model_ids = _configured_picker_model_ids(list(model_ids), confirm_provider)
 
     # Reorder: current model first, then the rest (deduplicated)
     ordered = list(dict.fromkeys(

@@ -3955,8 +3955,16 @@ class GatewayTurnMixin:
             await _run_followup_processing_hook(
                 _hook_adapter, pending_event, "on_processing_complete", ProcessingOutcome.FAILURE)
             raise
+        # The entry guard discarded this follow-up unrun: /stop landed while it was being prepared. Report it
+        # CANCELLED, as a /stop-cancelled task is. A human follow-up is dropped, like the one /stop clears from
+        # the slot; an internal wake is re-parked for the successor, as /stop parks one (#114456). The marker
+        # is popped so each turn of a chain reports its own outcome.
+        discarded = isinstance(followup_result, dict) and followup_result.pop("_stale_generation_discarded", False)
+        if discarded and pending_event is not None and pending_event.internal:
+            self._enqueue_fifo(session_key, pending_event, adapter)
         await _run_followup_processing_hook(
-            _hook_adapter, pending_event, "on_processing_complete", ProcessingOutcome.SUCCESS)
+            _hook_adapter, pending_event, "on_processing_complete",
+            ProcessingOutcome.CANCELLED if discarded else ProcessingOutcome.SUCCESS)
         merged = _preserve_queued_followup_history_offset(result, followup_result)
         # The TERMINAL turn of the chain owns the ledger identity for the outer final send, which
         # the adapter brackets against the event that OPENED the chain. Without this the terminal
@@ -4285,6 +4293,21 @@ class GatewayTurnMixin:
                 event_message_id=event_message_id, scheduled_heartbeat=scheduled_heartbeat,
             )
 
+        # A queued follow-up is prepared across awaits and inherits its parent's generation. If /stop
+        # invalidated it meanwhile, a worker started now is never tracked (so no later /stop can reach
+        # it) yet holds the session turn lease. The marker tells _run_agent_queued_followup the message
+        # never ran.
+        if run_generation is not None and not self._is_session_run_current(session_key, run_generation):
+            logger.info(
+                "Discarding stale turn for %s: generation %d is no longer current",
+                session_key or "?", run_generation,
+            )
+            return {
+                "final_response": "", "messages": [], "api_calls": 0, "tools": [],
+                "history_offset": len(history), "session_id": session_id, "response_previewed": False,
+                "_stale_generation_discarded": True,
+            }
+
         from run_agent import AIAgent
 
         disp = self._run_agent_display_settings(source)
@@ -4352,6 +4375,10 @@ class GatewayTurnMixin:
             result = turn_ctx.result_holder[0]
             adapter = self._delivery_adapter_for(source)
             await self._run_agent_finalize_streaming_tts(turn_ctx, adapter)
+            # A /stop that landed while the worker or streaming TTS was finishing handed the session to a
+            # successor; its queued messages are no longer this run's to drain.
+            if not turn_ctx._run_still_current():
+                return response
             pending_event, pending = await self._run_agent_drain_pending(result, adapter, source, session_key)
             if pending_event or pending:
                 return await self._run_agent_queued_followup(

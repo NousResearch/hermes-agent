@@ -31,6 +31,10 @@ _INTERPRETER_PREFIXES = tuple({
 _normcase = os.path.normcase
 _INTERPRETER_PREFIX_STRS = tuple(_normcase(os.fspath(p)) for p in _INTERPRETER_PREFIXES)
 
+# <repo>/../manifest.json — the sealed-payload probe pm.environments makes for this
+# checkout at import time (see the matching exemption in check()).
+_CHECKOUT_PAYLOAD_MANIFEST = _normcase(os.fspath(Path(__file__).resolve().parent.parent.parent / "manifest.json"))
+
 
 def _within(path: str, prefix: str) -> bool:
     """``Path(path).is_relative_to(prefix)`` for two normalized, case-folded absolute strings."""
@@ -100,6 +104,14 @@ class HomeIOGuard:
             for prefix in _INTERPRETER_PREFIX_STRS:
                 if _within(absolute, prefix) or (metadata and _contains(absolute, prefix)):
                     return
+            # Sealed-payload identification for the checkout under test: pm.environments
+            # reads <checkout>/../manifest.json at import time (activate_dependencies →
+            # payload_venv) to decide whether the tree is a packaged payload. On the default
+            # install the checkout lives INSIDE the real home, so that one metadata read hits
+            # a guarded root. It is read-only identification of the checkout itself, not
+            # state consumption — same class as the traceback exemption above.
+            if not destructive and absolute == _normcase(_CHECKOUT_PAYLOAD_MANIFEST):
+                return
             # Check the lexical path first: resolving must not probe a protected
             # tree merely to decide that the original path was forbidden.
             for root in roots:

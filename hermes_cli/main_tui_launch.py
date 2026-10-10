@@ -32,15 +32,15 @@ def _read_tui_active_session_file(path: Optional[str]) -> Optional[str]:
 
 def _print_tui_exit_summary(session_id: Optional[str], active_session_file: Optional[str] = None) -> None:
     """Print a shell-visible epilogue after TUI exits."""
-    from hermes_cli.main import _resolve_last_session
-    target = (
-        _read_tui_active_session_file(active_session_file) or session_id or _resolve_last_session(source="tui")
-    )
-    if not target:
-        return
-
     db = None
     try:
+        from hermes_cli.main import _resolve_last_session
+        target = (
+            _read_tui_active_session_file(active_session_file) or session_id or _resolve_last_session(source="tui")
+        )
+        if not target:
+            return
+
         from hermes_state import SessionDB
         db = SessionDB(read_only=True)  # exit epilogue only reads
         session = db.get_session(target)
@@ -54,7 +54,11 @@ def _print_tui_exit_summary(session_id: Optional[str], active_session_file: Opti
         tokens = {
             k: int(session.get(f"{k}_tokens") or 0)
             for k in ("input", "output", "cache_read", "cache_write", "reasoning")}
-    except Exception:
+    except (Exception, KeyboardInterrupt):
+        # KeyboardInterrupt is a BaseException, invisible to ``except Exception``: a second
+        # Ctrl+C landing anywhere in this read-only epilogue (SessionDB's config load
+        # included) dumped a raw traceback after the TUI had already exited cleanly —
+        # same class as #83341 / #80256. Best-effort epilogue: always stay quiet.
         return
     finally:
         if db is not None:
@@ -455,10 +459,12 @@ def _launch_tui(
         if code in {0, 130}:
             _print_tui_exit_summary(resume_session_id, active_session_file)
     finally:
-        with contextlib.suppress(OSError):
+        # Same late-Ctrl+C class as the exit summary above: these cleanups run after the
+        # TUI exited, so a stray KeyboardInterrupt must not turn them into a traceback.
+        with contextlib.suppress(OSError, KeyboardInterrupt):
             os.unlink(active_session_file)
         if wt_info:
-            with contextlib.suppress(Exception):
+            with contextlib.suppress(Exception, KeyboardInterrupt):
                 from cli import _cleanup_worktree
                 _cleanup_worktree(wt_info)
 

@@ -937,8 +937,57 @@ class TestReasoningStreaming:
         response = agent._interruptible_streaming_api_call({})
 
         assert reasoning_deltas == ["Let me think", " about this"]
-        assert text_deltas == ["The answer is 42"]
         assert response.choices[0].message.reasoning_content == "Let me think about this"
+        assert response.choices[0].message.content == "The answer is 42"
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_vertex_thought_stream_routes_to_reasoning_callback_and_message(
+        self, mock_close, mock_create
+    ):
+        """Vertex Gemini thinking chunks (extra_content.google.thought=True) route to reasoning."""
+        from run_agent import AIAgent
+
+        thought_delta = SimpleNamespace(
+            content="Thinking process...",
+            tool_calls=None,
+            reasoning_content=None,
+            reasoning=None,
+            model_extra={"extra_content": {"google": {"thought": True}}},
+        )
+        thought_chunk = SimpleNamespace(
+            choices=[SimpleNamespace(index=0, delta=thought_delta, finish_reason=None)],
+            model="google/gemini-3.8-flash",
+            usage=None,
+        )
+        content_chunk = _make_stream_chunk(content="The answer is 42", finish_reason="stop")
+        chunks = [thought_chunk, content_chunk]
+
+        reasoning_deltas = []
+        text_deltas = []
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter(chunks)
+        mock_create.return_value = mock_client
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://aiplatform.eu.rep.googleapis.com",
+            model="google/gemini-3.8-flash",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            stream_delta_callback=lambda t: text_deltas.append(t),
+            reasoning_callback=lambda t: reasoning_deltas.append(t),
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        response = agent._interruptible_streaming_api_call({})
+
+        assert reasoning_deltas == ["Thinking process..."]
+        assert text_deltas == ["The answer is 42"]
+        assert response.choices[0].message.reasoning_content == "Thinking process..."
         assert response.choices[0].message.content == "The answer is 42"
 
 

@@ -87,6 +87,13 @@ hermes_apply_env() {
 # matches REPO's current inputs.
 hermes_activation_current() {
     local repo="$1" sentinel stamps stamp input stamped=0
+    # `"$stamps"/*` and `"$stamps"/*/*` below match nothing when the install
+    # recorded no input stamps, and zsh's NOMATCH makes an unmatched glob a
+    # fatal error where bash keeps a literal word that `[ -f ]` then rejects.
+    # This file is sourced, so that error abandons the caller instead of
+    # letting it re-sync. local_options hands NOMATCH back on return, because
+    # `activate` applies to the user's own interactive shell.
+    [ -z "${ZSH_VERSION:-}" ] || setopt local_options null_glob
     [ -n "${__HERMES_ACTIVATED:-}" ] && [ -e "${__HERMES_ACTIVATED}" ] || return 1
     # activate.ps1 records a Windows path; Git Bash accepts it with slashes.
     sentinel="${__HERMES_ACTIVATED//\\//}"

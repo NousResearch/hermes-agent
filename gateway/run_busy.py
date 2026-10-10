@@ -492,13 +492,17 @@ class GatewayBusySessionMixin:
             else (None if event.source.platform == Platform.TELEGRAM and event.source.thread_id else event.message_id)
         )
 
-    async def _send_busy_reply(self, event: MessageEvent, adapter, content: str, *, plain_anchor: bool = False) -> None:
+    async def _send_busy_reply(self, event: MessageEvent, adapter, content: str, *, plain_anchor: bool = False, busy_ack: bool = False) -> None:
         """Send a busy-path reply anchored to the event (thread metadata included)."""
         reply_anchor = self._reply_anchor_for_event(event)
+        metadata = dict(self._thread_metadata_for_source(event.source, reply_anchor) or {})
+        if busy_ack:
+            metadata["busy_ack"] = True
+            metadata["_interim_send"] = True
         await adapter._send_with_retry(
             chat_id=event.source.chat_id, content=content,
             reply_to=reply_anchor if plain_anchor else self._busy_reply_to(event, reply_anchor),
-            metadata=self._thread_metadata_for_source(event.source, reply_anchor),
+            metadata=metadata,
         )
 
     async def _send_busy_drain_notice(self, event: MessageEvent, session_key: str, effective_mode: str) -> None:
@@ -767,20 +771,33 @@ class GatewayBusySessionMixin:
         if is_steer_mode and self._agent_has_active_subagents(running_agent):
             head = t("gateway.busy.steered_subagents_head")
             tail = t("gateway.busy.steered_subagents_tail")
-        elif is_steer_mode:
-            head, tail = t("gateway.busy.steered_head"), t("gateway.busy.steered_tail")
+            message = t("gateway.busy.ack", head=head, detail=status_detail, tail=tail)
         elif is_redirect_mode:
             head, tail = t("gateway.busy.redirected_head"), t("gateway.busy.redirected_tail")
+            message = t("gateway.busy.ack", head=head, detail=status_detail, tail=tail)
         elif is_queue_mode and demoted_for_subagents:
             # Explain the demotion: the follow-up didn't kill the subagent; /stop is the escape hatch.
             head, tail = t("gateway.busy.subagent_working_head"), self._BUSY_DEMOTED_TAIL
+            message = t("gateway.busy.ack", head=head, detail=status_detail, tail=tail)
         elif is_queue_mode and demoted_for_compression:
             head, tail = t("gateway.busy.compressing_head"), self._BUSY_DEMOTED_TAIL
-        elif is_queue_mode:
-            head, tail = t("gateway.busy.queued_head"), t("gateway.busy.queued_tail")
+            message = t("gateway.busy.ack", head=head, detail=status_detail, tail=tail)
         else:
-            head, tail = t("gateway.busy.interrupting_head"), t("gateway.busy.interrupting_tail")
-        message = t("gateway.busy.ack", head=head, detail=status_detail, tail=tail)
+            _busy_mode_key = "steer" if is_steer_mode else ("queue" if is_queue_mode else "interrupt")
+            try:
+                from tools.busy_ack_templates import load_templates_from_env, render_busy_ack
+                message = render_busy_ack(
+                    load_templates_from_env(), _busy_mode_key, status_detail=status_detail,
+                )
+            except Exception as _busy_render_err:
+                logger.debug("busy_ack template render failed (%s); using built-in default", _busy_render_err)
+                if is_steer_mode:
+                    head, tail = t("gateway.busy.steered_head"), t("gateway.busy.steered_tail")
+                elif is_queue_mode:
+                    head, tail = t("gateway.busy.queued_head"), t("gateway.busy.queued_tail")
+                else:
+                    head, tail = t("gateway.busy.interrupting_head"), t("gateway.busy.interrupting_tail")
+                message = t("gateway.busy.ack", head=head, detail=status_detail, tail=tail)
 
         # One-time onboarding hint about the queue/interrupt knob (flag persisted to config.yaml).
         try:
@@ -800,7 +817,7 @@ class GatewayBusySessionMixin:
 
     async def _send_busy_ack_reply(self, event: MessageEvent, adapter, message: str) -> None:
         try:
-            await self._send_busy_reply(event, adapter, message)
+            await self._send_busy_reply(event, adapter, message, busy_ack=True)
         except Exception as e:
             logger.debug("Failed to send busy-ack: %s", e)
 
@@ -901,6 +918,9 @@ class GatewayBusySessionMixin:
             demoted_for_subagents=_steer.demoted_for_subagents,
             demoted_for_compression=_steer.demoted_for_compression,
         )
+        if not message or not str(message).strip():
+            logger.debug("Busy ack suppressed by empty template for session %s", session_key)
+            return True
         await self._send_busy_ack_reply(event, adapter, message)
         return True
 

@@ -41,6 +41,31 @@ def _init_git_repo(repo: Path) -> None:
     subprocess.run(["git", "-C", str(repo), "commit", "-m", "init"], check=True, capture_output=True, text=True)
 
 
+@pytest.mark.parametrize("contract", [
+    "local-only",
+    "acme/widgets",
+    "https://github.com/acme/widgets/pull/42",
+])
+def test_edit_task_updates_validated_completion_contract(kanban_home, contract):
+    with kbc.connect_closing() as conn:
+        task_id = kb.create_task(conn, title="contract task", completion_contract="acme/old")
+        assert kb.edit_task(conn, task_id, completion_contract=contract)
+        task = kb.get_task(conn, task_id)
+        events = kb.list_events(conn, task_id)
+
+    assert task.completion_contract == contract
+    assert events[-1].kind == "edited"
+    assert events[-1].payload["fields"] == ["completion_contract"]
+
+
+def test_edit_task_rejects_invalid_completion_contract(kanban_home):
+    with kbc.connect_closing() as conn:
+        task_id = kb.create_task(conn, title="contract task")
+        with pytest.raises(ValueError, match="completion_contract must be"):
+            kb.edit_task(conn, task_id, completion_contract="acme/widgets/issues/42")
+        assert kb.get_task(conn, task_id).completion_contract == "local-only"
+
+
 # ---------------------------------------------------------------------------
 # Schema / init
 # ---------------------------------------------------------------------------

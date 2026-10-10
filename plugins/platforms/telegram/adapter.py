@@ -13,6 +13,8 @@ import time
 from contextvars import ContextVar
 from datetime import datetime, timezone, UTC
 from typing import Any, Awaitable, Callable, Dict, Iterator, List, Optional, Set
+from plugins.platforms.telegram.text_batching import TelegramTextBatchingMixin
+from plugins.platforms.telegram.delayed_delivery import TelegramDelayedDeliveryMixin
 from hermes_cli import setup_platforms
 
 logger = logging.getLogger(__name__)
@@ -511,7 +513,7 @@ class _PollingStallError(RuntimeError):
     """
 
 
-class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
+class TelegramAdapter(TelegramHeldInboundMixin, TelegramTextBatchingMixin, TelegramDelayedDeliveryMixin, BasePlatformAdapter):
     """Telegram bot adapter: users/groups, MarkdownV2 replies, forum topics, media."""
 
     # Bound for the per-(chat_id, status_key) status-message cache; FIFO half-trim on overflow.
@@ -3281,45 +3283,6 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         for attr in attrs:
             if getattr(self, attr, None) is not current_task:
                 setattr(self, attr, None)
-
-    async def _cancel_pending_delivery_tasks(self) -> None:
-        """Cancel every delayed-delivery task family before disconnect completes (media-group, photo-batch, text-batch flushes plus
-        polling recovery all sit behind ``asyncio.sleep()`` and would dispatch ``handle_message`` into a torn-down session)."""
-        current_task = asyncio.current_task()
-        pending_tasks = self._collect_live_tasks(
-            [
-                *self._media_group_tasks.values(), *self._pending_photo_batch_tasks.values(), *self._pending_text_batch_tasks.values(),
-                getattr(self, "_polling_error_task", None), getattr(self, "_polling_progress_verifier_task", None),
-                # Hold-queue redispatch must be cancellable+awaitable on teardown too.
-                getattr(self, "_held_inbound_redispatch_task", None),
-           ],
-            current_task)
-        awaitable_tasks = [t for t in pending_tasks if asyncio.isfuture(t) or asyncio.iscoroutine(t)]
-        # Hold-queue redispatch must be cancellable+awaitable on teardown so it cannot dispatch
-        # handle_message into a torn-down session (same lifecycle rule teknium called out on #72037 for
-        # shielded flush dispatch).
-        for task in pending_tasks:
-            task.cancel()
-        if awaitable_tasks:
-            await asyncio.gather(*awaitable_tasks, return_exceptions=True)
-        # Salvage buffered inbound events before clearing maps — unless permanent fatal, where no
-        # reconnect can drain and hold would re-orphan them.
-        if self._is_permanent_fatal():
-            n_pending = len(self._pending_text_batches) + len(self._pending_photo_batches) + len(self._media_group_events)
-            if n_pending:
-                logger.warning("[Telegram] Non-retryable fatal teardown; discarding %d pending inbound batch(es)", n_pending)
-        else:
-            for events, where in (
-                (self._pending_text_batches, "text-batch-teardown"), (self._pending_photo_batches, "photo-batch-teardown"),
-                (self._media_group_events, "media-group-teardown")):
-                for event in list(events.values()):
-                    self._hold_inbound_event(event, where=where)
-        for d in (
-            self._media_group_tasks, self._media_group_events, self._pending_photo_batch_tasks,
-            self._pending_photo_batches, self._pending_text_batch_tasks, self._pending_text_batches):
-            d.clear()
-        self._clear_task_attrs_except(
-            current_task, "_polling_error_task", "_polling_progress_verifier_task", "_held_inbound_redispatch_task")
 
     async def _await_disconnect_step(self, awaitable, timeout: float, step: str) -> bool:
         """Await one disconnect step; detach on timeout so teardown advances (``wait_for`` would wait for a
@@ -6531,49 +6494,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
 
     # -- Text message aggregation (handles Telegram client-side splits) --
 
-    def _text_batch_key(self, event: MessageEvent) -> str:
-        """Session-scoped batching key; topic recovery first so DM-topic batches coalesce on the recovered lane."""
-        self._apply_topic_recovery(event)
-        return super()._text_batch_key(event)
 
-    def _enqueue_text_event(self, event: MessageEvent) -> None:
-        """Buffer a text chunk, or hold it while delayed delivery must be dropped."""
-        if self._should_drop_delayed_delivery():
-            self._hold_inbound_event(event, where="text-enqueue")
-            return
-        super()._enqueue_text_event(event)
-        self._accept_update()
 
-    async def _flush_buffered(self, pending: dict, tasks: dict, key: str, delay: float, where: str, log_fn=None) -> None:
-        """Shared delayed-flush body: sleep, pop, hold if teardown started, else dispatch. A cancel after
-        the pop but before durable dispatch re-holds the event (never lose it)."""
-        current_task = asyncio.current_task()
-        event = None
-        try:
-            await asyncio.sleep(delay)
-            # Superseded flush (a newer chunk re-armed the timer while our sleep was already done):
-            # CancelledError only lands at the next await, so check synchronously before the pop.
-            owner = tasks.get(key)
-            if owner is not None and owner is not current_task:
-                return
-            event = pending.pop(key, None)
-            if not event:
-                return
-            if self._should_drop_delayed_delivery():
-                self._hold_inbound_event(event, where=f"{where}-flush")
-                event = None
-                return
-            if log_fn is not None:
-                log_fn(event)
-            await self.handle_message(event)
-            event = None
-        except asyncio.CancelledError:
-            if event is not None:
-                self._hold_inbound_event(event, where=f"{where}-flush-cancelled")
-            raise
-        finally:
-            if tasks.get(key) is current_task:
-                tasks.pop(key, None)
 
     def _text_batch_delay_for(self, pending: Optional[MessageEvent]) -> float:
         """Adaptive delay: near-split-point last chunk → long delay (continuation almost certain);
@@ -6588,14 +6510,6 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             return min(self._text_batch_delay_seconds, self._TEXT_BATCH_SHORT_DELAY_S)
         return self._text_batch_delay_seconds
 
-    async def _flush_text_batch(self, key: str) -> None:
-        """Telegram keeps its own flush body: a cancel after the pop must HOLD the event and re-raise
-        (PTB already acked the update; the hold queue redispatches after reconnect) rather than shield
-        the dispatch — teardown must be able to stop a flush from reaching a torn-down session."""
-        await self._flush_buffered(
-            self._pending_text_batches, self._pending_text_batch_tasks, key,
-            self._text_batch_delay_for(self._pending_text_batches.get(key)), "text",
-            lambda ev: logger.info("[Telegram] Flushing text batch %s (%d chars)", key, len(ev.text or "")))
 
     # -- Photo batching --
 
@@ -6617,8 +6531,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         if existing is None:
             pending[key] = event
             return
-        existing.media_urls.extend(event.media_urls)
-        existing.media_types.extend(event.media_types)
+        existing.absorb_media(event)
         if event.text:
             existing.text = self._merge_caption(existing.text, event.text)
 

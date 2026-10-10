@@ -13,6 +13,7 @@ const DESKTOP_HIDDEN_TOOLSETS = new Set([
   // adapter; `hermes tools` restricts these off the CLI too.
   'discord',
   'discord_admin',
+  'matrix_admin',
   'yuanbao',
   // Internal plumbing, not a user capability toggle.
   'context_engine',

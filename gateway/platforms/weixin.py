@@ -734,6 +734,9 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         self._held_outbound_max = max(1, int(_extra_or_secret(extra, "held_outbound_max", "20")))
         self._held_outbound_ttl_seconds = float(_extra_or_secret(extra, "held_outbound_ttl_seconds", "3600"))
         self._held_outbound: Dict[str, List[Tuple[float, List[str]]]] = {}
+        # Loop this adapter connected on. A throwaway adapter built off-loop (cron ``send_message``) hands a
+        # hold to the live adapter through it instead of losing the queue with itself (#135921).
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._dm_policy = _extra_or_secret(extra, "dm_policy", "pairing").lower()
         self._group_policy = _extra_or_secret(extra, "group_policy", "disabled").lower()
         # ``extra`` wins even when falsy (an explicit empty list disables the env allowlist).
@@ -778,6 +781,7 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         self._token_store.restore(self._account_id)
         self._poll_task = asyncio.create_task(self._poll_loop(), name="weixin-poll")
         self._mark_connected()
+        self._loop = asyncio.get_running_loop()
         _LIVE_ADAPTERS[self._token] = self
         logger.info("[%s] Connected account=%s base=%s", self.name, _safe_id(self._account_id), self._base_url)
         if self._group_policy != "disabled":
@@ -792,6 +796,7 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
 
     async def disconnect(self) -> None:
         _LIVE_ADAPTERS.pop(self._token, None)
+        self._loop = None
         self._running = False
         for task in self._pending_text_batch_tasks.values():
             if not task.done():
@@ -1077,10 +1082,22 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                     await self._send_text_chunk(chat_id=chat_id, chunk=chunk, context_token=context_token, client_id=client_id)
                 except PeerSessionNotReady:
                     # Hold only what never went out — re-sending already-delivered chunks would duplicate them —
-                    # and stop here: the remainder is flushed when the peer messages the bot again.
-                    depth = self._hold_outbound_text(chat_id, chunks[idx:])
-                    logger.warning("[%s] peer session closed for %s; holding %d chunk(s) until their next message (queued=%d)",
-                                   self.name, _safe_id(chat_id), len(chunks) - idx, depth)
+                    # and stop here: the remainder is flushed when the peer messages the bot again. A throwaway
+                    # adapter (cron ``send_message``) can never flush, so it hands the queue to the live adapter.
+                    pending = chunks[idx:]
+                    if self._hand_off_hold_to_live_adapter(chat_id, pending):
+                        # The live adapter now owns this text, so report the send as accepted rather than failed:
+                        # a caller reading this as a failure retries blindly (the window reopens when the *peer*
+                        # speaks, not on a timer) and would queue a second copy of a message already held.
+                        logger.warning("[%s] peer session closed for %s; handed %d chunk(s) to the live adapter's hold queue",
+                                       self.name, _safe_id(chat_id), len(pending))
+                        return SendResult(success=True, message_id=last_message_id,
+                                          raw_response={"queued": True, "queued_chunks": len(pending),
+                                                        "reason": "peer session closed"})
+                    else:
+                        depth = self._hold_outbound_text(chat_id, pending)
+                        logger.warning("[%s] peer session closed for %s; holding %d chunk(s) until their next message (queued=%d)",
+                                       self.name, _safe_id(chat_id), len(pending), depth)
                     raise
                 last_message_id = client_id
                 if idx < len(chunks) - 1 and self._send_chunk_delay_seconds > 0:
@@ -1090,33 +1107,84 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             logger.error("[%s] send failed to=%s: %s", self.name, _safe_id(chat_id), exc)
             return SendResult(success=False, error=str(exc))
 
-    def _hold_outbound_text(self, chat_id: str, chunks: List[str]) -> int:
-        """Keep text iLink refused for this peer until their next inbound; returns the new queue depth."""
+    def _hand_off_hold_to_live_adapter(self, chat_id: str, chunks: List[str]) -> bool:
+        """Give a hold to the live adapter when ``self`` is a throwaway instance, else ``False``.
+
+        ``send_weixin_direct`` builds a short-lived adapter whenever the live session sits on another loop
+        (cron ``send_message``), and its ``_held_outbound`` would be dropped with it. Handing the queue to
+        ``_LIVE_ADAPTERS[token]`` on that loop (thread-safe) means the peer still gets the text on their
+        next inbound (#135921)."""
+        live = _LIVE_ADAPTERS.get(self._token)
+        if live is None or live is self:
+            return False
+        loop = getattr(live, "_loop", None)
+        if loop is None or loop.is_closed():
+            return False
+        try:
+            loop.call_soon_threadsafe(live._hold_outbound_text, chat_id, list(chunks))
+        except RuntimeError:  # the loop closed between the check and the call
+            return False
+        return True
+
+    def _hold_outbound_text(self, chat_id: str, chunks: List[str], enqueued_at: Optional[float] = None) -> int:
+        """Keep text iLink refused for this peer until their next inbound; returns the new queue depth.
+
+        ``enqueued_at`` carries the original deadline when a refused flush re-holds a reply, so re-queueing
+        can never extend a message's life past ``held_outbound_ttl_seconds``. Text already pending is never
+        queued twice: a refused reply gets retried many times over (the delivery ledger redelivers it on every
+        reconnect), and one copy per attempt would fill the queue with the same text and flush it all at once."""
         queue = self._held_outbound.setdefault(chat_id, [])
         now = time.time()
-        queue[:] = [entry for entry in queue if now - entry[0] <= self._held_outbound_ttl_seconds]
-        queue.append((now, list(chunks)))
-        del queue[: max(0, len(queue) - self._held_outbound_max)]
+        keep = [entry for entry in queue if now - entry[0] <= self._held_outbound_ttl_seconds]
+        if len(keep) != len(queue):
+            logger.warning("[%s] %d held outbound message(s) for %s expired after %.0fs without an inbound",
+                           self.name, len(queue) - len(keep), _safe_id(chat_id), self._held_outbound_ttl_seconds)
+        queue[:] = keep
+        if any(pending == chunks for _, pending in queue):
+            logger.warning("[%s] %s already has this text held; not queueing a duplicate copy",
+                           self.name, _safe_id(chat_id))
+            return len(queue)
+        queue.append((now if enqueued_at is None else enqueued_at, list(chunks)))
+        overflow = len(queue) - self._held_outbound_max
+        if overflow > 0:
+            del queue[:overflow]
+            logger.warning("[%s] held outbound queue for %s is over capacity (%d); dropped the %d oldest message(s)",
+                           self.name, _safe_id(chat_id), self._held_outbound_max, overflow)
         return len(queue)
 
     async def _flush_held_outbound(self, chat_id: str) -> None:
         """Re-send text held while this peer's reply window was closed. Called from ``_process_message`` once
-        the inbound refreshed the ``context_token``; whatever is still refused is held again, never dropped."""
+        the inbound refreshed the ``context_token``; everything still refused is held again under its original
+        deadline, never dropped, and a reply that died of old age is dropped instead of delivered late."""
         pending = self._held_outbound.pop(chat_id, None)
         if not pending:
             return
         logger.info("[%s] flushing %d held outbound message(s) to %s", self.name, len(pending), _safe_id(chat_id))
-        for index, (_, chunks) in enumerate(pending):
+        for index, (enqueued_at, chunks) in enumerate(pending):
+            age = time.time() - enqueued_at
+            if age > self._held_outbound_ttl_seconds:
+                logger.warning("[%s] dropping %d held chunk(s) for %s: expired %.0fs after being queued",
+                               self.name, len(chunks), _safe_id(chat_id), age)
+                continue
             context_token = self._token_store.get(self._account_id, chat_id)
+            remaining = list(chunks)
             try:
-                for chunk in chunks:
-                    await self._send_text_chunk(chat_id=chat_id, chunk=chunk, context_token=context_token,
+                while remaining:
+                    await self._send_text_chunk(chat_id=chat_id, chunk=remaining[0], context_token=context_token,
                                                 client_id=f"hermes-weixin-{uuid.uuid4().hex}")
+                    remaining.pop(0)
+                    # Pace a flush like ``send()`` does: a burst of queued replies back-to-back is exactly what
+                    # walks into iLink's rate limiter.
+                    if (remaining or index < len(pending) - 1) and self._send_chunk_delay_seconds > 0:
+                        await asyncio.sleep(self._send_chunk_delay_seconds)
             except Exception as exc:
-                logger.warning("[%s] held outbound flush stopped for %s (%d/%d delivered): %s",
-                               self.name, _safe_id(chat_id), index, len(pending), exc, exc_info=True)
-                for _, remaining in pending[index:]:
-                    self._hold_outbound_text(chat_id, remaining)
+                logger.warning("[%s] held outbound flush stopped at reply %d/%d for %s: %s",
+                               self.name, index + 1, len(pending), _safe_id(chat_id), exc, exc_info=True)
+                # Re-hold from the first chunk this peer has not seen — the ones that went out must not be
+                # re-sent — and keep everything queued behind this reply in order, under its original deadline.
+                self._hold_outbound_text(chat_id, remaining, enqueued_at=enqueued_at)
+                for queued_at, queued in pending[index + 1:]:
+                    self._hold_outbound_text(chat_id, queued, enqueued_at=queued_at)
                 return
 
     async def _ensure_typing_ticket(self, chat_id: str) -> Optional[str]:
@@ -1274,7 +1342,14 @@ async def _deliver_direct(
         if not last_result.success:
             return {"error": f"Weixin media send failed: {last_result.error}"}
     message_id = last_result.message_id if last_result else None
-    return {"success": True, "platform": "weixin", "chat_id": chat_id, "message_id": message_id, "context_token_used": bool(context_token)}
+    result: dict[str, Any] = {"success": True, "platform": "weixin", "chat_id": chat_id,
+                              "message_id": message_id, "context_token_used": bool(context_token)}
+    queued = getattr(last_result, "raw_response", None)
+    if isinstance(queued, dict) and queued.get("queued"):
+        # The text is held for the peer's next inbound, not delivered yet — say so instead of implying a send.
+        result["queued"] = True
+        result["note"] = "peer reply window closed; queued for delivery on their next message"
+    return result
 
 
 async def send_weixin_direct(

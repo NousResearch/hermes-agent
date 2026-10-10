@@ -1,0 +1,24 @@
+name: photofresco
+title: PhotoFresco
+repo: https://github.com/photofresco/photofresco-agent
+sha: 0f8168b2ab7bf35155d73d041a44320fa37e2533
+description: >-
+  Edit images in a PhotoFresco window you approve: layers, masks, selections, adjustment layers,
+  previews and PNG/PSD export. Portable Agent Plugins v1 package (mcp.json + skills/) with a local
+  stdio MCP server and bundled skill; needs Node.js 22+ and Chrome, Edge or Chromium 120+.
+maintainer: photofresco
+tier: community
+category: tools
+docs_url: https://photofresco.com/docs/ai-agents/
+version: "0.1.0"
+image: https://raw.githubusercontent.com/photofresco/photofresco-agent/0f8168b2ab7bf35155d73d041a44320fa37e2533/assets/banner.jpg
+screenshots:
+  - https://raw.githubusercontent.com/photofresco/photofresco-agent/0f8168b2ab7bf35155d73d041a44320fa37e2533/assets/demo.gif
+platforms: []
+known_issues:
+  - Needs a desktop session and an installed Chrome, Edge or Chromium; the user approves the connection and each permission in the PhotoFresco window.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

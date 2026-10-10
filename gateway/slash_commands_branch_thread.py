@@ -8,11 +8,11 @@ always branch in place. Pure helpers only — the handler lives in ``slash_comma
 
 from __future__ import annotations
 
-import dataclasses
 from typing import Optional
 
 from gateway.config import Platform
 from gateway.session import SessionSource
+from gateway.session_identity import replace_source
 
 # Adapters that override ``BasePlatformAdapter.create_handoff_thread`` (the base returns None).
 BRANCH_THREAD_PLATFORMS = frozenset({Platform.DISCORD, Platform.TELEGRAM, Platform.SLACK, Platform.MATRIX})
@@ -57,12 +57,12 @@ def branch_dest_source(source: SessionSource, *, parent_id: str, thread_id: str,
                   auto_thread_created=False, auto_thread_initial_name=None)
     if source.platform == Platform.DISCORD:
         # Discord keys an in-thread message on the thread's OWN id as chat_id.
-        return dataclasses.replace(source, chat_id=str(thread_id), chat_name=title or source.chat_name,
-                                   chat_type="thread", parent_chat_id=str(parent_id), **common)
+        return replace_source(source, chat_id=str(thread_id), chat_name=title or source.chat_name,
+                              chat_type="thread", parent_chat_id=str(parent_id), **common)
     # Telegram (``group:<chat>:<topic>``, private-chat topics stay ``dm``), Slack (parent channel's
     # dm/group + workspace scope) and Matrix (room type) key a thread reply on the PARENT chat's type.
     chat_type = "group" if source.chat_type == "thread" else source.chat_type
-    return dataclasses.replace(source, chat_id=str(parent_id), chat_type=chat_type, **common)
+    return replace_source(source, chat_id=str(parent_id), chat_type=chat_type, **common)
 
 
 def format_thread_ref(platform: Optional[Platform], thread_id: str) -> str:

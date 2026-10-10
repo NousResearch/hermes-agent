@@ -1165,7 +1165,11 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
     try:
         ws_client.start()
     except Exception:
-        pass
+        # ``disconnect()`` nils ``_ws_client`` before stopping this loop, so only a live client's exit is an error.
+        if getattr(adapter, "_ws_client", None) is ws_client:
+            logger.exception("[Feishu] lark WS client exited with an error")
+        else:
+            logger.debug("[Feishu] lark WS client stopped during disconnect", exc_info=True)
     finally:
         _ws_isolation_state.loop = None
         _ws_isolation_state.connect_kwargs = None

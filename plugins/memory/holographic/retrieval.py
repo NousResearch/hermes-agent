@@ -4,6 +4,7 @@ Jaccard similarity and HRR vector similarity, trust-weighted (ported from KIK me
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Callable
 from datetime import datetime, timezone, UTC
 from typing import TYPE_CHECKING
@@ -142,8 +143,30 @@ class FactRetriever:
                 entity_overlap = len(ents1 & ents2) / len(ents1 | ents2)
                 if entity_overlap < 0.3:
                     continue  # not enough shared subject to be contradictory
+
+                # Attribute-value conflict detection: two facts about the same
+                # subject may be semantically similar yet state conflicting
+                # values for the same structured attribute (e.g. "expires
+                # 2026-11-14" vs "expires 2026-11-24"). The vector-based
+                # score above treats those as near-duplicates because the
+                # surrounding prose is almost identical, so we additionally
+                # compare extracted attributes and flag any shared attribute
+                # whose value differs.
+                attrs1 = self._extract_attribute_values(f1["content"])
+                attrs2 = self._extract_attribute_values(f2["content"])
+                attr_conflicts = sorted(
+                    attr for attr in attrs1
+                    if attr in attrs2 and attrs1[attr] != attrs2[attr]
+                )
+
                 content_sim = hrr.similarity(vec1, vec2)
                 contradiction_score = entity_overlap * (1.0 - _shift(content_sim))  # high overlap + low similarity
+
+                # An explicit attribute-value mismatch is a strong, direct
+                # contradiction signal: promote it above the threshold so it
+                # is surfaced even when prose similarity is high.
+                if attr_conflicts:
+                    contradiction_score = max(contradiction_score, 0.6)
                 if contradiction_score >= threshold:
                     contradictions.append({
                         "fact_a": f1, "fact_b": f2,
@@ -151,6 +174,7 @@ class FactRetriever:
                         "content_similarity": round(content_sim, 3),
                         "contradiction_score": round(contradiction_score, 3),
                         "shared_entities": sorted(ents1 & ents2),
+                        "attribute_conflicts": attr_conflicts,
                     })
         return sorted(contradictions, key=lambda x: x["contradiction_score"], reverse=True)[:limit]
 
@@ -202,6 +226,42 @@ class FactRetriever:
     def _jaccard_similarity(set_a: set, set_b: set) -> float:
         """Jaccard similarity coefficient: |A ∩ B| / |A ∪ B|."""
         return len(set_a & set_b) / len(set_a | set_b) if set_a and set_b else 0.0
+
+    @staticmethod
+    def _extract_attribute_values(content: str) -> dict[str, str]:
+        """Extract attribute-value pairs from fact content.
+
+        Recognises common structured values that may conflict between two
+        facts about the same subject: dates (2026-11-14, 2026年11月14日),
+        money ($20, 7400元), percentages (60%), capacities (1.9GB), and
+        version numbers (v7.0.0). Returns a mapping of attribute name →
+        extracted value; unknown attributes are ignored so non-structured
+        prose does not produce spurious matches.
+        """
+        if not content:
+            return {}
+        values: dict[str, str] = {}
+        # ISO-ish dates: 2026-11-14 / 2026/11/14 / 2026年11月14日
+        m = re.search(r"(20\d{2}[-/年]\d{1,2}[-/月]\d{1,2}日?)", content)
+        if m:
+            values["date"] = m.group(1)
+        # Money: $20 / $20.5 / 7400元 / 7400 元
+        m = re.search(r"[$¥]\s*\d+(?:\.\d+)?|\d+(?:\.\d+)?\s*(?:元|美元|人民币)", content)
+        if m:
+            values["money"] = m.group(0).strip()
+        # Percent: 60% / 60 %
+        m = re.search(r"\d+(?:\.\d+)?\s*%", content)
+        if m:
+            values["percent"] = m.group(0).strip()
+        # Capacity: 1.9GB / 30G / 512MB (case-insensitive, whole number+unit)
+        m = re.search(r"\d+(?:\.\d+)?\s*(?:GB|G|TB|T|MB|M)(?![A-Za-z])", content, re.IGNORECASE)
+        if m:
+            values["capacity"] = m.group(0).strip()
+        # Version: v7.0.0 / 7.0.0 / 3.15.1
+        m = re.search(r"\bv?\d+\.\d+\.\d+\b", content)
+        if m:
+            values["version"] = m.group(0).strip()
+        return values
 
     def _temporal_decay(self, timestamp_str: str | None) -> float:
         """0.5^(age_days / half_life); 1.0 if disabled, missing, unparseable, or in the future."""

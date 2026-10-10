@@ -230,4 +230,45 @@ describe('roster avatar sync (#102978)', () => {
     // The raster is a notice-only copy of the live face, never parked on the roster.
     expect($botMeta.get()['local::secretary']?.image).toBeUndefined()
   })
+
+  it('re-fetches a cached avatar only when the server avatar_rev moves', async () => {
+    const { pullServerAvatars } = await import('./profile-ops')
+    faceOnlyMock.mockReturnValue(false)
+    hostMock.request.mockResolvedValue({ data: 'data:image/webp;base64,OLD', found: true, rev: 'webp:1:10' })
+
+    const row = (rev: null | string | undefined) =>
+      ({
+        avatar_rev: rev,
+        connectionId: 'local',
+        has_avatar: true,
+        name: 'tutor',
+        route: { connectionId: 'local', mode: 'local', profile: 'tutor', targetProfile: 'tutor' },
+        sourceScoped: true
+      }) as RosterRow
+
+    const settle = () => new Promise(resolve => setTimeout(resolve, 0))
+    const cachedKey = () => Object.keys($botMeta.get()).find(k => k.endsWith('tutor')) as string
+
+    pullServerAvatars([row('webp:1:10')])
+    await vi.waitFor(() => expect(hostMock.request).toHaveBeenCalledTimes(1))
+    await settle()
+    expect($botMeta.get()[cachedKey()]).toMatchObject({ image: 'data:image/webp;base64,OLD', imageRev: 'webp:1:10' })
+
+    // Same rev: served from the local cache, no download.
+    pullServerAvatars([row('webp:1:10')])
+    await settle()
+    expect(hostMock.request).toHaveBeenCalledTimes(1)
+
+    // The file was replaced on the server: the stale image is re-fetched.
+    hostMock.request.mockResolvedValue({ data: 'data:image/webp;base64,NEW', found: true, rev: 'webp:2:12' })
+    pullServerAvatars([row('webp:2:12')])
+    await vi.waitFor(() => expect(hostMock.request).toHaveBeenCalledTimes(2))
+    await settle()
+    expect($botMeta.get()[cachedKey()]).toMatchObject({ image: 'data:image/webp;base64,NEW', imageRev: 'webp:2:12' })
+
+    // An older backend (no avatar_rev) keeps the fetch-once behaviour.
+    pullServerAvatars([row(undefined)])
+    await settle()
+    expect(hostMock.request).toHaveBeenCalledTimes(2)
+  })
 })

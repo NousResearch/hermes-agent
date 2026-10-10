@@ -81,6 +81,8 @@ export interface BotMeta {
   hidden?: boolean
   /** Data URL. Stripped before `profiles.configure`; travels via `set_asset`. */
   image?: null | string
+  /** `avatar_rev` the cached `image` was fetched at; local-only, like `image`. */
+  imageRev?: null | string
   imageKind?: 'photo' | 'shape'
   /** Legacy single-group scalar, projected alongside `groups`. */
   group?: null | string
@@ -105,6 +107,8 @@ export interface RosterRow {
   ghost?: boolean
   handle?: string
   has_avatar?: boolean
+  /** Server avatar content revision (`profiles.list`); a change means the cached image is stale. */
+  avatar_rev?: null | string
   /** The connection's backend identity (/api/status `install_id`) when the
    *  roster source has seen it — stable across Desktops, unlike `connectionId`
    *  / `connectionLabel`, which are THIS Desktop's names for the connection. */

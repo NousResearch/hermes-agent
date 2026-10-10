@@ -374,7 +374,7 @@ async function persistBotMetaPatch(
   route: null | ProfileRoute,
   patch: StoredBotMeta
 ): Promise<null | ProfilesConfigureResult> {
-  const { image: _image, pet: _pet, ...fields } = patch
+  const { image: _image, imageRev: _imageRev, pet: _pet, ...fields } = patch
 
   for (let attempt = 0; attempt < BOT_META_CAS_ATTEMPTS; attempt++) {
     const server = await readServerBotMeta(bot, name, route)

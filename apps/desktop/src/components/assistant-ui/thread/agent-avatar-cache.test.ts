@@ -11,6 +11,7 @@ import { agentAvatarCache, resolveAgentAvatar } from './user-message'
 // refetch, never correctness.
 const CACHE_MAX = 128
 const MISS_TTL_MS = 30_000
+const HIT_TTL_MS = 60_000
 
 const clearCache = () => {
   for (const key of [...agentAvatarCache.keys()]) {
@@ -19,20 +20,28 @@ const clearCache = () => {
 }
 
 const withAvatar = new Set<string>()
+const avatarRevs = new Map<string, string>()
 let listCalls = 0
+let assetCalls = 0
 
 const stubGateway = () => {
   listCalls = 0
+  assetCalls = 0
   $gateway.set({
     request: async (method: string, params: Record<string, unknown>) => {
       if (method === 'profiles.list') {
         listCalls += 1
 
-        return { profiles: [...withAvatar].map(name => ({ has_avatar: true, name })) }
+        return {
+          profiles: [...withAvatar].map(name => ({ avatar_rev: avatarRevs.get(name) ?? null, has_avatar: true, name }))
+        }
       }
 
       if (method === 'profiles.get_asset') {
-        return { data: `data:image/png;base64,${String(params.name)}`, found: true }
+        assetCalls += 1
+        const name = String(params.name)
+
+        return { data: `data:image/png;base64,${name}${avatarRevs.get(name) ?? ''}`, found: true }
       }
 
       throw new Error(`unexpected request: ${method}`)
@@ -44,6 +53,7 @@ describe('agent avatar cache', () => {
   beforeEach(() => {
     clearCache()
     withAvatar.clear()
+    avatarRevs.clear()
     stubGateway()
   })
 
@@ -78,5 +88,29 @@ describe('agent avatar cache', () => {
 
     expect(await resolveAgentAvatar('ghost')).toBe('data:image/png;base64,ghost')
     expect(listCalls).toBe(2)
+  })
+
+  it('revalidates a hit after its TTL and re-downloads only when avatar_rev moved', async () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(2_000_000)
+    withAvatar.add('tutor')
+    avatarRevs.set('tutor', 'r1')
+
+    expect(await resolveAgentAvatar('tutor')).toBe('data:image/png;base64,tutorr1')
+    expect([listCalls, assetCalls]).toEqual([1, 1])
+
+    // Inside the hit TTL: no gateway traffic at all.
+    expect(await resolveAgentAvatar('tutor')).toBe('data:image/png;base64,tutorr1')
+    expect([listCalls, assetCalls]).toEqual([1, 1])
+
+    // TTL expired, same rev: one roster probe, no image download.
+    now.mockReturnValue(2_000_000 + HIT_TTL_MS + 1)
+    expect(await resolveAgentAvatar('tutor')).toBe('data:image/png;base64,tutorr1')
+    expect([listCalls, assetCalls]).toEqual([2, 1])
+
+    // The avatar file was replaced: the next revalidation picks up the new art.
+    avatarRevs.set('tutor', 'r2')
+    now.mockReturnValue(2_000_000 + 2 * (HIT_TTL_MS + 1))
+    expect(await resolveAgentAvatar('tutor')).toBe('data:image/png;base64,tutorr2')
+    expect([listCalls, assetCalls]).toEqual([3, 2])
   })
 })

@@ -276,6 +276,20 @@ def _profile_ui_meta_fields(row: dict, profile_dir) -> None:
     row.update(cached_ui_meta_fields(profile_dir, _read))
     # Cheap existence flag so rosters skip a get_asset probe per paint.
     row["has_avatar"] = _try(lambda: any((profile_dir / "assets" / f"avatar.{e}").is_file() for e in _ASSET_EXTS), False)
+    # Content revision of the stored avatar (mtime_ns + size of the file get_asset would serve).
+    # Clients cache the avatar data URL indefinitely; comparing this token is how they notice a
+    # replaced file (set_asset from another Desktop, or an operator dropping in new art) without
+    # re-downloading the image on every roster paint.
+    row["avatar_rev"] = _try(lambda: _avatar_rev(profile_dir), None)
+
+
+def _avatar_rev(profile_dir) -> str | None:
+    for ext in _ASSET_EXTS:
+        path = profile_dir / "assets" / f"avatar.{ext}"
+        if path.is_file():
+            st = path.stat()
+            return f"{ext}:{st.st_mtime_ns}:{st.st_size}"
+    return None
 
 
 @_profile_handler("profiles.list", 5061)
@@ -459,6 +473,7 @@ def _(rid, params: dict) -> dict:
         if target.is_file():
             blob = target.read_bytes()
             return _ok(rid, {"found": True, "mime": mime, "size": len(blob),
+                             "rev": _try(lambda: _avatar_rev(profile_dir), None) if asset == "avatar" else None,
                              "data": f"data:{mime};base64,{base64.b64encode(blob).decode('ascii')}"})
     return _ok(rid, {"found": False})
 

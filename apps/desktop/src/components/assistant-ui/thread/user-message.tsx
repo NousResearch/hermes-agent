@@ -102,9 +102,15 @@ export const AGENT_MESSAGE_RE =
 // Misses expire after 30s — an avatar can appear at any moment (bot just
 // created, art backfill still running), and a permanent negative cache
 // froze the 🤖 glyph until an app restart.
+// Hits revalidate after 60s against the server's avatar_rev: one cheap
+// profiles.list, and the image itself is only re-downloaded when the rev
+// moved — a replaced avatar used to stay stale until the window reloaded.
 const AGENT_AVATAR_CACHE_MAX = 128
-export const agentAvatarCache = new LruCache<string, { at: number; url: null | string }>(AGENT_AVATAR_CACHE_MAX)
+export const agentAvatarCache = new LruCache<string, { at: number; rev?: null | string; url: null | string }>(
+  AGENT_AVATAR_CACHE_MAX
+)
 const AVATAR_MISS_TTL_MS = 30_000
+const AVATAR_HIT_TTL_MS = 60_000
 const agentAvatarInflight = new Map<string, Promise<null | string>>()
 
 export async function resolveAgentAvatar(handle: string): Promise<null | string> {
@@ -117,12 +123,13 @@ export async function resolveAgentAvatar(handle: string): Promise<null | string>
   const hit = agentAvatarCache.get(key)
 
   if (hit) {
-    if (hit.url !== null) {
+    // Positive entry: serve it inside the TTL, then revalidate its rev.
+    if (hit.url !== null && Date.now() - hit.at < AVATAR_HIT_TTL_MS) {
       return hit.url
     }
 
     // Negative entry: honor it only within the TTL, then re-probe.
-    if (Date.now() - hit.at < AVATAR_MISS_TTL_MS) {
+    if (hit.url === null && Date.now() - hit.at < AVATAR_MISS_TTL_MS) {
       return null
     }
   }
@@ -133,6 +140,8 @@ export async function resolveAgentAvatar(handle: string): Promise<null | string>
     return inflight
   }
 
+  let rev: null | string = null
+
   const run = (async (): Promise<null | string> => {
     try {
       const gateway = $gateway.get()
@@ -141,7 +150,9 @@ export async function resolveAgentAvatar(handle: string): Promise<null | string>
         return null
       }
 
-      const res = await gateway.request<{ profiles?: Array<{ has_avatar?: boolean; name: string }> }>('profiles.list', {
+      const res = await gateway.request<{
+        profiles?: Array<{ avatar_rev?: null | string; has_avatar?: boolean; name: string }>
+      }>('profiles.list', {
         include_sessions: false
       })
 
@@ -157,6 +168,13 @@ export async function resolveAgentAvatar(handle: string): Promise<null | string>
         return null
       }
 
+      rev = profile.avatar_rev ?? null
+
+      // Same file as the cached copy: skip the image download, just re-arm the TTL.
+      if (hit?.url && rev !== null && hit.rev === rev) {
+        return hit.url
+      }
+
       const asset = await gateway.request<{ data?: string; found?: boolean }>('profiles.get_asset', {
         asset: 'avatar',
         name: profile.name
@@ -164,9 +182,9 @@ export async function resolveAgentAvatar(handle: string): Promise<null | string>
 
       return asset?.found && asset.data ? asset.data : null
     } catch {
-      // Older gateway (no profiles.* RPCs) or transient failure — the 🤖
-      // glyph fallback is always correct.
-      return null
+      // Older gateway (no profiles.* RPCs) or transient failure — keep a
+      // cached image if we had one, else the 🤖 glyph fallback is correct.
+      return hit?.url ?? null
     } finally {
       agentAvatarInflight.delete(key)
     }
@@ -174,7 +192,7 @@ export async function resolveAgentAvatar(handle: string): Promise<null | string>
 
   agentAvatarInflight.set(key, run)
   const out = await run
-  agentAvatarCache.set(key, { at: Date.now(), url: out })
+  agentAvatarCache.set(key, { at: Date.now(), rev, url: out })
 
   return out
 }

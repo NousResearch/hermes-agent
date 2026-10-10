@@ -1979,6 +1979,7 @@ def _deliver_result(
     ``failure_deliver`` override when present (NS-788). Returns None on success, else an error."""
     job.pop("_bot_chat_delivery_receipts", None)
     job.pop("_notification_all_targets_suppressed", None)
+    job.pop("_delivery_outcome_unknown", None)
     targets = _resolve_delivery_targets(job, for_failure=for_failure)
     if not targets:
         _record_delivery_verification(job, [])
@@ -2001,6 +2002,12 @@ def _deliver_result(
         delivery_status = get_status(external_execution)
         if delivery_status and delivery_status["status"] == "suppressed":
             job["_notification_all_targets_suppressed"] = True
+        if delivery_status and delivery_status["status"] == "unknown":
+            # The queue fenced the send uncertain (the worker's wait budget ran out mid-send);
+            # the gateway's at-most-once attempt may still land, so the returned error says
+            # "unknown", not "failed" — the scheduler must not read it as a delivery failure
+            # (#132078).
+            job["_delivery_outcome_unknown"] = True
         from cron.jobs import get_job
         refreshed = get_job(job["id"]) or {}
         job["last_delivery_queued"] = refreshed.get("last_delivery_queued")

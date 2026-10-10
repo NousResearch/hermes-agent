@@ -3430,11 +3430,18 @@ def _run_one_job_body(
             # left with its real error — so fall through to _finish_completed_run, whose owner-fenced
             # mark_job_run is authoritative either way. An explicit transport cancel stays fail-closed.
             transport_cancelled = fence.transport_cancelled()
-            if d.delivery_attempted and not d.delivery_error and not transport_cancelled:
+            # #132078: a delivery fenced ``unknown`` by the worker's wait budget is uncertain,
+            # not failed — the gateway's at-most-once send may still land — so it earns the same
+            # fall-through; the queue row is where that uncertainty lives, not the run's status.
+            uncertain_delivery = (
+                d.delivery_attempted and bool(job.get("_delivery_outcome_unknown")))
+            if (d.delivery_attempted and (not d.delivery_error or uncertain_delivery)
+                    and not transport_cancelled):
                 logger.warning(
-                    "Job '%s': fire claim ownership lost after completed delivery; "
+                    "Job '%s': fire claim ownership lost after %s delivery; "
                     "recording the delivered run's terminal status",
-                    job["id"])
+                    job["id"],
+                    "a completed" if not d.delivery_error else "an outcome-unknown")
             else:
                 if transport_cancelled:
                     logger.warning(

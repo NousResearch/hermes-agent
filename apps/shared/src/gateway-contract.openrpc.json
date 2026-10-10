@@ -18885,6 +18885,17 @@
             "default": null,
             "title": "Failure Reason"
           },
+          "quota_resume": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/QuotaResume"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "rendered": {
             "anyOf": [
               {
@@ -26992,6 +27003,81 @@
           "user"
         ],
         "title": "QueuedPrompt",
+        "type": "object"
+      },
+      "QuotaResume": {
+        "additionalProperties": false,
+        "description": "Provider-reported reset plan, with the backend's scheduling verdict.",
+        "properties": {
+          "eligible": {
+            "title": "Eligible",
+            "type": "boolean"
+          },
+          "resume_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Resume At"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Source"
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Provider"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reason"
+          },
+          "scheduled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Scheduled"
+          }
+        },
+        "required": [
+          "eligible"
+        ],
+        "title": "QuotaResume",
         "type": "object"
       },
       "ReactionAuthor": {

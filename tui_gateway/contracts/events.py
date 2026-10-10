@@ -186,6 +186,17 @@ class PersistedTurn(Payload):
     final_assistant_row_id: int | None = None
 
 
+class QuotaResume(Payload):
+    """Provider-reported reset plan, with the backend's scheduling verdict."""
+
+    eligible: bool
+    resume_at: float | None = None
+    source: str | None = None
+    provider: str | None = None
+    reason: str | None = None
+    scheduled: bool | None = None
+
+
 class MessageCompletePayload(Payload):
     """``prompt_turn._complete_turn_payload`` / ``session_auto_continue._emit_terminal_turn_error`` /
     ``agent_callbacks._mirror_subagent_to_child`` (child watch mirror: ``text`` only) /
@@ -202,6 +213,7 @@ class MessageCompletePayload(Payload):
     response_transformed: bool | None = None
     billing: BillingBlock | None = None
     failure_reason: str | None = None
+    quota_resume: QuotaResume | None = None
     rendered: str | None = None
     error: str | None = None
     recoverable: bool | None = None

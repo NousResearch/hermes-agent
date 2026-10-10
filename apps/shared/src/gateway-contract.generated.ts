@@ -4681,6 +4681,7 @@ export interface MessageCompletePayload {
   response_transformed?: boolean | null
   billing?: BillingBlock | null
   failure_reason?: string | null
+  quota_resume?: QuotaResume | null
   rendered?: string | null
   error?: string | null
   recoverable?: boolean | null
@@ -4699,6 +4700,15 @@ export interface BillingBlock {
   is_nous: boolean
   message: string
   unverified?: boolean | null
+}
+/** Provider-reported reset plan, with the backend's scheduling verdict. */
+export interface QuotaResume {
+  eligible: boolean
+  resume_at?: number | null
+  source?: string | null
+  provider?: string | null
+  reason?: string | null
+  scheduled?: boolean | null
 }
 /** ``agent/error_surface.py::_surface`` — advisory {layer, code, retryable} (+ identity, + auth hint, + ``resets_at`` epoch seconds when the provider named when its limit lifts). */
 export interface ErrorSurface {

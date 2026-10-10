@@ -33,7 +33,7 @@ from agent.auxiliary_client import (
 from agent.context_engine import ContextEngine, sanitize_memory_context
 from agent.context_compressor_prellm import PreLlmSkipMixin
 from agent.context_compressor_summary import SummaryDispatchMixin
-from agent.context_compressor_telemetry import CompressionTelemetryMixin, _safe_int
+from agent.context_compressor_telemetry import CompressionTelemetryMixin
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.micro_compaction import MicroCompactionMixin
 from agent.prompt_builder import STEER_DISPLAY_KIND

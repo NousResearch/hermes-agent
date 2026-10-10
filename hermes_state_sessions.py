@@ -520,10 +520,22 @@ class SessionSessionsMixin:
     def end_session(self, session_id: str, end_reason: str) -> None:
         """Mark a session ended; the first end_reason wins (a compression split must keep
         ``'compression'`` even if a stale end_session() lands later); reopen_session() to re-end."""
-        self._execute_write(lambda conn: self._end_and_bump(
-            conn, "UPDATE sessions SET ended_at = ?, end_reason = ? WHERE id = ? AND ended_at IS NULL",
-            (time.time(), end_reason, session_id), session_id, end_reason,
-        ))
+        def _do(conn):
+            stamp = time.time()
+            if end_reason in {"cron_complete", "cron_incomplete_no_output"}:
+                sql = ("UPDATE sessions SET ended_at = ?, end_reason = ?, "
+                       "model_config = json_set(COALESCE(model_config, '{}'), '$._cron_finalized', ?) "
+                       "WHERE id = ? AND ended_at IS NULL AND source = 'cron'")
+                changed = self._end_and_bump(
+                    conn, sql, (stamp, end_reason, end_reason, session_id), session_id, end_reason,
+                )
+                if changed:
+                    return
+            self._end_and_bump(
+                conn, "UPDATE sessions SET ended_at = ?, end_reason = ? WHERE id = ? AND ended_at IS NULL",
+                (stamp, end_reason, session_id), session_id, end_reason,
+            )
+        self._execute_write(_do)
 
     def _end_and_bump(self, conn, sql: str, params: tuple, session_id: str, reason: str) -> int:
         """Run an end-stamp UPDATE; only a boundary this call actually wrote advances the
@@ -565,6 +577,29 @@ class SessionSessionsMixin:
         The guard compares against the parent's started_at, not its current ended_at: a parent that was
         reopened and re-ended later still owns reset children from its earlier boundaries."""
         def _do(conn):
+            # Translate pre-marker scheduler history before clearing the mutable lifecycle boundary.
+            # This keeps the scheduler outcome durable while still reopening the session as live.
+            from hermes_state_common import is_scheduler_finalized_cron
+            row = conn.execute(
+                "SELECT source, end_reason, model_config FROM sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+            if row is not None and is_scheduler_finalized_cron(dict(row)):
+                finalized_reason = row["end_reason"]
+                if finalized_reason not in {"cron_complete", "cron_incomplete_no_output"}:
+                    raw = row["model_config"]
+                    try:
+                        finalized_reason = json.loads(raw or "{}").get("_cron_finalized")
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        finalized_reason = None
+                if finalized_reason in {"cron_complete", "cron_incomplete_no_output"}:
+                    conn.execute(
+                        "UPDATE sessions SET model_config = json_set("
+                        "CASE WHEN json_valid(COALESCE(model_config, '{}')) "
+                        "THEN COALESCE(model_config, '{}') ELSE '{}' END, "
+                        "'$._cron_finalized', ?) WHERE id = ?",
+                        (finalized_reason, session_id),
+                    )
             self._retire_undrained_queue_rows_conn(conn, session_id)
             conn.execute(
                 "UPDATE sessions AS child SET model_config = json_set("
@@ -873,7 +908,12 @@ class SessionSessionsMixin:
             "LEFT JOIN system_prompts tp ON tp.hash = s.tool_names WHERE s.id = ?",
             (session_id,),
         )
-        return self._session_row_dict(row) if row else None
+        if not row:
+            return None
+        data = self._session_row_dict(row)
+        if data.get("source") == "cron":
+            data["cron_finalized"] = self.cron_finalized_outcome(session_id) is not None
+        return data
 
     def get_recent_session_model_route(self, session_id: str) -> Optional[dict[str, Any]]:
         """Most recently used main-loop model route as one coherent per-call tuple

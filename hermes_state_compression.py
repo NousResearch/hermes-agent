@@ -84,6 +84,52 @@ _CHAIN_CAP = 1000
 class SessionCompressionMixin:
     """Compression lineage, cooldown/streak counters, locks and turn leases."""
 
+    def cron_finalized_outcome(self, session_id: str) -> Optional[str]:
+        """Read scheduler finalization through a unique, verified compression continuation.
+
+        Do not borrow facts from latest descendants: forks, delegates, resets, tool
+        sessions and independent cron attempts are different authorization objects.
+        Ambiguous or cyclic lineages fail closed. No mutable lifecycle fields are healed.
+        """
+        from hermes_state_common import scheduler_finalized_cron_outcome
+
+        with self._read_ctx() as conn:
+            seen = set()
+            current = session_id
+            outcome = None
+            for _ in range(_CHAIN_CAP):
+                if current in seen:
+                    return None
+                seen.add(current)
+                row = conn.execute("SELECT * FROM sessions WHERE id = ?", (current,)).fetchone()
+                if row is None or row["source"] != "cron":
+                    return None
+                outcome = scheduler_finalized_cron_outcome(dict(row)) or outcome
+                if row["end_reason"] != "compression":
+                    return outcome
+                children = conn.execute(
+                    "SELECT * FROM sessions WHERE parent_session_id = ? AND source = 'cron'"
+                    + self._NON_CONTINUATION_CHILD_FILTER_SQL.format(alias="")
+                    + f" AND NOT ({_RESET_CHILD_SQL.format(a='sessions')})"
+                    + " AND id NOT GLOB 'cron_*'",
+                    (current,) * 4,
+                ).fetchall()
+                # The scheduler's canonical resolver prefers continuations over
+                # stale automatic-cleanup siblings. Do not let those siblings
+                # erase a unique settlement after the live tip is finalized.
+                # A sibling with its own durable receipt remains competing.
+                children = [child for child in children if not (
+                    child["ended_at"] is not None
+                    and is_automatic_end_reason(child["end_reason"])
+                    and scheduler_finalized_cron_outcome(dict(child)) is None
+                )]
+                if not children:
+                    return outcome
+                if len(children) != 1:
+                    return None
+                current = children[0]["id"]
+            return None
+
     def reopen_if_explicitly_closed(
         self, session_id: str, *, provenance: str, patience_s: Optional[float] = None,
     ) -> Optional[str]:
@@ -103,11 +149,20 @@ class SessionCompressionMixin:
             return None
 
         def _do(conn):
-            row = conn.execute(_ENDED_ROW_SQL, (session_id,)).fetchone()
+            row = conn.execute(
+                "SELECT ended_at, end_reason, source, model_config FROM sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
             if row is None or row["ended_at"] is None:
                 return None
             reason = row["end_reason"]
-            if is_automatic_end_reason(reason) or reason == "compression" or reason in _BOUNDARY_END_REASONS:
+            from hermes_state_common import CRON_FINALIZED_END_REASONS
+            if (
+                is_automatic_end_reason(reason)
+                or (row["source"] == "cron" and reason in CRON_FINALIZED_END_REASONS)
+                or reason == "compression"
+                or reason in _BOUNDARY_END_REASONS
+            ):
                 return None
             superseded = conn.execute(
                 "SELECT 1 FROM sessions WHERE parent_session_id = ?"
@@ -217,6 +272,15 @@ class SessionCompressionMixin:
         """INSERT the compression child's ``sessions`` row copied from *parent*. Same contract as
         _insert_session_row's compression-fork backfill: the child stays on the parent's profile and keeps
         gateway routing/origin columns; no owner on either side -> this store's profile."""
+        from hermes_state_common import scheduler_finalized_cron_outcome
+
+        # Fresh agent init config is not the parent's durable metadata. Carry only
+        # the verified scheduler outcome, without mutating the caller's config.
+        model_config = dict(model_config or {})
+        model_config.pop("_cron_finalized", None)
+        outcome = scheduler_finalized_cron_outcome(dict(parent))
+        if source == "cron" and outcome is not None:
+            model_config["_cron_finalized"] = outcome
         system_prompt_hash = self._store_system_prompt(conn, system_prompt)
         # The child continues the parent's tools[] pin (the compaction refresh re-pinned it just
         # before publish), or its first hop to another surface re-derives the array.
@@ -280,7 +344,7 @@ class SessionCompressionMixin:
                 raise CompressionSessionBusyError(
                     f"Compression lease lost before publication: {parent_session_id}")
             parent = conn.execute(
-                """SELECT ended_at, end_reason, cwd, git_branch, git_repo_root,
+                """SELECT ended_at, end_reason, source, model_config, cwd, git_branch, git_repo_root,
                           user_id, session_key, chat_id, chat_type,
                           thread_id, display_name, origin_json, profile_name, tool_names,
                           archived, auto_archived, pinned
@@ -294,7 +358,15 @@ class SessionCompressionMixin:
                 # evict) is stale by construction — this lease holder is still continuing the
                 # conversation, and left alone it wedges rotation forever. Clear it; the closure
                 # UPDATE below re-stamps end_reason='compression'. Deliberate boundaries fail closed.
-                if not is_automatic_end_reason(parent["end_reason"]):
+                from hermes_state_common import CRON_FINALIZED_END_REASONS, is_scheduler_finalized_cron
+                scheduler_finalized_current = (
+                    parent["source"] == "cron"
+                    and (
+                        parent["end_reason"] in CRON_FINALIZED_END_REASONS
+                        or (parent["end_reason"] is None and is_scheduler_finalized_cron(dict(parent)))
+                    )
+                )
+                if not is_automatic_end_reason(parent["end_reason"]) and not scheduler_finalized_current:
                     raise RuntimeError(f"Compression parent already ended: {parent_session_id}")
                 conn.execute(
                     "UPDATE sessions SET ended_at = NULL, end_reason = NULL WHERE id = ?",

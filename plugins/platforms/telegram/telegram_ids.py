@@ -1,10 +1,12 @@
-"""Helpers for Telegram Bot API chat identifiers: a ``chat_id`` is a numeric ID (int) or an ``@username``
-string for public channels/groups; a bare ``int(chat_id)`` crashes on the username form."""
+"""Helpers for Telegram Bot API chat and message identifiers: a ``chat_id`` is a numeric ID (int) or an
+``@username`` string for public channels/groups; a bare ``int(chat_id)`` crashes on the username form."""
 
 from __future__ import annotations
 
 import re
 from typing import Any, Union
+
+from gateway.platforms.event import MessageOrigin
 
 # Usernames are 5-32 chars (letters, digits, underscores) with a leading "@"; 4-char legacy handles are tolerated.
 _TELEGRAM_USERNAME_RE = re.compile(r"@[A-Za-z0-9_]{4,32}")
@@ -29,3 +31,11 @@ def parse_telegram_username_target(target_ref: Any) -> str | None:
     """Return the value when it is an ``@username`` target, else ``None``."""
     value = str(target_ref).strip()
     return value if looks_like_telegram_username(value) else None
+
+
+def message_origin(message: Any, update_id: int | None) -> MessageOrigin:
+    """One inbound message revision. Telegram sends ``edit_date`` only for an edit, so an ordinary
+    message is fully identified by its chat, message and update ids with ``edit_date`` None."""
+    edit_date = getattr(message, "edit_date", None)
+    return MessageOrigin(str(message.chat.id), str(message.message_id), update_id,
+                         int(edit_date.timestamp()) if edit_date else None)

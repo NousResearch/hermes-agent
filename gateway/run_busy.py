@@ -683,7 +683,7 @@ class GatewayBusySessionMixin:
         if turn.agent is not running_agent:
             return None
         if turn.event is not None and turn.event is not event:
-            turn.event.absorb_reply_expected(event)
+            turn.event.absorb(event)
             if turn.ctx is not None:
                 turn.ctx.reply_expected = turn.event.reply_expected
         return turn
@@ -1056,6 +1056,7 @@ class GatewayBusySessionMixin:
                 reply_to_is_own_message=event.reply_to_is_own_message, auto_skill=event.auto_skill,
                 channel_prompt=event.channel_prompt, channel_context=event.channel_context,
                 internal=event.internal, timestamp=event.timestamp,
+                source_origins=event.source_origins, source_origins_complete=event.source_origins_complete,
             ), adapter)
         depth = self._queue_depth(quick_key, adapter=adapter)
         return t("gateway.queue.queued") + (t("gateway.queue.queued_depth", depth=depth) if depth > 1 else "")
@@ -1078,6 +1079,7 @@ class GatewayBusySessionMixin:
                     text=steer_text, message_type=MessageType.TEXT, source=event.source,
                     message_id=event.message_id, channel_prompt=event.channel_prompt,
                     channel_context=event.channel_context,
+                    source_origins=event.source_origins, source_origins_complete=event.source_origins_complete,
                 ), adapter)
             return reply
 

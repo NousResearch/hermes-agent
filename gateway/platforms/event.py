@@ -8,7 +8,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, NamedTuple, Optional
 
 from gateway.session import SessionSource
 
@@ -39,6 +39,15 @@ class ProcessingOutcome(Enum):
     SUCCESS = "success"
     FAILURE = "failure"
     CANCELLED = "cancelled"
+
+
+class MessageOrigin(NamedTuple):
+    """One inbound platform message revision a turn was built from. A tuple of scalars, so
+    origins are deeply immutable and can be shared with every hook callback as they are."""
+    chat_id: str
+    message_id: str
+    update_id: Optional[int] = None
+    edit_date: Optional[int] = None  # Unix seconds; None for a message that was never edited
 
 
 @dataclass
@@ -101,16 +110,23 @@ class MessageEvent:
     # knows the message was meant for someone else); None means unknown and keeps the visible
     # fallback, like True.
     reply_expected: Optional[bool] = None
+    # The platform messages this event was built from, in arrival order; complete only when the
+    # adapter identified every one of them (merges: ``absorb``).
+    source_origins: tuple[MessageOrigin, ...] = ()
+    source_origins_complete: bool = False
 
     # Process-local admission receipt, never routing metadata or execution acknowledgement.
     _gateway_accepted: bool = field(default=False, init=False, repr=False, compare=False)
     # Run-owned final presentation snapshot; never deserialized from ingress metadata.
     _notification_reply_muted: Optional[bool] = field(default=None, init=False, repr=False, compare=False)
 
-    def absorb_reply_expected(self, other: "MessageEvent") -> None:
-        """One turn now answers *other* too: an addressed message wins, then an unknown one."""
+    def absorb(self, other: "MessageEvent") -> None:
+        """One turn now answers *other* too: an addressed message wins, then an unknown one; its
+        origins join ours, complete only if both sides were."""
         if self.reply_expected is not True and other.reply_expected is not False:
             self.reply_expected = other.reply_expected
+        self.source_origins += other.source_origins
+        self.source_origins_complete = self.source_origins_complete and other.source_origins_complete
 
     def _command_text(self) -> str:
         """Return the message text with leading Desktop attachment refs stripped.

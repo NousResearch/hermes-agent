@@ -16,9 +16,10 @@ metadata:
 
 Work GitHub end to end with the `gh` CLI (REST fallback where noted): auth,
 issues, the PR lifecycle, issue-to-PR delivery, code review, and repo
-management. This skill consolidates six former skills; each workflow lives
-complete in its reference file — ALWAYS read the matching reference before
-starting that workflow, the body below only routes.
+management. Each of the six workflows remains complete in its own reference;
+standalone GitHub skills remain separate, with no absorption or deletion.
+ALWAYS read the matching reference before starting that workflow; the body below
+only routes.
 
 ## Routing
 
@@ -31,13 +32,23 @@ starting that workflow, the body below only routes.
 | Review someone's PR: diffs, inline comments, verdict | `references/code-review.md` |
 | Clone/create/fork repos, remotes, releases | `references/repo-management.md` |
 
-Supporting assets: `scripts/gh-env.sh` + `scripts/git-credential-token.py`
-(auth helpers), `templates/` (PR bodies, bug report, feature request),
+Supporting assets: [`scripts/gh-env.sh`](scripts/gh-env.sh) is the safe bundled
+authentication detector. The installed `github-auth/scripts/gh-env.sh` remains
+the canonical helper when that standalone skill is present. Git-store detection
+is presence-only: it never supplies a PAT for API calls.
+[`scripts/git-credential-token.py`](scripts/git-credential-token.py) is a legacy,
+operator-only extraction utility, not an agent route; agents must never invoke
+it or read credential-store values. Keep it for explicit human maintenance only.
+`templates/` (PR bodies, bug report, feature request),
 `references/ci-troubleshooting.md`, `references/conventional-commits.md`,
 `references/github-api-cheatsheet.md`, `references/review-output-template.md`.
 
 ## Core discipline (applies to every workflow)
 
+- Authentication and secret entry are user-only interactive steps. Never
+  receive or print credentials, embed them in URLs/command text, extract them
+  from Git's store, or write raw gh credential files. Use existing `gh` auth or
+  a preconfigured environment token; see `references/auth.md` for setup.
 - Preflight once per session: `gh auth status` — if it fails, go to
   `references/auth.md` before anything else.
 - Prefer `gh` over raw REST; drop to `gh api` only for endpoints the

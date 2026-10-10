@@ -3756,8 +3756,24 @@ class FeishuAdapter(BasePlatformAdapter):
             request = self._build_reply_message_request(effective_reply_to, body)
             return await self._run_blocking(self._client.im.v1.message.reply, request)
         if thread_id:
-            # reply→create fallback inside a topic: thread_id as receive_id keeps it in the topic.
-            receive_id, receive_id_type = thread_id, "thread_id"
+            # ``thread_id`` is NOT a valid receive_id_type for im/v1/messages (Feishu only
+            # accepts open_id/user_id/union_id/email/chat_id) — creating with it always fails
+            # with 99992402 (upstream #54498/#61000/#78975). Keep the message inside the topic
+            # by replying to the thread's last message (the same mitigation the audio path
+            # already uses below); if the thread is unreachable, fall back to a plain chat_id
+            # create so the response is still delivered instead of being silently dropped.
+            thread_msg_id = await self._fetch_last_message_in_thread(thread_id)
+            if thread_msg_id:
+                body = self._build_reply_message_body(
+                    content=payload, msg_type=msg_type, reply_in_thread=True, uuid_value=str(uuid.uuid4()),
+                )
+                request = self._build_reply_message_request(thread_msg_id, body)
+                logger.info("[Feishu] Thread send: replying to last message in thread %s", thread_id)
+                return await self._run_blocking(self._client.im.v1.message.reply, request)
+            logger.warning(
+                "[Feishu] No message found in thread %s; falling back to chat_id create", thread_id,
+            )
+            receive_id, receive_id_type = chat_id, "chat_id"
         elif chat_id.startswith("feishu_user_id:"):
             receive_id, receive_id_type = chat_id.split(":", 1)[1], "user_id"
         else:

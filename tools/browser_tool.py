@@ -35,6 +35,31 @@ _BROWSER_PASSTHROUGH_KEYS: tuple[str, ...] = (
     "FIRECRAWL_API_KEY", "FIRECRAWL_API_URL", "FIRECRAWL_BROWSER_TTL",
 )
 
+# Unlike a terminal, agent-browser and the Chromium process it launches never
+# need the operator's general AWS credential chain. The shared subprocess
+# policy intentionally preserves these variables for trusted terminal use, so
+# remove them explicitly at this narrower process boundary.
+_BROWSER_AWS_CREDENTIAL_KEYS: tuple[str, ...] = (
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+    "AWS_SECURITY_TOKEN",
+    "AWS_PROFILE",
+    "AWS_DEFAULT_PROFILE",
+    "AWS_SHARED_CREDENTIALS_FILE",
+    "AWS_CONFIG_FILE",
+    "AWS_WEB_IDENTITY_TOKEN_FILE",
+    "AWS_ROLE_ARN",
+    "AWS_ROLE_SESSION_NAME",
+    "AWS_ROLE_SESSION_DURATION",
+    "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+    "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+    "AWS_CONTAINER_AUTHORIZATION_TOKEN",
+    "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE",
+    "AWS_EC2_METADATA_SERVICE_ENDPOINT",
+    "AWS_EC2_METADATA_SERVICE_ENDPOINT_MODE",
+)
+
 
 def warm_agent_browser_npx_cache(timeout: float = 60.0) -> bool:
     """Frozen old-updater surface (tests/compat/old_updater_surface.json): a pre-PM ``hermes update``
@@ -55,6 +80,8 @@ def _build_browser_env() -> dict:
     from agent.proxy_bypass import add_loopback_no_proxy
 
     env = served_profile_child_env(inherit_credentials=False)
+    for _key in _BROWSER_AWS_CREDENTIAL_KEYS:
+        env.pop(_key, None)
     # A routed profile (multiplex, or a Desktop/dashboard backend serving ``?profile=B`` with the
     # flag off) resolves from its bound scope only — a miss is "no key", never the launch profile's
     # ``os.environ`` value that ``get_secret`` falls through to while multiplexing is inactive.

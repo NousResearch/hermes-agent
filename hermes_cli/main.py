@@ -593,6 +593,8 @@ def explicit_cli_profile() -> str | None:
 
 def _apply_profile_override() -> None:
     """Pre-parse --profile/-p and set HERMES_HOME before imports."""
+    from hermes_cli.main_resume import follow_resume_owner
+
     global _explicit_cli_profile
     _explicit_cli_profile = None
     argv = sys.argv[1:]
@@ -606,6 +608,8 @@ def _apply_profile_override() -> None:
     # `hermes profile use` and the gateway should honour it (#22502).
     hermes_home_env = os.environ.get("HERMES_HOME", "")
     if profile_name is None and hermes_home_env and Path(hermes_home_env).parent.name == "profiles":
+        # Pinned as deliberately as -p: a --resume id it lacks only gets a hint naming the owner.
+        follow_resume_owner(argv, None, pinned=True, active_home=Path(hermes_home_env))
         return
 
     if (profile_name is None and not _under_gateway_supervisor(argv)
@@ -623,6 +627,8 @@ def _apply_profile_override() -> None:
         except (UnicodeDecodeError, OSError):
             pass  # corrupted file, skip
 
+    # Sticky/default only: a typed --resume id this profile lacks follows its one owning profile.
+    profile_name = follow_resume_owner(argv, profile_name, pinned=consume > 0)
     if profile_name is None:
         return
     try:
@@ -902,6 +908,7 @@ from hermes_cli.main_web_build import (  # frozen updater surface: update_cmd*.p
     _record_bytecode_fingerprint,
     _run_npm_install_deterministic,
 )
+from hermes_cli.main_resume import _import_foreign_resume
 from hermes_cli.main_tui_launch import (
     _launch_tui,
     _pin_kanban_board_env,
@@ -1511,26 +1518,6 @@ def _apply_in_dir(args) -> None:
     if os.environ.get("TERMINAL_CWD", "").strip():
         os.environ["TERMINAL_CWD"] = _target_dir
     args.no_restore_cwd = True
-
-
-def _import_foreign_resume(args) -> None:
-    """--resume @claude / @codex: import a foreign session and resume it."""
-    _resume_foreign = getattr(args, "resume", None)
-    if not (isinstance(_resume_foreign, str) and _resume_foreign.strip().lower() in ("@claude", "@codex")):
-        return
-    from hermes_cli.foreign_sessions import import_foreign_session, pick_foreign_session
-
-    _picked = pick_foreign_session(_resume_foreign.strip().lower().lstrip("@"))
-    if _picked is None:
-        sys.exit(1)
-    try:
-        _imported_id = import_foreign_session(_picked.source, _picked.path)
-    except ValueError as e:
-        print(f"Error: {e}")
-        sys.exit(1)
-    print(f"✓ Imported as {_imported_id} — resuming it now.")
-    print(f"  (later: hermes --resume {_imported_id})")
-    args.resume = _imported_id
 
 
 def _resolve_chat_session_args(args, use_tui: bool) -> None:

@@ -126,7 +126,7 @@ def test_writer_reader_preserve_response_with_nested_frames(cron_env, monkeypatc
 
     job = create_job(prompt="Original prompt noise\r\n**Response Characters:** 4\n## Response\n\nbody",
                      schedule="0 8 * * *", context_from="self")
-    success, archive, final, error = _run_stub_job(monkeypatch, job, answer)
+    success, archive, _final, error = _run_stub_job(monkeypatch, job, answer)
     assert success, error
     save_job_output(job["id"], archive)
     prompt, injected = _inject_context_from(job, "Next task")
@@ -147,7 +147,7 @@ def test_truncated_outer_frame_cannot_promote_a_quoted_inner_frame(cron_env, mon
               + suffix)
 
     job = create_job(prompt="Report", schedule="0 8 * * *", context_from="self")
-    success, archive, final, error = _run_stub_job(monkeypatch, job, answer)
+    success, archive, _final, error = _run_stub_job(monkeypatch, job, answer)
     assert success, error
     save_job_output(job["id"], archive)
     saved = next((OUTPUT_DIR / job["id"]).glob("*.md"))

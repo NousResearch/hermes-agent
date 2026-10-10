@@ -15,13 +15,13 @@ from tools.registry import registry, tool_error
 
 
 def manage_connections(
-    args: Dict[str, Any],
+    args: dict[str, Any],
     *,
     client_factory: Optional[Callable[[], Any]] = None,
     mcp_backend: Optional[Any] = None,
     session_id: Optional[str] = None,
     tool_call_id: Optional[str] = None,
-    connection_callback: Optional[Callable[[Dict[str, Any]], Optional[str]]] = None,
+    connection_callback: Optional[Callable[[dict[str, Any]], Optional[str]]] = None,
     connectors_available: Optional[Callable[[], bool]] = None,
 ) -> str:
     action = str(args.get("action") or "status").strip().lower()

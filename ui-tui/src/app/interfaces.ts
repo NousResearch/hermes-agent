@@ -548,7 +548,7 @@ export interface SlashHandlerContext {
     setCatalog: StateSetter<null | SlashCatalog>
   }
   session: {
-    closeSession: (targetSid?: null | string) => Promise<unknown>
+    closeSession: (targetSid?: null | string, deferMessages?: boolean) => Promise<unknown>
     die: () => void
     dieWithCode: (code: number) => void
     guardBusySessionSwitch: (what?: string) => boolean

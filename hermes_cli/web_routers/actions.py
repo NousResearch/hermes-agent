@@ -84,7 +84,7 @@ def _record_completed_action(name: str, message: str, exit_code: int = 1) -> Non
     _finish_action(name, exit_code, None)
 
 
-def _tail_lines(path: Path, n: int) -> List[str]:
+def _tail_lines(path: Path, n: int) -> list[str]:
     """Return the last ``n`` lines of ``path`` without loading huge logs."""
     try:
         size = path.stat().st_size
@@ -97,7 +97,7 @@ def _tail_lines(path: Path, n: int) -> List[str]:
     offset = size
     chunk_size = _ACTION_LOG_TAIL_INITIAL_CHUNK_BYTES
     newline_count = 0
-    chunks: List[bytes] = []
+    chunks: list[bytes] = []
     drop_partial_first_line = False
     try:
         with path.open("rb") as handle:
@@ -121,7 +121,7 @@ def _tail_lines(path: Path, n: int) -> List[str]:
     return lines[-n:]
 
 
-def _durable_completed_update_action_id(lines: List[str]) -> Optional[str]:
+def _durable_completed_update_action_id(lines: list[str]) -> Optional[str]:
     """Latest successful update id from ``update.log`` — the durable record that survives
     the update restarting the dashboard (losing the in-memory ``Popen``/result registries).
     Only a completion marker after the latest start marker counts, so a stale success
@@ -138,7 +138,7 @@ def _durable_completed_update_action_id(lines: List[str]) -> Optional[str]:
     return completed_action_id if completed_action_id and last_completed > last_start else None
 
 
-def _latest_spawned_update_action_id(lines: List[str]) -> Optional[str]:
+def _latest_spawned_update_action_id(lines: list[str]) -> Optional[str]:
     """Action id named by the latest ``hermes-update started`` header of THIS dashboard's log."""
     for line in reversed(lines):
         if line.startswith("=== hermes-update started "):
@@ -229,7 +229,7 @@ async def gateway_drain(request: Request):
     }
 
 
-def _update_refused(error: str, message: str, update_command: str) -> Dict[str, Any]:
+def _update_refused(error: str, message: str, update_command: str) -> dict[str, Any]:
     _record_completed_action("hermes-update", message, exit_code=1)
     return {
         "ok": False, "pid": None, "name": "hermes-update", "error": error, "message": message,
@@ -309,7 +309,7 @@ async def check_hermes_update(force: bool = False, profile: Optional[str] = None
         }
 
     install_method = detect_install_method(_server_path("PROJECT_ROOT"))
-    payload: Dict[str, Any] = {
+    payload: dict[str, Any] = {
         "install_method": install_method,
         "current_version": get_version_info().derived_version,
         "behind": None,
@@ -348,7 +348,7 @@ async def check_hermes_update(force: bool = False, profile: Optional[str] = None
 
 
 def _completed_exit_code(
-    result: Optional[Dict[str, Any]], durable_action_id: Optional[str], receipt: Optional[Dict[str, Any]],
+    result: Optional[dict[str, Any]], durable_action_id: Optional[str], receipt: Optional[dict[str, Any]],
 ) -> Optional[int]:
     """Exit code for an action with no live process: in-memory result, else durable evidence."""
     if result is not None:
@@ -425,7 +425,7 @@ async def get_action_status(name: str, lines: int = 200):
     return response
 
 
-def _read_latest_receipt() -> Optional[Dict[str, Any]]:
+def _read_latest_receipt() -> Optional[dict[str, Any]]:
     """Latest update receipt, or None on any failure (never raises)."""
     try:
         from hermes_cli.update_receipt import read_latest_receipt
@@ -434,7 +434,7 @@ def _read_latest_receipt() -> Optional[Dict[str, Any]]:
         return None
 
 
-def _latest_update_receipt_summary(action_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+def _latest_update_receipt_summary(action_id: Optional[str] = None) -> Optional[dict[str, Any]]:
     """Compact summary of dashboard action ``action_id``'s receipt when one exists, else of the
     latest receipt (written by EVERY ``hermes update`` run, incl. refused/failed), or None; never
     raises. Steps/skips stay in the full endpoint. ``action_id`` names the writer so a client

@@ -187,7 +187,7 @@ def test_git_object_bytes_that_do_not_hash_to_pres_blob_never_run(tmp_path, corr
     """No published closure, and ``pre``'s loose object of the repair inflates to other bytes: they
     never run and nothing is published; the marker stays for a later launch or update (N02)."""
     ran = tmp_path / "FOREIGN_RAN"
-    root, env, original, launcher = _killed_mid_write(tmp_path, "hermes_bootstrap.py")
+    root, env, _original, launcher = _killed_mid_write(tmp_path, "hermes_bootstrap.py")
     (closure,) = (root / ".git/hermes-update-recovery").iterdir()  # named for ``pre``
     shutil.rmtree(closure.parent)
     if corrupt:

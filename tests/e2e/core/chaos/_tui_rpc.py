@@ -27,7 +27,7 @@ class RpcError(AssertionError):
 
 class TuiGatewayProcess:
     def __init__(self, env: dict[str, str], cwd: Path, stderr_path: Path) -> None:
-        self._stderr_fh = open(stderr_path, "wb")  # noqa: SIM115 - closed in close()
+        self._stderr_fh = open(stderr_path, "wb")
         self.stderr_path = stderr_path
         self.proc = subprocess.Popen(
             [python_exe(), "-X", "faulthandler", "-m", "tui_gateway.entry"],
@@ -198,7 +198,7 @@ class Heartbeat:
                 self._inflight_since = None
             self._stop.wait(self.interval)
 
-    def __enter__(self) -> "Heartbeat":
+    def __enter__(self) -> Heartbeat:
         self._inflight_since: float | None = None
         self._thread.start()
         return self

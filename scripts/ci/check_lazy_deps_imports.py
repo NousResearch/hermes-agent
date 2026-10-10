@@ -113,9 +113,7 @@ def _import_sites(tree: ast.AST, relpath: str) -> list[str]:
             if node.level == 0:
                 if node.module == _STUB_MODULE or (
                     node.module and node.module.startswith(_STUB_MODULE + ".")
-                ):
-                    kind = f"'{node.module} ({names})'"
-                elif node.module == _DELETED_PARENT and any(
+                ) or node.module == _DELETED_PARENT and any(
                     a.name == "lazy_deps" for a in node.names
                 ):
                     kind = f"'{node.module} ({names})'"
@@ -123,9 +121,7 @@ def _import_sites(tree: ast.AST, relpath: str) -> list[str]:
                 resolved = _relative_target(relpath, node)
                 if resolved == _DELETED_PARENT and any(
                     a.name == "lazy_deps" for a in node.names
-                ):
-                    kind = f"'{resolved} ({names})' (relative)"
-                elif resolved == _STUB_MODULE or (
+                ) or resolved == _STUB_MODULE or (
                     resolved and resolved.startswith(_STUB_MODULE + ".")
                 ):
                     kind = f"'{resolved} ({names})' (relative)"

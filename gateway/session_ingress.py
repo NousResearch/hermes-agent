@@ -61,10 +61,7 @@ async def _hand_over_turn_marker(authority, admission_id, event):
     no-waiter reply keeps it until ``deliver_settled``; any other turn releases it here."""
     adopter = _marker_adopters(authority).get(admission_id)
     if adopter is not None:
-        for name in _MARKER_FIELDS:
-            if hasattr(event, name):
-                setattr(adopter, name, getattr(event, name))
-                delattr(event, name)
+        _move_marker(event, adopter)
         return
     if admission_id in authority.pending_deliveries:
         # Released by ``deliver_settled``, also when settlement failed and dropped the delivery.
@@ -73,11 +70,63 @@ async def _hand_over_turn_marker(authority, admission_id, event):
     await _release_turn_marker(authority, event)
 
 
+def _move_marker(source, target):
+    for name in _MARKER_FIELDS:
+        if hasattr(source, name):
+            setattr(target, name, getattr(source, name))
+            delattr(source, name)
+
+
 def _held_markers(authority):
     held = getattr(authority, 'held_turn_markers', None)
     if held is None:
         held = authority.held_turn_markers = {}
     return held
+
+
+def _registry(authority, name):
+    found = getattr(authority, name, None)
+    if found is None:
+        found = {}
+        setattr(authority, name, found)
+    return found
+
+
+def waiter_replies(authority):
+    """admission -> the reply a live native waiter is about to send, kept only until the drain
+    settles the turn, so a turn fenced ``unknown`` can still owe it to the chat."""
+    return _registry(authority, 'waiter_replies')
+
+
+def retain_unsettled_delivery(authority, admission_id):
+    """Settlement could not commit and the turn is fenced ``unknown``, but this owner keeps its
+    captured answer for Discard (``resolve_unknown``). The reply stays owed to its destination,
+    and so does the turn's crash marker: the live waiter is released with a pause notice, so the
+    marker is taken back from it. Restart while unknown clears the marker (no answer is owed,
+    ``release_unknown_turn_markers``); a Discard that commits the captured answer makes it owed,
+    sent once by ``deliver_resolved`` or, after a kill before that send, by the boot ledger."""
+    delivery = waiter_replies(authority).pop(admission_id, None)
+    if delivery is not None:
+        adopter = _marker_adopters(authority).get(admission_id)
+        if adopter is not None:
+            _move_marker(adopter, delivery[1])
+            _held_markers(authority)[admission_id] = delivery[1]
+    else:
+        delivery = authority.pending_deliveries.pop(admission_id, None)
+    if delivery is not None:
+        _registry(authority, 'unsettled_deliveries')[admission_id] = delivery
+
+
+async def deliver_resolved(authority, admission_id, *, owed):
+    """After a Discard committed: send the retained reply when its captured answer committed with
+    the resolution (``owed``), else release its marker and drop it. Popped first, so a repeated
+    resolution never sends twice; a turn the drain still owns is delivered by the drain."""
+    delivery = _registry(authority, 'unsettled_deliveries').pop(admission_id, None)
+    if delivery is None:
+        return
+    if owed:
+        authority.pending_deliveries[admission_id] = delivery
+    await deliver_settled(authority, admission_id)
 
 
 async def _release_turn_marker(authority, event):
@@ -190,14 +239,18 @@ async def execute_admission(authority, ref, row):
             # The drain commits this under the stream lock so no viewer reads `terminal`
             # before the completion event exists in the replay ring.
             authority.pending_results[row['admission_id']] = {'result': result, 'usage': captured.get('usage', {})}
-            if not native and not is_api and response:
+            if not is_api and response:
                 adapter = authority.runner._adapter_for_source(event.source)
                 if adapter is not None:
                     # A recovered turn with no live delivery waiter: the drain sends this only after
                     # it commits the terminal outcome (deliver_settled), so a failed settlement never
-                    # leaves an externally answered admission started -> unknown.
-                    authority.pending_deliveries[row['admission_id']] = (
-                        adapter, event, live.route, response, home)
+                    # leaves an externally answered admission started -> unknown. A live waiter
+                    # sends its own; the record only outlives a settlement fenced unknown.
+                    delivery = (adapter, event, live.route, response, home)
+                    if native:
+                        waiter_replies(authority)[row['admission_id']] = delivery
+                    else:
+                        authority.pending_deliveries[row['admission_id']] = delivery
             handed = True
             await _hand_over_turn_marker(authority, row['admission_id'], event)
             return response

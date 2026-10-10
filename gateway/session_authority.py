@@ -517,6 +517,10 @@ class SessionAuthority:
         # would otherwise stay on disk forever (the drain releases only settled turns).
         from gateway.session_ingress_media import release_admission_media
         release_admission_media(self.db, admission_id)
+        # Before the successor can run: a committed captured answer reaches the chat it was
+        # owed to (a turn fenced unknown already released its delivery waiter), exactly once.
+        from gateway.session_ingress import deliver_resolved
+        await deliver_resolved(self, admission_id, owed=prepared is not None and row['owner_epoch'] == self.epoch)
         self._publish_pending(ref)
         self._schedule(ref)
         return self._receipt(row)
@@ -753,6 +757,8 @@ class SessionAuthority:
                     current = get_session_admission(self.db, admission_id=admission_id)
                     status = current['status']
                     if status == 'unknown':
+                        from gateway.session_ingress import retain_unsettled_delivery
+                        retain_unsettled_delivery(self, admission_id)
                         self._publish_pending(ref)
                         self._pause(ref, 'unknown_execution')
                         return
@@ -784,6 +790,8 @@ class SessionAuthority:
                 if settled is None:
                     # Uncommitted (unknown or discarded): the user is not told an answer the FIFO lost.
                     self.pending_deliveries.pop(admission_id, None)
+                from gateway.session_ingress import waiter_replies
+                waiter_replies(self).pop(admission_id, None)
             from gateway.session_ingress import deliver_settled
             await deliver_settled(self, admission_id)
             waiter = self.waiters.pop(admission_id, None)

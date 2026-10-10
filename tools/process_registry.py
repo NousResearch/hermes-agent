@@ -830,10 +830,9 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
         promote the session to notify_on_complete."""
         if not session.watch_patterns or session._watch_disabled:
             return
-        # Late chunks after the reader declared exit are post-exit noise; dropping them
-        # avoids stale notifications minutes after the process ended.
-        if session.exited:
-            return
+        # A reader can deliver buffered output after the exit state is observed.  Keep
+        # scanning those final chunks so a match printed immediately before exit is not
+        # lost to the completion race.
         hits = [  # (first matching pattern, line) — one match per line
             (next(p for p in session.watch_patterns if p in line), line.rstrip())
             for line in new_text.splitlines() if any(p in line for p in session.watch_patterns)]

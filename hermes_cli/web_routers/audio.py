@@ -47,6 +47,9 @@ _AUDIO_MIME_EXTENSIONS: dict[str, str] = {
 }
 
 _MAX_TRANSCRIPTION_UPLOAD_BYTES = 25 * 1024 * 1024
+_SPEAK_STREAM_MAX_INPUT_BYTES = 1024 * 1024
+_SPEAK_STREAM_TEXT_QUEUE_MAX = 64
+_SPEAK_STREAM_AUDIO_QUEUE_MAX = 64
 
 _SPEAK_MIME_BY_EXT = {
     ".mp3": "audio/mpeg", ".ogg": "audio/ogg", ".opus": "audio/ogg", ".wav": "audio/wav",
@@ -411,7 +414,7 @@ def _sync_sentence_to_pcm(text: str) -> tuple:
 
     fd, tmp_path = tempfile.mkstemp(suffix=".mp3")
     os.close(fd)
-    extra = None
+    artifacts = {tmp_path}
     try:
         raw = text_to_speech_tool(text=text, output_path=tmp_path)
         try:
@@ -421,19 +424,20 @@ def _sync_sentence_to_pcm(text: str) -> tuple:
         if not isinstance(payload, dict) or not payload.get("success"):
             detail = str(payload.get("error") or "") if isinstance(payload, dict) else ""
             raise RuntimeError(detail or "Speech synthesis failed")
+        reported = payload.get("file_paths") or []
+        if isinstance(reported, list):
+            artifacts.update(path for path in reported if isinstance(path, str) and path)
         written = payload.get("file_path") or tmp_path
         if not isinstance(written, str) or not os.path.isfile(written) or os.path.getsize(written) <= 0:
             raise RuntimeError("Audio file missing")
-        if os.path.abspath(written) != os.path.abspath(tmp_path):
-            extra = written
+        artifacts.add(written)
         pcm, rate = _audio_file_to_pcm(written)
         if not pcm:
             raise RuntimeError("TTS audio decoded to silence")
         return pcm, rate
     finally:
-        _unlink_quietly(tmp_path)
-        if extra:
-            _unlink_quietly(extra)
+        for artifact in artifacts:
+            _unlink_quietly(artifact)
 
 
 def _audio_file_to_pcm(path: str) -> tuple:
@@ -663,8 +667,20 @@ async def speak_stream_ws(ws: WebSocket) -> None:
     stop = threading.Event()
     produced_audio = False
     synthesis_failed = False
-    text_q: queue.Queue = queue.Queue()  # str deltas; None = end-of-text
-    chunks: asyncio.Queue = asyncio.Queue()  # PCM out; None = synthesis done
+    text_q: queue.Queue = queue.Queue(maxsize=_SPEAK_STREAM_TEXT_QUEUE_MAX)
+    chunks: asyncio.Queue = asyncio.Queue(maxsize=_SPEAK_STREAM_AUDIO_QUEUE_MAX)
+
+    def _put_audio(chunk) -> bool:
+        """Apply backpressure to synthesis without growing cross-thread PCM storage."""
+        pending = asyncio.run_coroutine_threadsafe(chunks.put(chunk), loop)
+        while not stop.is_set():
+            try:
+                pending.result(timeout=0.5)
+                return True
+            except TimeoutError:
+                continue
+        pending.cancel()
+        return False
 
     def _produce():
         # Every streamer re-resolves its API key on each stream() call (tts_streaming ->
@@ -718,31 +734,40 @@ async def speak_stream_ws(ws: WebSocket) -> None:
                         if stop.is_set():
                             return
                         produced_audio = True
-                        loop.call_soon_threadsafe(chunks.put_nowait, chunk)
+                        if not _put_audio(chunk):
+                            return
         except Exception as exc:
             _log.warning("speak-stream synthesis failed: %s", exc)
             synthesis_failed = True
         finally:
-            loop.call_soon_threadsafe(chunks.put_nowait, None)
+            _put_audio(None)
 
     threading.Thread(target=_produce, daemon=True).start()
 
     async def _pump_client():
         # Text frames feed synthesis; done ends the text; stop/disconnect
         # (or any unparseable frame) is barge-in.
+        input_bytes = 0
         try:
             while True:
                 frame = json.loads(await ws.receive_text())
                 if frame.get("text"):
-                    text_q.put(str(frame["text"]))
+                    text = str(frame["text"])
+                    input_bytes += len(text.encode("utf-8"))
+                    if input_bytes > _SPEAK_STREAM_MAX_INPUT_BYTES:
+                        await ws.close(code=1009)
+                        break
+                    await asyncio.to_thread(text_q.put, text)
                 if frame.get("stop"):
                     break
                 if frame.get("done"):
-                    text_q.put(None)
+                    await asyncio.to_thread(text_q.put, None)
         except Exception:
             pass
         stop.set()
-        text_q.put(None)  # unblock the producer
+        with contextlib.suppress(queue.Full):
+            text_q.put_nowait(None)  # unblock the producer when queue capacity remains
+        await chunks.put(None)  # unblock the websocket sender on stop or rejected ingress
 
     pump = asyncio.ensure_future(_pump_client())
     try:
@@ -764,7 +789,8 @@ async def speak_stream_ws(ws: WebSocket) -> None:
         pass
     finally:
         stop.set()
-        text_q.put(None)
+        with contextlib.suppress(queue.Full):
+            text_q.put_nowait(None)
         pump.cancel()
         with contextlib.suppress(Exception):
             await ws.close()

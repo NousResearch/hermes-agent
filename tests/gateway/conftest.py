@@ -54,7 +54,7 @@ def _bind_lark_sdk_globals_when_installed():
     their own ``skipUnless`` guards.
     """
     try:
-        import lark_oapi  # noqa: F401
+        import lark_oapi
     except ImportError:
         yield
         return
@@ -163,6 +163,14 @@ def _ensure_telegram_mock() -> None:
 
     # Update.ALL_TYPES used in start_polling()
     mod.Update.ALL_TYPES = []
+
+    # PerChatUpdateProcessor subclasses this at import time: a MagicMock base
+    # would turn the subclass itself into a mock that fails on its second call.
+    class SimpleUpdateProcessor:
+        def __init__(self, max_concurrent_updates):
+            self.max_concurrent_updates = max_concurrent_updates
+
+    mod.SimpleUpdateProcessor = SimpleUpdateProcessor
 
     for name in (
         "telegram",

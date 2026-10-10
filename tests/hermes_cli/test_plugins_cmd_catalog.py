@@ -15,7 +15,7 @@ import pytest
 from hermes_cli import plugin_catalog as pc_cat
 from hermes_cli import plugins_cmd as pc
 from hermes_cli import plugins_cmd_catalog as cat
-from tests.pm._fixtures import client, isolated_python  # noqa: F401
+from tests.pm._fixtures import client, isolated_python
 
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git not available")
 
@@ -134,6 +134,32 @@ def test_kill_list_blocks_cli_dashboard_and_tui_paths(world, monkeypatch):
                                   cat.resolved_removed_entries()) == "malware"
 
 
+def test_the_catalog_name_you_installed_with_works_for_every_later_verb(world, tmp_path):
+    """17 catalog entries install under a different manifest name (`hermes-memory-wiki` lands as
+    `plugins/memory-wiki`). Every later verb must accept the name the user typed at install, resolved
+    through the installer's own record; a URL install shipping a forged sidecar must not claim it."""
+    repo = world["repo"]
+    (repo / "plugin.yaml").write_text("name: renamed-plugin\nversion: 1.0.0\ndescription: d\n")
+    world["state"]["pin"] = _commit(repo, "manifest name differs from catalog name")
+    forged = json.dumps({"catalog_name": "cat-plugin", "tier": "official", "sha": "0" * 40, "repo": "x"})
+    _install_url(tmp_path / "evil", "evil-plugin", {cat.CATALOG_SIDECAR: forged})
+    assert pc._find_plugin_entry("cat-plugin") is None
+
+    pc.cmd_install("cat-plugin", enable=False)
+    target = world["plugins_dir"] / "renamed-plugin"
+    assert target.is_dir() and pc._get_enabled_set() == set()
+
+    pc.cmd_enable("cat-plugin")
+    assert pc._get_enabled_set() == {"renamed-plugin"}
+    pc.cmd_show("cat-plugin")
+    pc.cmd_capabilities("cat-plugin")
+    pc.cmd_disable("cat-plugin")
+    assert pc._get_disabled_set() == {"renamed-plugin"}
+    assert pc.dashboard_set_agent_plugin_enabled("cat-plugin", enabled=True)["name"] == "renamed-plugin"
+    assert pc.dashboard_update_user_plugin("cat-plugin")["ok"] is True
+    assert pc.dashboard_remove_user_plugin("cat-plugin")["ok"] is True
+    assert not target.exists()
+    assert "renamed-plugin" not in pc._get_enabled_set()
 
 
 def test_custom_install_records_an_anonymous_extension_install_and_reinstall_none(world, monkeypatch):
@@ -330,6 +356,93 @@ def test_kill_list_covers_update_enable_and_load_of_an_installed_plugin(world, t
     # Explicit bypass at install time is remembered.
     pc.cmd_install((tmp_path / "later-killed").as_uri(), force=True, enable=False, allow_removed=True)
     assert gate_manifest(manifest, set(), {"killed"}).action == "load"
+
+
+_HOOK = "def register(ctx):\n    ctx.register_hook('pre_llm_call', print)\n"
+
+
+_PROVIDER = "def register(ctx):\n    ctx.register_memory_provider(object())\n"
+
+
+@pytest.mark.parametrize("init,enable", [
+    (_PROVIDER, True),
+    (_PROVIDER, False),
+    (_HOOK, True),
+    ('"""Recall hook. Not a MemoryProvider: it only injects context."""\n' + _HOOK, True),
+])
+def test_memory_category_install_activates_via_memory_provider_not_plugins_enable(world, monkeypatch,
+                                                                                  init, enable):
+    """A memory provider activates through memory.provider alone — the loader never consults
+    plugins.enabled — so "Enable now?" must select the provider, and a decline must point at
+    `hermes memory setup`, never at the dead-end `plugins enable` hint. Catalog category "memory" also
+    holds hook plugins: those enable normally and leave the user's memory.provider alone, even when their
+    docstring names MemoryProvider (the loader would return None for them)."""
+    repo = world["repo"]
+    provider = init is _PROVIDER
+    (repo / "__init__.py").write_text(init)
+    world["state"]["pin"] = _commit(repo, "memory category plugin")
+
+    def _memory_entries():
+        return [pc_cat.PluginCatalogEntry(name="cat-plugin", repo=repo.as_uri(), sha=world["state"]["pin"],
+                                          description="d", maintainer="t", category="memory")]
+
+    monkeypatch.setattr(pc_cat, "load_catalog", lambda catalog_dir=None: _memory_entries())
+    printed: list[str] = []
+
+    def _capture(*args, **_kwargs):
+        printed.extend(str(a) for a in args)
+
+    monkeypatch.setattr(pc, "_console",
+                        lambda: type("C", (), {"print": staticmethod(_capture)})())
+
+    if not provider:
+        pc._save_memory_provider("honcho")
+        pc.cmd_install("cat-plugin", enable=enable)
+        assert (pc._get_current_memory_provider(), pc._get_enabled_set()) == ("honcho", {"cat-plugin"})
+        return
+    pc.cmd_install("cat-plugin", enable=enable)
+    assert pc._get_current_memory_provider() == ("cat-plugin" if enable else "")
+    assert pc._get_enabled_set() == set()
+    assert any("hermes memory setup" in line for line in printed)
+    assert not any("plugins enable cat-plugin" in line for line in printed)
+
+
+@pytest.mark.parametrize("prior", [None, "disabled", "enabled"])
+def test_url_install_of_a_memory_provider_dir_gets_the_provider_hint(world, tmp_path, monkeypatch, prior):
+    """A URL (non-catalog) install whose tree satisfies the memory-provider contract gets the same
+    provider activation path — the catalog category is a shortcut, not the only trigger. An explicit
+    --enable must leave the provider loadable: a plugins.disabled entry would make the loader refuse it,
+    and a reinstall must repair the old state that listed the provider in plugins.enabled instead."""
+    from hermes_cli.config import load_config, save_config
+    from plugins.memory import _explicitly_disabled, find_provider_dir
+
+    repo = tmp_path / "mem-repo"
+    repo.mkdir()
+    (repo / "plugin.yaml").write_text("name: mem-plugin\nversion: 1.0.0\ndescription: d\n")
+    (repo / "__init__.py").write_text("from agent.memory_provider import MemoryProvider\n\n\n"
+                                      "class Mem(MemoryProvider):\n    pass\n")
+    sp.run(["git", "init", "-q"], cwd=repo, check=True, env=_GIT_ENV)
+    _commit(repo, "v1")
+
+    printed: list[str] = []
+
+    def _capture(*args, **_kwargs):
+        printed.extend(str(a) for a in args)
+
+    monkeypatch.setattr(pc, "_console",
+                        lambda: type("C", (), {"print": staticmethod(_capture)})())
+
+    if prior == "enabled":
+        pc.cmd_install(repo.as_uri(), enable=False)
+    if prior:
+        cfg = load_config()
+        cfg.setdefault("plugins", {})[prior] = ["mem-plugin"]
+        save_config(cfg)
+    pc.cmd_install(repo.as_uri(), enable=True, force=prior == "enabled")
+    assert pc._get_current_memory_provider() == "mem-plugin"
+    assert pc._get_enabled_set() == ({"mem-plugin"} if prior == "enabled" else set())
+    assert not _explicitly_disabled("mem-plugin", find_provider_dir("mem-plugin"))
+    assert any("memory.provider" in line for line in printed)
 
 
 def test_annotated_tag_pin_keeps_reviewed_trust_and_reads_as_at_pin(world, monkeypatch):

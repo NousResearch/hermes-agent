@@ -45,7 +45,7 @@ def _isolate(tmp_path, monkeypatch):
     state.mkdir()
     monkeypatch.setattr(lp, "_state_dir", lambda: state)
     # Never touch the developer's real ~/.local/bin/lightpanda.
-    monkeypatch.setattr(lp, "_home_candidates", lambda: [])
+    monkeypatch.setattr(lp, "_home_candidates", list)
     monkeypatch.setattr(lp, "_safe_start_time", lambda pid: 111)
     lp._binary_supports_http_cache.cache_clear()
     monkeypatch.setattr(lp, "_binary_supports_http_cache", lambda binary: True)
@@ -221,7 +221,7 @@ class TestLaunch:
     def test_spawn_failure_is_reported(self, monkeypatch):
         monkeypatch.setattr(lp, "find_lightpanda_binary", lambda: "/opt/lightpanda")
         monkeypatch.setattr(lp, "_pick_free_loopback_port", lambda: 1)
-        monkeypatch.setattr(lp, "_browser_env", lambda: {})
+        monkeypatch.setattr(lp, "_browser_env", dict)
 
         def boom(*a, **k):
             raise OSError("exec format error")

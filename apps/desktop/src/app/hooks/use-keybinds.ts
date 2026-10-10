@@ -71,7 +71,8 @@ import {
   setCurrentReasoningEffort,
   setModelPickerOpen
 } from '@/store/session'
-import { $focusedStoredSessionId, reopenLastClosedTile } from '@/store/session-states'
+import { $focusedStoredSessionId } from '@/store/session-focus'
+import { reopenLastClosedTile } from '@/store/session-states'
 import {
   $switcherOpen,
   closeSwitcher,

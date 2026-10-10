@@ -52,7 +52,7 @@ def import_fal_client() -> Any:
             _lazy_ensure("fal")
         except ImportError:
             pass  # same authority rule: let the plain import decide
-        except Exception as exc:  # noqa: BLE001 — pm surfaces install hints
+        except Exception as exc:
             raise ImportError(str(exc))
     import fal_client  # type: ignore  # noqa: WPS433 — intentionally lazy
     return fal_client
@@ -87,7 +87,7 @@ def _managed_fal_billing_error(exc: BaseException, what: str) -> Optional[str]:
         return None
     try:
         payload = response.json()
-    except Exception:  # noqa: BLE001 — diagnostics must not mask the provider error
+    except Exception:
         return None
     error = payload.get("error") if isinstance(payload, dict) else None
     if not isinstance(error, dict) or error.get("code") != "BILLING_ERROR":
@@ -115,7 +115,7 @@ def _managed_fal_retry_after_seconds(exc: BaseException) -> Optional[float]:
     if raw is None:
         try:
             error = response.json().get("error")
-        except Exception:  # noqa: BLE001 — a non-JSON 429 body simply has no hint
+        except Exception:
             return None
         raw = error.get("retryAfter") if isinstance(error, dict) else None
     try:
@@ -133,7 +133,7 @@ def _managed_fal_rate_limit_message(what: str, name: str, retry_after: Optional[
 
 
 def submit_managed_fal_with_rate_limit_retry(
-    submit: Callable[[Dict[str, str]], Any], *, what: str, name: str,
+    submit: Callable[[dict[str, str]], Any], *, what: str, name: str,
 ):
     """Call ``submit(headers)`` with a fresh ``x-idempotency-key``; on a 429 whose Retry-After
     fits the cap, wait it out (interrupt-aware) and resubmit ONCE under a new key.
@@ -186,9 +186,9 @@ class _ManagedFalSyncClient:
         self._add_timeout_header = getattr(client_module, "add_timeout_header", None)
 
     def submit(
-        self, application: str, arguments: Dict[str, Any], *, path: str = "",
+        self, application: str, arguments: dict[str, Any], *, path: str = "",
         hint: Optional[str] = None, webhook_url: Optional[str] = None, priority: Any = None,
-        headers: Optional[Dict[str, str]] = None, start_timeout: Optional[Union[int, float]] = None,
+        headers: Optional[dict[str, str]] = None, start_timeout: Optional[int | float] = None,
     ):
         url = self._queue_url_format + application
         if path:

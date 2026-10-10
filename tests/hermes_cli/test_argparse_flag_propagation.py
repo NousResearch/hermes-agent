@@ -45,11 +45,11 @@ class TestChatVerboseArg:
         def fake_main(**kwargs):
             captured.update(kwargs)
 
-        setattr(fake_cli, "main", fake_main)
+        fake_cli.main = fake_main
         fake_banner = types.ModuleType("hermes_cli.banner")
-        setattr(fake_banner, "prefetch_update_check", lambda: None)
+        fake_banner.prefetch_update_check = lambda: None
         fake_skills_sync = types.ModuleType("tools.skills_sync")
-        setattr(fake_skills_sync, "sync_skills", lambda quiet=True: None)
+        fake_skills_sync.sync_skills = lambda quiet=True: None
 
         monkeypatch.setitem(sys.modules, "cli", fake_cli)
         monkeypatch.setitem(sys.modules, "hermes_cli.banner", fake_banner)

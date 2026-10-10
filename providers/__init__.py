@@ -45,6 +45,7 @@ import time
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from providers.base import ProviderProfile
 
@@ -155,6 +156,39 @@ def provider_source(name: str) -> str | None:
     return _SOURCES.get(canonical)
 
 
+# ``has_named_custom_provider`` walks the provider registry (``_shadowed_by_builtin`` →
+# ``resolve_provider``, which formats an AuthError for unregistered names) and loads config
+# on every call — ~2.5 ms per miss (Enough1122's profile on #120901, 40-50x the old miss
+# path). This sits on the profile-miss path that ``model_metadata._strip_provider_prefix``
+# reaches per model/prefix, so it must not be paid per iteration. Memo per home keyed on
+# the config file's ``file_signature`` — the same invalidation signal ``load_config`` uses —
+# so an edit re-arms the next lookup, and multiplex homes never borrow each other's answers.
+_NAMED_CUSTOM_MEMO: dict[str, dict[str, bool]] = {}
+_NAMED_CUSTOM_MEMO_SIG: dict[str, Any] = {}
+_NAMED_CUSTOM_MEMO_NO_SIG = object()
+
+
+def _has_named_custom_provider(name: str, home: Path | None, hkey: str) -> bool:
+    """``has_named_custom_provider`` memoized on the home's config file signature."""
+    from utils import file_signature
+
+    try:
+        sig = file_signature((home / "config.yaml").stat()) if home is not None else None
+    except OSError:
+        sig = None  # no readable config: nothing configured, stable until one appears
+    memo = _NAMED_CUSTOM_MEMO.get(hkey)
+    if memo is None or _NAMED_CUSTOM_MEMO_SIG.get(hkey, _NAMED_CUSTOM_MEMO_NO_SIG) != sig:
+        memo = {}
+        _NAMED_CUSTOM_MEMO[hkey] = memo
+        _NAMED_CUSTOM_MEMO_SIG[hkey] = sig
+    if name in memo:
+        return memo[name]
+    from hermes_cli.runtime_provider_custom import has_named_custom_provider
+
+    memo[name] = has_named_custom_provider(name)
+    return memo[name]
+
+
 def get_provider_profile(name: str) -> ProviderProfile | None:
     """Look up a provider profile by name or alias.
 
@@ -182,6 +216,13 @@ def get_provider_profile(name: str) -> ProviderProfile | None:
     # explicitly registered that route. Other names retain exact lookup.
     if profile is None and is_custom_route:
         profile = lookup("custom")
+    # Bare named custom providers (not ``custom:<name>``) that are configured in
+    # ``providers:`` / ``custom_providers:`` but lack an explicit profile entry
+    # also share the generic wire policy. The helper is memoized (see
+    # ``_has_named_custom_provider``) so the miss path stays cheap for per-model loops.
+    if profile is None and isinstance(name, str) and not is_custom_route:
+        if _has_named_custom_provider(name, home, key):
+            profile = lookup("custom")
     return profile
 
 
@@ -231,6 +272,25 @@ def list_providers() -> list[ProviderProfile]:
     result = [p for p in _PROVIDER_LIST_CACHE if p.name not in layer.registry]
     result.extend({id(p): p for p in layer.registry.values()}.values())
     return result
+
+
+def unlisted_provider_names() -> set[str]:
+    """Registered profiles that discovery surfaces (provider pickers, setup lists, the accounts tab)
+    must not offer: pre-release ones the user has not opted into.
+
+    Resolution never consults this: an unlisted profile still resolves, authenticates and serves
+    turns by name. A raising ``listed()`` counts as unlisted, because a broken gate must never
+    advertise a dark launch.
+    """
+    hidden: set[str] = set()
+    for profile in list_providers():
+        try:
+            if not profile.listed():
+                hidden.add(profile.name)
+        except Exception:
+            logger.debug("provider %s listed() raised; hiding it", profile.name, exc_info=True)
+            hidden.add(profile.name)
+    return hidden
 
 
 def _home_layer(*, force_stamp_check: bool = False) -> _HomeLayer:
@@ -399,6 +459,20 @@ def _import_plugin_dir(plugin_dir: Path, source: str, *, home_key: str = "") -> 
     init_file = plugin_dir / "__init__.py"
     if not init_file.exists():
         return
+    if source != "bundled":
+        from hermes_cli.plugin_isolation import ISOLATION_HOST, isolation_mode
+        if isolation_mode() == ISOLATION_HOST:  # the plugin's code runs in the plugin host
+            from hermes_cli.plugin_host_profiles import load_hosted_profiles
+            _current_source = source
+            try:
+                for profile in load_hosted_profiles(plugin_dir, _user_module_name(plugin_dir, home_key)):
+                    register_provider(profile)
+            except Exception as exc:
+                logger.warning("Failed to load user provider plugin %s in the plugin host: %s",
+                               plugin_dir.name, exc)
+            finally:
+                _current_source = None
+            return
 
     # Give bundled plugins a stable import path (``plugins.model_providers.<name>``)
     # so relative imports within the plugin work. User plugins load via
@@ -498,6 +572,11 @@ def _discover_entry_point_providers() -> None:
             logger.debug(
                 "entry-point provider %r skipped: not enabled in config", ep.name
             )
+            continue
+        from hermes_cli.plugin_isolation import in_process_import_refusal
+        refusal = in_process_import_refusal(f"pip-installed model-provider plugin {ep.name!r}")
+        if refusal:
+            logger.warning("%s", refusal)
             continue
         try:
             loaded = ep.load()

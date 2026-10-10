@@ -92,6 +92,7 @@ describe('useContextBreakdown (#94001)', () => {
     const requestGatewaySlow = vi.fn(
       (_method: string) => deferred<ContextBreakdown>().promise
     ) as unknown as GatewayRequester
+
     rerender({ busy: false, enabled: true, requestGateway: requestGatewaySlow, sessionId: 's3' })
 
     expect(result.current.breakdown).toBeNull()
@@ -177,6 +178,7 @@ describe('useContextBreakdown (#94001)', () => {
 
   it('does not cache a zeroed breakdown (agentless window) and retries until a live agent answers', async () => {
     let zeroed = true
+
     const requestGateway = vi.fn(async () =>
       zeroed ? ZEROED_BREAKDOWN : LIVE_BREAKDOWN
     ) as unknown as GatewayRequester

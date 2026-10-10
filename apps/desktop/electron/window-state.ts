@@ -6,12 +6,26 @@
  * live `screen` displays.
  */
 
+import type { WindowSizeMode } from './window-size-types'
+
 const MIN_WIDTH = 400
 const MIN_HEIGHT = 620
 
 // Keep at least this much of the window over a display work area before we trust
 // a saved position, so the title bar stays grabbable after a monitor unplugs.
 const MIN_VISIBLE = 48
+
+// A stale normal-bounds snapshot written while the window was fullscreen has
+// no meaningful restore-down size, so recovery (see staleFullscreenWorkArea)
+// gives the window back a centered, deliberately windowed shape instead.
+const RECOVERED_WINDOW_RATIO = 0.8
+
+// Legacy snapshots (written before boundsCapturedFullScreen existed) have no
+// provenance flag, so stale fullscreen-as-normal bounds can only be told apart
+// from a deliberate near-fullscreen window by an exact geometry match: the
+// bounds equal a display's work area (or its full bounds, where the taskbar is
+// hidden) within this many pixels on every edge.
+const LEGACY_EXACT_MATCH_TOLERANCE = 2
 
 const finite = v => typeof v === 'number' && Number.isFinite(v)
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(v, hi))
@@ -22,6 +36,10 @@ interface SanitizedWindowState {
   isMaximized: boolean
   x?: number
   y?: number
+  // Provenance recorded at save time: the persisted bounds were captured while
+  // the window was fullscreen, the transition known to write fullscreen bounds
+  // as normal ones. Absent on legacy snapshots; strict like isMaximized.
+  boundsCapturedFullScreen?: boolean
 }
 
 // Parse raw JSON → clean state, or null if garbage. width/height are required
@@ -35,6 +53,10 @@ function sanitizeWindowState(raw?: any): SanitizedWindowState | null {
     width: Math.max(MIN_WIDTH, Math.round(raw.width)),
     height: Math.max(MIN_HEIGHT, Math.round(raw.height)),
     isMaximized: raw.isMaximized === true
+  }
+
+  if (raw.boundsCapturedFullScreen === true) {
+    state.boundsCapturedFullScreen = true
   }
 
   if (finite(raw.x) && finite(raw.y)) {
@@ -92,14 +114,103 @@ interface WorkArea {
   height: number
 }
 
-function firstLaunchSize(workArea: WorkArea): WindowOptions {
-  return {
-    width: Math.min(clamp(Math.round(workArea.width * 0.75), 1220, 1600), workArea.width),
-    height: Math.min(clamp(Math.round(workArea.height * 0.8), 800, 1000), workArea.height)
+// Share of the display's work area, clamped. Normal is the working app — the
+// first window and a layout pick in the setup chat. Onboarding is the setup
+// chat alone, before a layout exists; its floor keeps the chat readable at the
+// 110% default zoom.
+const WINDOW_SIZES: Record<WindowSizeMode, { share: WorkArea; min: WorkArea; max: WorkArea }> = {
+  normal: {
+    share: { width: 0.88, height: 0.88 },
+    min: { width: 1280, height: 820 },
+    max: { width: 1760, height: 1100 }
+  },
+  onboarding: {
+    share: { width: 0.5, height: 0.85 },
+    min: { width: 760, height: 760 },
+    max: { width: 960, height: 1000 }
   }
 }
 
-function computeWindowOptions(state: WindowOptions, displays): WindowOptions {
+function windowSize(mode: WindowSizeMode, workArea: WorkArea): WindowOptions {
+  const { share, min, max } = WINDOW_SIZES[mode]
+
+  return {
+    width: Math.min(clamp(Math.round(workArea.width * share.width), min.width, max.width), workArea.width),
+    height: Math.min(clamp(Math.round(workArea.height * share.height), min.height, max.height), workArea.height)
+  }
+}
+
+// A stale normal-bounds snapshot written while the window was fullscreen: the
+// broken transition persists fullscreen bounds as normal ones, leaving Windows
+// with no meaningful restore-down size. Provenance is recorded at save time
+// (boundsCapturedFullScreen, see persistWindowState in main.ts), so recovery
+// here never guesses from geometry. Legacy snapshots written before that flag
+// existed recover only on an unambiguous match: bounds that equal a display's
+// work area (or its full bounds, when the taskbar hides) within
+// LEGACY_EXACT_MATCH_TOLERANCE on every edge — a window the user deliberately
+// sized to 90-something percent never matches.
+function staleFullscreenWorkArea(state, displays) {
+  if (
+    !state ||
+    state.isMaximized ||
+    !finite(state.x) ||
+    !finite(state.y) ||
+    !finite(state.width) ||
+    !finite(state.height) ||
+    !Array.isArray(displays)
+  ) {
+    return null
+  }
+
+  if (state.boundsCapturedFullScreen !== true) {
+    return legacyStaleFullscreenWorkArea(state, displays)
+  }
+
+  // Flagged at save time: recover to a centered windowed size on the work
+  // area the fullscreen bounds actually covered.
+  return (
+    displays.find(({ workArea: a } = {}) => {
+      if (!a || !finite(a.x) || !finite(a.y) || !finite(a.width) || !finite(a.height)) {
+        return false
+      }
+
+      const x = Math.min(state.x + state.width, a.x + a.width) - Math.max(state.x, a.x)
+      const y = Math.min(state.y + state.height, a.y + a.height) - Math.max(state.y, a.y)
+
+      return x > 0 && y > 0
+    })?.workArea ?? null
+  )
+}
+
+// Exact-match recovery for legacy snapshots with no provenance flag.
+function legacyStaleFullscreenWorkArea(state, displays) {
+  const t = LEGACY_EXACT_MATCH_TOLERANCE
+
+  const exact = ({ x, y, width, height }) =>
+    Math.abs(state.x - x) <= t &&
+    Math.abs(state.y - y) <= t &&
+    Math.abs(state.width - width) <= t &&
+    Math.abs(state.height - height) <= t
+
+  for (const { workArea: a, bounds: b } of displays) {
+    for (const candidate of [a, b]) {
+      if (
+        candidate &&
+        finite(candidate.x) &&
+        finite(candidate.y) &&
+        finite(candidate.width) &&
+        finite(candidate.height) &&
+        exact(candidate)
+      ) {
+        return a
+      }
+    }
+  }
+
+  return null
+}
+
+function computeWindowOptions(state: WindowOptions, displays, platform = process.platform): WindowOptions {
   const opts: WindowOptions = { width: state.width, height: state.height }
 
   const cap = (Array.isArray(displays) ? displays : []).reduce(
@@ -113,6 +224,19 @@ function computeWindowOptions(state: WindowOptions, displays): WindowOptions {
   if (cap.width && cap.height) {
     opts.width = clamp(opts.width, MIN_WIDTH, cap.width)
     opts.height = clamp(opts.height, MIN_HEIGHT, cap.height)
+  }
+
+  // The motivating restore-down failure is Windows-specific. Keeping the
+  // geometry heuristic there avoids rewriting deliberate near-fullscreen
+  // layouts from tiling WMs or user placement on macOS/Linux. This early return
+  // intentionally omits stale x/y so Electron centers the recovered window.
+  const staleWorkArea = platform === 'win32' ? staleFullscreenWorkArea(state, displays) : null
+
+  if (staleWorkArea) {
+    opts.width = clamp(Math.round(staleWorkArea.width * RECOVERED_WINDOW_RATIO), MIN_WIDTH, staleWorkArea.width)
+    opts.height = clamp(Math.round(staleWorkArea.height * RECOVERED_WINDOW_RATIO), MIN_HEIGHT, staleWorkArea.height)
+
+    return opts
   }
 
   if (finite(state.x) && finite(state.y)) {
@@ -175,11 +299,11 @@ export {
   bindGeometryPersistence,
   computeWindowOptions,
   debounce,
-  firstLaunchSize,
   GEOMETRY_EVENTS,
   matchingWorkArea,
   MIN_HEIGHT,
   MIN_VISIBLE,
   MIN_WIDTH,
-  sanitizeWindowState
+  sanitizeWindowState,
+  windowSize
 }

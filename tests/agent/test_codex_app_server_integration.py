@@ -69,6 +69,70 @@ def _make_codex_agent(**kwargs):
 
 
 class TestRunConversationCodexPath:
+    @pytest.mark.parametrize(
+        "reasoning_config,service_tier,expected_effort,expected_tier",
+        [
+            ({"enabled": True, "effort": "high"}, "priority", "high", "fast"),
+            ({"enabled": False}, None, "none", None),
+            # Hermes-only levels are clamped to the route's vocabulary: gpt-5.4 has no `max`, so ultra goes out as xhigh.
+            # A tier codex has no word for is not sent.
+            ({"enabled": True, "effort": "ultra"}, "ultrafast", "xhigh", None),
+        ],
+    )
+    def test_effective_runtime_settings_reach_codex_turn(
+        self,
+        monkeypatch,
+        reasoning_config,
+        service_tier,
+        expected_effort,
+        expected_tier,
+    ):
+        captured = {}
+
+        def fake_run_turn(self, user_input: str, **kwargs):
+            captured.update(kwargs)
+            return TurnResult(
+                final_text="done",
+                projected_messages=[{"role": "assistant", "content": "done"}],
+                turn_id="turn-settings-1",
+                thread_id="thread-settings-1",
+            )
+
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+        monkeypatch.setattr(CodexAppServerSession, "ensure_started", lambda self: "thread-stub-1")
+        agent = _make_codex_agent(
+            model="gpt-5.4",
+            reasoning_config=reasoning_config,
+            service_tier=service_tier,
+            # Every surface pins a static /fast tier into request_overrides (resolve_fast_mode_overrides).
+            request_overrides={"service_tier": service_tier} if service_tier else None,
+        )
+
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation("hello")
+
+        assert captured["model"] == "gpt-5.4"
+        assert captured["reasoning_effort"] == expected_effort
+        assert captured["service_tier"] == expected_tier
+
+    @pytest.mark.parametrize("model,expected", [("gpt-5.6-sol", "ultra"), ("gpt-5.5", "xhigh")])
+    def test_ultra_stays_codex_harness_mode_where_the_model_reaches_max(self, monkeypatch, model, expected):
+        """Live codex-cli 0.147: ``ultra`` runs on a model whose ladder reaches ``max`` and 400s on one
+        without it (codex maps it to ``max``), so only the latter is clamped."""
+        captured = {}
+
+        def fake_run_turn(self, user_input: str, **kwargs):
+            captured.update(kwargs)
+            return TurnResult(final_text="done", projected_messages=[{"role": "assistant", "content": "done"}])
+
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+        monkeypatch.setattr(CodexAppServerSession, "ensure_started", lambda self: "thread-stub-1")
+        agent = _make_codex_agent(model=model, reasoning_config={"enabled": True, "effort": "ultra"})
+        agent.provider = "openai-codex"
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation("hello")
+        assert captured["reasoning_effort"] == expected
+
     def test_run_conversation_returns_codex_shape(self, fake_session):
         agent = _make_codex_agent()
         # No background review fork during tests

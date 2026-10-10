@@ -49,7 +49,7 @@ def _job_not_found() -> HTTPException:
     return HTTPException(status_code=404, detail="Job not found")
 
 
-def _normalize_dashboard_cron_updates(updates: Dict[str, Any], profile_home: Path) -> Dict[str, Any]:
+def _normalize_dashboard_cron_updates(updates: dict[str, Any], profile_home: Path) -> dict[str, Any]:
     """Normalize dashboard JSON into cron.jobs.update_job's storage shape.
 
     Stays in the dashboard adapter layer on purpose: cron/jobs.py is the source
@@ -122,7 +122,7 @@ def _list_cron_jobs_sync(profile: str = "all"):
     # profile's copy over per-iteration order (#51721): collect all jobs first,
     # then resolve duplicates by id with default-profile priority, rather than
     # keeping whichever copy happened to be seen first during the profile loop.
-    all_jobs: List[Dict[str, Any]] = []
+    all_jobs: list[dict[str, Any]] = []
     for item in _cron_profile_dicts():
         name = str(item.get("name") or "")
         if not name:
@@ -132,8 +132,8 @@ def _list_cron_jobs_sync(profile: str = "all"):
         except Exception:
             _log.exception("Failed to list cron jobs for profile %s", name)
 
-    by_id: Dict[str, Dict[str, Any]] = {}
-    unkeyed: List[Dict[str, Any]] = []
+    by_id: dict[str, dict[str, Any]] = {}
+    unkeyed: list[dict[str, Any]] = []
     for job in all_jobs:
         if not isinstance(job, dict):
             continue
@@ -233,7 +233,7 @@ def _cron_output_run_preview(path: Path, max_chars: int = 180) -> str:
     return preview[: max_chars - 1].rstrip() + "…"
 
 
-def _cron_job_last_run_timestamp(job: Optional[Dict[str, Any]]) -> Optional[float]:
+def _cron_job_last_run_timestamp(job: Optional[dict[str, Any]]) -> Optional[float]:
     if not isinstance(job, dict):
         return None
     raw = job.get("last_run_at")
@@ -244,13 +244,13 @@ def _cron_job_last_run_timestamp(job: Optional[Dict[str, Any]]) -> Optional[floa
         if not text:
             return None
         try:
-            return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
+            return datetime.fromisoformat(text).timestamp()
         except ValueError:
             return None
     return None
 
 
-def _cron_output_status_label(job: Optional[Dict[str, Any]]) -> str:
+def _cron_output_status_label(job: Optional[dict[str, Any]]) -> str:
     if not isinstance(job, dict):
         return ""
     status = str(job.get("last_status") or "").strip()
@@ -259,7 +259,7 @@ def _cron_output_status_label(job: Optional[Dict[str, Any]]) -> str:
     return status.replace("_", " ").upper()
 
 
-def _cron_output_run_row(started_at: float, title: str, preview: Optional[str]) -> Dict[str, Any]:
+def _cron_output_run_row(started_at: float, title: str, preview: Optional[str]) -> dict[str, Any]:
     return {
         "title": title,
         "preview": preview or None,
@@ -282,12 +282,12 @@ def _iso_to_epoch(text: Any) -> Optional[float]:
     if not isinstance(text, str) or not text.strip():
         return None
     try:
-        return datetime.fromisoformat(text.strip().replace("Z", "+00:00")).timestamp()
+        return datetime.fromisoformat(text.strip()).timestamp()
     except ValueError:
         return None
 
 
-def _owner_profile_executions(canonical_job_id: str) -> List[Dict[str, Any]]:
+def _owner_profile_executions(canonical_job_id: str) -> list[dict[str, Any]]:
     """Terminal execution-ledger rows for the job, newest first.
 
     Each script-only fire creates exactly one ledger row (claimed → completed /
@@ -301,7 +301,7 @@ def _owner_profile_executions(canonical_job_id: str) -> List[Dict[str, Any]]:
         rows = list_executions(job_id=canonical_job_id, limit=100)
     except Exception:
         return []
-    terminal: List[Dict[str, Any]] = []
+    terminal: list[dict[str, Any]] = []
     for row in rows:
         if str(row.get("status") or "") not in ("completed", "failed", "unknown"):
             continue
@@ -316,7 +316,7 @@ def _owner_profile_executions(canonical_job_id: str) -> List[Dict[str, Any]]:
 
 
 def _execution_contains(
-    attempt: Dict[str, Any], started_at: float, grace_seconds: float = 300.0,
+    attempt: dict[str, Any], started_at: float, grace_seconds: float = 300.0,
 ) -> bool:
     """Whether an output doc's timestamp falls inside a ledger attempt's window.
 
@@ -344,11 +344,11 @@ def _execution_status_title(status: str, error: str, fallback: str) -> str:
 
 
 def _list_cron_output_runs(
-    job: Optional[Dict[str, Any]],
+    job: Optional[dict[str, Any]],
     canonical_job_id: str,
     profile: Optional[str],
     limit: int,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """SessionDB-less run history for jobs that never create agent sessions.
 
     Script-only (no_agent) jobs deliberately skip SessionDB (cron/scheduler.run_job),
@@ -375,7 +375,7 @@ def _list_cron_output_runs(
 
     executions = _owner_profile_executions(canonical_job_id)
     represented: set = set()
-    runs: List[Dict[str, Any]] = []
+    runs: list[dict[str, Any]] = []
 
     for path in files[:limit]:
         started_at = _cron_output_run_timestamp(path)
@@ -444,6 +444,61 @@ def _list_cron_output_runs(
     }]
 
 
+_CRON_RUN_SESSION_ID = re.compile(r"^cron_(.+)_\d{8}_\d{6}$")
+# The run's session row is written just AFTER its execution claim; the grace only
+# absorbs float/ISO rounding between the two clocks on one host.
+_OWNERSHIP_CLAIM_GRACE_SECONDS = 5.0
+
+
+def _live_inflight_execution(canonical_job_id: str) -> Optional[dict[str, Any]]:
+    """The job's claimed/running ledger attempt under a live owner, or None (fail closed).
+
+    Must run inside the owner-home scope so it reads the OWNER's executions.db.
+    """
+    try:
+        from cron.executions import live_inflight_execution
+
+        return live_inflight_execution(canonical_job_id)
+    except Exception:
+        return None
+
+
+def _run_owned_by(session: dict[str, Any], inflight: Optional[dict[str, Any]]) -> bool:
+    """Whether the scheduler still OWNS this never-closed run session (#88443).
+
+    ``is_active`` is a 300s activity window, so a live run inside a long tool call
+    (no heartbeat, no message) reads inactive exactly like a zombie whose process
+    died. Ownership is the durable answer: the job's in-flight attempt is held by a
+    live process and this session started under that claim. An older never-closed
+    run of the same job predates the claim, so it stays a zombie.
+    """
+    if not inflight or session.get("ended_at") is not None:
+        return False
+    claimed_at = _iso_to_epoch(inflight.get("claimed_at"))
+    try:
+        started_at = float(session.get("started_at") or 0)
+    except (TypeError, ValueError):
+        return False
+    return claimed_at is not None and started_at >= claimed_at - _OWNERSHIP_CLAIM_GRACE_SECONDS
+
+
+def cron_run_scheduler_owned(session: dict[str, Any], profile: Optional[str] = None) -> Optional[bool]:
+    """``scheduler_owned`` for one session row, or None when it is not a cron run session.
+
+    The session-detail endpoint stamps this so a client re-checking a run it
+    already has open (a restored tab, a send) gets the same answer as the runs list.
+    """
+    if session.get("source") != "cron":
+        return None
+    match = _CRON_RUN_SESSION_ID.match(str(session.get("id") or ""))
+    if not match:
+        return None
+    if session.get("ended_at") is not None:
+        return False
+    with _owner_home_scope(profile):
+        return _run_owned_by(session, _live_inflight_execution(match.group(1)))
+
+
 def _list_cron_job_runs_sync(job_id: str, profile: Optional[str] = None, limit: int = 20):
     """Run history for a cron job, newest first: agent sessions PLUS script-only fires.
 
@@ -485,8 +540,10 @@ def _list_cron_job_runs_sync(job_id: str, profile: Optional[str] = None, limit: 
             db.close()
 
         now = time.time()
+        inflight = _live_inflight_execution(canonical)
         for s in session_runs:
             s["is_active"] = s.get("ended_at") is None and (now - s.get("last_active", s.get("started_at", 0))) < 300
+            s["scheduler_owned"] = _run_owned_by(s, inflight)
             s["archived"] = bool(s.get("archived"))
             if selected:
                 s["profile"] = selected
@@ -497,10 +554,10 @@ def _list_cron_job_runs_sync(job_id: str, profile: Optional[str] = None, limit: 
 
 
 def _reconcile_cron_runs(
-    session_runs: List[Dict[str, Any]],
-    doc_runs: List[Dict[str, Any]],
+    session_runs: list[dict[str, Any]],
+    doc_runs: list[dict[str, Any]],
     limit: int,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Merge session rows and output-doc rows per execution, newest first.
 
     An agent fire writes BOTH a session and an output doc for the same
@@ -524,7 +581,7 @@ def _reconcile_cron_runs(
     return merged[:limit]
 
 
-def _doc_matches_session(doc_ts: float, session: Dict[str, Any], grace_seconds: float) -> bool:
+def _doc_matches_session(doc_ts: float, session: dict[str, Any], grace_seconds: float) -> bool:
     """Whether an output doc belongs to a session's run.
 
     The doc is written when the run FINISHES, so its filename timestamp sits
@@ -770,34 +827,39 @@ async def cron_fire_webhook(request: Request):
     return JSONResponse(gateway_body, status_code=status_code, headers=headers)
 
 
-@router.get("/api/cron/blueprints")
-async def list_cron_blueprints(profile: Optional[str] = None):
-    """Blueprint catalog as form schemas; the ``deliver`` slot's options are
-    rewritten from the actually configured gateway platforms."""
-    try:
-        from cron.blueprint_catalog import CATALOG, blueprint_catalog_entry
+def _blueprint_catalog_sync(profile: Optional[str]) -> list:
+    """Built-in + ``profile``'s plugin blueprints, with the ``deliver`` slot's options rewritten
+    from that profile's configured gateway platforms. Plugin discovery can import plugin code, so
+    this runs off the event loop, inside the profile scope that picks the plugin manager."""
+    from cron.blueprint_catalog import blueprint_catalog_entry, list_blueprints
 
+    with _config_profile_scope(profile):  # an unknown ?profile= raises the scope's 404
+        catalog = list_blueprints()
         deliver_options = None
         try:
             from cron.scheduler_delivery import cron_delivery_targets
 
-            with _config_profile_scope(profile):
-                platforms = [t["id"] for t in cron_delivery_targets() if t.get("id")]
+            platforms = [t["id"] for t in cron_delivery_targets() if t.get("id")]
             deliver_options = ["origin", "local", *platforms]
-        except HTTPException:
-            raise  # an unknown ?profile= is the scope's 404, not a reason for static options
-        except Exception:
+        except Exception:  # health: allow BLE001 -- gateway targets are optional; static options are the fallback
             _log.debug("cron_delivery_targets unavailable; using static deliver options", exc_info=True)
 
-        entries = []
-        for r in CATALOG:
-            entry = blueprint_catalog_entry(r)
-            if deliver_options:
-                for f in entry.get("fields", []):
-                    if f.get("name") == "deliver":
-                        f["options"] = deliver_options
-            entries.append(entry)
-        return {"blueprints": entries}
+    entries = []
+    for r in catalog:
+        entry = blueprint_catalog_entry(r)
+        if deliver_options:
+            for f in entry.get("fields", []):
+                if f.get("name") == "deliver":
+                    f["options"] = deliver_options
+        entries.append(entry)
+    return entries
+
+
+@router.get("/api/cron/blueprints")
+async def list_cron_blueprints(profile: Optional[str] = None):
+    """Blueprint catalog (built-ins + the profile's plugin blueprints) as form schemas."""
+    try:
+        return {"blueprints": await _run_cron_dashboard_io(_blueprint_catalog_sync, profile)}
     except HTTPException:
         raise
     except Exception as e:
@@ -805,13 +867,20 @@ async def list_cron_blueprints(profile: Optional[str] = None):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _blueprint_for_profile(key: str, profile: Optional[str]):
+    from cron.blueprint_catalog import get_blueprint
+
+    with _config_profile_scope(profile):
+        return get_blueprint(key)
+
+
 @router.post("/api/cron/blueprints/instantiate")
 async def instantiate_blueprint(body: AutomationBlueprintInstantiate, profile: str = "default"):
     """Fill a blueprint's slots and create the cron job (form-submit path)."""
     try:
-        from cron.blueprint_catalog import BlueprintFillError, fill_blueprint, get_blueprint
+        from cron.blueprint_catalog import BlueprintFillError, fill_blueprint
 
-        blueprint = get_blueprint(body.blueprint)
+        blueprint = await _run_cron_dashboard_io(_blueprint_for_profile, body.blueprint, profile)
         if blueprint is None:
             raise HTTPException(status_code=404, detail=f"Unknown blueprint: {body.blueprint}")
         try:

@@ -154,7 +154,7 @@ class DCFModelValidator:
         except KeyError:
             self.warnings.append("DCF sheet not found")
         except Exception as e:
-            self.warnings.append(f"Could not validate terminal growth vs WACC: {str(e)}")
+            self.warnings.append(f"Could not validate terminal growth vs WACC: {e!s}")
 
     def _check_wacc_range(self):
         """Check if WACC is in reasonable range"""
@@ -183,7 +183,7 @@ class DCFModelValidator:
                 self.warnings.append("Could not locate WACC value")
 
         except Exception as e:
-            self.warnings.append(f"Could not validate WACC range: {str(e)}")
+            self.warnings.append(f"Could not validate WACC range: {e!s}")
 
     def _check_terminal_value_proportion(self):
         """Check if terminal value is reasonable proportion of enterprise value"""
@@ -228,7 +228,7 @@ class DCFModelValidator:
                 self.warnings.append("Could not locate terminal value and enterprise value")
 
         except Exception as e:
-            self.warnings.append(f"Could not validate terminal value proportion: {str(e)}")
+            self.warnings.append(f"Could not validate terminal value proportion: {e!s}")
     
 
 

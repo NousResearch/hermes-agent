@@ -257,7 +257,7 @@ def test_first_run_always_runs_agent(hermes_env, monkeypatch):
     observed: dict = {}
     _install_agent_stubs(monkeypatch, observed)
 
-    success, doc, final, error = run_job(job)
+    success, _doc, _final, error = run_job(job)
     assert success is True
     assert error is None
     assert observed["agent_runs"] == 1
@@ -356,7 +356,7 @@ def test_changed_output_injects_diff(hermes_env, monkeypatch):
     # Mutate the monitored source, then fire again.
     _write_script(hermes_env, "mon.sh", "echo 'state B'\n")
     job = get_job(job["id"])
-    success, doc, final, error = run_job(job)
+    success, _doc, _final, _error = run_job(job)
     assert success is True
     assert observed["agent_runs"] == 2
     prompt = observed["prompts"][1]
@@ -389,7 +389,7 @@ def test_hash_persists_across_scheduler_restart(hermes_env, monkeypatch):
 
     job = cron.jobs.get_job(job["id"])
     assert job["monitor_state"]["last_output_hash"]
-    success, doc, final, error = cron.scheduler.run_job(job)
+    success, _doc, final, _error = cron.scheduler.run_job(job)
     assert success is True
     assert final == cron.scheduler.SILENT_MARKER
     assert observed["agent_runs"] == 1  # still suppressed after restart
@@ -409,7 +409,7 @@ def test_monitor_script_failure_is_error_not_change(hermes_env, monkeypatch):
     # Break the source: non-zero exit must be an error, never a "change".
     _write_script(hermes_env, "mon.sh", "echo boom >&2\nexit 3\n")
     job = get_job(job["id"])
-    success, doc, final, error = run_job(job)
+    success, _doc, _final, error = run_job(job)
     assert success is False
     assert error is not None
     assert observed["agent_runs"] == 1  # agent NOT invoked on source failure

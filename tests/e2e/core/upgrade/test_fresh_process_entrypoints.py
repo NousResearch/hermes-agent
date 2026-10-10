@@ -79,13 +79,13 @@ _OPTIONAL_IMPORTS = {
     "elevenlabs": "elevenlabs", "exa_py": "exa-py", "fal_client": "fal-client",
     "faster_whisper": "faster-whisper", "firecrawl": "firecrawl-py", "google": "google-auth",
     "google_auth_oauthlib": "google-auth-oauthlib", "googleapiclient": "google-api-python-client",
-    "honcho": "honcho-ai", "httplib2": "httplib2", "lark_oapi": "lark-oapi", "mautrix": "mautrix",
-    "mcp": "mcp", "mem0": "mem0ai", "microsoft_teams": "microsoft-teams-apps", "mistralai": "mistralai",
+    "httplib2": "httplib2", "lark_oapi": "lark-oapi", "mautrix": "mautrix",
+    "mcp": "mcp", "microsoft_teams": "microsoft-teams-apps", "mistralai": "mistralai",
     "modal": "modal", "numpy": "numpy", "pyopen_wakeword": "pyopen-wakeword",
     "opentelemetry": "opentelemetry-sdk", "parallel": "parallel-web", "pvporcupine": "pvporcupine",
     "pyasn1": "pyasn1", "qrcode": "qrcode", "sentencepiece": "sentencepiece", "sherpa_onnx": "sherpa-onnx",
     "slack_bolt": "slack-bolt", "slack_sdk": "slack-sdk", "sounddevice": "sounddevice",
-    "supermemory": "supermemory", "telegram": "python-telegram-bot", "uvloop": "uvloop",
+    "telegram": "python-telegram-bot", "uvloop": "uvloop",
     "vercel": "vercel", "youtube_transcript_api": "youtube-transcript-api",
     # Windows-only core requirements (their markers exclude Linux).
     "pywintypes": "pywin32", "win32api": "pywin32", "win32con": "pywin32", "win32event": "pywin32",
@@ -119,7 +119,7 @@ _POST_PURGE_IMPORTS = (
 # What the pre-hand-off ``hermes update`` process had imported before the pull.
 _OLD_UPDATER_GRAPH = ("hermes_cli.main", "hermes_cli.update_cmd", "hermes_cli.config", "hermes_cli.gateway")
 
-_READY_RE = re.compile(r"^HERMES_(?:BACKEND|DASHBOARD)_READY port=(\d+)", re.M)  # electron/backend-ready.ts
+_READY_RE = re.compile(r"^HERMES_(?:BACKEND|DASHBOARD)_READY port=(\d+)", re.MULTILINE)  # electron/backend-ready.ts
 
 
 # --------------------------------------------------------------------------- packaging model

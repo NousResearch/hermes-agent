@@ -327,6 +327,53 @@ class TestWeixinChunkDelivery:
         assert result.success is True
         assert [call.kwargs["context_token"] for call in send_message_mock.await_args_list] == ["ctx-token", None]
 
+    @patch("gateway.platforms.weixin._send_message", new_callable=AsyncMock)
+    def test_failed_send_does_not_evict_shared_context_token(self, send_message_mock):
+        """A failed push (cron / one-shot) that borrows the live adapter must not drop the stored
+        context_token the interactive path still needs: the tokenless re-send is scoped to the
+        failing send, and the store entry is replaced only by a newer inbound (#135503)."""
+        adapter = _make_adapter()
+        adapter._session = object()
+        adapter._send_session = adapter._session
+        adapter._token = "test-token"
+        adapter._base_url = "https://weixin.example.com"
+        adapter._token_store._cache[adapter._token_store._key(adapter._account_id, "wxid_test123")] = "ctx-token"
+        expired = {"ret": weixin.SESSION_EXPIRED_ERRCODE, "errmsg": "session expired"}
+        # First send (the cron push): token rejected, tokenless re-send still out of window.
+        send_message_mock.side_effect = [expired, {"ret": weixin.RATE_LIMIT_ERRCODE, "errmsg": "prepare failed"}]
+        failed = asyncio.run(adapter.send("wxid_test123", "cron push"))
+        assert failed.success is False
+        assert "session not ready" in (failed.error or "")
+        assert adapter._token_store.get(adapter._account_id, "wxid_test123") == "ctx-token"
+        # Second send (the interactive reply) still starts from the stored token instead of being disarmed.
+        send_message_mock.side_effect = [expired, {"ret": 0}]
+        reply = asyncio.run(adapter.send("wxid_test123", "reply"))
+        assert reply.success is True
+        assert [call.kwargs["context_token"] for call in send_message_mock.await_args_list] == [
+            "ctx-token", None, "ctx-token", None]
+
+    @patch.object(weixin, "_send_items", new_callable=AsyncMock)
+    @patch.object(weixin, "_upload_ciphertext", new=AsyncMock(return_value="enc-q"))
+    @patch.object(weixin, "_get_upload_url", new=AsyncMock(return_value={"upload_full_url": "https://cdn.example.com/upload"}))
+    def test_failed_media_send_does_not_evict_shared_context_token(self, send_items_mock, tmp_path):
+        """Media leg of #135503: a stale-token push that ultimately fails must leave the stored token alone."""
+        adapter = _make_adapter()
+        adapter._session = object()
+        adapter._send_session = adapter._session
+        adapter._token = "test-token"
+        adapter._base_url = "https://weixin.example.com"
+        adapter._token_store._cache[adapter._token_store._key(adapter._account_id, "wxid_test123")] = "ctx-token"
+        doc = tmp_path / "report.pdf"
+        doc.write_bytes(b"%PDF-1.4")
+        send_items_mock.return_value = {"ret": weixin.RATE_LIMIT_ERRCODE, "errmsg": "prepare failed"}
+
+        result = asyncio.run(adapter.send_document("wxid_test123", str(doc)))
+
+        assert result.success is False
+        assert "session not ready" in (result.error or "")
+        assert [call.kwargs["context_token"] for call in send_items_mock.await_args_list] == ["ctx-token", None]
+        assert adapter._token_store.get(adapter._account_id, "wxid_test123") == "ctx-token"
+
     @patch.object(weixin, "_send_items", new_callable=AsyncMock)
     @patch.object(weixin, "_upload_ciphertext", new=AsyncMock(return_value="enc-q"))
     @patch.object(weixin, "_get_upload_url", new=AsyncMock(return_value={"upload_full_url": "https://cdn.example.com/upload"}))

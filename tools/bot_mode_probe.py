@@ -326,6 +326,16 @@ def get_bot_mode_protocol_section(home: str | os.PathLike | None = None, *, forc
 _EPOCH_PREFIX = "Capability epoch: "
 _EPOCH_RE_TEXT = r"Capability epoch: ([0-9a-f]{12})"
 
+# Hosted room member sessions (``tui_gateway.hosted_room_driver.room_session_title``)
+# are reused for the room's lifetime, just like a Bot Chat, so their prompts carry
+# the epoch stamp too — without the Bot-to-Bot protocol section.
+HOSTED_ROOM_TITLE_PREFIX = "Group: "
+
+
+def is_hosted_room_session_title(title: str) -> bool:
+    """True for the canonical hidden title of a hosted room member session."""
+    return str(title or "").strip().startswith(HOSTED_ROOM_TITLE_PREFIX)
+
 
 def _model_prompt_capability_surface(model_cfg: object) -> dict:
     """``model.*`` overrides whose flip changes a rebuilt prompt, coerced like their consumers.
@@ -467,6 +477,15 @@ def stored_bot_chat_prompt_needs_upgrade(stored_prompt: str, home: str | os.Path
     if _EPOCH_PREFIX in (stored_prompt or ""):
         return False
     return _swallow(lambda: bool(get_bot_mode_protocol_section(home)), False)
+
+
+def stored_room_member_prompt_needs_epoch(stored_prompt: str) -> bool:
+    """True when a hosted room member session's stored prompt PREDATES the epoch stamp
+    (none embedded). The caller must only ask for sessions titled "Group: <room_id>".
+    Unlike a Bot Chat there is no "probe would emit a section" gate — the member rebuild
+    adds no protocol section, only the stamp — so any unstamped member prompt upgrades
+    once; the rebuilt prompt is stamped and this cannot re-fire."""
+    return _EPOCH_PREFIX not in (stored_prompt or "")
 
 
 def _reset_cache_for_tests() -> None:

@@ -2166,12 +2166,54 @@ class MatrixAdapter(BasePlatformAdapter):
             extra["message_type"] = MessageType.COMMAND if body.startswith("/") else MessageType.TEXT
         elif _is_bare_media_filename(media_msgtype, body):
             body = ""  # transport filename, not user text
+        # Fetch thread root content so the agent sees what the thread is about.
+        channel_context = None
+        if _thread_id:
+            channel_context = await self._fetch_thread_root_content(room_id, _thread_id)
         return MessageEvent(
             text=body, source=source, raw_message=source_content, message_id=event_id,
             reply_to_message_id=reply_to, reply_to_text=reply_to_text, reply_to_author_id=reply_to_author_id,
             reply_to_author_name=reply_to_author_name,
+            channel_context=channel_context,
             # Top-level sender fields mirror source.* — downstream prompt code reads them.
             user_id=sender, user_name=display_name, **extra)
+
+    async def _fetch_thread_root_content(self, room_id: str, thread_root_id: str) -> Optional[str]:
+        """Fetch the thread root message body from the homeserver.
+
+        Returns a formatted ``[Thread parent] <sender>: <text>`` string, or None on any
+        failure (logged). The agent sees this as channel_context so it knows what the
+        thread is about even on the very first reply.
+        """
+        if self._client is None or not room_id or not thread_root_id:
+            return None
+        try:
+            from mautrix.types import RoomID, EventID
+            root_event = await self._client.get_event(RoomID(room_id), EventID(thread_root_id))
+            if root_event is None:
+                return None
+            # Extract body from the event content (dict or object).
+            content = root_event.content if hasattr(root_event, "content") else (
+                root_event.get("content") if isinstance(root_event, dict) else {})
+            if content is None:
+                return None
+            if hasattr(content, "body"):
+                root_body = content.body
+                root_sender = getattr(root_event, "sender", None) or getattr(root_event, "user_id", None) or ""
+            elif isinstance(content, dict):
+                root_body = content.get("body", "")
+                root_sender = getattr(root_event, "sender", None) or ""
+            else:
+                return None
+            if not root_body:
+                return None
+            # Format like Slack's thread context injection.
+            root_sender_name = root_sender.split(":")[0].lstrip("@") if root_sender else "unknown"
+            return f"[Thread parent] {root_sender_name}: {root_body}"
+        except Exception as exc:
+            logger.debug(
+                "Matrix: failed to fetch thread root %s in %s: %s", thread_root_id, room_id, exc)
+            return None
 
     async def _handle_text_message(
         self, room_id: str, sender: str, event_id: str, event_ts: float, source_content: dict,

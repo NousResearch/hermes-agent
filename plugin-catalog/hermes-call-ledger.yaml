@@ -22,10 +22,15 @@ description: >-
   string, never returned by a route, and never written to config.yaml (the settings route drops the key by
   name, and it is declared type: secret so it lands in .env instead). vilao issues one full-scope token
   per account including wallet writes, so this plugin restricts itself to reads by design and no write
-  endpoint is named anywhere in it. Disclosure — no background process, thread or timer: every request
-  happens when the page asks for it. No self-updating code, no telemetry, no bundled or downloaded
-  binaries. The desktop half is one plain JavaScript file that stays inside the plugin SDK, taking one
-  route, one palette command and one keybinding.
+  endpoint is named anywhere in it. Disclosure — nothing runs in the plugin host between requests: there
+  is no daemon thread, no scheduled job and no self-triggered refresh, so while the page is closed the
+  plugin makes no call at all. While the page is open its twelve query hooks poll the plugin's own routes
+  on a 5-minute base interval, the price list at 30 times that with a 10-minute staleTime, and the billing
+  pull behind the Vilao view is rate-limited server-side to one per 45 seconds however fast the reader
+  changes filters. No self-updating code, no telemetry, no bundled or downloaded binaries. The desktop
+  half is one plain JavaScript file that stays inside the plugin SDK, taking four surfaces: one route, one
+  sidebar nav entry, one palette command and one keybinding (the last only when the running Desktop
+  exposes it).
 maintainer: skappafrost
 tier: community
 category: desktop

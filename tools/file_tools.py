@@ -20,11 +20,11 @@ from pathlib import Path
 
 from agent.file_safety import get_nt_namespace_error, get_read_block_error
 from agent.tool_result_classification import GUARDRAIL_REFUSAL_KEY
-from tools.binary_extensions import has_binary_extension
 from tools.skill_provenance import is_background_review
 from tools.file_operations import (
     ShellFileOperations, normalize_read_pagination, normalize_search_pagination)
 from tools.file_operations_common import DEFAULT_READ_LIMIT, count_conflict_blocks
+from tools.file_tools_read_navigation import read_navigation_result, validate_read_options
 from tools import file_state
 from agent.redact import _is_secret_file_arg, redact_sensitive_text
 from tools.file_tools_paths import (
@@ -604,7 +604,8 @@ def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_s
     return count
 
 
-def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, task_id: str = "default") -> str:
+def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, task_id: str = "default",
+                   mode: str = "read", cursor: str | None = None) -> str:
     """Read a file with pagination and line numbers.
 
     Guard order: NT/device-namespace prefix (raw string, no resolution) →
@@ -614,6 +615,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
     """
     try:
         offset, limit = normalize_read_pagination(offset, limit)
+        validate_read_options(mode, cursor)
 
         # On the RAW model-supplied string, before any expanduser()/resolve():
         # on Windows resolving \??\UNC\host\share already sends SMB auth (NTLM
@@ -650,17 +652,9 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
         block_error = get_read_block_error(str(_resolved))
         if block_error:
             return tool_error(block_error)
-
-        extracted = _read_extracted_document(path, _resolved, offset, limit, task_id)
-        if extracted is not None:
-            return extracted
-
-        # The extension is a claim, so this message names only the extension;
-        # the content-sniffing path names the actual magic-byte type.
-        if has_binary_extension(str(_resolved)):
-            return tool_error(
-                f"Cannot read binary file '{path}' ({_resolved.suffix.lower()}). "
-                "Use vision_analyze for images, or terminal to inspect binary files.")
+        navigation = read_navigation_result(path, _resolved, offset, limit, task_id, mode, cursor)
+        if navigation is not None:
+            return navigation
 
         resolved_str = str(_resolved)
         cached_not_found = _check_not_found_cache("read", resolved_str, task_id)
@@ -1164,8 +1158,10 @@ READ_FILE_SCHEMA = {
         "type": "object",
         "properties": {
             "path": {"type": "string", "description": "Path to the file to read (absolute, relative, or ~/path)"},
-            "offset": {"type": "integer", "description": "Line number to start reading from (1-indexed, default: 1)", "default": 1, "minimum": 1},
-            "limit": {"type": "integer", "description": "Maximum number of lines to read (default: 2000, max: 2000). Reads are additionally capped at a ~100K-character budget with a next_offset continuation.", "default": DEFAULT_READ_LIMIT, "maximum": 2000}
+            "offset": {"type": "integer", "description": "Starting line (1-based); in outline mode, initial heading ordinal. Ignored with cursor.", "default": 1, "minimum": 1},
+            "limit": {"type": "integer", "description": "Maximum lines (default/max 2000); in outline mode, maximum headings (capped at 500). Output is also character-budgeted.", "default": DEFAULT_READ_LIMIT, "maximum": 2000},
+            "mode": {"type": "string", "enum": ["read", "outline"], "default": "read", "description": "outline: Markdown headings/levels/source lines, not body content; scans up to 2 MiB per call. Stop when a useful heading is found and read its body. Follow next_cursor only for more headings; scan_complete marks a complete outline. Default read is unchanged."},
+            "cursor": {"type": "string", "description": "Outline continuation from next_cursor, for the same path and task. Expires in 10 minutes; restart if file changed."}
         },
         "required": ["path"]
     }
@@ -1309,7 +1305,9 @@ SEARCH_FILES_SCHEMA = {
 
 def _handle_read_file(args, **kw):
     tid = kw.get("task_id") or "default"
-    return read_file_tool(path=args.get("path", ""), offset=args.get("offset", 1), limit=args.get("limit", DEFAULT_READ_LIMIT), task_id=tid)
+    return read_file_tool(path=args.get("path", ""), offset=args.get("offset", 1),
+                          limit=args.get("limit", DEFAULT_READ_LIMIT), task_id=tid,
+                          mode=args.get("mode", "read"), cursor=args.get("cursor"))
 
 
 def _handle_write_file(args, **kw):

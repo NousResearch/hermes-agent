@@ -119,6 +119,22 @@ Scoped to the Feishu document-comment handler. Drives comment read/write operati
 
 For local files, a full unredacted read (including all pages of the same file version), a successful `write_file`, or your own `patch` of a file you had read in full supplies a whole-file baseline. Reading a smaller region afterward does not discard that baseline while the bytes remain unchanged. A file changed by another writer, an unread file, a file patched without a full read, or a view with hidden/redacted or clamped content still needs a full current read before replacement; `patch` remains available for targeted edits. Writes made through terminal commands or `execute_code` do not establish a `write_file` baseline.
 
+### Navigate Markdown before reading sections
+
+`read_file({"path":"spec.md","mode":"outline"})` returns heading text, level
+(1–6), and 1-based source line numbers instead of body content; pick a section
+and read it with the normal `offset`/`limit`. ATX and Setext headings are
+recognized, fenced code is skipped, and duplicate headings keep their own
+positions. Ordinary reads are unchanged.
+
+Scanning and output are bounded: up to 2 MiB per call (256 KiB backend
+windows), 500 headings, and a 90,000-character page. When `scan_complete` is
+false, pass `next_cursor` as `cursor` on the same path; cursors expire after
+ten minutes and reject a changed file. Titles go through the file-read
+redaction policy. An outline never counts as a body read for
+read-before-write checks. Markdown only; binary input and physical lines over
+256 KiB return an explicit error.
+
 ## `computer_use` toolset
 
 | Tool | Description | Requires environment |
@@ -401,5 +417,3 @@ Registered only on the `hermes-yuanbao` platform toolset. Yuanbao is Tencent's c
 | `yb_send_dm` | Send a private/direct message to a user in a group, with optional media files. | Yuanbao credentials |
 | `yb_search_sticker` | Search the built-in Yuanbao sticker (TIM face) catalogue by keyword. | Yuanbao credentials |
 | `yb_send_sticker` | Send a built-in sticker to the current Yuanbao chat. | Yuanbao credentials |
-
-

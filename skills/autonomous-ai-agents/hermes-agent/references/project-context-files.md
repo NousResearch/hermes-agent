@@ -5,8 +5,8 @@ Hermes injects project-level instructions into the system prompt by reading cont
 | File (in priority order) | Discovery | Use when |
 |---|---|---|
 | `.hermes.md` / `HERMES.md` | Walks parents up to the git root, stops at git root | You want hierarchical project rules (root + per-package overrides) |
-| `AGENTS.md` / `agents.md` | **Cwd only** — subdirectory and parent copies are ignored | You want portable agent instructions that work the same in Hermes, Claude Code, Codex, etc. |
-| `CLAUDE.md` / `claude.md` | Cwd only | Same as AGENTS.md, Claude-flavored |
+| `AGENTS.md` / `agents.md` | In a Git repo, loads the chain from git root through the startup CWD; deeper files take precedence. Further descendant `AGENTS.md` files are discovered progressively as the agent navigates. | You want portable agent instructions that work the same in Hermes, Claude Code, Codex, etc. |
+| `CLAUDE.md` / `claude.md` | CWD at startup plus subdirectories progressively | Same as AGENTS.md, Claude-flavored |
 | `.cursorrules` / `.cursor/rules/*.mdc` | Cwd only | Migrating from Cursor |
 
 `SOUL.md` (in `$HERMES_HOME`) is independent and always loaded when present — it sets the agent's identity, not project rules.
@@ -14,7 +14,7 @@ Hermes injects project-level instructions into the system prompt by reading cont
 ### Pick the right one
 
 - **Use `.hermes.md`** when you want Hermes-specific behavior that lives above the cwd (root + subtree), or when you want rules to inherit from a parent directory. The parent walk stops at the git root, so a home-level `.hermes.md` won't leak into every project (a git repo's root is the boundary).
-- **Use `AGENTS.md`** when the same project will also be worked on by other agents (Codex, Claude Code, OpenCode). Those tools all have their own conventions for `AGENTS.md`, and the "cwd only" contract keeps the file portable.
+- **Use `AGENTS.md`** when the same project will also be worked on by other agents (Codex, Claude Code, OpenCode). Hermes composes the Git-root-to-CWD chain, so keep root rules broadly applicable and put narrow package rules closer to the package.
 - **Don't put project rules in `~/.hermes/AGENTS.md`** (or any other home-level location). When Hermes runs with that directory as cwd, the file loads — but only for that one directory. For cross-project context, use `SOUL.md` (in `$HERMES_HOME`, identity-only) or install a skill via `hermes skills install`.
 
 ### Size and truncation

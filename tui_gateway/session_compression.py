@@ -13,12 +13,24 @@ from .method_ctx import bind_module
 
 def _tui_compression_config_signature(cfg: dict | None) -> tuple:
     """Stable snapshot of compression/context keys that must apply next turn: the messaging-gateway
-    cache-busting extract plus ``idle_compact_after_seconds``/``tail_mode`` (live-TUI-only keys)."""
+    cache-busting extract plus ``idle_compact_after_seconds``/``tail_mode`` (live-TUI-only keys) and the
+    ``auxiliary.compression`` route + window pin, whose window caps the trigger
+    (``check_compression_model_feasibility``).
+    Per-call aux knobs (timeout, reasoning_effort, extra_body) are read by auxiliary_client on every call
+    and must not churn the signature."""
     from gateway.run import GatewayRunner
     keys = GatewayRunner._extract_cache_busting_config(cfg)
     picked = {k: v for k, v in keys.items() if k.startswith("compression.") or k == "model.context_length"}
     compression = cfg.get("compression") if isinstance(cfg, dict) and isinstance(cfg.get("compression"), dict) else {}
     picked.update({f"compression.{k}": compression.get(k) for k in ("idle_compact_after_seconds", "tail_mode")})
+    auxiliary = cfg.get("auxiliary") if isinstance(cfg, dict) else None
+    aux_compression = auxiliary.get("compression") if isinstance(auxiliary, dict) else None
+    if not isinstance(aux_compression, dict):
+        aux_compression = {}
+    # context_length is the window pin the probe resolves the route with; a stale pin defeats a route switch.
+    picked.update({
+        f"auxiliary.compression.{k}": aux_compression.get(k) for k in ("provider", "model", "base_url", "context_length")
+    })
     return tuple(sorted(picked.items()))
 
 
@@ -168,13 +180,28 @@ def _apply_live_compression_config(agent: Any, cfg: dict | None) -> None:
     cc.threshold_tokens_cap = cc._coerce_threshold_tokens_cap(
         compression.get("threshold_tokens", _default_threshold_tokens_cap())
     )
+    # Same parse as agent_init: the feasibility probe reads this pin, so it must follow the route it describes.
+    aux_cfg = cfg.get("auxiliary") if isinstance(cfg.get("auxiliary"), dict) else {}
+    aux_compression = aux_cfg.get("compression") if isinstance(aux_cfg.get("compression"), dict) else {}
+    aux_ctx = aux_compression.get("context_length")
+    try:
+        agent._aux_compression_context_length_config = int(aux_ctx) if aux_ctx is not None else None
+    except (TypeError, ValueError):
+        agent._aux_compression_context_length_config = None
     # Invalidate the cached trigger so the next preflight re-derives from percent/window, then the cap.
     cc._threshold_tokens = cc._tail_token_budget = None
+    # The trigger above is the configured one; an aux route edit or raised threshold can make an existing
+    # aux ceiling stale or insufficient. Same rule as model switch / fallback: refresh an existing verdict only,
+    # never-probed sessions stay lazy (their first probe reads the current config).
+    if getattr(agent, "_compression_feasibility_checked", False) is True:
+        from agent.conversation_compression import revalidate_compression_feasibility
+        revalidate_compression_feasibility(agent)
 
 
 def _sync_agent_compression_with_config(sid: str, session: dict) -> None:
-    """Adopt compression.* / model.context_length edits at turn start (messaging gateways rebuild the
-    agent on these keys; Desktop/TUI keeps the live compressor, so it must be updated in place).
+    """Adopt compression.* / auxiliary.compression route / model.context_length edits at turn start
+    (messaging gateways rebuild the agent on the compression keys; Desktop/TUI keeps the live compressor,
+    so it must be updated in place).
 
     Desktop/TUI only synced the model; the live compressor kept the threshold captured at agent creation
     (#95151).

@@ -278,7 +278,8 @@ def _real_profile_cdp() -> tuple:
                       "Set browser.engine to 'auto' or 'chrome' to use real-profile browsing, or turn the toggle off.")
 
     from hermes_cli.browser_connect import (chromium_executable, detect_default_chromium,
-                                            real_profile_copy_dir, snapshot_real_profile)
+                                            real_profile_copy_dir, resolve_pinned_chromium,
+                                            snapshot_real_profile, _real_profile_pin)
 
     if not _bt._real_profile_cdp_lock.acquire(
         timeout=_bt._REAL_PROFILE_CDP_LOCK_TIMEOUT_S
@@ -297,7 +298,13 @@ def _real_profile_cdp() -> tuple:
             return cached, None
         _bt._real_profile_cdp_cache.pop("cdp", None)
 
-        browser = detect_default_chromium()
+        pin = _real_profile_pin()
+        if pin:
+            browser, resolve_err = resolve_pinned_chromium(pin)
+            if resolve_err:
+                return None, _RP + resolve_err
+        else:
+            browser = detect_default_chromium()
         unsupported = _real_profile_unsupported_reason(browser)
         if unsupported:
             return None, unsupported

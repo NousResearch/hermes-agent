@@ -2663,10 +2663,27 @@ def _check_non_ascii_credential(key: str, value: str) -> str:
 
 
 def _quote_env_value(value: str) -> str:
-    """Quote .env values containing characters with special dotenv meaning. Any whitespace
-    (including internal runs) is quoted so ``set -a; . file`` word-splitting keeps paths intact."""
+    """Quote .env values whose characters are special to dotenv OR to a shell sourcing the file.
+    Any whitespace (including internal runs) is quoted so ``set -a; . file`` word-splitting keeps
+    paths intact; ``$`` / backtick are quoted too, because an unquoted ``$NAME`` is *expanded* by
+    the shell that sources ``.env`` — an unset name aborts a ``set -u`` consumer outright, and a
+    silently truncated secret is worse. Single quotes are the .env dialect for literal text (read
+    verbatim by load_env_file, python-dotenv and a shell); the double-quote form stays for the
+    remaining cases and escapes ``\\`` / ``"`` / ``$`` / backtick, which ``_parse_env_value``
+    reverses."""
     if value == "":
         return value
+    if "$" in value or "`" in value:
+        if "'" not in value:
+            return f"'{value}'"
+        # A value holding BOTH a shell-special char and a single quote cannot use the literal form.
+        escaped = (
+            value.replace("\\", "\\\\")
+            .replace('"', '\\"')
+            .replace("$", "\\$")
+            .replace("`", "\\`")
+        )
+        return f'"{escaped}"'
     if not ("#" in value or '"' in value or "'" in value or any(c.isspace() for c in value)):
         return value
     escaped = value.replace("\\", "\\\\").replace('"', '\\"')

@@ -22,36 +22,31 @@ _GITHUB_ORIGIN = re.compile(
 _SHA = re.compile(r"[0-9a-f]{40}")
 
 
-def source_repository(git_cmd=None, cwd=None) -> str:
-    """GitHub forks own their releases; other origins must mirror official tags."""
-    if git_cmd is not None:
-        from hermes_cli.source_check import source_git_env
-
-        result = subprocess.run(
-            [*git_cmd, "config", "--get", "remote.origin.url"], cwd=cwd,
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
-            stdin=subprocess.DEVNULL, env=source_git_env(),
-        )
-        match = _GITHUB_ORIGIN.fullmatch(result.stdout.strip())
-        if result.returncode == 0 and match:
-            return match[1]
-    return OFFICIAL_REPOSITORY
-
-
-def _tag_remote(git_cmd, cwd, repository: str) -> str:
-    """Where the release tag is verified: ``origin``, except an SSH origin of the official
-    repository, which is read over public HTTPS (no SSH key, agent or FIDO touch needed)."""
+def _origin_url(git_cmd, cwd) -> str:
+    from hermes_cli._subprocess_compat import windows_hide_flags
     from hermes_cli.source_check import source_git_env
 
-    url = subprocess.run(
+    result = subprocess.run(
         [*git_cmd, "config", "--get", "remote.origin.url"], cwd=cwd, capture_output=True, text=True,
         encoding="utf-8", errors="replace", timeout=10, stdin=subprocess.DEVNULL, env=source_git_env(),
-    ).stdout.strip()
-    match = _GITHUB_ORIGIN.fullmatch(url)
-    if (match and match[1].lower() == OFFICIAL_REPOSITORY.lower() == repository.lower()
-            and url.lower().startswith(("git@", "ssh://"))):
+        creationflags=windows_hide_flags())
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def source_repository(git_cmd=None, cwd=None) -> str:
+    """GitHub forks own their releases; other origins must mirror official tags."""
+    match = _GITHUB_ORIGIN.fullmatch(_origin_url(git_cmd, cwd)) if git_cmd is not None else None
+    return match[1] if match else OFFICIAL_REPOSITORY
+
+
+def official_https_remote(origin_url: str, repository: str | None) -> str | None:
+    """The public HTTPS URL to read instead of an SSH origin of the official repository
+    (no SSH key, agent or FIDO touch needed); ``None`` for every other origin, forks included."""
+    match = _GITHUB_ORIGIN.fullmatch(origin_url or "")
+    if (match and repository and match[1].lower() == OFFICIAL_REPOSITORY.lower() == repository.lower()
+            and origin_url.lower().startswith(("git@", "ssh://"))):
         return f"https://github.com/{OFFICIAL_REPOSITORY}.git"
-    return "origin"
+    return None
 
 
 @dataclass(frozen=True)
@@ -71,6 +66,8 @@ class SourceTarget:
         return self.requested_channel != self.channel
 
     ahead: bool = False
+    # Why an unchosen stable default follows main instead: "diverged" or "unknown".
+    main_fallback: str | None = None
 
     @property
     def label(self) -> str:
@@ -94,32 +91,39 @@ def _resolve_channel(name: str, repository: str):
 
 
 def resolve_source_target(channel: str, git_cmd=None, cwd=None, *, repository=None,
-                          forward_only: bool = False) -> SourceTarget:
+                          forward_only: bool = False, fetch=None) -> SourceTarget:
     """Resolve every subscription, including default labels, through R2.
 
     ``forward_only`` (an unchosen default subscription) moves a checkout to the release only
     when HEAD is proven behind it. A HEAD that already contains the release is pinned to
-    itself (a no-op, never a downgrade); any other relation (diverged local work, or one
-    nothing can establish) keeps following main, as an install did before stable was its
-    default, instead of detaching the user's branch onto the release.
+    itself (a no-op, never a downgrade); a diverged HEAD, or one whose relation nothing can
+    establish, keeps following main as it did before stable was the default, instead of
+    being detached onto the release. ``fetch(sha) -> bool`` (apply only) brings a release
+    commit the checkout lacks so the relation is decided locally, not by the GitHub API.
     """
     target = _resolve_source_target(channel, git_cmd, cwd, repository=repository)
     if forward_only and target.commit and git_cmd is not None and cwd is not None:
-        head, relation = _head_relation(git_cmd, cwd, target.commit, target.repository)
+        head, relation = _head_relation(git_cmd, cwd, target.commit, target.repository, fetch=fetch)
         if relation == "contains" and head != target.commit:
             return replace(target, commit=head, ahead=True)
-        if relation not in ("contains", "behind"):
-            return replace(target, commit=None, branch=CHANNEL_MAIN, version=None, build_id=None)
+        if relation in ("diverged", None):
+            return replace(target, commit=None, branch=CHANNEL_MAIN, version=None, build_id=None,
+                           main_fallback=relation or "unknown")
     return target
 
 
-def _head_relation(git_cmd, cwd, commit: str, repository: str) -> tuple[str | None, str | None]:
+# GitHub compare status of HEAD relative to the release.
+_GITHUB_RELATION = {"ahead": "contains", "identical": "contains", "behind": "behind", "diverged": "diverged"}
+
+
+def _head_relation(git_cmd, cwd, commit: str, repository: str, *, fetch=None) -> tuple[str | None, str | None]:
     """``(HEAD sha, relation)``: relation is ``"contains"`` (HEAD is or descends from ``commit``),
     ``"behind"`` (HEAD is an ancestor of it), ``"diverged"``, or ``None`` when unknown.
 
-    Only full history is local proof: a shallow boundary turns ``--is-ancestor`` into a guess.
-    In a full (or blobless) clone every commit HEAD reaches is local, so a missing ``commit``
-    proves HEAD lacks it; whether HEAD is behind it is then GitHub's to say.
+    Only full history is local proof: a shallow boundary turns ``--is-ancestor`` into a guess
+    (and ``== "false"`` keeps an unreadable answer on the guess side). In a full or blobless
+    clone every commit HEAD reaches is local, so a missing ``commit`` proves HEAD lacks it:
+    ``fetch`` brings it to decide behind/diverged locally, else GitHub says which.
     """
     from hermes_cli._subprocess_compat import windows_hide_flags
     from hermes_cli.source_check import _github_compare, source_git_env
@@ -130,19 +134,21 @@ def _head_relation(git_cmd, cwd, commit: str, repository: str) -> tuple[str | No
             errors="replace", timeout=10, stdin=subprocess.DEVNULL, env=source_git_env(),
             creationflags=windows_hide_flags())
 
+    def local(*args):
+        return run(*args).returncode == 0
+
     head = run("rev-parse", "HEAD").stdout.strip()
     if not _SHA.fullmatch(head):
         return None, None
-    if run("merge-base", "--is-ancestor", commit, head).returncode == 0:
+    if local("merge-base", "--is-ancestor", commit, head):
         return head, "contains"
-    if run("rev-parse", "--is-shallow-repository").stdout.strip() == "false":
-        if run("merge-base", "--is-ancestor", head, commit).returncode == 0:
-            return head, "behind"
-        if run("cat-file", "-e", f"{commit}^{{commit}}").returncode == 0:
-            return head, "diverged"
+    full = run("rev-parse", "--is-shallow-repository").stdout.strip() == "false"
+    if full and (local("cat-file", "-e", f"{commit}^{{commit}}") or (fetch is not None and fetch(commit))):
+        return head, "behind" if local("merge-base", "--is-ancestor", head, commit) else "diverged"
     status = (_github_compare(commit, head, repository) or {}).get("status")
-    return head, {"ahead": "contains", "identical": "contains", "behind": "behind",
-                  "diverged": "diverged"}.get(status)
+    relation = _GITHUB_RELATION.get(status)
+    # Full history already proved HEAD lacks the release; GitHub cannot overrule that.
+    return head, None if full and relation == "contains" else relation
 
 
 def _resolve_source_target(channel: str, git_cmd=None, cwd=None, *, repository=None) -> SourceTarget:
@@ -359,7 +365,7 @@ def resolve_source_release(channel: str, git_cmd=None, cwd=None, *, repository=N
 
             ref = f"refs/tags/{tag}"
             result = subprocess.run(
-                [*git_cmd, "ls-remote", "--tags", _tag_remote(git_cmd, cwd, repository), ref, ref + "^{}"],
+                [*git_cmd, "ls-remote", "--tags", official_https_remote(_origin_url(git_cmd, cwd), repository) or "origin", ref, ref + "^{}"],
                 cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace",
                 check=True, timeout=60, stdin=subprocess.DEVNULL,
                 env=source_git_env(),

@@ -81,7 +81,7 @@ def channel_compare_branch(selected_channel: str, git_cmd: list[str], root: Path
         print(f"✗ Could not resolve the {selected_channel} source channel: {exc}")
         sys.exit(1)
     if not target.commit:
-        _note_main_fallback(selected_channel, target)
+        _note_main_fallback(target)
         return target.branch
     if target.retired:
         print(f"→ {selected_channel} retired; source destination: {target.channel}")
@@ -198,11 +198,27 @@ def report_rev_list_verdict(git_cmd: list[str], root: Path, compare_branch: str)
     print(f"  Run '{recommended_update_command()}' to install.")
 
 
-def _note_main_fallback(selected: str, target) -> None:
+def _note_main_fallback(target) -> None:
     """An unchosen stable default that cannot move this checkout forward onto the release."""
-    if selected == "stable" and target.branch == "main":
-        print("→ This checkout is not on the stable release line; following main as before"
-              " (`hermes update --set-channel stable` lands on the release)")
+    if target.main_fallback == "diverged":
+        why = "This checkout has history the stable release does not"
+    elif target.main_fallback:
+        why = "Could not confirm this checkout is behind the stable release"
+    else:
+        return
+    print(f"→ {why}; following {target.branch} as before"
+          " (`hermes update --set-channel stable` lands on the release)")
+
+
+def _fetch_commit(git_cmd):
+    """``fetch(sha) -> bool`` for the apply path: the release commit, through the update's fetch."""
+    from hermes_cli.gitlock import fetch_with_partial_clone_recovery
+
+    def fetch(sha: str) -> bool:
+        return fetch_with_partial_clone_recovery(
+            lambda gc, a: _uc()._git_run(gc, a, network=True), git_cmd,
+            ["fetch", "--no-tags", "origin", sha], _uc()._m().PROJECT_ROOT).returncode == 0
+    return fetch
 
 
 def select_apply_target(args, branch: str, request: dict, *, git_cmd, stop) -> tuple:
@@ -230,7 +246,8 @@ def select_apply_target(args, branch: str, request: dict, *, git_cmd, stop) -> t
     try:
         with retrying_reads():
             target = resolve_source_target(selected, git_cmd, root,
-                                           forward_only=rides_default_channel(original, selected, root))
+                                           forward_only=rides_default_channel(original, selected, root),
+                                           fetch=_fetch_commit(git_cmd) if git_cmd else None)
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         print(f"✗ Could not resolve the {selected} source channel: {exc}. No update was applied.")
         stop()
@@ -245,6 +262,6 @@ def select_apply_target(args, branch: str, request: dict, *, git_cmd, stop) -> t
         request["expected_sha"] = target.commit
         return target.commit, target.commit, target.ahead, target.repository
     assert target.branch is not None  # a SourceTarget without a commit names its branch
-    _note_main_fallback(selected, target)
+    _note_main_fallback(target)
     request["branch"] = target.branch
     return f"origin/{target.branch}", None, False, target.repository

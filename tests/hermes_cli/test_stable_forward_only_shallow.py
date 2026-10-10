@@ -52,7 +52,10 @@ def test_full_history_behind_release_is_proof(history, tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("blobless", [False, True])
-@pytest.mark.parametrize("compare,relation", [(None, None), ({"status": "behind"}, "behind")])
+@pytest.mark.parametrize("compare,relation", [
+    (None, None), ({"status": "behind"}, "behind"),
+    ({"status": "ahead"}, None),  # full history already proved HEAD lacks it
+])
 def test_full_clone_missing_a_newer_release_is_never_called_ahead(history, tmp_path, monkeypatch,
                                                                     blobless, compare, relation):
     """The release is cut after the install's last fetch, so its commit is not local yet."""
@@ -64,6 +67,12 @@ def test_full_clone_missing_a_newer_release_is_never_called_ahead(history, tmp_p
     release = _git(origin, "rev-parse", "HEAD")
     monkeypatch.setattr(source_check, "_github_compare", lambda *a, **k: compare)
     assert source_releases._head_relation(["git"], clone, release, "o/r") == (shas[2], relation)
+    # The apply path fetches the release and decides locally, whatever GitHub says.
+    def fetch(sha):
+        _git(clone, "fetch", "-q", "origin", sha)
+        return True
+    monkeypatch.setattr(source_check, "_github_compare", lambda *a, **k: pytest.fail("decided locally"))
+    assert source_releases._head_relation(["git"], clone, release, "o/r", fetch=fetch) == (shas[2], "behind")
 
 
 @pytest.mark.parametrize("start", ["diverged", "unknown"])
@@ -85,6 +94,7 @@ def test_unchosen_default_follows_main_instead_of_detaching_onto_the_release(his
     monkeypatch.setattr(source_check, "_github_compare", lambda *a, **k: None)
     target = source_releases.resolve_source_target("stable", ["git"], clone, repository="o/r", forward_only=True)
     assert (target.commit, target.branch, target.ahead) == (None, "main", False)
+    assert target.main_fallback == ("diverged" if start == "diverged" else "unknown")
     # A chosen subscription still lands exactly on the release.
     chosen = source_releases.resolve_source_target("stable", ["git"], clone, repository="o/r")
     assert chosen.commit == release
@@ -100,4 +110,4 @@ def test_official_ssh_origin_verifies_the_release_tag_over_https(tmp_path, url, 
     _git(tmp_path, "init", "-q")
     _git(tmp_path, "remote", "add", "origin", url)
     repository = source_releases.source_repository(["git"], tmp_path)
-    assert source_releases._tag_remote(["git"], tmp_path, repository) == remote
+    assert (source_releases.official_https_remote(url, repository) or "origin") == remote

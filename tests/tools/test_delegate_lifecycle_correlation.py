@@ -1,90 +1,64 @@
-"""Delegation lifecycle correlation across parallel children."""
+"""Delegation hook correlation: child lifecycle and child tool hooks name the parent delegate_task call."""
 
 from __future__ import annotations
 
+import functools
 from types import SimpleNamespace
 
-from tools import delegate_tool, delegate_tool_results
+import pytest
 
 
-def test_child_lifecycle_correlation_carries_parent_call_and_task_index(monkeypatch):
-    start_events = []
-    stop_events = []
-    child = SimpleNamespace(
-        session_id="child-session",
-        _delegate_role="researcher",
-        _subagent_id="sa-0-test",
-        _delegate_parent_tool_call_id="call-parent-1",
-    )
-    parent = SimpleNamespace(session_id="parent-session", _current_turn_id="turn-1")
-
-    monkeypatch.setattr(
-        delegate_tool_results,
-        "_subagent_stop_tool_call_history",
-        lambda _trace: [],
-    )
-    import hermes_cli.plugins as plugin_module
-    monkeypatch.setattr(plugin_module, "invoke_hook", lambda name, **kwargs: stop_events.append((name, kwargs)))
-
-    entry = {
-        "task_index": 3,
-        "status": "completed",
-        "summary": "done",
-        "duration_seconds": 1.2,
-        "tool_trace": [],
-        "_child_role": "researcher",
-        "_child_cost_usd": 0.0,
-    }
-    delegate_tool_results._fire_subagent_stop_hooks([entry], {3: child}, parent)
-
-    assert stop_events == [("subagent_stop", {
-        "parent_session_id": "parent-session",
-        "parent_turn_id": "turn-1",
-        "child_session_id": "child-session",
-        "child_role": "researcher",
-        "child_subagent_id": "sa-0-test",
-        "parent_tool_call_id": "call-parent-1",
-        "task_index": 3,
-        "delegation_purpose": None,
-        "child_summary": "done",
-        "child_status": "completed",
-        "tool_call_history": [],
-        "duration_ms": 1200,
-    })]
-
-
-def test_sequential_dispatch_scopes_parent_tool_call_id(monkeypatch):
-    from agent.tool_executor import _ToolCallRef, _resolve_sequential_dispatch
-
-    seen = []
-    agent = SimpleNamespace(
-        _delegate_spinner=None,
-        _context_engine_tool_names=set(),
-        _memory_manager=None,
-        _dispatch_delegate_task=lambda args: seen.append((args, getattr(agent, "_delegate_parent_tool_call_id", None))) or "ok",
-    )
-    monkeypatch.setattr("agent.tool_executor._start_quiet_tool_spinner", lambda *args, **kwargs: None)
-    ref = _ToolCallRef(name="delegate_task", args={"tasks": [{"goal": "inspect bounded target"}]}, task_id="task", call_id="call-parent-1", trace=[])
-
-    dispatch = _resolve_sequential_dispatch(agent, ref, [])
-    assert dispatch.execute(ref.args) == "ok"
-    assert seen == [(ref.args, "call-parent-1")]
-    assert not hasattr(agent, "_delegate_parent_tool_call_id")
-
-
-def test_agent_dispatch_forwards_parent_tool_call_id(monkeypatch):
-    from run_agent import AIAgent
+def test_delegate_tool_call_id_reaches_delegate_task_on_both_dispatch_paths(monkeypatch):
+    """Sequential and concurrent (inline-executor) dispatch both forward the parent's
+    ``delegate_task`` tool_call_id; a dropped id leaves parallel same-goal children uncorrelatable."""
     import tools.delegate_tool as delegate_module
+    from agent.inline_tool_executors import INLINE_TOOL_EXECUTORS, InlineToolContext
+    from agent.tool_executor import _ToolCallRef, _resolve_sequential_dispatch
+    from run_agent import AIAgent
 
-    captured = {}
-    monkeypatch.setattr(delegate_module, "delegate_task", lambda **kwargs: captured.update(kwargs) or "ok")
+    captured: list = []
+    monkeypatch.setattr(delegate_module, "delegate_task", lambda **kw: captured.append(kw["tool_call_id"]) or "ok")
+    monkeypatch.setattr("agent.tool_executor._start_quiet_tool_spinner", lambda *a, **k: None)
+    agent = SimpleNamespace(_delegate_depth=0, _delegate_spinner=None, _context_engine_tool_names=set(),
+                            _memory_manager=None)
+    agent._dispatch_delegate_task = functools.partial(AIAgent._dispatch_delegate_task, agent)
+    args = {"tasks": [{"goal": "same goal"}, {"goal": "same goal"}]}
 
-    agent = SimpleNamespace(_delegate_depth=0, _delegate_parent_tool_call_id="call-parent-1")
-    result = AIAgent._dispatch_delegate_task(
-        agent,
-        {"tasks": [{"goal": "inspect bounded target"}]},
-    )
+    ref = _ToolCallRef(name="delegate_task", args=args, task_id="t", call_id="call-seq", trace=[])
+    assert _resolve_sequential_dispatch(agent, ref, []).execute(args) == "ok"
+    ctx = InlineToolContext(effective_task_id="t", tool_call_id="call-par")
+    assert INLINE_TOOL_EXECUTORS["delegate_task"](agent, args, ctx) == "ok"
 
-    assert result == "ok"
-    assert captured["tool_call_id"] == "call-parent-1"
-    assert captured["parent_agent"] is agent
+    assert captured == ["call-seq", "call-par"]
+
+
+@pytest.mark.parametrize("hook", ["pre_tool_call", "post_tool_call"])
+def test_child_tool_hooks_carry_parent_tool_call_id_only_inside_a_child(monkeypatch, hook):
+    """A tool hook fired by a delegate child carries ``parent_tool_call_id``; the same hook fired by the
+    parent (outside the child context) has no such key, so top-level payloads keep their shape."""
+    from hermes_cli import plugins
+    from agent.delegation_context import delegated_child_context
+    from model_tools import _emit_post_tool_call_hook
+
+    seen: list[dict] = []
+    manager = plugins.PluginManager()
+    manager._discovered = True
+    manager._hooks[hook] = [lambda **kw: seen.append(kw)]
+    monkeypatch.setattr(plugins, "_delivery_manager", lambda: manager)
+    monkeypatch.setattr(plugins, "get_plugin_manager", lambda: manager)
+
+    def fire():
+        if hook == "pre_tool_call":
+            plugins._get_pre_tool_call_directive_details("read_file", {"path": "x"}, tool_call_id="child-call")
+        else:
+            _emit_post_tool_call_hook(function_name="read_file", function_args={"path": "x"}, result="{}",
+                                      tool_call_id="child-call")
+
+    fire()
+    with delegated_child_context("child-session", "call-delegate-7"):
+        fire()
+
+    assert len(seen) == 2
+    assert "parent_tool_call_id" not in seen[0]
+    assert seen[1]["parent_tool_call_id"] == "call-delegate-7"
+    assert seen[1]["tool_call_id"] == "child-call"

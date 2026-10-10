@@ -369,7 +369,6 @@ def _fire_subagent_stop_hooks(results, child_by_index, parent_agent) -> float:
                 child_subagent_id=getattr(child, "_subagent_id", None),
                 parent_tool_call_id=getattr(child, "_delegate_parent_tool_call_id", None),
                 task_index=entry.get("task_index"),
-                delegation_purpose=getattr(child, "_delegate_purpose", None),
                 child_summary=entry.get("summary"), child_status=entry.get("status"),
                 tool_call_history=_subagent_stop_tool_call_history(entry.get("tool_trace")),
                 duration_ms=int((entry.get("duration_seconds") or 0) * 1000),

@@ -201,7 +201,6 @@ def _build_child_agent(
     task_count: int,
     parent_agent,
     parent_tool_call_id: Optional[str] = None,
-    delegation_purpose: Optional[str] = None,
     # Credential overrides from delegation config
     override_provider: Optional[str] = None,
     override_base_url: Optional[str] = None,
@@ -287,9 +286,6 @@ def _build_child_agent(
                 tool_progress_callback=child_progress_cb,
                 iteration_budget=None,  # fresh budget per subagent
             )
-            # Purpose is Plugin-owned admission metadata, but it must exist
-            # before the child's first tool resolution.
-            child._delegate_purpose = delegation_purpose
         except BaseException:
             # No child close() will ever run: release the dedicated handle here.
             if child_session_db is not None:
@@ -338,9 +334,7 @@ def _build_child_agent(
             parent_turn_id=getattr(parent_agent, "_current_turn_id", "") or "", parent_subagent_id=parent_subagent_id,
             child_session_id=getattr(child, "session_id", None), child_subagent_id=subagent_id,
             child_role=effective_role, child_goal=goal,
-            parent_tool_call_id=parent_tool_call_id,
-            task_index=task_index,
-            delegation_purpose=delegation_purpose,
+            parent_tool_call_id=parent_tool_call_id, task_index=task_index,
         )
     return child
 
@@ -437,9 +431,8 @@ def _build_children(
         try:
             child = _build_child_preserving_parent_tools(
                 task_index=i, goal=t["goal"], context=_child_context,
-                toolsets=None,  # inherit the parent's toolsets; profile overrides are a separate feature
+                toolsets=None,  # always inherit the parent's toolsets
                 parent_tool_call_id=parent_tool_call_id,
-                delegation_purpose=t.get("purpose"),
                 model=creds["model"], max_iterations=max_iterations, task_count=len(task_list),
                 parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role), **overrides,
             )

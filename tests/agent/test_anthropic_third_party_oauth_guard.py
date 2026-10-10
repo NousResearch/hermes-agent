@@ -25,8 +25,9 @@ import pytest
 
 from run_agent import AIAgent
 
-# A plausible-looking OAuth token (``sk-ant-`` without the ``-api`` suffix).
-_OAUTH_LIKE_TOKEN = "sk-ant-oauth-example-1234567890abcdef"
+# A real-shaped OAuth token (``sk-ant-oat``), so the provider guard — not the token's shape —
+# is what keeps ``_is_anthropic_oauth`` False on a third-party endpoint.
+_OAUTH_LIKE_TOKEN = "sk-ant-oat01-example-1234567890abcdef"
 
 @pytest.fixture
 def agent():

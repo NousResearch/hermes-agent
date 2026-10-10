@@ -135,6 +135,12 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
     []
   )
 
+  // Terminal sequences belong to one backend replay epoch; a restart resets
+  // their numbering. Retain each epoch's watermark across message.start so
+  // replayed frames cannot attach to the next turn's fresh bubble. `null`
+  // records a legacy terminal frame that did not carry a sequence number.
+  const terminalMessageSeqBySessionRef = useRef<Map<string, number | null>>(new Map())
+
   return useCallback(
     (event: GatewayEvent) => {
       const payload = event.payload as GatewayEventPayload | undefined
@@ -224,6 +230,41 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         setSessionProviderWait(sessionId, '')
       }
 
+      const terminalSessionKey = `${event.replayEpoch ?? `conn:${event.connectionId ?? ''}`}\u0000${sessionId}`
+
+      if (sessionId && event.type === 'message.complete') {
+        const previous = terminalMessageSeqBySessionRef.current.get(terminalSessionKey)
+        const seq = typeof event.seq === 'number' && Number.isSafeInteger(event.seq) ? event.seq : null
+
+        terminalMessageSeqBySessionRef.current.set(
+          terminalSessionKey,
+          seq === null ? previous ?? null : previous == null ? seq : Math.max(previous, seq)
+        )
+      }
+
+      const staleStreamFrame = (): boolean => {
+        if (!sessionId || (event.type !== 'message.delta' && event.type !== 'message.interim')) {
+          return false
+        }
+
+        const terminalSeq = terminalMessageSeqBySessionRef.current.get(terminalSessionKey)
+
+        if (terminalSeq === undefined) {
+          return false
+        }
+
+        const state = sessionStateByRuntimeIdRef.current.get(sessionId)
+
+        // Once this epoch has completed the turn, even a legacy seq-less
+        // delta is stale until a new turn is accepted or adopted. Drop it
+        // BEFORE enqueueing: its timer may flush before a late interim lands.
+        if (!state?.turnLive && !state?.busy && !state?.awaitingResponse && !state?.streamId) {
+          return true
+        }
+
+        return terminalSeq !== null && typeof event.seq === 'number' && Number.isSafeInteger(event.seq) && event.seq <= terminalSeq
+      }
+
       const ctx: GatewayEventContext = {
         deps,
         event,
@@ -233,7 +274,8 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         isActiveEvent,
         occurredAt,
         fromActiveSource,
-        scheduleConfigRefresh
+        scheduleConfigRefresh,
+        staleStreamFrame
       }
 
       try {

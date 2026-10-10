@@ -1450,6 +1450,9 @@ class TestSafeCopyDb:
         clock = iter((100.0, 100.5, 101.1))
 
         class FakeSourceConnection:
+            def execute(self, _sql):
+                pass
+
             def backup(self, _destination, *, pages, progress, sleep):
                 assert pages > 0
                 assert sleep > 0
@@ -1486,8 +1489,153 @@ class TestSafeCopyDb:
         assert connect_calls[0][1]["timeout"] == 0.0
         assert not dst.exists()
 
+    def test_finishes_from_one_snapshot_despite_checkpoints_between_every_step(
+        self, tmp_path, monkeypatch
+    ):
+        """A writer that checkpoints the WAL between every backup step must
+        not leave the copy stuck making zero progress forever.
 
+        Without pinning a read snapshot, each backup step opens and closes
+        its own implicit read transaction, so a writer checkpoint between
+        two steps invalidates the WAL frames the next step needs and the
+        step keeps re-reading the same range -- `remaining` never moves --
+        indefinitely, as long as checkpoints keep arriving, without ever
+        surfacing SQLITE_BUSY/SQLITE_LOCKED to the caller. A source-
+        connection proxy forces a real commit + checkpoint after every real
+        backup step, deterministically reproducing a continuously busy
+        writer instead of racing a background thread.
+        """
+        from hermes_cli import backup_sqlite as backup_mod
 
+        src = tmp_path / "wal.db"
+        dst = tmp_path / "copy.db"
+
+        setup = sqlite3.connect(str(src))
+        setup.execute("PRAGMA journal_mode=WAL")
+        setup.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, data TEXT)")
+        payload = "x" * 3200
+        setup.executemany(
+            "INSERT INTO t (data) VALUES (?)",
+            [(payload,) for _ in range(3000)],
+        )
+        setup.commit()
+        setup.close()
+
+        writer = sqlite3.connect(str(src))
+        callback_statuses = []
+        real_connect = sqlite3.connect
+
+        class _StepBoundExceeded(RuntimeError):
+            pass
+
+        class _InterleavedWritesConnection:
+            """Proxies the real source connection; forces a real commit on
+            `writer` right after every real, non-final backup step."""
+
+            def __init__(self, real_conn):
+                self._real = real_conn
+
+            def backup(self, destination, *, pages, progress, sleep):
+                def _wrapped_progress(status, remaining, total):
+                    callback_statuses.append(status)
+                    if len(callback_statuses) > 200:
+                        raise _StepBoundExceeded(
+                            "copy made no progress after 200 steps instead "
+                            "of pinning one snapshot"
+                        )
+                    if status == sqlite3.SQLITE_OK and remaining:
+                        writer.execute(
+                            "UPDATE t SET data = ? WHERE id = 1", (payload,)
+                        )
+                        writer.commit()
+                        writer.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                    progress(status, remaining, total)
+
+                return self._real.backup(
+                    destination, pages=pages, progress=_wrapped_progress, sleep=sleep
+                )
+
+            def __getattr__(self, name):
+                return getattr(self._real, name)
+
+        def fake_connect(*args, **kwargs):
+            conn = real_connect(*args, **kwargs)
+            if kwargs.get("uri"):
+                return _InterleavedWritesConnection(conn)
+            return conn
+
+        monkeypatch.setattr(backup_mod.sqlite3, "connect", fake_connect)
+
+        try:
+            result = backup_mod._safe_copy_db(src, dst, timeout_seconds=5.0)
+        finally:
+            writer.close()
+
+        assert result is True, (
+            "safe copy did not finish while a writer checkpointed between "
+            "every step -- it kept making zero progress"
+        )
+        verify = sqlite3.connect(str(dst))
+        try:
+            count = verify.execute("SELECT COUNT(*) FROM t").fetchone()[0]
+        finally:
+            verify.close()
+        assert count == 3000
+
+    def test_waits_out_a_transient_lock_on_the_pinning_statements(
+        self, tmp_path, monkeypatch
+    ):
+        """The snapshot-pinning statements run on a connection opened with
+        `timeout=0.0`, so a bare `execute()` surfaces `OperationalError`
+        straight from the first lock collision instead of waiting out
+        `busy_deadline` like the backup() progress callback does. That
+        regresses rollback-journal (`journal_mode: "delete"`) databases,
+        where a real writer lock now aborts the copy immediately instead of
+        clearing within the existing deadline.
+        """
+        from hermes_cli import backup_sqlite as backup_mod
+
+        src = tmp_path / "delete_mode.db"
+        dst = tmp_path / "copy.db"
+
+        setup = sqlite3.connect(str(src))
+        setup.execute("CREATE TABLE t (x INTEGER)")
+        setup.execute("INSERT INTO t VALUES (42)")
+        setup.commit()
+        setup.close()
+
+        writer = sqlite3.connect(str(src))
+        writer.execute("BEGIN EXCLUSIVE")
+        writer.execute("INSERT INTO t VALUES (7)")
+
+        real_sleep = backup_mod.time.sleep
+        released = []
+
+        def fake_sleep(seconds):
+            if not released:
+                released.append(True)
+                writer.commit()
+            real_sleep(0)
+
+        monkeypatch.setattr(backup_mod.time, "sleep", fake_sleep)
+
+        try:
+            result = backup_mod._safe_copy_db(src, dst, timeout_seconds=5.0)
+        finally:
+            writer.close()
+
+        assert result is True, (
+            "safe copy aborted on the first lock collision instead of "
+            "waiting out busy_deadline"
+        )
+        verify = sqlite3.connect(str(dst))
+        try:
+            assert verify.execute("SELECT x FROM t ORDER BY x").fetchall() == [
+                (7,),
+                (42,),
+            ]
+        finally:
+            verify.close()
 
     def test_is_zeroed_sqlite_file_detects_nul_header(self, tmp_path):
         from hermes_cli.backup import is_zeroed_sqlite_file

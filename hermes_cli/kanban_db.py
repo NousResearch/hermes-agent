@@ -27,7 +27,7 @@ import time
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Callable, Iterable, Mapping, Optional
 
 from hermes_cli.kanban_workflow import DEFAULT_STATUSES as VALID_STATUSES
 from toolsets import get_toolset_names
@@ -233,7 +233,7 @@ def notify_task_updated(
 # DispatchResult counters whose non-zero value means the tick did something.
 _TICK_ACTIVITY_FIELDS = (
     "spawned", "reclaimed", "promoted", "reconciled_orphans", "reaped_terminal_workers", "crashed", "stale",
-    "timed_out", "auto_blocked", "rate_limited", "auto_assigned_default",
+    "timed_out", "auto_blocked", "contract_guarded", "rate_limited", "auto_assigned_default",
     "respawn_guarded", "skipped_per_profile_capped", "skipped_unassigned",
     "skipped_nonspawnable",
 )
@@ -2193,9 +2193,46 @@ def _claim_and_open_run(
     return run_id
 
 
+class ClaimGuardRejected(RuntimeError):
+    """The exact task snapshot observed inside the claim transaction is unsafe."""
+
+    def __init__(self, reason: str):
+        super().__init__(reason)
+        self.reason = reason
+
+
+_ClaimGuard = Callable[[Mapping[str, Any]], Optional[str]]
+
+
+def _guard_claim_snapshot(
+    conn: sqlite3.Connection,
+    task_id: str,
+    source_status: str,
+    guard: Optional[_ClaimGuard],
+) -> bool:
+    """Validate the row protected by the same write transaction as its claim.
+
+    ``False`` means the compare-and-swap is already ineligible.  A guard
+    rejection raises so the transaction rolls back without a run or claim.
+    """
+    row = conn.execute(
+        "SELECT id, title, body, assignee, created_by, project_id, idempotency_key, "
+        "workspace_kind, workspace_path, branch_name FROM tasks "
+        "WHERE id = ? AND status = ? AND claim_lock IS NULL",
+        (task_id, source_status),
+    ).fetchone()
+    if row is None:
+        return False
+    if guard is not None:
+        reason = guard(row)
+        if reason is not None:
+            raise ClaimGuardRejected(reason)
+    return True
+
+
 def claim_task(
     conn: sqlite3.Connection, task_id: str, *, ttl_seconds: Optional[int] = None,
-    claimer: Optional[str] = None,
+    claimer: Optional[str] = None, guard: Optional[_ClaimGuard] = None,
 ) -> Optional[Task]:
     """Atomically transition ``ready -> running``.
 
@@ -2206,6 +2243,8 @@ def claim_task(
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
     with write_txn(conn):
+        if not _guard_claim_snapshot(conn, task_id, "ready", guard):
+            return None
         # Single enforcement point: never ready -> running with an undone
         # parent, whichever writer set 'ready'. Demote to 'todo';
         # recompute_ready re-promotes when the parents finish.
@@ -2230,7 +2269,7 @@ def claim_task(
 
 def claim_review_task(
     conn: sqlite3.Connection, task_id: str, *, ttl_seconds: Optional[int] = None,
-    claimer: Optional[str] = None,
+    claimer: Optional[str] = None, guard: Optional[_ClaimGuard] = None,
 ) -> Optional[Task]:
     """Atomic ``review -> running`` (None when lost). Parents are re-checked
     (one may have reopened meanwhile) and a NEW run tracks the reviewer
@@ -2239,6 +2278,8 @@ def claim_review_task(
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
     with write_txn(conn):
+        if not _guard_claim_snapshot(conn, task_id, "review", guard):
+            return None
         if not _parents_satisfied(conn, task_id):
             demoted = conn.execute(
                 "UPDATE tasks SET status = 'todo' "

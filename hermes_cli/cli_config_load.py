@@ -118,6 +118,34 @@ _AUXILIARY_TASK_ENV = {
 _CWD_PLACEHOLDERS = (".", "auto", "cwd")
 
 
+def _dispatcher_pinned_kanban_cwd(expected_cwd: str | None = None) -> str | None:
+    """Return the trusted Kanban workspace pin that startup must preserve.
+
+    The dispatcher launches each worker with all three values equal to the
+    resolved task workspace.  Replacing ``TERMINAL_CWD`` with the profile's
+    static ``terminal.cwd`` here makes the Docker backend mount that unrelated
+    directory at ``/workspace``.  Preserve the launch pin only for a complete,
+    exact, existing host-path match; partial or mismatched process state still
+    falls through to the configured cwd.
+    """
+    task_id = os.environ.get("HERMES_KANBAN_TASK", "").strip()
+    workspace = os.environ.get("HERMES_KANBAN_WORKSPACE", "").strip()
+    companion_cwd = expected_cwd
+    if companion_cwd is None:
+        companion_cwd = os.environ.get("TERMINAL_CWD", "")
+    if not task_id or not workspace or not isinstance(companion_cwd, str) or not companion_cwd.strip():
+        return None
+    candidate = os.path.abspath(os.path.expanduser(workspace))
+    pinned = os.path.abspath(os.path.expanduser(companion_cwd))
+    if (
+        candidate != pinned
+        or not os.path.isdir(candidate)
+        or candidate.startswith(("/workspace", "/root"))
+    ):
+        return None
+    return candidate
+
+
 def _mirror_config_to_env(defaults, _file_has_terminal_config):
     """Project config.yaml values into the env vars the tool modules read (terminal/browser/auxiliary/security/sessions). Env always wins when already set."""
     from cli import _AUXILIARY_TASK_ENV, _CWD_PLACEHOLDERS, _TERMINAL_ENV_MAPPINGS
@@ -136,15 +164,17 @@ def _mirror_config_to_env(defaults, _file_has_terminal_config):
     elif terminal_config.get("cwd") in _CWD_PLACEHOLDERS:
         terminal_config.pop("cwd", None)
 
-    # TERMINAL_CWD is force-exported (beats stale .env) except inside a gateway process,
-    # whose config bridge already set it.
+    # TERMINAL_CWD is force-exported (beats stale .env) except inside a gateway
+    # process, whose config bridge already set it, or a Kanban worker whose
+    # trusted dispatcher pinned an exact task/workspace/cwd triple.
     _is_gateway = os.environ.get("_HERMES_GATEWAY") == "1"
+    _kanban_cwd = _dispatcher_pinned_kanban_cwd()
     for config_key, env_var in _TERMINAL_ENV_MAPPINGS.items():
         if config_key not in terminal_config:
             continue
         val = terminal_config[config_key]
         if env_var == "TERMINAL_CWD":
-            if not _is_gateway:
+            if not _is_gateway and _kanban_cwd is None:
                 os.environ[env_var] = str(val)
         elif _file_has_terminal_config or env_var not in os.environ:
             os.environ[env_var] = json.dumps(val) if isinstance(val, (list, dict)) else str(val)

@@ -168,6 +168,21 @@ def build_profile_terminal_scope(
             image_pinned = image_pinned or "docker_image" in raw_terminal
     scope["TERMINAL_DOCKER_IMAGE_PINNED"] = "1" if image_pinned else "0"
     _resolve_scope_cwd_placeholder(scope)
+    # Finite Kanban CLI turns bind a profile scope after startup. Preserve the
+    # dispatcher's exact task/workspace/cwd grant inside that otherwise
+    # self-contained policy; without this, the profile's static cwd replaces
+    # the isolated worktree even though the process environment is correct.
+    from hermes_cli.cli_config_load import _dispatcher_pinned_kanban_cwd
+
+    # A finite worker is also launched with cwd=workspace. That process cwd is
+    # the stable companion signal after dotenv/config bridging has replaced
+    # TERMINAL_CWD, and survives tool-executor thread/context boundaries.
+    kanban_workspace = (
+        _dispatcher_pinned_kanban_cwd()
+        or _dispatcher_pinned_kanban_cwd(os.getcwd())
+    )
+    if kanban_workspace is not None:
+        scope["TERMINAL_CWD"] = kanban_workspace
     return scope
 
 

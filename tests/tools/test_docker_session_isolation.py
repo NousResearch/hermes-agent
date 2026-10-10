@@ -224,6 +224,42 @@ class TestSessionScopedMountResolution:
         cfg = self._config(host_cwd="/Users/prev/dev/oldrepo")
         assert terminal_tool._resolve_task_host_cwd(cfg, "tui:sess-new") == str(ws)
 
+    def test_isolation_mounts_dispatcher_pinned_kanban_workspace(self, monkeypatch, tmp_path):
+        """A Kanban CLI worker has no session adapter, so the dispatcher's two
+        matching workspace pins are its session-scoped mount authority."""
+        _enable_isolation(monkeypatch)
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_123")
+        monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(tmp_path))
+        cfg = self._config(host_cwd=str(tmp_path))
+        assert terminal_tool._resolve_task_host_cwd(cfg, "kanban-session") == str(tmp_path)
+
+    def test_isolation_rejects_mismatched_kanban_workspace(self, monkeypatch, tmp_path):
+        """A stale or forged Kanban marker must not bless a different process cwd."""
+        _enable_isolation(monkeypatch)
+        workspace = tmp_path / "task"
+        workspace.mkdir()
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_123")
+        monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(workspace))
+        cfg = self._config(host_cwd=str(tmp_path))
+        assert terminal_tool._resolve_task_host_cwd(cfg, "kanban-session") is None
+
+    def test_isolation_accepts_dispatcher_process_cwd_after_config_clobber(
+        self, monkeypatch, tmp_path
+    ):
+        """The spawned worker cwd remains a trusted exact companion pin when
+        a later profile scope has replaced the config-derived host cwd."""
+        _enable_isolation(monkeypatch)
+        workspace = tmp_path / "task"
+        workspace.mkdir()
+        configured = tmp_path / "configured"
+        configured.mkdir()
+        monkeypatch.chdir(workspace)
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_123")
+        monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(workspace))
+        cfg = self._config(host_cwd=str(configured))
+
+        assert terminal_tool._resolve_task_host_cwd(cfg, "kanban-session") == str(workspace)
+
     def test_isolation_rejects_nonexistent_session_dir(self, monkeypatch, tmp_path):
         _enable_isolation(monkeypatch)
         terminal_tool.register_task_env_overrides(
@@ -265,6 +301,53 @@ class TestSessionScopedMountResolution:
         cfg = self._config()
         cfg["env_type"] = "modal"
         assert terminal_tool._resolve_task_host_cwd(cfg, "t") is None
+
+
+class TestKanbanConfigBridgePin:
+    """The fallback config bridge must not erase a dispatcher's exact pin."""
+
+    @staticmethod
+    def _fake_bridge(monkeypatch, configured_cwd):
+        from hermes_cli import config as hermes_config
+
+        monkeypatch.setattr(hermes_config, "read_raw_config", lambda: {"terminal": {"cwd": configured_cwd}})
+
+        def apply_terminal_config_to_env(*, env, override):
+            assert env is None and override is True
+            os.environ["TERMINAL_CWD"] = configured_cwd
+
+        monkeypatch.setattr(
+            hermes_config, "apply_terminal_config_to_env", apply_terminal_config_to_env
+        )
+        monkeypatch.setattr(terminal_tool, "_terminal_config_bridge_attempted", False)
+
+    def test_exact_dispatcher_pin_survives_fallback_bridge(self, monkeypatch, tmp_path):
+        workspace = tmp_path / "task-worktree"
+        workspace.mkdir()
+        configured = str(tmp_path / "configured-static-cwd")
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_123")
+        monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(workspace))
+        monkeypatch.setenv("TERMINAL_CWD", str(workspace))
+        self._fake_bridge(monkeypatch, configured)
+
+        terminal_tool._ensure_terminal_env_bridged()
+
+        assert os.environ["TERMINAL_CWD"] == str(workspace.resolve())
+
+    def test_mismatched_dispatcher_pin_does_not_survive_bridge(self, monkeypatch, tmp_path):
+        workspace = tmp_path / "task-worktree"
+        other = tmp_path / "other-worktree"
+        workspace.mkdir()
+        other.mkdir()
+        configured = str(tmp_path / "configured-static-cwd")
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_123")
+        monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(workspace))
+        monkeypatch.setenv("TERMINAL_CWD", str(other))
+        self._fake_bridge(monkeypatch, configured)
+
+        terminal_tool._ensure_terminal_env_bridged()
+
+        assert os.environ["TERMINAL_CWD"] == configured
 
 
 class TestRecordedHostCwdDiscardedOnContainers:

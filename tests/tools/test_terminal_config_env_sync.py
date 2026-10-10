@@ -22,7 +22,24 @@ cli.py's map; the config-set path is checked for key coverage only.
 """
 
 import os
+import sys
+from types import SimpleNamespace
 from unittest.mock import patch
+
+import pytest
+
+
+def _mirror_cwd_only(monkeypatch, defaults):
+    """Drive the cwd bridge without importing the installed CLI bootstrap."""
+    fake_cli = SimpleNamespace(
+        _AUXILIARY_TASK_ENV={},
+        _CWD_PLACEHOLDERS=(".", "auto", "cwd"),
+        _TERMINAL_ENV_MAPPINGS={"cwd": "TERMINAL_CWD"},
+    )
+    monkeypatch.setitem(sys.modules, "cli", fake_cli)
+    from hermes_cli.cli_config_load import _mirror_config_to_env
+
+    _mirror_config_to_env(defaults, True)
 
 
 def _cli_env_map() -> dict[str, str]:
@@ -147,3 +164,55 @@ def test_save_config_set_bridges_every_cli_terminal_key():
         f"{sorted(missing)}.  Add them to TERMINAL_CONFIG_ENV_MAP in "
         f"hermes_cli/config.py (set_config_value bridges through it)."
     )
+
+
+def test_cli_preserves_exact_dispatcher_pinned_kanban_cwd(tmp_path, monkeypatch):
+    """A worker's resolved task worktree survives profile-config mirroring."""
+    workspace = tmp_path / "task-worktree"
+    workspace.mkdir()
+    monkeypatch.delenv("_HERMES_GATEWAY", raising=False)
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_test")
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(workspace))
+    monkeypatch.setenv("TERMINAL_CWD", str(workspace))
+
+    defaults = {"terminal": {"backend": "docker", "cwd": "/configured-static-cwd"}}
+    _mirror_cwd_only(monkeypatch, defaults)
+
+    assert os.environ["TERMINAL_CWD"] == str(workspace.resolve())
+
+
+@pytest.mark.parametrize(
+    "missing",
+    ["HERMES_KANBAN_TASK", "HERMES_KANBAN_WORKSPACE", "TERMINAL_CWD"],
+)
+def test_cli_does_not_preserve_incomplete_kanban_cwd_pin(tmp_path, monkeypatch, missing):
+    """Partial launch markers cannot override the profile's configured cwd."""
+    workspace = tmp_path / "task-worktree"
+    workspace.mkdir()
+    monkeypatch.delenv("_HERMES_GATEWAY", raising=False)
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_test")
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(workspace))
+    monkeypatch.setenv("TERMINAL_CWD", str(workspace))
+    monkeypatch.delenv(missing, raising=False)
+
+    defaults = {"terminal": {"backend": "docker", "cwd": "/configured-static-cwd"}}
+    _mirror_cwd_only(monkeypatch, defaults)
+
+    assert os.environ["TERMINAL_CWD"] == "/configured-static-cwd"
+
+
+def test_cli_rejects_mismatched_dispatcher_kanban_cwd_pin(tmp_path, monkeypatch):
+    """A stale/mismatched process cwd cannot become a Kanban worker mount."""
+    workspace = tmp_path / "task-worktree"
+    other = tmp_path / "other-worktree"
+    workspace.mkdir()
+    other.mkdir()
+    monkeypatch.delenv("_HERMES_GATEWAY", raising=False)
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_test")
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(workspace))
+    monkeypatch.setenv("TERMINAL_CWD", str(other))
+
+    defaults = {"terminal": {"backend": "docker", "cwd": "/configured-static-cwd"}}
+    _mirror_cwd_only(monkeypatch, defaults)
+
+    assert os.environ["TERMINAL_CWD"] == "/configured-static-cwd"

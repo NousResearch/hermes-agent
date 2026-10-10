@@ -25,6 +25,7 @@ from typing import Mapping
 from typing import Optional
 from typing import TYPE_CHECKING
 
+from hermes_cli.kanban_contract_guard import fleet_contract_guard_reason
 from hermes_cli.quiet_single_query import KANBAN_WORKER_EXIT_TRAILER
 
 if TYPE_CHECKING:
@@ -133,6 +134,9 @@ class DispatchResult:
     """Task ids reclaimed because their worker PID disappeared."""
     auto_blocked: list[str] = field(default_factory=list)
     """Task ids auto-blocked by the spawn-failure circuit breaker."""
+    contract_guarded: list[tuple[str, str]] = field(default_factory=list)
+    """``(task_id, reason)`` fleet tasks refused before claim because their
+    deterministic source contract failed validation."""
     timed_out: list[str] = field(default_factory=list)
     """Task ids whose workers exceeded ``max_runtime_seconds``."""
     stale: list[str] = field(default_factory=list)
@@ -1763,7 +1767,8 @@ def dispatch_profile_allowlist_summary() -> str:
 
 def _has_spawnable(conn: sqlite3.Connection, status: str) -> bool:
     rows = conn.execute(
-        "SELECT DISTINCT assignee FROM tasks "
+        "SELECT id, title, body, assignee, created_by, project_id, idempotency_key, "
+        "workspace_kind, workspace_path, branch_name FROM tasks "
         "WHERE status = ? AND assignee IS NOT NULL AND claim_lock IS NULL",
         (status,),
     ).fetchall()
@@ -1773,7 +1778,10 @@ def _has_spawnable(conn: sqlite3.Connection, status: str) -> bool:
     if profile_exists is None:
         # Can't introspect — assume spawnable, preserve legacy behavior.
         return True
-    return any(profile_exists(row["assignee"]) for row in rows)
+    return any(
+        profile_exists(row["assignee"]) and fleet_contract_guard_reason(row) is None
+        for row in rows
+    )
 
 
 def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
@@ -2022,6 +2030,36 @@ def _call_spawn_fn(spawn_fn, task: Task, workspace: str, board: Optional[str]) -
         return spawn_fn(task, workspace)
 
 
+def _reject_guarded_contract(
+    conn: sqlite3.Connection,
+    task_id: str,
+    reason: str,
+    result: "DispatchResult",
+    *,
+    lane: str,
+    dry_run: bool,
+) -> bool:
+    """Record and, on a real tick, park a fleet task before it is claimed."""
+    result.contract_guarded.append((task_id, reason))
+    if dry_run:
+        return False
+    if lane == "review":
+        _kb.reopen_review_task(conn, task_id)
+    message = f"fleet contract guard: {reason}"
+    if not _kb.block_task(conn, task_id, reason=message, kind="capability"):
+        # A reopened review may land in ``todo`` when parents are incomplete.
+        # That state is already non-spawnable; retain one bounded audit event.
+        with _kb.write_txn(conn):
+            last = conn.execute(
+                "SELECT kind, payload FROM task_events WHERE task_id = ? "
+                "ORDER BY created_at DESC, id DESC LIMIT 1", (task_id,),
+            ).fetchone()
+            payload = _kb._json_or_null({"reason": reason})
+            if last is None or last["kind"] != "fleet_contract_guarded" or last["payload"] != payload:
+                _kb._append_event(conn, task_id, "fleet_contract_guarded", {"reason": reason})
+    return False
+
+
 def _dispatch_lane_task(
     conn: sqlite3.Connection,
     row: sqlite3.Row,
@@ -2042,6 +2080,11 @@ def _dispatch_lane_task(
     skip is recorded on ``result``.
     """
     task_id = row["id"]
+    contract_reason = fleet_contract_guard_reason(row)
+    if contract_reason is not None:
+        return _reject_guarded_contract(
+            conn, task_id, contract_reason, result, lane=lane, dry_run=dry_run,
+        )
     # Non-profile assignees (control-plane lanes that pull via ``claim_task``)
     # would fail ``hermes -p <assignee>`` at startup and loop ready→crash→ready
     # forever. Bucketed apart from skipped_unassigned: the operator cannot fix
@@ -2096,7 +2139,20 @@ def _dispatch_lane_task(
         _count_spawn(assignee)
         return True
     claim = _kb.claim_review_task if lane == "review" else _kb.claim_task
-    claimed = claim(conn, task_id, ttl_seconds=ttl_seconds)
+    try:
+        claimed = claim(
+            conn,
+            task_id,
+            ttl_seconds=ttl_seconds,
+            guard=fleet_contract_guard_reason,
+        )
+    except _kb.ClaimGuardRejected as exc:
+        # Selection is advisory.  This is the authoritative validation of the
+        # exact row serialized with the claim, so an edit between selection and
+        # claim cannot reach workspace resolution or worker spawn.
+        return _reject_guarded_contract(
+            conn, task_id, exc.reason, result, lane=lane, dry_run=False,
+        )
     if claimed is None:
         return False
     try:
@@ -2269,7 +2325,8 @@ def _tick_spawn_budget(
 def _lane_rows(conn: sqlite3.Connection, status: str) -> list[sqlite3.Row]:
     """Unclaimed rows of one lane in dispatch order."""
     return conn.execute(
-        "SELECT id, assignee FROM tasks "
+        "SELECT id, title, body, assignee, created_by, project_id, idempotency_key, "
+        "workspace_kind, workspace_path, branch_name FROM tasks "
         f"WHERE status = '{status}' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
@@ -2297,6 +2354,8 @@ def _any_spawnable_review(
     for row in review_rows:
         assignee = row["assignee"]
         if not assignee:
+            continue
+        if fleet_contract_guard_reason(row) is not None:
             continue
         if profile_exists is not None and not profile_exists(assignee):
             continue

@@ -601,6 +601,18 @@ def _resolve_task_host_cwd(config: dict[str, Any], task_id: Optional[str]) -> Op
     # Top-level CLI parent ("default") is a single-session process — legacy behavior.
     if not _docker_session_isolation_enabled() or _resolve_container_task_id(task_id) == "default":
         return config.get("host_cwd")
+    # Kanban workers are standalone CLI children, so they do not pass through a
+    # session adapter that can call register_task_env_overrides(). The trusted
+    # dispatcher pins BOTH values to the resolved task workspace before spawn.
+    # Accept that exact match without reopening the stale process-global cwd
+    # path that per-session isolation intentionally rejects.
+    configured_host_cwd = config.get("host_cwd")
+    kanban_workspace = (
+        _dispatcher_pinned_kanban_workspace(configured_host_cwd)
+        or _dispatcher_pinned_kanban_workspace(_safe_getcwd())
+    )
+    if kanban_workspace:
+        return kanban_workspace
     overrides = resolve_task_overrides(task_id)
     candidate = overrides.get("cwd")
     if overrides.get("cwd_source") == "process" or not isinstance(candidate, str) or not candidate.strip():
@@ -615,6 +627,33 @@ def _resolve_task_host_cwd(config: dict[str, Any], task_id: Optional[str]) -> Op
 # One-shot guard for the config-fallback bridge: after the first attempt
 # either TERMINAL_ENV is set or the import failed, so retrying is wasted work.
 _terminal_config_bridge_attempted = False
+
+
+def _dispatcher_pinned_kanban_workspace(
+    expected_cwd: Optional[str] = None,
+) -> Optional[str]:
+    """Return a valid dispatcher workspace only when its companion pin matches.
+
+    Mount resolution supplies the already-sanitized ``config["host_cwd"]``.
+    The fallback config bridge supplies no argument and therefore validates the
+    live ``TERMINAL_CWD`` before preserving it across an overriding bridge.
+    """
+    task_id = os.environ.get("HERMES_KANBAN_TASK", "").strip()
+    workspace = os.environ.get("HERMES_KANBAN_WORKSPACE", "").strip()
+    companion_cwd = expected_cwd
+    if companion_cwd is None:
+        companion_cwd = os.environ.get("TERMINAL_CWD", "")
+    if not task_id or not workspace or not isinstance(companion_cwd, str) or not companion_cwd.strip():
+        return None
+    candidate = os.path.abspath(os.path.expanduser(workspace))
+    pinned = os.path.abspath(os.path.expanduser(companion_cwd))
+    if (
+        candidate != pinned
+        or not os.path.isdir(candidate)
+        or candidate.startswith(("/workspace", "/root"))
+    ):
+        return None
+    return candidate
 
 
 def _ensure_terminal_env_bridged() -> None:
@@ -654,6 +693,11 @@ def _ensure_terminal_env_bridged() -> None:
     if _terminal_config_bridge_attempted:
         return
     _terminal_config_bridge_attempted = True
+    # The CLI startup bridge already preserves this exact triple. Save it
+    # across the terminal tool's own fallback bridge as well: that bridge uses
+    # override=True and would otherwise replace the task worktree with the
+    # profile's static terminal.cwd immediately before Docker mount planning.
+    kanban_workspace = _dispatcher_pinned_kanban_workspace()
     # Never let a config problem take the terminal tool down.
     with _quiet("terminal config → env fallback bridge failed"):
         from hermes_cli.config import apply_terminal_config_to_env, read_raw_config
@@ -663,6 +707,8 @@ def _ensure_terminal_env_bridged() -> None:
             apply_terminal_config_to_env(env=None, override=True)
         elif "TERMINAL_ENV" not in os.environ:
             apply_terminal_config_to_env(env=None, override=False)
+        if kanban_workspace is not None:
+            os.environ["TERMINAL_CWD"] = kanban_workspace
 
 
 # Default cwd per backend; anything else (container backends, plugins) is "/root".

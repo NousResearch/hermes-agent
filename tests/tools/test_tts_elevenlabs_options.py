@@ -215,3 +215,85 @@ def test_older_models_keep_speaker_boost():
     )
 
     assert _setting(kwargs["voice_settings"], "use_speaker_boost") is True
+
+
+def _run(path, config, tmp_path, client):
+    """Sync path calls the provider generator; stream path goes through the real streaming resolver."""
+    from tools import tts_streaming, tts_tool, tts_tool_providers
+
+    config = {"provider": "elevenlabs", **config}
+    with patch.object(tts_streaming, "_resolve_key", return_value="key"), patch.object(
+        tts_tool_providers, "_require_key", return_value="key"
+    ), patch.object(tts_tool, "_import_elevenlabs", return_value=MagicMock(return_value=client)):
+        if path == "sync":
+            tts_tool._generate_elevenlabs("hello", str(tmp_path / "out.mp3"), config)
+            return
+        streamer = tts_streaming.resolve_streaming_provider(config)
+        assert isinstance(streamer, tts_streaming.ElevenLabsStreamer)
+        list(streamer.stream("hello"))
+
+
+def test_resolved_streamer_forwards_global_speed_to_older_model(tmp_path):
+    from tools.tts_tool_providers import DEFAULT_ELEVENLABS_STREAMING_MODEL_ID
+
+    client = _client()
+    _run("stream", {"speed": 1.1}, tmp_path, client)
+
+    kwargs = client.text_to_speech.convert.call_args.kwargs
+    assert kwargs["model_id"] == DEFAULT_ELEVENLABS_STREAMING_MODEL_ID
+    assert _setting(kwargs["voice_settings"], "speed") == 1.1
+
+
+@pytest.mark.parametrize("path", ["sync", "stream"])
+@pytest.mark.parametrize(
+    "section", [{"speed": 0.9}, {"voice_settings": {"speed": 0.9}}], ids=["top-level", "nested"],
+)
+def test_provider_speed_wins_over_global_speed(path, section, tmp_path):
+    client = _client()
+    _run(path, {"speed": 1.1, "elevenlabs": section}, tmp_path, client)
+
+    assert _setting(client.text_to_speech.convert.call_args.kwargs["voice_settings"], "speed") == 0.9
+
+
+@pytest.mark.parametrize("path", ["sync", "stream"])
+@pytest.mark.parametrize(
+    "config,expected",
+    [
+        ({"speed": 1.5}, 1.2),
+        ({"elevenlabs": {"speed": 0.5}}, 0.7),
+        ({"elevenlabs": {"voice_settings": {"speed": 1.2}}}, 1.2),
+    ],
+    ids=["global-above-band", "provider-below-band", "upper-bound-unchanged"],
+)
+def test_speed_is_clamped_into_elevenlabs_band_before_request(path, config, expected, tmp_path):
+    client = _client()
+    _run(path, config, tmp_path, client)
+
+    assert _setting(client.text_to_speech.convert.call_args.kwargs["voice_settings"], "speed") == expected
+
+
+@pytest.mark.parametrize("path", ["sync", "stream"])
+@pytest.mark.parametrize(
+    "config",
+    [
+        {"speed": "1.0", "elevenlabs": {"model_id": "eleven_v4", "voice_settings": {"stability": 0.5}}},
+        {"elevenlabs": {"model_id": "eleven_v4", "voice_settings": {"stability": 0.5, "speed": "1.0"}}},
+    ],
+    ids=["global", "nested"],
+)
+def test_v4_treats_quoted_neutral_speed_like_numeric(path, config, tmp_path):
+    client = _client()
+    _run(path, config, tmp_path, client)
+
+    kwargs = client.text_to_speech.convert.call_args.kwargs
+    assert _setting(kwargs["voice_settings"], "stability") == 0.5
+    assert _setting_is_absent(kwargs["voice_settings"], "speed")
+
+
+@pytest.mark.parametrize("path", ["sync", "stream"])
+@pytest.mark.parametrize("speed", ["fast", "nan", float("inf"), True], ids=["word", "nan", "inf", "bool"])
+def test_malformed_or_nonfinite_speed_is_rejected_before_request(path, speed, tmp_path):
+    client = _client()
+    with pytest.raises(ValueError, match="speed must be a finite number"):
+        _run(path, {"speed": speed}, tmp_path, client)
+    client.text_to_speech.convert.assert_not_called()

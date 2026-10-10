@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+/* global window, document */
 import * as React from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, expect, it, vi } from 'vitest'
@@ -18,7 +19,7 @@ afterEach(async () => {
 
 async function renderBoard(assignees, { laneByProfile = true, status = 'running' } = {}) {
   vi.resetModules()
-  globalThis.IS_REACT_ACT_ENVIRONMENT = true
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
   const tasks = assignees.map((assignee, i) => ({ id: `task-${i}`, title: `Task ${i}`, assignee, status }))
   const board = { columns: [{ name: status, tasks }], tenants: [], assignees: [], latest_event_id: 0 }
   const fetchJSON = vi.fn(async url => {

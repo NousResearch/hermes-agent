@@ -21,16 +21,21 @@ from plugins.memory.holographic.store import MemoryStore
 @pytest.mark.parametrize(
     "query,expected_tokens",
     [
-        # stopwords dropped
+        # English stopwords dropped
         ("what happened with the deployment rollback", {"happened", "deployment", "rollback"}),
+        # Spanish function words dropped without discarding content terms
+        ("No uses archivos ni herramientas; responde solo con lo que recuerdes: qué decidió el usuario sobre el proveedor de memoria",
+         {"uses", "archivos", "herramientas", "responde", "recuerdes",
+          "decidió", "usuario", "proveedor", "memoria"}),
         # single content word passes through
         ("compaction", {"compaction"}),
         # all stopwords → falls back to raw
         ("the and of", None),  # None = sentinel for fallback-to-raw
         # empty string → empty output
         ("", ""),
-        # FTS5 operator characters stripped
-        ("context: length-probe", {"context", "lengthprobe"}),
+        # Operators and path separators split terms instead of concatenating them
+        ("context: length-probe /home/example/pptx-studio",
+         {"context", "length", "probe", "home", "example", "pptx", "studio"}),
         # trailing punctuation stripped by tokenizer
         ("hello, world!", {"hello", "world"}),
     ],

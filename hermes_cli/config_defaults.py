@@ -1780,7 +1780,7 @@ DEFAULT_CONFIG = {
         # transport is used only when named explicitly. Transport timeout/error/invalid response
         # DENIES unless transport_fallback is "builtin". Presentation only: plugins cannot detect,
         # suppress, or auto-approve commands outside a correlated human response.
-        "approval": {"transport": "builtin", "transport_fallback": "deny"},
+        "approval": {"transport": "builtin", "transport_fallback": "deny", "desktop_first": False},
         # Writes to agent-instruction files (AGENTS.md/CLAUDE.md/SOUL.md/.cursorrules, project-local
         # .hermes config) always need human approval, even under yolo. Extra patterns are fnmatch
         # globs on the basename (e.g. "*.mdc").

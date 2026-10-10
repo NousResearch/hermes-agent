@@ -334,3 +334,14 @@ def _get_approval_transport_config() -> tuple[str, str | None]:
         # prompt on a built-in surface the operator may not be watching.
         return "config-error", None
     return selected or "builtin", "builtin" if fallback == "builtin" else None
+
+
+def _approval_desktop_first() -> bool:
+    """True when ``security.approval.desktop_first`` is set. Default False."""
+    try:
+        from hermes_cli.config import load_config_readonly
+        cfg = ((load_config_readonly() or {}).get("security") or {}).get("approval") or {}
+        return is_truthy_value(cfg.get("desktop_first"))
+    except Exception:
+        logger.debug("approval desktop_first unreadable; defaulting to False", exc_info=True)
+        return False

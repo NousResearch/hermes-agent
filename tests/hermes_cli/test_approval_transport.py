@@ -568,3 +568,134 @@ def test_hardline_blocks_before_selected_transport(monkeypatch):
 
     assert result["approved"] is False
     assert calls == []
+
+
+# --- desktop_first: session surface first, transport escalation on its timeout ------
+
+def _configure_desktop_first(monkeypatch, approval_module, manager, *, fallback=None):
+    _configure_manual_guard(monkeypatch, approval_module, manager, fallback=fallback)
+    monkeypatch.setattr(approval_context, "_approval_desktop_first", lambda: True)
+
+
+def test_desktop_first_asks_session_surface_before_transport(monkeypatch):
+    from tools import approval
+
+    manager = PluginManager()
+    order = []
+    _context(manager).register_approval_transport(
+        "phone",
+        lambda request: order.append("transport") or request.respond("once"),
+    )
+    _configure_desktop_first(monkeypatch, approval, manager)
+
+    def local_surface_timeout(*args, **kwargs):
+        order.append("local")
+        return "timeout"  # the CLI panel timed out with no answer
+
+    result = approval.check_all_command_guards(
+        "rm -rf /tmp/example", "local", approval_callback=local_surface_timeout
+    )
+
+    assert result["approved"] is True
+    assert order == ["local", "transport"]
+
+
+def test_desktop_first_local_deny_never_reaches_transport(monkeypatch):
+    from tools import approval
+
+    manager = PluginManager()
+    order = []
+    _context(manager).register_approval_transport(
+        "phone",
+        lambda request: order.append("transport") or request.respond("once"),
+    )
+    _configure_desktop_first(monkeypatch, approval, manager)
+
+    result = approval.check_all_command_guards(
+        "rm -rf /tmp/example",
+        "local",
+        approval_callback=lambda *args, **kwargs: order.append("local") or "deny",
+    )
+
+    assert result["approved"] is False
+    assert order == ["local"]
+
+
+def test_desktop_first_escalates_after_gateway_timeout(monkeypatch):
+    from tools import approval
+    import tools.approval_context as tools_approval_context
+
+    manager = PluginManager()
+    order = []
+    _context(manager).register_approval_transport(
+        "phone",
+        lambda request: order.append("transport") or request.respond("once"),
+    )
+    _configure_desktop_first(monkeypatch, approval, manager)
+    monkeypatch.setattr(approval, "_is_interactive_cli", lambda: False)
+    monkeypatch.setattr(approval, "_is_gateway_approval_context", lambda: True)
+    monkeypatch.setattr(tools_approval_context, "_is_gateway_approval_context", lambda: True)
+    monkeypatch.setattr(approval, "_gateway_notify_cb", lambda session_key: (lambda data: True))
+    monkeypatch.setattr(
+        approval,
+        "_await_gateway_decision",
+        lambda *args, **kwargs: order.append("gateway") or {"resolved": False, "choice": None},
+    )
+
+    result = approval.check_all_command_guards("rm -rf /tmp/example", "local")
+
+    assert result["approved"] is True
+    assert order == ["gateway", "transport"]
+
+
+def test_desktop_first_escalation_failure_fails_closed_without_fallback(monkeypatch):
+    from tools import approval
+
+    manager = PluginManager()
+    _context(manager).register_approval_transport("phone", lambda request: None)  # invalid
+    _configure_desktop_first(monkeypatch, approval, manager)
+
+    result = approval.check_all_command_guards(
+        "rm -rf /tmp/example", "local", approval_callback=lambda *a, **k: "timeout"
+    )
+
+    assert result["approved"] is False
+    assert result["outcome"] == "transport_invalid"
+
+
+def test_desktop_first_escalation_failure_with_builtin_fallback_keeps_timeout_deny(monkeypatch):
+    from tools import approval
+
+    manager = PluginManager()
+    _context(manager).register_approval_transport("phone", lambda request: None)  # invalid
+    _configure_desktop_first(monkeypatch, approval, manager, fallback="builtin")
+
+    result = approval.check_all_command_guards(
+        "rm -rf /tmp/example", "local", approval_callback=lambda *a, **k: "timeout"
+    )
+
+    assert result["approved"] is False
+    assert result["outcome"] == "timeout"
+
+
+def test_desktop_first_without_local_surface_keeps_transport_first(monkeypatch):
+    """desktop_first must not strand a session with no answerable local surface (no
+    gateway notifier, no CLI callback): the selected transport runs first, as before."""
+    from tools import approval
+    import tools.approval_context as tools_approval_context
+
+    manager = PluginManager()
+    seen = []
+    _context(manager).register_approval_transport(
+        "phone", lambda request: seen.append(request) or request.respond("once")
+    )
+    _configure_desktop_first(monkeypatch, approval, manager)
+    monkeypatch.setattr(approval, "_is_interactive_cli", lambda: False)
+    monkeypatch.setattr(approval, "_is_gateway_approval_context", lambda: True)
+    monkeypatch.setattr(tools_approval_context, "_is_gateway_approval_context", lambda: True)
+    monkeypatch.setattr(approval, "_gateway_notify_cbs", {})
+
+    result = approval.check_all_command_guards("rm -rf /tmp/example", "local")
+
+    assert result["approved"] is True
+    assert len(seen) == 1  # transport asked, not a silent pending_approval

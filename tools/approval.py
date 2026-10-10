@@ -770,7 +770,17 @@ def _smart_gate(spec: _GateSpec, command: str, description: str, pattern_key: st
     }, True
 
 
-def _human_decision(spec: _GateSpec, *, command: str, description: str,
+def _has_answerable_local_surface(*, is_gateway: bool, is_ask: bool, is_cli: bool,
+                                  approval_callback, session_key: str) -> bool:
+    """desktop_first precondition: can this session actually show a local approval
+    surface — a gateway notifier, or an interactive CLI with a panel callback?"""
+    if is_gateway or is_ask:
+        return _gateway_notify_cb(session_key) is not None
+    return _should_fall_through_to_cli_approval(
+        is_cli=is_cli, approval_callback=approval_callback, notify_cb=None)
+
+
+def _human_decision(spec: _GateSpec, *, command: str, description: str,  # health: allow CC -- desktop_first adds the two escalation decisions; baseline 20 reached its cap on main
                     pattern_key: str, pattern_keys: list[str],
                     session_key: str, approval_callback, is_cli: bool, is_gateway: bool,
                     is_ask: bool, smart: bool = False, pending_body=None) -> dict:
@@ -809,7 +819,37 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
             return _user_approved(session_key, description)
         return _approved()
 
-    if spec.transport:
+    # desktop_first: session surface first, transport escalation only after its timeout.
+    # Sessions with no answerable local surface keep the transport-first order —
+    # desktop_first must not strand them on an unanswerable pending approval.
+    desktop_first = (
+        spec.transport
+        and approval_context._approval_desktop_first()
+        and _has_answerable_local_surface(
+            is_gateway=is_gateway, is_ask=is_ask, is_cli=is_cli,
+            approval_callback=approval_callback, session_key=session_key)
+    )
+
+    def escalate(surface: str):
+        """Present through the selected plugin transport after the session surface timed out."""
+        if not desktop_first:
+            return None
+        attempt = _present_with_selected_transport(
+            command=command, description=description, pattern_key=pattern_key, pattern_keys=pattern_keys,
+            session_key=session_key, surface=surface, allow_session=not smart_denied,
+            allow_permanent=allow_permanent,
+        )
+        choice, denied = _transport_choice(attempt, pattern_key=pattern_key, description=description)
+        if denied is not None:
+            return denied
+        if choice is None:
+            return None
+        if choice == "deny":
+            _record_denial(session_key)
+            return deny(spec.transport_denied, "denied")
+        return grant(choice)
+
+    if spec.transport and not desktop_first:
         attempt = _present_with_selected_transport(
             command=command, description=description, pattern_key=pattern_key, pattern_keys=pattern_keys,
             session_key=session_key, surface="gateway" if (is_gateway or is_ask) else "cli",
@@ -858,6 +898,9 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
                             reason=f"approval was withdrawn before the user answered ({decision['cancelled']})",
                             reason_addendum="", timeout_addendum="", deny_reason=None)
             if not decision["resolved"]:
+                escalated = escalate("gateway")
+                if escalated is not None:
+                    return escalated
                 return deny(spec.gateway_refused, "timeout", reason="timed out without user response",
                             reason_addendum="", timeout_addendum=" Silence is not consent.",
                             deny_reason=deny_reason)
@@ -892,6 +935,9 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
                                        smart_denied=smart_denied, approval_callback=approval_callback)
     approval_context._fire_approval_hook("post_approval_response", **hook_kwargs, choice=choice)
     if choice == "timeout":
+        escalated = escalate("cli")
+        if escalated is not None:
+            return escalated
         return deny(spec.cli_timeout, "timeout")
     if choice == "cancelled":
         # The prompt never reached a human (callback raised, no callback under prompt_toolkit, interrupted

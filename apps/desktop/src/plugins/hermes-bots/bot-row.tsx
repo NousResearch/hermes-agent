@@ -64,7 +64,7 @@ import { $activeGroupMemberKeys } from './group-presence'
 import { fallbackSelectionAfterHide, isBotHidden, isBotPinned } from './hidden-bots'
 import { useBots } from './i18n'
 import { displayName, stripPreviewMarkdown } from './labels'
-import { duplicateBot } from './profile-ops'
+import { canExportBot, duplicateBot, exportBot } from './profile-ops'
 import { botRecentSession, openBotRecentSession } from './recent-session'
 import { openRosterBot } from './roster-actions'
 import { botRosterMeta, botWorkspaceOwnerKey, setBotsWorkspaceOwner } from './routing'
@@ -436,6 +436,9 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
           }}
         >
           {b.bot.duplicate}
+        </ContextMenuItem>
+        <ContextMenuItem disabled={!canExportBot(bot)} onSelect={() => void exportBot(bot)}>
+          {b.bot.exportMenu}
         </ContextMenuItem>
         <ContextMenuSeparator />
         <ContextMenuItem

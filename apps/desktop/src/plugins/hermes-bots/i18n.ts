@@ -32,6 +32,7 @@
 import { type PluginLocaleBundles, type PluginTranslate, usePluginI18n } from '@hermes/plugin-sdk'
 import { useMemo } from 'react'
 
+import { bind, type Bound } from './i18n-bind'
 import { getPluginCtx } from './shared'
 
 type BotsMessages = {
@@ -199,6 +200,9 @@ type BotsMessages = {
     attentionBlocked: string
     duplicate: string
     duplicateFailed: string
+    /** Save the bot as a portable profile archive / restore one (#121619). */
+    exportMenu: string
+    importMenu: string
     deleteTitle: string
     removeFromAllGroups: string
     createFirstHint: string
@@ -648,6 +652,8 @@ const en: BotsMessages = {
     attentionBlocked: 'Bot is blocked — see its last message',
     duplicate: 'Duplicate',
     duplicateFailed: 'Duplicate failed',
+    exportMenu: 'Export bot…',
+    importMenu: 'Import bot…',
     deleteTitle: 'Delete bot and profile?',
     removeFromAllGroups: 'Remove from all groups',
     createFirstHint: 'Open the Bots pane and hit “New Bot”.',
@@ -1085,6 +1091,8 @@ const ja: BotsMessages = {
     attentionBlocked: 'ボットがブロックされています — 最後のメッセージを確認してください',
     duplicate: '複製',
     duplicateFailed: '複製に失敗しました',
+    exportMenu: 'ボットをエクスポート…',
+    importMenu: 'ボットをインポート…',
     deleteTitle: 'ボットとプロファイルを削除しますか？',
     removeFromAllGroups: 'すべてのグループから外す',
     createFirstHint: 'ボットパネルを開いて「新しいボット」を押してください。',
@@ -1515,6 +1523,8 @@ const zh: BotsMessages = {
     attentionBlocked: '机器人已被阻止 — 请查看其最后一条消息',
     duplicate: '复制',
     duplicateFailed: '复制失败',
+    exportMenu: '导出机器人…',
+    importMenu: '导入机器人…',
     deleteTitle: '删除机器人和配置档案？',
     removeFromAllGroups: '从所有群组中移除',
     createFirstHint: '打开机器人面板，点击“新建机器人”。',
@@ -1939,6 +1949,8 @@ const zhHant: BotsMessages = {
     attentionBlocked: '機器人已被封鎖 — 請查看其最後一則訊息',
     duplicate: '複製',
     duplicateFailed: '複製失敗',
+    exportMenu: '匯出機器人…',
+    importMenu: '匯入機器人…',
     deleteTitle: '刪除機器人和設定檔？',
     removeFromAllGroups: '從所有群組中移除',
     createFirstHint: '開啟機器人面板，點「新增機器人」。',
@@ -2209,32 +2221,6 @@ const zhHant: BotsMessages = {
 
 /** Registered via `ctx.i18n.register` at plugin load (disposer tracked). */
 export const BOTS_LOCALES: PluginLocaleBundles = { en, ja, zh, 'zh-hant': zhHant }
-
-// Bind the message SHAPE to a plugin translator: string leaves resolve now,
-// function leaves forward their args through t(path, …).
-type Bound<T> = {
-  [K in keyof T]: T[K] extends (...args: infer A) => string
-    ? (...args: A) => string
-    : T[K] extends object
-      ? Bound<T[K]>
-      : string
-}
-
-function bind<T extends object>(t: PluginTranslate, template: T, prefix = ''): Bound<T> {
-  const out = {} as Record<string, unknown>
-
-  for (const [key, value] of Object.entries(template)) {
-    const path = prefix ? `${prefix}.${key}` : key
-    out[key] =
-      typeof value === 'function'
-        ? (...args: unknown[]) => t(path, ...args)
-        : value && typeof value === 'object'
-          ? bind(t, value as object, path)
-          : t(path)
-  }
-
-  return out as Bound<T>
-}
 
 export type BotsText = Bound<BotsMessages>
 

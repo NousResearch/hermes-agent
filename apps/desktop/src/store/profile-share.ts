@@ -187,8 +187,10 @@ export async function runExportProfileFlow(profile?: string): Promise<null | str
 }
 
 /** Pick an archive and import it as a new profile; lands the user in it on a
- *  fresh chat. Returns the new profile name, or null when cancelled/failed. */
-export async function runImportProfileFlow(): Promise<null | string> {
+ *  fresh chat unless `select` is false (Bot Mode keeps the roster in place and
+ *  lists the restored bot instead). Returns the new profile name, or null when
+ *  cancelled/failed. */
+export async function runImportProfileFlow({ select = true }: { select?: boolean } = {}): Promise<null | string> {
   const paths = await window.hermesDesktop?.selectPaths?.({
     title: translateNow('profiles.importProfile'),
     multiple: false,
@@ -207,7 +209,10 @@ export async function runImportProfileFlow(): Promise<null | string> {
     // Same landing as CreateProfileDialog's onCreated: refresh the list, then
     // switch into the new profile on a fresh chat.
     await refreshActiveProfile()
-    selectProfile(name)
+
+    if (select) {
+      selectProfile(name)
+    }
 
     return name
   } catch (error) {

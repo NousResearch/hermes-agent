@@ -15,6 +15,7 @@ from . import (
     profiles_vault_complete_foreign_subagents,
     projects_pets,
     prompt_voice,
+    prompt_voice_grok,
     server_requests,
     sessions,
     tools_commands,

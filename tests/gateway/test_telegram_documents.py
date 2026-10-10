@@ -9,6 +9,7 @@ We mock the telegram module at import time to avoid collection errors.
 """
 
 import asyncio
+import json
 import os
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -255,6 +256,104 @@ class TestDocumentDownloadBlock:
         adapter.handle_message.assert_called_once()
         event = adapter.handle_message.call_args[0][0]
         assert "could not be downloaded" in (event.text or "")
+
+
+class _FakeIngressProcess:
+    def __init__(self, *, stdout: bytes, returncode: int = 0, stderr: bytes = b""):
+        self.stdout = stdout
+        self.stderr = stderr
+        self.returncode = returncode
+        self.communicate = AsyncMock(return_value=(stdout, stderr))
+        self.wait = AsyncMock()
+        self.kill = MagicMock()
+
+
+class TestBrokerImageIngress:
+    @staticmethod
+    def _adapter_with_ingress(command):
+        config = PlatformConfig(
+            enabled=True,
+            token="fake-token",
+            extra={"broker_image_ingress_command": command},
+        )
+        adapter = TelegramAdapter(config)
+        adapter.handle_message = AsyncMock()
+        adapter._is_callback_user_authorized = lambda user_id, **_kw: True
+        adapter._route_photo_event = AsyncMock()
+        return adapter
+
+    @pytest.mark.parametrize(
+        ("configured", "expected"),
+        [(None, "receipt"), ("image_description", "image_description"), ("invalid", "receipt")],
+    )
+    def test_broker_image_schema_is_explicit_and_validated(self, configured, expected):
+        extra = {} if configured is None else {"broker_image_schema": configured}
+        adapter = TelegramAdapter(PlatformConfig(enabled=True, token="fake-token", extra=extra))
+
+        assert adapter._broker_image_schema() == expected
+
+    @pytest.mark.asyncio
+    async def test_photo_is_handed_to_broker_and_uses_durable_path(self, tmp_path):
+        cached = tmp_path / "hermes-cache.jpg"
+        durable = tmp_path / "scratch" / "incoming" / "task-abc" / "image.jpg"
+        cached.write_bytes(b"cached")
+        durable.parent.mkdir(parents=True)
+        durable.write_bytes(b"durable")
+        process = _FakeIngressProcess(
+            stdout=json.dumps({"path": str(durable), "task_id": "task-abc"}).encode()
+        )
+        adapter = self._adapter_with_ingress(["/usr/local/bin/gtx-image-ingress", "--json-stdin"])
+        msg = _make_message(caption="check this", photo=[_make_photo()])
+        update = _make_update(msg)
+
+        with patch(
+            "plugins.platforms.telegram.adapter.cache_image_from_bytes_async",
+            new=AsyncMock(return_value=str(cached)),
+        ), patch(
+            "plugins.platforms.telegram.adapter.asyncio.create_subprocess_exec",
+            new=AsyncMock(return_value=process),
+        ) as spawn:
+            await adapter._handle_media_message(update, MagicMock())
+
+        event = adapter._route_photo_event.await_args.args[1]
+        assert event.media_urls == [str(durable)]
+        assert event.media_types == ["image/jpeg"]
+        assert spawn.await_args.args == ("/usr/local/bin/gtx-image-ingress", "--json-stdin")
+        payload = json.loads(process.communicate.await_args.args[0])
+        assert payload == {
+            "source_path": str(cached),
+            "mime_type": "image/jpeg",
+            "kind": "photo",
+            "chat_id": 100,
+            "message_id": 42,
+            "user_id": 1,
+            "caption": "check this",
+            "media_group_id": None,
+            "schema": "receipt",
+        }
+
+    @pytest.mark.asyncio
+    async def test_broker_ingress_failure_keeps_hermes_cache(self, tmp_path):
+        cached = tmp_path / "hermes-cache.png"
+        cached.write_bytes(b"cached")
+        process = _FakeIngressProcess(stdout=b"not-json", returncode=2, stderr=b"broker unavailable")
+        adapter = self._adapter_with_ingress("/usr/local/bin/gtx-image-ingress")
+        doc = _make_document(file_name="receipt.png", mime_type="image/png", file_size=10)
+        msg = _make_message(document=doc)
+        update = _make_update(msg)
+
+        with patch(
+            "plugins.platforms.telegram.adapter.cache_image_from_bytes_async",
+            new=AsyncMock(return_value=str(cached)),
+        ), patch(
+            "plugins.platforms.telegram.adapter.asyncio.create_subprocess_exec",
+            new=AsyncMock(return_value=process),
+        ):
+            await adapter._handle_media_message(update, MagicMock())
+
+        event = adapter._route_photo_event.await_args.args[1]
+        assert event.media_urls == [str(cached)]
+        assert event.media_types == ["image/png"]
 
 
 class TestVideoDownloadBlock:

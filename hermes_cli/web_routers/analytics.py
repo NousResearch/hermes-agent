@@ -14,7 +14,9 @@ import hermes_yaml as yaml
 from fastapi import APIRouter, HTTPException, Query
 
 from hermes_cli.config import _deep_merge, get_config_path, read_raw_config, require_readable_config_before_write
-from hermes_cli.usage_budget import month_usage_rows, month_window, read_budgets, summarize_month
+from hermes_cli.usage_budget import (
+    ledger_started_at, month_usage_rows, month_window, read_budgets, summarize_month,
+)
 from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_routers._common import corrupt_store_as_status
 from hermes_cli.web_server_profiles import (
@@ -166,11 +168,13 @@ def _get_usage_month(profile: Optional[str] = None) -> dict:
     db = _open_session_db_for_profile(profile, read_only=True)
     try:
         rows = month_usage_rows(db._conn, month_window(now)[0].timestamp())
+        ledger_ts = ledger_started_at(db._conn)
     finally:
         db.close()
+    ledger_start = datetime.fromtimestamp(ledger_ts, now.tzinfo) if ledger_ts is not None else None
     with _profile_scope(profile):
         budgets = read_budgets(load_config())
-    return summarize_month(rows, budgets, now)
+    return summarize_month(rows, budgets, now, ledger_start=ledger_start)
 
 
 @router.get("/api/analytics/month")

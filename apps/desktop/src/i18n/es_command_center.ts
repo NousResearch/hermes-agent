@@ -19,6 +19,7 @@ export const esCommandCenter = {
   budgetSaveFailed: (error: string) => `No se pudo guardar el presupuesto: ${error}`,
   loadingMonth: (seconds: number) => `Cargando este mes… ${seconds}s`,
   noUsageThisMonth: 'Aún no hay uso registrado este mes.',
+  countingSince: (date: string) => `Contando desde el ${date}`,
   close: 'Cerrar Centro de comandos',
   paletteTitle: 'Paleta de comandos',
   back: 'Atrás',

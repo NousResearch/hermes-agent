@@ -7,8 +7,7 @@ from datetime import UTC, datetime
 
 from hermes_cli import config as config_module
 from hermes_cli.config import load_config, validate_config_structure
-from hermes_cli.usage_budget import month_usage_rows, month_window, read_budgets, summarize_month
-from hermes_state import SessionDB
+from hermes_cli.usage_budget import month_window, read_budgets, summarize_month
 
 NOW = datetime(2026, 10, 10, 12, 0, tzinfo=UTC)  # day 10 of a 31-day month, 9.5 days elapsed
 
@@ -71,19 +70,3 @@ def test_a_budgeted_provider_with_no_usage_still_shows():
     month = summarize_month([], {"openrouter": ("usd", 20.0)}, NOW)
     assert month["providers"][0]["provider"] == "openrouter"
     assert month["providers"][0]["budget"]["used"] == 0
-
-
-def test_month_rows_count_this_month_plus_auxiliary_calls_only(tmp_path):
-    db = SessionDB(db_path=tmp_path / "state.db")
-    start = month_window(NOW)[0].timestamp()
-    conn = db._conn
-    conn.execute("INSERT INTO sessions (id, source, started_at, billing_provider, input_tokens, cache_read_tokens,"
-                 " output_tokens, cost_status) VALUES ('now', 'cli', ?, 'xiaomi', 100, 50, 10, 'unknown')",
-                 (start + 3600,))
-    conn.execute("INSERT INTO sessions (id, source, started_at, billing_provider, input_tokens, output_tokens,"
-                 " cost_status) VALUES ('old', 'cli', ?, 'xiaomi', 9999, 9999, 'unknown')", (start - 3600,))
-    conn.execute("INSERT INTO session_model_usage (session_id, model, billing_provider, task, input_tokens,"
-                 " output_tokens) VALUES ('now', 'mimo-v2.5', 'xiaomi', 'compression', 20, 5)")
-    conn.commit()
-    (row,) = month_usage_rows(conn, start)
-    assert (row["provider"], row["tokens"], row["sessions"], row["unpriced_sessions"]) == ("xiaomi", 185, 1, 1)

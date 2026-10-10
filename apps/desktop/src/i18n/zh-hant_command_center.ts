@@ -19,6 +19,7 @@ export const zhHantCommandCenter = {
     budgetSaveFailed: (error: string) => `無法儲存預算：${error}`,
     loadingMonth: (seconds: number) => `正在載入本月資料… ${seconds} 秒`,
     noUsageThisMonth: '本月尚無用量記錄。',
+    countingSince: (date: string) => `自${date}起統計`,
     close: '關閉命令中心',
     paletteTitle: '命令面板',
     back: '返回',

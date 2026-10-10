@@ -17,6 +17,8 @@ export interface CommandCenterTranslations {
   budgetSaveFailed: (error: string) => string
   loadingMonth: (seconds: number) => string
   noUsageThisMonth: string
+  /** The month the usage ledger started in: days before it were never recorded by time. */
+  countingSince: (date: string) => string
   close: string
   paletteTitle: string
   back: string

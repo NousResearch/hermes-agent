@@ -2245,6 +2245,13 @@ def _fetch_anthropic_models(
 
     url = _anthropic_models_url(resolved_base_url)
     try:
+        from hermes_cli.config import get_custom_provider_extra_headers
+
+        # Match inference's endpoint-scoped headers, using the pool endpoint if it won
+        # credential resolution. Reuse the same headers for retries and every page.
+        for key, value in get_custom_provider_extra_headers(resolved_base_url or "https://api.anthropic.com").items():
+            # Canonicalize the retry-managed header; HTTP field names are case-insensitive.
+            headers["anthropic-beta" if key.lower() == "anthropic-beta" else key] = value
         try:
             data = _get_json(url, timeout=timeout, headers=headers)
         except urllib.error.HTTPError as http_err:
@@ -2259,7 +2266,8 @@ def _fetch_anthropic_models(
             if not ("long context beta" in body_text and "not yet available" in body_text):
                 raise
             headers["anthropic-beta"] = ",".join(
-                [b for b in _COMMON_BETAS if b != _CONTEXT_1M_BETA] + list(_OAUTH_ONLY_BETAS)
+                beta.strip() for beta in headers.get("anthropic-beta", "").split(",")
+                if beta.strip() and beta.strip() != _CONTEXT_1M_BETA
             )
             data = _get_json(url, timeout=timeout, headers=headers)
         models = [m["id"] for m in data.get("data", []) if m.get("id")]
@@ -2274,7 +2282,7 @@ def _fetch_anthropic_models(
         # opus, then sonnet, then haiku; alphabetical within tier.
         return sorted(models, key=lambda m: ("opus" not in m, "sonnet" not in m, "haiku" not in m, m))
     except Exception as e:
-        logger.debug("Failed to fetch Anthropic models: %s", e)
+        logger.debug("Failed to fetch Anthropic models (%s)", type(e).__name__)
         return None
 
 

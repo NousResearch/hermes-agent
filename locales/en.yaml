@@ -754,6 +754,7 @@ gateway:
     paused: "⏸️ Paused{suffix}. New cron/kanban/gateway work is on hold; in-flight work finishes normally. Use `/pause off` to resume."
 
   queue:
+    full: "The pending queue is full. This message was not queued. Wait for a queued turn to finish, then resend it."
     usage: "Usage: /queue <prompt>"
     queued: "Queued for the next turn."
     queued_depth: " ({depth} queued)"

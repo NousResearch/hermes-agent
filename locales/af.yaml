@@ -744,6 +744,7 @@ gateway:
     already_paused: "⏸️ Hermes is reeds gepouseer{suffix}. Gebruik `/pause off` om te hervat."
     paused: "⏸️ Gepouseer{suffix}. Nuwe cron-/kanban-/gateway-werk is opgeskort; werk wat reeds loop, word normaal voltooi. Gebruik `/pause off` om te hervat."
   queue:
+    full: "Die wagry is vol. Hierdie boodskap is nie in die wagry geplaas nie. Wag totdat ’n beurt in die wagry voltooi is en stuur dit dan weer."
     usage: "Gebruik: /queue <prompt>"
     queued: "In die tou vir die volgende beurt."
     queued_depth: " ({depth} in die tou)"

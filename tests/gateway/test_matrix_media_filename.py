@@ -9,7 +9,7 @@ to the model as user message text.
 
 import pytest
 
-from plugins.platforms.matrix.adapter import (
+from plugins.platforms.matrix.media_content import (
     _looks_like_matrix_image_filename,
     _looks_like_matrix_media_filename,
 )

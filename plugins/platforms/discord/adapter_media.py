@@ -157,6 +157,7 @@ class DiscordMediaMixin:
         CHUNK = 10
         chunks = [images[i:i + CHUNK] for i in range(0, len(images), CHUNK)]
         delivered = False
+        error = None
         for chunk_idx, chunk in enumerate(chunks):
             if human_delay > 0 and chunk_idx > 0:
                 await asyncio.sleep(human_delay)
@@ -265,13 +266,15 @@ class DiscordMediaMixin:
                 )
                 fallback = await super().send_multiple_images(chat_id, chunk, metadata, human_delay=human_delay)
                 delivered = delivered or fallback.success
+                if error is None and fallback.error:
+                    error = fallback.error
             finally:
                 if aiohttp_session is not None:
                     try:
                         await aiohttp_session.close()
                     except Exception:
                         pass
-        return SendResult(success=delivered, error=None if delivered else "all images failed to send")
+        return SendResult(success=delivered, error=error if delivered else "all images failed to send")
 
 
     async def send_voice(

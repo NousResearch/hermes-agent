@@ -403,6 +403,7 @@ class MattermostAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="no images to send")
         chunks = [images[i:i + 5] for i in range(0, len(images), 5)]  # Mattermost post file_ids cap
         delivered = False
+        error = None
         for chunk_idx, chunk in enumerate(chunks):
             if human_delay > 0 and chunk_idx > 0:
                 await asyncio.sleep(human_delay)
@@ -425,12 +426,16 @@ class MattermostAdapter(BasePlatformAdapter):
                     logger.warning("Mattermost: multi-image post failed, falling back")
                     fallback = await super().send_multiple_images(chat_id, chunk, metadata, human_delay=human_delay)
                     delivered = delivered or fallback.success
+                    if error is None and fallback.error:
+                        error = fallback.error
             except Exception as e:
                 logger.warning("Mattermost: multi-image send failed (chunk %d/%d), falling back: %s",
                                chunk_idx + 1, len(chunks), e, exc_info=True)
                 fallback = await super().send_multiple_images(chat_id, chunk, metadata, human_delay=human_delay)
                 delivered = delivered or fallback.success
-        return SendResult(success=delivered, error=None if delivered else "all images failed to send")
+                if error is None and fallback.error:
+                    error = fallback.error
+        return SendResult(success=delivered, error=error if delivered else "all images failed to send")
 
     # --- WebSocket ---
 

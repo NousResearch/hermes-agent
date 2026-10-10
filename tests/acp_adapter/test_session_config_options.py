@@ -260,6 +260,42 @@ class TestReasoningEffortLifecycle:
         assert state.agent.reasoning_config == {"enabled": False}
 
     @pytest.mark.asyncio
+    async def test_effort_survives_model_switch_then_restart(self, tmp_path):
+        """The reviewer's full chain: pick ``high``, switch model, reload in a fresh manager."""
+        db = SessionDB(tmp_path / "state.db")
+        server = HermesACPAgent(
+            session_manager=SessionManager(db=db, agent_factory=self._factory)
+        )
+        resp = await server.new_session(cwd=str(tmp_path))
+        state = server.session_manager.get_session(resp.session_id)
+        state.history.append({"role": "user", "content": "hello"})
+        await server.set_config_option("reasoning_effort", resp.session_id, "high")
+
+        result = SimpleNamespace(
+            success=True, target_provider="openrouter", new_model="other-model"
+        )
+        with (
+            patch("hermes_cli.model_switch.switch_model", return_value=result),
+            patch("hermes_cli.config.load_config", return_value={}),
+            patch(
+                "hermes_cli.config.get_compatible_custom_providers", return_value=[]
+            ),
+            patch(
+                "hermes_cli.observability.shared_metrics_events.record_model_switch"
+            ),
+        ):
+            server._switch_model(state, "openrouter:other-model")
+
+        reloaded = HermesACPAgent(
+            session_manager=SessionManager(db=db, agent_factory=self._factory)
+        )
+        restored = reloaded.session_manager.get_session(resp.session_id)
+        assert restored.model == "other-model"
+        assert restored.agent.reasoning_config == {"enabled": True, "effort": "high"}
+        assert reloaded._effort_config_option(restored).current_value == "high"
+        db.close()
+
+    @pytest.mark.asyncio
     async def test_fork_keeps_effort(self, tmp_path):
         server = HermesACPAgent(
             session_manager=SessionManager(agent_factory=self._factory)

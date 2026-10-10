@@ -1128,10 +1128,8 @@ def _run_prompt_submit(
     # the synthesized turns that enter here directly (crash auto-continue, queued-prompt drain,
     # wake-ups) bypass prompt.submit's persist, and a row-less turn is otherwise materialized by
     # the token-accounting guard as an anonymous session (#111999).
-    if _ensure_session_db_row(session) is False:
-        logger.warning(
-            "prompt dispatch: session store unavailable for %s — this turn may not persist",
-            session.get("session_key") or sid)
+    if not _ensure_dispatch_session_row(sid, session, text, terminal_callback):
+        return False
     admitted = _admit_prompt_turn(
         sid, session, text, image_paths, queued_prompt_generation, display_kind, display_metadata)
     if admitted is None:

@@ -555,54 +555,6 @@ def _reopen_if_finalized(db, session_id: str) -> None:
         db.reopen_session(session_id)
 
 
-def _persist_session_row_for_submit(rid, session, text=None, display_kind=None):
-    """Lazily persist the DB row now that the user sent a message (a branch becomes real
-    here), then the message itself (#111868: a freeze during the first build must leave a
-    resumable transcript); the error reply is the only user-visible signal (desktop maps it to a toast)."""
-    from hermes_state_user_copy import describe_storage_failure
-    try:
-        if _ensure_session_db_row(session) is False:
-            failure = describe_storage_failure(_db_error)
-            error = _err(
-                rid, 5072,
-                f"Session storage is unavailable, so this message was not saved. Cause: {failure.gloss}. "
-                f"{failure.action} Then send your message again.",
-                data=_storage_error_data(failure, _db_error))
-        else:
-            _persist_branch_seed(session)
-            # The first real turn reopens a finalized row (#85303): resume is read-only, so
-            # an ended_at set at mount time is cleared HERE, before the turn's first write.
-            with _session_db(session) as db:
-                if db is not None:
-                    _reopen_if_finalized(db, str(session.get("session_key") or ""))
-            _persist_submit_user_row(session, text, display_kind)
-            return None
-    except Exception as exc:
-        failure = describe_storage_failure(exc)
-        if failure.code == "disk_full":
-            error = _err(
-                rid, 5070,
-                "Session storage could not be written, so this message was not saved: the disk is full. "
-                "Free some disk space, then send your message again.",
-                data=_storage_error_data(failure, exc))
-        else:
-            logger.warning("prompt.submit: session persist failed: %s", exc, exc_info=True)
-            error = _err(
-                rid, 5071,
-                f"Session storage could not be written, so this message was not saved. Cause: {failure.gloss}. "
-                f"{failure.action} Then send your message again.",
-                data=_storage_error_data(failure, exc))
-    # No turn thread will start, so neither resume nor the busy queue may see
-    # this rejected prompt as live. Release the slot a turn would normally own.
-    with session["history_lock"]:
-        session["running"] = False
-        session["last_active"] = time.time()
-        session.pop("_hosted_room_task", None)
-        _clear_inflight_turn(session)
-        _release_active_session_slot(session)
-    return error
-
-
 def _run_after_agent_ready(
     rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback, turn_author=None
 ):
@@ -650,6 +602,8 @@ def _lock_in_submit_turn(
     with _session_turn_admission(session) as admitted:
         if not admitted:
             return _err(rid, 5035, "backend is retiring; reconnect to continue"), fields
+        if (ownership_error := _profile_route_submit_error(rid, session)) is not None:
+            return ownership_error, fields
         # A watch session's run lives in the PARENT turn (own running flag False); typing
         # mid-run would build a second agent racing the child on the same stored session.
         if session.get("lazy") and _child_run_active(
@@ -780,39 +734,10 @@ def _(rid, params: dict) -> dict:
     if err is not None:
         return err
     if turn_isolation:
-        if turn_author:
-            logger.debug("isolated compute turns carry no author yet; the turn from %s runs unattributed",
-                         turn_author.get("id"))
-        # The isolated dispatch returns BELOW before the inline persist, so the reopen
-        # cannot live only in _persist_session_row_for_submit: the turn is already
-        # admitted here (running, in flight, active-slot lease claimed, truncation
-        # applied inline), and the child's transcript writes must land in a live row
-        # (#85303 review: the early return made _reopen_if_finalized unreachable on
-        # this path). Best-effort like the helper: a failed read never blocks the send.
-        try:
-            with _session_db(session) as db:
-                if db is not None:
-                    _reopen_if_finalized(db, str(session.get("session_key") or ""))
-        except Exception:
-            logger.debug("finalized-session reopen before isolated dispatch failed for %s",
-                         sid, exc_info=True)
-        isolated_response = _submit_prompt_to_compute_host(
-            rid, sid, session, text, display_kind=display_kind, display_metadata=display_metadata)
-        if not isolated_response.get("error"):
-            # The truncation already happened inline above (memory + DB).
-            isolated_response["result"].update(survivor_fields)
+        isolated_response = _dispatch_isolated_submit(
+            rid, sid, session, text, survivor_fields, display_kind, display_metadata, turn_author)
+        if isolated_response is not None:
             return isolated_response
-        # An ordinal/id alone is not consent. A client that carries a leftover ordinal into an ORDINARY
-        # submit sends a request that is indistinguishable, field by field, from a real rewind — same
-        # method, same shape, an in-range target — and the cut it asks for is a destructive
-        # replace_messages() the user never requested (#80763: 296 -> 52 messages, 244 durable rows gone).
-        # Only the client knows whether this submit is a rewind/edit/regenerate, so it has to say so; refuse
-        # the cut when it doesn't. Consent is checked BEFORE target resolution: an unconfirmed
-        # (leaked-state) request must refuse with 4029 without paying the durable transcript read or
-        # heal-stamping live history dicts that row-id resolution performs.
-        logger.warning(
-            "compute-host dispatch failed for session %s; falling back inline: %s", sid,
-            isolated_response["error"].get("message", "unknown error"))
     if (err := _persist_session_row_for_submit(rid, session, text, display_kind)) is not None:
         return err
     # Capture before starting the worker: it consumes the staging dict and may finish before the RPC returns.

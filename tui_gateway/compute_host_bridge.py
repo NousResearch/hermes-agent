@@ -51,6 +51,7 @@ def _compute_host_turn_frame(
     rid: str, sid: str, session: dict, text: Any, image_paths: list[str] | None = None,
     queued_prompt_generation: int | None = None, display_kind: str | None = None,
     display_metadata: dict | None = None) -> dict:
+    _assert_session_profile_ownership(session)
     with session["history_lock"]:
         history = list(session.get("history", []))
         history_version = int(session.get("history_version", 0))
@@ -63,7 +64,7 @@ def _compute_host_turn_frame(
         "history_version": history_version, "cols": int(session.get("cols", 80) or 80),
         "cwd": _session_cwd(session),
         "context_cwd_is_launch_artifact": _context_cwd_is_launch_artifact(session),
-        "profile_home": session.get("profile_home") or "",
+        "profile_home": str(session.get("profile_home") or _launch_home()),
         "model_override": session.get("model_override"),
         # A model switch queued while the session was busy (config.set model ->
         # pending_model_switch) must cross the process boundary — the live agent is in
@@ -270,9 +271,13 @@ def _submit_prompt_to_compute_host(
     queued_prompt_generation: int | None = None, display_kind: str | None = None,
     display_metadata: dict | None = None) -> dict:
     cfg = _load_dashboard_process_isolation_config()
-    frame = _compute_host_turn_frame(rid, sid, session, text, image_paths=image_paths,
-                                     queued_prompt_generation=queued_prompt_generation,
-                                     display_kind=display_kind, display_metadata=display_metadata)
+    try:
+        frame = _compute_host_turn_frame(rid, sid, session, text, image_paths=image_paths,
+                                         queued_prompt_generation=queued_prompt_generation,
+                                         display_kind=display_kind, display_metadata=display_metadata)
+    except SessionProfileOwnershipError as exc:
+        _refuse_profile_owned_turn(sid, session, text, exc)
+        return _err(rid, 4095, _session_profile_ownership_error_message(exc))
     # Caller JSON-RPC ids may repeat across sockets and turns. Use an opaque
     # dispatch lifetime token, installed before a fast child can send activity.
     turn_id = frame["turn_id"] = frame["request_id"] = uuid.uuid4().hex
@@ -303,6 +308,42 @@ def _submit_prompt_to_compute_host(
         if image_paths is None:
             session["attached_images"] = []
     return _ok(rid, {"status": "streaming", "turn_isolation": True})
+
+
+def _dispatch_isolated_submit(
+    rid, sid, session, text, survivor_fields, display_kind, display_metadata, turn_author):
+    """Dispatch a qualified isolated turn, returning None only for a recoverable pipe failure."""
+    if (ownership_error := _profile_route_submit_error(rid, session)) is not None:
+        return ownership_error
+    if turn_author:
+        logger.debug("isolated compute turns carry no author yet; the turn from %s runs unattributed",
+                     turn_author.get("id"))
+    # The isolated dispatch returns BELOW before the inline persist, so the reopen
+    # cannot live only in _persist_session_row_for_submit: the turn is already
+    # admitted here (running, in flight, active-slot lease claimed, truncation
+    # applied inline), and the child's transcript writes must land in a live row
+    # (#85303 review: the early return made _reopen_if_finalized unreachable on
+    # this path). Best-effort like the helper: a failed read never blocks the send.
+    try:
+        with _session_db(session) as db:
+            if db is not None:
+                _reopen_if_finalized(db, str(session.get("session_key") or ""))
+    except Exception:
+        logger.debug("finalized-session reopen before isolated dispatch failed for %s",
+                     sid, exc_info=True)
+    isolated_response = _submit_prompt_to_compute_host(
+        rid, sid, session, text, display_kind=display_kind, display_metadata=display_metadata)
+    if not isolated_response.get("error"):
+        # The truncation already happened inline above (memory + DB).
+        isolated_response["result"].update(survivor_fields)
+        return isolated_response
+    # A routing refusal cannot become an inline retry under the same invalid owner.
+    if isolated_response["error"].get("code") == 4095:
+        return isolated_response
+    logger.warning(
+        "compute-host dispatch failed for session %s; falling back inline: %s", sid,
+        isolated_response["error"].get("message", "unknown error"))
+    return None
 
 
 def _send_compute_host_control(

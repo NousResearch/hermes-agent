@@ -407,6 +407,12 @@ def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any,
     and drop sends): ``interrupt`` (default) → redirect, falling back to hard interrupt + queue; ``queue`` → queue only;
     ``steer`` → inject after the current atomic action. ``queued=True`` (client queue drain) forces queue mode: a "run
     after" message must NEVER become a live correction."""
+    try:
+        _assert_session_profile_ownership(session)
+    except SessionProfileOwnershipError as exc:
+        logger.warning("busy prompt refused cross-profile session ownership: %s", exc)
+        return _err(
+            rid, 4095, _session_profile_ownership_error_message(exc))
     mode = "queue" if queued else _load_busy_input_mode()
     agent = session.get("agent")
     # Compression in flight demotes steer/interrupt to queue: a correction delivered
@@ -464,6 +470,13 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
     with _session_turn_admission(session) as admitted:
         if not admitted or session.get("_closing") or not (queued := session.get("queued_prompt")) or session.get("running"):
             return False
+        try:
+            _assert_session_profile_ownership(session)
+        except SessionProfileOwnershipError as exc:
+            logger.warning("queued prompt refused session profile ownership: %s", exc)
+            # Leave the envelope intact: ownership must be restored before it can be dispatched.
+            _emit("error", sid, {"message": _session_profile_ownership_error_message(exc)})
+            return True
         queue_generation = int(session.get("_queued_prompt_generation", 0))
         _ac_set_queue(session, session.get("queued_prompts") or [])
         session["running"] = True

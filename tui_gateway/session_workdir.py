@@ -13,6 +13,131 @@ from tui_gateway import git_probe
 from .method_ctx import bind_module
 
 
+class SessionProfileOwnershipError(RuntimeError):
+    """A launch-scoped session id is owned by, or cannot be ruled out from, another registered profile."""
+
+    def __init__(self, session_key: str, profile_home, *, probe_failed: bool = False):
+        self.session_key = session_key
+        self.profile_home = Path(profile_home)
+        self.probe_failed = probe_failed
+        detail = "could not verify" if probe_failed else "is owned by"
+        super().__init__(f"session {session_key!r} {detail} registered profile {self.profile_home}")
+
+
+def _session_owner_profile_homes(key: str) -> tuple[Path, ...]:
+    """Read profile identity directories without UI metadata, caches or background refreshes."""
+    from stat import S_ISDIR
+    from hermes_cli.profiles import (
+        _get_default_hermes_home, _get_profiles_root, _iter_named_profile_dirs)
+
+    try:
+        homes = {_get_default_hermes_home().resolve()}
+        try:
+            entries = tuple(_get_profiles_root().iterdir())
+        except FileNotFoundError:
+            entries = ()
+        # An unreadable registration directory is unknown ownership, not an empty inventory.
+        for entry in entries:
+            if S_ISDIR(entry.stat().st_mode):
+                tuple(entry.iterdir())
+        homes.update(home.resolve() for home in _iter_named_profile_dirs())
+        homes.update(Path(home).resolve() for home in _served_profile_homes)
+        homes.discard(_launch_home().resolve())
+        return tuple(sorted(homes))
+    except Exception as exc:
+        logger.warning("session profile inventory could not be read", exc_info=True)
+        raise SessionProfileOwnershipError(key, _launch_home(), probe_failed=True) from exc
+
+
+def _assert_session_profile_ownership(session: dict) -> None:
+    """Fail closed before an unscoped session can write or run under the launch profile.
+
+    A missing ``profile_home`` means launch-profile ownership only while no registered sibling
+    already has the same durable id. A disconnected Desktop can lose its route metadata;
+    without this guard the launch backend creates a second row and then executes the foreign
+    profile's prompt. Explicitly routed sessions and single-profile processes stay on their
+    existing path without opening any sibling store.
+    """
+    if session.get("profile_home") or not (key := str(session.get("session_key") or "").strip()):
+        return
+    for raw_home in _session_owner_profile_homes(key):
+        home = Path(raw_home)
+        db_path = home / "state.db"
+        try:
+            db_path.stat()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise SessionProfileOwnershipError(key, home, probe_failed=True) from exc
+        db = None
+        try:
+            from hermes_state import SessionDB
+            db = SessionDB(db_path=db_path, read_only=True)
+            if db.get_session(key) is not None:
+                raise SessionProfileOwnershipError(key, home)
+        except SessionProfileOwnershipError:
+            raise
+        except Exception as exc:
+            raise SessionProfileOwnershipError(key, home, probe_failed=True) from exc
+        finally:
+            if db is not None:
+                with contextlib.suppress(Exception):
+                    db.close()
+
+
+def _session_profile_ownership_error_message(exc: SessionProfileOwnershipError) -> str:
+    if exc.probe_failed:
+        return (
+            "Session routing could not be verified because another registered profile store is unavailable. "
+            "Restore access to that profile store, then try again."
+        )
+    return (
+        "This session belongs to another profile on this gateway. "
+        "Reopen it from that profile and try again."
+    )
+
+
+def _profile_route_submit_error(rid, session: dict):
+    """Reject an invalid route before submit can truncate, reopen or write a transcript."""
+    try:
+        _assert_session_profile_ownership(session)
+    except SessionProfileOwnershipError as exc:
+        logger.warning("prompt.submit refused session profile ownership: %s", exc)
+        _release_active_session_slot(session)
+        return _err(rid, 4095, _session_profile_ownership_error_message(exc))
+    return None
+
+
+def _refuse_profile_owned_turn(sid: str, session: dict, text: Any, exc, terminal_callback=None) -> None:
+    """Retain a terminal error so connected and resumed clients can observe the refused turn."""
+    message = _session_profile_ownership_error_message(exc)
+    logger.warning("prompt dispatch refused session profile ownership: %s", exc)
+    with session["history_lock"]:
+        session["running"] = False
+        session["last_active"] = time.time()
+        for key in ("_submit_user_row", "_hosted_room_task", "_auto_continue_scheduled",
+                    "_auto_continue_attempt", "_auto_continue_prompt"):
+            session.pop(key, None)
+        _start_inflight_turn(session, text)
+        _release_active_session_slot(session)
+    _emit_terminal_turn_error(sid, session, message,
+        error_surface={"layer": "runtime", "code": "session_profile_mismatch", "retryable": False})
+    if terminal_callback is not None:
+        terminal_callback({"status": "failed", "text": "", "error": message})
+
+
+def _ensure_dispatch_session_row(sid: str, session: dict, text: Any, terminal_callback=None) -> bool:
+    """Synthesized turns bypass prompt.submit; validate ownership before they persist or run."""
+    try:
+        if _ensure_session_db_row(session) is False:
+            logger.warning("prompt dispatch: session store unavailable for %s — this turn may not persist",
+                           session.get("session_key") or sid)
+    except SessionProfileOwnershipError as exc:
+        _refuse_profile_owned_turn(sid, session, text, exc, terminal_callback)
+        return False
+    return True
+
+
 def _normalize_completion_path(path_part: str) -> str:
     expanded = os.path.expanduser(path_part)
     if os.name != "nt":
@@ -493,6 +618,7 @@ def _ensure_session_db_row(session: dict) -> bool:
     """
     if not (key := session.get("session_key")):
         return
+    _assert_session_profile_ownership(session)
     # Persist into the session's own profile db (global remote mode), not the launch profile's — otherwise the unified
     # list mis-tags the row and resume 404s ("session not found").
     profile_home = session.get("profile_home")
@@ -868,6 +994,58 @@ def _set_session_cwd(session: dict, cwd: str) -> str:
         from tools.terminal_tool_lifecycle import cleanup_vm
         cleanup_vm(session["session_key"])
     return resolved
+
+
+def _persist_session_row_for_submit(rid, session, text=None, display_kind=None):
+    """Lazily persist the DB row now that the user sent a message (a branch becomes real
+    here), then the message itself (#111868: a freeze during the first build must leave a
+    resumable transcript); the error reply is the only user-visible signal (desktop maps it to a toast)."""
+    from hermes_state_user_copy import describe_storage_failure
+    try:
+        if _ensure_session_db_row(session) is False:
+            failure = describe_storage_failure(_db_error)
+            error = _err(
+                rid, 5072,
+                f"Session storage is unavailable, so this message was not saved. Cause: {failure.gloss}. "
+                f"{failure.action} Then send your message again.",
+                data=_storage_error_data(failure, _db_error))
+        else:
+            _persist_branch_seed(session)
+            # The first real turn reopens a finalized row (#85303): resume is read-only, so
+            # an ended_at set at mount time is cleared HERE, before the turn's first write.
+            with _session_db(session) as db:
+                if db is not None:
+                    _reopen_if_finalized(db, str(session.get("session_key") or ""))
+            _persist_submit_user_row(session, text, display_kind)
+            return None
+    except SessionProfileOwnershipError as exc:
+        logger.warning("prompt.submit: refused cross-profile session ownership: %s", exc)
+        error = _err(
+            rid, 4095, _session_profile_ownership_error_message(exc))
+    except Exception as exc:
+        failure = describe_storage_failure(exc)
+        if failure.code == "disk_full":
+            error = _err(
+                rid, 5070,
+                "Session storage could not be written, so this message was not saved: the disk is full. "
+                "Free some disk space, then send your message again.",
+                data=_storage_error_data(failure, exc))
+        else:
+            logger.warning("prompt.submit: session persist failed: %s", exc, exc_info=True)
+            error = _err(
+                rid, 5071,
+                f"Session storage could not be written, so this message was not saved. Cause: {failure.gloss}. "
+                f"{failure.action} Then send your message again.",
+                data=_storage_error_data(failure, exc))
+    # No turn thread will start, so neither resume nor the busy queue may see
+    # this rejected prompt as live. Release the slot a turn would normally own.
+    with session["history_lock"]:
+        session["running"] = False
+        session["last_active"] = time.time()
+        session.pop("_hosted_room_task", None)
+        _clear_inflight_turn(session)
+        _release_active_session_slot(session)
+    return error
 
 
 def register(server) -> None:

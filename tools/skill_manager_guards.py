@@ -225,8 +225,15 @@ def _background_review_preflight(action: str, name: str) -> Optional[dict[str, A
     if action != "delete":
         return None
     from tools import skill_manager_tool as _smt
+
     existing = _smt._find_skill(name)
-    return _background_review_delete_guard(name, existing["path"]) if existing else None
+    if not existing:
+        return None
+    # `_find_skill` resolves the bare name and the ``category/name`` form to the same skill,
+    # but the usage store keys the pin and curator-management records under the bare name.
+    # Keying the guard on the name as passed let a category-qualified delete read a forked
+    # record (``created_by: "agent"``, unpinned) and sidestep the pin (#121887).
+    return _background_review_delete_guard(existing["path"].name, existing["path"])
 
 
 def _curator_consolidation_delete_guard(

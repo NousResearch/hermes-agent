@@ -72,7 +72,26 @@ def _resolve_standard_oauth_client(req: Any) -> tuple[Any, Any]:
     client = aux._create_openai_client(api_key=api_key, base_url=base_url,
                                      **({"default_headers": headers} if headers else {}))
     client._hermes_aux_effective_provider = req.provider
+    pool = runtime.get("credential_pool")
+    entry = pool.current() if pool is not None else None
+    client._hermes_aux_credential_id = entry.id if entry and entry.runtime_api_key == api_key else None
     profile = get_provider_profile(req.provider)
     api_mode = runtime["api_mode"] if profile and profile.fixed_api_mode else req.api_mode or runtime["api_mode"]
     routed = req._replace(api_mode=api_mode)
     return aux._route_client(routed, aux._wrap_transport(routed, client, model, base_url, api_key), model)
+
+
+def refresh_plugin_oauth_credentials(provider: str, failed_api_key: str, credential_id: str | None) -> bool:
+    """Refresh the issuing registration, or adopt its already-rotated token without spending it again."""
+    from agent.credential_pool import load_pool
+    from providers import get_provider_profile
+
+    profile = get_provider_profile(provider)
+    if profile is None or profile.refresh_credential is None:
+        return False
+    pool = load_pool(provider)
+    entry = next((row for row in pool.entries() if row.id == credential_id), None) if credential_id else None
+    if entry is not None and entry.runtime_api_key != failed_api_key:
+        selected = pool.select()
+        return selected is not None and selected.id == entry.id
+    return pool.try_refresh_matching(api_key_hint=failed_api_key, credential_id=credential_id) is not None

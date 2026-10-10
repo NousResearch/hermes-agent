@@ -566,8 +566,7 @@ def _scan_gateway_pids(
     exclude_pids: set[int], all_profiles: bool = False, include_restart_managers: bool = False
 ) -> list[int]:
     """Best-effort process-table scan for gateway PIDs (backs up a stale/missing PID file; ``--all`` sweeps)."""
-    # Exclude the entire ancestor chain so the CLI process that invoked this scan (e.g. ``hermes gateway
-    # status``) is never mistaken for a running gateway. See #13242.
+    # Exclude the whole ancestor chain: the invoking CLI (``hermes gateway status``) is not a gateway (#13242).
     exclude_pids = exclude_pids | _get_ancestor_pids()
     pids: list[int] = []
     # Strict matcher shared with gateway.status: requires a real ``gateway run`` argv, so
@@ -580,6 +579,7 @@ def _scan_gateway_pids(
         command_line_names_hermes_home,
     )
     from hermes_cli.dashboard_procs import _hermes_home_for_pid, _normalized_home_for_compare
+    from hermes_cli.gateway_migrate_guards import pid_is_other_users
     current_home_path = get_hermes_home().resolve()
     current_home = str(current_home_path)
     # Forward slashes on both sides of the HERMES_HOME= match (mirrors gateway.status), and no
@@ -623,7 +623,7 @@ def _scan_gateway_pids(
         matches_runtime = looks_like_gateway_command_line(command) or (
             include_restart_managers and looks_like_gateway_runtime_command_line(command)
         )
-        if matches_runtime and (all_profiles or _matches_current_profile(pid, command)):
+        if matches_runtime and not pid_is_other_users(pid) and (all_profiles or _matches_current_profile(pid, command)):
             _append_unique_pid(pids, pid, exclude_pids)
 
     try:
@@ -4015,6 +4015,7 @@ from hermes_cli.gateway_launchd import (
     wait_for_launchd_gateway_supervision,
     launchd_status,
 )
+from datetime import UTC
 
 
 # Cached launchd domain — probe once per process invocation.
@@ -4540,7 +4541,7 @@ def _make_exit_diag():
             log_dir = _ghh() / "logs"
             log_dir.mkdir(parents=True, exist_ok=True)
             line = {
-                "ts": _dt.now(_tz.utc).isoformat(), "tag": tag, "pid": os.getpid(),
+                "ts": _dt.now(UTC).isoformat(), "tag": tag, "pid": os.getpid(),
                 "python": sys.version.split()[0], "platform": sys.platform, **extra,
             }
             with open(log_dir / "gateway-exit-diag.log", "a", encoding="utf-8") as f:

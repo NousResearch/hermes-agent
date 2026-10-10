@@ -16,9 +16,9 @@ class _ExpiredToken(Exception):
     status_code = 401
     message = "Provided authentication token is expired. Please try signing in again."
 
-    def __init__(self):
+    def __init__(self, code="token_expired"):
         super().__init__(self.message)
-        self.body = {"error": {"code": "token_expired", "message": self.message,
+        self.body = {"error": {"code": code, "message": self.message,
                                "type": "invalid_request_error"}}
 
 
@@ -52,7 +52,7 @@ def _agent(provider):
 
 
 @pytest.mark.parametrize("provider", ["openai-chatgpt", "openai-codex"])
-def test_expired_token_respects_provider_policy_before_replaying_reasoning(provider):
+def test_explicit_policy_respects_terminal_gate_and_legacy_codex_keeps_replay_recovery(provider):
     agent, retry = _agent(provider), TurnRetryState()
     messages = [
         {"role": "assistant", "content": "Earlier answer", "codex_reasoning_items": [
@@ -63,7 +63,8 @@ def test_expired_token_respects_provider_policy_before_replaying_reasoning(provi
     original = deepcopy(messages)
     api_messages = deepcopy(messages)
     verdict = handle_api_error(
-        agent, api_error=_ExpiredToken(), _retry=retry, thinking_spinner=None,
+        agent, api_error=_ExpiredToken("chatpass_v2_scope_not_authorized" if provider == "openai-chatgpt"
+                                       else "token_expired"), _retry=retry, thinking_spinner=None,
         messages=messages, api_messages=api_messages, api_kwargs={"model": agent.model},
         system_message="", active_system_prompt="", conversation_history=deepcopy(messages[:-1]),
         approx_tokens=100, retry_count=0, max_retries=3, compression_attempts=0,

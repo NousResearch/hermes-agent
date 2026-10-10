@@ -2388,7 +2388,7 @@ def init_agent(
     gateway_session_key: str | None = None, skip_context_files: bool = False,
     load_soul_identity: bool = False, skip_memory: bool = False,
     skip_background_review: bool = False, session_db=None, parent_session_id: str | None = None,
-    iteration_budget: "IterationBudget" = None, run_budget_seconds: Optional[float] = None,
+    iteration_budget: IterationBudget = None, run_budget_seconds: Optional[float] = None,
     fallback_model: dict[str, Any] | None = None, credential_pool=None, checkpoints_enabled: bool = False,
     checkpoint_max_snapshots: int = 20, checkpoint_max_total_size_mb: int = 500,
     checkpoint_max_file_size_mb: int = 10, pass_session_id: bool = False,
@@ -2414,11 +2414,8 @@ def init_agent(
     # Skips the end-of-turn review fork (~30K tokens/event); one switch for both review paths.
     agent.skip_background_review = bool(skip_background_review)
     agent.log_prefix = f"{log_prefix} " if log_prefix else ""
-    # Effective base URL for feature detection (prompt caching, reasoning, etc.)
-    from hermes_cli.providers import is_actual_route
-    if is_actual_route(provider, base_url):
-        from hermes_cli.auth import normalize_actual_base_url
-        base_url = normalize_actual_base_url(base_url)
+    from agent.provider_endpoint import initial_provider_route
+    base_url, api_mode = initial_provider_route(provider, base_url, api_mode)
     agent.base_url = base_url or ""
     provider_name = provider.strip().lower() if isinstance(provider, str) and provider.strip() else None
     agent.provider = provider_name or ""

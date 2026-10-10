@@ -117,6 +117,7 @@ from hermes_cli.update_cmd_maint import (
     _sweep_bytecode_after_update,
     _update_complete_message, _verify_and_restore_one_state_db,
     _verify_and_restore_state_dbs_post_update)
+from datetime import UTC
 logger = logging.getLogger(__name__)
 
 
@@ -887,7 +888,7 @@ def _reconcile_diverged_checkout(git_cmd, branch: str, pre_pull_sha, *, target_r
         kind = "diverged" if has_common_ancestor else "orphan"
         rescue_ref = (
             f"refs/hermes-update-backups/{kind}-{branch}-"
-            f"{_dt.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}-{pre_pull_sha[:12]}")
+            f"{_dt.now(UTC).strftime('%Y%m%d-%H%M%S')}-{pre_pull_sha[:12]}")
         head = (
             f"  ⚠ Local history has diverged from origin/{branch} — "
             if has_common_ancestor else
@@ -1318,12 +1319,12 @@ def _missing_branch_stop(git_cmd, branch) -> str:
 class _CheckoutPlan:
     """What the pre-pull checkout phase decided (see ``_prepare_checkout_for_update``)."""
 
-    auto_stash_ref: "str | None"
+    auto_stash_ref: str | None
     commit_count: int
     in_place_update: bool
     parked_branch_switched: bool
     prompt_for_restore: bool
-    switch_block_reason: "str | None"
+    switch_block_reason: str | None
     upstream_checked: bool
     pre_sync_sha: str | None = None
     rollback_branch: str | None = None
@@ -1333,7 +1334,7 @@ class _CheckoutPlan:
 
 def _apply_parked_branch_guard(
     git_cmd, branch, current_branch, *, switch_branch, _windows_gateway_resume
-) -> tuple[bool, bool, "str | None"]:
+) -> tuple[bool, bool, str | None]:
     """Decide how a checkout parked on another branch is brought to *branch* (stash-switch-pull-
     switch-back used to "update" main while the running code stayed behind).
 
@@ -1773,6 +1774,25 @@ def _apply_pulled_update(
     _complete_source_update(completion_request)
 
 
+def _pause_gateways_for_update(opts):
+    """Windows pauses here (venv locks); Linux/macOS only arm a pause the commit point performs."""
+    try:
+        return _m()._pause_windows_gateways_for_update() or _posix_pause.arm_pause(
+            no_gateway_restart=opts.no_gateway_restart)
+    except RuntimeError:  # update_cmd_windows._abort_on_error / ServicePauseFailed: nothing moved
+        _record_stop("gateway_pause_failed")
+        raise
+
+
+def _update_run_channel(args) -> str:
+    """``_source_update_channel`` for this run, naming the exit when the configured channel is invalid."""
+    try:
+        return _source_update_channel(args)
+    except ValueError:  # ChannelError: this install's configured channel is not a valid name
+        _record_stop("channel_unresolved")
+        raise
+
+
 def _cmd_update_impl(args, gateway_mode: bool):
     """Apply the update; the command boundary owns errors, receipts and stdio."""
     # Marks this frame as the CURRENT updater for
@@ -1815,9 +1835,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
     _record_pre_update_backup_outcome(args, pre_update_snapshot_id)
     _record_snapshot_stage(args, pre_update_snapshot_id)
 
-    # Windows pauses here (venv locks); Linux/macOS only arm a pause the commit point performs.
-    _windows_gateway_resume = _m()._pause_windows_gateways_for_update() or _posix_pause.arm_pause(
-        no_gateway_restart=opts.no_gateway_restart)
+    _windows_gateway_resume = _pause_gateways_for_update(opts)
     if _windows_gateway_resume:
         import atexit as _atexit
         _atexit.register(_m()._resume_windows_gateways_after_update, _windows_gateway_resume)
@@ -1839,7 +1857,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
     target_ref = f"origin/{branch}"
     release_sha = None
     target_repository = None
-    selected_channel = _source_update_channel(args)
+    selected_channel = _update_run_channel(args)
     if not getattr(args, "branch", None):
         from hermes_cli.release_channels import retrying_reads
         from hermes_cli.source_releases import resolve_source_target

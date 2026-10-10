@@ -158,30 +158,6 @@ def _post_setup_python(spec: dict) -> None:
     _info_lines(*spec["on_install"], *spec["always"])
 
 
-def _post_setup_spotify() -> None:
-    # Full `hermes auth spotify` flow: no client_id yet → interactive wizard (persists to ~/.hermes/.env)
-    # then PKCE; existing app → OAuth only.
-    from types import SimpleNamespace
-    try:
-        from hermes_cli.auth import login_spotify_command
-    except Exception as exc:
-        _print_warning(f"    Could not load Spotify auth: {exc}")
-        _info_lines("Run manually: hermes auth spotify")
-        return
-    _print_info("    Starting Spotify login...")
-    try:
-        login_spotify_command(SimpleNamespace(
-            client_id=None, redirect_uri=None, scope=None, no_browser=False, timeout=None))
-        _print_success("    Spotify authenticated")
-    except SystemExit as exc:
-        # User aborted the wizard or OAuth failed — don't fail the toolset enable.
-        _print_warning(f"    Spotify login did not complete: {exc}")
-        _info_lines("Run later: hermes auth spotify")
-    except Exception as exc:
-        _print_warning(f"    Spotify login failed: {exc}")
-        _info_lines("Run manually: hermes auth spotify")
-
-
 def _post_setup_langfuse() -> None:
     import pm
 
@@ -319,7 +295,6 @@ _POST_SETUP_HOOKS: dict = {
     "browser_use_cli": lambda: _ensure_browser_use_cli(verbose_hints=True),
     "camofox": _post_setup_camofox,
     "cua_driver": lambda: install_cua_driver(upgrade=False),
-    "spotify": _post_setup_spotify,
     "langfuse": _post_setup_langfuse,
     "xai_grok": _post_setup_xai_grok,
     "openai_codex": _post_setup_openai_codex,

@@ -3035,7 +3035,7 @@ def _pair_tool_calls_positionally(messages: list[dict[str, Any]]) -> list[dict[s
                 if variants:
                     # Key on a stable representative of the alias group so a result matching ANY
                     # spelling can consume the call.
-                    declared_calls[sorted(variants)[0]] = (tc, variants)
+                    declared_calls[min(variants)] = (tc, variants)
         elif role == "tool":
             result_variants = tool_result_id_variants(msg.get("tool_call_id"))
             matched = next((k for k, (_tc, v) in declared_calls.items() if v & result_variants), None)

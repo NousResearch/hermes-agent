@@ -211,7 +211,7 @@ def test_chatgpt_auxiliary_wire_and_stream_contract(monkeypatch, terminal):
     from types import SimpleNamespace
     from agent.auxiliary_client import _CodexCompletionsAdapter
 
-    monkeypatch.setattr("hermes_cli.auth_chatgpt.assert_active_access_token", lambda token: None, raising=False)
+    monkeypatch.setattr("hermes_cli.auth_chatgpt.assert_active_access_token", lambda token, **kwargs: None, raising=False)
 
     captured = []
     final = SimpleNamespace(status="completed", output=[SimpleNamespace(

@@ -449,3 +449,82 @@ def test_rotated_grant_with_another_identity_is_never_released(idp, pending_firs
     assert len(idp.token_requests) == posts + 1
     with pytest.raises(AuthError):
         chatgpt.assert_active_access_token(before["access_token"])
+
+
+@pytest.mark.parametrize("change,expected", [
+    ("rotation", "chatgpt_token_rotated"), ("account", "chatgpt_session_changed"),
+    ("scope", "chatgpt_session_changed"), ("pending", "chatgpt_session_changed"),
+    ("logout", "chatgpt_session_changed"),
+])
+def test_bound_session_recovers_only_a_verified_rotation_of_its_own_registration(idp, change, expected):
+    from hermes_cli import auth
+    chatgpt.auth_handler("add", _args())
+    before = _rows()[0]
+    store = auth._load_auth_store()
+    row = store["credential_pool"][chatgpt.PROVIDER][0]
+    row.update(access_token="peer-access", refresh_token="peer-refresh")
+    row.update({"account": {"id": "another-registration"}}.get(change, {}))
+    row["chatgpt"].update({
+        "account": {"client_id": "another-client"},
+        "scope": {"scopes": ["openid"]},
+        "pending": {"pending_refresh": {"response": {}, "received_at_ms": 1}},
+    }.get(change, {}))
+    store["providers"][chatgpt.PROVIDER].update({
+        "account": {"active_credential_id": "another-registration"},
+        "logout": {"active_credential_id": None},
+    }.get(change, {}))
+    auth._save_auth_store(store)
+
+    with pytest.raises(AuthError) as rejected:
+        chatgpt.assert_active_access_token(before["access_token"], credential_id=before["id"])
+    assert rejected.value.code == expected
+    with pytest.raises(AuthError) as unbound:
+        chatgpt.assert_active_access_token(before["access_token"])
+    assert unbound.value.code == "chatgpt_session_changed"
+
+
+@pytest.mark.parametrize("operation", ["remove", "disconnect", "rpc-disconnect"])
+@pytest.mark.parametrize("confirmed", [True, False])
+def test_generic_removal_uses_logout_and_preserves_returning_registrations(idp, capsys, operation, confirmed):
+    from hermes_cli import auth
+    from hermes_cli.auth_commands import auth_remove_command
+    chatgpt.auth_handler("add", _args(label="first"))
+    first = _rows()[0]
+    idp.client_id = "issued-second"
+    idp.subject = "subject-second"
+    chatgpt.auth_handler("add", _args(label="second"))
+    before = _rows()
+    state = auth._load_auth_store()["providers"][chatgpt.PROVIDER]
+    idp.metadata_outage = None if confirmed else "/.well-known/openid-configuration"
+    capsys.readouterr()
+
+    if operation == "remove":
+        auth_remove_command(SimpleNamespace(provider=chatgpt.PROVIDER, target="second"))
+        assert confirmed or "Remote session revocation was not confirmed" in capsys.readouterr().out
+    elif operation == "rpc-disconnect":
+        from tui_gateway import server
+        response = server._methods["model.disconnect"](1, {"slug": chatgpt.PROVIDER})
+        if confirmed:
+            assert response["result"]["disconnected"] is True
+        else:
+            assert "locally" in response["error"]["message"]
+        assert not capsys.readouterr().out
+    elif confirmed:
+        assert auth.clear_provider_auth(chatgpt.PROVIDER)
+    else:
+        with pytest.raises(AuthError, match="locally"):
+            auth.clear_provider_auth(chatgpt.PROVIDER)
+
+    after = _rows()
+    assert len(after) == 2
+    removed = [row for row in after if row["label"] == "second"] if operation == "remove" else after
+    assert all(not row.get("access_token") and not row.get("refresh_token") for row in removed)
+    current = auth._load_auth_store()["providers"][chatgpt.PROVIDER]
+    assert current["ext_agent_host_id"] == state["ext_agent_host_id"]
+    assert current["registrations"] == state["registrations"]
+    assert not current.get("active_credential_id")
+    if confirmed:
+        expected = before[1:] if operation == "remove" else before
+        assert {call["token"] for call in idp.revocations} == {row["refresh_token"] for row in expected}
+    if operation == "remove":
+        assert next(row for row in after if row["id"] == first["id"])["refresh_token"] == first["refresh_token"]

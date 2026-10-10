@@ -88,7 +88,7 @@ class FakeTokenServer:
         self._httpd = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
         self._thread = threading.Thread(target=self._httpd.serve_forever, daemon=True)
 
-    def __enter__(self) -> "FakeTokenServer":
+    def __enter__(self) -> FakeTokenServer:
         self._thread.start()
         return self
 

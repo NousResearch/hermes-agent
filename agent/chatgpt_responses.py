@@ -38,7 +38,7 @@ def classify_chatgpt_error(error: Exception, *, status_code=None, error_code=Non
     existing bounded server-error retry policy.
     """
     error_code = error_code or getattr(error, "code", None)
-    if error_code in _TERMINAL_CODES or status_code in {401, 403}:
+    if error_code in _TERMINAL_CODES or status_code == 403:
         verdict = {"reason": "provider_policy_blocked", "retryable": False,
                    "should_rotate_credential": False, "should_fallback": False}
         if error_code == "subscription_sharing_usage_limit_exceeded":
@@ -48,10 +48,24 @@ def classify_chatgpt_error(error: Exception, *, status_code=None, error_code=Non
                 "Check usage at https://chatgpt.com/settings/usage before trying again."
             )}
         return verdict
+    if status_code == 401 or error_code in {"token_expired", "chatgpt_token_rotated"}:
+        return {"reason": "auth", "retryable": False,
+                "should_rotate_credential": True, "should_fallback": False}
     if error_code in _TEMPORARY_CODES or status_code == 503:
         return {"reason": "server_error", "retryable": True,
                 "should_rotate_credential": False, "should_fallback": False}
     return None
+
+
+def recheck_chatgpt_auth_error(error: Exception, client: Any, credential_id: str | None, *, enabled: bool) -> None:
+    """A rejection belongs to its issuing account, even when selection changed during HTTP."""
+    if not enabled:
+        return
+    from agent.error_classifier import classify_api_error
+    from hermes_cli.auth_chatgpt import assert_active_access_token
+
+    if classify_api_error(error, provider="openai-chatgpt").is_auth:
+        assert_active_access_token(getattr(client, "api_key", ""), credential_id=credential_id)
 
 
 def prepare_chatgpt_request(kwargs: dict[str, Any]) -> dict[str, Any]:

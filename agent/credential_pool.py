@@ -13,7 +13,7 @@ import time
 import uuid
 import re
 from dataclasses import dataclass, fields, replace
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 
@@ -251,7 +251,7 @@ class PooledCredential:
         raise AttributeError(f"'{type(self).__name__}' object has no attribute {name!r}")
 
     @classmethod
-    def from_dict(cls, provider: str, payload: dict[str, Any]) -> "PooledCredential":
+    def from_dict(cls, provider: str, payload: dict[str, Any]) -> PooledCredential:
         field_names = {f.name for f in fields(cls) if f.name != "provider"}
         data = {k: payload.get(k) for k in field_names if k in payload}
         # Rehydrated last_status_at may be an ISO string from to_dict() — normalize to float epoch
@@ -419,13 +419,13 @@ def _parse_absolute_timestamp(value: Any) -> Optional[float]:
         except ValueError:
             pass
         try:
-            return datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
+            return datetime.fromisoformat(raw).timestamp()
         except ValueError:
             return None
     return None
 
 
-def _singleton_predates_entry(state: Any, entry: "PooledCredential") -> bool:
+def _singleton_predates_entry(state: Any, entry: PooledCredential) -> bool:
     """True only when the auth.json singleton is PROVABLY older than *entry*.
 
     Both sides stamp ``last_refresh`` on every successful rotation. When
@@ -819,7 +819,7 @@ def _write_through_provider_state_to_global_root(
         logger.debug("%s pool refresh: write-through to global root failed: %s", provider_id, exc)
 
 
-def _singleton_target_for_entry(pool: "CredentialPool", entry: "PooledCredential") -> Optional[Path]:
+def _singleton_target_for_entry(pool: CredentialPool, entry: PooledCredential) -> Optional[Path]:
     """Root ``.anthropic_oauth.json`` when *entry* is a borrowed hermes_pkce row, else None."""
     if entry.source != "hermes_pkce" or entry.id not in getattr(pool, "_borrowed_root_ids", ()):
         return None
@@ -999,7 +999,7 @@ _RESYNC_SOURCE = {
 class _RefreshDone(Exception):
     """Raised inside a provider refresher to short-circuit ``_refresh_entry_impl`` with ``result``."""
 
-    def __init__(self, result: Optional["PooledCredential"]):
+    def __init__(self, result: Optional[PooledCredential]):
         super().__init__()
         self.result = result
 
@@ -1058,44 +1058,6 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         with self._lock:
             available, _pending = self._available_entries(clear_expired=True, model=model)
             return bool(available)
-
-    def next_available_at(self, *, model: Optional[str] = None) -> Optional[float]:
-        """Earliest epoch time (seconds) any entry re-enters rotation.
-
-        ``None`` when an entry is available now, or when no exhausted entry
-        carries a usable recovery time (empty pool, or only ``STATUS_DEAD``
-        entries). Callers must treat ``None`` as "no wait information".
-        Runs under ``self._lock`` for the same reason as ``has_available``.
-        """
-        with self._lock:
-            available, _pending = self._available_entries(model=model)
-            if available:
-                return None
-            # Mirror _available_entries: a sole credential's transient throttle
-            # cools down in seconds, and the fallback restore gate must not
-            # wait an hour for a 60s cooldown.
-            sole_credential = self._is_sole_credential()
-            candidates = [
-                until
-                for until in (
-                    _exhausted_until(entry, sole_credential=sole_credential)
-                    for entry in self._entries
-                    if entry.last_status == STATUS_EXHAUSTED
-                )
-                if until is not None
-            ]
-            candidates.extend(
-                until
-                for entry in self._entries
-                if entry.last_status != STATUS_DEAD
-                for until in (model_cooldown_until(entry, model),)
-                if until is not None
-            )
-            return min(candidates) if candidates else None
-
-    def _is_sole_credential(self) -> bool:
-        """DEAD entries never re-enter rotation, so <=1 non-DEAD entry means nothing to rotate to."""
-        return sum(1 for e in self._entries if e.last_status != STATUS_DEAD) <= 1
 
     def current(self) -> Optional[PooledCredential]:
         with self._lock:
@@ -1711,6 +1673,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         # Single-use-token providers adopt fresher tokens from their store
         # BEFORE spending the refresh_token; ``entry`` is rebound to the synced
         # row so the failure path below recovers against the pair we POSTed.
+        refresh_has_expiry = False
         try:
             if self.provider == "anthropic":
                 updated = self._refresh_anthropic(entry)
@@ -1724,6 +1687,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                     # report the stale row as refreshed (the loop would replay the dead bearer).
                     raise RuntimeError("provider refresh_credential returned no rotated fields")
                 updated = apply_plugin_refresh_result(entry, rotated)
+                refresh_has_expiry = "expires_at_ms" in rotated
             elif self.provider == "nous":
                 stale_key = entry.runtime_api_key or entry.agent_key or entry.access_token
                 synced = self._sync_nous_entry_from_auth_store(entry)
@@ -1753,7 +1717,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         # Sync back so _seed_from_singletons() on the next load_pool() sees
         # fresh state instead of re-seeding consumed tokens.
         self._sync_device_code_entry_to_auth_store(updated)
-        if plugin_refresh_hook(self.provider) is not None and plugin_row_is_expired(updated):
+        if refresh_has_expiry and plugin_row_is_expired(updated):
             return None
         return updated
 
@@ -1905,7 +1869,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                             "message": str(exc),
                             "reason": "credential_pool_refresh_failure",
                             "relogin_required": True,
-                            "at": datetime.now(timezone.utc).isoformat(),
+                            "at": datetime.now(UTC).isoformat(),
                         }
                         _save_provider_state(auth_store, self.provider, state)
                         _save_auth_store(auth_store)

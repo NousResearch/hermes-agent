@@ -326,7 +326,7 @@ class TestNormalizeMessageEdited:
         a = _adapter()
         update = _edited_update()
         update.edited_message.edit_date = _dt.datetime(
-            2026, 8, 12, 10, 30, tzinfo=_dt.timezone.utc,
+            2026, 8, 12, 10, 30, tzinfo=_dt.UTC,
         )
 
         event = a._normalize_platform_event(update)

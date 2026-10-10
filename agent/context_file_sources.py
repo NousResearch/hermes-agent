@@ -59,7 +59,7 @@ def _loaded_status(content: str, rendered_len: int, max_chars: int, user_authore
 
 def list_context_file_sources(
     cwd: Optional[str] = None, context_length: Optional[int] = None, allow_install_tree_fallback: bool = False,
-    home_override: "Path | None" = None, skip_soul: bool = False,
+    home_override: Path | None = None, skip_soul: bool = False,
 ) -> list[dict[str, Any]]:
     """One dict per context file Hermes considered, in the builder's priority order.
 

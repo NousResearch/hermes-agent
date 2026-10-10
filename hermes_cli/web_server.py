@@ -87,7 +87,7 @@ def _gateway_owns_cron(name: str, home) -> bool:
         name != "default" and _served_by_running_multiplexer(name))
 
 
-def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60) -> None:
+def _start_desktop_cron_ticker(stop_event: threading.Event, interval: int = 60) -> None:
     """Tick the cron scheduler from inside the desktop dashboard backend.
 
     The desktop spawns a ``hermes dashboard`` backend, not a gateway, so without
@@ -177,7 +177,7 @@ _DESKTOP_MCP_DISCOVERY_DELAY_S = 1.0
 
 
 @asynccontextmanager
-async def _lifespan(app: "FastAPI"):
+async def _lifespan(app: FastAPI):
     app.state.event_channels = {}  # dict[str, set]
     app.state.event_lock = asyncio.Lock()
     app.state.pty_active_session_files = {}  # dict[str, Path]
@@ -246,8 +246,8 @@ async def _lifespan(app: "FastAPI"):
     # Desktop-spawned backends fire cron jobs themselves, since the app has no
     # gateway running the scheduler. Server `hermes dashboard` is unaffected —
     # it relies on its own gateway.
-    cron_stop: "threading.Event | None" = None
-    cron_thread: "threading.Thread | None" = None
+    cron_stop: threading.Event | None = None
+    cron_thread: threading.Thread | None = None
     desktop_owned = is_desktop_owned_backend()
     if desktop_owned:
         # Reap an orphaned gateway from an abnormal previous exit (reparented to
@@ -341,7 +341,7 @@ async def _lifespan(app: "FastAPI"):
         eager_reconcile_thread.join()
 
 
-def _app_state_default(app: "FastAPI", name: str, factory):
+def _app_state_default(app: FastAPI, name: str, factory):
     """Return ``app.state.<name>``, lazily creating it for non-``with`` TestClient usages.
 
     The lifespan normally initialises these on the running event loop (an
@@ -355,11 +355,11 @@ def _app_state_default(app: "FastAPI", name: str, factory):
         return value
 
 
-def _get_chat_argv_lock(app: "FastAPI") -> asyncio.Lock:
+def _get_chat_argv_lock(app: FastAPI) -> asyncio.Lock:
     return _app_state_default(app, "chat_argv_lock", asyncio.Lock)
 
 
-def _get_pty_active_session_files(app: "FastAPI") -> dict[str, Path]:
+def _get_pty_active_session_files(app: FastAPI) -> dict[str, Path]:
     return _app_state_default(app, "pty_active_session_files", dict)
 
 
@@ -744,7 +744,7 @@ class DashboardHealth:
 
     def __init__(self, window_seconds: float = _DASHBOARD_HEALTH_WINDOW_SECONDS) -> None:
         self.window_seconds = window_seconds
-        self._error_times: "deque[float]" = deque(maxlen=256)
+        self._error_times: deque[float] = deque(maxlen=256)
         self.last_error_type: Optional[str] = None
         self.last_error_path: Optional[str] = None  # internal-only, never serialized
         self.last_error_at: Optional[float] = None

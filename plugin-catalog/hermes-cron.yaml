@@ -1,20 +1,21 @@
 name: hermes-cron
 repo: https://github.com/itpartypattaya/hermes-cron
-sha: b57e15fe990ba0be14c8eb4ec04baa7e86cd725e
-description: "Operating skill for Hermes cron: lifecycle rules (pause vs disable vs remove, `in 30m` vs `30m`), four ways to avoid needless LLM runs (no_agent, wakeAgent pre-check, monitor, [SILENT]), verify-after-change, a layered runbook and a read-only doctor that complements `hermes cron doctor` and reports one error across several jobs as one scheduler fault. Portable Agent Plugins v1 package (plugin.json + skills/); no tools, hooks, middleware or env vars. Disclosure — skill only, no network; the bundled doctor reads ~/.hermes/cron/jobs.json, ticker stamps and executions.db read-only and runs the local hermes cron doctor (argument list, no shell), whose job loader may repair malformed jobs.json entries (--no-builtin skips it)."
+sha: 350ec6edb06c50b88b867d877ede367bf89a3f95
+description: "Operating skill for Hermes cron: lifecycle rules (pause vs disable vs remove, `in 30m` vs `30m`), four ways to avoid needless LLM runs (no_agent, wakeAgent pre-check, monitor, [SILENT]), verify-after-change, a layered runbook and a read-only doctor that complements `hermes cron doctor` and reports one error across several jobs as one scheduler fault and a cron store that cannot be written. Portable Agent Plugins v1 package (plugin.json + skills/); no tools, hooks, middleware or env vars. Disclosure — skill only, no network; the bundled doctor reads ~/.hermes/cron/jobs.json, ticker stamps and executions.db read-only, checks the cron directory's permissions and free space without writing, and runs the local hermes cron doctor (argument list, no shell), whose job loader may repair malformed jobs.json entries (--no-builtin skips it)."
 maintainer: itpartypattaya
 tier: community
 category: automation
 requires_hermes: ">=0.21"
-docs_url: https://github.com/itpartypattaya/hermes-cron/blob/b57e15fe990ba0be14c8eb4ec04baa7e86cd725e/README.md
-version: "1.2.0"
-image: "https://raw.githubusercontent.com/itpartypattaya/hermes-cron/b57e15fe990ba0be14c8eb4ec04baa7e86cd725e/docs/banner.png"
+docs_url: https://github.com/itpartypattaya/hermes-cron/blob/350ec6edb06c50b88b867d877ede367bf89a3f95/README.md
+version: "1.3.0"
+image: "https://raw.githubusercontent.com/itpartypattaya/hermes-cron/350ec6edb06c50b88b867d877ede367bf89a3f95/docs/banner.png"
 screenshots:
-- "https://raw.githubusercontent.com/itpartypattaya/hermes-cron/b57e15fe990ba0be14c8eb4ec04baa7e86cd725e/docs/modes.png"
-- "https://raw.githubusercontent.com/itpartypattaya/hermes-cron/b57e15fe990ba0be14c8eb4ec04baa7e86cd725e/docs/doctor.png"
+- "https://raw.githubusercontent.com/itpartypattaya/hermes-cron/350ec6edb06c50b88b867d877ede367bf89a3f95/docs/modes.png"
+- "https://raw.githubusercontent.com/itpartypattaya/hermes-cron/350ec6edb06c50b88b867d877ede367bf89a3f95/docs/doctor.png"
 platforms: []
 capabilities:
   provides_tools: []
   provides_hooks: []
   provides_middleware: []
   requires_env: []
+

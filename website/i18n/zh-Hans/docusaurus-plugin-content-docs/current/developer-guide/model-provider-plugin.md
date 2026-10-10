@@ -205,13 +205,15 @@ register_provider(ProviderProfile(
 
 OAuth 插件可以注册 `auth_handler(action, args)` 和 `refresh_credential(entry)`，分别处理认证命令与凭据池刷新。刷新回调返回字段映射：`access_token`、`refresh_token`、`expires_at_ms` 等字段直接更新凭据，其余字段存入 `entry.extra`。凭据池持有当前 profile 的认证存储锁，先检查其他进程是否已刷新，再调用回调并保存结果。有到期时间的凭据会在临近到期时主动刷新。
 
-已有到期时间的凭据刷新成功时，回调必须返回新 token 的实际 `expires_at_ms`。已过期的刷新结果仍会保存，但不能用于推理，采用其他进程的刷新结果时也遵循此规则。插件可据此保留身份验证暂时不可用时已轮换的授权；下一次回调应验证保留的响应，不能再次使用已消耗的刷新 token。
+保留已签发注册的插件可处理 `remove`，撤销选中账户的授权并保留注册。`clear_provider_auth`（含 Desktop/TUI 断开操作）还会调用非交互的 `disconnect`，该动作不得向 stdout 打印。完成本地退出后返回 `True` 可保留插件管理的注册信息；远端撤销未能确认时，应先完成本地清理，再抛出安全的 `AuthError`，由调用方提示用户手动断开。
+
+刷新回调应在已知时返回新 token 的实际 `expires_at_ms`；省略这个可选字段的旧插件保持兼容。当回调明确返回已过期时间时，结果仍会保存，但不能用于推理，采用其他进程的结果时也遵循此规则。插件可据此保留身份验证暂时不可用时已轮换的授权；下一次回调应验证保留的响应，不能再次使用已消耗的刷新 token。回调替换 access token 却未提供到期时间时，会清除旧 token 的到期时间；新 bearer 的到期时间视为未知，不能沿用旧值。
 
 覆盖 `credential_is_eligible(entry)` 可限制推理只使用用户明确选中的账户和授权范围；默认返回 `True`。检查发生在读取重新登录结果后、刷新前以及刷新后，未选中的账户继续保留。不要因此拒绝仍可刷新的过期 token，也不要自动切换付费账户。
 
 终态刷新错误会让凭据退出轮转。可选 `clear_credential(entry)` 回调返回清理字段映射，用于清除 token 并保留账户注册信息；默认 `None`，不改变其他提供商行为。回调必须是纯函数，不修改传入对象、不自行写认证文件。凭据池先确认其他进程没有成功刷新，再应用清理字段并保存 DEAD 状态；重新登录后，运行中的池会重新读取新凭据。
 
-主对话和辅助任务使用相同的池内账户及传输方式。辅助恢复会遵守禁止重试、轮转与跨提供商回退的终态错误分类。`requires_streaming=True` 表示接口强制流式请求；`fixed_api_mode=True` 表示主对话和 OAuth 辅助任务不能通过配置覆盖 profile 的传输类型。两个选项默认均为 `False`。
+主对话和辅助任务使用相同的池内账户及传输方式。辅助恢复会遵守禁止重试、轮转与跨提供商回退的终态错误分类。`requires_streaming=True` 表示接口强制流式请求；`fixed_api_mode=True` 表示主对话和 OAuth 辅助任务不能通过配置覆盖 profile 的传输类型。`fixed_base_url=True` 表示凭据只能用于 profile 的 `base_url`，运行时会在创建客户端或探测模型能力前固定该端点，即使配置提供了中继 URL。三个选项默认均为 `False`。
 
 OAuth 模型目录会使用当前选中账户的 token；`discover_models()` 可为设置菜单返回账户专属显示名，`fetch_models()` 应返回相同顺序的模型 ID。没有可靠兜底目录时，应保持 `fallback_models` 为空，不猜测账户可用模型。
 

@@ -77,5 +77,5 @@ register_provider(ChatGPTProfile(
     api_mode="codex_responses", base_url=BASE_URL,
     auth_handler=_auth_handler, refresh_credential=_refresh_credential,
     classify_api_error=_classify_api_error, clear_credential=_clear_credential,
-    supports_health_check=False, requires_streaming=True, fixed_api_mode=True,
+    supports_health_check=False, requires_streaming=True, fixed_api_mode=True, fixed_base_url=True,
 ))

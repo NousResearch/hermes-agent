@@ -85,7 +85,7 @@ class _HealthzClient:
     def __init__(self, *a: Any, **k: Any) -> None:
         pass
 
-    async def __aenter__(self) -> "_HealthzClient":
+    async def __aenter__(self) -> _HealthzClient:
         return self
 
     async def __aexit__(self, *a: object) -> bool:
@@ -193,7 +193,7 @@ class _SendClient:
     def __init__(self, *a: Any, **k: Any) -> None:
         pass
 
-    async def __aenter__(self) -> "_SendClient":
+    async def __aenter__(self) -> _SendClient:
         return self
 
     async def __aexit__(self, *a: object) -> bool:

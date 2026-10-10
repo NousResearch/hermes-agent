@@ -4,7 +4,7 @@ patchable helpers resolve through ``_ss()`` at call time so ``tools.skills_sync`
 import json
 import logging
 from contextlib import suppress
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path, PurePosixPath
 from typing import Dict, Iterator, List, Optional, Set, Tuple
 
@@ -140,7 +140,7 @@ def restore_official_optional_skill(name: str, *, restore: bool = False) -> dict
         return {"ok": False, "message": message, "restored": [], "backfilled": [], "backed_up": []}
     restored: list[str] = []
     backed_up: list[str] = []
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
     backup_root = ss._skills_dir() / ".restore-backups" / f"official-optional-{timestamp}"
     for folder_name, install_path, src in targets if restore else []:
         dest = ss._skills_dir() / Path(*install_path.split("/"))
@@ -218,7 +218,7 @@ def _backfill_optional_provenance(quiet: bool = False) -> list[str]:
             dest, install_path = found  # still requires a byte-identical hash below
         if install_path in existing_paths or ss._dir_hash(dest) != ss._dir_hash(src):
             continue
-        timestamp = datetime.now(timezone.utc).isoformat()
+        timestamp = datetime.now(UTC).isoformat()
         installed[lock_name] = {
             "source": "official", "identifier": f"official/{install_path}",
             "trust_level": "builtin", "scan_verdict": "backfilled",

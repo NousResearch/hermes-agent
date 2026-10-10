@@ -21,7 +21,7 @@ from agent.agent_runtime_helpers import (
 
 
 def _agent(
-    mode: Union[str, bool, list] = "auto",
+    mode: str | bool | list = "auto",
     api_mode="chat_completions",
     model="anthropic/claude-sonnet-4",
 ):

@@ -104,7 +104,7 @@ Full definition in `providers/base.py`. The most useful ones:
 | `base_url` | str | Default inference endpoint |
 | `models_url` | str | Explicit catalog URL (falls back to `{base_url}/models`) |
 | `auth_type` | str | `api_key` \| `oauth_device_code` \| `oauth_external` \| `copilot` \| `aws_sdk` \| `external_process` |
-| `auth_handler` | `Callable \| None` | Provider-owned `hermes auth add/status/logout/refresh <name>` — see [Provider-owned auth](#provider-owned-auth-auth_handler-refresh_credential) |
+| `auth_handler` | `Callable \| None` | Provider-owned `hermes auth add/status/logout/refresh/remove <name>` and noninteractive `disconnect` — see [Provider-owned auth](#provider-owned-auth-auth_handler-refresh_credential) |
 | `refresh_credential` | `Callable \| None` | Provider-owned rotation of a pooled OAuth row — same section |
 | `classify_api_error` | `Callable \| None` | Provider-scoped error-classification override — see [Recovery and error classification](#recovery-and-error-classification) |
 | `fallback_models` | `tuple[str, ...]` | Curated list shown when live catalog fetch fails — in the `/model` picker AND the first-time `hermes setup` / `hermes model` API-key flow, which resolve the catalog the same way (`fetch_models()` merged curated-first with `fallback_models`; `fallback_models` alone when the fetch returns `None` or raises) |
@@ -280,8 +280,11 @@ leave `fallback_models` empty instead of guessing a model its account may not ha
 
 Set `requires_streaming=True` when the API requires streaming even if the user disables streaming
 display. Set `fixed_api_mode=True` when the profile's `api_mode` is part of its authorization contract;
-main and pooled OAuth auxiliary resolution then ignore transport overrides. Both flags default to
-`False` and leave existing providers unchanged.
+main and pooled OAuth auxiliary resolution then ignore transport overrides. Set `fixed_base_url=True`
+when the credential's authorization contract restricts it to the profile's `base_url`. Runtime
+resolution then pins that endpoint before constructing clients or probing model capabilities,
+including when configuration supplies a relay URL. These flags default to `False` and leave
+existing providers unchanged.
 
 #### Optional external-process hooks
 
@@ -406,7 +409,7 @@ from providers.base import ProviderProfile
 
 
 def example_auth(action: str, args) -> bool:
-    """action: "add" | "status" | "logout" | "refresh"; args: parsed CLI namespace."""
+    """action: add/status/logout/refresh/remove/disconnect; args: parsed namespace."""
     if action == "add":
         from agent.credential_pool import AUTH_TYPE_OAUTH, PooledCredential, load_pool
         tokens = run_device_code_flow()                      # provider-specific
@@ -435,6 +438,13 @@ register_provider(ProviderProfile(
     auth_handler=example_auth, refresh_credential=example_refresh))
 ```
 
+Providers that retain issued registrations can handle `remove` to revoke the selected row
+without deleting its registration. The noninteractive `disconnect` action is also used by
+`clear_provider_auth` (including Desktop/TUI); it must not print to stdout. Return `True`
+after completing local cleanup to retain provider-owned registration metadata. If remote
+revocation cannot be confirmed, complete local logout first, then raise a safe `AuthError`
+so the caller can show the remaining manual disconnect step.
+
 | Contract | |
 |---|---|
 | `auth_handler(action, args)` | `args` is the parsed `hermes auth` namespace for CLI actions; the interactive setup picker passes a minimal namespace carrying only `provider`, so read options with `getattr(args, name, None)`. Truthy = handled (Hermes prints nothing more, exit 0); falsy = fall back to the built-in path **for that action**. An exception becomes `SystemExit("<provider> auth handler failed for `&lt;action&gt;`: …")`. |
@@ -454,11 +464,15 @@ Pooled OAuth plugins use the same selected row and transport for main and auxili
 provider resolution instead of resolving a different provider. Auxiliary recovery also honors terminal
 provider error classifications that disallow retries, credential rotation, and provider fallback.
 
-For an expiry-stamped row, a successful refresh must return the new token's actual `expires_at_ms`.
-The pool persists an already-expired result but does not release it for inference, including when
-adopting a peer's result. A plugin can use this to retain a rotated grant while identity verification
+Refresh hooks should return the new token's actual `expires_at_ms` when it is available. Hooks that
+omit this optional field retain the existing compatibility contract. When the hook explicitly returns
+an already-expired timestamp, the pool persists the result but does not release it for inference,
+including when adopting a peer's result. A plugin can use this to retain a rotated grant while identity verification
 is temporarily unavailable; its next hook call must verify the retained response without replaying
 the consumed refresh token.
+
+When a hook replaces the access token without supplying expiry, the old token's expiry is cleared
+instead of being assigned to the new bearer. Its expiry is unknown until the provider supplies it.
 
 Hermes passes the parsed namespace, not provider-declared flags: ask for provider-specific values
 interactively (or read your own config/env). Rows the plugin stores in the pool are its own — extra keys

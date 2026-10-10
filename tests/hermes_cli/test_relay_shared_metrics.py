@@ -13,7 +13,7 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -338,14 +338,14 @@ def test_v1_outbox_package_exports_unchanged_after_upgrade(tmp_path):
 def test_due_export_runs_once_per_utc_day_and_catches_up_pending_deltas(
     tmp_path, monkeypatch
 ):
-    current_time = datetime(2026, 7, 28, 9, tzinfo=timezone.utc)
+    current_time = datetime(2026, 7, 28, 9, tzinfo=UTC)
     monkeypatch.setattr(shared_metrics_module, "_utc_now", lambda: current_time)
     store = SharedMetricsStore(tmp_path / "metrics.sqlite3", tmp_path / "outbox")
 
     store.record_model_call(_dimensions(), _resource())
     assert len(store.create_and_export_package_if_due()) == 1
 
-    current_time = datetime(2026, 7, 28, 18, tzinfo=timezone.utc)
+    current_time = datetime(2026, 7, 28, 18, tzinfo=UTC)
     store = SharedMetricsStore(tmp_path / "metrics.sqlite3", tmp_path / "outbox")
     store.record_model_call(_dimensions(), _resource())
     assert store.create_and_export_package_if_due() == []
@@ -359,7 +359,7 @@ def test_due_export_runs_once_per_utc_day_and_catches_up_pending_deltas(
         "packaged_value": 1,
     }
 
-    current_time = datetime(2026, 7, 29, 9, tzinfo=timezone.utc)
+    current_time = datetime(2026, 7, 29, 9, tzinfo=UTC)
     store.record_model_call(_dimensions(), _resource())
     assert len(store.create_and_export_package_if_due()) == 2
     assert len(list((tmp_path / "outbox").glob("*.json"))) == 3
@@ -379,7 +379,7 @@ def test_client_active_uses_a_transactional_rolling_24_hour_latch(
     database_path = tmp_path / "metrics.sqlite3"
     outbox_directory = tmp_path / "outbox"
     store = SharedMetricsStore(database_path, outbox_directory)
-    now = datetime(2026, 7, 22, 10, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 22, 10, 0, tzinfo=UTC)
     monkeypatch.setattr(shared_metrics_module, "_utc_now", lambda: now)
 
     assert store.record_client_active(_resource())
@@ -415,7 +415,7 @@ def test_client_active_recovers_from_an_invalid_latch_and_creates_identity(
             "INSERT INTO telemetry_state(key, value) VALUES (?, ?)",
             ("client_active_recorded_at", "invalid-timestamp"),
         )
-    now = datetime(2026, 7, 22, 10, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 22, 10, 0, tzinfo=UTC)
     monkeypatch.setattr(shared_metrics_module, "_utc_now", lambda: now)
 
     assert store.record_client_active(_resource())
@@ -436,7 +436,7 @@ def test_client_active_rebases_a_future_latch_without_double_counting(
 ):
     database_path = tmp_path / "metrics.sqlite3"
     store = SharedMetricsStore(database_path, tmp_path / "outbox")
-    now = datetime(2026, 7, 22, 10, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 22, 10, 0, tzinfo=UTC)
     monkeypatch.setattr(shared_metrics_module, "_utc_now", lambda: now)
 
     assert store.record_client_active(_resource())
@@ -1311,7 +1311,7 @@ def test_retention_prunes_only_expired_exported_history(tmp_path):
         )
 
     store._prune_expired_history(
-        now=datetime(2026, 7, 23, tzinfo=timezone.utc)
+        now=datetime(2026, 7, 23, tzinfo=UTC)
     )
 
     assert not expired_path.exists()

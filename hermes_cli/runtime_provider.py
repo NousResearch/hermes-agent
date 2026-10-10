@@ -314,6 +314,8 @@ def _runtime(provider: str, api_mode: str, base_url: Any, api_key: Any, **extra:
     profile = get_provider_profile(provider)
     if profile is not None and profile.fixed_api_mode:
         api_mode = profile.api_mode
+    if profile is not None and profile.fixed_base_url:
+        base_url = profile.base_url
     if is_actual_route(provider, base_url):
         api_mode = "chat_completions"
         base_url = normalize_actual_base_url(base_url)
@@ -661,6 +663,8 @@ def _resolve_from_pool(provider: str, requested_provider: str, model_cfg: dict[s
         return None
     entry = pool.select(model=target_model or None)
     if entry is None:
+        from hermes_cli.runtime_provider_oauth import raise_for_plugin_pool_cooldown
+        raise_for_plugin_pool_cooldown(provider, pool, model=target_model)
         return None
     pool_api_key = _pool_entry_api_key(entry)
     if provider == "nous":

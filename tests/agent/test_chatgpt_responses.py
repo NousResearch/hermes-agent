@@ -54,9 +54,11 @@ def test_chatgpt_stream_requires_completed_even_after_text_or_tool_output(termin
                                             "message": "App allowance exhausted", "param": "usage"},
             "incomplete_details": {"reason": "content_filter"},
         }})
-    if terminal == "completed":
+    if terminal in {"completed", "incomplete"}:
         result = _consume_codex_event_stream(events, model="gpt-test", require_completed=True)
-        assert result.status == "completed" and result.output_text == "partial"
+        assert result.status == terminal and result.output_text == "partial"
+        if terminal == "incomplete":
+            assert result.incomplete_details == {"reason": "content_filter"}
     elif terminal == "failed":
         with pytest.raises(_StreamErrorEvent) as raised:
             _consume_codex_event_stream(events, model="gpt-test", require_completed=True)
@@ -69,6 +71,20 @@ def test_chatgpt_stream_requires_completed_even_after_text_or_tool_output(termin
     if terminal is None:
         # Existing compatible Responses providers retain their partial-stream behavior.
         assert _consume_codex_event_stream(events, model="gpt-test").status == "completed"
+
+
+@pytest.mark.parametrize("event_type,status", [
+    ("response.incomplete", "completed"), ("response.incomplete", "in_progress"),
+    ("response.failed", "incomplete"), ("response.completed", "incomplete"),
+])
+def test_chatgpt_rejects_conflicting_terminal_event_and_status(event_type, status):
+    from agent.codex_runtime import _consume_codex_event_stream
+
+    with pytest.raises(RuntimeError, match="response.completed"):
+        _consume_codex_event_stream([
+            {"type": "response.output_text.delta", "delta": "Partial"},
+            {"type": event_type, "response": {"status": status}},
+        ], model="gpt-test", require_completed=True)
 
 
 def test_namespaced_tool_call_executes_locally_and_replays_on_the_next_request(tmp_path):
@@ -131,7 +147,6 @@ def test_namespaced_tool_call_executes_locally_and_replays_on_the_next_request(t
     ("subscription_sharing_invalid_user", 401),
     ("chatpass_v2_scope_not_authorized", 403),
     ("chatpass_v2_invalid_authorization_context", 403),
-    (None, 401),
     (None, 403),
 ])
 def test_chatgpt_terminal_errors_never_retry_rotate_or_switch_billing(code, status, monkeypatch):

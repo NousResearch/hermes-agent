@@ -281,16 +281,22 @@ def credential_is_eligible(entry: Any) -> bool:
             and bool(entry.access_token) and bool(current.get("access_token")))
 
 
-def assert_active_access_token(access_token: str) -> None:
-    """Reject cached clients after logout, account selection or token replacement."""
+def assert_active_access_token(access_token: str, *, credential_id: str | None = None) -> None:
+    """Reject changed accounts; a bound session can recover its own peer-rotated grant."""
     state, rows = _local_state()
     current = next((row for row in rows if row.get("id") == state.get("active_credential_id")), {})
     stored = current.get("access_token")
-    if (not isinstance(access_token, str) or not access_token or not isinstance(stored, str)
-            or not hmac.compare_digest(access_token.encode(), stored.encode())
+    if (not isinstance(access_token, str) or not access_token or not isinstance(stored, str) or not stored
+            or (credential_id is not None and credential_id != current.get("id"))
             or current.get("chatgpt", {}).get("pending_refresh") is not None
             or DIRECT_SCOPE not in current.get("chatgpt", {}).get("scopes", [])):
         raise _error("The selected ChatGPT account or session changed. Reinitialize this session before sending another request.",
+                     "chatgpt_session_changed")
+    if not hmac.compare_digest(access_token.encode(), stored.encode()):
+        if credential_id is not None:
+            raise _error("The selected ChatGPT session was refreshed. Reload its latest credential.",
+                         "chatgpt_token_rotated")
+        raise _error("The selected ChatGPT session changed. Reinitialize this session before sending another request.",
                      "chatgpt_session_changed")
 
 
@@ -373,7 +379,7 @@ def _revoke(registration: dict) -> bool:
     return False
 
 
-def _logout(registration: dict) -> None:
+def _logout(registration: dict, *, quiet: bool = False) -> bool:
     from hermes_cli.auth import _auth_store_lock, _load_auth_store, _save_auth_store
     # Keep refresh and revocation serialized with a running pool's token rotation.
     with _auth_store_lock(timeout_seconds=40):
@@ -381,7 +387,7 @@ def _logout(registration: dict) -> None:
         rows = store.get("credential_pool", {}).get(PROVIDER, [])
         current = next((row for row in rows if row["id"] == registration["id"]), None)
         if current is None:
-            return
+            return True
         state = store.get("providers", {}).get(PROVIDER, {})
         if state.get("active_credential_id") == current["id"]:
             state.pop("active_credential_id", None)
@@ -393,12 +399,47 @@ def _logout(registration: dict) -> None:
         current["chatgpt"].pop("earliest_refresh_at", None)
         current["chatgpt"].pop("pending_refresh", None)
         _save_auth_store(store)
-    print(f"Signed out of ChatGPT account {registration['label']}.")
+    if not quiet:
+        print(f"Signed out of ChatGPT account {registration['label']}.")
+        if not confirmed:
+            print("Remote session revocation was not confirmed. Disconnect Hermes Agent in ChatGPT Settings.")
+    return confirmed
+
+
+def _disconnect() -> None:
+    """Disconnect every local account while retaining issued registration identities."""
+    from hermes_cli.auth import _auth_store_lock, _load_auth_store, _save_auth_store
+    with _auth_store_lock(timeout_seconds=40):
+        store = _load_auth_store()
+        state = store.get("providers", {}).get(PROVIDER, {})
+        state.pop("active_credential_id", None)
+        if store.get("active_provider") == PROVIDER:
+            store["active_provider"] = None
+        _save_auth_store(store)
+        _, rows = _local_state()
+        confirmed = all([_logout(row, quiet=True) for row in rows])
     if not confirmed:
-        print("Remote session revocation was not confirmed. Disconnect Hermes Agent in ChatGPT Settings.")
+        raise _error("ChatGPT was signed out locally, but remote session revocation was not confirmed. "
+                     "Disconnect Hermes Agent in ChatGPT Settings.", "chatgpt_revocation_unconfirmed")
+
+
+def _remove_account(args: Any) -> None:
+    from agent.credential_pool import load_pool
+    target = getattr(args, "target", None)
+    target = getattr(args, "index", None) if target is None else target
+    _, matched, error = load_pool(PROVIDER).resolve_target(target)
+    if matched is None:
+        raise _error(f"{error} Provider: {PROVIDER}.", "chatgpt_account_selection_required")
+    _logout(matched.to_dict())
 
 
 def auth_handler(action: str, args: Any) -> bool:
+    if action == "disconnect":
+        _disconnect()
+        return True
+    if action == "remove":
+        _remove_account(args)
+        return True
     if action == "add":
         selected = _select_registration(args, adding=True)
         fields = login(args, selected)

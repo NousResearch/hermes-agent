@@ -171,11 +171,6 @@ TOOLSETS = {
     "yuanbao": _ts("Yuanbao platform tools - group info, member queries, DM, stickers", _YUANBAO_TOOLS),
     "feishu_doc": _ts("Read Feishu/Lark document content", ["feishu_doc_read"]),
     "feishu_drive": _ts("Feishu/Lark document comment operations (list, reply, add)", _FEISHU_TOOLS[1:]),
-    "spotify": _ts(
-        "Native Spotify playback, search, playlist, album, and library tools",
-        ["spotify_playback", "spotify_devices", "spotify_queue", "spotify_search",
-         "spotify_playlists", "spotify_albums", "spotify_library"],
-    ),
 
     # Scenario-specific toolsets
     "debugging": _ts("Debugging and troubleshooting toolkit", ["terminal", "process_manage"], includes=["web", "file"]),

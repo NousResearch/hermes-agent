@@ -71,7 +71,7 @@ def write_catalog_sidecar_record(target: Path, catalog: dict, sha: str) -> None:
     sidecar = {
         "catalog_name": catalog["name"], "repo": catalog["repo"], "sha": sha,
         "tier": catalog.get("tier") or "community",
-        "installed_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+        "installed_at": datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds")
         .replace("+00:00", "Z"),
     }
     try:
@@ -834,7 +834,7 @@ def installed_catalog_state(installed: dict[str, dict[str, Any]]) -> dict[str, A
     return {
         "entries": entries,
         "removed": [{"name": r.name, "repo": r.repo, "reason": r.reason, "date": r.date} for r in resolved_removed_entries()],
-        "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z"),
+        "generated_at": datetime.datetime.now(datetime.UTC).isoformat().replace("+00:00", "Z"),
     }
 
 

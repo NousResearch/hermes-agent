@@ -68,9 +68,11 @@ class ProviderProfile:
     supports_model_listing: bool = True
     requires_streaming: bool = False
     fixed_api_mode: bool = False  # True → configuration cannot override this profile's transport.
+    fixed_base_url: bool = False  # True → credentials are restricted to this profile's endpoint.
 
     # ── Provider-owned auth (optional; non-api-key plugins) ──────────
-    # ``auth_handler(action, args) -> bool``: ``hermes auth add|status|logout|refresh <name>`` calls it
+    # ``auth_handler(action, args) -> bool``: auth add/status/logout/refresh/remove calls it;
+    # noninteractive ``disconnect`` handles whole-provider cleanup without printing to stdout.
     # FIRST with the parsed CLI namespace; truthy = the plugin owned the action, falsy = built-in path.
     # ``refresh_credential(entry) -> Mapping | None``: the credential pool's refresh of a pooled OAuth
     # row — return the rotated fields (``access_token``, ``refresh_token``, ``expires_at_ms`` …) or raise.

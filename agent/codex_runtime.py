@@ -858,6 +858,7 @@ class _CodexResponseAssembler:
     terminal_service_tier = None  # the tier the backend SERVED (may differ from the one requested)
     # terminal_status defaults to "completed", so settlement needs an explicitly observed response.completed frame.
     saw_response_completed = False
+    terminal_event_type = None
 
     def __init__(self, *, model, on_text_delta, on_reasoning_delta, on_commentary_message, on_first_delta):
         self.model, self.on_text_delta, self.on_reasoning_delta = model, on_text_delta, on_reasoning_delta
@@ -1024,6 +1025,7 @@ class _CodexResponseAssembler:
                 self.terminal_incomplete_details = _event_field(resp_obj, "incomplete_details")
             elif event_type == "response.failed":
                 self.terminal_error = _event_field(resp_obj, "error")
+        self.terminal_event_type = event_type
         self.saw_response_completed = self.saw_response_completed or event_type == "response.completed"
         self.terminal_status = self.terminal_status or event_type.removeprefix("response.")
         return True
@@ -1091,7 +1093,8 @@ def _consume_codex_event_stream(
 ) -> SimpleNamespace:
     """Consume a Codex Responses SSE stream into a Response-shaped ``SimpleNamespace`` (see
     :class:`_CodexResponseAssembler`; ``status`` is ``completed`` when the stream ended with content but no
-    terminal frame; ``model`` comes from kwargs).
+    terminal frame; ``model`` comes from kwargs). ``require_completed`` requires an explicit, consistent
+    terminal event: an incomplete response retains its partial output and never counts as completed.
 
     Callbacks: ``on_text_delta`` per output_text delta, suppressed once a function_call is seen;
     ``on_reasoning_delta`` for reasoning and ``phase=analysis`` deltas (also commentary without a commentary
@@ -1114,8 +1117,10 @@ def _consume_codex_event_stream(
     if require_completed:
         if assembler.terminal_error is not None:
             _raise_stream_error({"error": assembler.terminal_error})
-        if not assembler.saw_response_completed or assembler.terminal_status != "completed":
-            raise RuntimeError("ChatGPT plan stream ended without response.completed "
+        if (assembler.terminal_event_type, assembler.terminal_status) not in {
+            ("response.completed", "completed"), ("response.incomplete", "incomplete"),
+        }:
+            raise RuntimeError("ChatGPT plan stream ended without a valid response.completed or response.incomplete event "
                                f"(status={assembler.terminal_status if assembler.saw_terminal else 'interrupted'}).")
     return assembler.result()
 
@@ -1151,16 +1156,20 @@ def _sanitize_consumer_codex_request(agent: Any, request: dict[str, Any]) -> dic
 def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta=None):
     """One streaming Responses API request over raw ``responses.create(stream=True)`` events."""
     import httpx as _httpx
-    from openai import APIConnectionError as _APIConnectionError
+    from openai import APIConnectionError as _APIConnectionError, APIStatusError
+    chatgpt_auth_errors = (APIStatusError,)
+    from agent.chatgpt_responses import recheck_chatgpt_auth_error
     from agent import relay_llm
     transport_errors = (_httpx.RemoteProtocolError, _httpx.ReadTimeout, _httpx.ReadError, _httpx.ConnectError, ConnectionError)
     active_client = client or agent._ensure_primary_openai_client(reason="codex_stream_direct")
     require_completed = getattr(agent, "provider", None) == "openai-chatgpt"
     if require_completed:
+        from run_agent import _StreamErrorEvent
+        chatgpt_auth_errors += (_StreamErrorEvent,)
         from agent.chatgpt_responses import validate_chatgpt_base_url
         from hermes_cli.auth_chatgpt import assert_active_access_token
         validate_chatgpt_base_url(active_client.base_url)
-        assert_active_access_token(active_client.api_key)
+        assert_active_access_token(active_client.api_key, credential_id=getattr(agent, "_credential_pool_entry_id", None))
     max_stream_retries, model = 1, api_kwargs.get("model")
     # Accumulate streamed text so callers / compat shims can read it.
     agent._codex_streamed_text_parts: list = []
@@ -1251,7 +1260,7 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
         stream_kwargs = _sanitize_consumer_codex_request(agent, next_api_kwargs)
         stream_kwargs["stream"] = True
         if require_completed:
-            assert_active_access_token(active_client.api_key)
+            assert_active_access_token(active_client.api_key, credential_id=getattr(agent, "_credential_pool_entry_id", None))
         return active_client.responses.create(**bypass_sdk_request_transform(stream_kwargs))
 
     def _log_failure(exc: BaseException) -> None:
@@ -1433,6 +1442,10 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                                final.status, final.incomplete_details, final.error,
                                sum(len(p) for p in agent._codex_streamed_text_parts), agent._client_log_context())
             return final
+        except chatgpt_auth_errors as exc:
+            recheck_chatgpt_auth_error(exc, active_client, getattr(agent, "_credential_pool_entry_id", None),
+                                      enabled=require_completed)
+            raise
         finally:
             # relay_llm.stream is ManagedLlmStream, whose close() always owns the provider stream; only
             # when construction itself failed (event_stream None) may a raw stream be left to close here.

@@ -3,7 +3,7 @@
 import argparse
 import time
 from argparse import Namespace
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from types import SimpleNamespace
 
 import pytest
@@ -225,11 +225,11 @@ class TestCronDoctor:
         assert "unknown error" not in out
 
     def test_doctor_flags_overdue_next_run(self, tmp_cron_dir, capsys):
-        from datetime import datetime, timedelta, timezone
+        from datetime import datetime, timedelta
 
         create_job(prompt="Hourly ping", schedule="every 1h")
         jobs = load_jobs()
-        stale = (datetime.now(timezone.utc) - timedelta(hours=3)).isoformat()
+        stale = (datetime.now(UTC) - timedelta(hours=3)).isoformat()
         jobs[0]["next_run_at"] = stale
         save_jobs(jobs)
 
@@ -241,12 +241,12 @@ class TestCronDoctor:
         assert "not firing" in out
 
     def test_doctor_tolerates_slightly_late_next_run(self, tmp_cron_dir, capsys):
-        from datetime import datetime, timedelta, timezone
+        from datetime import datetime, timedelta
 
         create_job(prompt="Hourly ping", schedule="every 1h")
         jobs = load_jobs()
         # 5 minutes late is within the ticker grace window — healthy.
-        recent = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+        recent = (datetime.now(UTC) - timedelta(minutes=5)).isoformat()
         jobs[0]["next_run_at"] = recent
         save_jobs(jobs)
 
@@ -592,7 +592,7 @@ class TestStatusSurfacesDeadScheduler:
     ):
         job = create_job(prompt="Hourly", schedule="every 60m")
         self._dead_gateway(monkeypatch, tmp_cron_dir / "locks")
-        self._park_next_run(job["id"], datetime.now(timezone.utc) - timedelta(hours=7))
+        self._park_next_run(job["id"], datetime.now(UTC) - timedelta(hours=7))
         (tmp_cron_dir / "cron" / "ticker_heartbeat").write_text(str(time.time() - 25 * 3600))
 
         cron_command(Namespace(cron_command="status"))
@@ -613,7 +613,7 @@ class TestStatusSurfacesDeadScheduler:
         # not flash OVERDUE while doctor calls the same job healthy.
         job = create_job(prompt="Hourly", schedule="every 60m")
         self._dead_gateway(monkeypatch, tmp_cron_dir / "locks")
-        self._park_next_run(job["id"], datetime.now(timezone.utc) - timedelta(minutes=5))
+        self._park_next_run(job["id"], datetime.now(UTC) - timedelta(minutes=5))
 
         cron_command(Namespace(cron_command="status"))
         status_out = capsys.readouterr().out
@@ -635,7 +635,7 @@ class TestStatusSurfacesDeadScheduler:
 
         stale = create_job(prompt="Hourly", schedule="every 60m")
         paused = create_job(prompt="Parked", schedule="every 60m")
-        when = datetime.now(timezone.utc) - timedelta(hours=7)
+        when = datetime.now(UTC) - timedelta(hours=7)
         self._park_next_run(stale["id"], when)
         self._park_next_run(paused["id"], when)
         jobs = load_jobs()

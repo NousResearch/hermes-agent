@@ -447,7 +447,9 @@ def _is_codex_token_expired(agent: Any, api_error: Exception, classified: Any) -
     in again" while a fresh session on the same bearer works. The caller treats it like
     ``invalid_encrypted_content`` — but only while cached reasoning items remain to strip."""
     # A provider-owned policy refusal must not be replayed as a stale-reasoning repair.
-    if classified.reason == FailoverReason.provider_policy_blocked or getattr(api_error, "status_code", None) != 401:
+    if (getattr(agent, "provider", None) == "openai-chatgpt"
+            or classified.reason == FailoverReason.provider_policy_blocked
+            or getattr(api_error, "status_code", None) != 401):
         return False
     reason = agent._extract_api_error_context(api_error).get("reason")
     return isinstance(reason, str) and reason.strip().lower() == "token_expired"

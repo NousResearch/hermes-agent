@@ -371,7 +371,7 @@ class MicroCompactionMixin:
         except Exception as exc:
             logger.debug("failed to emit micro-compaction telemetry: %s", exc)
 
-    def _micro_start_watermark(self, held: list[dict[str, Any]]) -> "tuple[Optional[str], Optional[int]]":
+    def _micro_start_watermark(self, held: list[dict[str, Any]]) -> tuple[Optional[str], Optional[int]]:
         """``(skip_outcome, watermark)`` taken before a pass's slow step; *skip_outcome* is the telemetry
         label of a pass that must not run, or None.
 

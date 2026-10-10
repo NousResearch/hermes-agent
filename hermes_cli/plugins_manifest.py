@@ -216,7 +216,7 @@ def validate_config_schema(plugin_id: str, schema: Mapping, settings: Mapping) -
     return warnings
 
 
-def resolve_plugin_load_order(manifests: Mapping[str, "PluginManifest"]) -> list[str]:
+def resolve_plugin_load_order(manifests: Mapping[str, PluginManifest]) -> list[str]:
     """Return plugin keys in dependency order: B before A when A requires B; alphabetical ties. A cycle warns
     and falls back to alphabetical order for all; a missing dependency warns once but never removes the
     dependent plugin (loads never hard-fail on advisory deps).
@@ -333,7 +333,7 @@ def _resolve_module_source(module_name: str, limit: int = 8192) -> str:
     return _read_source_from_origin(resolve_module_origin(module_name), limit)
 
 
-def manifest_key(manifest: "PluginManifest") -> str:
+def manifest_key(manifest: PluginManifest) -> str:
     """Registry id of a manifest: the path-derived ``key`` when set, else the bare ``name``."""
     return manifest.key or manifest.name
 
@@ -346,7 +346,7 @@ class PluginManifest:
     version: str = ""
     description: str = ""
     author: str = ""
-    requires_env: list[Union[str, dict[str, Any]]] = field(default_factory=list)
+    requires_env: list[str | dict[str, Any]] = field(default_factory=list)
     provides_tools: list[str] = field(default_factory=list)
     provides_hooks: list[str] = field(default_factory=list)
     source: str = ""        # "bundled", "user", "project", or "entrypoint"
@@ -475,7 +475,7 @@ def version_satisfies(spec: str, current: str) -> bool:
     return True
 
 
-def requires_hermes_error(manifest: "PluginManifest") -> Optional[str]:
+def requires_hermes_error(manifest: PluginManifest) -> Optional[str]:
     """Load-blocking reason when the manifest's ``requires_hermes`` rejects the running version."""
     spec = manifest.get("requires_hermes", "") if isinstance(manifest, Mapping) else manifest.requires_hermes
     if not spec:

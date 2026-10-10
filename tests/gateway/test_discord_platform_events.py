@@ -190,7 +190,7 @@ class TestMessageEdited:
         a = _adapter()
         seen = _capture(a)
         after = _message(
-            edited_at=_dt.datetime(2026, 8, 12, 10, 30, tzinfo=_dt.timezone.utc),
+            edited_at=_dt.datetime(2026, 8, 12, 10, 30, tzinfo=_dt.UTC),
         )
 
         asyncio.run(a._on_platform_message_edit(None, after))

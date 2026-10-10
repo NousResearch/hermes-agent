@@ -26,6 +26,42 @@ class CredentialNotSavedError(RuntimeError):
 
 
 class CredentialPoolAdminMixin:
+    def _eligible_entries(self) -> list[PooledCredential]:
+        """Live rows the provider permits to fund requests, regardless of cooldown."""
+        from agent.credential_pool import STATUS_DEAD
+        from providers import get_provider_profile
+
+        profile = get_provider_profile(self.provider)
+        return [entry for entry in self._entries if entry.last_status != STATUS_DEAD
+                and (profile is None or profile.credential_is_eligible(entry))]
+
+    def _is_sole_credential(self) -> bool:
+        """Ineligible and DEAD rows cannot provide a rotation alternative."""
+        return len(self._eligible_entries()) <= 1
+
+    def next_available_at(self, *, model: Optional[str] = None) -> Optional[float]:
+        """Earliest epoch time (seconds) an eligible entry re-enters rotation.
+
+        ``None`` means an entry is available now or no eligible row has a
+        recoverable cooldown. Ineligible registrations cannot supply a deadline.
+        """
+        from agent.credential_pool import _exhausted_until
+        from agent.credential_pool_model_cooldowns import model_cooldown_until
+
+        with self._lock:
+            available, _pending = self._available_entries(model=model)
+            if available:
+                return None
+            eligible = self._eligible_entries()
+            sole_credential = len(eligible) <= 1
+            # A row is usable only after both its account and model restrictions end.
+            candidates = [
+                max(_exhausted_until(entry, sole_credential=sole_credential) or 0,
+                    model_cooldown_until(entry, model) or 0)
+                for entry in eligible
+            ]
+            return min((until for until in candidates if until), default=None)
+
     def entries(self) -> list[PooledCredential]:
         with self._lock:
             return list(self._entries)

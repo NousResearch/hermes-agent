@@ -15,6 +15,7 @@ import subprocess
 import sys
 import time
 from xml.sax.saxutils import escape
+from datetime import UTC
 
 from hermes_cli import gateway_service_owner
 
@@ -192,7 +193,7 @@ def _write_launchd_unsupported_marker() -> None:
     """Persist that launchd cannot supervise the gateway on this host."""
     from datetime import datetime, timezone
     payload = {
-        "written_at": datetime.now(timezone.utc).isoformat(),
+        "written_at": datetime.now(UTC).isoformat(),
         "reason": "launchd domain unsupported (exit 5/125)",
     }
     with contextlib.suppress(OSError):

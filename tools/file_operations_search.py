@@ -1091,7 +1091,7 @@ class SearchMixin:
         if is_absolute:
             search_root = self._escape_shell_arg(path)
         else:
-            relative_path = path[2:] if path.startswith("./") else path
+            relative_path = path.removeprefix("./")
             search_root = '"$PWD"'
             if relative_path not in {"", "."}:
                 search_root += f"/{self._escape_shell_arg(relative_path)}"

@@ -49,7 +49,7 @@ class _Match:
     exact: bool = False
     suggestion_text: str = ""
 
-    def verdict(self, req: "_Request") -> Optional[dict[str, Any]]:
+    def verdict(self, req: _Request) -> Optional[dict[str, Any]]:
         """Accept on exact membership, else None so the branch composes its own message."""
         return _accept() if self.exact else None
 

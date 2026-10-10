@@ -406,7 +406,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 return False, None
             try:
                 return True, await resp.json()
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 raise  # a body that never arrives is no answer, the same as headers that never arrive
             except Exception:
                 return True, None
@@ -485,7 +485,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 return True
             stale_reason = f"running={running_hash or 'unversioned'}, disk={disk_hash}" if running_hash != disk_hash else "send_read_receipts config changed"
             print(f"[{self.name}] Running bridge is stale ({stale_reason}), restarting")
-        except asyncio.TimeoutError:
+        except TimeoutError:
             self._bridge_probe_timed_out = True  # something holds the port but gave no identity; connect() leaves it
         except Exception:
             pass  # Bridge not running, start a new one

@@ -2468,7 +2468,6 @@ def save_config(
 
         config_path = get_config_path()
         _refuse_failed_read(config_path, config)
-        config = _strip_managed_keys_for_save(config)
 
         ensure_hermes_home()
         # Explicit user paths come from the RAW dict BEFORE normalisation (which may inject
@@ -2479,6 +2478,11 @@ def save_config(
         _raw_for_paths = require_readable_config_before_write(config_path)
         if merge_existing and _raw_for_paths:
             config = _merge_partial_save(_raw_for_paths, config)
+
+        # Strip managed leaves after _merge_partial_save: the merge can
+        # reintroduce stale on-disk values for keys the administrator pins.
+        # The final document must drop those values and report the omissions.
+        config = _strip_managed_keys_for_save(config)
 
         current_normalized = _canonicalize_config(config)
         normalized = current_normalized

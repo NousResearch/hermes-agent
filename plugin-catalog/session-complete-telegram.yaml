@@ -1,35 +1,34 @@
 name: session-complete-telegram
 repo: https://github.com/metamindedu/hermes-telegram-bridge
-sha: 1a76ed54ccf8a279d4dc4d9bfe1553b90d81d5ca
+sha: "13c08c022965a589e87fe7198ab1a93201539d7e"
 subdir: desktop-plugins/session-complete-telegram
-title: Desktop Telegram Bridge
+title: "Hermes Telegram Bridge"
 description: >-
-  Settled Hermes Desktop completion cards, clarify replies and eligible command
-  approval buttons through the user's existing Telegram private home. Disclosure
-  — opt-in Desktop component reads local profile session titles, persisted final
-  answers and pending requests under the same default Hermes home; sends redacted
+  One package for Hermes Desktop Telegram notifications, optional live-card
+  replies and Allow Once / Deny command approvals. Uses the existing Gateway,
+  public SDK and fixed native CLI; no core patch, second poller, self-updater
+  or author telemetry. Reads local profile session titles, persisted final
+  responses and pending requests under the same default home. Sends redacted
   final previews (up to 1,200 characters) and request text to api.telegram.org
-  using the user's existing default-home TELEGRAM_BOT_TOKEN and
-  TELEGRAM_HOME_CHANNEL. Cards are copyable/forwardable. Uses a fixed native CLI
-  helper, no arbitrary renderer shell commands, no self-updater and no telemetry
-  to the author. Stores local plaintext expiring request/receipt content and
-  retained deduplication/tombstone identifiers under plugin-data. The companion
-  desktop-clarify-telegram package is needed for inbound replies and Allow Once /
-  Deny; only exact private-owner, live-request native in-process command approvals
-  are actionable, never session/permanent grants or generic/compute-host approval.
+  using your existing default-home Telegram bot/private destination. Cards are
+  copyable/forwardable. Stores plaintext expiring inbox content and retained
+  deduplication/tombstone identifiers. Only exact private-owner live-request
+  command approvals are actionable; no session/permanent permission is granted.
 maintainer: metamindedu
 tier: community
 category: desktop
 requires_hermes: ">=0.21.5"
-docs_url: https://github.com/metamindedu/hermes-telegram-bridge
-version: "1.6.1"
-readme: true
+docs_url: https://github.com/metamindedu/hermes-telegram-bridge/blob/main/docs/public-install.md
+version: "1.7.0"
+# Immutable source docs were frozen before release; use current setup docs.
+readme: false
 platforms: []
 known_issues:
-  - Install both companion packages at the same pin in the default profile; configure your own Telegram private home and keep Desktop connected.
-  - User-facing messages are primarily Korean; physical macOS Desktop testing is not included in the Windows/Ubuntu contract tests.
-  - Unsupported or unsafe approval reviews remain Desktop-only; a delivered decision is not command-completion evidence.
-  - Local bridge storage must be owner-restricted; this release does not automatically audit Windows ACLs.
+  - "If Gateway/plugin handlers fail to initialize, old-card text replies may become ordinary Telegram chat. Bridge readiness and approvals remain denied; use Desktop and recover Gateway normally."
+  - "Uses your existing default-home Telegram bot/private owner. Replies and approvals are independent opt-ins, both off by default; old companion enablement requires explicit migration and restart."
+  - "Cards are copyable/forwardable. Preview redaction is bounded, not absolute. Local inbox/ledger storage is plaintext; protect the home with owner-only permissions."
+  - "Current message cards are primarily Korean. No full localization, physical macOS or every newer Hermes core compatibility is claimed."
+  - "Unsupported or unsafe approval reviews remain Desktop-only; a delivered decision is not command-completion evidence."
 capabilities:
   provides_tools: []
   provides_hooks: []

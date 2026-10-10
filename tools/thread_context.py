@@ -33,6 +33,20 @@ def _callback_api():
             (vault_unlock.get_code_prompt_callback, vault_unlock.set_code_prompt_callback))
 
 
+def capture_thread_callbacks() -> tuple:
+    """``(setter, callback)`` pairs for the *current thread's* prompt callbacks, to replay on
+    another thread (empty when none are installed or the API is unavailable). The elicitation
+    consent hop uses this: ``asyncio.to_thread`` carries neither contextvars nor ``threading.local``,
+    so the tool wrapper snapshots both at the call site."""
+    try:
+        return tuple((setter, cb) for getter, setter in _callback_api()
+                     for cb in (getter(),) if cb is not None)
+    except Exception:
+        logger.debug("Could not capture prompt callbacks for cross-thread replay",
+                     exc_info=True)
+        return ()
+
+
 def propagate_context_to_thread(target: Callable) -> Callable:
     """Wrap *target* to run with the *current* thread's ContextVars and per-thread prompt callbacks
     (approval, sudo, password-manager unlock).

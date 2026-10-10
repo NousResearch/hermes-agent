@@ -81,3 +81,54 @@ def test_hot_reload_does_not_pin_a_session_on_another_route(monkeypatch):
 
     assert compressor._config_context_length is None
     assert session["agent"]._config_context_length is None
+
+
+def _external_engine_session(config_context_length=PIN):
+    """Same session, but ``agent.context_compressor`` is an external engine: a
+    ``ContextEngine`` with the public contract only, no ``ContextCompressor`` internals."""
+    engine = SimpleNamespace(
+        name="lcm",
+        threshold_tokens=100_000,
+        threshold_percent=0.65,
+        model_thresholds={},
+        update_model=lambda *a, **k: None,
+    )
+    agent = SimpleNamespace(
+        model="model-a",
+        provider="custom:acme",
+        base_url="http://127.0.0.1:8123/v1",
+        _config_context_length=config_context_length,
+        context_compressor=engine,
+        compression_enabled=True,
+        compression_idle_compact_after_seconds=0,
+        codex_responses_native_compaction=False,
+        codex_responses_compact_threshold=200_000,
+    )
+    return {"agent": agent, "session_key": "session-pin-engine"}, engine
+
+
+def test_hot_reload_does_not_pin_an_external_engine_session_on_another_route(monkeypatch):
+    """The scoping rule holds for an external engine too: a session that switched elsewhere
+    must not inherit the configured pin, and the engine must stay untouched. The pin block
+    keys its clear branch off ``context_compressor._config_context_length`` — an attribute
+    ``ContextEngine`` never declares — so this branch is the one a guard placed above it
+    silently strands."""
+    # The session already carries a pin from its own (switched) route. The configured pin
+    # describes a different runtime, so it must not be adopted; the session's stale pin is
+    # cleared, exactly as the ContextCompressor path does.
+    session, engine = _external_engine_session(config_context_length=PIN)
+    session["agent"].base_url = "https://openrouter.ai/api/v1"
+    session["agent"].provider = "openrouter"
+    monkeypatch.setattr(cc_mod, "get_model_context_length", lambda *a, **k: 256_000)
+
+    _sync(monkeypatch, session, {
+        "model": {"default": "model-b", "provider": "custom:acme", "base_url": "http://127.0.0.1:8123/v1",
+                  "context_length": 512_000},
+        "custom_providers": [{"name": "acme", "base_url": "http://127.0.0.1:8123/v1", "models": {}}],
+        "compression": {},
+    })
+
+    assert session["agent"]._config_context_length is None
+    # The engine owns its own policy: no compressor attribute is written onto it.
+    assert not hasattr(engine, "tail_mode")
+    assert engine.threshold_tokens == 100_000

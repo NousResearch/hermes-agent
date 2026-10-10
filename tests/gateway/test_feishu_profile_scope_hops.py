@@ -86,6 +86,7 @@ def test_ws_client_thread_and_its_loop_callbacks_carry_the_adapter_profile_scope
     run_coroutine_threadsafe (which copies the caller's context): both must see the profile that
     connected the adapter, so media caching / markers / env reads before handle_message stay in it."""
     from plugins.platforms.feishu import adapter as fa
+    from plugins.platforms.feishu import adapter_ws_isolation as fa_ws_isolation
 
     client_mod = types.ModuleType("lark_oapi.ws.client")
     client_mod.loop = SimpleNamespace(name="sdk-default-loop")
@@ -97,7 +98,7 @@ def test_ws_client_thread_and_its_loop_callbacks_carry_the_adapter_profile_scope
     lark.ws = lark_ws
     for name, mod in (("lark_oapi", lark), ("lark_oapi.ws", lark_ws), ("lark_oapi.ws.client", client_mod)):
         monkeypatch.setitem(sys.modules, name, mod)
-    monkeypatch.setattr(fa, "_WS_ISOLATION_INSTALLED", False)
+    monkeypatch.setattr(fa_ws_isolation, "_WS_ISOLATION_INSTALLED", False)
     monkeypatch.setattr(fa, "FEISHU_WEBSOCKET_AVAILABLE", True)
     monkeypatch.setattr(fa, "lark", SimpleNamespace(LogLevel=SimpleNamespace(INFO=1)))
 

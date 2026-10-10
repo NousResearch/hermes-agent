@@ -1711,6 +1711,19 @@ def _normalize_context_from(value: Any) -> Optional[list[str]]:
     return _normalize_str_list(value) if isinstance(value, list) else None
 
 
+def _normalize_script_failure_policy(value: Any) -> Optional[str]:
+    """script_failure_policy: ''/None unset (falls back to the 'agent' default); 'agent' or
+    'fail'. Stored normalized lowercase so hand-edited records behave identically to
+    tool-created ones. None-tolerant like the other optional-text normalizers: create_job
+    runs every normalizer over unset fields."""
+    if not isinstance(value, str):
+        return None
+    v = value.strip().lower()
+    if v in ("", "agent", "fail"):
+        return v or None
+    raise ValueError("script_failure_policy must be 'agent' or 'fail'.")
+
+
 def _normalize_failure_deliver(value: Any) -> Optional[str]:
     """failure_deliver shares deliver's value grammar; flatten str/list like the tool layer's
     _normalize_deliver_param for direct create_job callers. Semantic validation happens at
@@ -1756,6 +1769,7 @@ _CREATE_FIELD_NORMALIZERS: dict[str, Callable[[Any], Any]] = {
     "context_from": _normalize_context_from,
     "failure_deliver": _normalize_failure_deliver,
     "interpreter": _normalize_job_optional_text,
+    "script_failure_policy": _normalize_script_failure_policy,
 }
 _UPDATE_FIELD_NORMALIZERS: dict[str, Callable[[Any], Any]] = {
     # [] is an explicit zero-tool allowlist and must survive the update path as [] too (#82010).
@@ -1765,6 +1779,7 @@ _UPDATE_FIELD_NORMALIZERS: dict[str, Callable[[Any], Any]] = {
     "monitor_url": _normalize_job_optional_text,
     "interpreter": _normalize_job_optional_text,
     "reasoning_effort": _normalize_reasoning_effort,
+    "script_failure_policy": _normalize_script_failure_policy,
 }
 
 
@@ -1832,6 +1847,7 @@ def create_job(
     monitor_url: Optional[str] = None,
     reasoning_effort: Optional[str] = None,
     failure_deliver: Optional[str] = None,
+    script_failure_policy: Optional[str] = None,
     paused: bool = False,
     paused_reason: Optional[str] = None,
     pinned: bool = False,
@@ -1934,6 +1950,7 @@ def create_job(
     for key, value in (
         ("attach_to_session", normalized_attach), ("reasoning_effort", normalized_reasoning_effort),
         ("failure_deliver", f["failure_deliver"]), ("interpreter", f["interpreter"]),
+        ("script_failure_policy", f["script_failure_policy"]),
     ):
         if value is not None:
             job[key] = value

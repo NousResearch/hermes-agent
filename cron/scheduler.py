@@ -261,7 +261,7 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     ``classify_api_error`` verdict and the copy table in ``scheduler_failure_copy``."""
     from cron.scheduler_failure_copy import (
         classify_cron_failure_reason, generic_failure_notice, inactivity_notice,
-        provider_failure_notice, script_timeout_notice)
+        provider_failure_notice, script_origin_failure_notice, script_timeout_notice)
 
     job_name = job.get("name") or job.get("id") or "cron job"
     job_id = job.get("id") or job_name
@@ -273,6 +273,14 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     # See #78503, #82460.
     if lower.startswith("script timed out"):
         return script_timeout_notice(job_name, job_id)
+
+    # script_failure_policy=fail gate ("Pre-run script failed (script_failure_policy=fail): ...",
+    # scheduler._prepare_job_prompt): the run was ended BEFORE any agent was constructed, so the
+    # embedded script stderr — which may read "Read timed out", "429" or "401" — is the script's
+    # own output, never a model-service verdict. Must precede provider classification (#123441).
+    if lower.startswith("pre-run script failed (script_failure_policy=fail):"):
+        return script_origin_failure_notice(
+            job_name, job_id, text[len("pre-run script failed (script_failure_policy=fail):"):])
 
     # Scheduler inactivity watchdog ("idle for {n}s (limit {m}s)"): the job's OWN tool call went
     # quiet, no model service involved. Its text may still contain "timed out", so it must be
@@ -2226,7 +2234,7 @@ def _prepare_job_prompt(
 ) -> tuple[Optional[_RunResult], Optional[str]]:
     """Run every pre-agent gate and build the prompt. Returns ``(early_result, prompt)``: an early
     result short-circuits ``run_job`` (no_agent job, empty payload, monitor gate, wake gate,
-    injection block, empty prompt); otherwise ``prompt`` is set."""
+    script-failure policy, injection block, empty prompt); otherwise ``prompt`` is set."""
     # Fail closed on a corrupt config.yaml: defaults would let auto-detection bill a provider the
     # user never chose. no_agent jobs are exempt. Escape hatch: HERMES_IGNORE_USER_CONFIG=1.
     if not job.get("no_agent"):
@@ -2269,6 +2277,24 @@ def _prepare_job_prompt(
             cancel_event=cancel_event,
         )
         _ran_ok, _script_output = prerun_script
+        if not _ran_ok and str(job.get("script_failure_policy") or "").strip().lower() == "fail":
+            # script_failure_policy=fail (#123441): a non-zero pre-run script ends the
+            # run BEFORE any agent is constructed — no LLM call, no failure text handed
+            # to a model. The run records ok=False and routes through the normal
+            # failure-delivery lane (same tuple shape as the blocked-config gate).
+            logger.info(
+                "Job '%s' (ID: %s): pre-run script failed with script_failure_policy=fail "
+                "— failing the run without waking the agent", job_name, job_id)
+            fail_doc = (
+                f"# Cron Job: {job_name}\n\n"
+                f"**Job ID:** {job_id}\n"
+                f"**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+                "The pre-run script exited non-zero and this job sets "
+                "`script_failure_policy: fail`, so the agent was NOT run.\n\n"
+                f"**Script error:** {_script_output}"
+            )
+            return (False, fail_doc, "",
+                    f"Pre-run script failed (script_failure_policy=fail): {_script_output}"), None
         if _ran_ok and not _parse_wake_gate(_script_output):
             logger.info("Job '%s' (ID: %s): wakeAgent=false, skipping agent run", job_name, job_id)
             note_cron_skipped(job)

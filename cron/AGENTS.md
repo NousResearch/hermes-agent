@@ -12,7 +12,9 @@ schedule via the `cronjob` tool; users via `hermes cron list|add|edit|pause|resu
 `skills`, `model`/`provider` overrides, `script` (pre-run data-collection script whose stdout is
 injected into the prompt; `no_agent=True` makes the script the whole job), `context_from` (chain job
 A's last output into job B's prompt), `workdir` (run with that directory's `AGENTS.md`/`CLAUDE.md`
-loaded), multi-platform delivery.
+loaded), `script_failure_policy` (`agent` default: failed pre-run script wakes the agent with the
+error as context; `fail`: end the run before any LLM call — run records ok=False, delivery follows
+the failure lane), multi-platform delivery.
 
 Hardening invariants — each guards a real failure; don't weaken without answering for it:
 - **Inactivity watchdog** on cron agent sessions (`_cron_inactivity_seconds()`): default 600s idle,

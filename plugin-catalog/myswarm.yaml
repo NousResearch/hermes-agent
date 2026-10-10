@@ -1,0 +1,28 @@
+name: myswarm
+title: MySwarm
+repo: https://github.com/tomkubik/hermes-myswarm
+sha: 8bc4886b14fdb1ae6e0ad0453bab128339dc9c52
+description: >-
+  Discover, visualize, sanitize/export, and safely test community agents.md swarm
+  configurations. Outputs abbreviated agent/persona/goal tables, renders PII-pruned
+  ASCII topology diagrams (.svg image + portable 7-bit copy-paste ASCII symbol blocks),
+  generates themed swarm illustrations via Hermes default model and image_generate,
+  exports PII-scrubbed agents.md files, and imports/reverts shared configs with
+  on-screen file preview and automated exploit/prompt-injection auditing.
+maintainer: tomkubik
+tier: community
+category: tools
+version: "0.1.0"
+docs_url: https://github.com/tomkubik/hermes-myswarm#readme
+readme: true
+capabilities:
+  provides_tools:
+    - myswarm_list
+    - myswarm_ascii
+    - myswarm_visualize_image
+    - myswarm_export
+    - myswarm_import
+    - myswarm_revert
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

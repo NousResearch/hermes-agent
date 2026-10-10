@@ -11,11 +11,8 @@ import warnings
 
 import pytest
 
-from gateway.platforms.yuanbao import (
-    ForwardedRecordsParseMiddleware,
-    InboundContext,
-    WS_HEARTBEAT_RUNNING,
-)
+from gateway.platforms.yuanbao import (WS_HEARTBEAT_RUNNING)
+from gateway.platforms.yuanbao_inbound import (ForwardedRecordsParseMiddleware, InboundContext)
 
 
 class _Heartbeat:

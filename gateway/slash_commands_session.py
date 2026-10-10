@@ -181,7 +181,7 @@ class GatewaySessionCommandsMixin:
                                   parent_session_id=str(getattr(old_entry, "session_id", "") or ""))
         _reset_process_scoped_tool_state()
 
-        new_entry = await self.async_session_store.reset_session(session_key)
+        new_entry = await self.async_session_store.reset_session(session_key, source=source)
         _old_sid = old_entry.session_id if old_entry else None
         await self._fire_session_reset_hooks(source, session_key, _old_sid,
                                              new_entry.session_id if new_entry else None)

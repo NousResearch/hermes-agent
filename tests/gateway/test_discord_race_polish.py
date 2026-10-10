@@ -39,6 +39,14 @@ async def test_concurrent_joins_do_not_double_connect():
 
     connect_count = [0]
     release = asyncio.Event()
+    entered = asyncio.Event()
+    listener_stop = asyncio.Event()
+    adapter._voice_timeout_seconds = 0
+
+    async def listen(guild_id):
+        await listener_stop.wait()
+
+    adapter._voice_listen_loop = listen
 
     class FakeVC:
         def __init__(self, channel):
@@ -52,6 +60,7 @@ async def test_concurrent_joins_do_not_double_connect():
 
     async def slow_connect(self):
         connect_count[0] += 1
+        entered.set()
         await release.wait()
         return FakeVC(self)
 
@@ -61,15 +70,22 @@ async def test_concurrent_joins_do_not_double_connect():
     channel.connect = lambda: slow_connect(channel)
 
     from plugins.platforms.discord import adapter as discord_mod
-    with patch.object(discord_mod, "VoiceReceiver",
-                      MagicMock(return_value=MagicMock(start=lambda: None))):
-        with patch.object(discord_mod.asyncio, "ensure_future",
-                          lambda _c: asyncio.create_task(asyncio.sleep(0))):
-            t1 = asyncio.create_task(adapter.join_voice_channel(channel))
-            t2 = asyncio.create_task(adapter.join_voice_channel(channel))
-            await asyncio.sleep(0.05)
+    tasks = []
+    try:
+        with patch.object(discord_mod, "VoiceReceiver",
+                          MagicMock(return_value=MagicMock(start=lambda: None))):
+            tasks.append(asyncio.create_task(adapter.join_voice_channel(channel)))
+            await asyncio.wait_for(entered.wait(), timeout=10)
+            tasks.append(asyncio.create_task(adapter.join_voice_channel(channel)))
             release.set()
-            r1, r2 = await asyncio.gather(t1, t2)
+            r1, r2 = await asyncio.gather(*tasks)
+    finally:
+        release.set()
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        listener_stop.set()
+        await asyncio.gather(*adapter._voice_listen_tasks.values())
 
     assert connect_count[0] == 1, (
         f"expected 1 channel.connect() call, got {connect_count[0]} — "

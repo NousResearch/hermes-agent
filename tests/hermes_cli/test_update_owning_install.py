@@ -1,7 +1,9 @@
 """``hermes update`` from a PM environment's workspace goes to the checkout that owns it (#122627)."""
 import sys
 
-from hermes_cli.update_owning_install import owning_install_root
+import pytest
+
+from hermes_cli.update_owning_install import owning_install_root, retarget_to_owning_install
 from pm.environments import install_key
 
 
@@ -26,3 +28,23 @@ def test_pm_generation_venv_is_owned_by_the_checkout_its_install_key_names(tmp_p
 
     record.write_text(str(tmp_path / "elsewhere"), encoding="utf-8")  # not the path the key hashes
     assert owning_install_root(workspace) is None
+
+
+@pytest.mark.real_owning_install_retarget
+def test_retarget_reruns_the_command_in_the_owning_checkout(tmp_path, monkeypatch):
+    owner = tmp_path / "owner"
+    (owner / "hermes_cli").mkdir(parents=True)
+    (owner / "hermes_cli" / "main.py").write_text("", encoding="utf-8")
+    monkeypatch.setattr(sys, "prefix", str(owner / ".venv"))
+    monkeypatch.setattr(sys, "base_prefix", str(tmp_path / "python"))
+    monkeypatch.setattr(sys, "argv", ["hermes", "update"])
+    monkeypatch.delenv("PYTHONPATH", raising=False)
+    calls = []
+    monkeypatch.setattr("hermes_cli.update_owning_install.subprocess.call",
+                        lambda cmd, **kw: calls.append((cmd, kw["cwd"])) or 3)
+
+    with pytest.raises(SystemExit) as exit_info:
+        retarget_to_owning_install(tmp_path / "dev")
+
+    assert exit_info.value.code == 3
+    assert calls == [([sys.executable, "-m", "hermes_cli.main", "update"], owner.resolve())]

@@ -206,6 +206,9 @@ sys.exit(0)
                 capture_output=True,
                 text=True,
                 cwd=str(repo_root),
+                # Mark this tree as chosen so main() does not hand off to the checkout
+                # owning a shared venv (update_owning_install.owning_install_root).
+                env={**os.environ, "PYTHONPATH": str(repo_root)},
                 timeout=60,
             )
             assert result.returncode == 0, (

@@ -57,7 +57,8 @@ def _get_max_read_chars() -> int:
     try:
         from hermes_cli.config import load_config_readonly
         val = load_config_readonly().get("file_read_max_chars")
-    except Exception:
+    except Exception as e:
+        logger.debug("Failed to load file_read_max_chars config: %s", e)
         val = None
     valid = isinstance(val, (int, float)) and val > 0
     return int(val) if valid else _DEFAULT_MAX_READ_CHARS

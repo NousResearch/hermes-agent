@@ -253,6 +253,53 @@ async def test_messaging_agent_forwards_checkpoint_config(monkeypatch, tmp_path)
 
 
 @pytest.mark.asyncio
+async def test_cleanup_registers_on_queued_followup_path(monkeypatch, tmp_path):
+    """Regression: a follow-up queued mid-run made _run_agent_inner return through the
+    queued-followup branch, which never reached the trailing bubble-cleanup scheduling.
+    Progress bubbles from that turn stayed in the chat forever (visible Telegram clutter;
+    upstream bug family #4882 / #99026). The queued branch must register cleanup itself,
+    and delivering the first response must then pop+fire it."""
+    adapter = CleanupCaptureAdapter()
+    runner = _make_runner(adapter)
+    gateway_run = _install_fakes(monkeypatch, ProgressAgent, cleanup_on=True)
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="-1001")
+    session_key = "agent:main:telegram:group:-1001"
+
+    # A real (non-goal) queued follow-up arriving after the agent loop:
+    # drain_pending consumes it and _run_agent takes the queued-followup branch.
+    from gateway.platforms.base import MessageEvent, MessageType
+    from unittest.mock import MagicMock
+    adapter._pending_messages[session_key] = MessageEvent(
+        text="follow up question",
+        message_type=MessageType.TEXT,
+        source=MagicMock(chat_id="-1001", platform=Platform.TELEGRAM),
+        message_id="q-1",
+    )
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-queued-cleanup",
+        session_key=session_key,
+    )
+    assert result["final_response"] == "done"
+
+    # The outer turn's first progress bubble (a send whose content is not the final
+    # response) must already be deleted: registration+fire happen synchronously inside
+    # _run_agent_deliver_first_response, before the recursive turn returns.
+    bubble_ids = [s["message_id"] for s in adapter.sent if s["content"] != "done"]
+    assert bubble_ids, "expected at least one progress bubble send"
+    deleted_ids = {d["message_id"] for d in adapter.deleted}
+    assert bubble_ids[0] in deleted_ids, (
+        f"queued-followup path skipped progress-bubble cleanup: sent={bubble_ids} deleted={deleted_ids}"
+    )
+
+
+@pytest.mark.asyncio
 async def test_cleanup_chains_with_existing_callback(monkeypatch, tmp_path):
     """When a bg-review-style callback is already registered, the cleanup
     callback chains with it — both fire, neither clobbers the other."""

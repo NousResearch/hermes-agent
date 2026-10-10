@@ -1780,13 +1780,9 @@ export const toBranchMessages = (messages: ChatMessage[]): BranchMessage[] =>
 
 /**
  * Choose the transcript used to seed an open-chat branch.
- *
- * The local renderer can hold a compacted model projection, while the REST
- * transcript contains the complete display projection. Use the latter for a
- * whole-chat branch. When branching from a clicked bubble, map that bubble by
- * durable row id first and by same-role/text ordinal as a legacy fallback; if
- * it cannot be mapped, keep the local prefix rather than silently choosing a
- * different point in the conversation.
+ * The local renderer may be compacted; the REST transcript is complete. For a
+ * clicked bubble, map every durable source row, then same-role/text ordinal.
+ * If neither works, keep the local prefix rather than choose the wrong point.
  */
 export function selectBranchMessages(
   localMessages: ChatMessage[],
@@ -1809,10 +1805,14 @@ export function selectBranchMessages(
 
   const target = localMessages[localIndex]
 
-  let authoritativeIndex =
-    target.rowId === undefined
-      ? -1
-      : authoritativeMessages.findIndex(message => message.rowId !== undefined && message.rowId === target.rowId)
+  const sourceRowIds = (message: ChatMessage) =>
+    [message.rowId, ...message.parts.map(part => part.sourceRowId)].flatMap(rowId => rowId ?? [])
+
+  const targetRowIds = new Set(sourceRowIds(target))
+
+  let authoritativeIndex = targetRowIds.size
+    ? authoritativeMessages.findIndex(message => sourceRowIds(message).some(rowId => targetRowIds.has(rowId)))
+    : -1
 
   // Strip `@image:` directive lines the same way the persisted→ChatMessage
   // conversion does (extractImageRefs lifts them into attachmentRefs), so a

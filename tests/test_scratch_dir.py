@@ -381,9 +381,115 @@ def test_prune_releases_git_worktree_registration_of_idle_entry(tmp_path):
     ancient = time.time() - 30 * 3600
     for dirpath, dirnames, filenames in os.walk(tree.parent):
         for name in dirnames + filenames:
-            os.utime(os.path.join(dirpath, name), (ancient, ancient), follow_symlinks=False)
+            try:
+                os.utime(os.path.join(dirpath, name), (ancient, ancient), follow_symlinks=False)
+            except NotImplementedError:
+                # Windows: os.utime has no follow_symlinks parameter.
+                os.utime(os.path.join(dirpath, name), (ancient, ancient))
     os.utime(tree.parent, (ancient, ancient))
     assert prune_scratch_dir(scratch) == 1
     listing = subprocess.run(["git", "worktree", "list", "--porcelain"], cwd=repo, capture_output=True,
                              text=True, stdin=subprocess.DEVNULL, check=True).stdout
     assert str(tree) not in listing and not tree.exists()
+
+
+def test_midprune_resumed_write_is_rescued(tmp_path: Path) -> None:
+    """F1 on #132401, ported from 3f72fd9c8e (#132455): a writer whose cwd is outside
+    scratch — invisible to the reap — resumes during the prune's own reap window and
+    lands a fresh file in a doomed entry. The doomed list is a candidate list, never a
+    verdict: the entry is re-validated with the same idleness walk immediately before
+    deletion, rescued, recorded in ``scratch-prune.log``, and never counted as removed.
+    Red on pre-fix code: the entry is destroyed with the fresh write inside."""
+    scratch = get_scratch_dir(tmp_path, prune=False)
+    entry = scratch / "resumed-lane"
+    entry.mkdir()
+    (entry / "old-output.md").write_text("stale content\n", encoding="utf-8")
+    ancient = time.time() - 30 * 3600
+    for path in (entry / "old-output.md", entry):
+        os.utime(path, (ancient, ancient))
+    fresh = entry / "resumed-work.md"
+
+    def write_during_reap(root, doomed, *args, **kwargs):
+        # The resumed writer lands its fresh write mid-prune: selection is done,
+        # the deletion loop has not started. This is the F1 window.
+        fresh.write_text("FRESH RESUMED WORK\n", encoding="utf-8")
+        return 0
+
+    with patch("hermes_constants_scratch.reap_processes_rooted_in", write_during_reap):
+        assert prune_scratch_dir(scratch) == 0  # rescued — not counted as removed
+    assert fresh.exists(), "fresh mid-prune write was destroyed"
+    assert entry.exists()
+    log = (tmp_path / "logs" / "scratch-prune.log").read_text(encoding="utf-8-sig")
+    assert f"rescued {str(entry)!r} " in log, log
+    assert f"removed {str(entry)!r} (" not in log, log
+
+
+def test_midprune_vanished_entry_is_recorded_not_counted(tmp_path: Path) -> None:
+    """The third state beside rescued and kept: an entry deleted by an outside actor
+    during the reap window is recorded as vanished — not a rescue (no touch happened),
+    not a scan failure (nothing is unreadable), and never counted as removed (we did
+    not remove it). Pins the tri-state audit born in the P3 review of #134173."""
+    scratch = get_scratch_dir(tmp_path, prune=False)
+    entry = scratch / "doomed-lane"
+    entry.mkdir()
+    (entry / "old-output.md").write_text("stale content\n", encoding="utf-8")
+    ancient = time.time() - 30 * 3600
+    for path in (entry / "old-output.md", entry):
+        os.utime(path, (ancient, ancient))
+
+    def remove_during_reap(root, doomed, *args, **kwargs):
+        # An outside actor (a lane's own cleanup) deletes the entry mid-prune.
+        shutil.rmtree(entry)
+        return 0
+
+    with patch("hermes_constants_scratch.reap_processes_rooted_in", remove_during_reap):
+        assert prune_scratch_dir(scratch) == 0  # gone, but not by our hand
+    assert not entry.exists()
+    log = (tmp_path / "logs" / "scratch-prune.log").read_text(encoding="utf-8-sig")
+    assert f"entry {str(entry)!r} vanished" in log, log
+    assert f"rescued {str(entry)!r} " not in log, log
+    assert "re-scan failed" not in log, log
+
+
+def test_postremoval_unreadable_entry_is_not_counted_as_removed(tmp_path: Path) -> None:
+    """R2/P2 on #134173: after rmtree, the removal-confirmation gate uses
+    os.path.lexists(), which swallows OSError from lstat and returns False — so an
+    entry that stayed (rmtree left residue) but became unreadable is counted and
+    recorded as removed. Only an explicit lstat proves absence: FileNotFoundError
+    confirms gone, a successful stat is residue, any other OSError means the
+    removal state is unknown, so the entry is neither counted nor recorded removed.
+    Red on the previous head: removed == 1 and a false 'removed' record."""
+    scratch = get_scratch_dir(tmp_path, prune=False)
+    entry = scratch / "residue-lane"
+    entry.mkdir()
+    payload = entry / "result.txt"
+    payload.write_text("still here", encoding="utf-8")
+    ancient = time.time() - 30 * 3600
+    for path in (payload, entry):
+        os.utime(path, (ancient, ancient))
+    log_file = tmp_path / "logs" / "scratch-prune.log"
+
+    deny = {"lstat": False}
+
+    def rmtree_leaves_residue(path, *args, **kwargs):
+        # rmtree(ignore_errors=True) is allowed to leave the directory in place.
+        deny["lstat"] = True
+        return None
+
+    real_lstat = os.lstat
+
+    def lstat(path, *args, **kwargs):
+        # Only the post-removal visibility check fails; everything else stat()s.
+        if deny["lstat"] and os.path.abspath(os.fspath(path)) == os.path.abspath(entry):
+            raise PermissionError("post-rmtree visibility denied")
+        return real_lstat(path, *args, **kwargs)
+
+    with patch("hermes_constants_scratch.reap_processes_rooted_in", lambda *a, **k: 0), \
+         patch("hermes_constants_scratch.shutil.rmtree", rmtree_leaves_residue), \
+         patch("hermes_constants_scratch.os.lstat", lstat):
+        assert prune_scratch_dir(scratch) == 0  # unknown, not removed
+    assert entry.exists() and payload.read_text(encoding="utf-8") == "still here"
+    log = log_file.read_text(encoding="utf-8-sig")
+    assert f"removed {str(entry)!r} (" not in log, log
+    assert "could not confirm removal" in log, log
+    assert "could not fully remove" not in log, log

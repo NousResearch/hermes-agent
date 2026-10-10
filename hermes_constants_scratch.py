@@ -22,8 +22,8 @@ logger = logging.getLogger(__name__)
 _REAP_GRACE_SECONDS = 3.0
 # ``.git`` files (linked worktrees) are looked for this deep; lanes nest repo/tree/subtree.
 _GIT_FILE_MAX_DEPTH = 4
-# logs/scratch-prune.log: one line per entry deleted and per process signalled (#132401). Same
-# fixed rotation as tool_calls.log.
+# logs/scratch-prune.log: one line per entry deleted, per process signalled, and per
+# entry rescued or vanished mid-prune (#132401). Same fixed rotation as tool_calls.log.
 _PRUNE_LOG_MAX_BYTES = 5 * 1024 * 1024
 _PRUNE_LOG_BACKUPS = 3
 # Paths and process names go in with %r: a control character (a newline in a legal POSIX name)
@@ -92,21 +92,23 @@ def _tree_bytes(path: Path) -> int:
     return total
 
 
-def subtree_touched_since(path: Path, cutoff: float) -> bool:
-    """True when *path* or anything beneath it has an mtime at or after *cutoff*.
+_TOUCHED = "touched"
+_SCAN_FAILED = "scan-failed"
+_IDLE = "idle"
 
-    Stops at the first recent entry, so a live tree costs one hit and only a truly idle
-    tree pays for the full walk (once, right before it is deleted). Symlinks are never
-    followed: a link into the repo would make the target's activity keep the entry alive.
-    An unreadable entry is kept: an incomplete scan cannot establish that it is idle.
-    """
+
+def subtree_touch_state(path: Path, cutoff: float) -> str:
+    """Tri-state form of :func:`subtree_touched_since`: ``touched`` (recent write seen),
+    ``scan-failed`` (unreadable — idle cannot be established, so the entry is kept, but
+    a failed scan is not activity and is never reported as such), or ``idle``.
+    Same walk, same stop-at-first-recent shortcut, same symlink rules."""
     try:
         if os.lstat(path).st_mtime >= cutoff:
-            return True
+            return _TOUCHED
         if not path.is_dir() or path.is_symlink():
-            return False
+            return _IDLE
     except OSError:
-        return True
+        return _SCAN_FAILED
     stack = [str(path)]
     while stack:
         try:
@@ -114,14 +116,27 @@ def subtree_touched_since(path: Path, cutoff: float) -> bool:
                 for child in it:
                     try:
                         if child.stat(follow_symlinks=False).st_mtime >= cutoff:
-                            return True
+                            return _TOUCHED
                     except OSError:
-                        return True
+                        return _SCAN_FAILED
                     if child.is_dir(follow_symlinks=False):
                         stack.append(child.path)
         except OSError:
-            return True
-    return False
+            return _SCAN_FAILED
+    return _IDLE
+
+
+def subtree_touched_since(path: Path, cutoff: float) -> bool:
+    """True when *path* or anything beneath it has an mtime at or after *cutoff*.
+
+    Stops at the first recent entry, so a live tree costs one hit and only a truly idle
+    tree pays for the full walk (once, right before it is deleted). Symlinks are never
+    followed: a link into the repo would make the target's activity keep the entry alive.
+    An unreadable entry is kept: an incomplete scan cannot establish that it is idle —
+    so True here means "touched **or** uninspectable", and callers that need to tell the
+    two apart (the mid-prune audit) use :func:`subtree_touch_state` instead.
+    """
+    return subtree_touch_state(path, cutoff) != _IDLE
 
 
 def _under(path: str, root: str) -> bool:
@@ -245,8 +260,9 @@ def prune_idle_entries(
 ) -> int:
     """Delete top-level entries of *root* with no write anywhere in their subtree for
     *max_idle_hours*, reaping processes and worktree registrations rooted in them first.
-    Each removal and each signalled process is recorded in *log_file*. Returns the count
-    actually removed."""
+    Each removal, each signalled process and each entry rescued mid-prune (touched
+    again after selection) is recorded in *log_file*. Returns the count actually
+    removed."""
     audit = _open_prune_log(log_file)
     try:
         return _prune_idle_entries(root, max_idle_hours, skip_names, audit)
@@ -276,10 +292,48 @@ def _prune_idle_entries(
     repos: set[str] = set()
     removed = 0
     for entry in doomed:
+        # Worktree scan first: a registration whose tree an earlier pass (or hand)
+        # removed is stale even in a rescued entry, and the re-check below sits as
+        # close to the delete as the loop allows.
+        if entry.is_dir() and not entry.is_symlink():
+            repos |= _linked_worktree_repos(entry)
+        # Last-moment re-validation (#132401 C1/F1): ``doomed`` is a snapshot from
+        # before the reap ran, and a writer whose cwd is outside scratch — invisible
+        # to the reap — can land fresh work in that window. The snapshot is a
+        # candidate list, never a verdict: anything touched since selection is
+        # rescued here, not deleted. A re-scan that cannot read the entry is also
+        # fail-closed (the entry is kept), but a failed scan is not activity — the
+        # audit names the failed re-scan instead of inventing a touch that did not
+        # happen, so operators can tell an uninspectable candidate from verified
+        # recent activity (P3 on #134173).
+        state = subtree_touch_state(entry, cutoff)
+        if state != _IDLE:
+            # Only a missing path is a vanish: a stat that raises PermissionError means
+            # the entry is there but unreadable, and reporting it as vanished would be
+            # the same invented reason the audit exists to prevent.
+            try:
+                os.lstat(entry)
+                entry_gone = False
+            except FileNotFoundError:
+                entry_gone = True
+            except OSError:
+                entry_gone = False
+            if entry_gone:
+                audit.info("scratch prune: entry %r vanished since selection", os.fspath(entry))
+            elif state == _TOUCHED:
+                audit.info(
+                    "scratch prune: rescued %r — touched since selection, kept",
+                    os.fspath(entry),
+                )
+            else:
+                audit.info(
+                    "scratch prune: kept %r — activity re-scan failed, left untouched",
+                    os.fspath(entry),
+                )
+            continue
         size = _tree_bytes(entry)
         try:
             if entry.is_dir() and not entry.is_symlink():
-                repos |= _linked_worktree_repos(entry)
                 shutil.rmtree(entry, ignore_errors=True)
             else:
                 entry.unlink()
@@ -287,8 +341,18 @@ def _prune_idle_entries(
             audit.info("scratch prune: could not remove %r: %s", os.fspath(entry), exc)
             continue
         # rmtree ignores errors, so only a path that is really gone counts as removed.
-        if os.path.lexists(entry):
+        # Only an explicit lstat proves absence: lexists() swallows OSError from lstat,
+        # so an entry that stayed (rmtree left residue) but cannot be inspected would be
+        # counted and recorded as removed — the same invented reason the vanish rule
+        # above refuses to invent (P2 on #134173).
+        try:
+            os.lstat(entry)
             audit.info("scratch prune: could not fully remove %r", os.fspath(entry))
+            continue
+        except FileNotFoundError:
+            pass
+        except OSError:
+            audit.info("scratch prune: could not confirm removal of %r", os.fspath(entry))
             continue
         audit.info("scratch prune: removed %r (%d bytes)", os.fspath(entry), size)
         removed += 1

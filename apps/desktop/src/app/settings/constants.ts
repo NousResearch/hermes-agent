@@ -711,7 +711,7 @@ export const SECTIONS: DesktopConfigSection[] = [
     id: 'model',
     label: 'Model',
     icon: Box,
-    keys: ['model_context_length', 'fallback_providers']
+    keys: ['model_context_length', 'model_lmstudio_unload_policy', 'fallback_providers']
   },
   {
     id: 'chat',

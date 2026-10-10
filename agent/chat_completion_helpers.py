@@ -2144,7 +2144,7 @@ def _iteration_summary_api_messages(agent, messages: list) -> list:
 
     ``reasoning_details`` is kept: the anthropic_messages converter rebuilds signed thinking
     blocks from it, and the chat-completions transport already drops it on the wire for routes
-    that do not replay it (``_chat_summary_attempt`` -> ``_build_api_kwargs``)."""
+    that do not replay it (``chat_summary_attempt`` -> ``_build_api_kwargs``)."""
     needs_sanitize = agent._should_sanitize_tool_calls()
     sanitize_model = agent.model
     if needs_sanitize and agent.provider == "moa":
@@ -2269,26 +2269,6 @@ def _anthropic_summary_attempt(agent, api_messages: list, api_request_id: str):
     return _attempt
 
 
-def _chat_summary_attempt(agent, api_messages: list, api_request_id: str):
-    # Same kwargs builder as the main loop so the summary keeps the cached prefix (tools,
-    # prompt_cache_key, xAI alias, Moonshot sanitization). Do not omit tools or force
-    # tool_choice="none" here: SGLang renders the prompt with tools=None in that mode and the KV
-    # prefix diverges. (cache_control breakpoint decoration is not re-applied on this path.)
-    summary_kwargs = agent._build_api_kwargs(api_messages)
-    # The summary now carries ``tools``; on cache-planned routes the main loop scrubbed a deep
-    # copy, so ``agent.tools`` may still hold bytes the provider 400s on.
-    sanitize_outbound_kwargs(agent, summary_kwargs)
-
-    def _attempt(retry_count: int) -> str:
-        # Use the ordinary request-local lifecycle: a summary can be interrupted
-        # during a long prefill without closing the shared primary client.
-        response = _managed_summary_call(
-            agent, api_request_id, summary_kwargs, agent._interruptible_api_call,
-            retry_count=retry_count)
-        return _summary_text(agent, response)
-    return _attempt
-
-
 _SUMMARY_ATTEMPT_BUILDERS = {"codex_responses": _codex_summary_attempt, "anthropic_messages": _anthropic_summary_attempt}
 
 
@@ -2313,8 +2293,9 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
     nudge = append_message(messages, {"role": "user", "content": MAX_ITERATIONS_SUMMARY_REQUEST})
 
     try:
+        from agent.chat_completion_helpers_summary import chat_summary_attempt
         api_messages = _iteration_summary_api_messages(agent, messages)
-        build_attempt = _SUMMARY_ATTEMPT_BUILDERS.get(agent.api_mode, _chat_summary_attempt)
+        build_attempt = _SUMMARY_ATTEMPT_BUILDERS.get(agent.api_mode, chat_summary_attempt)
         attempt = build_attempt(agent, api_messages, summary_api_request_id)
 
         # One retry on an empty summary; a summary empty once its <think> block is stripped is NOT retried.

@@ -351,7 +351,8 @@ def _base_kwargs(model: str, sanitized: list, tools: Any, params: dict, profile:
 
     ``temperature`` is profile-path only: ``fixed_temperature`` beats the caller's; ``OMIT_TEMPERATURE`` sends none.
     """
-    api_kwargs: dict[str, Any] = {"model": model, "messages": sanitized}
+    from hermes_cli.models_lmstudio_instances import lmstudio_request_model
+    api_kwargs: dict[str, Any] = {"model": lmstudio_request_model(model, params.get("base_url")), "messages": sanitized}
     if profile is not None:
         from providers.base import OMIT_TEMPERATURE
 

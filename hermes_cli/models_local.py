@@ -386,6 +386,7 @@ def _lmstudio_fetch_raw_models(
     """Raw model list from LM Studio's ``/api/v1/models``; None on network errors / malformed
     payloads; raises ``AuthError`` on HTTP 401/403."""
     from hermes_cli.models import _urlopen_model_catalog_request
+
     server_root = _lmstudio_server_root(base_url)
     if not server_root:
         return None
@@ -497,6 +498,8 @@ def ensure_lmstudio_model_loaded(
     timeout: float = 120.0,
     *,
     return_load_result: bool = False,
+    previous_model: Optional[str] = None,
+    unload_policy: str = "always",
 ) -> Optional[int] | LMStudioLoadResult:
     """Ensure ``model`` is loaded and return verified runtime context.
 
@@ -505,7 +508,11 @@ def ensure_lmstudio_model_loaded(
     refreshed state."""
     from hermes_cli.models import _urlopen_model_catalog_request
 
+    unloaded_previous = None
+
     def _result(context_length: Optional[int], *, load_attempted: bool = False, rejected: bool = False):
+        from hermes_cli.models_lmstudio_instances import restore_previous_if_failed
+        restore_previous_if_failed(unloaded_previous, context_length, _lmstudio_server_root(base_url), _lmstudio_request_headers(api_key), timeout)
         result = LMStudioLoadResult(context_length, load_attempted, rejected)
         return result if return_load_result else context_length
 
@@ -516,7 +523,13 @@ def ensure_lmstudio_model_loaded(
     explicit_context = _positive_int(target_context_length)
     if target_context_length is not None and explicit_context is None:
         return _result(None)
-    target_entry = _lmstudio_entry_for(_lmstudio_raw_models_or_none(api_key, base_url, 10) or [], model)
+    from hermes_cli.models_lmstudio_instances import owned_instance, verified_instance_context
+    target_claim = owned_instance(server_root, model)
+    raw_models = _lmstudio_raw_models_or_none(api_key, base_url, 10)
+    if raw_models is None:
+        return _result(None)
+    target_entry = _lmstudio_entry_for(raw_models, model)
+    current_context = verified_instance_context(server_root, model, target_entry, expected_instance_id=target_claim)
     if target_entry is None:
         return _result(None)
 
@@ -524,13 +537,18 @@ def ensure_lmstudio_model_loaded(
     if explicit_context is not None and max_ctx is not None and explicit_context > max_ctx:
         return _result(None, rejected=True)
 
-    current_context = _lmstudio_loaded_context(target_entry)
+    loaded_instances = target_entry.get("loaded_instances")
+    if current_context is None and (not isinstance(loaded_instances, list) or loaded_instances):
+        return _result(None)
+
+    from hermes_cli.models_lmstudio_instances import (
+        normalize_lmstudio_unload_policy, remember_instance, unload_previous_instance,
+    )
+    if previous_model and previous_model != model and normalize_lmstudio_unload_policy(unload_policy) == "always":
+        unloaded_previous = unload_previous_instance(server_root, previous_model, raw_models, _lmstudio_request_headers(api_key), timeout)
+
     if current_context is not None:
         return _result(current_context)
-
-    loaded_instances = target_entry.get("loaded_instances")
-    if not isinstance(loaded_instances, list) or loaded_instances:
-        return _result(None)
 
     load_payload: dict[str, Any] = {"model": model, "echo_load_config": True}
     if explicit_context is not None:
@@ -553,13 +571,19 @@ def ensure_lmstudio_model_loaded(
         response_payload = None
     load_config = response_payload.get("load_config") if isinstance(response_payload, dict) else None
     applied_context = _positive_int(load_config.get("context_length")) if isinstance(load_config, dict) else None
+    instance_id = response_payload.get("instance_id") if isinstance(response_payload, dict) else None
     if applied_context is not None:
+        if isinstance(instance_id, str) and instance_id:
+            remember_instance(server_root, model, instance_id)
         return _result(applied_context, load_attempted=True)
 
     refreshed_models = _lmstudio_raw_models_or_none(api_key, base_url, 10)
     if refreshed_models is None:
         return _result(None, load_attempted=True)
-    return _result(_lmstudio_loaded_context(_lmstudio_entry_for(refreshed_models, model)), load_attempted=True)
+    refreshed_entry = _lmstudio_entry_for(refreshed_models, model)
+    from hermes_cli.models_lmstudio_instances import remember_catalog_instance
+    remember_catalog_instance(server_root, model, instance_id, refreshed_entry)
+    return _result(verified_instance_context(server_root, model, refreshed_entry), load_attempted=True)
 
 
 def lmstudio_model_reasoning_options(

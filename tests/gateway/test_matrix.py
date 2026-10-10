@@ -5,11 +5,31 @@ import threading
 import time
 import types
 import pytest
+import pytest_asyncio
 from unittest.mock import MagicMock, patch, AsyncMock
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.event import MessageType
 from gateway.turn_context import TurnContext
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def matrix_http_sessions(monkeypatch):
+    from plugins.platforms.matrix import adapter as matrix_module
+
+    create_session = matrix_module._create_matrix_session
+    sessions = []
+
+    def create_tracked_session(proxy_url):
+        session = create_session(proxy_url)
+        sessions.append(session)
+        return session
+
+    monkeypatch.setattr(matrix_module, "_create_matrix_session", create_tracked_session)
+    yield
+
+    for session in sessions:
+        await session.close()
 
 
 def _make_fake_mautrix():

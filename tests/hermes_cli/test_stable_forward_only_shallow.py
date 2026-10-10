@@ -67,12 +67,6 @@ def test_full_clone_missing_a_newer_release_is_never_called_ahead(history, tmp_p
     release = _git(origin, "rev-parse", "HEAD")
     monkeypatch.setattr(source_check, "_github_compare", lambda *a, **k: compare)
     assert source_releases._head_relation(["git"], clone, release, "o/r") == (shas[2], relation)
-    # The apply path fetches the release and decides locally, whatever GitHub says.
-    def fetch(sha):
-        _git(clone, "fetch", "-q", "origin", sha)
-        return True
-    monkeypatch.setattr(source_check, "_github_compare", lambda *a, **k: pytest.fail("decided locally"))
-    assert source_releases._head_relation(["git"], clone, release, "o/r", fetch=fetch) == (shas[2], "behind")
 
 
 @pytest.mark.parametrize("start", ["diverged", "unknown"])
@@ -111,3 +105,47 @@ def test_official_ssh_origin_verifies_the_release_tag_over_https(tmp_path, url, 
     _git(tmp_path, "remote", "add", "origin", url)
     repository = source_releases.source_repository(["git"], tmp_path)
     assert (source_releases.official_https_remote(url, repository) or "origin") == remote
+
+
+def test_apply_fetches_a_missing_release_and_decides_locally(history, tmp_path, monkeypatch):
+    """select_apply_target wires the fetch: a release cut after the last fetch lands, no GitHub."""
+    from types import SimpleNamespace
+
+    from hermes_cli import main, update_cmd, update_cmd_check
+
+    origin, shas = history
+    clone = tmp_path / "clone"
+    _git(tmp_path, "clone", "-q", f"file://{origin}", str(clone))
+    (origin / "f").write_text("release")
+    _git(origin, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qam", "release")
+    release = _git(origin, "rev-parse", "HEAD")
+    monkeypatch.setattr(main, "PROJECT_ROOT", clone)
+    monkeypatch.setattr(update_cmd, "_update_run_channel", lambda args: "stable")
+    monkeypatch.setattr("hermes_cli.config.require_readable_config_before_write", lambda path: {})
+    monkeypatch.setattr("hermes_cli.update_channel.rides_default_channel", lambda *a: True)
+    monkeypatch.setattr(source_releases, "_resolve_stable", lambda repository, *_: source_releases.SourceTarget(
+        "stable", "stable", repository, commit=release, version="1.0.0"))
+    monkeypatch.setattr(source_check, "_github_compare", lambda *a, **k: pytest.fail("decided locally"))
+    request = {"home": str(tmp_path), "branch": "main"}
+    target_ref, release_sha, target_is_head, _ = update_cmd_check.select_apply_target(
+        SimpleNamespace(branch=None, channel=None), "main", request, git_cmd=["git"], stop=lambda: None)
+    assert (target_ref, release_sha, target_is_head, request["expected_sha"]) == (release, release, False, release)
+    assert _git(clone, "cat-file", "-t", release) == "commit"
+
+
+def test_apply_fetch_reads_an_official_ssh_origin_over_https_in_the_checkout(history, tmp_path, monkeypatch):
+    """No SSH use (GIT_SSH_COMMAND=false), and the fetch runs in the checkout it was given."""
+    from hermes_cli import main, update_cmd_check
+
+    origin, _ = history
+    clone = tmp_path / "clone"
+    _git(tmp_path, "clone", "-q", f"file://{origin}", str(clone))
+    _git(clone, "remote", "set-url", "origin", "git@github.com:NousResearch/hermes-agent.git")
+    _git(clone, "config", f"url.file://{origin}.insteadOf", source_releases.OFFICIAL_HTTPS_URL)
+    (origin / "f").write_text("release")
+    _git(origin, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qam", "release")
+    release = _git(origin, "rev-parse", "HEAD")
+    monkeypatch.setenv("GIT_SSH_COMMAND", "false")
+    monkeypatch.setattr(main, "PROJECT_ROOT", tmp_path / "elsewhere")
+    assert update_cmd_check._fetch_commit(["git"], clone)(release)
+    assert _git(clone, "cat-file", "-t", release) == "commit"

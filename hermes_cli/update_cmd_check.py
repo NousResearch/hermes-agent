@@ -210,14 +210,20 @@ def _note_main_fallback(target) -> None:
           " (`hermes update --set-channel stable` lands on the release)")
 
 
-def _fetch_commit(git_cmd):
-    """``fetch(sha) -> bool`` for the apply path: the release commit, through the update's fetch."""
+def _fetch_commit(git_cmd, root: Path):
+    """``fetch(sha) -> bool`` for the apply path: bring a release commit the checkout lacks.
+
+    An official SSH origin is read over public HTTPS, as the release tag check is, so this
+    adds no SSH prompt or key touch; the update's own fetch of that sha is then local.
+    """
     from hermes_cli.gitlock import fetch_with_partial_clone_recovery
+    from hermes_cli.source_releases import _origin_url, official_https_remote, source_repository
 
     def fetch(sha: str) -> bool:
+        remote = official_https_remote(_origin_url(git_cmd, root), source_repository(git_cmd, root)) or "origin"
         return fetch_with_partial_clone_recovery(
-            lambda gc, a: _uc()._git_run(gc, a, network=True), git_cmd,
-            ["fetch", "--no-tags", "origin", sha], _uc()._m().PROJECT_ROOT).returncode == 0
+            lambda gc, a: _uc()._git_run(gc, a, root, network=True), git_cmd,
+            ["fetch", "--no-tags", remote, sha], root).returncode == 0
     return fetch
 
 
@@ -247,7 +253,7 @@ def select_apply_target(args, branch: str, request: dict, *, git_cmd, stop) -> t
         with retrying_reads():
             target = resolve_source_target(selected, git_cmd, root,
                                            forward_only=rides_default_channel(original, selected, root),
-                                           fetch=_fetch_commit(git_cmd) if git_cmd else None)
+                                           fetch=_fetch_commit(git_cmd, root) if git_cmd else None)
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         print(f"✗ Could not resolve the {selected} source channel: {exc}. No update was applied.")
         stop()

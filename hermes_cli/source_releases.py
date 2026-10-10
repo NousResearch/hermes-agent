@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from typing import Literal
 from html.parser import HTMLParser
 import json
 import logging
@@ -15,6 +16,7 @@ from hermes_cli.update_channel import CHANNEL_MAIN, STABLE_TAG_RE, is_canary_tag
 logger = logging.getLogger(__name__)
 _PUBLIC_BASE = "https://hermes-assets.nousresearch.com"
 OFFICIAL_REPOSITORY = "NousResearch/hermes-agent"
+OFFICIAL_HTTPS_URL = f"https://github.com/{OFFICIAL_REPOSITORY}.git"
 _GITHUB_ORIGIN = re.compile(
     r"^(?:https://github\.com/|git@github\.com:|ssh://git@github\.com/)"
     r"([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+?)(?:\.git)?/?$", re.IGNORECASE,
@@ -45,7 +47,7 @@ def official_https_remote(origin_url: str, repository: str | None) -> str | None
     match = _GITHUB_ORIGIN.fullmatch(origin_url or "")
     if (match and repository and match[1].lower() == OFFICIAL_REPOSITORY.lower() == repository.lower()
             and origin_url.lower().startswith(("git@", "ssh://"))):
-        return f"https://github.com/{OFFICIAL_REPOSITORY}.git"
+        return OFFICIAL_HTTPS_URL
     return None
 
 
@@ -67,7 +69,7 @@ class SourceTarget:
 
     ahead: bool = False
     # Why an unchosen stable default follows main instead: "diverged" or "unknown".
-    main_fallback: str | None = None
+    main_fallback: Literal["diverged", "unknown"] | None = None
 
     @property
     def label(self) -> str:
@@ -144,7 +146,9 @@ def _head_relation(git_cmd, cwd, commit: str, repository: str, *, fetch=None) ->
         return head, "contains"
     full = run("rev-parse", "--is-shallow-repository").stdout.strip() == "false"
     if full and (local("cat-file", "-e", f"{commit}^{{commit}}") or (fetch is not None and fetch(commit))):
-        return head, "behind" if local("merge-base", "--is-ancestor", head, commit) else "diverged"
+        # Exit 1 is "not an ancestor"; any other failure proves nothing.
+        ancestry = run("merge-base", "--is-ancestor", head, commit).returncode
+        return head, {0: "behind", 1: "diverged"}.get(ancestry)
     status = (_github_compare(commit, head, repository) or {}).get("status")
     relation = _GITHUB_RELATION.get(status)
     # Full history already proved HEAD lacks the release; GitHub cannot overrule that.

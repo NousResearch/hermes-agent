@@ -17,7 +17,7 @@ import urllib.error
 import urllib.request
 
 from hermes_constants import get_hermes_home
-from hermes_cli.source_releases import OFFICIAL_REPOSITORY, _GITHUB_ORIGIN, official_https_remote, resolve_source_target
+from hermes_cli.source_releases import OFFICIAL_HTTPS_URL, OFFICIAL_REPOSITORY, _GITHUB_ORIGIN, official_https_remote, resolve_source_target
 
 logger = logging.getLogger(__name__)
 UPDATE_AVAILABLE_NO_COUNT = -1
@@ -294,7 +294,7 @@ def _branch_remote(co: _Checkout, selected_branch: str) -> str:
     # The public official repo does not require the user's SSH credentials.
     # Forks must keep their own origin, including its authentication.
     if co.embedded:
-        return f"https://github.com/{OFFICIAL_REPOSITORY}.git"
+        return OFFICIAL_HTTPS_URL
     https = official_https_remote(co.origin, co.repository)
     return https if https and selected_branch != "main" else "origin"
 

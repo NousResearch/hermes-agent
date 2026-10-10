@@ -1,0 +1,12 @@
+.build/
+**/.build/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+.DS_Store
+BuildEvidence/
+__pycache__/
+*.pyc
+Local.xcconfig
+LocalDevice.txt
+Setup Private Login.command

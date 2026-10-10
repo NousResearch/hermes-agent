@@ -1655,7 +1655,16 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
         """
         proc = session.process
         if proc is not None:
-            for stream in (proc.stdout, proc.stderr, proc.stdin):
+            # getattr, not attribute access: ``session.process`` is any Popen-shaped handle,
+            # and the posix_spawn path hands over ``_PosixSpawnProcess`` rather than a real
+            # Popen. This teardown is best-effort by contract, and it runs on the reader
+            # thread (via _publish_finished) and inside _prune_if_needed — an AttributeError
+            # here does not lose one stream, it kills the reader thread and leaves the
+            # session in _finished, so EVERY later spawn's prune raises and backgrounding
+            # wedges for the life of the process (t_73f1fd2c). A missing optional stream
+            # attribute must degrade to "nothing to close".
+            for stream in (getattr(proc, "stdout", None), getattr(proc, "stderr", None),
+                           getattr(proc, "stdin", None)):
                 if stream is not None:
                     with suppress(OSError, ValueError):  # a stdin flush can hit EPIPE
                         stream.close()

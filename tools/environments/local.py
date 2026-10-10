@@ -1100,7 +1100,11 @@ class _PosixSpawnProcess:
 
     Implements the ``ProcessHandle`` duck type ``_wait_for_process`` needs (``poll``, ``kill``,
     ``wait``, ``stdout``, ``returncode``) and the attributes this module's teardown touches
-    (``pid``, ``args``, ``stdin``, ``_hermes_pgid``). Reaping is cached under a lock: the drain
+    (``pid``, ``args``, ``stdin``, ``_hermes_pgid``). ``stderr`` is present and ``None``, exactly
+    as ``Popen(stdout=PIPE, stderr=STDOUT)`` reports it: the child's stderr is ``dup2``'d onto
+    the stdout pipe, so there is no second stream to hand out — but consumers that duck-type a
+    Popen (``tools/process_registry.py::_release_finished_handles`` releases every stream of an
+    adopted handle) read the attribute unconditionally. Reaping is cached under a lock: the drain
     thread and the waiter both call ``poll()``. Exit-status handling mirrors ``Popen`` —
     a child reaped elsewhere (``ChildProcessError``) reads as a 0 exit, any other transient
     ``OSError`` leaves the code unknown rather than inventing one."""
@@ -1109,6 +1113,10 @@ class _PosixSpawnProcess:
         self.pid = pid
         self.args = list(args)
         self.stdout = stdout
+        # Folded into stdout by the spawn's dup2 actions; see the class docstring. Never
+        # omitted: an absent attribute here is an AttributeError inside a consumer's
+        # teardown, not a missing stream.
+        self.stderr = None
         self.stdin = stdin
         self._returncode: int | None = None
         self._reap_lock = threading.Lock()
@@ -1171,7 +1179,7 @@ class _PosixSpawnProcess:
         return out, None
 
     def _close_streams(self) -> None:
-        for stream in (self.stdout, self.stdin):
+        for stream in (self.stdout, self.stderr, self.stdin):
             if stream is not None:
                 with contextlib.suppress(Exception):
                     stream.close()

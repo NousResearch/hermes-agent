@@ -19,6 +19,7 @@ def summary_agent(monkeypatch):
     agent = SimpleNamespace(
         provider="custom", model="review-model", base_url="https://example.invalid/v1",
         session_id="summary-session", platform="cli", max_tokens=100,
+        _current_task_id="summary-task", _current_turn_id="summary-turn",
         reasoning_config=None, _is_anthropic_oauth=False,
         _anthropic_preserve_dots=lambda: False,
         _get_transport=lambda: transport, _build_api_kwargs=lambda messages: dict(request),
@@ -30,19 +31,25 @@ def summary_agent(monkeypatch):
 
 
 @pytest.mark.parametrize("mode", ["codex_responses", "anthropic_messages", "chat_completions"])
-def test_summary_middleware_can_refuse_without_provider_call(monkeypatch, summary_agent, mode):
+@pytest.mark.parametrize("has_turn", [True, False])
+def test_summary_middleware_can_refuse_without_provider_call(monkeypatch, summary_agent, mode, has_turn):
     agent = summary_agent
     agent.api_mode = mode
     seen = []
+    if not has_turn:
+        del agent._current_task_id, agent._current_turn_id
 
-    def refuse(**context):
+    def refuse(*, task_id, turn_id, api_call_count, middleware_trace, **context):
+        assert task_id == ("summary-task" if has_turn else "")
+        assert turn_id == ("summary-turn" if has_turn else "")
+        assert api_call_count == 7 and middleware_trace == []
         seen.append(context)
         return "policy refused summary"
 
     monkeypatch.setattr(plugins, "_delivery_manager", lambda: SimpleNamespace(
-        _middleware={"llm_execution": [refuse]}))
+        _middleware={"llm_execution": [refuse]}, _report_hook_failure=lambda *args, **kw: None))
     builder = helpers._SUMMARY_ATTEMPT_BUILDERS.get(mode, helpers._chat_summary_attempt)
-    attempt = builder(agent, [], "iteration-summary:test")
+    attempt = builder(agent, [], "iteration-summary:test", api_call_count=7)
     for retry in (0, 1):
         assert attempt(retry) == "policy refused summary"
     agent._interruptible_api_call.assert_not_called()

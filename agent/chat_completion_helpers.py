@@ -2231,7 +2231,7 @@ def _summary_text(agent, response, **normalize_kwargs) -> str:
     return (normalized.content or "").strip()
 
 
-def _codex_summary_attempt(agent, api_messages: list, api_request_id: str):
+def _codex_summary_attempt(agent, api_messages: list, api_request_id: str, *, api_call_count: int = 0):
     def _attempt(retry_count: int) -> str:
         codex_kwargs = agent._build_api_kwargs(api_messages)
         # The transport emits these three as one block (transports/codex.py build_kwargs);
@@ -2244,12 +2244,12 @@ def _codex_summary_attempt(agent, api_messages: list, api_request_id: str):
         # unattended cron summary could wedge forever (#70943).
         response = execute_summary_call(
             agent, api_request_id, codex_kwargs, agent._interruptible_api_call,
-            retry_count=retry_count)
+            retry_count=retry_count, api_call_count=api_call_count)
         return _summary_text(agent, response)
     return _attempt
 
 
-def _anthropic_summary_attempt(agent, api_messages: list, api_request_id: str):
+def _anthropic_summary_attempt(agent, api_messages: list, api_request_id: str, *, api_call_count: int = 0):
     def _attempt(retry_count: int) -> str:
         ant_kw = agent._get_transport().build_kwargs(
             model=agent.model, messages=api_messages, tools=None, max_tokens=agent.max_tokens,
@@ -2257,12 +2257,13 @@ def _anthropic_summary_attempt(agent, api_messages: list, api_request_id: str):
             preserve_dots=agent._anthropic_preserve_dots(), base_url=getattr(agent, "_anthropic_base_url", None))
         ant_kw = _merge_nous_portal_messages_extra_body(agent, ant_kw)
         response = execute_summary_call(
-            agent, api_request_id, ant_kw, agent._interruptible_api_call, retry_count=retry_count)
+            agent, api_request_id, ant_kw, agent._interruptible_api_call,
+            retry_count=retry_count, api_call_count=api_call_count)
         return _summary_text(agent, response, strip_tool_prefix=agent._is_anthropic_oauth)
     return _attempt
 
 
-def _chat_summary_attempt(agent, api_messages: list, api_request_id: str):
+def _chat_summary_attempt(agent, api_messages: list, api_request_id: str, *, api_call_count: int = 0):
     # Same kwargs builder as the main loop so the summary keeps the cached prefix (tools,
     # prompt_cache_key, xAI alias, Moonshot sanitization). Do not omit tools or force
     # tool_choice="none" here: SGLang renders the prompt with tools=None in that mode and the KV
@@ -2277,7 +2278,7 @@ def _chat_summary_attempt(agent, api_messages: list, api_request_id: str):
         # during a long prefill without closing the shared primary client.
         response = execute_summary_call(
             agent, api_request_id, summary_kwargs, agent._interruptible_api_call,
-            retry_count=retry_count)
+            retry_count=retry_count, api_call_count=api_call_count)
         return _summary_text(agent, response)
     return _attempt
 
@@ -2308,7 +2309,7 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
     try:
         api_messages = _iteration_summary_api_messages(agent, messages)
         build_attempt = _SUMMARY_ATTEMPT_BUILDERS.get(agent.api_mode, _chat_summary_attempt)
-        attempt = build_attempt(agent, api_messages, summary_api_request_id)
+        attempt = build_attempt(agent, api_messages, summary_api_request_id, api_call_count=api_call_count)
 
         # One retry on an empty summary; a summary empty once its <think> block is stripped is NOT retried.
         final_response = _EMPTY_SUMMARY_RESPONSE

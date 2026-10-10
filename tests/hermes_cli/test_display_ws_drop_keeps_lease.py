@@ -158,3 +158,69 @@ def test_no_bridge_task_or_socket_outlives_the_bridge():
     with tempfile.TemporaryDirectory() as home:
         leftover = asyncio.run(_run(home))
     assert leftover == set(), [t.get_coro() for t in leftover]
+
+
+def test_a_takeover_made_by_another_process_evicts_the_former_holder():
+    """desk-1 holds; another process hands control to desk-2 (the lease file changes, no in-process
+    listener fires). desk-1 must be closed with control-taken within the refresh interval, exactly as
+    for an in-process takeover — not keep a live view of a screen someone else now drives."""
+    async def _run(home: str) -> list:
+        sock_dir = os.path.join(home, "bot-desktop")
+        os.makedirs(sock_dir, exist_ok=True)
+        server = await asyncio.start_unix_server(lambda r, w: None, path=os.path.join(sock_dir, "rfb.sock"))
+        closes = []
+
+        class _Recording(_OpenWs):
+            async def close(self, code=1000, reason=""):
+                closes.append(code)
+                self.finish.set()
+        ws = _Recording()
+        task = asyncio.create_task(display._bridge(ws, {"hermes_home": home, "viewer_id": "desk-1"}))
+        await asyncio.sleep(0.1)
+        lease._write(lease._path(home), lease.Lease(holder=lease.HUMAN, viewer_id="desk-2", epoch=2))
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=1.0)
+        except asyncio.TimeoutError:
+            pass
+        ws.finish.set()
+        await task
+        server.close()
+        return closes
+
+    lease._reset_for_tests()
+    with tempfile.TemporaryDirectory() as home:
+        lease.acquire("desk-1", profile_key=home)
+        closes = asyncio.run(_run(home))
+    lease._reset_for_tests()
+    assert closes and closes[0] == display._CLOSE_CONTROL_TAKEN, closes
+
+
+def test_a_handback_made_by_another_process_keeps_the_viewer_connected():
+    """The fix must not change the hand-back rule: the agent taking control back from another
+    process leaves the former holder watching, as an in-process hand-back does."""
+    async def _run(home: str) -> list:
+        sock_dir = os.path.join(home, "bot-desktop")
+        os.makedirs(sock_dir, exist_ok=True)
+        server = await asyncio.start_unix_server(lambda r, w: None, path=os.path.join(sock_dir, "rfb.sock"))
+        closes = []
+
+        class _Recording(_OpenWs):
+            async def close(self, code=1000, reason=""):
+                closes.append(code)
+                self.finish.set()
+        ws = _Recording()
+        task = asyncio.create_task(display._bridge(ws, {"hermes_home": home, "viewer_id": "desk-1"}))
+        await asyncio.sleep(0.1)
+        lease._write(lease._path(home), lease.Lease(holder=lease.AGENT, epoch=2))
+        await asyncio.sleep(0.6)
+        ws.finish.set()
+        await task
+        server.close()
+        return closes
+
+    lease._reset_for_tests()
+    with tempfile.TemporaryDirectory() as home:
+        lease.acquire("desk-1", profile_key=home)
+        closes = asyncio.run(_run(home))
+    lease._reset_for_tests()
+    assert display._CLOSE_CONTROL_TAKEN not in closes, closes

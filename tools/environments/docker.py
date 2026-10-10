@@ -13,6 +13,7 @@ import os
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -128,6 +129,34 @@ def _container_identity(shared_key: str = "") -> str:
     return f"{_sanitize_label_value(shared_key)[:50]}-{digest}"
 
 
+def _bind_source_path(spec: str) -> str | None:
+    """Source of a volume argument, or ``None`` for flags and non-volume arguments."""
+    if spec in ("-v", "--mount") or ":" not in spec:
+        return None  # the flag element itself, or a non-bind arg (tmpfs modes etc.)
+    parsed = _split_volume_spec(spec)
+    return parsed[0] if parsed is not None else spec.split(":", 1)[0]
+
+
+def _file_source_identity(spec: str) -> str | None:
+    """Device and inode of a regular file bind source, if available.
+
+    File binds keep the old inode after atomic replacement. A changed identity
+    prevents a later session from reusing that stale binding.
+    """
+    source = _bind_source_path(spec)
+    if source is None:
+        return None
+    if not os.path.isabs(source) and not source.startswith("."):
+        return None  # A named volume must not depend on a same-named local file.
+    try:
+        stat_result = os.stat(source)
+    except OSError:
+        return None
+    if not stat.S_ISREG(stat_result.st_mode):
+        return None
+    return f"{stat_result.st_dev}:{stat_result.st_ino}"
+
+
 def _is_volatile_mount_spec(spec: str) -> bool:
     """True when *spec* is a ``host:container[:mode]`` mount whose host source is a
     per-process tempdir (a ``mkdtemp`` under the system temp), so its path is random
@@ -138,10 +167,9 @@ def _is_volatile_mount_spec(spec: str) -> bool:
     fresh ``mkdtemp`` per process. Stable host paths — including a symlink-free
     skills dir, which mounts directly — never sit under the process tempdir.
     """
-    if spec in ("-v", "--mount") or ":" not in spec:
-        return False  # the flag element itself, or a non-bind arg (tmpfs modes etc.)
-    parsed = _split_volume_spec(spec)
-    source = parsed[0] if parsed is not None else spec.split(":", 1)[0]
+    source = _bind_source_path(spec)
+    if source is None:
+        return False
     if _is_windows_drive_path(source):
         return False  # drive-letter hosts can never be the POSIX process tempdir
     try:
@@ -162,12 +190,18 @@ def _reuse_environment_fingerprint(*, image: str, mount_args: list[str], hermes_
     it made the label differ across processes and cross-process container reuse never
     matched for users with any symlink under ``skills/``. The container path stays in the
     hash, so moving where that mount lands still forces a fresh container.
+
+    Stable file binds also include device/inode identity so replacing the source
+    prevents reuse of a container bound to the old inode.
     """
     normalized_home = os.path.normcase(os.path.abspath(os.path.expanduser(hermes_home)))
-    canonical_mounts = [
-        (f"<volatile-tempdir-mount>:{spec.split(':', 1)[1]}"
-         if _is_volatile_mount_spec(spec) else spec)
-        for spec in mount_args]
+    canonical_mounts = []
+    for spec in mount_args:
+        if _is_volatile_mount_spec(spec):
+            canonical_mounts.append(f"<volatile-tempdir-mount>:{spec.split(':', 1)[1]}")
+            continue
+        identity = _file_source_identity(spec)
+        canonical_mounts.append(spec if identity is None else f"{spec}<{identity}>")
     payload = json.dumps(
         {"image": image, "mount_args": canonical_mounts, "hermes_home": normalized_home},
         sort_keys=True, separators=(",", ":"))

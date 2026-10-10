@@ -253,6 +253,9 @@ _MEMORY_CEILING_ERROR_CODES = frozenset({
 _CONTEXT_OVERFLOW_PATTERNS = (
     "context length", "context size", "maximum context", "token limit", "too many tokens",
     "reduce the length", "exceeds the limit", "context window", "prompt is too long",
+    # Z.AI/GLM: `{"code":"1261","message":"Prompt too long"}` — no "is", so the Anthropic pattern
+    # above never matched it and the 400 read as a non-retryable format error (port of pi 0e283203c).
+    "prompt too long",
     "prompt exceeds max length", "max_tokens", "maximum number of tokens",
     "exceeds the max_model_len", "max_model_len", "prompt length", "input is too long", "maximum model length",
     "context length exceeded", "truncating input",

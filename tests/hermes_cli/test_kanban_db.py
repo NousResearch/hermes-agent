@@ -33,12 +33,12 @@ def kanban_home(tmp_path, monkeypatch):
 
 def _init_git_repo(repo: Path) -> None:
     repo.mkdir(parents=True, exist_ok=True)
-    subprocess.run(["git", "init", "-b", "main", str(repo)], check=True, capture_output=True, text=True)
-    subprocess.run(["git", "-C", str(repo), "config", "user.email", "kanban@example.com"], check=True, capture_output=True, text=True)
-    subprocess.run(["git", "-C", str(repo), "config", "user.name", "Kanban Test"], check=True, capture_output=True, text=True)
+    subprocess.run(["git", "init", "-b", "main", str(repo)], check=True, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    subprocess.run(["git", "-C", str(repo), "config", "user.email", "kanban@example.com"], check=True, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    subprocess.run(["git", "-C", str(repo), "config", "user.name", "Kanban Test"], check=True, capture_output=True, text=True, encoding="utf-8", errors="replace")
     (repo / "README.md").write_text("hello\n", encoding="utf-8")
-    subprocess.run(["git", "-C", str(repo), "add", "README.md"], check=True, capture_output=True, text=True)
-    subprocess.run(["git", "-C", str(repo), "commit", "-m", "init"], check=True, capture_output=True, text=True)
+    subprocess.run(["git", "-C", str(repo), "add", "README.md"], check=True, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    subprocess.run(["git", "-C", str(repo), "commit", "-m", "init"], check=True, capture_output=True, text=True, encoding="utf-8", errors="replace")
 
 
 # ---------------------------------------------------------------------------
@@ -801,7 +801,14 @@ def test_worktree_workspace_explicit_target_materializes_linked_worktree(kanban_
         capture_output=True,
         text=True,
     ).stdout
-    assert f"worktree {target}" in listed
+    # Git normalizes paths differently across platforms (Windows separators,
+    # short names), so compare resolved worktree paths, not raw substrings.
+    listed_worktrees = {
+        Path(line.removeprefix("worktree ")).resolve()
+        for line in listed.splitlines()
+        if line.startswith("worktree ")
+    }
+    assert target.resolve() in listed_worktrees
     assert f"branch refs/heads/{branch}" in listed
 
 
@@ -1610,9 +1617,18 @@ def test_resolve_hermes_argv_module_actually_runs():
 
     with mock.patch.dict(os.environ, {}, clear=False):
         os.environ.pop("HERMES_BIN", None)
-        with mock.patch.object(shutil, "which", return_value=None):
+        with mock.patch.object(shutil, "which", return_value=None), mock.patch.object(
+            kbd, "_safe_which_no_cwd", return_value=None
+        ):
             argv = kbd._resolve_hermes_argv()
-    r = subprocess.run(argv + ["--version"], capture_output=True, text=True, timeout=30)
+    r = subprocess.run(
+        argv + ["--version"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=30,
+    )
     assert r.returncode == 0, (
         f"`{' '.join(argv)} --version` failed (rc={r.returncode}); "
         f"stderr={r.stderr[:200]!r}"
@@ -2084,3 +2100,119 @@ def test_archive_non_running_task_does_not_attempt_termination(kanban_home):
             (t,),
         ).fetchone()
         assert row is None
+
+
+# ---------------------------------------------------------------------------
+# _record_task_failure metadata + late-finalizer guard (#79399)
+# ---------------------------------------------------------------------------
+
+
+def test_record_task_failure_below_threshold_preserves_budget_metadata(kanban_home):
+    """Iteration-budget exhaustion keeps budget_used/budget_max in the run
+    metadata AND the event payload on the below-threshold path (#79399)."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="budget task")
+        claimed = kb.claim_task(conn, tid, claimer="test:1")
+        assert claimed is not None
+        assert kb.get_task(conn, tid).status == "running"
+
+        # Below the breaker threshold (failure_limit=5, this is failure 1).
+        blocked = kbd._record_task_failure(
+            conn, tid,
+            error="Iteration budget exhausted (20/20)",
+            outcome="timed_out",
+            failure_limit=5,
+            release_claim=True,
+            end_run=True,
+            event_payload_extra={"budget_used": 20, "budget_max": 20},
+        )
+        assert blocked is False
+        # Task dropped back to ready for respawn.
+        assert kb.get_task(conn, tid).status == "ready"
+
+        run = conn.execute(
+            "SELECT metadata FROM task_runs WHERE task_id = ? "
+            "ORDER BY id DESC LIMIT 1",
+            (tid,),
+        ).fetchone()
+        assert run is not None
+        meta = json.loads(run["metadata"] or "{}")
+        assert meta.get("budget_used") == 20
+        assert meta.get("budget_max") == 20
+
+        ev = conn.execute(
+            "SELECT payload FROM task_events WHERE task_id = ? "
+            "AND kind = 'timed_out' ORDER BY id DESC LIMIT 1",
+            (tid,),
+        ).fetchone()
+        assert ev is not None
+        payload = json.loads(ev["payload"] or "{}")
+        assert payload.get("budget_used") == 20
+        assert payload.get("budget_max") == 20
+
+
+def test_record_task_failure_noop_after_blocked_handoff(kanban_home):
+    """A late iteration finalizer must not fail a task already blocked (#79399)."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="blocked handoff")
+        claimed = kb.claim_task(conn, tid, claimer="test:1")
+        assert claimed is not None
+
+        # Worker spends its final iteration on kanban_block -> task blocked.
+        assert kb.block_task(conn, tid, reason="needs human input") is True
+        assert kb.get_task(conn, tid).status == "blocked"
+
+        # Late finalizer fires after the handoff: must be a no-op.
+        result = kbd._record_task_failure(
+            conn, tid,
+            error="Iteration budget exhausted (20/20)",
+            outcome="timed_out",
+            failure_limit=5,
+            release_claim=True,
+            end_run=True,
+            event_payload_extra={"budget_used": 20, "budget_max": 20},
+        )
+        assert result is False
+        assert kb.get_task(conn, tid).status == "blocked"
+        # No timed_out event appended on top of the handoff.
+        kinds = [
+            r["kind"]
+            for r in conn.execute(
+                "SELECT kind FROM task_events WHERE task_id = ?", (tid,)
+            ).fetchall()
+        ]
+        assert "timed_out" not in kinds
+
+
+def test_record_task_failure_noop_after_completed_handoff(kanban_home):
+    """A late iteration finalizer must not fail a task already done (#79399)."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="completed handoff")
+        claimed = kb.claim_task(conn, tid, claimer="test:1")
+        assert claimed is not None
+
+        run_id = kb.get_task(conn, tid).current_run_id
+        assert kb.complete_task(
+            conn, tid, result="done", expected_run_id=run_id,
+        ) is True
+        assert kb.get_task(conn, tid).status == "done"
+
+        result = kbd._record_task_failure(
+            conn, tid,
+            error="Iteration budget exhausted (20/20)",
+            outcome="timed_out",
+            failure_limit=5,
+            release_claim=True,
+            end_run=True,
+            event_payload_extra={"budget_used": 20, "budget_max": 20},
+        )
+        assert result is False
+        assert kb.get_task(conn, tid).status == "done"
+        # No timed_out event appended on top of the handoff.
+        kinds = [
+            r["kind"]
+            for r in conn.execute(
+                "SELECT kind FROM task_events WHERE task_id = ?", (tid,)
+            ).fetchall()
+        ]
+        assert "timed_out" not in kinds

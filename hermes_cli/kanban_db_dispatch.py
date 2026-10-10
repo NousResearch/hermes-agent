@@ -1383,6 +1383,12 @@ def _record_task_failure(
         ).fetchone()
         if row is None:
             return False
+        # Late finalizers: a worker that already ended its task via
+        # kanban_block / kanban_complete must not emit a bogus failure
+        # on top of the handoff. Only a still-running (or still-claimable
+        # ready/review) task may be failed (#79399).
+        if row["status"] not in ("running", "ready", "review"):
+            return False
         retry_status = (
             _kb._retry_status_for_run(conn, task_id, row["current_run_id"])
             if release_claim
@@ -1418,6 +1424,13 @@ def _record_task_failure(
                 detail = {"failures": failures, "retry_status": retry_status}
                 if infrastructure:
                     detail["infrastructure"] = True
+                # Callers pass outcome-specific context (budget_used /
+                # budget_max on iteration exhaustion, pid on crash, elapsed on
+                # timeout); it must survive into the below-threshold run
+                # metadata AND the event payload so the notifiers can render
+                # the real cause instead of inventing max_runtime=0s (#79399).
+                if event_payload_extra:
+                    detail.update(event_payload_extra)
                 run_id = _kb._end_run(
                     conn, task_id, outcome=outcome, status=outcome, error=error, metadata=detail,
                 )

@@ -451,20 +451,43 @@ def _fmt_block_loop_detected(ev, n) -> tuple:
 
 
 def _fmt_gave_up(ev, n) -> tuple:
-    # The dispatcher auto-blocked the task after ``failures`` consecutive non-success attempts
-    # (spawn failure, crash, or timeout alike): it is now Blocked and waiting for a human.
+    # The dispatcher auto-blocked the task after ``failures`` consecutive
+    # non-success attempts: name the class of the final failure
+    # (trigger_outcome: spawn_failed, crashed, timed_out, ...) rather than
+    # leaving a generic phrase, so a reader can tell iteration exhaustion
+    # apart from a crash without opening the board (#79399).
     failures = _payload(ev, "failures")
     count = (t("gateway.kanban.ping.failed_n_times", count=int(failures)) if failures
              else t("gateway.kanban.ping.kept_failing"))
+    trigger = _payload(ev, "trigger_outcome")
+    if trigger:
+        count += t("gateway.kanban.ping.trigger_suffix", outcome=str(trigger))
     last = _clip(ev, "error", "gateway.kanban.ping.last_error", 160)
     return t("gateway.kanban.ping.gave_up", head=n.head, count=count, last=last, task_id=n.task_id), None, None
 
 
 def _fmt_timed_out(ev, n) -> tuple:
-    limit = int(_payload(ev, "limit_seconds") or 0)
-    minutes = max(1, round(limit / 60)) if limit else 0
-    span = t("gateway.kanban.ping.limit_minutes", minutes=minutes) if minutes else t("gateway.kanban.ping.limit_generic")
-    return t("gateway.kanban.ping.timed_out", head=n.head, span=span), None, None
+    # Iteration-budget exhaustion carries budget_used/budget_max, not a
+    # wall-clock limit: render it as such and never invent a runtime (#79399).
+    payload = ev.payload or {}
+    budget_used = payload.get("budget_used")
+    budget_max = payload.get("budget_max")
+    if budget_used is not None and budget_max is not None:
+        span = t("gateway.kanban.ping.limit_iterations", used=budget_used, max=budget_max)
+    else:
+        limit = int(_payload(ev, "limit_seconds") or 0)
+        if not limit and n.task is not None:
+            # Legacy events / metadata-less payloads: fall back to the task's
+            # configured runtime rather than an invented zero.
+            limit = int(getattr(n.task, "max_runtime_seconds", 0) or 0)
+        minutes = max(1, round(limit / 60)) if limit else 0
+        span = t("gateway.kanban.ping.limit_minutes", minutes=minutes) if minutes else t("gateway.kanban.ping.limit_generic")
+    # Only a task that will actually be respawned may promise a retry: a
+    # blocked / dependency-gated card is not going to retry itself (#79399).
+    key = ("gateway.kanban.ping.timed_out"
+           if n.task is not None and getattr(n.task, "status", "") == "ready"
+           else "gateway.kanban.ping.timed_out_no_retry")
+    return t(key, head=n.head, span=span), None, None
 
 
 # archived / unblocked are claimed (so the cursor advances past them) but

@@ -8,6 +8,7 @@ context before each model iteration.
 from __future__ import annotations
 
 import contextlib
+import copy
 import functools
 import hashlib
 import json
@@ -250,7 +251,9 @@ def _slot_runtime(slot: dict[str, Any]) -> dict[str, Any]:
     """Slot → ``call_llm`` kwargs with the provider's real api_mode/base_url/api_key.
 
     Cached per (profile home, provider, model) with a short TTL. Falls back to bare provider/model
-    on error — never cached, or a transient error would pin bare kwargs for a TTL.
+    on error — never cached, or a transient error would pin bare kwargs for a TTL. Every caller
+    gets its own copy: the aggregator pops ``extra_body``, and doing that on the cached dict
+    dropped it from every later call inside the TTL.
     """
     provider = str(slot.get("provider") or "").strip()
     model = str(slot.get("model") or "").strip()
@@ -262,7 +265,7 @@ def _slot_runtime(slot: dict[str, Any]) -> dict[str, Any]:
     with _runtime_cache_lock:
         entry = _runtime_cache.get(cache_key)
     if entry is not None and now - entry[0] < _RUNTIME_CACHE_TTL_SECONDS:
-        return entry[1]
+        return copy.deepcopy(entry[1])
     out: dict[str, Any] = {"provider": provider, "model": model}
     try:
         from hermes_cli.runtime_provider import resolve_runtime_provider
@@ -278,7 +281,7 @@ def _slot_runtime(slot: dict[str, Any]) -> dict[str, Any]:
         return out
     with _runtime_cache_lock:
         _runtime_cache[cache_key] = (now, out)
-    return out
+    return copy.deepcopy(out)
 
 
 def _merge_slot_extra_body(slot_extra_body: Any, caller_extra_body: Any) -> Any:

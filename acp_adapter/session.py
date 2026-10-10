@@ -151,6 +151,15 @@ class SessionState:
     # Per-session allocator for ACP assistant messageIds (lazily created by
     # the server so streamed chunks group into distinct assistant replies).
     message_ids: Any = None
+    # Cross-turn file snapshots: absolute resolved path -> content observed before the
+    # first mutation (or None when the path did not exist then). Owned by the session so a
+    # ``terminal`` call in a later API round can still diff against what an earlier
+    # ``read_file`` observed — a per-call snapshot has no such history.
+    read_snapshots_cache: dict[str, str | None] = field(default_factory=dict)
+    # Lineage: set when this session is a branch of another (ACP ``new_session`` may carry
+    # ``parent_session_id``). Persisted to the session row, which backfills cwd/git/profile
+    # from the parent only where the child's own columns are still NULL.
+    parent_session_id: str | None = None
 
 
 class SessionManager:
@@ -173,13 +182,21 @@ class SessionManager:
 
     # ---- public API ---------------------------------------------------------
 
-    def create_session(self, cwd: str = ".") -> SessionState:
-        """Create a new session with a unique ID and a fresh AIAgent."""
+    def create_session(self, cwd: str = ".", parent_session_id: str | None = None) -> SessionState:
+        """Create a new session with a unique ID and a fresh AIAgent.
+
+        ``parent_session_id`` records lineage — the new session is a branch of that
+        parent. It is threaded to the agent and persisted so the row can inherit the
+        parent's cwd / git metadata / profile where its own columns are still NULL."""
         cwd = _translate_acp_cwd(cwd)
         session_id = str(uuid.uuid4())
-        agent = self._make_agent(session_id=session_id, cwd=cwd)
-        state = self._install_state(session_id, agent, cwd, getattr(agent, "model", "") or "", [])
-        logger.info("Created ACP session %s (cwd=%s)", session_id, cwd)
+        agent = self._make_agent(session_id=session_id, cwd=cwd, parent_session_id=parent_session_id)
+        state = self._install_state(
+            session_id, agent, cwd, getattr(agent, "model", "") or "", [],
+            parent_session_id=parent_session_id,
+        )
+        logger.info("Created ACP session %s (cwd=%s%s)", session_id, cwd,
+                    f", parent={parent_session_id}" if parent_session_id else "")
         return state
 
     def get_session(self, session_id: str) -> Optional[SessionState]:
@@ -304,10 +321,12 @@ class SessionManager:
     # ---- persistence via SessionDB ------------------------------------------
 
     def _install_state(self, session_id: str, agent: Any, cwd: str, model: str,
-                       history: list[dict[str, Any]], *, persist: bool = True) -> SessionState:
+                       history: list[dict[str, Any]], *, persist: bool = True,
+                       parent_session_id: str | None = None) -> SessionState:
         """Build a SessionState, register it in memory, bind its cwd for tools, optionally persist."""
         state = SessionState(session_id=session_id, agent=agent, cwd=cwd, model=model,
-                             history=history, cancel_event=threading.Event())
+                             history=history, cancel_event=threading.Event(),
+                             parent_session_id=parent_session_id)
         with self._lock:
             self._sessions[session_id] = state
         _register_task_cwd(session_id, cwd)
@@ -359,7 +378,8 @@ class SessionManager:
                     # Empty editor probes stay ephemeral; copied fork history persists.
                     return
                 db.create_session(session_id=state.session_id, source="acp", model=model_str,
-                                  model_config=session_meta, cwd=state.cwd or None)
+                                  model_config=session_meta, cwd=state.cwd or None,
+                                  parent_session_id=state.parent_session_id)
             else:
                 try:
                     db.update_session_meta(state.session_id, json.dumps(session_meta), model_str)
@@ -493,7 +513,8 @@ class SessionManager:
 
     def _make_agent(self, *, session_id: str, cwd: str, model: str | None = None,
                     requested_provider: str | None = None, base_url: str | None = None, api_mode: str | None = None,
-                    enabled_toolsets: list[str] | None = None, disabled_toolsets: list[str] | None = None):
+                    enabled_toolsets: list[str] | None = None, disabled_toolsets: list[str] | None = None,
+                    parent_session_id: str | None = None):
         """``enabled_toolsets``/``disabled_toolsets`` carry a live session's toolsets into a rebuild; ``None`` derives
         them from config (fresh session)."""
         if self._agent_factory is not None:
@@ -529,6 +550,9 @@ class SessionManager:
                                   else parse_config_string_list((config.get("agent") or {}).get("disabled_toolsets")) or None),
             "model": model or default_model,
             "cwd": cwd,
+            # Keep None (not "") when there is no parent: the session row has a FK on
+            # parent_session_id, and inserting an empty string violates it.
+            "parent_session_id": parent_session_id or None,
             # Same chokepoint as the CLI/gateway/TUI/cron: without it ``agent.reasoning_effort: none`` never
             # reaches an ACP session and the transport applies its default effort (a 400 on non-reasoning
             # models). Resolved against the session's model so per-model overrides apply.

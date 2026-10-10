@@ -53,6 +53,7 @@ Supported middleware kinds:
 | `tool_request` | `tool_name`, `args`, `original_args` | `{"args": {...}}` | Replace effective tool args before hooks, guardrails, approvals, and execution. |
 | `llm_execution` | `request`, `original_request`, `next_call` | Any provider response | Wrap or replace the actual provider call. |
 | `tool_execution` | `tool_name`, `args`, `original_args`, `next_call` | Any tool result | Wrap or replace the actual tool call. |
+| `authorized_tool_execution` | `tool_name`, approved `args`, `env_type`, zero-argument `next_call`, trusted runtime identity | Actual completed tool result, or a pre-execution refusal | Acquire/release resources immediately around an approved terminal command. |
 
 Request middleware can return optional trace fields:
 
@@ -77,13 +78,119 @@ def on_tool_execution(**kwargs):
 ```
 
 If multiple plugins register the same execution middleware kind, Hermes runs
-them as a nested chain in registration order. Middleware failures are fail-open:
+them as a nested chain in registration order. The four original middleware kinds are fail-open:
 Hermes logs a warning and continues with the next middleware or the base
 runtime path. A callback that fails the same way on every call (typically a
 signature naming a field the middleware does not send) is reported **once** at
 WARNING — the message lists the fields it does provide — and identical repeats go
 to DEBUG, so a mis-declared middleware cannot flood the log; a plugin reload
 resets the report.
+
+### Approved terminal execution
+
+`authorized_tool_execution` is a separate, **fail-closed** synchronous contract.
+Its first consumer is `terminal`, after command/workdir validation and all terminal
+approval guards. The existing `tool_execution` wrapper runs outside those terminal
+guards and is not an appropriate place to acquire a resource needed only by an
+approved command. The new kind does not alter other tools or their approvals.
+
+An enabled, trusted **in-process** plugin can use this seam for a bounded resource
+handoff before a build or GPU test starts. A separate supervisor resource broker
+is the concrete consumer; the engine protocol and policy belong to that plugin,
+not Hermes core. Registration alone does not suppress normal terminal yielding:
+the consumer explicitly protects only the calls it has admitted.
+
+```python
+from hermes_cli.authorized_tool_execution import hold_foreground_execution
+
+def register(ctx):
+    ctx.register_middleware("authorized_tool_execution", admitted_terminal)
+
+def admitted_terminal(*, args, next_call, lineage_valid, **context):
+    if not resource_policy.matches(args["command"]):
+        return next_call()
+    if not lineage_valid or args.get("background"):
+        raise RuntimeError("This resource policy requires an owned foreground call")
+    with resource_policy.acquire(context):
+        with hold_foreground_execution():
+            return next_call()
+```
+
+Here `resource_policy` is supplied by the plugin. Admission must be bounded and
+honor `tools.interrupt.is_interrupted()`. The continuation checks cancellation
+again immediately before dispatch. It takes no arguments, runs once on its owning
+thread, and expires when the callback returns. Changing the callback's private
+copy of `args` cannot rewrite the already-approved command. Raising before
+execution blocks that call; Hermes does not fall through to execute it. Once the
+command completes, its actual result is retained even if middleware cleanup
+fails or returns a different result.
+
+Within `hold_foreground_execution()`, a foreground terminal call cannot use
+Hermes's automatic yield-to-background path. Explicit background calls and
+commands promoted to background by the existing timeout policy are reported with
+`args["background"] == True`; a foreground-only consumer must reject those before
+acquiring resources. This scope does not prevent a shell command itself from
+spawning detached children, nor does it change backend timeout/cleanup semantics.
+The terminal's ordinary retry loop is disabled inside this scope: a backend error
+may follow a real side effect, so the protected command is not silently replayed.
+Use bounded commands whose process lifetime the terminal backend owns. Plugin-host
+isolation is not supported by this synchronous in-process contract.
+
+### Trusted tool identity
+
+`agent.tool_execution_context.current_tool_execution_context()` returns an
+immutable snapshot bound around actual agent tool dispatch, including direct
+`invoke_tool` dispatch. The snapshot contains `session_id`, `root_session_id`,
+`parent_session_id`, `delegate_depth`, `lineage_valid`, `profile_home`, `task_id`,
+`tool_call_id`, `turn_id`, and `api_request_id`. Approved execution middleware
+receives these same fields. `profile_home` is the current context-local profile,
+so multiplexed A/B/A sessions do not inherit the first profile's configuration.
+
+Lineage is derived from runtime parent references and delegation depth, not model
+arguments. Missing, dead, inconsistent or cyclic ancestry has `lineage_valid=False`
+and grants no root identity. Outside dispatch the snapshot is unbound and invalid.
+A plugin supervisor-only tool can require a valid depth of zero before recording
+a plan; worker terminal calls can consume that plan without supplying an engine
+credential or choosing another root. Context is restored after nested dispatch.
+
+This is a trusted extension API, not a sandbox against arbitrary Python or shell
+code. No live agent object or credential is included, and the context must not be
+copied into a model prompt. Consumers must retain ordinary approval enforcement
+and their own profile-scoped configuration and secret handling.
+
+### Private control credentials
+
+An in-process plugin using a control credential can declare its environment key
+with `ctx.register_private_env_keys(["EXAMPLE_CONTROL_TOKEN"])`. This registers
+**names only**; the plugin continues to read values through normal secret sources.
+The returned registration handle and the plugin unload ledger remove only that
+owner's declaration. Multiple plugins can protect the same name independently.
+An authorized middleware call captures its callbacks and profile's private names
+together. If a plugin unloads while that call is waiting for admission, the call
+retains those names through execution and cleanup, then releases its snapshot.
+Nested calls into another profile do not inherit the first profile's registration
+authority. Child-environment scrubbing retains the process-wide names visible at
+capture until the call finishes, including for children of another profile or
+thread. This retention stores no values and does not keep the plugin registered.
+
+Registration ownership and lookup remain scoped to the active Hermes profile.
+The existing child-env builders strip the union of registered private names from
+all profiles: the parent process environment can contain operator-injected keys
+with no profile provenance. This denial-only union does not share values,
+callbacks or permissions between profiles. It applies to inherited values,
+extras, credential-inheriting children, and skill passthrough additions.
+Name matching is case-insensitive,
+including Windows environment blocks. `_HERMES_FORCE_...` extras cannot reintroduce
+a private key; other existing FORCE behavior is unchanged. Snapshot the configured
+key at registration and require plugin reload when it changes, so the credential
+used by the control client always has a matching declaration.
+
+This controls normal Hermes child-environment construction. It does not erase an
+already-running shell's environment or prevent a trusted local tool from reading
+the user's secret files. Explicit internal `scrub_secrets=False` callers retain
+their existing unsanitized contract. Disabling/unloading the plugin removes its declaration;
+remove obsolete control credentials from the environment as part of disabling the
+integration. Do not publish credential values or expose them as tool arguments.
 
 ## Execution Order
 
@@ -261,10 +368,10 @@ and system configuration, or through an explicit `plugins.toml` selected with
   patches.
 - Execution middleware should call `next_call(...)` exactly once unless it is
   intentionally short-circuiting execution.
-- If execution middleware raises before calling `next_call(...)`, Hermes treats
+- If `llm_execution` or `tool_execution` raises before calling `next_call(...)`, Hermes treats
   that as middleware failure and continues with the remaining middleware chain
   and base execution.
-- If execution middleware calls `next_call(...)` successfully and then raises
+- If `llm_execution` or `tool_execution` calls `next_call(...)` successfully and then raises
   during post-processing, Hermes preserves the downstream result and does not
   run the provider or tool a second time.
 - If downstream provider or tool execution fails, middleware may let that error

@@ -1233,6 +1233,9 @@ def _acquire_env(plan: _ExecPlan, task_id: Optional[str]) -> Any:
 
 def _yield_kwargs(command: str, **ctx) -> dict:
     """``env.execute`` kwargs enabling yield-to-background (local backend only)."""
+    from hermes_cli.authorized_tool_execution import authorized_tool_execution_active
+    if authorized_tool_execution_active():
+        return {}
     handler = yield_to_background_handler(command=command, **ctx)
     return {"yield_handler": handler} if handler is not None else {}
 
@@ -1246,7 +1249,10 @@ def _run_foreground(
     """Execute in the foreground with retry on transient errors, then finalize. ``metered``
     is False for Hermes' own control-plane commands (``_host_local``)."""
     from hermes_cli.observability.shared_metrics_harness import record_terminal_outcome
-    max_retries = 3
+    from hermes_cli.authorized_tool_execution import authorized_tool_execution_active
+    # A protected tool may already have side effects when its backend raises.
+    # Its owner gets that outcome once; never silently repeat the command.
+    max_retries = 0 if authorized_tool_execution_active() else 3
     env_type, eff, effective_timeout = plan.env_type, plan.effective_task_id, plan.effective_timeout
 
     # Clean interrupt slate for an approved command, ONCE before the retry
@@ -1459,26 +1465,38 @@ def terminal_tool(
             # Promotion implies notify_on_complete; watch_patterns is a background-only flag the
             # caller could not have meant for a foreground call, and the two are exclusive anyway.
             background, notify_on_complete, watch_patterns = True, True, None
+        from hermes_cli.authorized_tool_execution import (
+            authorized_tool_execution_active, run_authorized_tool_execution_middleware,
+        )
         if background:
-            result = spawn_background_process(
-                command=command, env=env, env_type=env_type, effective_task_id=effective_task_id,
-                task_id=task_id, session_key=session_key, workdir=workdir, cwd=cwd,
-                mounted_host=getattr(env, "host_cwd", None) or plan.host_cwd,
-                effective_pty=pty and not pty_disabled, notify_on_complete=notify_on_complete,
-                watch_patterns=watch_patterns, approval_note=verdict.note,
-                pty_disabled_reason=_PTY_DISABLED_REASON if pty_disabled else None,
-                completion_output_chars=_completion_output_chars,
-                heartbeat_seconds=heartbeat,
-                persist_on_release=persist_on_release,
+            result = run_authorized_tool_execution_middleware(
+                "terminal", {"command": command, "background": True, "workdir": workdir,
+                             "timeout": plan.effective_timeout, "pty": pty},
+                lambda: spawn_background_process(
+                    command=command, env=env, env_type=env_type, effective_task_id=effective_task_id,
+                    task_id=task_id, session_key=session_key, workdir=workdir, cwd=cwd,
+                    mounted_host=getattr(env, "host_cwd", None) or plan.host_cwd,
+                    effective_pty=pty and not pty_disabled, notify_on_complete=notify_on_complete,
+                    watch_patterns=watch_patterns, approval_note=verdict.note,
+                    pty_disabled_reason=_PTY_DISABLED_REASON if pty_disabled else None,
+                    completion_output_chars=_completion_output_chars,
+                    heartbeat_seconds=heartbeat,
+                    persist_on_release=persist_on_release,
+                ), env_type=env_type, clear_interrupt=verdict.approved_run,
             )
             if plan.promoted_from_foreground_timeout is not None:
                 result = _with_promoted_note(result, plan.promoted_from_foreground_timeout)
             return _metered(None if _host_local else plan, result)
-        return _metered(None if _host_local else plan, _run_foreground(
-            command, env, plan,
-            task_id=task_id, session_id=session_id, session_key=session_key,
-            workdir=workdir, approval_note=verdict.note, clear_interrupt=verdict.approved_run,
-            metered=not _host_local,
+        return _metered(None if _host_local else plan, run_authorized_tool_execution_middleware(
+            "terminal", {"command": command, "background": False, "workdir": workdir,
+                         "timeout": plan.effective_timeout, "pty": pty},
+            lambda: _run_foreground(
+                command, env, plan,
+                task_id=task_id, session_id=session_id, session_key=session_key,
+                workdir=workdir, approval_note=verdict.note,
+                clear_interrupt=verdict.approved_run and not authorized_tool_execution_active(),
+                metered=not _host_local,
+            ), env_type=env_type, clear_interrupt=verdict.approved_run,
         ))
     except _Rejected as r:
         return r.result_json

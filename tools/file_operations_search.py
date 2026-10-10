@@ -144,6 +144,65 @@ def _split_tool_diagnostics(output: str) -> tuple[str, str]:
     return '\n'.join(diagnostics), '\n'.join(payload)
 
 
+# One unreadable-path diagnostic, in every shape the search lanes produce:
+#   rg:   ``rg: <path>: Permission denied (os error 13)``
+#   rg modified-sort walk: ``rg: <path>: IO error for operation on <path>: Permission denied (os error 13)``
+#   grep: ``grep: <path>: Permission denied`` (no ``(os error N)`` suffix)
+# The ``(os error N)`` suffix is ripgrep's Rust io::Error spelling, so it is optional.
+_PERMISSION_DENIED_RE = re.compile(
+    r"^(?:(?:rg|grep): )?(?P<path>.+?): "
+    r"(?:IO error for operation on .+?: )?Permission denied(?: \(os error \d+\))?$")
+
+
+def _is_permission_only_error(diagnostics: str) -> bool:
+    """True when every diagnostic line reports an unreadable path (rg or grep).
+    That is a partial-success condition — the tool still emits results for the
+    readable remainder — not a broken invocation like a bad glob or regex."""
+    lines = [line.strip() for line in diagnostics.splitlines() if line.strip()]
+    return bool(lines) and all(_PERMISSION_DENIED_RE.match(line) for line in lines)
+
+
+def _extract_unreadable_paths(diagnostics: str) -> list[str]:
+    """Paths reported unreadable by rg or grep, deduplicated in first-seen order."""
+    paths: list[str] = []
+    for line in diagnostics.splitlines():
+        match = _PERMISSION_DENIED_RE.match(line.strip())
+        if not match:
+            continue
+        path = match.group("path").strip()
+        if path and path not in paths:
+            paths.append(path)
+    return paths
+
+
+def _compact_unreadable_paths(paths: list[str], keep: int = 3) -> str:
+    shown = ", ".join(paths[:keep])
+    extra = len(paths) - keep
+    return shown + (f" (+{extra} more)" if extra > 0 else "")
+
+
+def _skipped_unreadable_warning(paths: list[str]) -> str:
+    return ("Skipped " + str(len(paths)) + " unreadable path(s) with restricted "
+            "permissions: " + _compact_unreadable_paths(paths)
+            + ". Results are partial; fix permissions or search the path directly "
+            "to include it.")
+
+
+def _prepend_skipped_paths_warning(diagnostics: str, existing: Optional[str]) -> Optional[str]:
+    """Warning naming the skipped unreadable paths, prepended to any existing warning."""
+    paths = _extract_unreadable_paths(diagnostics)
+    if not paths:
+        return existing
+    warning = _skipped_unreadable_warning(paths)
+    return warning if not existing else f"{warning} {existing}"
+
+
+_PERMISSION_SEARCH_HINT = (
+    "Every reported path was skipped for restricted permissions, so the searchable "
+    "scope itself is unreadable: fix permissions (e.g. chown the path back to the "
+    "service user) or search a readable subtree.")
+
+
 def _parse_search_context_line(line: str) -> tuple[str, int, str] | None:
     """Parse a ``path-line-content`` context line using the RIGHTMOST numeric
     separator (filenames may contain ``-<digits>-`` segments):
@@ -206,7 +265,18 @@ def _parse_search_output(result, output_mode: str, limit: int, offset: int,
     diagnostics, payload = _split_tool_diagnostics(stdout)
     if result.exit_code == 2 and not payload.strip():
         error_msg = diagnostics.strip() or result.stdout.strip() or "Search error"
+        if _is_permission_only_error(error_msg):
+            # Pure unreadable-path failure: rg read nothing but the invocation was
+            # sound. Degrade to an explicit empty result instead of failing — the
+            # model can still act on the named paths.
+            warning = _prepend_skipped_paths_warning(error_msg, warning)
+            if not warning:
+                warning = _PERMISSION_SEARCH_HINT
+            elif _PERMISSION_SEARCH_HINT not in warning:
+                warning = f"{warning} {_PERMISSION_SEARCH_HINT}"
+            return SearchResult(total_count=0, warning=warning)
         return SearchResult(error=f"Search failed: {error_msg}", total_count=0)
+    warning = _prepend_skipped_paths_warning(diagnostics, warning)
     lines = [ln for ln in payload.strip().split('\n') if ln]
     if output_mode == "files_only":
         return SearchResult(
@@ -882,19 +952,36 @@ class SearchMixin:
             elif line:
                 raw_files.append(line)
         bounded_sigpipe = result.exit_code == 141 and len(raw_files) >= fetch_limit
-        if result.exit_code not in {0, 124} and not bounded_sigpipe:
+        if result.exit_code not in {0, 1, 124} and not bounded_sigpipe:
             if order == "modified":
                 return SearchResult(error=(
                     "Exact modification-time order requires GNU find with "
                     "-printf support; install ripgrep 14+ or use order='discovery'."))
             return SearchResult(error="File search failed while running bounded find traversal.")
+        # GNU find exits 1 when traversal hit unreadable dirs (EACCES et al.) but
+        # still prints what it could read. With a payload that is a partial-success
+        # condition (stderr is discarded, so the paths cannot be named here); with
+        # an empty payload it is a real failure (parse errors also exit 1).
+        partial_warning: Optional[str] = None
+        if result.exit_code == 1 and not bounded_sigpipe:
+            if not raw_files:
+                if order == "modified":
+                    return SearchResult(error=(
+                        "Exact modification-time order requires GNU find with "
+                        "-printf support; install ripgrep 14+ or use order='discovery'."))
+                return SearchResult(error="File search failed while running bounded find traversal.")
+            partial_warning = (
+                "find traversal skipped one or more unreadable paths (restricted "
+                "permissions); results are partial. Fix permissions or search a "
+                "readable subtree to include them.")
 
         from tools.environments.local import LocalEnvironment, _IS_WINDOWS, _msys_to_windows_path
         if _IS_WINDOWS and isinstance(self.env, LocalEnvironment):
             raw_files = [_msys_to_windows_path(file_path) for file_path in raw_files]
         return SearchResult(
             files=raw_files[offset:offset + limit], total_count=len(raw_files),
-            truncated=len(raw_files) > offset + limit or bool(limit_reason), limit_reason=limit_reason)
+            truncated=len(raw_files) > offset + limit or bool(limit_reason),
+            limit_reason=limit_reason, warning=partial_warning)
 
     def _search_files_rg(self, pattern: str, path: str | list[str], limit: int, offset: int,
                          order: str = "discovery", rg_executable: Optional[str] = None) -> SearchResult:
@@ -941,20 +1028,45 @@ class SearchMixin:
         rg_cmd = (f"{rg} --files{sort_arg} -g {self._escape_shell_arg(glob_pattern)}"
                   f"{exclusion_args} -- {root_args}")
         result = self._run_rg_bounded([rg_cmd], fetch_limit, timeout=60, native_ok=not scoped_common,
+                                      merge_stderr=True,
                                       shell_prefix=f"set -o pipefail; {cd_prefix}")
         stdout, limit_reason = _search_stdout_and_limit(result)
-        all_files = [f for f in stdout.splitlines() if f]
+        # Files-mode transport mixes stderr into stdout, but file paths may contain
+        # spaces — the content-mode shape matcher (_SEARCH_OUTPUT_RE) would drop
+        # them as "diagnostics". rg/grep diagnostic lines always begin with
+        # "rg: "/"grep: " (continuation lines only matter on the fail-closed path),
+        # so classify by that prefix instead.
+        stdout_lines = stdout.splitlines()
+        diagnostics = "\n".join(
+            line for line in stdout_lines if line.lstrip().startswith(("rg: ", "grep: ")))
+        all_files = [
+            line for line in stdout_lines
+            if line and not line.lstrip().startswith(("rg: ", "grep: "))]
+        # Permission-denied diagnostics are partial-success signals independent of
+        # the exit code: exit 2 = traversal hit unreadable paths (degrade below),
+        # exit 124 = timed out while ALSO skipping them (warning rides along).
+        skipped = _extract_unreadable_paths(diagnostics) \
+            if _is_permission_only_error(diagnostics) else []
+        permission_only = result.exit_code == 2 and bool(skipped)
+        warning = _skipped_unreadable_warning(skipped) if skipped else None
         if scoped_common:
             all_files = [
                 f if posixpath.isabs(f) else posixpath.normpath(posixpath.join(scoped_common, f))
                 for f in all_files]
         bounded_sigpipe = result.exit_code == 141 and len(all_files) >= fetch_limit
-        if result.exit_code not in {0, 1, 124} and not bounded_sigpipe:
+        if (result.exit_code not in {0, 1, 124} and not bounded_sigpipe
+                and not permission_only):
+            detail = diagnostics.strip() or "no diagnostics"
             if order == "modified":
+                # ripgrep 14+ was already verified by the capability gate, so this
+                # failure is an invocation/traversal error, not a version problem.
                 return SearchResult(error=(
-                    "Exact modification-time order failed; ripgrep 14+ is "
-                    "required. Upgrade ripgrep or use order='discovery'."))
-            return SearchResult(error="File search failed while running ripgrep.")
+                    "Exact modification-time order search failed (ripgrep 14+ "
+                    "required for --sortr=modified; the installed rg passed the "
+                    f"version check, so this is an invocation failure: {detail}). "
+                    "Use order='discovery'."))
+            return SearchResult(error=(
+                f"File search failed while running ripgrep: {detail}"))
         # rg --files lists files only; supplement with matching directories so
         # empty directories stay discoverable (#54347). Skip the extra traversal
         # when rg already timed out — partial file results must not be presented
@@ -970,9 +1082,13 @@ class SearchMixin:
                 # the merged view keeps the newest-first contract globally.
                 all_files = merged_entries
                 limit_reason = limit_reason or directory_limit_reason
+        if permission_only and not all_files:
+            return SearchResult(files=[], total_count=0,
+                                warning=f"{warning} {_PERMISSION_SEARCH_HINT}")
         return SearchResult(
             files=all_files[offset:offset + limit], total_count=len(all_files),
-            truncated=len(all_files) > offset + limit or bool(limit_reason), limit_reason=limit_reason)
+            truncated=len(all_files) > offset + limit or bool(limit_reason),
+            limit_reason=limit_reason, warning=warning)
 
     def _search_content(self, pattern: str, path: str, file_glob: Optional[str],
                         limit: int, offset: int, output_mode: str, context: int) -> SearchResult:

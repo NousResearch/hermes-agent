@@ -2333,6 +2333,7 @@ cli:
   goal:
     barrier_lifted: "▶ Doelwit-versperring opgehef — hervat."
     paused_interrupted: "⏸ Doelwit gepouseer — beurt is onderbreek. Gebruik /goal resume om voort te gaan, of /goal clear om te stop."
+    paused_provider_failure: "⏸ Doelwit onderbreek — die verskaffer het die beurt geweier ({reason}). Herstel krediete of geloofsbriewe en gebruik dan /goal resume om voort te gaan, of /goal clear om te stop."
   loop:
     wakeup_firing: "↻ /loop wekroep #{tick} word afgevuur…"
     paused_interrupted: "⏸ Lus gepouseer — wekroep-beurt is onderbreek. Gebruik /loop resume om voort te gaan, of /loop stop om dit te beëindig."

@@ -2333,6 +2333,7 @@ cli:
   goal:
     barrier_lifted: "▶ Ziel-Sperre aufgehoben — wird fortgesetzt."
     paused_interrupted: "⏸ Ziel pausiert — Zug wurde unterbrochen. Verwenden Sie /goal resume zum Fortsetzen oder /goal clear zum Beenden."
+    paused_provider_failure: "⏸ Ziel pausiert — der Anbieter hat den Zug abgelehnt ({reason}). Guthaben oder Zugangsdaten korrigieren, dann /goal resume zum Fortsetzen oder /goal clear zum Beenden verwenden."
   loop:
     wakeup_firing: "↻ /loop-Weckruf #{tick} wird ausgelöst…"
     paused_interrupted: "⏸ Loop pausiert — Weckruf-Zug wurde unterbrochen. Verwenden Sie /loop resume zum Fortsetzen oder /loop stop zum Beenden."

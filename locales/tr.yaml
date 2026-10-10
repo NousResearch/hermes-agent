@@ -2333,6 +2333,7 @@ cli:
   goal:
     barrier_lifted: "▶ Hedef engeli kaldırıldı — devam ediliyor."
     paused_interrupted: "⏸ Hedef duraklatıldı — tur kesildi. Devam etmek için /goal resume, durdurmak için /goal clear kullanın."
+    paused_provider_failure: "⏸ Hedef duraklatıldı — sağlayıcı turu reddetti ({reason}). Krediyi veya kimlik bilgilerini düzeltin, ardından devam etmek için /goal resume, durdurmak için /goal clear kullanın."
   loop:
     wakeup_firing: "↻ /loop uyandırma #{tick} tetikleniyor…"
     paused_interrupted: "⏸ Döngü duraklatıldı — uyandırma turu kesildi. Devam etmek için /loop resume, sonlandırmak için /loop stop kullanın."

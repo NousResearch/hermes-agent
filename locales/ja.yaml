@@ -2333,6 +2333,7 @@ cli:
   goal:
     barrier_lifted: "▶ 目標の待機が解除されました — 再開します。"
     paused_interrupted: "⏸ 目標を一時停止しました — ターンが中断されました。続けるには /goal resume、停止するには /goal clear を使用してください。"
+    paused_provider_failure: "⏸ 目標を一時停止しました — プロバイダーがターンを拒否しました ({reason})。クレジットまたは認証情報を修正してから、続けるには /goal resume、停止するには /goal clear を使用してください。"
   loop:
     wakeup_firing: "↻ /loop ウェイクアップ #{tick} を実行中…"
     paused_interrupted: "⏸ ループを一時停止しました — ウェイクアップのターンが中断されました。続けるには /loop resume、終了するには /loop stop を使用してください。"

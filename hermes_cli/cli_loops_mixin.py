@@ -54,6 +54,10 @@ _QUEUE_VERBS: dict[str, tuple[str, bool]] = {
     "move": ("_queue_move", True),
 }
 
+# Failure reasons that recur on every retry until the user acts (credits, credentials): the goal
+# loop pauses instead of waiting for the next turn to fail the same way.
+_GOAL_PAUSING_FAILURE_REASONS = frozenset({"billing", "auth", "auth_permanent"})
+
 
 def _print_decision_message(decision: dict) -> bool:
     """Print a manager decision's ``message`` (if any) via _cprint; True when one was printed."""
@@ -690,6 +694,31 @@ class CLILoopsMixin:
                 and mgr.state is not None):
             _cprint(f"  {_DIM}{t('cli.loop.remaining', label=mgr.state.remaining_label())}{_RST}")
 
+    def _goal_turn_failed(self, mgr) -> bool:
+        """True when the last turn failed, so the goal judge must not run.
+
+        A failed turn (402, 401, provider error) has no model reply: the newest assistant row is the
+        failed-turn notice or an EARLIER turn's reply, and judging it re-queued a continuation into
+        the same failure until the turn budget ran out. Same contract as the TUI's
+        ``_is_successful_goal_turn`` (a max-iterations handoff still counts as a turn). Billing and
+        auth failures repeat on every retry, so they also pause the goal (``/goal resume``)."""
+        from agent.turn_failure_copy import is_max_iteration_handoff
+        from cli import _DIM, _RST, _cprint
+        result = getattr(self, "_last_turn_result", None)
+        if not isinstance(result, dict):
+            return False
+        if not (result.get("failed") or result.get("interrupted")) and (
+                result.get("completed") is not False or is_max_iteration_handoff(result)):
+            return False
+        reason = str(result.get("failure_reason") or "")
+        if reason in _GOAL_PAUSING_FAILURE_REASONS:
+            try:
+                mgr.pause(reason=f"provider turn failed ({reason})")
+            except Exception:
+                logging.debug("goal pause-on-provider-failure failed", exc_info=True)
+            _cprint(f"  {_DIM}{t('cli.goal.paused_provider_failure', reason=reason)}{_RST}")
+        return True
+
     def _maybe_continue_goal_after_turn(self) -> None:
         """Post-turn hook: judge the goal and maybe re-queue a continuation. A real user
         message already queued preempts judging (re-judged after their turn). Ctrl+C
@@ -725,6 +754,9 @@ class CLILoopsMixin:
             except Exception as exc:
                 logging.debug("goal pause-on-interrupt failed: %s", exc)
             _cprint(f"  {_DIM}{t('cli.goal.paused_interrupted')}{_RST}")
+            return
+
+        if self._goal_turn_failed(mgr):
             return
 
         # Empty/whitespace responses are almost always transient failures (API error,

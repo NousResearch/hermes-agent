@@ -486,5 +486,90 @@ def test_threshold_suggestion_kept_for_large_context_main(mock_get_client, mock_
     assert "threshold: 0.30" in messages[0]
 
 
+# ── #67422 follow-up: advice must name the key the edit actually takes effect on ──
+#
+# When the main model has a matching model_thresholds override, resolve_model_threshold()
+# returns the override and ignores the global `threshold` — so a "lower compression.threshold"
+# suggestion is inert (the override shadows it) and the warning reappears every session. The
+# recompute must mirror the override, and the permanent-fix advice must point at the
+# model_thresholds key. A real ContextCompressor is required: a spec'd MagicMock cannot carry
+# the model_thresholds match that has_explicit_model_threshold() inspects.
+
+
+def _aux_advice_agent(compressor) -> AIAgent:
+    agent = AIAgent.__new__(AIAgent)
+    agent.context_compressor = compressor
+    agent.model = compressor.model
+    agent.provider = compressor.provider
+    agent.base_url = ""
+    agent._last_feasibility_notice = None
+    agent._compression_warning = None
+    agent._emit_diagnostic_status = lambda msg: None
+    return agent
+
+
+@patch("agent.context_compressor.get_model_context_length", return_value=200_000)
+def test_aux_advice_points_at_model_thresholds_override(mock_ctx_len):
+    """Main model has a matching override -> advice names the model_thresholds key, not the
+    (shadowed) global threshold. 200K main, 64K aux: safe_pct=32; with the override the floor
+    is skipped, so the 0.32 recompute (64,000) fits aux and the suggestion is viable — but only
+    as an override edit."""
+    compressor = ContextCompressor(
+        model="my-local-model",
+        threshold_percent=0.50,
+        model_thresholds={"my-local-model": 0.40},
+        quiet_mode=True,
+    )
+    # Explicit override beats the 0.75 floor: trigger = 0.40 * 200K = 80,000.
+    assert compressor.threshold_tokens == 80_000
+
+    agent = _aux_advice_agent(compressor)
+    from agent.conversation_compression import _lower_threshold_to_aux_context
+
+    _lower_threshold_to_aux_context(
+        agent, aux_model="small-aux-model", aux_context=64_000, aux_provider="openrouter",
+        aux_base_url="https://openrouter.ai/api/v1",
+    )
+
+    # The live clamp still applies regardless of the advice text.
+    assert agent.context_compressor.threshold_tokens == 64_000
+    msg = agent._compression_warning
+    assert msg is not None
+    assert "Auto-lowered" in msg
+    # The override shadows the global key: the advice must target model_thresholds, not
+    # `threshold:` (an edit there resolves back to the 0.40 override and is inert).
+    assert "model_thresholds" in msg
+    assert '"my-local-model": 0.32' in msg
+    assert "threshold:" not in msg
+
+
+@patch("agent.context_compressor.get_model_context_length", return_value=1_000_000)
+def test_aux_advice_uses_global_threshold_without_override(mock_ctx_len):
+    """No matching override (large window, floor inapplicable) -> the global `threshold` key is
+    the live one, so the pre-existing global-key advice is preserved."""
+    compressor = ContextCompressor(
+        model="big-window-model",
+        threshold_percent=0.50,
+        model_thresholds={"other-model": 0.40},
+        quiet_mode=True,
+    )
+    # No matching override: trigger = 0.50 * 1M = 500,000.
+    assert compressor.threshold_tokens == 500_000
+
+    agent = _aux_advice_agent(compressor)
+    from agent.conversation_compression import _lower_threshold_to_aux_context
+
+    _lower_threshold_to_aux_context(
+        agent, aux_model="small-aux-model", aux_context=300_000, aux_provider="openrouter",
+        aux_base_url="https://openrouter.ai/api/v1",
+    )
+
+    assert agent.context_compressor.threshold_tokens == 300_000
+    msg = agent._compression_warning
+    assert msg is not None
+    assert "threshold: 0.30" in msg
+    assert "model_thresholds" not in msg
+
+
 
 

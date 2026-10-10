@@ -2024,16 +2024,19 @@ def _lower_threshold_to_aux_context(
     # when the recomputed trigger actually fits the auxiliary model's context.
     from agent.context_compressor import ContextCompressor as _CC, has_explicit_model_threshold
     recomputed_threshold = None
+    _main_has_override = False
+    _main_model_key = ""
     if main_ctx and isinstance(compressor, _CC):
         # Mirror the compressor's own floor decision for its main model: an explicit per-model
         # override skips the small-context floor, so the feasibility check must too (#67422).
-        _main_model = getattr(compressor, "model", "") or ""
+        _main_model_key = getattr(compressor, "model", "") or ""
         _main_provider = getattr(compressor, "provider", "") or ""
+        _main_has_override = has_explicit_model_threshold(_main_model_key, getattr(compressor, "model_thresholds", {}), _main_provider)
         recomputed_threshold = _CC._compute_threshold_tokens(
             main_ctx,
             _CC._effective_threshold_percent(
                 main_ctx, safe_pct / 100,
-                explicit_override=has_explicit_model_threshold(_main_model, getattr(compressor, "model_thresholds", {}), _main_provider),
+                explicit_override=_main_has_override,
             ),
             getattr(compressor, "max_tokens", None),
         )
@@ -2056,11 +2059,22 @@ def _lower_threshold_to_aux_context(
         f"Auto-lowered this session's threshold to {new_threshold:,} tokens so compression can run.\n"
     )
     if threshold_suggestion_viable:
-        msg += (
-            f"  To make this permanent, edit config.yaml — either:\n  1. Use a larger compression model:\n"
-            f"       auxiliary:\n         compression:\n           model: <model-with-{old_threshold:,}+-context>\n"
-            f"  2. Lower the compression threshold:\n       compression:\n         threshold: 0.{safe_pct:02d}"
-        )
+        if _main_has_override and _main_model_key:
+            # A matching per-model override shadows the global `threshold`, so the permanent fix
+            # is an edit to THAT key — the global one would be inert (#67422). The full model name
+            # is the most specific substring match and always wins, even with multiple keys.
+            msg += (
+                f"  To make this permanent, edit config.yaml — either:\n  1. Use a larger compression model:\n"
+                f"       auxiliary:\n         compression:\n           model: <model-with-{old_threshold:,}+-context>\n"
+                f"  2. Lower this model's threshold override:\n       compression:\n         model_thresholds:\n"
+                f'           "{_main_model_key}": 0.{safe_pct:02d}'
+            )
+        else:
+            msg += (
+                f"  To make this permanent, edit config.yaml — either:\n  1. Use a larger compression model:\n"
+                f"       auxiliary:\n         compression:\n           model: <model-with-{old_threshold:,}+-context>\n"
+                f"  2. Lower the compression threshold:\n       compression:\n         threshold: 0.{safe_pct:02d}"
+            )
     else:
         msg += (
             f"  To make this permanent, use a larger compression model in config.yaml:\n       auxiliary:\n"

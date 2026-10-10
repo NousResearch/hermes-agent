@@ -118,12 +118,28 @@ def _copilot_acp_status() -> dict[str, Any]:
 
 def _external_process_cli_command(provider_id: str, default: str) -> str:
     """Render an external-process provider's sign-in command with the CLI actually configured
-    (``HERMES_COPILOT_ACP_COMMAND`` / ``COPILOT_CLI_PATH``); others get ``default`` untouched."""
+    (``HERMES_COPILOT_ACP_COMMAND`` / ``COPILOT_CLI_PATH``); others get ``default`` untouched.
+
+    The first-token swap only fits defaults that are the provider CLI's own template (curated
+    rows like ``copilot login``). Plugin rows default to the *Hermes* command ``hermes auth add
+    <slug>``; swapping its first token mints a command neither CLI understands (``agy auth add
+    <slug>``), so a ``hermes``-led default survives verbatim when the plugin ships an
+    ``auth_handler`` (then Hermes really can run it) and becomes a neutral use-the-provider-CLI
+    instruction when it does not (#136071)."""
     try:
         from hermes_cli.auth import PROVIDER_REGISTRY, get_external_process_provider_status
         pconfig = PROVIDER_REGISTRY.get(provider_id)
         if not pconfig or pconfig.auth_type != "external_process":
             return default
+        if default.split(" ", 1)[0] == "hermes":
+            # `hermes auth add <slug>` only works when the plugin owns an auth_handler; without
+            # one the CLI exits with "ships no auth_handler" and no executable swap fixes that.
+            from hermes_cli.auth_plugin_providers import plugin_auth_handler
+            if plugin_auth_handler(provider_id) is not None:
+                return default
+            status = get_external_process_provider_status(provider_id) or {}
+            cli = str(status.get("command") or "").strip() or provider_id
+            return f"# sign in with the {cli} CLI itself; hermes auth cannot manage {provider_id}"
         status = get_external_process_provider_status(provider_id) or {}
         command = str(status.get("command") or "").strip()
         if command:

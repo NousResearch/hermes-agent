@@ -5,7 +5,7 @@
 name: hermes-adaptive-effort
 repo: https://github.com/atostivint/hermes-adaptive-effort
 sha: 0998a083d85ea52fbef38427b44a54d27332358a
-description: Choose a separate scorer to set the reasoning effort of each Hermes request.
+description: "Choose a separate scorer to set the reasoning effort of each Hermes request. Disclosure — off by default; when a mode is enabled (or on an explicit `/hae probe`), sends the latest user message (or the parent-written subagent goal), truncated to 4000 characters, plus any configured guidance to the scorer you select (TypeSafe Jev at api.typesafe.ai by default, or OpenAI Decisions, OpenRouter, Cloudflare Workers AI, or a custom URL) using that service's key; in Hermes Desktop it also sets the focused chat's session reasoning selector through the gateway `config.set` API after each applied change, and it keeps a prompt-free effort-change history (64 changes × 64 conversations) in its plugin data directory."
 maintainer: atostivint
 tier: community
 category: models

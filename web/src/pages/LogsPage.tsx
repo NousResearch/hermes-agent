@@ -5,7 +5,7 @@ import {
   useCallback,
   useRef,
 } from "react";
-import { FileText, RefreshCw } from "lucide-react";
+import { Check, Copy, FileText, RefreshCw } from "lucide-react";
 import { useSearchParams } from "react-router";
 import { api } from "@/lib/api";
 import { Badge } from "@nous-research/ui/ui/components/badge";
@@ -23,6 +23,7 @@ import { PluginSlot } from "@/plugins";
 // text like "parse_errors=0" can't render an INFO line red.
 import { classifyLine } from "@/lib/log-classify";
 import { errorMessage } from "@/lib/api-error";
+import { copyTextToClipboard } from "@/lib/clipboard";
 
 const FILES = ["agent", "errors", "gateway"] as const;
 const LEVELS = ["ALL", "DEBUG", "INFO", "WARNING", "ERROR"] as const;
@@ -68,7 +69,9 @@ export default function LogsPage() {
   const [lines, setLines] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const copyResetTimer = useRef<number | null>(null);
   const { t } = useI18n();
   const { setAfterTitle, setEnd } = usePageHeader();
 
@@ -88,6 +91,27 @@ export default function LogsPage() {
       .catch((err) => setError(errorMessage(err)))
       .finally(() => setLoading(false));
   }, [file, lineCount, level, component]);
+
+  useEffect(
+    () => () => {
+      if (copyResetTimer.current !== null) {
+        window.clearTimeout(copyResetTimer.current);
+      }
+    },
+    [],
+  );
+
+  const copyLines = useCallback(async () => {
+    if (!(await copyTextToClipboard(lines.join("\n")))) return;
+    setCopied(true);
+    if (copyResetTimer.current !== null) {
+      window.clearTimeout(copyResetTimer.current);
+    }
+    copyResetTimer.current = window.setTimeout(() => {
+      setCopied(false);
+      copyResetTimer.current = null;
+    }, 2000);
+  }, [lines]);
 
   useLayoutEffect(() => {
     setAfterTitle(
@@ -212,6 +236,18 @@ export default function LogsPage() {
           <CardTitle className="text-sm flex items-center gap-2">
             <FileText className="h-4 w-4" />
             {file}.log
+            <Button
+              type="button"
+              ghost
+              size="icon"
+              className="ml-auto text-muted-foreground hover:text-foreground"
+              onClick={() => void copyLines()}
+              disabled={lines.length === 0}
+              aria-label={copied ? t.logs.copied : t.logs.copy}
+              title={copied ? t.logs.copied : t.logs.copy}
+            >
+              {copied ? <Check /> : <Copy />}
+            </Button>
           </CardTitle>
         </CardHeader>
         <CardContent className="p-0">

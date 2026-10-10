@@ -227,6 +227,8 @@ export const ru: Translations = {
     component: "Компонент",
     lines: "Строк",
     noLogLines: "Записи журнала не найдены",
+    copy: "Копировать",
+    copied: "Скопировано",
   },
 
   cron: {

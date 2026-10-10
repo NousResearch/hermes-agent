@@ -83,6 +83,11 @@ commandcode = CommandCodeProfile(
         "xiaomi/mimo-v2.5-pro", "google/gemini-3.5-flash", "gpt-5.5",
     ),
     default_aux_model="deepseek/deepseek-v4-flash",
+    # /provider/v1 accepts images in user messages but 400s list-type tool-result
+    # content (native vision embeds) with ``Invalid input`` / ``param: messages.N.content``
+    # (#107476), and the rejected row stays in history so every later call dies too.
+    # Vision itself keeps working via the text-summary downgrade.
+    supports_vision_tool_messages=False,
 )
 
 commandcode_anthropic = CommandCodeAnthropicProfile(

@@ -253,6 +253,24 @@ def test_upload_sanitizes_traversal_filename(client):
     assert Path(stored_path).resolve().is_relative_to(task_dir)
 
 
+def test_upload_unhashable_blob_leaves_no_orphan(client, kanban_home, monkeypatch):
+    # The dashboard writes the blob before add_attachment hashes it; a failing
+    # hash must not orphan it (same class as the completion path, PR #125782).
+    task_id = _create_task_via_api(client)
+    real = Path.read_bytes
+    def _unreadable(self):
+        if self.name == "doomed.txt":
+            raise OSError("simulated read failure at anchor time")
+        return real(self)
+    monkeypatch.setattr(Path, "read_bytes", _unreadable)
+    r = client.post(f"/api/plugins/kanban/tasks/{task_id}/attachments",
+                    files={"file": ("doomed.txt", b"payload", "text/plain")})
+    assert r.status_code == 400, r.text
+    att_dir = kb.task_attachments_dir(task_id)
+    orphans = sorted(p.name for p in att_dir.glob("doomed*")) if att_dir.exists() else []
+    assert orphans == [], f"upload left an orphan blob: {orphans}"
+
+
 def test_download_unknown_attachment_404(client):
     assert client.get("/api/plugins/kanban/attachments/424242").status_code == 404
 

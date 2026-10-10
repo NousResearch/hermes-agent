@@ -3380,7 +3380,6 @@ export interface Translations extends NoticeTranslations {
     releaseNotes: string
     onLatest: string
     installing: string
-    cantReach: string
     tapCheck: string
     updateReady: (count: number) => string
     updateReadyUnknown: string

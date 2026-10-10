@@ -98,7 +98,7 @@ function ordinaryUpdateStatus({ apply, checking, status, target, u }: UpdateStat
     return {
       applying,
       error: [status.message, status.error].filter(l => !!l).join('\n'),
-      line: u.cantReach,
+      line: u.checkFailedTitle,
       supported,
       tone: 'error',
       updateAvailable
@@ -265,10 +265,12 @@ function UpdateActions({ target, u, view }: UpdateActionsProps): ReactElement | 
  */
 export function UpdateStatusCard({
   showReleaseNotes = true,
-  target
+  target,
+  version
 }: {
   showReleaseNotes?: boolean
   target: UpdateTarget
+  version?: DesktopVersionInfo | null
 }): ReactElement {
   const { t } = useI18n()
   const u = t.updates
@@ -277,6 +279,11 @@ export function UpdateStatusCard({
   const checking = useStore(isBackend ? $backendUpdateChecking : $updateChecking)
   const apply = useStore(isBackend ? $backendUpdateApply : $updateApply)
   const [justChecked, setJustChecked] = useState<boolean>(false)
+
+  // Version facts supersede the stale client check, but hook order stays stable.
+  if (target === 'client' && version?.bundleSwapPending) {
+    return <></>
+  }
 
   const view = deriveUpdateStatus({ apply, checking, status, target, u })
 

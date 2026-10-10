@@ -175,7 +175,6 @@ export const zhHantBoot = {
     releaseNotes: '發行說明',
     onLatest: '你已是最新版本。',
     installing: '正在安裝更新。',
-    cantReach: '無法連線到更新伺服器。',
     tapCheck: '點選「立即檢查」以尋找更新。',
     updateReady: count => `新更新已就緒（包含 ${count} 項變更）。`,
     updateReadyUnknown: '新更新已就緒。',

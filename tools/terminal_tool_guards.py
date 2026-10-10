@@ -213,7 +213,17 @@ def gateway_lifecycle_block(
     # Keep the specific launchctl diagnostic when this optional pre-scan fits the
     # budget. The full fail-closed guard below still runs when it does not, so
     # oversized roots never reach shlex here.
-    if lifecycle_scan_root_within_budget(command) and contains_launchctl_submit_command(command):
+    guard_cwd_base = get_session_cwd(session_key)
+    if guard_cwd_base is None:
+        guard_cwd_base = getattr(env, "cwd", None) or cwd
+    guard_cwd = _resolve_command_cwd(
+        workdir=workdir, default_cwd=guard_cwd_base, session_key=session_key, env_type=env_type,
+        mounted_host=getattr(env, "host_cwd", None),
+        env=env,
+    )
+    if lifecycle_scan_root_within_budget(command) and contains_launchctl_submit_command(
+        command, cwd=guard_cwd
+    ):
         return _blocked_json(
             "Blocked: launchctl submit/bootstrap is restricted inside a supervised "
             "gateway regardless of the job label, to prevent indirect gateway "
@@ -223,14 +233,6 @@ def gateway_lifecycle_block(
             "not by switching launchctl verbs to bypass this rejection.",
             "error",
         )
-    guard_cwd_base = get_session_cwd(session_key)
-    if guard_cwd_base is None:
-        guard_cwd_base = getattr(env, "cwd", None) or cwd
-    guard_cwd = _resolve_command_cwd(
-        workdir=workdir, default_cwd=guard_cwd_base, session_key=session_key, env_type=env_type,
-        mounted_host=getattr(env, "host_cwd", None),
-        env=env,
-    )
     unsafe, refusal = scan_gateway_lifecycle(
         command,
         cwd=guard_cwd,

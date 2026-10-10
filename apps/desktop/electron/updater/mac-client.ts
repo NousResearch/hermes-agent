@@ -1,6 +1,6 @@
 import { autoUpdater as nativeUpdater } from 'electron'
 import electronUpdater from 'electron-updater'
-import { SemVer } from 'semver'
+import { compare, SemVer } from 'semver'
 
 import feedContract from '../../update-feed.cjs'
 
@@ -38,8 +38,15 @@ export function createMacStrategy(deps: MacClientDeps): MacStrategy {
   const updater = new electronUpdater.MacUpdater()
 
   if (deps.feed) {
-    // The validated channel sequence, not SemVer precedence, decides whether a
-    // pinned build is newer. Build metadata is intentionally precedence-neutral.
+    const installedVersion = deps.appVersion
+    const supportsUpdate = updater.isUpdateSupported.bind(updater)
+
+    // The validated channel sequence may authorize a reinstall at equal SemVer,
+    // so keep the neutral comparison base. Preserve the real package version as
+    // an independent floor: admitted, correctly signed stale bytes are never an
+    // installable update.
+    updater.isUpdateSupported = async updateInfo =>
+      compare(updateInfo.version, installedVersion) >= 0 && (await supportsUpdate(updateInfo))
     Object.defineProperty(updater, 'currentVersion', {
       value: new SemVer('0.0.0'),
       configurable: true

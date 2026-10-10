@@ -5,13 +5,15 @@ import { createClientSessionState } from '@/lib/chat-runtime'
 import {
   $petActivity,
   $petAtRest,
+  $petInfo,
   $petMotion,
   $petState,
   derivePetState,
   flashPetActivity,
   hasPetSpriteForMeta,
   mergePetInfoMeta,
-  setPetActivity
+  setPetActivity,
+  setPetInfo
 } from './pet'
 import { $activeSessionId, $busy } from './session'
 import { clearAllSessionStates, publishSessionState } from './session-states'
@@ -150,5 +152,19 @@ describe('$petState reads the active runtime slice, not the $busy mirror (#84434
     publishSessionState(runtimeId, slice(false))
     expect($petState.get()).toBe('idle')
     expect($petAtRest.get()).toBe(true)
+  })
+})
+
+describe('setPetInfo', () => {
+  afterEach(() => setPetInfo({ enabled: false }))
+
+  it('keeps a scale change made while the pet is disabled', () => {
+    // The settings slider writes through setPetInfo({ ...current, scale })
+    // even before a sprite has loaded; the poll-side no-op guard must not
+    // swallow it.
+    setPetInfo({ enabled: false })
+    setPetInfo({ ...$petInfo.get(), scale: 1.5 })
+
+    expect($petInfo.get().scale).toBe(1.5)
   })
 })

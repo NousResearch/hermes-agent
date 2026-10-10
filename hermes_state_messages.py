@@ -738,7 +738,11 @@ class SessionMessagesMixin:
         stored-row CAS digest (``DB_ROW_SNAPSHOT``, see ``agent.transcript_repair``) that wins instead,
         covering every owned column including assistant ``tool_calls`` arguments. Absent or inactive
         rows are NOT reported — that is the activity check's job and it has its own fallback rules.
-        Only tool/assistant rows are compared: those are the roles the in-place writer rewrites.
+        Every model-transcript role is compared (user/assistant/tool): the callers gate the FULL
+        writer (``archive_and_compact`` via the prune fallback and micro-compaction), which re-inserts
+        held rows of those roles verbatim — a concurrently rewritten user row (``set_user_message_content``,
+        the repair batch's in-place rewrite) is as much a lost race as a rewritten tool result (#124102).
+        Bookkeeping roles (``session_meta``/``system``) never reach the model-facing list and stay excluded.
         """
         from agent.transcript_repair import transcript_row_snapshot
 
@@ -747,7 +751,7 @@ class SessionMessagesMixin:
             for message in held
             if isinstance(message, dict) and message.get(_DB_PERSISTED_MARKER_KEY)
             and isinstance(message.get("_row_id"), int) and not isinstance(message["_row_id"], bool)
-            and message["_row_id"] > 0 and message.get("role") in ("tool", "assistant")]
+            and message["_row_id"] > 0 and message.get("role") in ("user", "assistant", "tool")]
         ids = [row_id for _, row_id in exact]
         if not session_id or not ids:
             return []

@@ -540,3 +540,64 @@ def test_an_assistant_tool_calls_rewrite_is_stale_with_and_without_a_snapshot(tm
     assert (result, count) == (messages, 0)
     assert full_rewrite.call_count == 0
     assert _rows(db, session_id) == rows_before
+
+
+def test_a_concurrent_user_edit_stays_active_when_the_prune_falls_back(tmp_path: Path) -> None:
+    """The fallback full writer republishes every held row, user rows included.
+
+    A lease-less prune can hold an unwritten message BEFORE later durable rows, which sends the commit
+    down the archive_and_compact fallback. Its staleness gate must then cover the USER rows the fallback
+    re-inserts verbatim, not just the tool/assistant rows the in-place writer edits: a user row another
+    view rewrote in place (``set_user_message_content``) is the same lost race. Republishing the held
+    pre-edit body would leave the newer edit with zero active copies (#124102).
+    """
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "PRUNE_STALE_USER_EDIT_FALLBACK"
+    db.create_session(session_id, source="telegram")
+    db.append_messages_batch(session_id, _history())
+    agent = _build_agent(db, session_id)
+    _configure_pruning(agent)
+    messages = db.get_messages_as_conversation(session_id, include_row_ids=True)
+    user_row = next(m for m in messages if m.get("role") == "user")
+    # Another SessionDB view rewrites that durable user row in place (a newer user edit).
+    assert db.set_user_message_content(session_id, user_row["_row_id"], "edited by the user elsewhere") == 1
+    # One unwritten live-turn message placed BEFORE later durable rows forces the fallback branch:
+    # _rewrite_pruned_rows_in_place refuses (row order would break) and returns None.
+    splice = next(i for i, m in enumerate(messages)
+                  if m.get("_row_id") and m["_row_id"] > user_row["_row_id"])
+    held = messages[:splice] + [{"role": "user", "content": "live turn not yet flushed"}] + messages[splice:]
+    rows_before = _rows(db, session_id)
+
+    with patch.object(db, "archive_and_compact", wraps=db.archive_and_compact) as full_rewrite:
+        result, count = agent.context_compressor.prune_tool_results_only(held, current_tokens=120_000)
+
+    assert (result, count) == (held, 0)  # a true no-op: the stale generation is never published
+    assert full_rewrite.call_count == 0
+    assert _rows(db, session_id) == rows_before
+    live = [message["content"] for message in db.get_messages_as_conversation(session_id)]
+    assert live.count("edited by the user elsewhere") == 1  # the newer edit keeps its active copy
+    assert "start" not in live  # the stale pre-edit body is not republished
+
+
+def test_the_fallback_still_commits_when_no_held_row_was_rewritten(tmp_path: Path) -> None:
+    """Widening the stale check to user rows must not disable the fallback itself: with no concurrent
+    rewrite, the same interleaved-unwritten shape still commits through archive_and_compact (#124102)."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "PRUNE_FALLBACK_CLEAN_COMMIT"
+    db.create_session(session_id, source="telegram")
+    db.append_messages_batch(session_id, _history())
+    agent = _build_agent(db, session_id)
+    _configure_pruning(agent)
+    messages = db.get_messages_as_conversation(session_id, include_row_ids=True)
+    first_user = next(i for i, m in enumerate(messages) if m.get("role") == "user")
+    splice = next(i for i, m in enumerate(messages) if i > first_user and m.get("_row_id"))
+    held = messages[:splice] + [{"role": "user", "content": "live turn not yet flushed"}] + messages[splice:]
+
+    with patch.object(db, "archive_and_compact", wraps=db.archive_and_compact) as full_rewrite:
+        result, count = agent.context_compressor.prune_tool_results_only(held, current_tokens=120_000)
+
+    assert (result, count) != (held, 0)
+    assert full_rewrite.call_count == 1
+    live = [message["content"] for message in db.get_messages_as_conversation(session_id)]
+    assert live.count("start") == 1  # the held user row is republished exactly once
+    assert live.count("live turn not yet flushed") == 1

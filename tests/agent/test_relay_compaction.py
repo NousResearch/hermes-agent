@@ -8,12 +8,13 @@ hygiene runs outside any turn). Relay resets LLM-history freshness only for the 
 from __future__ import annotations
 
 import threading
+import time
 from typing import Any
 from unittest.mock import patch
 
 import pytest
 
-from agent import compaction_events, relay_runtime
+from agent import compaction_events, relay_compaction, relay_runtime
 from agent.relay_compaction import COMPACTION_DATA_SCHEMA, emit_compaction_mark
 from agent.relay_runtime import RelayRuntime, RelaySessionCoordinator
 
@@ -138,6 +139,7 @@ def test_no_relay_host_skips_quietly(monkeypatch):
 
 def test_stalled_relay_event_does_not_hold_the_caller(monkeypatch, relay):
     fake, runtime, coordinator = relay
+    monkeypatch.setattr(relay_compaction, "_stalled", False)
     coordinator.acquire_conversation(profile_key=runtime.profile_key, session_id="s1", platform="cli")
     release, finished = threading.Event(), threading.Event()
 
@@ -145,7 +147,7 @@ def test_stalled_relay_event_does_not_hold_the_caller(monkeypatch, relay):
         release.wait()
 
     monkeypatch.setattr(fake.scope, "event", stalled_event)
-    monkeypatch.setattr(relay_runtime, "_SCOPE_OP_TIMEOUT", 2.0)
+    monkeypatch.setattr(relay_runtime, "SCOPE_OP_TIMEOUT", 2.0)
     result = []
 
     def publish():
@@ -163,6 +165,10 @@ def test_stalled_relay_event_does_not_hold_the_caller(monkeypatch, relay):
         assert len(result) == 1
         assert isinstance(result[0], TimeoutError)
         assert "Relay scope operation exceeded" in str(result[0])
+        # One stall trips the breaker: the next compaction returns at once instead of waiting again.
+        started = time.monotonic()
+        assert emit_compaction_mark("s1", "compaction", _committed("s1")) is False
+        assert time.monotonic() - started < 0.5
     finally:
         release.set()
         publisher.join(timeout=2)

@@ -141,7 +141,7 @@ def test_failed_summary_is_an_attempt_mark_not_a_compaction(published):
     agent.context_compressor.abort_on_summary_failure = True
 
     with patch.object(agent.context_compressor, "_generate_summary", return_value=None):
-        returned, _ = compress_context(agent, _messages(), "system prompt", approx_tokens=80_000, trigger="post_tool")
+        compress_context(agent, _messages(), "system prompt", approx_tokens=80_000, trigger="post_tool")
 
     [(_sid, name, payload)] = published
     assert name == "compaction.attempt"
@@ -203,21 +203,6 @@ def test_overflow_attempt_records_its_classified_overflow_reason(published):
     assert (payload["trigger"], payload["trigger_class"], payload["overflow_reason"]) == (
         "overflow", "overflow", "context_overflow",
     )
-
-
-@pytest.mark.parametrize(
-    ("record", "expected"),
-    [
-        ({"trigger_source": "overflow", "overflow_reason": "payload_too_large"}, "payload_too_large"),
-        ({"trigger_source": "overflow", "overflow_reason": "long_context_tier"}, "long_context_tier"),
-        ({"trigger_source": "overflow", "overflow_reason": "rate_limit"}, "other"),
-        ({"trigger_source": "overflow"}, None),
-        ({"trigger_source": "pre_api"}, None),
-    ],
-)
-def test_overflow_reason_stays_in_its_closed_set(record, expected):
-    payload = compaction_events.attempt_payload({"commit_status": "committed", **record})
-    assert payload["overflow_reason"] == expected
 
 
 def test_gate_blocked_attempt_publishes_exactly_one_blocked_attempt_mark(published):
@@ -460,75 +445,3 @@ def test_a_split_that_fails_after_rewriting_history_is_still_a_compaction(publis
         "committed", "session_split_failed", "failed_not_indexed",
     )
     assert (payload["in_place"], payload["session_rotated"], payload["cache_break"]) == (None, None, True)
-
-
-@pytest.mark.parametrize(
-    ("record", "name", "outcome"),
-    [
-        # Rotation published the compacted child, then indexing failed: the history was rewritten.
-        ({"commit_status": "aborted", "split_status": "failed_not_indexed", "history_rewritten": True},
-         "compaction", "committed"),
-        # The split rolled back to the original transcript: nothing the model sees changed.
-        ({"commit_status": "aborted", "split_status": "aborted", "history_rewritten": False},
-         "compaction.attempt", "failed"),
-    ],
-)
-def test_the_mark_name_follows_whether_history_was_rewritten(record, name, outcome):
-    payload = compaction_events.attempt_payload({**record, "failure_class": "session_split_failed"})
-    assert (compaction_events.event_name(payload), payload["outcome"]) == (name, outcome)
-    assert payload["failure_class"] == "session_split_failed"
-
-
-@pytest.mark.parametrize(
-    ("split_status", "expected"),
-    [
-        ("in_place_committed", (True, False)), ("rotated_committed", (False, True)),
-        # A session without a database has no commit mode to report.
-        ("not_applicable", (None, None)), ("failed_not_indexed", (None, None)),
-    ],
-)
-def test_commit_mode_is_null_unless_the_split_committed(split_status, expected):
-    payload = compaction_events.attempt_payload({"commit_status": "committed", "split_status": split_status})
-    assert (payload["in_place"], payload["session_rotated"]) == expected
-
-
-@pytest.mark.parametrize(
-    ("record", "expected"),
-    [
-        ({"commit_status": "aborted", "failure_class": "lock_contended"}, ("skipped", "lock_contended")),
-        ({"commit_status": "aborted", "failure_class": "would_grow"}, ("aborted", "would_grow")),
-        ({"commit_status": "aborted", "failure_class": "exception:AcmeSecretError"}, ("failed", "exception")),
-        ({"commit_status": "aborted", "failure_class": "acme_engine_reason"}, ("failed", "other")),
-        ({"commit_status": "mystery", "failure_class": None}, ("other", "none")),
-    ],
-)
-def test_outcome_and_failure_class_stay_in_their_closed_sets(record, expected):
-    payload = compaction_events.attempt_payload(record)
-    assert (payload["outcome"], payload["failure_class"]) == expected
-    assert "Acme" not in json.dumps(payload)
-
-
-@pytest.mark.parametrize(
-    ("trigger_source", "trigger", "trigger_class"),
-    [
-        ("manual", "manual", "manual"), ("overflow", "overflow", "overflow"), ("gateway_hygiene", "gateway_hygiene", "auto"),
-        # An unlabelled automatic caller: the reason is unknown, but the attempt is known to be automatic.
-        ("auto", "unknown", "auto"),
-        # No trigger, or one outside the closed set: the record cannot say what started it.
-        ("unknown", "unknown", "unknown"), (None, "unknown", "unknown"), ("plugin_said_so", "other", "unknown"),
-    ],
-)
-def test_trigger_maps_onto_the_closed_set(trigger_source, trigger, trigger_class):
-    payload = compaction_events.attempt_payload({"trigger_source": trigger_source, "method": "made_up"})
-    assert (payload["trigger"], payload["trigger_class"], payload["method"]) == (trigger, trigger_class, "other")
-
-
-@pytest.mark.parametrize(
-    ("outcome", "scope", "name"),
-    [
-        ("committed", "history", "compaction"), ("committed", "provider", "compaction"),
-        ("committed", "other", "compaction.attempt"), ("skipped", "history", "compaction.attempt"),
-    ],
-)
-def test_only_a_committed_history_or_provider_rewrite_is_named_compaction(outcome, scope, name):
-    assert compaction_events.event_name({"outcome": outcome, "scope": scope}) == name

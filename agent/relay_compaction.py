@@ -20,6 +20,9 @@ from agent import relay_runtime
 logger = logging.getLogger(__name__)
 
 COMPACTION_DATA_SCHEMA = {"name": "hermes.compaction", "version": "1"}
+# Marks are observability: after one stalled publish, stop waiting on Relay for the rest of the process
+# so a wedged pipeline costs one bounded timeout, not one per compaction under the compression lease.
+_stalled = False
 
 
 def _turn_target(session_id: str) -> tuple[relay_runtime.RelayRuntime, relay_runtime.RelaySession, Any] | None:
@@ -74,9 +77,17 @@ def emit_compaction_mark(
     if target is None:
         logger.debug("no live Relay session for %s; %s mark not recorded", session_id or "none", name)
         return False
+    global _stalled
+    if _stalled:
+        return False
     host, session, handle = target
-    host.run_in_session(
-        session, host.relay.scope.event, name, handle=handle, data=data, data_schema=dict(COMPACTION_DATA_SCHEMA),
-        metadata=relay_runtime.runtime_metadata(host.runtime_id), timeout=relay_runtime._SCOPE_OP_TIMEOUT,
-    )
+    try:
+        host.run_in_session(
+            session, host.relay.scope.event, name, handle=handle, data=data,
+            data_schema=dict(COMPACTION_DATA_SCHEMA), metadata=relay_runtime.runtime_metadata(host.runtime_id),
+            timeout=relay_runtime.SCOPE_OP_TIMEOUT,
+        )
+    except TimeoutError:
+        _stalled = True
+        raise
     return True

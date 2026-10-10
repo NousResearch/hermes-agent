@@ -4024,7 +4024,7 @@ def _begin_compression_attempt(
     # commit-time hold keeps the trio for THIS attempt's own emit, but the next attempt (and
     # every emit before it re-seeds) must start clean. AFTER the snapshot so a late-unwind
     # restore still round-trips the full pre-attempt state.
-    for _name in ("_last_compression_telemetry", "_active_compression_telemetry", "_compression_telemetry_seed"):
+    for _name in _ATTEMPT_TELEMETRY_FIELDS:
         with contextlib.suppress(Exception):
             setattr(agent.context_compressor, _name, None)
     if defer_notification and callable(getattr(agent, _PENDING_CONTEXT_ENGINE_NOTIFICATION, None)):

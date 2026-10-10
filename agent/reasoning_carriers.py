@@ -61,18 +61,22 @@ class StreamCarriers:
         self.opaque: Optional[str] = None
         self.text_parts: list[str] = []
 
-    def feed(self, delta: Any) -> Optional[str]:
-        """Absorb one delta; returns its ``reasoning_text`` fragment (Copilot's readable reasoning)."""
+    def feed(self, delta: Any, reasoning: Optional[str]) -> Optional[str]:
+        """Absorb one delta; returns ``reasoning``, else its ``reasoning_text`` fragment (Copilot's readable reasoning)."""
         self.signature = thought_signature(field(delta, "extra_content")) or self.signature
         opaque = field(delta, "reasoning_opaque")
         self.opaque = opaque if isinstance(opaque, str) and opaque else self.opaque
         text = field(delta, "reasoning_text")
         if not (isinstance(text, str) and text):
-            return None
+            return reasoning
         self.text_parts.append(text)
-        return text
+        return text if reasoning is None else reasoning
 
-    def apply(self, message: Any) -> None:
+    def apply(self, response: Any) -> None:
+        choices = getattr(response, "choices", None)
+        message = getattr(choices[0], "message", None) if choices else None
+        if message is None:
+            return
         if self.signature:
             message.extra_content = {"google": {"thought_signature": self.signature}}
         if self.opaque:

@@ -168,6 +168,7 @@ def test_pending_response_does_not_mask_later_terminal_exit(
 def test_pending_response_records_kanban_timeout(monkeypatch):
     monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
     monkeypatch.setenv("HERMES_KANBAN_TASK", "task-123")
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", "42")
     record = MagicMock(name="record_task_failure")
     conn = SimpleNamespace(close=lambda: None)
     monkeypatch.setattr("hermes_cli.kanban_db_connect.connect", lambda: conn)
@@ -190,7 +191,32 @@ def test_pending_response_records_kanban_timeout(monkeypatch):
         release_claim=True,
         end_run=True,
         event_payload_extra={"budget_used": 60, "budget_max": 60},
+        expected_run_id=42,
     )
+
+
+@pytest.mark.parametrize("run_id", [None, "", "not-an-int", "-1", "0"])
+def test_budget_finalizer_without_valid_owned_run_id_is_non_mutating(monkeypatch, run_id):
+    """A task id is not ownership: never guess the card's current run."""
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "task-123")
+    if run_id is None:
+        monkeypatch.delenv("HERMES_KANBAN_RUN_ID", raising=False)
+    else:
+        monkeypatch.setenv("HERMES_KANBAN_RUN_ID", run_id)
+    record = MagicMock(name="record_task_failure")
+    monkeypatch.setattr("hermes_cli.kanban_db_dispatch._record_task_failure", record)
+    monkeypatch.setattr(
+        "hermes_cli.kanban_db_connect.connect",
+        lambda: pytest.fail("invalid ownership must not open the board"),
+    )
+
+    _finalize(
+        _LimitAgent(), final_response=None, exit_reason="unknown",
+        pending_verification_response="composed report",
+    )
+
+    record.assert_not_called()
 
 
 def test_published_pending_candidate_is_not_duplicated_by_finalizer(monkeypatch):
@@ -239,6 +265,7 @@ def test_bounded_fallback_records_kanban_failure_when_interrupted(monkeypatch):
     """
     monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
     monkeypatch.setenv("HERMES_KANBAN_TASK", "task-456")
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", "456")
     record = MagicMock(name="record_task_failure")
     conn = SimpleNamespace(close=lambda: None)
     monkeypatch.setattr("hermes_cli.kanban_db_connect.connect", lambda: conn)
@@ -280,6 +307,7 @@ def test_bounded_fallback_records_kanban_failure_when_failed(monkeypatch):
     """
     monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
     monkeypatch.setenv("HERMES_KANBAN_TASK", "task-789")
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", "789")
     record = MagicMock(name="record_task_failure")
     conn = SimpleNamespace(close=lambda: None)
     monkeypatch.setattr("hermes_cli.kanban_db_connect.connect", lambda: conn)

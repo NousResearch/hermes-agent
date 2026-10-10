@@ -1354,6 +1354,7 @@ def _record_task_failure(
     end_run: bool = False,
     event_payload_extra: Optional[dict] = None,
     infrastructure: bool = False,
+    expected_run_id: Optional[int] = None,
 ) -> bool:
     """Record a non-success outcome and maybe trip the circuit breaker; every
     non-success path funnels through here so ``consecutive_failures`` stays
@@ -1372,6 +1373,12 @@ def _record_task_failure(
     with ``infrastructure: true`` but ``consecutive_failures`` is left alone and
     the breaker never trips; the card stays retryable and
     :func:`check_respawn_guard` spaces the retries.
+    
+    ``expected_run_id``: when given, this call is a no-op (no mutation of the
+    task, its counters, claim, run or events) unless the task's
+    ``current_run_id`` still equals it. A worker's delayed finalizer must not
+    fail/close a *successor* run that already reclaimed the card
+    (crash -> reclaim -> new run -> old worker's late finalizer fires).
     """
     if failure_limit is None:
         failure_limit = DEFAULT_FAILURE_LIMIT
@@ -1382,6 +1389,9 @@ def _record_task_failure(
             "FROM tasks WHERE id = ?", (task_id,),
         ).fetchone()
         if row is None:
+            return False
+        if expected_run_id is not None and _kb._opt_int(row["current_run_id"]) != int(expected_run_id):
+            # Stale/foreign run: the card already moved on. No mutation.
             return False
         retry_status = (
             _kb._retry_status_for_run(conn, task_id, row["current_run_id"])
@@ -1465,7 +1475,9 @@ def _record_task_failure(
         return True
 
 
-def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int) -> None:
+def _set_worker_pid(
+    conn: sqlite3.Connection, task_id: str, pid: int, *, expected_run_id: Optional[int] = None,
+) -> bool:
     """Record the spawned child's pid + its restart-stable fingerprint (``_process_fingerprint``), and
     emit a ``spawned`` event carrying them. The fingerprint is what lets every later liveness/kill
     decision tell OUR worker from a process that recycled the PID after a reboot. A failed capture is
@@ -1473,6 +1485,16 @@ def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int) -> None:
     whose bare-PID kill authority a new spawn must not inherit."""
     started_at = _process_fingerprint(int(pid)) or UNVERIFIED_WORKER_FINGERPRINT
     with _kb.write_txn(conn):
+        if expected_run_id is not None:
+            owner = conn.execute(
+                "SELECT current_run_id, status FROM tasks WHERE id = ?", (task_id,),
+            ).fetchone()
+            if (
+                owner is None
+                or owner["status"] != "running"
+                or _kb._opt_int(owner["current_run_id"]) != int(expected_run_id)
+            ):
+                return False
         conn.execute("UPDATE tasks SET worker_pid = ?, worker_started_at = ? WHERE id = ?",
                      (int(pid), started_at, task_id))
         run_id = _kb._current_run_id(conn, task_id)
@@ -1480,6 +1502,7 @@ def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int) -> None:
             conn.execute("UPDATE task_runs SET worker_pid = ?, worker_started_at = ? WHERE id = ?",
                          (int(pid), started_at, run_id))
         _kb._append_event(conn, task_id, "spawned", {"pid": int(pid), "started_at": started_at}, run_id=run_id)
+        return True
 
 
 def adopt_worker_pid(conn: sqlite3.Connection, task_id: str, run_id: int, pid: int) -> bool:
@@ -2109,6 +2132,7 @@ def _dispatch_lane_task(
         if _record_task_failure(
             conn, claimed.id, f"workspace: {exc}",
             outcome="spawn_failed", failure_limit=failure_limit, release_claim=True, end_run=True,
+            expected_run_id=claimed.current_run_id,
         ):
             result.auto_blocked.append(claimed.id)
         return False
@@ -2123,7 +2147,9 @@ def _dispatch_lane_task(
     try:
         pid = _call_spawn_fn(spawn_fn if spawn_fn is not None else _default_spawn, claimed, str(workspace), board)
         if pid:
-            _set_worker_pid(conn, claimed.id, int(pid))
+            _set_worker_pid(
+                conn, claimed.id, int(pid), expected_run_id=claimed.current_run_id,
+            )
         # Fires AFTER the PID (when reported) is durably persisted. Best-effort.
         _kb._fire_worker_spawned_hook(conn, claimed, str(workspace), pid, board=board)
         # consecutive_failures is deliberately NOT reset here: resetting on
@@ -2144,6 +2170,7 @@ def _dispatch_lane_task(
             conn, claimed.id, str(exc),
             outcome="spawn_failed", failure_limit=failure_limit, release_claim=True, end_run=True,
             infrastructure=infrastructure,
+            expected_run_id=claimed.current_run_id,
         ):
             result.auto_blocked.append(claimed.id)
         return False

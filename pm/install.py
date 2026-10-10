@@ -859,6 +859,38 @@ def sync_venv(extras: Optional[list[str]] = None, *, explicit: bool = False,
         receipt.finalize(outcome, 0 if outcome == "ok" else 1, token=token)
 
 
+def _externally_provided(package: Package, target: str) -> bool:
+    """Whether the artifact's own packaging provides this tool on ambient PATH.
+
+    A sealed tree's store belongs to the artifact (Nix: a read-only
+    ``/nix/store``, whose loader also refuses the generic ELFs a PM download
+    stages), so in that lane PM is not the party that can satisfy the
+    lockfile — the steward is, and it commonly provides the same tool at
+    system level. A binary that resolves on PATH outside both tool stores
+    therefore counts as satisfied for drift; anything else still reports.
+    Mutable installs never take this path: their store is pm's to fill."""
+    if (paths.repo_root() / ".git").exists():
+        return False
+    if not paths.install_stamp_path(paths.repo_root()).is_file():
+        return False
+    rel = getattr(package, "_rel", lambda _t: None)(target)
+    name = Path(rel).name if rel else package.name
+    resolved = shutil.which(name)
+    if resolved is None:
+        return False
+    try:
+        real = Path(resolved).resolve()
+    except OSError:
+        return False  # an unresolvable path is not evidence of anything
+    for store in (paths.store_root(), paths.writable_store_root()):
+        try:
+            if real.is_relative_to(Path(store).resolve()):
+                return False  # pm's own store provides it — drift is real
+        except OSError:
+            continue
+    return True
+
+
 def drift(*, include_venv: bool = True) -> dict[str, str]:
     """Cheap stamp comparisons of the installed state
     against the lockfile. Maps package names to reasons; empty means healthy. Never
@@ -884,7 +916,8 @@ def drift(*, include_venv: bool = True) -> dict[str, str]:
         if package.missing_reason(target) is not None:
             continue
         if _installed_location(package, lockfile, target) is None:
-            problems[name] = "not installed or outdated"
+            if not _externally_provided(package, target):
+                problems[name] = "not installed or outdated"
     try:
         venv = get_package("venv")
     except KeyError:

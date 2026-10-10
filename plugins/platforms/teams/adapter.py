@@ -519,6 +519,9 @@ class TeamsAdapter(BasePlatformAdapter):
             text = re.sub(r"<at>[^<]*</at>\s*", "", text).strip()
         from_account = activity.from_
         user_id = getattr(from_account, "aad_object_id", None) or getattr(from_account, "id", "")
+        # A channel post's conversation id is "<channel>;messageid=<root>". Expose the bare channel
+        # as the parent so a profile route keyed on the channel id matches every post in it.
+        channel_id, _, _ = str(conv.id or "").partition(";messageid=")
         source = self.build_source(
             chat_id=conv.id,
             chat_name=getattr(conv, "name", None) or "",
@@ -526,6 +529,7 @@ class TeamsAdapter(BasePlatformAdapter):
             user_id=str(user_id),
             user_name=getattr(from_account, "name", None) or "",
             guild_id=getattr(conv, "tenant_id", None) or self._tenant_id,
+            parent_chat_id=channel_id if channel_id != conv.id else None,
             message_id=msg_id)
         media: list = [m for m in [await self._cache_attachment(a) for a in getattr(activity, "attachments", None) or []] if m]
         media_kinds = [kind for _, _, kind in media]  # media items are (path, media_type, kind)

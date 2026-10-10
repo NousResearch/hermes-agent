@@ -1176,28 +1176,11 @@ class TestDeviceCodeGrantLifetime:
 
         assert nous_grant_expires_at("1970-01-01T00:00:00+00:00") == "1970-01-31T00:00:00+00:00"
 
-    def test_auth_status_reports_the_grant_deadline(self, tmp_path, monkeypatch):
-        """The advance signal the issue asks for: status carries the deadline even while the
-        instance still reports itself healthy."""
-        from hermes_cli import auth_nous
-
-        granted = datetime(2026, 10, 1, tzinfo=UTC)
-        state = {"access_token": "a", "refresh_token": "r", "obtained_at": granted.isoformat(),
-                 "expires_at": (granted + timedelta(hours=1)).isoformat(),
-                 "grant_obtained_at": granted.isoformat(), "scope": auth_nous.DEFAULT_NOUS_SCOPE}
-        monkeypatch.setattr("hermes_cli.auth.get_provider_auth_state", lambda _p: state)
-        monkeypatch.setattr(auth_nous, "_state_invoke_jwt_status", lambda *_a, **_k: None)
-        monkeypatch.setattr(auth_nous, "_terminal_quarantine_marker", lambda *_a: None)
-
-        status = auth_nous.get_nous_auth_status_local()
-
-        assert status["grant_obtained_at"] == granted.isoformat()
-        assert status["grant_expires_at"] == "2026-10-31T00:00:00+00:00"
-        # 9 days out: healthy, but inside the 3-day warning? no.
-        assert "grant_expiring" not in status
-
-    def test_auth_status_flags_a_grant_inside_the_warning_window(self, tmp_path, monkeypatch):
+    def test_computed_status_flags_a_grant_inside_the_warning_window(self, monkeypatch):
+        """``hermes auth status nous`` routes to _compute_nous_auth_status, NOT the local
+        snapshot — the signal has to land there or the command still says only "logged in"."""
         from datetime import timedelta
+
         from hermes_cli import auth_nous
 
         granted = datetime.now(UTC) - timedelta(days=29)
@@ -1205,7 +1188,83 @@ class TestDeviceCodeGrantLifetime:
                  "expires_at": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
                  "grant_obtained_at": granted.isoformat(), "scope": auth_nous.DEFAULT_NOUS_SCOPE}
         monkeypatch.setattr("hermes_cli.auth.get_provider_auth_state", lambda _p: state)
-        monkeypatch.setattr(auth_nous, "_state_invoke_jwt_status", lambda *_a, **_k: None)
-        monkeypatch.setattr(auth_nous, "_terminal_quarantine_marker", lambda *_a: None)
+        monkeypatch.setattr("hermes_cli.auth.resolve_nous_runtime_credentials", lambda: {
+            "base_url": "https://inference.nousresearch.com/v1", "expires_at": state["expires_at"],
+            "source": "portal"})
 
-        assert auth_nous.get_nous_auth_status_local()["grant_expiring"] is True
+        status = auth_nous._compute_nous_auth_status()
+
+        assert status["grant_expiring"] is True
+        assert status["grant_expires_at"]
+
+    def test_computed_status_is_silent_for_a_healthy_grant(self, monkeypatch):
+        """No noise on a healthy install: the deadline is reported to the status dict, but only
+        the warning window flips the flag the CLI prints."""
+        from datetime import timedelta
+
+        from hermes_cli import auth_nous
+
+        granted = datetime.now(UTC) - timedelta(days=2)
+        state = {"access_token": "a", "refresh_token": "r", "obtained_at": granted.isoformat(),
+                 "expires_at": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
+                 "grant_obtained_at": granted.isoformat(), "scope": auth_nous.DEFAULT_NOUS_SCOPE}
+        monkeypatch.setattr("hermes_cli.auth.get_provider_auth_state", lambda _p: state)
+        monkeypatch.setattr("hermes_cli.auth.resolve_nous_runtime_credentials", lambda: {
+            "base_url": "https://inference.nousresearch.com/v1", "expires_at": state["expires_at"],
+            "source": "portal"})
+
+        status = auth_nous._compute_nous_auth_status()
+
+        assert "grant_expiring" not in status
+        assert status["grant_expires_at"]
+
+    def test_pre_upgrade_state_without_the_field_is_left_alone(self, monkeypatch):
+        """An install whose auth.json predates this field must not gain a made-up deadline."""
+        from hermes_cli import auth_nous
+
+        state = {"access_token": "a", "refresh_token": "r",
+                 "obtained_at": datetime.now(UTC).isoformat(),
+                 "expires_at": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
+                 "scope": auth_nous.DEFAULT_NOUS_SCOPE}
+        monkeypatch.setattr("hermes_cli.auth.get_provider_auth_state", lambda _p: state)
+        monkeypatch.setattr("hermes_cli.auth.resolve_nous_runtime_credentials", lambda: {
+            "base_url": "https://inference.nousresearch.com/v1", "expires_at": state["expires_at"],
+            "source": "portal"})
+
+        status = auth_nous._compute_nous_auth_status()
+
+        assert "grant_expires_at" not in status
+        assert "grant_expiring" not in status
+
+    def test_cli_status_command_prints_the_deadline(self, capsys, monkeypatch):
+        """End-to-end through the command the issue names.
+
+        The status dict is not the deliverable; ``hermes auth status nous`` printing the
+        deadline is. An earlier draft added the keys to a snapshot the CLI never renders, so
+        the dict alone could pass while the operator still saw only "logged in".
+        """
+        from datetime import timedelta
+
+        from hermes_cli import auth_commands
+
+        granted = datetime.now(UTC) - timedelta(days=29)
+        state = {"access_token": "a", "refresh_token": "r", "obtained_at": granted.isoformat(),
+                 "expires_at": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
+                 "grant_obtained_at": granted.isoformat(), "scope": "openid profile email"}
+        monkeypatch.setattr("hermes_cli.auth.get_provider_auth_state", lambda _p: state)
+        monkeypatch.setattr("hermes_cli.auth.resolve_nous_runtime_credentials", lambda: {
+            "base_url": "https://inference.nousresearch.com/v1", "expires_at": state["expires_at"],
+            "source": "portal"})
+        monkeypatch.setattr(auth_commands, "dispatch_plugin_auth", lambda *_a, **_k: False)
+        monkeypatch.setattr(auth_commands, "_moved_auth_hint", lambda *_a: None)
+        monkeypatch.setattr(auth_commands, "_print_oauth_heal_notices", lambda: None)
+
+        class _Args:
+            provider = "nous"
+
+        auth_commands.auth_status_command(_Args())
+
+        out = capsys.readouterr().out
+        assert "grant expires:" in out
+        # ...and it names the remediation, because a date alone is not actionable.
+        assert "hermes auth add nous" in out

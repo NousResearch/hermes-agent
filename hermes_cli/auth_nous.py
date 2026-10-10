@@ -89,6 +89,25 @@ NOUS_DEVICE_CODE_GRANT_LIFETIME_DAYS = 30
 _NOUS_GRANT_EXPIRY_WARN_SECONDS = 3 * 24 * 3600
 
 
+def _apply_nous_grant_expiry(status: dict[str, Any], state: dict[str, Any]) -> None:
+    """Add the device-code grant deadline to a Nous status snapshot, in place.
+
+    The deadline is not derivable from anything else on the snapshot: the access token keeps
+    rotating, so ``logged_in`` stays true right up to the refused refresh that IS the outage
+    (#135518). Every surface that reports Nous status calls this, so none of them can report
+    a healthy login while the grant it belongs to is days from dead.
+    """
+    from hermes_cli.auth import _is_expiring
+
+    grant_expires_at = nous_grant_expires_at(state.get("grant_obtained_at"))
+    if not grant_expires_at:
+        return
+    status["grant_obtained_at"] = state.get("grant_obtained_at")
+    status["grant_expires_at"] = grant_expires_at
+    if _is_expiring(grant_expires_at, _NOUS_GRANT_EXPIRY_WARN_SECONDS):
+        status["grant_expiring"] = True
+
+
 def nous_grant_expires_at(granted_at: Any) -> Optional[str]:
     """When a device-code grant approved at *granted_at* dies, or ``None`` if unparseable."""
     from hermes_cli.auth import _parse_iso_timestamp
@@ -1342,12 +1361,17 @@ def _compute_nous_auth_status() -> dict[str, Any]:
         return _snapshot_nous_pool_status()
     base_status = _nous_status_from_state(
         state, logged_in=bool(state.get("access_token")), source="auth_store")
+    # Read the grant deadline off the pre-refresh state: the refresh below rewrites
+    # obtained_at, and the deadline must not move with it (#135518).
+    _apply_nous_grant_expiry(base_status, state)
     try:
         # A status paint must not park on (or open a browser for) a free-tier challenge.
         from hermes_cli.anon_challenge import background_caller
         with background_caller():
             creds = resolve_nous_runtime_credentials()
         refreshed_state = get_provider_auth_state("nous") or state
+        if refreshed_state is not state:
+            _apply_nous_grant_expiry(base_status, refreshed_state)
         base_status.update({
             "logged_in": True,
             "portal_base_url": (
@@ -1392,7 +1416,7 @@ def get_nous_auth_status_local() -> dict[str, Any]:
     the server still accepts it.
     """
     from hermes_cli.anon_auth import guest_without_free_tier
-    from hermes_cli.auth import _is_expiring, get_provider_auth_state
+    from hermes_cli.auth import get_provider_auth_state
     try:
         state = get_provider_auth_state("nous")
     except Exception:
@@ -1403,14 +1427,7 @@ def get_nous_auth_status_local() -> dict[str, Any]:
     last_err = _terminal_quarantine_marker(state)
     logged_in = (jwt_reason is None) or (bool(state.get("refresh_token")) and last_err is None)
     status = _nous_status_from_state(state, logged_in=logged_in, source="auth_store_local")
-    # The grant deadline is not derivable from anything above: the access token keeps rotating,
-    # so ``logged_in`` stays true right up to the refused refresh that IS the outage (#135518).
-    grant_expires_at = nous_grant_expires_at(state.get("grant_obtained_at"))
-    if grant_expires_at:
-        status["grant_obtained_at"] = state.get("grant_obtained_at")
-        status["grant_expires_at"] = grant_expires_at
-        if _is_expiring(grant_expires_at, _NOUS_GRANT_EXPIRY_WARN_SECONDS):
-            status["grant_expiring"] = True
+    _apply_nous_grant_expiry(status, state)
     if last_err is not None:
         status.update(
             relogin_required=True, error_code=last_err.get("code"),

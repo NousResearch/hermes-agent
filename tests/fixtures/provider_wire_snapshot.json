@@ -4483,6 +4483,15 @@
   "high": {
    "__bedrock_converse__": true,
    "__bedrock_region__": "us-east-1",
+   "additionalModelRequestFields": {
+    "output_config": {
+     "effort": "high"
+    },
+    "thinking": {
+     "display": "summarized",
+     "type": "adaptive"
+    }
+   },
    "messages": [
     {
      "content": [

@@ -997,6 +997,14 @@ class TestBuildAnthropicKwargs:
             assert _forbids_sampling_params(m) is False, m
 
 
+    def test_bare_claude_4_slugs_use_the_manual_thinking_path(self):
+        from agent.anthropic_adapter import _forbids_sampling_params, _supports_adaptive_thinking
+        for bare, dated in (("claude-sonnet-4", "claude-sonnet-4-20250514"),
+                            ("claude-opus-4", "claude-opus-4-20250514")):
+            assert _supports_adaptive_thinking(bare) is _supports_adaptive_thinking(dated) is False
+            assert _forbids_sampling_params(bare) is _forbids_sampling_params(dated)
+        assert _supports_adaptive_thinking("claude-sonnet-4-6") is True
+
     def test_bare_k3_coding_plan_slug_is_kimi_family(self):
         """Kimi Coding Plan serves K3 as the bare slug ``k3`` — it must be
         classified as Kimi family (adaptive thinking) even on proxied

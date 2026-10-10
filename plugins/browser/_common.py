@@ -5,6 +5,7 @@ vendor label so emitted text matches the pre-refactor per-vendor modules."""
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import uuid
 from typing import Any, Dict, List, Optional
@@ -74,6 +75,12 @@ class CloudBrowserProvider(BrowserProvider):
 
     @staticmethod
     def _session_name(task_id: str) -> str:
+        # The name repeats in the agent-browser socket dir name AND the socket filename
+        # under a 103-byte AF_UNIX budget, so even on the shortest root (/tmp) the name
+        # must stay <= ~39 chars — bound the task_id share; long ids keep a readable
+        # prefix plus a hash tail so distinct ids stay distinct (#131231).
+        if len(task_id) > 22:
+            task_id = f"{task_id[:14]}-{hashlib.sha1(task_id.encode()).hexdigest()[:7]}"
         return f"hermes_{task_id}_{uuid.uuid4().hex[:8]}"
 
     def _post_create(

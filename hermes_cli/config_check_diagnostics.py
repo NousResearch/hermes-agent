@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+import fnmatch
 import json
 from pathlib import Path
 import re
@@ -44,18 +45,27 @@ def _delivery_policy_diagnostics(config: dict[str, Any]) -> list[str]:
         )
     allowlist = config.get("command_allowlist") or []
 
+    delivery_effect_probes = (
+        "gh pr merge 123 --repo owner/repo",
+        "gh pr merge 123 --squash",
+        "gh pr review 123 --approve --repo owner/repo",
+        "gh issue close 123 --repo owner/repo",
+        "/usr/bin/gh pr merge 123 --repo owner/repo",
+        "/usr/local/bin/gh issue close 123 --repo owner/repo",
+        "git push origin HEAD",
+    )
+
     def _unsafe_permanent_approval(pattern: Any) -> bool:
+        """Mirror runtime permanent-approval exact/fnmatchcase behavior."""
         if not isinstance(pattern, str):
             return False
-        normalized = " ".join(pattern.lower().split())
-        if normalized in {"*", "**"}:
-            return True
-        return bool(
-            re.search(r"(?:^|\s)(?:gh|git)\s+\*+(?:\s|$)", normalized)
-            or re.search(r"(?:^|\s)gh\s+pr\s+(?:merge|review|close)(?:\s|$)", normalized)
-            or re.search(r"(?:^|\s)gh\s+issue\s+close(?:\s|$)", normalized)
-            or re.search(r"(?:^|\s)gh\s+api(?:\s|$)", normalized)
-            or re.search(r"(?:^|\s)git\s+(?:merge|push\b.*--force(?:-with-lease)?)(?:\s|$)", normalized)
+        normalized = pattern.strip()
+        if not normalized:
+            return False
+        return any(
+            normalized == command
+            or (any(ch in normalized for ch in "*?[") and fnmatch.fnmatchcase(command, normalized))
+            for command in delivery_effect_probes
         )
 
     if isinstance(allowlist, list) and any(
@@ -80,13 +90,20 @@ def _delivery_policy_diagnostics(config: dict[str, Any]) -> list[str]:
             if path.is_file() and path.stat().st_size <= 1_000_000:
                 payload = json.loads(path.read_text(encoding="utf-8-sig"))
                 text = json.dumps(payload, ensure_ascii=False).lower()
-                role_terms = (
-                    "immutable delivery role",
-                    "closure controller",
-                    "independent reviewer",
-                    "must not merge",
+                explicit_contract = "immutable delivery role" in text
+                explicit_reviewer_policy = "independent reviewer" in text and "must not merge" in text
+                delivery_pipeline = all(
+                    term in text for term in ("implementer", "independent reviewer", "closure controller")
                 )
-                if any(term in text for term in role_terms):
+                merger_identity = bool(re.search(r"you\s+are\s+(?:the\s+)?merger\b|role\s*:\s*merger\b", text))
+                exact_review_target = bool(
+                    re.search(r"exact\s+(?:reviewed\s+)?(?:sha|commit)|reviewed\s+(?:head\s+)?sha", text)
+                )
+                ci_gate = bool(re.search(r"required\s+ci|ci\s+(?:checks?|must|is)\b", text))
+                if (
+                    explicit_contract or explicit_reviewer_policy or delivery_pipeline
+                    or (merger_identity and exact_review_target and ci_gate)
+                ):
                     diagnostics.append(
                         "WARNING: prefill_messages_file appears to encode software-delivery policy as fabricated "
                         "dialogue; use delegate_task.delivery_role and acceptance_ledger instead."

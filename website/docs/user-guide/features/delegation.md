@@ -56,39 +56,32 @@ delegate_task(tasks=[
 
 Delegation topology (`leaf` or depth-derived `orchestrator`) is separate from software-delivery authority. A task may set exactly one `delivery_role`: `implementer`, `reviewer`, `merger`, or `closure_controller`. Omitting it preserves ordinary non-delivery delegation. Set `delegation.require_delivery_role: true` only for installations where every delegated task is delivery work; an omitted or invalid role then fails closed.
 
-The runtime injects the role and acceptance contract into the child system prompt and filters the child's final effective tool list after composite/MCP expansion. It also checks fabricated tool calls and terminal actions at dispatch time. This is a capability boundary, not prompt-only guidance:
+The runtime injects the role and acceptance contract into the child system prompt, filters every effective/restored tool snapshot, and checks calls before plugin or MCP middleware. Delivery workers have no generic terminal, `execute_code`, connector, browser, or MCP capability. This is an effect/credential boundary rather than command-text filtering:
 
-- **implementer** — may edit, test, commit, push without force, and open a PR; cannot delegate its authority, independently approve/pass review, merge, or close;
-- **reviewer** — read-only evidence and test commands plus `read_file`, `search_files`, `skills_list`, and `skill_view`; no write/patch/skill-management, approval, merge, closure, or tracker mutation;
-- **merger** — read-only evidence plus the merge lifecycle, and only after `delivery_evidence` supplies a full exact SHA and independent-review and CI evidence that each identifies that SHA;
-- **closure_controller** — read-only post-merge acceptance plus closure actions, and only after a full merged SHA and merge and post-merge acceptance evidence that each identifies that SHA.
+- **implementer** — gets workspace-confined file tools and the structured `delivery_action` operations needed to inspect/stage/commit, push without force, open a PR, and run a verification command in a networkless container over a read-only mount. It cannot delegate, review/approve, merge, close, or issue arbitrary host/API commands;
+- **reviewer** — gets `skill_view`'s side-effect-free delivery reader and structured exact-SHA PR inspection/search/verification. Source is read from the bound Git object, and tests run against a securely materialized exact-SHA Git archive mounted read-only in a disposable networkless container; checkout filters and repository hooks never run on the host. If that sandbox is unavailable, verification fails closed; images must already exist locally because pulling is disabled;
+- **merger** — gets only the structured merge operation and side-effect-free skill reads. Immediately before merge the server queries the policy-bound PR head, current independent GitHub approval for that exact head, and required CI. The fixed squash merge uses `--match-head-commit`; admin/delete-branch flags, caller-selected repository/PR, GraphQL, and arbitrary commands are rejected;
+- **closure_controller** — gets only structured issue closure and side-effect-free skill reads. The server verifies that the bound merged SHA is on the repository default branch, runs post-merge acceptance in the exact-SHA sandbox, confirms the bound issue is open, and only then closes it.
 
-Lifecycle commands are SHA-bound as well as evidence-gated: mergers must use `gh pr merge` with an explicit merge method and `--match-head-commit <exact_sha>`, while closure controllers may close a GitHub issue only when the `gh issue close` command carries the evidenced merged SHA (for example in `--comment`).
+`delivery_evidence` identifies machine-verifiable targets; it does not accept prose as proof. Reviewer and merger repository work uses `repository`, `pull_request`, and a full `exact_sha`. Closure uses `repository`, `issue`, and a full `merged_sha`. GitHub state and required checks are fetched by the structured operation itself.
 
-`acceptance_ledger` is authoritative system content. `required_skills` names profile-scoped workflow skills the worker must load with `skill_view`; granting that read access never grants `skill_manage`. Delivery-role children do not inherit configured prefill dialogue, so operational policy is never represented as fabricated user/assistant turns.
+`acceptance_ledger` is authoritative system content. Every `required_skills` entry is resolved before child creation with the side-effect-free reader; unavailable, disabled, ambiguous, or unreadable skills abort the spawn. The resolved content and digest are placed immutably in the system prompt. Restricted reads never preprocess shell, install dependencies, activate plugins, or mutate skill usage state. Delivery-role children do not inherit configured prefill dialogue.
 
 ```python
 delegate_task(tasks=[{
-    "goal": "Review the production fix at the supplied commit",
+    "goal": "Review PR 123 at the exact supplied head",
     "delivery_role": "reviewer",
+    "delivery_evidence": {
+        "repository": "owner/repository",
+        "pull_request": 123,
+        "exact_sha": "0123456789abcdef0123456789abcdef01234567"
+    },
     "acceptance_ledger": "Verify authorization boundaries and run the focused suite.",
     "required_skills": ["hermes-agent-dev"]
 }])
 ```
 
-For a merger:
-
-```python
-delegate_task(tasks=[{
-    "goal": "Merge PR 123 if the supplied evidence still matches",
-    "delivery_role": "merger",
-    "delivery_evidence": {
-        "exact_sha": "0123456789abcdef0123456789abcdef01234567",
-        "independent_review": "Reviewer verdict PASS for this exact SHA",
-        "ci_evidence": "Required checks passed for this exact SHA"
-    }
-}])
-```
+For a merger, use the same repository, pull request, and exact head target with `delivery_role: "merger"`; do not supply review or CI strings. The structured merge action obtains those facts from GitHub at execution time.
 
 `hermes config check` reports delivery policy stored in prefill dialogue, incompatible role/approval settings, and broad permanent command approvals without printing file contents or secrets.
 
@@ -333,7 +326,7 @@ Note that the pin is global: `delegate_task` has no per-task model parameter, so
 
 ## The `/review` Command
 
-`/review` spawns an independent, full-privilege background subagent whose only job is to review the work your conversation just produced — a PR, a diff, code, documentation, a design. It works on every surface: CLI, TUI, the Desktop app, and every gateway messaging platform.
+`/review` spawns an independent background subagent with the immutable `reviewer` delivery role to critique the work your conversation just produced — a PR description, diff excerpt, code, documentation, or design. It works on every surface: CLI, TUI, the Desktop app, and every gateway messaging platform.
 
 ```
 /review                       # review whatever the last 10 messages presented
@@ -343,11 +336,12 @@ Note that the pin is global: `delegate_task` has no per-task model parameter, so
 What happens:
 
 1. The last 10 user/assistant messages are snapshotted as the reviewer's starting evidence (tool output and system messages are excluded).
-2. A reviewer subagent is dispatched on the same background delegation rail as `delegate_task` — it gets the full normal subagent toolset (terminal, web, files, browser...), so it actually opens the PR, reads the diff, and runs code rather than judging from the excerpt.
-3. The reviewer inherits the primary agent's working context: any skills the primary agent had loaded (launch-preloaded or via `skill_view` during the session) are named in its briefing with an instruction to load them and judge the work against their conventions. Like every subagent, its system prompt also embeds the workspace's project context files (AGENTS.md / CLAUDE.md / .cursorrules) as binding conventions.
-4. When it finishes, its full review re-enters the same session as a normal background-subagent completion — your primary agent sees it and can act on it (fix the findings, push follow-ups, reply to you).
+2. The child has only the side-effect-free skill reader and structured reviewer action. It has no generic terminal, `execute_code`, filesystem, web/browser, connector, or MCP tools, and delivery calls bypass extension middleware.
+3. Plain `/review` critiques the supplied conversation/artifact only; it is not an exact-SHA PR approval and cannot claim to have opened a PR or run code. Exact repository review is delegated with `delivery_role: reviewer` plus machine-bound `repository`, `pull_request`, and `exact_sha`. That path reads the exact Git object and runs commands only against a securely materialized Git archive mounted read-only in a disposable networkless container. If Docker, the pre-existing local image, or exact-SHA materialization is unavailable, verification fails closed.
+4. Skills explicitly required for a delivery worker are resolved before spawn and embedded with their digest. Restricted skill reads do not run preprocessing shell, install dependencies, activate plugins, or update usage state.
+5. When the reviewer finishes, its full review re-enters the same session as a normal background-subagent completion, so the primary agent can address findings.
 
-The canonical flow: your main agent opens a PR, you type `/review`, and a second pair of eyes investigates it while you keep working; the review lands back in the chat addressed to the agent that created the PR.
+Use `/review` for an independent second reading of evidence already in the conversation. Use machine-bound delivery delegation when the reviewer must inspect or execute against a repository head.
 
 Dispatch prints only “Review started. Results will return here.” The live subagent viewer identifies the worker as **Review: your focus** (or **Review recent work** for bare `/review`), with a shortened single-line label; the reviewer still receives your full instructions. In the classic CLI, the dock above the composer shows elapsed time and latest activity; **Ctrl+T** (or **F6**) opens the roster with its model, transcript, steering, and stop controls. The same review label appears in the TUI and Desktop subagent viewers.
 
@@ -378,7 +372,7 @@ Certain tools are blocked for subagents even when the parent has them:
 - `cronjob` — no scheduling more work in the parent's name
 - `start_chat` — no opening chats in the user's name
 
-Both roles retain `execute_code` (programmatic tool calling) so children can batch mechanical work.
+Ordinary topology roles retain `execute_code` (programmatic tool calling) so non-delivery children can batch mechanical work. Immutable delivery roles never expose `execute_code` or a generic terminal; they use `delivery_action` for bounded effects and sandboxed verification.
 
 ## Max Iterations
 

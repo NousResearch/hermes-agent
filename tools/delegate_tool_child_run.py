@@ -855,9 +855,12 @@ class _ChildRun:
         def _run_with_thread_capture():
             worker_thread_holder["t"] = threading.current_thread()
             from agent.delegation_context import delegated_child_context
-            from tools.delivery_policy import delivery_role_context
+            from tools.delivery_policy import DeliveryPolicy, delivery_role_context
+            policy = getattr(child, "_delivery_policy", None)
+            if not isinstance(policy, DeliveryPolicy):
+                policy = None
             with delegated_child_context(str(getattr(child, "session_id", "") or "")):
-                with delivery_role_context(getattr(child, "_delivery_policy", None)):
+                with delivery_role_context(policy):
                     return child.run_conversation(
                         user_message=user_message, task_id=self.child_task_id, stream_callback=self.relay_text,
                     )

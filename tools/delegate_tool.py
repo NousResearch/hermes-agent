@@ -129,6 +129,30 @@ def _normalize_required_skills(value) -> list[str]:
     return normalized
 
 
+def _resolve_required_delivery_skills(
+    names: list[str], delivery_role: Optional[str]
+) -> list[dict[str, Any]]:
+    """Resolve required skills before child construction, without side effects."""
+    if not names:
+        return []
+    if delivery_role is None:
+        raise ValueError("required_skills requires a delivery_role")
+    from tools.skills_tool import read_delivery_skill
+
+    resolved: list[dict[str, Any]] = []
+    for name in names:
+        try:
+            skill = read_delivery_skill(name)
+        except Exception as exc:
+            if isinstance(exc, ValueError):
+                raise
+            raise ValueError(f"Required delivery skill {name!r} failed to load: {exc}") from exc
+        if not skill.get("success") or not isinstance(skill.get("content"), str):
+            raise ValueError(f"Required delivery skill {name!r} failed to load")
+        resolved.append(dict(skill))
+    return resolved
+
+
 def _apply_delivery_capabilities(child, role_or_policy) -> None:
     policy = role_or_policy if hasattr(role_or_policy, "role") else build_delivery_policy(role_or_policy)
     apply_delivery_capabilities(child, policy)
@@ -250,7 +274,7 @@ def _build_child_agent(
     role: str = "leaf",
     delivery_policy=None,
     acceptance_ledger: str = "",
-    required_skills: Optional[list[str]] = None,
+    required_skills: Optional[list[dict[str, Any]]] = None,
 ):
     """Build (don't run) a child AIAgent on the main thread. override_* (from delegation config) replace parent
     inheritance so children can run on a different provider:model pair."""
@@ -464,6 +488,16 @@ def _build_children(
             _child_context = append_output_contract(_child_context, _task_schema)
         try:
             delivery_policy = build_delivery_policy(t.get("delivery_role"), t.get("delivery_evidence"))
+            if delivery_policy.role is not None:
+                delivery_policy = delivery_policy.bound_to_workspace(_resolve_workspace_hint(parent_agent))
+                needs_workspace = (
+                    delivery_policy.role in {"implementer", "closure_controller"}
+                    or (delivery_policy.role == "reviewer" and bool(delivery_policy.exact_sha))
+                )
+                if needs_workspace and not delivery_policy.workspace:
+                    raise ValueError(
+                        f"delivery role {delivery_policy.role!r} requires a concrete local workspace"
+                    )
             child = _build_child_preserving_parent_tools(
                 task_index=i, goal=t["goal"], context=_child_context,
                 toolsets=None,  # always inherit the parent's toolsets
@@ -471,7 +505,7 @@ def _build_children(
                 parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role),
                 delivery_policy=delivery_policy,
                 acceptance_ledger=str(t.get("acceptance_ledger") or ""),
-                required_skills=list(t.get("required_skills") or []), **overrides,
+                required_skills=list(t.get("resolved_required_skills") or []), **overrides,
             )
         except ValueError as exc:
             return [], str(exc)
@@ -602,6 +636,9 @@ def delegate_task(
             try:
                 task["delivery_role"] = _normalize_delivery_role(task.get("delivery_role"))
                 task["required_skills"] = _normalize_required_skills(task.get("required_skills"))
+                task["resolved_required_skills"] = _resolve_required_delivery_skills(
+                    task["required_skills"], task["delivery_role"]
+                )
                 build_delivery_policy(task["delivery_role"], task.get("delivery_evidence"))
                 if require_role and task["delivery_role"] is None:
                     raise ValueError("delivery_role is required by delegation.require_delivery_role")
@@ -822,16 +859,17 @@ DELEGATE_TASK_SCHEMA = {
                         ),
                         "delivery_evidence": _p(
                             "object",
-                            "Role evidence. Merger requires exact_sha, independent_review, ci_evidence; closure "
-                            "controller requires merged_sha, merge_evidence, post_merge_acceptance.",
+                            "Machine-bound role target. Reviewer and merger require repository, pull_request, "
+                            "exact_sha. Closure controller requires repository, issue, merged_sha. Free-form "
+                            "review/CI/merge assertions are not accepted.",
                             properties={
-                                "exact_sha": {"type": "string"},
-                                "independent_review": {"type": "string"},
-                                "ci_evidence": {"type": "string"},
-                                "merged_sha": {"type": "string"},
-                                "merge_evidence": {"type": "string"},
-                                "post_merge_acceptance": {"type": "string"},
+                                "repository": {"type": "string"},
+                                "pull_request": {"type": "integer", "minimum": 1},
+                                "issue": {"type": "integer", "minimum": 1},
+                                "exact_sha": {"type": "string", "pattern": "^[0-9a-fA-F]{40}$"},
+                                "merged_sha": {"type": "string", "pattern": "^[0-9a-fA-F]{40}$"},
                             },
+                            additionalProperties=False,
                         ),
                     },
                     "required": ["goal"],

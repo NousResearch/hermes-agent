@@ -106,6 +106,13 @@ def test_delivery_policy_diagnostics_distinguish_warnings_from_blocking_errors()
     assert len(unsafe) == 1 and unsafe[0].startswith("WARNING:")
 
 
+@pytest.mark.parametrize("pattern", ["gh pr *", "gh issue *", "/usr/bin/gh *", "git push *"])
+def test_delivery_diagnostic_catches_common_unsafe_globs(pattern: str) -> None:
+    diagnostics = _delivery_policy_diagnostics({"command_allowlist": [pattern]})
+    assert len(diagnostics) == 1
+    assert diagnostics[0].startswith("WARNING:")
+
+
 def test_invalid_delivery_policy_config_is_blocking() -> None:
     diagnostics = _delivery_policy_diagnostics({"delegation": {"require_delivery_role": "true"}})
     assert diagnostics == [
@@ -126,10 +133,16 @@ def test_prefill_diagnostic_targets_delivery_policy_not_legitimate_few_shot_use(
         '[{"role":"user","content":"Translate this sentence"},{"role":"assistant","content":"Bonjour"}]',
         encoding="utf-8",
     )
+    merger_prefill = tmp_path / "merger.json"
+    merger_prefill.write_text(
+        '[{"role":"user","content":"You are the merger. Merge only the exact reviewed SHA after required CI checks."}]',
+        encoding="utf-8",
+    )
 
     diagnostics = _delivery_policy_diagnostics({"prefill_messages_file": "policy.json"})
     assert len(diagnostics) == 1
     assert "fabricated dialogue" in diagnostics[0]
+    assert len(_delivery_policy_diagnostics({"prefill_messages_file": "merger.json"})) == 1
     assert _delivery_policy_diagnostics({"prefill_messages_file": "generic.json"}) == []
 
 

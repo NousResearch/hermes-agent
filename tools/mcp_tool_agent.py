@@ -79,6 +79,13 @@ def _publish_tool_snapshot(
         if prefix_registered is not None:
             new_defs, new_names = _merge_preserving_prefix(current_defs, new_defs, prefix_registered)
         new_defs, new_names = _drop_session_tools(agent, new_defs, new_names)
+        # Prefix preservation can carry a still-registered definition from the
+        # live snapshot after the pre-publish delivery filter. Re-apply the
+        # immutable capability boundary to the final staged snapshot.
+        from tools.delivery_policy import effective_tool_definitions
+        new_defs = effective_tool_definitions(new_defs, getattr(agent, "_delivery_policy", None))
+        new_names = {_def_name(item) for item in new_defs}
+        staged_engine_names &= new_names
         # Record the generation even when unchanged so an in-flight older caller can't clobber.
         agent._tool_snapshot_generation = max(published_gen, snapshot_generation)
         # Same NAME set: no change for MCP-reload callers. Content-aware callers

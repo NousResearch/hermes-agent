@@ -20,8 +20,8 @@ from agent.anthropic_credentials import _is_oauth_token
 from agent.anthropic_endpoints import (
     _base_url_needs_context_1m_beta, _is_azure_anthropic_endpoint, _is_kimi_coding_endpoint,
     _is_minimax_anthropic_endpoint, _is_nous_portal_endpoint, _is_opencode_endpoint,
-    _is_third_party_anthropic_endpoint, _model_name_is_kimi_family, _normalize_base_url_text,
-    _requires_bearer_auth,
+    _is_third_party_anthropic_endpoint, _model_name_is_kimi_family, _model_name_is_minimax_adaptive,
+    _normalize_base_url_text, _requires_bearer_auth,
 )
 from agent.anthropic_message_convert import (
     convert_messages_to_anthropic, convert_tools_to_anthropic, normalize_model_name,
@@ -84,8 +84,8 @@ ADAPTIVE_EFFORT_MAP = {
 # top_k. Newer releases share no common version substring, so an allowlist of "modern" versions
 # would go stale and silently route a new model down the legacy path: unknown Claude models
 # DEFAULT to the modern contract and only explicit *legacy* lists are kept (mirroring
-# _get_anthropic_max_output's default-to-newest). Non-Claude Anthropic-Messages models (minimax,
-# qwen3, GLM, ...) fall through to the legacy manual-thinking path, which they need.
+# _get_anthropic_max_output's default-to-newest). Kimi/Moonshot and MiniMax M3.1 also use adaptive
+# thinking; other non-Claude models (MiniMax M3/M2.x, qwen3, GLM, ...) keep the manual path.
 # Older Claude families that need manual thinking (budget_tokens only); ``claude-3`` covers
 # 3/3.5/3.7 and the ``-2025`` entries are date-stamped 4.0 ids.
 _LEGACY_MANUAL_THINKING_CLAUDE_SUBSTRINGS = (
@@ -172,8 +172,9 @@ def _resolve_anthropic_messages_max_tokens(requested, model: str, context_length
 def _supports_adaptive_thinking(model: str) -> bool:
     """True for Claude models using adaptive thinking (4.6+): unknown Claude models default to
     adaptive, the explicit legacy list stays manual, and non-Claude models return False — except
-    Kimi/Moonshot, whose Anthropic-compatible endpoints implement the adaptive contract."""
-    return _model_name_is_kimi_family(model) or (
+    Kimi/Moonshot and the MiniMax M3.1 line, whose Anthropic-compatible endpoints implement the adaptive
+    contract (``output_config.effort``)."""
+    return _model_name_is_kimi_family(model) or _model_name_is_minimax_adaptive(model) or (
         _is_claude_model(model) and not _model_matches(model, _LEGACY_MANUAL_THINKING_CLAUDE_SUBSTRINGS)
     )
 
@@ -598,8 +599,8 @@ def _apply_claude_code_identity(system, anthropic_tools, anthropic_messages, to_
 
 def _thinking_kwargs(reasoning_config: dict[str, Any], model: str, effective_max_tokens: int) -> dict[str, Any]:
     """Map ``reasoning_config`` to Anthropic thinking kwargs. Adaptive models (Claude 4.6+,
-    Kimi/Moonshot) get ``thinking.type=adaptive`` + ``output_config.effort``; older models and
-    manual-only compat endpoints (MiniMax) get budget_tokens. Haiku has no extended thinking. On
+    Kimi/Moonshot, MiniMax M3.1) get ``thinking.type=adaptive`` + ``output_config.effort``; older
+    models and manual compat models (MiniMax M3/M2.x) get budget_tokens. Haiku has no extended thinking. On
     4.7+ ``thinking.display`` defaults to "omitted", hiding the reasoning Hermes shows in its CLI,
     so "summarized" is requested to keep the activity feed populated."""
     if reasoning_config.get("enabled") is False:
@@ -671,7 +672,9 @@ def build_anthropic_kwargs(
             }
     # Map reasoning_config to Anthropic's thinking parameter. Claude 4.6+ models use adaptive thinking +
     # output_config.effort. Older models use manual thinking with budget_tokens. MiniMax Anthropic-compat
-    # endpoints support thinking (manual mode only, not adaptive). Haiku does NOT support extended thinking
+    # endpoints support manual thinking for M3/M2.x; the M3.1 line is adaptive (effort, default max,
+    # and thinking cannot be disabled — an off request omits the controls, leaving thinking on).
+    # Haiku does NOT support extended thinking
     # — skip entirely. Kimi / Moonshot models also use adaptive thinking: their Anthropic-compatible
     # endpoints (api.moonshot.cn/anthropic, api.kimi.com/coding) accept ``thinking.type="adaptive"`` +
     # ``output_config.effort``, and the replay-validation 400s that originally motivated dropping the

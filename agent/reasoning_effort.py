@@ -58,6 +58,9 @@ KIMI_K3_EFFORTS: tuple[str, ...] = ("low", "high", "max")
 KIMI_K2_EFFORTS: tuple[str, ...] = ("low", "medium", "high")
 KIMI_K3_OVERRIDES: dict[str, str] = {"medium": "high", "xhigh": "max"}
 
+#: MiniMax M3.1 Chat Completions: mandatory thinking, default max when effort is omitted.
+MINIMAX_M31_EFFORTS: tuple[str, ...] = ("low", "medium", "high", "xhigh", "max")
+
 #: OpenCode "Ox Alpha" (x-preview-f-free): thinking cannot be disabled and the wire accepts
 #: exactly low/high/max (medium/none/xhigh 400); xhigh rounds up.
 OX_ALPHA_EFFORTS: tuple[str, ...] = ("low", "high", "max")

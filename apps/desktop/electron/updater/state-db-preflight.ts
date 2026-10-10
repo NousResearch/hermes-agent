@@ -1,6 +1,24 @@
 import { execFileSync } from 'node:child_process'
+import fs from 'node:fs'
+import path from 'node:path'
 
 import { hiddenWindowsChildOptions } from '../windows-child-options'
+
+const DEFAULT_TIMEOUT_MS = 30_000
+const COPY_RATE_BYTES_PER_SECOND = 40 * 1024 * 1024
+const TIMEOUT_SLACK_MS = 10_000
+
+export function stateDbPreflightTimeoutMs(home: string): number {
+  try {
+    const bytes = fs.statSync(path.join(home, 'state.db')).size
+    return Math.max(
+      DEFAULT_TIMEOUT_MS,
+      Math.ceil(bytes / COPY_RATE_BYTES_PER_SECOND) * 1_000 + TIMEOUT_SLACK_MS
+    )
+  } catch {
+    return DEFAULT_TIMEOUT_MS
+  }
+}
 
 interface StateDbPreflight {
   python: string | null
@@ -44,7 +62,7 @@ export function preflightStateDb({ python, script, home, log, launcher = null }:
         : args,
       hiddenWindowsChildOptions({
         encoding: 'utf8',
-        timeout: 30_000,
+        timeout: stateDbPreflightTimeoutMs(home),
         stdio: ['ignore', 'pipe', 'pipe'],
         windowsVerbatimArguments: viaCmd
       })

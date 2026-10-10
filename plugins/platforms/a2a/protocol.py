@@ -333,6 +333,14 @@ class TaskStore:
             if (rec := self._tasks.get(task_id)) and rec["state"] not in TERMINAL_STATES:
                 rec["state"] = state
 
+    def note(self, task_id: str, text: str) -> None:
+        """Attach a status message to a NON-terminal task (a hint for whoever polls tasks/get).
+        It lives in ``reply`` — where ``to_task`` already renders it as ``status.message`` — and is
+        overwritten by the real reply the moment the task completes, so a hint never outlives its task."""
+        with self._lock:
+            if (rec := self._tasks.get(task_id)) and rec["state"] not in TERMINAL_STATES:
+                rec["reply"] = text
+
     def set_push_config(self, task_id: str, url: str, agent_slug: str = "", tenant: str = "") -> Optional[dict]:
         """Attach a push notification config; returns the stored config or None."""
         with self._lock:
@@ -407,13 +415,19 @@ class TaskStore:
         next_offset = offset + page_size if offset + page_size < total else 0
         return (page, next_offset, total) if with_total else (page, next_offset)
 
-    def fail_orphans(self, timeout_seconds: float = 300, *, exclude: set[str] | None = None) -> list[str]:
+    def fail_orphans(self, timeout_seconds: float = 300, *, exclude: set[str] | None = None,
+                     only: set[str] | None = None,
+                     reason: str = "[task orphaned — no reply produced]") -> list[str]:
+        """Fail non-terminal tasks older than ``timeout_seconds``. ``exclude`` protects tasks a live
+        request still owns; ``only`` narrows the sweep to a named subset (the adapter uses it to give
+        parked tasks their own, longer budget without touching ordinary orphans)."""
         excluded = exclude or set()
         with self._lock:
             stale = [tid for tid, rec in self._tasks.items()
-                     if tid not in excluded and rec["state"] not in TERMINAL_STATES
+                     if tid not in excluded and (only is None or tid in only)
+                     and rec["state"] not in TERMINAL_STATES
                      and time.time() - rec["created_at"] > timeout_seconds]
-        return [tid for tid in stale if self.complete(tid, STATE_FAILED, "[task orphaned — no reply produced]")]
+        return [tid for tid in stale if self.complete(tid, STATE_FAILED, reason)]
 
     def _trim_locked(self) -> None:
         terminal = [tid for tid, rec in self._tasks.items() if rec["state"] in TERMINAL_STATES]

@@ -10,6 +10,7 @@ import contextlib
 import json
 import logging
 import os
+import socket
 import re
 import sqlite3
 import subprocess
@@ -33,11 +34,21 @@ from . import protocol, security
 logger = logging.getLogger(__name__)
 
 _DEFAULT_PORT = 9900
+# Outcomes that end the request thread's wait but not the task (see A2AAdapter._finish -> _park_task).
+_TIMED_OUT = (protocol.STATE_FAILED, "[agent did not reply in time]")
+_CLIENT_GONE = (protocol.STATE_FAILED, "[client disconnected]")
+_STILL_WORKING = "[still working: poll tasks/get for the reply]"
 # seconds: orphan grace floor / ceiling / watchdog period. The ceiling keeps the sweep
 # meaningful when A2A_REPLY_TIMEOUT is absurd (1e18 would never fail an orphan).
 _MIN_ORPHAN_TIMEOUT, _MAX_ORPHAN_TIMEOUT, _WATCHDOG_INTERVAL = 300, 86400, 60
+# Job budget: how long a task may stay WORKING once its requester stopped waiting (reply window
+# elapsed, or accept-then-poll accepted). Separate knob from A2A_REPLY_TIMEOUT on purpose — the reply
+# window bounds ONE request, the job budget bounds the WORK. Doubling the reply window alone never
+# made a 60-minute suite answerable; this does.
+_JOB_TIMEOUT_DEFAULT, _MIN_JOB_TIMEOUT, _MAX_JOB_TIMEOUT = 3600, 60, 86400
 _MAX_BODY = 1_048_576  # 1MB max request body — prevents DoS via memory exhaustion
 _SSE_KEEPALIVE = 5  # seconds between SSE keepalive comments
+
 _DEFAULT_DESCRIPTION = "Hermes Agent — a general-purpose agent reachable over A2A."
 
 _ok = protocol.jsonrpc_result
@@ -74,6 +85,39 @@ def _reply_timeout() -> float:
 def _orphan_timeout() -> float:
     """Orphan grace must never expire before a configured reply window, but stays bounded."""
     return min(float(_MAX_ORPHAN_TIMEOUT), max(float(_MIN_ORPHAN_TIMEOUT), _reply_timeout()))
+
+
+def _job_timeout() -> float:
+    """Seconds a task may stay WORKING after its requester stopped waiting (A2A_JOB_TIMEOUT).
+    The reply window bounds ONE request; this bounds the WORK — so a 60-minute suite can still land."""
+    try:
+        budget = float(os.getenv("A2A_JOB_TIMEOUT", str(_JOB_TIMEOUT_DEFAULT)))
+    except (ValueError, TypeError):
+        budget = float(_JOB_TIMEOUT_DEFAULT)
+    return min(float(_MAX_JOB_TIMEOUT), max(float(_MIN_JOB_TIMEOUT), budget))
+
+
+# What a poller reads when the adapter stops blocking on a reply (tasks/get status.message). The rule
+# itself lives here so the *error hint* carries it: a requester hitting the ceiling is exactly the
+# audience that never finds it in a doc.
+_ASYNC_ACCEPTED_NOTE = (
+    "Task accepted for asynchronous execution — this peer answers with the task id instead of holding "
+    "the request for the whole job. Poll tasks/get until the state is terminal, or use tasks/subscribe / "
+    "message/stream for live updates. Jobs that may outlive A2A_REPLY_TIMEOUT must be sent this way "
+    "(configuration.returnImmediately=true, A2A v1.0; blocking=false, A2A v0.2) or handed off as a kanban "
+    "card — never as a blocking message/send.")
+
+# Sentinel reply used when a sweep (the job budget) tombstones a still-waiting task. It tells the
+# late-finalize callback that the outcome is already recorded, so it is not counted a second time.
+_SWEPT_REPLY = "[task already tombstoned by the A2A sweep]"
+
+
+def _window_elapsed_note() -> str:
+    return (
+        f"A2A reply window ({_reply_timeout():.0f}s) elapsed while the agent was still working — the task is "
+        "NOT failed and stays pollable via tasks/get; the reply lands there when the work finishes. Send jobs "
+        "that may outlive the reply window with configuration.returnImmediately=true so you hold the task id "
+        "from the start (see the A2A long-jobs docs).")
 
 
 def _default_agent_name() -> str:
@@ -119,6 +163,19 @@ def _profile_home(profile: str) -> Optional[str]:
         from hermes_cli.config import get_hermes_home
         return str(get_hermes_home())
     return None
+
+
+class _ExclusiveHTTPServer(ThreadingHTTPServer):
+    """A port belongs to one gateway. stdlib sets SO_REUSEADDR, which on Windows lets a second profile bind the
+    same listening port, and requests then split between them; there the second bind must fail instead
+    (SO_EXCLUSIVEADDRUSE). Elsewhere SO_REUSEADDR only lets a restart reuse a TIME_WAIT port, so it stays."""
+
+    allow_reuse_address = os.name != "nt"
+
+    def server_bind(self):
+        if os.name == "nt" and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
 
 
 def _daemon_thread(target, name: str) -> threading.Thread:
@@ -204,7 +261,9 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
             return self._json(200, protocol.metrics.snapshot())
         if subpath not in ("/", "/health"):
             return self._json(404, {"error": "not found"})
-        payload = {"status": "ok", "agent": agent.get("name") or adapter.agent_name}
+        payload = {"status": "ok", "agent": agent.get("name") or adapter.agent_name,
+                   # Timings an operator/requester can read live instead of guessing from .env files.
+                   "reply_timeout_seconds": int(_reply_timeout()), "job_timeout_seconds": int(_job_timeout())}
         # Agent Cards are public; profile/tenant topology is not leaked on remote unauthenticated GETs.
         sec = adapter._security_context
         if sec.localhost_only() or sec.authenticate(self.headers.get("Authorization"), self._client_ip()) is not None:
@@ -297,6 +356,13 @@ class A2AAdapter(BasePlatformAdapter):
         self._pending_order: dict[str, deque[str]] = {}
         # Request ownership outlives reply Futures and also covers synchronous profile forwards.
         self._active_tasks: set[str] = set()
+        # Parked tasks: the requester stopped waiting (reply window elapsed, or the call asked for
+        # accept-then-poll) while the agent is still working. They stay in _active_tasks on purpose —
+        # that membership is what keeps the orphan sweep off them and lets the late reply land — and
+        # are bounded by _job_timeout() instead of the reply window. Maps task_id -> the pending
+        # record, because the budget sweep needs that record to mark the task tombstoned before it
+        # tears the pending entry down (otherwise its late reply steals the next reply on the context).
+        self._parked: Dict[str, dict] = {}
         self._pending_lock = threading.Lock()
 
     @property
@@ -317,7 +383,7 @@ class A2AAdapter(BasePlatformAdapter):
         # Capture the gateway loop so the HTTP thread can marshal events via run_coroutine_threadsafe.
         self._loop = asyncio.get_running_loop()
         try:
-            self._httpd = ThreadingHTTPServer((self.host, self.port), A2ARequestHandler)
+            self._httpd = _ExclusiveHTTPServer((self.host, self.port), A2ARequestHandler)
         except OSError as e:
             logger.error("A2A: could not bind %s:%s — %s", self.host, self.port, e)
             self._set_fatal_error("bind_failed", f"A2A bind failed: {e}", retryable=True)
@@ -352,6 +418,7 @@ class A2AAdapter(BasePlatformAdapter):
             self._pending.clear()
             self._pending_order.clear()
             self._active_tasks.clear()
+            self._parked.clear()
 
     def _watchdog_loop(self) -> None:
         """Background thread that fails orphaned tasks (keeps them queryable)."""
@@ -362,15 +429,44 @@ class A2AAdapter(BasePlatformAdapter):
                 logger.debug("A2A: watchdog error", exc_info=True)
 
     def _fail_orphans_once(self) -> list[str]:
-        """Fail stale tasks that no request still owns."""
+        """Fail stale tasks that no request still owns, plus parked tasks that outlived the job budget."""
         with self._pending_lock:
             active_tasks = set(self._active_tasks)
+            parked = set(self._parked)
         timeout = _orphan_timeout()
         failed = self.tasks.fail_orphans(timeout, exclude=active_tasks)
         for tid in failed:
             logger.warning("A2A: orphaned task %s marked failed (timeout %gs)", tid, timeout)
-            protocol.metrics.tasks_failed += 1
+            self._drop_swept_pending(tid)
+        # Parked tasks are deliberately excluded above (a live entry is what lets the late reply land),
+        # so the job budget is the only thing that ever bounds them.
+        job = _job_timeout()
+        expired = self.tasks.fail_orphans(job, exclude=active_tasks - parked, only=parked,
+                                          reason=f"[task exceeded A2A_JOB_TIMEOUT={job:.0f}s — no reply within the job budget]")
+        for tid in expired:
+            logger.warning("A2A: parked task %s marked failed (job budget %.0fs)", tid, job)
+            # Full teardown, not just a _parked removal: a pending entry left here keeps the task id at
+            # the HEAD of _pending_order[context_id], and adapter.send() resolves replies oldest-first —
+            # so the tombstone would eat the *next* real reply on that (reused) context and lose that
+            # task's answer too. Tombstone first (see _drop_swept_pending) so a reply already in flight
+            # cannot resurrect the task behind our back.
+            self._drop_swept_pending(tid)
+        failed += expired
+        protocol.metrics.tasks_failed += len(failed)
         return failed
+
+    def _drop_swept_pending(self, task_id: str) -> None:
+        """Tear down a task the sweep just made terminal: cancel its waiter and drop every pending
+        container entry. Idempotent — the task store already ignores a second terminal transition,
+        so counting it twice is impossible.
+        """
+        with self._pending_lock:
+            entry = self._pending.get(task_id)
+        if entry is not None and not entry[1].done():
+            # Resolve the waiter with a sentinel the late-finalize path recognises as "already
+            # tombstoned": the store is authoritative, so the outcome is NOT recorded a second time.
+            entry[1].set_result((protocol.STATE_FAILED, _SWEPT_REPLY))
+        self._pop_pending(task_id)
 
     def _load_served_agents(self, extra: dict) -> dict[str, dict]:
         """Served-agent routing from ``platforms.a2a.extra.agents`` (top-level ``a2a_served_agents``
@@ -494,12 +590,63 @@ class A2AAdapter(BasePlatformAdapter):
     def _pop_pending(self, task_id: str) -> None:
         with self._pending_lock:
             self._active_tasks.discard(task_id)
+            self._parked.pop(task_id, None)
             entry = self._pending.pop(task_id, None)
             order = self._pending_order.get(entry[0]) if entry else None
             if order and task_id in order:
                 order.remove(task_id)
             if order is not None and not order:
                 self._pending_order.pop(entry[0], None)
+
+    def _park_task(self, pending: dict, note: str) -> dict:
+        """Stop waiting for a reply WITHOUT failing the task. The requester gets a WORKING task it can
+        poll, and the eventual reply still lands in the task store (audit, push, tasks/get) instead of
+        dying with the HTTP thread — which is exactly what a reply-window expiry used to do to a long
+        job's result."""
+        task_id = pending["task_id"]
+        if pending["future"].done():
+            # The agent answered in the same breath as the deadline (or the sweep tombstoned it):
+            # the real outcome is already available, so park nothing — reporting WORKING here would
+            # tell the caller to poll a task that is finished. Caller checks done() first in the
+            # blocking path; this keeps the accept-then-poll path consistent with it.
+            try:
+                state, reply = pending["future"].result()
+            except Exception:
+                state, reply = protocol.STATE_FAILED, "[agent reply lost]"
+            state, reply = self._finalize_task(pending, state, reply)
+            return protocol.build_task(task_id, pending["context_id"], state, reply,
+                                       created_at=pending["created_iso"])
+        with self._pending_lock:
+            self._parked[task_id] = pending
+        self._attach_late_finalize(pending)
+        self.tasks.set_state(task_id, protocol.STATE_WORKING)
+        self.tasks.note(task_id, note)
+        logger.info("A2A: task %s parked (reply window / accept-then-poll) — result lands on completion", task_id)
+        return protocol.build_task(task_id, pending["context_id"], protocol.STATE_WORKING, note,
+                                   created_at=pending["created_iso"])
+
+    def _attach_late_finalize(self, pending: dict) -> None:
+        """Hand the task's outcome to whoever resolves its future once no HTTP thread waits on it.
+        Resolvers run in the gateway's event loop (adapter.send / on_processing_complete), so the
+        finalization itself — sqlite, audit jsonl, push POST — runs on a throwaway worker thread."""
+        if pending.get("late_finalizer"):
+            return
+        pending["late_finalizer"] = True
+
+        def _land(fut: Future, owned: dict = dict(pending)) -> None:
+            try:
+                state, reply = fut.result()
+            except Exception:
+                state, reply = protocol.STATE_FAILED, "[agent reply lost]"
+            if reply == _SWEPT_REPLY:
+                # The job-budget sweep already tombstoned this task and counted it failed. Its pending
+                # entry is gone, so re-recording the outcome here would count the SAME task as both
+                # failed and completed. _pop_pending() is already idempotent, so just leave it.
+                return
+            threading.Thread(target=self._finalize_task, args=(owned, state, reply),
+                             name="a2a-late-finalize", daemon=True).start()
+
+        pending["future"].add_done_callback(_land)
 
     def _resolve_locked(self, task_id: str, state: str, text: str) -> bool:
         entry = self._pending.get(task_id)
@@ -583,7 +730,10 @@ class A2AAdapter(BasePlatformAdapter):
         safe_ctx = _safe_context_slug(context_id)
         session_title = f"a2a-{slug}-{safe_ctx}"
         key = (profile or "default", slug, safe_ctx)
-        timeout = int(agent.get("timeout") or _reply_timeout())
+        # Profile forwards run inline in the request thread, so the subprocess is bounded by the JOB
+        # budget, not the reply window: the reply window is what the caller waits for, the job budget
+        # is what the work gets. (An explicit per-agent ``timeout`` still wins.)
+        timeout = int(agent.get("timeout") or _job_timeout())
         with self._forward_lock(key):
             session_id = self._profile_sessions.get(key) or _state_db(
                 profile, "SELECT id FROM sessions WHERE title = ? ORDER BY started_at DESC LIMIT 1",
@@ -656,19 +806,43 @@ class A2AAdapter(BasePlatformAdapter):
                     try:
                         keepalive()
                     except Exception:
-                        return (protocol.STATE_FAILED, "[client disconnected]")
+                        return _CLIENT_GONE
             except Exception:
                 return on_timeout
 
     def _await_reply(self, pending: dict, keepalive=None) -> tuple[str, str]:
-        return self._await_future(pending["future"], pending["started"] + _reply_timeout(), keepalive,
-                                  (protocol.STATE_FAILED, "[agent did not reply in time]"))
+        return self._await_future(pending["future"], pending["started"] + _reply_timeout(), keepalive, _TIMED_OUT)
+
+    def _finish(self, pending: dict, keepalive=None) -> tuple[str, str]:
+        """Wait up to A2A_REPLY_TIMEOUT; past it, or once the stream client is gone, PARK the task
+        instead of failing it (see _park_task). One budget bounds a parked task: A2A_JOB_TIMEOUT."""
+        out = self._await_reply(pending, keepalive)
+        if out is _TIMED_OUT or out is _CLIENT_GONE:
+            note = _window_elapsed_note() if out is _TIMED_OUT else _STILL_WORKING
+            task = self._park_task(pending, note)
+            status = task.get("status", {})
+            return status.get("state", protocol.STATE_WORKING), protocol.extract_text(status.get("message", {}) or {})
+        return self._finalize_task(pending, *out)
+
+    @staticmethod
+    def _return_immediately(params: dict) -> bool:
+        """Accept-then-poll: v1.0 ``configuration.returnImmediately=true`` (spec default is blocking),
+        v0.2 ``configuration.blocking=false`` with the inverted polarity."""
+        cfg = params.get("configuration")
+        if not isinstance(cfg, dict):
+            return False
+        return cfg.get("returnImmediately") is True or cfg.get("blocking") is False
 
     def _rpc_message_send(self, req_id: Any, params: dict, peer: str, agent: Optional[dict] = None, v1_response: bool = False) -> dict:
         task, pending = self._prepare_task(params, peer, agent=agent)
         if task is None:
-            state, reply = self._finalize_task(pending, *self._await_reply(pending))
-            task = protocol.build_task(pending["task_id"], pending["context_id"], state, reply, created_at=pending["created_iso"])
+            if self._return_immediately(params):
+                # Accept-then-poll: hold the task id from the start so a long job never rides on a reply window.
+                task = self._park_task(pending, _ASYNC_ACCEPTED_NOTE)
+            else:
+                state, reply = self._finish(pending)
+                task = protocol.build_task(pending["task_id"], pending["context_id"], state, reply,
+                                           created_at=pending["created_iso"])
         return _ok(req_id, protocol.send_message_response(task) if v1_response else task)
 
     @staticmethod
@@ -711,13 +885,14 @@ class A2AAdapter(BasePlatformAdapter):
             task_id, context_id = pending["task_id"], pending["context_id"]
             submitted = protocol.build_task(task_id, context_id, protocol.STATE_SUBMITTED, created_at=pending["created_iso"])
             self._sse_write(handler, protocol.sse_data(protocol.stream_task(submitted), req_id))
-            self._sse_write(handler, protocol.sse_data(protocol.status_update(task_id, context_id, protocol.STATE_WORKING), req_id))
-            state, reply = self._finalize_task(pending, *self._await_reply(pending, keepalive=self._keepalive(handler)))
-            pending = None
+            self._sse_write(handler, protocol.sse_data(protocol.status_update(task_id, context_id, protocol.STATE_WORKING), req_id=req_id))
+            state, reply = self._finish(pending, keepalive=self._keepalive(handler))
+            pending = None  # a parked task ends the stream on WORKING; the client follows it via tasks/get
             self._emit_terminal(handler, task_id, context_id, state, reply, req_id=req_id)
         except (BrokenPipeError, ConnectionResetError):
             if pending is not None:
-                self._finalize_task(pending, protocol.STATE_FAILED, "[client disconnected]")
+                # Client left mid-stream: park rather than fail, so the work and its result survive the socket.
+                self._park_task(pending, _STILL_WORKING)
             logger.debug("A2A: stream client disconnected")
 
     def _rpc_tasks_subscribe(self, handler, req_id: Any, params: dict, agent: Optional[dict] = None) -> None:

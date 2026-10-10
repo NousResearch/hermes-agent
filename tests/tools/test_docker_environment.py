@@ -60,6 +60,7 @@ def _make_dummy_env(**kwargs):
         shared_container_key=kwargs.get("shared_container_key", ""),
         shm_size=kwargs.get("shm_size", docker_env._DEFAULT_SHM_SIZE),
         snap_compat=kwargs.get("snap_compat", False),
+        implicit_mounts=kwargs.get("implicit_mounts", True),
     )
 
 
@@ -1655,6 +1656,35 @@ def test_credential_mount_skipped_when_source_missing(monkeypatch, tmp_path, cap
     assert run_calls, "docker run should have been called"
     run_args_str = " ".join(run_calls[0][0])
     assert "deleted_token.json" not in run_args_str
+
+
+def test_implicit_mounts_opt_out_leaves_only_the_operators_mounts(monkeypatch, tmp_path):
+    """#92571: the skills, credential-file and cache mounts are host exposure Hermes adds on its own.
+    ``implicit_mounts=False`` drops all of them and keeps every mount the operator asked for."""
+    host = {name: tmp_path / name for name in ("skills", "cache", "data")}
+    for path in host.values():
+        path.mkdir()
+    token = tmp_path / "token.json"
+    token.write_text("{}")
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    for getter, entries in (
+        ("get_credential_file_mounts", [(token, "/root/.hermes/token.json")]),
+        ("get_skills_directory_mount", [(host["skills"], "/root/.hermes/skills")]),
+        ("get_cache_directory_mounts", [(host["cache"], "/root/.hermes/cache/documents")]),
+    ):
+        monkeypatch.setattr(
+            f"tools.credential_files.{getter}",
+            lambda entries=entries: [{"host_path": str(h), "container_path": c} for h, c in entries])
+
+    def mounts(**kw):
+        calls = _mock_subprocess_run(monkeypatch)
+        _make_dummy_env(volumes=[f"{host['data']}:/data"], **kw)
+        return set(_bind_mount_specs(_run_args_from_calls(calls)))
+
+    operator = {f"{host['data']}:/data"}
+    implicit = mounts() - operator
+    assert len(implicit) == 3 and all(spec.endswith(":ro") for spec in implicit)
+    assert mounts(implicit_mounts=False) == operator
 
 
 # ── s6-overlay /init image handling (issue #34628) ────────────────

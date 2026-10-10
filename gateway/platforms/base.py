@@ -1224,7 +1224,7 @@ def _validated_delivery_path(raw_path, session_key: str, label: str,
     safe_path = validate_media_delivery_path(raw, session_key=session_key)
     if not safe_path:
         from gateway.media_fetch import fetch_remote_media
-        safe_path = fetch_remote_media(raw)
+        safe_path = fetch_remote_media(raw, session_key)
     if not safe_path:
         # Say WHY: a path that does not exist on the host is the common case (a model hallucinated or
         # a sandbox path failed to translate) and is not a security rejection.

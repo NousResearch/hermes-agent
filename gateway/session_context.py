@@ -105,6 +105,22 @@ def scoped_current_session_id(session_id: str | None = None) -> Iterator[None]:
         _SESSION_ID.set(previous)
 
 
+@contextmanager
+def scoped_session_key(session_key: str) -> Iterator[None]:
+    """Bind a task-local session key and restore the prior value on exit; never touches
+    ``os.environ``.  For code that runs OUTSIDE the handler's context but was handed the key
+    (post-handler media delivery), so lookups keyed off the session resolve the same way they
+    did during the turn.  Empty key: a pure save/restore boundary.
+    """
+    previous = _SESSION_KEY.get()
+    if session_key:
+        _SESSION_KEY.set(session_key)
+    try:
+        yield
+    finally:
+        _SESSION_KEY.set(previous)
+
+
 def source_route_metadata(source: Any, metadata: dict | None) -> dict | None:
     """Keep inbound route anchors for durable deliveries after the source is gone."""
     anchors = {key: str(value) for key in ("scope_id", "parent_chat_id")

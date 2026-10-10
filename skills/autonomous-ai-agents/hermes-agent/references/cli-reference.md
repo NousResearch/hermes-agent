@@ -147,5 +147,5 @@ Plugin- and provider-supplied subcommands (e.g. `hermes photon setup`) only appe
 | Skills catalog | `hermes skills browse` · [Skills catalog](https://hermes-agent.nousresearch.com/docs/reference/skills-catalog) |
 | Provider setup | `hermes model` · [Providers guide](https://hermes-agent.nousresearch.com/docs/integrations/providers) |
 | Env variables | `hermes config env-path` · [Env vars reference](https://hermes-agent.nousresearch.com/docs/reference/environment-variables) |
-| Gateway logs | `~/.hermes/logs/gateway.log` (or `hermes logs`) |
+| Gateway logs | `${HERMES_HOME:-~/.hermes}/logs/gateway.log` (or `hermes logs`) |
 | Sessions | `hermes sessions browse` (reads state.db) |

@@ -3,7 +3,7 @@
 Author a Hermes **skin** — one YAML file that themes the CLI, the TUI, and the
 desktop GUI at once. The skin engine (`hermes_cli/skin_engine.py`) resolves the
 active skin and the gateway pushes it to every surface, so a file dropped in
-`~/.hermes/skins/` is the theme analogue of a plugin: no code, all surfaces. This
+`${HERMES_HOME:-~/.hermes}/skins/` is the theme analogue of a plugin: no code, all surfaces. This
 skill covers writing a good skin and activating it; it does not build GUI theme
 editors or ship built-in presets.
 
@@ -99,7 +99,7 @@ enumerate.
 
 ## Pitfalls
 
-- **Don't hardcode `~/.hermes`** when a profile is active — resolve the real home
+- **Don't hardcode `${HERMES_HOME:-~/.hermes}`** when a profile is active — resolve the real home
   from `$HERMES_HOME` first, falling back to `~/.hermes`.
 - **Keep `#rrggbb` hex.** Shorthand `#rgb`, `rgb()`, and named colors are not
   guaranteed to parse on every surface.

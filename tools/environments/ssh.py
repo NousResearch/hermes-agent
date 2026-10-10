@@ -11,6 +11,7 @@ import tempfile
 from pathlib import Path
 from typing import Iterable
 
+from hermes_constants import socket_safe_tmpdir
 from tools.environments.base import BaseEnvironment, EnvironmentConnectionError
 from tools.environments.base_output import _popen_bash
 from tools.environments.file_sync import (
@@ -60,7 +61,10 @@ class SSHEnvironment(BaseEnvironment):
                  probe_only: bool = False, sync_files: bool = True):
         super().__init__(cwd=cwd, timeout=timeout)
         self.host, self.user, self.port, self.key_path = host, user, port, key_path
-        self.control_dir = Path(tempfile.gettempdir()) / "hermes-ssh"
+        # Socket-safe root: a deep profile scratch TMPDIR overflows sun_path once OpenSSH
+        # appends its 16-char ControlMaster temp-listener suffix (issue #11840 class);
+        # socket_safe_tmpdir() falls back to /tmp so the full path stays under the limit.
+        self.control_dir = Path(socket_safe_tmpdir()) / "hermes-ssh"
         self.control_dir.mkdir(parents=True, exist_ok=True)
         # Short, deterministic socket name: the path must stay under macOS's 104-byte sun_path
         # limit (raw user@host:port + SSH's 16-byte suffix under a deep $TMPDIR exceeds it), and

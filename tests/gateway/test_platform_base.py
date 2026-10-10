@@ -3,6 +3,7 @@
 import logging
 import os
 import time
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -74,6 +75,67 @@ class TestCacheAudioFromBytes:
         assert saved.suffix == ".m4a"
         assert saved.read_bytes() == payload
 
+
+@pytest.mark.parametrize(
+    ("cache_name", "cache_kind", "payload"),
+    [
+        ("cache_image_from_bytes", "image", b"\x89PNG\r\n\x1a\n" + b"x" * 64),
+        ("cache_audio_from_bytes", "audio", b"unknown audio container"),
+        ("cache_video_from_bytes", "video", b"video payload"),
+    ],
+)
+@pytest.mark.parametrize(
+    "ext", [".b/../../outside", r".b\..\..\outside", ".jpg:payload"]
+)
+def test_media_cache_rejects_path_extensions(
+    cache_name, cache_kind, payload, ext, tmp_path, monkeypatch
+):
+    import gateway.platforms.base as base
+
+    home = tmp_path / "hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    from hermes_cli.config import load_config_readonly
+
+    load_config_readonly()
+    getattr(base, f"get_{cache_kind}_cache_dir")()
+    files_before = {
+        path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()
+    }
+
+    with pytest.raises(ValueError, match="Media cache extension"):
+        getattr(base, cache_name)(payload, ext)
+
+    assert {
+        path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()
+    } == files_before
+
+
+@pytest.mark.parametrize(
+    ("cache_name", "cache_directory", "payload"),
+    [
+        ("cache_image_from_bytes", "images", b"\x89PNG\r\n\x1a\n" + b"x" * 64),
+        ("cache_audio_from_bytes", "audio", b"unknown audio container"),
+        ("cache_video_from_bytes", "videos", b"video payload"),
+    ],
+)
+@pytest.mark.parametrize("ext", [".custom", ".tar.gz", ".音声"])
+def test_media_cache_preserves_safe_extensions(
+    cache_name, cache_directory, payload, ext, tmp_path, monkeypatch
+):
+    import gateway.platforms.base as base
+
+    home = tmp_path / "hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    cached = Path(getattr(base, cache_name)(payload, ext))
+    directory = home / "cache" / cache_directory
+
+    assert (
+        cached.parent,
+        cached.name.endswith(ext),
+        cached.read_bytes(),
+        list(directory.iterdir()),
+    ) == (directory, True, payload, [cached])
 
 # ---------------------------------------------------------------------------
 # MessageEvent — command parsing

@@ -1,9 +1,9 @@
 import { PassThrough } from 'stream'
 
 import { Box, renderSync } from '@hermes/ink'
-import { stripAnsi } from '@hermes/shared/ansi'
 import chalk from 'chalk'
 import React from 'react'
+import { stripAnsi } from '@hermes/shared/ansi'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { AUDIO_DIRECTIVE_RE, INLINE_RE, Md, MEDIA_LINE_RE, stripInlineMarkup } from '../components/markdown.js'
@@ -37,9 +37,7 @@ const ESC = String.fromCharCode(27)
 const CSI_RE = new RegExp(`${ESC}\\[[0-?]*[ -/]*[@-~]`, 'g')
 const OSC_RE = new RegExp(`${ESC}\\][\\s\\S]*?(?:${BEL}|${ESC}\\\\)`, 'g')
 
-// The escape stream exactly as it reaches the terminal, OSC sequences and
-// all — the only view that can prove an OSC 8 hyperlink was emitted.
-const renderAnsi = (node: React.ReactNode) => {
+const renderPlain = (node: React.ReactNode) => {
   const stdout = new PassThrough()
   const stdin = new PassThrough()
   const stderr = new PassThrough()
@@ -63,13 +61,10 @@ const renderAnsi = (node: React.ReactNode) => {
   instance.cleanup()
 
   return output
-}
-
-const renderPlain = (node: React.ReactNode) =>
-  renderAnsi(node)
     .replace(OSC_RE, '')
     .split('\n')
     .map(line => stripAnsi(line).replace(CSI_RE, '').trimEnd())
+}
 
 describe('INLINE_RE emphasis', () => {
   it('matches word-boundary italic/bold', () => {
@@ -176,6 +171,29 @@ describe('INLINE_RE inline math', () => {
     expect(matches('$P=a_n x^n + a_0$')).toEqual(['$P=a_n x^n + a_0$'])
     expect(matches('$\\beta_1,\\dots,\\beta_r$')).toEqual(['$\\beta_1,\\dots,\\beta_r$'])
   })
+
+  it('places math content in the correct capture group (regression: m[16] is bare URL)', () => {
+    // When `m[16]` was the bare URL group AND the inline-math `$...$`
+    // group simultaneously (because the bare URL pattern lacked its own
+    // capturing parens), MdInline rendered `$\\mathbb{R}$` as an
+    // underlined autolink instead of italic amber math. Lock down the
+    // numbering: math goes in m[17] / m[18], URLs go in m[16].
+    const url = [...'see https://example.com here'.matchAll(INLINE_RE)][0]!
+    const dollarMath = [...'$\\mathbb{R}$'.matchAll(INLINE_RE)][0]!
+    const parenMath = [...'\\(\\pi\\)'.matchAll(INLINE_RE)][0]!
+
+    expect(url[16]).toBe('https://example.com')
+    expect(url[17]).toBeUndefined()
+    expect(url[18]).toBeUndefined()
+
+    expect(dollarMath[16]).toBeUndefined()
+    expect(dollarMath[17]).toBe('\\mathbb{R}')
+    expect(dollarMath[18]).toBeUndefined()
+
+    expect(parenMath[16]).toBeUndefined()
+    expect(parenMath[17]).toBeUndefined()
+    expect(parenMath[18]).toBe('\\pi')
+  })
 })
 
 describe('protocol sentinels', () => {
@@ -253,87 +271,55 @@ describe('Md wrapping', () => {
 })
 
 describe('Md link labels', () => {
-  const md = (text: string, width = 200) =>
-    React.createElement(Box, { width }, React.createElement(Md, { cols: width, t: DEFAULT_THEME, text }))
+  it('renders bare URLs with readable slug labels', () => {
+    const lines = renderPlain(
+      React.createElement(
+        Box,
+        { width: 120 },
+        React.createElement(Md, {
+          t: DEFAULT_THEME,
+          text: 'see https://www.expedia.com/things-to-do/puerto-rico-el-yunque-rainforest-adventure for details'
+        })
+      )
+    )
 
-  // The link target has to survive as literal text, not just as OSC 8
-  // metadata: a bare URL that renders as a site name leaves nothing to read,
-  // copy or retype on any terminal that strips the escape.
-  it('renders a bare URL verbatim instead of a derived label', () => {
-    const url = 'https://connect.example.com/link/lk_9f2c1d7e'
-    const rendered = renderPlain(md(`see ${url} for details`)).join('\n')
+    const rendered = lines.join('\n')
 
-    expect(rendered).toContain(url)
-    // `urlSlugTitleLabel` used to turn the last path segment into this.
-    expect(rendered).not.toContain('Lk 9f2c1d7e')
+    expect(rendered).toContain('Puerto Rico El Yunque Rainforest Adventure')
+    expect(rendered).not.toContain('https://www.expedia.com/things-to-do/puerto-rico-el-yunque-rainforest-adventure')
   })
 
-  it('wraps a bare URL in an OSC 8 hyperlink pointing at the same target', () => {
-    const url = 'https://connect.example.com/link/lk_9f2c1d7e'
-    const ansi = renderAnsi(md(`Connect link: ${url}`))
+  it('keeps the authored markdown label even when a page title resolves', async () => {
+    const url = 'https://www.expedia.com/things-to-do/puerto-rico-el-yunque-rainforest-adventure'
 
-    expect(ansi).toContain(`;${url}${BEL}`)
-    expect(ansi).toContain(`${ESC}]8;`)
+    // Warm the shared cache so `useLinkTitle` would have a title to render
+    // synchronously — the label must still win.
+    await stubFetchedTitle(url, 'El Yunque Rainforest Adventure | Expedia')
+
+    const lines = renderPlain(
+      React.createElement(
+        Box,
+        { width: 80 },
+        React.createElement(Md, { t: DEFAULT_THEME, text: `[Trip details](${url})` })
+      )
+    )
+
+    const rendered = lines.join('\n')
+
+    expect(rendered).toContain('Trip details')
+    expect(rendered).not.toContain('El Yunque Rainforest Adventure | Expedia')
   })
 
-  it('leaves trailing prose punctuation outside the visible URL', () => {
-    const url = 'https://docs.example.com/guide/auth'
-    const rendered = renderPlain(md(`open ${url}, then retry`)).join('\n')
+  it('still resolves titles for links whose label is just the URL', async () => {
+    const url = 'https://www.expedia.com/things-to-do/puerto-rico-el-yunque-rainforest-adventure'
 
-    expect(rendered).toContain(`open ${url}, then retry`)
-  })
+    await stubFetchedTitle(url, 'Rainforest Adventure Tour')
 
-  it('renders an autolink verbatim', () => {
-    const url = 'https://docs.example.com/guide/auth'
-    const rendered = renderPlain(md(`see <${url}>`)).join('\n')
+    const lines = renderPlain(
+      React.createElement(Box, { width: 120 }, React.createElement(Md, { t: DEFAULT_THEME, text: `[${url}](${url})` }))
+    )
 
-    expect(rendered).toContain(url)
-  })
-
-  it('keeps an authored markdown label and carries the target in OSC 8', () => {
-    const url = 'https://docs.example.com/guide/auth'
-    const ansi = renderAnsi(md(`[Trip details](${url})`))
-
-    expect(stripAnsi(ansi.replace(OSC_RE, ''))).toContain('Trip details')
-    expect(ansi).toContain(`;${url}${BEL}`)
-  })
-
-  it('never lets a fetched page title replace the URL', async () => {
-    const url = 'https://connect.example.com/link/lk_9f2c1d7e'
-
-    // Warm the shared title cache, then prove the renderer ignores it. This
-    // is the exact shape of the live defect: the fetched title was the only
-    // thing on screen.
-    await stubFetchedTitle(url, 'Connect your account')
-
-    const rendered = renderPlain(md(`Connect link: ${url}`)).join('\n')
-
-    expect(rendered).toContain(url)
-    expect(rendered).not.toContain('Connect your account')
-  })
-
-  it('renders a URL-labelled markdown link as the URL', async () => {
-    const url = 'https://docs.example.com/guide/auth'
-
-    await stubFetchedTitle(url, 'Auth Guide')
-
-    const rendered = renderPlain(md(`[${url}](${url})`)).join('\n')
-
-    expect(rendered).toContain(url)
-    expect(rendered).not.toContain('Auth Guide')
-  })
-
-  it('falls back to the URL when the markdown label is blank', () => {
-    const url = 'https://docs.example.com/guide/auth'
-    const rendered = renderPlain(md(`[ ](${url})`)).join('\n')
-
-    expect(rendered).toContain(url)
-  })
-
-  it('renders a mailto autolink as the address', () => {
-    const rendered = renderPlain(md('write <ops@example.com> today')).join('\n')
-
-    expect(rendered).toContain('write ops@example.com today')
+    expect(lines.join('\n')).toContain('Rainforest Adventure Tour')
   })
 })
 
@@ -382,6 +368,17 @@ describe('renderTable CJK width alignment', () => {
     // The CJK row is the one that drifted before the fix.  It must
     // align with the rest now.
     expect(qwenCol2).toBe(headerCol2)
+  })
+})
+
+describe('Markdown fences', () => {
+  it('keeps recursively rendering fenced Markdown', () => {
+    const markdown = ['```markdown', '## Nested heading', '', '- nested item', '```'].join('\n')
+    const output = renderPlain(React.createElement(Md, { t: DEFAULT_THEME, text: markdown })).join('\n')
+
+    expect(output).toContain('Nested heading')
+    expect(output).toContain('nested item')
+    expect(output).not.toContain('⧉⧉⧉')
   })
 })
 

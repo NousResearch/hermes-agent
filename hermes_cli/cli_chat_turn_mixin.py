@@ -582,6 +582,10 @@ class CLIChatTurnMixin:
         if self._voice_tts and response and not turn.use_streaming_tts:
             self._voice_speak_response_async(response)
 
+        # Show code copy hint after responses containing fenced code blocks
+        from cli import _print_code_copy_hint
+        _print_code_copy_hint(response)
+
         # Re-queue the interrupt message (plus any that arrived meanwhile) as the next
         # prompt. Only reached in busy_input_mode == "interrupt"; "queue" mode routes
         # Enter straight to _pending_input.

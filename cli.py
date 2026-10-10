@@ -325,6 +325,32 @@ def format_token_count_compact(*args, **kwargs):
     return f"{value:,}"
 
 
+def _print_code_copy_hint(response: Any) -> None:
+    """Print copy hint if the response contains code blocks.
+
+    Called after a response completes to let the user know they can
+    use ``/cc`` (shorthand for ``/copy-code``) to copy code blocks.
+    """
+    from hermes_cli.code_fences import parse_code_fences
+
+    if response is None:
+        return
+    text = _assistant_content_as_text(response) if not isinstance(response, str) else response
+    fences = parse_code_fences(text)
+    closed_fences = [f for f in fences if f["closed"]]
+    if not closed_fences:
+        return
+    if len(closed_fences) == 1:
+        _cprint(
+            f"\n{_DIM}💡 Single code block — run /cc to copy it{_RST}"
+        )
+    else:
+        _cprint(
+            f"\n{_DIM}💡 {len(closed_fences)} code blocks — "
+            f"/cc to list, /cc N to copy block N{_RST}"
+        )
+
+
 realign_markdown_tables = _lazy_shim("agent.markdown_tables", "realign_markdown_tables")
 
 _COMMAND_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")

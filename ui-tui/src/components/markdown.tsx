@@ -1,11 +1,15 @@
 import { Box, Link, stringWidth, Text } from '@hermes/ink'
-import { Fragment, memo, type ReactNode, useMemo } from 'react'
+import React, { Fragment, memo, type ReactNode, useMemo } from 'react'
 
+import type { CopyBloxFence } from '../domain/codeFence.js'
+import { parseCodeFences } from '../domain/codeFence.js'
 import { ensureEmojiPresentation } from '../lib/emoji.js'
-import { normalizeExternalUrl } from '../lib/externalLink.js'
+import { normalizeExternalUrl, urlSlugTitleLabel, useLinkTitle } from '../lib/externalLink.js'
 import { BOX_CLOSE, BOX_OPEN, texToUnicode } from '../lib/mathUnicode.js'
 import { highlightLine, isHighlightable } from '../lib/syntax.js'
 import type { Theme } from '../theme.js'
+
+import { CopyBlox } from './copyblox.js'
 
 // `\boxed{X}` regions in `texToUnicode` output are marked with the
 // non-printable U+0001 / U+0002 sentinels. Split on them and render the
@@ -150,32 +154,44 @@ const isTableDivider = (row: string) => {
 const autolinkUrl = (raw: string) =>
   raw.startsWith('mailto:') || raw.startsWith('http') || !raw.includes('@') ? raw : `mailto:${raw}`
 
-// A bare URL renders as itself. The target IS the message for connect links,
-// one-time tokens and signed URLs, so a derived slug label or a fetched page
-// title ("Composio") hides the only string the reader has to copy — and a
-// terminal that ignores OSC 8 leaves nothing behind at all. `mailto:` is the
-// one scheme whose useful text is the address, not the URL.
-const urlAsText = (url: string) => (url.startsWith('mailto:') ? url.replace(/^mailto:/, '') : url)
+const defaultLinkLabel = (url: string) =>
+  url.startsWith('mailto:') ? url.replace(/^mailto:/, '') : /^https?:\/\//i.test(url) ? urlSlugTitleLabel(url) : url
 
-// An authored markdown label may stand in for the URL, because the OSC 8
-// wrapper below keeps the target reachable by click. A blank label
-// (`[](url)`) says nothing, so the URL itself becomes the text.
-const authoredLabel = (label: string | undefined): string | undefined => label?.trim() || undefined
+// A label only counts as authored if it says something the URL doesn't:
+// `[https://example.com](https://example.com)` and `<https://example.com>`
+// are bare links wearing markdown syntax, so they still want a page title.
+const pickAuthoredLabel = (label: string | undefined, target: string): string | undefined => {
+  const trimmed = label?.trim()
 
-// `Link` emits the OSC 8 hyperlink unconditionally and the renderer also
-// records it per cell, so a label never strands its target: terminals that
-// speak OSC 8 make it clickable, and the in-process click dispatcher covers
-// the ones that don't.
-const renderLink = (k: number, t: Theme, rawUrl: string, label?: string) => {
-  const target = normalizeExternalUrl(rawUrl)
+  return trimmed && normalizeExternalUrl(trimmed) !== target ? trimmed : undefined
+}
+
+interface ResolvedLinkProps {
+  authoredLabel?: string
+  t: Theme
+  url: string
+}
+
+// Title resolution is a fallback for links with no text of their own, not an
+// override — replacing `[Read the RFC](url)` with the page title throws away
+// better wording than we can derive, and mangles labels like `#71706`.
+function ResolvedLink({ authoredLabel, t, url }: ResolvedLinkProps) {
+  const fetched = useLinkTitle(authoredLabel ? null : url)
+  const display = authoredLabel || fetched || defaultLinkLabel(url)
 
   return (
-    <Link key={k} url={target}>
+    <Link url={url}>
       <Text color={t.color.accent} underline>
-        {authoredLabel(label) ?? urlAsText(target)}
+        {display}
       </Text>
     </Link>
   )
+}
+
+const renderResolvedLink = (k: number, t: Theme, rawUrl: string, label?: string) => {
+  const target = normalizeExternalUrl(rawUrl)
+
+  return <ResolvedLink authoredLabel={pickAuthoredLabel(label, target)} key={k} t={t} url={target} />
 }
 
 export const stripInlineMarkup = (v: string) =>
@@ -556,9 +572,9 @@ function MdInline({ color, t, text }: { color?: string; t: Theme; text: string }
         </Text>
       )
     } else if (m[3] && m[4]) {
-      parts.push(renderLink(parts.length, t, m[4], m[3]))
+      parts.push(renderResolvedLink(parts.length, t, m[4], m[3]))
     } else if (m[5]) {
-      parts.push(renderLink(parts.length, t, autolinkUrl(m[5]), m[5].replace(/^mailto:/, '')))
+      parts.push(renderResolvedLink(parts.length, t, autolinkUrl(m[5]), m[5].replace(/^mailto:/, '')))
     } else if (m[6]) {
       parts.push(
         <Text key={parts.length} strikethrough>
@@ -620,7 +636,7 @@ function MdInline({ color, t, text }: { color?: string; t: Theme; text: string }
       // so `see https://x.com/, which…` keeps the comma outside the link.
       const url = m[16].replace(/[),.;:!?]+$/g, '')
 
-      parts.push(renderLink(parts.length, t, url))
+      parts.push(renderResolvedLink(parts.length, t, url))
 
       if (url.length < m[16].length) {
         parts.push(<Text key={parts.length}>{m[16].slice(url.length)}</Text>)
@@ -703,6 +719,18 @@ function MdImpl({ cols, compact, t, text }: MdProps) {
     }
 
     const lines = ensureEmojiPresentation(text).split('\n')
+
+    // Compute raw source fence data BEFORE display normalisation changes text.
+    // parseCodeFences operates on `text` (raw) so rawContent is byte-accurate.
+    const rawFences = parseCodeFences(text)
+
+    // Map display-line indices (open fence) to raw fence content.
+    const fenceContentMap = new Map<number, CopyBloxFence>()
+
+    for (const rf of rawFences) {
+      fenceContentMap.set(rf.openLineIndex, rf)
+    }
+
     const nodes: ReactNode[] = []
 
     let prevKind: Kind = null
@@ -766,6 +794,7 @@ function MdImpl({ cols, compact, t, text }: MdProps) {
       const fence = line.match(FENCE_RE)
 
       if (fence) {
+        const openLineIndex = i
         const char = fence[1]![0] as '`' | '~'
         const len = fence[1]!.length
         const lang = fence[2]!.trim().toLowerCase()
@@ -781,10 +810,14 @@ function MdImpl({ cols, compact, t, text }: MdProps) {
           block.push(lines[i]!)
         }
 
-        if (i < lines.length) {
+        const closed = i < lines.length
+
+        if (closed) {
           i++
         }
 
+        // Preserve the established nested-Markdown rendering for Markdown
+        // fences. These are display-only; other fenced languages get CopyBlox.
         if (['md', 'markdown'].includes(lang)) {
           start('paragraph')
           nodes.push(<Md cols={cols} compact={compact} key={key} t={t} text={block.join('\n')} />)
@@ -792,48 +825,75 @@ function MdImpl({ cols, compact, t, text }: MdProps) {
           continue
         }
 
-        start('code')
-
+        // Look up raw content from pre-computed raw source parse using the
+        // saved opener index.  `block` contains display-normalized lines
+        // (ensureEmojiPresentation may have mutated emoji bytes), so we must
+        // never fall back to `block.join('\n')` for clipboard content.
         const isDiff = lang === 'diff'
         const highlighted = !isDiff && isHighlightable(lang)
 
+        // Build display lines for syntax rendering.
+        const codeChildren: ReactNode[] = block.map((l, j) => {
+          if (highlighted) {
+            return (
+              <Text key={j} wrap="wrap-char">
+                {highlightLine(l, lang, t).map(([color, text], kk) =>
+                  color ? (
+                    <Text color={color} key={kk}>
+                      {text}
+                    </Text>
+                  ) : (
+                    <Text key={kk}>{text}</Text>
+                  )
+                )}
+              </Text>
+            )
+          }
+
+          const add = isDiff && l.startsWith('+')
+          const del = isDiff && l.startsWith('-')
+          const hunk = isDiff && l.startsWith('@@')
+
+          return (
+            <Text
+              backgroundColor={add ? t.color.diffAdded : del ? t.color.diffRemoved : undefined}
+              color={add ? t.color.diffAddedWord : del ? t.color.diffRemovedWord : hunk ? t.color.muted : undefined}
+              dimColor={isDiff && !add && !del && !hunk && l.startsWith(' ')}
+              key={j}
+              wrap="wrap-char"
+            >
+              {l}
+            </Text>
+          )
+        })
+
+        const rawFence = fenceContentMap.get(openLineIndex)
+        const rawContent = rawFence?.rawContent
+
+        if (!rawFence) {
+          // Fail closed: no parser-to-renderer mapping — never copy display-normalized text.
+          nodes.push(
+            <Box flexDirection="column" key={key} paddingLeft={2}>
+              {lang && !isDiff && <Text color={t.color.muted}>{'─ ' + lang}</Text>}
+              {codeChildren}
+            </Box>
+          )
+
+          continue
+        }
+
         nodes.push(
-          <Box flexDirection="column" key={key} paddingLeft={2}>
-            {lang && !isDiff && <Text color={t.color.muted}>{'─ ' + lang}</Text>}
-
-            {block.map((l, j) => {
-              if (highlighted) {
-                return (
-                  <Text key={j}>
-                    {highlightLine(l, lang, t).map(([color, text], kk) =>
-                      color ? (
-                        <Text color={color} key={kk}>
-                          {text}
-                        </Text>
-                      ) : (
-                        <Text key={kk}>{text}</Text>
-                      )
-                    )}
-                  </Text>
-                )
-              }
-
-              const add = isDiff && l.startsWith('+')
-              const del = isDiff && l.startsWith('-')
-              const hunk = isDiff && l.startsWith('@@')
-
-              return (
-                <Text
-                  backgroundColor={add ? t.color.diffAdded : del ? t.color.diffRemoved : undefined}
-                  color={add ? t.color.diffAddedWord : del ? t.color.diffRemovedWord : hunk ? t.color.muted : undefined}
-                  dimColor={isDiff && !add && !del && !hunk && l.startsWith(' ')}
-                  key={j}
-                >
-                  {l}
-                </Text>
-              )
-            })}
-          </Box>
+          <CopyBlox
+            closed={closed}
+            cols={cols ?? 80}
+            compact={compact}
+            key={key}
+            language={isDiff ? 'diff' : lang}
+            rawContent={rawFence.rawContent}
+            theme={t}
+          >
+            {codeChildren}
+          </CopyBlox>
         )
 
         continue

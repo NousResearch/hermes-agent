@@ -2,7 +2,6 @@ export { default as useStderr } from './hooks/use-stderr.js'
 export { default as useStdout } from './hooks/use-stdout.js'
 export { Ansi } from './ink/Ansi.js'
 export { evictInkCaches, type EvictLevel, type InkCacheSizes } from './ink/cache-eviction.js'
-export { colorize } from './ink/colorize.js'
 export { AlternateScreen } from './ink/components/AlternateScreen.js'
 export { default as Box } from './ink/components/Box.js'
 export { default as Link } from './ink/components/Link.js'
@@ -37,6 +36,7 @@ export {
   terminalForegroundHex
 } from './ink/terminal.js'
 export type { MouseTrackingMode } from './ink/termio/dec.js'
+export { setClipboard } from './ink/termio/osc.js'
 export { wrapAnsi } from './ink/wrapAnsi.js'
 
 // NOTE: Do not re-export from 'ink-text-input' here.

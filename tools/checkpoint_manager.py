@@ -56,6 +56,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 from pathlib import Path, PurePosixPath
 from hermes_constants import get_hermes_home
@@ -70,6 +71,8 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
+
+_LEDGER_LOCK = threading.RLock()
 
 CHECKPOINT_BASE = get_hermes_home() / "checkpoints"
 _CHECKPOINT_BASE_AT_IMPORT = CHECKPOINT_BASE
@@ -841,7 +844,7 @@ class CheckpointManager:
             digest = _hash_file(path)
             if digest is None:
                 return
-            with store_lock(_resolve_checkpoint_base()):
+            with _LEDGER_LOCK, store_lock(_resolve_checkpoint_base()):
                 store = _store_path()
                 dir_hash = self._ledger_key(str(path))
                 ledger = _load_ledger(store, dir_hash)

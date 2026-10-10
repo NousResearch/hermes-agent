@@ -33,6 +33,11 @@ const CURVE = {
 }
 
 const PATH_STEPS = 240
+
+// Every frame redraws the whole loader through the ObjC bridge and re-reads the status file.
+// Matching a 120 Hz display kept osascript at ~64% of a core for the entire update, competing
+// with the build this panel reports on; 30 fps looks the same for this loader at a fraction.
+const MAX_FRAMES_PER_SECOND = 30
 const norm = progress => ((progress % 1) + 1) % 1
 
 function detailScaleFor (time, phaseOffset) {
@@ -220,10 +225,10 @@ function run (argv) {
     if (settled === null) {
       loaderView.image = renderLoaderFrame($.CACurrentMediaTime() * 1000 - startedAtMs, phaseOffset, fg)
       const screen = $.NSScreen.mainScreen;
-      const refreshRate = screen.maximumFramesPerSecond;
+      const refreshRate = Math.min(screen.maximumFramesPerSecond || MAX_FRAMES_PER_SECOND, MAX_FRAMES_PER_SECOND);
       const frameInterval = 1.0 / refreshRate;
 
-      // Pump the main runloop at the monitor's refresh rate.
+      // Pump the main runloop at the monitor's refresh rate, capped at MAX_FRAMES_PER_SECOND.
       runloop.runModeBeforeDate(
         $.NSDefaultRunLoopMode,
         $.NSDate.dateWithTimeIntervalSinceNow(frameInterval)

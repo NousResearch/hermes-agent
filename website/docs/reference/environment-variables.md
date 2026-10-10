@@ -262,6 +262,7 @@ These variables configure the [Tool Gateway](../user-guide/features/tool-gateway
 | `TERMINAL_VERCEL_RUNTIME` | Vercel Sandbox runtime (`node24`, `node22`, `python3.13`) |
 | `TERMINAL_TIMEOUT` | Command timeout in seconds |
 | `TERMINAL_LIFETIME_SECONDS` | Max lifetime for terminal sessions in seconds |
+| `TERMINAL_PROBE_TIMEOUT` | Seconds to wait for the backend availability probe (`docker version`, or the Apptainer/Singularity version check) before the terminal and file tools are treated as unavailable (default: `20`) |
 | `TERMINAL_CWD` | Deprecated direct override for gateway/cron terminal sessions. Prefer `terminal.cwd` in `config.yaml`; CLI still uses the launch directory. |
 | `SUDO_PASSWORD` | Enable sudo without interactive prompt |
 

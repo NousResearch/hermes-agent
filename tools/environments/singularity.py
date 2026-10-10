@@ -18,6 +18,7 @@ from tools.environments.base import BaseEnvironment, _load_json_store, _save_jso
 from tools.environments.base_output import _popen_bash
 from tools.environments.path_utils import sanitize_task_id_for_path
 from tools.environments.remote_common import bash_argv, run_capture
+from tools.terminal_tool_config import _probe_timeout
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +43,7 @@ def _ensure_singularity_available() -> str:
     """Preflight check: resolve the executable and verify it responds."""
     exe = _find_singularity_executable()
     try:
-        result = run_capture([exe, "version"], timeout=10)
+        result = run_capture([exe, "version"], timeout=_probe_timeout())
     except FileNotFoundError:
         raise RuntimeError(f"Singularity backend selected but '{exe}' could not be executed.")
     except subprocess.TimeoutExpired:

@@ -94,8 +94,173 @@ def installation_command(repo_root: Path, args=(), *, module: str = "hermes_cli.
     root = Path(repo_root)
     if resolve_store_python(root) is None:
         return runtime_command(root, args, module=module, python=python, home=home)
-    prefix = [] if module == "hermes_cli.main" else ["--run-module", module]
-    return [str(root / ".hermes" / "bin" / "hermes"), *prefix, *args]
+    launcher = _published_launcher(root)
+    recorded = _recorded_venv_for_root(root)
+    if launcher is not None and recorded is not None:
+        # The normal published-checkout flow: the launcher is activatable
+        # through this tree's own committed facts.
+        prefix = [] if module == "hermes_cli.main" else ["--run-module", module]
+        return [str(launcher), *prefix, *args]
+    if recorded is None:
+        # Not activatable through this tree: the runtime facts are keyed to
+        # the install that committed the venv (the checkout), not this
+        # workspace copy, so the launcher and any root-bound form die with
+        # "no dependency environment is committed" (#125375). Resolve the
+        # owning checkout from this generation's recorded project root, with
+        # the default facts owner only as a fallback for older layouts.
+        # The owner/sibling entries are useful for resolving activation, but
+        # they live inside a generation and may be collected immediately after
+        # this command is persisted. Resolve the command from a stable install
+        # root instead; only its published shim (or store interpreter bootstrap)
+        # may cross the service-definition boundary.
+        stable_root = _stable_runtime_root(root)
+        stable_launcher = _published_launcher(stable_root)
+        if stable_root != root.resolve() and stable_launcher is not None:
+            prefix = [] if module == "hermes_cli.main" else ["--run-module", module]
+            return [str(stable_launcher), *prefix, *args]
+        return runtime_command(stable_root, args, module=module, python=python, home=home)
+    # No published launcher (#125043), or one whose tree cannot activate and
+    # no owner record resolves: the interpreter bootstrap form — the same
+    # shape the launcher itself wraps. Where the tree genuinely has no
+    # committed environment this fails at activation with the actionable
+    # ``pm repair`` message instead of a deferred, silent exec failure.
+    return runtime_command(root, args, module=module, python=python, home=home)
+
+
+def _stable_runtime_root(root: Path) -> Path:
+    """Find the non-generation project root that owns a PM generation."""
+    workspace = Path(root).resolve()
+    if workspace.name == "workspace":
+        marker = workspace.parent.parent.parent / "inputs" / ".project-root"
+        try:
+            value = marker.read_text(encoding="utf-8").strip()
+            candidate = Path(value).resolve() if value else None
+        except (FileNotFoundError, OSError, ValueError):
+            pass
+        else:
+            # The generation's recorded source owns this workspace even when
+            # another checkout under the same home also has committed facts.
+            if candidate is not None and candidate.is_dir():
+                return candidate
+    # Older layouts without a valid marker retain the default-owner fallback.
+    owner = _facts_owner_root(root)
+    if _recorded_venv_for_root(owner) is not None:
+        return owner.resolve()
+    return workspace
+
+
+def _module_carrier_command(entry: Path, module: str, args) -> list[str] | None:
+    """A command carrying *module* that the artifact at *entry* understands.
+
+    ``--run-module`` exists only in the repo shim's body; the environment's
+    console script is wired to ``hermes_cli.main:main`` and cannot select a
+    non-default module at all. The console script's sibling interpreter
+    already has the dependency environment on ``sys.path``, so it takes the
+    module directly via ``-m``; an interpreter entry (the script-less venv
+    fallback of ``_committed_environment_command``) carries it itself.
+    ``None`` when no carrier artifact exists — callers fall through to the
+    bootstrap form.
+    """
+    python_names = (("python.exe", "python3.exe") if _is_windows()
+                    else ("python", "python3"))
+    if entry.name in python_names:
+        return [str(entry), "-I", "-m", module, *args]
+    hermes_names = ("hermes.exe",) if _is_windows() else ("hermes",)
+    if entry.name in hermes_names:
+        for name in python_names:
+            interpreter = entry.parent / name
+            if interpreter.is_file():
+                return [str(interpreter), "-I", "-m", module, *args]
+    return None
+
+
+def _recorded_venv_for_root(root: Path) -> Path | None:
+    """The dependency environment PM recorded for this root, if any.
+
+    PM keys runtime facts by the *root that installed them* — a PM
+    environment workspace copy resolves the same store Python but hashes
+    to its own install key, so ``facts.json`` never exists for it and
+    every command form that bootstraps through the workspace tree dies
+    with "no dependency environment is committed" (#125375).
+    """
+    try:
+        from pm.environments import runtime_facts_path
+        facts_path = runtime_facts_path(root)
+        data = json.loads(facts_path.read_text(encoding="utf-8-sig"))
+        value = data.get("packages", {}).get("venv", {}).get("environment")
+        return Path(value).resolve() if isinstance(value, str) else None
+    except (FileNotFoundError, OSError, ValueError, RuntimeError):
+        return None
+
+
+def _committed_environment_command(root: Path) -> Path | None:
+    """A resolvable ``hermes`` entry point for a root with committed facts.
+
+    Prefers the environment's own console script (it carries the full
+    entry-point wiring); falls back to its interpreter (the bootstrap
+    form ``installation_command`` builds on it is valid there too).
+    """
+    venv = _recorded_venv_for_root(root)
+    if venv is None:
+        return None
+    bin_dir = venv / ("Scripts" if _is_windows() else "bin")
+    script = bin_dir / ("hermes.exe" if _is_windows() else "hermes")
+    if script.is_file():
+        return script
+    interpreter = bin_dir / ("python.exe" if _is_windows() else "python")
+    return interpreter if interpreter.is_file() else None
+
+
+def _sibling_generation_entry(root: Path) -> Path | None:
+    """The entry point living in *root*'s own PM generation layout.
+
+    Generations are materialized as ``environments/<id>/{venv,workspace}``
+    (``pm/packages.py``); a workspace copy inside one can reach the
+    sibling venv's console script even when no facts record exists for
+    the root — the exact shape of #125375's last-resort branch, where
+    binding the interpreter form to the workspace dies with "no
+    dependency environment is committed" just like the dead shim did.
+    """
+    workspace = Path(root).resolve()
+    generation = workspace.parent
+    venv = generation / "venv"
+    if workspace.name != "workspace" or not (venv / "pyvenv.cfg").is_file():
+        return None
+    bin_dir = venv / ("Scripts" if _is_windows() else "bin")
+    script = bin_dir / ("hermes.exe" if _is_windows() else "hermes")
+    # Script only: the venv interpreter cannot take the entry point's
+    # ``--run-module`` flag or positional subcommand, so a script-less venv
+    # falls through to the interpreter bootstrap (whose activation error
+    # points at ``pm repair``) rather than a command that fails differently.
+    return script if script.is_file() and os.access(script, os.X_OK) else None
+
+
+def _facts_owner_root(root: Path) -> Path:
+    """The blessed checkout root whose install typically owns the committed venv.
+
+    PM workspaces are materialized under the install that created them; the
+    canonical checkout lives at ``<home>/hermes-agent`` (that is where
+    ``gateway start`` from the resolved shell publishes its launcher and its
+    facts). Returned as a candidate only — callers still verify the record.
+    """
+    from hermes_constants import get_default_hermes_root
+    return get_default_hermes_root() / "hermes-agent"
+
+
+def _published_launcher(root: Path) -> Path | None:
+    """The exact-install launcher path iff it exists and is executable.
+
+    POSIX publication writes the extensionless shim; Windows distlib
+    executables land as ``hermes.exe`` next to it. Callers embed this path
+    in service definitions, so a path that cannot exec is never a valid
+    answer.
+    """
+    path = root / ".hermes" / "bin" / "hermes"
+    candidates = (path, path.with_suffix(".exe")) if _is_windows() else (path,)
+    for candidate in candidates:
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return candidate
+    return None
 
 #: Launcher command names — keep in lockstep with scripts/install.ps1
 #: Publish-UserCommand and hermes_cli/_install_repair.py.

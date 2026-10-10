@@ -570,11 +570,11 @@ _HERMES_HOME_SUBDIRS = (
     "pairing", "hooks", "image_cache", "audio_cache", "skills")
 
 
-def ensure_hermes_home():
+def ensure_hermes_home(*, home: Optional[Path] = None, seed: bool = True):
     """Ensure the ~/.hermes directory skeleton exists with secure permissions.
     Memoized per home path: this runs on EVERY ``load_config()`` and the ~14 mkdir/chmod syscalls
     made repeated loads the dominant cost of hot read paths."""
-    home = get_hermes_home()
+    home = Path(home) if home is not None else get_hermes_home()
     key = str(home)
 
     # Named profiles must be created explicitly. Check tombstones BEFORE the memo so a stale
@@ -584,7 +584,7 @@ def ensure_hermes_home():
     if key in _HERMES_HOME_ENSURED and home.is_dir():
         return
     from hermes_cli.config_home import initialize_home
-    initialize_home(home, _HERMES_HOME_SUBDIRS, _HERMES_HOME_ENSURED)
+    initialize_home(home, _HERMES_HOME_SUBDIRS, _HERMES_HOME_ENSURED, seed=seed)
 
 
 # ---- Config loading/saving ----

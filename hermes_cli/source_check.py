@@ -381,6 +381,8 @@ def check_for_updates(*, install_root: Path | None = None, home: Path | None = N
     Only the default (running installation) may use HERMES_REVISION. An explicit
     target must never inherit the host process's embedded revision or stamp.
     """
+    from hermes_cli.config_home import initialize_probe_home
+    initialize_probe_home(Path(home if home is not None else get_hermes_home()).absolute())
     from hermes_cli.config import get_project_root, require_readable_config_before_write
     from hermes_cli.steward import read_install_stamp
     from hermes_cli.update_channel import channel_record, install_id, resolve_update_channel, rides_default_channel
@@ -389,6 +391,7 @@ def check_for_updates(*, install_root: Path | None = None, home: Path | None = N
     embedded = (os.environ.get("HERMES_REVISION") or None) if install_root is None else None
     root = Path(install_root if install_root is not None else get_project_root()).resolve()
     home = Path(home if home is not None else get_hermes_home()).resolve()
+
     result = {"supported": False, "hermesRoot": str(root), "behind": None, "commits": []}
     unsupported = _unsupported_reason(read_install_stamp(root), root,
                                       explicit_root=install_root is not None, embedded=embedded)

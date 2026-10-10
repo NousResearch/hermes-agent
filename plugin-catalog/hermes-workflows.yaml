@@ -1,22 +1,23 @@
 name: hermes-workflows
 repo: https://github.com/jacobhausler/hermes-workflows
-sha: 79043f10c3c234085f58b4b761d169e4de757c26
-description: "Agent-owned workflow graphs for Hermes — a background runner executes a JSON DAG of agent nodes, fan-outs (quorum) and human/machine gates with fingerprint replay-skip resume, cooperative steer, typed failure events and compact status payloads; ships a desktop DAG view, an inline transcript card and the authoring skill with measured budget recipes. Stock Hermes; no patched core required. Disclosure — every workflow run spawns a detached background runner (wf.py run <id>) that survives session end, gateway restart and plugin disable until the graph reaches a boundary or workflow stop; each agent node is a child hermes chat --query-file … --oneshot -Q … inheriting the runner's environment, and a node with profile set runs as that named profile (with its own credentials) only if the target's workflow_team.json lists the launcher; a gate's wait.until_argv runs an agent-authored argv directly from the runner, outside Hermes' tool-approval gate (the engine uses no shell, but the shipped machine-watch and incident-response templates use it to run a shell line read from a fixed-name handoff file in the shared system temp directory); the runner makes itself the subreaper of its children and SIGTERM/SIGKILLs any process a node leaves running (its own descendants plus pids registered in the run's .proctree_sidecar.jsonl) when the node finishes, retries or the run stops; run and amend send a one-token ping through Hermes' configured providers to check pinned model routes; the runner reads state.db read-only; state lives under $HERMES_HOME/workflows/ (or a configured runs_root). No scheduler, credential-store access or network of its own."
+sha: e0b8e2b8ed03c83ef2ac2f3cf739b4844d527386
+description: "Agent-owned workflow graphs for Hermes — a background runner executes a JSON DAG of agent nodes, fan-outs (quorum) and human/machine gates with fingerprint replay-skip resume, cooperative steer, typed failure events and compact status payloads; ships a desktop DAG view, an inline transcript card and the authoring skill with measured budget recipes. Stock Hermes; no patched core required. Disclosure — every workflow run spawns a detached background runner (wf.py run <id>) that survives session end, gateway restart and plugin disable until the graph reaches a boundary or workflow stop; each agent node is a child hermes chat --query-file … --oneshot -Q … inheriting the runner's environment, and a node with profile set runs as that named profile (with its own credentials) only if the target's workflow_team.json lists the launcher; a gate's wait.until_argv runs an agent-authored argv directly from the runner, outside Hermes' tool-approval gate (the engine uses no shell, but the shipped machine-watch and incident-response templates use it to run a shell line read from a fixed-name handoff file under a fixed scratch root under $HERMES_HOME); the runner makes itself the subreaper of its children and SIGTERM/SIGKILLs any process a node leaves running (its own descendants plus pids registered in the run's .proctree_sidecar.jsonl) when the node finishes, retries or the run stops; run and amend send a one-token ping through Hermes' configured providers to check pinned model routes; the runner reads state.db read-only; state lives under $HERMES_HOME/workflows/ (or a configured runs_root). The runner opens no network of its own beyond Hermes' configured providers (the door's one-token route-check ping) and the local Hermes API server: at gate.held/run.done/run.failed it reads the API server key and POSTs wake messages to that loopback server. A node-registered post-exit hook (post_exit_hook.py) lets a run hand an absolute .sh script living OUTSIDE the run tree to launchd (launchctl submit/bootstrap/load -w, RunAtLoad plist) or a detached double-fork after the runner exits, with a durable receipt; the shipped release-lifecycle template runs a shell line read from a per-run handoff file under $HERMES_WF_RUN_DIR, never a fixed shared /tmp path."
 maintainer: jacobhausler
 tier: community
 category: automation
 requires_hermes: ">=0.21.4"
 docs_url: https://github.com/jacobhausler/hermes-workflows#readme
-version: "1.2.0"
-image: https://raw.githubusercontent.com/jacobhausler/hermes-workflows/79043f10c3c234085f58b4b761d169e4de757c26/assets/dag-review.png
+version: "1.3.3"
+image: https://raw.githubusercontent.com/jacobhausler/hermes-workflows/7c7b102a5a37419c8d1000332d50e83e24212d9d/assets/dag-review.png
 screenshots:
-  - https://raw.githubusercontent.com/jacobhausler/hermes-workflows/79043f10c3c234085f58b4b761d169e4de757c26/assets/dag-review.png
-  - https://raw.githubusercontent.com/jacobhausler/hermes-workflows/79043f10c3c234085f58b4b761d169e4de757c26/assets/branch-gate.png
-  - https://raw.githubusercontent.com/jacobhausler/hermes-workflows/79043f10c3c234085f58b4b761d169e4de757c26/assets/fanout.png
+  - https://raw.githubusercontent.com/jacobhausler/hermes-workflows/7c7b102a5a37419c8d1000332d50e83e24212d9d/assets/dag-review.png
+  - https://raw.githubusercontent.com/jacobhausler/hermes-workflows/7c7b102a5a37419c8d1000332d50e83e24212d9d/assets/branch-gate.png
+  - https://raw.githubusercontent.com/jacobhausler/hermes-workflows/7c7b102a5a37419c8d1000332d50e83e24212d9d/assets/fanout.png
 platforms: []
 capabilities:
   provides_tools:
     - workflow
-  provides_hooks: []
+  provides_hooks:
+    - transform_llm_output
   provides_middleware: []
   requires_env: []

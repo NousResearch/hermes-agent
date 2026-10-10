@@ -96,12 +96,18 @@ function collectReceipts(value: RawReceipts, known: Record<string, PendingSubmis
   const admissionByInput = new Map<string, string>()
 
   for (const raw of value) {
-    if (!raw || typeof raw.admission_id !== 'string' || !['queued', 'started', 'unknown'].includes(raw.status) ||
-        isStale(raw, known)) {
+    if (!raw || typeof raw.admission_id !== 'string' || !['queued', 'started', 'unknown'].includes(raw.status)) {
       continue
     }
 
     const id = raw.admission_id
+    const stale = isStale(raw, known)
+
+    // A stale status is still a listing: the admission is pending at its stronger observed state
+    // (a replayed `started` keeps an `unknown` card and its Discard). A retired one stays retired.
+    if (stale && known[id]?.status === 'retired') {
+      continue
+    }
 
     if (typeof raw.input_id === 'string') {
       admissionByInput.set(raw.input_id, id)
@@ -111,7 +117,7 @@ function collectReceipts(value: RawReceipts, known: Record<string, PendingSubmis
       ...known[id],
       id,
       text: typeof raw.user === 'string' ? raw.user : (known[id]?.text ?? ''),
-      status: raw.status
+      status: stale ? known[id].status : raw.status
     })
   }
 

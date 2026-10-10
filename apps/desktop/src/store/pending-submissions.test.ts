@@ -131,3 +131,17 @@ it('a delayed older empty snapshot never retires a receipt a newer frame still l
   expect(readPendingSubmissions('fenced').q?.status).toBe('retired')
   expect(getQueuedPrompts('fenced')).toEqual([])
 })
+
+// A replayed or delayed snapshot that still lists an `unknown` admission as `started` is stale for
+// its status, not for its presence: the Discard card the owner's restart produced must stay.
+it('a stale started snapshot keeps an existing unknown card and its Discard control', () => {
+  reconcilePendingSubmissions('lost', [{ admission_id: 'b', status: 'started', user: 'lost' }])
+  reconcilePendingSubmissions('lost', [{ admission_id: 'b', status: 'unknown', user: 'lost' }])
+  reconcilePendingSubmissions('lost', [{ admission_id: 'b', status: 'started', user: 'lost' }])
+  expect(getQueuedPrompts('lost').map(entry => [entry.id, entry.serverStatus])).toEqual([['b', 'unknown']])
+  expect(readPendingSubmissions('lost').b?.status).toBe('unknown')
+
+  // Its real absence from a current snapshot still retires it.
+  reconcilePendingSubmissions('lost', [])
+  expect(getQueuedPrompts('lost')).toEqual([])
+})

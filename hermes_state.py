@@ -628,6 +628,11 @@ class SessionDB(
         self._retire_connection: Optional[Callable[[Any], None]] = None
         self._connection_pinned = False  # one unmatched C reference taken at most once per handle
         self._wal_lock_guard: dict = {}  # hermes_state_lockguard.hold() record, see _open_writer
+        # Explicit degraded-mode opt-out for the strict WAL guard arming check (#125184):
+        # HERMES_STATE_WAL_GUARD_BYPASS=1 keeps WARNING-and-proceed for operators who accept
+        # an unguarded WAL generation. Read once per instance; deliberately not a config key.
+        self._wal_guard_degraded = (os.environ.get("HERMES_STATE_WAL_GUARD_BYPASS", "").strip().lower()
+                                    in {"1", "true", "yes", "on"})
         self._db_corrupt, self._db_corrupt_reason = False, ""  # sticky quarantine (StateDbCorruptError)
         self._fts_usermerge_floor_applied = False  # one-shot usermerge-floor write guard
         self._fts_enabled = self._fts_stale = self._trigram_available = False
@@ -716,8 +721,16 @@ class SessionDB(
         if self._wal_active:
             # OFD copies of the two POSIX locks that keep a sibling's close from unlinking this WAL
             # generation: any in-process open()/close() of state.db or -shm cancels SQLite's own
-            # (howtocorrupt §2.2); these survive it. Lifted in close().
-            self._wal_lock_guard = _lockguard.hold(self.db_path)
+            # (howtocorrupt §2.2); these survive it. Lifted in close(). Strict: on a supported
+            # runtime a guard that failed to arm is not a guard — refuse the writer (#125184),
+            # unless HERMES_STATE_WAL_GUARD_BYPASS explicitly accepts the degraded mode.
+            # Exception-safe publication (#125184 R2): same contract as the reopen path —
+            # a strict hold() that raises must not leave an unguarded writer installed.
+            try:
+                self._wal_lock_guard = _lockguard.hold(self.db_path, strict=not self._wal_guard_degraded)
+            except BaseException:
+                self._retire_connection_locked()
+                raise
 
     def _open_read_only(self) -> None:
         """Read-only attach for cross-profile aggregation: no schema init, NO write
@@ -982,7 +995,7 @@ class SessionDB(
             "flight — reopening (teardown/worker race, #94736)", self.db_path, context,
         )
         try:
-            self._conn = self._open_writer_conn()
+            conn = self._open_writer_conn()
         except Exception as exc:
             raise sqlite3.OperationalError(
                 f"state.db connection was closed while a {context} was still "
@@ -990,7 +1003,50 @@ class SessionDB(
                 f"this worker finished — #94736) and the automatic reopen failed: {exc}"
             ) from exc
         if self._wal_active:  # a reopened writer is a live generation holder like the first open
-            self._wal_lock_guard = _lockguard.hold(self.db_path)
+            # Exception-safe publication (#125184 R2): opening the connection and arming
+            # its guard must be ONE step — a strict hold() that raises after partially
+            # arming unwinds its own refcounts but cannot unpublish self._conn. A writer
+            # installed without its guard would skip this reopen on every later write
+            # (non-None _conn) and keep committing unguarded. Retire the candidate the
+            # same way a healthy close() does — release whatever arming survived (none,
+            # strict failure unwinds itself), close the connection, clear the sidecar
+            # identity a native close unlinks — and let the next write re-attempt the
+            # full open+guard pair. The refusal is per-call, never a silent degradation.
+            try:
+                self._wal_lock_guard = _lockguard.hold(self.db_path, strict=not self._wal_guard_degraded)
+            except BaseException:
+                self._retire_connection_locked(conn)
+                raise
+        self._conn = conn
+
+    def _retire_connection_locked(self, conn: Optional[sqlite3.Connection] = None) -> None:
+        """Retire a writer connection under ``self._lock`` the way a healthy close() does:
+        release the WAL guard BEFORE the close (SQLite's close-time lock reset then sees
+        only real holders — see lockguard.release()), quietly close the connection, and
+        clear the recorded sidecar identity so the next write re-adopts whatever
+        generation is on disk instead of misclassifying our own clean close as a deleted
+        WAL generation (#125184 R1). Only call when the handle is NOT already marked
+        replaced / generation-lost: those retire through the quarantine paths, and an
+        unsafe generation must never be erased to reach a green test.
+
+        Callers that hold a guard record NOT tied to *conn* (the close() path, whose
+        guard may predate the connection being closed) release the guard themselves;
+        here the guard and the connection retire together.
+        """
+        _lockguard.release(self._wal_lock_guard)
+        self._wal_lock_guard = {}
+        conn = self._conn if conn is None else conn
+        if conn is not None:
+            self._close_connection_quietly(conn)
+        if conn is self._conn:
+            self._conn = None
+        # A native close of the last WAL holder unlinks -wal/-shm: the recorded
+        # identity describes files that are (correctly) gone. Keep it only when
+        # this retire is NOT a clean one — a quarantine/generation-loss retirement
+        # preserves the identity for the capture path; here nothing was wrong with
+        # the connection, only with its guard.
+        if not (self._db_replaced or self._db_wal_generation_lost or self._db_corrupt):
+            self._db_sidecar_identity = {}
 
     def _execute_write(
         self, fn: Callable[[sqlite3.Connection], T], patience_s: Optional[float] = None,
@@ -1024,6 +1080,12 @@ class SessionDB(
             # later writes (#105567). Inside the lock the probe only ever sees the
             # stable post-close state (identity cleared → adopt / reopen path).
             fn_started = False
+            # Set when the post-error rollback() itself raised: the transaction may
+            # still be open. Retrying inside an open transaction resurfaces as a
+            # misleading "cannot start a transaction within a transaction" or
+            # replays non-idempotent work — strictly worse than failing the
+            # operation, so every retry path below refuses to continue (#125184).
+            rollback_failed = False
             try:
                 with self._lock:
                     self._raise_if_db_replaced()
@@ -1038,7 +1100,24 @@ class SessionDB(
                         try:
                             self._conn.rollback()
                         except Exception:
-                            pass
+                            # Swallowing this silently used to hide an open
+                            # transaction from every retry decision below.
+                            rollback_failed = True
+                            logger.warning(
+                                "rollback failed after write error on %s; the transaction may "
+                                "still be open — refusing to retry the write",
+                                self.db_path, exc_info=True,
+                            )
+                            # The transaction state of this connection is now
+                            # ambiguous (conn.in_transaction may still be True), and
+                            # the next BEGIN IMMEDIATE on it would raise a misleading
+                            # "cannot start a transaction within a transaction". Retire
+                            # the connection the same way close() does — release the
+                            # guard first, then a quiet close, clearing the sidecar
+                            # identity a native close unlinks (#125184 R1) — so a later
+                            # write goes through a proven-fresh reopen instead of
+                            # inheriting it.
+                            self._retire_connection_locked()
                         raise
                 # Success — periodic best-effort checkpoint + FTS merge.
                 self._write_count += 1
@@ -1058,20 +1137,27 @@ class SessionDB(
                 # finally lets go.
                 if compression_deadline is None:
                     compression_deadline = min(time.monotonic() + self._COMPRESSION_BUSY_WAIT_S, deadline)
-                if self._sleep_before_write_retry(
-                    compression_deadline, self._COMPRESSION_BUSY_WAIT_S
+                if (
+                    not rollback_failed
+                    and self._sleep_before_write_retry(
+                        compression_deadline, self._COMPRESSION_BUSY_WAIT_S
+                    )
                 ):
                     continue
                 raise
             except sqlite3.Error as exc:
                 # 'no more rows' is a transient engine error on contended WAL appends (some builds
                 # raise it as InterfaceError, a sibling of DatabaseError): retry like locked/busy.
-                if _is_no_more_rows(exc) and self._sleep_before_write_retry(deadline, patience_s):
+                if (
+                    not rollback_failed
+                    and _is_no_more_rows(exc)
+                    and self._sleep_before_write_retry(deadline, patience_s)
+                ):
                     continue
                 err_msg = str(exc).lower()
                 if isinstance(exc, sqlite3.OperationalError):
                     if is_sqlite_lock_error(exc):
-                        if self._sleep_before_write_retry(deadline, patience_s):
+                        if not rollback_failed and self._sleep_before_write_retry(deadline, patience_s):
                             continue
                         # Say what actually happened, not disk/permission damage. The holder goes to
                         # the log, not the message: classify_persistence_error() buckets by phrase and
@@ -1104,7 +1190,10 @@ class SessionDB(
                             self._raise_if_db_replaced()
                     # Corrupt FTS shadow tables fail every write via the sync triggers while canonical
                     # rows are intact: detach the derived indexes atomically and retry (never rebuild here).
-                    if self._enter_fts_fail_open(exc, deadline=deadline, patience_s=patience_s):
+                    if (
+                        not rollback_failed
+                        and self._enter_fts_fail_open(exc, deadline=deadline, patience_s=patience_s)
+                    ):
                         continue
                     # What survives both checks is structural damage: quarantine.
                     if self._is_structural_corruption_error(exc):
@@ -1485,6 +1574,9 @@ class SessionDB(
                 result = self._conn.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
                 if result and result[1] > 0:
                     logger.debug("WAL checkpoint: %d/%d pages checkpointed", result[2], result[1])
+        except _lockguard.WalGuardArmedIncompleteError:
+            # Do not downgrade a failed guard re-arm to a warning-only success.
+            raise
         except Exception as exc:
             logger.warning("WAL checkpoint (PASSIVE) failed: %s", exc)
 

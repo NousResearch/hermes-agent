@@ -244,6 +244,10 @@ def classify_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str
 # Guardrail verdict text injected into the conversation, keyed by decision code.
 # ``same_tool_failure_warning`` is built by _tool_failure_recovery_hint (tool-specific).
 _DECISION_MESSAGES: dict[str, str] = {
+    "runtime_policy_blocked": (
+        "Runtime policy blocked {tool_name}. Stop this turn and report the boundary or pending approval; "
+        "do not retry through another tool, script, or wrapper."
+    ),
     "repeated_exact_failure_block": (
         "Blocked {tool_name}: the same tool call failed {count} times with identical arguments. "
         "Stop retrying it unchanged; change strategy or explain the blocker."
@@ -359,6 +363,9 @@ class ToolCallGuardrailController:
         signature = ToolCallSignature.from_call(tool_name, args)
         allow = ToolGuardrailDecision(tool_name=tool_name, signature=signature)
 
+        if self._halt_decision is not None and self._halt_decision.code == "runtime_policy_blocked":
+            return self._halt_decision
+
         # Loop caps apply regardless of hard_stop_enabled (which only governs the detector).
         cap_block = self._check_loop_cap(tool_name, args, signature)
         if cap_block is not None or not self.config.hard_stop_enabled:
@@ -378,6 +385,9 @@ class ToolCallGuardrailController:
     ) -> ToolGuardrailDecision:
         args = _coerce_args(args)
         signature = ToolCallSignature.from_call(tool_name, args)
+        data = safe_json_loads(result) if isinstance(result, str) else None
+        if isinstance(data, dict) and data.get("policy_blocked") is True:
+            return self._decide("halt", "runtime_policy_blocked", tool_name, 1, signature)
         if failed is None:
             failed, _ = classify_tool_failure(tool_name, result)
         warnings = self.config.warnings_enabled

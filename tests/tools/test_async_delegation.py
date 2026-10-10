@@ -1222,3 +1222,28 @@ def test_prune_never_evicts_live_records():
 
     assert {"live-stalling", "live-finalizing", "live-running"} <= survivors
     assert "done-0" not in survivors and len(survivors - {"live-stalling", "live-finalizing", "live-running"}) == ad._MAX_RETAINED_COMPLETED
+
+
+def test_durable_pruning_evicts_unsuccessful_before_delivered(tmp_path, monkeypatch):
+    """The terminal cap preserves successful delivery audit records."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    with ad._connect() as conn:
+        now = time.time()
+        rows = [
+            (f"delivered-{i}", "completed", now + i, now + i, "delivered")
+            for i in range(ad._MAX_RETAINED_COMPLETED)
+        ]
+        rows.append(("dropped", "dropped", now, now, "dropped"))
+        conn.executemany(
+            """INSERT INTO async_delegations
+               (delegation_id, origin_session, state, dispatched_at, updated_at, delivery_state)
+               VALUES (?, '', ?, ?, ?, ?)""",
+            rows,
+        )
+    ad._prune_durable_records()
+    with ad._connect() as conn:
+        survivors = {row[0] for row in conn.execute(
+            "SELECT delegation_id FROM async_delegations"
+        )}
+    assert "dropped" not in survivors
+    assert {f"delivered-{i}" for i in range(ad._MAX_RETAINED_COMPLETED)} <= survivors

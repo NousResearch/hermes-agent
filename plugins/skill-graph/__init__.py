@@ -33,6 +33,7 @@ import re
 import sqlite3
 import threading
 import time
+import traceback
 import hermes_yaml as yaml
 from pathlib import Path
 from typing import Any, Mapping
@@ -44,6 +45,14 @@ from hermes_constants import (
 )
 
 logger = logging.getLogger(__name__)
+
+def _log_fallback_exception(message: str, exc: Exception) -> None:
+    """Log stack locations without exception text or source lines containing secrets."""
+    stack = " -> ".join(
+        f"{frame.f_code.co_name}:{line}"
+        for frame, line in traceback.walk_tb(exc.__traceback__)
+    )
+    logger.error("%s (stack: %s)", message, stack)
 
 # ── Constants ───────────────────────────────────────────────────────────────
 
@@ -64,7 +73,8 @@ def _skill_graph_config() -> dict[str, Any]:
         config = load_config_readonly() or {}
         value = (((config.get("skills") or {}).get("config") or {}).get("skill-graph") or {})
         return value if isinstance(value, dict) else {}
-    except Exception:
+    except (ImportError, OSError, TypeError, ValueError, AttributeError, RuntimeError, yaml.YAMLError) as exc:
+        _log_fallback_exception("skill-graph: could not read profile configuration", exc)
         return {}
 
 
@@ -163,8 +173,8 @@ def _db_path() -> Path:
         raw = _skill_graph_config().get("db_path")
         if raw:
             return _resolve_config_path(raw)
-    except Exception:
-        pass
+    except (OSError, TypeError, ValueError, RuntimeError) as exc:
+        _log_fallback_exception("skill-graph: invalid DB path override; using profile default", exc)
 
     hermes_home = get_hermes_home()
     if os.environ.get("HERMES_BUNDLED_PLUGINS"):
@@ -202,8 +212,8 @@ def _read_source_dirs_from_config() -> list[Path]:
                 p = _resolve_config_path(entry)
                 if p.is_dir():
                     dirs.append(p)
-    except Exception:
-        pass
+    except (OSError, TypeError, ValueError, RuntimeError) as exc:
+        _log_fallback_exception("skill-graph: could not resolve configured source directories", exc)
     return dirs
 
 
@@ -227,8 +237,8 @@ def _find_all_skills_dirs() -> list[Path]:
         from agent.skill_utils import get_external_skills_dirs
 
         dirs.extend(get_external_skills_dirs())
-    except Exception:
-        pass
+    except (ImportError, OSError, TypeError, RuntimeError) as exc:
+        _log_fallback_exception("skill-graph: could not discover external skill directories", exc)
     return [path for path in _dedupe_paths(dirs) if path.is_dir()]
 
 
@@ -309,7 +319,7 @@ def _parse_skill_md(path: Path) -> dict[str, Any]:
     }
 
     try:
-        content = path.read_text(encoding="utf-8", errors="replace")
+        content = path.read_text(encoding="utf-8-sig", errors="replace")
         result["content_hash"] = str(hash(content))
 
         content_str = content.lstrip("\ufeff")
@@ -347,8 +357,8 @@ def _parse_skill_md(path: Path) -> dict[str, Any]:
                                 "target": rs,
                                 "properties": {"source": "legacy_related_skills"},
                             })
-    except Exception as e:
-        logger.debug("Failed to parse %s: %s", path, e)
+    except (OSError, TypeError, ValueError, AttributeError, yaml.YAMLError) as exc:
+        _log_fallback_exception("skill-graph: could not parse skill metadata", exc)
 
     return result
 
@@ -750,7 +760,18 @@ def _search_graph(query: str, conn: sqlite3.Connection, limit: int = 10) -> list
             }
 
     # Phase 5: Term-based scoring boost + search stats
-    # Uses per-(skill, term) stats with confidence-weighted S-curve.
+    _boost_search_results(conn, results, terms)
+
+    sorted_results = sorted(results.values(), key=lambda r: -r["score"])
+    if not sorted_results:
+        return _fallback_search(query, conn, limit)
+    return sorted_results[:limit]
+
+
+def _boost_search_results(
+    conn: sqlite3.Connection, results: dict[str, dict[str, Any]], terms: list[str],
+) -> None:
+    """Apply confidence-weighted term stats without losing search results on stats errors."""
     _norm_terms = [t.lower() for t in terms]
     for sname, r in results.items():
         _placeholders = ",".join("?" for _ in _norm_terms)
@@ -768,8 +789,8 @@ def _search_graph(query: str, conn: sqlite3.Connection, limit: int = 10) -> list
                            ON CONFLICT(skill_name, term) DO UPDATE SET search_count = search_count + 1""",
                         (sname, mt),
                     )
-                except Exception:
-                    pass
+                except sqlite3.Error as exc:
+                    _log_fallback_exception("skill-graph: search stat update failed", exc)
             try:
                 rows = conn.execute(
                     """SELECT term, load_count, search_count, success_count FROM skill_term_stats
@@ -787,14 +808,9 @@ def _search_graph(query: str, conn: sqlite3.Connection, limit: int = 10) -> list
                     _adj = (_avg_eff - 0.5) * 2
                     _tanh = _adj / (1 + abs(_adj) * 0.5)  # tanh approximation
                     r["score"] *= (1.0 + 0.1 * _tanh * _confidence)
-            except Exception:
-                pass
+            except (sqlite3.Error, ArithmeticError, TypeError, ValueError) as exc:
+                _log_fallback_exception("skill-graph: search stat boost failed", exc)
     conn.commit()
-
-    sorted_results = sorted(results.values(), key=lambda r: -r["score"])
-    if not sorted_results:
-        return _fallback_search(query, conn, limit)
-    return sorted_results[:limit]
 
 
 def _fallback_search(query: str, conn: sqlite3.Connection, limit: int = 10) -> list[dict[str, Any]]:
@@ -1024,8 +1040,9 @@ def _show_graph_config() -> str:
             cnt = len(list(d.rglob("SKILL.md"))) if d.exists() else 0
             lines.append(f"    {d}  ({cnt} SKILL.md)")
         return "\n".join(lines)
-    except Exception as e:
-        return f"Config failed: {e}"
+    except (OSError, sqlite3.Error, RuntimeError, TypeError, ValueError, AttributeError) as exc:
+        _log_fallback_exception("skill-graph: could not display configuration", exc)
+        return "Config failed: could not display graph configuration"
 
 def _handle_source_dir_config(action: str, path_str: str) -> str:
     """Add or remove a source_dir at runtime and persist to config.yaml."""
@@ -1038,8 +1055,10 @@ def _handle_source_dir_config(action: str, path_str: str) -> str:
         target, count, note = _change_source_dir(mapped, path_str, persist=True)
         suffix = f" ({note})" if note else ""
         return f"✅ {action}ed {target}{suffix}\n   Graph rebuilt: {count} skills indexed."
-    except Exception as e:
-        return f"Config {action} failed: {e}"
+    except (ImportError, OSError, sqlite3.Error, RuntimeError, TypeError, ValueError,
+            AttributeError, yaml.YAMLError) as exc:
+        _log_fallback_exception("skill-graph: could not change source directory", exc)
+        return f"Config {action} failed: could not change source directory"
 
 
 def _handle_skill_graph_config(args: dict | None = None, **kw) -> str:
@@ -1066,8 +1085,10 @@ def _handle_skill_graph_config(args: dict | None = None, **kw) -> str:
                 result["note"] = note
             return json.dumps(result)
         return json.dumps({"success": False, "error": f"Unknown action: {action}. Use add_dir, remove_dir, or list_dirs."})
-    except Exception as e:
-        return json.dumps({"success": False, "error": str(e)})
+    except (ImportError, OSError, sqlite3.Error, RuntimeError, TypeError, ValueError,
+            AttributeError, yaml.YAMLError) as exc:
+        _log_fallback_exception("skill-graph: configuration tool failed", exc)
+        return json.dumps({"success": False, "error": "Could not update graph configuration"})
 
 # ── Slash command handler ───────────────────────────────────────────────────
 
@@ -1097,7 +1118,8 @@ def _format_edges(skill_name: str) -> str:
                 import json as _j
                 try:
                     reason = _j.loads(props).get("reason", "")
-                except Exception:
+                except (ValueError, TypeError, AttributeError) as exc:
+                    _log_fallback_exception("skill-graph: invalid edge properties", exc)
                     reason = props[:40]
             elif isinstance(props, dict):
                 reason = props.get("reason", "")
@@ -1106,7 +1128,9 @@ def _format_edges(skill_name: str) -> str:
             else:
                 parts.append(arrow)
         return "Edges:\n" + "\n".join(parts) + "\n"
-    except Exception:
+    except (sqlite3.Error, OSError, RuntimeError, TypeError, ValueError,
+            AttributeError, IndexError) as exc:
+        _log_fallback_exception("skill-graph: could not format edges", exc)
         return ""
 
 
@@ -1165,116 +1189,80 @@ def _format_terms(skill_name: str) -> str:
             parts.append("\n".join(rev_lines))
 
         return "\n".join(parts) if parts else ""
-    except Exception:
+    except (sqlite3.Error, OSError, RuntimeError, TypeError, ValueError,
+            AttributeError, IndexError) as exc:
+        _log_fallback_exception("skill-graph: could not format terms", exc)
         return ""
 
 
-def _handle_slash_command(args: str) -> str | None:
-    parts = args.strip().split(None, 1) if args.strip() else []
-    subcmd = parts[0].lower() if parts else "help"
-    rest = parts[1] if len(parts) > 1 else ""
+def _slash_graph_status() -> str:
+    """Report graph counts and indexed source directories."""
+    try:
+        conn = _ensure_graph()
+        node_count = conn.execute("SELECT COUNT(*) FROM skill_nodes").fetchone()[0]
+        edge_count = conn.execute("SELECT COUNT(*) FROM skill_edges").fetchone()[0]
+        term_count = conn.execute("SELECT COUNT(DISTINCT term) FROM skill_terms").fetchone()[0]
+        db_path = _db_path()
 
-    if subcmd == "rebuild":
-        try:
-            conn = _ensure_graph()
+        if node_count == 0:
             with _graph_lock:
-                count = _full_rebuild(conn)
-            return f"Skill graph rebuilt: {count} skills indexed."
-        except Exception as e:
-            logger.exception("skill-graph: rebuild failed")
-            return f"Rebuild failed: {e}"
-
-    elif subcmd == "show":
-        """Show full skill content (preview)."""
-        if not rest:
-            return "Usage: /skill-graph show <skill-name>"
-        try:
-            result = _handle_skill_load({"name": rest})
-            data = json.loads(result)
-            if not data.get("success"):
-                return f"Not found: {rest}"
-            content = data.get("content", "")
-            return (
-                f"Skill: {data['name']} ({len(content)} chars)\n"
-                f"  Description: {data.get('description', '')}\n"
-                f"  Category:    {data.get('category', '')}\n"
-                f"\n{content[:2000]}"
-            )
-        except Exception as e:
-            return f"Show failed: {e}"
-
-    elif subcmd == "info":
-        """Show skill metadata only."""
-        if not rest:
-            return "Usage: /skill-graph info <skill-name>"
-        try:
-            conn = _ensure_graph()
-            node = conn.execute(
-                "SELECT name, category, description, tags, file_path FROM skill_nodes WHERE name = ?",
-                (rest,),
-            ).fetchone()
-            if not node:
-                return f"Not found: {rest}  (try /sg list)"
-            return "\n".join([
-                f"Node: {node['name']}",
-                f"  Category:    {node['category'] or ''}",
-                f"  Description: {node['description'] or ''}",
-                f"  Tags:        {node['tags'] or ''}",
-                f"  Path:        {node['file_path'] or ''}",
-            ])
-        except Exception as e:
-            return f"Info failed: {e}"
-
-    elif subcmd == "terms":
-        """Show term associations with stats."""
-        if not rest:
-            return "Usage: /skill-graph terms <skill-name>"
-        try:
-            return _format_terms(rest)
-        except Exception as e:
-            return f"Terms failed: {e}"
-
-    elif subcmd in ("status", "stats"):
-        try:
-            conn = _ensure_graph()
-            node_count = conn.execute("SELECT COUNT(*) FROM skill_nodes").fetchone()[0]
+                count = _sync_graph(conn)
+            node_count = count
             edge_count = conn.execute("SELECT COUNT(*) FROM skill_edges").fetchone()[0]
-            term_count = conn.execute("SELECT COUNT(DISTINCT term) FROM skill_terms").fetchone()[0]
-            db_path = _db_path()
 
-            if node_count == 0:
-                with _graph_lock:
-                    count = _sync_graph(conn)
-                node_count = count
-                edge_count = conn.execute("SELECT COUNT(*) FROM skill_edges").fetchone()[0]
+        scanned = _find_all_skills_dirs()
+        dirs_info = []
+        for d in scanned:
+            if d.exists():
+                cnt = sum(
+                    1 for root, dirs, files in os.walk(str(d), followlinks=True)
+                    if "SKILL.md" in files
+                )
+            else:
+                cnt = 0
+            dirs_info.append(f"    {d}  ({cnt} SKILL.md)")
+        dirs_text = "\n".join(dirs_info) if dirs_info else "    (none)"
 
-            scanned = _find_all_skills_dirs()
-            dirs_info = []
-            for d in scanned:
-                if d.exists():
-                    cnt = sum(
-                        1 for root, dirs, files in os.walk(str(d), followlinks=True)
-                        if "SKILL.md" in files
-                    )
-                else:
-                    cnt = 0
-                dirs_info.append(f"    {d}  ({cnt} SKILL.md)")
-            dirs_text = "\n".join(dirs_info) if dirs_info else "    (none)"
+        db_size = db_path.stat().st_size if db_path.exists() else 0
+        return (
+            f"Skill Graph status\n"
+            f"  Skills:  {node_count}\n"
+            f"  Edges:   {edge_count}\n"
+            f"  Terms:   {term_count}\n"
+            f"  DB size: {db_size / 1024:.1f} KB\n"
+            f"  DB path: {db_path}\n"
+            f"  Scanned dirs:\n{dirs_text}"
+        )
+    except (sqlite3.Error, OSError, RuntimeError, TypeError, ValueError,
+            KeyError, AttributeError, IndexError) as exc:
+        _log_fallback_exception("skill-graph: status check failed", exc)
+        return "Status check failed: could not read graph status"
 
-            db_size = db_path.stat().st_size if db_path.exists() else 0
-            return (
-                f"Skill Graph status\n"
-                f"  Skills:  {node_count}\n"
-                f"  Edges:   {edge_count}\n"
-                f"  Terms:   {term_count}\n"
-                f"  DB size: {db_size / 1024:.1f} KB\n"
-                f"  DB path: {db_path}\n"
-                f"  Scanned dirs:\n{dirs_text}"
-            )
-        except Exception as e:
-            return f"Status check failed: {e}"
 
-    elif subcmd == "search" and rest:
+def _slash_help() -> str:
+    """Default slash help, also used when search has no query."""
+    return (
+        "/skill-graph — Skill knowledge graph\n\n"
+        "Subcommands:\n"
+        "  /skill-graph search <query>   Search skills by intent\n"
+        "  /skill-graph show <name>      Show full skill content (preview)\n"
+        "  /skill-graph info <name>      Show skill metadata\n"
+        "  /skill-graph terms <name>     Show term associations with stats\n"
+        "  /skill-graph score <query>    Show scoring breakdown with term stats\n"
+        "  /skill-graph list             List all skills in graph\n"
+        "  /skill-graph config           Show configuration (paths, DB)\n"
+        "  /skill-graph status           Show graph stats\n"
+        "  /skill-graph rebuild          Force full graph rebuild\n"
+    )
+
+
+def _handle_slash_discovery(subcmd: str, rest: str) -> str:
+    """Handle graph-wide discovery and statistics subcommands."""
+    if subcmd in ("status", "stats"):
+        return _slash_graph_status()
+    if subcmd == "search" and not rest:
+        return _slash_help()
+    if subcmd == "search":
         try:
             conn = _ensure_graph()
             with _graph_lock:
@@ -1290,9 +1278,10 @@ def _handle_slash_command(args: str) -> str | None:
                     extra += f"  chain: {' → '.join(chain[:2])}"
                 lines.append(f"  {r['name']:35s}  {r.get('description', '')[:55]}{extra}")
             return "\n".join(lines)
-        except Exception as e:
-            logger.exception("skill-graph: search failed")
-            return f"Search failed: {e}"
+        except (sqlite3.Error, OSError, RuntimeError, TypeError, ValueError,
+                KeyError, AttributeError, IndexError) as exc:
+            _log_fallback_exception("skill-graph: search failed", exc)
+            return "Search failed: could not search skills"
 
     elif subcmd == "list":
         try:
@@ -1307,16 +1296,10 @@ def _handle_slash_command(args: str) -> str | None:
                 desc = (r["description"] or "")[:60]
                 lines.append(f"  {r['name']:35s}  [{r['category']}]  {desc}")
             return "\n".join(lines)
-        except Exception as e:
-            return f"List failed: {e}"
-
-    elif subcmd == "config":
-        rest_parts = rest.strip().split(None, 1) if rest.strip() else []
-        config_action = rest_parts[0].lower() if rest_parts else "show"
-        config_arg = rest_parts[1] if len(rest_parts) > 1 else ""
-        if config_action in ("add", "remove"):
-            return _handle_source_dir_config(config_action, config_arg)
-        return _show_graph_config()
+        except (sqlite3.Error, OSError, RuntimeError, TypeError, ValueError,
+                KeyError, AttributeError, IndexError) as exc:
+            _log_fallback_exception("skill-graph: list failed", exc)
+            return "List failed: could not read graph results"
 
     elif subcmd in ("score", "explain"):
         """Show detailed scoring breakdown for a search query."""
@@ -1349,8 +1332,98 @@ def _handle_slash_command(args: str) -> str | None:
                     lines.append(f"  {'':40s}  stats: {stats_line}")
                 lines.append(f"\n{len(results)} results shown")
                 return "\n".join(lines)
-        except Exception as e:
-            return f"Score breakdown failed: {e}"
+        except (sqlite3.Error, OSError, RuntimeError, TypeError, ValueError,
+                KeyError, AttributeError, IndexError) as exc:
+            _log_fallback_exception("skill-graph: score breakdown failed", exc)
+            return "Score breakdown failed: could not read graph results"
+    raise ValueError("Unsupported graph discovery command")
+
+
+def _slash_graph_config(rest: str) -> str:
+    """Dispatch configuration display or source-directory changes."""
+    rest_parts = rest.strip().split(None, 1) if rest.strip() else []
+    config_action = rest_parts[0].lower() if rest_parts else "show"
+    config_arg = rest_parts[1] if len(rest_parts) > 1 else ""
+    if config_action in ("add", "remove"):
+        return _handle_source_dir_config(config_action, config_arg)
+    return _show_graph_config()
+
+
+def _handle_slash_command(args: str) -> str | None:
+    parts = args.strip().split(None, 1) if args.strip() else []
+    subcmd = parts[0].lower() if parts else "help"
+    rest = parts[1] if len(parts) > 1 else ""
+
+    if subcmd in ("status", "stats", "search", "list", "score", "explain"):
+        return _handle_slash_discovery(subcmd, rest)
+    if subcmd == "config":
+        return _slash_graph_config(rest)
+    if subcmd == "rebuild":
+        try:
+            conn = _ensure_graph()
+            with _graph_lock:
+                count = _full_rebuild(conn)
+            return f"Skill graph rebuilt: {count} skills indexed."
+        except (sqlite3.Error, OSError, RuntimeError, TypeError, ValueError,
+                KeyError, AttributeError, IndexError, yaml.YAMLError) as exc:
+            _log_fallback_exception("skill-graph: rebuild failed", exc)
+            return "Rebuild failed: could not rebuild skill graph"
+
+    if subcmd == "show":
+        """Show full skill content (preview)."""
+        if not rest:
+            return "Usage: /skill-graph show <skill-name>"
+        try:
+            result = _handle_skill_load({"name": rest})
+            data = json.loads(result)
+            if not data.get("success"):
+                return f"Not found: {rest}"
+            content = data.get("content", "")
+            return (
+                f"Skill: {data['name']} ({len(content)} chars)\n"
+                f"  Description: {data.get('description', '')}\n"
+                f"  Category:    {data.get('category', '')}\n"
+                f"\n{content[:2000]}"
+            )
+        except (sqlite3.Error, OSError, RuntimeError, TypeError, ValueError,
+                KeyError, AttributeError, IndexError) as exc:
+            _log_fallback_exception("skill-graph: show failed", exc)
+            return "Show failed: could not load skill"
+
+    elif subcmd == "info":
+        """Show skill metadata only."""
+        if not rest:
+            return "Usage: /skill-graph info <skill-name>"
+        try:
+            conn = _ensure_graph()
+            node = conn.execute(
+                "SELECT name, category, description, tags, file_path FROM skill_nodes WHERE name = ?",
+                (rest,),
+            ).fetchone()
+            if not node:
+                return f"Not found: {rest}  (try /sg list)"
+            return "\n".join([
+                f"Node: {node['name']}",
+                f"  Category:    {node['category'] or ''}",
+                f"  Description: {node['description'] or ''}",
+                f"  Tags:        {node['tags'] or ''}",
+                f"  Path:        {node['file_path'] or ''}",
+            ])
+        except (sqlite3.Error, OSError, RuntimeError, TypeError, ValueError,
+                KeyError, AttributeError, IndexError) as exc:
+            _log_fallback_exception("skill-graph: info failed", exc)
+            return "Info failed: could not read skill metadata"
+
+    elif subcmd == "terms":
+        """Show term associations with stats."""
+        if not rest:
+            return "Usage: /skill-graph terms <skill-name>"
+        try:
+            return _format_terms(rest)
+        except (sqlite3.Error, OSError, RuntimeError, TypeError, ValueError,
+                KeyError, AttributeError, IndexError) as exc:
+            _log_fallback_exception("skill-graph: terms failed", exc)
+            return "Terms failed: could not read skill terms"
 
     else:
         # Unknown command — try proxying to a skill in the graph
@@ -1375,22 +1448,10 @@ def _handle_slash_command(args: str) -> str | None:
                             f"(Use /sg info {subcmd} for metadata, "
                             f"/sg terms {subcmd} for term details)"
                         )
-            except Exception:
-                pass
-        return (
-            "/skill-graph — Skill knowledge graph\n\n"
-            "Subcommands:\n"
-            "  /skill-graph search <query>   Search skills by intent\n"
-            "  /skill-graph show <name>      Show full skill content (preview)\n"
-            "  /skill-graph info <name>      Show skill metadata\n"
-            "  /skill-graph terms <name>     Show term associations with stats\n"
-            "  /skill-graph score <query>    Show scoring breakdown with term stats\n"
-            "  /skill-graph list             List all skills in graph\n"
-            "  /skill-graph config           Show configuration (paths, DB)\n"
-            "  /skill-graph status           Show graph stats\n"
-            "  /skill-graph rebuild          Force full graph rebuild\n"
-        )
-
+            except (sqlite3.Error, OSError, RuntimeError, TypeError, ValueError,
+                    KeyError, AttributeError, IndexError) as exc:
+                _log_fallback_exception("skill-graph: command proxy failed", exc)
+        return _slash_help()
 
 # ── Tool handlers ───────────────────────────────────────────────────────────
 
@@ -1520,7 +1581,7 @@ def _handle_skill_load(args: dict | None = None, **kw) -> str:
                 "hint": "Use skill_graph_search() to discover available skills",
             })
 
-        content = path.read_text(encoding="utf-8", errors="replace")
+        content = path.read_text(encoding="utf-8-sig", errors="replace")
         info = _parse_skill_md(path)
         skill_dir = str(path.parent)
 
@@ -1537,8 +1598,9 @@ def _handle_skill_load(args: dict | None = None, **kw) -> str:
                     (info["name"], _t),
                 )
             _conn.commit()
-        except Exception:
-            pass
+        except (sqlite3.Error, OSError, RuntimeError, TypeError, ValueError,
+                KeyError, AttributeError, IndexError) as exc:
+            _log_fallback_exception("skill-graph: load stats update failed", exc)
 
         return json.dumps({
             "success": True,
@@ -1552,9 +1614,10 @@ def _handle_skill_load(args: dict | None = None, **kw) -> str:
             "skill_dir": skill_dir,
         }, ensure_ascii=False)
 
-    except Exception as e:
-        logger.exception("skill_load failed for '%s'", name)
-        return json.dumps({"success": False, "error": str(e)})
+    except (sqlite3.Error, OSError, RuntimeError, TypeError, ValueError,
+            KeyError, AttributeError, IndexError, yaml.YAMLError) as exc:
+        _log_fallback_exception("skill-graph: skill load failed", exc)
+        return json.dumps({"success": False, "error": "Could not load skill"})
 
 
 # ── Plugin entry point ──────────────────────────────────────────────────────
@@ -1566,7 +1629,9 @@ def _skill_graph_mode_enabled() -> bool:
 
         config = load_config_readonly() or {}
         return bool((config.get("agent") or {}).get("skill_graph_mode", False))
-    except Exception:
+    except (ImportError, OSError, RuntimeError, TypeError, ValueError,
+            KeyError, AttributeError, yaml.YAMLError) as exc:
+        _log_fallback_exception("skill-graph: could not read graph mode", exc)
         return False
 
 
@@ -1577,7 +1642,7 @@ def _gateway_extension_skills() -> list[tuple[str, str]]:
         return []
     try:
         path = _resolve_config_path(raw_path)
-        lines = path.read_text(encoding="utf-8").splitlines()
+        lines = path.read_text(encoding="utf-8-sig").splitlines()
     except (OSError, TypeError, ValueError):
         return []
 
@@ -1832,8 +1897,9 @@ def register(ctx):
                         (_last_loaded_skill,),
                     )
                     conn.commit()
-                except Exception:
-                    pass
+                except (sqlite3.Error, OSError, RuntimeError, TypeError, ValueError,
+                        KeyError, AttributeError, IndexError) as exc:
+                    _log_fallback_exception("skill-graph: success stat update failed", exc)
                 _last_loaded_skill = None
             else:
                 _last_loaded_skill = skill_name

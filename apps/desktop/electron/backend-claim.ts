@@ -17,7 +17,7 @@
  * exit reason reaches desktop.log and the boot UI).
  */
 
-import { execFile } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import fs from 'node:fs'
 
 import { electronProcessStartMarker } from './parent-process-identity'
@@ -39,6 +39,99 @@ export function execText(command: string, args: string[], { timeout = 3000 } = {
 
     // These probes are noninteractive; do not leave readers waiting for input.
     child.stdin?.end()
+  })
+}
+
+const EXEC_TEXT_MAX_BUFFER = 1024 * 1024
+
+/**
+ * Run the SSH effective-config probe without allocating an input pipe. Some
+ * Windows OpenSSH builds hang when Node starts `ssh -G` with every stream
+ * piped, so this intentionally matches the stdin-ignored topology used by
+ * the interactive SSH-config resolver below in main.ts.
+ */
+export function execTextWithIgnoredStdin(
+  command: string,
+  args: string[],
+  { timeout = 3000, maxBuffer = EXEC_TEXT_MAX_BUFFER }: { timeout?: number; maxBuffer?: number } = {}
+): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    const child = spawn(command, args, hiddenWindowsChildOptions({ stdio: ['ignore', 'pipe', 'pipe'] }))
+    let settled = false
+    let stdout = ''
+    let stderr = ''
+    let stdoutBytes = 0
+    let stderrBytes = 0
+    let timer: ReturnType<typeof setTimeout> | undefined
+
+    const settle = (callback: () => void) => {
+      if (settled) {
+        return
+      }
+
+      settled = true
+
+      if (timer) {
+        clearTimeout(timer)
+      }
+
+      callback()
+    }
+
+    const maxBufferError = () => {
+      const error = Object.assign(new RangeError(`${command} output exceeded ${maxBuffer} bytes`), {
+        code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER'
+      })
+
+      child.kill()
+      settle(() => reject(error))
+    }
+
+    const collect = (stream: 'stdout' | 'stderr', chunk: unknown) => {
+      if (settled) {
+        return
+      }
+
+      const text = String(chunk)
+      const bytes = Buffer.isBuffer(chunk) ? chunk.length : Buffer.byteLength(text)
+
+      if (stream === 'stdout') {
+        stdoutBytes += bytes
+        stdout += text
+
+        if (stdoutBytes > maxBuffer) {
+          maxBufferError()
+        }
+      } else {
+        stderrBytes += bytes
+        stderr += text
+
+        if (stderrBytes > maxBuffer) {
+          maxBufferError()
+        }
+      }
+    }
+
+    child.stdout?.on('data', chunk => collect('stdout', chunk))
+    child.stderr?.on('data', chunk => collect('stderr', chunk))
+    child.once('error', error => settle(() => reject(error)))
+    child.once('close', (code, signal) => {
+      if (code === 0 && !child.killed) {
+        settle(() => resolve(stdout.trim()))
+
+        return
+      }
+
+      const error = Object.assign(new Error(stderr.trim() || `Command failed: ${command}`), { code, signal, stderr, stdout })
+      settle(() => reject(error))
+    })
+
+    if (timeout > 0) {
+      timer = setTimeout(() => {
+        child.kill()
+        settle(() => reject(new Error(`${command} timed out after ${timeout}ms`)))
+      }, timeout)
+    }
   })
 }
 

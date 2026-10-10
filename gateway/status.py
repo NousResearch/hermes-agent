@@ -27,7 +27,7 @@ from gateway.status_inline_source import (
     inline_source_flag_index,
 )
 from hermes_constants import _get_platform_default_hermes_home, get_hermes_home, get_process_hermes_home
-from hermes_cli._subprocess_compat import pid_exists_stdlib
+from hermes_cli._subprocess_compat import parse_linux_proc_stat_start_time, pid_exists_stdlib
 from utils import atomic_json_write
 
 if sys.platform == "win32":
@@ -487,7 +487,7 @@ def _get_process_start_time(pid: int) -> Optional[int]:
     stat_path = Path(f"/proc/{pid}/stat")
     try:
         # Field 22 in /proc/<pid>/stat is process start time (clock ticks).
-        return int(stat_path.read_text(encoding="utf-8").split()[21])  # windows-footgun: ok (/proc is BOM-free)
+        return parse_linux_proc_stat_start_time(stat_path.read_text(encoding="utf-8"))
     except (FileNotFoundError, IndexError, PermissionError, ValueError, OSError):
         pass
 

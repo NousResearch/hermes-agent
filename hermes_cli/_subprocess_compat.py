@@ -604,12 +604,42 @@ def noninteractive_repo_git_env(
     return env
 
 
+def parse_linux_proc_stat_suffix(raw: str) -> list[str]:
+    """Return fields 3 onward from a Linux ``/proc/<pid>/stat`` row.
+
+    Field 2 is a parenthesized process name that may contain spaces and right
+    parentheses, so fixed-position whitespace splitting is unsafe. Kernel
+    fields resume after the final ``)`` delimiter.
+    """
+    open_paren = raw.find("(")
+    close_paren = raw.rfind(")")
+    if open_paren <= 0 or close_paren <= open_paren:
+        raise ValueError("malformed /proc stat comm field")
+
+    suffix_fields = raw[close_paren + 1:].split()
+    if not suffix_fields:
+        raise ValueError("truncated /proc stat row")
+
+    state = suffix_fields[0]
+    if len(state) != 1 or not state.isascii() or not state.isalpha():
+        raise ValueError("invalid /proc stat state field")
+    return suffix_fields
+
+
+def parse_linux_proc_stat_start_time(raw: str) -> int:
+    """Parse field 22 (``starttime``) from a Linux proc stat row."""
+    suffix_fields = parse_linux_proc_stat_suffix(raw)
+    if len(suffix_fields) <= 19:
+        raise ValueError("truncated /proc stat row")
+    return int(suffix_fields[19])
+
+
 def posix_is_zombie(pid: int) -> bool:
     """Zombie via ``/proc/<pid>/stat`` field 3, or ``ps -o state=`` without /proc (macOS/BSD)."""
     try:
         with open(f"/proc/{pid}/stat", encoding="utf-8") as fh:
-            stat_fields = fh.read().split()
-        return len(stat_fields) > 2 and stat_fields[2] == "Z"
+            stat_suffix = parse_linux_proc_stat_suffix(fh.read())
+        return stat_suffix[0] == "Z"
     except FileNotFoundError:
         try:
             r = subprocess.run(
@@ -619,7 +649,7 @@ def posix_is_zombie(pid: int) -> bool:
             return r.returncode == 0 and r.stdout.strip().startswith("Z")
         except Exception:
             pass
-    except (IndexError, PermissionError, OSError):
+    except (IndexError, PermissionError, ValueError, OSError):
         pass
     return False
 

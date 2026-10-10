@@ -20,7 +20,7 @@ class TestGatewayPidState:
 
         status.write_pid_file()
 
-        payload = json.loads((tmp_path / "gateway.pid").read_text())
+        payload = json.loads((tmp_path / "gateway.pid").read_text(encoding="utf-8"))
         assert payload["pid"] == os.getpid()
         assert payload["kind"] == "hermes-gateway"
         assert isinstance(payload["argv"], list)
@@ -47,7 +47,7 @@ class TestGatewayPidState:
             status.write_pid_file()
 
         # Original record is preserved.
-        payload = json.loads((tmp_path / "gateway.pid").read_text())
+        payload = json.loads((tmp_path / "gateway.pid").read_text(encoding="utf-8"))
         assert payload["pid"] == os.getpid()
 
 
@@ -76,9 +76,8 @@ class TestGatewayPidState:
                 "argv": ["python", "-m", "hermes_cli.main", "gateway"],
                 "start_time": start_time,
             }
-            pid_path.write_text(json.dumps(record))
-            (tmp_path / "gateway.lock").write_text(json.dumps(record))
-
+            pid_path.write_text(json.dumps(record), encoding="utf-8")
+            (tmp_path / "gateway.lock").write_text(json.dumps(record), encoding="utf-8")
         _write_record(111, 123)
 
         calls = {"lock_active": 0}
@@ -163,7 +162,7 @@ class TestGatewayPidState:
         assert (process_home / "gateway.pid").exists()
         assert not (profile_home / "gateway.pid").exists()
 
-        payload = json.loads((process_home / "gateway.pid").read_text())
+        payload = json.loads((process_home / "gateway.pid").read_text(encoding="utf-8"))
         assert payload["pid"] == os.getpid()
 
         # Cleanup for atexit hooks.
@@ -830,7 +829,7 @@ class TestScopedLocks:
         acquired, _existing = status.acquire_scoped_lock("telegram-bot-token", "secret", metadata={"platform": "telegram"})
 
         assert acquired is True
-        payload = json.loads(lock_path.read_text())
+        payload = json.loads(lock_path.read_text(encoding="utf-8"))
         assert payload["pid"] == os.getpid()
         assert payload["metadata"]["platform"] == "telegram"
 
@@ -869,7 +868,7 @@ class TestScopedLocks:
 
         assert acquired is True
         assert existing["pid"] == os.getpid()
-        payload = json.loads(lock_path.read_text())
+        payload = json.loads(lock_path.read_text(encoding="utf-8"))
         assert payload["pid"] == os.getpid()
         assert payload["start_time"] == 987654321
         assert payload["metadata"]["platform"] == "discord"
@@ -918,7 +917,7 @@ class TestScopedLocks:
 
         assert acquired is True
         assert existing["pid"] == os.getpid()
-        payload = json.loads(lock_path.read_text())
+        payload = json.loads(lock_path.read_text(encoding="utf-8"))
         assert payload["pid"] == os.getpid()
         assert payload["start_time"] == 987654321
 
@@ -935,7 +934,7 @@ class TestScopedLocks:
             "start_time": 123,
             "kind": "hermes-gateway",
         }
-        lock_path.write_text(json.dumps(stale_record))
+        lock_path.write_text(json.dumps(stale_record), encoding="utf-8")
         monkeypatch.setattr(status, "_pid_exists", lambda pid: False)
 
         winner_record = {
@@ -950,7 +949,7 @@ class TestScopedLocks:
             if str(src) == str(lock_path):
                 # Simulate the winner completing removal + O_EXCL create
                 # between our staleness check and our removal attempt.
-                lock_path.write_text(json.dumps(winner_record))
+                lock_path.write_text(json.dumps(winner_record), encoding="utf-8")
                 raise FileNotFoundError(2, "No such file or directory", str(src))
             return real_replace(src, dst, *args, **kwargs)
 
@@ -962,7 +961,7 @@ class TestScopedLocks:
         assert existing is not None
         assert existing["pid"] == 424242
         # The winner's fresh lock must be untouched on disk.
-        assert json.loads(lock_path.read_text())["pid"] == 424242
+        assert json.loads(lock_path.read_text(encoding="utf-8"))["pid"] == 424242
 
 
     def test_acquire_scoped_lock_replaces_stale_record(self, tmp_path, monkeypatch):
@@ -981,7 +980,7 @@ class TestScopedLocks:
         acquired, _existing = status.acquire_scoped_lock("telegram-bot-token", "secret", metadata={"platform": "telegram"})
 
         assert acquired is True
-        payload = json.loads(lock_path.read_text())
+        payload = json.loads(lock_path.read_text(encoding="utf-8"))
         assert payload["pid"] == os.getpid()
         assert payload["metadata"]["platform"] == "telegram"
 
@@ -1026,7 +1025,7 @@ class TestScopedLocks:
         lock_path = tmp_path / "locks" / (
             "telegram-bot-token-" + status._scope_hash("secret") + ".lock"
         )
-        payload = json.loads(lock_path.read_text())
+        payload = json.loads(lock_path.read_text(encoding="utf-8"))
         assert payload["profile"] == "lead-gen-outreach"
 
     def test_acquire_scoped_lock_omits_profile_when_not_inferable(self, tmp_path, monkeypatch):
@@ -1041,7 +1040,7 @@ class TestScopedLocks:
         lock_path = tmp_path / "locks" / (
             "telegram-bot-token-" + status._scope_hash("secret") + ".lock"
         )
-        payload = json.loads(lock_path.read_text())
+        payload = json.loads(lock_path.read_text(encoding="utf-8"))
         assert "profile" not in payload
 
 
@@ -1121,7 +1120,7 @@ class TestTakeoverMarker:
         assert ok is True
         marker = tmp_path / ".gateway-takeover.json"
         assert marker.exists()
-        payload = json.loads(marker.read_text())
+        payload = json.loads(marker.read_text(encoding="utf-8"))
         assert payload["target_pid"] == 12345
         assert payload["target_start_time"] == 42
         assert payload["replacer_pid"] == os.getpid()
@@ -1147,7 +1146,7 @@ class TestTakeoverMarker:
 
         ok = status.write_takeover_marker(target_pid=os.getpid())
         assert ok is True
-        payload = json.loads((tmp_path / ".gateway-takeover.json").read_text())
+        payload = json.loads((tmp_path / ".gateway-takeover.json").read_text(encoding="utf-8"))
         assert payload["target_start_time"] is None
 
         result = status.consume_takeover_marker_for_self()
@@ -1163,7 +1162,7 @@ class TestTakeoverMarker:
 
         status.write_takeover_marker(target_pid=12345)
 
-        payload = json.loads((tmp_path / ".gateway-takeover.json").read_text())
+        payload = json.loads((tmp_path / ".gateway-takeover.json").read_text(encoding="utf-8"))
         assert payload["replacer_hermes_home"] == str(tmp_path)
 
     def test_consume_rejects_marker_from_different_profile(self, tmp_path, monkeypatch):
@@ -1228,7 +1227,7 @@ class TestScopedLockTakeover:
             "start_time": start_time,
             "hermes_home": str(target_home),
         }
-        (target_home / "gateway.pid").write_text(json.dumps(record))
+        (target_home / "gateway.pid").write_text(json.dumps(record), encoding="utf-8")
         return record
 
     def test_verified_distinct_home_handoff_marks_target_before_sigterm(
@@ -1253,7 +1252,7 @@ class TestScopedLockTakeover:
         def terminate(pid, *, force=False):
             marker_path = target_home / ".gateway-takeover.json"
             assert marker_path.exists()
-            payload = json.loads(marker_path.read_text())
+            payload = json.loads(marker_path.read_text(encoding="utf-8"))
             assert payload["target_hermes_home"] == str(target_home)
             assert payload["replacer_hermes_home"] == str(replacer_home)
             calls.append((pid, force))
@@ -1275,8 +1274,7 @@ class TestScopedLockTakeover:
         # The lock claims target_home, but that home's PID record names a
         # different process identity.
         bad_pid_record = dict(record, pid=9999)
-        (target_home / "gateway.pid").write_text(json.dumps(bad_pid_record))
-
+        (target_home / "gateway.pid").write_text(json.dumps(bad_pid_record), encoding="utf-8")
         monkeypatch.setattr(status, "_pid_exists", lambda _pid: True)
         monkeypatch.setattr(status, "_get_process_start_time", lambda _pid: 123)
         monkeypatch.setattr(
@@ -1306,7 +1304,7 @@ class TestPlannedStopMarker:
         assert ok is True
         marker = tmp_path / ".gateway-planned-stop.json"
         assert marker.exists()
-        payload = json.loads(marker.read_text())
+        payload = json.loads(marker.read_text(encoding="utf-8"))
         assert payload["target_pid"] == 12345
         assert payload["target_start_time"] == 42
         assert payload["stopper_pid"] == os.getpid()
@@ -1335,7 +1333,7 @@ class TestPlannedStopMarker:
         ok = status.write_planned_stop_marker(target_pid=os.getpid())
         assert ok is True
         # Marker carries a null start_time, exactly as written on Windows.
-        payload = json.loads((tmp_path / ".gateway-planned-stop.json").read_text())
+        payload = json.loads((tmp_path / ".gateway-planned-stop.json").read_text(encoding="utf-8"))
         assert payload["target_start_time"] is None
 
         result = status.consume_planned_stop_marker_for_self()

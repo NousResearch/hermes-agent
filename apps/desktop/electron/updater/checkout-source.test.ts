@@ -266,6 +266,12 @@ it('carries each install channel from Python publication checks into the source 
       responses.set(`/repos/NousResearch/hermes-agent/commits/${tags[channel]}`, { sha })
     }
 
+    // Stable is GitHub's latest published release; R2 holds no stable record.
+    responses.set('/repos/NousResearch/hermes-agent/releases/latest', {
+      tag_name: tags.stable,
+      draft: false,
+      prerelease: false
+    })
     responses.set('/releases/stable/release-candidates.json', { tag: tags.stable, commit: commits[1] })
     // The 'main' subscription is a source-branch channel record under the R2 protocol.
     responses.set(

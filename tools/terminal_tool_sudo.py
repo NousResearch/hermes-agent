@@ -322,25 +322,44 @@ def _scan_shell(command: str, background: bool = False) -> Iterator[tuple[str, i
 
 _SUDO_NON_INTERACTIVE_FLAGS = {"-n", "--non-interactive"}
 # Argument-less sudo short options, used to accept merged clusters like
-# ``-nv`` without misreading option+argument shapes (``-un root`` is
-# ``-u`` with user ``n``, not a non-interactive cluster).
-_SUDO_NO_ARG_SHORT_FLAGS = "nvkKlVeisbhEP"
+# ``-nv`` or ``-Hn`` without misreading option+argument shapes (``-un root``
+# is ``-u`` with user ``n``, not a non-interactive cluster). ``-S`` stays out
+# so ``-Sn`` keeps the password-stdin path.
+_SUDO_NO_ARG_SHORT_FLAGS = "nvkKlVeisbhEPABHN"
 # sudo options whose value arrives as a separate token; the value is
 # consumed verbatim (even when it looks like a flag) so scanning reaches
-# a later ``-n``: ``sudo -u janet-admin -n id``.
-_SUDO_ARG_SHORT_FLAGS = "CcgpRrTtUu"
+# a later ``-n``: ``sudo -u janet-admin -n id``. ``-D`` covers chdir, ``-R``
+# chroot — ``sudo -D -n id`` runs in directory ``-n`` and is interactive.
+_SUDO_ARG_SHORT_FLAGS = "CcDgpRrTtUu"
 _SUDO_ARG_LONG_FLAGS = {
+    "--chdir",
+    "--chroot",
     "--close-from",
     "--command-timeout",
     "--group",
+    "--host",
     "--login-class",
     "--other-user",
     "--prompt",
-    "--restart-timeout",
     "--role",
     "--type",
     "--user",
 }
+
+
+def _shell_word_value(token: str) -> str:
+    """Semantic value of one shell word token, quotes/escapes resolved.
+
+    ``"-n"`` and ``'-n'`` are still sudo's ``-n``; a token shlex cannot make
+    sense of is kept verbatim, which reads as a non-flag (conservative).
+    """
+    if not any(c in token for c in "'\"\\"):
+        return token
+    try:
+        parts = shlex.split(token)
+    except ValueError:
+        return token
+    return parts[0] if len(parts) == 1 else token
 
 
 def _sudo_invocation_is_non_interactive(command: str, start: int) -> bool:
@@ -351,8 +370,9 @@ def _sudo_invocation_is_non_interactive(command: str, start: int) -> bool:
     immediately instead of prompting: ``-n`` / ``--non-interactive``, or a
     merged argument-less short cluster containing ``n`` (e.g. ``-nv``).
     An option whose value comes as a separate token (``-u janet-admin``,
-    ``--user janet-admin``) consumes that token, so scanning continues at
-    the following flag instead of stopping at the value. Stops at the
+    ``--user janet-admin``, ``-D /``, ``--chdir /``) consumes that token, so
+    scanning continues at the following flag instead of stopping at the
+    value. Quotes do not hide a flag (``sudo "-n" id``). Stops at the
     first non-flag token (the command sudo would run), at ``--`` (end of
     sudo options), or at a shell/line separator.
     """
@@ -373,15 +393,16 @@ def _sudo_invocation_is_non_interactive(command: str, start: int) -> bool:
             skip_value = False
             i = next_i
             continue
-        if token == "--":
+        word = _shell_word_value(token)
+        if word == "--":
             return False
-        if token.startswith("-"):
-            if token in _SUDO_NON_INTERACTIVE_FLAGS:
+        if word.startswith("-"):
+            if word in _SUDO_NON_INTERACTIVE_FLAGS:
                 return True
-            if token in _SUDO_ARG_LONG_FLAGS:
+            if word in _SUDO_ARG_LONG_FLAGS:
                 skip_value = True
-            elif not token.startswith("--"):
-                body = token[1:]
+            elif not word.startswith("--"):
+                body = word[1:]
                 for pos, c in enumerate(body):
                     if c == "n":
                         return True

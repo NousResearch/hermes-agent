@@ -142,6 +142,42 @@ def test_non_interactive_sudo_probe_with_option_values_keeps_scanning(monkeypatc
     assert sudo_stdin == "testpass\n"
 
 
+def test_non_interactive_sudo_probe_covers_chdir_chroot_host_and_clusters(monkeypatch):
+    """#94592 review: the remaining value-taking sudo options (``-D``/``--chdir``,
+    ``--chroot``, ``--host``), the ``-A/-B/-H/-N`` argument-less clusters, and
+    quoted flags must all let the scan reach a later ``-n``. Conversely ``-n``
+    consumed as a value (``sudo -D -n id`` changes directory to ``-n``) is not
+    sudo's non-interactive flag and keeps the password-pipe rewrite."""
+    monkeypatch.setenv("SUDO_PASSWORD", "testpass")
+    monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+
+    for command in (
+        "sudo -D / -n id",
+        "sudo --chdir / --non-interactive id",
+        "sudo --chroot / -n id",
+        "sudo --host web01 -n id",
+        "sudo --host=web01 -n id",
+        "sudo -Hn id",
+        "sudo -An id",
+        "sudo -Bn id",
+        "sudo -Nn id",
+        'sudo "-n" id',
+        "sudo '-n' id",
+    ):
+        transformed, sudo_stdin = terminal_tool_sudo._transform_sudo_command(command)
+        assert transformed == command
+        assert sudo_stdin is None
+
+    for command, rewritten in (
+        ("sudo -D -n id", "sudo -S -p '' -D -n id"),
+        ("sudo --chdir -n id", "sudo -S -p '' --chdir -n id"),
+        ("sudo -H id", "sudo -S -p '' -H id"),
+    ):
+        transformed, sudo_stdin = terminal_tool_sudo._transform_sudo_command(command)
+        assert transformed == rewritten
+        assert sudo_stdin == "testpass\n"
+
+
 def test_explicit_empty_sudo_password_tries_empty_without_prompt(monkeypatch):
     monkeypatch.setenv("SUDO_PASSWORD", "")
     monkeypatch.setenv("HERMES_INTERACTIVE", "1")

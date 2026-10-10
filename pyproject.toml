@@ -831,10 +831,19 @@ plugins = ["**/plugin.yaml", "**/plugin.yml"]
 # pm/lock.json is the runtime pin table (uv/python/tool versions + sha256s).
 # Without it a sealed wheel installs the pm package but has no pins to
 # realize — the pm store would be empty.
-pm = ["lock.json", "artifact-mirror.json", "pyproject.toml", "uv.lock"]
+# termux_runtime_libs.json is the pinned runtime-lib table pm/termux_libs.py reads via
+# Path(__file__).parent; hermes pm update --termux fails without it.
+pm = ["lock.json", "artifact-mirror.json", "pyproject.toml", "uv.lock", "termux_runtime_libs.json"]
 # Bot Desktop starts Xvnc + Xfce through a shell launcher and seeds the wallpaper; both are read
 # via Path(__file__).parent in tools/bot_desktop/runtime.py and vanish from sealed wheels otherwise.
-tools = ["bot_desktop/launcher.sh", "bot_desktop/wallpaper.png"]
+# wakewords/hey_hermes.tflite (the bundled wake word model, tools/wake_word.py) and the
+# neutts_samples reference voice (tools/tts_tool_local.py) resolve the same way.
+tools = [
+  "bot_desktop/launcher.sh",
+  "bot_desktop/wallpaper.png",
+  "wakewords/*.tflite",
+  "neutts_samples/*",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

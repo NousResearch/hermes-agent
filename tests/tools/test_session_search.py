@@ -541,6 +541,34 @@ class TestCrossProfileRead:
             assert result["mode"] == "read"
             assert result["session_id"] == "s_other"
 
+    def test_emitted_link_resolves_verbatim_as_session_id(self, db, tmp_path, monkeypatch):
+        # The `link` value the tool emits (and the desktop composer inserts) comes back verbatim
+        # as session_id; both its shapes must read the session they name.
+        other_home = tmp_path / "other_home"
+        other_home.mkdir()
+        other = SessionDB(other_home / "state.db")
+        other.create_session("s_other", source="cli")
+        other.append_message("s_other", role="user", content="hi")
+        other._conn.commit()
+        db.create_session("s_here", source="cli")
+        db.append_message("s_here", role="user", content="hello")
+        from hermes_cli import profiles as profiles_mod  # real name validation; only 'asdf' exists
+        monkeypatch.setattr(profiles_mod, "profile_exists", lambda n: n == "asdf")
+        monkeypatch.setattr(profiles_mod, "get_profile_dir", lambda n: other_home)
+
+        from tools.registry import registry  # the registered handler's argument mapping, not the bare function
+
+        def call(**args):
+            return json.loads(registry.dispatch("session_search", args, db=db))
+
+        emitted = call(session_id="s_other", profile="asdf")["link"]  # the `link` a result hands the model
+        assert emitted == "@session:asdf/s_other"
+        for link, sid in ((emitted, "s_other"),                # @session:<profile>/<id>
+                          ("@session:s_here", "s_here")):      # profile-less shape
+            result = call(session_id=link)
+            assert result["success"] is True, (link, result)
+            assert result["session_id"] == sid
+
 
 # =========================================================================
 # Cron demotion in discover ranking (#19434)

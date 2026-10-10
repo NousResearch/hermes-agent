@@ -954,6 +954,334 @@ class TestReviewRound3:
         assert matched[0].info["name"] == "chrome.exe"
         assert f"--user-data-dir={ud}" in " ".join(matched[0].info["cmdline"])
 
+    def test_default_dir_owner_via_singleton_and_stale_lock_cases(self, tmp_path, monkeypatch):
+        """Default-dir Chrome (no --user-data-dir) is found via SingletonLock; close must
+        wait for real exit, clear stale same-host locks only, refuse foreign-host locks,
+        and never report success while the owner PID is still alive (#121485 / kokhlo)."""
+        import os
+        import socket
+        import hermes_cli.browser_connect as bc
+
+        src = str(tmp_path / "profile")
+        (tmp_path / "profile").mkdir()
+        host = socket.gethostname()
+
+        class Proc:
+            def __init__(self, pid, name, args, survive_kill=False):
+                self.pid = pid
+                self.info = {"name": name, "cmdline": args}
+                self._survive = survive_kill
+                self.terminated = False
+                self.killed = False
+                self._dead = False
+
+            def children(self, recursive=False):
+                return []
+
+            def terminate(self):
+                self.terminated = True
+                if not self._survive:
+                    self._dead = True
+
+            def kill(self):
+                self.killed = True
+                if not self._survive:
+                    self._dead = True
+
+        owner = Proc(321, "chrome", ["/opt/google/chrome/chrome", "http://localhost"])
+        other = Proc(322, "chrome", ["/opt/google/chrome/chrome", "--user-data-dir=/other"])
+        crashpad = Proc(
+            323, "chrome_crashpad_handler",
+            ["chrome_crashpad_handler", f"--database={src}/Crash Reports"])
+        live = [owner, other, crashpad]
+
+        monkeypatch.setattr(bc, "_singleton_owner_pid", lambda _: 321)
+        monkeypatch.setattr(
+            bc, "_pid_is_alive",
+            lambda pid: any(p.pid == pid and not p._dead for p in live))
+
+        import psutil
+
+        def _iter(attrs=None):
+            return iter([p for p in live if not p._dead])
+
+        monkeypatch.setattr(psutil, "process_iter", _iter)
+        matched = list(bc._processes_holding_profile(src))
+        assert matched == [owner, crashpad]
+
+        # Successful close: holders exit, stale lock cleared only for this host + dead pid.
+        lock = tmp_path / "profile" / "SingletonLock"
+        sock = tmp_path / "profile" / "SingletonSocket"
+        cookie = tmp_path / "profile" / "SingletonCookie"
+        lock.symlink_to(f"{host}-321")
+        sock.write_text("x")
+        cookie.write_text("y")
+
+        monkeypatch.setattr(psutil, "wait_procs", lambda targets, timeout: (list(targets), []))
+        ok, message = bc.close_browser_holding_profile(src, timeout=0.5)
+        assert ok and "closed the browser" in message
+        assert owner.terminated and crashpad.terminated and not other.terminated
+        assert not os.path.lexists(str(lock))
+        assert not sock.exists() and not cookie.exists()
+
+        # Foreign hostname: refuse to kill/clear.
+        foreign = tmp_path / "foreign"
+        foreign.mkdir()
+        (foreign / "SingletonLock").symlink_to("other-host-999")
+        ok, message = bc.close_browser_holding_profile(str(foreign), timeout=0.5)
+        assert not ok and "other-host" in message
+        assert os.path.lexists(str(foreign / "SingletonLock"))
+
+        # Stale lock after SIGKILL (dead PID, files remain): treat as gone and clear.
+        stale = tmp_path / "stale"
+        stale.mkdir()
+        (stale / "SingletonLock").symlink_to(f"{host}-424242")
+        (stale / "SingletonSocket").write_text("s")
+        (stale / "SingletonCookie").write_text("c")
+        monkeypatch.setattr(bc, "_pid_is_alive", lambda pid: False)
+        monkeypatch.setattr(psutil, "process_iter", lambda attrs=None: iter([]))
+        ok, message = bc.close_browser_holding_profile(str(stale), timeout=0.5)
+        assert ok and "stale" in message.lower()
+        assert not os.path.lexists(str(stale / "SingletonLock"))
+
+        # Process survives kill → must report failure, not success.
+        survivor = Proc(555, "chrome", ["/opt/google/chrome/chrome", "http://x"], survive_kill=True)
+        live[:] = [survivor]
+        survive_src = tmp_path / "survive"
+        survive_src.mkdir()
+        (survive_src / "SingletonLock").symlink_to(f"{host}-555")
+        monkeypatch.setattr(bc, "_singleton_owner_pid", lambda _: 555)
+        monkeypatch.setattr(
+            bc, "_pid_is_alive",
+            lambda pid: any(p.pid == pid and not p._dead for p in live))
+        monkeypatch.setattr(psutil, "process_iter", lambda attrs=None: iter(live))
+        monkeypatch.setattr(psutil, "wait_procs", lambda targets, timeout: ([], list(targets)))
+        ok, message = bc.close_browser_holding_profile(str(survive_src), timeout=0.3)
+        assert not ok and "still present" in message
+        assert os.path.lexists(str(survive_src / "SingletonLock"))
+
+    def test_stale_lock_pid_reuse_by_non_browser_is_not_killed(self, tmp_path, monkeypatch):
+        """A SingletonLock whose PID was recycled by a non-browser process must not be
+        killed, and close must refuse to clear the lock while that PID is alive."""
+        import os
+        import socket
+        import subprocess
+        import hermes_cli.browser_connect as bc
+
+        src = tmp_path / "reuse"
+        src.mkdir()
+        host = socket.gethostname()
+        # Spawn a non-browser child that will own a recycled-looking PID.
+        sleeper = subprocess.Popen(["sleep", "30"])
+        try:
+            (src / "SingletonLock").symlink_to(f"{host}-{sleeper.pid}")
+            (src / "SingletonSocket").write_text("s")
+            (src / "SingletonCookie").write_text("c")
+
+            import psutil
+            monkeypatch.setattr(psutil, "process_iter", lambda attrs=None: iter([]))
+            # Real _pid_is_alive / _singleton_owner_pid see the live sleep PID.
+            ok, message = bc.close_browser_holding_profile(str(src), timeout=0.5)
+            assert not ok, message
+            assert "still alive" in message.lower() or "alive" in message.lower()
+            assert os.path.lexists(str(src / "SingletonLock"))
+            # sleep must survive — the removed raw-PID fallback used to kill it.
+            assert sleeper.poll() is None, "non-browser PID was killed (PID-reuse bug)"
+        finally:
+            sleeper.terminate()
+            try:
+                sleeper.wait(timeout=2)
+            except Exception:
+                sleeper.kill()
+
+
+
+    def test_singleton_lock_toctou_changed_target_is_not_unlinked(self, tmp_path, monkeypatch):
+        """If SingletonLock is rewritten between the dead-PID check and unlink, refuse
+        to clear — do not delete another owner's lock files (TOCTOU)."""
+        import os
+        import socket
+        import hermes_cli.browser_connect as bc
+
+        src = tmp_path / "toctou"
+        src.mkdir()
+        host = socket.gethostname()
+        lock = src / "SingletonLock"
+        sock = src / "SingletonSocket"
+        cookie = src / "SingletonCookie"
+        lock.symlink_to(f"{host}-424242")
+        sock.write_text("s")
+        cookie.write_text("c")
+
+        monkeypatch.setattr(bc, "_pid_is_alive", lambda pid: False)
+
+        original_readlink = os.readlink
+        calls = {"n": 0}
+
+        def flaky_readlink(path):
+            # Capture expected target on first read; later reads simulate a rewrite
+            # to a different hostname-pid before unlink.
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return f"{host}-424242"
+            return f"{host}-999001"
+
+        monkeypatch.setattr(os, "readlink", flaky_readlink)
+        cleared, err = bc._clear_stale_singleton_files(str(src))
+        assert not cleared, err
+        assert err and "changed" in err.lower()
+        monkeypatch.setattr(os, "readlink", original_readlink)
+        assert os.path.lexists(str(lock)), "lock must not be unlinked after TOCTOU abort"
+        assert sock.exists() and cookie.exists()
+
+    def test_singleton_lock_replaced_after_sidecars_is_not_unlinked(self, tmp_path, monkeypatch):
+        """A new SingletonLock target appearing after the stale sidecars are
+        removed must abort the final lock unlink. The new owner's lock and
+        sidecars stay in place (#121776 review)."""
+        import os
+        import socket
+        import hermes_cli.browser_connect as bc
+
+        src = tmp_path / "toctou-after-sidecars"
+        src.mkdir()
+        host = socket.gethostname()
+        lock = src / "SingletonLock"
+        sock = src / "SingletonSocket"
+        cookie = src / "SingletonCookie"
+        lock.symlink_to(f"{host}-424242")
+        sock.write_text("old-socket")
+        cookie.write_text("old-cookie")
+        monkeypatch.setattr(bc, "_pid_is_alive", lambda pid: False)
+
+        original_unlink = os.unlink
+        removed: list[str] = []
+        swapped = {"done": False}
+        unlinked_lock = {"target": None}
+
+        def racing_unlink(path, *args, **kwargs):
+            name = os.path.basename(os.fspath(path))
+            if name == "SingletonLock":
+                try:
+                    unlinked_lock["target"] = os.readlink(path)
+                except OSError:
+                    unlinked_lock["target"] = "<unreadable>"
+                original_unlink(path, *args, **kwargs)
+                return
+            original_unlink(path, *args, **kwargs)
+            if name not in ("SingletonSocket", "SingletonCookie"):
+                return
+            removed.append(name)
+            if swapped["done"] or set(removed) < {"SingletonSocket", "SingletonCookie"}:
+                return
+            swapped["done"] = True
+            # New Chrome acquired the profile after the stale sidecars were
+            # removed and before the lock itself is unlinked.
+            if os.path.lexists(lock):
+                original_unlink(lock)
+            os.symlink(f"{host}-999001", lock)
+            sock.write_text("new-socket")
+            cookie.write_text("new-cookie")
+
+        monkeypatch.setattr(os, "unlink", racing_unlink)
+        cleared, err = bc._clear_stale_singleton_files(str(src))
+        assert cleared is False, err
+        assert err and "changed" in err.lower()
+        assert swapped["done"], "race hook did not run between sidecar and lock unlink"
+        assert unlinked_lock["target"] is None, "new SingletonLock was unlinked"
+        assert os.readlink(lock) == f"{host}-999001"
+        assert sock.read_text() == "new-socket"
+        assert cookie.read_text() == "new-cookie"
+
+    def test_replaced_singleton_sidecar_is_not_unlinked(self, tmp_path, monkeypatch):
+        """Unlink a sidecar only when its inode and symlink target still match
+        the snapshot taken under the stale lock. A replacement is left alone."""
+        import os
+        import socket
+        import hermes_cli.browser_connect as bc
+
+        src = tmp_path / "sidecar-identity"
+        src.mkdir()
+        host = socket.gethostname()
+        lock = src / "SingletonLock"
+        sock = src / "SingletonSocket"
+        cookie = src / "SingletonCookie"
+        lock.symlink_to(f"{host}-424242")
+        # Chromium's sidecars are symlinks; the cookie target is the identity.
+        sock.symlink_to("/tmp/old-singleton-socket")
+        cookie.symlink_to("old-cookie-token")
+        monkeypatch.setattr(bc, "_pid_is_alive", lambda pid: False)
+
+        original_unlink = os.unlink
+
+        def racing_unlink(path, *args, **kwargs):
+            # Replace the cookie before the clearer re-checks it, after the
+            # snapshot was taken (snapshot happens before any unlink).
+            if os.path.basename(os.fspath(path)) == "SingletonSocket":
+                if os.path.lexists(cookie):
+                    original_unlink(cookie)
+                os.symlink("new-owner-cookie", cookie)
+            original_unlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(os, "unlink", racing_unlink)
+        cleared, err = bc._clear_stale_singleton_files(str(src))
+        assert cleared is False, err
+        assert err and "SingletonCookie" in err and "changed" in err.lower()
+        assert os.readlink(cookie) == "new-owner-cookie"
+        assert os.path.lexists(lock)
+        assert os.readlink(lock) == f"{host}-424242"
+        assert not os.path.lexists(sock)
+
+    def test_singleton_unlink_oserror_is_not_success(self, tmp_path, monkeypatch):
+        """A required unlink that raises must not be reported as a cleared profile."""
+        import os
+        import socket
+        import hermes_cli.browser_connect as bc
+
+        host = socket.gethostname()
+        monkeypatch.setattr(bc, "_pid_is_alive", lambda pid: False)
+        original_unlink = os.unlink
+
+        def _stale_tree(name: str):
+            root = tmp_path / name
+            root.mkdir()
+            lock = root / "SingletonLock"
+            sock = root / "SingletonSocket"
+            cookie = root / "SingletonCookie"
+            lock.symlink_to(f"{host}-424242")
+            sock.write_text("s")
+            cookie.write_text("c")
+            return root, lock, sock, cookie
+
+        # Every unlink fails: all three stale files are still present.
+        src, lock, sock, cookie = _stale_tree("unlink-all-denied")
+
+        def deny_all(path, *args, **kwargs):
+            raise PermissionError(13, "Permission denied", os.fspath(path))
+
+        monkeypatch.setattr(os, "unlink", deny_all)
+        cleared, err = bc._clear_stale_singleton_files(str(src))
+        assert cleared is False, err
+        assert err and "failed to remove" in err.lower()
+        assert os.path.lexists(lock)
+        assert sock.read_text() == "s" and cookie.read_text() == "c"
+
+        # Sidecars are removed, then the lock unlink fails. The lock remains
+        # and the clear is not success.
+        src, lock, sock, cookie = _stale_tree("unlink-lock-denied")
+
+        def deny_lock(path, *args, **kwargs):
+            if os.path.basename(os.fspath(path)) == "SingletonLock":
+                raise PermissionError(13, "Permission denied", os.fspath(path))
+            original_unlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(os, "unlink", deny_lock)
+        cleared, err = bc._clear_stale_singleton_files(str(src))
+        assert cleared is False, err
+        assert err and "SingletonLock" in err
+        assert os.path.lexists(lock)
+        assert os.readlink(lock) == f"{host}-424242"
+        assert not sock.exists() and not cookie.exists()
+
     def test_consent_off_triggers_cleanup(self, tmp_path, monkeypatch):
         called = {"n": 0}
         with patch.object(bt_cloud, "_use_real_profile", return_value=False), \

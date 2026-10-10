@@ -323,14 +323,14 @@ def _scan_shell(command: str, background: bool = False) -> Iterator[tuple[str, i
 _SUDO_NON_INTERACTIVE_FLAGS = {"-n", "--non-interactive"}
 # Argument-less sudo short options, used to accept merged clusters like
 # ``-nv`` or ``-Hn`` without misreading option+argument shapes (``-un root``
-# is ``-u`` with user ``n``, not a non-interactive cluster). ``-S`` stays out
-# so ``-Sn`` keeps the password-stdin path.
-_SUDO_NO_ARG_SHORT_FLAGS = "nvkKlVeisbhEPABHN"
+# is ``-u`` with user ``n``, not a non-interactive cluster). ``-S`` takes
+# no option operand; leave explicit non-interactive stdin use to sudo.
+_SUDO_NO_ARG_SHORT_FLAGS = "nvkKlVeisbEPABHNS"
 # sudo options whose value arrives as a separate token; the value is
 # consumed verbatim (even when it looks like a flag) so scanning reaches
 # a later ``-n``: ``sudo -u janet-admin -n id``. ``-D`` covers chdir, ``-R``
 # chroot — ``sudo -D -n id`` runs in directory ``-n`` and is interactive.
-_SUDO_ARG_SHORT_FLAGS = "CcDgpRrTtUu"
+_SUDO_ARG_SHORT_FLAGS = "CcDghpRrTtUu"
 _SUDO_ARG_LONG_FLAGS = {
     "--chdir",
     "--chroot",
@@ -386,7 +386,7 @@ def _sudo_invocation_is_non_interactive(command: str, start: int) -> bool:
                 return False
             i += 1
             continue
-        if ch in ";|&()":
+        if ch in ";|&()#":
             return False
         token, next_i = _read_shell_token(command, i)
         if skip_value:

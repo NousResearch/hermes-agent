@@ -435,7 +435,7 @@ class TestRunJobScript:
 
         argv, env = scheduler_script._posix_cron_script_argv(script)
         assert argv == [sys.executable, str(script)]
-        assert env == {}
+        assert env == {"HERMES_DISABLE_LAZY_INSTALLS": "1"}
 
     def test_emoji_stdout_round_trips_through_script_capture(self, cron_env):
         """Emoji in script stdout must reach the caller intact (#42384).

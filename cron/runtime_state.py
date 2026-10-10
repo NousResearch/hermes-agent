@@ -16,6 +16,7 @@ caller, never by ``get_hermes_home()`` here.
 from __future__ import annotations
 
 import contextlib
+import errno
 import json
 import os
 import sqlite3
@@ -94,24 +95,42 @@ def _owner_snapshot(cron_dir: Path) -> Optional[os.stat_result]:
     return None
 
 
+# SQLite result codes of a store that cannot take writes, as the errno a jobs.json write would have
+# raised: the scheduler degrades an unwritable store instead of failing the tick, and it only
+# recognizes OSError with one of cron.store_health.UNWRITABLE_ERRNOS.
+_UNWRITABLE_SQLITE_ERRNOS = {
+    sqlite3.SQLITE_FULL: errno.ENOSPC,
+    sqlite3.SQLITE_READONLY: errno.EACCES,
+    sqlite3.SQLITE_CANTOPEN: errno.EACCES,
+    sqlite3.SQLITE_PERM: errno.EPERM,
+}
+
+
 @contextlib.contextmanager
 def _transaction(cron_dir: Path, *, write: bool = True) -> Iterator[sqlite3.Connection]:
     """One transaction on a fresh connection, always closed. Writes use IMMEDIATE (a plain ``SELECT``
     opens no transaction in sqlite3, leaving a read-to-write window for a sibling writer) and apply
     the journal-mode policy; reads run on the hot ``load_jobs()`` path, and WAL mode persists in the
-    file once a writer set it, so they skip that (config-reading) setup."""
+    file once a writer set it, so they skip that (config-reading) setup. A write the store refuses
+    (full disk, read-only, denied) raises OSError, as the jobs.json write it sits beside would."""
     from hermes_cli.sqlite_util import open_db, transaction
 
     owner_before = _owner_snapshot(cron_dir) if write else None
-    conn = open_db(
-        runtime_db_path(cron_dir), db_label="cron/runtime.db", synchronous_full=True, wal=write,
-        wal_lock_retries=3, initialize=_initialize_schema)
     try:
-        with transaction(conn, immediate=write):
-            yield conn
-    finally:
-        if write:
-            _secure(cron_dir, owner_before)
+        conn = open_db(
+            runtime_db_path(cron_dir), db_label="cron/runtime.db", synchronous_full=True, wal=write,
+            wal_lock_retries=3, initialize=_initialize_schema)
+        try:
+            with transaction(conn, immediate=write):
+                yield conn
+        finally:
+            if write:
+                _secure(cron_dir, owner_before)
+    except sqlite3.Error as exc:
+        code = _UNWRITABLE_SQLITE_ERRNOS.get((getattr(exc, "sqlite_errorcode", None) or 0) & 0xFF)
+        if not write or code is None:
+            raise
+        raise OSError(code, f"{runtime_db_path(cron_dir)}: {exc}") from exc
 
 
 def _dumps(value: Any) -> str:

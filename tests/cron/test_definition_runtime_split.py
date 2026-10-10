@@ -783,3 +783,55 @@ def test_root_writer_hands_runtime_db_to_the_store_owner(hermes_env, monkeypatch
     jobs.load_jobs()
 
     assert (cron_dir / "runtime.db", 1000, 1000) in chowned
+
+
+def _runtime_only_save(home):
+    """A save that changes only scheduler state (the per-fire advance), after one normal save."""
+    import cron.jobs as jobs
+
+    record = _combined_record()
+    jobs.save_jobs([record])
+    before = _jobs_file(home).read_bytes()
+    record["last_error"] = "x" * 200_000  # needs new pages in runtime.db
+    return jobs, record, before
+
+
+def test_full_runtime_db_raises_enospc_so_the_store_degrades(hermes_env, monkeypatch):
+    """A full disk fails the runtime.db commit with SQLITE_FULL. The scheduler degrades an unwritable
+    store (cron/store_health.py) only on OSError, so the commit must surface as ENOSPC like the
+    jobs.json write beside it, not as a sqlite3 error that fails the whole tick."""
+    import hermes_cli.sqlite_util as sqlite_util
+    from cron import store_health
+
+    jobs, record, before = _runtime_only_save(hermes_env)
+    real_open_db = sqlite_util.open_db
+
+    def full_disk_open_db(*args, **kwargs):
+        conn = real_open_db(*args, **kwargs)
+        pages = conn.execute("PRAGMA page_count").fetchone()[0]
+        conn.execute(f"PRAGMA max_page_count = {pages}")
+        return conn
+
+    monkeypatch.setattr(sqlite_util, "open_db", full_disk_open_db)
+    with pytest.raises(OSError) as raised:
+        jobs.save_jobs([record])
+    assert raised.value.errno in store_health.UNWRITABLE_ERRNOS
+    assert isinstance(raised.value.__cause__, sqlite3.OperationalError)
+    assert _jobs_file(hermes_env).read_bytes() == before
+
+
+@pytest.mark.platforms("posix")
+def test_read_only_runtime_db_raises_an_unwritable_errno(hermes_env):
+    from cron import store_health
+
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        pytest.skip("root writes through file modes")
+    jobs, record, _ = _runtime_only_save(hermes_env)
+    db = hermes_env / "cron" / "runtime.db"
+    for path in (db, Path(f"{db}-wal"), Path(f"{db}-shm")):
+        if path.exists():
+            path.chmod(0o444)
+    with pytest.raises(OSError) as raised:
+        jobs.save_jobs([record])
+    assert raised.value.errno in store_health.UNWRITABLE_ERRNOS
+    assert isinstance(raised.value.__cause__, sqlite3.Error)

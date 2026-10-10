@@ -25,8 +25,13 @@ def _handle_admitted_request(req: dict) -> dict | None:
     # Test doubles register straight into ``_methods`` without a contract; every production
     # handler comes through ``register_method`` and therefore has one.
     contract = _contracts.METHODS.get(method)
+    # ``_model_runtime_snapshot`` is dispatch-frozen internal state for the model.options pool
+    # worker (``_freeze_model_options_request`` overwrites it before queueing), never client wire
+    # surface: the handler reads it off ``params``, but the contract only sees what a client sends.
+    wire_params = ({k: v for k, v in params.items() if k != _MODEL_OPTIONS_RUNTIME_SNAPSHOT}
+                   if contract is not None else params)
     if contract is not None:
-        params, problem = _contracts.validate_params(contract, params)
+        _, problem = _contracts.validate_params(contract, wire_params)
         if problem is not None:
             return _err(rid, 4000, problem)
     token = _current_rpc_method.set(method)
@@ -37,9 +42,35 @@ def _handle_admitted_request(req: dict) -> dict | None:
     finally:
         _current_rpc_method.reset(token)
     if contract is not None and isinstance(response, dict) and isinstance(response.get("result"), dict):
-        _contracts.check_params_accepted(contract, params)
+        _contracts.check_params_accepted(contract, wire_params)
         _contracts.check_result(contract, response["result"])
     return response
+
+
+def _freeze_model_options_request(req: dict, params: dict) -> dict:
+    """Copy a model.options request with its coherent request-time runtime.
+
+    ``model.options`` runs on the long-handler pool; a model switch queued ahead
+    of it can otherwise mutate the live agent before the worker reads it, so
+    the worker would report the POST-switch runtime for a PRE-switch request.
+    Freeze (model, provider, base_url) under the sessions lock at dispatch time
+    and hand the worker the frozen copy (#65388)."""
+    with _sessions_lock:
+        session = _sessions.get(params.get("session_id", ""))
+        agent = session.get("agent") if session else None
+        if agent is None:
+            runtime_snapshot = None
+        else:
+            runtime_snapshot = {
+                key: getattr(agent, key, "") or ""
+                for key in ("model", "provider", "base_url")
+            }
+
+    worker_params = dict(params)
+    worker_params[_MODEL_OPTIONS_RUNTIME_SNAPSHOT] = runtime_snapshot
+    worker_request = dict(req)
+    worker_request["params"] = worker_params
+    return worker_request
 
 
 def dispatch(req: dict, transport: Optional[Transport] = None) -> dict | None:
@@ -61,6 +92,13 @@ def dispatch(req: dict, transport: Optional[Transport] = None) -> dict | None:
             return normalized
         if normalized[1] not in _LONG_HANDLERS:
             return handle_request(req)
+        # model.options: freeze the request-time runtime so a queued switch
+        # can't tear the identity the worker reports (#65388).
+        worker_request = (
+            _freeze_model_options_request(req, normalized[2])
+            if normalized[1] == "model.options"
+            else req
+        )
         from hermes_cli.backend_retirement import retirement
 
         # Reserve BEFORE enqueueing: a queued handler has accepted work even though no worker runs yet.
@@ -74,7 +112,7 @@ def dispatch(req: dict, transport: Optional[Transport] = None) -> dict | None:
 
             def run():
                 try:
-                    resp = _handle_admitted_request(req)
+                    resp = _handle_admitted_request(worker_request)
                 except Exception as exc:
                     resp = _err(req.get("id"), -32000, f"handler error: {exc}")
                 if resp is not None:

@@ -471,9 +471,9 @@ export async function fetchRegistrySessionRows(
 
   await Promise.all(
     sources.map(async source => {
-      if (source.kind === 'ssh' || source.kind === 'local') {
-        // Each ssh-scoped or forced-local backend serves its own state.db
-        // natively.
+      if (source.kind === 'local') {
+        // Forced-local backends each own a separate state.db, so read every
+        // profile backend independently.
         await Promise.all(
           source.backends.map(async ({ descriptor, profileLabel }) => {
             const params = new URLSearchParams(searchParams)
@@ -490,8 +490,9 @@ export async function fetchRegistrySessionRows(
         return
       }
 
-      // Shared remote/cloud host: one cross-profile read returns every
-      // profile's rows, each tagged with its owning remote profile.
+      // SSH, remote, and cloud hosts share one HERMES_HOME across their
+      // profile descriptors. Read the aggregate once through the first
+      // connected backend and preserve the profile labels returned by it.
       const shared = source.backends[0]
 
       if (!shared) {

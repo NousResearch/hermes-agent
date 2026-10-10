@@ -179,6 +179,11 @@ def _platform_enablement(
     required = entry["required_env"]
     if scoped:
         configured = bool(required) and all(env_on_disk.get(key) for key in required)
+        if platform_id == "whatsapp":
+            # Baileys has no required env credentials: pairing lives in this
+            # profile's session. An empty required_env tuple must not turn a
+            # live named-profile WhatsApp account into "not_configured".
+            configured = (_whatsapp_session_path() / "creds.json").is_file()
         try:
             plat_cfg = (load_config().get("platforms") or {}).get(platform_id)
             plat_cfg = plat_cfg if isinstance(plat_cfg, dict) else {}
@@ -355,11 +360,10 @@ def _normalize_whatsapp_allowed_users(value: Any) -> str:
 
 
 def _whatsapp_phone_from_identifier(value: Any) -> str | None:
+    """Return a phone number only for a phone-addressable WhatsApp JID."""
     raw = str(value or "").strip()
-    if not raw:
-        return None
-    digits = re.sub(r"\D+", "", raw.split("@", 1)[0].split(":", 1)[0])
-    return digits or None
+    match = re.fullmatch(r"([1-9][0-9]{6,14})(?::[0-9]+)?@s\.whatsapp\.net", raw)
+    return match.group(1) if match else None
 
 
 def _first_str(candidate: Any, keys: tuple[str, ...]) -> str | None:
@@ -834,6 +838,33 @@ async def get_messaging_platforms(profile: Optional[str] = None):
                 "env_path": str(get_env_path()),
                 "gateway_start_command": " ".join(["hermes", *_gateway_subcommand(profile, "start")]),
                 "platforms": _platform_payloads(scoped_dir, _messaging_platform_catalog()),
+            }
+
+    return await asyncio.to_thread(_run)
+
+
+@router.get("/api/messaging/whatsapp/identity")
+async def get_whatsapp_identity(profile: Optional[str] = None):
+    """Return the live self-chat account identity, or a fail-closed result."""
+    def _run() -> dict[str, Any]:
+        with _profile_scope(profile) as scoped_dir:
+            session_path = _whatsapp_session_path()
+            payload = _platform_payloads(scoped_dir, [_require_platform("whatsapp")])[0]
+            mode = str(payload.get("whatsapp_setup", {}).get("mode") or "").strip()
+            account_id, account_name, account_phone = _whatsapp_linked_account_from_session(session_path)
+            connected = (
+                payload.get("gateway_running") is True
+                and payload.get("state") == "connected"
+                and mode == "self-chat"
+                and bool(account_phone)
+            )
+            if not connected:
+                account_id = account_name = account_phone = None
+            return {
+                "connected": connected,
+                "account_id": account_id,
+                "account_name": account_name,
+                "account_phone": account_phone,
             }
 
     return await asyncio.to_thread(_run)

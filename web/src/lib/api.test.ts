@@ -112,6 +112,27 @@ describe("api.getModelOptions", () => {
   });
 });
 
+describe("WhatsApp identity management scope", () => {
+  it("follows A→B→A and preserves an explicit target", async () => {
+    const fetchMock = jsonFetchMock();
+    vi.stubGlobal("fetch", fetchMock);
+    for (const profile of ["default", "worker", "default"]) {
+      setManagementProfile(profile);
+      await fetchJSON("/api/messaging/whatsapp/identity");
+      expect(fetchMock.mock.calls.at(-1)?.[0]).toBe(
+        `/api/messaging/whatsapp/identity?profile=${profile}`,
+      );
+      const init = fetchMock.mock.calls.at(-1)?.[1];
+      expect(new Headers(init?.headers).get(SESSION_HEADER)).toBe("stale-token");
+    }
+    setManagementProfile("worker");
+    await fetchJSON("/api/messaging/whatsapp/identity?profile=default");
+    expect(fetchMock.mock.calls.at(-1)?.[0]).toBe(
+      "/api/messaging/whatsapp/identity?profile=default",
+    );
+  });
+});
+
 describe("management profile scope", () => {
   // Every family whose routes write into a named profile's home must carry the
   // scope; an unprofiled request 400s on a host that merely HAS a second profile.

@@ -1,6 +1,6 @@
 name: hermes-guide
 repo: https://github.com/iap/hermes-guide
-sha: 578e1fd11321723e7523fad36c0c8ff9310bfa27
+sha: 4830c4d0a7eb452cbce4b3009614f3e98fb3eb47
 description: >-
   Read-only diagnostics for Hermes configuration: /hermes-doctor in-session and
   hermes guide in a terminal. Seven read-only health checks (config, mcp, skills,

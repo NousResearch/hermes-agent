@@ -1,0 +1,47 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+#
+# First official `npx` pin. Version-locked (x402-reader-mcp@0.1.2) to satisfy
+# tests/hermes_cli/test_mcp_catalog.py. This is a protocol client for x402
+# (quote unarmed; pay opt-in), not a plugins/ SaaS connector. Stripe and n8n
+# already live in optional-mcps/. Transitive npm ranges resolve at `npx -y`
+# time; a git+SHA install is the conservative alternative if review prefers it.
+manifest_version: 1
+
+name: x402-reader
+description: >-
+  Probe or pay an x402 reader to fetch a public URL as markdown.
+source: https://www.npmjs.com/package/x402-reader-mcp
+
+transport:
+  type: stdio
+  command: npx
+  args:
+    - "-y"
+    - "x402-reader-mcp@0.1.2"
+  env:
+    READER_BASE_URL: "https://reader.outbid.sh"
+
+auth:
+  type: none
+
+tools:
+  default_enabled:
+    - scrape
+    - browse
+
+suggest:
+  keywords:
+    - x402
+    - scrape
+    - markdown
+  hosts:
+    - reader.outbid.sh
+
+post_install: |
+  Unarmed scrape/browse return a free 422 miss or a visible 402 quote.
+  Shell exports do not reach this MCP. To pay, set server env on
+  mcp_servers.x402-reader.env (X402_READER_PAYMENTS_ENABLED=1 and
+  SVM_PRIVATE_KEY_FILE or EVM_PRIVATE_KEY_FILE), then start a new session
+  and call the scrape tool — do not run npx as a pay command.
+  Caps refuse above $0.05/call before signing. scrape never auto-opens browse.

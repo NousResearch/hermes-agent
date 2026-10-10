@@ -52,11 +52,13 @@ except ImportError:
         )
         from fastapi.middleware.cors import CORSMiddleware
         from fastapi.responses import JSONResponse
-    except Exception:
-        raise SystemExit(
-            "Web UI requires fastapi and uvicorn.\n"
-            "Run hermes pm repair, then restart Hermes."
-        )
+    except Exception as exc:
+        # `ensure_import` sets a remedy per failure (platform gate, declined, awaiting restart,
+        # failed sync). Surfacing it is the point of setting it; the old fixed text sent every
+        # one of those to `hermes pm repair`, which repairs the recorded environment rather than
+        # installing the `web` extra. Non-InstallError failures keep the previous wording.
+        remedy = getattr(exc, "remedy", "") or "Run hermes pm repair, then restart Hermes."
+        raise SystemExit(f"Web UI requires fastapi and uvicorn.\n{remedy}")
 
 WEB_DIST = Path(os.environ["HERMES_WEB_DIST"]) if "HERMES_WEB_DIST" in os.environ else Path(__file__).parent / "web_dist"
 _log = logging.getLogger(__name__)

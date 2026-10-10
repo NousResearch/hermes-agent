@@ -357,6 +357,25 @@ class LongPreviewAgent:
         }
 
 
+class NativeLongCommandAgent:
+    """Exercise both tool callbacks as the real agent does, with a multiline command."""
+
+    LONG_CMD = "printf '%s\n' '" + "x" * 300 + "'\necho final-command-line"
+
+    def __init__(self, **kwargs):
+        self.tool_start_callback = kwargs.get("tool_start_callback")
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None, **kwargs):
+        args = {"command": self.LONG_CMD}
+        if self.tool_start_callback:
+            self.tool_start_callback("call-terminal", "terminal", args)
+        self.tool_progress_callback("tool.started", "terminal", "short preview", args)
+        time.sleep(0.35)
+        return {"final_response": "done", "messages": [], "api_calls": 1}
+
+
 class UrlPreviewAgent:
     URL = "https://hermes-agent.nousresearch.com/docs/gateway/discord/tool-progress"
 
@@ -770,7 +789,7 @@ def _extract_progress_preview(content: str) -> str | None:
     return None
 
 
-def _run_long_preview_helper(monkeypatch, tmp_path, preview_length=0):
+def _run_long_preview_helper(monkeypatch, tmp_path, preview_length=0, full_tool_commands=False):
     """Shared setup for long-preview truncation tests.
 
     Returns (adapter, result) after running the agent with LongPreviewAgent.
@@ -791,7 +810,12 @@ def _run_long_preview_helper(monkeypatch, tmp_path, preview_length=0):
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
 
     # Write config.yaml so _run_agent picks up tool_preview_length
-    config = {"display": {"tool_preview_length": preview_length}}
+    config = {
+        "display": {
+            "tool_preview_length": preview_length,
+            "full_tool_commands": full_tool_commands,
+        }
+    }
     (tmp_path / "config.yaml").write_text(yaml.safe_dump(config), encoding="utf-8")
 
     adapter = ProgressCaptureAdapter()
@@ -806,6 +830,9 @@ def _run_long_preview_helper(monkeypatch, tmp_path, preview_length=0):
         chat_type="dm",
         thread_id=None,
     )
+
+    if full_tool_commands:
+        assert runner._run_agent_display_settings(source).full_tool_commands is True
 
     result = asyncio.get_event_loop().run_until_complete(
         runner._run_agent(
@@ -833,6 +860,85 @@ def test_all_mode_respects_custom_preview_length(monkeypatch, tmp_path):
     assert len(preview_text) > 40, f"Preview suspiciously short ({len(preview_text)}): {preview_text}"
     # But still capped at 120
     assert len(preview_text) <= 120, f"Preview too long ({len(preview_text)}): {preview_text}"
+
+
+def test_full_tool_commands_keeps_complete_terminal_command(monkeypatch, tmp_path):
+    """The opt-in command setting bypasses the compact preview cap for terminal only."""
+    adapter, result = _run_long_preview_helper(
+        monkeypatch, tmp_path, preview_length=40, full_tool_commands=True,
+    )
+
+    assert result["final_response"] == "done"
+    content = "\n".join(call["content"] for call in adapter.sent)
+    assert LongPreviewAgent.LONG_CMD in content
+    assert "..." not in content
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("grouping", ["accumulate", "separate"])
+async def test_full_tool_commands_splits_one_oversized_progress_line(
+    monkeypatch, tmp_path, grouping
+):
+    """A single full command must be split before it reaches a small platform limit."""
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        LongPreviewAgent,
+        session_id="sess-full-command-overflow",
+        config_data={
+            "display": {
+                "tool_progress": "all",
+                "tool_progress_grouping": grouping,
+                "full_tool_commands": True,
+            }
+        },
+        adapter_cls=SmallLimitProgressAdapter,
+    )
+
+    assert result["final_response"] == "done"
+    assert adapter.oversized_sends == []
+    assert adapter.oversized_edits == []
+    content = "\n".join(
+        [call["content"] for call in adapter.sent]
+        + [call["content"] for call in adapter.edits]
+    )
+    assert "hermes-agent/.worktrees/hermes-d8860339" in content
+    assert "pytest tests/gateway/test_run_progress_topics.py" in content
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("progress_mode", ["all", "off", "log", None])
+async def test_slack_full_tool_commands_uses_text_without_enabling_progress(
+    monkeypatch, tmp_path, progress_mode,
+):
+    """Full commands use the uncapped text rail, without overriding off/log defaults."""
+    settings = {"full_tool_commands": True}
+    if progress_mode is not None:
+        settings["tool_progress"] = progress_mode
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        NativeLongCommandAgent,
+        session_id="sess-native-full-command",
+        config_data={
+            "display": {
+                "platforms": {
+                    "slack": settings
+                }
+            }
+        },
+        platform=Platform.SLACK,
+        chat_id="C1",
+        thread_id="thread-1",
+        adapter_cls=NativeTaskCardAdapter,
+    )
+
+    assert result["final_response"] == "done"
+    assert adapter.native_updates == []
+    content = "\n".join(call["content"] for call in adapter.sent)
+    assert (NativeLongCommandAgent.LONG_CMD in content) is (progress_mode == "all")
+    if progress_mode == "all":
+        assert "echo final-command-line" in content
 
 
 def test_discord_truncated_tool_url_links_to_full_destination(monkeypatch, tmp_path):
@@ -1979,6 +2085,27 @@ async def test_verbose_mode_does_not_truncate_args_by_default(monkeypatch, tmp_p
     all_content = " ".join(call["content"] for call in adapter.sent)
     all_content += " ".join(call["content"] for call in adapter.edits)
     assert VerboseAgent.LONG_CODE in all_content
+
+
+def test_verbose_terminal_opt_out_keeps_all_args_and_repeated_progress():
+    """The full-command opt-out preserves verbose JSON and the no-dedup queue path."""
+    import queue
+
+    from gateway.run_turn_runner import TurnRunner
+    from gateway.turn_context import TurnContext
+
+    ctx = TurnContext(
+        progress_mode="verbose", full_tool_commands=False, progress_queue=queue.Queue(),
+    )
+    runner = TurnRunner(SimpleNamespace(_delivery_adapter_for=lambda source: None), ctx)
+    args = {"command": "printf same", "cwd": "/workspace/project", "timeout": 17}
+    for _ in range(2):
+        assert runner._progress_build_message("terminal", "short preview", args) is None
+    assert ctx.progress_queue.qsize() == 2
+    first, second = ctx.progress_queue.get_nowait(), ctx.progress_queue.get_nowait()
+    assert first == second
+    assert '"cwd": "/workspace/project"' in first
+    assert '"timeout": 17' in first
 
 
 class CodeBlockProgressAdapter(ProgressCaptureAdapter):

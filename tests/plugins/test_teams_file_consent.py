@@ -13,6 +13,8 @@ The adapter is imported plain (the venv has the SDK); the instance is built
 with object.__new__ so no App/auth is constructed, sends are captured by
 stubbing _send_via_conv_ref / send, and the consent directory is a tmp_path.
 The upload goes through an httpx.MockTransport -- nothing leaves the process.
+A filesystem fault in the cleanup -- the consent-directory lookup or one of the
+three unlinks -- is swallowed, because the fileConsent invoke has to answer 200.
 
     ./venv/bin/python -m pytest tests/plugins/test_teams_file_consent.py -q
 """
@@ -20,6 +22,7 @@ The upload goes through an httpx.MockTransport -- nothing leaves the process.
 from __future__ import annotations
 
 import asyncio
+import errno
 import json
 import logging
 from types import SimpleNamespace
@@ -285,6 +288,65 @@ class TestConsentInvoke:
         assert "Could not deliver report.pdf" in text and "HTTP 403" in text
         assert "quota" not in text and "sharepoint.com" not in text
         assert not list(tmp_path.glob(f"{token}*"))
+
+
+class TestCleanupFaults:
+    """A filesystem fault while cleaning up a consent offer must not escape. The
+    fileConsent invoke has to answer HTTP 200, and the background delivery task
+    must not die inside its ``finally`` with the delivery failure still unreported.
+    """
+
+    def test_drop_file_consent_tolerates_a_failing_unlink(self, tmp_path) -> None:
+        inst = _adapter(tmp_path, conv_type="personal")
+        token = "tok-unlink"
+        (tmp_path / f"{token}.bin").mkdir()  # unlink() -> IsADirectoryError, not FileNotFoundError
+        (tmp_path / f"{token}.json").write_text("{}", encoding="utf-8")
+        (tmp_path / f"{token}.claimed").write_text("{}", encoding="utf-8")
+        assert inst._drop_file_consent(token) is None
+        assert (tmp_path / f"{token}.bin").is_dir()  # the faulting entry stays
+        assert not list(tmp_path.glob(f"{token}.json"))  # and the loop keeps going
+        assert not list(tmp_path.glob(f"{token}.claimed"))
+
+    def test_drop_file_consent_tolerates_a_failing_directory_lookup(self, tmp_path, monkeypatch) -> None:
+        inst = _adapter(tmp_path, conv_type="personal")
+
+        def _boom():
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+        monkeypatch.setattr(inst, "_file_consent_dir", _boom)
+        assert inst._drop_file_consent("tok-enospc") is None
+
+    def test_decline_answers_even_when_the_cleanup_faults(self, tmp_path, monkeypatch) -> None:
+        """End to end on the decline branch: the cleanup fault is swallowed, so the
+        invoke returns 200 and the member still gets the decline note."""
+        inst = _adapter(tmp_path, conv_type="personal")
+        _, token = _offer(inst, tmp_path)
+        real = inst._file_consent_dir
+        calls = []
+
+        def _flaky():
+            calls.append(1)
+            if len(calls) > 1:  # the claim succeeds, the cleanup hits the fault
+                raise OSError(errno.ENOSPC, "No space left on device")
+            return real()
+
+        monkeypatch.setattr(inst, "_file_consent_dir", _flaky)
+        assert _run(_answer(inst, _invoke(token, action="decline"))) is None
+        assert len(calls) == 2
+        assert "declined" in inst.sent_texts[-1][1]
+
+    def test_invoke_answers_even_when_the_consent_directory_is_unusable(self, tmp_path, monkeypatch) -> None:
+        """The claim itself is outside the caller's protection: an unusable consent
+        directory must log and drop the click, never escape the invoke."""
+        inst = _adapter(tmp_path, conv_type="personal")
+        _, token = _offer(inst, tmp_path)
+
+        def _boom():
+            raise OSError(errno.EACCES, "Permission denied")
+
+        monkeypatch.setattr(inst, "_file_consent_dir", _boom)
+        assert _run(_answer(inst, _invoke(token))) is None
+        assert (tmp_path / f"{token}.json").exists()  # the offer is untouched, only unclaimable
 
 
 class TestRejectionDiagnostics:

@@ -847,10 +847,11 @@ class TeamsAdapter(BasePlatformAdapter):
         return directory
 
     def _drop_file_consent(self, token: str) -> None:
-        directory = self._file_consent_dir()
-        for suffix in (".bin", ".json", ".claimed"):
-            with suppress(FileNotFoundError):
-                (directory / f"{token}{suffix}").unlink()
+        with suppress(OSError):
+            directory = self._file_consent_dir()
+            for suffix in (".bin", ".json", ".claimed"):
+                with suppress(OSError):
+                    (directory / f"{token}{suffix}").unlink()
 
     def _prune_file_consents(self) -> None:
         """Drop offers nobody answered within the TTL (their snapshots would otherwise pile up)."""
@@ -923,9 +924,9 @@ class TeamsAdapter(BasePlatformAdapter):
         conv_id = getattr(activity.conversation, "id", None) or ""
         if conv_id:
             self._conv_refs[conv_id] = ctx.conversation_ref
-        directory = self._file_consent_dir()
-        claimed = directory / f"{token}.claimed"
         try:
+            directory = self._file_consent_dir()
+            claimed = directory / f"{token}.claimed"
             # Atomic claim: a double click or a Teams retry must not upload twice.
             os.rename(directory / f"{token}.json", claimed)
         except FileNotFoundError:
@@ -933,6 +934,9 @@ class TeamsAdapter(BasePlatformAdapter):
             if conv_id:
                 with suppress(Exception):
                     await self.send(conv_id, "That file offer has expired or was already answered.")
+            return None
+        except OSError as e:
+            logger.error("[teams] file consent %s: consent directory unusable: %s", token[:8], e)
             return None
         action = str(getattr(value.action, "value", value.action) or "")
         if action != "accept":

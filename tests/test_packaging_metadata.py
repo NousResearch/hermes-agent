@@ -51,3 +51,42 @@ def test_starlette_server_pins_and_lock_exclude_cve_2026_48710():
     assert len(pins) == 1 and pins[0].operator == "==" and Version(pins[0].version) >= floor
     versions = [Version(row["version"]) for row in lock["package"] if row["name"] == "starlette"]
     assert versions and all(version >= floor for version in versions)
+
+
+# Reviewed fixed boundaries (independent of today's exact pins). A lock
+# regeneration or pin edit that slides any of these back below its floor
+# reintroduces a published advisory.
+_LOCK_SECURITY_FLOORS = {
+    "pyjwt": "2.15.0",      # PYSEC-2026-4140..4152 (2.14.0), CVE-2026-101918 (2.15.0)
+    "httpx2": "2.12.0",     # PYSEC-2026-3845..3849 (GHSA-7mj9-2mp8-4m2p family)
+    "httpcore2": "2.10.0",  # PYSEC-2026-3844
+    "urllib3": "2.8.0",     # PYSEC-2026-4175/4176/4177
+    "tornado": "6.5.9",     # GHSA-chx6-46f5-w4vp, GHSA-c2m8-h5v5-343r, GHSA-3hv7-mjh2-fv65
+}
+
+
+def test_lock_excludes_published_advisories_for_http_and_jwt_stack():
+    lock = tomllib.loads((REPO_ROOT / "uv.lock").read_text(encoding="utf-8"))
+    for name, floor in _LOCK_SECURITY_FLOORS.items():
+        versions = [Version(row["version"]) for row in lock["package"] if row["name"] == name]
+        assert versions, name
+        assert all(version >= Version(floor) for version in versions), (name, versions)
+
+
+def test_manifest_pins_respect_http_and_jwt_security_floors():
+    metadata = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    groups = dict(metadata["project"]["optional-dependencies"])
+    groups["<core>"] = metadata["project"]["dependencies"]
+    groups["<dev>"] = metadata["dependency-groups"]["dev"]
+    seen = set()
+    for group, specs in groups.items():
+        for requirement in map(Requirement, (s for s in specs if isinstance(s, str))):
+            floor = _LOCK_SECURITY_FLOORS.get(requirement.name.lower())
+            if floor is None:
+                continue
+            seen.add(requirement.name.lower())
+            # Every allowed version must be at or above the fixed boundary.
+            lower = [s for s in requirement.specifier if s.operator in ("==", ">=")]
+            assert lower, (group, str(requirement))
+            assert all(Version(s.version) >= Version(floor) for s in lower), (group, str(requirement))
+    assert {"pyjwt", "httpx2", "urllib3"} <= seen

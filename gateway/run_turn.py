@@ -2335,18 +2335,87 @@ class GatewayTurnMixin:
         from gateway.run import _profile_runtime_scope
         return _profile_runtime_scope(self._resolve_profile_home_for_source(source), {})
 
+    def _session_route_for_source(self, source: SessionSource):
+        """``(model, route)`` for this lane's ``channel_overrides`` entry, or ``(None, None)``.
+
+        Mirrors the channel-override branch of the turn's own resolution
+        (``_resolve_session_agent_runtime``: chat id -> thread id -> parent id, then the
+        override's own provider endpoint). Displays (``/new`` banner, ``/footer`` preview)
+        use this so they report the route the turn actually runs. Never raises: a broken
+        override degrades to the global default so ``/new`` still renders."""
+        try:
+            cfg = getattr(self, "config", None)
+            if cfg is None or source is None:
+                return None, None
+            platform = getattr(source, "platform", None)
+            if platform is None:
+                return None, None
+            chat_id = str(getattr(source, "chat_id", "") or "")
+            if not chat_id:
+                return None, None
+            from gateway.run import _get_channel_override
+            thread_id = getattr(source, "thread_id", None)
+            parent_id = getattr(source, "parent_chat_id", None)
+            ch = _get_channel_override(
+                cfg, platform, chat_id,
+                thread_id=str(thread_id) if thread_id else None,
+                parent_id=str(parent_id) if parent_id else None,
+            )
+            if ch is None:
+                return None, None
+            model = (ch.model or "").strip() or None
+            route = None
+            if getattr(ch, "provider", None):
+                try:
+                    from gateway.run import _resolve_runtime_agent_kwargs_for_provider
+                    rt = _resolve_runtime_agent_kwargs_for_provider(
+                        ch.provider, target_model=model or None)
+                except Exception:
+                    logger.debug("Channel-override provider unavailable for display", exc_info=True)
+                    # Fall back model and route together: keeping the override
+                    # model with route=None would pair it with the global
+                    # provider in _resolve_gateway_model_context(), an unusable
+                    # route the turn itself cannot run.
+                    return None, None
+                if rt:
+                    bundled = rt.get("model")
+                    if bundled and not model:
+                        model = bundled
+                    route = {k: rt.get(k) for k in ("provider", "base_url", "api_key") if rt.get(k)}
+                    if not route:
+                        route = None
+                if route is None:
+                    # Provider pinned but no usable endpoint: same fallback.
+                    return None, None
+            if model is None and route is None:
+                return None, None
+            return model, route
+        except Exception:
+            logger.debug("Channel-override display route lookup failed", exc_info=True)
+            return None, None
+
     def _reset_notice_session_info(self, source: SessionSource) -> str:
         """Session-info block for the auto-reset notice, resolved inside the profile serving ``source``.
 
         Call via ``asyncio.to_thread``: resolution can block (credential refresh, context-length
         probes), and the scope is entered here so contextvars behave in the worker thread."""
         with self._profile_scope_for_source(source):
-            return self._format_session_info()
+            try:
+                return self._format_session_info(source)
+            except TypeError:
+                # Test doubles patching _format_session_info with a zero-arg lambda.
+                return self._format_session_info()
 
-    def _format_session_info(self) -> str:
+    def _format_session_info(self, source: SessionSource | None = None) -> str:
         """Model / provider / context-length / endpoint block so users can spot bad context detection."""
         from gateway.run import _resolve_gateway_model_context
-        resolved = _resolve_gateway_model_context()
+        model = route = None
+        if source is not None:
+            try:
+                model, route = self._session_route_for_source(source)
+            except Exception:
+                model, route = None, None
+        resolved = _resolve_gateway_model_context(model=model, route=route)
         context_length = resolved.context_length
         ctx_source = {
             "config": "config",

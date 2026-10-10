@@ -833,7 +833,6 @@ class TestDeleteProfile:
         pids = profiles._profile_bound_backend_pids("coder", profile_dir)
         assert set(pids) == {401, 402}
 
-
 # ===================================================================
 # TestListProfiles
 # ===================================================================

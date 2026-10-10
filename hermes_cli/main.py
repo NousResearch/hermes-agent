@@ -2943,7 +2943,7 @@ def _prepare_agent_startup(args) -> None:
     if not _is_tui_chat_launch(args):
         # The TUI backend does its own discovery; the launcher only spawns Node.
         try:
-            from hermes_cli.plugins import start_background_plugin_discovery
+            from hermes_cli.plugins_discovery import start_background_plugin_discovery
 
             # Daemon thread: ~150ms of manifest scanning overlaps the rest of
             # startup. Every synchronous reader goes through discover_plugins(),

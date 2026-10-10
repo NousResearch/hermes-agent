@@ -25,7 +25,7 @@ def _install_discover_spy(monkeypatch):
 
     monkeypatch.setitem(
         sys.modules,
-        "hermes_cli.plugins",
+        "hermes_cli.plugins_discovery",
         types.SimpleNamespace(
             discover_plugins=_discover,
             # main.py now kicks discovery off in a background thread; both

@@ -60,6 +60,62 @@ def plugin_discovery_suppressed() -> bool:
     return _discovery_suppressed.get()
 
 
+def start_background_plugin_discovery() -> None:
+    """Run discovery alongside CLI startup; synchronous readers join this worker."""
+    from hermes_cli import plugins
+    from agent.memory_provider import spawn_context_thread
+
+    manager = plugins.get_plugin_manager()
+    if manager._discovered:
+        return
+    with plugins._background_discovery_lock:
+        thread = plugins._background_discovery_thread
+        if thread is not None and thread.is_alive():
+            return
+
+        def _run() -> None:
+            try:
+                with manager._discovery_lock:
+                    if manager._retired:
+                        return
+                    manager.discover_and_load()
+                    if manager._retired:
+                        return
+                    plugins._persist_plugin_toolset_keys(
+                        manager=manager, home=manager.home_path
+                    )
+            except Exception:  # health: allow BLE001 -- discovery runs plugin code and startup must fail open
+                logger.warning("background plugin discovery failed", exc_info=True)
+
+        plugins._background_discovery_thread = spawn_context_thread(
+            _run, name="plugin-discovery"
+        )
+        plugins._background_discovery_thread.start()
+
+
+def join_background_discovery(timeout: float = 30.0) -> None:
+    """Join background discovery unless called from that worker or its plugin-load worker."""
+    import threading
+    from hermes_cli import plugins
+    from hermes_cli.plugins_loader import in_plugin_load_worker
+
+    thread = plugins._background_discovery_thread
+    if thread is None or not thread.is_alive() or thread is threading.current_thread() or in_plugin_load_worker():
+        return
+    thread.join(timeout=timeout)
+
+
+def _delivery_manager():
+    """Resolve the active manager and lazily discover plugins before hook delivery."""
+    from hermes_cli import plugins
+
+    manager = plugins.get_plugin_manager()
+    if not getattr(manager, "_discovered", True):
+        join_background_discovery()
+        manager.discover_and_load()
+    return manager
+
+
 def _select_entry_point_group(entry_points: Any, group: str) -> list:
     """Return one metadata entry-point group across supported Python APIs."""
     if hasattr(entry_points, "select"):

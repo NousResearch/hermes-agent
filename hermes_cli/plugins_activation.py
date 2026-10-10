@@ -143,8 +143,9 @@ def load_and_go_live(name: str) -> Optional[dict[str, Any]]:
 def _go_live(name: str) -> Optional[dict[str, Any]]:
     from hermes_cli.plugins_activation_live import connect_plugin_mcp, live_notice, plugin_skills
     try:
-        from hermes_cli.plugins import _join_background_discovery, get_plugin_manager
-        _join_background_discovery()
+        from hermes_cli.plugins import get_plugin_manager
+        from hermes_cli.plugins_discovery import join_background_discovery
+        join_background_discovery()
         manager = get_plugin_manager()
         # Other forced passes (a reload-plugins verb, the dashboard) do not take the go-live lock, so the
         # reads share the discovery lock with the pass that produced them.

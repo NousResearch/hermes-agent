@@ -94,12 +94,23 @@ class Opaque:
         return f"<opaque {self.type_name}>"
 
 
+def _opaque_wire_value(value: Any) -> Opaque:
+    name = type.__getattribute__(type(value), "__name__")
+    return Opaque(str.__str__(name)[:128])
+
+
 def encode(value: Any, refs: Optional[Callable[[Any], Optional[dict]]] = None, _depth: int = 0) -> Any:
     """JSON-safe form of ``value``; ``refs`` may turn callables/objects into reference dicts."""
     if value is None or isinstance(value, (bool, int, float, str)):
         return value
     if _depth > 64:
         return {"__opaque__": type(value).__name__, "repr": "<too deep>"}
+    if type(value).__module__ == "agent.memory_provider" or isinstance(value, tuple):
+        from hermes_cli.plugin_host_wire_memory import encode_memory_value
+
+        memory_value = encode_memory_value(value, refs, _depth)
+        if memory_value is not None:
+            return memory_value
     if isinstance(value, enum.Enum):
         return encode(value.value, refs, _depth + 1)
     if isinstance(value, PurePath):
@@ -139,7 +150,37 @@ def decode(value: Any, resolve: Optional[Callable[[dict], Any]] = None) -> Any:
     if not isinstance(value, dict):
         return value
     if "__record__" in value:
-        return Record(decode(value.get("fields") or {}, resolve))
+        record_name = value["__record__"]
+        fields = decode(value.get("fields") or {}, resolve)
+        if record_name == "MemoryObservation":
+            from agent.memory_provider import (
+                MemoryObservation,
+                _freeze_memory_observation_payload,
+            )
+
+            payload = fields.get("payload")
+            if not isinstance(payload, Opaque):
+                try:
+                    payload, _ = _freeze_memory_observation_payload(payload)
+                except (TypeError, ValueError, OverflowError):
+                    payload = _opaque_wire_value(payload)
+            return MemoryObservation(
+                source_kind=fields.get("source_kind"),
+                schema=fields.get("schema"),
+                version=fields.get("version"),
+                payload=payload,
+                provider=fields.get("provider", ""),
+            )
+        if record_name == "MemoryPrefetchResult":
+            from agent.memory_provider import MemoryPrefetchResult
+
+            return MemoryPrefetchResult(
+                context=fields.get("context", ""),
+                observations=fields.get("observations", ()),
+            )
+        if record_name == "MemoryObservationTuple":
+            return tuple(fields.get("items", ()))
+        return Record(fields)
     if "__bytes__" in value:
         return base64.b64decode(value["__bytes__"])
     if "__opaque__" in value:

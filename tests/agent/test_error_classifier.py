@@ -10,6 +10,7 @@ from agent.error_classifier import (
     PROVIDER_STREAM_NON_JSON_ERROR_CODE,
     classify_api_error,
     is_reasoning_field_rejection,
+    is_reasoning_required_rejection,
     _extract_status_code,
     _extract_error_body,
     _extract_error_code,
@@ -936,6 +937,30 @@ class TestClassifyApiError:
         assert result.retryable is True
         assert result.should_fallback is False
         assert result.should_compress is False
+
+    def test_zai_chinese_reasoning_mandatory_400_takes_the_floor_rung(self):
+        """Z.ai's China endpoint answers a thinking-off aux call with a Chinese-only 400 (code 1214,
+        "该模型始终思考，不支持关闭思考；请使用 low、high 或 max" — "this model always thinks, turning
+        thinking off is not supported; use low, high or max", #129173). The English-only markers never
+        matched, so the reasoning-floor rung never fired and every session-start title call 400'd.
+        Two gaps in one fix: the field token learns 思考 (CJK characters are word chars, so the
+        token sits glued to the preceding character and the lookbehind must not apply to it), and
+        the markers learn the Chinese wording. It must take the FLOOR rung (step up to low) — the
+        endpoint's own message names the efforts it accepts — not the strip rung. Unrelated Chinese
+        400s and a bare 思考 without mandatory wording stay unmatched."""
+        msg = ("Error code: 400 - {'error': {'code': '1214', 'message': '该模型始终思考，"
+               "不支持关闭思考；请使用 low、high 或 max'}}")
+        assert is_reasoning_required_rejection(msg)
+        assert not is_reasoning_field_rejection(msg), "floor retry, not a strip retry"
+        result = classify_api_error(MockAPIError(msg, status_code=400), provider="zai", model="glm-5.3-flash")
+        assert result.reason == FailoverReason.reasoning_mandatory
+        assert result.retryable is True and result.should_fallback is False and result.should_compress is False
+        assert not is_reasoning_required_rejection(
+            "Error code: 400 - {'error': {'message': '该模型不存在'}}")
+        assert not is_reasoning_field_rejection(
+            "Error code: 400 - {'error': {'message': '该模型不存在'}}")
+        assert not is_reasoning_required_rejection(
+            "Error code: 400 - {'message': '模型正在思考中，请稍候重试'}")
 
     def test_reasoning_field_rejection_is_reasoning_mandatory(self):
         """A 400 rejecting a reasoning wire control by name — reversed ("reasoning_effort 'none'

@@ -9,6 +9,8 @@ import {
   HOUR,
   MINUTE,
   nominalDayStart,
+  relativeDayCount,
+  relativeTime,
   SECOND,
   sessionBucketLabel
 } from './time'
@@ -147,5 +149,37 @@ describe('sessionBucketLabel', () => {
     }
 
     expect(sessionBucketLabel(monthYearBucket, labels)).toBe(fmtMonthYear.format(monthYearBucket.at))
+  })
+})
+
+describe('relativeDayCount', () => {
+  // Build local-time instants so the assertions are timezone-independent:
+  // both relativeDayCount and its Date(...).setHours use local time.
+  const at = (year: number, month: number, day: number, hour = 0) =>
+    new Date(year, month, day, hour).getTime()
+
+  it('counts calendar-date changes, not 24h buckets', () => {
+    expect(relativeDayCount(at(2026, 7, 2, 10), at(2026, 7, 3, 10))).toBe(1)
+    expect(relativeDayCount(at(2026, 7, 2, 10), at(2026, 7, 4, 2))).toBe(2)
+    expect(relativeDayCount(at(2026, 7, 2, 10), at(2026, 7, 1, 23))).toBe(-1)
+    expect(relativeDayCount(at(2026, 7, 2, 10), at(2026, 7, 2, 23))).toBe(0)
+  })
+
+  it('#76725: an evening "now" to an early target two dates out is 2, not 1', () => {
+    // Aug 2 20:00 -> Aug 4 02:00 is ~30h (rounds to 1 by 24h buckets) but two
+    // calendar dates away — the */3 schedule case from the issue.
+    expect(relativeDayCount(at(2026, 7, 2, 20), at(2026, 7, 4, 2))).toBe(2)
+  })
+})
+
+describe('relativeTime day-word (#76725)', () => {
+  const at = (year: number, month: number, day: number, hour = 0) =>
+    new Date(year, month, day, hour).getTime()
+
+  it('does not label a two-calendar-day-out run the same as a genuine next-day run', () => {
+    const nextDay = relativeTime(at(2026, 7, 3, 10), at(2026, 7, 2, 10)) // real "tomorrow"
+    const twoDaysOut = relativeTime(at(2026, 7, 4, 2), at(2026, 7, 2, 20)) // #76725 repro
+    // Before the fix both rounded to 1 day and read identically ("tomorrow").
+    expect(twoDaysOut).not.toBe(nextDay)
   })
 })

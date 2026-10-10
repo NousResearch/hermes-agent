@@ -6,7 +6,14 @@ import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { confirm } from '@/store/confirm'
 import { notifyError } from '@/store/notifications'
-import { $updateChecking, $updateStatus, checkUpdates, setUpdateChannel, type SourceUpdateChannel, sourceUpdateChannel } from '@/store/updates'
+import {
+  $updateChecking,
+  $updateStatus,
+  checkUpdates,
+  setUpdateChannel,
+  type SourceUpdateChannel,
+  sourceUpdateChannel
+} from '@/store/updates'
 
 import { ListRow } from './primitives'
 

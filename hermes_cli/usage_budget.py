@@ -10,26 +10,18 @@ import calendar
 import sqlite3
 from datetime import datetime, timedelta
 
-# "Tokens used" is CanonicalUsage.total_tokens(): input excludes cache reads/writes, so nothing doubles.
-_MAIN_SQL = """
+# Read from usage_hourly: every per-call delta (main loop and auxiliary tasks) in the hour it was spent,
+# under the provider that served it. A session started last month counts its calls from this month, and
+# a mid-session /model switch splits by provider. "Tokens used" is CanonicalUsage.total_tokens(): input
+# excludes cache reads/writes, so nothing doubles.
+_MONTH_SQL = """
     SELECT COALESCE(NULLIF(billing_provider, ''), 'unknown') AS provider,
-           SUM(COALESCE(input_tokens, 0) + COALESCE(cache_read_tokens, 0)
-               + COALESCE(cache_write_tokens, 0) + COALESCE(output_tokens, 0)) AS tokens,
+           SUM(input_tokens + cache_read_tokens + cache_write_tokens + output_tokens) AS tokens,
            COALESCE(SUM(estimated_cost_usd), 0) AS estimated_cost,
            COALESCE(SUM(actual_cost_usd), 0) AS actual_cost,
-           COUNT(*) AS sessions,
-           SUM(CASE WHEN (cost_status IS NULL OR cost_status = 'unknown')
-                         AND COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0) > 0
-                    THEN 1 ELSE 0 END) AS unpriced_sessions
-    FROM sessions WHERE started_at >= ? GROUP BY 1
-"""
-# Auxiliary calls (compression, vision, ...) never touch the sessions counters: add-only, no double count.
-_AUX_SQL = """
-    SELECT COALESCE(NULLIF(u.billing_provider, ''), 'unknown') AS provider,
-           SUM(u.input_tokens + u.cache_read_tokens + u.cache_write_tokens + u.output_tokens) AS tokens,
-           COALESCE(SUM(u.estimated_cost_usd), 0) AS estimated_cost
-    FROM session_model_usage u JOIN sessions s ON s.id = u.session_id
-    WHERE s.started_at >= ? AND u.task != '' GROUP BY 1
+           COUNT(DISTINCT session_id) AS sessions,
+           COUNT(DISTINCT CASE WHEN unpriced_calls > 0 THEN session_id END) AS unpriced_sessions
+    FROM usage_hourly WHERE hour >= ? GROUP BY 1
 """
 
 
@@ -46,45 +38,54 @@ def month_window(now: datetime) -> tuple[datetime, int, float]:
 
 
 def month_usage_rows(conn: sqlite3.Connection, start_ts: float) -> list[dict]:
-    """Per billing provider since *start_ts*: tokens, estimated/actual cost, sessions, unpriced sessions."""
-    rows = {r["provider"]: dict(r) for r in conn.execute(_MAIN_SQL, (start_ts,))}
+    """Per billing provider, usage spent since *start_ts*: tokens, estimated/actual cost, sessions, and
+    sessions with at least one call of unknown price."""
     try:
-        aux = conn.execute(_AUX_SQL, (start_ts,)).fetchall()
-    except sqlite3.OperationalError:  # a store older than session_model_usage.task
-        aux = []
-    for r in aux:
-        row = rows.setdefault(r["provider"], _empty_row(r["provider"]))
-        row["tokens"] += r["tokens"] or 0
-        row["estimated_cost"] += r["estimated_cost"] or 0
-    return list(rows.values())
+        return [dict(r) for r in conn.execute(_MONTH_SQL, (start_ts,))]
+    except sqlite3.OperationalError:  # a store no writer has opened since usage_hourly arrived (schema v32)
+        return []
 
 
-def _evaluate(kind: str, limit: float, row: dict, start: datetime, days: int, elapsed: float) -> dict:
+def ledger_started_at(conn: sqlite3.Connection) -> float | None:
+    """Start of the earliest hour usage_hourly holds: nothing before it was recorded by time."""
+    try:
+        return conn.execute("SELECT MIN(hour) FROM usage_hourly").fetchone()[0]
+    except sqlite3.OperationalError:
+        return None
+
+
+def _evaluate(kind: str, limit: float, row: dict, counted_from: datetime, span: float, counted: float) -> dict:
+    """*span*: days from *counted_from* to month end; *counted*: how many of them have passed."""
     used = row["tokens"] if kind == "tokens" else row["estimated_cost"]
-    rate = used / max(elapsed, 1 / 24)  # never extrapolate from the first minutes of a month
-    runs_out = start + timedelta(days=limit / rate) if rate and rate * days > limit else None
+    rate = used / max(counted, 1 / 24)  # never extrapolate from the first minutes of a month
+    runs_out = counted_from + timedelta(days=limit / rate) if rate and rate * span > limit else None
     return {"kind": kind, "limit": limit, "used": used, "used_ratio": used / limit,
-            "projected_ratio": rate * days / limit,
+            "projected_ratio": rate * span / limit,
             "runs_out_on": runs_out.date().isoformat() if runs_out else None}
 
 
-def summarize_month(rows: list[dict], budgets: dict[str, tuple[str, float]], now: datetime) -> dict:
+def summarize_month(rows: list[dict], budgets: dict[str, tuple[str, float]], now: datetime, *,
+                    ledger_start: datetime | None = None) -> dict:
     """Month-to-date rows with each budgeted provider's used/projected share and overrun date.
 
     A budgeted provider with no usage yet still appears. Budgeted providers sort first, nearest their
-    limit first; then the rest by tokens."""
+    limit first; then the rest by tokens. When the usage ledger began after this month did
+    (*ledger_start*: the upgrade that added it), the days before were never recorded by time: the pace
+    covers the counted part only and counted_since says where it starts."""
     start, days, elapsed = month_window(now)
+    counted_from = ledger_start if ledger_start and ledger_start > start else start
+    offset = (counted_from - start).total_seconds() / 86400
     by_provider = {r["provider"]: dict(r) for r in rows}
     for provider in budgets.keys() - by_provider.keys():
         by_provider[provider] = _empty_row(provider)
     providers = []
     for row in by_provider.values():
         spec = budgets.get(row["provider"])
-        row["budget"] = _evaluate(*spec, row, start, days, elapsed) if spec else None
+        row["budget"] = _evaluate(*spec, row, counted_from, days - offset, elapsed - offset) if spec else None
         providers.append(row)
     providers.sort(key=lambda r: (r["budget"] is None, -(r["budget"] or {}).get("used_ratio", 0), -r["tokens"]))
     return {"month": start.strftime("%Y-%m"), "days_in_month": days, "days_elapsed": round(elapsed, 2),
-            "providers": providers}
+            "counted_since": counted_from.isoformat() if counted_from > start else None, "providers": providers}
 
 
 def read_budgets(config: dict) -> dict[str, tuple[str, float]]:

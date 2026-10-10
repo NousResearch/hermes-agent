@@ -21,6 +21,7 @@ export const zhCommandCenter = {
   balanceLeft: (amounts: string, age: string) => `余额 ${amounts} · ${age}`,
   balanceUnknown: '余额未知',
   balanceUnavailable: '无余额接口',
+  countingSince: (date: string) => `自${date}起统计`,
   close: '关闭命令中心',
   paletteTitle: '命令面板',
   back: '返回',

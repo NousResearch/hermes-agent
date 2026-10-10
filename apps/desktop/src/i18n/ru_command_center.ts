@@ -23,6 +23,7 @@ export const ruCommandCenter = {
   balanceLeft: (amounts: string, age: string) => `Баланс ${amounts} · ${age}`,
   balanceUnknown: 'Баланс неизвестен',
   balanceUnavailable: 'Нет API баланса',
+  countingSince: (date: string) => `Учёт с ${date}`,
   close: 'Закрыть командный центр',
   paletteTitle: 'Палитра команд',
   back: 'Назад',

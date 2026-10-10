@@ -22,6 +22,7 @@ export const enCommandCenter: Translations['commandCenter'] = {
   balanceLeft: (amounts: string, age: string) => `Balance ${amounts} · ${age}`,
   balanceUnknown: 'Balance unknown',
   balanceUnavailable: 'No balance API',
+  countingSince: (date: string) => `Counting since ${date}`,
   close: 'Close command center',
   paletteTitle: 'Command palette',
   back: 'Back',

@@ -21,6 +21,7 @@ export const jaCommandCenter = {
   balanceLeft: (amounts: string, age: string) => `残高 ${amounts} · ${age}`,
   balanceUnknown: '残高不明',
   balanceUnavailable: '残高APIなし',
+  countingSince: (date: string) => `${date}から集計`,
   close: 'コマンドセンターを閉じる',
   paletteTitle: 'コマンドパレット',
   back: '戻る',

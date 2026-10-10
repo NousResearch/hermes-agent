@@ -15,7 +15,7 @@ import { relativeTime } from '@/lib/time'
 import { $usageMonth } from '@/store/usage-month'
 import type { UsageMonthProvider } from '@/types/hermes'
 
-import { formatRunsOut, UsageMonthSection } from './usage-month'
+import { formatRunsOut, shortDate, UsageMonthSection } from './usage-month'
 
 const xiaomi: UsageMonthProvider = {
   actual_cost: 0,
@@ -124,6 +124,13 @@ describe('UsageMonthSection', () => {
     await screen.findByText(cc.balanceUnknown)
     expect(screen.getAllByText(cc.balanceUnavailable)).toHaveLength(1)
     expect(screen.queryByText(/\$0/)).toBeNull()
+  })
+
+  it('says from when the month is counted when the ledger started mid-month', async () => {
+    getUsageMonth.mockResolvedValue({ ...month([xiaomi]), counted_since: '2026-10-05T14:00:00+00:00' })
+    render(<UsageMonthSection />)
+
+    await screen.findByText(cc.countingSince(shortDate(new Date('2026-10-05T14:00:00+00:00'))))
   })
 
   it('says what it is loading and for how long', () => {

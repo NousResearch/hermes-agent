@@ -22,6 +22,7 @@ export const deCommandCenter = {
   balanceLeft: (amounts: string, age: string) => `Guthaben ${amounts} · ${age}`,
   balanceUnknown: 'Guthaben unbekannt',
   balanceUnavailable: 'Keine Guthaben-API',
+  countingSince: (date: string) => `Gezählt seit ${date}`,
   close: 'Command Center schließen',
   paletteTitle: 'Befehlspalette',
   back: 'Zurück',

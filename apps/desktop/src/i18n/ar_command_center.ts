@@ -22,6 +22,7 @@ export const arCommandCenter = {
     balanceLeft: (amounts: string, age: string) => `الرصيد ${amounts} · ${age}`,
     balanceUnknown: 'الرصيد غير معروف',
     balanceUnavailable: 'لا توجد واجهة للرصيد',
+    countingSince: (date: string) => `يُحسب منذ ${date}`,
     close: 'إغلاق',
     paletteTitle: 'لوحة الأوامر',
     back: 'رجوع',

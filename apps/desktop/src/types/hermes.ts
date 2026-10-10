@@ -1027,6 +1027,9 @@ export interface UsageMonthResponse {
   month: string
   days_in_month: number
   days_elapsed: number
+  /** ISO time the usage ledger started, when that is inside this month: earlier days were not recorded
+   *  by time, so the pace covers the counted part. Absent or null: the whole month is counted. */
+  counted_since?: null | string
   providers: UsageMonthProvider[]
 }
 

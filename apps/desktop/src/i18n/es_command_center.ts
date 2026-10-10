@@ -22,6 +22,7 @@ export const esCommandCenter = {
   balanceLeft: (amounts: string, age: string) => `Saldo ${amounts} · ${age}`,
   balanceUnknown: 'Saldo desconocido',
   balanceUnavailable: 'Sin API de saldo',
+  countingSince: (date: string) => `Contando desde el ${date}`,
   close: 'Cerrar Centro de comandos',
   paletteTitle: 'Paleta de comandos',
   back: 'Atrás',

@@ -195,8 +195,9 @@ class SessionProfileRepairMixin:
                 "SELECT * FROM messages WHERE session_id = ? ORDER BY id", (session_id,))]
             usage = [dict(r) for r in conn.execute(
                 "SELECT * FROM session_model_usage WHERE session_id = ?", (session_id,))]
+            hourly = [dict(r) for r in conn.execute("SELECT * FROM usage_hourly WHERE session_id = ?", (session_id,))]
             return {"session": dict(session), "system_prompt": prompt, "tool_pin": tool_pin, "messages": messages,
-                    "usage": usage}
+                    "usage": usage, "usage_hourly": hourly}
         return self._read_retrying_ioerr(_read)
 
     def import_moved_session(self, payload: dict[str, Any], *, profile_name: str) -> str:
@@ -230,6 +231,8 @@ class SessionProfileRepairMixin:
                 self._insert_row(conn, "messages", {**message, "session_id": session_id}, skip=_MESSAGE_MOVE_SKIP)
             for usage in payload.get("usage") or []:
                 self._insert_row(conn, "session_model_usage", {**usage, "session_id": session_id}, skip=frozenset())
+            for hourly in payload.get("usage_hourly") or []:
+                self._insert_row(conn, "usage_hourly", {**hourly, "session_id": session_id}, skip=frozenset())
             return "imported"
         return self._execute_write(_do)
 
@@ -250,6 +253,7 @@ class SessionProfileRepairMixin:
             conn.execute("UPDATE sessions SET parent_session_id = NULL WHERE parent_session_id = ?", (session_id,))
             conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
             conn.execute("DELETE FROM session_model_usage WHERE session_id = ?", (session_id,))
+            conn.execute("DELETE FROM usage_hourly WHERE session_id = ?", (session_id,))
             conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
             self._delete_unreferenced_system_prompts(conn)
             return True

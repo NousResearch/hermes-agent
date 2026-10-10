@@ -60,6 +60,8 @@ def _seed_crossings(homes):
     # 2. wrong store: acme's key in the root store, with a compressed parent it points at (moves whole)
     _session(root, "stray-parent", "agent:acme:telegram:dm:202", profile="acme", messages=3)
     _session(root, "stray-child", "agent:acme:telegram:dm:202", profile="acme", parent="stray-parent")
+    root.update_token_counts("stray-child", input_tokens=500, output_tokens=50, model="m", billing_provider="xiaomi",
+                             api_call_count=1)  # its spend travels with it (usage_hourly)
     #    …and a legacy agent:main row inside acme's store (reported, not repaired by default)
     _session(acme, "legacy-main", "agent:main:telegram:dm:203", profile="default")
     #    …and a row keyed to a profile that does not exist
@@ -175,6 +177,9 @@ def test_apply_settles_every_repairable_crossing_and_is_idempotent(homes, monkey
         assert moved_child["profile_name"] == "acme" and moved_child["parent_session_id"] == "stray-parent"
         assert len(acme.get_messages("stray-parent")) == 3 and len(acme.get_messages("stray-child")) == 2
         assert acme.get_session("stray-parent")["system_prompt"] == "sys"
+        hourly = "SELECT session_id, input_tokens FROM usage_hourly WHERE session_id = 'stray-child'"
+        assert [tuple(r) for r in acme._conn.execute(hourly)] == [("stray-child", 500)]
+        assert root._conn.execute(hourly).fetchall() == []
         #    legacy agent:main row and the ghost row are left exactly as they were
         assert acme.get_session("legacy-main")["session_key"] == "agent:main:telegram:dm:203"
         assert root.get_session("ghost")["session_key"] == GHOST_KEY

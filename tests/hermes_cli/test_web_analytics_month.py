@@ -22,9 +22,9 @@ def _client(tmp_path, monkeypatch) -> TestClient:
 
     db_path = tmp_path / "state.db"
     db = SessionDB(db_path=db_path)
-    db._conn.execute("INSERT INTO sessions (id, source, started_at, billing_provider, input_tokens, output_tokens,"
-                     " cost_status) VALUES ('s', 'cli', strftime('%s', 'now'), 'xiaomi', 1000, 200, 'unknown')")
-    db._conn.commit()
+    db.create_session("s", "cli")
+    db.update_token_counts("s", input_tokens=1000, output_tokens=200, model="mimo-v2.5-pro",
+                           billing_provider="xiaomi", cost_status="unknown", api_call_count=1)
     db.close()
     monkeypatch.setattr(hermes_state, "_default_db_path", lambda: db_path)
     (tmp_path / "config.yaml").write_text("display:\n  skin: herald-os\n", encoding="utf-8")

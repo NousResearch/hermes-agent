@@ -29,9 +29,14 @@ export interface FuzzyMatch {
 
 const WORD_BOUNDARY = /[-_/.\s]/
 
-/** Length-preserving search fold: lower-case and `[-_.]` → space. */
+/**
+ * Length-preserving search fold: lower-case and every separator `WORD_BOUNDARY` recognises
+ * (`-`, `_`, `/`, `.`) → space. The two sets must stay in step: a query typed with one
+ * separator has to match a target written with another, and the `/` of an aggregator vendor
+ * prefix is the common case — `Qwen-3.8` must find `Qwen/Qwen3.8-Flash`.
+ */
 export function searchFold(value: string): string {
-  return value.toLowerCase().replace(/[-_.]/g, ' ')
+  return value.toLowerCase().replace(/[-_/.]/g, ' ')
 }
 
 function isBoundary(target: string, index: number): boolean {

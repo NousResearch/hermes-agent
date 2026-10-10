@@ -349,6 +349,10 @@ def finish_text_response(
         final_response = None
         return _verdict("continue")
 
+    from agent.turn_response_persistence import commit_final_text_response
+    final_response = commit_final_text_response(
+        agent, messages, conversation_history, final_msg, final_response, _promoted, _joined,
+    )
     # Plugins rewrite the reply BEFORE it is appended and flushed: SQLite treats a non-blank
     # assistant row as settled, so a transform after this write would reach the user but never
     # the stored/replayed transcript (#44239). finalize_turn reads the recorded outcome; like

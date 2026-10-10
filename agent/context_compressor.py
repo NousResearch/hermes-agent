@@ -3393,7 +3393,6 @@ class ContextCompressor(
             f"{int(self._proactive_prune_rearm_tokens):,}",
         )
 
-    def _compute_summary_budget(self, turns_to_summarize: list[dict[str, Any]]) -> int:
         """Scale the summary token budget with content size and context window."""
         content_tokens = estimate_messages_tokens_rough(turns_to_summarize)
         budget = int(content_tokens * _SUMMARY_RATIO)

@@ -1020,7 +1020,7 @@ async def test_profile_scoped_child_noise_and_handoff_admission(
             assert event.source.profile == name and home == homes[name]
             assert resolved_id == entry.session_id
             if path == "agent":
-                assert event.metadata["gateway_session_id"] == child
+                assert event.metadata["gateway_session_id"] == entry.session_id
         completion = runner._build_process_completion_event(watcher, proc, proc.id)
         assert completion["owner_task_id"] == proc.owner_task_id
         assert completion["parent_session_id"] == child

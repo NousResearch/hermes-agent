@@ -62,7 +62,7 @@ async def test_transient_ownership_ancestor_failure_retries_durable_delivery_onc
             async def accept(event):
                 assert event.source.chat_id == "ownership-retry"
                 assert event.metadata["gateway_session_key"] == entry.session_key
-                assert event.metadata["gateway_session_id"] == "nested-worker"
+                assert event.metadata["gateway_session_id"] == owner
                 current = store.lookup_by_session_key(entry.session_key)
                 assert current is not None
                 resolved = await runner._resolve_async_delegation_session(
@@ -181,6 +181,66 @@ async def test_claimed_ownership_retries_do_not_spend_the_delivery_budget(
             assert len(admitted) == 1
             delivered = ad.get_durable_delegation(event["delegation_id"])
             assert delivered is not None and delivered["delivery_state"] == "delivered"
+        finally:
+            store.close_all_db_handles()
+            runner.close_all_session_db_handles()
+
+
+@pytest.mark.asyncio
+async def test_admitted_delegate_completion_reaches_owner_without_rereading_the_chain(
+    tmp_path, monkeypatch, private_db_probe_cleanup,
+):
+    """Admission acknowledges the durable claim, so the resolver must reach the owner preflight proved
+    even when the delegate chain cannot be read afterwards."""
+    with _profile_runtime_scope(tmp_path):
+        runner = GatewayRunner(GatewayConfig(sessions_dir=tmp_path / "sessions"))
+        store = runner.session_store
+        try:
+            entry = store.get_or_create_session(SessionSource(
+                platform=Platform.TELEGRAM, chat_id="ownership-admitted", chat_type="dm",
+            ))
+            db = cast(Any, store._db)
+            owner = entry.session_id
+            db.create_session("worker", source="subagent", model_config={"_delegate_from": owner})
+            db.create_session("nested-worker", source="subagent", model_config={"_delegate_from": "worker"})
+            async_db = runner._session_db
+            get_session = async_db.get_session
+            admitted_phase = False
+
+            async def lookup_session(sid):
+                if admitted_phase and sid in {"worker", "nested-worker"}:
+                    raise RuntimeError("delegate chain unreadable after admission")
+                return await get_session(sid)
+
+            monkeypatch.setattr(async_db, "get_session", lookup_session)
+            resolved = []
+
+            async def accept(event):
+                nonlocal admitted_phase
+                admitted_phase = True
+                current = store.lookup_by_session_key(entry.session_key)
+                assert current is not None
+                result = await runner._resolve_async_delegation_session(
+                    current, event.metadata["gateway_session_id"],
+                )
+                resolved.append(result.session_id if result else None)
+                event._gateway_accepted = True
+
+            runner.adapters[Platform.TELEGRAM] = cast(BasePlatformAdapter, SimpleNamespace(handle_message=accept))
+            event = {
+                "type": "async_delegation", "delegation_id": "owner-admitted",
+                "session_key": entry.session_key, "parent_session_id": "nested-worker",
+                "dispatched_at": 1.0, "status": "completed", "summary": "completed result",
+            }
+            ad._persist_dispatch(event)
+            ad._persist_completion(event, {"status": "completed", "summary": event["summary"]})
+
+            assert await runner._deliver_completion_notification("completed result", event) is True
+            assert resolved == [owner]
+            delivered = ad.get_durable_delegation(event["delegation_id"])
+            assert delivered is not None and delivered["delivery_state"] == "delivered"
+            current = store.lookup_by_session_key(entry.session_key)
+            assert current is not None and current.session_id == owner
         finally:
             store.close_all_db_handles()
             runner.close_all_session_db_handles()

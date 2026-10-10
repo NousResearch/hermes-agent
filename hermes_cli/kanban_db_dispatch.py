@@ -116,6 +116,10 @@ class DispatchResult:
     skipped_unassigned: list[str] = field(default_factory=list)
     """Ready task ids with no assignee at all — operator-actionable (usually a
     misfiled task waiting for routing)."""
+    skill_development_needed: list[tuple[str, str, str, str]] = field(default_factory=list)
+    """``(task_id, profile, skill, state)`` rows deferred before claim because a
+    forced review skill or the task's own explicit skill is ``missing``,
+    ``disabled`` or a ``lookup_error`` for the assigned profile."""
     auto_assigned_default: list[str] = field(default_factory=list)
     """Unassigned task ids that had ``kanban.default_assignee`` applied this
     tick before spawning, so telemetry/CLI/dashboard can show the dispatcher
@@ -2022,6 +2026,186 @@ def _call_spawn_fn(spawn_fn, task: Task, workspace: str, board: Optional[str]) -
         return spawn_fn(task, workspace)
 
 
+# Review workers need this policy skill in addition to any task-specific skills.
+# Keep the preflight and the eventual worker argv sourced from the same tuple.
+_FORCED_REVIEW_SKILLS = ("sdlc-review",)
+
+
+def _skill_issues(profile: str, skills: tuple[str, ...]) -> list[tuple[str, str]]:
+    """Return ``(skill, missing|disabled|lookup_error)`` for ``skills`` against one profile.
+
+    Shared engine behind ``_forced_review_skill_issues`` (review-lane's policy-forced
+    ``sdlc-review``) and ``_explicit_task_skill_issues`` (ready/review-lane's task-specific
+    ``task.skills``) — same claimed assignee, same read-only lookup, same
+    fail-closed contract, so the two preflights cannot silently diverge.
+
+    Resolves availability through the same profile-scoped disabled-list check used by
+    explicit CLI preloading, plus a pure filesystem lookup (``tools.skills_tool``'s search/
+    locate helpers) — never ``build_preloaded_skills_prompt``/``skill_view``, which render
+    the skill body, bump Curator usage tracking, and (via ``load_config()``) can seed a
+    missing profile's ``SOUL.md``/config skeleton. A read-only availability probe must not
+    have any of those side effects, including under ``dry_run``. Disabled and missing are
+    both fail-closed. Any lookup failure (bad profile home, unreadable config, unexpected
+    exception) is reported as ``lookup_error`` and treated as unavailable: starting the
+    worker anyway would recreate the opaque startup-crash loop this preflight exists to
+    prevent.
+    """
+    if not skills:
+        return []
+    try:
+        from agent.skill_utils import get_disabled_skill_names, skill_matches_platform, yaml_load
+        from hermes_constants import get_config_path, reset_hermes_home_override, set_hermes_home_override
+        from hermes_cli.profiles import normalize_profile_name, resolve_profile_env
+        from tools.skills_tool import _locate_skill, _parse_frontmatter, _skill_search_dirs
+
+        profile = normalize_profile_name(profile)
+        token = set_hermes_home_override(resolve_profile_env(profile))
+        try:
+            # ``get_disabled_skill_names`` swallows an unreadable/malformed config.yaml
+            # into "no disabled skills" (its normal-operation contract for every OTHER
+            # caller, which must fail open on a config typo). A FORCED skill preflight must
+            # do the opposite: a config we could not actually parse is indistinguishable
+            # from one we haven't inspected, so validate it ourselves first and let a
+            # parse failure propagate to the outer ``except`` -> ``lookup_error``.
+            config_path = get_config_path()
+            if config_path.exists():
+                yaml_load(config_path.read_text(encoding="utf-8"))
+            disabled = get_disabled_skill_names()
+            issues: list[tuple[str, str]] = []
+            for skill in skills:
+                if skill in disabled:
+                    issues.append((skill, "disabled"))
+                    continue
+                project_dirs, all_dirs, _active = _skill_search_dirs()
+                error, _skill_dir, skill_md = _locate_skill(skill, None, project_dirs, all_dirs)
+                available = False
+                if error is None and skill_md is not None and skill_md.exists():
+                    frontmatter, _body = _parse_frontmatter(skill_md.read_text(encoding="utf-8"))
+                    available = skill_matches_platform(frontmatter)
+                if not available:
+                    issues.append((skill, "missing"))
+            return issues
+        finally:
+            reset_hermes_home_override(token)
+    except Exception as exc:
+        _kb._log.warning(
+            "kanban skill preflight failed for profile %r (skills=%r): %s", profile, skills, exc,
+        )
+        return [(skill, "lookup_error") for skill in skills]
+
+
+def _forced_review_skill_issues(profile: str, task_id: str) -> list[tuple[str, str]]:
+    """Return ``(skill, missing|disabled|lookup_error)`` for a review target profile's
+    policy-FORCED ``_FORCED_REVIEW_SKILLS``. See ``_skill_issues`` for the shared engine.
+    """
+    return _skill_issues(profile, _FORCED_REVIEW_SKILLS)
+
+
+def _explicit_task_skill_issues(
+    profile: str, task_id: str, skills_json: Any,
+) -> list[tuple[str, str]]:
+    """Preflight a ready-or-review row's own explicit ``task.skills`` (the
+    ``--skills`` argv this row will actually force onto the worker — see ``_worker_argv``)
+    against the row's CLAIMED assignee, not a prior/other row's cached list. Called fresh
+    on every dispatch tick before claim/workspace/spawn so a changed skill list or a skill
+    that becomes available/disabled between ticks is re-validated, never assumed from an
+    earlier check. Missing/disabled/lookup_error must defer exactly like the forced review
+    skill preflight — no auto-enable, no budget spent, no claim taken. Empty/absent skills
+    is not an issue: most tasks carry no explicit skill and must not pay this lookup cost
+    or be gated by it.
+    """
+    parsed = _kb._json_or(skills_json)
+    skills = tuple(str(s) for s in parsed if s) if isinstance(parsed, list) else ()
+    if not skills:
+        return []
+    return _skill_issues(profile, skills)
+
+
+def _record_skill_disposition(
+    conn: sqlite3.Connection,
+    task_id: str,
+    status: str,
+    profile: str,
+    issues: list[tuple[str, str]],
+    *,
+    category: str,
+    message_prefix: str,
+) -> None:
+    """Emit an idempotent operator-visible ``review_dispatch_deferred`` diagnostic event.
+
+    Shared by the review-lane forced-skill preflight and the ready/review-lane explicit
+    task-skill preflight — same idempotence contract, different ``status``
+    filter and message wording via ``category``/``message_prefix``.
+
+    ``tasks.result`` is the worker's own handoff/result field, not a scratchpad for this
+    preflight — overwriting it here would destroy a prior ``kanban_request_review`` summary
+    with no way to restore it once the profile becomes eligible. The diagnostic lives ONLY
+    in ``task_events`` (``hermes kanban tail`` / dashboard event feed already surface it);
+    ``result`` and every other task field are left untouched.
+
+    Idempotent: a repeated unchanged tick sees the same ``message`` in the newest
+    ``review_dispatch_deferred`` event for THIS run and appends nothing — no duplicate
+    events, no failure-budget/run consumption. A CHANGED issue set (different skill/state)
+    produces a new event because the stored message differs, and a changed run resets the
+    dedup scope (a new run's first tick always emits once).
+    """
+    details = ", ".join(f"skill '{skill}' is {state}" for skill, state in issues)
+    message = f"{message_prefix} {details}; enable/install the skill or reassign the task"
+    with _kb.write_txn(conn):
+        row = conn.execute(
+            "SELECT current_run_id FROM tasks WHERE id = ? AND status = ? AND claim_lock IS NULL",
+            (task_id, status),
+        ).fetchone()
+        if row is None:
+            return
+        run_id = _kb._row_get(row, "current_run_id")
+        latest = _kb._latest_event(conn, task_id, "review_dispatch_deferred", run_id=run_id)
+        if latest is not None and _kb._json_or(latest["payload"], {}).get("message") == message:
+            return
+        for skill, state in issues:
+            _kb._append_event(
+                conn, task_id, "review_dispatch_deferred",
+                {
+                    "category": category,
+                    "message": message,
+                    "profile": profile,
+                    "skill": skill,
+                    "state": state,
+                },
+                run_id=run_id,
+            )
+
+
+def _record_review_skill_disposition(
+    conn: sqlite3.Connection, task_id: str, profile: str, issues: list[tuple[str, str]],
+) -> None:
+    """Review-lane policy-forced skill (``_FORCED_REVIEW_SKILLS``) disposition. See
+    ``_record_skill_disposition`` for the shared engine."""
+    _record_skill_disposition(
+        conn, task_id, "review", profile, issues,
+        category="skill-development-needed",
+        message_prefix=f"skill-development-needed: review profile '{profile}' is missing",
+    )
+
+
+def _record_explicit_skill_disposition(
+    conn: sqlite3.Connection, task_id: str, status: str, profile: str, issues: list[tuple[str, str]],
+) -> None:
+    """A ready-or-review row's own explicit ``task.skills`` preflight
+    disposition. See ``_record_skill_disposition`` for the shared engine."""
+    _record_skill_disposition(
+        conn, task_id, status, profile, issues,
+        category="skill-development-needed",
+        message_prefix=f"skill-development-needed: task requires profile '{profile}' to have",
+    )
+
+
+def _clear_review_skill_disposition(conn: sqlite3.Connection, task_id: str) -> None:
+    """No-op retained as the natural-resume hook: eligibility needs no cleanup now that the
+    diagnostic never touches ``tasks.result`` — the normal claim path proceeds unchanged."""
+    return
+
+
 def _dispatch_lane_task(
     conn: sqlite3.Connection,
     row: sqlite3.Row,
@@ -2091,10 +2275,41 @@ def _dispatch_lane_task(
         if per_profile_cap is not None and name:
             per_profile_running[name] = per_profile_running.get(name, 0) + 1
 
+    # Preflight this row's own explicit task.skills (either lane) against the
+    # assignee, fresh every tick. Missing/disabled/lookup_error defers before
+    # claim: no run, no failure budget, no workspace, no auto-enable.
+    explicit_issues = _explicit_task_skill_issues(assignee, task_id, row["skills"])
     if dry_run:
+        if explicit_issues:
+            result.skill_development_needed.extend(
+                (task_id, assignee, skill, state) for skill, state in explicit_issues
+            )
+            return False
+        if lane == "review":
+            issues = _forced_review_skill_issues(assignee, task_id)
+            if issues:
+                result.skill_development_needed.extend(
+                    (task_id, assignee, skill, state) for skill, state in issues
+                )
+                return False
         result.spawned.append((task_id, assignee, ""))
         _count_spawn(assignee)
         return True
+    if explicit_issues:
+        result.skill_development_needed.extend(
+            (task_id, assignee, skill, state) for skill, state in explicit_issues
+        )
+        _record_explicit_skill_disposition(conn, task_id, lane, assignee, explicit_issues)
+        return False
+    if lane == "review":
+        issues = _forced_review_skill_issues(assignee, task_id)
+        if issues:
+            result.skill_development_needed.extend(
+                (task_id, assignee, skill, state) for skill, state in issues
+            )
+            _record_review_skill_disposition(conn, task_id, assignee, issues)
+            return False
+        _clear_review_skill_disposition(conn, task_id)
     claim = _kb.claim_review_task if lane == "review" else _kb.claim_task
     claimed = claim(conn, task_id, ttl_seconds=ttl_seconds)
     if claimed is None:
@@ -2117,9 +2332,10 @@ def _dispatch_lane_task(
         _kbw.set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
     _kbw._maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
     if lane == "review":
-        # Force-load sdlc-review; the kanban lifecycle is already in every
-        # worker's system prompt via KANBAN_GUIDANCE.
-        claimed.skills = list(dict.fromkeys([*(claimed.skills or []), "sdlc-review"]))
+        # The kanban lifecycle is already in every worker's system prompt via
+        # KANBAN_GUIDANCE; policy review skills are explicit forced loads,
+        # preflighted above via ``_forced_review_skill_issues``.
+        claimed.skills = list(dict.fromkeys([*(claimed.skills or []), *_FORCED_REVIEW_SKILLS]))
     try:
         pid = _call_spawn_fn(spawn_fn if spawn_fn is not None else _default_spawn, claimed, str(workspace), board)
         if pid:
@@ -2269,7 +2485,7 @@ def _tick_spawn_budget(
 def _lane_rows(conn: sqlite3.Connection, status: str) -> list[sqlite3.Row]:
     """Unclaimed rows of one lane in dispatch order."""
     return conn.execute(
-        "SELECT id, assignee FROM tasks "
+        "SELECT id, assignee, skills FROM tasks "
         f"WHERE status = '{status}' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()

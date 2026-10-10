@@ -320,6 +320,85 @@ class TestRunJobScript:
         assert result.returncode == 0, result.stderr
         assert result.stdout.strip() == "sibling ok"
 
+    def test_bootstrap_main_module_outlives_body_for_atexit_threads(self, cron_env, tmp_path):
+        """A non-daemon thread that pickles a script-defined class after the body returns
+        must succeed: runpy.run_path swaps __main__ out once the body returns, so the
+        lookup ``__main__.Widget`` fails and the thread dies silently — the cron run is
+        still recorded as successful (returncode 0). ``4d4aed0f98`` replaced the POSIX
+        bootstrap with a real ``__main__`` module for exactly this reason; the Windows
+        branch kept the broken runpy form (#124973 scoped to POSIX only). The bootstrap
+        semantics are interpreter-agnostic, so this test exercises the cross-platform
+        ``_windows_cron_bootstrap_argv`` on any host via ``python -c``.
+        """
+        from cron.scheduler_script import _windows_cron_bootstrap_argv
+
+        venv = tmp_path / "venv"
+        (venv / "Lib" / "site-packages").mkdir(parents=True)
+
+        script = cron_env / "scripts" / "probe.py"
+        script.write_text(
+            "import sys, threading, time, pickle\n"
+            "\n"
+            "class Widget:\n"
+            "    def __reduce__(self):\n"
+            "        return (Widget, ())\n"
+            "\n"
+            "def worker():\n"
+            "    time.sleep(0.3)\n"
+            "    pickle.dumps(Widget())\n"
+            '    print("PICKLE-OK", file=sys.stderr)\n'
+            "\n"
+            "threading.Thread(target=worker, daemon=False).start()\n"
+            'print("body-done")\n',
+            encoding="utf-8",
+        )
+
+        argv = _windows_cron_bootstrap_argv(
+            sys.executable, {"VIRTUAL_ENV": str(venv)}, str(script)
+        )
+        result = subprocess.run(
+            argv, capture_output=True, timeout=30,
+            text=True, encoding="utf-8", errors="replace")
+        assert result.returncode == 0, result.stderr
+        # The thread joined cleanly and the pickle succeeded; the runpy form fails with
+        # a PicklingError in the thread and never emits PICKLE-OK.
+        assert "PICKLE-OK" in result.stderr, result.stderr
+
+    def test_bootstrap_non_source_shapes_keep_running(self, cron_env, tmp_path):
+        """The bootstrap this replaced resolved the script by path (runpy), so a job's
+        ``script`` could be a zipapp or sourceless bytecode. Compiling the file as source
+        instead refuses both with a bare ``SyntaxError: source code string cannot contain
+        null bytes`` — a narrowing of what a cron script may be. Only ``.py`` takes the
+        real-``__main__`` path; every other shape keeps runpy's loader-by-path execution,
+        which is what these two probes pin.
+        """
+        import py_compile
+        import zipfile
+
+        from cron.scheduler_script import _windows_cron_bootstrap_argv
+
+        venv = tmp_path / "venv"
+        (venv / "Lib" / "site-packages").mkdir(parents=True)
+        overlay = {"VIRTUAL_ENV": str(venv)}
+
+        pyz = cron_env / "scripts" / "app.pyz"
+        with zipfile.ZipFile(pyz, "w") as zf:
+            zf.writestr("__main__.py", 'print("ZIPAPP-RAN")\n')
+
+        pyc_src = tmp_path / "_bytecode_src.py"
+        pyc_src.write_text('print("BYTECODE-RAN")\n', encoding="utf-8")
+        pyc = cron_env / "scripts" / "mod.pyc"
+        py_compile.compile(str(pyc_src), cfile=str(pyc), doraise=True)
+
+        for probe, expected in ((pyz, "ZIPAPP-RAN"), (pyc, "BYTECODE-RAN")):
+            argv = _windows_cron_bootstrap_argv(sys.executable, overlay, str(probe))
+            result = subprocess.run(
+                argv, capture_output=True, timeout=30,
+                text=True, encoding="utf-8", errors="replace")
+            assert result.returncode == 0, (probe.name, result.stderr)
+            assert result.stdout.strip() == expected, (
+                probe.name, result.stdout, result.stderr)
+
     def test_bootstrap_argv_falls_back_without_site_packages(self, cron_env, tmp_path):
         """Unresolvable venv layout must not break the run — fall back to a
         plain invocation (pre-existing PYTHONPATH behaviour)."""

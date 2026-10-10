@@ -678,7 +678,7 @@ class ClientLifecycleMixin:
             return False
         try:
             return self._try_refresh_nous_client_credentials(force=False, require_account=str(account))
-        except Exception:  # noqa: BLE001 — a failed adoption leaves the key in hand; the 401 path still heals
+        except Exception:
             logger.debug("Nous key pre-expiry adoption failed", exc_info=True)
             return False
 

@@ -75,7 +75,7 @@ class ClassifiedError:
     provider: Optional[str] = None
     model: Optional[str] = None
     message: str = ""
-    error_context: Dict[str, Any] = field(default_factory=dict)
+    error_context: dict[str, Any] = field(default_factory=dict)
 
     # Recovery hints — the retry loop checks these instead of re-classifying.
     retryable: bool = True
@@ -326,7 +326,7 @@ _REQUEST_VALIDATION_PATTERNS = (
 # A rejection from any other host means the provider's gateway injected the
 # field itself: a server-side flake, not our request shape. prompt_cache_retention
 # is only sent for api.meta.ai / bedrock-mantle (agent/transports/codex.py).
-_SERVER_INJECTED_PARAM_SENDERS: Dict[str, tuple] = {
+_SERVER_INJECTED_PARAM_SENDERS: dict[str, tuple] = {
     "prompt_cache_retention": ("meta", "muse", "msl", "model-api", "bedrock", "mantle"),
 }
 _PARAM_REJECTION_WORDS = ("not supported", "unsupported", "unknown", "unrecognized")
@@ -449,7 +449,7 @@ _UPSTREAM_BLOCKED_PATTERNS = (
 # ordered ``(patterns, verdict)`` pairs matched first-hit; ``verdict`` may be
 # a callable of the error message.
 
-Verdict = Dict[str, Any]
+Verdict = dict[str, Any]
 
 
 def _v(reason: FailoverReason, **hints: Any) -> Verdict:
@@ -571,7 +571,7 @@ def is_reasoning_field_rejection(error_msg: str) -> bool:
 
 def _billing_hints(error_msg: str) -> Verdict:
     """Billing verdict carrying the #82154 ambiguity marker when applicable."""
-    ctx: Dict[str, Any] = {}
+    ctx: dict[str, Any] = {}
     if any(p in error_msg for p in _UNVERIFIED_BILLING_PATTERNS):
         ctx = {"billing_unverified": True, "possible_content_filter": True}
     return {**_V_BILLING, "error_context": ctx}
@@ -636,7 +636,7 @@ _MESSAGE_TAIL_RULES = (
 
 # Structured error code → verdict. The error-code rate_limit verdict rotates
 # but does not set should_fallback (unlike the message/status paths).
-_ERROR_CODE_VERDICTS: Dict[str, Verdict] = {
+_ERROR_CODE_VERDICTS: dict[str, Verdict] = {
     **dict.fromkeys(("resource_exhausted", "throttled", "rate_limit_exceeded"),
                     _v(_R.rate_limit, should_rotate_credential=True)),
     **dict.fromkeys(_BILLING_ERROR_CODES, _V_BILLING),
@@ -653,7 +653,7 @@ _ERROR_CODE_VERDICTS: Dict[str, Verdict] = {
 # to the family key before lookup.
 _PROVIDER_CODE_FAMILIES = {"openai-codex": "openai", "google": "gemini", "google-gemini": "gemini",
                            "google-ai-studio": "gemini", "vertex": "gemini", "google-vertex": "gemini"}
-_PROVIDER_CODE_VERDICTS: Dict[str, Dict[str, Verdict]] = {
+_PROVIDER_CODE_VERDICTS: dict[str, dict[str, Verdict]] = {
     "openai": {"server_error": _V_SERVER_ERROR},
     "gemini": {"unavailable": _V_OVERLOADED, "deadline_exceeded": _V_TIMEOUT, "internal": _V_SERVER_ERROR},
     "anthropic": {"api_error": _V_SERVER_ERROR, "rate_limit_error": _V_RATE_LIMIT},
@@ -1222,7 +1222,7 @@ def _classify_image_tool_422(c: _Ctx) -> Verdict:
 # check, then the client-error abort path (fallback first) is correct. 408 is
 # retry-safe (RFC 9110 §15.5.9; proxies emit it when generation outruns the
 # read window). Unlisted 4xx → format_error, 5xx → server_error.
-_STATUS_HANDLERS: Dict[int, Callable[[_Ctx], Verdict]] = {
+_STATUS_HANDLERS: dict[int, Callable[[_Ctx], Verdict]] = {
     400: _classify_400, 401: lambda c: _V_AUTH_ROTATE, 402: lambda c: _classify_402(c.msg, dict),
     403: _status_403, 404: _status_404, 408: lambda c: _V_TIMEOUT, 413: lambda c: _V_PAYLOAD_TOO_LARGE,
     422: lambda c: _classify_image_tool_422(c),
@@ -1301,7 +1301,7 @@ _CODEX_MASKED_REPLAY_MESSAGE = "request blocked."
 _CODEX_UNSUPPORTED_CONTENT_DETAIL = "unsupported content type"
 
 
-def _is_codex_masked_replay_rejection(c: "_Ctx") -> bool:
+def _is_codex_masked_replay_rejection(c: _Ctx) -> bool:
     """HTTP 400 / status-less ``{code: invalid_prompt, message: "Request blocked."}`` from
     ``openai-codex`` — as an SDK error body, a Responses ``error`` SSE frame, or the
     ``response.failed`` text ``"invalid_prompt: Request blocked."`` — or the bare

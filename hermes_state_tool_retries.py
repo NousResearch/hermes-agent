@@ -16,7 +16,7 @@ class SessionToolRetriesMixin:
 
     TOOL_RETRY_METADATA_KEY = "retried"
 
-    def tool_row_retry(self, session_id: str, tool_call_id: str) -> Optional[Tuple[int, Optional[Dict[str, Any]]]]:
+    def tool_row_retry(self, session_id: str, tool_call_id: str) -> Optional[tuple[int, Optional[dict[str, Any]]]]:
         """``(row id, recorded retry outcome or None)`` of the newest visible tool row for *tool_call_id* in the
         session's resume lineage, or ``None`` when no such row is saved."""
         if not session_id or not tool_call_id:
@@ -32,7 +32,7 @@ class SessionToolRetriesMixin:
         result = retried.get("result") if isinstance(retried, dict) else None
         return row["id"], result if isinstance(result, dict) else None
 
-    def set_tool_row_retry(self, row_id: int, outcome: Dict[str, Any]) -> None:
+    def set_tool_row_retry(self, row_id: int, outcome: dict[str, Any]) -> None:
         """Record *outcome* as the retry of tool row *row_id*, not yet announced to the model."""
         def _do(conn):
             row = conn.execute("SELECT display_metadata FROM messages WHERE id = ?", (row_id,)).fetchone()
@@ -43,7 +43,7 @@ class SessionToolRetriesMixin:
             conn.execute(_SET_DISPLAY_META_SQL, (self._encode_display_metadata(meta), row_id))
         self._execute_write(_do)
 
-    def take_unannounced_tool_retries(self, session_id: str) -> List[Dict[str, Any]]:
+    def take_unannounced_tool_retries(self, session_id: str) -> list[dict[str, Any]]:
         """``{result, tool_name}`` for each retry the model has not heard about yet, marked announced."""
         if not session_id:
             return []
@@ -56,7 +56,7 @@ class SessionToolRetriesMixin:
                   f"AND display_metadata LIKE '%\"{key}\"%' "
                   f"AND {_sql_json_extract('display_metadata', '$.' + key)} IS NOT NULL ORDER BY id")
 
-        def _unannounced(row) -> Optional[Dict[str, Any]]:
+        def _unannounced(row) -> Optional[dict[str, Any]]:
             meta = self._decode_display_metadata(row["display_metadata"]) or {}
             retried = meta.get(key)
             if not isinstance(retried, dict) or retried.get("announced") or not isinstance(retried.get("result"), dict):

@@ -6,7 +6,13 @@ import { afterEach, beforeEach, describe, expect, it, type MockInstance, vi } fr
 import { PRIMARY_SESSION_VIEW, type SessionView, SessionViewProvider } from '@/app/chat/session-view'
 import { accentsFor, NOUS_ACCENT } from '@/components/onboarding-chat/options'
 import { I18nProvider } from '@/i18n'
-import { answerSetupCard, type ClarifyRequest, clearClarifyRequest, setClarifyRequest, type SetupChooseSpec } from '@/store/clarify'
+import {
+  answerSetupCard,
+  type ClarifyRequest,
+  clearClarifyRequest,
+  setClarifyRequest,
+  type SetupChooseSpec
+} from '@/store/clarify'
 import { rememberServerRequest, resetServerRequestsForTests } from '@/store/server-requests'
 import { $accentOverride } from '@/themes/accent-override'
 

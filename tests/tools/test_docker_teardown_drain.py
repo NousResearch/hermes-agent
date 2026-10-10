@@ -6,7 +6,7 @@ import subprocess
 import threading
 
 import tools.environments.docker as docker_env
-import tools.terminal_tool as terminal_tool
+from tools import terminal_tool
 
 def _env_with_slow_teardown(monkeypatch, release: threading.Event, seen: list):
     docker_env._cgroup_limits_ok = True

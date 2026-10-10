@@ -101,8 +101,8 @@ def _tools_mod(module: str):
     return importlib.import_module(module)
 
 
-_stripped = lambda v: bool(str(v or "").strip())  # noqa: E731 — required-param predicates
-_nonempty = lambda v: not (v is None or str(v) == "")  # noqa: E731
+_stripped = lambda v: bool(str(v or "").strip())
+_nonempty = lambda v: not (v is None or str(v) == "")
 _NAME = (("name", _stripped),)
 _NAME_SESSION = (("name", _stripped), ("session_id", _stripped))
 
@@ -199,7 +199,7 @@ def _capture_run_kwargs(timeout: int) -> dict:
 
 
 def _captured_exec(rid, cmd, timeout: int, *, on_result, timeout_err: tuple, fail_code: int,
-                   shell: bool = False, env: "dict | None" = None) -> dict:
+                   shell: bool = False, env: dict | None = None) -> dict:
     """Run ``cmd`` captured (see ``_capture_run_kwargs``) and hand the CompletedProcess to
     ``on_result``; TimeoutExpired → ``timeout_err`` (code, message), other errors → ``fail_code``."""
     try:
@@ -1941,7 +1941,7 @@ def _plugins_settings(rid, params):
     if not key or not isinstance(values, dict):
         return _err(rid, 4019, "plugins.settings requires a 'key' and a 'values' mapping")
     pc = _tools_mod("hermes_cli.plugins_cmd")
-    found = next((p for p in pc._discover_all_plugins() if key in (p[5], p[0])), None)
+    found = pc._find_plugin_entry(key)
     if found is None:
         return _err(rid, 4020, f"plugin '{key}' not found")
     _name, _version, _desc, _source, plugin_dir, canonical = found

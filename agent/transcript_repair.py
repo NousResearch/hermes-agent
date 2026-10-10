@@ -66,7 +66,7 @@ def transcript_row_snapshot(row: Mapping[str, Any]) -> str:
     return digest.hexdigest()
 
 
-def stamp_inserted_row_snapshots(conn: sqlite3.Connection, session_id: str, messages: List[Dict[str, Any]]) -> None:
+def stamp_inserted_row_snapshots(conn: sqlite3.Connection, session_id: str, messages: list[dict[str, Any]]) -> None:
     """Stamp the stored-row digest on freshly inserted dicts (every ``_insert_message_rows`` caller; one SELECT
     per batch)."""
     by_id = {msg["_row_id"]: msg for msg in messages if isinstance(msg.get("_row_id"), int)}
@@ -110,12 +110,12 @@ def _active_logical_message_row(
 def resolve_and_repair_transcript_batch(
     conn: sqlite3.Connection,
     session_id: str,
-    messages: List[Dict[str, Any]],
+    messages: list[dict[str, Any]],
     encode_content_fn: Callable[[Any], Any],
     decode_content_fn: Callable[[Any], Any],
-    serialize_message_fn: Callable[[Dict[str, Any], float], Mapping[str, Any]],
-    decode_row_fn: Callable[[Mapping[str, Any]], Dict[str, Any]],
-) -> List[Dict[str, Any]]:
+    serialize_message_fn: Callable[[dict[str, Any], float], Mapping[str, Any]],
+    decode_row_fn: Callable[[Mapping[str, Any]], dict[str, Any]],
+) -> list[dict[str, Any]]:
     """Resolve row-addressed rewrites without appending duplicates or replacing concurrent winners.
 
     A durable row snapshot is a compare-and-swap version for sanitizer rewrites. When a live replay loses
@@ -124,7 +124,7 @@ def resolve_and_repair_transcript_batch(
     copied payload identity, not timestamp alone. Legacy blank assistant rows retain the narrow interrupted-
     stream content repair. Returns only rows that need fresh inserts.
     """
-    inserted_rows: List[Dict[str, Any]] = []
+    inserted_rows: list[dict[str, Any]] = []
     for msg in messages:
         existing_row_id = msg.get("_row_id") if isinstance(msg, dict) else None
         role = msg.get("role", "unknown") if isinstance(msg, dict) else "unknown"
@@ -231,7 +231,7 @@ def _restore_display_index(
     target_row: Mapping[str, Any],
     serialized: Mapping[str, Any],
     old_identity: Any,
-    old_peer_ids: List[int],
+    old_peer_ids: list[int],
 ) -> None:
     """Restore display identities/orders invalidated by the payload-update trigger."""
     if old_peer_ids:
@@ -304,7 +304,7 @@ def _active_message_row(conn: sqlite3.Connection, session_id: str, row_id: int, 
     return clones[0] if len(clones) == 1 else row
 
 
-def sync_flushed_message_markers(batch_msgs: List[Dict[str, Any]], batch_rows: List[Dict[str, Any]]) -> None:
+def sync_flushed_message_markers(batch_msgs: list[dict[str, Any]], batch_rows: list[dict[str, Any]]) -> None:
     """Stamp persistence markers and sync canonical durable fields onto live dicts after commit."""
     for written, row in zip(batch_msgs, batch_rows):
         written[_DB_PERSISTED_MARKER] = True

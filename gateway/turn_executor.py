@@ -32,7 +32,7 @@ class _UnboundedThreadExecutor(concurrent.futures.Executor):
                     return
                 try:
                     fut.set_result(fn(*args, **kwargs))
-                except BaseException as exc:  # noqa: BLE001 - mirror ThreadPoolExecutor
+                except BaseException as exc:
                     fut.set_exception(exc)
             finally:
                 # Blocks until submit() has registered this thread, so the discard never races the add.

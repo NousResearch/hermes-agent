@@ -201,7 +201,6 @@ async def main():
 
     async def secondary_boundary(event):
         secondary_turns.append(event.source.profile)
-        return None
 
     secondary.set_message_handler(secondary_boundary)
     secondary.send_typing = typing_boundary

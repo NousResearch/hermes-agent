@@ -6,7 +6,7 @@ import contextvars
 import copy
 import hashlib
 import importlib
-import inspect  # noqa: F401  (split modules)
+import inspect
 import json
 import logging
 import os
@@ -17,13 +17,13 @@ import sys
 import threading
 import time
 import uuid
-from datetime import datetime, timezone  # noqa: F401  (timezone: split modules)
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, NamedTuple, Optional  # noqa: F401  (Callable: split modules)
+from typing import Any, Callable, NamedTuple, Optional
 
 # Several of these look unused here but are resolved BARE by split-module bodies rebound onto this
 # namespace (method_ctx.bind_module) — deleting one breaks a handler at call time, not import time.
-from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope  # noqa: F401
+from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
 from hermes_constants import (
     get_hermes_home, get_hermes_home_override, get_process_hermes_home, profile_name_for_home,
     reset_hermes_home_override, set_hermes_home_override)
@@ -34,17 +34,18 @@ from tools.environments.local import hermes_subprocess_env
 from agent.fast_mode import STATIC_TIERS
 from agent.replay_cleanup import canonicalize_replay_history
 from agent.reasoning_effort import clamp_effort, route_supported_efforts
-from agent.compaction_display import project_compaction_message_for_display  # noqa: F401
-from agent.skill_commands import describe_skill_invocation  # noqa: F401
-from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX  # noqa: F401
+from agent.voice_turn_route import session_runtime_view
+from agent.compaction_display import project_compaction_message_for_display
+from agent.skill_commands import describe_skill_invocation
+from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 from tui_gateway import git_probe
 from tui_gateway.checkpoints import (_load_checkpoints_enabled, _resolve_checkpoint_hash,
-                                     resolve_checkpoints_enabled as _resolve_checkpoints_enabled)  # noqa: F401
+                                     resolve_checkpoints_enabled as _resolve_checkpoints_enabled)
 from tui_gateway._env import env_float, env_int
-from tui_gateway.turn_marker import clear_turn_marker, marker_writer_state, read_turn_marker, record_turn_start  # noqa: F401
+from tui_gateway.turn_marker import clear_turn_marker, marker_writer_state, read_turn_marker, record_turn_start
 from tui_gateway.contracts import registry as _contracts
 # User-facing copy shared with the split method modules (they close over this namespace).
-from tui_gateway.user_messages import (  # noqa: F401
+from tui_gateway.user_messages import (
     AGENT_BUILD_ABANDONED, AGENT_MISSING_FOR_TURN, AGENT_STILL_STARTING, agent_init_failed_message, busy_message,
     resume_failed_message, turn_error_text)
 from tui_gateway.transport import (FanoutTransport, StdioTransport, Transport, bind_transport,
@@ -90,7 +91,7 @@ with contextlib.suppress(Exception):
 
     prefetch_update_check()
 
-from tui_gateway.render import make_stream_renderer, render_diff, render_message  # noqa: F401
+from tui_gateway.render import make_stream_renderer, render_diff, render_message
 
 _sessions: dict[str, dict] = {}
 _methods: dict[str, callable] = {}
@@ -710,7 +711,7 @@ def _emit(event: str, sid: str, payload: dict | None = None) -> bool:
     return write_json(_event_frame(event, sid, payload))
 
 
-from tui_gateway import server_requests as _server_requests  # noqa: E402
+from tui_gateway import server_requests as _server_requests
 
 _server_requests.bind_sinks(lambda frame: write_json(frame), lambda event, sid, payload: _emit(event, sid, payload),
                             lambda sid: _session_client_answers_requests(sid),
@@ -1001,7 +1002,7 @@ def _wait_agent_for_prompt(session: dict, rid: str, sid: str) -> dict | None:
     return _err(rid, 5032, err) if (err := session.get("agent_error")) else None
 
 
-def _bind_build_profile_scopes(profile_home: "str | None") -> "_TurnScopes | None":
+def _bind_build_profile_scopes(profile_home: str | None) -> "_TurnScopes | None":
     """Bind a session profile's HERMES_HOME / secret / terminal scopes for an agent build. ``None`` is the
     launch profile: its own launch-env secret scope (live env while single-profile, frozen once
     multiplexing is active — a hosted-room turn for a default member otherwise died at build with
@@ -1718,6 +1719,7 @@ def _runtime_model_config(agent, existing: dict | None = None) -> dict:
     attributes DELETE the key rather than skip the write: resume reads provider/endpoint from this JSON
     (model column written separately), so a stale provider would route the resumed chat to the wrong endpoint."""
     config = dict(existing or {})
+    agent = session_runtime_view(agent)
     attr = lambda k: str(getattr(agent, k, "") or "").strip()
     model, provider, base_url = attr("model"), attr("provider"), attr("base_url")
     if provider.lower() == "custom":
@@ -1759,7 +1761,7 @@ def _persist_live_session_runtime(session: dict | None) -> None:
         if (tier_override := session.get("create_service_tier_override")) is not None:
             # agent.service_tier is None for explicit normal; without this the distinction is erased on every persist.
             model_config["service_tier"] = tier_override or "normal"
-        model = str(getattr(agent, "model", "") or "").strip()
+        model = str(model_config.get("model") or "").strip()
         if hasattr(db, "update_session_meta"):
             db.update_session_meta(session_key, json.dumps(model_config), model or None)
         elif model and hasattr(db, "update_session_model"):
@@ -2324,7 +2326,7 @@ def _live_session_identity(session: dict) -> tuple[str, str]:
     carries. The profile default is the LAST resort, never the answer for a chat that made its own pick."""
     pending = session.get("pending_model_switch") or {}
     mirror = _metadata_mirror(session)
-    agent = session.get("agent")
+    agent = session_runtime_view(session.get("agent"))
     override = session.get("model_override") or {}
     model = (str(pending.get("display_model") or "").strip() or mirror.get("model")
              or getattr(agent, "model", "") or override.get("model"))
@@ -2354,6 +2356,7 @@ def _fast_tier_applies(agent, model: str, provider: str, *, route_known: bool, t
 def _session_info(agent, session: dict | None = None) -> dict:
     if session is None:
         session = next((c for c in _sessions.values() if c.get("agent") is agent), None)
+    agent = session_runtime_view(agent)
     sess = session or {}
     mirror = _metadata_mirror(session)
     cwd = _display_session_cwd(session)
@@ -3279,7 +3282,7 @@ def _pet_sprite_payload(pet, *, scale: float) -> dict:
     try:
         stat = pet.spritesheet.stat()
         cache_key = (str(pet.spritesheet), stat.st_mtime_ns, stat.st_size, pet.slug, pet.display_name, round(scale, 4))
-    except Exception:  # noqa: BLE001
+    except Exception:
         cache_key = None
     if cache_key is not None:
         with _pet_payload_cache_lock:
@@ -3289,7 +3292,7 @@ def _pet_sprite_payload(pet, *, scale: float) -> dict:
     try:  # real (padding-trimmed) frame count per state; {} → the canvas uses the static framesPerState
         from agent.pet import render
         frames_by_state = render.state_frame_counts(str(pet.spritesheet))
-    except Exception:  # noqa: BLE001
+    except Exception:
         frames_by_state = {}
     raw = pet.spritesheet.read_bytes()
     mime = "image/png" if pet.spritesheet.suffix.lower() == ".png" else "image/webp"
@@ -3344,7 +3347,7 @@ def _pet_gen_sweep(root, *, max_age_s: float = 3600.0) -> None:
         now = time.time()
         for child in (c for c in root.iterdir() if c.is_dir() and now - c.stat().st_mtime > max_age_s):
             shutil.rmtree(child, ignore_errors=True)
-    except Exception as exc:  # noqa: BLE001 - cleanup is best-effort
+    except Exception as exc:
         logger.debug("pet-gen sweep failed: %s", exc)
 
 
@@ -3644,12 +3647,12 @@ _paste_counter = 0
 
 
 # mcp.servers.* handlers (methods_tools) resolve this BARE through this namespace.
-from .mcp_rpc_helpers import summarize_server as _mcp_summarize_server  # noqa: E402, F401
+from .mcp_rpc_helpers import summarize_server as _mcp_summarize_server
 
 
 # ── Split @method handler modules (see method_ctx.py): imported last so every global the handlers close
 # over exists; register() rebinds them onto this namespace.
-from . import (  # noqa: E402
+from . import (
     methods_voice as _methods_voice, methods_browser as _methods_browser, methods_slash as _methods_slash,
     methods_complete_helpers as _methods_complete_helpers, session_auto_continue as _session_auto_continue,
     plugin_inject as _plugin_inject,

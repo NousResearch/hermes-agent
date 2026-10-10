@@ -82,7 +82,6 @@ import { useSlashCompletions } from './hooks/use-slash-completions'
 import { useStatusDrawer } from './hooks/use-status-drawer'
 import { useSessionStatusPresence } from './hooks/use-status-presence'
 import { shouldConvertPasteToAttachment } from './large-paste'
-import { LocalSetupCard } from './local-setup-card'
 import { ActionBadges } from './micro-actions'
 import { chipTypedPathOnSpace, pathifyRefs } from './path-refs'
 import { QueuePanel } from './queue-panel'
@@ -1275,7 +1274,7 @@ export function ChatBar({
             them out here is what makes that impossible rather than excluded. */}
         <div
           className={cn(
-            'z-30 flex flex-col',
+            'group/composer-dock z-30 flex flex-col',
             poppedOut ? 'fixed max-w-[calc(100vw-1.5rem)]' : 'absolute bottom-0 left-1/2 max-w-full -translate-x-1/2'
           )}
           data-popped-out={poppedOut ? '' : undefined}
@@ -1482,7 +1481,7 @@ export function ChatBar({
                   className={cn(
                     'relative z-1 flex min-h-0 w-full flex-col gap-(--composer-row-gap) overflow-hidden rounded-[inherit] px-(--composer-surface-pad-x) py-(--composer-surface-pad-y) transition-opacity duration-200 ease-out',
                     scrolledUp
-                      ? 'opacity-30 group-hover/composer:opacity-100 group-focus-within/composer-surface:opacity-100'
+                      ? 'opacity-30 group-hover/composer-dock:opacity-100 group-focus-within/composer-dock:opacity-100'
                       : 'opacity-100'
                   )}
                   data-slot="composer-fade"
@@ -1496,7 +1495,6 @@ export function ChatBar({
                     onUndone={clearDraft}
                     readLiveText={syncDraftFromEditor}
                   />
-                  <LocalSetupCard busy={busy} guidedChat={guidedChat} />
                   <VoiceActivity state={voiceActivityState} />
                   <VoicePlaybackActivity />
                   {queueEdit && editingQueuedPrompt && (

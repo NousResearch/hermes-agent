@@ -10,7 +10,7 @@ import hashlib
 import json
 import re
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any
 
@@ -27,7 +27,7 @@ def _iso_timestamp(value: Any) -> str:
         return ""
     if (ts := coerce_epoch(value)) is None:
         return str(value)  # corrupt cell: odd-looking date, not an aborted export
-    return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+    return datetime.fromtimestamp(ts, tz=UTC).isoformat().replace("+00:00", "Z")
 
 
 def _frontmatter_line(key: str, value: Any) -> str:

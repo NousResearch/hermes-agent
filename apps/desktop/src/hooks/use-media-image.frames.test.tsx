@@ -30,9 +30,11 @@ describe('inline image preview envelope (#74564)', () => {
   })
 
   const maxWidth = Number(stylesheet.match(/--image-preview-max-width:\s*([\d.]+)rem/)?.[1])
+
   const heightClamp = stylesheet.match(
     /--image-preview-height:\s*clamp\(([\d.]+)rem,\s*calc\(var\(--vsq\)\s*\*\s*([\d.]+)\),\s*([\d.]+)rem\)/
   )
+
   const [floor, vsqFactor, ceiling] = (heightClamp?.slice(1) ?? []).map(Number)
 
   it('guarantees a landscape frame can span the full preview width', () => {
@@ -62,9 +64,7 @@ describe('inline image preview envelope (#74564)', () => {
   })
 
   it('keeps the natural-size cap so a small image is never upscaled', () => {
-    const { result } = renderHook(() =>
-      useMediaImage('/home/user/out/shot.png', 16 / 9, { width: 640, height: 360 })
-    )
+    const { result } = renderHook(() => useMediaImage('/home/user/out/shot.png', 16 / 9, { width: 640, height: 360 }))
 
     expect(String(result.current.frameStyle?.width)).toContain('640px')
   })

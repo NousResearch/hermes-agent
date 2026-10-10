@@ -174,7 +174,7 @@ class TestMcpInvocationUsesResolvedCommand:
                  return_value=True,
              ) as mock_probe:
             cua_backend_driver._cua_driver_supports_no_overlay.cache_clear()
-            cmd, args = _resolve_mcp_invocation("/usr/bin/cua-driver")
+            cmd, _args = _resolve_mcp_invocation("/usr/bin/cua-driver")
         assert cmd == "/opt/relocated/cua-driver"
         # The support probe must be called with the manifest-resolved
         # command, not the input driver_cmd argument.

@@ -118,7 +118,8 @@ import { desktopSettings } from './settings'
 
 /** Pane, status bar and titlebar slots; see `./areas` for the mount rules. */
 export { PANES_AREA, STATUSBAR_AREAS, TITLEBAR_AREAS } from './areas'
-export type { PluginProfileRoute } from './profile-route'
+/** The plugin authoring contract (`HermesPlugin`, `PluginContext`, `ctx.*` door types). */
+export type * from './plugin-contract'
 
 // -- state: readonly views over the app's live atoms -------------------------
 
@@ -1620,10 +1621,11 @@ export const host = {
 
 // -- react bridge -------------------------------------------------------------
 
-export type { DesktopSettingKey, DesktopSettingValues } from './settings'
+export type { PluginProfileRoute } from './profile-route'
 
 // -- ui: the design language --------------------------------------------------
 
+export type { DesktopSettingKey, DesktopSettingValues } from './settings'
 /** THE whole Capabilities surface (Skills / Tools / MCP tabs, installed
  *  lists, full-skill detail pane, embedded hub picker with one-click
  *  installs). For plugin dialogs pass `embedded` (tab state stays local —
@@ -1708,6 +1710,7 @@ export {
   PanelRowMenu,
   PanelSectionLabel
 } from '@/app/overlays/panel'
+
 export {
   type ProfileGroupHeaderContribution,
   type ProfileGroupRoute,
@@ -1718,7 +1721,6 @@ export {
   type SidebarNavContribution,
   WORKSPACE_PAGE_HEADER_AREA
 } from '@/app/routes'
-
 /** Appearance settings' plugin seam: register a render contribution at
  *  `APPEARANCE_AREAS.extra` to add controls at the end of the Appearance page.
  *  `ColorSwatches` is the app's own swatch grid (profile rail / project dialog
@@ -1849,18 +1851,6 @@ export { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 export { Textarea } from '@/components/ui/textarea'
 export { Tip, Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 export type { GatewayEventListener } from '@/contrib/events'
-export type {
-  HermesPlugin,
-  PluginContext,
-  PluginContribution,
-  PluginNativeNotificationInput,
-  PluginNotificationAction,
-  PluginOs,
-  PluginRestOptions,
-  PluginSettingsPage,
-  PluginSettingsSubpage,
-  PluginStorage
-} from '@/contrib/plugin'
 /** Mount-scoped contribution: while the rendering component is mounted, its
  *  children render in the target area's slot; unmount disposes it. Use for
  *  page-owned chrome (a page's titlebar control leaves with the page) —

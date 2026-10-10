@@ -19,7 +19,7 @@ from pathlib import Path
 
 _PROTOCOL_HEADING = "## Messaging other agents"
 # The legacy section through the next H2 heading (or EOF), plus the blank lines before it.
-_LEGACY_PROTOCOL_RE = re.compile(r"\n*" + re.escape(_PROTOCOL_HEADING) + r"[ \t]*\n.*?(?=\n## |\Z)", re.S)
+_LEGACY_PROTOCOL_RE = re.compile(r"\n*" + re.escape(_PROTOCOL_HEADING) + r"[ \t]*\n.*?(?=\n## |\Z)", re.DOTALL)
 
 
 def strip_legacy_protocol(text: str) -> str:

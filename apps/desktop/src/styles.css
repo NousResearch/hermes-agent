@@ -1102,6 +1102,62 @@
   }
 }
 
+/* Pure-CSS edge fade for a scroller (FadeScroll). From each edge inward the
+   mask is `pad` of fully hidden content, then `size` of gradient up to fully
+   visible. The pad is for the scroller's own padding, so the gradient starts
+   at the content instead of spending itself on empty space. Both lengths are
+   scaled by a 0..1 progress that the scroller's own scroll position animates
+   (scroll-driven animations, Chromium 115+), so an edge only fades while
+   content is clipped behind it: progress rests at 0, so a list that fits
+   (inactive timeline, no animation) and a browser without support are never
+   dimmed. The progress is a registered <number> so the keyframes can
+   interpolate it, and an edge is fully faded in once `pad + size` px have
+   been scrolled. */
+@property --scroll-fade-top {
+  syntax: '<number>';
+  initial-value: 0;
+  inherits: false;
+}
+
+@property --scroll-fade-bottom {
+  syntax: '<number>';
+  initial-value: 0;
+  inherits: false;
+}
+
+@keyframes scroll-fade-top {
+  to {
+    --scroll-fade-top: 1;
+  }
+}
+
+@keyframes scroll-fade-bottom {
+  from {
+    --scroll-fade-bottom: 1;
+  }
+}
+
+@utility scroll-fade-y {
+  --scroll-fade-size: 1.25rem;
+  --scroll-fade-pad: 0px;
+
+  mask-image: linear-gradient(
+    to bottom,
+    transparent calc(var(--scroll-fade-pad) * var(--scroll-fade-top)),
+    #000 calc((var(--scroll-fade-pad) + var(--scroll-fade-size)) * var(--scroll-fade-top)),
+    #000 calc(100% - (var(--scroll-fade-pad) + var(--scroll-fade-size)) * var(--scroll-fade-bottom)),
+    transparent calc(100% - var(--scroll-fade-pad) * var(--scroll-fade-bottom))
+  );
+  animation:
+    scroll-fade-top linear both,
+    scroll-fade-bottom linear both;
+  /* After the shorthand: it resets the timeline. */
+  animation-timeline: scroll(self y), scroll(self y);
+  animation-range:
+    0 calc(var(--scroll-fade-pad) + var(--scroll-fade-size)),
+    calc(100% - var(--scroll-fade-pad) - var(--scroll-fade-size)) 100%;
+}
+
 /* The guided-onboarding thread is marked with [data-thread-type='onboarding']
    — the hook for onboarding-only transcript styling. */
 
@@ -2058,6 +2114,10 @@ body.guest-pointer-lock :is(webview, iframe) {
 
 [data-slot='composer-root'][data-thread-scrolled-up] {
   --composer-fill: color-mix(in srgb, var(--dt-card) 80%, transparent);
+}
+
+[data-slot='composer-dock']:is(:hover, :focus-within) [data-slot='composer-root'][data-thread-scrolled-up] {
+  --composer-fill: color-mix(in srgb, var(--dt-card) 88%, transparent);
 }
 
 /* Tool/thinking blocks now live at message-text alignment (no leading

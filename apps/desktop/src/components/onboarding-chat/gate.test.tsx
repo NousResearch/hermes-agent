@@ -40,9 +40,7 @@ describe('OnboardingChatGate', () => {
     const { OnboardingChatGate, gate, onboarding } = await loadWindow()
 
     onboarding.requestDesktopOnboarding('No provider configured')
-    render(
-      <OnboardingChatGate enabled onKickoff={neverKicksOff} requestGateway={unseenFirstRun} runsIntro={false} />
-    )
+    render(<OnboardingChatGate enabled onKickoff={neverKicksOff} requestGateway={unseenFirstRun} runsIntro={false} />)
 
     await waitFor(() => expect(onboarding.$desktopOnboarding.get().requested).toBe(true))
     expect(gate.$onboardingGate.get().phase).toBe('idle')

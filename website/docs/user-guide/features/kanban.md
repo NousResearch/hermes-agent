@@ -1287,8 +1287,9 @@ Subscriptions created from inside the chat (`/kanban create`, `kanban_create`) r
 | `wake` | no | yes | You only want the agent to act on the event, with no separate ping. |
 
 Desktop/TUI consumers also honor the stored delivery mode. Newly auto-subscribed tasks explicitly use
-`notify+wake`; existing `notify` subscriptions remain passive and are not migrated. To request turns for
-an existing subscription, re-subscribe with `--delivery-mode notify+wake`. Delivery requires its owning
+`notify+wake`. Existing `notify` subscriptions are now treated as passive: older Desktop/TUI versions
+woke the agent despite that stored mode. They are not migrated automatically. To keep receiving turns
+for an existing subscription, re-subscribe with `--delivery-mode notify+wake`. Delivery requires its owning
 Desktop/TUI session to remain live: a subscription alone does not keep a detached idle session resident.
 The TUI's pending wake buffer is in memory; it is not a crash-recoverable delivery queue and does not
 guarantee retry after a rejected turn submission.

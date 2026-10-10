@@ -403,12 +403,16 @@ def _guarded_write(name: str, skill_dir: Path, target: Path, action: str, label:
         original = target.read_text(encoding="utf-8-sig")
     from hermes_constants import mkdir_under_hermes_home
     mkdir_under_hermes_home(target.parent)
-    atomic_write_text(target, content, preserve_mode=True, create_mode=0o644)
+    # newline="": skill files are hashed byte-for-byte to decide whether `hermes update` still
+    # owns them (skills_sync._dir_hash). Platform newline translation would turn a whole LF
+    # SKILL.md into CRLF on Windows, and that alone flips a bundled skill to `user_modified`
+    # forever — even when the write changed nothing else.
+    atomic_write_text(target, content, preserve_mode=True, create_mode=0o644, newline="")
     scan_error = _security_scan_skill(skill_dir)
     if not scan_error:
         return None
     if original is not None:
-        atomic_write_text(target, original, preserve_mode=True)
+        atomic_write_text(target, original, preserve_mode=True, newline="")
     else:
         target.unlink(missing_ok=True)
     return _err(scan_error)

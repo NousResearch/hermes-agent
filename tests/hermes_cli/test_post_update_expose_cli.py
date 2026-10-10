@@ -137,7 +137,7 @@ class TestExposeCli:
 
     @posix_only
     def test_leaves_another_installs_wrapper_alone(self, fake_install):
-        home, root = fake_install
+        home, _root = fake_install
         other = "/somewhere/else/checkout"
         wrapper_dir = home / ".local" / "bin"
         wrapper_dir.mkdir(parents=True)

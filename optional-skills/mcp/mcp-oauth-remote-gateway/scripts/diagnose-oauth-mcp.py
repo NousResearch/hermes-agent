@@ -110,7 +110,7 @@ def main():
         print(f"stored expires_at in {round((exp - time.time())/60)} min")
 
     # Step 1: stored token
-    ok, expired, status, txt = _mcp_initialize(mcp_url, tok["access_token"])
+    ok, expired, status, _txt = _mcp_initialize(mcp_url, tok["access_token"])
     print(f"[1] stored-token initialize -> HTTP {status} ok={ok} expired={expired}")
     if ok:
         print("BRANCH=TOKEN_OK  -> stored token works; 'not connected' is the breaker (7). Restart the gateway.")

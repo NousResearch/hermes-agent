@@ -7,8 +7,8 @@ of that this module stages what a real user machine looks like to the installer 
   the official clone URLs are rewritten to by the sandbox's own ``~/.gitconfig``, plus a ``git``
   wrapper that reports the official URL for ``remote get-url origin`` (``insteadOf`` would
   otherwise expose the local path and send the updater down the fork path);
-* the real host uv on PATH as an optional warm-cache shortcut; the installer
-  still rejects a version below its PM pin and provisions the pinned artifact;
+* the real host uv on PATH, which the installer must ignore: it always provisions the pinned
+  PM artifact;
 * ``TMPDIR`` inside the sandbox root (the host's is not writable in the sandbox).
 """
 

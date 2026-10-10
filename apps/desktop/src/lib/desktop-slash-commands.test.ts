@@ -7,7 +7,9 @@ import {
   type DesktopSlashArgumentMode,
   desktopSlashCommandArgumentMode,
   desktopSlashUnavailableMessage,
+  desktopSubcommandUnavailableMessage,
   filterDesktopCommandsCatalog,
+  filterDesktopSubcommandCompletions,
   isDesktopSlashCommand,
   isDesktopSlashExtensionCommand,
   isDesktopSlashSuggestion,
@@ -87,6 +89,52 @@ describe('desktop slash command curation', () => {
     expect(desktopSlashCommandArgumentMode('/btw')).toBe('text')
     expect(resolveDesktopCommand('/lcm')?.surface).toEqual({ kind: 'exec' })
     expect(desktopSlashCommandArgumentMode('/lcm')).toBe('text')
+  })
+
+  it('hands the /skills write-approval subcommands to the backend, keeping the hub mutations off the wire', () => {
+    // #98330: the registry declares `desktop_subcommands` on /skills so the
+    // review slice (pending/approve/reject/diff/approval) is exec-routed
+    // while the CLI-hub mutations (search/install/…) stay refused — an
+    // allowlisted invocation execs, everything else renders the gate message.
+    expect(isDesktopSlashCommand('/skills', 'pending')).toBe(true)
+    expect(isDesktopSlashCommand('/skills', '  approve 9f2c1a ')).toBe(true)
+
+    for (const sub of ['reject 9f2c1a', 'diff 9f2c1a', 'approval on']) {
+      expect(isDesktopSlashCommand('/skills', sub)).toBe(true)
+    }
+
+    // The exec gate is desktopSubcommandUnavailableMessage: the hub mutations
+    // render a refusal message instead of reaching the wire, and a bare
+    // /skills never execs into the interactive hub from the desktop.
+    expect(desktopSubcommandUnavailableMessage('/skills', 'search')).toContain('not available in the desktop app')
+    expect(desktopSubcommandUnavailableMessage('/skills', 'install gif-search')).toContain(
+      'not available in the desktop app'
+    )
+    expect(desktopSubcommandUnavailableMessage('/skills', 'audit')).toContain('not available in the desktop app')
+    expect(desktopSubcommandUnavailableMessage('/skills', '')).toContain('needs a subcommand here')
+    expect(desktopSubcommandUnavailableMessage('/skills', '   ')).toContain('needs a subcommand here')
+    expect(desktopSubcommandUnavailableMessage('/skills', 'pending')).toBeNull()
+
+    // Completion never suggests a subcommand the gate would refuse.
+    const subs = (items: readonly { text?: string }[]) => items.map(item => item.text)
+    expect(
+      subs(
+        filterDesktopSubcommandCompletions('/skills ', [{ text: 'pending review' }, { text: 'install demo' }], {
+          isArgCompletion: true
+        })
+      )
+    ).toEqual(['pending review'])
+    expect(
+      subs(filterDesktopSubcommandCompletions('/skills ap', [{ text: 'approval on' }], { isArgCompletion: true }))
+    ).toEqual(['approval on'])
+    // Value completion for a blocked hub mutation stays empty.
+    expect(
+      filterDesktopSubcommandCompletions('/skills install ', [{ text: 'demo' }], { isArgCompletion: true })
+    ).toEqual([])
+    // Command-token completions pass through untouched.
+    expect(subs(filterDesktopSubcommandCompletions('/sk', [{ text: '/skills' }], { isArgCompletion: false }))).toEqual([
+      '/skills'
+    ])
   })
 
   it('groups complete.slash rows by backend kind, not the desktop table', () => {

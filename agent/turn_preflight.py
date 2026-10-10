@@ -51,7 +51,7 @@ class PreflightGateVerdict:
     _preflight_compression_blocked: Any
     _provider_overflow_recovery_pending: Any
     _last_preflight_pressure: Any
-    result: Optional[Dict[str, Any]] = None
+    result: Optional[dict[str, Any]] = None
 
 
 def run_preflight_compression(
@@ -72,11 +72,11 @@ def run_preflight_compression(
         _should_skip_model_call_for_reference_handoff,
     )
 
-    def _done(action: str, result: Optional[Dict[str, Any]] = None) -> PreflightGateVerdict:
+    def _done(action: str, result: Optional[dict[str, Any]] = None) -> PreflightGateVerdict:
         v.action, v.result = action, result
         return v
 
-    def _exhausted_result() -> Dict[str, Any]:
+    def _exhausted_result() -> dict[str, Any]:
         return _provider_overflow_exhausted_result(
             agent, v.messages, v.conversation_history, v.api_call_count, request_pressure_tokens,
             max_compression_attempts,
@@ -232,7 +232,7 @@ class PostToolCompressionVerdict:
     ``turn_exit_reason`` set)."""
 
     end_turn: bool
-    messages: List[Dict[str, Any]]
+    messages: list[dict[str, Any]]
     active_system_prompt: Any
     conversation_history: Any
     compression_attempts: int
@@ -242,7 +242,7 @@ class PostToolCompressionVerdict:
 
 
 def compress_after_tool_results(
-    agent: Any, *, messages: List[Dict[str, Any]], system_message: Any, user_message: Any,
+    agent: Any, *, messages: list[dict[str, Any]], system_message: Any, user_message: Any,
     active_system_prompt: Any, conversation_history: Any, compression_attempts: int,
     max_compression_attempts: int, effective_task_id: Any, final_response: Any,
     turn_exit_reason: Any, current_turn_user_idx: int,

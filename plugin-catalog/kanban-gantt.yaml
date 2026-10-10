@@ -1,14 +1,18 @@
 name: kanban-gantt
 repo: https://github.com/e-is/hermes-kanban-gantt
-sha: 0bac644268c104f6afd168c5a6e2ef11b011fa56
-description: 'Gantt timeline view for the Hermes kanban boards: a full /kanban-gantt desktop page rendering any board as a timeline of real work timestamps
-  (created/started/review/done), with dependency tree connectors, live-activity arcs, filters, bulk actions, and a dockable task detail drawer. Zero API keys,
-  zero model tokens.'
+sha: 0009d8e229aaf69ce38e7d17da55871af3fe2d6e
+description: "Gantt timeline view for the Hermes kanban boards: a full /kanban-gantt desktop page rendering any board as a timeline of real work timestamps (created/started/review/done), with a collapsible tree column (boxed fold controls, tree connectors, per-board fold state, multi-parent links kept visible), an optional List view beside the timeline (task, assignee, status, last activity — the timeline stays the default), task creation (project, workspace, skills, model override, goal mode), re-parenting by drag & drop or from the drawer, live-activity arcs, filters, bulk actions, and a dockable task detail drawer. Zero API keys, zero model tokens; live updates follow the plugin's /events websocket, which a gateway turns off with KANBAN_GANTT_WS=0 (the page then polls every 60 s and shows a Refresh button). Disclosure — Desktop page plus dashboard routes that read and write the local kanban boards (create tasks with workspace path, skills, model override and goal mode; re-parent; move a task, with its children, to another board — the copy is verified there before the source rows and their links are deleted; edit status, assignee and description; bulk archive and delete); live updates over a dashboard-authenticated /events websocket, off with KANBAN_GANTT_WS=0; no third-party network."
 maintainer: e-is
 tier: community
 category: desktop
-requires_hermes: '>=0.19'
+requires_hermes: '>=0.21.5'
 docs_url: https://github.com/e-is/hermes-kanban-gantt
+version: "1.4.2"
+image: https://raw.githubusercontent.com/e-is/hermes-kanban-gantt/0009d8e229aaf69ce38e7d17da55871af3fe2d6e/docs/catalog-card.png
+screenshots:
+  - https://raw.githubusercontent.com/e-is/hermes-kanban-gantt/0009d8e229aaf69ce38e7d17da55871af3fe2d6e/docs/screenshot-en-01.png
+  - https://raw.githubusercontent.com/e-is/hermes-kanban-gantt/0009d8e229aaf69ce38e7d17da55871af3fe2d6e/docs/screenshot-en-02-details.png
+  - https://raw.githubusercontent.com/e-is/hermes-kanban-gantt/0009d8e229aaf69ce38e7d17da55871af3fe2d6e/docs/screenshot-en-06-list.png
 platforms: []
 capabilities:
   provides_tools: []

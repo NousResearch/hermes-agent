@@ -37,7 +37,7 @@ class _LoopbackProvider:
             def log_message(self, *args):
                 pass
 
-            def do_POST(self):  # noqa: N802 - BaseHTTPRequestHandler API
+            def do_POST(self):
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 provider.requests.append(body)
                 spec = provider.script.pop(0)
@@ -94,8 +94,8 @@ def acp(tmp_path, monkeypatch):
 
     import acp_adapter.session as acp_session
     import hermes_cli.config as cli_config
-    import hermes_cli.mcp_startup as mcp_startup
-    import hermes_cli.runtime_provider as runtime_provider
+    from hermes_cli import mcp_startup
+    from hermes_cli import runtime_provider
 
     monkeypatch.setattr(cli_config, "load_config", lambda *a, **k: {
         "model": {"provider": "openai-compat", "default": _MODEL, "context_length": 131072},
@@ -231,4 +231,66 @@ def test_failed_turn_boundary_is_idempotent_on_the_durable_tail_and_skips_contex
     assert len(written) == 1
     assert (messages[-1]["role"], messages[-1]["content"]) == ("assistant", PARTIAL_FAILED_TURN_NOTICE)  # a tool ran: hedge
     assert db.latest_conversation_role(sid) == "assistant"
+    db.close()
+
+
+def test_prompt_after_cancel_keeps_the_unanswered_request(acp):
+    """An unanswered request survives the next ACP prompt and its replay prefix."""
+    provider, prompt, _rows, _db, sid, _conn, server = acp
+    state = server.session_manager.get_session(sid)
+    before, real = list(state.history), state.agent.run_conversation
+    state.agent.run_conversation = lambda **kw: {
+        "final_response": None, "interrupted": True, "completed": False,
+        "messages": before + [{"role": "user", "content": "deploy build 42"}],
+    }
+    try:
+        prompt("deploy build 42")
+    finally:
+        state.agent.run_conversation = real
+
+    provider.script = [
+        {"finish_reason": "stop", "content": "done"},
+        {"finish_reason": "stop", "content": "ok"},
+    ]
+    prompt("also run the smoke tests")
+    prompt("third")
+    turn2 = provider.requests[-2]["messages"]
+    turn3 = provider.requests[-1]["messages"]
+    assert turn3[:len(turn2)] == turn2
+    assert any(
+        msg["role"] == "user" and msg["content"] == "deploy build 42\n\nalso run the smoke tests"
+        for msg in turn2
+    )
+
+
+def test_failed_turn_boundary_keeps_the_error_card_for_rehydration(tmp_path, monkeypatch):
+    """The boundary row carries the failure's error text and ``error_surface`` so a client
+    reopening the session after a restart redraws the error card, not only the notice."""
+    from types import SimpleNamespace
+
+    from agent.conversation_loop import _close_durable_failed_turn
+    from hermes_state import SessionDB
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    db = SessionDB(tmp_path / "state.db")
+    sid = "s1"
+    db.create_session(session_id=sid, source="acp", model="m")
+    db.append_message(sid, "user", "say hello")
+
+    def flush(messages):
+        db.append_message(sid, messages[-1]["role"], messages[-1]["content"],
+                          display_metadata=messages[-1].get("display_metadata"))
+
+    agent = SimpleNamespace(_session_db=db, session_id=sid, _flush_messages_to_session_db=flush,
+                            provider="opencode-go", model="deepseek-v4.1-flash")
+    messages = [{"role": "user", "content": "say hello"}]
+    _close_durable_failed_turn(agent, {"completed": False, "failed": True, "failure_reason": "timeout",
+                                       "error": "Connection error.", "messages": messages})
+
+    metadata = messages[-1]["display_metadata"]
+    assert metadata["error"] == "Connection error."
+    assert metadata["error_surface"]["code"] == "timeout"
+    assert metadata["error_surface"]["provider"] == "opencode-go"
+    stored = db.get_messages(sid)[-1]["display_metadata"]
+    assert (stored if isinstance(stored, dict) else json.loads(stored))["error_surface"]["code"] == "timeout"
     db.close()

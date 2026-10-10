@@ -2,6 +2,8 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
+import { resolveDesktopHermesHome } from './data-paths'
+
 // macOS apps launched from Finder/Dock inherit only /usr/bin:/bin:/usr/sbin:/sbin,
 // which misses Homebrew and user-installed CLI tools (codex, git credential
 // helpers). Hermes' own managed tools need no PATH help — the backend composes
@@ -182,16 +184,51 @@ function profileBackendParentEnv({
 }
 
 /**
+ * PATH with the entries under the PM store (HERMES_RUNTIME_DIR, else
+ * <hermes home>/tools, as pm.environments.store_root resolves it) moved to the
+ * front, every other entry kept in order. Hermes's own children must run the
+ * store's uv/node/npm, but shell-path.ts puts the user's login-shell entries
+ * (nvm, Homebrew, ~/.local/bin) ahead of the inherited PATH, which is where
+ * `hermes desktop` put the store dirs.
+ */
+function storeFirstPath(
+  pathValue: string,
+  { currentEnv = process.env, platform = process.platform, homedir = os.homedir() }: any = {}
+) {
+  const pathModule = pathModuleForPlatform(platform)
+  const delimiter = delimiterForPlatform(platform)
+  const hermesHome = resolveDesktopHermesHome({ home: homedir, env: currentEnv, platform })
+  const roots = [currentEnv?.HERMES_RUNTIME_DIR, pathModule.join(hermesHome, 'tools')].filter(Boolean)
+
+  const owned = (entry: string) =>
+    roots.some(root => {
+      const relative = pathModule.relative(pathModule.resolve(root), pathModule.resolve(entry))
+
+      return !relative.startsWith('..') && !pathModule.isAbsolute(relative)
+    })
+
+  const entries = String(pathValue || '').split(delimiter)
+
+  return appendUniquePathEntries([entries.filter(entry => entry && owned(entry)), entries], { delimiter })
+}
+
+/**
  * The environment for the spawned Python backend. Electron knows ONE thing:
  * where the interpreter is (by convention). Everything else — managed tool
  * PATHs, browser paths, node — is composed in-process by pm when the backend
  * spawns tools. PYTHONPATH/PYTHONHOME are scrubbed so an inherited value
- * can't make the backend import modules from another checkout.
+ * can't make the backend import modules from another checkout. Store dirs
+ * already on the inherited PATH stay first (storeFirstPath).
  */
-function buildDesktopBackendEnv({ currentEnv = process.env, platform = process.platform }: any = {}) {
+function buildDesktopBackendEnv({
+  currentEnv = process.env,
+  platform = process.platform,
+  homedir = os.homedir()
+}: any = {}) {
   const delimiter = delimiterForPlatform(platform)
   const key = pathEnvKey(currentEnv, platform)
   const saneEntries = platform === 'win32' ? [] : POSIX_SANE_PATH_ENTRIES
+  const inherited = storeFirstPath(currentEnv?.[key] || '', { currentEnv, platform, homedir })
 
   return {
     PYTHONPATH: '',
@@ -203,8 +240,56 @@ function buildDesktopBackendEnv({ currentEnv = process.env, platform = process.p
     // pre-bootstrap tracebacks) still decodes with the locale default without
     // this. User's explicit setting wins. Re-port of PR #56499 (echoriver89).
     PYTHONUTF8: currentEnv?.PYTHONUTF8 ?? '1',
-    [key]: appendUniquePathEntries([currentEnv?.[key] || '', saneEntries], { delimiter })
+    [key]: appendUniquePathEntries([inherited, saneEntries], { delimiter })
   }
+}
+
+/**
+ * Spawn env for a POOLED per-profile backend (`spawnPoolBackend`).
+ *
+ * TERMINAL_CWD is the LAUNCH profile's resolved workspace. A pooled child
+ * serves ANOTHER profile (`--profile X`): stamping the app-global cwd makes
+ * that profile's placeholder/unset `terminal.cwd` sessions inherit the launch
+ * (or another) profile's workspace (#87584). Drop TERMINAL_CWD from the
+ * inherited env AND from any runtime-provided mapping (case-insensitively on
+ * Windows); the `--profile` child re-resolves its own cwd from its profile
+ * config, the same way a standalone `hermes -p X serve` would. The launch
+ * profile's own (primary) backend keeps the pin in main.ts.
+ */
+function pooledProfileBackendEnv({
+  hermesHome,
+  profile,
+  currentEnv = process.env,
+  backendEnv = {},
+  platform = process.platform,
+  fsModule = fs,
+  pathModule = pathModuleForPlatform(platform)
+}: any = {}) {
+  const parent = profileBackendParentEnv({ hermesHome, profile, currentEnv, platform, fsModule, pathModule })
+  const fold = platform === 'win32' ? (value: string) => value.toUpperCase() : (value: string) => value
+  const isTerminalCwd = (key: string) => fold(key) === 'TERMINAL_CWD'
+
+  const env = { ...parent }
+
+  for (const key of Object.keys(env)) {
+    if (isTerminalCwd(key)) {
+      delete env[key]
+    }
+  }
+
+  // The resolved root, not process.env's: on Windows it can come from the user
+  // registry, and the --profile child resolves its home under it.
+  env.HERMES_HOME = hermesHome
+
+  for (const [key, value] of Object.entries(backendEnv || {})) {
+    if (isTerminalCwd(key)) {
+      continue
+    }
+
+    env[key] = value
+  }
+
+  return env
 }
 
 export {
@@ -213,6 +298,8 @@ export {
   delimiterForPlatform,
   normalizeHermesHomeRoot,
   pathEnvKey,
+  pooledProfileBackendEnv,
   POSIX_SANE_PATH_ENTRIES,
-  profileBackendParentEnv
+  profileBackendParentEnv,
+  storeFirstPath
 }

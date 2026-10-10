@@ -832,6 +832,85 @@ describe('register() failure isolation', () => {
       restore()
     }
   })
+
+  it('a rollback disposer that throws cannot wedge the registry: the fixed source still reloads (#126338)', async () => {
+    const restore = withBlobReroute()
+    const counters = globalThis as unknown as Record<string, number | undefined>
+    counters.__wedgeFixedRegister = 0
+
+    try {
+      // v1: register() fails midway AND the disposer rolling it back throws
+      // too — the plugin's own cleanup path is buggy.
+      await loadRuntimePlugin(
+        `export default {
+          id: 'wedge-reload',
+          register(ctx) {
+            ctx.onDispose(() => { throw new Error('dispose boom') })
+            throw new Error('register boom')
+          }
+        }`,
+        'wedge-reload'
+      )
+
+      // The row reports the registration failure, not the rollback's.
+      expect($pluginRecords.get()['wedge-reload']).toMatchObject({ status: 'error', error: 'register boom' })
+
+      // v2: the file is fixed. The reload must reach the fresh register()
+      // instead of dying re-running the previous incarnation's broken
+      // disposer — the wedge that made every edit look inert until an app
+      // restart.
+      const id = await loadRuntimePlugin(
+        `export default { id: 'wedge-reload', register() { globalThis.__wedgeFixedRegister++ } }`,
+        'wedge-reload'
+      )
+
+      expect(id).toBe('wedge-reload')
+      expect(counters.__wedgeFixedRegister).toBe(1)
+      expect($pluginRecords.get()['wedge-reload']).toMatchObject({ status: 'loaded' })
+    } finally {
+      unloadRuntimePlugin('wedge-reload')
+      delete counters.__wedgeFixedRegister
+      restore()
+    }
+  })
+
+  it('unloadRuntimePlugin releases the registration even when a disposer throws (#126338)', async () => {
+    const restore = withBlobReroute()
+    const counters = globalThis as unknown as Record<string, number | undefined>
+    counters.__throwingDisposerLoads = 0
+
+    try {
+      await loadRuntimePlugin(
+        `export default {
+          id: 'throwing-disposer',
+          register(ctx) {
+            ctx.onDispose(() => { throw new Error('dispose boom') })
+            globalThis.__throwingDisposerLoads++
+          }
+        }`,
+        'throwing-disposer'
+      )
+
+      expect($pluginRecords.get()['throwing-disposer']).toMatchObject({ status: 'loaded' })
+
+      expect(() => unloadRuntimePlugin('throwing-disposer')).not.toThrow()
+
+      // The registration was released — reloading registers fresh instead of
+      // tripping over the retained disposer list.
+      const id = await loadRuntimePlugin(
+        `export default { id: 'throwing-disposer', register() { globalThis.__throwingDisposerLoads++ } }`,
+        'throwing-disposer'
+      )
+
+      expect(id).toBe('throwing-disposer')
+      expect(counters.__throwingDisposerLoads).toBe(2)
+      expect($pluginRecords.get()['throwing-disposer']).toMatchObject({ status: 'loaded' })
+    } finally {
+      unloadRuntimePlugin('throwing-disposer')
+      delete counters.__throwingDisposerLoads
+      restore()
+    }
+  })
 })
 
 describe('remote static imports are refused (catalog trust)', () => {
@@ -1105,6 +1184,98 @@ describe('manual "Reload desktop plugins" (#91503)', () => {
       unloadRuntimePlugin('replaceable')
       delete (globalThis as unknown as { __replaceableV1?: unknown }).__replaceableV1
       delete (globalThis as unknown as { __replaceableV2?: unknown }).__replaceableV2
+    }
+  })
+})
+
+describe('linked dev package: the source checkout drives the desktop half', () => {
+  it('watches the SOURCE plugin.js and a save there re-syncs the copy and reloads it', async () => {
+    const root = '/local/.hermes/desktop-plugins'
+    const sourceDir = '/local/.hermes/plugins/devpkg/desktop'
+    desktopPluginsRoot.mockResolvedValue(root)
+    readDir.mockImplementation(async dir => {
+      if (dir === root) {
+        return { entries: [{ isDirectory: true, name: 'devpkg', path: `${root}/devpkg` }] }
+      }
+
+      if (dir === `${root}/devpkg`) {
+        return {
+          entries: [
+            { isDirectory: false, name: '.hermes-package.json', path: `${root}/devpkg/.hermes-package.json` },
+            { isDirectory: false, name: 'plugin.js', path: `${root}/devpkg/plugin.js` }
+          ]
+        }
+      }
+
+      return { entries: [] }
+    })
+
+    const registerV1 = vi.fn()
+    const registerV2 = vi.fn()
+    Object.assign(globalThis, { __devV1: registerV1, __devV2: registerV2 })
+    let copy = 'export default { id: "devpkg", register: globalThis.__devV1 }'
+    readFileText.mockImplementation(async file =>
+      file.endsWith('.hermes-package.json')
+        ? { text: JSON.stringify({ linked: true, package: 'devpkg', source: sourceDir, sourceMtimeMs: 1 }) }
+        : { text: copy }
+    )
+    watchPreviewFile.mockImplementation(async file => ({ id: `w:${file}` }))
+
+    // Electron's reconcile is the one writer of the copy: it lands the new bytes.
+    const reconcileDesktopPlugins = vi.fn(async () => {
+      copy = 'export default { id: "devpkg", register: globalThis.__devV2 }'
+
+      return [`${root}/devpkg`]
+    })
+
+    Object.assign((window as unknown as { hermesDesktop: object }).hermesDesktop, { reconcileDesktopPlugins })
+
+    const createObjectURL = vi
+      .spyOn(URL, 'createObjectURL')
+      .mockImplementation(
+        blob =>
+          `data:text/javascript;base64,${Buffer.from((blob as unknown as { parts: string[] }).parts.join('')).toString('base64')}`
+      )
+
+    const revokeObjectURL = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined)
+    const RealBlob = globalThis.Blob
+    vi.stubGlobal(
+      'Blob',
+      class {
+        parts: string[]
+        constructor(parts: string[]) {
+          this.parts = parts
+        }
+      }
+    )
+
+    // watchRuntimePlugins is once-per-module and an earlier test already ran it;
+    // a fresh module graph gives this test its own change listener.
+    vi.resetModules()
+    const loader = await import('./runtime-loader')
+    const store = await import('./plugins-store')
+
+    try {
+      loader.watchRuntimePlugins()
+      await vi.waitFor(() => expect(watchPreviewFile).toHaveBeenCalledWith(`${sourceDir}/plugin.js`))
+      await store.setPluginEnabled('devpkg', true)
+      expect(registerV1).toHaveBeenCalledTimes(1)
+
+      // The developer saves the checkout, not the copy.
+      const onChange = onPreviewFileChanged.mock.calls[0][0] as (event: { id: string }) => void
+      onChange({ id: `w:${sourceDir}/plugin.js` })
+
+      await vi.waitFor(() => expect(registerV2).toHaveBeenCalledTimes(1))
+      expect(reconcileDesktopPlugins).toHaveBeenCalledTimes(1)
+      // The replaced copy's watch is re-bound to the new inode.
+      expect(stopPreviewFileWatch).toHaveBeenCalledWith(`w:${root}/devpkg/plugin.js`)
+    } finally {
+      createObjectURL.mockRestore()
+      revokeObjectURL.mockRestore()
+      vi.stubGlobal('Blob', RealBlob)
+      loader.unloadRuntimePlugin('devpkg')
+      delete (globalThis as unknown as { __devV1?: unknown }).__devV1
+      delete (globalThis as unknown as { __devV2?: unknown }).__devV2
     }
   })
 })

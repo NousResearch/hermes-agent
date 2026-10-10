@@ -14,6 +14,7 @@ import os
 import re
 import shutil
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 
 from hermes_cli._subprocess_compat import harden_git_argv, noninteractive_git_env
@@ -285,7 +286,22 @@ def review_list(cwd: str, scope: str, base_ref: str | None) -> dict:
 
 def _all_add_diff(cwd: str, file_path: str) -> str:
     """Synthesized all-add diff for an untracked file (``--no-index`` exits non-zero by design)."""
+    if not (Path(cwd) / file_path).is_file():
+        return ""
     return _git(cwd, ["diff", "--no-index", "--", os.devnull, file_path])[1]
+
+
+def _single_file_diff(cwd: str, args: list[str], file_path: str) -> str:
+    """Literal Git pathspecs still expand directories, including deleted ones."""
+    literal = f":(literal){file_path}"
+    names = _git_out(cwd, ["diff", *args, "--no-renames", "--name-only", "-z", "--", literal])
+    if not names:
+        return ""
+    root = Path(_git_line(cwd, ["rev-parse", "--show-toplevel"]))
+    target = (Path(cwd) / file_path).resolve()
+    if any((root / name).resolve() != target for name in names.split("\0") if name):
+        raise RuntimeError("Expected a single file, not a directory")
+    return _git_out(cwd, ["diff", *args, "--no-renames", "--", literal])
 
 
 def review_diff(cwd: str, file_path: str, scope: str, base_ref: str | None, staged: bool) -> str:
@@ -293,12 +309,12 @@ def review_diff(cwd: str, file_path: str, scope: str, base_ref: str | None, stag
         return ""
     if scope == "branch":
         base = _branch_base(cwd)
-        return _git_out(cwd, ["diff", f"{base}...HEAD", "--", file_path]) if base else ""
+        return _single_file_diff(cwd, [f"{base}...HEAD"], file_path) if base else ""
     if scope == "lastTurn":
-        return _git_out(cwd, ["diff", base_ref, "--", file_path]) if base_ref else ""
+        return _single_file_diff(cwd, [base_ref], file_path) if base_ref else ""
     if staged:
-        return _git_out(cwd, ["diff", "--cached", "--", file_path])
-    worktree = _git_out(cwd, ["diff", "--", file_path])
+        return _single_file_diff(cwd, ["--cached"], file_path)
+    worktree = _single_file_diff(cwd, [], file_path)
     return worktree if worktree.strip() else _all_add_diff(cwd, file_path)
 
 
@@ -307,10 +323,11 @@ def file_diff_vs_head(cwd: str, file_path: str) -> str:
     review_diff, never all-adds a clean tracked file; only a genuinely untracked one."""
     if not _is_dir(cwd):
         return ""
-    head = _git_out(cwd, ["diff", "HEAD", "--", file_path])
+    literal = f":(literal){file_path}"
+    head = _single_file_diff(cwd, ["HEAD"], file_path)
     if head.strip():
         return head
-    status = _git_out(cwd, ["status", "--porcelain", "--", file_path])
+    status = _git_out(cwd, ["status", "--porcelain", "--", literal])
     return _all_add_diff(cwd, file_path) if status.strip().startswith("??") else ""
 
 
@@ -340,11 +357,46 @@ def _has_staged(raw: str) -> bool:
     return any(_entry_staged(tag, xy) for tag, xy, _ in _walk_entries(raw))
 
 
+def _review_commit_env(cwd: str) -> dict[str, str]:
+    """Carry Git's effective identity into an otherwise isolated commit.
+
+    Only read-only ``git var`` queries see the original config files. Git resolves
+    local/conditional config and author/committer environment precedence in *cwd*;
+    status, staging and the commit itself retain all noninteractive isolation.
+    """
+    base = dict(os.environ)
+    env = noninteractive_git_env(base)
+    probe_env = dict(env)
+    for key in ("GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM"):
+        if key in base:
+            probe_env[key] = base[key]
+        else:
+            probe_env.pop(key, None)
+    for role in ("AUTHOR", "COMMITTER"):
+        proc = _run(["git", "var", f"GIT_{role}_IDENT"], cwd, 5, probe_env)
+        if proc is None:
+            raise RuntimeError("git identity lookup failed")
+        if proc.returncode != 0:
+            raise RuntimeError(proc.stderr.strip() or "git identity lookup failed")
+        ident = re.fullmatch(r"(.*) <([^<>]*)> -?\d+ [+-]\d{4}", proc.stdout.strip())
+        if ident is None:
+            raise RuntimeError("git returned an invalid commit identity")
+        env[f"GIT_{role}_NAME"], env[f"GIT_{role}_EMAIL"] = ident.groups()
+    return env
+
+
 def review_commit(cwd: str, message: str, push: bool) -> dict:
     """Commit the working tree; stage everything first when nothing is staged."""
+    env = _review_commit_env(cwd)
     if not _has_staged(_status_z(cwd)[1]):
         _git_ok(cwd, ["add", "-A"])
-    _git_ok(cwd, ["commit", "-m", message])
+    proc = _run(
+        ["git", *harden_git_argv(["commit", "-m", message])], cwd, _GIT_TIMEOUT, env
+    )
+    if proc is None or proc.returncode != 0:
+        raise RuntimeError(
+            (proc.stderr.strip() if proc is not None else "") or "git commit failed"
+        )
     if push:
         _review_push(cwd)
     return {"ok": True}
@@ -364,13 +416,25 @@ def review_push(cwd: str) -> dict:
     return {"ok": True}
 
 
-def review_commit_context(cwd: str) -> dict:
+def review_commit_context(cwd: str, path_allowed: Callable[[Path], bool] | None = None) -> dict:
     """Diff of what WILL commit + recent subjects, for drafting a commit message."""
     code, raw = _status_z(cwd) if _is_dir(cwd) else (1, "")
     if code != 0:
         return {"diff": "", "recent": ""}
     entries = list(_walk_entries(raw))
-    diff = _git_out(cwd, ["diff", "--cached"] if _has_staged(raw) else ["diff", "HEAD"])
+    args = ["diff", "--cached"] if _has_staged(raw) else ["diff", "HEAD"]
+    if path_allowed is None:
+        diff = _git_out(cwd, args)
+    else:
+        # Disable rename pairing so an allowed destination cannot include the
+        # old contents of a credential path excluded from the diff.
+        repo = _git_line(cwd, ["rev-parse", "--show-toplevel"])
+        if not repo:
+            return {"diff": "", "recent": ""}
+        names = _git_out(repo, [*args, "--no-renames", "--name-only", "-z"]).split("\0")
+        allowed = [f":(literal){name}" for name in names if name and path_allowed(Path(repo) / name)]
+        diff = _git_out(repo, [*args, "--no-renames", "--", *allowed]) if allowed else ""
+        entries = [entry for entry in entries if path_allowed(Path(repo) / entry[2])]
     if len(diff) > _COMMIT_CONTEXT_DIFF_MAX_CHARS:
         omitted = len(diff) - _COMMIT_CONTEXT_DIFF_MAX_CHARS
         diff = f"{diff[:_COMMIT_CONTEXT_DIFF_MAX_CHARS]}\n# diff truncated: {omitted} chars omitted\n"
@@ -458,7 +522,7 @@ def _own_pr(key: str, field: dict) -> dict | None:
     return next((n for n in (field.get("nodes") or []) if n and not n.get("isCrossRepository")), None)
 
 
-def review_pr_list(cwd: str, branches: list[str], numbers: list[int] = None) -> dict:
+def review_pr_list(cwd: str, branches: list[str], numbers: list[int] | None = None) -> dict:
     """PRs on the given branches (plus any asked for by number) — queried per branch
     rather than paging the repo's newest PRs and hoping ours are in the page."""
     not_ready = {"ghReady": False, "prs": []}
@@ -546,6 +610,17 @@ def _sanitize_branch(name: str) -> str:
     return value
 
 
+def _fetch_tracking_ref(root: str, remote: str, branch: str) -> bool:
+    """Fetch ``<remote>/<branch>`` by explicit refspec; True when the remote has the branch.
+
+    A tag-pinned narrow clone maps only the tag in ``remote.<remote>.fetch``, so a by-name
+    fetch writes FETCH_HEAD without creating the tracking ref (#125686).
+    """
+    from hermes_cli.update_cmd_check import tracking_refspec
+
+    return _git(root, ["fetch", remote, tracking_refspec(remote, branch)])[0] == 0
+
+
 def _slugify(name: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", str(name or "").strip().lower())
     slug = re.sub(r"^-+|-+$", "", slug)[:40].rstrip("-")
@@ -598,21 +673,40 @@ def _worktree_for_existing(root: str, raw_name: str) -> dict:
     if not requested:
         raise RuntimeError("Branch name is required.")
     # "origin/feature" is a remote-tracking ref, not a branch git can check out — `git worktree add <dir>
-    # origin/feature` detaches HEAD. Create a local branch with the same short name that tracks the remote
+    # origin/feature` detaches HEAD. Create a local branch of the same short name that tracks the remote
     # ref, like `git switch feature` does for a branch on exactly one remote. (Parity with the Electron op;
     # a remote gateway serves this mirror, so the desktop's convert-a-branch flow must behave identically.
     # #81724)
     remote = _remote_of_ref(root, requested)
+    fetched = False
+    if not remote and "/" in requested and not _ref_exists(root, f"refs/heads/{requested}"):
+        # A tag-pinned narrow clone has no tracking ref for any branch, so the ref-based reading
+        # above misreads "origin/feature" as a local branch. When no such local branch exists
+        # and the remote carries the branch, fetching it creates the ref; otherwise keep the
+        # local-branch reading and its error.
+        maybe_remote, maybe_branch = requested.split("/", 1)
+        if _git_line(root, ["remote", "get-url", maybe_remote]) and _fetch_tracking_ref(
+            root, maybe_remote, maybe_branch
+        ):
+            remote, fetched = maybe_remote, True
     existing = requested.split("/", 1)[1] if remote else requested
     if not remote and existing == _default_branch(root):
         _git_ok(root, ["switch", existing])
         return {"path": root, "branch": existing, "repoRoot": root}
     target = _unique_dir(os.path.join(root, ".worktrees", _slugify(existing)))
     if remote:
-        # Best-effort freshness; on failure (offline, branch gone) the last known ref is still
+        # Best-effort freshness: on failure (offline, branch gone) the last known ref is still
         # there to branch from.
-        _git(root, ["fetch", remote, existing])
-        _git_ok(root, ["worktree", "add", "--track", "-b", existing, target, requested])
+        fetched = fetched or _fetch_tracking_ref(root, remote, existing)
+        if _git(root, ["worktree", "add", "--track", "-b", existing, target, requested])[0] != 0:
+            # `--track` needs remote.<remote>.fetch to map the ref back to a remote branch; a
+            # narrow clone maps only its tag. Branch untracked, then register the branch and
+            # wire upstream, but only for a branch the fetch just proved exists: a configured
+            # refspec whose source is gone makes every later plain `git fetch` fail.
+            _git_ok(root, ["worktree", "add", "-b", existing, target, requested])
+            if fetched:
+                _git(root, ["remote", "set-branches", "--add", remote, existing])
+                _git(root, ["branch", f"--set-upstream-to={requested}", existing])
     else:
         _git_ok(root, ["worktree", "add", target, existing])
     return {"path": target, "branch": existing, "repoRoot": root}
@@ -635,7 +729,11 @@ def worktree_add(cwd: str, options: dict) -> dict:
         # (offline / no remote) are ignored — git uses the local ref or raises a clear error
         # below if it is entirely missing.
         if base.startswith("origin/"):
-            _git(root, ["fetch", "origin", base[len("origin/"):]])
+            remote_branch = base[len("origin/"):]
+            # `base` comes straight from the API, and inside a refspec a glob such as
+            # "origin/*" would fetch every branch: only fetch valid branch names.
+            if _git(root, ["check-ref-format", "--branch", remote_branch])[0] == 0:
+                _fetch_tracking_ref(root, "origin", remote_branch)
             # Branching off a remote-tracking ref auto-wires upstream tracking; the user wants
             # a standalone local branch (Electron-op parity).
             args.append("--no-track")

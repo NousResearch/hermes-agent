@@ -16,6 +16,7 @@ import { createContext, type ReactNode, useCallback, useContext, useEffect, useM
 import { $registryVersion } from '@/contrib/registry'
 import { matchesQuery, useMediaQuery } from '@/hooks/use-media-query'
 import { persistString, persistStringRecord, storedString, storedStringRecord } from '@/lib/storage'
+import { recordFeatureUse } from '@/store/desktop-metrics'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { $connection } from '@/store/session'
 import { setAppearance } from '@/store/translucency'
@@ -30,9 +31,9 @@ import {
 } from './backend-sync'
 import { $chatFontFamily, resolveChatFontFamily } from './chat-font'
 import { harmonize, readableInk } from './color'
-import { BUILTIN_THEME_LIST, DEFAULT_SKIN_NAME, DEFAULT_TYPOGRAPHY, nousTheme } from './presets'
+import { BUILTIN_THEME_LIST, DEFAULT_SKIN_NAME, DEFAULT_TYPOGRAPHY, nousTheme, RETIRED_SKINS } from './presets'
 import { retintTheme } from './retint'
-import type { DesktopTheme, DesktopThemeColors } from './types'
+import type { DesktopTheme, DesktopThemeColors, DesktopThemeTypography } from './types'
 import { $userThemes, listAllThemes, resolveTheme } from './user-themes'
 
 // Legacy global skin (pre per-profile themes). Still the inheritance fallback
@@ -47,9 +48,6 @@ const PROFILE_MODES_KEY = 'hermes-desktop-profile-modes-v1'
 // Last active profile, recorded so the boot-time paint can pick that profile's
 // theme before the gateway reports which profile actually launched.
 const LAST_PROFILE_KEY = 'hermes-desktop-active-profile-v1'
-// Skins that no longer exist. A profile still pointing at one falls back to
-// DEFAULT_SKIN_NAME rather than painting a name nothing resolves.
-const RETIRED_SKINS = new Set(['nous-light', 'default', 'gold'])
 
 export type ThemeMode = 'light' | 'dark' | 'system'
 
@@ -77,8 +75,33 @@ const normalizeMode = (value: string | null): ThemeMode =>
 // it *is* the legacy global slot, so it reads/writes the global directly. Named
 // profiles get their own entry and fall back to that global until assigned, so
 // unassigned profiles and pre-per-profile installs stay on the global value.
+// Named assigns also mirror into the global slot so a Bot Mode gateway hop onto
+// a never-themed bot inherits the look the user just picked (#101216).
+// Persists from stored (write-on-read). Idempotent. No-op when records disagree.
+const promoteUnanimousLegacy = (record: string, legacy: string): void => {
+  if (storedString(legacy) != null) {
+    return
+  }
+
+  const values = Object.values(storedStringRecord(record)).filter(Boolean)
+
+  if (values.length === 0) {
+    return
+  }
+
+  const unique = [...new Set(values)]
+
+  if (unique.length === 1) {
+    persistString(legacy, unique[0])
+  }
+}
+
 const profilePref = <T extends string>(record: string, legacy: string, normalize: (v: string | null) => T) => {
-  const stored = (profile: string): string | null => storedStringRecord(record)[profile] ?? storedString(legacy)
+  const stored = (profile: string): string | null => {
+    promoteUnanimousLegacy(record, legacy)
+
+    return storedStringRecord(record)[profile] ?? storedString(legacy)
+  }
 
   return {
     /** The pick as written, un-normalized. */
@@ -89,6 +112,7 @@ const profilePref = <T extends string>(record: string, legacy: string, normalize
         persistString(legacy, value)
       } else {
         persistStringRecord(record, { ...storedStringRecord(record), [profile]: value })
+        persistString(legacy, value)
       }
     }
   }
@@ -224,6 +248,28 @@ const mixesFor = (isDark: boolean): Record<string, string> => ({
   '--theme-mix-bubble': isDark ? '46%' : '0%'
 })
 
+const TYPOGRAPHY_KNOB_VARS = {
+  baseSize: '--dt-base-size',
+  lineHeight: '--dt-line-height',
+  letterSpacing: '--dt-letter-spacing'
+} as const
+
+// Optional typography knobs. They are the ONLY vars applyTheme may paint
+// inline conditionally: styles.css declares the same fallbacks on :root, so
+// a theme that stops providing one must drop the inline value — otherwise
+// the previous skin's size/leading/tracking sticks across a switch (#41766).
+function applyTypographyKnobs(root: HTMLElement, typo: Partial<DesktopThemeTypography>) {
+  for (const [key, cssVar] of Object.entries(TYPOGRAPHY_KNOB_VARS) as [keyof typeof TYPOGRAPHY_KNOB_VARS, string][]) {
+    const value = typo[key]
+
+    if (value) {
+      root.style.setProperty(cssVar, value)
+    } else {
+      root.style.removeProperty(cssVar)
+    }
+  }
+}
+
 function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark', chatFontFamily = $chatFontFamily.get()) {
   if (typeof document === 'undefined') {
     return
@@ -301,6 +347,8 @@ function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark', chatFontFamily 
   for (const [k, v] of Object.entries({ ...seeds, ...mixesFor(isDark), ...palette })) {
     root.style.setProperty(k, v)
   }
+
+  applyTypographyKnobs(root, typo)
 
   const chromeBg = chromeBackground(c.background, isDark)
 
@@ -539,12 +587,14 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 
   const setTheme = useCallback((name: string) => {
     const next = normalizeSkin(name)
+    recordFeatureUse('skins')
     setPreview(null)
     setThemeNameState(next)
     skinPref.assign(liveProfile(), next)
   }, [])
 
   const setMode = useCallback((next: ThemeMode) => {
+    recordFeatureUse('skins')
     setPreview(null)
     setModeState(next)
     modePref.assign(liveProfile(), next)

@@ -1,4 +1,4 @@
-import { spawn, type SpawnOptions, spawnSync, type SpawnSyncReturns } from 'node:child_process'
+import { execFileSync, spawn, type SpawnOptions, spawnSync, type SpawnSyncReturns } from 'node:child_process'
 import { existsSync, realpathSync, statSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -42,23 +42,11 @@ export function resolveInstallationLauncher(
   // Earlier PM installers published only to user-bin. Trust that historical
   // launcher only after its existing version surface proves exact source identity.
   if (stagedFileExists(path.join(updateRoot, 'hermes_cli', '_launchers.py'))) {
-    const defaultHome: string = platformDefaultHermesHome(os.homedir(), process.env, isWindows ? 'win32' : 'linux')
+    const extraDirs: string[] = isWindows ? [path.join(path.dirname(updateRoot), 'bin')] : []
 
-    const dirs: string[] = isWindows
-      ? [
-          path.join(hermesHome || defaultHome, 'bin'),
-          path.join(defaultHome, 'bin'),
-          path.join(path.dirname(updateRoot), 'bin')
-        ]
-      : [path.join(os.homedir(), '.local', 'bin'), path.join(hermesHome || defaultHome, 'bin')]
-
-    for (const dir of new Set(dirs)) {
-      for (const name of names) {
-        const candidate: string = path.join(dir, name)
-
-        if (stagedFileExists(candidate) && launcherTargetsInstallation(candidate, updateRoot)) {
-          return candidate
-        }
+    for (const candidate of userBinLaunchers(isWindows, hermesHome, extraDirs)) {
+      if (launcherTargetsInstallation(candidate, updateRoot)) {
+        return candidate
       }
     }
   }
@@ -79,7 +67,53 @@ export function resolveInstallationLauncher(
 // these would change the command instead of naming a file.
 const CMD_UNSAFE_PATH: RegExp = /["%&|<>^\r\n]/
 
+/** Published user-bin launchers, at fixed locations: a GUI launch's PATH may omit them. */
+function userBinLaunchers(isWindows: boolean, hermesHome: string, extraDirs: string[] = []): string[] {
+  const names: string[] = isWindows ? ['hermes.exe', 'hermes.cmd'] : ['hermes']
+  const defaultHome: string = platformDefaultHermesHome(os.homedir(), process.env, isWindows ? 'win32' : 'linux')
+
+  const dirs: string[] = isWindows
+    ? [path.join(hermesHome || defaultHome, 'bin'), path.join(defaultHome, 'bin'), ...extraDirs]
+    : [path.join(os.homedir(), '.local', 'bin'), path.join(hermesHome || defaultHome, 'bin'), ...extraDirs]
+
+  return [...new Set(dirs)]
+    .flatMap((dir: string): string[] => names.map((name: string): string => path.join(dir, name)))
+    .filter(stagedFileExists)
+}
+
+/**
+ * A source install outside the canonical root (install.sh --dir, a
+ * setup-hermes.sh clone) is reachable only through the user-bin launcher it
+ * published. Return the install directory that launcher reports, when it is a
+ * Hermes source tree; the caller still resolves and probes it by root.
+ */
+export function userLauncherInstallRoot(
+  isWindows: boolean = process.platform === 'win32',
+  hermesHome: string = process.env.HERMES_HOME ?? ''
+): { launcher: string; root: string } | null {
+  for (const launcher of userBinLaunchers(isWindows, hermesHome)) {
+    const root: string | null = launcherInstallDirectory(launcher)
+
+    if (root && existsSync(path.join(root, 'hermes_cli', 'main.py'))) {
+      return { launcher, root }
+    }
+  }
+
+  return null
+}
+
 export function launcherTargetsInstallation(launcher: string, root: string): boolean {
+  try {
+    const reported: string | null = launcherInstallDirectory(launcher, root)
+
+    return reported !== null && reported === realpathSync(root)
+  } catch {
+    return false
+  }
+}
+
+/** The real install directory a launcher's `--version` reports, or null. */
+function launcherInstallDirectory(launcher: string, root?: string): string | null {
   try {
     // Node refuses to exec a .cmd directly (CVE-2024-27980), and `shell:true`
     // would hand an interpolated path to cmd.exe wholesale. Invoke cmd.exe
@@ -88,7 +122,7 @@ export function launcherTargetsInstallation(launcher: string, root: string): boo
     const viaCmd: boolean = process.platform === 'win32' && /\.cmd$/i.test(launcher)
 
     if (viaCmd && CMD_UNSAFE_PATH.test(launcher)) {
-      return false
+      return null
     }
 
     const command: string = viaCmd ? (process.env.ComSpec ?? 'cmd.exe') : launcher
@@ -100,18 +134,18 @@ export function launcherTargetsInstallation(launcher: string, root: string): boo
       timeout: 15000,
       windowsHide: true,
       windowsVerbatimArguments: viaCmd,
-      env: { ...process.env, HERMES_INSTALL_ROOT: root }
+      env: root ? { ...process.env, HERMES_INSTALL_ROOT: root } : process.env
     })
 
     if (probe.error || probe.status !== 0) {
-      return false
+      return null
     }
 
     const reported: string | undefined = /^Install directory: (.+)$/m.exec(probe.stdout)?.[1]?.trim()
 
-    return reported !== undefined && realpathSync(reported) === realpathSync(root)
+    return reported ? realpathSync(reported) : null
   } catch {
-    return false
+    return null
   }
 }
 
@@ -436,6 +470,41 @@ export function stagedUpdaterSupportsPrewrittenMarker(
   return typeof mtimeMs === 'number' && Number.isFinite(mtimeMs) && mtimeMs >= MARKER_SELF_ADOPT_EPOCH_MS
 }
 
+/**
+ * Clear the staged macOS updater helper's quarantine and, when its signature
+ * does not verify, ad-hoc sign it so Gatekeeper lets it run. Best effort.
+ */
+export function repairMacUpdaterHelper(
+  updater: string | null,
+  deps: { isMac: boolean; log: (line: string) => void }
+): void {
+  if (!deps.isMac || !updater) {
+    return
+  }
+
+  try {
+    execFileSync('/usr/bin/xattr', ['-cr', updater], { stdio: 'ignore' })
+  } catch (err) {
+    deps.log(`[updates] macOS updater helper quarantine repair skipped: ${(err as Error).message}`)
+  }
+
+  try {
+    execFileSync('/usr/bin/codesign', ['--verify', updater], { stdio: 'ignore' })
+
+    return
+  } catch {
+    // Unsigned or invalid helper. Apply a local ad-hoc signature so Gatekeeper
+    // does not block the staged updater before it can run.
+  }
+
+  try {
+    execFileSync('/usr/bin/codesign', ['--force', '--sign', '-', updater], { stdio: 'ignore' })
+    deps.log('[updates] repaired macOS updater helper signature')
+  } catch (err) {
+    deps.log(`[updates] macOS updater helper signature repair skipped: ${(err as Error).message}`)
+  }
+}
+
 export interface SpawnUpdaterProcessDeps {
   isWindows?: boolean
   spawnProcess?: (command: string, args: string[], options: SpawnOptions) => UpdaterChild
@@ -462,6 +531,67 @@ export function spawnUpdaterProcess(
   child.unref()
 
   return child
+}
+
+/**
+ * Stop a hand-off the Desktop has given up on (C2 timeout), so a script that
+ * starts late cannot run an update the UI already reported as "did not start".
+ * POSIX: the detached launcher leads its own process group — kill the group.
+ * Windows: the `cmd start /b` wrapper exits at once and PowerShell outlives it,
+ * so stop the wrapper's recorded children that carry this Desktop's
+ * `-DesktopPid` (a reused pid never matches both), then the wrapper's tree if
+ * it is still running. Best effort; the script is adopt-only besides (A4).
+ */
+export function killHandoffTree(
+  child: UpdaterChild & { exitCode?: number | null; signalCode?: string | null },
+  {
+    isWindows = process.platform === 'win32',
+    desktopPid = process.pid,
+    kill = process.kill.bind(process),
+    spawnProcess = spawn
+  }: {
+    isWindows?: boolean
+    desktopPid?: number
+    kill?: typeof process.kill
+    spawnProcess?: typeof spawn
+  } = {}
+): void {
+  const pid = child.pid
+
+  if (!Number.isInteger(pid) || !pid || pid <= 0) {
+    return
+  }
+
+  if (!isWindows) {
+    try {
+      kill(-pid, 'SIGKILL')
+    } catch {
+      try {
+        kill(pid, 'SIGKILL')
+      } catch {
+        // Already gone.
+      }
+    }
+
+    return
+  }
+
+  const wrapperRunning = child.exitCode == null && child.signalCode == null
+
+  const command =
+    `Get-CimInstance Win32_Process -Filter 'ParentProcessId=${pid}' | ` +
+    `Where-Object { $_.CommandLine -match '-DesktopPid\\s+${desktopPid}(\\s|$)' } | ` +
+    `ForEach-Object { taskkill.exe /PID $_.ProcessId /T /F | Out-Null }` +
+    (wrapperRunning ? `; taskkill.exe /PID ${pid} /T /F | Out-Null` : '')
+
+  try {
+    spawnProcess('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], {
+      stdio: 'ignore',
+      windowsHide: true
+    }).on('error', () => {})
+  } catch {
+    // Best effort.
+  }
 }
 
 export interface UpdaterHandoffOutcome {

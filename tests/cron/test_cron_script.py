@@ -13,7 +13,7 @@ import re
 import subprocess
 import sys
 import textwrap
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -74,7 +74,7 @@ class TestJobScriptField:
 def test_cronjob_tool_rejects_stale_past_one_shot(cron_env, monkeypatch):
     from tools.cronjob_tools import cronjob
 
-    now = datetime(2026, 3, 18, 4, 30, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 3, 18, 4, 30, 0, tzinfo=UTC)
     monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
     stale = (now - timedelta(minutes=5)).isoformat()
 
@@ -96,6 +96,34 @@ class TestRunJobScript:
         success, output = _run_job_script(str(script))
         assert success is True
         assert output == "hello from script"
+
+    @pytest.mark.platforms("posix")
+    @pytest.mark.parametrize("make_interpreter, expected", [
+        (lambda d: "python3", "absolute or ~-prefixed"),
+        (lambda d: str(d / "missing" / "python3"), "not found"),
+        (lambda d: str(d), "not a file"),
+        (lambda d: (d / "python3").write_text("") or str(d / "python3"), "not executable"),
+        (lambda d: "/bin/bash", "must be a Python executable"),
+        (lambda d: (d / "python").symlink_to("/bin/bash") or str(d / "python"),
+         "must be a Python executable"),
+        (lambda d: (d / "pythonw").symlink_to(sys.executable) or str(d / "pythonw"),
+         "must be a Python executable"),
+    ], ids=["bare-name", "missing", "directory", "not-executable", "bash",
+            "python-symlink-to-bash", "pythonw"])
+    def test_configured_interpreter_is_refused_unless_a_python_path(
+        self, cron_env, tmp_path, make_interpreter, expected
+    ):
+        """#70500: a bad job ``interpreter`` fails the run with a clear message instead of
+        raising — and never runs a ``.py`` body under a non-Python image, which would let an
+        unscanned script execute as shell."""
+        from cron.scheduler_script import _run_job_script
+
+        script = cron_env / "scripts" / "job.py"
+        script.write_text('print("ran")\n')
+
+        success, output = _run_job_script(str(script), interpreter=make_interpreter(tmp_path))
+        assert success is False
+        assert expected in output
 
     def test_script_stdout_non_utf8_decoded_lossily(self, cron_env):
         """A stray non-UTF-8 byte in script stdout must not fail the run (#105582).
@@ -145,7 +173,7 @@ class TestRunJobScript:
 
         # sorted() so the probed var is deterministic across runs
         # (frozenset iteration order varies with PYTHONHASHSEED).
-        blocked_var = sorted(_HERMES_PROVIDER_ENV_BLOCKLIST)[0]
+        blocked_var = min(_HERMES_PROVIDER_ENV_BLOCKLIST)
         monkeypatch.setenv(blocked_var, "must_not_leak")
 
         script = cron_env / "scripts" / "env_probe.py"

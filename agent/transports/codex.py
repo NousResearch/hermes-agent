@@ -207,7 +207,7 @@ def _openai_prefers_native_web_search() -> bool:
         from tools.web_tools import _get_search_backend
 
         return (_get_search_backend() or "").strip().lower() == "openai-native"
-    except Exception:  # noqa: BLE001 — a probe failure must not change the request shape
+    except Exception:
         return False
 
 
@@ -591,7 +591,15 @@ def _reasoning_fields(
     elif enabled:
         if is_github_responses:
             if params.get("github_reasoning_extra") is not None:
-                fields["reasoning"] = params["github_reasoning_extra"]
+                # Request a reasoning summary so the Responses API actually returns
+                # reasoning text. Without ``summary: "auto"`` the GitHub/Copilot
+                # /responses endpoint returns reasoning items with no summary, so Hermes
+                # persists empty reasoning/thinking content for every Copilot model on
+                # the Responses API (gpt-5.4, gpt-5, ...) — the same loss the non-GitHub
+                # branch below already avoids. Verified against api.githubcopilot.com
+                # /responses: the summary is only emitted when summary="auto" is sent.
+                # See #46527.
+                fields["reasoning"] = {**params["github_reasoning_extra"], "summary": "auto"}
         else:
             fields["reasoning"] = {"effort": effort, "summary": "auto"}
             fields["include"] = include
@@ -899,16 +907,6 @@ class ResponsesApiTransport(ProviderTransport):
 
 
 # Auto-register on import
-from agent.transports import register_transport  # noqa: E402
+from agent.transports import register_transport
 
 register_transport("codex_responses", ResponsesApiTransport)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import Dict  # noqa: F401,E402
-from typing import List  # noqa: F401,E402
-from typing import Tuple  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

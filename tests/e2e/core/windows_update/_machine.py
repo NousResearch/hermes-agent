@@ -12,7 +12,7 @@ Only external edges are replaced (tests/install/README.md, "The isolation trick"
 
 * git: a bare clone of this checkout (``serve.git``) answers every canonical Hermes URL via
   ``url.<file>.insteadOf`` in a machine-owned ``GIT_CONFIG_GLOBAL``. ``serve.git`` allows
-  filtered fetches, so the installer's ``--filter=tree:0`` clone is a real partial clone,
+  filtered fetches, so the installer's ``--filter=blob:none`` clone is a real partial clone,
   as it is against GitHub. Every ``git.exe`` directory is removed from PATH, so the
   installer stages its own pinned Git, as it does on a clean Windows box.
 * the model provider: the recording loopback server (tests/fakes/fake_llm_provider.py).
@@ -262,6 +262,61 @@ class Machine:
         """Publish NEXT on main: an update becomes available the way it does for a user."""
         harness_git("-C", str(self.serve), "update-ref", "refs/heads/main", self.next)
 
+    def mint(self, parent: str, tag: str, runtime_files: tuple[str, ...] = ()) -> str:
+        """A child of ``parent`` in serve.git adding ``.hermes-e2e-<tag>`` (unpublished).
+
+        ``runtime_files`` (repo paths of modules every launch imports) each gain one harmless
+        statement naming ``tag``, so a checkout torn between ``parent`` and the child differs
+        from both commits in bytes the next launch actually runs, not only in a marker file."""
+        blob_src = self.root / f"{tag}-marker.txt"
+        blob_src.write_text(f"synthetic {tag} commit for the Windows update E2E\n", encoding="utf-8")
+        blob = harness_git("-C", str(self.serve), "hash-object", "-w", "--no-filters", str(blob_src))
+        index = self.root / f"{tag}.index"
+        env = {"GIT_INDEX_FILE": str(index),
+               "GIT_AUTHOR_NAME": "Hermes E2E", "GIT_AUTHOR_EMAIL": "e2e@hermes.invalid",
+               "GIT_COMMITTER_NAME": "Hermes E2E", "GIT_COMMITTER_EMAIL": "e2e@hermes.invalid"}
+        harness_git("-C", str(self.serve), "read-tree", parent, env=env)
+        harness_git("-C", str(self.serve), "update-index", "--add", "--cacheinfo",
+                    f"100644,{blob},.hermes-e2e-{tag}", env=env)
+        for n, rel in enumerate(runtime_files):
+            mode = harness_git("-C", str(self.serve), "ls-tree", parent, "--", rel).split(" ", 1)[0]
+            old = subprocess.run([REAL_GIT, "-C", str(self.serve), "cat-file", "blob", f"{parent}:{rel}"],
+                                 env={k: v for k, v in os.environ.items() if not k.startswith("GIT_")},
+                                 capture_output=True, timeout=120, check=True).stdout
+            edited = self.root / f"{tag}-runtime-{n}"
+            edited.write_bytes(old.rstrip(b"\n") + f'\n_E2E_UPDATE_TARGET = "{tag}"\n'.encode())
+            sha = harness_git("-C", str(self.serve), "hash-object", "-w", "--no-filters", str(edited))
+            harness_git("-C", str(self.serve), "update-index", "--cacheinfo", f"{mode},{sha},{rel}", env=env)
+        tree = harness_git("-C", str(self.serve), "write-tree", env=env)
+        index.unlink(missing_ok=True)
+        return harness_git("-C", str(self.serve), "commit-tree", tree, "-p", parent,
+                           "-m", f"e2e: synthetic {tag} commit", env=env)
+
+    def publish(self, sha: str) -> None:
+        harness_git("-C", str(self.serve), "update-ref", "refs/heads/main", sha)
+
+    def spawn_logged(self, argv: list[str], label: str, *,
+                     env_extra: dict[str, str] | None = None) -> subprocess.Popen:
+        """Start ``argv`` with its transcript streaming to disk; the caller ends it
+        (``taskkill_tree``) or waits. The crash cells kill updates mid-flight."""
+        self._seq += 1
+        log = self.logs / f"{self._seq:02d}-{label}.log"
+        started = time.monotonic()
+        proc = subprocess.Popen(argv, cwd=self.profile, env=self.env(env_extra),
+                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+
+        def pump() -> None:
+            with log.open("w", encoding="utf-8") as fh:
+                for raw in iter(proc.stdout.readline, b""):
+                    fh.write(f"[{time.monotonic() - started:7.1f}s] {_decode(raw).rstrip()}\n")
+                    fh.flush()
+
+        threading.Thread(target=pump, name=f"pump-{label}", daemon=True).start()
+        self._spawned.append(proc)
+        proc.transcript = log  # type: ignore[attr-defined]
+        return proc
+
+
     # -- running --------------------------------------------------------------
 
     def _run_logged(self, argv: list[str], label: str, *, timeout: float, cwd: Path | None = None,
@@ -377,7 +432,7 @@ class Machine:
 
     def gateway_state(self) -> dict:
         try:
-            return json.loads((self.hermes_home / "gateway_state.json").read_text(encoding="utf-8"))
+            return json.loads((self.hermes_home / "gateway_state.json").read_text(encoding="utf-8-sig"))
         except (OSError, ValueError):
             return {}
 
@@ -577,3 +632,21 @@ SOURCE_COMPLETION_MARKERS = ("completing source-update", "Preparing Node depende
 
 def source_completion_detour(run: Run) -> str | None:
     return next((m for m in SOURCE_COMPLETION_MARKERS if m in run.stdout), None)
+
+
+def descendants(proc: subprocess.Popen) -> list[Any]:
+    """The live process tree under ``proc`` (empty once it exited)."""
+    import psutil
+
+    try:
+        return psutil.Process(proc.pid).children(recursive=True)
+    except psutil.Error:
+        return []
+
+
+def taskkill_tree(pid: int) -> subprocess.CompletedProcess:
+    """``taskkill /T /F``: what Task Manager's End task tree / a power cut does to an update.
+
+    rc 0 means every process in the tree was terminated. rc 128 can still mean ``pid`` itself was
+    killed (a job member died with it mid-walk): read stdout, see ``_kill_delivered``."""
+    return subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, timeout=60)

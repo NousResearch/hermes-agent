@@ -42,12 +42,12 @@ MODELS = {
 }
 
 
-def _resolve_model() -> Tuple[str, Dict[str, Any]]:
+def _resolve_model() -> tuple[str, dict[str, Any]]:
     return resolve_static_model(
         MODELS, DEFAULT_MODEL, env_var="OPENAI_IMAGE_MODEL", config_key="openai", passthrough=True)
 
 
-def _named_endpoint(name: str) -> Tuple[str, str]:
+def _named_endpoint(name: str) -> tuple[str, str]:
     """``(base_url, api_key)`` of the user-declared custom endpoint *name* (``providers:`` /
     ``custom_providers:``), so image generation reuses a chat endpoint's URL and credential without
     duplicating the key into OpenAI variables (#83080). Unknown name → ``("", "")`` with a warning."""
@@ -62,7 +62,7 @@ def _named_endpoint(name: str) -> Tuple[str, str]:
     return str(entry.get("base_url") or "").strip().rstrip("/"), api_key
 
 
-def _resolve_endpoint() -> Tuple[str, str]:
+def _resolve_endpoint() -> tuple[str, str]:
     """``(base_url, api_key)`` — ``image_gen.openai.base_url`` → ``OPENAI_BASE_URL`` → ``""`` (SDK default);
     the env var named by ``image_gen.openai.key_env`` → ``OPENAI_API_KEY``. Only the var NAME lives in
     config.yaml; ``is_available()`` and ``generate()`` share this so they cannot disagree (#65309)."""
@@ -83,7 +83,7 @@ def _build_client(openai: Any, base_url: str, api_key: str) -> Any:
     projects with a model allow-list, and the key already carries the project (#60748)."""
     from agent.process_bootstrap import build_keepalive_http_client
 
-    kwargs: Dict[str, Any] = {"api_key": api_key, "default_headers": {"OpenAI-Project": ""}}
+    kwargs: dict[str, Any] = {"api_key": api_key, "default_headers": {"OpenAI-Project": ""}}
     if base_url:
         kwargs["base_url"] = base_url
     http_client = build_keepalive_http_client(base_url)
@@ -92,7 +92,7 @@ def _build_client(openai: Any, base_url: str, api_key: str) -> Any:
     return openai.OpenAI(**kwargs)
 
 
-def _load_image_bytes(ref: str) -> Tuple[bytes, str]:
+def _load_image_bytes(ref: str) -> tuple[bytes, str]:
     """Load ``(data, filename)`` from a URL, data URI or local path; raises on IO/network error."""
     ref = ref.strip()
     lower = ref.lower()
@@ -144,15 +144,15 @@ class OpenAIImageGenProvider(StaticImageGenProvider):
     def is_available(self) -> bool:
         return bool(_resolve_endpoint()[1]) and openai_importable()
 
-    def capabilities(self) -> Dict[str, Any]:
+    def capabilities(self) -> dict[str, Any]:
         # images.edit() accepts up to 16 source images.
         return {"modalities": ["text", "image"], "max_reference_images": 16}
 
     def generate(
         self, prompt: str, aspect_ratio: str = DEFAULT_ASPECT_RATIO, *,
-        image_url: Optional[str] = None, reference_image_urls: Optional[List[str]] = None,
+        image_url: Optional[str] = None, reference_image_urls: Optional[list[str]] = None,
         **kwargs: Any,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         prompt = (prompt or "").strip()
         aspect = resolve_aspect_ratio(aspect_ratio)
         if not prompt:
@@ -178,7 +178,7 @@ class OpenAIImageGenProvider(StaticImageGenProvider):
         # gpt-image-2 returns b64_json unconditionally and REJECTS
         # ``response_format`` as an unknown parameter. Don't send it.
         # A custom (non-catalog) model id carries no quality tier: gateways reject unknown enum values.
-        request: Dict[str, Any] = dict(model=meta["api_model"], prompt=prompt, size=size, n=1)
+        request: dict[str, Any] = dict(model=meta["api_model"], prompt=prompt, size=size, n=1)
         if meta["quality"] is not None:
             request["quality"] = meta["quality"]
         if is_edit:
@@ -207,7 +207,7 @@ class OpenAIImageGenProvider(StaticImageGenProvider):
             model=tier_id, prompt=prompt, aspect=aspect, log=logger)
         if err:
             return err
-        extra: Dict[str, Any] = {"size": size, "quality": meta["quality"]}
+        extra: dict[str, Any] = {"size": size, "quality": meta["quality"]}
         if getattr(first, "revised_prompt", None):
             extra["revised_prompt"] = first.revised_prompt
         return success_response(
@@ -218,29 +218,3 @@ class OpenAIImageGenProvider(StaticImageGenProvider):
 def register(ctx) -> None:
     """Plugin entry point — wire ``OpenAIImageGenProvider`` into the registry."""
     ctx.register_image_gen_provider(OpenAIImageGenProvider())
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'ImageGenProvider': ('agent.image_gen_provider', 'ImageGenProvider'),
-    'error_response': ('agent.image_gen_provider', 'error_response'),
-    'normalize_reference_images': ('agent.image_gen_provider', 'normalize_reference_images'),
-    'save_b64_image': ('agent.image_gen_provider', 'save_b64_image'),
-    'save_url_image': ('agent.image_gen_provider', 'save_url_image'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

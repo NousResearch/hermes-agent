@@ -29,3 +29,7 @@ JOB_DEFINITION_FIELDS = frozenset({
 # Also kept in jobs.json, though profile distributions do not refresh them: identity and operator
 # intent (``enabled`` flips only on pause/resume/trigger and terminal completion, never per fire).
 DECLARATIVE_JOB_EXTRAS = frozenset({"id", "enabled", "created_at"})
+
+def is_recurring(job: dict) -> bool:
+    """A cron/interval job (vs a one-shot); a null ``schedule`` counts as not recurring."""
+    return (job.get("schedule") or {}).get("kind") in {"cron", "interval"}

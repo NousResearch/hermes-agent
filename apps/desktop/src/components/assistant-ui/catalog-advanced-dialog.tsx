@@ -109,7 +109,12 @@ function CatalogAdvancedForm({ entry, fields, kind, onCancel, onInstall }: Catal
   const profiles = useStore($profiles)
   const [agentHalf, setAgentHalf] = useState(true)
   const [desktopHalf, setDesktopHalf] = useState(entry.hasDesktopHalf)
-  const [targetProfile, setTargetProfile] = useState(normalizeProfileKey(entry.targetProfile))
+
+  // Empty when the chat's home is no named profile: the install then goes to the chat's own home.
+  const [targetProfile, setTargetProfile] = useState(
+    entry.targetProfile ? normalizeProfileKey(entry.targetProfile) : ''
+  )
+
   const [enable, setEnable] = useState(true)
   const [force, setForce] = useState(false)
   const [pin, setPin] = useState(entry.sha ?? '')
@@ -123,8 +128,13 @@ function CatalogAdvancedForm({ entry, fields, kind, onCancel, onInstall }: Catal
   const missingCredential = fields.some(field => field.required && !credentials[field.name]?.trim())
   const nothingSelected = !agentHalf && !desktopHalf
   const known = profiles.some(profile => normalizeProfileKey(profile.name) === targetProfile)
-  const profileOptions = known ? profiles : [...profiles, { name: targetProfile }]
+  const profileOptions = known || !targetProfile ? profiles : [...profiles, { name: targetProfile }]
   const filesUrl = pluginFilesUrl(entry)
+
+  const requirements = [
+    ...(entry.requiresHermes ? [copy.requiresHermes(entry.requiresHermes)] : []),
+    ...fields.map(field => copy.envVar(field.name))
+  ]
 
   const plugin = kind === 'plugin'
 
@@ -207,7 +217,7 @@ function CatalogAdvancedForm({ entry, fields, kind, onCancel, onInstall }: Catal
           </Section>
         ) : null}
 
-        {entry.scan || entry.requirements.length > 0 ? (
+        {entry.scan || requirements.length > 0 ? (
           <Section title={copy.securityHeading}>
             {entry.scan ? (
               <p className={cn(CAPTION, SCAN_TONE[entry.scan.status])}>
@@ -215,8 +225,8 @@ function CatalogAdvancedForm({ entry, fields, kind, onCancel, onInstall }: Catal
                 {entry.scan.summary ? ` · ${entry.scan.summary}` : ''}
               </p>
             ) : null}
-            {entry.requirements.length > 0 ? (
-              <Facts mono={false} rows={[[copy.requirementsLabel, entry.requirements.join(', ')]]} />
+            {requirements.length > 0 ? (
+              <Facts mono={false} rows={[[copy.requirementsLabel, requirements.join(', ')]]} />
             ) : null}
           </Section>
         ) : null}

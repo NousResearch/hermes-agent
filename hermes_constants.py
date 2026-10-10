@@ -745,7 +745,7 @@ SCRATCH_DIR_MARKER_ENV = "HERMES_SCRATCH_DIR"
 SCRATCH_MAX_IDLE_HOURS = 24
 _SCRATCH_PRUNE_STAMP = ".last_prune"
 _SCRATCH_PRUNE_INTERVAL_SECONDS = 3600
-_scratch_pruned_once = False
+_scratch_pruned_roots: set[Path] = set()
 
 # AF_UNIX socket paths cap at 104 bytes (macOS) / 108 (Linux). Chrome appends
 # ``com.google.Chrome.XXXXXX/SingletonSocket`` (~45) and the code kernel
@@ -895,8 +895,8 @@ def get_scratch_dir(home: str | Path | None = None, *, prune: bool = True) -> Pa
 
     Every Hermes process and child gets ``TMPDIR``/``TMP``/``TEMP`` pointed here at boot (see
     :func:`export_scratch_tmp_env`), so ``tempfile`` defaults land here without call sites
-    knowing. Entries idle for ``SCRATCH_MAX_IDLE_HOURS`` are pruned at most once per process
-    and once per hour across processes (stamp file), so a fan-out of children stays cheap.
+    knowing. Each scratch root's idle entries are pruned at most once per process and once
+    per hour across processes (stamp file), so a fan-out of children stays cheap.
 
     Permissions follow :func:`apply_secure_dir_policy`, so an explicit ``HERMES_HOME_MODE`` or
     a managed/shared home is honored instead of a blanket ``0700`` (#117347).
@@ -929,10 +929,10 @@ def prune_scratch_dir(scratch: Path | None = None, max_idle_hours: float = SCRAT
 
 
 def _prune_scratch_dir_once(scratch: Path) -> None:
-    global _scratch_pruned_once
-    if _scratch_pruned_once:
+    root = scratch.resolve()
+    if root in _scratch_pruned_roots:
         return
-    _scratch_pruned_once = True
+    _scratch_pruned_roots.add(root)
     import time
     stamp = scratch / _SCRATCH_PRUNE_STAMP
     try:

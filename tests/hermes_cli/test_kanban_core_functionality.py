@@ -929,6 +929,155 @@ def test_legacy_migration_no_legacy_columns_at_all(tmp_path):
 
 
 
+_GATEWAY_CMDLINE = "/usr/bin/python -m hermes_cli.main gateway run"
+
+
+def _pin_store(monkeypatch, tmp_path, *, name=".hermes"):
+    """Point the kanban store at a temp home (NEVER the live store) and return it."""
+    store = tmp_path / name
+    (store / "kanban").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(store))
+    monkeypatch.setenv("HERMES_KANBAN_HOME", str(store))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    return store
+
+
+def _fake_live_gateway(monkeypatch):
+    """Make the OS process probe see a hermes gateway for any PID.
+
+    The record's OWN lifecycle — atomic write, version/store/PID validation,
+    owner-only clear — runs for real; only the process table is faked, because a
+    unit test cannot make pytest's own process look like a gateway.
+    """
+    monkeypatch.setattr("gateway.status._read_process_cmdline", lambda pid: _GATEWAY_CMDLINE)
+
+
+def test_dispatcher_owner_live_pid_reports_running(monkeypatch, tmp_path):
+    from gateway.kanban_watchers_common import (
+        dispatcher_active, read_dispatcher_owner, write_dispatcher_owner,
+    )
+    from hermes_cli import kanban as kb_cli
+
+    store = _pin_store(monkeypatch, tmp_path)
+    _fake_live_gateway(monkeypatch)
+
+    written = write_dispatcher_owner(store, pid=os.getpid(), home=str(store))
+    assert written == store / "kanban" / ".dispatcher.owner.json"
+    owner = read_dispatcher_owner(store)
+    assert owner and owner["version"] == 1 and owner["pid"] == os.getpid()
+    assert dispatcher_active(store) is True
+
+    running, message = kb_cli._check_dispatcher_presence()
+    assert running is True
+    assert "dispatch enabled" in message
+    assert str(os.getpid()) in message
+
+
+def test_dispatcher_owner_dead_pid_reports_not_running(monkeypatch, tmp_path):
+    import subprocess
+    import sys
+
+    from gateway.kanban_watchers_common import dispatcher_active, write_dispatcher_owner
+    from hermes_cli import kanban as kb_cli
+
+    store = _pin_store(monkeypatch, tmp_path)
+    _fake_live_gateway(monkeypatch)
+
+    child = subprocess.Popen([sys.executable, "-c", "pass"])
+    child.wait()
+    write_dispatcher_owner(store, pid=child.pid, home=str(store))
+
+    assert dispatcher_active(store) is False
+    running, message = kb_cli._check_dispatcher_presence()
+    assert running is False
+    assert "No active dispatcher" in message
+
+
+def test_dispatcher_owner_serves_custom_store_home(monkeypatch, tmp_path):
+    """A gateway under a normal HERMES_HOME may serve a custom HERMES_KANBAN_HOME.
+
+    The record's ``store`` (not its ``home``) is what proves this store is served, so
+    the two identities must not be conflated.
+    """
+    from gateway.kanban_watchers_common import read_dispatcher_owner, write_dispatcher_owner
+    from hermes_cli import kanban as kb_cli
+
+    custom_store = tmp_path / "custom-kanban-store"
+    custom_store.mkdir()
+    gateway_home = tmp_path / ".hermes"
+    gateway_home.mkdir()
+    monkeypatch.setenv("HERMES_KANBAN_HOME", str(custom_store))
+    monkeypatch.setenv("HERMES_HOME", str(gateway_home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    _fake_live_gateway(monkeypatch)
+
+    write_dispatcher_owner(custom_store, pid=os.getpid(), home=str(gateway_home))
+    owner = read_dispatcher_owner(custom_store)
+    assert owner and owner["home"] == str(gateway_home) != str(custom_store)
+
+    running, message = kb_cli._check_dispatcher_presence()
+    assert running is True
+    assert "dispatch enabled" in message
+
+
+def test_no_owner_record_reports_not_running(monkeypatch, tmp_path):
+    """A live gateway with dispatch off writes no record -> not running.
+
+    The probe must NOT consult the caller's config: disposition comes from whether a
+    dispatcher actually holds the store, so the one merged message must name both the
+    enablement flag and the standalone escape hatch.
+    """
+    from hermes_cli import kanban as kb_cli
+
+    store = _pin_store(monkeypatch, tmp_path)
+    _fake_live_gateway(monkeypatch)  # a gateway process is alive ...
+    assert not (store / "kanban" / ".dispatcher.owner.json").exists()
+
+    running, message = kb_cli._check_dispatcher_presence()
+    assert running is False
+    assert "No active dispatcher" in message
+    assert "kanban.dispatch_in_gateway" in message
+    assert "hermes kanban daemon --force" in message
+
+
+def test_cli_and_dashboard_agree_on_one_store(monkeypatch, tmp_path):
+    """Both consumers read the same store record, so their verdicts cannot diverge."""
+    from gateway.kanban_watchers_common import write_dispatcher_owner
+    from hermes_cli import kanban as kb_cli
+
+    store = _pin_store(monkeypatch, tmp_path)
+    _fake_live_gateway(monkeypatch)
+    kb.init_db()
+
+    # Import the dashboard route with pydantic's entry-point plugin scan disabled. That scan
+    # walks EVERY installed distribution (reading <dist>.egg-info/entry_points.txt); when the
+    # interpreter's install lives under the real HERMES_HOME the harness home-I/O guard refuses
+    # that read, which would fail this test for an environment reason unrelated to the probe.
+    monkeypatch.setenv("PYDANTIC_DISABLE_PLUGINS", "1")
+    from plugins.kanban.dashboard import plugin_api
+
+    def _dashboard_create(title):
+        return plugin_api.create_task(
+            plugin_api.CreateTaskBody(title=title, assignee="platform-coder"), board=None)
+
+    # No dispatcher -> CLI says not-running AND the dashboard banners the idle task.
+    cli_running, _ = kb_cli._check_dispatcher_presence()
+    assert cli_running is False
+    assert "warning" in _dashboard_create("no dispatcher")
+
+    # A live store dispatcher -> both agree it IS running (no banner).
+    write_dispatcher_owner(store, pid=os.getpid(), home=str(store))
+    cli_running, _ = kb_cli._check_dispatcher_presence()
+    assert cli_running is True
+    assert "warning" not in _dashboard_create("has dispatcher")
+
+    # The record lives under the PINNED temp store — the probe resolves THIS store, so the
+    # operator's live store is never read or written by this test.
+    assert (store / "kanban" / ".dispatcher.owner.json").exists()
+    assert kb.kanban_home() == store
+    assert tmp_path in store.parents
+
+
 
 
 

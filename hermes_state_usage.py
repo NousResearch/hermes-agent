@@ -70,6 +70,22 @@ _MODEL_USAGE_UPSERT_SQL = """INSERT INTO session_model_usage (
                    cost_source = COALESCE(excluded.cost_source, cost_source),
                    last_seen = excluded.last_seen"""
 
+_USAGE_HOURLY_UPSERT_SQL = """INSERT INTO usage_hourly (
+                   hour, session_id, billing_provider, model, task, api_call_count, input_tokens,
+                   output_tokens, cache_read_tokens, cache_write_tokens, estimated_cost_usd,
+                   actual_cost_usd, unpriced_calls
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(hour, session_id, billing_provider, model, task)
+               DO UPDATE SET
+                   api_call_count = api_call_count + excluded.api_call_count,
+                   input_tokens = input_tokens + excluded.input_tokens,
+                   output_tokens = output_tokens + excluded.output_tokens,
+                   cache_read_tokens = cache_read_tokens + excluded.cache_read_tokens,
+                   cache_write_tokens = cache_write_tokens + excluded.cache_write_tokens,
+                   estimated_cost_usd = estimated_cost_usd + excluded.estimated_cost_usd,
+                   actual_cost_usd = actual_cost_usd + excluded.actual_cost_usd,
+                   unpriced_calls = unpriced_calls + excluded.unpriced_calls"""
+
 
 # Kwargs forwarded verbatim from update_token_counts / record_auxiliary_usage into
 # _record_model_usage (the per-route attribution row).
@@ -359,12 +375,18 @@ class SessionUsageMixin:
         sess = dict(row) if (row is not None and not task) else {}
         counts = [v or 0 for v in (input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens)]
         now = time.time()
+        model = model or sess.get("model") or "unknown"
+        billing_provider = billing_provider or sess.get("billing_provider") or ""
+        estimated, actual = float(estimated_cost_usd or 0.0), float(actual_cost_usd or 0.0)
         conn.execute(_MODEL_USAGE_UPSERT_SQL, (
-            session_id, model or sess.get("model") or "unknown",
-            billing_provider or sess.get("billing_provider") or "",
-            billing_base_url or sess.get("billing_base_url") or "",
+            session_id, model, billing_provider, billing_base_url or sess.get("billing_base_url") or "",
             billing_mode or sess.get("billing_mode") or "", task or "", api_call_count or 0, *counts,
-            float(estimated_cost_usd or 0.0), float(actual_cost_usd or 0.0), cost_status, cost_source, now, now))
+            estimated, actual, cost_status, cost_source, now, now))
+        # The same delta in the hour it was spent: calendar windows read this, not the session's start.
+        unpriced = cost_status in (None, "unknown") and not (estimated or actual) and bool(counts[0] or counts[1])
+        conn.execute(_USAGE_HOURLY_UPSERT_SQL, (
+            int(now // 3600) * 3600, session_id, billing_provider, model, task or "", api_call_count or 0,
+            *counts[:4], estimated, actual, (api_call_count or 1) if unpriced else 0))
 
     def record_auxiliary_usage(
         self, session_id: str, task: str, *, model: Optional[str]=None, billing_provider: Optional[str]=None,

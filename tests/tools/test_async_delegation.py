@@ -304,6 +304,38 @@ def test_stalled_runner_is_interrupted_then_finalized(monkeypatch):
     assert _drain_one(timeout=0.5) is None
 
 
+def test_force_stalled_runner_does_not_starve_later_units(monkeypatch):
+    """A runner that ignores its stall interrupt keeps its pool thread after the monitor frees its slot;
+    every unit admitted afterwards (split units sharing one slot included) must still get a thread."""
+    _fast_stale_monitor(monkeypatch)
+    stuck, release = threading.Event(), threading.Event()
+    started = {"u-1": threading.Event(), "u-2": threading.Event()}
+
+    def unit(uid):
+        def run():
+            started[uid].set()
+            release.wait(timeout=10)
+            return {"results": [{"task_index": 0, "status": "completed"}], "total_duration_seconds": 0}
+        return run
+
+    common = dict(goals=["x"], context=None, toolsets=None, role="leaf", model="m", session_key="", max_async_children=1)
+    try:
+        wedged = ad.dispatch_async_delegation(
+            goal="wedged child", context=None, toolsets=None, role="leaf", model="m", session_key="",
+            runner=lambda: {} if stuck.wait(timeout=10) else {}, max_async_children=1,
+            progress_fn=lambda: ((0, None), False))
+        assert (_drain_for(wedged["delegation_id"], timeout=5.0) or {}).get("status") == "stalled"
+
+        assert ad.dispatch_async_delegation_batch(delegation_id="deleg_u-1", runner=unit("u-1"), **common)["status"] == "dispatched"
+        assert started["u-1"].wait(timeout=2.0), "unit queued behind the force-stalled runner's thread"
+        assert ad.dispatch_async_delegation_batch(
+            delegation_id="deleg_u-2", runner=unit("u-2"), slot_key="deleg_u-1", **common)["status"] == "dispatched"
+        assert started["u-2"].wait(timeout=2.0), "split unit queued behind the force-stalled runner's thread"
+    finally:
+        release.set()
+        stuck.set()
+
+
 def test_progressing_runner_is_never_stalled(monkeypatch):
     """A child that keeps advancing is left alone no matter how long it runs."""
     _fast_stale_monitor(monkeypatch)

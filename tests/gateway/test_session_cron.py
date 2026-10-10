@@ -133,3 +133,57 @@ async def test_owner_execution_binds_the_scheduler_cron_identity_inside_run_job(
     assert (ident.source, ident.scheduled_instant, ident.started_at) == (
         'builtin', record['scheduled_instant'], record['started_at'])
     assert current_cron_execution() is None
+
+
+def test_draining_owner_still_answers_status_and_cancel_of_admitted_cron_work(tmp_path, monkeypatch):
+    """A stop/restart sets ``_draining`` while it waits for in-flight cron work. The in-gateway
+    firer polls ``status`` until the run settles: refusing it made the firer raise
+    CronExecutionUnknown and pause the job although the run completed. New fires stay fenced."""
+    import threading
+    from cron import jobs
+    from cron.scheduler_authority import run_canonical_job
+    from gateway import run, session_cron
+    from gateway.config import GatewayConfig
+    from gateway.session import SessionStore
+    from gateway.session_authority import SessionAuthority
+    from hermes_state import SessionDB
+    from hermes_state_runtime import (RuntimeStoreError, begin_runtime_epoch, claim_session_input,
+                                      settle_session_input)
+
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    monkeypatch.setattr(jobs, 'get_job', lambda jid: {'id': jid, 'prompt': 'p', 'model': 'm'})
+    monkeypatch.setattr(run, '_load_gateway_config', lambda: {'model': {}, 'platform_toolsets': {'cli': []}})
+    db = SessionDB(tmp_path / 'state.db')
+    runner = SimpleNamespace(_draining=False, session_store=SessionStore(tmp_path / 'sessions', GatewayConfig()),
+                             adapters={})
+    authority = SessionAuthority(runner, profile_id=str(tmp_path), instance_id='test', db=db,
+                                 epoch=begin_runtime_epoch(db, instance_id='test'))
+    runner.session_authority = authority
+    admitted = threading.Event()
+    monkeypatch.setattr(authority, '_schedule', lambda ref: admitted.set())
+
+    async def probe():
+        session_cron.bind_owner(authority)
+        try:
+            firer = asyncio.create_task(asyncio.to_thread(run_canonical_job, {'id': 'job'}, execution_id='fire'))
+            assert await asyncio.to_thread(admitted.wait, 10), firer
+            runner._draining = True  # shutdown begins while the admitted run executes
+            sid = next(iter(authority.sessions))
+            row = claim_session_input(db, epoch=authority.epoch, session_id=sid)
+            assert await session_cron.operation(
+                authority, 'cancel', {'session_id': sid, 'admission_id': row['admission_id']}) == {'ok': True}
+            await asyncio.sleep(0.3)  # the firer polls status at least once during the drain
+            settle_session_input(db, epoch=authority.epoch, admission_id=row['admission_id'],
+                                 generation=row['generation'], outcome='completed',
+                                 result={'result': {'cron_result': [True, 'doc', 'answer', None]}, 'usage': {}})
+            assert await asyncio.wait_for(firer, 10) == (True, 'doc', 'answer', None)
+            with pytest.raises(RuntimeStoreError, match='runtime_draining'):
+                await session_cron.operation(authority, 'submit',
+                                             {'job_id': 'job', 'request_id': 'next', 'extra_prompt': None})
+        finally:
+            session_cron.unbind_owner(authority)
+
+    try:
+        asyncio.run(probe())
+    finally:
+        db.close()

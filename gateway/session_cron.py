@@ -106,7 +106,9 @@ RUN_JOB_FLAGS = ('_model_unreachable', '_quota_hold_seconds')
 
 async def operation(authority, name, params, actor=None):
     actor = _actor(authority, actor)
-    authority._require_admission_open()
+    # Only new work is fenced by a drain. ``recover``/``status``/``cancel`` observe or stop work
+    # already admitted, which the drain is waiting for: refusing them makes the firer give up
+    # (CronExecutionUnknown pauses the job) on every restart that overlaps a cron run.
     if name == 'recover':
         from gateway.session_local_recovery import local_identity
         if (set(params) != {'job_id', 'request_id', 'extra_prompt'}
@@ -132,6 +134,7 @@ async def operation(authority, name, params, actor=None):
         state['job'] = frozen['cron_job']
         return state
     if name == 'submit':
+        authority._require_admission_open()
         from gateway.session_authorities import owner_scope
         # The job id, jobs file and gateway config belong to the OWNING profile.
         with owner_scope(authority):
@@ -183,7 +186,7 @@ def scheduler_execution_id(job_id, request_id):
     """The scheduler's execution id this admission carries: ``_create`` admits under
     ``cron:<job>:<request_id>`` and the ticker's ``request_id`` IS its ``cron/executions`` row id."""
     prefix = 'cron:' + job_id + ':'
-    return request_id[len(prefix):] if request_id.startswith(prefix) else request_id
+    return request_id.removeprefix(prefix)
 
 
 def _run_identified(run_job, job, execution_id, **kwargs):

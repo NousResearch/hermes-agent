@@ -1,0 +1,4 @@
+{"benchmark_id":"graph-synthetic-v1","case_id":"g1","variant":"flat","accepted":true,"tokens":840,"latency_ms":1210,"cost_microusd":420,"cost_source":"synthetic-fixture-only"}
+{"benchmark_id":"graph-synthetic-v1","case_id":"g1","variant":"hierarchical","accepted":true,"tokens":910,"latency_ms":1330,"cost_microusd":455,"cost_source":"synthetic-fixture-only"}
+{"benchmark_id":"graph-synthetic-v1","case_id":"g2","variant":"flat","accepted":false,"tokens":760,"latency_ms":1160,"cost_microusd":380,"cost_source":"synthetic-fixture-only"}
+{"benchmark_id":"graph-synthetic-v1","case_id":"g2","variant":"hierarchical","accepted":true,"tokens":990,"latency_ms":1510,"cost_microusd":495,"cost_source":"synthetic-fixture-only"}

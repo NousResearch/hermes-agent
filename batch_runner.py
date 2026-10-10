@@ -264,6 +264,13 @@ def _process_single_prompt(
         try:
             # task_id ensures each task gets its own isolated VM
             result = agent.run_conversation(prompt, task_id=task_id)
+            if result.get("failed"):
+                # Provider failures (credits exhausted, rate limit, outage) come back as a
+                # result, not an exception. Kept as a sample, the run would be tombstoned as
+                # "no reasoning" or saved truncated, and resume would never retry it.
+                error = str(result.get("error") or "agent run failed")
+                print(f"❌ Error processing prompt {prompt_index}: {error}")
+                return _failure_result(prompt_index, batch_num, error)
 
             # Stats before conversion — keep the original evaluation order.
             tool_stats = _extract_tool_stats(result["messages"])

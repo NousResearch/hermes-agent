@@ -1,6 +1,7 @@
 """Tests for `hermes fallback` — chain reading, add/remove/clear, legacy migration."""
 from __future__ import annotations
 
+import json
 import types
 from pathlib import Path
 from unittest.mock import patch
@@ -226,11 +227,20 @@ class TestAddCommand:
     @pytest.mark.parametrize("picker_error", [LookupError("picker failed"), KeyboardInterrupt()],
                              ids=["exception", "ctrl-c"])
     def test_picker_failure_restores_persisted_primary_without_masking_error(
-        self, isolated_home, picker_error
+        self, isolated_home, monkeypatch, picker_error
     ):
-        """An ordinary picker exception or a Ctrl+C mid-picker must leave config.yaml's
-        ``model`` exactly as it was before ``fallback add`` started (base only handled SystemExit)."""
+        """Picker failure restores both persisted routes without dropping newly created auth
+        provider metadata or appending a fallback entry."""
         from hermes_cli import fallback_cmd
+        from hermes_cli.auth import _auth_store_lock, _load_auth_store, _save_auth_store
+
+        # Keep the simulated HOME separate from the profile under test.
+        fake_home = isolated_home / "home"
+        fake_home.mkdir()
+        monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setattr(Path, "home", lambda: fake_home)
+        with _auth_store_lock():
+            _save_auth_store({"active_provider": "anthropic", "providers": {}})
 
         primary_model = {
             "provider": "anthropic",
@@ -238,7 +248,10 @@ class TestAddCommand:
             "base_url": "https://api.anthropic.com",
             "api_mode": "anthropic_messages",
         }
-        _write_config(isolated_home, {"model": primary_model, "theme": "midnight"})
+        chain = [{"provider": "nous", "model": "Hermes-4"}]
+        _write_config(isolated_home, {
+            "model": primary_model, "theme": "midnight", "fallback_providers": chain,
+        })
 
         def failing_picker(args=None):
             from hermes_cli.config import load_config, save_config
@@ -251,6 +264,11 @@ class TestAddCommand:
                 "api_mode": "chat_completions",
             }
             save_config(cfg)
+            with _auth_store_lock():
+                store = _load_auth_store()
+                store["active_provider"] = "openrouter"
+                store["providers"]["openrouter"] = {"test_marker": "created-by-picker"}
+                _save_auth_store(store)
             raise picker_error
 
         with patch(
@@ -264,6 +282,10 @@ class TestAddCommand:
         persisted = _read_config(isolated_home)
         assert persisted["model"] == primary_model
         assert persisted["theme"] == "midnight"
+        assert persisted["fallback_providers"] == chain
+        auth = json.loads((isolated_home / ".hermes" / "auth.json").read_text(encoding="utf-8"))
+        assert auth["active_provider"] == "anthropic"
+        assert auth["providers"]["openrouter"] == {"test_marker": "created-by-picker"}
 
 # ---------------------------------------------------------------------------
 # cmd_fallback_remove

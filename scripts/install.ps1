@@ -1142,10 +1142,39 @@ function Stage-Products {
     if ($desktop) { Confirm-DesktopArtifact }
 }
 
+function Set-UserPathValue([string]$value) {
+    # The one registry choke point for the User PATH -- a named function rather
+    # than an inline call on purpose: `[Environment]`'s static setter cannot be
+    # replaced from PowerShell, so a boundary wrapper that claims not to touch
+    # the operator's real PATH has nothing to intercept. That is exactly how the
+    # 2026-10-10 leak stayed green while it wrote the real value (see
+    # tests/scripts/test_install_ps1_user_path.py).
+    [Environment]::SetEnvironmentVariable("Path", $value, "User")
+}
+
 function Set-LauncherUserPath([string]$binDir) {
+    # Inert under test isolation, the same marker the three python write points
+    # honour (hermes_cli/_launchers._register_windows_user_path,
+    # hermes_cli/_install_repair._write_user_path_raw,
+    # hermes_cli/uninstall.remove_path_from_windows_registry). pytest redirects
+    # HERMES_HOME to a sandbox, so $binDir is a throwaway `<tmp>\...\bin` -- but
+    # this function writes the operator's REAL persisted PATH, through .NET,
+    # which (unlike the python writers) ALSO downgrades the stored type from
+    # REG_EXPAND_SZ to REG_SZ and freezes every `%VAR%` entry it reads. Nothing
+    # removes the entry again, so it grows towards the 32,767-character
+    # environment block. Measured 2026-10-10: the full suite's batch b021 did
+    # exactly that -- 663 chars / 15 entries / REG_EXPAND_SZ became 802 / 16 /
+    # REG_SZ, with `%USERPROFILE%\.dotnet\tools` frozen to a literal.
+    # The whole function returns, not just the registry write: under isolation
+    # the session `$env:Path` prepend below is a side effect of the same
+    # decision, and a test process must not be mutated either.
+    if ($env:HERMES_TEST_ISOLATION) {
+        Write-Verbose "[hermes] test isolation: leaving the user PATH alone"
+        return
+    }
     $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
     if ($userPath -notlike "*$binDir*") {
-        [Environment]::SetEnvironmentVariable("Path", "$binDir;$userPath", "User")
+        Set-UserPathValue "$binDir;$userPath"
         Write-Ok "added $binDir to your user PATH (new shells pick it up)"
     }
     # The registry write only reaches shells started later. $env:Path is

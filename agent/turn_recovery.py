@@ -25,8 +25,7 @@ from agent.error_classifier import FailoverReason, classify_api_error
 from agent.message_sanitization import (
     _looks_like_corrupt_image_rejection, _looks_like_image_content_rejection, _sanitize_messages_non_ascii,
     _sanitize_messages_surrogates, _sanitize_structure_non_ascii, _sanitize_structure_surrogates,
-    _strip_images_from_messages, _strip_non_ascii,
-    close_interrupted_tool_sequence,
+    _strip_images_from_messages, _strip_non_ascii, close_interrupted_tool_sequence, record_reasoning_field_rejection,
 )
 from agent.thinking_timeout_guidance import build_thinking_timeout_guidance, is_thinking_timeout
 from agent.vision_message_prep import _provider_model_key
@@ -239,7 +238,9 @@ def recover_before_classification(
     """Recovery branches that run BEFORE ``classify_api_error``: UnicodeEncodeError
     sanitization, Anthropic fast mode with no capacity (drop ``speed`` for that model),
     provider image-content rejection (record the (provider, model);
-    build_api_request strips images from that model's requests only), and the Bedrock
+    build_api_request strips images from that model's requests only), an unknown-field
+    rejection naming a replayed reasoning key (recorded per (provider, host, model),
+    stripped on the retry), and the Bedrock
     AnthropicBedrock SDK streaming fallback. Returns ``(retry_now, active_system_prompt)``;
     the prompt may be ASCII-sanitized in place."""
     if isinstance(api_error, UnicodeEncodeError) and getattr(agent, '_unicode_sanitization_passes', 0) < 2:
@@ -295,6 +296,14 @@ def recover_before_classification(
                 "images stay in the session history.",
             )
             return True, active_system_prompt
+
+    # A strict schema rejected a replayed reasoning key BY NAME: record it per (provider, host, model)
+    # and retry once; build_api_request re-shapes api_messages without it. An unnamed upstream error
+    # never counts, and a key already recorded falls through to normal handling (no loop).
+    _sent = api_kwargs.get("messages") if isinstance(api_kwargs, dict) else None
+    if _status_ok and (_new := record_reasoning_field_rejection(agent, _err_body, _sent or api_messages)):
+        _vlines(agent, f"⚠️  {agent.model} rejected replayed {', '.join(sorted(_new))} — retrying without it for this model.")
+        return True, active_system_prompt
 
     # AnthropicBedrock SDK raises "Unexpected event order" when Bedrock errors before
     # message_start; fall back to native Converse for this session.

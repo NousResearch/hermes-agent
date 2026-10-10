@@ -3497,14 +3497,14 @@ def intent_ack_continuation_mode(agent) -> str:
 def copy_reasoning_content_for_api(agent, source_msg: dict, api_msg: dict) -> None:
     """Forward reasoning fields onto an API replay message; policy lives in ``agent.message_sanitization.apply_reasoning_content_policy``."""
     from agent.message_sanitization import apply_reasoning_content_policy
-    apply_reasoning_content_policy(source_msg, api_msg, agent._needs_thinking_reasoning_pad())
+    apply_reasoning_content_policy(source_msg, api_msg, *agent._reasoning_replay_route())
 
 
 def reapply_reasoning_echo_for_provider(agent, api_messages: list) -> int:
-    """Re-pad or strip assistant turns' reasoning_content for the CURRENT provider after a
-    fallback switch: ``api_messages`` is shaped for the primary; require-side providers
+    """Reconcile assistant turns' reasoning keys with the CURRENT route after a fallback switch or
+    a recorded field rejection: ``api_messages`` is shaped for the primary; must-echo providers
     (DeepSeek/Kimi/MiMo) 400 without the pad, strict ones (Mistral, Cerebras, Groq) 400/422
-    with it. Idempotent; returns the number of assistant turns changed.
+    with any reasoning key. Idempotent; returns the number of assistant turns changed.
 
     * Switching TO a strict provider that rejects the field (Mistral, Cerebras, Groq, SambaNova, …):
     assistant turns built under a reasoning primary carry a ``reasoning_content`` pad (often a single space
@@ -3513,7 +3513,7 @@ def reapply_reasoning_echo_for_provider(agent, api_messages: list) -> int:
     request falls back to Mistral, and Mistral 422s on the stale pad.
     """
     from agent.message_sanitization import reapply_reasoning_echo
-    return reapply_reasoning_echo(api_messages, agent._needs_thinking_reasoning_pad())
+    return reapply_reasoning_echo(api_messages, *agent._reasoning_replay_route())
 
 
 def _iter_httpx_pools_with_owner(http_client: Any):

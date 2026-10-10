@@ -246,35 +246,44 @@ def _is_openai_api_base_url(base_url: Any) -> bool:
         return False
 
 
-def _model_consumes_thought_signature(model: Any) -> bool:
-    """True for Gemini-family targets, which require tool-call ``extra_content`` (thought_signature) replay.
-
-    Every other strict provider rejects it, so it is stripped for non-Gemini targets.
-    """
-    m = str(model or "").lower()
-    return "gemini" in m or "gemma" in m
+_GEMINI_SIGNATURE_HOSTS = ("generativelanguage.googleapis.com", "aiplatform.googleapis.com")
+_GEMINI_SIGNATURE_PROVIDERS = frozenset({"gemini", "vertex", "copilot"})
 
 
-def _route_replays_reasoning_details(base_url: Any) -> bool:
-    """True when the target route reads replayed ``reasoning_details`` (OpenRouter's unified
-    reasoning array).
+def _model_consumes_thought_signature(model: Any, base_url: Any = None, provider: Any = None) -> bool:
+    """True for Gemini routes, which require tool-call ``extra_content`` (thought_signature) replay.
 
-    Every other chat-completions endpoint either ignores the field or, when its schema is
-    strict (Groq, Mistral, Cerebras, opencode relays: ``property 'reasoning_details' is
-    unsupported`` / ``Extra inputs are not permitted`` / ``no such field``), rejects the whole
-    request with HTTP 400/422 — so a reasoning turn produced earlier in the session wedges every
-    later turn once the model is switched (#70233). The stored history keeps the field; only the
-    wire copy drops it.
-
-    The Nous Portal read the field too (multi-turn reasoning continuity), but it enforces a
-    cumulative replayed-reasoning budget: replaying stored reasoning_details wedges long
-    sessions with a non-retryable 400 (#118182), so the Portal now strips like every other
-    route. Stored history keeps the field, so a route that genuinely replays it (OpenRouter,
-    #129037) still receives it.
+    A Gemini host or provider counts even when the model id is an alias without "gemini" in it;
+    every other strict provider (Fireworks, Cerebras) rejects the key, so it is stripped there.
     """
     from utils import base_url_host_matches
 
-    return base_url_host_matches(base_url, "openrouter.ai")
+    m = str(model or "").lower()
+    return (
+        "gemini" in m or "gemma" in m
+        or (provider or "").strip().lower() in _GEMINI_SIGNATURE_PROVIDERS
+        or any(base_url_host_matches(base_url, host) for host in _GEMINI_SIGNATURE_HOSTS)
+    )
+
+
+def _wire_reasoning_carriers(provider: Any, base_url: Any) -> frozenset:
+    """Reasoning keys an assistant message may carry on this route; the rest are stripped.
+
+    ``message_sanitization.route_reasoning_carriers`` owns the table; keys the route rejected
+    this session were already removed upstream by ``reapply_reasoning_echo``. The table replays
+    ``reasoning_details`` to OpenRouter-format gateways (OpenRouter, Kilo, Vercel AI Gateway,
+    Nous Portal) and to vendors documenting it (Novita, MiniMax /v1, TokenHub), never to strict
+    schemas (Groq, Mistral, Cerebras, opencode relays: ``property 'reasoning_details' is
+    unsupported`` / ``Extra inputs are not permitted`` / ``no such field``, #70233).
+    The Portal is back on the list: the "cumulative replayed-reasoning budget" blamed for #118182
+    does not exist in the Portal code and ~440 live replay requests (up to 32 KB of reasoning)
+    returned no 400; the observed failures were an upstream content filter surfaced as
+    "Provider returned error". Portal lanes that reject a carrier are handled by the
+    per-(provider, host, model) reactive strip. Stored history always keeps every carrier.
+    """
+    from agent.message_sanitization import route_reasoning_carriers
+
+    return route_reasoning_carriers(provider, base_url)
 
 
 def _has_replayable_thought_signature(extra_content: Any) -> bool:
@@ -379,7 +388,7 @@ def _finish_kwargs(api_kwargs: dict[str, Any], sanitized: list, params: dict, *,
 
 
 def _sanitize_message(
-    msg: Any, strip_extra_content: bool, strip_reasoning_details: bool = False,
+    msg: Any, strip_extra_content: bool, strip_reasoning: frozenset = frozenset(),
     native_reasoning_details_type: str | None = None,
 ) -> dict | None:
     """Sanitized copy of ``msg``, or None when nothing needs stripping.
@@ -388,19 +397,19 @@ def _sanitize_message(
     ``response_item_id`` (and ``extra_content`` unless Gemini), an assistant
     ``tool_calls: []`` / ``null`` (strict providers reject both), ``name``
     on tool results (schema-valid only on user/assistant messages; strict
-    providers reject it with ``contains item with unknown key name``), and
-    ``reasoning_details`` unless the route replays it (``_route_replays_reasoning_details``).
-    On a replaying route, private ``<provider>.native_assistant`` carriers still go only to the
+    providers reject it with ``contains item with unknown key name``), and the reasoning
+    keys in ``strip_reasoning`` (carriers the route does not read, ``_wire_reasoning_carriers``).
+    On a route that reads ``reasoning_details``, private ``<provider>.native_assistant`` carriers still go only to the
     profile that declared that exact type: another provider's signed replay is meaningless (or
     rejected) elsewhere, and stored history keeps it for a return to the original provider.
     """
     if not isinstance(msg, dict):
         return None
     strip_keys = [k for k in msg if k in _STRIP_MSG_KEYS or (isinstance(k, str) and k.startswith("_"))]
+    if msg.get("role") == "assistant":
+        strip_keys += [k for k in strip_reasoning if k in msg]
     kept_details = None
-    if strip_reasoning_details and "reasoning_details" in msg:
-        strip_keys.append("reasoning_details")
-    elif isinstance(msg.get("reasoning_details"), list):
+    if "reasoning_details" not in strip_keys and isinstance(msg.get("reasoning_details"), list):
         details = msg["reasoning_details"]
         kept = [d for d in details if not (
             isinstance(d, dict) and isinstance(d.get("type"), str)
@@ -455,11 +464,16 @@ class ChatCompletionsTransport(ProviderTransport):
 
         Returns the input list unchanged when nothing needs sanitizing.
         """
-        strip_extra_content = not _model_consumes_thought_signature(kwargs.get("model"))
-        # A profile declaring a native carrier type consumes replayed details by contract.
-        native_type = getattr(kwargs.get("provider_profile"), "native_reasoning_details_type", None) or None
-        strip_reasoning_details = not (native_type or _route_replays_reasoning_details(kwargs.get("base_url")))
-        sanitized_pairs = [(m, _sanitize_message(m, strip_extra_content, strip_reasoning_details, native_type))
+        profile = kwargs.get("provider_profile")
+        provider = getattr(profile, "name", None) or kwargs.get("provider")
+        strip_extra_content = not _model_consumes_thought_signature(kwargs.get("model"), kwargs.get("base_url"), provider)
+        native_type = getattr(profile, "native_reasoning_details_type", None) or None
+        carriers = _wire_reasoning_carriers(provider, kwargs.get("base_url"))
+        if native_type and carriers:
+            # A profile declaring a native carrier type consumes replayed details by contract.
+            carriers = carriers | {"reasoning_details"}
+        strip_reasoning = frozenset({"reasoning_content", "reasoning", "reasoning_details"}) - carriers
+        sanitized_pairs = [(m, _sanitize_message(m, strip_extra_content, strip_reasoning, native_type))
                            for m in messages]
         if all(s is None for _, s in sanitized_pairs):
             return messages
@@ -478,7 +492,10 @@ class ChatCompletionsTransport(ProviderTransport):
         path below (is_kimi, is_openrouter, ...) is only reached for unregistered providers.
         """
         _profile = params.get("provider_profile")
-        sanitized = self.convert_messages(messages, model=model, base_url=params.get("base_url"), provider_profile=_profile)
+        sanitized = self.convert_messages(
+            messages, model=model, base_url=params.get("base_url"), provider_profile=_profile,
+            provider=params.get("provider_name"),
+        )
         if _profile:
             return self._build_kwargs_from_profile(_profile, model, sanitized, tools, params)
 

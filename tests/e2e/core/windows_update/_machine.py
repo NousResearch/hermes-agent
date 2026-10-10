@@ -367,9 +367,15 @@ class Machine:
         shutil.copyfile(REPO_ROOT / "scripts" / "install.ps1", script)
         cwd = self.root / "install-cwd"
         cwd.mkdir(parents=True, exist_ok=True)
-        return self._run_logged(
+        run = self._run_logged(
             ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script), "-NonInteractive"],
             "install", timeout=INSTALL_TIMEOUT, cwd=cwd)
+        if run.returncode == 0 and self.hermes_exe.is_file():
+            # advance() lands NEXT on main and publishes no release: follow main, not the stable
+            # default an official-origin checkout gets (channel resolution has its own suites).
+            pin = self.hermes("update", "--set-channel", "main", label="pin-main-channel")
+            assert pin.returncode == 0, f"could not pin the main channel\n{self.evidence()}"
+        return run
 
     def hermes(self, *args: str, label: str | None = None, timeout: float = CMD_TIMEOUT,
                env_extra: dict[str, str] | None = None) -> Run:

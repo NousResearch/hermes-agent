@@ -9,6 +9,7 @@ import fs from 'node:fs'
 import fsp from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import { publishDesktopTree, writeDesktopHalfMarker } from './desktop-plugins-root'
 import { execGit, hiddenGitSpawnSpec } from './no-console-git'
@@ -54,6 +55,14 @@ export function resolvePluginGitUrl(identifier: string): ResolvedGitUrl {
   }
 
   if (/^(https?:\/\/|git@|ssh:\/\/|file:\/\/)/.test(trimmed)) {
+    if (trimmed.startsWith('file://')) {
+      const hashIdx = trimmed.indexOf('#')
+      const fileUrl = hashIdx === -1 ? trimmed : trimmed.slice(0, hashIdx)
+      const subdir = hashIdx === -1 ? null : trimmed.slice(hashIdx + 1).replace(/^\/+|\/+$/g, '') || null
+
+      return { gitUrl: fileURLToPath(fileUrl), subdir }
+    }
+
     if (trimmed.startsWith('https://github.com/')) {
       const rest = trimmed.slice('https://github.com/'.length).split(/[?#]/)[0].replace(/\/+$/, '')
       const parts = rest.split('/').filter(Boolean)
@@ -365,8 +374,9 @@ function insecureSchemeWarnings(gitUrl: string): { warnings: string[]; insecure:
 
 export async function probePluginRepo(gitBin: string, identifier: string): Promise<PluginProbeResult> {
   try {
-    const { gitUrl, subdir } = resolvePluginGitUrl(identifier)
-    const { warnings, insecure } = insecureSchemeWarnings(gitUrl)
+    const sourceIdentifier = identifier.trim()
+    const { gitUrl, subdir } = resolvePluginGitUrl(sourceIdentifier)
+    const { warnings, insecure } = insecureSchemeWarnings(sourceIdentifier)
     const cloneRoot = await cloneToTemp(gitBin, gitUrl, subdir)
 
     try {
@@ -416,7 +426,8 @@ export async function installDesktopPluginFromGit(
   force = false
 ): Promise<DesktopPluginInstallResult> {
   try {
-    const { gitUrl, subdir } = resolvePluginGitUrl(identifier)
+    const sourceIdentifier = identifier.trim()
+    const { gitUrl, subdir } = resolvePluginGitUrl(sourceIdentifier)
     const cloneRoot = await cloneToTemp(gitBin, gitUrl, subdir)
 
     try {
@@ -464,7 +475,7 @@ export async function installDesktopPluginFromGit(
 
         await writeDesktopHalfMarker(staged, {
           package: packageName,
-          repo: gitUrl,
+          repo: sourceIdentifier,
           // The published folder, not the temp clone. The clone is deleted
           // below; a source that disappears is ghost-pruned on the next
           // reconcile when no local `plugins/<name>/desktop` exists to

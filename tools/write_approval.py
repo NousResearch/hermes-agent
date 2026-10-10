@@ -3,8 +3,10 @@
 
 A per-subsystem boolean ``write_approval`` gates the agent's cross-session writes —
 **memory** (MEMORY.md / USER.md) and **skills** (SKILL.md + files) — from either
-origin (**foreground** turn or **background_review** fork). ``false`` (default)
-writes freely; ``true`` never commits directly: it prompts inline (memory,
+origin (**foreground** turn or **background_review** fork). The gate is enforced
+by the subsystem tools that own these writes (``memory``, ``skill_manage``);
+the generic file tools (``write_file``/``patch``) do not consult it (#60440
+tracks closing that gap). ``false`` (default) writes freely; ``true`` never commits directly: it prompts inline (memory,
 interactive CLI only) or **stages** the write under
 ``<HERMES_HOME>/pending/{memory,skills}/<id>.json`` for out-of-band review.
 """

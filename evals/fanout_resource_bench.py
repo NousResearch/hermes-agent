@@ -102,7 +102,8 @@ def _count_live(cls_name: str) -> int:
 
 
 def _snap(pid: int, db_path: str) -> dict:
-    st = open(f"/proc/{pid}/status", encoding="utf-8").read()
+    with open(f"/proc/{pid}/status", encoding="utf-8") as fh:
+        st = fh.read()
     g = lambda k: int(st.split(k + ":")[1].split()[0])
     tcp = subprocess.run(f"ss -tanp 2>/dev/null | grep -c 'pid={pid},'", shell=True, capture_output=True, text=True).stdout.strip()
     kids = subprocess.run(["ps", "-o", "args=", "--ppid", str(pid)], capture_output=True, text=True).stdout

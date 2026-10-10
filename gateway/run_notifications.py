@@ -445,6 +445,11 @@ class GatewayNotificationsMixin:
                         )
                         if getattr(_edit_res, "success", False):
                             _reconciled = True
+                            if session_key:
+                                from gateway.run_turn import GatewayTurnMixin
+                                await GatewayTurnMixin._run_agent_notify_streamed_final_delivery(
+                                    adapter, source, session_key, stream_consumer, text_content,
+                                )
                             logger.info(
                                 "Queued-lane final reconciled by editing message %s in place (no duplicate send).",
                                 _sc_msg_id,

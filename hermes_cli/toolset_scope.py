@@ -4,7 +4,15 @@ from typing import Set
 
 
 # Toolsets without a restriction entry are available on every platform.
-_TOOLSET_PLATFORM_RESTRICTIONS = {"discord": {"discord"}, "discord_admin": {"discord"}}
+_TOOLSET_PLATFORM_RESTRICTIONS = {
+    "discord": {"discord"},
+    "discord_admin": {"discord"},
+    "matrix_followup": {"matrix"},
+    "matrix_read": {"matrix"},
+    "matrix_admin": {"matrix"},
+    "matrix_image_packs": {"matrix"},
+    "matrix_reaction": {"matrix"},
+}
 
 
 def toolset_allowed_for_platform(ts_key: str, platform: str) -> bool:

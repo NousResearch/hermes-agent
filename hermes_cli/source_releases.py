@@ -9,7 +9,9 @@ import re
 import subprocess
 import urllib.error
 import urllib.request
+from urllib.parse import urlsplit
 
+from hermes_cli.github_api import github_token
 from hermes_cli.update_channel import STABLE_TAG_RE, is_canary_tag
 
 logger = logging.getLogger(__name__)
@@ -226,15 +228,40 @@ def _refuse_retirement_downgrade(request: dict, terminal: dict, git_cmd, cwd) ->
                 raise ValueError("Source retirement would downgrade the newer destination build; select the destination channel explicitly")
 
 
-def _read(url: str, *, missing_ok: bool = False) -> str | None:
-    request = urllib.request.Request(url, headers={
+def _github_api_headers(url: str, token: str | None) -> dict[str, str]:
+    """Headers for a release-channel HTTP read, authenticated on GitHub only.
+
+    Channel resolution reads api.github.com for release/commit metadata; that
+    budget is 60 anonymous requests/hour keyed on the client IP, so a shared
+    exit (NAT/VPN/proxy) exhausts it and the 403 surfaces as "No published
+    stable release could be verified". Send the configured credential (env →
+    home .env → gh CLI, see hermes_cli.github_api) on GitHub API requests only —
+    the R2 asset host must never see it.
+    """
+    headers = {
         "User-Agent": "hermes-update", "Cache-Control": "no-cache",
         "Accept": "application/json, text/html",
-    })
+    }
+    if token and urlsplit(url).hostname == "api.github.com":
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
+def _read(url: str, *, missing_ok: bool = False) -> str | None:
+    token = github_token() if urlsplit(url).hostname == "api.github.com" else None
+    request = urllib.request.Request(url, headers=_github_api_headers(url, token))
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
             return response.read(2 * 1024 * 1024).decode("utf-8-sig")
     except urllib.error.HTTPError as exc:
+        # A token GitHub rejects drops this request to anonymous rather than
+        # failing the channel on a stale credential — the same ladder
+        # source_check.py uses.
+        if token is not None and exc.code == 401:
+            headers = dict(request.headers)
+            headers.pop("Authorization", None)
+            with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=30) as response:
+                return response.read(2 * 1024 * 1024).decode("utf-8-sig")
         if missing_ok and exc.code == 404:
             return None
         raise

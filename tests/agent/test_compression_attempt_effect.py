@@ -453,4 +453,4 @@ def test_engine_that_returns_an_empty_transcript_logs_one_aborted_record(caplog,
     [record] = _attempt_records(caplog)
     assert (record["commit_status"], record["failure_class"]) == ("aborted", "empty_transcript")
     assert (record["trigger_source"], record["method"]) == ("pre_api", "none")
-    assert [(row["outcome"], row["failure_class"]) for row in shared_metric_rows] == [("failed", "other")]
+    assert [(row["outcome"], row["failure_class"]) for row in shared_metric_rows] == [("failed", "empty_transcript")]

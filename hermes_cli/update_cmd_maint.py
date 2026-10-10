@@ -13,7 +13,7 @@ import subprocess
 import sys
 import time as _time
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 from hermes_cli.update_cmd_common import _best_effort
 from datetime import UTC
@@ -415,26 +415,36 @@ def _print_update_summary(*, node_failures: list, desktop_build_ok: bool, pre_up
     stop_for_relaunch()
 
 
-def _restore_state_db_from_snapshot(state_path: Path, snap_state: Path) -> bool:
-    """Replace *state_path* with the snapshot image; True when the result passes integrity.
+def _restore_state_db_from_snapshot(
+    state_path: Path, snap_state: Path
+) -> Literal["restored", "refused", "invalid"]:
+    """Replace *state_path* with the snapshot image; "invalid" when the copy fails integrity.
 
     Stale sidecars are cleared first so the corrupt DB's WAL can't replay over the image.
-    Refuses (False) while another process — or a live connection in THIS process — holds the
-    DB: copying over a live writer's inode desyncs its page cache and its next checkpoint
-    clobbers pages. Holder scan ``None`` proceeds (gateways drained; refusing on unknown would
-    disable auto-restore on non-Linux). Raises OSError if the copy fails.
+    Refuses ("refused", nothing copied) while another process — or a live connection in THIS
+    process — holds the DB: copying over a live writer's inode desyncs its page cache and its
+    next checkpoint clobbers pages. The holder scan covers Linux, macOS and Windows, and an inconclusive scan
+    counts as a holder. Raises OSError if the copy fails.
     """
     from hermes_cli.backup import verify_sqlite_integrity
-    from hermes_cli.backup_restore import _foreign_db_holder_pids
     from hermes_cli.sqlite_safe_read import LiveConnectionError, offline_file_access
-    holders = _foreign_db_holder_pids(state_path)
+    from hermes_state_holders import foreign_state_db_holders
+    holders = foreign_state_db_holders(state_path)
     if holders:
+        pids = sorted({pid for pid, _target in holders if pid > 0})
+        unknown = [target for pid, target in holders if pid <= 0]
+        reason = (
+            f"process(es) {pids} still hold state.db or its WAL open."
+            if pids
+            else "cannot prove no process holds state.db or its WAL open."
+        )
+        if unknown:
+            reason += f" (holder scan incomplete: {unknown[0][:120]})"
         print(
-            f"  ✗ Auto-restore refused: process(es) {holders} still hold "
-            "state.db or its WAL open. Stop them (hermes gateway stop), "
+            f"  ✗ Auto-restore refused: {reason} Stop them (hermes gateway stop), "
             "then restore manually with /snapshot restore."
         )
-        return False
+        return "refused"
     # The foreign-pid scan excludes THIS process; an in-process SessionDB handle is just as
     # live (it would checkpoint through deleted-inode sidecars). offline_file_access fails
     # CLOSED on any tracked connection and holds the lock across clear + copy.
@@ -447,9 +457,9 @@ def _restore_state_db_from_snapshot(state_path: Path, snap_state: Path) -> bool:
             f"  ✗ Auto-restore refused: {exc} Close the in-process database "
             "handles (or restart Hermes) and retry."
         )
-        return False
+        return "refused"
     restored = verify_sqlite_integrity(state_path, check_header=True, run_pragma=True)
-    return bool(restored.get("valid"))
+    return "restored" if restored.get("valid") else "invalid"
 
 
 def _verify_and_restore_one_state_db(home: Path, *, label: str) -> None:
@@ -477,9 +487,10 @@ def _verify_and_restore_one_state_db(home: Path, *, label: str) -> None:
             if not verify_sqlite_integrity(snap_state, check_header=True, run_pragma=True).get("valid"):
                 continue
             try:
-                if _restore_state_db_from_snapshot(state_path, snap_state):
+                outcome = _restore_state_db_from_snapshot(state_path, snap_state)
+                if outcome == "restored":
                     print(f"  ✓ Auto-restored from snapshot {snap_dir.name} ({label})")
-                else:
+                elif outcome == "invalid":
                     print("  ✗ Auto-restore FAILED — restored copy also failed integrity")
             except OSError as exc:
                 print(f"  ✗ Auto-restore file copy failed: {exc}")

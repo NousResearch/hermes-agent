@@ -101,7 +101,7 @@ def snapshot_db(tmp_path):
 @pytest.fixture(autouse=True)
 def _isolate_database_holders(monkeypatch):
     # These fixtures own all DB connections. Do not scan other users' /proc FDs.
-    monkeypatch.setattr("hermes_cli.backup_restore._foreign_db_holder_pids", lambda path: [])
+    monkeypatch.setattr("hermes_state_holders.foreign_state_db_holders", lambda path: [])
 
 
 def _row_count(db_path: Path) -> int:
@@ -191,7 +191,7 @@ def test_restore_helper_serves_snapshot_rows_over_a_hot_wal(
     has to hold the SNAPSHOT's rows even though the destination still owned a
     hot WAL from the corrupt database.
     """
-    assert _restore_state_db_from_snapshot(live_db_with_hot_wal, snapshot_db) is True
+    assert _restore_state_db_from_snapshot(live_db_with_hot_wal, snapshot_db) == "restored"
 
     assert _row_count(live_db_with_hot_wal) == SNAPSHOT_ROWS
     for suffix in ("-wal", "-shm", "-journal"):
@@ -199,14 +199,14 @@ def test_restore_helper_serves_snapshot_rows_over_a_hot_wal(
 
 
 def test_restore_helper_reports_failure_when_the_restored_copy_is_corrupt(tmp_path):
-    """A snapshot that does not survive the copy must return False, so the
+    """A snapshot that does not survive the copy must return "invalid", so the
     caller prints the failure branch instead of claiming success."""
     state_path = tmp_path / "state.db"
     state_path.write_bytes(b"whatever")
     bad_snapshot = tmp_path / "bad-snapshot.db"
     bad_snapshot.write_bytes(b"\x00" * 4096)
 
-    assert _restore_state_db_from_snapshot(state_path, bad_snapshot) is False
+    assert _restore_state_db_from_snapshot(state_path, bad_snapshot) == "invalid"
 
 
 def test_restore_helper_propagates_copy_errors(tmp_path):
@@ -217,6 +217,22 @@ def test_restore_helper_propagates_copy_errors(tmp_path):
 
     with pytest.raises(OSError):
         _restore_state_db_from_snapshot(state_path, tmp_path / "does-not-exist.db")
+
+
+def test_restore_helper_names_an_inconclusive_holder_scan(
+    live_db_with_hot_wal, snapshot_db, monkeypatch, capsys
+):
+    monkeypatch.setattr(
+        "hermes_state_holders.foreign_state_db_holders",
+        lambda path: [(-1, "open-file scan unavailable")],
+    )
+
+    assert _restore_state_db_from_snapshot(live_db_with_hot_wal, snapshot_db) == "refused"
+
+    out = capsys.readouterr().out
+    assert "[-1]" not in out
+    assert "holder scan incomplete: open-file scan unavailable" in out
+    assert _row_count(live_db_with_hot_wal) == OLD_ROWS
 
 
 # ── Multi-profile coverage (#97994) ─────────────────────────────────────
@@ -330,3 +346,26 @@ def test_post_update_guard_survives_missing_sibling_snapshot(tmp_path, monkeypat
     assert "corrupted" in out
     # Still corrupt (no snapshot) — but the guard completed cleanly.
     assert (sibling_home / "state.db").read_bytes() == b"\x00" * 4096
+
+
+def test_post_update_guard_reports_a_holder_refusal_as_a_refusal(
+    tmp_path, monkeypatch, capsys
+):
+    from hermes_cli import update_cmd
+
+    home = tmp_path / "home"
+    home.mkdir()
+    _make_valid_snapshot(home, "20260901-pre-update", 25)
+    corrupt = b"\x00" * 4096
+    (home / "state.db").write_bytes(corrupt)
+    monkeypatch.setattr(
+        "hermes_state_holders.foreign_state_db_holders",
+        lambda path: [(4242, str(path))],
+    )
+
+    update_cmd._verify_and_restore_one_state_db(home, label="default home")
+
+    out = capsys.readouterr().out
+    assert "Auto-restore refused: process(es) [4242]" in out
+    assert "restored copy also failed integrity" not in out
+    assert (home / "state.db").read_bytes() == corrupt

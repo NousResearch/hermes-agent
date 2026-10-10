@@ -9,6 +9,7 @@ import { useI18n } from '@/i18n'
 import { $freeTierStatus } from '@/store/free-tier'
 import { openFreeTierSignIn } from '@/store/free-tier-sign-in'
 import { notifyError, readableError } from '@/store/notifications'
+import { $activeSessionId } from '@/store/session'
 
 import { installBundledEntry } from '../mcp/install-catalog-entry'
 import { useMcpServers } from '../mcp/use-mcp-servers'
@@ -32,6 +33,7 @@ import {
 import { HostedConnectorDialog } from './hosted-dialog'
 import { LocalConnectorDialog } from './local-dialog'
 import { RemoveServerConfirm } from './local-slots'
+import { ManualMcpReload } from './manual-mcp-reload'
 import { openToolsList, resetOpenedTools } from './tools-summary'
 import type { ConnectorCardModel, ConnectorsFilter, HostedPhase } from './types'
 
@@ -51,6 +53,7 @@ export function ConnectorsTab({ gateway, profile }: ConnectorsTabProps) {
   const operations = useStore($accountOperations)
   const abandoned = useStore($abandonedConnects)
   const freeTier = useStore($freeTierStatus)
+  const activeSessionId = useStore($activeSessionId)
 
   const connector = useConnectConnector(profile)
   const switcher = useConnectorSwitch(profile)
@@ -256,6 +259,8 @@ export function ConnectorsTab({ gateway, profile }: ConnectorsTabProps) {
         onVerb={runVerb}
         selectedKey={openKey}
       />
+
+      <ManualMcpReload gateway={gateway} sessionId={activeSessionId} />
 
       {openCard && openCard.ways.hosted === null ? (
         <LocalConnectorDialog

@@ -97,6 +97,15 @@ export interface Translations {
   }
   connectorsPage: {
     title: string
+    manualReload: {
+      action: string
+      title: string
+      warning: string
+      confirm: string
+      success: string
+      noSession: string
+      failed: string
+    }
     searchPlaceholder: (count: number) => string
     filterCategory: string
     categoryAll: string

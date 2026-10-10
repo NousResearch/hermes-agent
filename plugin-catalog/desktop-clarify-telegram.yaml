@@ -21,7 +21,7 @@ category: platform
 requires_hermes: ">=0.21.5"
 docs_url: https://github.com/metamindedu/hermes-telegram-bridge
 version: "1.6.1"
-readme: true
+readme: false  # Companion subdir has no README; docs_url/entry disclose setup and risks.
 platforms: []
 known_issues:
   - Requires session-complete-telegram at the same pin, installed in the default home; this companion is not a standalone Telegram bot.

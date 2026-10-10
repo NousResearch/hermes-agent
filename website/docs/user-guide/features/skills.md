@@ -35,7 +35,7 @@ then **Installed** and a completion notification; errors stay in the dialog so y
 can retry. Installation goes through the normal Skills Hub pipeline (security scan,
 action log, installed-list refresh). If you switch profile or connection while the
 confirmation is open, reopen the link for the new destination; a link cannot bypass
-scanning or pick a different profile. Changes apply to new sessions.
+scanning or pick a different profile. Open conversations are told about the new skill on their next message.
 
 The `skill/install` route needs an updated Desktop build. If the app is missing or
 does not recognize the link, expand the card and copy its CLI install command.
@@ -180,6 +180,16 @@ Level 2: skill_view(name, path)  → Specific reference file       (varies)
 ```
 
 The agent only loads the full skill content when it actually needs it.
+
+### Skills added during a conversation
+
+The list of skills the agent picks from is part of the conversation's system prompt, which stays
+fixed so the provider's prompt cache keeps working. When a skill is installed, created or removed
+while a conversation is open (from the Skills Hub, `hermes skills install` in another
+terminal, a plugin, the curator, or the agent itself), your next message to the agent carries a short
+note naming the new skills with their descriptions and the removed ones. The note is sent once per change;
+the system prompt itself picks up the change at the next compaction. `/reload-skills` is not needed
+for this, it still refreshes the `/skill-name` slash commands.
 
 ## SKILL.md Format
 
@@ -413,7 +423,7 @@ Paths support `~` expansion and `${VAR}` environment variable substitution.
 
 - **Create locally, update in place**: New agent-created skills are written to `~/.hermes/skills/` (or `skills.create_dir` when configured — see below). Existing skills are modified where they are found, including skills under `external_dirs`, when the agent uses `skill_manage` actions such as `patch` (targeted or full rewrite), `write_file`, `remove_file`, or `delete`.
 - **External dirs are not a write-protection boundary**: If an external skill directory is writable by the Hermes process, agent-managed skill updates can change files in that directory. Use filesystem permissions or a separate profile/toolset setup if shared external skills must stay read-only.
-- **Local precedence**: If the same skill name exists in both the local dir and an external dir, the local version wins.
+- **Precedence**: If the same skill name exists in more than one directory, the higher-precedence directory wins everywhere — skill index, `skills_list`, `hermes skills list`, `skill_view`, slash commands, `-s` preload and cron: `project → local (~/.hermes/skills/) → skills.create_dir → external_dirs`. The hidden copy is logged as shadowed. See [Duplicate skill names](#duplicate-skill-names).
 - **Full integration**: External skills appear in the system prompt index, `skills_list`, `skill_view`, and as `/skill-name` slash commands — no different from local skills.
 - **Non-existent paths are silently skipped**: If a configured directory doesn't exist, Hermes ignores it without errors. Useful for optional shared directories that may not be present on every machine.
 
@@ -485,9 +495,18 @@ Trusted roots are stored in `skills.trusted_project_dirs` in `~/.hermes/config.y
 
 ### Precedence
 
-Project skills are the **highest-precedence tier**: `project → local (~/.hermes/skills/) → external_dirs`. A project skill named `deploy` overrides a same-named profile or bundled skill for sessions inside that repo — that's the point: vendored repo skills win on their home turf, without touching your global profile. Project skills are tagged `[project]` in the agent's skill index so provenance stays visible.
+Project skills are the **highest-precedence tier**: `project → local (~/.hermes/skills/) → skills.create_dir → external_dirs`. A project skill named `deploy` overrides a same-named profile or bundled skill for sessions inside that repo — that's the point: vendored repo skills win on their home turf, without touching your global profile. Project skills are tagged `[project]` in the agent's skill index so provenance stays visible.
 
 Like external dirs, project skill directories are treated as repo-owned: autonomous skill maintenance (the curator) never modifies them, and new agent-created skills always go to `~/.hermes/skills/`.
+
+### Duplicate skill names
+
+Every surface resolves a skill name the same way:
+
+- **Across directories**, the higher-precedence directory wins (`project → local → skills.create_dir → external_dirs`), including for the same relative path (`productivity/xdup` local and external loads the local copy). The shadowed copy is hidden and a warning is logged.
+- **Inside one directory**, two *different* skills that share a name are never guessed between. Both are listed under their exact relative path (for example `a/one` and `b/two`), and loading the bare name fails with `Ambiguous skill name dup-demo: use one of a/one, b/two`. That message is also what `hermes -s dup-demo` and cron jobs report. Identical copies of one skill (a symlink view or byte-identical copy) resolve to the shallowest path.
+
+Plugin skills use their own `plugin:skill` names and never collide with these.
 
 ### Scan-time quarantine
 
@@ -925,7 +944,7 @@ Valid installs continue to use their source adapter’s existing synchronous fet
 Skills you have edited locally (the on-disk content no longer matches the hash recorded at install time) are **skipped** by `hermes skills update` so your changes are never silently overwritten. Pass `--force` to replace them with the upstream version anyway.
 
 :::tip GitHub rate limits
-Skills hub operations use the GitHub API, which has a rate limit of 60 requests/hour for unauthenticated users. If you see rate-limit errors during install or search, set `GITHUB_TOKEN` in your `.env` file to increase the limit to 5,000 requests/hour. The error message includes an actionable hint when this happens.
+Skills hub operations use the GitHub API, which has a rate limit of 60 requests/hour for unauthenticated users. An install costs about two API calls (the repo and its file tree); the skill's files themselves download from `raw.githubusercontent.com`, which the limit does not count. If you see rate-limit errors during install or search, set `GITHUB_TOKEN` in your `.env` file to increase the limit to 5,000 requests/hour. The error message includes an actionable hint when this happens.
 :::
 
 ### Publishing a custom skill tap

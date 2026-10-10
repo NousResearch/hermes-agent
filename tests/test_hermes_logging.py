@@ -955,7 +955,7 @@ class TestSafeStderr:
         handler = logging.StreamHandler(result)
         handler.handle(logging.LogRecord("unicode", logging.INFO, "", 0, "Session — 日本", (), None))
         handler.flush()
-        assert fake.buffer.getvalue() == "Session — 日本\n".encode("utf-8")
+        assert fake.buffer.getvalue() == "Session — 日本\n".encode()
 
 
 

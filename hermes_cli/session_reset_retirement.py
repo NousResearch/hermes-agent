@@ -14,7 +14,7 @@ PLUGIN_NAME = "hermes-session-reset-policy"
 _TIMED_MODES = frozenset({"idle", "daily", "both"})
 
 
-def retired_reset_policy(config: Any) -> Optional[Tuple[str, str]]:
+def retired_reset_policy(config: Any) -> Optional[tuple[str, str]]:
     """``(config_path, mode)`` for a timed ``session_reset`` the config still declares, else None.
 
     Looks at the top-level block and the ``gateway:`` form the pre-removal loader also accepted.

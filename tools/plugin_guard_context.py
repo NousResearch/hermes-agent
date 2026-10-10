@@ -259,7 +259,7 @@ def is_regex_alternation_token(finding: Finding, line: str) -> bool:
     spans = [m.span() for m in _LITERAL_SPANS.finditer(line)]
     hits = list(token.finditer(line))
 
-    def inert(h: "re.Match[str]") -> bool:
+    def inert(h: re.Match[str]) -> bool:
         if " " in h.group(0):
             return False
         span = next(((a, b) for a, b in spans if a <= h.start() and h.end() <= b), None)
@@ -268,20 +268,6 @@ def is_regex_alternation_token(finding: Finding, line: str) -> bool:
         return _is_alternation_member(line, h.start(), h.end()) or _is_whole_literal(line, h.start(), h.end(), span)
 
     return bool(hits) and all(inert(h) for h in hits)
-
-
-# ── (6) base64 decode piped to a non-interpreter ────────────────────────────────────────────
-# ``base64_decode_pipe`` describes "decodes and pipes to execution". ``gh api … | base64 -d |
-# grep '^sha:'`` decodes data for a text filter; the shape is only execution when the consumer
-# is a shell/interpreter or ``eval``/``source``/``exec``. A data consumer steps down to medium.
-_DECODE_CONSUMER = re.compile(r"base64\s+(?:-d|--decode)\s*\|\s*(?:\w+=\S*\s+)*(?:\S*/)?(?P<cmd>[A-Za-z0-9_.+-]+)")
-_INTERPRETERS = re.compile(r"^(?:sh|bash|zsh|dash|ksh|fish|python[\d.]*|perl|ruby|node|nodejs|php|eval|source|exec|xargs|env|sudo)$")
-
-
-def is_data_decode(line: str) -> bool:
-    """``base64 -d`` whose pipe target is a non-interpreter command (grep, jq, tee, tar …)."""
-    m = _DECODE_CONSUMER.search(line)
-    return m is not None and _INTERPRETERS.match(m.group("cmd")) is None
 
 
 # ── (7) loopback address with port ───────────────────────────────────────────────────────────
@@ -320,7 +306,7 @@ def is_pip_install_in_prose_literal(finding: Finding, line: str) -> bool:
     spans = [m.span() for m in _LITERAL_SPANS.finditer(line)]
     hits = list(_PIP_INSTALL_TOKEN.finditer(line))
 
-    def prose(h: "re.Match[str]") -> bool:
+    def prose(h: re.Match[str]) -> bool:
         span = next(((a, b) for a, b in spans if a <= h.start() and h.end() <= b), None)
         if span is None:
             return False
@@ -416,7 +402,7 @@ def is_json_prose_value(finding: Finding, rel_path: str, line: str) -> bool:
     if key is not None and not re.search(r"\s", key) and _JSON_COMMAND_KEY.search(key):
         return False
 
-    def prose(h: "re.Match[str]") -> bool:
+    def prose(h: re.Match[str]) -> bool:
         part = next((g for g in ("k", "v") if m.start(g) <= h.start() and h.end() <= m.end(g)), None)
         return part is not None and _COMMAND_POSITION.search(line[m.start(part):h.start()]) is None
 
@@ -450,10 +436,38 @@ def is_coin_name_only(finding: Finding, line: str) -> bool:
     return bool(hits) and all(_is_standalone_coin_name(line, h.start(), h.end()) for h in hits)
 
 
+# Google mints installed-app (desktop/CLI) OAuth clients with a ``GOCSPX-`` secret that its OAuth
+# docs say cannot be kept confidential: every copy of the app ships it (gcloud does). A plugin is
+# such an app, so the literal identifies a public client rather than leaking a credential; it stays
+# in the report for review (caution) instead of hard-blocking the install.
+_GOOGLE_PUBLIC_CLIENT_SECRET = re.compile(r'["\']GOCSPX-[A-Za-z0-9_-]{20,}["\']')
+
+
+def is_google_installed_app_secret(finding: Finding, line: str) -> bool:
+    """A ``hardcoded_secret`` hit whose literal is a Google installed-app OAuth client secret."""
+    return finding.pattern_id == "hardcoded_secret" and bool(_GOOGLE_PUBLIC_CLIENT_SECRET.search(line))
+
+
 __all__ = [
-    "STEP_DOWN", "DOC_PROSE_EXTENSIONS", "TEST_TREE_DIRS", "LITERAL_INERT_PATTERN_IDS",
-    "is_doc_prose", "is_ci_workflow", "is_agent_facing", "prose_cap", "is_self_uninstall_doc", "is_test_tree",
-    "is_inert_fixture_line", "is_base64_media",
-    "is_regex_alternation_token", "is_data_decode", "is_loopback_only", "is_pip_install_in_prose_literal",
-    "is_hex_in_char_class", "logical_line", "is_loopback_continuation", "is_json_prose_value", "is_coin_name_only",
+    "DOC_PROSE_EXTENSIONS",
+    "LITERAL_INERT_PATTERN_IDS",
+    "STEP_DOWN",
+    "TEST_TREE_DIRS",
+    "is_agent_facing",
+    "is_base64_media",
+    "is_ci_workflow",
+    "is_coin_name_only",
+    "is_doc_prose",
+    "is_google_installed_app_secret",
+    "is_hex_in_char_class",
+    "is_inert_fixture_line",
+    "is_json_prose_value",
+    "is_loopback_continuation",
+    "is_loopback_only",
+    "is_pip_install_in_prose_literal",
+    "is_regex_alternation_token",
+    "is_self_uninstall_doc",
+    "is_test_tree",
+    "logical_line",
+    "prose_cap",
 ]

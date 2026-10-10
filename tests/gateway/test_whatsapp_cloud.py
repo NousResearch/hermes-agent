@@ -390,6 +390,13 @@ class TestWebhookSignature:
         assert response.status == 503
         adapter._dispatch_payload.assert_not_called()
 
+    def test_null_yaml_app_secret_is_unset_not_the_string_none(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.whatsapp_cloud import WhatsAppCloudAdapter
+
+        adapter = WhatsAppCloudAdapter(PlatformConfig(enabled=True, extra={"app_secret": None, "verify_token": None}))
+        assert adapter._app_secret == "" and adapter._verify_token == ""
+
 
 class TestWebhookReplay:
     """wamid dedup — Meta retries failed deliveries up to 7 days."""

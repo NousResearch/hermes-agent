@@ -789,6 +789,8 @@ gateway:
   plan:
     ack_task: "Tervezés: {task}"
     ack_conversation: "Tervezés a beszélgetés kontextusa alapján…"
+  initiate_setup:
+    ack: "Beállítás indítása…"
   init:
     start_failed: "Az /init nem indult el — próbáld újra."
     ack_update: "AGENTS.md frissítése a projekt átvizsgálása alapján…"
@@ -859,6 +861,9 @@ gateway:
     db_fts_corrupt: "⚠️ A munkamenet-adatbázis a keresőindexre (FTS5) korlátozódó sérülési hibát jelzett; az üzenettáblák nem sérültek. A javításig az üzenetek mentése sikertelen lehet: futtasd a `hermes {profile_arg}doctor --fix` parancsot, majd indítsd újra az átjárót. Ne futtass helyreállító eszközöket, és ne állíts vissza biztonsági mentést, hacsak a `hermes {profile_arg}doctor` nem igazol sérülést."
     db_then_restart: "{action} Ezután: `hermes {profile_arg}gateway restart`."
     db_unavailable: "⚠️ A munkamenet-adatbázis nem érhető el — az üzenetek mentése sikertelen lehet, és a /resume üres lesz. Ok: {cause}. {action}"
+  cron_store:
+    unwritable: "⚠️ A(z) {store} cron tároló {since} óta nem írható ({error}). Az ütemezett feladatok kimaradnak, amíg újra el nem fogadja az írást. Javítás: {fix}."
+    recovered: "✅ A(z) {store} cron tároló újra írható; {skipped} kihagyott futás, minden feladat egyszer pótlódik."
   whoami:
     scope_dm: "DM"
     scope_group: "csoport/csatorna"
@@ -1465,8 +1470,6 @@ platform:
   irc:
     quit_message: "Hermes Agent leáll"
     standalone_quit: "kézbesítve"
-  homeassistant:
-    notification_title: "Hermes Agent"
   relay:
     confirm_approve_once: "Jóváhagyás egyszer"
     confirm_always_approve: "Mindig jóváhagy"
@@ -1572,6 +1575,8 @@ slash:
     description: "Prompt ismételt futtatása adott időközönként ebben a munkamenetben"
   plan:
     description: "Markdown megvalósítási terv írása a .hermes/plans/ mappába, végrehajtás nélkül"
+  initiate-setup:
+    description: "Első beállítás indítása: megismer téged, és hozzád igazítja a Hermest"
   moa:
     description: "Egy prompt futtatása az alapértelmezett Mixture of Agents előbeállítással, majd a modelled visszaállítása"
   subgoal:
@@ -2411,6 +2416,7 @@ cli:
     session_not_found: "A munkamenet nem található: {session_id}"
     compressed_into: "A(z) {session_id} munkamenet a(z) {descendant} munkamenetbe lett tömörítve; a leszármazottat folytatom az átiratoddal."
     cannot_resume: "A munkamenet nem folytatható: {error}"
+    kanban_owned: "⛔ A(z) {session_id} munkamenet egy Kanban-worker átirata. Itt folytatva egy olyan írót hozna létre, amelyet a Kanban-tábla nem tud megfigyelni vagy felügyelni — ehelyett próbáld újra vagy oldd fel a kártyát a táblán, hogy a dispatcher legyen a következő futás tulajdonosa."
     cannot_resume_prefix: "A munkamenet nem folytatható:"
     resumed_session: "↻ Munkamenet folytatva"
     counts_one: "({count} felhasználói üzenet, összesen {total} üzenet)"
@@ -2445,7 +2451,6 @@ cli:
     run_model_to_retry: "Újrapróbáláshoz: 'hermes model'"
     provider_configured: "✓ Szolgáltató beállítva — kezdődhet a beszélgetés."
     provider_setup_incomplete: "A szolgáltató beállítása nem fejeződött be. Újrapróbáláshoz: 'hermes model'"
-    tirith_unavailable: "⚠ A tirith biztonsági szkenner be van kapcsolva, de nem érhető el — a parancsellenőrzés csak mintaillesztést használ"
     unknown_toolsets: "Figyelem: ismeretlen eszközkészletek: {names}"
     stdin_unusable: "\nHiba: az stdin nem használható ({error}).\nEz bizonyos Python-telepítéseknél fordulhat elő (pl. uv által kezelt cPython macOS-en),\nahol a kqueue nem tudja regisztrálni a 0. fd-t.\nPróbáld újratelepíteni a Pythont pyenv-vel vagy Homebrew-val, majd futtasd újra: hermes setup"
     warning: "Figyelem: {warning}"
@@ -2930,6 +2935,8 @@ cli:
     plan:
       planning: "📋 Tervezés: {task}"
       from_conversation: "📋 Tervezés a beszélgetés kontextusa alapján..."
+    initiate_setup:
+      starting: "🧭 Beállítás indítása..."
     init:
       updating: "⚡ AGENTS.md frissítése a projekt átvizsgálása alapján..."
       generating: "⚡ AGENTS.md létrehozása a projekt átvizsgálása alapján..."
@@ -3663,7 +3670,7 @@ tips:
   t167: "A veszélyes parancsok jóváhagyásának 4 szintje van: egyszer, munkamenet, mindig (állandó engedélylista), elutasítás."
   t168: "Az intelligens jóváhagyási mód LLM-mel hagyja jóvá automatikusan a biztonságos parancsokat, és jelöli meg a veszélyeseket."
   t169: "Az SSRF-védelem blokkolja a privát hálózatokat, a loopback és link-local címeket, valamint a felhő metaadat-címeit."
-  t170: "A Tirith futtatás előtti vizsgálata felismeri a homográf URL-hamisítást és a pipe-to-interpreter mintákat."
+  t170: "A munkamenet-azonosítók időbélyeggel kezdődnek (20250305_091523_abcd), így ls-ben és jq-ban természetesen rendeződnek."
   t171: "Az MCP alfolyamatok szűrt környezetet kapnak – csak a biztonságos rendszerváltozók jutnak át."
   t172: "A kontextusfájlokat (.hermes.md, AGENTS.md) betöltés előtt a rendszer prompt injection ellen átvizsgálja."
   t173: "A config.yaml command_allowlist beállítása véglegesen jóváhagy adott shell parancsmintákat."
@@ -3693,7 +3700,7 @@ tips:
   t197: "A trajektóriamentés (--save-trajectories) rögzíti a teljes eszközhasználati nyomokat a modelltanításhoz."
   t198: "Három plugintípus van: általános (eszközök/hookok), memóriaszolgáltatók és kontextusmotorok."
   t199: "A hermes plugins install owner/repo közvetlenül a GitHubról telepít plugint."
-  t200: "Külső memóriaszolgáltatók: az OpenViking és a Mem0 beépített; a Honcho, a Hindsight és mások a hermes plugins install parancson keresztül."
+  t200: "Külső memóriaszolgáltatók: a Honcho, a Hindsight, a Mem0, az OpenViking és mások a hermes plugins install parancson keresztül."
   t201: "A plugin hookok közé tartozik a pre/post_tool_call, a pre/post_llm_call és a transform_terminal_output a kimenet egységesítésére."
   t202: "A prompt-gyorsítótárazás (Anthropic) a rendszerprompt gyorsítótárazott előtagjainak újrahasznosításával csökkenti a költségeket."
   t203: "Az ügynök háttérszálon generálja a munkamenetek címét – nincs hatása a késleltetésre."
@@ -3868,12 +3875,9 @@ tips:
   t372: "Az image_gen.model a config.yaml-ban választja ki a FAL-modellt: flux-2/klein, gpt-image-2, nano-banana-pro és mások."
   t373: "Az image_gen.provider egy pluginon (OpenAI Images, Codex, FAL) át irányítja a képgenerálást az alapértelmezett helyett."
   t374: "Az AUXILIARY_VISION_BASE_URL + AUXILIARY_VISION_API_KEY bármely OpenAI-kompatibilis végpontra irányítja a képelemzést."
-  t375: "A security.tirith_fail_open: false hatására a Hermes blokkolja a parancsokat, ha maga a tirith-ellenőrző hibázik."
-  t376: "A TIRITH_FAIL_OPEN környezeti változó felülírja a tirith_fail_open konfigurációt — gyors kapcsoló a config.yaml szerkesztése nélkül."
+  t375: "Az API_SERVER_MODEL_NAME testreszabja a modellnevet a /v1/models végponton — többprofilos Open WebUI felállásoknál elengedhetetlen."
+  t376: "A dashboard-pluginok a /dashboard-plugins/<name>/ útvonalról szolgálódnak ki — másold a fájlokat a ~/.hermes/dashboard-plugins/ mappába."
   t377: "A --source tool chatek alapból nem szerepelnek a hermes sessions list kimenetében — add meg a --source kapcsolót kifejezetten, hogy lásd őket."
-  t378: "A munkamenet-azonosítók időbélyeggel kezdődnek (20250305_091523_abcd), így ls-ben és jq-ban természetesen rendeződnek."
-  t379: "Az API_SERVER_MODEL_NAME testreszabja a modellnevet a /v1/models végponton — többprofilos Open WebUI felállásoknál elengedhetetlen."
-  t380: "A dashboard-pluginok a /dashboard-plugins/<name>/ útvonalról szolgálódnak ki — másold a fájlokat a ~/.hermes/dashboard-plugins/ mappába."
   placeholder:
     p01: "Kérdezz bármit, vagy írj / jelet a parancsokhoz…"
     p02: "Foglald össze, mi van ebben a mappában"

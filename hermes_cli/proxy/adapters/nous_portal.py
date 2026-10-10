@@ -6,6 +6,7 @@ import logging
 import threading
 from typing import Any, Dict, FrozenSet, Optional
 
+from hermes_cli.anon_challenge import background_caller
 from hermes_cli.auth import (
     AuthError,
     DEFAULT_NOUS_INFERENCE_URL,
@@ -26,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 # Endpoints inference-api.nousresearch.com actually serves; anything else is a 404 so stray
 # clients cannot leak odd requests upstream.
-_ALLOWED_PATHS: FrozenSet[str] = frozenset({"/chat/completions", "/completions", "/embeddings", "/models"})
+_ALLOWED_PATHS: frozenset[str] = frozenset({"/chat/completions", "/completions", "/embeddings", "/models"})
 
 
 class NousPortalAdapter(UpstreamAdapter):
@@ -45,7 +46,7 @@ class NousPortalAdapter(UpstreamAdapter):
         return "Nous Portal"
 
     @property
-    def allowed_paths(self) -> FrozenSet[str]:
+    def allowed_paths(self) -> frozenset[str]:
         return _ALLOWED_PATHS
 
     def is_authenticated(self) -> bool:
@@ -72,9 +73,12 @@ class NousPortalAdapter(UpstreamAdapter):
             if state is None:
                 raise RuntimeError("Not logged into Nous Portal. Run `hermes auth add nous` first.")
             try:
-                refreshed = resolve_nous_runtime_credentials(
-                    force_refresh=force_refresh, stale_access_token=stale_access_token or None
-                )
+                # Every proxied request queues on self._lock: a free-tier browser challenge is
+                # announced and raised, never waited on while holding it.
+                with background_caller():
+                    refreshed = resolve_nous_runtime_credentials(
+                        force_refresh=force_refresh, stale_access_token=stale_access_token or None
+                    )
             except Exception as exc:
                 if isinstance(exc, AuthError) and _is_terminal_nous_refresh_error(exc):
                     _quarantine_nous_oauth_state(state, exc, reason="proxy_refresh_failure")
@@ -99,7 +103,7 @@ class NousPortalAdapter(UpstreamAdapter):
 
     # auth.json access — kept local so hermes_cli.auth's public surface does not grow.
 
-    def _read_state(self) -> Optional[Dict[str, Any]]:
+    def _read_state(self) -> Optional[dict[str, Any]]:
         try:
             with _auth_store_lock():
                 store = _load_auth_store()
@@ -111,7 +115,7 @@ class NousPortalAdapter(UpstreamAdapter):
 
     def _save_state(
         self,
-        state: Dict[str, Any],
+        state: dict[str, Any],
         *,
         quarantine_error: Optional[AuthError] = None,
         quarantine_reason: Optional[str] = None,

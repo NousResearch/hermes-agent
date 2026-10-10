@@ -18,8 +18,10 @@ def _git(git_cmd: list[str], root: Path, args: list[str], **kwargs: Any) -> subp
     # Callers pass **_no_prompt_git_kwargs() which already carries creationflags;
     # OR the hide flag into the shared kwargs instead of passing the keyword twice.
     kwargs["creationflags"] = kwargs.get("creationflags", 0) | windows_hide_flags()
-    return subprocess.run(
-        git_cmd + args, cwd=root, capture_output=True, text=True, encoding="utf-8", errors="replace",
+    from hermes_cli.update_custody import run_git
+
+    return run_git(
+        git_cmd, args, cwd=root, capture_output=True, text=True, encoding="utf-8", errors="replace",
         **kwargs,
     )
 
@@ -36,44 +38,45 @@ def clear_git_debris(root: Path) -> None:
     A crashed fetch can leave ``.git/shallow.lock`` (or another lock) behind, and every later
     fetch then fails with "File exists". Aborted fetches on flaky lines also strand
     ``tmp_pack_*`` debris: unchecked it reached 6 GB and corrupted the pack dir (#93732).
-    A partial clone's on-demand fetches also strand one small packfile each — fold those
-    back in (#129712).
+    A partial clone also gets its commit-graph-off keys re-applied (#127711).
     """
-    from hermes_cli.gitlock import clear_stale_git_locks, clear_stale_tmp_packs
+    from hermes_cli.gitlock import clear_stale_git_locks, clear_stale_tmp_packs, settle_partial_clone_maintenance
 
     for lock_path in clear_stale_git_locks(root):
         print(f"  (removed stale git lock: {lock_path})")
     swept = clear_stale_tmp_packs(root)
     if swept:
         print(f"  (removed {len(swept)} aborted-fetch pack temp file(s))")
-    fold_lazy_fetch_packs(root)
+    settle_partial_clone_maintenance(root)
 
 
-def fold_lazy_fetch_packs(root: Path) -> None:
-    """Fold a partial clone's lazy-fetch packs (#129712), announcing a slow fold and a timed-out one."""
-    from hermes_cli.gitlock import LAZY_FETCH_GC_TIMEOUT_SECONDS, consolidate_lazy_fetch_packs
+def report_pack_tidy(root: Path) -> None:
+    """Spend the update's bounded slice on a partial clone's on-demand packs, and say what it did."""
+    from hermes_cli.git_pack_tidy import TIDY_BUDGET_SECONDS, tidy_partial_clone_packs
 
-    folded = consolidate_lazy_fetch_packs(root, on_fold_start=lambda count: print(
-        f"  Folding {count} lazy-fetch packs into one (one-time; can take several minutes)...", flush=True))
-    if folded is None:
-        print(f"  ⚠ Folding lazy-fetch packs did not finish within {LAZY_FETCH_GC_TIMEOUT_SECONDS // 60} min."
-              " With Hermes closed, run:")
-        print(f'      git -C "{root}" -c gc.writeCommitGraph=false gc --auto')
-    elif folded:
-        print(f"  (folded {folded} lazy-fetch pack(s) into one)")
+    tidy = tidy_partial_clone_packs(root)
+    if tidy.erased or tidy.merged:
+        print(f"  (git cleanup: erased {tidy.erased} duplicate pack(s), {tidy.freed_bytes / 1e6:.0f} MB freed;"
+              f" merged {tidy.merged}; {tidy.packs_left} left)")
+    if tidy.out_of_time:
+        print(f"  (git cleanup stopped at its {TIDY_BUDGET_SECONDS}s limit; the next update continues it)")
 
 
 def channel_compare_branch(selected_channel: str, git_cmd: list[str], root: Path) -> str | None:
     """Report a release-pinned channel's verdict, or return the branch to compare against.
 
     ``None`` means the verdict is printed (the channel pins a commit); exits 1 when the channel
-    cannot be resolved.
+    cannot be resolved. An install riding its default channel only ever moves forward.
     """
+    from hermes_cli.config import get_config_path, require_readable_config_before_write
     from hermes_cli.source_releases import resolve_source_target
+    from hermes_cli.update_channel import channel_record, rides_default_channel
 
     print(f"→ Update channel: {selected_channel}")
+    record = channel_record(require_readable_config_before_write(get_config_path()), root)
+    forward_only = rides_default_channel(record, selected_channel, root)
     try:
-        target = resolve_source_target(selected_channel, git_cmd, root)
+        target = resolve_source_target(selected_channel, git_cmd, root, forward_only=forward_only)
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         print(f"✗ Could not resolve the {selected_channel} source channel: {exc}")
         sys.exit(1)
@@ -81,7 +84,9 @@ def channel_compare_branch(selected_channel: str, git_cmd: list[str], root: Path
         return target.branch
     if target.retired:
         print(f"→ {selected_channel} retired; source destination: {target.channel}")
-    if _uc()._capture_head_sha(git_cmd, root) == target.commit:
+    if target.ahead:
+        print(f"✓ No newer release: {target.label}.")
+    elif _uc()._capture_head_sha(git_cmd, root) == target.commit:
         print(f"✓ Up to date with the latest release ({target.label}).")
     else:
         print(f"→ Selected release available: {target.label}")
@@ -190,3 +195,47 @@ def report_rev_list_verdict(git_cmd: list[str], root: Path, compare_branch: str)
     from hermes_cli.config import recommended_update_command
 
     print(f"  Run '{recommended_update_command()}' to install.")
+
+
+def select_apply_target(args, branch: str, request: dict, *, git_cmd, stop) -> tuple:
+    """Resolve the update's target before any tree write: ``(target_ref, release_sha,
+    target_is_head, repository)``; records branch/expected_sha/retirement on ``request``.
+
+    ``target_is_head`` means an unchosen default subscription is already past the release,
+    so HEAD itself is the target. Exits 1 (after ``stop()``) when the channel is unresolvable.
+    """
+    from copy import deepcopy
+
+    from hermes_cli.config import require_readable_config_before_write
+    from hermes_cli.release_channels import retrying_reads
+    from hermes_cli.source_releases import resolve_source_target
+    from hermes_cli.update_channel import channel_record, rides_default_channel
+    from hermes_cli.update_cmd_common import _record_stop
+
+    if getattr(args, "branch", None):
+        return f"origin/{branch}", None, False, None
+    root = _uc()._m().PROJECT_ROOT
+    selected = _uc()._update_run_channel(args)
+    original = deepcopy(channel_record(require_readable_config_before_write(
+        Path(request["home"]) / "config.yaml"), root))
+    print(f"→ Update channel: {selected}")
+    try:
+        with retrying_reads():
+            target = resolve_source_target(selected, git_cmd, root,
+                                           forward_only=rides_default_channel(original, selected, root))
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        print(f"✗ Could not resolve the {selected} source channel: {exc}. No update was applied.")
+        stop()
+        _record_stop("channel_unresolved")
+        sys.exit(1)
+    if target.retired:
+        print(f"→ {selected} retired; source destination: {target.channel}")
+        if not getattr(args, "channel", None) and original.get("channel", "main") == selected:
+            request["channel_retirement"] = {"original": original, "destination": target.channel}
+    if target.commit:
+        print(f"→ {'Release' if target.ahead else 'Latest release'}: {target.label}")
+        request["expected_sha"] = target.commit
+        return target.commit, target.commit, target.ahead, target.repository
+    assert target.branch is not None  # a SourceTarget without a commit names its branch
+    request["branch"] = target.branch
+    return f"origin/{target.branch}", None, False, target.repository

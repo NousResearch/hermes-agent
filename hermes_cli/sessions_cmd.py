@@ -292,9 +292,9 @@ def _cmd_list(db, args):
     def _ws(s):  # repo/dir basename, "—" when unbound
         key = _ws_key(s)
         return ((os.path.basename(key.rstrip("/\\")) or key) if key else "—")[:16]
-    _title = lambda s, n: (s.get("title") or "—")[:n]  # noqa: E731
-    _preview = lambda s, n: s.get("preview", "")[:n]  # noqa: E731
-    _ago = lambda s: _relative_time(s.get("last_active"), session_id=s["id"])  # noqa: E731
+    _title = lambda s, n: (s.get("title") or "—")[:n]
+    _preview = lambda s, n: s.get("preview", "")[:n]
+    _ago = lambda s: _relative_time(s.get("last_active"), session_id=s["id"])
 
     def _src(s):  # current routing platform; "<created>→<current>" when provenance diverged (#56439)
         created = s.get("created_source") or ""
@@ -340,13 +340,10 @@ def _cmd_export(db, args):
         from hermes_cli.session_export_md import redact_session_data
         return redact_session_data(data)
 
-    from hermes_cli.session_export import SAVE_TRANSCRIPT_FORMATS
+    from hermes_cli.session_export import SAVE_TRANSCRIPT_FORMATS, export_projection
     # --only is a transcript view too (md/jsonl of what the user saw); md/qmd without --only go to _export_markdown.
     shown = args.format in SAVE_TRANSCRIPT_FORMATS or bool(getattr(args, "only", None))
-
-    # The json/jsonl backup is the TRANSFER projection (every row with its active/compacted flags) so
-    # an import restores a compacted session's archived turns; a shown transcript is display history.
-    projection = {"include_compacted": True} if shown else {"include_inactive": True}
+    projection = export_projection(shown)
 
     def _too_large(session_ids=None) -> bool:
         """The transfer projection holds every stored row in memory: the console export's per-session

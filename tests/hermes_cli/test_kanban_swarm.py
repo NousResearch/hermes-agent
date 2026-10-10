@@ -45,6 +45,31 @@ def test_create_swarm_builds_parallel_workers_verifier_and_synthesizer(tmp_path)
         assert set(kb.parent_ids(conn, created.verifier_id)) == set(created.worker_ids)
         assert kb.parent_ids(conn, created.synthesizer_id) == [created.verifier_id]
         assert all(created.root_id in (task.body or "") for task in workers)
+        assert verifier.skills is None
+        assert synthesizer.skills is None
+    finally:
+        conn.close()
+
+
+def test_create_swarm_preserves_explicit_role_skills(tmp_path):
+    conn = kb.connect(tmp_path / "kanban.db")
+    try:
+        created = create_swarm(
+            conn,
+            goal="Verify and synthesize the worker findings.",
+            workers=[SwarmWorkerSpec(profile="worker", title="Findings", body="Find facts")],
+            verifier_assignee="reviewer",
+            synthesizer_assignee="writer",
+            verifier_skills=["custom-review"],
+            synthesizer_skills=["custom-writing", "style-guide"],
+        )
+
+        verifier = kb.get_task(conn, created.verifier_id)
+        synthesizer = kb.get_task(conn, created.synthesizer_id)
+        assert verifier is not None
+        assert synthesizer is not None
+        assert verifier.skills == ["custom-review"]
+        assert synthesizer.skills == ["custom-writing", "style-guide"]
     finally:
         conn.close()
 

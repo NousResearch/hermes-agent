@@ -1149,6 +1149,8 @@ class TurnRunner:
             user_id_alt=getattr(ctx.source, "user_id_alt", None),
             skip_context_files=skip_context_files,
         )
+        from agent.runtime_cwd import scoped_session_cwd
+        sig = (sig, scoped_session_cwd())
         cache_lock = getattr(runner, "_agent_cache_lock", None)
         cache = getattr(runner, "_agent_cache", None)
         peek_sid, dead = self._cached_sid_is_dead(cache_lock, cache)
@@ -1882,6 +1884,36 @@ class TurnRunner:
         return final_response + "\n" + "\n".join(unique_tags)
 
     def run_sync(self):
+        """Bind the configured project workspace for this executor turn, never process cwd."""
+        from agent.runtime_cwd import set_session_cwd, reset_session_cwd
+        from gateway.platforms.base import resolve_channel_project
+        from hermes_cli import projects_db
+        source = self._ctx.source
+        platform_config = (getattr(getattr(self._runner, "config", None), "platforms", {}) or {}).get(source.platform)
+        project_ref = resolve_channel_project(
+            platform_config, str(source.thread_id or source.chat_id),
+            str(source.chat_id) if source.thread_id else getattr(source, "parent_chat_id", None),
+        )
+        cwd = None
+        if project_ref and projects_db.projects_db_path().is_file():
+            try:
+                with projects_db.connect_closing() as conn:
+                    project = projects_db.get_project(conn, project_ref)
+                if project and not project.archived and project.primary_path:
+                    from pathlib import Path
+                    if Path(project.primary_path).is_dir():
+                        cwd = project.primary_path
+            except Exception:
+                logger.warning("Cannot resolve configured channel project workspace", exc_info=True)
+        if not cwd:
+            return self._run_sync_with_project()
+        token = set_session_cwd(cwd)
+        try:
+            return self._run_sync_with_project()
+        finally:
+            reset_session_cwd(token)
+
+    def _run_sync_with_project(self):
         """Executor-thread body of the turn; returns the gateway result dict.
 
         The turn message lives on the shared TurnContext (``ctx.message``) so ``_run_agent_inner`` sees

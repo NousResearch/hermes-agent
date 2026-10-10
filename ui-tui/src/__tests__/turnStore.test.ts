@@ -11,7 +11,7 @@ import {
 describe('turnStore live progress helpers', () => {
   beforeEach(() => resetTurnState())
 
-  it('archives completed todos into a transcript trail and clears the live anchor', () => {
+  it('archives completed todos into a transcript trail and keeps the live panel', () => {
     patchTurnState({
       todos: [
         { content: 'prep', id: 'prep', status: 'completed' },
@@ -31,7 +31,12 @@ describe('turnStore live progress helpers', () => {
         ]
       }
     ])
-    expect(getTurnState().todos).toEqual([])
+    // The live panel persists across turns so it stays visible between the
+    // transcript and the composer; the trail message alone carries history.
+    expect(getTurnState().todos).toEqual([
+      { content: 'prep', id: 'prep', status: 'completed' },
+      { content: 'serve', id: 'serve', status: 'completed' }
+    ])
   })
 
   it('archives incomplete todos with an incomplete flag so the hint renders', () => {
@@ -47,7 +52,7 @@ describe('turnStore live progress helpers', () => {
     expect(archived).toHaveLength(1)
     expect(archived[0]!.todoIncomplete).toBe(true)
     expect(archived[0]!.todos?.map(t => t.id)).toEqual(['cook', 'serve', 'eat'])
-    expect(getTurnState().todos).toEqual([])
+    expect(getTurnState().todos.map(t => t.id)).toEqual(['cook', 'serve', 'eat'])
   })
 
   it('returns nothing when there are no todos at turn end', () => {

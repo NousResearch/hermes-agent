@@ -1277,6 +1277,8 @@ agent:
 
 The evidence that feeds this guard (which test/lint/build commands ran, which files were edited since) lives in `~/.hermes/verification_evidence.db`. That ledger is only written or created while the guard is enabled; with `verify_on_stop: false` nothing is recorded and an existing file can be deleted freely.
 
+When no canonical verification command is detected, a foreground `hermes-verify-` or `hermes-ad-hoc-` script under the resolved system temp directory can provide **targeted ad-hoc** evidence. The temp directory may be nested below a broad home/workspace root; projects rooted inside or at that temp directory remain excluded. This fallback never replaces a detected canonical suite, accepts a symlink escape, or treats a masked shell exit status as a passing check.
+
 For a user/plugin policy gate at the same point — keep the agent going with your own checks — see the [`pre_verify` hook](./features/hooks.md#pre_verify).
 
 ## Standing Goals (`/goal`)

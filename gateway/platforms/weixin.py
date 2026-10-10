@@ -78,12 +78,21 @@ def _is_session_expired(resp: dict[str, Any], ret: Any, errcode: Any) -> bool:
     return SESSION_EXPIRED_ERRCODE in (ret, errcode) or _is_stale_session_ret(ret, errcode, resp.get("errmsg") or resp.get("msg"))
 
 
-def _session_not_ready_error(ret: Any, errcode: Any, errmsg: Any) -> RuntimeError:
+class PeerSessionNotReady(RuntimeError):
+    """iLink refused a bot-initiated send because this peer's reply window is closed.
+
+    Not a rate limit: iLink prepares sends again as soon as the peer messages the bot, so the payload
+    is recoverable — ``WeixinAdapter`` holds it per peer and flushes it on that next inbound instead
+    of discarding it.
+    """
+
+
+def _session_not_ready_error(ret: Any, errcode: Any, errmsg: Any) -> PeerSessionNotReady:
     """The stale-session ``-2`` after the tokenless re-send is exhausted (or with no token to drop): iLink will not
     prepare a bot-initiated send until this peer messages the bot again. Deterministic, so it is neither retried nor
     fed to the rate-limit breaker (#80125). The text must not contain "rate limit" — ``classify_send_error`` would
     route it back into the rate-limited redelivery lane."""
-    return RuntimeError(
+    return PeerSessionNotReady(
         f"iLink sendmessage session not ready: ret={ret} errcode={errcode} errmsg={errmsg or 'unknown error'}"
         " — the user must send the bot a message first (or re-pair)")
 
@@ -719,6 +728,12 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         self._rate_limit_circuit_window_seconds = float(_extra_or_secret(extra, "rate_limit_circuit_window_seconds", "30.0"))
         self._rate_limit_circuit_open_seconds = float(_extra_or_secret(extra, "rate_limit_circuit_open_seconds", "30.0"))
         self._rate_limit_circuit_until, self._rate_limit_events = 0.0, []  # type: float, List[float]
+        # Held outbound text: iLink will not prepare a bot-initiated send once this peer's reply window has
+        # closed, so the undelivered chunks are kept per peer and flushed on that peer's next inbound
+        # (see PeerSessionNotReady) instead of being dropped on the floor.
+        self._held_outbound_max = max(1, int(_extra_or_secret(extra, "held_outbound_max", "20")))
+        self._held_outbound_ttl_seconds = float(_extra_or_secret(extra, "held_outbound_ttl_seconds", "3600"))
+        self._held_outbound: Dict[str, List[Tuple[float, List[str]]]] = {}
         self._dm_policy = _extra_or_secret(extra, "dm_policy", "pairing").lower()
         self._group_policy = _extra_or_secret(extra, "group_policy", "disabled").lower()
         # ``extra`` wins even when falsy (an explicit empty list disables the env allowlist).
@@ -889,6 +904,15 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         context_token = str(message.get("context_token") or "").strip()
         if context_token:
             await self._token_store.set(self._account_id, sender_id, context_token)
+        if sender_id in self._held_outbound:
+            # This peer's reply window just re-opened: deliver what iLink refused while it was closed, before
+            # this message's own reply, so the conversation stays in order. Never let a flush failure swallow
+            # the inbound itself.
+            try:
+                await self._flush_held_outbound(sender_id)
+            except Exception as exc:
+                logger.warning("[%s] held outbound flush failed for %s: %s", self.name, _safe_id(sender_id), exc,
+                               exc_info=True)
         if self._poll_session and self._token and not self._typing_cache.get(sender_id):
             asyncio.create_task(self._fetch_typing_ticket(self._poll_session, sender_id, context_token or None, "getConfig failed"))
         media_paths, media_types = [], []  # type: List[str], List[str]
@@ -1049,7 +1073,15 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             chunks = [c for c in self._split_text(self.format_message(final_content)) if c and c.strip()]
             for idx, chunk in enumerate(chunks):
                 client_id = f"hermes-weixin-{uuid.uuid4().hex}"
-                await self._send_text_chunk(chat_id=chat_id, chunk=chunk, context_token=context_token, client_id=client_id)
+                try:
+                    await self._send_text_chunk(chat_id=chat_id, chunk=chunk, context_token=context_token, client_id=client_id)
+                except PeerSessionNotReady:
+                    # Hold only what never went out — re-sending already-delivered chunks would duplicate them —
+                    # and stop here: the remainder is flushed when the peer messages the bot again.
+                    depth = self._hold_outbound_text(chat_id, chunks[idx:])
+                    logger.warning("[%s] peer session closed for %s; holding %d chunk(s) until their next message (queued=%d)",
+                                   self.name, _safe_id(chat_id), len(chunks) - idx, depth)
+                    raise
                 last_message_id = client_id
                 if idx < len(chunks) - 1 and self._send_chunk_delay_seconds > 0:
                     await asyncio.sleep(self._send_chunk_delay_seconds)
@@ -1057,6 +1089,35 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         except Exception as exc:
             logger.error("[%s] send failed to=%s: %s", self.name, _safe_id(chat_id), exc)
             return SendResult(success=False, error=str(exc))
+
+    def _hold_outbound_text(self, chat_id: str, chunks: List[str]) -> int:
+        """Keep text iLink refused for this peer until their next inbound; returns the new queue depth."""
+        queue = self._held_outbound.setdefault(chat_id, [])
+        now = time.time()
+        queue[:] = [entry for entry in queue if now - entry[0] <= self._held_outbound_ttl_seconds]
+        queue.append((now, list(chunks)))
+        del queue[: max(0, len(queue) - self._held_outbound_max)]
+        return len(queue)
+
+    async def _flush_held_outbound(self, chat_id: str) -> None:
+        """Re-send text held while this peer's reply window was closed. Called from ``_process_message`` once
+        the inbound refreshed the ``context_token``; whatever is still refused is held again, never dropped."""
+        pending = self._held_outbound.pop(chat_id, None)
+        if not pending:
+            return
+        logger.info("[%s] flushing %d held outbound message(s) to %s", self.name, len(pending), _safe_id(chat_id))
+        for index, (_, chunks) in enumerate(pending):
+            context_token = self._token_store.get(self._account_id, chat_id)
+            try:
+                for chunk in chunks:
+                    await self._send_text_chunk(chat_id=chat_id, chunk=chunk, context_token=context_token,
+                                                client_id=f"hermes-weixin-{uuid.uuid4().hex}")
+            except Exception as exc:
+                logger.warning("[%s] held outbound flush stopped for %s (%d/%d delivered): %s",
+                               self.name, _safe_id(chat_id), index, len(pending), exc, exc_info=True)
+                for _, remaining in pending[index:]:
+                    self._hold_outbound_text(chat_id, remaining)
+                return
 
     async def _ensure_typing_ticket(self, chat_id: str) -> Optional[str]:
         """Return a valid typing ticket, refreshing via getConfig once the 600s TTL evicts it —

@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import json
+import time
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -343,6 +344,84 @@ class TestWeixinChunkDelivery:
         assert result.success is False
         assert "session not ready" in (result.error or "") and "prepare failed" in (result.error or "")
         assert [call.kwargs["context_token"] for call in send_items_mock.await_args_list] == ["ctx-token", None]
+
+
+class TestWeixinHeldOutbound:
+    """iLink refuses bot-initiated sends once the peer's reply window has closed. The adapter must hold the
+    undelivered chunks per peer and flush them on that peer's next inbound instead of discarding the reply."""
+
+    def _connected_adapter(self, context_token="ctx-token") -> WeixinAdapter:
+        adapter = _make_adapter()
+        adapter._session = object()
+        adapter._send_session = adapter._session
+        adapter._poll_session = adapter._session
+        adapter._token = "test-token"
+        adapter._base_url = "https://weixin.example.com"
+        adapter._token_store.get = lambda account_id, chat_id: context_token
+        adapter._token_store.set = AsyncMock()
+        adapter._fetch_typing_ticket = AsyncMock()
+        return adapter
+
+    @patch("gateway.platforms.weixin.asyncio.sleep", new_callable=AsyncMock)
+    @patch("gateway.platforms.weixin._send_message", new_callable=AsyncMock)
+    def test_closed_window_holds_reply_and_flushes_it_on_next_inbound(self, send_message_mock, sleep_mock):
+        adapter = self._connected_adapter()
+        adapter._rate_limit_circuit_threshold = 1
+        send_message_mock.return_value = {"ret": weixin.RATE_LIMIT_ERRCODE, "errmsg": "prepare failed"}
+
+        result = asyncio.run(adapter.send("wxid_test123", "the report"))
+
+        assert result.success is False
+        assert [chunks for _, chunks in adapter._held_outbound["wxid_test123"]] == [["the report"]]
+
+        # The peer messages again: the fresh context_token reopens the window, so the held reply goes out.
+        send_message_mock.reset_mock()
+        send_message_mock.return_value = {"ret": 0}
+        adapter.handle_message = AsyncMock()
+        adapter._text_batch_delay_seconds = 0.05
+        adapter._text_batch_split_delay_seconds = 0.05
+
+        async def _drive():
+            await adapter._process_message({
+                "from_user_id": "wxid_test123",
+                "message_id": "msg-1",
+                "context_token": "fresh-token",
+                "item_list": [{"type": 1, "text_item": {"text": "any update?"}}],
+            })
+            await asyncio.sleep(0.2)
+
+        asyncio.run(_drive())
+
+        assert "wxid_test123" not in adapter._held_outbound
+        assert [call.kwargs["text"] for call in send_message_mock.await_args_list] == ["the report"]
+        assert [call.kwargs["context_token"] for call in send_message_mock.await_args_list] == ["ctx-token"]
+
+    def test_held_queue_is_bounded_and_expires(self):
+        adapter = _make_adapter()
+        adapter._held_outbound_max = 2
+        adapter._held_outbound_ttl_seconds = 30
+
+        adapter._hold_outbound_text("wxid_test123", ["one"])
+        adapter._hold_outbound_text("wxid_test123", ["two"])
+        adapter._hold_outbound_text("wxid_test123", ["three"])
+
+        assert [chunks for _, chunks in adapter._held_outbound["wxid_test123"]] == [["two"], ["three"]]
+
+        adapter._held_outbound["wxid_test123"][0] = (time.time() - 31, ["stale"])
+        adapter._hold_outbound_text("wxid_test123", ["four"])
+
+        assert [chunks for _, chunks in adapter._held_outbound["wxid_test123"]] == [["three"], ["four"]]
+
+    @patch("gateway.platforms.weixin._send_message", new_callable=AsyncMock)
+    def test_flush_reholds_what_is_still_refused(self, send_message_mock):
+        adapter = self._connected_adapter()
+        adapter._rate_limit_circuit_threshold = 1
+        send_message_mock.return_value = {"ret": weixin.RATE_LIMIT_ERRCODE, "errmsg": "prepare failed"}
+        adapter._hold_outbound_text("wxid_test123", ["held one"])
+
+        asyncio.run(adapter._flush_held_outbound("wxid_test123"))
+
+        assert [chunks for _, chunks in adapter._held_outbound["wxid_test123"]] == [["held one"]]
 
 
 class TestWeixinOutboundMedia:

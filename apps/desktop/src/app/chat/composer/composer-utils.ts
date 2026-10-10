@@ -66,7 +66,13 @@ export function shouldDisableComposerInput(disabled: boolean, gatewayState: Conn
   return disabled && gatewayState === 'open'
 }
 
-export const pickPlaceholder = (pool: readonly string[]) => pool[Math.floor(Math.random() * pool.length)]
+/**
+ * Pick a placeholder's slot, not its words: the catalogue the string is read
+ * from can swap under the held index (the locale arrives after first paint),
+ * so callers resolve the text on render from the pool they currently see.
+ */
+export const pickPlaceholderIndex = (poolLength: number): number =>
+  poolLength === 0 ? 0 : Math.floor(Math.random() * poolLength)
 
 /**
  * Width classes for the unstacked vs stacked composer editor.

@@ -15,6 +15,8 @@ compression timeout, while honouring the four constraints from the issue:
   * The floor is a minimum — a config value already above it is unchanged.
   * Both the sync (``call_llm``) and async (``async_call_llm``) paths are
     covered.
+  * The floor covers the schema default only; a positive timeout the user set
+    in config.yaml is theirs (#126769).
 
 These tests exercise the real ``call_llm`` / ``async_call_llm`` production
 paths with a mocked LLM client and assert the timeout that actually reaches
@@ -25,7 +27,9 @@ from unittest.mock import patch, MagicMock, AsyncMock
 
 import pytest
 
-from agent.auxiliary_client import call_llm, async_call_llm
+from agent.auxiliary_client import _effective_aux_timeout, call_llm, async_call_llm
+from agent.conversation_compression import resolve_context_compression_timeouts
+from hermes_constants import get_hermes_home
 
 # The committed bounded floor for config-derived compression timeouts.
 # Behaviour contract (see AGENTS.md "Behavior contracts over snapshots"):
@@ -156,3 +160,29 @@ class TestCompressionTimeoutFloorAsync:
             )
         timeout = client.chat.completions.create.call_args.kwargs["timeout"]
         assert timeout == low
+
+
+def _set_user_compression_timeout(value):
+    (get_hermes_home() / "config.yaml").write_text(
+        f"auxiliary:\n  compression:\n    timeout: {value}\n", encoding="utf-8")
+
+
+class TestExplicitCompressionTimeout:
+    """A timeout written to config.yaml is a choice; only the schema default is floored (#126769)."""
+
+    @pytest.mark.parametrize("configured, expected", [
+        (None, COMPRESSION_TIMEOUT_FLOOR),  # unset: schema default 120, floored
+        (0, COMPRESSION_TIMEOUT_FLOOR),     # not a usable deadline: floored, never an instant expiry
+        (90, 90.0),
+        (120, 120.0),                       # equal to the schema default, still a choice
+        (900, 900.0),
+    ])
+    def test_only_an_unset_timeout_is_floored(self, configured, expected):
+        if configured is not None:
+            _set_user_compression_timeout(configured)
+        assert _effective_aux_timeout("compression", None) == expected
+
+    def test_explicit_timeout_bounds_the_host_budgets(self):
+        _set_user_compression_timeout(120)
+        assert resolve_context_compression_timeouts(
+            {"context_timeout_seconds": 60, "context_total_ceiling_seconds": 120}) == (120.0, 120.0)

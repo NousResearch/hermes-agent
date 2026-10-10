@@ -6250,8 +6250,8 @@ def _resolve_task_provider_model(
 _DEFAULT_AUX_TIMEOUT = 30.0
 
 # Reasoning compression models can exceed the default 120 s config timeout, falling back to the
-# deterministic marker. Bounded *floor* for config-derived compression timeouts only; never
-# overrides an explicit per-call timeout.
+# deterministic marker. Bounded *floor* for the schema-default compression timeout only; never
+# overrides an explicit per-call timeout or a positive one the user set in config.yaml (#126769).
 # Compression summarises large conversation histories; a reasoning auxiliary model (e.g. Codex / GPT-5.5)
 # can legitimately take longer than the default ``auxiliary.compression.timeout`` (120 s), causing the
 # stream to time out and the compressor to fall back to the deterministic context marker (#54915). A floor
@@ -6262,7 +6262,7 @@ _COMPRESSION_TIMEOUT_FLOOR_SECONDS = 300.0
 
 # Read-time resolution of auxiliary.<task> (plugin defaults, inherit_from) lives in its own module;
 # re-exported here because callers and tests reach it as agent.auxiliary_client._get_auxiliary_task_config.
-from agent.auxiliary_task_config import _get_auxiliary_task_config
+from agent.auxiliary_task_config import _as_seconds, _get_auxiliary_task_config, _user_set_task_timeout
 
 
 class CompressionFastLane(NamedTuple):
@@ -6354,20 +6354,18 @@ def _get_task_timeout(task: str, default: float = _DEFAULT_AUX_TIMEOUT) -> float
     """``auxiliary.<task>.timeout`` from config, else *default*."""
     if not task:
         return default
-    raw = _get_auxiliary_task_config(task).get("timeout")
-    if raw is not None:
-        with contextlib.suppress(ValueError, TypeError):
-            return float(raw)
-    return default
+    seconds = _as_seconds(_get_auxiliary_task_config(task).get("timeout"))
+    return default if seconds is None else seconds
 
 
 def _effective_aux_timeout(task: str, timeout: Optional[float]) -> float:
-    """Explicit ``timeout`` wins, else config; compression gets a floor so a reasoning model
-    summarising a large context isn't cut off."""
+    """Explicit ``timeout`` wins, else config. Compression's default is floored; a user-set value is kept."""
     if timeout is not None:
         return timeout
-    effective = _get_task_timeout(task)
-    return max(effective, _COMPRESSION_TIMEOUT_FLOOR_SECONDS) if task == "compression" else effective
+    if task != "compression":
+        return _get_task_timeout(task)
+    chosen = _user_set_task_timeout(task)
+    return chosen if chosen is not None else max(_get_task_timeout(task), _COMPRESSION_TIMEOUT_FLOOR_SECONDS)
 
 
 def _with_custom_endpoint_extra_body(

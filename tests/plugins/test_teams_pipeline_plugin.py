@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import multiprocessing
 from types import SimpleNamespace
 from pathlib import Path
 
@@ -136,6 +137,95 @@ def test_store_persists_subscription_event_and_job_state(tmp_path):
     assert job["status"] == "received"
     assert sink is not None
     assert sink["page_id"] == "page-1"
+
+
+def test_runtime_notification_preserves_cli_subscription(tmp_path, monkeypatch):
+    from plugins.teams_pipeline import cli, runtime, subscriptions
+
+    path = tmp_path / "teams-store.json"
+    monkeypatch.setattr(runtime, "build_graph_client", lambda: FakeGraphClient())
+    monkeypatch.setattr(runtime, "resolve_teams_pipeline_store_path", lambda: path)
+    live = runtime.build_pipeline_runtime(SimpleNamespace(config=GatewayConfig(platforms={})))
+
+    class SubscriptionGraph:
+        async def post_json(self, path, json_body):
+            return {"id": "new-sub", **json_body}
+
+    monkeypatch.setattr(cli, "build_graph_client", SubscriptionGraph)
+    cli._cmd_subscribe(SimpleNamespace(
+        store_path=str(path), resource="communications/onlineMeetings/getAllTranscripts",
+        notification_url="https://example.invalid/hooks", change_type="created",
+        expiration=subscriptions.utc_timestamp(1), client_state="ours",
+        lifecycle_notification_url="", latest_supported_tls_version="",
+    ))
+    before = TeamsPipelineStore(path).get_subscription("new-sub")
+    assert before is not None
+    job = live.create_job_from_notification({"id": "event-1", "resourceData": {"id": "meeting-1"}})
+    persisted = TeamsPipelineStore(path)
+    assert persisted.get_subscription("new-sub") == before
+    assert persisted.get_job(job.job_id) is not None
+
+
+def _write_pipeline_state(path, index, connection, start):
+    store = TeamsPipelineStore(path)
+    connection.send(True)
+    if not start.wait(30):
+        raise TimeoutError("pipeline writers were not released")
+    accepted = store.record_notification_receipt("shared-receipt")
+    deleted = store.delete_subscription(f"old-{index}")
+    for iteration in range(8):
+        key = f"{index}-{iteration}"
+        store.upsert_job("shared-job", {key: True})
+        store.upsert_sink_record(key, {"job_id": "shared-job"})
+        store.upsert_subscription(key, {"resource": key})
+    connection.send((accepted, deleted))
+
+
+def test_store_transactions_preserve_concurrent_process_updates(tmp_path):
+    path = tmp_path / "nested" / "teams-store.json"
+    seed = TeamsPipelineStore(path)
+    workers = range(4)
+    for index in workers:
+        seed.upsert_subscription(f"old-{index}", {"resource": "old"})
+    ctx = multiprocessing.get_context("spawn")
+    start = ctx.Event()
+    processes, connections = [], []
+    try:
+        for index in workers:
+            parent, child = ctx.Pipe()
+            process = ctx.Process(target=_write_pipeline_state, args=(path, index, child, start))
+            process.start()
+            child.close()
+            processes.append(process)
+            connections.append(parent)
+        for connection in connections:
+            assert connection.poll(30), "writer did not load its initial state"
+            assert connection.recv() is True
+        start.set()
+        outcomes = []
+        for connection in connections:
+            assert connection.poll(30), "writer did not finish"
+            outcomes.append(connection.recv())
+        for process in processes:
+            process.join(30)
+            assert process.exitcode == 0
+    finally:
+        for process in processes:
+            if process.is_alive():
+                process.terminate()
+            process.join(30)
+        for connection in connections:
+            connection.close()
+
+    assert sum(accepted for accepted, _ in outcomes) == 1
+    assert all(deleted for _, deleted in outcomes)
+    persisted = TeamsPipelineStore(path)
+    expected = {f"{index}-{iteration}" for index in workers for iteration in range(8)}
+    assert set(persisted.list_subscriptions()) == expected
+    job = persisted.get_job("shared-job")
+    assert all(job.get(key) is True for key in expected)
+    assert all(persisted.get_sink_record(key)["job_id"] == "shared-job" for key in expected)
+    assert persisted.record_notification_receipt("shared-receipt") is False
 
 
 @pytest.mark.anyio

@@ -2399,6 +2399,8 @@ class ContextCompressor(SummaryDispatchMixin, PreLlmSkipMixin, MicroCompactionMi
         self._fallback_probe_at = 0.0
         # Armed at a completed boundary; consumed by the next real prompt count in update_from_response().
         self._verify_compaction_cleared_threshold = False
+        # Turn-owned history fact; model recovery must not erase a committed rewrite.
+        self._pending_history_compaction_verdict = False
         # Lets the boundary wrapper tell a completed rewrite from a no-op without inferring from length.
         self._last_compression_made_progress = False
         # Transient summary errors must not block a fresh session.
@@ -2614,6 +2616,8 @@ class ContextCompressor(SummaryDispatchMixin, PreLlmSkipMixin, MicroCompactionMi
         # A completed boundary proves compressibility: lift any structural no-op backoff.
         self._structural_no_op_backoff_until = 0.0
         self._verify_compaction_cleared_threshold = True
+        # Only a completed boundary arms this; a later no-op cannot overwrite it.
+        self._pending_history_compaction_verdict = True
         if feasibility_skip:
             # A deliberate pre-LLM summary skip (#60451, benched model) is not a summary-quality verdict: it must
             # neither extend a fallback streak (the streak decides whether the summary model is called)
@@ -2805,6 +2809,7 @@ class ContextCompressor(SummaryDispatchMixin, PreLlmSkipMixin, MicroCompactionMi
             # The overload budget rode those cooldowns; a new runtime restarts it too.
             self._reset_consecutive_overload_aborts()
         self._verify_compaction_cleared_threshold = self._last_compression_made_progress = False
+        # Keep _pending_history_compaction_verdict: the history commit survives the model switch.
         # Runway was computed against the previous model's trigger; clear the durable copy too.
         self._reset_proactive_prune_rearm()
         self._clear_durable_proactive_prune_rearm()

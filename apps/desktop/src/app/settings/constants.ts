@@ -479,6 +479,7 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
     maxSnapshots: 'Checkpoint Limit'
   },
   voice: {
+    bargeInThresholdMultiplier: 'Interruption Threshold',
     maxRecordingSeconds: 'Max Recording Length',
     autoTts: 'Read Responses Aloud',
     voiceChatMode: 'Voice Chat Mode',
@@ -668,6 +669,8 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
     }
   },
   voice: {
+    bargeInThresholdMultiplier:
+      'Sensitivity when interrupting a chained voice reply. Use a positive number; lower values detect quieter speech but may pick up speaker audio. Default: 3.',
     autoTts: 'Automatically speak assistant responses.',
     voiceChatMode:
       'chained: speech-to-text → Hermes → text-to-speech with the providers below. gpt-live: one full-duplex OpenAI voice model (gpt-live-1) listens and talks, and hands every real request to Hermes — any model you have selected answers with the full toolset. Needs an OpenAI API key; the voice layer bills $0.05 per minute.',
@@ -785,6 +788,7 @@ export const SECTIONS: DesktopConfigSection[] = [
     icon: Mic,
     keys: [
       'voice.voice_chat_mode',
+      'voice.barge_in_threshold_multiplier',
       'voice.gpt_live.voice',
       'voice.gpt_live.instructions',
       'tts.provider',

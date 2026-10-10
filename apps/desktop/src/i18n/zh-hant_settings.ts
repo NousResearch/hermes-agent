@@ -468,6 +468,7 @@ export const zhHantSettings = {
         maxSnapshots: '檢查點上限'
       },
       voice: {
+        bargeInThresholdMultiplier: '打斷閾值',
         maxRecordingSeconds: '最長錄音時間',
         autoTts: '朗讀回覆',
         voiceChatMode: '語音聊天模式',
@@ -646,6 +647,8 @@ export const zhHantSettings = {
           '本機瀏覽會使用你的真實登入狀態。Hermes 會將預設瀏覽器的設定（Cookie、登入資訊與偏好）複製成受管理的快照，再以內建的 Chromium 驅動它——不會直接開啟你正在使用的設定檔，且每次執行都會從目前的設定檔重新整理副本。設定雲端瀏覽器後端時，也允許代理視需要開啟本機真實設定檔工作階段。僅支援 Chromium 系瀏覽器（Chrome、Edge、Brave、Brave Origin、Chromium）；若預設瀏覽器並非 Chromium 系，會顯示明確錯誤。預設關閉。'
       },
       voice: {
+        bargeInThresholdMultiplier:
+          '分段語音回覆的打斷靈敏度。請輸入正數；較低的值可偵測更輕的說話聲，但也可能收取揚聲器聲音。預設值：3。',
         autoTts: '自動朗讀助手回覆。',
         voiceChatMode:
           'chained：語音轉文字 → Hermes → 文字轉語音，使用下方的提供方。gpt-live：由全雙工 OpenAI 語音模型（gpt-live-1）負責聆聽與說話，並將每個實際請求交給 Hermes——由你選擇的任意模型使用完整工具集作答。需要 OpenAI API 金鑰；語音層每分鐘收費 $0.05。',

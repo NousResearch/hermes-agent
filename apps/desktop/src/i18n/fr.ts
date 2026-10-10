@@ -471,6 +471,7 @@ export const frOverrides = {
       openMaintenance: 'Ouvrir Maintenance'
     },
     voice: {
+      echoDropped: 'Écho de lecture ignoré. Essayez de parler à nouveau.',
       configureSpeechToText: 'Configurez la reconnaissance vocale pour utiliser le mode vocal.',
       couldNotStartSession: 'Impossible de démarrer la session vocale',
       microphoneAccessDenied: 'Accès au microphone refusé.',
@@ -1260,6 +1261,7 @@ export const frOverrides = {
         maxSnapshots: 'Limite de points de contrôle'
       },
       voice: {
+        bargeInThresholdMultiplier: 'Seuil d’interruption',
         maxRecordingSeconds: "Durée maximale d'enregistrement",
         autoTts: 'Lire les réponses à haute voix',
         voiceChatMode: 'Mode de conversation vocale',
@@ -1440,6 +1442,8 @@ export const frOverrides = {
         }
       },
       voice: {
+        bargeInThresholdMultiplier:
+          'Sensibilité pour interrompre une réponse vocale en mode enchaîné. Utilisez un nombre positif ; les valeurs plus basses détectent une voix plus faible, mais peuvent capter le son des haut-parleurs. Par défaut : 3.',
         autoTts: "Lit automatiquement les réponses de l'assistant à voix haute.",
         voiceChatMode:
           'chained : reconnaissance vocale → Hermes → synthèse vocale avec les fournisseurs ci-dessous. gpt-live : un modèle vocal OpenAI full-duplex (gpt-live-1) écoute et parle, et confie chaque vraie demande à Hermes — le modèle que vous avez sélectionné répond avec l’ensemble des outils. Nécessite une clé API OpenAI ; la couche vocale est facturée 0,05 $ par minute.',

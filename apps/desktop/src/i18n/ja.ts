@@ -227,6 +227,7 @@ export const jaOverrides = {
         'アップデート後、このバックエンドは古いコードのままです。再起動して新しいコードを読み込んでください。'
     },
     voice: {
+      echoDropped: '再生音のエコーを無視しました。もう一度話してください。',
       configureSpeechToText: '音声モードを使用するには音声認識を設定してください。',
       couldNotStartSession: '音声セッションを開始できませんでした',
       microphoneAccessDenied: 'マイクへのアクセスが拒否されました。',
@@ -809,6 +810,7 @@ export const jaOverrides = {
         maxSnapshots: 'チェックポイント上限'
       },
       voice: {
+        bargeInThresholdMultiplier: '割り込みしきい値',
         maxRecordingSeconds: '最大録音時間',
         autoTts: '応答を読み上げる'
       },
@@ -970,6 +972,8 @@ export const jaOverrides = {
         }
       },
       voice: {
+        bargeInThresholdMultiplier:
+          '連鎖型の音声応答に割り込む際の感度です。正の数を指定してください。小さい値ほど小さな声を検出しますが、スピーカーの音も拾う場合があります。既定値：3。',
         autoTts: 'アシスタントの応答を自動で読み上げます。'
       },
       stt: {

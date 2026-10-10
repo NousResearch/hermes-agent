@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { atom } from 'nanostores'
 import { createRef } from 'react'
 import { MemoryRouter } from 'react-router'
@@ -96,6 +96,51 @@ function renderConfigSettings(activeSectionId = 'safety') {
 }
 
 describe('ConfigSettings autosave', () => {
+  it('saves a positive fractional interruption threshold to the displayed profile without resending other voice settings', async () => {
+    scopeProfileMock.set('voice-profile')
+    getHermesConfigRecord.mockResolvedValue({
+      voice: { barge_in_threshold_multiplier: 3, auto_tts: true, voice_chat_mode: 'chained' }
+    })
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+
+    try {
+      renderConfigSettings('voice')
+      const input = await screen.findByRole('spinbutton', { name: 'Interruption Threshold' })
+      fireEvent.change(input, { target: { value: '1.5' } })
+      await vi.advanceTimersByTimeAsync(700)
+      await vi.waitFor(() =>
+        expect(saveHermesConfig).toHaveBeenCalledWith(
+          { voice: { barge_in_threshold_multiplier: 1.5 } },
+          'voice-profile'
+        )
+      )
+
+      // Zero/negative values mean "use the default" in the monitor, not more
+      // sensitivity. A Settings edit must not silently save that reversal.
+      for (const value of ['0', '-1', '']) {
+        fireEvent.change(input, { target: { value } })
+        await vi.advanceTimersByTimeAsync(700)
+      }
+
+      expect(saveHermesConfig).toHaveBeenCalledTimes(1)
+      fireEvent.blur(input)
+      expect(input).toHaveProperty('value', '1.5')
+
+      fireEvent.change(input, { target: { value: '' } })
+      fireEvent.change(input, { target: { value: '0' } })
+      fireEvent.change(input, { target: { value: '0.75' } })
+      await vi.advanceTimersByTimeAsync(700)
+      await vi.waitFor(() =>
+        expect(saveHermesConfig).toHaveBeenLastCalledWith(
+          { voice: { barge_in_threshold_multiplier: 0.75 } },
+          'voice-profile'
+        )
+      )
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('sends a later revert instead of diffing it away against the stale page-load baseline', async () => {
     getHermesConfigRecord.mockResolvedValue({ checkpoints: { enabled: false }, other: 'untouched' })
 

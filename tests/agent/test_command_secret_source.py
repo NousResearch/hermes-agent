@@ -219,3 +219,91 @@ def test_registry_helper_error_prints_remediation(tmp_path, monkeypatch, capsys)
     env_loader._apply_external_secret_sources(tmp_path)
     err = capsys.readouterr().err
     assert "secrets.command.command" in err
+
+
+def test_multiline_secret_source_registers_each_line_for_terminal_redaction(tmp_path, monkeypatch):
+    from agent import redact
+    from agent.secret_sources.base import FetchResult, SecretSource
+    from agent.secret_sources import registry
+
+    class FakeSource(SecretSource):
+        name = "fake"
+        label = "fake"
+        shape = "mapped"
+        def fetch(self, cfg, home_path):
+            return FetchResult(secrets={
+                "CMDTEST_KEY": "marker-start\nbody-line-one-secret\nbody-line-two-secret\nmarker-end"
+            })
+
+    source = FakeSource()
+    monkeypatch.setattr(registry, "_ordered_enabled_sources", lambda *_args, **_kwargs: [source])
+    monkeypatch.setattr(registry, "_section", lambda *_args, **_kwargs: {"enabled": True})
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    registry.apply_all({"fake": {"enabled": True}}, tmp_path, environ={})
+
+    output = redact.redact_terminal_output(
+        "body-line-one-secret\nbody-line-two-secret\n",
+        command="env | cut -d= -f1", force=True
+    )
+    assert "body-line-one-secret" not in output
+    assert "body-line-two-secret" not in output
+
+
+def test_large_multiline_secret_keeps_bounded_early_middle_and_late_fragments(tmp_path, monkeypatch):
+    from agent import redact
+    from agent.secret_sources.base import FetchResult, SecretSource
+    from agent.secret_sources import registry
+
+    class FakeSource(SecretSource):
+        name = "fake"
+        label = "fake"
+        shape = "mapped"
+        def fetch(self, cfg, home_path):
+            lines = [f"opaque-line-{i}-secret" for i in range(70)]
+            return FetchResult(secrets={"CMDTEST_KEY": "\n".join(lines)})
+
+    source = FakeSource()
+    monkeypatch.setattr(registry, "_ordered_enabled_sources", lambda *_args, **_kwargs: [source])
+    monkeypatch.setattr(registry, "_section", lambda *_args, **_kwargs: {"enabled": True})
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    registry.apply_all({"fake": {"enabled": True}}, tmp_path, environ={})
+
+    output = redact.redact_terminal_output(
+        "opaque-line-0-secret opaque-line-35-secret opaque-line-69-secret",
+        command="env", force=True
+    )
+    assert "opaque-line-0-secret" not in output
+    assert "opaque-line-35-secret" not in output
+    assert "opaque-line-69-secret" not in output
+
+
+def test_large_multiline_secret_is_one_capacity_unit_and_keeps_sentinel(tmp_path, monkeypatch):
+    from agent import redact
+    from agent.secret_sources.base import FetchResult, SecretSource
+    from agent.secret_sources import registry
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    redact.register_vault_redaction_value("pre-existing-sentinel-secret")
+
+    class FakeSource(SecretSource):
+        name = "fake"
+        label = "fake"
+        shape = "mapped"
+        def fetch(self, cfg, home_path):
+            return FetchResult(secrets={"CMDTEST_KEY": "\n".join(
+                f"opaque-line-{i}-secret" for i in range(70)
+            )})
+
+    source = FakeSource()
+    monkeypatch.setattr(registry, "_ordered_enabled_sources", lambda *_args, **_kwargs: [source])
+    monkeypatch.setattr(registry, "_section", lambda *_args, **_kwargs: {"enabled": True})
+    registry.apply_all({"fake": {"enabled": True}}, tmp_path, environ={})
+
+    output = redact.redact_terminal_output(
+        "pre-existing-sentinel-secret opaque-line-0-secret opaque-line-35-secret opaque-line-69-secret",
+        command="env", force=True
+    )
+    assert "pre-existing-sentinel-secret" not in output
+    assert "opaque-line-0-secret" not in output
+    assert "opaque-line-35-secret" not in output
+    assert "opaque-line-69-secret" not in output

@@ -533,15 +533,20 @@ class _ConcurrentToolAuthorizationGate:
 
     def _acquire_serialization_lock(self) -> bool:
         """Acquire by the ordinary bound, extending only for an active host-owned human wait."""
-        deadline = time.monotonic() + self._lock_timeout
+        ordinary_deadline = time.monotonic() + self._lock_timeout
+        # Re-check an active wait often enough that closing it restores a short
+        # ordinary bound promptly. The positive floor keeps bad/test-only zero
+        # timeouts from turning this into a busy loop.
+        poll_interval = max(0.01, min(1.0, self._lock_timeout))
         while True:
             active_deadline = self._active_human_wait_deadline()
+            deadline = ordinary_deadline
             if active_deadline is not None:
                 deadline = max(deadline, active_deadline)
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 return False
-            if self._serialization_lock.acquire(timeout=min(1.0, remaining)):
+            if self._serialization_lock.acquire(timeout=min(poll_interval, remaining)):
                 return True
 
     def run(self, callback):

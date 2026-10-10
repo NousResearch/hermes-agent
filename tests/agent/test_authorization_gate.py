@@ -226,6 +226,44 @@ class TestAuthorizationGate:
         second.join(timeout=5)
         assert second_ran.is_set()
 
+    def test_closed_human_wait_reverts_to_ordinary_lock_timeout(self, monkeypatch):
+        """A closed long wait must not leave its deadline stuck on later lock acquisition."""
+        monkeypatch.setattr("agent.tool_executor._authorization_gate_lock_timeout", lambda: 0.05)
+        gate = _make_gate()
+        holder_in_wait = threading.Event()
+        close_wait = threading.Event()
+        wait_closed = threading.Event()
+        release_holder = threading.Event()
+        second_ran = threading.Event()
+
+        def _holder():
+            with approval_human_wait.human_wait_window(SESSION, timeout_seconds=1.0):
+                holder_in_wait.set()
+                close_wait.wait(timeout=5)
+            wait_closed.set()
+            release_holder.wait(timeout=5)
+
+        holder = threading.Thread(target=lambda: gate.run(_holder), daemon=True)
+        holder.start()
+        assert holder_in_wait.wait(timeout=5)
+
+        second = threading.Thread(target=lambda: gate.run(second_ran.set), daemon=True)
+        second.start()
+        try:
+            time.sleep(0.15)
+            assert not second_ran.is_set(), "active human wait did not extend the lock deadline"
+
+            close_wait.set()
+            assert wait_closed.wait(timeout=2)
+            assert second_ran.wait(timeout=2), (
+                "closed human wait left its long deadline stuck on the authorization waiter"
+            )
+        finally:
+            close_wait.set()
+            release_holder.set()
+            holder.join(timeout=5)
+            second.join(timeout=5)
+
     def test_wedged_callback_contributes_nothing_to_exclusion(self):
         """THE #79719 regression: gate residency is not deadline exclusion."""
         gate = _make_gate()

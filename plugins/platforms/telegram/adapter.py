@@ -178,6 +178,9 @@ _MEDIA_KIND_KEYS = {
     "video file": "platform.telegram.media.kind_video"}
 
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
+from plugins.platforms.telegram.telegram_drafts import draft_flood_result, retry_draft_after_flood
+from plugins.platforms.telegram.telegram_media_probe import (
+    _coerce_duration_seconds, _probe_video_geometry, _probe_voice_duration_seconds, _video_thumbnail_jpeg)
 from plugins.platforms.telegram.telegram_entities import expand_link_entities
 from plugins.platforms.telegram.telegram_held_inbound import TelegramHeldInboundMixin
 from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id
@@ -210,116 +213,6 @@ def _flood_cap_result(wait: float) -> SendResult:
 
 _TELEGRAM_IMAGE_MIME_TO_EXT = {"image/png": ".png", "image/jpeg": ".jpg", "image/jpg": ".jpg", "image/webp": ".webp", "image/gif": ".gif"}
 _TELEGRAM_IMAGE_EXT_TO_MIME = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif"}
-
-
-def _coerce_duration_seconds(value: Any) -> Optional[int]:
-    """Round a raw length to whole positive seconds, or None if unusable."""
-    try:
-        secs = round(float(value))
-    except (TypeError, ValueError):
-        return None
-    return secs if secs > 0 else None
-
-
-def _probe_voice_duration_seconds(path: str) -> Optional[int]:
-    """Best-effort whole-second audio length (wave → mutagen → ffprobe; None if unreadable).
-
-    Telegram renders long clips as 0:00 without an explicit duration. Blocking: use ``to_thread``."""
-    if os.path.splitext(path)[1].lower() == ".wav":
-        try:
-            import wave
-            with wave.open(path, "rb") as wf:
-                rate = wf.getframerate() or 0
-                secs = _coerce_duration_seconds(wf.getnframes() / float(rate)) if rate else None
-            if secs is not None:
-                return secs
-        except Exception:
-            pass
-    try:
-        import mutagen
-        secs = _coerce_duration_seconds(getattr(getattr(mutagen.File(path), "info", None), "length", None))
-        if secs is not None:
-            return secs
-    except Exception:
-        pass
-    try:
-        import shutil
-        import subprocess
-        if shutil.which("ffprobe"):
-            proc = subprocess.run(
-                ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", path],
-                stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5)
-            if proc.returncode == 0:
-                return _coerce_duration_seconds(proc.stdout.strip())
-    except Exception:
-        pass
-    return None
-
-
-def _probe_video_geometry(path: str) -> dict[str, int]:
-    """``{"width", "height", "duration"}`` for a local video; ``{}`` when ffprobe can't read it.
-
-    Telegram runs its own video processing only for uploads under roughly 10 MB; above that it
-    stores the file as an unprocessed ``320x320`` video with ``duration=0``, so the message must
-    carry the real geometry or clients draw a square tile for any aspect ratio.
-    """
-    try:
-        import shutil
-        import subprocess
-        if not shutil.which("ffprobe"):
-            return {}
-        proc = subprocess.run(
-            ["ffprobe", "-v", "error", "-select_streams", "v:0",
-             "-show_entries", "stream=width,height", "-show_entries", "format=duration",
-             "-of", "json", path],
-            stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20)
-        if proc.returncode != 0:
-            return {}
-        blob = json.loads(proc.stdout or "{}")
-        streams = blob.get("streams") or []
-        if not streams:
-            return {}
-        geometry = {"width": int(streams[0]["width"]), "height": int(streams[0]["height"])}
-        duration = _coerce_duration_seconds((blob.get("format") or {}).get("duration"))
-        if duration:
-            geometry["duration"] = duration
-        return geometry
-    except Exception:
-        logger.debug("[Telegram] video geometry probe failed for %s", path, exc_info=True)
-        return {}
-
-
-def _video_thumbnail_jpeg(path: str, duration: Optional[int]) -> Optional[str]:
-    """Write a 320px-wide JPEG frame for Telegram's ``thumbnail`` field; None on failure.
-
-    Telegram keeps a supplied thumbnail for the uploads it did not process itself — without one the
-    chat shows a square placeholder tile until the video is opened.
-    """
-    out = None
-    try:
-        import shutil
-        import subprocess
-        import tempfile
-        if not shutil.which("ffmpeg"):
-            return None
-        seek = max(1, int((duration or 3) * 0.25))
-        fd, out = tempfile.mkstemp(suffix=".jpg", prefix="hermes-tg-thumb-")
-        os.close(fd)
-        proc = subprocess.run(
-            ["ffmpeg", "-y", "-ss", str(seek), "-i", path, "-frames:v", "1",
-             "-vf", "scale=320:-2", "-q:v", "6", out],
-            stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
-        if proc.returncode != 0 or not os.path.getsize(out):
-            with contextlib.suppress(OSError):
-                os.remove(out)
-            return None
-        return out
-    except Exception:
-        logger.debug("[Telegram] video thumbnail extraction failed for %s", path, exc_info=True)
-        if out:
-            with contextlib.suppress(OSError):
-                os.remove(out)
-        return None
 
 
 def telegram_deps_present() -> bool:
@@ -1567,17 +1460,27 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             and not getattr(self, "_rich_draft_disabled", False)
             and self._rich_content_ok(content))
 
-    async def _try_send_rich_draft(self, chat_id: str, draft_id: int, content: str, metadata: Optional[dict[str, Any]]) -> bool:
-        """Emit one ``sendRichMessageDraft`` frame; True on success. Frames are ephemeral, so any failure
-        returns False and the caller renders the legacy draft; capability failures latch off."""
+    async def _try_send_rich_draft(self, chat_id: str, draft_id: int, content: str, metadata: Optional[dict[str, Any]]) -> tuple[bool, Optional[float]]:
+        """Emit one ``sendRichMessageDraft`` frame; ``(success, retry_after)``. ``retry_after`` (only with a
+        failure) is a flood-control wait the caller must propagate rather than try the legacy draft in the
+        same window. Other failures return ``(False, None)`` and the caller renders the legacy draft;
+        capability failures latch off."""
         payload: dict[str, Any] = {
             "chat_id": normalize_telegram_chat_id(chat_id), "draft_id": int(draft_id), "rich_message": self._rich_message_payload(content)}
         payload.update(self._thread_kwargs_for_draft(chat_id, metadata))
         try:
-            return bool(await _await_with_thread_deadline(
+            ok = await _await_with_thread_deadline(
                 self._bot.do_api_request("sendRichMessageDraft", api_kwargs=payload),
-                timeout=_TEXT_SEND_DEADLINE, label="telegram-send", dump_on_blocked_loop=False))
+                timeout=_TEXT_SEND_DEADLINE, label="telegram-send", dump_on_blocked_loop=False)
+            return bool(ok), None
         except Exception as exc:
+            retry_after = getattr(exc, "retry_after", None)
+            if retry_after is not None:
+                logger.debug(
+                    "[%s] sendRichMessageDraft flood control %.1fs (chat=%s draft_id=%s)",
+                    self.name, float(retry_after), chat_id, draft_id,
+                )
+                return False, float(retry_after)
             if self._is_rich_capability_error(exc):
                 self._rich_draft_disabled = True
                 logger.debug(
@@ -1586,7 +1489,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
                 logger.debug(
                     "[%s] sendRichMessageDraft transient failure (%s) — legacy draft this frame", self.name,
                     _redact_telegram_error_text(exc))
-            return False
+            return False, None
 
     async def _drain_polling_connections(self) -> None:
         """Reset the httpx pool used for getUpdates polling before a reconnect.
@@ -3804,6 +3707,26 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         await _await_with_thread_deadline(
             self._bot.edit_message_text(**kwargs), timeout=_TEXT_SEND_DEADLINE, label="telegram-send", dump_on_blocked_loop=False)
 
+    async def _edit_streaming_tick(
+            self, chat_id: str, message_id: str, content: str, preview_key: Any, saturated: bool) -> SendResult:
+        """One streaming (non-final) edit, in MarkdownV2 so the message stays formatted while content arrives.
+
+        ``format_message`` escapes unmatched markers, so a BadRequest is rare; when MarkdownV2 is rejected
+        this tick goes out as plain text and the next one tries MarkdownV2 again. Flood/network errors
+        propagate to ``edit_message``'s handler so the consumer can back off. A saturated preview is
+        cached on every successful exit so the next identical truncated frame is skipped instead of
+        re-tripping flood control."""
+        try:
+            await self._edit_text(chat_id, message_id, self.format_message(content), ParseMode.MARKDOWN_V2)
+        except Exception as exc:
+            if "not modified" not in str(exc).lower():
+                if not self._is_bad_request_error(exc):
+                    raise
+                await self._edit_text(chat_id, message_id, content)
+        if saturated:
+            self._last_overflow_preview[preview_key] = content
+        return SendResult(success=True, message_id=message_id)
+
     async def _edit_markdown_or_plain(self, chat_id: str, message_id: str, formatted: str, plain: str, warn_fmt: str) -> bool:
         """MarkdownV2 edit with plain-text fallback. Returns True on a "not modified" no-op (caller may
         skip further work); the fallback edit's exceptions propagate."""
@@ -3882,10 +3805,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             self._last_overflow_preview.pop(_preview_key, None)
         try:
             if not finalize:
-                await self._edit_text(chat_id, message_id, content)
-                if _saturated_preview:
-                    self._last_overflow_preview[_preview_key] = content
-                return SendResult(success=True, message_id=message_id)
+                return await self._edit_streaming_tick(chat_id, message_id, content, _preview_key, _saturated_preview)
             await self._edit_markdown_or_plain(
                 chat_id, message_id, self.format_message(content), _strip_mdv2(content) if content else content,
                 "[%s] MarkdownV2 edit failed, falling back to plain text: %s")
@@ -4075,8 +3995,14 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         if not self._bot:
             return SendResult(success=False, error="not_connected")
         # Rich draft fast-path; any failure degrades to the plain draft below. Drafts have no message_id.
-        if self._should_attempt_rich_draft(content) and await self._try_send_rich_draft(chat_id, draft_id, content, metadata):
-            return SendResult(success=True, message_id=None)
+        if self._should_attempt_rich_draft(content):
+            rich_ok, rich_retry_after = await self._try_send_rich_draft(chat_id, draft_id, content, metadata)
+            if rich_ok:
+                return SendResult(success=True, message_id=None)
+            if rich_retry_after is not None:
+                # Flood control on the rich endpoint: falling back to sendMessageDraft would spend
+                # another call in the same window, so the caller cools down instead.
+                return draft_flood_result(rich_retry_after)
         if not hasattr(self._bot, "send_message_draft"):
             return SendResult(success=False, error="api_unavailable")
         # Drafts share the regular-send UTF-16 length contract.
@@ -4096,21 +4022,31 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
                 kwargs["parse_mode"] = ParseMode.MARKDOWN_V2
             kwargs.update(draft_thread_kwargs)
             try:
-                if await _await_with_thread_deadline(
-                    self._bot.send_message_draft(**kwargs), timeout=_TEXT_SEND_DEADLINE, label="telegram-send", dump_on_blocked_loop=False):
+                if await self._send_message_draft_frame(kwargs):
                     return SendResult(success=True, message_id=None)
-                return SendResult(success=False, error="draft_rejected")
+                # ok=False (typing action expired, unsupported client, ...) is a normal miss that
+                # counts toward _MAX_DRAFT_FAILURES, so repeated rejections still trip the fallback.
+                logger.debug("[%s] sendMessageDraft ok=False (chat=%s draft_id=%s)", self.name, chat_id, draft_id)
+                return SendResult(success=False, error="rejected")
             except Exception as e:
-                # MarkdownV2 parse failure → retry once as plain text; anything else returns to the caller,
-                # which falls back to edit-based streaming for this response.
+                if (retry_after := getattr(e, "retry_after", None)) is not None:
+                    return await retry_draft_after_flood(
+                        self.name, kwargs, float(retry_after), self._send_message_draft_frame, _redact_telegram_error_text)
+                # MarkdownV2 parse failure: retry once as plain text.
                 if use_markdown and self._is_bad_request_error(e):
                     logger.debug(
                         "[%s] sendMessageDraft MarkdownV2 rejected, retrying as plain text (chat=%s draft_id=%s): %s",
                         self.name, chat_id, draft_id, _redact_telegram_error_text(e))
                     continue
+                # Any other failure is a normal miss that counts toward _MAX_DRAFT_FAILURES, so a
+                # permanent problem (bot blocked, chat gone) still trips the edit-based fallback.
                 logger.debug("[%s] sendMessageDraft failed (chat=%s draft_id=%s): %s", self.name, chat_id, draft_id, e)
                 return SendResult(success=False, error=_redact_telegram_error_text(e))
         return SendResult(success=False, error="draft_rejected")
+
+    def _send_message_draft_frame(self, kwargs: dict[str, Any]):
+        return _await_with_thread_deadline(
+            self._bot.send_message_draft(**kwargs), timeout=_TEXT_SEND_DEADLINE, label="telegram-send", dump_on_blocked_loop=False)
 
     async def _send_message_with_thread_fallback(self, **kwargs):
         """Send a control-style message (approval prompts, pickers), retrying once without

@@ -372,12 +372,32 @@ def _validate_file_path(file_path: str) -> Optional[str]:
     return None
 
 
+def _main_skill_md(skill_dir: Path) -> Path:
+    return skill_dir / "SKILL.md"
+
+
 def _resolve_supporting_file(skill_dir: Path, file_path: str):
     """Validate ``file_path`` and resolve it inside ``skill_dir``
     -> ``(target, None)`` | ``(None, error_dict)``."""
     from tools.path_security import validate_within_dir
-    target = skill_dir / (file_path or "")
-    err = _validate_file_path(file_path) or validate_within_dir(target, skill_dir)
+    if err := _validate_file_path(file_path):
+        return None, _err(err)
+    parts = Path(file_path).parts
+    # The main file's two accepted spellings (#40568: "so callers can target the main
+    # file") resolve to the skill ROOT: 'SKILL.md' and '<skill-name>/SKILL.md'. A deeper
+    # 'references/sub/SKILL.md' would nest a second SKILL.md that skill discovery (rglob)
+    # reads as a duplicate skill — reject it, whatever the depth, so the accepted set is
+    # exactly {'SKILL.md', '<skill>/SKILL.md'}.
+    if parts[-1] == "SKILL.md":
+        if len(parts) == 1 or (len(parts) == 2 and parts[0] == skill_dir.name):
+            return _main_skill_md(skill_dir), None
+        return None, _err(
+            f"file_path '{file_path}' would create a nested SKILL.md inside skill "
+            f"'{skill_dir.name}', which skill discovery reads as a duplicate skill. "
+            f"Use 'SKILL.md' to target the main file, or put supporting files under "
+            f"references/, templates/, scripts/, or assets/.")
+    target = skill_dir / file_path
+    err = validate_within_dir(target, skill_dir)
     return (None, _err(err)) if err else (target, None)
 
 
@@ -541,7 +561,7 @@ def _patch_skill(name: str, old_string: str, new_string: str, file_path: str | N
         return _err(match_error) | {"file_preview": _clip(content, 500, "...")}
     if err := _validate_content_size(new_content, label=target_label):
         return _err(err)
-    if not file_path and (err := _validate_frontmatter(new_content)):
+    if target == _main_skill_md(skill_dir) and (err := _validate_frontmatter(new_content)):
         return _err(f"Patch would break SKILL.md structure: {err}")
     if guard := _guarded_write(name, skill_dir, target, "patch", target_label, new_content):
         return guard
@@ -551,7 +571,7 @@ def _patch_skill(name: str, old_string: str, new_string: str, file_path: str | N
         "_change": {"old": _clip(old_string, 200, "…"), "new": _clip(new_string, 200, "…")}}
     # SKILL.md grows by patches, not by creates: surface findings on the patch that crosses a line
     # (oversized-body, incident-log-shape) — a clean patch attaches nothing and stays quiet.
-    if not file_path:
+    if target == _main_skill_md(skill_dir):
         _attach_lint_findings(result, target, before=content)
     return result
 
@@ -613,7 +633,13 @@ def _write_file(name: str, file_path: str, file_content: str) -> dict[str, Any]:
     if guard:
         return guard
     target, err = _resolve_supporting_file(skill_dir, file_path)
-    if guard := err or _guarded_write(name, skill_dir, target, "write_file", file_path, file_content):
+    if err:
+        return err
+    if target == _main_skill_md(skill_dir):
+        # A main-file spelling is a full rewrite of SKILL.md: route through the edit handler
+        # so frontmatter validation and the scan-rollback apply (the #40568 intent).
+        return _edit_skill(name, file_content)
+    if guard := _guarded_write(name, skill_dir, target, "write_file", file_path, file_content):
         return guard
     result = {"success": True, "message": f"File '{file_path}' written to skill '{name}'.", "path": str(target)}
     # references/ is where per-session hoarding shows up; surface the sprawl finding on the write
@@ -633,6 +659,13 @@ def _remove_file(name: str, file_path: str) -> dict[str, Any]:
     target, err = _resolve_supporting_file(skill_dir, file_path)
     if err:
         return err
+    if target == _main_skill_md(skill_dir):
+        # SKILL.md IS the skill: removing it would delete the skill while bypassing the
+        # delete path's guards (curator consolidation, recoverable archive, usage ledger).
+        return _err(
+            f"file_path '{file_path}' is the skill's main file — removing it would delete skill "
+            f"'{name}' while bypassing the delete guards (curator consolidation, recoverable "
+            f"archive). Use skill_manage(action='delete', ...) instead.")
     if not target.exists():  # list what IS there so the model can pick the right path
         available = [str(f.relative_to(skill_dir)) for subdir in ALLOWED_SUBDIRS
                      if (skill_dir / subdir).exists() for f in (skill_dir / subdir).rglob("*") if f.is_file()]
@@ -843,7 +876,9 @@ _FILE_PATH = {
     "type": "string",
     "description": (
         "Path RELATIVE to the skill's own directory, e.g. 'references/api.md' — no leading "
-        "slash, never absolute; first segment references/, templates/, scripts/, or assets/."
+        "slash, never absolute; first segment references/, templates/, scripts/, or assets/. "
+        "'SKILL.md' (or '<skill-name>/SKILL.md') targets the main file — write_file then "
+        "behaves like a full edit; removing the main file is action='delete', not remove_file."
     ),
 }  # stated once (write_file); patch/remove_file point at it
 

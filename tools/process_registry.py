@@ -2618,6 +2618,8 @@ PROCESS_SCHEMA = {
         "until exit or timeout (partial output on timeout). write vs "
         "submit: submit appends Enter — use it to answer prompts; write "
         "sends raw bytes, no newline. close: EOF stdin. kill: terminate. "
+        "To start a command, call terminal (optionally background=true); "
+        "process has no run/exec action. "
         "handoff (subagents only): transfer a running process you started to your parent agent, which then "
         "receives its completion; `data` = one sentence on its purpose. Subagent-owned processes are otherwise "
         "killed when the subagent finishes and their notifications never reach the parent."
@@ -2766,16 +2768,31 @@ def _handle_process(args, **kw):
     action = args.get("action", "")
     # Coerce to string — some models send session_id as an integer
     session_id = str(args.get("session_id", "")) if args.get("session_id") is not None else ""
-    if action == "list":
+    # Coerce non-string actions (some models send structured values)
+    if not isinstance(action, str):
+        action = str(action or "")
+    action_norm = action.strip().lower()
+
+    # Models often invent process(action="run") for what is actually terminal().
+    # Give a pointer instead of the generic unknown-action error (#63477 logs).
+    if action_norm in {"run", "exec", "execute", "start", "command"}:
+        return tool_error(
+            "process has no 'run' action. To execute a command, call the terminal "
+            "tool (set background=true for long-running work, then process "
+            "action=poll/log/wait). Valid process actions: list, poll, log, wait, "
+            "kill, write, submit, close, handoff."
+        )
+
+    if action_norm == "list":
         return json.dumps(_list_processes(kw.get("task_id")), ensure_ascii=False)
-    if action == "handoff":
+    if action_norm == "handoff":
         if not session_id:
             return tool_error("session_id is required for handoff")
         return json.dumps(_handoff_process(session_id, args, kw.get("task_id")), ensure_ascii=False)
-    if action in _SESSION_ACTIONS:
+    if action_norm in _SESSION_ACTIONS:
         if not session_id:
-            return tool_error(f"session_id is required for {action}")
-        handler, redact = _SESSION_ACTIONS[action]
+            return tool_error(f"session_id is required for {action_norm}")
+        handler, redact = _SESSION_ACTIONS[action_norm]
         result = handler(session_id, args)
         return json.dumps(_redact_process_result(result) if redact else result, ensure_ascii=False)
     return tool_error(f"Unknown process action: {action}. Use: list, poll, log, wait, kill, write, submit, close, handoff")

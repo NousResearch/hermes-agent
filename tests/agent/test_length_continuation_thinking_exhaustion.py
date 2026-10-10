@@ -1,21 +1,15 @@
 """Regression tests for thinking-only length truncations.
 
-GLM-5.3-flash on ollama-cloud with reasoning_effort=high can burn the ENTIRE
-output cap on reasoning delivered in a separate field and return
-finish_reason="length" with NO visible content (verified live: max_tokens=4096
-→ completion_tokens=4096, reasoning ~18.5KB, content empty).
+GLM-5.3-flash on ollama with reasoning_effort=max can burn the ENTIRE output cap
+on reasoning delivered in a separate field and return finish_reason="length"
+with NO visible content (verified live: max_tokens=4096 → completion_tokens=4096,
+reasoning ~18.5KB, content empty).
 
-The old continuation flow handled this badly:
-  1. the empty response was appended as an interim assistant fragment,
-     poisoning the transcript until the pre-call sanitizer "healed" it
-     (observed 3+ healings per turn);
-  2. every continuation re-ran with thinking ON, re-deriving — and re-burning
-     — the whole thinking budget against a growing context, so 4 attempts
-     still produced nothing and the turn died with
-     "Response remained truncated after 4 continuation attempts".
-
-The fix: skip empty interim fragments, and issue the continuation with a
-one-shot reasoning-off override so the budget goes to writing the answer.
+The self-heal contract: the thinking channel carries the answer, so it is
+RESCUED — the reasoning text is returned as the final response and thinking
+stays configured. The old one-shot reasoning-off override (which muted the next
+call and dropped the reasoning on the floor) is gone: the next call never runs
+with ``{"enabled": False, "effort": "none"}`` after a thinking-only truncation.
 """
 
 from __future__ import annotations
@@ -33,71 +27,6 @@ class _AgentStandIn:
 
     def __init__(self, reasoning_config):
         self.reasoning_config = reasoning_config
-
-
-class TestReasoningOffOneShotOverride:
-    def test_flag_consumed_exactly_once(self):
-        from agent.chat_completion_helpers import _reasoning_config_for_wire
-
-        agent = _AgentStandIn({"enabled": True, "effort": "high"})
-        # Without the flag the reasoning config passes through untouched.
-        assert _reasoning_config_for_wire(agent) == {
-            "enabled": True,
-            "effort": "high",
-        }
-
-        agent._ephemeral_reasoning_off = True
-        cfg = _reasoning_config_for_wire(agent)
-        assert cfg["enabled"] is False
-        assert cfg["effort"] == "none"
-        assert agent._ephemeral_reasoning_off is False, (
-            "The one-shot override must be consumed by the first call."
-        )
-
-        # Subsequent calls keep the user's own reasoning config.
-        assert _reasoning_config_for_wire(agent) == {
-            "enabled": True,
-            "effort": "high",
-        }
-
-    def test_flag_with_no_user_reasoning_config(self):
-        from agent.chat_completion_helpers import _reasoning_config_for_wire
-
-        agent = _AgentStandIn(None)
-        agent._ephemeral_reasoning_off = True
-        cfg = _reasoning_config_for_wire(agent)
-        assert cfg == {"enabled": False, "effort": "none"}
-
-    def test_rejected_disable_resends_users_config_verbatim(self):
-        """After a 'reasoning is mandatory' 400 the retry must land on the
-        SAME provider cache key as every prior request: the ephemeral
-        continuation override is discarded and the user's own config goes
-        out unchanged. A config that is itself a disable is omitted."""
-        from agent.chat_completion_helpers import _reasoning_config_for_wire
-
-        agent = _AgentStandIn({"enabled": True, "effort": "high"})
-        agent._reasoning_disable_rejected = True
-        agent._ephemeral_reasoning_off = True
-        assert _reasoning_config_for_wire(agent) == {"enabled": True, "effort": "high"}
-        assert agent._ephemeral_reasoning_off is False
-
-        agent.reasoning_config = {"enabled": False}
-        assert _reasoning_config_for_wire(agent) is None
-
-    def test_mandatory_reasoning_route_steps_a_disable_up_to_the_floor(self):
-        """"Reasoning is mandatory ... cannot be disabled" understands the field: the session's
-        disable becomes the floor effort (closest to what the user asked for), while a config that
-        already reasons still goes out verbatim (cache key preserved)."""
-        from agent.auxiliary_reasoning_floor import REASONING_FLOOR_EFFORT
-        from agent.chat_completion_helpers import _reasoning_config_for_wire
-
-        agent = _AgentStandIn({"enabled": False})
-        agent._reasoning_disable_rejected = True
-        agent._reasoning_floor_required = True
-        assert _reasoning_config_for_wire(agent) == {"enabled": True, "effort": REASONING_FLOOR_EFFORT}
-
-        agent.reasoning_config = {"enabled": True, "effort": "high"}
-        assert _reasoning_config_for_wire(agent) == {"enabled": True, "effort": "high"}
 
 
 @pytest.fixture()
@@ -124,9 +53,9 @@ def loop_agent():
         return a
 
 
-def _thinking_only_length_response():
+def _thinking_only_length_response(reasoning=None):
     """finish_reason='length' with reasoning but zero visible content — the
-    live GLM-5.3-flash-on-ollama-cloud shape (normal response id, NOT the
+    live GLM-5.3-flash-on-ollama shape (normal response id, NOT the
     partial-stream stub)."""
     from tests.agent.test_run_agent import _mock_assistant_msg
 
@@ -135,7 +64,7 @@ def _thinking_only_length_response():
         model="test/model",
         choices=[SimpleNamespace(
             index=0,
-            message=_mock_assistant_msg(content=""),
+            message=_mock_assistant_msg(content="", reasoning=reasoning),
             finish_reason=FINISH_REASON_LENGTH,
         )],
         usage=None,
@@ -173,9 +102,9 @@ def _no_empty_assistant_rows(messages):
 
 
 class TestThinkingOnlyTruncation:
-    def test_retry_after_thinking_only_truncation_completes(self, loop_agent):
-        """One thinking-only truncation, then a normal answer: the retry must
-        drop thinking (one-shot), boost the output cap, and finish the turn."""
+    def test_retry_after_reasoningless_truncation_completes(self, loop_agent):
+        """A truncated response with NO reasoning text at all falls through to the
+        continuation ladder — and the continuation runs with thinking still ON."""
         loop_agent.client.chat.completions.create.side_effect = [
             _thinking_only_length_response(),
             _full_response("Here is the full answer."),
@@ -196,16 +125,11 @@ class TestThinkingOnlyTruncation:
             "The continuation retry must request a larger output budget than "
             "the request that truncated."
         )
-        assert loop_agent._ephemeral_reasoning_off is False, (
-            "The one-shot reasoning-off override must be consumed by the "
-            "continuation call."
-        )
-
 
     def test_full_ceiling_with_empty_fragments_still_settles(self, loop_agent):
-        """All four attempts thinking-only: the turn must exit through the
-        ceiling with an actionable final_response, no poisoned transcript,
-        and no leaked reasoning-off flag."""
+        """All four attempts thinking-only (no reasoning captured): the turn must
+        exit through the ceiling with an actionable final_response and no
+        poisoned transcript."""
         loop_agent.client.chat.completions.create.side_effect = [
             _thinking_only_length_response() for _ in range(4)
         ]
@@ -218,10 +142,6 @@ class TestThinkingOnlyTruncation:
             "message instead of an invisible None."
         )
         assert _no_empty_assistant_rows(result["messages"]) == []
-        assert loop_agent._ephemeral_reasoning_off is False, (
-            "The ceiling exit must clear the pending one-shot override so the "
-            "next turn does not silently lose thinking."
-        )
 
     def test_mixed_fragments_keep_visible_text(self, loop_agent):
         """A visible fragment followed by a thinking-only one: the visible
@@ -238,10 +158,49 @@ class TestThinkingOnlyTruncation:
         assert "and the ending." in (result["final_response"] or "")
         assert _no_empty_assistant_rows(result["messages"]) == []
 
-class TestReasoningOffReachesTheWire:
-    def test_continuation_request_carries_reasoning_off_on_the_wire(self, loop_agent):
-        """The flag is only useful if the continuation REQUEST goes out with
-        thinking disabled — assert the OpenRouter extra_body, not the flag."""
+
+class TestReasoningRescue:
+    def test_thinking_only_truncation_rescues_reasoning_as_the_answer(self, loop_agent):
+        """Reasoning present, content empty: the reasoning text IS the answer —
+        the turn ends with it, no continuation call is burned, and the next
+        request keeps the configured reasoning (never a disable)."""
+        loop_agent.reasoning_config = {"enabled": True, "effort": "high"}
+        loop_agent.client.chat.completions.create.side_effect = [
+            _thinking_only_length_response(reasoning="The answer is 42, because the math says so."),
+        ]
+        result = _run(loop_agent, "write me a long report")
+
+        assert "The answer is 42" in (result["final_response"] or "")
+        # The rescued reasoning stays in the assistant row's reasoning field.
+        assistant_rows = [m for m in result["messages"] if m.get("role") == "assistant"]
+        assert any("The answer is 42" in (m.get("reasoning") or "") for m in assistant_rows)
+
+    def test_rescue_keeps_thinking_on_the_wire(self, loop_agent):
+        """The request AFTER a rescued thinking-only truncation must carry the
+        configured reasoning — never ``{"enabled": False, "effort": "none"}``."""
+        loop_agent.reasoning_config = {"enabled": True, "effort": "high"}
+        loop_agent._supports_reasoning_extra_body = lambda: True
+        loop_agent.client.chat.completions.create.side_effect = [
+            _thinking_only_length_response(reasoning="Rescued reasoning."),
+            _full_response("Fresh turn answer."),
+        ]
+        _run(loop_agent, "write me a long report")
+        _run(loop_agent, "and now something else")
+
+        wire = [
+            (c.kwargs.get("extra_body") or {}).get("reasoning")
+            for c in loop_agent.client.chat.completions.create.call_args_list
+        ]
+        assert wire[0] == {"enabled": True, "effort": "high"}, wire
+        assert all(w != {"enabled": False, "effort": "none"} for w in wire), (
+            f"no request may go out with reasoning disabled; got {wire!r}"
+        )
+
+
+class TestThinkingStaysOnTheWire:
+    def test_continuation_request_keeps_reasoning_configured(self, loop_agent):
+        """After a reasoningless thinking-only truncation the continuation call
+        runs with the user's configured reasoning — no reasoning-off override."""
         loop_agent.reasoning_config = {"enabled": True, "effort": "high"}
         loop_agent._supports_reasoning_extra_body = lambda: True
         loop_agent.client.chat.completions.create.side_effect = [
@@ -253,26 +212,17 @@ class TestReasoningOffReachesTheWire:
 
         calls = loop_agent.client.chat.completions.create.call_args_list
         assert len(calls) == 2
-        first = (calls[0].kwargs.get("extra_body") or {}).get("reasoning")
         second = (calls[1].kwargs.get("extra_body") or {}).get("reasoning")
-        assert first == {"enabled": True, "effort": "high"}, first
-        assert second is not None and second.get("enabled") is False, (
-            f"continuation must be sent with thinking off, got {second!r}"
+        assert second == {"enabled": True, "effort": "high"}, (
+            f"continuation must keep thinking configured, got {second!r}"
         )
 
-    def test_reasoning_off_is_exactly_one_request_and_prefix_stays_stable(self, loop_agent):
-        """Prompt-cache invariant for the override.
-
-        The reasoning parameter is part of the provider's cache key on
-        config-sensitive providers (Anthropic renders thinking/effort into
-        the prompt; OpenAI lists reasoning.effort as a prefix-affecting
-        setting), so the reasoning-off request is a deliberate one-request
-        cache miss.  It must stay exactly one request: the request AFTER it
-        (a second, visible-text continuation) must go out with the
-        configured reasoning again, and the system prompt must be
-        byte-identical on every request so the miss never compounds into a
-        rebuilt prefix.
-        """
+    def test_reasoning_config_is_stable_across_the_retry_sequence(self, loop_agent):
+        """Prompt-cache invariant: the reasoning parameter is part of the
+        provider's cache key on config-sensitive providers. Every request of the
+        continuation sequence must go out with the same configured reasoning,
+        and the system prompt must be byte-identical so no request ever
+        rebuilds the prefix."""
         loop_agent.reasoning_config = {"enabled": True, "effort": "high"}
         loop_agent._supports_reasoning_extra_body = lambda: True
         loop_agent.client.chat.completions.create.side_effect = [
@@ -290,33 +240,12 @@ class TestReasoningOffReachesTheWire:
         wire = [
             (c.kwargs.get("extra_body") or {}).get("reasoning") for c in calls
         ]
-        assert wire[0] == {"enabled": True, "effort": "high"}, wire
-        assert wire[1] == {"enabled": False, "effort": "none"}, wire
-        assert wire[2] == {"enabled": True, "effort": "high"}, (
-            f"reasoning must be restored on the very next request; got {wire!r}"
-        )
+        assert wire == [{"enabled": True, "effort": "high"}] * 3, wire
         system_prompts = {
             c.kwargs["messages"][0]["content"] for c in calls
             if c.kwargs["messages"][0].get("role") == "system"
         }
         assert len(system_prompts) == 1, (
             "system prompt must be byte-identical across the retry sequence "
-            "(the override may only change request parameters, never the prefix)"
+            "(no override may change request parameters beyond the prefix)"
         )
-        assert loop_agent._ephemeral_reasoning_off is False
-
-    def test_stale_flag_does_not_leak_into_next_turn(self, loop_agent):
-        """A flag armed by a previous turn that never reached build_api_kwargs
-        (interrupt/error between arm and consume) must not silently strip
-        thinking from the next turn's first request."""
-        loop_agent.reasoning_config = {"enabled": True, "effort": "high"}
-        loop_agent._supports_reasoning_extra_body = lambda: True
-        loop_agent._ephemeral_reasoning_off = True  # stale from a prior turn
-        loop_agent.client.chat.completions.create.side_effect = [
-            _full_response("fresh turn answer."),
-        ]
-        result = _run(loop_agent, "hello")
-        assert result["completed"] is True
-        calls = loop_agent.client.chat.completions.create.call_args_list
-        first = (calls[0].kwargs.get("extra_body") or {}).get("reasoning")
-        assert first == {"enabled": True, "effort": "high"}, first

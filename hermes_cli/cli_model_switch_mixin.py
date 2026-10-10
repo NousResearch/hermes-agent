@@ -79,6 +79,143 @@ def stored_session_route(session_meta, *, current_model, current_provider):
     return stored_model, provider, base_url, api_mode, provider_changed
 
 
+#: Session surfaces with no user in them. A row created by one of these can never
+#: hold a model a PERSON chose, so its ``sessions.model`` is always re-derived from
+#: the profile's config on resume. Closed by construction from the live stores; a
+#: source this set does not name falls back to the conservative route check below
+#: (honour the stored model), so an unknown surface is never silently clobbered.
+_NON_INTERACTIVE_SESSION_SOURCES = frozenset({
+    "kanban", "cron", "oneshot", "bot_peer_dm", "peer", "webhook",
+    "delegation", "subagent", "background_review",
+})
+
+
+def stored_model_is_config_cache(session_meta) -> bool:
+    """True when ``sessions.model`` is a CACHE of the profile's config default rather
+    than a model a user deliberately chose.
+
+    ``sessions.model`` is written at session CREATION from whatever
+    ``model.default`` said at that instant, so it silently diverges from config the
+    moment config changes — and only ever comes back if something re-derives it.
+    That is the observed shape: a profile's ``config.yaml`` carried a
+    ``model.default`` that was later reverted, and every resumed session that had
+    cached it kept billing the superseded default.
+
+    A DELIBERATE pick is distinguishable: both the CLI's ``/model`` switch
+    (``_persist_model_switch_to_session``) and the TUI's ``_apply_model_switch``
+    stamp a route — a ``provider`` at the top level of ``model_config`` or under
+    its nested ``gateway_runtime`` — beside the model. A plain creation row carries
+    no route: in the sessions observed almost every row has no ``provider`` key,
+    and the few that do are ``desktop`` rows).
+
+    ``follow_profile_config`` is the gateway's own "this chat follows config"
+    marker: it makes the row a cache by declaration.
+    """
+    meta = session_meta or {}
+    source = str(meta.get("source") or "").strip().lower()
+    if source in _NON_INTERACTIVE_SESSION_SOURCES:
+        return True
+    model_config = meta.get("model_config")
+    if isinstance(model_config, str):
+        import json as _json
+        try:
+            model_config = _json.loads(model_config or "{}")
+        except (ValueError, TypeError):
+            model_config = {}
+    if not isinstance(model_config, dict):
+        model_config = {}
+    if model_config.get("follow_profile_config"):
+        return True
+    runtime = model_config.get("gateway_runtime")
+    runtime = runtime if isinstance(runtime, dict) else {}
+    if model_config.get("provider") or runtime.get("provider"):
+        return False
+    return True
+
+
+def config_model_target() -> tuple:
+    """``(model, provider)`` the running profile's config currently names as its
+    default — the reference a config-following session must be reconciled against."""
+    from cli import CLI_CONFIG, _split_model_config_default
+    model_cfg = CLI_CONFIG.get("model") or {}
+    model, nested_provider = _split_model_config_default(
+        model_cfg.get("default") or model_cfg.get("model") or "")
+    provider = model_cfg.get("provider") or nested_provider or ""
+    return str(model or "").strip(), str(provider or "").strip()
+
+
+def _repair_stored_model_pin(cli, stored_model: str, config_provider: str) -> None:
+    """Write the config-derived route back onto the row so the cache stops lying.
+
+    Best-effort: the session must open even if the store is read-only, and the guard
+    in ``_reconcile_stored_model_to_config`` already protected THIS resume without it.
+    """
+    from cli import logger
+    db = getattr(cli, "_session_db", None)
+    sid = getattr(cli, "session_id", None)
+    if not db or not sid or not cli.model or cli.model == stored_model:
+        return
+    try:
+        db.update_session_model(sid, cli.model)
+        if config_provider:
+            db.patch_session_model_config(
+                sid, {"provider": config_provider, "model": cli.model,
+                      "gateway_runtime": {"provider": config_provider}})
+    except Exception:
+        logger.debug("Failed to repair a stale stored model pin", exc_info=True)
+
+
+def _reconcile_stored_model_to_config(cli, session_meta, *, quiet: bool = False) -> bool:
+    """A config change must never be silently bypassed by a stale stored pin.
+
+    The row's ``model`` was a copy of ``model.default`` at creation. The CLI has
+    already resolved the profile's CURRENT default into ``cli.model`` /
+    ``cli.provider``, so the repair is simply: do NOT overwrite them with the cached
+    value — and write the corrected route back to the row so the stale pin stops
+    reappearing on every resume. A mismatch is announced (never silent): silence here
+    is what let a stale pin keep billing a superseded model, undetected.
+
+    Returns True once the row is reconciled (the caller must NOT also run the ordinary
+    stored-route restore). Returns False when the profile config names no default at
+    all: a cache is only a cache OF a config default, so with nothing to reconcile
+    against the caller must run that ordinary restore unchanged — it carries the
+    credential re-resolution and the in-place agent swap a partial re-implementation
+    here would silently drop.
+
+    Module-level because the switch paths are driven with bare stubs (see the module
+    docstring): ``cli`` may be a SimpleNamespace with no mixin methods.
+    """
+    from cli import logger
+    stored_model = str((session_meta or {}).get("model") or "").strip()
+    config_model, config_provider = config_model_target()
+    if not config_model:
+        # No configured default to reconcile against — nothing this guard's row can be a
+        # cache OF. Let the caller run the ordinary stored-route restore, which also
+        # re-resolves credentials and swaps a live agent; re-implementing it here would
+        # degrade to a partial restore.
+        return False
+    resolved = cli.model or config_model
+    if stored_model != resolved:
+        msg = (f"Session was pinned to {stored_model}, which this profile's config no "
+               f"longer defaults to; following config ({resolved}).")
+        logger.warning(
+            "session %s stored model %r is a stale cache of the profile config default; "
+            "reconciled to %r", getattr(cli, "session_id", "?"), stored_model, resolved)
+        if quiet:
+            print(msg, file=sys.stderr)
+        else:
+            cli._console_print(f"[dim]{_escape(msg)}[/dim]")
+    if getattr(cli, "agent", None) is not None and stored_model != resolved:
+        try:
+            cli.agent.switch_model(
+                new_model=cli.model, new_provider=cli.provider, api_key=cli.api_key or "",
+                base_url=cli.base_url or "", api_mode=cli.api_mode or "")
+        except Exception:
+            logger.debug("In-place agent model swap on config reconcile failed", exc_info=True)
+    _repair_stored_model_pin(cli, stored_model, config_provider)
+    return True
+
+
 def _heal_bare_custom_provider(provider, *, base_url, model):
     """Bare ``custom`` is a billing class, not a routable identity: persisting/restoring it makes a
     later resume hard-fail once the config default leaves the custom endpoint. Recover the durable
@@ -449,12 +586,21 @@ class CLIModelSwitchMixin:
         """Restore model/provider from the session DB row on every resume path.
 
         Skips when no model is recorded or the CLI got an explicit ``-m`` (user intent wins).
+        A row whose model is a CACHE of the profile's config default (see
+        ``stored_model_is_config_cache``) is NOT restored: the config the CLI already
+        resolved wins, and the stale pin is repaired so it cannot drift again. Only a row
+        that records a deliberate pick may move the model.
         A different stored provider gets its credentials re-resolved — the ambient ``api_key``
         must not be sent to the session's endpoint; on failure the ambient credentials are kept
         so the session still opens (the first turn surfaces the auth error).
         """
         from cli import logger
         if not (session_meta or {}).get("model") or getattr(self, "_explicit_model_override", False):
+            return
+        if stored_model_is_config_cache(session_meta) and _reconcile_stored_model_to_config(
+                self, session_meta, quiet=quiet):
+            # The profile's CURRENT config default wins over a cached pin; the row was
+            # repaired and the override announced. Nothing left to restore.
             return
         route = stored_session_route(session_meta, current_model=self.model, current_provider=self.provider)
         if route is None:

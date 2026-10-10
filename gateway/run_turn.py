@@ -1809,56 +1809,25 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
             }
         return merged
 
-    async def _run_agent_cleanup_turn_tasks(
-        self, turn_ctx: TurnContext, *, progress_task: Any, log_task: Any, interrupt_monitor: asyncio.Task,
-        _notify_task: asyncio.Task, tracking_task: asyncio.Task, stream_task: Any,
+    async def _run_agent_edit_streamed_message(
+        self, _sc, source, response, content, *, _sk, ok, fail_result: str, fail_exc: str,
     ) -> None:
-        """``finally`` half of a turn: cancel background tasks, flush stream, release the session slot."""
-        stream_consumer_holder, session_key = turn_ctx.stream_consumer_holder, turn_ctx.session_key
-        for task in (progress_task, log_task, interrupt_monitor, _notify_task):
-            if task:
-                task.cancel()
-
+        """Edit the stream consumer's message in place with ``content``; on success mark
+        ``response["already_sent"]`` and log ``ok``. A returned failure logs ``fail_result`` as
+        ``(session, error)`` and an exception logs ``fail_exc`` as ``(session, exc)``; either way
+        ``already_sent`` stays unset so the normal final send delivers the content."""
         try:
-            try:
-                if stream_task:
-                    # No stream consumer was created: nothing to flush, cancel instead of waiting out 5s.
-                    if not (stream_consumer_holder and stream_consumer_holder[0] is not None):
-                        stream_task.cancel()
-                        with suppress(asyncio.CancelledError):
-                            await stream_task
-                    else:
-                        await self._await_stream_task(stream_task)
-            finally:
-                # Abort + bounded wait for streaming TTS: covers paths where normal finalisation was skipped.
-                _stts_finally = turn_ctx.streaming_tts_consumer_holder[0]
-                # See #60671. Text-flush cancellation must not skip TTS cleanup.
-                if _stts_finally is not None and not _stts_finally.done:
-                    _stts_finally.abort("cleanup")
-                    with suppress(Exception):
-                        await _stts_finally.wait_complete(timeout=2.0)
-        finally:
-            tracking_task.cancel()
-            if session_key:
-                # Release the slot only if this run's generation still owns it (/stop or /new may have
-                # installed its own state).
-                self._release_running_agent_state(session_key, run_generation=turn_ctx.run_generation)
-            if self._draining:
-                self._update_runtime_status("draining")
-
-            for task in (progress_task, log_task, interrupt_monitor, tracking_task, _notify_task):
-                if task:
-                    try:
-                        await task
-                    except asyncio.CancelledError:
-                        pass
-                    except Exception:
-                        # A background task that died of a real error must not abort the cleanup path.
-                        logger.debug("background turn task failed during cleanup", exc_info=True)
-            # Child-task cancellation is expected above, but must not consume a
-            # new cancellation of this turn while one of those children settles.
-            if asyncio.current_task().cancelling():
-                raise asyncio.CancelledError
+            _res = await _sc.adapter.edit_message(
+                chat_id=source.chat_id, message_id=_sc.message_id, content=content, finalize=True,
+            )
+        except Exception as _edit_err:
+            logger.warning(fail_exc, _sk, _edit_err, exc_info=True)
+            return
+        if not getattr(_res, "success", True):
+            logger.warning(fail_result, _sk, getattr(_res, "error", None))
+            return
+        response["already_sent"] = True
+        logger.info(*ok)
 
     async def _run_agent_mark_streamed_delivery(self, response: Any, turn_ctx: TurnContext) -> None:
         """Set ``response["already_sent"]`` when streaming already delivered the final reply.
@@ -2156,8 +2125,10 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
             stream_task.cancel()
             raise
         finally:
-            await self._run_agent_cleanup_turn_tasks(
-                turn_ctx, progress_task=progress_task, log_task=log_task, interrupt_monitor=interrupt_monitor,
+            from gateway.run_turn_streaming import cleanup_turn_tasks
+
+            await cleanup_turn_tasks(
+                self, turn_ctx, progress_task=progress_task, log_task=log_task, interrupt_monitor=interrupt_monitor,
                 _notify_task=_notify_task, tracking_task=tracking_task, stream_task=stream_task,
             )
 

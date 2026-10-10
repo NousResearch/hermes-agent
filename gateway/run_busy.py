@@ -92,6 +92,19 @@ def _same_chat_key_slots(
 class GatewayBusySessionMixin:
     """Busy-session queueing, slot claims, slash dispatch tables, destructive-slash confirmation."""
 
+    def _agentcrew_turn_requires_fresh_transport(self, session_key: str) -> bool:
+        """Keep each authoritative inbound on its own AgentCrew transport context."""
+        from gateway.trusted_transport import agentcrew_transport
+        state = self._peek_session_state(session_key)
+        event = state.turn.event if state is not None else None
+        source = event.source if event is not None else None
+        profile = str(getattr(source, "profile", "") or "").strip().casefold()
+        return bool(
+            event is not None
+            and profile == "agentcrewm3"
+            and agentcrew_transport(event, source, "bound")
+        )
+
     def _queue_during_drain_enabled(self, busy_input_mode: Optional[str] = None) -> bool:
         # "queue"/"steer" mean messages survive a restart (queued for the new process); "interrupt" drops.
         mode = busy_input_mode or self._busy_input_mode
@@ -584,6 +597,11 @@ class GatewayBusySessionMixin:
         self, event: MessageEvent, session_key: str, effective_mode: str, running_agent: Any
     ) -> GatewayRunner._BusySteerOutcome:
         """Apply interrupt->queue demotions, then attempt steer (steer mode) or redirect (interrupt mode)."""
+        if self._agentcrew_turn_requires_fresh_transport(session_key):
+            return self._BusySteerOutcome(
+                effective_mode="queue", demoted_for_subagents=False,
+                demoted_for_compression=False, steered=False, redirected=False,
+            )
         from gateway.run import _AGENT_PENDING_SENTINEL
         # Steer injects mid-run via running_agent.steer(), falling back to queue (nothing lost) when
         # the agent isn't running yet, lacks steer(), or the payload is empty. Interrupt is demoted
@@ -1044,9 +1062,10 @@ class GatewayBusySessionMixin:
             return t("gateway.queue.usage")
         adapter = self._delivery_adapter_for(source)
         if adapter:
-            self._enqueue_fifo(quick_key, MessageEvent(
+            queued = MessageEvent(
                 text=queued_text, message_type=event.message_type if has_media else MessageType.TEXT,
                 source=event.source, raw_message=event.raw_message, message_id=event.message_id,
+                platform_update_id=event.platform_update_id,
                 media_urls=list(getattr(event, "media_urls", []) or []),
                 media_types=list(getattr(event, "media_types", []) or []),
                 media_text_inlined=list(getattr(event, "media_text_inlined", []) or []),
@@ -1056,7 +1075,9 @@ class GatewayBusySessionMixin:
                 reply_to_is_own_message=event.reply_to_is_own_message, auto_skill=event.auto_skill,
                 channel_prompt=event.channel_prompt, channel_context=event.channel_context,
                 internal=event.internal, timestamp=event.timestamp,
-            ), adapter)
+            )
+            queued._transport_received_at = event._transport_received_at
+            self._enqueue_fifo(quick_key, queued, adapter)
         depth = self._queue_depth(quick_key, adapter=adapter)
         return t("gateway.queue.queued") + (t("gateway.queue.queued_depth", depth=depth) if depth > 1 else "")
 
@@ -1074,13 +1095,18 @@ class GatewayBusySessionMixin:
             # Turn-boundary fallback: queue the steer text as its own follow-up turn.
             adapter = self._delivery_adapter_for(source)
             if adapter:
-                self._enqueue_fifo(quick_key, MessageEvent(
+                queued = MessageEvent(
                     text=steer_text, message_type=MessageType.TEXT, source=event.source,
                     message_id=event.message_id, channel_prompt=event.channel_prompt,
                     channel_context=event.channel_context,
-                ), adapter)
+                    platform_update_id=event.platform_update_id,
+                )
+                queued._transport_received_at = event._transport_received_at
+                self._enqueue_fifo(quick_key, queued, adapter)
             return reply
 
+        if self._agentcrew_turn_requires_fresh_transport(quick_key):
+            return _queue_fallback(t("gateway.queue.queued"))
         if running_agent is _AGENT_PENDING_SENTINEL:
             return _queue_fallback(t("gateway.steer.queued_starting"))
         if not running_agent or not hasattr(running_agent, "steer"):

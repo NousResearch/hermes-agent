@@ -704,6 +704,10 @@ describe('active transcript refresh', () => {
 
   it('only defers an external tick while busy, then refreshes once after idle', async () => {
     $changeEventsAvailable.set(true)
+    // Pin the viewed session so the busy-deferral flush is reachable: without
+    // these atoms the flush no-ops and only the coalescing timer can fire.
+    $activeSessionId.set(ACTIVE_RUNTIME_ID)
+    $selectedStoredSessionId.set(ACTIVE_STORED_ID)
     const refresh = vi.fn(async () => undefined)
 
     renderSync(refresh)
@@ -885,7 +889,7 @@ describe('active transcript refresh', () => {
     expect(refresh).toHaveBeenCalledTimes(1)
 
     await act(async () => {
-      vi.advanceTimersByTime(9_999)
+      vi.advanceTimersByTime(29_999)
       await Promise.resolve()
     })
 
@@ -1305,7 +1309,7 @@ describe('typing-aware sessions.changed deferral', () => {
     await act(async () => {
       // One SESSIONS_LIST_TICK_GAP_MS covers both the immediate first tick
       // and any trailing timer the burst armed.
-      vi.advanceTimersByTime(10_000)
+      vi.advanceTimersByTime(30_000)
       await Promise.resolve()
     })
     refreshSessions.mockClear()
@@ -1365,9 +1369,9 @@ describe('typing-aware sessions.changed deferral', () => {
     renderTypingSync(refreshSessions)
     await primeThrottle(refreshSessions)
 
-    // Keys every 200ms for ~22s — longer than SESSIONS_LIST_TICK_GAP_MS.
+    // Keys every 200ms for ~32s — longer than SESSIONS_LIST_TICK_GAP_MS.
     // Broadcasts keep flowing; the heavy pass must not land under them.
-    for (let index = 0; index < 110; index += 1) {
+    for (let index = 0; index < 160; index += 1) {
       typeKey()
 
       if (index % 10 === 0) {

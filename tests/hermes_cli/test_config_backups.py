@@ -1,4 +1,5 @@
 """config.yaml backups: one dir, deduped, bounded — never a pile of siblings in HERMES_HOME."""
+import os
 from pathlib import Path
 
 from hermes_cli.config_backups import backup_config, list_config_backups
@@ -7,6 +8,8 @@ from hermes_cli.config_backups import backup_config, list_config_backups
 def test_repeat_backups_dedupe_and_rotate(tmp_path: Path, monkeypatch):
     cfg = tmp_path / "config.yaml"
     cfg.write_text("model: a\n")
+    timestamp_ns = 1_700_000_000_000_000_000
+    os.utime(cfg, ns=(timestamp_ns, timestamp_ns))
     stamps = iter(f"2026010100000{i}" for i in range(10))
     monkeypatch.setattr("hermes_cli.config_backups.time.strftime", lambda _fmt: next(stamps))
 
@@ -16,6 +19,7 @@ def test_repeat_backups_dedupe_and_rotate(tmp_path: Path, monkeypatch):
     assert backup_config(cfg, "pre-setup", keep=2) is None
     for i in range(3):
         cfg.write_text(f"model: {i}\n")
+        os.utime(cfg, ns=(timestamp_ns, timestamp_ns))
         backup_config(cfg, "pre-setup", keep=2)
     kept = list_config_backups(cfg, "pre-setup")
     assert len(kept) == 2 and kept[0].read_text() == "model: 2\n"

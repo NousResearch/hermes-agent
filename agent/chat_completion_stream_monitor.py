@@ -1,10 +1,13 @@
 """Display and heartbeat phase of the request-local streaming monitor."""
 
+import logging
 import time
 from types import SimpleNamespace
 
 from agent import chat_completion_wait_notice as wn
 from agent.model_metadata import is_local_endpoint
+
+logger = logging.getLogger(__name__)
 
 
 class StreamingWaitMonitor:
@@ -67,18 +70,26 @@ class StreamingWaitMonitor:
         while not self._call_done.is_set():
             self._call_done.wait(timeout=0.3)
             _hb_now = time.time()
-            if _is_local_base and self._poll_local_load_notice(_hb_now):
-                continue
-            # Reasoning callbacks do not clear the classic CLI spinner. The empty
-            # protocol payload resets status without adding synthetic reasoning.
-            if (self._mon.wait_notice_started_ts is not None
-                    and self.last_chunk_time["t"] > self._mon.wait_notice_started_ts):
-                self.agent._emit_wait_notice("")
-                self._mon.wait_notice_started_ts = None
-                self._mon.wait_notice.reset()
-            if _hb_now - self._mon.last_heartbeat >= _HEARTBEAT_INTERVAL:
-                self._mon.last_heartbeat = _hb_now
-                self._heartbeat(int(_hb_now - self.last_chunk_time["t"]))
+            try:
+                if _is_local_base and self._poll_local_load_notice(_hb_now):
+                    continue
+                # Reasoning callbacks do not clear the classic CLI spinner. The empty
+                # protocol payload resets status without adding synthetic reasoning.
+                if (self._mon.wait_notice_started_ts is not None
+                        and self.last_chunk_time["t"] > self._mon.wait_notice_started_ts):
+                    self.agent._emit_wait_notice("")
+                    self._mon.wait_notice_started_ts = None
+                    self._mon.wait_notice.reset()
+                if _hb_now - self._mon.last_heartbeat >= _HEARTBEAT_INTERVAL:
+                    self._mon.last_heartbeat = _hb_now
+                    self._heartbeat(int(_hb_now - self.last_chunk_time["t"]))
+            except Exception:
+                # Display and heartbeat must never preempt the safety kill below. A failing
+                # helper used to take the whole watcher down silently while the worker stayed
+                # parked in its socket read, leaving a dead stream in receiving status until
+                # the turn liveness watchdog fired minutes later. Log loudly and keep watching;
+                # the stale check below still runs.
+                logger.exception('Streaming monitor heartbeat failed; the stale watchdog stays armed')
             _stale_elapsed = time.time() - self.last_chunk_time["t"]
             if _stale_elapsed > self._stream_stale_timeout:
                 self._mon.wait_notice_started_ts = None  # Reconnect status has its own owner.

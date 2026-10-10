@@ -973,7 +973,8 @@ class CLIInfoMixin:
                         if _name not in merged:
                             merged.append(_name)
                     enabled_override = merged
-                refresh_agent_mcp_tools(self.agent, enabled_override=enabled_override, quiet_mode=True)
+                refresh_agent_mcp_tools(self.agent, enabled_override=enabled_override, quiet_mode=True,
+                                        content_aware=True)
                 if enabled_override is not None:
                     self.enabled_toolsets = enabled_override
 

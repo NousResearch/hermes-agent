@@ -1,11 +1,11 @@
 """Compaction rebuilds dynamic tool schemas (forever-session fix, #95681 arc).
 
-Forever-sessions (Bot Mode, gateway channels) never restart; compaction is
-the only boundary where the prompt cache is already broken, so it is the
-one sanctioned point for a tool-snapshot rebuild. These tests pin:
+Forever-sessions (Bot Mode, gateway channels) need current tool schemas at
+compaction, where the prompt cache is already broken. Explicit MCP reloads
+are covered separately. These tests pin:
 - refresh_agent_mcp_tools(content_aware=True) swaps on CONTENT change under
   a stable name set (the dynamic-schema case its name-only diff missed)
-- content_aware=False keeps the old no-churn behavior (MCP-reload callers)
+- content_aware=False keeps the no-churn behavior for background refreshes
 """
 import os
 import sys
@@ -52,7 +52,7 @@ class TestContentAwareRefresh(unittest.TestCase):
                       agent.tools[0]["function"]["description"])
 
     def test_content_change_ignored_when_name_only(self):
-        """MCP-reload callers keep the historical no-churn contract."""
+        """Background name-only refreshes retain their no-churn contract."""
         agent = self._agent_with("old capabilities text")
         self._refresh(agent, "new capabilities text", content_aware=False)
         self.assertIn("old capabilities",

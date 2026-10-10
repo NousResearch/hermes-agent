@@ -378,9 +378,10 @@ THREAT_PATTERNS = [
      "wget_pipe_shell", "critical", "supply_chain", "wget piped to shell (download-and-execute)"),
     # A fixed stdlib JSON formatter reads data, not downloaded Python source. Keep unknown
     # arguments/modules conservative, and do not exempt the rest of the line: a later pipe
-    # to a bare interpreter must still match (including after json.tool).
+    # to a bare interpreter must still match (including after json.tool). Module/flag case
+    # is significant even though the surrounding threat-pattern registry is case-insensitive.
     (rf'curl\s+[^|\s][^\n]*\|\s*{_SUDO_PREFIX}python'
-     r'(?![0-9.]*(?:[ \t]+-m[ \t]+json\.tool[ \t]*(?=$|[|;&])))',
+     r'(?![0-9.]*(?:(?-i:[ \t]+-m[ \t]+json\.tool)[ \t]*(?=$|[|;&])))',
      "curl_pipe_python", "critical", "supply_chain", "curl piped to Python interpreter"),
     # ── Supply chain: unpinned/deferred dependencies ──
     (r'#\s*///\s*script.*dependencies',

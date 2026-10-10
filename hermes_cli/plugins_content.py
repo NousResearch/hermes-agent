@@ -16,7 +16,7 @@ from hermes_cli.plugins_loader import _serialized_replacement
 # Same logger as the rest of the ctx surface, so plugin-load diagnostics stay in one place.
 logger = logging.getLogger("hermes_cli.plugins")
 
-__all__ = ["register_automation_blueprint", "register_skill"]
+__all__ = ["register_automation_blueprint", "register_kanban_backend", "register_skill"]
 
 
 @_serialized_replacement
@@ -77,3 +77,31 @@ def register_automation_blueprint(
     return self._register_entry("automation_blueprint", blueprint.key,
                                 self._manager._automation_blueprints, blueprint,
                                 "Plugin %s registered automation blueprint: %s", blueprint.key)
+
+
+def register_kanban_backend(self, module) -> None:
+    """Register the plugin's kanban backend module as resolvable under the plugin
+    name: ``plugins.kanban_backend`` in config.yaml (or the plugin key) activates it
+    for every call site that resolves through ``hermes_cli.kanban_backend``.
+    Activation is owned by the seam — registration here only makes the module
+    discoverable and does NOT switch the active backend on its own."""
+    import types
+    from hermes_cli import kanban_backend as _seam
+    name = self.manifest.key or self.manifest.name or self.plugin_id
+    if not isinstance(module, types.ModuleType):
+        logger.warning(
+            "Plugin '%s' tried to register a kanban backend that is not a module (%s); "
+            "ignored", self.manifest.name, type(module).__name__)
+        return
+    if not hasattr(module, "connect") or not hasattr(module, "write_txn"):
+        logger.warning(
+            "Plugin '%s' kanban backend module does not expose connect()/write_txn(); "
+            "ignored", self.manifest.name)
+        return
+    _seam.register_backend(name, module)
+    logger.info("Plugin '%s' registered kanban backend: %s", self.manifest.name, name)
+    self._track_replacement(
+        "kanban_backend", name, slot=("manager_value", id(self._manager), "_kanban_backend"),
+        current=module, previous=None,
+        restore=lambda replacement: bool(_seam.unregister_backend(name)) or True,
+    )

@@ -314,7 +314,7 @@ Discord 行为通过两个文件控制：**`~/.hermes/.env`** 用于凭据和环
 | `DISCORD_ALLOW_MENTION_USERS` | 否 | `true` | 为 `true`（默认）时，机器人可以通过 ID ping 单个用户。 |
 | `DISCORD_ALLOW_MENTION_REPLIED_USER` | 否 | `true` | 为 `true`（默认）时，回复消息会 ping 原始作者。 |
 | `DISCORD_PROXY` | 否 | — | Discord 连接的代理 URL（HTTP、WebSocket、REST）。覆盖 `HTTPS_PROXY`/`ALL_PROXY`。支持 `http://`、`https://` 和 `socks5://` 协议。 |
-| `DISCORD_ALLOW_ANY_ATTACHMENT` | 否 | `false` | 为 `true` 时，机器人接受任何文件类型的附件（不仅限于内置的 PDF/文本/zip/office 允许列表）。未知类型会被缓存到磁盘，并以 `application/octet-stream` MIME 类型作为本地路径提供给 agent，以便它可以使用 `terminal` / `read_file` / `ffprobe` 等工具检查。 |
+| `DISCORD_ALLOW_ANY_ATTACHMENT` | 否 | — | 已弃用，无任何作用：任何文件类型始终都会被接受（参见[接收任意文件类型](#接收任意文件类型)）。 |
 | `DISCORD_MAX_ATTACHMENT_BYTES` | 否 | `33554432` | 网关将下载并缓存的每个附件的最大字节数。默认 32 MiB。设置为 `0` 表示无上限（附件在写入时保存在内存中，因此无限制会带来真实的内存成本）。 |
 | `HERMES_DISCORD_TEXT_BATCH_DELAY_SECONDS` | 否 | `0.6` | 适配器在刷新排队文本块之前等待的宽限窗口。用于平滑流式输出。 |
 | `HERMES_DISCORD_TEXT_BATCH_SPLIT_DELAY_SECONDS` | 否 | `2.0` | 当单条消息超过 Discord 长度限制时，分割块之间的延迟。 |
@@ -661,24 +661,25 @@ Discord 的每次上传大小限制取决于服务器的加成等级（免费 25
 
 ## 接收任意文件类型
 
-默认情况下，机器人缓存与内置允许列表匹配的上传——图片、音频、视频、PDF、文本/markdown/csv/log、JSON/XML/YAML/TOML、zip、docx/xlsx/pptx。其他任何内容（`.wav`、`.bin`、自定义扩展名的转储文件）都会被记录为 `Unsupported document type` 并在 agent 看到之前被丢弃。
+用户上传的任何文件类型都会被接受。关口是向 agent 发消息的授权，而不是文件扩展名。每个上传都会被下载、缓存到 `~/.hermes/cache/documents/` 下，并以 `DOCUMENT` 类型的消息事件提供给 agent，使其可以用 `terminal`（`ffprobe`、`unzip`、`file`、`strings` 等）或 `read_file` 检查文件。
 
-要接受任意文件类型，启用 `discord.allow_any_attachment`：
+- 已知类型（PDF、docx/xlsx/pptx、zip、图片/音频/视频等）保留其精确的 MIME 类型。
+- 未知类型回退到上传报告的内容类型；未提供时使用 `application/octet-stream`。
+- 可按 UTF-8 解码的小文件（文本、代码、配置、HTML、CSS、JSON、YAML……）的内容会自动注入 prompt，最多 100 KiB。无法解码的二进制文件只以指向路径的上下文说明提供（通过 `to_agent_visible_cache_path` 为 Docker/Modal 沙盒终端自动转换），因此不会撑爆上下文窗口。
+
+唯一的入站限制是每文件大小上限（默认 32 MiB）：
 
 ```yaml
 discord:
-  allow_any_attachment: true
   # 可选 — 提高/禁用每文件大小上限。默认为 32 MiB。
   # 整个文件在缓存时保存在内存中，因此无限制
   # 上传会带来真实的内存成本。
   max_attachment_bytes: 33554432   # 字节；0 = 无限制
 ```
 
-启用该标志后，任何上传的文件都会被下载、缓存到 `~/.hermes/cache/documents/` 下，并以 `application/octet-stream` MIME 类型的 `DOCUMENT` 类型消息事件提供给 agent。Agent 收到指向本地路径的上下文说明（通过 `to_agent_visible_cache_path` 为 Docker/Modal 沙盒终端自动转换），可以使用 `terminal`（`ffprobe`、`unzip`、`file`、`strings` 等）或 `read_file` 检查文件。文件内容**不会**内联到 prompt 中——只有路径——因此二进制上传不会撑爆上下文窗口。
+等效环境变量：`DISCORD_MAX_ATTACHMENT_BYTES=33554432`（或 `0` 表示无上限）。
 
-已在允许列表中的已知文本格式（`.txt`、`.md`、`.log`）继续自动注入最多 100 KiB 的内容；启用该标志后此行为不变。
-
-等效环境变量：`DISCORD_ALLOW_ANY_ATTACHMENT=true` 和 `DISCORD_MAX_ATTACHMENT_BYTES=33554432`（或 `0` 表示无上限）。
+旧的 `discord.allow_any_attachment` 标志现在不起任何作用——任何文件类型始终都会被接受——保留它只是为了让现有配置不报错。
 
 :::warning 无限制的内存成本
 禁用大小上限（`max_attachment_bytes: 0`）意味着用户可以向机器人上传数 GB 的文件，网关会尽职地在缓存到磁盘时将其缓冲到内存中。仅在受信任的单用户安装中设置此项。对于共享机器人，保持默认的 32 MiB 或保守地提高上限。

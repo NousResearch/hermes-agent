@@ -114,7 +114,7 @@ def test_a_takeover_made_by_another_process_stops_input_within_the_refresh_inter
             # Another process takes over: the file changes, no listener in this process is told.
             lease._write(lease._path(home), lease.Lease(holder=lease.HUMAN, viewer_id="desk-2", epoch=2))
             t0 = asyncio.get_running_loop().time()
-            while captured["allow"]() and asyncio.get_running_loop().time() - t0 < 2.0:
+            while captured["allow"]() and asyncio.get_running_loop().time() - t0 < 10.0:
                 await asyncio.sleep(0.02)
             return asyncio.get_running_loop().time() - t0
         finally:
@@ -127,7 +127,10 @@ def test_a_takeover_made_by_another_process_stops_input_within_the_refresh_inter
         lease.acquire("desk-1", profile_key=home)
         elapsed = asyncio.run(_run(home))
     lease._reset_for_tests()
-    assert elapsed < 0.5, elapsed
+    # Without the periodic re-read the cached decision never flips (the loop runs out at 10 s). The bound
+    # only separates "re-read" from "never": a 0.5 s bound on a 0.25 s refresh failed at 0.527 s on a
+    # loaded runner (main run 37689165345).
+    assert elapsed < 5.0, elapsed
 
 
 def test_no_bridge_task_or_socket_outlives_the_bridge():

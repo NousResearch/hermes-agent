@@ -2060,7 +2060,7 @@ let poolLimits = readPersistedPoolLimits()
 const localBackendSpawnCoordinator = new LocalBackendSpawnCoordinator(poolLimits.maxBackends)
 const backgroundSlotRetryBackoff = new BackgroundSlotRetryBackoff()
 // How long a spawn may wait for a free local slot. Must stay under the
-// renderer's BACKEND_BOOT_WAIT_TIMEOUT_MS (45s, src/lib/with-timeout.ts) so
+// renderer's BACKEND_BOOT_WAIT_TIMEOUT_MS (180s, src/lib/with-timeout.ts) so
 // the queued ticket fails before the renderer does and the user sees why.
 const POOL_SLOT_WAIT_MS = 30_000
 
@@ -13193,7 +13193,7 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
     // start alone runs 2-8s) and advanceBootProgress awaits renderer IPC.
     // stdout is already flowing into the tail, and Node streams never replay
     // consumed chunks to late listeners, so a sentinel printed during that
-    // window was lost forever — the wait then hit its 90s timeout and a
+    // window was lost forever — the wait then hit its announce timeout and a
     // healthy backend was killed (deterministic on Windows, racy on
     // macOS/Linux). The tail-buffer accessor covers any residual gap.
     const portAnnouncement = waitForDashboardPortAnnouncement(hermesProcess, {

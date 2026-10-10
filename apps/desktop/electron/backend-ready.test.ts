@@ -19,6 +19,7 @@ import path from 'node:path'
 
 import { test } from 'vitest'
 
+import { DEFAULT_BACKEND_READY_TIMEOUT_MS } from './backend-health'
 import {
   DEFAULT_PORT_ANNOUNCE_TIMEOUT_MS,
   MIN_PORT_ANNOUNCE_TIMEOUT_MS,
@@ -52,6 +53,20 @@ test('default is cold-start tolerant (> the historical 45s floor)', () => {
   assert.ok(
     DEFAULT_PORT_ANNOUNCE_TIMEOUT_MS > MIN_PORT_ANNOUNCE_TIMEOUT_MS,
     'cold-start default must exceed the warm-start floor'
+  )
+})
+
+test('announce deadline tracks the health-wait boot budget (#126110)', () => {
+  // DEFAULT_BACKEND_READY_TIMEOUT_MS also pins the renderer's
+  // BACKEND_BOOT_WAIT_TIMEOUT_MS (with-timeout.ts lockstep, #63454). The
+  // announce wait is the first leg of the same cold boot, so an independent
+  // (shorter) deadline kills healthy-but-slow backends while both 180s waits
+  // are still willing to keep going.
+  assert.equal(
+    DEFAULT_PORT_ANNOUNCE_TIMEOUT_MS,
+    DEFAULT_BACKEND_READY_TIMEOUT_MS,
+    'the announce leg must stay aligned with the shared boot budget; ' +
+      'a deliberate decoupling should update this expectation on purpose'
   )
 })
 

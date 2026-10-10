@@ -1,0 +1,15 @@
+name: deferred-questions
+repo: https://github.com/web3blind/hermes-deferred-questions
+sha: 38ed92318a65ced3a036375d70e455ab7cd9154e
+description: Durable non-blocking questions with exact answer binding and gateway continuation.
+maintainer: web3blind
+tier: community
+category: automation
+version: "0.2.3"
+docs_url: https://github.com/web3blind/hermes-deferred-questions#readme
+readme: true
+capabilities:
+  provides_tools: [deferred_questions]
+  provides_hooks: [pre_gateway_dispatch]
+  provides_middleware: []
+  requires_env: []

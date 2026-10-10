@@ -3424,7 +3424,7 @@ display:
     bounded: "Iteration {n}/{max}"
   review:
     routing_fallback_warning: "⚠ auxiliary.background_review.provider='{task_provider}' (Modell '{task_model}') konnte nicht geroutet werden ({error}); Rückfall auf {provider}/{model}"
-    reasoning_effort_warning: "⚠ auxiliary.background_review.reasoning_effort='{effort}' hat keine Wirkung, solange das Review-Modell nicht das Hauptmodell ist"
+    reasoning_effort_warning: "⚠ auxiliary.background_review.reasoning_effort='{effort}' hat keine Wirkung, solange das Review-Modell das Hauptmodell ist"
     memory_op_line: "{label} {glyph} {preview}"
     skill_patched_verbose: "📝 Skill '{name}' gepatcht: \"{old}\" → \"{new}\""
     skill_changed_verbose: "📝 Skill '{name}' {verb}: {description}"

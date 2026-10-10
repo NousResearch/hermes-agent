@@ -3424,7 +3424,7 @@ display:
     bounded: "iterazione {n}/{max}"
   review:
     routing_fallback_warning: "⚠ auxiliary.background_review.provider='{task_provider}' (modello '{task_model}') non instradabile ({error}); fallback su {provider}/{model}"
-    reasoning_effort_warning: "⚠ auxiliary.background_review.reasoning_effort='{effort}' non ha effetto finché il modello di revisione non è quello principale"
+    reasoning_effort_warning: "⚠ auxiliary.background_review.reasoning_effort='{effort}' non ha effetto finché il modello di revisione è quello principale"
     memory_op_line: "{label} {glyph} {preview}"
     skill_patched_verbose: "📝 Skill '{name}' corretta: \"{old}\" → \"{new}\""
     skill_changed_verbose: "📝 Skill '{name}' {verb}: {description}"

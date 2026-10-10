@@ -38,9 +38,10 @@
  *   installed on demand by ``tools_config.py`` ``post_setup_key ==
  *   "camofox"`` when the user actually selects Camofox.
  *
- * If a future PR re-adds any of these to root ``dependencies``, this test
- * fails — read the lazy-install guidance in the ``hermes-agent-dev`` skill
- * before changing the expectations.
+ * If a future PR re-adds Camofox (or any other binary-postinstall package)
+ * to root ``dependencies``, this test fails. Keep Camofox and any similar
+ * heavy/region-restricted binary dependency lazy-installed on demand rather
+ * than in root ``dependencies``.
  */
 
 import assert from 'node:assert/strict'

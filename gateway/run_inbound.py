@@ -1386,7 +1386,7 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
         finally:
             # One-shot restore (/moa, /model --once) must run on EVERY exit path (success,
             # exception, interrupt); the generation guard makes a displaced turn's finalizer a no-op.
-            self._restore_pending_one_turn_model_override(_quick_key, _run_generation)
+            self._restore_pending_one_turn_model_override(_quick_key, _run_generation, source=source)
             # SIGKILL/OOM skips finally, leaving the durable marker for the next unclean startup's
             # recovery pass. A turn the adapter delivers hands its marker to that lifecycle, which
             # clears it only once the reply is in the delivery ledger (else a kill in between
@@ -1402,13 +1402,22 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
             # the lease its own turn acquired, never a newer turn's.
             self._release_turn_lease(_quick_key, _run_generation)
 
-    def _restore_pending_one_turn_model_override(self, session_key: str, run_generation: int | None = None) -> None:
+    def _restore_pending_one_turn_model_override(
+        self, session_key: str, run_generation: int | None = None, source=None,
+    ) -> None:
         """Restore the per-session model override captured by ``/model --once`` or ``/moa``.
 
         With ``run_generation`` (the turn finalizer) the restore happens only while that generation
         is still current; a stop/reset/eviction has already settled the snapshot itself (see
         ``_invalidate_session_run_generation``), so the displaced finalizer finds nothing to do.
-        Without it (the settlement paths) the restore is unconditional."""
+        Without it (the settlement paths) the restore is unconditional.
+
+        ``source`` is optional and only used to re-enter the Telegram group-title lane, so the
+        ``r<N>``/model segment follows the model BACK when a one-turn override expires (spec §3.3:
+        "flips the tag twice (out and back)"). The settlement paths have no source in hand, so they
+        simply do not recompose — the title then lags until the next real switch, which the §3.5
+        budget already bounds.
+        """
         if not session_key:
             return
         try:
@@ -1420,6 +1429,8 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
             snapshot = _otr_state.conversation.one_turn_restore
             _otr_state.conversation.one_turn_restore = None
             self._restore_session_model_override(session_key, snapshot)
+            if source is not None:
+                self._notify_telegram_group_title_of_switch(source, session_key)
         except Exception:
             logger.debug("Failed to restore one-turn model override", exc_info=True)
 

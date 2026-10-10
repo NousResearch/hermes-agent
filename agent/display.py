@@ -976,6 +976,8 @@ class KawaiiSpinner:
 _ERROR_SUFFIX_MAX_LEN = 48
 # A degraded backend (Docker down, SSH host unreachable) needs the whole reason plus the fix hint.
 _DEGRADED_SUFFIX_MAX_LEN = 200
+# How deep a nested MCP result envelope is followed before giving up.
+_MAX_STRUCTURED_RESULT_DEPTH = 4
 
 
 def _trim_error(msg: str) -> str:
@@ -986,6 +988,30 @@ def _trim_error(msg: str) -> str:
         if "/" in tail:
             msg = t("display.failure.file_not_found", name=tail.rsplit("/", 1)[-1])
     return _tail_trunc(msg, _ERROR_SUFFIX_MAX_LEN)
+
+
+def _structured_failure_message(result: Any) -> str | None:
+    """Return a failure message from bounded nested MCP result envelopes."""
+    current = result
+    for _ in range(_MAX_STRUCTURED_RESULT_DEPTH):
+        if isinstance(current, str):
+            current = safe_json_loads(current)
+        if not isinstance(current, dict):
+            return None
+        if current.get("ok") is False:
+            return str(
+                current.get("error")
+                or current.get("message")
+                or current.get("status")
+                or "reported ok=false"
+            )
+        err = current.get("error") or current.get("message")
+        if err and (current.get("success") is False or "error" in current):
+            return str(err)
+        if "result" not in current:
+            return None
+        current = current["result"]
+    return None
 
 
 def _degraded_suffix(data: dict) -> str:
@@ -1030,6 +1056,13 @@ def _detect_tool_failure(tool_name: str, result: Any) -> tuple[bool, str]:
         err = data.get("error") or data.get("message")
         if err and (failed or "error" in data):
             return True, f" [{_trim_error(str(err))}]"
+    # Structured errors may be wrapped by MCP as {"result": "<json>"} or
+    # {"result": {...}}. Only follow that explicit envelope, with a small
+    # depth cap, so arbitrary nested payload data is not treated as failure.
+    structured_error = _structured_failure_message(result)
+    if structured_error:
+        return True, f" [{_trim_error(structured_error)}]"
+
     # Multimodal results (dicts) are successes; failures arrive as JSON-encoded strings.
     if isinstance(result, str) and (
         '"error"' in result[:500].lower() or '"failed"' in result[:500].lower() or result.startswith("Error")

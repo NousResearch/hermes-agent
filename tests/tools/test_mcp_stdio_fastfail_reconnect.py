@@ -226,6 +226,40 @@ def test_sdk_first_transport_close_midcall_is_uncertain_without_replay(monkeypat
         _cleanup(mcp_tool, "srv-sdk-first")
 
 
+@pytest.mark.parametrize("code, message, closed", [
+    (-32602, "Browser session not found: s-123", False),
+    (-32603, "Unexpected end of file while reading x.zip", False),
+    (-32000, "Connection closed", True),  # the SDK's own code for a pipe that closed under the request
+])
+def test_stdio_jsonrpc_error_answer_is_the_tool_error_not_a_child_death(monkeypatch, tmp_path, code, message, closed):
+    """A JSON-RPC error the stdio child answered with proves the pipe is alive, whatever its text says.
+    It must reach the model as-is and leave the child running; only a real closure respawns it."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    exceptions = pytest.importorskip("mcp.shared.exceptions", reason="MCP SDK not installed")
+    from tools import mcp_tool
+    from tools.mcp_tool_handlers import _make_tool_handler
+
+    monkeypatch.setattr(mcp_tool, "_STDIO_RESPAWN_WAIT_SEC", 1.0)
+
+    async def _fails(*a, **kw):
+        raise exceptions.MCPError(code=code, message=message)
+
+    async def _watch_children():
+        await asyncio.sleep(30)  # the child stays alive
+
+    server = _install_stub_server(mcp_tool, "srv-answers", _fails, children_dead=lambda: False)
+    server._watch_stdio_children = _watch_children
+    server._is_http = lambda: False
+    _mcp_loop._ensure_mcp_loop()
+    try:
+        parsed = json.loads(_make_tool_handler("srv-answers", "tool1", 10.0)({}))
+        assert server._reconnect_event.set_calls == int(closed)
+        assert bool(parsed.get("outcome_uncertain")) is closed, parsed
+        assert (message in parsed["error"]) is not closed, parsed
+    finally:
+        _cleanup(mcp_tool, "srv-answers")
+
+
 def test_dead_child_never_returning_is_not_reported_as_a_timeout(
     monkeypatch, tmp_path,
 ):

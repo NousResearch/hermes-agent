@@ -348,6 +348,84 @@ Hermes reads these from installed metadata without importing your code, so
 `hermes plugins capabilities` and the consent flow stay accurate for pip
 installs.
 
+### Use the user's Codex sign-in (core-made requests)
+
+A plugin that needs the user's ChatGPT / Codex subscription (minting an OpenAI
+Realtime client secret, calling a Codex backend endpoint) must **not** read,
+refresh or rewrite `~/.codex/auth.json` or Hermes's `auth.json`. Codex refresh
+tokens are single-use: a plugin that refreshes on its own races Hermes's locked
+refresh, and the loser's rotation chain gets revoked, signing the user out.
+Ask Hermes to make the request instead. Hermes resolves the credential through
+its own refresh path, attaches `Authorization` itself and returns only the
+response. Your code never sees the token.
+
+Declare the sign-in in `plugin.yaml`:
+
+```yaml
+name: live-voice
+requires_auth:
+  - openai-codex
+```
+
+Then call the public helper. It is a plain function, so dashboard plugins
+(`dashboard/plugin_api.py`) and vendored modules can import it as well as
+`register(ctx)` code:
+
+```python
+from hermes_cli.plugin_provider_requests import ProviderNotSignedIn, credentialed_provider_request
+
+def mint_client_secret(session: dict) -> dict:
+    try:
+        resp = credentialed_provider_request(
+            "openai-codex", "POST", "https://api.openai.com/v1/realtime/client_secrets",
+            json={"session": session}, timeout=15)
+    except ProviderNotSignedIn as exc:
+        return {"ok": False, "error": str(exc)}  # tells the user how to sign in
+    if resp.status != 200:
+        return {"ok": False, "error": f"client secret failed ({resp.status}): {resp.text[:300]}"}
+    return {"ok": True, **resp.json()}
+```
+
+This replaces a hand-rolled helper that read `~/.codex/auth.json`, POSTed to
+`auth.openai.com/oauth/token` when the token was near expiry and wrote the
+result back. Delete that code; there is no refresh step left for the plugin.
+
+`credentialed_provider_request(provider, method, url, *, json=None, headers=None, timeout=30.0)`
+returns a `ProviderResponse` (`status`, `headers`, `body`, `.text`, `.json()`).
+The rules:
+
+- **Declared plugins only.** The caller is the plugin whose file is on the call
+  stack. Hermes finds it under the plugins directory and reads its
+  `plugin.yaml`. A plugin that does not list the provider in `requires_auth`,
+  and code outside any installed plugin, gets `PermissionError`. Call the helper
+  from your own function. Handing the bare helper to `run_in_executor` leaves no
+  plugin frame on the stack, so the call is refused.
+- **Provider origins only.** For `openai-codex` the token is sent only to
+  `https://chatgpt.com` and `https://api.openai.com`. Any other URL raises
+  `PermissionError` before a request is made. A profile whose Codex credential
+  routes to a custom gateway is refused too, because that key belongs to the
+  gateway.
+- **No redirects.** A 3xx response comes back as-is and is never followed, so
+  the header cannot reach a third host.
+- **Profile-scoped.** The credential is the active profile's Codex sign-in, the
+  same one chat uses (`hermes auth add openai-codex`, or the Codex sign-in in the
+  desktop app). When there is none you get `ProviderNotSignedIn`, whose message
+  names the sign-in command.
+- Your own `headers` are sent too, except any that would replace the
+  `Authorization` (or account) headers Hermes attaches.
+
+`requires_auth` appears in `hermes plugins show <name>` and at install time, and
+a catalog re-pin that adds it asks the user before updating. Like capabilities,
+this is consent and visibility. It is **not a sandbox**: in-process plugin code
+can still read any file the user can, and reviewers reject plugins that do.
+
+**Usage panels:** don't call the usage endpoints yourself. Use
+`agent.account_usage.fetch_account_usage("openai-codex", read_only=True)`. It
+returns an `AccountUsageSnapshot` (plan, session/weekly windows with
+`used_percent` and `reset_at`) and never refreshes or rotates a credential.
+**Sign-out** belongs to Hermes, not to a plugin: point users at
+`hermes auth logout openai-codex` instead of deleting credential files.
+
 ### Manifest v2 reference
 
 `plugin.yaml` also supports an additive **v2 schema** (#64165). Every field is
@@ -368,6 +446,7 @@ this Hermes understands still loads with a warning.
 | `homepage` | str | Project URL. |
 | `tags` | list of str | Free-form discovery tags (e.g. `[gateway, telegram]`). |
 | `provides_locales` | list | Language pack declaration: ids (`- pl`) or `{id, endonym, rtl}` mappings whose `locales/<id>[.tui\|.desktop].yaml` the loader registers automatically — see [Ship a language pack](#ship-a-language-pack). |
+| `requires_auth` | list of str | Providers whose sign-in the plugin uses through Hermes (today: `openai-codex`). Required by `credentialed_provider_request`; shown at install and in `hermes plugins show`. See [Use the user's Codex sign-in](#use-the-users-codex-sign-in-core-made-requests). |
 
 ```yaml
 # plugin.yaml — manifest v2 example

@@ -39,7 +39,7 @@ _LAST_TURN_ONLY_RE = re.compile(r"claude[-_.]?3(?!\d)", re.IGNORECASE)
 _KEEP_ALL_FROM = {"opus": (4, 5), "sonnet": (4, 6), "haiku": (5, 5)}
 
 
-def _claude_family_version(model: Any) -> tuple[str, tuple[int, int]] | None:
+def claude_family_version(model: Any) -> tuple[str, tuple[int, int]] | None:
     if not isinstance(model, str):
         return None
     match = _CLAUDE_VERSION_RE.search(model.strip())
@@ -55,7 +55,7 @@ def model_preserves_prior_thinking(model: Any) -> bool:
     """Whether Anthropic keeps prior assistant thinking in model-visible context."""
     if not isinstance(model, str) or "claude" not in model.lower() or _LAST_TURN_ONLY_RE.search(model):
         return False
-    parsed = _claude_family_version(model)
+    parsed = claude_family_version(model)
     if parsed is None:
         return True
     family, version = parsed

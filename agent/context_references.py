@@ -629,6 +629,48 @@ def _iter_visible_entries(path: Path, cwd: Path, limit: int) -> list[Path]:
     return output
 
 
+# A staged copy is refused past this size: `attachments/` is a bind mount, and
+# copying a multi-GB file (a model checkpoint, a dataset shard) through it on
+# every prompt turn would hammer the gateway's disk for nothing. Oversized refs
+# keep the honest warning instead of a doomed staging attempt.
+_STAGING_MAX_BYTES = 256 * 1024 * 1024
+
+
+def _stage_unmapped_file_for_backend(path: Path) -> Path | None:
+    """Copy *path* into the bind-mounted ``attachments/`` dir; None when it can't/shouldn't.
+
+    Only called for a container backend when ``to_agent_visible_cache_path`` left the
+    HOST path in place — the file lives outside every mounted cache root, so the raw
+    path dangles inside the sandbox (#103147). The staged copy sits under a mount the
+    backend receives, so its translated path resolves there. Content-addressed by
+    size+hash, never by name: a same-name existing file with different bytes gets a
+    suffixed sibling (the gateway's own stager de-dupes the same way), and identical
+    bytes reuse the existing copy — no unbounded re-staging of one file per turn.
+    """
+    try:
+        import hashlib
+        import shutil
+        from hermes_constants import get_hermes_dir
+        size = path.stat().st_size
+        if size <= 0 or size > _STAGING_MAX_BYTES:
+            return None
+        root = get_hermes_dir("attachments", "attachments")
+        root.mkdir(parents=True, exist_ok=True)
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        existing = root / f"{path.stem}-{digest[:12]}{path.suffix}"
+        if existing.is_file() and existing.stat().st_size == size:
+            return existing
+        staged = existing
+        counter = 1
+        while staged.exists():  # size matches but hash collided on the probe: fall aside
+            staged = root / f"{path.stem}-{digest[:12]}-{counter}{path.suffix}"
+            counter += 1
+        shutil.copy2(path, staged)
+        return staged
+    except Exception:
+        return None
+
+
 def _agent_visible_path(path: Path) -> str:
     # Under a container backend the host path dangles inside the sandbox: translate staged
     # files to their auto-mounted cache path; fall back to the host path (local backend /
@@ -638,7 +680,23 @@ def _agent_visible_path(path: Path) -> str:
         from tools.terminal_tool import _ensure_terminal_env_bridged
         _ensure_terminal_env_bridged()
         from tools.credential_files import to_agent_visible_cache_path
-        return to_agent_visible_cache_path(str(path))
+        host_str = str(path)
+        translated = to_agent_visible_cache_path(host_str)
+        if translated != host_str:
+            return translated
+        # No-op translation: the path sits outside every mounted cache root. Under a
+        # container backend that host path does not exist in the sandbox — stage the
+        # bytes into the bind-mounted attachments dir and hand over its translated
+        # path instead of a dangling one (#103147). Local (and translationless plugin)
+        # backends keep the host path: their tools run where the file already is.
+        from tools.credential_files import _terminal_backend
+        if _terminal_backend() in ("docker", "modal"):
+            staged = _stage_unmapped_file_for_backend(path)
+            if staged is not None:
+                staged_translated = to_agent_visible_cache_path(str(staged))
+                if staged_translated != str(staged):
+                    return staged_translated
+        return host_str
     except Exception:
         return str(path)
 

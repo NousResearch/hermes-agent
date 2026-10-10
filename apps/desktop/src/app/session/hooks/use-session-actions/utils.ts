@@ -10,6 +10,7 @@ import {
   textPart,
   toChatMessages
 } from '@/lib/chat-messages'
+import { withoutCoveredAssistantPrefix } from '@/lib/chat-messages/coverage'
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { embeddedImageUrls, textWithoutEmbeddedImages } from '@/lib/embedded-images'
 import { parseErrorSurface } from '@/lib/error-surface'
@@ -1692,6 +1693,52 @@ export function overlayConcurrentMessageChanges(
     )
   }
 
+  // A tool-heavy turn folds into ONE committed row built from its own streamed
+  // text, while the live side still holds each sealed segment as a bubble of
+  // its own: the lead-in duplicates the fold's first text part and the tail its
+  // last, so neither bubble matches the fold on its own text. Walk the live run
+  // against the committed rows the way the resume fold does — ordered parts,
+  // tool-anchored, from every possible offset — and retire what the walk
+  // consumes. Text-only runs stay (no anchor), and a run that grew past the
+  // fold keeps its survivor, so this cannot swallow a coincidentally equal
+  // paragraph. Narration is not an occurrence: strip reasoning from both sides
+  // before the walk, or a reasoning-led row stalls the cursor on its first
+  // part. A row that was only reasoning carries no identity to prove with and
+  // stays.
+  const lastUserInPage = nextMessages.findLastIndex(message => message.role === 'user')
+
+  const committedAfterPrompt = nextMessages
+    .filter((message, index) => index > lastUserInPage && message.role === 'assistant' && !isLiveTailRow(message))
+    .map(message => ({ ...message, parts: message.parts.filter(part => part.type !== 'reasoning') }))
+
+  const lastUserLocally = currentMessages.findLastIndex(message => message.role === 'user')
+
+  const liveRunAfterPrompt = currentMessages
+    .filter(
+      (message, index) => index > lastUserLocally && message.role === 'assistant' && isLiveTailReplyId(message.id)
+    )
+    .map(message => ({ ...message, parts: message.parts.filter(part => part.type !== 'reasoning') }))
+
+  const liveRunIds = liveRunAfterPrompt.filter(message => message.parts.length > 0).map(message => message.id)
+  const coveredLiveRunIds = new Set<string>()
+  const committedParts = committedAfterPrompt.flatMap(message => message.parts)
+
+  for (let offset = 0; offset < committedParts.length; offset += 1) {
+    const window = [
+      { id: 'committed-window', parts: committedParts.slice(offset), role: 'assistant' } as ChatMessage
+    ]
+
+    const survivors = new Set(
+      withoutCoveredAssistantPrefix(window, liveRunAfterPrompt).map(message => message.id)
+    )
+
+    for (const id of liveRunIds) {
+      if (!survivors.has(id)) {
+        coveredLiveRunIds.add(id)
+      }
+    }
+  }
+
   for (const current of currentMessages) {
     const baseline = baselineById.get(current.id)
     const changedSinceBaseline = !baseline || !chatMessagesEquivalent(baseline, current)
@@ -1709,7 +1756,7 @@ export function overlayConcurrentMessageChanges(
       current.pending !== true &&
       !current.error &&
       isLiveTailReplyId(current.id) &&
-      committedOnPage(current)
+      (committedOnPage(current) || coveredLiveRunIds.has(current.id))
     ) {
       if (nextIndex !== undefined) {
         dropped.add(current.id)

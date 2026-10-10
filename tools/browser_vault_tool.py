@@ -381,7 +381,9 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
             return json.dumps({"success": False, "error_type": "code_declined",
                                "error": "The user did not enter a code. Do not ask again this turn."})
 
-    register_vault_redaction_value(code)
+    # A one-time code is short (6 digits) — a known secret, so the registry's length
+    # floor (guard against ambient card fields, #120655) must not drop it.
+    register_vault_redaction_value(code, known_secret=True)
     fills = build_otp_fills(otp_controls, code)
     result = _eval_js_secret(effective_task_id, build_fill_js(fills, expected_origin=origin, nonce=nonce))
     del code
@@ -395,6 +397,26 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
     filled = int(parsed.get("filled", 0)) if isinstance(parsed, dict) else 0
     return json.dumps({"success": bool(filled), "filled_fields": filled, "origin": origin, "source": source,
                        "next": "Submit the form (many sites auto-submit when the last digit lands)."})
+
+
+# Card fields whose values are secrets even when short. The rest (cardholder name, expiry
+# dates, postal code) are ambient data that must not feed the substring scrub (#120655).
+_PAYMENT_EGRESS_SECRET_FIELDS = ("card_number", "cvc")
+
+
+def _register_fill_secrets_for_egress(kind: str, secret: dict) -> None:
+    """Register the fill's secret bytes with the model-egress redaction boundary.
+
+    Only the secret fields register, as known secrets: a short CVC or password must not be
+    dropped by the registry's length floor, while ambient fields never become scrub keys.
+    """
+    from agent.redact import register_vault_redaction_value
+
+    if kind == "payment":
+        for key in _PAYMENT_EGRESS_SECRET_FIELDS:
+            register_vault_redaction_value(secret.get(key) or "", known_secret=True)
+    else:
+        register_vault_redaction_value(secret.get("password", ""), known_secret=True)
 
 
 def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
@@ -521,9 +543,7 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
     # Register the secret bytes with the model-egress redaction boundary
     # BEFORE they touch the page: any later browser_* result (including
     # browser_cdp Runtime.evaluate reads) that echoes them is scrubbed.
-    # Address values are not secrets but the card fields are: register every payment value.
-    for value in (secret.values() if meta.kind == "payment" else [secret.get("password", "")]):
-        register_vault_redaction_value(value)
+    _register_fill_secrets_for_egress(meta.kind, secret)
 
     try:
         fill_result = _eval_js_secret(

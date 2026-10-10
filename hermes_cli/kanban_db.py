@@ -4448,3 +4448,42 @@ from hermes_cli.kanban_db_dispatch import (
     _worker_survived_termination,
     _worker_terminal_timeout_env,
 )
+
+
+def recommended_workspace_kind_for_board(board: Optional[str] = None) -> tuple[str, Optional[str]]:
+    """Recommend ``(workspace_kind, workspace_path)`` from board ``default_workdir``.
+
+    Mirrors the dashboard create-dialog default (git repo -> ``worktree``, other
+    existing directory -> ``dir``). Scratch never gets a real path. Missing,
+    non-directory, or unreadable workdirs return ``("scratch", None)``.
+    """
+    from hermes_cli.kanban_db_workspace import _git_toplevel
+
+    workdir = str(read_board_metadata(board).get("default_workdir") or "").strip()
+    if not workdir:
+        return ("scratch", None)
+    try:
+        path = Path(workdir).expanduser()
+        if not path.exists() or not path.is_dir():
+            return ("scratch", None)
+        path = path.resolve()
+        kind = "worktree" if _git_toplevel(path) else "dir"
+        return (kind, str(path))
+    except (OSError, ValueError):
+        return ("scratch", None)
+
+
+def inherit_workspace_for_create(board: Optional[str] = None) -> tuple[Optional[str], Optional[str]]:
+    """Workspace args for a create that omitted ``--workspace`` / ``workspace_kind``.
+
+    A usable ``default_workdir`` becomes ``(kind, path)``. ``(None, None)`` when
+    there is nothing to inherit, or the board is project-scoped: ``create_task``
+    treats omitted kind as "inherit the board project" and explicit ``scratch``
+    as opting out (#106342). Passing ``("scratch", None)`` here would block that.
+    """
+    if str(read_board_metadata(board).get("project_id") or "").strip():
+        return (None, None)
+    kind, path = recommended_workspace_kind_for_board(board)
+    if kind == "scratch":
+        return (None, None)
+    return (kind, path)

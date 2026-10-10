@@ -10,7 +10,9 @@ parity across every registered verb.
 
 from __future__ import annotations
 
+import argparse
 import os
+import subprocess
 import time
 from pathlib import Path
 
@@ -1393,5 +1395,48 @@ def test_dead_worker_reap_reads_the_log_of_the_dispatching_board(kanban_home):
             kb._pid_alive = original_alive
         task = kb.get_task(conn, tid)
         assert "no reassignment operation" in (task.last_failure_error or "")
+    finally:
+        conn.close()
+
+
+def _cli_create_ns(**overrides):
+    ns = dict(
+        title="cli task", body=None, assignee=None, workspace=None, branch=None,
+        project=None, tenant=None, priority=0, parent=[], triage=False,
+        idempotency_key=None, max_runtime=None, skills=None, max_retries=None,
+        model_override=None, provider_override=None, goal_mode=False,
+        goal_max_turns=None, initial_status="running", created_by="user", json=False,
+    )
+    ns.update(overrides)
+    return argparse.Namespace(**ns)
+
+
+def test_cli_create_inherits_board_default_workdir_kind(kanban_home, tmp_path):
+    repo = tmp_path / "proj"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-b", "main", str(repo)], check=True, capture_output=True)
+    kb.write_board_metadata(None, default_workdir=str(repo))
+    from hermes_cli import kanban as kcli
+    assert kcli._cmd_create(_cli_create_ns(title="cli inherit")) == 0
+    conn = kbc.connect()
+    try:
+        task = kb.list_tasks(conn)[0]
+        assert task.workspace_kind == "worktree"
+        assert Path(task.workspace_path).resolve() == repo.resolve()
+    finally:
+        conn.close()
+
+
+def test_cli_create_explicit_scratch_skips_board_default(kanban_home, tmp_path):
+    d = tmp_path / "src"
+    d.mkdir()
+    kb.write_board_metadata(None, default_workdir=str(d))
+    from hermes_cli import kanban as kcli
+    assert kcli._cmd_create(_cli_create_ns(title="explicit scratch", workspace="scratch")) == 0
+    conn = kbc.connect()
+    try:
+        task = kb.list_tasks(conn)[0]
+        assert task.workspace_kind == "scratch"
+        assert not task.workspace_path
     finally:
         conn.close()

@@ -22,9 +22,12 @@ Invariants covered:
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from agent.context_compressor import (
     _MAX_PRUNED_SKILL_MARKERS,
@@ -35,6 +38,7 @@ from agent.conversation_compression import (
     _pruned_skill_reload_notice,
     _strip_stale_todo_snapshot,
 )
+from agent.tool_guardrails import ToolCallGuardrailConfig, ToolCallGuardrailController
 from hermes_state import SessionDB
 from tools.todo_tool import TODO_INJECTION_HEADER
 
@@ -316,3 +320,80 @@ class TestNoticeStripLifecycle:
         assert "fresh task" in tail_text
         assert "skill_view(name='hodle-design-system')" in tail_text
         assert "keep this human text" in tail_text
+
+
+@pytest.mark.parametrize("in_place", [False, True])
+@pytest.mark.parametrize("outcome", ["committed", "committed_plugin", "committed_plugin_no_db", "noop", "failed", "publish_failed"])
+def test_compaction_read_generation_follows_committed_content_loss(tmp_path, monkeypatch, in_place, outcome):
+    from tools.skills_tool import _skill_view_with_bump, reset_skill_view_dedup
+
+    home = tmp_path / "home"
+    skill = home / "skills" / "report"
+    skill.mkdir(parents=True)
+    body = "Follow the report procedure completely.\n" * 40
+    (skill / "SKILL.md").write_text(
+        "---\nname: report\ndescription: Report procedure.\n---\n" + body,
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    task_id = "compaction-report"
+    reset_skill_view_dedup(task_id)
+    db = SessionDB(db_path=home / "state.db")
+    db.create_session("report-session", source="cli")
+    agent = _build_agent_with_db(db, "report-session")
+    agent.compression_in_place = in_place
+    controller = ToolCallGuardrailController(ToolCallGuardrailConfig(hard_stop_enabled=True))
+    agent._tool_guardrails = controller
+    agent._todo_store._items = [{"id": "report", "content": "Finish the report", "status": "pending"}]
+    args = {"name": "report"}
+    messages = _msgs()
+    agent.context_compressor.compress.return_value = [
+        {"role": "user", "content": "[CONTEXT COMPACTION] summary\n" + _skill_pruned_marker("report")},
+        {"role": "assistant", "content": messages[-1]["content"]},
+        {"role": "user", "content": "Finish the report"},
+    ]
+    if outcome.startswith("committed_plugin"):
+        # ContextEngine implementations need not carry the built-in engine's
+        # private telemetry; the changed, committed transcript is the boundary.
+        del agent.context_compressor._last_compression_made_progress
+    if outcome == "committed_plugin_no_db":
+        agent._session_db = None
+
+    try:
+        if not outcome.startswith("committed"):
+            for _ in range(5):
+                controller.after_call("skill_view", args, "unchanged", failed=False)
+            if outcome == "noop":
+                agent.context_compressor.compress.side_effect = lambda messages, **_kwargs: messages
+                returned, _ = agent._compress_context(messages, "sys", approx_tokens=120_000, task_id=task_id)
+                assert returned is messages
+            elif outcome == "failed":
+                agent.context_compressor.compress.side_effect = RuntimeError("compression failed")
+                with pytest.raises(RuntimeError, match="compression failed"):
+                    agent._compress_context(messages, "sys", approx_tokens=120_000, task_id=task_id)
+            else:
+                publish_method = "archive_and_compact" if in_place else "publish_compression_child"
+                with patch.object(db, publish_method, side_effect=RuntimeError("publication failed")):
+                    returned, _ = agent._compress_context(messages, "sys", approx_tokens=120_000, task_id=task_id)
+                assert returned is messages
+            assert controller.before_call("skill_view", args).code == "idempotent_no_progress_block"
+            return
+
+        # The incident crossed five real compaction boundaries during one
+        # user turn. Each required the unchanged skill body again; the sixth
+        # view must not inherit the previous generations' no-progress count.
+        for index in range(6):
+            assert controller.before_call("skill_view", args).allows_execution
+            result = _skill_view_with_bump(args, task_id=task_id)
+            assert body in json.loads(result)["content"]
+            controller.after_call("skill_view", args, result, failed=False)
+            assert controller.observe_call("skill_view", args, result, tool_call_id=f"skill-{index}").stub is None
+            controller.after_call("terminal", {"command": f"report-step-{index}"}, "done", failed=False)
+            controller.observe_call("terminal", {"command": f"report-step-{index}"}, "done")
+            if index < 5:
+                agent.context_compressor.compression_count = index + 1
+                compressed, _ = agent._compress_context(messages, "sys", approx_tokens=120_000, task_id=task_id)
+                assert compressed is not messages
+                assert "skill_view(name='report')" in "\n".join(str(row.get("content", "")) for row in compressed)
+    finally:
+        db.close()

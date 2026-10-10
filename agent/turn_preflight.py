@@ -389,5 +389,8 @@ def compress_after_tool_results(
                 # A committed prune is a content-loss boundary like compaction: demoted skill_view /
                 # read_file bodies survive only as one-line markers, so the repeat-read dedup must
                 # stop answering "unchanged" for them or the reload the marker asks for is refused.
-                _reset_read_dedup_caches(effective_task_id, session_id=agent.session_id or "")
+                _reset_read_dedup_caches(
+                    effective_task_id, session_id=agent.session_id or "",
+                    guardrails=getattr(agent, "_tool_guardrails", None),
+                )
     return _verdict(False)

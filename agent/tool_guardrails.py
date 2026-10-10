@@ -338,6 +338,26 @@ class ToolCallGuardrailController:
         self._turn_web_search_count = 0
         self._turn_subagent_count = 0
 
+    def reset_read_tracking(self) -> None:
+        """Start a fresh read generation after a committed context prune.
+
+        The read caches can serve full skill/file content again, but their old
+        no-progress counts must not block that reload before the tools execute.
+        Other no-progress/failure counts, halt decisions and per-turn caps survive.
+        Any tool's original result may have left the transcript, so forget the
+        reference-stub streak and cycle history rather than point at deleted rows.
+        """
+        self._no_progress = {
+            signature: record for signature, record in self._no_progress.items()
+            if signature.tool_name not in {"read_file", "skill_view"}
+        }
+        self._identical_streak_sig = None
+        self._identical_streak_result_hash = ""
+        self._identical_streak_count = 0
+        self._identical_streak_first_call_id = ""
+        self._call_history.clear()
+        self._persisted_result_paths.clear()
+
     @property
     def halt_decision(self) -> ToolGuardrailDecision | None:
         return self._halt_decision

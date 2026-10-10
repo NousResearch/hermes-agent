@@ -315,11 +315,16 @@ class TestCommittedPruneIsDedupBoundary:
         return skill_stubbed, file_in_generation
 
     def test_committed_prune_releases_skill_and_file_dedup(self, agent, tmp_path):
+        from agent.tool_guardrails import ToolCallGuardrailConfig, ToolCallGuardrailController
+
+        agent._tool_guardrails = ToolCallGuardrailController(ToolCallGuardrailConfig(hard_stop_enabled=True))
         task_id = "prune-boundary-task"
         self._seed_dedup(tmp_path, task_id)
         assert self._dedup_state(task_id) == (True, True)
 
         def _prune(messages, current_tokens=None):
+            for _ in range(5):
+                agent._tool_guardrails.after_call("skill_view", {"name": "bigskill"}, "unchanged", failed=False)
             pruned = [dict(m) for m in messages]
             changed = 0
             for m in pruned:
@@ -333,10 +338,20 @@ class TestCommittedPruneIsDedupBoundary:
         # Skill: next view serves full content again. File: the generation-read set is cleared so the
         # first unchanged re-read serves content; the mtime map itself is preserved (later reads stub).
         assert self._dedup_state(task_id) == (False, False)
+        assert agent._tool_guardrails.before_call("skill_view", {"name": "bigskill"}).allows_execution
 
     def test_noop_prune_keeps_dedup(self, agent, tmp_path):
+        from agent.tool_guardrails import ToolCallGuardrailConfig, ToolCallGuardrailController
+
+        agent._tool_guardrails = ToolCallGuardrailController(ToolCallGuardrailConfig(hard_stop_enabled=True))
         task_id = "prune-noop-task"
         self._seed_dedup(tmp_path, task_id)
-        agent.context_compressor.prune_tool_results_only = lambda messages, current_tokens=None: (messages, 0)
+        def _prune(messages, current_tokens=None):
+            for _ in range(5):
+                agent._tool_guardrails.after_call("skill_view", {"name": "bigskill"}, "unchanged", failed=False)
+            return messages, 0
+
+        agent.context_compressor.prune_tool_results_only = _prune
         assert _run_tool_loop(agent, n_tool_iterations=1, task_id=task_id)["completed"] is True
         assert self._dedup_state(task_id) == (True, True)
+        assert agent._tool_guardrails.before_call("skill_view", {"name": "bigskill"}).code == "idempotent_no_progress_block"

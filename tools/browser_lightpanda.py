@@ -113,14 +113,21 @@ def _binary_supports_http_cache(binary: str) -> bool:
     ("unknown argument"), which would break every launch. Probing ``help``
     output keeps working across future flag additions without parsing
     versions, and the lru_cache keeps it once per binary per process.
+
+    Lightpanda 0.4.x lists only commands in bare ``help`` output and keeps
+    serve flags in subcommand help (``help serve``), so probe both shapes
+    before concluding the flag is unsupported.
     """
     try:
-        proc = subprocess.run(
-            [binary, "help"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=3.0,
-            stdin=subprocess.DEVNULL,
-        )
-        return _HTTP_CACHE_FLAG in ((proc.stdout or "") + (proc.stderr or ""))
+        for argv in ([binary, "help", "serve"], [binary, "help"]):
+            proc = subprocess.run(
+                argv,
+                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=3.0,
+                stdin=subprocess.DEVNULL,
+            )
+            if _HTTP_CACHE_FLAG in ((proc.stdout or "") + (proc.stderr or "")):
+                return True
+        return False
     except Exception as e:
         logger.debug("lightpanda http-cache probe failed (%s); assuming no", e)
         return False

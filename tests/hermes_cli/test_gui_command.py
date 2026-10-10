@@ -18,6 +18,7 @@ from hermes_cli import main_desktop
 from hermes_cli import main_desktop_tcc
 from hermes_cli import main_install_repair
 from hermes_cli import main_web_build
+from hermes_cli import main_desktop_processes
 
 
 @pytest.fixture(autouse=True)
@@ -1558,7 +1559,7 @@ def _gui_build_patches(root: Path, run_side_effect):
     ]
 
 
-def test_swap_staged_desktop_app_promotes_staged_tree_and_drops_previous(tmp_path):
+def test_swap_staged_desktop_app_promotes_staged_tree_and_drops_previous(tmp_path, monkeypatch):
     root = _make_desktop_tree(tmp_path)
     desktop_dir = root / "apps" / "desktop"
     live_exe = desktop_dir / "release" / _packaged_exe_rel()
@@ -1568,6 +1569,7 @@ def test_swap_staged_desktop_app_promotes_staged_tree_and_drops_previous(tmp_pat
     staged_exe = staging / _packaged_exe_rel()
     staged_exe.parent.mkdir(parents=True)
     staged_exe.write_text("new", encoding="utf-8")
+    monkeypatch.setattr(main_desktop_processes, "processes_running_from", lambda _tree: [])
 
     promoted = main_desktop._swap_staged_desktop_app(desktop_dir, staging)
 
@@ -1618,10 +1620,9 @@ def test_swap_staged_desktop_app_rolls_back_when_second_rename_fails(tmp_path, m
     assert not (live_exe.parent.parent / (live_exe.parent.name + ".previous")).exists()
 
 
+@pytest.mark.platforms("windows")
 def test_swap_staged_desktop_app_stops_live_renderer_before_rename(tmp_path):
-    """#109643: a renderer alive through the promotion rename keeps fetching its
-    old hashed chunks from disk and dies on the next lazy import — the swap must
-    ask for running desktop processes to stop on EVERY platform."""
+    """windows must stop the live app to release the bundle's file lock."""
     root = _make_desktop_tree(tmp_path)
     desktop_dir = root / "apps" / "desktop"
     live_exe = desktop_dir / "release" / _packaged_exe_rel()
@@ -1807,6 +1808,7 @@ def test_gui_failed_pack_leaves_previous_app_untouched(tmp_path, monkeypatch, ca
 def test_gui_successful_pack_swaps_new_app_into_release(tmp_path, monkeypatch):
     root = _make_desktop_tree(tmp_path)
     monkeypatch.setattr(main_desktop, "_desktop_exe_integrity_error", lambda exe: None)
+    monkeypatch.setattr(main_desktop_processes, "processes_running_from", lambda _tree: [])
     desktop_dir = root / "apps" / "desktop"
     monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
     live_exe = _make_packaged_executable(root, monkeypatch)

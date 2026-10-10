@@ -190,7 +190,8 @@ jobs:
           scripts/run_tests.sh -rs \
             tests/gateway/test_native_role_reauthorization.py \
             tests/gateway/test_native_telegram_startup_recovery.py \
-            tests/gateway/test_native_pause_notice.py | tee "$log"
+            tests/gateway/test_native_pause_notice.py \
+            tests/gateway/test_native_reply_crash_recovery.py | tee "$log"
           summary=$(grep '^=== Summary:' "$log")
           case "$summary" in
             *skipped*) echo "::error::messaging-gated gateway cases skipped: $summary"; exit 1 ;;

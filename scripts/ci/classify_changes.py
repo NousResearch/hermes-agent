@@ -380,6 +380,7 @@ _E2E_LANES: dict[str, tuple[str, ...]] = {
         "tests/gateway/test_native_role_reauthorization.py",
         "tests/gateway/test_native_telegram_startup_recovery.py",
         "tests/gateway/test_native_pause_notice.py",
+        "tests/gateway/test_native_reply_crash_recovery.py",
     ),
     "e2e_upgrade": (
         *_PY_TEST_HARNESS,

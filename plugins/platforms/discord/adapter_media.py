@@ -8,8 +8,9 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from agent.display import ToolPreview
 from agent.i18n import t
-from gateway.platforms.base import SendResult, ToolPreview
+from gateway.platforms.base import SendResult
 
 logger = logging.getLogger("plugins.platforms.discord.adapter")
 

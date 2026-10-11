@@ -178,13 +178,21 @@ def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> 
         # ``includeThoughts: False`` only omits thought parts from the returned
         # response; the model may still reason internally and bill thought
         # tokens against maxOutputTokens, starving small budgets (title
-        # generation's 64 tokens). Set thinkingBudget to 0 to actually disable
-        # thinking on families that document it: Gemini 2.5 and 3+ (plus the
-        # ``gemini-flash-latest`` alias); future majors are added only when the
-        # API documents thinkingBudget for them. (#91927)
+        # generation's 64 tokens). Gemini 2.5 documents ``thinkingBudget: 0``
+        # as the off switch (#91927). Gemini 3 deprecates ``thinkingBudget``
+        # (silently remapped to a level today, rejected on upcoming models), so
+        # 3.x and the ``gemini-flash-latest`` alias express the same intent with
+        # ``thinkingLevel`` at its documented floor: ``minimal`` on the flash
+        # family, else ``low`` — 3 Pro rejects ``minimal`` and an unnamed 3.x
+        # family must not guess. (#135176)
         config: dict[str, Any] = {"includeThoughts": False}
-        if normalized_model == "gemini-flash-latest" or normalized_model.startswith(("gemini-2.5-", "gemini-3")):
+        if normalized_model.startswith("gemini-2.5-"):
             config["thinkingBudget"] = 0
+        elif (
+            normalized_model.startswith("gemini-3")
+            or normalized_model == "gemini-flash-latest"
+        ):
+            config["thinkingLevel"] = "minimal" if "flash" in normalized_model else "low"
         return config
     thinking_config: dict[str, Any] = {"includeThoughts": True}
     # Gemini 2.5 takes thinkingBudget; don't guess one from coarse effort levels.

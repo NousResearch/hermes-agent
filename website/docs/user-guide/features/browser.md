@@ -93,6 +93,8 @@ browser:
 
 Browser Use's own cloud browsers need `BROWSER_USE_API_KEY`; other browser sources use their existing credentials unchanged.
 
+If a browser page sometimes takes longer than five seconds to answer an individual CDP request, set `browser.ipc_response_timeout_seconds` in `config.yaml` (integer 5–120; default 5). For example, `hermes config set browser.ipc_response_timeout_seconds 20` allows each ordinary CDP/IPC response to wait up to 20 seconds, including the preliminary dialog probe in `page_info()` and direct helpers such as `drain_events()`. This is a per-response limit, not a total helper-call or page-load budget. Explicit per-request overrides (such as the 60-second cloud-screenshot timeout) and the connection timeout are unchanged. If an incompatible Browser Use version prevents applying the setting, the CLI reports a warning on stderr. This is separate from the overall `browser_exec(timeout_s=...)` limit and from `browser.command_timeout` for built-in browser tools; restart a running gateway after changing it.
+
 :::note
 Because Browser Use mode executes model-written Python on your machine, the
 `browser_exec` tool is only offered to sessions that also have terminal

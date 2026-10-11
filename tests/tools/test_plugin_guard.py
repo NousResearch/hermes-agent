@@ -424,8 +424,7 @@ class TestInstallIntegration:
 
     @pytest.mark.parametrize("filename,content", [
         ("helper.py", "eval('1 + 1')\n"),
-        ("desktop/plugin.js", 'const lookup = `dig +short +time=3 A ${hostname}`;\n'),
-        ("desktop/plugin.js", 'const help = "Add this public key to authorized_keys on the server.";\n'),
+        ("desktop/plugin.js", 'const fds = fs.readdirSync("/proc/self/fd");\n'),
     ])
     def test_caution_plugin_accepted_via_callback(self, tmp_path, monkeypatch, filename, content):
         from hermes_cli import plugins_cmd as pc

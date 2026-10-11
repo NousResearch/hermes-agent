@@ -5710,6 +5710,69 @@ class TestAgentSessionsApiRouting:
         )
         a._app.client.assistant_threads_setTitle.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_typing_falls_back_to_legacy_when_agents_sessions_rejects_free_text(self):
+        """#112866: agents.sessions.setStatus rejects free-text (``is thinking...``) with
+        ``invalid_arguments: must be a valid enum value``; the adapter must retry the legacy
+        ``assistant.threads.setStatus`` so typing indicators still appear (#112866)."""
+        _slack_mod._AGENT_SESSIONS_SUPPORTED = True
+        a = self._adapter()
+        new_api = AsyncMock(
+            side_effect=Exception("invalid_arguments: status must be a valid enum value"))
+        legacy = AsyncMock()
+        a._app.client.agents_sessions_setStatus = new_api
+        a._app.client.assistant_threads_setStatus = legacy
+        await a.send_typing("C123", metadata={"thread_id": "parent_ts"})
+        new_api.assert_called_once_with(
+            channel_id="C123", thread_ts="parent_ts", status="is thinking...")
+        legacy.assert_called_once_with(
+            channel_id="C123", thread_ts="parent_ts", status="is thinking...")
+
+    @pytest.mark.asyncio
+    async def test_stop_typing_falls_back_to_legacy_when_agents_sessions_rejects_empty(self):
+        """#112866: stop_typing clears with ``status=""`` which the new enum-only API rejects
+        the same way; legacy must catch the fallback so the indicator disappears."""
+        _slack_mod._AGENT_SESSIONS_SUPPORTED = True
+        a = self._adapter()
+        new_api = AsyncMock(
+            side_effect=Exception("invalid_arguments: status must be a valid enum value"))
+        legacy = AsyncMock()
+        a._app.client.agents_sessions_setStatus = new_api
+        a._app.client.assistant_threads_setStatus = legacy
+        await a.send_typing("C123", metadata={"thread_id": "parent_ts"})
+        new_api.reset_mock(); legacy.reset_mock()
+        await a.stop_typing("C123", metadata={"thread_id": "parent_ts"})
+        new_api.assert_called_once_with(channel_id="C123", thread_ts="parent_ts", status="")
+        legacy.assert_called_once_with(channel_id="C123", thread_ts="parent_ts", status="")
+
+    @pytest.mark.asyncio
+    async def test_legacy_only_sdk_does_not_double_send_a_failing_status(self, monkeypatch):
+        """#112866: on a slack-sdk without the Agent Sessions API ``_session_status_method`` is
+        already the legacy method, so a failure there must be logged, not retried — the same
+        request with the same arguments used to go out twice (``assistant_threads_setStatus``
+        call count 2 on a head that fell back unconditionally)."""
+        monkeypatch.setattr(_slack_mod, "_AGENT_SESSIONS_SUPPORTED", False)
+        a = self._adapter()
+        legacy = AsyncMock(side_effect=Exception("missing_scope"))
+        a._app.client.assistant_threads_setStatus = legacy
+        await a.send_typing("C123", metadata={"thread_id": "parent_ts"})
+        legacy.assert_awaited_once_with(
+            channel_id="C123", thread_ts="parent_ts", status="is thinking...")
+
+    @pytest.mark.asyncio
+    async def test_typing_does_not_double_call_when_agents_sessions_succeeds(self):
+        """#112866: when the new API accepts the call (e.g. enum value), legacy must NOT be
+        invoked — only the failing path falls back, not every call."""
+        _slack_mod._AGENT_SESSIONS_SUPPORTED = True
+        a = self._adapter()
+        new_api = AsyncMock()  # succeeds
+        legacy = AsyncMock()
+        a._app.client.agents_sessions_setStatus = new_api
+        a._app.client.assistant_threads_setStatus = legacy
+        await a.send_typing("C123", metadata={"thread_id": "parent_ts"})
+        new_api.assert_called_once_with(
+            channel_id="C123", thread_ts="parent_ts", status="is thinking...")
+        legacy.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

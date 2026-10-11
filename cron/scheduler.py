@@ -515,7 +515,7 @@ from cron.jobs import (
     clear_run_claim, get_due_jobs, heartbeat_fire_claim, heartbeat_run_claim, mark_job_run,
     save_job_output, self_removal_delivery_allowed, self_removal_delivery_scope, use_cron_store)
 from cron import store_health
-from cron.execution_identity import enter_cron_execution, exit_cron_execution
+from cron.execution_identity import cron_execution_env, enter_cron_execution, exit_cron_execution
 from cron.executions import (
     _TERMINAL_STATES, HANDOFF_ADOPTION_GRACE_SECONDS, create_execution, finish_execution,
     get_execution, mark_execution_handoff_pending, mark_execution_running,
@@ -2785,6 +2785,7 @@ def run_one_job(
         execution = create_execution(
             job["id"], source="direct", scheduled_instant=job.get("_scheduled_instant"))
         job["execution_id"] = execution["id"]
+        job["source"] = execution.get("source")
 
     execution_id = str(job["execution_id"])
     note_cron_execution(job)
@@ -3722,6 +3723,10 @@ def _launch_external_cron_worker(job: dict) -> bool:
             extra={"HERMES_HOME": str(profile_home)},
         ))
     worker_env = systemd_user_bus_env(worker_env)
+    # The worker is a fresh process adopting this execution: it needs the occurrence identity
+    # for the same reason a script does, and it cannot re-derive it (see
+    # cron/execution_identity.py). Applied after the sanitizer, like the PYTHONPATH pin below.
+    worker_env.update(cron_execution_env(job))
     # Unattended worker: the gateway sets HERMES_EXEC_ASK at startup (interactive launches set
     # the other two), and an inherited presence var makes every env-fallback consumer in the
     # child (`_is_interactive_cli`, sudo prompting, `check_cronjob_requirements`) believe a
@@ -4260,6 +4265,9 @@ def _process_due_job(job: dict, adapters, loop, verbose: bool) -> bool:
     claimed_job = dict(claimed) if isinstance(claimed, dict) else dict(job)
     claimed_job["execution_id"] = job["execution_id"]
     claimed_job["_scheduled_instant"] = job.get("_scheduled_instant")
+    # The CAS record has no source; the fire snapshot carries the execution's own, so the
+    # child-env identity contract (cron.execution_identity.cron_execution_env) is complete.
+    claimed_job["source"] = job.get("source")
     return run_one_job(claimed_job, adapters=adapters, loop=loop, verbose=verbose)
 
 
@@ -4321,7 +4329,9 @@ def _submit_with_guard(job: dict, pool: concurrent.futures.ThreadPoolExecutor, p
     try:
         execution = create_execution(
             job_id, source="builtin", scheduled_instant=job.get("_scheduled_instant"))
-        dispatched_job = dict(job, execution_id=execution["id"])
+        # ``source`` rides the dispatched snapshot beside execution_id so every child env
+        # (script, prerun gate, restart-safe worker) can name the execution's origin.
+        dispatched_job = dict(job, execution_id=execution["id"], source=execution.get("source"))
         note_cron_execution(dispatched_job)
         _ctx = contextvars.copy_context()
     except Exception as execution_err:

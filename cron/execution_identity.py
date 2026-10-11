@@ -52,3 +52,33 @@ def current_cron_execution() -> Optional[CronExecution]:
     from agent.delegation_context import is_delegated_child_context
 
     return None if is_delegated_child_context() else _CURRENT.get()
+
+
+# --- The occurrence identity a fire EXPORTS to its children ----------------
+#
+# The contextvar above serves in-process plugins. A child process (a ``no_agent`` script,
+# a pre-run gate script, a restart-safe worker) shares no interpreter with the scheduler
+# and cannot re-derive the identity: ``create_execution`` records the SCHEDULER's pid, so a
+# child cannot recognise its own ledger row, and picking a row by nearest window would put
+# resolution logic in the consumer. So the fire exports the identity as env vars, once,
+# from the job snapshot the scheduler dispatched — and the CONSUMER decides what an absent
+# value means (a manual/off-schedule fire legitimately has no occurrence).
+
+
+def cron_execution_env(job: Mapping[str, Any]) -> dict[str, str]:
+    """The occurrence identity of *job*, as the env a fire's child processes receive.
+
+    ``_scheduled_instant`` is the occurrence fired, VERBATIM as the ledger holds it
+    (``cron.occurrences.scheduled_instant`` stays its only normaliser) — never the wall
+    clock. An absent instant is the single readable "off-schedule / manual fire" signal,
+    so a key whose value is None or empty is OMITTED rather than exported empty: a
+    present-but-empty variable is indistinguishable from a real one and would be a trap.
+    Only ids, an instant and a source travel here — never a secret.
+    """
+    values = {
+        "HERMES_CRON_JOB_ID": job.get("id"),
+        "HERMES_CRON_EXECUTION_ID": job.get("execution_id"),
+        "HERMES_CRON_SCHEDULED_INSTANT": job.get("_scheduled_instant"),
+        "HERMES_CRON_SOURCE": job.get("source"),
+    }
+    return {name: str(value) for name, value in values.items() if value not in (None, "")}

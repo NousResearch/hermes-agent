@@ -27,6 +27,9 @@ command that must reach the runner while the agent is blocked (approval prompts)
 guards and be dispatched inline — never via `_process_message_background()`, which races session
 lifecycle.
 
+Startup/restart notices and home-channel delivery methods are in `run_startup_notices.py`.
+Process, completion and update notifications remain in `run_notifications.py`.
+
 ## Streaming delivery contract (stream-is-the-message adapters)
 
 Adapters with `draft_stream_is_message = True` (relay Slack native streaming) keep ONE cumulative

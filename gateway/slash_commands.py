@@ -109,8 +109,10 @@ def _execute(command: str, **ctx_kwargs):
 
 def _restart_notify_payload(event: MessageEvent) -> dict:
     """Requester routing info so the new gateway process can notify them once back online.
-    ``profile`` is persisted so the notice leaves through the requester's own profile bot after the
-    restart (a bare platform lookup would resolve the default profile's adapter)."""
+    Preserve both the runtime profile and the receiving transport: a routed runtime may have a
+    different bot (or none), and the notice belongs to the bot that received the command."""
+    from gateway.session_identity import transport_profile_of
+
     source = event.source
     data = {"platform": source.platform.value if source.platform else None,
             "chat_id": source.chat_id, "chat_type": source.chat_type}
@@ -118,7 +120,8 @@ def _restart_notify_payload(event: MessageEvent) -> dict:
         data["delivered_via_upstream_relay"] = True
         data.update({k: getattr(source, k) for k in ("user_id", "scope_id") if getattr(source, k)})
     optional = (("thread_id", source.thread_id), ("message_id", event.message_id),
-                ("profile", getattr(source, "profile", None)))
+                ("profile", getattr(source, "profile", None)),
+                ("transport_profile", transport_profile_of(source)))
     data.update({k: v for k, v in optional if v})
     return data
 

@@ -370,6 +370,7 @@ def test_launch_tui_bypass_without_model_refuses_before_the_tui_starts(monkeypat
     say "pass --model" before spawning the TUI, as classic chat does."""
     monkeypatch.setenv(flag, "1")
     monkeypatch.delenv("HERMES_MODEL", raising=False)
+    monkeypatch.setenv("HERMES_PYTHON", sys.executable)  # never resolve a python over the real PATH
     monkeypatch.setattr(main_tui_launch, "_make_tui_argv",
                         lambda tui_dir, tui_dev: (["node", "dist/entry.js"], Path(".")))
     spawned = []

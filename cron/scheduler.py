@@ -1974,7 +1974,10 @@ def _run_agent_with_watchdog(
     # Carry scheduler-scoped ContextVar state (e.g. env passthrough) into the worker thread.
     _cron_context = contextvars.copy_context()
     _cron_future = _cron_pool.submit(
-        _cron_context.run, agent.run_conversation, prompt, task_id=task_id)
+        # Headless turn: no user watches, so honour full provider parks
+        # instead of the 300s interactive sleep cap (explicit per-turn value
+        # wins over the platform-derived default in resolve_turn_interactive).
+        _cron_context.run, agent.run_conversation, prompt, task_id=task_id, interactive=False)
     if worker_state is not None:
         worker_state["future"] = _cron_future
     _inactivity_timeout = False

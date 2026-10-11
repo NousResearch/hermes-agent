@@ -26,6 +26,32 @@ _jitter_lock = threading.Lock()
 _ZAI_CODING_OVERLOAD_LONG_BACKOFF = (30.0, 60.0, 90.0, 120.0)
 _ZAI_CODING_OVERLOAD_SHORT_ATTEMPTS = 3
 
+# Console Go relay (opencode.ai zen/go, shared by every Go model) overloads:
+# the relay answers 503 / ``service_overloaded`` — and overload-signalled
+# 429s — when saturated. Retrying those on a 2s hot loop burns quota against
+# a window measured in minutes, so after ``_CONSOLE_GO_OVERLOAD_SHORT_ATTEMPTS``
+# normal retries the wait parks the turn patiently instead. The short-count +
+# jittered-ladder shape mirrors the Z.AI pattern above, but the ladder starts
+# at minutes and the ceiling *reduces* total attempts (each wait is huge)
+# instead of extending them.
+_CONSOLE_GO_OVERLOAD_LONG_BACKOFF = (300.0, 1200.0, 3600.0)
+_CONSOLE_GO_OVERLOAD_SHORT_ATTEMPTS = 1
+_CONSOLE_GO_BASE_URL_TOKEN = "zen/go"
+_CONSOLE_GO_OVERLOAD_TEXT_TOKENS = (
+    "service_overloaded",
+    "service overloaded",
+    "service is overloaded",
+    "temporarily overloaded",
+    "server overloaded",
+    "upstream overloaded",
+)
+# Park clamp: no structured-reset park ever sleeps longer than this, whatever
+# the server claims. Interactive turns cap further (see turn_recovery).
+CONSOLE_GO_PARK_MAX_S = 3600.0
+# Epoch-millisecond threshold, kept identical to
+# ``credential_pool._parse_absolute_timestamp`` so the two cannot desync.
+_ABSOLUTE_TIMESTAMP_MS_THRESHOLD = 1_000_000_000_000
+
 
 def parse_retry_after_seconds(value_or_headers: Any) -> Optional[float]:
     """Parse a ``Retry-After`` value (numeric / HTTP-date) or a headers mapping (both casings tried) into
@@ -193,3 +219,115 @@ def provider_retry_after_seconds(error: Any) -> Optional[float]:
             nested = body.get("error")
             value = parse_retry_after_seconds((nested if isinstance(nested, dict) else body).get("retry_after"))
     return value if value is not None and value > 0 else None
+
+
+def is_console_go_overload_error(*, base_url: str | None, model: str | None, error: Any) -> bool:
+    """True only for the narrow Console Go relay overload shape, so ordinary quota
+    429s still fail fast (same narrowness contract as ``is_zai_coding_overload_error``).
+
+    The relay serves every Go model under one base URL, so no model restriction:
+    a 503 on the relay *is* the overload signal; a 429 qualifies only with
+    overload text (``service_overloaded`` et al). ``model`` is accepted for
+    call-signature parity and ignored."""
+    _ = model
+    if _CONSOLE_GO_BASE_URL_TOKEN not in (base_url or "").lower():
+        return False
+    if getattr(error, "status_code", None) == 503:
+        return True
+    if getattr(error, "status_code", None) != 429:
+        return False
+    text = _error_text(error)
+    return any(token in text for token in _CONSOLE_GO_OVERLOAD_TEXT_TOKENS)
+
+
+def console_go_overload_backoff(
+    attempt: int, *, error: Any, default_wait: float,
+    short_attempts: int = _CONSOLE_GO_OVERLOAD_SHORT_ATTEMPTS,
+) -> tuple[float, str | None]:
+    """``(wait_seconds, reason_label)``: ``default_wait`` for the first
+    ``short_attempts`` attempts, then 300→1200→3600s with light jitter.
+    ``attempt`` is 1-based. ``error`` is accepted for call-signature parity
+    with ``adaptive_rate_limit_backoff`` and ignored."""
+    _ = error
+    if attempt <= short_attempts:
+        return default_wait, "console_go_overload_short"
+    idx = min(attempt - short_attempts - 1, len(_CONSOLE_GO_OVERLOAD_LONG_BACKOFF) - 1)
+    base_delay = _CONSOLE_GO_OVERLOAD_LONG_BACKOFF[idx]
+    return jittered_backoff(1, base_delay=base_delay, max_delay=base_delay, jitter_ratio=0.2), "console_go_overload_long"
+
+
+def console_go_overload_retry_ceiling(short_attempts: int = _CONSOLE_GO_OVERLOAD_SHORT_ATTEMPTS) -> int:
+    """Retry-loop ceiling for the full Console Go overload schedule: one past the last
+    long entry, because the loop gives up when ``retry_count >= ceiling`` BEFORE computing
+    the attempt's backoff. Apply with ``min()``, not ``max()`` — each wait is minutes
+    long, so this ceiling *reduces* total attempts so the turn reaches fallback/surface
+    instead of parking for hours (the inverse of the Z.AI ceiling, which extends)."""
+    return short_attempts + len(_CONSOLE_GO_OVERLOAD_LONG_BACKOFF) + 1
+
+
+def _error_payload_dicts(error: Any):
+    """Yield the structured 429 body dicts: the top-level body, then a nested
+    ``error`` object when present (the same unwrap ``extract_api_error_context``
+    uses)."""
+    body = getattr(error, "body", None)
+    if isinstance(body, dict):
+        yield body
+        nested = body.get("error")
+        if isinstance(nested, dict):
+            yield nested
+
+
+def _seconds_until_timestamp(value: Any, *, now: float) -> Optional[float]:
+    """Seconds from ``now`` until an absolute ``resets_at`` value: epoch seconds,
+    epoch milliseconds (same ``> 1e12`` rule as the credential pool), or an
+    ISO-8601 / HTTP-date string (naive datetimes read as UTC). None when
+    unparseable. May be <= 0 when already expired — the caller treats that as
+    absent so an expired reset never freezes the loop."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        epoch = float(value)
+        if epoch > _ABSOLUTE_TIMESTAMP_MS_THRESHOLD:
+            epoch /= 1000.0
+        return epoch - now
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            when = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            try:
+                when = parsedate_to_datetime(text)
+            except (TypeError, ValueError):
+                return None
+        if when is None:  # older stdlib returns None instead of raising
+            return None
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        return when.timestamp() - now
+    return None
+
+
+def park_seconds_from_error(
+    error: Any, *, now: Optional[float] = None, max_park_s: float = CONSOLE_GO_PARK_MAX_S,
+) -> Optional[float]:
+    """Seconds to park until a structured 429 reset: ``resets_in_seconds``
+    (duration) or ``resets_at`` (absolute timestamp, s/ms/ISO) from the error
+    body — the shortest credible positive candidate, clamped to ``max_park_s``.
+
+    None when absent, unparseable, or already expired: the caller must fall
+    through to the existing Retry-After path, never freeze."""
+    now = time.time() if now is None else now
+    candidates: list[float] = []
+    for payload in _error_payload_dicts(error):
+        raw_duration = payload.get("resets_in_seconds")
+        if isinstance(raw_duration, (int, float)) and not isinstance(raw_duration, bool):
+            candidates.append(float(raw_duration))
+        until = _seconds_until_timestamp(payload.get("resets_at"), now=now)
+        if until is not None:
+            candidates.append(until)
+    positive = [c for c in candidates if c > 0]
+    if not positive:
+        return None
+    return min(min(positive), max_park_s)

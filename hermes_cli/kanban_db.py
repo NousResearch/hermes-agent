@@ -27,7 +27,7 @@ import time
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Mapping, Optional
 
 from hermes_cli.kanban_workflow import DEFAULT_STATUSES as VALID_STATUSES
 from toolsets import get_toolset_names
@@ -322,6 +322,11 @@ def _resolve_crash_grace_seconds() -> int:
 def _resolve_rate_limit_cooldown_seconds() -> int:
     """``HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS`` (0 = next tick, for tests) else default."""
     return _env_int("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS)
+
+
+def _resolve_gave_up_cooldown_seconds() -> int:
+    """``HERMES_KANBAN_GAVE_UP_COOLDOWN_SECONDS`` (0 = disabled, for tests) else default."""
+    return _env_int("HERMES_KANBAN_GAVE_UP_COOLDOWN_SECONDS", DEFAULT_GAVE_UP_COOLDOWN_SECONDS)
 
 
 # build_worker_context() caps, sized for a ~100k-char prompt with headroom.
@@ -665,6 +670,11 @@ class Task:
     block_kind: Optional[str] = None
     block_recurrences: int = 0               # unblock-loop counter, see BLOCK_RECURRENCE_LIMIT
     completion_contract: Optional[str] = None
+    # Operator dispatch hold (``kanban hold`` / ``kanban release``); column
+    # semantics: see SCHEMA_SQL. Never set by the dispatcher itself.
+    do_not_dispatch: bool = False
+    do_not_dispatch_reason: Optional[str] = None
+    do_not_dispatch_until: Optional[int] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> Task:
@@ -682,6 +692,9 @@ class Task:
             skills=skills_value,
             goal_mode=bool(g("goal_mode")),
             block_recurrences=int(g("block_recurrences") or 0),
+            do_not_dispatch=bool(int(g("do_not_dispatch") or 0)),
+            do_not_dispatch_reason=g("do_not_dispatch_reason") or None,
+            do_not_dispatch_until=_opt_int(_row_get(row, "do_not_dispatch_until")),
         )
 
 
@@ -899,7 +912,19 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    -- Operator dispatch hold (``kanban hold`` / ``kanban release``). When 1
+    -- (and ``do_not_dispatch_until`` is NULL or in the future) the dispatcher
+    -- must not spawn this task — checked FIRST in ``check_respawn_guard``,
+    -- ahead of every automatic signal. Survives status transitions (it is
+    -- dispatch-level, not status-level) and is cleared only by an explicit
+    -- release or by TTL expiry. Default-off; never set by the dispatcher.
+    do_not_dispatch      INTEGER NOT NULL DEFAULT 0,
+    -- Human-readable reason recorded at hold time; NULL when unheld.
+    do_not_dispatch_reason TEXT,
+    -- Epoch seconds when the hold lapses (NULL = indefinite; an indefinite
+    -- hold records its owner in the ``dispatch_hold`` event payload).
+    do_not_dispatch_until  INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -2660,6 +2685,7 @@ def complete_task(
     summary: Optional[str] = None, metadata: Optional[dict] = None,
     created_cards: Optional[Iterable[str]] = None, expected_run_id: Optional[int] = None,
     fire_lifecycle_hook: bool = True, force: bool = False,
+    board: Optional[str] = None,
 ) -> bool:
     """``running|ready|blocked|review -> done``; records ``result``.
 
@@ -2677,6 +2703,10 @@ def complete_task(
     or ``summary``, or a stripped result already stored on the card. Empty or
     whitespace-only evidence raises :class:`EmptyCompletionError` after an
     auditable event. Approving a card out of ``review`` stays exempt.
+     ``board`` scopes the Phase2 P3 success-clear to this board's circuit slot
+    (None = ambient board via get_current_board() plus the legacy boardless
+    slot); it changes no SQL, only which in-memory ``(board, key)`` park —
+    if any — a success pops.
     """
     now = int(time.time())
     # Cheap pre-check; re-checked inside the txn to close the parent-reopen race.
@@ -2753,7 +2783,7 @@ def complete_task(
         )
     _flag_phantom_prose_refs(conn, task_id, run_id, summary, result, verified_cards)
     # Success wipes the breaker counter (history stays on the event log).
-    _clear_failure_counter(conn, task_id)
+    _clear_failure_counter(conn, task_id, board)
     recompute_ready(conn)  # separate txn so children see ``done``
     _cleanup_workspace(conn, task_id)
     _done_task = get_task(conn, task_id)
@@ -3620,6 +3650,178 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         return True
 
 
+# --- Operator dispatch hold (``kanban hold`` / ``kanban release``) ---
+
+# Statuses a hold may be placed from: every live lane. ``done``/``archived``
+# are terminal (nothing will ever dispatch them) so holding them is refused.
+_HOLDABLE_STATUSES = ("todo", "ready", "running", "review", "blocked", "scheduled", "triage")
+
+
+def dispatch_hold_active(task: Any, now: Optional[int] = None) -> bool:
+    """True when an operator hold suppresses dispatch of ``task`` right now.
+
+    Accepts a :class:`Task`, a ``sqlite3.Row``, or any mapping with the
+    ``do_not_dispatch`` / ``do_not_dispatch_until`` fields (missing fields
+    read as unheld, so pre-migration rows fail open). An expired TTL reads
+    as cleared — no write needed — but the stale flag row stays until an
+    explicit ``release`` so the lapse itself stays auditable.
+    """
+    if now is None:
+        now = int(time.time())
+    if isinstance(task, Mapping):
+        flag, until = task.get("do_not_dispatch", 0), task.get("do_not_dispatch_until")
+    else:
+        # sqlite3.Row exposes columns by index (not attribute); the
+        # dataclass exposes them by attribute. Try index first so a Row
+        # with a set flag is never misread as unheld.
+        try:
+            keys = task.keys()  # sqlite3.Row; AttributeError on the dataclass
+            flag = task["do_not_dispatch"] if "do_not_dispatch" in keys else 0
+            until = task["do_not_dispatch_until"] if "do_not_dispatch_until" in keys else None
+        except Exception:
+            flag = getattr(task, "do_not_dispatch", 0)
+            until = getattr(task, "do_not_dispatch_until", None)
+    try:
+        active = bool(int(flag or 0))
+    except (TypeError, ValueError):
+        return False
+    if not active:
+        return False
+    if until is None:
+        return True
+    try:
+        return int(now) < int(until)
+    except (TypeError, ValueError):
+        return True
+
+
+def set_do_not_dispatch(
+    conn: sqlite3.Connection, task_id: str, *, reason: Optional[str] = None,
+    ttl_seconds: Optional[int] = None, by: Optional[str] = None,
+) -> bool:
+    """Place an operator dispatch hold; True on transition, False when the
+    task is unknown, terminal, or already held.
+
+    Narrow CAS (one row + live-lane predicate + ``rowcount`` check, per the
+    narrow-UPDATE rule) with a ``dispatch_hold`` audit event carrying
+    reason/TTL/owner. ``ttl_seconds`` lapses the hold automatically (the
+    guard treats expiry as cleared); ``None`` = indefinite, in which case
+    ``by`` should name the owner. Never called by the dispatcher itself —
+    a hold is strictly operator intent, so it also survives ``unblock`` and
+    every other status transition until released or lapsed.
+    """
+    now = int(time.time())
+    until: Optional[int] = None
+    if ttl_seconds is not None:
+        try:
+            ttl = int(ttl_seconds)
+        except (TypeError, ValueError):
+            return False
+        if ttl <= 0:
+            return False
+        until = now + ttl
+    reason = (reason or "").strip() or None
+    by = (by or "").strip() or None
+    with write_txn(conn):
+        cur = conn.execute(
+            "UPDATE tasks SET do_not_dispatch = 1, "
+            "do_not_dispatch_reason = ?, do_not_dispatch_until = ? "
+            "WHERE id = ? AND do_not_dispatch = 0 "
+            f"AND status IN ({', '.join('?' * len(_HOLDABLE_STATUSES))})",
+            (reason, until, task_id, *_HOLDABLE_STATUSES),
+        )
+        if cur.rowcount != 1:
+            return False
+        _append_event(
+            conn, task_id, "dispatch_hold",
+            {"reason": reason, "until": until,
+             "ttl_seconds": ttl_seconds if until is not None else None,
+             "by": by},
+        )
+        return True
+
+
+def clear_do_not_dispatch(
+    conn: sqlite3.Connection, task_id: str, *, by: Optional[str] = None,
+) -> bool:
+    """Release an operator dispatch hold; True on transition, False when the
+    task is unknown or not held. Narrow CAS + ``dispatch_release`` audit
+    event (carries whether the hold had already lapsed, so a release-after-
+    expiry still reads honestly in ``tail``)."""
+    by = (by or "").strip() or None
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT do_not_dispatch_until FROM tasks WHERE id = ? AND do_not_dispatch = 1",
+            (task_id,),
+        ).fetchone()
+        if row is None:
+            return False
+        now = int(time.time())
+        cur = conn.execute(
+            "UPDATE tasks SET do_not_dispatch = 0, "
+            "do_not_dispatch_reason = NULL, do_not_dispatch_until = NULL "
+            "WHERE id = ? AND do_not_dispatch = 1",
+            (task_id,),
+        )
+        if cur.rowcount != 1:
+            return False
+        until = _row_get(row, "do_not_dispatch_until")
+        _append_event(
+            conn, task_id, "dispatch_release",
+            {"by": by,
+             "had_lapsed": bool(until is not None and now >= int(until))},
+        )
+        return True
+
+
+def unblock_loop_signal(conn: sqlite3.Connection, task_id: str) -> Optional[dict]:
+    """Loop-risk readout for an unblock confirmation gate, else None.
+
+    Fires ONLY on proven loop history — never on a first block — so routine
+    unblocks stay silent:
+
+    * the task must be unblockable (``blocked``/``scheduled``); anything
+      else has no unblock transition to confirm (same-kind re-blocks that
+      reach ``BLOCK_RECURRENCE_LIMIT`` already route to ``triage``);
+    * ``block_recurrences >= 2`` (two same-kind blocks PROVE a return to
+      the pool between them — ``block_task`` fires only from
+      ``running``/``ready``), or ``recurrences == 1`` with an ``unblocked``
+      event on record (blocked, unblocked, blocked again).
+
+    A first block (any kind, including untyped ``None`` — which also stores
+    ``recurrences=1``) and a fresh breaker block (``recurrences=0``) both
+    read as None. The CLI ``unblock`` gate keys its ``--force``
+    confirmation off this; automation calling :func:`unblock_task`
+    directly is unaffected.
+    """
+    row = conn.execute(
+        "SELECT status, block_kind, block_recurrences FROM tasks WHERE id = ?", (task_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    if _row_get(row, "status") not in ("blocked", "scheduled"):
+        return None
+    try:
+        recurrences = int(_row_get(row, "block_recurrences") or 0)
+    except (TypeError, ValueError):
+        return None
+    if recurrences < 1:
+        return None
+    if recurrences == 1:
+        cycled = conn.execute(
+            "SELECT 1 FROM task_events WHERE task_id = ? AND kind = 'unblocked' LIMIT 1",
+            (task_id,),
+        ).fetchone()
+        if cycled is None:
+            return None
+    return {
+        "block_kind": _row_get(row, "block_kind"),
+        "block_recurrences": recurrences,
+        "trips_triage_next": recurrences + 1 >= BLOCK_RECURRENCE_LIMIT,
+        "at_triage_threshold": recurrences >= BLOCK_RECURRENCE_LIMIT,
+    }
+
+
 def reopen_review_task(conn: sqlite3.Connection, task_id: str) -> bool:
     """``review`` -> ``ready``/``todo`` so the implementer re-runs on the new
     comments; restores the implementer from the ``review_requested`` event.
@@ -4437,6 +4639,7 @@ from hermes_cli.kanban_db_workspace import (
 )
 from hermes_cli.kanban_db_dispatch import (
     DEFAULT_FAILURE_LIMIT,
+    DEFAULT_GAVE_UP_COOLDOWN_SECONDS,
     DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS,
     DispatchResult,
     _clear_failure_counter,

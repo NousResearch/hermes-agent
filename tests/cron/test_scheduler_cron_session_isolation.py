@@ -37,7 +37,7 @@ class _FakeCronAgent:
     def __init__(self, *args, **kwargs):
         self.kwargs = kwargs
 
-    def run_conversation(self, prompt, *, task_id=None):
+    def run_conversation(self, prompt, *, task_id=None, interactive=None):
         assert isinstance(task_id, str)
         assert task_id.startswith("cron:ctx-isolation:")
         result = approval_module.check_execute_code_guard(

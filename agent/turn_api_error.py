@@ -56,10 +56,18 @@ def handle_api_error(
     compression_attempts: Any, max_compression_attempts: Any, api_call_count: Any,
     api_request_id: Any, api_start_time: Any, effective_task_id: Any, turn_id: Any,
     current_turn_user_idx: Any = None,
+    interactive: bool = True,
 ) -> ApiErrorVerdict:
     """Recover from ``api_error`` in the original order. Every fallback activation must leave
     the retry loop with ``restart_with_rebuilt_messages`` armed (``"break"``) so the pre-API
-    preflight re-runs against the fallback's context window (#84733)."""
+    preflight re-runs against the fallback's context window (#84733).
+
+    ``interactive`` mirrors ``compute_error_backoff``: True caps one sleep at
+    300s for a user-facing turn; False honours full parks. Default True, so
+    current callers are unchanged. Headless turns arrive False via
+    ``_LoopState.interactive`` (resolved from the agent platform; cron/batch
+    entries also pass it explicitly).
+    """
     _provider_overflow_recovery_pending = False
 
     def _verdict(action: str, result: Optional[dict[str, Any]] = None) -> ApiErrorVerdict:
@@ -179,6 +187,7 @@ def handle_api_error(
     is_rate_limited = _ce.is_rate_limited
     _wrapped_output_cap_budget = _ce.wrapped_output_cap_budget
     _is_zai_coding_overload = _ce.is_zai_coding_overload
+    _is_console_go_overload = _ce.is_console_go_overload
     if _ce.provider_overflow_recovery_pending:
         _provider_overflow_recovery_pending = True
     if _ce.action != "fallthrough":
@@ -209,11 +218,13 @@ def handle_api_error(
         error_msg=error_msg, error_context=error_context,
         is_context_length_error=is_context_length_error,
         is_rate_limited=is_rate_limited, _is_zai_coding_overload=_is_zai_coding_overload,
+        _is_console_go_overload=_is_console_go_overload,
         _provider=_provider, _base=_base, _model=_model, messages=messages,
         api_messages=api_messages, api_kwargs=api_kwargs, active_system_prompt=active_system_prompt,
         conversation_history=conversation_history, approx_tokens=approx_tokens,
         retry_count=retry_count, max_retries=max_retries, compression_attempts=compression_attempts,
         api_call_count=api_call_count, current_turn_user_idx=current_turn_user_idx,
+        interactive=interactive,
     )
     active_system_prompt = _ue.active_system_prompt
     retry_count = _ue.retry_count
@@ -253,10 +264,12 @@ class UnrecoveredErrorVerdict:
 def settle_unrecovered_error(
     agent: Any, *, api_error: Any, classified: Any, _retry: Any, status_code: Any, error_msg: Any,
     is_context_length_error: Any, is_rate_limited: Any, _is_zai_coding_overload: Any,
+    _is_console_go_overload: Any = False,
     _provider: Any, _base: Any, _model: Any, messages: Any, api_messages: Any, api_kwargs: Any,
     active_system_prompt: Any, conversation_history: Any, approx_tokens: Any, retry_count: Any,
     max_retries: Any, compression_attempts: Any, api_call_count: Any, error_context: Any = None,
     current_turn_user_idx: Any = None,
+    interactive: bool = True,
 ) -> UnrecoveredErrorVerdict:
     """Decide the fate of an API error that every recovery chain declined: local validation /
     non-retryable client errors (Copilot stale-credential self-heal first, then fallback, then a
@@ -406,7 +419,8 @@ def settle_unrecovered_error(
     wait_time = compute_error_backoff(
         agent, api_error, retry_count=retry_count, max_retries=max_retries,
         is_rate_limited=is_rate_limited, is_zai_coding_overload=_is_zai_coding_overload,
-        base_url=_base, model=_model,
+        is_console_go_overload=_is_console_go_overload,
+        base_url=_base, model=_model, interactive=interactive,
     )
     # Same preserve-redirect rule as the invalid-response wait: a steering correction
     # must survive backoff, not die as "Operation interrupted".

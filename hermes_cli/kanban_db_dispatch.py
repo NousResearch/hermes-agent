@@ -82,6 +82,22 @@ DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS = 300  # 5 minutes
 # Within this window a GitHub PR URL in a comment blocks re-spawn.
 _RESPAWN_GUARD_PR_WINDOW = 86400  # 24 hours
 
+# Cooldown base after a circuit-breaker ``gave_up`` before the task may be
+# re-spawned. Without it an auto-recovered crasher respawns on the very next
+# tick and burns a worker slot per tick until ``consecutive_failures`` trips
+# the breaker for good. The effective cooldown backs off with the task's
+# ``gave_up`` count — ``base * 2**(n-1)`` capped at
+# ``GAVE_UP_COOLDOWN_MAX_SECONDS`` — so a repeat crasher is spaced out but
+# NEVER parked: the cooldown always elapses into permission (sticky
+# ``gave_up`` is a proven self-healing deadlock). Overridable via
+# ``HERMES_KANBAN_GAVE_UP_COOLDOWN_SECONDS`` (0 = disabled, respawn at will).
+DEFAULT_GAVE_UP_COOLDOWN_SECONDS = 300  # 5 minutes
+GAVE_UP_COOLDOWN_MAX_SECONDS = 3600  # 1 hour
+_GAVE_UP_COOLDOWN_BACKOFF_BASE = 2
+# Exponent cap: 2**7 * 300s already exceeds the max, so higher counts
+# collapse to the cap without unbounded arithmetic.
+_GAVE_UP_COOLDOWN_MAX_EXPONENT = 7
+
 _RESPAWN_GUARD_PR_URL_RE = re.compile(
     r"https?://github\.com/[^/\s]+/[^/\s]+/pull/\d+",
     re.IGNORECASE,
@@ -129,6 +145,16 @@ class DispatchResult:
     """``(task_id, assignee, current_running_count)`` deferred because the
     assignee is at ``kanban.max_in_progress_per_profile``. Picked up on a later
     tick; separate bucket so dashboards show "profile busy" vs "stuck"."""
+    # --- Phase2 P3 (scoped wave-cap + scoped circuit): additive buckets only.
+    skipped_upstream_capped: list[tuple[str, str, int]] = field(default_factory=list)
+    """``(task_id, upstream_key, current_inflight_count)`` deferred because the
+    task's upstream is at ``kanban.wave_cap_per_upstream`` (in-flight on that
+    key = running-with-same-key + spawned-this-tick-with-same-key). Picked up
+    on a later tick; never a status write."""
+    scoped_paused: list[tuple[str, str]] = field(default_factory=list)
+    """``(task_id, upstream_key)`` skipped because the task's upstream key is
+    parked (P2 park signal or the P3 fast-crash circuit). Scoped-only: every
+    other key flows normally the same tick; never a status write."""
     crashed: list[str] = field(default_factory=list)
     """Task ids reclaimed because their worker PID disappeared."""
     auto_blocked: list[str] = field(default_factory=list)
@@ -140,11 +166,18 @@ class DispatchResult:
     respawn_guarded: list[tuple[str, str]] = field(default_factory=list)
     """``(task_id, reason)`` skipped by the respawn guard: ``"blocker_auth"``
     (quota/auth error — also auto-blocked), ``"recent_success"`` (completed run
-    within guard window), ``"active_pr"`` (GitHub PR URL in a recent comment)."""
+    within guard window), ``"active_pr"`` (GitHub PR URL in a recent comment),
+    ``"rate_limit_cooldown"`` (quota-wall requeue inside the cooldown),
+    ``"gave_up_cooldown"`` (recent ``gave_up`` inside the crash-loop backoff),
+    ``"do_not_dispatch"`` (operator hold — see ``kanban hold``)."""
     rate_limited: list[str] = field(default_factory=list)
     """Task ids whose workers bailed on a provider rate-limit / quota wall
     (EX_TEMPFAIL sentinel exit) and were released to ``ready`` WITHOUT counting
     a failure — a long quota window must never trip the circuit breaker."""
+    ledger_warnings: list[str] = field(default_factory=list)
+    """Warn-only :func:`ledger_integrity_sweep` findings this tick
+    (``done_pointer`` / ``orphan_run`` / ``leaked_open_run``). Read-only
+    tripwires: the sweep performs no writes, so these never mutate the board."""
     skipped_locked: bool = False
     """True when another process held the board's dispatch lock: this tick did
     no DB writes; the lock holder is making progress on the same board."""
@@ -159,7 +192,9 @@ def describe_suppression(results: Iterable[Optional[DispatchResult]]) -> str:
 
     ``active_pr=1, recent_success=2, rate_limited=1, skipped_locked=1,
     memory_pressure=critical`` — the respawn-guard reasons counted per task
-    plus the tick-level holds. Feeds the "dispatcher stuck" warnings of the
+    plus the tick-level holds. Phase2 P3 adds ``upstream_capped`` /
+    ``scoped_paused`` counts so a scoped pause reads as scoped, never "stuck".
+    Feeds the "dispatcher stuck" warnings of the
     CLI daemon and the embedded gateway dispatcher, which otherwise report a
     bare zero-spawn count while ``hermes kanban tail`` is the only place the
     guard reason is written (#111910).
@@ -177,10 +212,513 @@ def describe_suppression(results: Iterable[Optional[DispatchResult]]) -> str:
             counts["skipped_locked"] = counts.get("skipped_locked", 0) + 1
         if res.memory_pressure:
             pressure = res.memory_pressure
+        # Phase2 P3: scoped wave-cap / scoped-pause surfacing (counts only —
+        # upstream keys are endpoint URLs and stay out of log lines).
+        if getattr(res, "skipped_upstream_capped", None):
+            counts["upstream_capped"] = (
+                counts.get("upstream_capped", 0) + len(res.skipped_upstream_capped)
+            )
+        if getattr(res, "scoped_paused", None):
+            counts["scoped_paused"] = (
+                counts.get("scoped_paused", 0) + len(res.scoped_paused)
+            )
     parts = [f"{k}={v}" for k, v in sorted(counts.items())]
     if pressure:
         parts.append(f"memory_pressure={pressure}")
     return ", ".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# Phase2 P3 — scoped wave-cap + scoped circuit breaker (per-upstream).
+#
+# Goal: stop N-wide parallel retries from amplifying an upstream outage
+# without freezing the dispatcher. All cap/pause logic is scoped to the sick
+# upstream key only; every other key flows normally the same tick.
+#
+# Confined block: P4 (t_3f196ad5) owns check_respawn_guard / _run_reclaim_phase
+# / ledger_sweep / its own DispatchResult fields in this file — do not touch
+# those regions from this lane.
+# ---------------------------------------------------------------------------
+
+#: Upstream bucket for tasks whose endpoint cannot be resolved. A blind
+#: fan-out is still a fan-out, so it is capped like any other key.
+UNKNOWN_UPSTREAM_KEY = "unknown"
+
+#: ``kanban.wave_cap_per_upstream`` config default; valid range 1..4.
+_WAVE_CAP_DEFAULT = 3
+_WAVE_CAP_MAX = 4
+
+#: Fast-crash circuit: park an upstream after this many failure signals.
+_UPSTREAM_CIRCUIT_THRESHOLD = 3
+#: Max park window per park episode (seconds). Restart clears all parks.
+_UPSTREAM_CIRCUIT_PARK_SECONDS = 900
+
+#: Memory-only circuit state, keyed ``(board, upstream_key)`` ->
+#: ``{"signals", "first_at", "parked_until", "probe_inflight"}`` on the
+#: monotonic clock. No DB migration, no status writes; restart = unparked.
+_UPSTREAM_CIRCUIT: dict[tuple[str, str], dict[str, Any]] = {}
+
+#: P2 composition point: extra parked-upstream providers. Each is a callable
+#: ``(board) -> iterable[str]`` (P2's park-until signal). Called best-effort
+#: per tick; a raising/unparseable provider is skipped (fallthrough, never a
+#: freeze). Either source alone suffices for a scoped pause.
+_EXTRA_UPSTREAM_PARK_PROVIDERS: list[Any] = []
+
+
+def normalize_upstream_key(base_url: Any) -> str:
+    """Coarse upstream bucket: strip, lowercase, strip trailing ``/``.
+
+    ``zen``/``go``/``v1`` suffixes intentionally share one bucket. Empty or
+    missing input maps to :data:`UNKNOWN_UPSTREAM_KEY` (still capped).
+    """
+    key = (base_url or "")
+    if not isinstance(key, str):
+        key = str(key)
+    key = key.strip().lower().rstrip("/")
+    return key or UNKNOWN_UPSTREAM_KEY
+
+
+def _normalize_wave_cap_setting(raw: Any, default: int = _WAVE_CAP_DEFAULT) -> int:
+    """Config-layer ``kanban.wave_cap_per_upstream``: None -> default (3),
+    0 -> 0 (disabled kill-switch), 1..4 -> as-is, True -> default,
+    False -> 0 (off), anything else -> default."""
+    if raw is None:
+        return default
+    if isinstance(raw, bool):
+        # YAML bools are not caps: True is meaningless (take the default),
+        # False reads as off (take the 0 kill-switch). Never silently
+        # enable a cap the operator did not ask for — and never let int()
+        # turn True into cap 1 (near-total throttle). The tick-path inline
+        # check independently excludes bool, so this layer cannot smuggle
+        # one through to dispatch.
+        outcome = default if raw else 0
+        _kb._log.warning(
+            "kanban dispatcher: invalid kanban.wave_cap_per_upstream=%r; using %d%s",
+            raw, outcome, " (default)" if raw else " (off)",
+        )
+        return outcome
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        _kb._log.warning(
+            "kanban dispatcher: invalid kanban.wave_cap_per_upstream=%r; using default %d",
+            raw, default,
+        )
+        return default
+    if value == 0:
+        return 0
+    if 1 <= value <= _WAVE_CAP_MAX:
+        return value
+    _kb._log.warning(
+        "kanban dispatcher: kanban.wave_cap_per_upstream=%r outside 0..%d; using default %d",
+        raw, _WAVE_CAP_MAX, default,
+    )
+    return default
+
+
+def resolve_task_upstream_key(
+    assignee: Optional[str],
+    model_override: Optional[str] = None,
+    provider_override: Optional[str] = None,
+) -> str:
+    """Best-effort upstream key for one task.
+
+    Resolution is ``provider_override``/``model_override`` plus the runtime
+    provider config, via ``hermes_cli.runtime_provider`` helpers. Anything
+    unresolvable (no creds, unknown provider, any exception) maps to
+    :data:`UNKNOWN_UPSTREAM_KEY` — never raises out of the dispatch tick.
+    ``assignee`` is part of the contract (per-tick cache key) even though the
+    current resolution does not vary by profile.
+    """
+    try:
+        from hermes_cli import runtime_provider as _rp
+        runtime = _rp.resolve_runtime_provider(
+            requested=(provider_override or None),
+            target_model=(model_override or None),
+        )
+        base_url = runtime.get("base_url") if isinstance(runtime, dict) else None
+    except Exception:
+        return UNKNOWN_UPSTREAM_KEY
+    return normalize_upstream_key(base_url)
+
+
+def _cached_upstream_key(
+    cache: dict[tuple[Any, Any, Any], str],
+    assignee: Any,
+    model_override: Any = None,
+    provider_override: Any = None,
+) -> str:
+    """In-tick key cache: resolve once per distinct (assignee, model, provider)."""
+    cache_key = (assignee, model_override, provider_override)
+    key = cache.get(cache_key)
+    if key is None:
+        key = resolve_task_upstream_key(assignee, model_override, provider_override)
+        cache[cache_key] = key
+    return key
+
+
+def _upstream_row_key(cache: dict, row: Any) -> str:
+    """Cached key for a task row (tolerant of narrow SELECTs without overrides)."""
+    return _cached_upstream_key(
+        cache,
+        _kb._row_get(row, "assignee"),
+        _kb._row_get(row, "model_override"),
+        _kb._row_get(row, "provider_override"),
+    )
+
+
+def _circuit_board(board: Optional[str]) -> str:
+    return board or ""
+
+
+def _expire_upstream_parks(
+    board: Optional[str], *, now: Optional[float] = None,
+) -> list[str]:
+    """Drop elapsed parks for *board*; returns the unparked keys.
+
+    Stale parks self-clear every tick (checked here and at the top of
+    :func:`get_parked_upstream_keys`). Counting entries whose first signal is
+    older than one park window are reset so only fast-crash clusters trip.
+    One loud ``logger.error`` per unpark transition.
+    """
+    if now is None:
+        now = time.monotonic()
+    bkey = _circuit_board(board)
+    unparked: list[str] = []
+    for (b, key), entry in list(_UPSTREAM_CIRCUIT.items()):
+        if b != bkey:
+            continue
+        parked_until = entry.get("parked_until")
+        if parked_until is not None and now >= parked_until:
+            _UPSTREAM_CIRCUIT.pop((b, key), None)
+            unparked.append(key)
+            _kb._log.error(
+                "kanban dispatcher: upstream %r on board %r park expired "
+                "(%d signals); resuming normal dispatch for that upstream",
+                key, board, entry.get("signals", 0),
+            )
+        elif parked_until is None and now - entry.get("first_at", now) > _UPSTREAM_CIRCUIT_PARK_SECONDS:
+            _UPSTREAM_CIRCUIT.pop((b, key), None)
+    return unparked
+
+
+def _probe_due(board: Optional[str], key: str, *, now: Optional[float] = None) -> bool:
+    """Single probe per park window: parked, window live, none inflight."""
+    if now is None:
+        now = time.monotonic()
+    entry = _UPSTREAM_CIRCUIT.get((_circuit_board(board), key))
+    if not entry:
+        return False
+    parked_until = entry.get("parked_until")
+    return (
+        parked_until is not None
+        and now < parked_until
+        and not entry.get("probe_inflight")
+    )
+
+
+def _mark_probe_spawned(board: Optional[str], key: str) -> None:
+    entry = _UPSTREAM_CIRCUIT.get((_circuit_board(board), key))
+    if entry and entry.get("parked_until") is not None:
+        entry["probe_inflight"] = True
+
+
+def note_upstream_signal(
+    board: Optional[str], key: str, *, cause: Optional[dict] = None,
+    now: Optional[float] = None,
+) -> bool:
+    """Record one failure signal for ``(board, key)``.
+
+    Returns True when this signal newly parked the key (>= threshold,
+    transitioning). A signal on an already-parked key extends the window
+    (still <= 15 min per extension); the probe stays consumed — exactly one
+    probe spawn per park episode. One loud ``logger.error`` per park.
+    """
+    if not key:
+        key = UNKNOWN_UPSTREAM_KEY
+    if now is None:
+        now = time.monotonic()
+    slot = (_circuit_board(board), key)
+    entry = _UPSTREAM_CIRCUIT.get(slot)
+    if entry is not None and entry.get("parked_until") is not None:
+        if now < entry["parked_until"]:
+            entry["signals"] = int(entry.get("signals", 0)) + 1
+            entry["parked_until"] = now + _UPSTREAM_CIRCUIT_PARK_SECONDS
+            return False
+        # Elapsed park left behind by a direct dict write (expiry runs per
+        # tick, but be safe): start a fresh episode.
+        _UPSTREAM_CIRCUIT.pop(slot, None)
+        entry = None
+    if entry is not None and now - entry.get("first_at", now) > _UPSTREAM_CIRCUIT_PARK_SECONDS:
+        entry = None  # stale counting episode decayed; fresh count below
+    signals = (int(entry.get("signals", 0)) if entry else 0) + 1
+    first_at = entry.get("first_at", now) if entry else now
+    if signals >= _UPSTREAM_CIRCUIT_THRESHOLD:
+        _UPSTREAM_CIRCUIT[slot] = {
+            "signals": signals,
+            "first_at": first_at,
+            "parked_until": now + _UPSTREAM_CIRCUIT_PARK_SECONDS,
+            "probe_inflight": False,
+            "cause": cause or {"source": "none", "reason": "unclassified"},
+        }
+        _kb._log.error(
+            "kanban dispatcher: upstream %r on board %r parked for %ds after "
+            "%d failure signals (scoped pause; other upstreams unaffected)",
+            key, board, _UPSTREAM_CIRCUIT_PARK_SECONDS, signals,
+        )
+        return True
+    _UPSTREAM_CIRCUIT[slot] = {
+        "signals": signals,
+        "first_at": first_at,
+        "parked_until": None,
+        "probe_inflight": False,
+        "cause": cause or {"source": "none", "reason": "unclassified"},
+    }
+    return False
+
+
+def get_parked_upstream_keys(board: Optional[str]) -> frozenset:
+    """Parked set = P2 park-until providers + P3 circuit parks (union).
+
+    Either source alone suffices; both missing = no pause. Each extra
+    provider is best-effort: raising or unparseable output falls through to
+    the circuit parks alone (never a freeze). Expiry is checked first so
+    stale parks self-clear even for direct callers.
+    """
+    _expire_upstream_parks(board)
+    bkey = _circuit_board(board)
+    now = time.monotonic()
+    parked = {
+        key for (b, key), entry in _UPSTREAM_CIRCUIT.items()
+        if b == bkey and entry.get("parked_until") is not None and now < entry["parked_until"]
+    }
+    for provider in list(_EXTRA_UPSTREAM_PARK_PROVIDERS):
+        try:
+            provided = provider(board)
+        except Exception:
+            continue
+        try:
+            items = list(provided) if provided else []
+        except Exception:
+            continue
+        for item in items:
+            try:
+                if isinstance(item, str):
+                    norm = normalize_upstream_key(item)
+                elif isinstance(item, dict):
+                    norm = normalize_upstream_key(
+                        item.get("upstream_key") or item.get("key") or item.get("base_url")
+                    )
+                else:
+                    continue
+            except Exception:
+                continue
+            parked.add(norm)
+    return frozenset(parked)
+
+
+def _read_failure_cause(
+    conn: sqlite3.Connection, task_id: str, error_text: Any,
+) -> dict:
+    """Per-cause attribution for one failure (P1 contract).
+
+    Reads the additive ``task_runs.metadata`` cause key (``provider_error`` /
+    ``infra_error``) when present; otherwise classifies the raw error text via
+    :func:`_classify_provider_error_text`. Never raises, never filters — the
+    cause only annotates the circuit signal, it never gates dispatch.
+    """
+    try:
+        row = conn.execute(
+            "SELECT metadata FROM task_runs WHERE task_id = ? AND ended_at IS NOT NULL "
+            "ORDER BY id DESC LIMIT 1",
+            (task_id,),
+        ).fetchone()
+        if row is not None:
+            metadata = _kb._json_dict(row["metadata"])
+            if isinstance(metadata, dict):
+                for kind in ("provider_error", "infra_error"):
+                    hit = metadata.get(kind)
+                    if isinstance(hit, dict) and hit.get("reason"):
+                        return {
+                            "source": "telemetry",
+                            "kind": kind,
+                            "reason": str(hit.get("reason"))[:80],
+                            "code": hit.get("code"),
+                            "provider": hit.get("provider"),
+                            "detail": str(hit.get("detail") or "")[-_PROVIDER_TELEMETRY_DETAIL_CHARS:],
+                        }
+    except Exception:
+        pass
+    try:
+        text = error_text if isinstance(error_text, str) else str(error_text or "")
+        hit = _classify_provider_error_text(text)
+        if isinstance(hit, dict) and hit.get("reason"):
+            return {"source": "text", "kind": "classified", **hit}
+    except Exception:
+        pass
+    return {
+        "source": "none", "kind": "unclassified", "reason": "unclassified",
+        "code": None, "provider": None, "detail": "",
+    }
+
+
+def _note_task_failure_signal(
+    conn: sqlite3.Connection,
+    board: Optional[str],
+    task_id: str,
+    error_text: Any,
+    key_cache: dict,
+) -> Optional[str]:
+    """Attribute one failed task to its upstream key and feed the circuit.
+
+    Integrates with (never duplicates) the per-task machinery: per-task
+    blocking stays with ``_record_task_failure`` / ``_account_crashes`` /
+    ``check_respawn_guard``. The circuit only defers spawns within a tick.
+    Best-effort: never raises out of dispatch. Returns the key (or None).
+    """
+    try:
+        row = conn.execute(
+            "SELECT assignee, model_override, provider_override FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        key = _cached_upstream_key(
+            key_cache,
+            _kb._row_get(row, "assignee"),
+            _kb._row_get(row, "model_override"),
+            _kb._row_get(row, "provider_override"),
+        )
+        cause = _read_failure_cause(conn, task_id, error_text)
+        if note_upstream_signal(board, key, cause=cause):
+            try:
+                with _kb.write_txn(conn):
+                    _kb._append_event(conn, task_id, "upstream_parked", {
+                        "upstream_key": key,
+                        "signals": _UPSTREAM_CIRCUIT_THRESHOLD,
+                        "park_seconds": _UPSTREAM_CIRCUIT_PARK_SECONDS,
+                        "cause": cause,
+                    })
+            except Exception:
+                _kb._log.debug("kanban dispatch: upstream_parked event failed", exc_info=True)
+        return key
+    except Exception:
+        _kb._log.debug("kanban dispatch: upstream signal note failed", exc_info=True)
+        return None
+
+
+def _emit_unpark_task_events(
+    conn: sqlite3.Connection,
+    board: Optional[str],
+    keys: list[str],
+    key_cache: dict,
+) -> None:
+    """One ``upstream_unparked`` transition event per expired park, attached to
+    the first queued (ready/review, unclaimed) task on that key when one
+    exists; log-only otherwise. Best-effort, never raises."""
+    if not keys:
+        return
+    try:
+        rows = conn.execute(
+            "SELECT id, assignee, model_override, provider_override FROM tasks "
+            "WHERE status IN ('ready', 'review') AND claim_lock IS NULL "
+            "ORDER BY priority DESC, created_at ASC"
+        ).fetchall()
+        by_key: dict[str, str] = {}
+        for row in rows:
+            try:
+                k = _upstream_row_key(key_cache, row)
+            except Exception:
+                continue
+            if k in keys and k not in by_key:
+                by_key[k] = row["id"]
+        for key in keys:
+            task_id = by_key.get(key)
+            if task_id is None:
+                continue
+            try:
+                with _kb.write_txn(conn):
+                    _kb._append_event(conn, task_id, "upstream_unparked", {
+                        "upstream_key": key, "reason": "park_expired",
+                    })
+            except Exception:
+                _kb._log.debug("kanban dispatch: upstream_unparked event failed", exc_info=True)
+    except Exception:
+        _kb._log.debug("kanban dispatch: unpark event sweep failed", exc_info=True)
+
+
+def _resolve_scoped_circuit_enabled() -> bool:
+    """Kill-switch for the scoped circuit on the completion path.
+
+    Mirrors the tick callers (CLI ``kanban_ops`` + gateway
+    ``kanban_watchers_dispatcher``): ``kanban.scoped_circuit_enabled``,
+    default True. Unreadable config fails safe (enabled) exactly like the
+    tick path. Tests should monkeypatch this symbol; production never
+    passes it explicitly.
+    """
+    try:
+        from hermes_cli.config import load_config
+        _cfg = load_config()
+        _kanban_cfg = _cfg.get("kanban", {}) if isinstance(_cfg, dict) else {}
+        return bool(_kanban_cfg.get("scoped_circuit_enabled", True))
+    except Exception:
+        return True
+
+
+def _clear_upstream_parks_for_task(
+    conn: sqlite3.Connection, task_id: str, board: Optional[str] = None,
+    *, clear_cross_board: bool = False,
+) -> None:
+    """Success clears: a completed task proves its upstream is healthy — drop
+    the park episode for that key on the completing task's board (the probe
+    succeeded, or a pre-park spawn landed). One transition event on the
+    completing task per cleared board entry. Best-effort, never raises;
+    no-op when empty.
+
+    Board scoping: ``tasks`` carries no board column (each board is its own
+    DB file), so the board slug arrives via the caller — the circuit slot is
+    ``(_circuit_board(board), key)`` and only that slot pops by default.
+    Cross-board clear needs explicit opt-in (``clear_cross_board=True``) and
+    never applies to :data:`UNKNOWN_UPSTREAM_KEY`: a blind-bucket success
+    proves nothing about the bucket. No caller opts in today.
+    """
+    if not _UPSTREAM_CIRCUIT:
+        return
+    try:
+        row = conn.execute(
+            "SELECT assignee, model_override, provider_override FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if row is None:
+            return
+        key = _cached_upstream_key(
+            {},
+            _kb._row_get(row, "assignee"),
+            _kb._row_get(row, "model_override"),
+            _kb._row_get(row, "provider_override"),
+        )
+    except Exception:
+        return
+    if not key or key == UNKNOWN_UPSTREAM_KEY:
+        return
+    if clear_cross_board:
+        slots = [slot for slot in _UPSTREAM_CIRCUIT if slot[1] == key]
+    else:
+        slot = (_circuit_board(board), key)
+        slots = [slot] if slot in _UPSTREAM_CIRCUIT else []
+    for (b, k) in slots:
+        _UPSTREAM_CIRCUIT.pop((b, k), None)
+        _kb._log.error(
+            "kanban dispatcher: upstream %r cleared after task %s succeeded; "
+            "resuming normal dispatch for that upstream",
+            k, task_id,
+        )
+        try:
+            _kb._append_event(conn, task_id, "upstream_unparked", {
+                "upstream_key": k, "reason": "success",
+            })
+        except Exception:
+            _kb._log.debug("kanban dispatch: upstream_unparked event failed", exc_info=True)
 
 
 # Bounded registry of recently-reaped worker exits, filled by the reap loop in
@@ -719,6 +1257,21 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
                     "sigkill": killed,
                     "retry_status": retry_status,
                 }
+                # Additive timeout telemetry (Phase2 P1): provider_error when
+                # the dying worker's last output names a provider failure,
+                # else infra_error so every timed_out close carries a key.
+                # Best-effort: _worker_final_output never raises ("" when the
+                # log is missing or on the wrong board).
+                provider_hit = _classify_provider_error_text(_worker_final_output(tid))
+                if provider_hit is not None:
+                    payload["provider_error"] = provider_hit
+                else:
+                    payload["infra_error"] = {
+                        "reason": "max_runtime_exceeded",
+                        "code": None,
+                        "provider": None,
+                        "detail": f"elapsed {int(elapsed)}s > limit {limit}s",
+                    }
                 run_id = _kb._end_run(
                     conn, tid, outcome="timed_out", status="timed_out",
                     error=error, metadata=payload,
@@ -908,6 +1461,97 @@ def reconcile_orphaned_running(conn: sqlite3.Connection) -> list[str]:
     return reconciled
 
 
+# ---------------------------------------------------------------------------
+# Ledger-integrity sweep (Phase2 P4): warn-only tripwires over the task/run
+# ledger. Runs inside the dispatch tick's single-writer lock but performs NO
+# writes (SELECTs only), so it can never contend with or corrupt the board.
+# Auto-repair, if ever added, must live under this same lock with one logged
+# event per repair — never as a bare fixup. Kill-switch:
+# ``HERMES_KANBAN_LEDGER_SWEEP=0`` disables the sweep (returns no findings).
+# ---------------------------------------------------------------------------
+
+_LEDGER_SWEEP_REPORT_LIMIT = 20  # findings kept per check; totals still counted
+
+
+def _ledger_sweep_enabled() -> bool:
+    return os.environ.get("HERMES_KANBAN_LEDGER_SWEEP", "1") != "0"
+
+
+def ledger_integrity_sweep(conn: sqlite3.Connection) -> list[str]:
+    """Warn-only ledger checks; returns ``"<kind> <task_id> <detail>"`` strings.
+
+    Checks (read-only — zero writes, safe on any read connection):
+
+    * ``done_pointer`` — a ``done`` task whose ``current_run_id`` denormalised
+      pointer is still set. ``_end_run`` clears it on close, so any remnant is
+      a bookkeeping slip: ``open`` (points at a still-open run — worst),
+      ``stale`` (points at a closed run), ``dangling`` (points at no run row).
+    * ``orphan_run`` — a ``task_runs`` row whose ``task_id`` matches no task.
+    * ``leaked_open_run`` — an open run (``ended_at IS NULL``) on a task that
+      is neither ``running`` nor ``review`` (``done`` is owned by the
+      ``done_pointer`` check and excluded here to avoid double-reporting).
+      Every close path (complete/block/crash/timeout/reclaim) ends the run,
+      so a leftover open run means a close path was skipped.
+    """
+    findings: list[str] = []
+    for row in conn.execute(
+        "SELECT id, current_run_id FROM tasks "
+        "WHERE status = 'done' AND current_run_id IS NOT NULL"
+    ).fetchall():
+        run = conn.execute(
+            "SELECT ended_at FROM task_runs WHERE id = ?",
+            (row["current_run_id"],),
+        ).fetchone()
+        if run is None:
+            findings.append(
+                f"done_pointer {row['id']} dangling "
+                f"(current_run_id={row['current_run_id']} matches no run)"
+            )
+        elif run["ended_at"] is None:
+            findings.append(
+                f"done_pointer {row['id']} open "
+                f"(current_run_id={row['current_run_id']} still open)"
+            )
+        else:
+            findings.append(
+                f"done_pointer {row['id']} stale "
+                f"(current_run_id={row['current_run_id']} closed but never cleared)"
+            )
+    orphans = conn.execute(
+        "SELECT r.id, r.task_id FROM task_runs r "
+        "LEFT JOIN tasks t ON t.id = r.task_id "
+        "WHERE t.id IS NULL ORDER BY r.id"
+    ).fetchall()
+    for row in orphans[:_LEDGER_SWEEP_REPORT_LIMIT]:
+        findings.append(
+            f"orphan_run {row['task_id']} "
+            f"(task_runs.id={row['id']} references a missing task)"
+        )
+    if len(orphans) > _LEDGER_SWEEP_REPORT_LIMIT:
+        findings.append(
+            f"orphan_run * +{len(orphans) - _LEDGER_SWEEP_REPORT_LIMIT} more "
+            f"({len(orphans)} total)"
+        )
+    leaked = conn.execute(
+        "SELECT r.id, r.task_id, t.status FROM task_runs r "
+        "JOIN tasks t ON t.id = r.task_id "
+        "WHERE r.ended_at IS NULL "
+        "AND t.status NOT IN ('running', 'review', 'done') "
+        "ORDER BY r.id"
+    ).fetchall()
+    for row in leaked[:_LEDGER_SWEEP_REPORT_LIMIT]:
+        findings.append(
+            f"leaked_open_run {row['task_id']} "
+            f"(task_runs.id={row['id']} open while task is {row['status']!r})"
+        )
+    if len(leaked) > _LEDGER_SWEEP_REPORT_LIMIT:
+        findings.append(
+            f"leaked_open_run * +{len(leaked) - _LEDGER_SWEEP_REPORT_LIMIT} more "
+            f"({len(leaked)} total)"
+        )
+    return findings
+
+
 def _error_fingerprint(error_text: str) -> str:
     """Normalize an error message (strip PIDs, timestamps) so same-root-cause errors group."""
     fp = re.sub(r'\bpid \d+\b', 'pid N', error_text[:80])
@@ -1022,6 +1666,86 @@ def _worker_final_output(task_id: str, board: Optional[str] = None) -> str:
     return " ".join(lines)[-400:]
 
 
+# ---------------------------------------------------------------------------
+# Crash/timeout provider telemetry (Phase2 P1 — measurement only).
+# ---------------------------------------------------------------------------
+# A crashed/timed-out run's closing ``task_runs.metadata`` carries either
+# ``provider_error`` (the dead worker's last output matches a provider-error
+# signature) or ``infra_error`` (a process-level exit with no provider
+# signature, or a max-runtime kill). Additive JSON keys only: no migration,
+# no new index, and nothing filters on these keys yet — readers aggregate
+# with e.g.::
+#
+#     SELECT id, task_id, outcome, error, metadata FROM task_runs
+#      WHERE json_extract(metadata, '$.provider_error') IS NOT NULL
+#         OR json_extract(metadata, '$.infra_error') IS NOT NULL
+#      ORDER BY id DESC LIMIT 20;
+#
+# ``reason`` mirrors ``agent.error_classifier.FailoverReason`` values as
+# plain strings (this module must not import the agent package).
+# Best-effort by design: a missed signature means a missing key, never a
+# failed close. Values are size-capped so the 4 KiB context field budget
+# (``kanban_db._CTX_MAX_FIELD_BYTES``) is never threatened.
+
+_PROVIDER_TELEMETRY_DETAIL_CHARS = 200
+
+# (pattern, reason, status_code): first match wins.
+_PROVIDER_ERROR_PATTERNS: tuple[tuple[str, str, Optional[int]], ...] = (
+    (r"rate[ _\-]?limit|too many requests|\b429\b", "rate_limit", 429),
+    (r"quota.{0,20}exceed|exceed.{0,20}quota|insufficient[ _\-]credits|"
+     r"insufficient[ _\-]quota|\bbilling\b|payment required|\b402\b|"
+     r"out of (credits|funds|extra usage)", "billing", 402),
+    (r"unauthori[sz]ed|\b401\b|invalid[ _\-](api[ _\-]?key|token|auth)|"
+     r"auth(entication|orization)?[ _\-]fail|\bforbidden\b", "auth", None),
+    (r"overloaded|over capacity|server.{0,20}overload|\b503\b|\b529\b",
+     "overloaded", 503),
+    (r"internal server error|\b500\b|bad gateway|\b502\b|"
+     r"service unavailable|server error", "server_error", None),
+    (r"model.{0,60}not[ _\-]found|not[ _\-]found.{0,40}model|"
+     r"invalid model|unknown model", "model_not_found", 404),
+    (r"context.{0,20}overflow|context.{0,20}too (large|long|big)|"
+     r"too many tokens|maximum context|context window|context length",
+     "context_overflow", None),
+    (r"timed out|timedout|\btimeout\b|deadline exceeded|"
+     r"connection (reset|refused|aborted|timed out)|"
+     r"network.{0,20}(error|unreachable|unavailable)|temporarily unavailable",
+     "timeout", None),
+)
+
+_PROVIDER_NAME_RE = re.compile(
+    r"\b(opencode-go|openai-codex|anthropic|openai|gemini|deepseek|xiaomi|"
+    r"mimo|minimax|copilot|nous|xai|bedrock|vertex)\b",
+    re.IGNORECASE,
+)
+
+
+def _classify_provider_error_text(text: str) -> Optional[dict]:
+    """Best-effort provider-error classification of free-form worker output.
+
+    Returns ``{"reason", "code", "provider", "detail"}`` (all capped, JSON-safe)
+    on the first signature hit, else None. ``provider`` is the first named
+    backend in the text (None when unnamed); ``detail`` is the trailing
+    200 chars of whitespace-collapsed text so the matched context survives.
+    """
+    if not text or not text.strip():
+        return None
+    lowered = text.lower()
+    for pattern, reason, code in _PROVIDER_ERROR_PATTERNS:
+        if re.search(pattern, lowered):
+            provider: Optional[str] = None
+            match = _PROVIDER_NAME_RE.search(text)
+            if match:
+                provider = match.group(1).lower()
+            snippet = " ".join(text.split())
+            return {
+                "reason": reason,
+                "code": code,
+                "provider": provider,
+                "detail": snippet[-_PROVIDER_TELEMETRY_DETAIL_CHARS:],
+            }
+    return None
+
+
 @dataclass
 class _DeadWorker:
     """How ``detect_crashed_workers`` should book one dead worker."""
@@ -1059,6 +1783,22 @@ def _classify_dead_worker(
         if worker_output:
             dead.error_text += f" Worker's last output: {worker_output!r}"
             dead.event_payload["worker_output"] = worker_output
+            provider_hit = _classify_provider_error_text(worker_output)
+            if provider_hit is not None:
+                # Additive crash telemetry (Phase2 P1): task_runs.metadata
+                # only, never filtered. _end_run copies this payload into
+                # the closing run row.
+                dead.event_payload["provider_error"] = provider_hit
+        if "provider_error" not in dead.event_payload and dead.event_kind == "crashed":
+            # No provider signature (or no log at all): the exit itself is
+            # the signal. Covers every crashed close, including clean-exit
+            # protocol violations (reason worker_clean_exit).
+            dead.event_payload["infra_error"] = {
+                "reason": f"worker_{dead.kind}",
+                "code": dead.code,
+                "provider": None,
+                "detail": dead.error_text[:_PROVIDER_TELEMETRY_DETAIL_CHARS],
+            }
     return dead
 
 
@@ -1507,7 +2247,10 @@ def adopt_worker_pid(conn: sqlite3.Connection, task_id: str, run_id: int, pid: i
     return True
 
 
-def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
+def _clear_failure_counter(
+    conn: sqlite3.Connection, task_id: str, board: Optional[str] = None,
+    *, scoped_circuit_enabled: Optional[bool] = None,
+) -> None:
     """Reset the unified consecutive-failures counter.
 
     Called from ``complete_task`` on success. NOT called on spawn success: a
@@ -1520,6 +2263,36 @@ def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
             "last_failure_error = NULL WHERE id = ?",
             (task_id,),
         )
+    # Phase2 P3: success clears — a completed task proves its upstream is
+    # healthy, so drop any circuit park for that key (probe success path).
+    # Gated on the scoped-circuit kill-switch (resolved exactly like the tick
+    # callers, default True): with the circuit off this is only the
+    # consecutive_failures UPDATE above — prior behaviour, byte for byte.
+    # Best-effort: event emission inside must never break completion.
+    if scoped_circuit_enabled is None:
+        scoped_circuit_enabled = _resolve_scoped_circuit_enabled()
+    if not scoped_circuit_enabled:
+        return
+    # ``board=None`` (every production complete_task path omits it, and so
+    # does the reclaim path below): resolve the ambient slug so the clear
+    # hits the same slot the tick parks under (gateway ticks pass
+    # board=slug). get_current_board() always returns a slug (DEFAULT_BOARD
+    # at worst); board resolution must never break completion, hence the
+    # DEFAULT_BOARD fallback.
+    legacy_boardless = board is None
+    if legacy_boardless:
+        try:
+            board = _kb.get_current_board()
+        except Exception:
+            board = _kb.DEFAULT_BOARD
+    try:
+        _clear_upstream_parks_for_task(conn, task_id, board)
+        if legacy_boardless:
+            # Boardless ticks (CLI dispatch, run_daemon, eval harnesses)
+            # park under the legacy ('', key) slot in-process; pop it too.
+            _clear_upstream_parks_for_task(conn, task_id, "")
+    except Exception:
+        _kb._log.debug("kanban dispatch: success-clear failed", exc_info=True)
 
 
 def check_respawn_guard(
@@ -1528,29 +2301,41 @@ def check_respawn_guard(
     """Return a guard reason if ``task_id`` should NOT be re-spawned, else None.
 
     Called per ready/review row before any claim attempt. Priority order:
-    ``"infrastructure_cooldown"`` (latest run is a ``spawn_failed`` the host
-    refused — no restart-safe scope — within the cooldown; never counted),
-    ``"rate_limit_cooldown"`` (latest run ``rate_limited`` within the cooldown;
-    checked BEFORE ``blocker_auth`` because the requeue stamps a quota-flavored
-    ``last_failure_error`` that would otherwise park the task forever — that
-    path never increments ``consecutive_failures``), ``"blocker_auth"``
-    (quota/auth pattern; the breaker still trips eventually), then for the
-    ready lane only ``"recent_success"`` (completed run within the window, unless
-    a re-queue event arrived after it — a deliberate re-run) and ``"active_pr"``
-    (PR URL in a recent comment; re-spawning risks a duplicate PR — unless a
-    handoff event followed the comment: the named profile must work on that
-    PR). The review lane skips the last two: they are the *inputs* to a review
-    handoff. Stale / dead claim locks are NOT a guard reason — the reclaim
-    passes own those.
+    ``"do_not_dispatch"`` (explicit operator hold — wins over every
+    automatic signal), ``"infrastructure_cooldown"`` (latest run is a
+    ``spawn_failed`` the host refused — no restart-safe scope — within
+    the cooldown; never counted), ``"rate_limit_cooldown"`` (latest run
+    ``rate_limited`` within the cooldown; checked BEFORE ``blocker_auth``
+    because the requeue stamps a quota-flavored ``last_failure_error``
+    that would otherwise park the task forever — that path never increments
+    ``consecutive_failures``), ``"gave_up_cooldown"`` (a ``gave_up`` inside
+    the crash-loop backoff window; ``rate_limited`` runs are exempt because
+    that path returns earlier, and a later ``completed`` run clears the
+    debt — the cooldown always elapses into permission, never a sticky
+    park), ``"blocker_auth"`` (quota/auth pattern; the breaker still trips
+    eventually), then for the ready lane only ``"recent_success"`` (completed
+    run within the window, unless a re-queue event arrived after it — a
+    deliberate re-run) and ``"active_pr"`` (PR URL in a recent comment;
+    re-spawning risks a duplicate PR — unless a handoff event followed the
+    comment: the named profile must work on that PR). The review lane skips
+    the last two: they are the *inputs* to a review handoff. Stale / dead
+    claim locks are NOT a guard reason — the reclaim passes own those.
     """
     row = conn.execute(
-        "SELECT last_failure_error FROM tasks WHERE id = ?",
+        "SELECT last_failure_error, do_not_dispatch, "
+        "do_not_dispatch_reason, do_not_dispatch_until FROM tasks WHERE id = ?",
         (task_id,),
     ).fetchone()
     if row is None:
         return None
 
     now = int(time.time())
+
+    # 0. Operator hold — explicit "do not dispatch" beats every automatic
+    #    signal, including an elapsed cooldown. An expired TTL reads as
+    #    cleared (no write); the stale flag row stays until `kanban release`.
+    if _kb.dispatch_hold_active(row, now):
+        return "do_not_dispatch"
 
     # 1. Rate-limit cooldown — see docstring for why this precedes blocker_auth.
     #    LATEST run only: a newer crash/completion supersedes the rate-limit run.
@@ -1581,6 +2366,40 @@ def check_respawn_guard(
         # stamped rate-limit text; this path intentionally retries forever
         # (spaced by the cooldown) until quota returns or a real run supersedes it.
         return None
+
+    # 1b. Gave-up cooldown — a recent circuit-breaker ``gave_up`` spaces out
+    #     the re-dispatch with backoff. Reached only when the latest run was
+    #     NOT ``rate_limited`` (that path returned above), so quota walls
+    #     stay exempt; and a ``completed`` run after the last ``gave_up``
+    #     clears the debt (success proves health — ``complete_task`` also
+    #     resets ``consecutive_failures``). Unlike the rate-limit path, an
+    #     elapsed cooldown FALLS THROUGH to ``blocker_auth`` below: the
+    #     stamped error is a real crash signature, and a quota-flavored one
+    #     must still park. The cooldown always elapses into permission —
+    #     never a sticky park — so self-healing waves keep healing, spaced.
+    gave_up_base = _kb._resolve_gave_up_cooldown_seconds()
+    if gave_up_base > 0:
+        last_gave_up = conn.execute(
+            "SELECT MAX(created_at) AS ts, COUNT(*) AS n FROM task_events "
+            "WHERE task_id = ? AND kind = 'gave_up'",
+            (task_id,),
+        ).fetchone()
+        if last_gave_up is not None and last_gave_up["ts"] is not None:
+            gave_up_ts = int(last_gave_up["ts"])
+            completed_after = conn.execute(
+                "SELECT 1 FROM task_runs WHERE task_id = ? "
+                "AND outcome = 'completed' AND ended_at IS NOT NULL "
+                "AND ended_at >= ? LIMIT 1",
+                (task_id, gave_up_ts),
+            ).fetchone()
+            if completed_after is None:
+                exponent = min(max(int(last_gave_up["n"]) - 1, 0), _GAVE_UP_COOLDOWN_MAX_EXPONENT)
+                cooldown = min(
+                    gave_up_base * (_GAVE_UP_COOLDOWN_BACKOFF_BASE ** exponent),
+                    GAVE_UP_COOLDOWN_MAX_SECONDS,
+                )
+                if (now - gave_up_ts) < cooldown:
+                    return "gave_up_cooldown"
 
     # 2. Quota / auth blocker: retrying immediately will not help.  A plain
     # crash is different: its persisted error includes the worker's last
@@ -1964,6 +2783,11 @@ def dispatch_once(
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
     reconcile_orphans: bool = True,
+    # Phase2 P3: per-upstream wave cap (None/0 = disabled kill-switch;
+    # positive int = max in-flight per upstream key) and scoped-circuit
+    # kill-switch (False restores prior behaviour exactly).
+    wave_cap_per_upstream: Optional[int] = None,
+    scoped_circuit_enabled: bool = True,
 ) -> DispatchResult:
     """Run one dispatcher tick under the board's single-writer lock.
 
@@ -1987,6 +2811,8 @@ def dispatch_once(
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
             reconcile_orphans=reconcile_orphans,
+            wave_cap_per_upstream=wave_cap_per_upstream,
+            scoped_circuit_enabled=scoped_circuit_enabled,
         )
 
     try:
@@ -2036,12 +2862,30 @@ def _dispatch_lane_task(
     spawn_fn,
     per_profile_cap: Optional[int],
     per_profile_running: dict[str, int],
+    # Phase2 P3 (scoped wave-cap + scoped circuit). All default to
+    # feature-off so unrelated callers keep prior behaviour.
+    wave_cap: Optional[int] = None,
+    upstream_key: Optional[str] = None,
+    upstream_running: Optional[dict[str, int]] = None,
+    upstream_spawned: Optional[dict[str, int]] = None,
+    parked_keys: frozenset = frozenset(),
+    probe_allowed: bool = False,
+    circuit_enabled: bool = True,
+    upstream_key_cache: Optional[dict] = None,
 ) -> bool:
     """Guard, claim, resolve the workspace and spawn one ready/review row.
     Returns True when a spawn slot was consumed (real or ``dry_run``); every
     skip is recorded on ``result``.
+
+    Phase2 P3: rows whose upstream key is parked are skipped into
+    ``result.scoped_paused`` (scoped-only — other keys flow); at most one
+    parked row per park window spawns as a probe; rows over the per-upstream
+    wave cap defer into ``result.skipped_upstream_capped``. Never a status
+    write from these gates.
     """
     task_id = row["id"]
+    if upstream_key_cache is None:
+        upstream_key_cache = {}
     # Non-profile assignees (control-plane lanes that pull via ``claim_task``)
     # would fail ``hermes -p <assignee>`` at startup and loop ready→crash→ready
     # forever. Bucketed apart from skipped_unassigned: the operator cannot fix
@@ -2063,12 +2907,39 @@ def _dispatch_lane_task(
                         or last["payload"] != _kb._json_or_null({"assignee": assignee})):
                     _kb._append_event(conn, task_id, "skipped_nonspawnable", {"assignee": assignee})
         return False
+    # Phase2 P3: key off the EFFECTIVE assignee (the loop may have applied
+    # kanban.default_assignee to an unassigned row). Cached: free on hit.
+    upstream_key = _cached_upstream_key(
+        upstream_key_cache,
+        assignee,
+        _kb._row_get(row, "model_override"),
+        _kb._row_get(row, "provider_override"),
+    )
+    # Phase2 P3 scoped pause: skip ONLY parked-key rows. A due probe falls
+    # through to the normal guard/claim/spawn tail below (still gated by the
+    # respawn guard, caps and budget). Dry-run never probes — no real quota.
+    is_probe = False
+    if upstream_key in parked_keys:
+        if probe_allowed and not dry_run and circuit_enabled and _probe_due(board, upstream_key):
+            is_probe = True
+        else:
+            result.scoped_paused.append((task_id, upstream_key))
+            return False
     # Per-profile cap: one profile's local model / API quota / browser pool
     # must not be overwhelmed by a fan-out even with global headroom.
     if per_profile_cap is not None:
         current = per_profile_running.get(assignee, 0)
         if current >= per_profile_cap:
             result.skipped_per_profile_capped.append((task_id, assignee, current))
+            return False
+    # Phase2 P3 wave-cap: in-flight per key = running-with-same-key +
+    # already-spawned-this-tick-with-same-key. Over-cap defers, never blocks.
+    if wave_cap is not None:
+        running_same = (upstream_running or {}).get(upstream_key, 0)
+        spawned_same = (upstream_spawned or {}).get(upstream_key, 0)
+        current = running_same + spawned_same
+        if current >= wave_cap:
+            result.skipped_upstream_capped.append((task_id, upstream_key, current))
             return False
     guard_reason = check_respawn_guard(conn, task_id, lane=lane)
     if guard_reason is not None:
@@ -2085,15 +2956,18 @@ def _dispatch_lane_task(
                 _kb._append_event(conn, task_id, "respawn_guarded", {"reason": guard_reason})
         return False
 
-    def _count_spawn(name: str) -> None:
+    def _count_spawn(name: str, ukey: Optional[str] = None) -> None:
         # Later rows in this tick respect the per-profile cap; subsequent
         # ticks re-query from the DB.
         if per_profile_cap is not None and name:
             per_profile_running[name] = per_profile_running.get(name, 0) + 1
+        # Phase2 P3: same in-tick accounting for the per-upstream wave-cap.
+        if upstream_spawned is not None and ukey:
+            upstream_spawned[ukey] = upstream_spawned.get(ukey, 0) + 1
 
     if dry_run:
         result.spawned.append((task_id, assignee, ""))
-        _count_spawn(assignee)
+        _count_spawn(assignee, upstream_key)
         return True
     claim = _kb.claim_review_task if lane == "review" else _kb.claim_task
     claimed = claim(conn, task_id, ttl_seconds=ttl_seconds)
@@ -2111,6 +2985,10 @@ def _dispatch_lane_task(
             outcome="spawn_failed", failure_limit=failure_limit, release_claim=True, end_run=True,
         ):
             result.auto_blocked.append(claimed.id)
+        # Phase2 P3: a spawn failure is a circuit signal for the task's
+        # upstream (integrate — per-task blocking above is untouched).
+        if circuit_enabled:
+            _note_task_failure_signal(conn, board, claimed.id, f"workspace: {exc}", upstream_key_cache)
         return False
     _kbw.set_workspace_path(conn, claimed.id, str(workspace))
     if claimed.workspace_kind == "worktree":
@@ -2130,7 +3008,20 @@ def _dispatch_lane_task(
         # spawn would let a task that keeps timing out loop forever. Cleared
         # only on successful completion (complete_task).
         result.spawned.append((claimed.id, claimed.assignee or "", str(workspace)))
-        _count_spawn(claimed.assignee)
+        # Phase2 P3: wave-cap in-tick accounting, keyed off the claimed task.
+        try:
+            claimed_key = _cached_upstream_key(
+                upstream_key_cache,
+                claimed.assignee,
+                getattr(claimed, "model_override", None),
+                getattr(claimed, "provider_override", None),
+            )
+        except Exception:
+            claimed_key = upstream_key
+        _count_spawn(claimed.assignee or "", claimed_key)
+        # Phase2 P3: a parked-key spawn consumes the single probe window.
+        if is_probe:
+            _mark_probe_spawned(board, claimed_key)
         return True
     except Exception as exc:
         from tools.process_registry import RestartSafeScopeUnavailable
@@ -2146,6 +3037,10 @@ def _dispatch_lane_task(
             infrastructure=infrastructure,
         ):
             result.auto_blocked.append(claimed.id)
+        # Phase2 P3: spawn_fn raising is a circuit signal (per-task blocking
+        # above untouched; a failed probe stays consumed — one probe/window).
+        if circuit_enabled:
+            _note_task_failure_signal(conn, board, claimed.id, str(exc), upstream_key_cache)
         return False
 
 
@@ -2203,6 +3098,14 @@ def _run_reclaim_phase(
     result.rate_limited.extend(getattr(detect_crashed_workers, "_last_rate_limited", []))
     result.timed_out = enforce_max_runtime(conn)
     result.promoted = _kb.recompute_ready(conn, failure_limit=failure_limit)
+    if _ledger_sweep_enabled():
+        # Warn-only tripwires (SELECTs only — no writes, so a corrupt board
+        # can never be made worse by the sweep itself). Runs under the
+        # tick's single-writer lock, which is also where any future
+        # auto-repair must live, one logged event per fix.
+        result.ledger_warnings = ledger_integrity_sweep(conn)
+        for finding in result.ledger_warnings:
+            _kb._log.warning("kanban ledger: %s", finding)
 
 
 def _tick_spawn_budget(
@@ -2267,9 +3170,13 @@ def _tick_spawn_budget(
 
 
 def _lane_rows(conn: sqlite3.Connection, status: str) -> list[sqlite3.Row]:
-    """Unclaimed rows of one lane in dispatch order."""
+    """Unclaimed rows of one lane in dispatch order.
+
+    Phase2 P3: carries ``model_override``/``provider_override`` so the spawn
+    loop can bucket each row by upstream key without a second SELECT.
+    """
     return conn.execute(
-        "SELECT id, assignee FROM tasks "
+        "SELECT id, assignee, model_override, provider_override FROM tasks "
         f"WHERE status = '{status}' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
@@ -2339,17 +3246,47 @@ def _dispatch_once_locked(
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
     reconcile_orphans: bool = True,
+    # Phase2 P3: None/0 = wave-cap disabled (kill-switch, prior behaviour);
+    # positive int = max in-flight per upstream key. False disables the
+    # scoped circuit + scoped pause entirely (prior behaviour).
+    wave_cap_per_upstream: Optional[int] = None,
+    scoped_circuit_enabled: bool = True,
 ) -> DispatchResult:
     """One dispatcher tick: reclaim stale/crashed running tasks, promote
     todo -> ready, then atomically claim each spawnable ready/review row and
     call ``spawn_fn(task, workspace_path, board) -> Optional[int]``, recording
     the PID so later ticks catch crashes before the TTL. Cap semantics:
-    :func:`_tick_spawn_budget`."""
+    :func:`_tick_spawn_budget`.
+
+    Phase2 P3: crashed/timed-out outcomes observed this tick feed the
+    per-(board, upstream-key) fast-crash circuit (scoped pause + single
+    probe); per-upstream in-flight is capped at ``wave_cap_per_upstream``.
+    """
     result = DispatchResult()
     _run_reclaim_phase(
         conn, result, stale_timeout_seconds=stale_timeout_seconds,
         failure_limit=failure_limit, reconcile_orphans=reconcile_orphans, board=board,
     )
+    # Phase2 P3 circuit learning: attribute this tick's crashed/timed-out
+    # tasks to their upstream keys (integrate — per-task blocking already
+    # happened inside the reclaim phase; the circuit only defers spawns).
+    # Stale parks self-clear here; unparks emit one transition event each.
+    upstream_key_cache: dict[tuple[Any, Any, Any], str] = {}
+    circuit_enabled = bool(scoped_circuit_enabled)
+    if circuit_enabled:
+        for tid in (*result.crashed, *result.timed_out):
+            try:
+                erow = conn.execute(
+                    "SELECT last_failure_error FROM tasks WHERE id = ?", (tid,),
+                ).fetchone()
+                err_text = erow["last_failure_error"] if erow and erow["last_failure_error"] else ""
+            except Exception:
+                err_text = ""
+            _note_task_failure_signal(conn, board, tid, err_text, upstream_key_cache)
+        unparked_keys = _expire_upstream_parks(board)
+        if unparked_keys:
+            _emit_unpark_task_events(conn, board, unparked_keys, upstream_key_cache)
+    parked_keys = get_parked_upstream_keys(board) if circuit_enabled else frozenset()
     may_spawn, spawn_budget = _tick_spawn_budget(
         conn, result, max_spawn=max_spawn, max_in_progress=max_in_progress, board=board,
     )
@@ -2390,14 +3327,53 @@ def _dispatch_once_locked(
         per_profile_cap=per_profile_cap, per_profile_running=per_profile_running,
     ):
         ready_budget = max(spawn_budget - 1, 0)
+    # Phase2 P3 wave-cap: in-flight per upstream key = running-with-same-key
+    # (queried once per tick) + spawned-this-tick-with-same-key (counted in
+    # the loops via lane_kwargs). None/0 = disabled kill-switch.
+    wave_cap: Optional[int] = None
+    if (
+        isinstance(wave_cap_per_upstream, int)
+        and not isinstance(wave_cap_per_upstream, bool)
+        and wave_cap_per_upstream > 0
+    ):
+        wave_cap = wave_cap_per_upstream
+    upstream_running: dict[str, int] = {}
+    if wave_cap is not None:
+        try:
+            for urow in conn.execute(
+                "SELECT assignee, model_override, provider_override FROM tasks "
+                "WHERE status = 'running' AND assignee IS NOT NULL"
+            ):
+                ukey = _cached_upstream_key(
+                    upstream_key_cache,
+                    urow["assignee"],
+                    _kb._row_get(urow, "model_override"),
+                    _kb._row_get(urow, "provider_override"),
+                )
+                upstream_running[ukey] = upstream_running.get(ukey, 0) + 1
+        except Exception:
+            _kb._log.debug("kanban dispatch: upstream running-count failed", exc_info=True)
+            upstream_running = {}
+    upstream_spawned: dict[str, int] = {}
+    # Phase2 P3: resolve each row's key once (in-tick cache) and precompute
+    # the healthy-behind suffix so a parked-key probe never takes the last
+    # budget slot while non-parked work waits behind it (1 reserved ready
+    # slot per tick for non-parked keys, mirroring review-reservation).
+    ready_keys = [_upstream_row_key(upstream_key_cache, row) for row in ready_rows]
+    ready_healthy_behind = _healthy_behind_suffix(ready_keys, parked_keys)
+    review_keys = [_upstream_row_key(upstream_key_cache, row) for row in review_rows]
+    review_healthy_behind = _healthy_behind_suffix(review_keys, parked_keys)
     lane_kwargs: dict[str, Any] = dict(
         dry_run=dry_run, ttl_seconds=ttl_seconds, board=board,
         failure_limit=failure_limit, spawn_fn=spawn_fn,
         per_profile_cap=per_profile_cap, per_profile_running=per_profile_running,
+        wave_cap=wave_cap, upstream_running=upstream_running,
+        upstream_spawned=upstream_spawned, parked_keys=parked_keys,
+        circuit_enabled=circuit_enabled, upstream_key_cache=upstream_key_cache,
     )
     default_assignee = _resolve_default_assignee(default_assignee)
     spawned = 0
-    for row in ready_rows:
+    for idx, row in enumerate(ready_rows):
         if ready_budget is not None and spawned >= ready_budget:
             break
         row_assignee = row["assignee"]
@@ -2411,24 +3387,60 @@ def _dispatch_once_locked(
                 continue
             row_assignee = default_assignee
             result.auto_assigned_default.append(row["id"])
-        if _dispatch_lane_task(conn, row, row_assignee, result, lane="ready", **lane_kwargs):
+        if _dispatch_lane_task(
+            conn, row, row_assignee, result, lane="ready",
+            probe_allowed=_probe_slot_allowed(
+                ready_keys[idx], parked_keys, spawn_budget, spawned,
+                ready_healthy_behind[idx],
+            ),
+            **lane_kwargs,
+        ):
             spawned += 1
 
     # A review agent (sdlc-review) approves (→ done) or requests changes
     # (→ ready/todo). Review spawns share max_spawn with ready tasks. The loop
     # checks the FULL shared ``spawn_budget`` — the reservation above caps the
     # ready lane, it grants no extra capacity here.
-    for row in review_rows:
+    for idx, row in enumerate(review_rows):
         if spawn_budget is not None and spawned >= spawn_budget:
             break
         if not row["assignee"]:
             result.skipped_unassigned.append(row["id"])
             continue
-        if _dispatch_lane_task(conn, row, row["assignee"], result, lane="review", **lane_kwargs):
+        if _dispatch_lane_task(
+            conn, row, row["assignee"], result, lane="review",
+            probe_allowed=_probe_slot_allowed(
+                review_keys[idx], parked_keys, spawn_budget, spawned,
+                review_healthy_behind[idx],
+            ),
+            **lane_kwargs,
+        ):
             spawned += 1
     return result
 
 
+def _healthy_behind_suffix(keys: list[str], parked_keys: frozenset) -> list[bool]:
+    """Per-row ``any later row on a non-parked key`` flags (probe reservation)."""
+    suffix = [False] * len(keys)
+    seen = False
+    for idx in range(len(keys) - 1, -1, -1):
+        suffix[idx] = seen
+        if keys[idx] not in parked_keys:
+            seen = True
+    return suffix
+
+
+def _probe_slot_allowed(
+    key: str, parked_keys: frozenset, spawn_budget: Optional[int],
+    spawned: int, healthy_behind: bool,
+) -> bool:
+    """A parked-key probe may not take the last budget slot while non-parked
+    work waits behind it — 1 ready slot per tick is held for healthy keys."""
+    if key not in parked_keys:
+        return False
+    if spawn_budget is not None and healthy_behind and spawned + 1 >= spawn_budget:
+        return False
+    return True
 def _positive_int(value: Any, default: int, *, minimum: int = 1) -> int:
     try:
         parsed = int(value)

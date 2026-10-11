@@ -7,23 +7,32 @@ import type {
   ComposioProviderState,
   ComposioProviderStatus,
   ComposioRemoveResult,
-  ComposioStatusResult
+  ComposioStatusResult,
+  ComposioToolRow,
+  ComposioToolsResult,
+  ComposioToolsStatus
 } from '@hermes/shared/gateway-events'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { capabilityScoped } from '@/api/client'
 import { hermesConfigKey } from '@/app/hooks/use-config-record'
+import { SearchField } from '@/components/ui/search-field'
 import type { ProfileScope } from '@/hermes'
 import { profileScopeKey } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { completeMcpDesktopOAuth, McpOAuthCancelled } from '@/lib/mcp-dashboard-oauth'
 import { requestGatewayForAgent } from '@/store/gateway'
 
+import { ConnectorDialog } from './connector-dialog'
+import { ConnectorRowCard } from './connector-row-card'
+import { ToolRow } from './tool-row'
+import type { ConnectorCardModel, ConnectorState, ConnectorStateWord, ToolRowModel } from './types'
+
 const COMPOSIO_MCP_NAME = 'composio'
 const COMPOSIO_MCP_URL = 'https://connect.composio.dev/mcp'
 const PROVIDER_QUERY_ROOT = ['composio-providers'] as const
-const REFRESH_MS = 2_000
+const REFRESH_MS = 10_000
 const RECONNECT_ACCOUNT_STATES = new Set<ComposioAccountStatus>(['expired', 'revoked', 'failed', 'inactive'])
 
 type ProviderDefinition = ComposioProviderRow
@@ -35,6 +44,10 @@ type ProviderCatalogResult = ComposioCatalogResult
 type ProviderStatusResult = ComposioStatusResult
 type ProviderConnectResult = ComposioConnectResult
 type ProviderRemoveResult = ComposioRemoveResult
+
+type ProviderTool = ComposioToolRow
+
+type ProviderToolsResult = ComposioToolsResult
 
 interface McpServerAddResult {
   ok: boolean
@@ -51,6 +64,7 @@ export function useComposioProviderCatalog(profile: ProfileScope) {
 interface ProviderRowsProps {
   actionsDisabled?: boolean
   catalog: ReturnType<typeof useComposioProviderCatalog>
+  excludedToolkits?: readonly string[]
   filterQuery: string
   mcpServers: Record<string, Record<string, unknown>>
   profile: ProfileScope
@@ -87,6 +101,94 @@ function rpcWithoutProfile<T>(profile: ProfileScope, method: string, params: Rec
 
 const catalogKey = (profile: ProfileScope) => [...PROVIDER_QUERY_ROOT, profileScopeKey(profile), 'catalog'] as const
 const statusKey = (profile: ProfileScope) => [...PROVIDER_QUERY_ROOT, profileScopeKey(profile), 'status'] as const
+
+const toolsKey = (profile: ProfileScope, provider: string, accountId: string | null) =>
+  [...PROVIDER_QUERY_ROOT, profileScopeKey(profile), 'tools', provider, accountId] as const
+
+function providerCard(provider: ProviderDefinition, status?: ProviderStatus): ConnectorCardModel {
+  const phase = status?.status ?? 'disconnected'
+
+  const state: ConnectorState =
+    phase === 'connected'
+      ? 'connected'
+      : phase === 'pending'
+        ? 'connecting'
+        : phase === 'expired' || phase === 'revoked' || phase === 'inactive'
+          ? 'expired'
+          : phase === 'failed' || phase === 'requires_mcp_auth' || phase === 'unavailable'
+            ? 'broken'
+            : 'available'
+
+  const words: Record<ConnectorState, ConnectorStateWord> = {
+    available: 'available',
+    broken: 'couldNotConnect',
+    connected: 'connected',
+    connecting: 'connecting',
+    expired: 'accessExpired',
+    off: 'offForYou',
+    unknown: 'connectionUnknown'
+  }
+
+  const account = status?.accounts?.find(row => row.status === 'active') ?? status?.accounts?.[0]
+
+  return {
+    accountSource: 'composio',
+    description: providerDescription(provider),
+    inCatalog: true,
+    name: provider.label,
+    residency: 'hosted',
+    slug: provider.toolkit,
+    state,
+    stateWord: words[state],
+    verb: state === 'available' ? 'connect' : state === 'expired' || state === 'broken' ? 'reconnect' : undefined,
+    ways: {
+      hosted: {
+        accountLabel: account ? accountLabel(provider, account, (status?.accounts ?? []).indexOf(account)) : undefined,
+        accounts: [],
+        connected: state === 'connected',
+        retiredAccounts: [],
+        state
+      },
+      local: null
+    }
+  }
+}
+
+function providerDescription(provider: ProviderDefinition): string {
+  const known: Record<string, string> = {
+    gmail: 'Search, read, and send email.',
+    googlecalendar: 'Find availability and manage calendar events.',
+    googledrive: 'Search and organize files in Drive.',
+    slack: 'Find messages and work with channels.',
+    github: 'Browse repositories, issues, and pull requests.',
+    notion: 'Find and update pages and databases.',
+    linear: 'Search and manage issues and projects.',
+    jira: 'Find and update work items and projects.',
+    outlook: 'Work with Outlook mail and calendar.',
+    resend: 'Manage email delivery and contacts.',
+    zoho_inventory: 'Manage products, orders, and inventory.'
+  }
+
+  return known[provider.toolkit] ?? `Connect ${provider.label} to browse its available tools.`
+}
+
+function accountLabel(provider: ProviderDefinition, account: ProviderAccount, index: number): string {
+  return account.alias || account.display_name || `${provider.label} account ${index + 1}`
+}
+
+function providerToolRows(tools: readonly ProviderTool[]): ToolRowModel[] {
+  return tools.map(tool => ({
+    categories: [],
+    deprecated: false,
+    description: tool.description ?? '',
+    facet: 'unclassified',
+    hints: [],
+    lockedBy: null,
+    name: tool.tool_slug,
+    on: true,
+    slug: tool.tool_slug
+  }))
+}
 
 function queryMatches(provider: ProviderDefinition, query: string): boolean {
   const needle = query.trim().toLocaleLowerCase()
@@ -134,8 +236,14 @@ function statusCopy(status: ProviderState | AccountState | undefined, t: ReturnT
 function readableExternalUrl(value: string): string {
   const url = new URL(value)
 
-  if (url.protocol !== 'https:') {
-    throw new Error('The provider did not return a secure sign-in URL.')
+  if (
+    url.protocol !== 'https:' ||
+    url.hostname !== 'connect.composio.dev' ||
+    (url.port !== '' && url.port !== '443') ||
+    url.username !== '' ||
+    url.password !== ''
+  ) {
+    throw new Error('The provider did not return a trusted sign-in URL.')
   }
 
   return url.toString()
@@ -149,9 +257,23 @@ export function composioProvidersMatch(providers: readonly ProviderDefinition[],
   return providers.some(provider => queryMatches(provider, query))
 }
 
+export function composioProvidersForDirectory(
+  providers: readonly ProviderDefinition[],
+  cards: readonly ConnectorCardModel[]
+): ProviderDefinition[] {
+  const nativeProviders = new Set(
+    cards.filter(card => card.ways.hosted !== null).map(card => card.slug.toLocaleLowerCase())
+  )
+
+  return providers.filter(
+    provider => !nativeProviders.has(provider.provider.toLocaleLowerCase()) && !nativeProviders.has(provider.toolkit.toLocaleLowerCase())
+  )
+}
+
 export function ComposioProviderRows({
   actionsDisabled = false,
   catalog,
+  excludedToolkits = [],
   filterQuery,
   mcpServers,
   profile,
@@ -168,6 +290,8 @@ export function ComposioProviderRows({
   const [errorProvider, setErrorProvider] = useState<string | null>(null)
   const [errorText, setErrorText] = useState<string | null>(null)
   const [removing, setRemoving] = useState<{ account: ProviderAccount; provider: ProviderDefinition } | null>(null)
+  const [selectedProviderKey, setSelectedProviderKey] = useState<string | null>(null)
+  const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null)
   const cancelledNativeAuth = useRef(false)
   const activeOperation = useRef<symbol | null>(null)
   const profileEpoch = useRef(0)
@@ -186,6 +310,8 @@ export function ComposioProviderRows({
     setErrorProvider(null)
     setErrorText(null)
     setRemoving(null)
+    setSelectedProviderKey(null)
+    setSelectedAccountId(null)
 
     return () => {
       profileEpoch.current += 1
@@ -220,14 +346,37 @@ export function ComposioProviderRows({
   })
 
   const visibleProviders = useMemo(
-    () => (catalog.data?.providers ?? []).filter(provider => queryMatches(provider, filterQuery)),
-    [catalog.data?.providers, filterQuery]
+    () => (catalog.data?.providers ?? []).filter(provider => !excludedToolkits.includes(provider.toolkit) && queryMatches(provider, filterQuery)),
+    [catalog.data?.providers, excludedToolkits, filterQuery]
   )
 
   const statusByProvider = useMemo(
     () => new Map((status.data?.providers ?? []).map(provider => [provider.provider, provider])),
     [status.data?.providers]
   )
+
+  const selectedProvider = visibleProviders.find(provider => provider.provider === selectedProviderKey)
+
+  const selectedProviderStatus = selectedProvider
+    ? statusByProvider.get(selectedProvider.provider) ?? {
+        accounts: [],
+        provider: selectedProvider.provider,
+        status: 'unavailable' as const,
+        toolkit: selectedProvider.toolkit
+      }
+    : undefined
+
+  const activeAccounts = (selectedProviderStatus?.accounts ?? []).filter(account => account.status === 'active')
+  const selectedAccount = activeAccounts.find(account => account.id === selectedAccountId) ?? activeAccounts[0]
+
+  const providerTools = useQuery({
+    enabled: selectedProvider !== undefined && selectedAccount !== undefined,
+    queryKey: toolsKey(profile, selectedProvider?.provider ?? '', selectedAccount?.id ?? null),
+    queryFn: () => rpc<ProviderToolsResult>(profile, 'composio.tools', {
+      account_id: selectedAccount!.id,
+      provider: selectedProvider!.provider
+    })
+  })
 
   const refreshStatus = async (provider?: string) => {
     if (provider) {
@@ -479,124 +628,249 @@ export function ComposioProviderRows({
             const state = statusByProvider.get(provider.provider)
             const accounts = state?.accounts ?? []
             const isBusy = busyProvider === provider.provider
-            const isNativeAuth = nativeAuthProvider === provider.provider
-            const providerWatching = watching.has(provider.provider)
+            const card = providerCard(provider, state)
 
             return (
-              <article
-                className="grid gap-2 rounded-lg border border-(--ui-stroke-tertiary) p-3"
-                data-provider={provider.provider}
-                key={provider.provider}
-              >
-                <div className="flex min-w-0 items-start gap-2">
-                  <div className="min-w-0 flex-1">
-                    <h4 className="truncate text-sm font-medium text-(--ui-text-primary)">{provider.label}</h4>
-                    <p className="text-xs text-(--ui-text-tertiary)">{statusCopy(state?.status, t)}</p>
-                  </div>
-                  {isNativeAuth ? (
-                    <button className="text-xs text-(--ui-text-secondary) underline" onClick={cancelNativeAuthorization} type="button">
-                      {t.connectors.cancel}
-                    </button>
-                  ) : null}
-                </div>
-
-                {accounts.length > 0 ? (
-                  <ul className="grid gap-1.5">
-                    {accounts.map(account => (
-                      <li className="flex min-w-0 items-center gap-2 text-xs" key={account.id}>
-                        <span className="min-w-0 flex-1 truncate text-(--ui-text-secondary)">
-                          {account.alias || account.account_type || provider.label}
-                        </span>
-                        <span className="shrink-0 text-(--ui-text-tertiary)">{statusCopy(account.status, t)}</span>
-                        {account.status !== 'pending' && (
-                          <>
-                            {RECONNECT_ACCOUNT_STATES.has(account.status) ? (
-                              <button
-                                className="shrink-0 text-(--ui-text-secondary) underline"
-                                disabled={isBusy}
-                                onClick={() => void startProviderConnect(provider)}
-                                type="button"
-                              >
-                                {copy.card.verb.reconnect}
-                              </button>
-                            ) : null}
-                            <button
-                              className="shrink-0 text-(--ui-text-secondary) underline"
-                              disabled={isBusy}
-                              onClick={() => setRemoving({ account, provider })}
-                              type="button"
-                            >
-                              {accountCopy.remove}
-                            </button>
-                          </>
-                        )}
-                      </li>
-                    ))}
-                  </ul>
-                ) : null}
-
-                {accounts.some(account => account.status === 'expired' || account.status === 'revoked') && (
-                  <p className="text-[0.7rem] text-(--ui-text-tertiary)">{accountCopy.reconnectNote}</p>
-                )}
-
-                <div className="flex flex-wrap items-center gap-2">
-                  <button
-                    className="w-fit rounded-md bg-(--ui-fill-secondary) px-2.5 py-1.5 text-xs text-(--ui-text-primary) disabled:opacity-50"
-                    disabled={actionsDisabled || isBusy || isNativeAuth}
-                    onClick={() => void startProviderConnect(provider)}
-                    type="button"
-                  >
-                    {isBusy ? copy.card.state.connecting : accounts.length > 0 ? accountCopy.addAnother : accountCopy.add}
-                  </button>
-
-                  {providerIsWaiting(state, providerWatching, stopped.has(provider.provider)) ? (
-                    <button
-                      className="text-xs text-(--ui-text-secondary) underline"
-                      onClick={() => stopWaiting(provider.provider)}
-                      type="button"
-                    >
-                      {copy.card.verb.stopWaiting}
-                    </button>
-                  ) : null}
-
-                  {stopped.has(provider.provider) ? (
-                    <button
-                      className="text-xs text-(--ui-text-secondary) underline"
-                      onClick={() => void refreshStatus(provider.provider)}
-                      type="button"
-                    >
-                      {t.connectors.refresh}
-                    </button>
-                  ) : null}
-                </div>
-
-                {errorProvider === provider.provider ? (
-                  <p className="text-xs text-(--ui-text-danger)" role="alert">
-                    {errorText ?? t.connectors.connectErrorFor(provider.label)}
-                  </p>
-                ) : null}
-
-                {removing?.provider.provider === provider.provider ? (
-                  <div aria-label={accountCopy.removeTitle(provider.label, removing.account.alias ?? removing.account.account_type ?? provider.label)} className="grid gap-2 rounded-md border border-(--ui-stroke-tertiary) p-2" role="alertdialog">
-                    <p className="text-xs font-medium text-(--ui-text-primary)">
-                      {accountCopy.removeTitle(provider.label, removing.account.alias ?? removing.account.account_type ?? provider.label)}
-                    </p>
-                    <p className="text-xs text-(--ui-text-tertiary)">{accountCopy.removeBody}</p>
-                    <div className="flex justify-end gap-2">
-                      <button className="text-xs text-(--ui-text-secondary)" onClick={() => setRemoving(null)} type="button">
-                        {t.connectors.cancel}
-                      </button>
-                      <button className="text-xs text-(--ui-text-danger)" disabled={isBusy} onClick={() => void removeAccount()} type="button">
-                        {accountCopy.remove}
-                      </button>
-                    </div>
-                  </div>
-                ) : null}
-              </article>
+              <div data-provider={provider.provider} key={provider.provider}>
+                <ConnectorRowCard
+                  busy={isBusy}
+                  card={card}
+                  onOpen={() => {
+                    setSelectedProviderKey(provider.provider)
+                    setSelectedAccountId(null)
+                  }}
+                  onVerb={() => void startProviderConnect(provider)}
+                />
+              </div>
             )
           })}
         </div>
       )}
+
+      {selectedProvider ? (
+        <ConnectorDialog
+          accounts={
+            <>
+              <ProviderAccountRows
+                accounts={selectedProviderStatus?.accounts ?? []}
+                actionsDisabled={actionsDisabled}
+                busy={busyProvider === selectedProvider.provider}
+                onRemove={account => setRemoving({ account, provider: selectedProvider })}
+                onSelect={setSelectedAccountId}
+                onStart={() => void startProviderConnect(selectedProvider)}
+                provider={selectedProvider}
+                selectedAccountId={selectedAccount?.id ?? null}
+              />
+              {removing?.provider.provider === selectedProvider.provider ? (
+                <RemoveProviderAccount
+                  account={removing.account}
+                  accountIndex={(selectedProviderStatus?.accounts ?? []).indexOf(removing.account)}
+                  busy={busyProvider === selectedProvider.provider}
+                  onCancel={() => setRemoving(null)}
+                  onRemove={() => void removeAccount()}
+                  provider={selectedProvider}
+                />
+              ) : null}
+            </>
+          }
+          card={providerCard(selectedProvider, selectedProviderStatus)}
+          connectElement={
+            <ProviderActions
+              actionsDisabled={actionsDisabled}
+              busy={busyProvider === selectedProvider.provider}
+              error={errorProvider === selectedProvider.provider ? errorText : null}
+              nativeAuth={nativeAuthProvider === selectedProvider.provider}
+              onAdd={() => void startProviderConnect(selectedProvider)}
+              onCancel={cancelNativeAuthorization}
+              onRefresh={() => void refreshStatus(selectedProvider.provider)}
+              onStop={() => stopWaiting(selectedProvider.provider)}
+              provider={selectedProvider}
+              status={selectedProviderStatus!}
+              stopped={stopped.has(selectedProvider.provider)}
+              watching={watching.has(selectedProvider.provider)}
+            />
+          }
+          onOpenChange={open => { if (!open) { setSelectedProviderKey(null); setRemoving(null) } }}
+          open
+          tools={
+            <ProviderTools
+              account={selectedAccount}
+              loading={providerTools.isPending}
+              queryError={providerTools.isError}
+              selectedProvider={selectedProvider}
+              status={providerTools.data?.status}
+              tools={providerTools.data?.tools ?? []}
+            />
+          }
+        />
+      ) : null}
+
     </section>
+  )
+}
+
+function ProviderActions({
+  actionsDisabled,
+  busy,
+  error,
+  nativeAuth,
+  onAdd,
+  onCancel,
+  onRefresh,
+  onStop,
+  provider,
+  status,
+  stopped,
+  watching
+}: {
+  actionsDisabled: boolean
+  busy: boolean
+  error: string | null
+  nativeAuth: boolean
+  onAdd: () => void
+  onCancel: () => void
+  onRefresh: () => void
+  onStop: () => void
+  provider: ProviderDefinition
+  status: ProviderStatus
+  stopped: boolean
+  watching: boolean
+}) {
+  const { t } = useI18n()
+  const copy = t.connectorsPage.accounts
+  const pending = providerIsWaiting(status, watching, stopped)
+
+  return (
+    <div className="grid gap-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <button className="rounded-md bg-(--ui-fill-secondary) px-2.5 py-1.5 text-xs text-(--ui-text-primary) disabled:opacity-50" disabled={actionsDisabled || busy || nativeAuth} onClick={onAdd} type="button">
+          {busy ? t.connectorsPage.card.state.connecting : (status.accounts?.length ?? 0) > 0 ? copy.addAnother : copy.add}
+        </button>
+        {nativeAuth ? <button className="text-xs text-(--ui-text-secondary) underline" onClick={onCancel} type="button">{t.connectors.cancel}</button> : null}
+        {pending ? <button className="text-xs text-(--ui-text-secondary) underline" onClick={onStop} type="button">{t.connectorsPage.card.verb.stopWaiting}</button> : null}
+        {stopped ? <button className="text-xs text-(--ui-text-secondary) underline" onClick={onRefresh} type="button">{t.connectors.refresh}</button> : null}
+      </div>
+      {status.accounts?.some(account => RECONNECT_ACCOUNT_STATES.has(account.status)) ? (
+        <p className="text-[0.7rem] text-(--ui-text-tertiary)">{copy.reconnectNote}</p>
+      ) : null}
+      {error ? <p className="text-xs text-(--ui-text-danger)" role="alert">{error || t.connectors.connectErrorFor(provider.label)}</p> : null}
+    </div>
+  )
+}
+
+function ProviderAccountRows({
+  accounts,
+  actionsDisabled,
+  busy,
+  onRemove,
+  onSelect,
+  onStart,
+  provider,
+  selectedAccountId
+}: {
+  actionsDisabled: boolean
+  accounts: readonly ProviderAccount[]
+  busy: boolean
+  onRemove: (account: ProviderAccount) => void
+  onSelect: (accountId: string | null) => void
+  onStart: () => void
+  provider: ProviderDefinition
+  selectedAccountId: string | null
+}) {
+  const { t } = useI18n()
+  const copy = t.connectorsPage.accounts
+
+  return (
+    <section aria-label={`${provider.label} ${copy.heading}`} className="grid max-h-[34vh] shrink-0 gap-1 overflow-y-auto border-b border-(--ui-stroke-tertiary) px-3.5 py-2">
+      {accounts.map((account, index) => (
+        <div className="flex min-w-0 items-center gap-2 border-t border-(--ui-stroke-tertiary) py-2 first:border-t-0" key={account.id}>
+          {account.status === 'active' ? (
+            <button aria-pressed={selectedAccountId === account.id} className="min-w-0 flex-1 truncate text-left text-xs font-medium text-(--ui-text-primary)" onClick={() => onSelect(account.id)} type="button">
+              {accountLabel(provider, account, index)}{account.is_default ? ' · Default' : ''}
+            </button>
+          ) : <span className="min-w-0 flex-1 truncate text-xs text-(--ui-text-secondary)">{accountLabel(provider, account, index)}</span>}
+          <span className="shrink-0 text-[0.68rem] text-(--ui-text-tertiary)">{statusCopy(account.status, t)}</span>
+          {RECONNECT_ACCOUNT_STATES.has(account.status) ? <button className="shrink-0 text-xs text-(--ui-text-secondary) underline" disabled={actionsDisabled || busy} onClick={onStart} type="button">{t.connectorsPage.card.verb.reconnect}</button> : null}
+          {account.status !== 'pending' ? <button className="shrink-0 text-xs text-(--ui-text-secondary) underline" disabled={actionsDisabled || busy} onClick={() => onRemove(account)} type="button">{copy.remove}</button> : null}
+        </div>
+      ))}
+      {accounts.length === 0 ? <p className="text-xs text-(--ui-text-tertiary)">{t.connectors.notConnected}</p> : null}
+    </section>
+  )
+}
+
+function ProviderTools({
+  account,
+  loading,
+  queryError,
+  selectedProvider,
+  status,
+  tools
+}: {
+  account?: ProviderAccount
+  loading: boolean
+  queryError: boolean
+  selectedProvider: ProviderDefinition
+  status?: ComposioToolsStatus
+  tools: readonly ProviderTool[]
+}) {
+  const { t } = useI18n()
+  const [query, setQuery] = useState('')
+  const [expanded, setExpanded] = useState<string | null>(null)
+  const rows = useMemo(() => providerToolRows(tools), [tools])
+  const filtered = rows.filter(row => `${row.name} ${row.description}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()))
+
+  return (
+    <section aria-label={`${selectedProvider.label} tools`} className="flex min-h-0 flex-1 flex-col">
+      <div className="flex shrink-0 items-center gap-2 border-b border-(--ui-stroke-tertiary) px-3.5 py-2">
+      <SearchField containerClassName="flex-1" onChange={setQuery} placeholder={t.connectorsPage.tools.searchCountPlaceholder(rows.length)} value={query} />
+        <span className="text-[0.7rem] text-(--ui-text-tertiary)">{rows.length}</span>
+      </div>
+      {!account ? <p className="px-3.5 py-4 text-xs text-(--ui-text-tertiary)">{t.connectorsPage.accounts.add}</p> : null}
+      {account && loading ? <p className="px-3.5 py-4 text-xs text-(--ui-text-tertiary)" role="status">{t.connectorsPage.tools.loading}</p> : null}
+      {account && queryError ? <p className="px-3.5 py-4 text-xs text-(--ui-text-tertiary)" role="alert">{t.connectors.unavailable}</p> : null}
+      {account && !loading && !queryError && status !== undefined && status !== 'ready' ? (
+        <p className="px-3.5 py-4 text-xs text-(--ui-text-tertiary)" role="status">
+          {status === 'requires_mcp_auth' ? t.connectors.needsAuth : t.connectors.unavailable}
+        </p>
+      ) : null}
+      {account && !loading && !queryError ? (
+        <div aria-label={t.connectorsPage.tools.toolList(selectedProvider.label)} className="min-h-0 flex-1 overflow-y-auto px-3.5 py-2" role="list">
+          {status === 'ready' && filtered.length === 0 ? <p className="py-4 text-xs text-(--ui-text-tertiary)">{t.connectorsPage.tools.noMatch}</p> : null}
+          {status === 'ready' ? filtered.map(tool => <ToolRow expanded={expanded === tool.slug} key={tool.slug} on={true} onExpand={() => setExpanded(expanded === tool.slug ? null : tool.slug)} onToggle={() => undefined} preview readOnly tool={tool} />) : null}
+        </div>
+      ) : null}
+    </section>
+  )
+}
+
+function RemoveProviderAccount({
+  account,
+  accountIndex,
+  busy,
+  onCancel,
+  onRemove,
+  provider
+}: {
+  account: ProviderAccount
+  accountIndex: number
+  busy: boolean
+  onCancel: () => void
+  onRemove: () => void
+  provider: ProviderDefinition
+}) {
+  const { t } = useI18n()
+  const name = accountLabel(provider, account, accountIndex)
+  const copy = t.connectorsPage.accounts
+
+  return (
+    <div aria-label={copy.removeTitle(provider.label, name)} className="grid gap-2 border-b border-(--ui-stroke-tertiary) bg-(--ui-bg-chrome) px-3.5 py-3" role="alertdialog">
+      <p className="text-xs font-medium text-(--ui-text-primary)">{copy.removeTitle(provider.label, name)}</p>
+      <p className="text-xs text-(--ui-text-tertiary)">{copy.removeBody}</p>
+      <div className="flex justify-end gap-2">
+        <button className="text-xs text-(--ui-text-secondary)" onClick={onCancel} type="button">{t.connectors.cancel}</button>
+        <button className="text-xs text-(--ui-text-danger)" disabled={busy} onClick={onRemove} type="button">{copy.remove}</button>
+      </div>
+    </div>
   )
 }

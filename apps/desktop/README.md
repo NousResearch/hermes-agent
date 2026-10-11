@@ -102,10 +102,13 @@ npm run dev:fake-boot   # exercise the startup overlay with deterministic delays
 
 ### Provider accounts in Connectors
 
-Connectors lists Gmail, Google Calendar, Google Drive and the verified additional
-provider catalog as individual cards. Select a provider to add an account, then
-complete its supported consent flow. Account aliases and statuses are listed on
-that provider's card; another account can be added without replacing the first.
+Connectors keeps providers offered by the signed-in Nous account and adds Gmail,
+Google Calendar, Google Drive and the verified additional Composio provider catalog
+where the hosted catalog does not already offer them. Composio itself also appears
+as a native MCP connector. Select a provider to add an account, then complete its
+supported consent flow. Open its details to select an account, inspect available
+tools and review account aliases and statuses. Another account can be added
+without replacing the first.
 Reconnect starts a replacement authorization and keeps the old account until it
 is explicitly disconnected. Stop waiting stops local polling, not the grant.
 
@@ -116,6 +119,22 @@ it does not require a CLI or a project API key. Provider availability and accoun
 methods are checked against the live tool schemas. API-key providers still require
 their own credential handoff. Tools run through Hermes's existing untrusted-MCP
 approval checks; connection controls never execute provider actions themselves.
+
+The provider tools pane shows discovery results for the selected active account,
+not the provider's entire advertised tool catalog. Actual calls use the ordinary
+MCP tool path and must include the selected account ID or alias when accounts differ.
+The metadata RPC never executes a provider tool or changes tool permissions.
+
+For a shared application experience without the initial consumer Composio sign-in,
+maintainers must enable the hosted provider service for eligible Nous accounts or
+deploy an application-owned Composio SDK service. That service needs a server-held
+project key, stable authenticated user IDs, multi-account authorization and explicit
+account selection. A project key must never be shipped in Electron or the renderer.
+This PR does not deploy or configure that service. Composio-managed Google OAuth
+can supply consent without each user creating a Google project; a custom Hermes
+consent brand instead requires Hermes's own OAuth app and applicable verification.
+See the official [application integration](https://docs.composio.dev/examples/harness-integration)
+and [multiple-account documentation](https://docs.composio.dev/docs/authentication/managing-multiple-connected-accounts).
 
 Live OAuth completion and provider calls must be verified separately from fixture
 tests. An existing connection in another client is not automatically available here.

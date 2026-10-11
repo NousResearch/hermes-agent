@@ -49,6 +49,7 @@ export interface ConnectorAccountsTranslations {
   removeTitle: (app: string, name: string) => string
   removeBody: string
   reconnectNote: string
+  composioProfileNote: string
   retiredCount: (count: number) => string
   status: {
     expired: string

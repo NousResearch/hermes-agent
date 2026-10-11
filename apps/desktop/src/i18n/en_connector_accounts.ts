@@ -16,6 +16,7 @@ export const enConnectorAccounts: Translations['connectorsPage']['accounts'] = {
   removeTitle: (app: string, name: string) => `Remove the ${name} ${app} account?`,
   removeBody: 'Hermes stops acting as this account. Your other accounts stay connected.',
   reconnectNote: 'Reconnect starts a new sign-in. Your existing account stays until you remove it.',
+  composioProfileNote: 'These accounts belong to this profile’s Composio connection.',
   retiredCount: (count: number) => `${count} retired`,
   status: {
     expired: 'Access expired',

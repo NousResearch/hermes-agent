@@ -486,6 +486,7 @@ export type ComposioProviderStatus = 'connected' | 'disconnected' | 'pending' | 
 export interface ComposioAccountRow {
   id: string
   alias?: string | null
+  display_name?: string | null
   status: ComposioAccountStatus
   is_default?: boolean
   account_type?: string | null
@@ -513,6 +514,24 @@ export interface ComposioRemoveResult {
   toolkit: string
   account_id: string
   status: 'removed' | 'not_found' | 'requires_mcp_auth'
+}
+export interface ComposioToolsParams {
+  profile?: string | null
+  provider: string
+  account_id: string
+}
+export interface ComposioToolsResult {
+  provider: string
+  toolkit: string
+  status: ComposioToolsStatus
+  account?: ComposioAccountRow | null
+  tools?: ComposioToolRow[]
+}
+export type ComposioToolsStatus = 'ready' | 'account_not_found' | 'account_inactive' | 'requires_mcp_auth' | 'unavailable'
+export interface ComposioToolRow {
+  tool_slug: string
+  description?: string
+  input_schema: unknown
 }
 /** ``key`` selects one getter from ``_CONFIG_GETTERS``; ``cwd`` feeds the ``project`` getter, ``session_id`` lets ``reasoning`` / ``fast`` answer with the session's live pin. */
 export interface ConfigGetParams {
@@ -5128,6 +5147,8 @@ export interface RpcMethods {
   'composio.remove': { params: ComposioRemoveParams; result: ComposioRemoveResult }
   /** Read provider account status through Composio's allowlisted connection-management tools. */
   'composio.status': { params: ComposioStatusParams; result: ComposioStatusResult }
+  /** Discover provider tool schemas for one exact active Composio account. This returns metadata only. */
+  'composio.tools': { params: ComposioToolsParams; result: ComposioToolsResult }
   /** Read one normalised config value (or the whole effective config) the way the UIs render it. */
   'config.get': { params: ConfigGetParams; result: ConfigGetResult }
   /** Change one config key (persisted or session-scoped) and read back the normalised value. */
@@ -5620,6 +5641,7 @@ export const RPC_METHODS = [
   'composio.connect',
   'composio.remove',
   'composio.status',
+  'composio.tools',
   'config.get',
   'config.set',
   'config.show',

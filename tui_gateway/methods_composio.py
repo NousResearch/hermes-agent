@@ -1,12 +1,13 @@
 """Native desktop account controls for the verified hosted Composio MCP server.
 
-Only SEARCH_TOOLS and the list/add/remove connection actions are called here. Provider action
+Only SEARCH_TOOLS, GET_TOOL_SCHEMAS and the list/add/remove connection actions are called here. Provider action
 execution remains on the ordinary native MCP tools path, where the existing tool approval checks
 apply. In particular, this module never invokes COMPOSIO_MULTI_EXECUTE_TOOL.
 """
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -19,8 +20,14 @@ _profile_scoped = _registry.profile_scoped
 _MCP_SERVER = "composio"
 _MCP_URL = "https://connect.composio.dev/mcp"
 _SEARCH_TOOL = "COMPOSIO_SEARCH_TOOLS"
+_SCHEMAS_TOOL = "COMPOSIO_GET_TOOL_SCHEMAS"
 _MANAGE_TOOL = "COMPOSIO_MANAGE_CONNECTIONS"
 _MCP_TIMEOUT = 45.0
+_TOOL_DISCOVERY_QUERIES = {
+    "gmail": "Create a Gmail email draft",
+    "calendar": "Create a Google Calendar event",
+    "drive": "Create a Google Drive file from text",
+}
 
 
 @dataclass(frozen=True)
@@ -132,9 +139,17 @@ def _verified_server():
         raise _McpAuthRequired
 
     from tools import mcp_tool_discovery
+    from tools.mcp_oauth import suppress_interactive_oauth
 
     try:
-        server = mcp_tool_discovery._get_connected_server_for_call(_MCP_SERVER)
+        # First-open account metadata may precede agent tool discovery. Start only this
+        # already-authorized server; native suppression prevents lazy connect or refresh
+        # from opening a browser or initiating new consent in a passive status read.
+        with suppress_interactive_oauth():
+            server = mcp_tool_discovery._get_connected_server_for_call(_MCP_SERVER)
+            if server is None:
+                mcp_tool_discovery.discover_mcp_tools([_MCP_SERVER])
+                server = mcp_tool_discovery._get_connected_server_for_call(_MCP_SERVER)
     except Exception:  # health: allow BLE001 -- transport failures must not leak OAuth or endpoint details
         raise _ComposioUnavailable("native MCP connection is unavailable") from None
     if server is None or getattr(server, "session", None) is None:
@@ -312,11 +327,135 @@ def _search(server, rows: list[tuple[str, ProviderSpec]]) -> tuple[str, dict[str
     data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
     candidates = data.get("toolkit_connection_statuses", []) if isinstance(data, dict) else []
     toolkits = {
-        str(candidate.get("toolkit") or "")
+        str(candidate.get("toolkit") or "").casefold()
         for candidate in candidates
         if isinstance(candidate, dict)
     }
-    return session_id, {provider: spec.toolkit in toolkits for provider, spec in rows}
+    return session_id, {provider: spec.toolkit.casefold() in toolkits for provider, spec in rows}
+
+
+def _schemas_from_search(server, payload: dict, spec: ProviderSpec) -> list[dict]:
+    """Return only this provider's schemas, resolving references through the metadata tool."""
+    search_session_id = _session_id(payload)
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+    statuses = data.get("toolkit_connection_statuses", []) if isinstance(data, dict) else []
+    if not any(
+        isinstance(row, dict)
+        and isinstance(row.get("toolkit"), str)
+        and row["toolkit"].casefold() == spec.toolkit.casefold()
+        for row in statuses
+    ):
+        return []
+    raw_schemas = data.get("tool_schemas") if isinstance(data, dict) else None
+    if not isinstance(raw_schemas, dict):
+        raise _ComposioUnavailable("Composio did not return provider tool schemas")
+
+    schemas = []
+    referenced = []
+    for key, row in raw_schemas.items():
+        if (
+            not isinstance(row, dict)
+            or not isinstance(row.get("toolkit"), str)
+            or row["toolkit"].casefold() != spec.toolkit.casefold()
+        ):
+            continue
+        slug = row.get("tool_slug")
+        if not isinstance(slug, str) or slug != key or not _valid_tool_slug(slug):
+            continue
+        schema = row.get("input_schema")
+        if isinstance(schema, dict):
+            schemas.append({
+                "tool_slug": slug,
+                "description": _safe_description(row.get("description")),
+                "input_schema": schema,
+            })
+        elif row.get("schemaRef") or row.get("schema_ref"):
+            referenced.append((slug, row))
+
+    if referenced:
+        full = _call_tool(server, _SCHEMAS_TOOL, {
+            "tool_slugs": [slug for slug, _row in referenced],
+            "session_id": search_session_id,
+            "include": ["input_schema"],
+        })
+        if full.get("successful") is False or full.get("error"):
+            raise _ComposioUnavailable("Composio could not load provider tool schemas")
+        full_data = full.get("data") if isinstance(full.get("data"), dict) else full
+        tool_schemas = full_data.get("tool_schemas") if isinstance(full_data, dict) else None
+        if not isinstance(tool_schemas, dict):
+            raise _ComposioUnavailable("Composio did not return full provider tool schemas")
+        for slug, original in referenced:
+            full_row = tool_schemas.get(slug)
+            schema = full_row.get("input_schema") if isinstance(full_row, dict) else None
+            if not isinstance(schema, dict):
+                continue
+            schemas.append({
+                "tool_slug": slug,
+                "description": _safe_description(original.get("description")),
+                "input_schema": schema,
+            })
+
+    if not schemas:
+        raise _ComposioUnavailable("Composio returned no usable provider tool schemas")
+    return [_safe_tool_schema(row) for row in schemas[:30]]
+
+
+_TOOL_SLUG_RE = re.compile(r"^[A-Z][A-Z0-9_]{1,127}$")
+_SCHEMA_KEYS = frozenset({
+    "$defs", "$ref", "additionalProperties", "allOf", "anyOf", "const", "default", "description",
+    "enum", "exclusiveMaximum", "exclusiveMinimum", "format", "items", "maxItems", "maxLength",
+    "maximum", "minItems", "minLength", "minimum", "multipleOf", "oneOf", "pattern", "properties",
+    "required", "title", "type",
+})
+
+
+def _valid_tool_slug(value: str) -> bool:
+    return bool(_TOOL_SLUG_RE.fullmatch(value))
+
+
+def _safe_description(value: Any) -> str:
+    return value[:2000] if isinstance(value, str) else ""
+
+
+def _sanitize_schema(value: Any, depth: int = 0):
+    """Bound untrusted provider schemas before exposing them to the UI."""
+    if depth > 10:
+        return None
+    if isinstance(value, dict):
+        sanitized = {}
+        for key, child in list(value.items())[:120]:
+            if not isinstance(key, str) or key not in _SCHEMA_KEYS:
+                continue
+            if key == "description" or key == "title" or key == "pattern" or key == "$ref":
+                if isinstance(child, str):
+                    sanitized[key] = child[:2000]
+                continue
+            if key == "properties" and isinstance(child, dict):
+                sanitized[key] = {
+                    name[:160]: _sanitize_schema(schema, depth + 1)
+                    for name, schema in list(child.items())[:120]
+                    if isinstance(name, str) and isinstance(schema, dict)
+                }
+            else:
+                cooked = _sanitize_schema(child, depth + 1)
+                if cooked is not None:
+                    sanitized[key] = cooked
+        return sanitized
+    if isinstance(value, list):
+        return [cooked for child in value[:120]
+                if (cooked := _sanitize_schema(child, depth + 1)) is not None]
+    if isinstance(value, str):
+        return value[:2000]
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    return None
+
+
+def _safe_tool_schema(row: dict) -> dict:
+    schema = _sanitize_schema(row["input_schema"])
+    if not isinstance(schema, dict):
+        raise _ComposioUnavailable("Composio returned an invalid provider tool schema")
+    return {"tool_slug": row["tool_slug"], "description": row["description"], "input_schema": schema}
 
 
 def _manage(server, session_id: str, toolkit_actions: list[dict]) -> dict:
@@ -356,9 +495,18 @@ def _accounts_from(payload: dict, toolkit: str, *, required: bool = False) -> li
             continue
         alias = raw.get("alias")
         account_type = raw.get("account_type")
+        user_info = raw.get("user_info")
+        display_name = None
+        if isinstance(user_info, dict):
+            for key in ("email", "name"):
+                value = user_info.get(key)
+                if isinstance(value, str) and value.strip():
+                    display_name = value.strip()[:254]
+                    break
         accounts.append(ComposioAccountRow(
             id=account_id,
             alias=alias if isinstance(alias, str) else None,
+            display_name=display_name,
             status=_normalize_status(raw.get("status")),
             is_default=raw.get("is_default") is True,
             account_type=account_type if isinstance(account_type, str) else None,
@@ -378,8 +526,13 @@ def _find_redirect_url(payload: dict) -> str:
             for key in ("redirect_url", "auth_url", "connect_url"):
                 value = current.get(key)
                 if isinstance(value, str) and value:
-                    parsed = urlparse(value)
-                    if parsed.scheme == "https" and parsed.hostname == "connect.composio.dev":
+                    try:
+                        parsed = urlparse(value)
+                        safe = (parsed.scheme == "https" and parsed.hostname == "connect.composio.dev"
+                                and parsed.port in (None, 443) and not parsed.username and not parsed.password)
+                    except ValueError:
+                        safe = False
+                    if safe:
                         return value
             pending.extend(value for value in current.values() if isinstance(value, (dict, list)))
         elif isinstance(current, list):
@@ -528,6 +681,76 @@ def composio_remove(rid, params):
         return _ok(rid, ComposioRemoveResult(
             provider=provider, toolkit=spec.toolkit, account_id=request.account_id,
             status="removed").model_dump(mode="json"))
+    except _ComposioUnavailable as exc:
+        return _safe_error(rid, str(exc))
+
+
+@method("composio.tools")
+@_profile_scoped
+def composio_tools(rid, params):
+    from tui_gateway.contracts.composio import (
+        ComposioAccountStatus,
+        ComposioToolsParams,
+        ComposioToolsResult,
+        ComposioToolsStatus,
+    )
+
+    try:
+        request = ComposioToolsParams.model_validate(params)
+        provider, spec = _provider_rows(request.provider)[0]
+    except (ValueError, _ComposioUnavailable):
+        return _err(rid, 4000, "Select a supported Composio provider and account.")
+    try:
+        server = _verified_server()
+    except _McpAuthRequired:
+        return _ok(rid, ComposioToolsResult(
+            provider=provider, toolkit=spec.toolkit,
+            status=ComposioToolsStatus.requires_mcp_auth,
+        ).model_dump(mode="json"))
+    except _ComposioUnavailable as exc:
+        return _safe_error(rid, str(exc))
+
+    try:
+        queries = [{"use_case": spec.query}]
+        if provider in _TOOL_DISCOVERY_QUERIES:
+            queries.append({"use_case": _TOOL_DISCOVERY_QUERIES[provider]})
+        payload = _call_tool(server, _SEARCH_TOOL, {
+            "queries": queries,
+            "search_strategy": "tool_search",
+            "session": {"generate_id": True},
+        })
+        session_id = _session_id(payload)
+        data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+        statuses = data.get("toolkit_connection_statuses", []) if isinstance(data, dict) else []
+        if not any(
+            isinstance(row, dict)
+            and isinstance(row.get("toolkit"), str)
+            and row["toolkit"].casefold() == spec.toolkit.casefold()
+            for row in statuses
+        ):
+            status = ComposioToolsStatus.unavailable
+            return _ok(rid, ComposioToolsResult(
+                provider=provider, toolkit=spec.toolkit, status=status,
+            ).model_dump(mode="json"))
+
+        listing = _manage(server, session_id, [{"name": spec.toolkit, "action": "list"}])
+        accounts = _accounts_from(listing, spec.toolkit, required=True)
+        account = next((row for row in accounts if row.id == request.account_id), None)
+        if account is None:
+            return _ok(rid, ComposioToolsResult(
+                provider=provider, toolkit=spec.toolkit,
+                status=ComposioToolsStatus.account_not_found,
+            ).model_dump(mode="json"))
+        if account.status is not ComposioAccountStatus.active:
+            return _ok(rid, ComposioToolsResult(
+                provider=provider, toolkit=spec.toolkit,
+                status=ComposioToolsStatus.account_inactive, account=account,
+            ).model_dump(mode="json"))
+        schemas = _schemas_from_search(server, payload, spec)
+        return _ok(rid, ComposioToolsResult(
+            provider=provider, toolkit=spec.toolkit, status=ComposioToolsStatus.ready,
+            account=account, tools=schemas,
+        ).model_dump(mode="json"))
     except _ComposioUnavailable as exc:
         return _safe_error(rid, str(exc))
 

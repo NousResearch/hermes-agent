@@ -565,6 +565,24 @@
       }
     },
     {
+      "name": "composio.tools",
+      "summary": "Discover provider tool schemas for one exact active Composio account. This returns metadata only.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ComposioToolsParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ComposioToolsResult"
+        }
+      }
+    },
+    {
       "name": "config.get",
       "summary": "Read one normalised config value (or the whole effective config) the way the UIs render it.",
       "params": [
@@ -8722,6 +8740,18 @@
             "default": null,
             "title": "Alias"
           },
+          "display_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Display Name"
+          },
           "status": {
             "$ref": "#/components/schemas/ComposioAccountStatus"
           },
@@ -9063,6 +9093,114 @@
         ],
         "title": "ComposioStatusResult",
         "type": "object"
+      },
+      "ComposioToolRow": {
+        "additionalProperties": false,
+        "properties": {
+          "tool_slug": {
+            "title": "Tool Slug",
+            "type": "string"
+          },
+          "description": {
+            "default": "",
+            "title": "Description",
+            "type": "string"
+          },
+          "input_schema": {
+            "title": "Input Schema"
+          }
+        },
+        "required": [
+          "tool_slug",
+          "input_schema"
+        ],
+        "title": "ComposioToolRow",
+        "type": "object"
+      },
+      "ComposioToolsParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "account_id": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Account Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider",
+          "account_id"
+        ],
+        "title": "ComposioToolsParams",
+        "type": "object"
+      },
+      "ComposioToolsResult": {
+        "additionalProperties": false,
+        "properties": {
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "toolkit": {
+            "title": "Toolkit",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ComposioToolsStatus"
+          },
+          "account": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ComposioAccountRow"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "tools": {
+            "items": {
+              "$ref": "#/components/schemas/ComposioToolRow"
+            },
+            "title": "Tools",
+            "type": "array"
+          }
+        },
+        "required": [
+          "provider",
+          "toolkit",
+          "status"
+        ],
+        "title": "ComposioToolsResult",
+        "type": "object"
+      },
+      "ComposioToolsStatus": {
+        "enum": [
+          "ready",
+          "account_not_found",
+          "account_inactive",
+          "requires_mcp_auth",
+          "unavailable"
+        ],
+        "title": "ComposioToolsStatus",
+        "type": "string"
       },
       "CompressionSummary": {
         "additionalProperties": true,

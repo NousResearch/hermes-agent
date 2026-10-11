@@ -6,7 +6,7 @@ from typing import Literal
 
 from pydantic import Field
 
-from .base import Params, Result, WireEnum
+from .base import JsonValue, Params, Result, WireEnum
 from .common import ProfileParams
 from .registry import method
 
@@ -62,6 +62,7 @@ class ComposioStatusParams(ProfileParams):
 class ComposioAccountRow(Result):
     id: str
     alias: str | None = None
+    display_name: str | None = None
     status: ComposioAccountStatus
     is_default: bool = False
     account_type: str | None = None
@@ -124,4 +125,39 @@ method(
     params=ComposioRemoveParams,
     result=ComposioRemoveResult,
     doc="Remove only the exact account selected by the user from its provider toolkit.",
+)
+
+
+class ComposioToolsParams(ProfileParams):
+    provider: str
+    account_id: str = Field(min_length=1, max_length=256)
+
+
+class ComposioToolRow(Result):
+    tool_slug: str
+    description: str = ""
+    input_schema: JsonValue
+
+
+class ComposioToolsStatus(WireEnum):
+    ready = "ready"
+    account_not_found = "account_not_found"
+    account_inactive = "account_inactive"
+    requires_mcp_auth = "requires_mcp_auth"
+    unavailable = "unavailable"
+
+
+class ComposioToolsResult(Result):
+    provider: str
+    toolkit: str
+    status: ComposioToolsStatus
+    account: ComposioAccountRow | None = None
+    tools: list[ComposioToolRow] = Field(default_factory=list)
+
+
+method(
+    "composio.tools",
+    params=ComposioToolsParams,
+    result=ComposioToolsResult,
+    doc="Discover provider tool schemas for one exact active Composio account. This returns metadata only.",
 )

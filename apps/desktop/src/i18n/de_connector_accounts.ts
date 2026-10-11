@@ -17,6 +17,7 @@ export const deConnectorAccounts: NonNullable<TranslationOverrides['connectorsPa
   removeTitle: (app: string, name: string) => `Das ${app}-Konto ${name} entfernen?`,
   removeBody: 'Hermes handelt nicht mehr über dieses Konto. Ihre anderen Konten bleiben verbunden.',
   reconnectNote: 'Erneutes Verbinden startet eine neue Anmeldung. Dieses Konto bleibt bestehen, bis Sie es entfernen.',
+  composioProfileNote: 'Diese Konten gehören zur Composio-Verbindung dieses Profils.',
   retiredCount: (count: number) => `${count} ersetzt`,
   status: {
     expired: 'Zugriff abgelaufen',

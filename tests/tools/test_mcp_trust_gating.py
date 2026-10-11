@@ -118,6 +118,34 @@ class TestTrustGateAtCallTime:
         fake_session.call_tool.assert_not_awaited()
         assert "error" in json.loads(raw)
 
+    @pytest.mark.parametrize("slug,arguments,account", [
+        ("GMAIL_CREATE_EMAIL_DRAFT", {"recipient_email": "recipient@example.test", "subject": "Fixture", "body": "Fixture draft only"}, "fixture-gmail-work"),
+        ("GOOGLECALENDAR_CREATE_EVENT", {"summary": "Fixture event only", "start_datetime": "2030-01-01T10:00:00", "end_datetime": "2030-01-01T11:00:00"}, "fixture-calendar-personal"),
+        ("GOOGLEDRIVE_CREATE_FILE_FROM_TEXT", {"file_name": "fixture.txt", "text_content": "Fixture file only"}, "fixture-drive-archive"),
+    ])
+    @pytest.mark.parametrize("approved", [False, True])
+    def test_composio_nested_google_writes_keep_exact_account_and_require_consent(
+        self, fake_session, slug, arguments, account, approved,
+    ):
+        """Native MCP protects opaque nested writes before any fake provider transport.
+
+        Payloads are illustrative fixtures, not provider schema acceptance or live writes.
+        """
+        _set_trust("srv", "untrusted")
+        payload = {"tools": [{"tool_slug": slug, "arguments": arguments, "account": account}],
+                   "sync_response_to_workbench": False}
+        handler = _mcp_handlers._make_tool_handler("srv", "COMPOSIO_MULTI_EXECUTE_TOOL", 30.0)
+        with patch("tools.approval_prompt.request_elicitation_consent",
+                   return_value="accept" if approved else "decline") as consent:
+            raw = json.loads(handler(payload))
+        consent.assert_called_once()
+        if approved:
+            assert raw == {"result": "ok"}
+            fake_session.call_tool.assert_awaited_once_with("COMPOSIO_MULTI_EXECUTE_TOOL", arguments=payload)
+        else:
+            assert "error" in raw
+            fake_session.call_tool.assert_not_awaited()
+
     def test_read_only_tool_on_untrusted_server_skips_approval(
         self, fake_session
     ):

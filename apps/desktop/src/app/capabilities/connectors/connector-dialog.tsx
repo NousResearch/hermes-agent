@@ -350,7 +350,9 @@ function HostedLead({
 function HostedFoot({ card }: PartProps) {
   const { t } = useI18n()
 
-  return card.ways.hosted ? <FootLine>{t.connectorsPage.dialog.nousLine}</FootLine> : null
+  return card.ways.hosted ? (
+    <FootLine>{card.accountSource === 'composio' ? t.connectorsPage.accounts.composioProfileNote : t.connectorsPage.dialog.nousLine}</FootLine>
+  ) : null
 }
 
 function LocalLead({ card, installFields = [], installing, onInstall }: PartProps) {

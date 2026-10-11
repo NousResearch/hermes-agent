@@ -133,6 +133,7 @@ export type ConnectorWays =
   { hosted: ConnectorWayHosted; local: ConnectorWayLocal | null } | { hosted: null; local: ConnectorWayLocal }
 
 export interface ConnectorCardModel {
+  accountSource?: 'composio'
   description?: string
   fact?: ConnectorFact
   inCatalog: boolean

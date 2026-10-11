@@ -13,7 +13,7 @@ import { installBundledEntry } from '../mcp/install-catalog-entry'
 import { useMcpServers } from '../mcp/use-mcp-servers'
 
 import { AddServerDialog } from './add-dialog'
-import { ComposioProviderRows, composioProvidersMatch, useComposioProviderCatalog } from './composio-providers'
+import { ComposioProviderRows, composioProvidersForDirectory, composioProvidersMatch, useComposioProviderCatalog } from './composio-providers'
 import { ConnectorsDirectory } from './connectors-directory'
 import { $abandonedConnects, $accountOperations, abandonConnect, accountOperationFor } from './data/account-operations'
 import { claimRouteLink } from './data/deep-link'
@@ -110,12 +110,14 @@ export function ConnectorsTab({ gateway, profile }: ConnectorsTabProps) {
     [abandoned, bundled, hosted.rows, hosted.titles, servers]
   )
 
-  const directoryCards = useMemo(
-    () => cards.filter(card => card.slug.toLowerCase() !== 'composio' && card.name.toLowerCase() !== 'composio'),
-    [cards]
+  const directoryCards = cards
+
+  const composioProviders = useMemo(
+    () => composioProvidersForDirectory(composioCatalog.data?.providers ?? [], directoryCards),
+    [composioCatalog.data?.providers, directoryCards]
   )
 
-  const providerMatches = composioProvidersMatch(composioCatalog.data?.providers ?? [], filter.query)
+  const providerMatches = composioProvidersMatch(composioProviders, filter.query)
 
   useEffect(startConnectorPersistence, [])
 
@@ -268,7 +270,7 @@ export function ConnectorsTab({ gateway, profile }: ConnectorsTabProps) {
         loading={
           (hosted.phase === 'loading' || mcp.configLoading || mcp.catalogLoading) &&
           directoryCards.length === 0 &&
-          (composioCatalog.data?.providers.length ?? 0) === 0
+          composioProviders.length === 0
         }
         notices={
           <>
@@ -276,6 +278,7 @@ export function ConnectorsTab({ gateway, profile }: ConnectorsTabProps) {
             <ComposioProviderRows
               actionsDisabled={mcp.configLoading || mcp.profilePending}
               catalog={composioCatalog}
+              excludedToolkits={composioProviders.length === (composioCatalog.data?.providers.length ?? 0) ? [] : (composioCatalog.data?.providers ?? []).filter(provider => !composioProviders.includes(provider)).map(provider => provider.toolkit)}
               filterQuery={filter.query}
               mcpServers={mcp.servers}
               profile={profile}
@@ -299,7 +302,7 @@ export function ConnectorsTab({ gateway, profile }: ConnectorsTabProps) {
         onVerb={runVerb}
         selectedKey={openKey}
         supplementalMatches={providerMatches}
-        supplementalSearchableCount={composioCatalog.data?.providers.length ?? 0}
+        supplementalSearchableCount={composioProviders.length}
       />
 
       {openCard && openCard.ways.hosted === null ? (

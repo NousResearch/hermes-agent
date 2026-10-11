@@ -16,6 +16,7 @@ export const esConnectorAccounts: NonNullable<TranslationOverrides['connectorsPa
   removeTitle: (app: string, name: string) => `¿Quitar la cuenta ${name} de ${app}?`,
   removeBody: 'Hermes deja de actuar con esta cuenta. Tus otras cuentas siguen conectadas.',
   reconnectNote: 'Volver a conectar inicia un nuevo acceso. Esta cuenta seguirá hasta que la elimines.',
+  composioProfileNote: 'Estas cuentas pertenecen a la conexión de Composio de este perfil.',
   retiredCount: (count: number) => `${count} retirada${count === 1 ? '' : 's'}`,
   status: {
     expired: 'Acceso caducado',

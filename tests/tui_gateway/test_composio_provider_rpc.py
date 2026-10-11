@@ -40,6 +40,17 @@ _MANAGE_SCHEMA = {
     "additionalProperties": False,
 }
 
+_GET_SCHEMAS = {
+    "type": "object",
+    "properties": {
+        "tool_slugs": {"type": "array", "items": {"type": "string"}},
+        "session_id": {"type": "string"},
+        "include": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["tool_slugs"],
+    "additionalProperties": False,
+}
+
 
 class _FakeSession:
     def __init__(self, replies):
@@ -59,6 +70,7 @@ class _FakeServer:
         self._config = {"url": "https://connect.composio.dev/mcp", "auth": "oauth", "trust": "untrusted"}
         self._tools = [
             SimpleNamespace(name="COMPOSIO_SEARCH_TOOLS", inputSchema=search_schema),
+            SimpleNamespace(name="COMPOSIO_GET_TOOL_SCHEMAS", inputSchema=_GET_SCHEMAS),
             SimpleNamespace(name="COMPOSIO_MANAGE_CONNECTIONS", inputSchema=_MANAGE_SCHEMA),
         ]
         self._rpc_lock = asyncio.Lock()
@@ -138,6 +150,30 @@ def test_status_without_native_mcp_oauth_does_not_connect_or_mutate(monkeypatch)
     assert calls == []
 
 
+def test_cold_status_starts_only_authorized_composio_without_browser_consent(monkeypatch):
+    from tools import mcp_oauth, mcp_tool_discovery
+
+    fake = _FakeServer([
+        ("COMPOSIO_SEARCH_TOOLS", _search_payload()),
+        ("COMPOSIO_MANAGE_CONNECTIONS", _manage_payload(accounts=[{
+            "id": "gmail-cached", "status": "ACTIVE",
+        }])),
+    ])
+    _connect_fixture(monkeypatch, fake)
+    started = []
+    monkeypatch.setattr(mcp_tool_discovery, "_get_connected_server_for_call", lambda name: fake if started else None)
+
+    def discover(names):
+        assert names == ["composio"]
+        assert mcp_oauth._oauth_interactive_enabled.get() is False
+        started.extend(names)
+
+    monkeypatch.setattr(mcp_tool_discovery, "discover_mcp_tools", discover)
+    reply = _rpc("composio.status", provider="gmail")
+    assert reply["result"]["providers"][0]["accounts"][0]["id"] == "gmail-cached"
+    assert started == ["composio"]
+
+
 def test_status_refuses_disabled_server_even_if_stale_session_exists(monkeypatch):
     from hermes_cli import mcp_config
     from tools import mcp_tool_discovery
@@ -174,7 +210,7 @@ def test_status_uses_profile_scope_and_returns_only_safe_account_fields(monkeypa
     assert state == {
         "provider": "gmail", "toolkit": "gmail", "status": "connected", "accounts": [{
             "id": "acc_gmail_1", "alias": "work", "status": "active", "is_default": True,
-            "account_type": "oauth",
+            "account_type": "oauth", "display_name": "private@example.test",
         }],
     }
     assert fake._observed_profile_homes == [str(profile_home.resolve())]
@@ -185,7 +221,7 @@ def test_status_uses_profile_scope_and_returns_only_safe_account_fields(monkeypa
         "session_id": "session-safe-test", "toolkits": [{"name": "gmail", "action": "list"}],
     }
     serialized = repr(reply)
-    assert "private@example.test" not in serialized
+    assert "private@example.test" in serialized  # Safe, bounded display identity only.
     assert "never-return-this" not in serialized
 
 
@@ -319,6 +355,24 @@ def test_connect_adds_only_the_selected_provider_and_returns_safe_auth_link(monk
     assert all(name != "COMPOSIO_MULTI_EXECUTE_TOOL" for name, _args in fake.session.calls)
 
 
+@pytest.mark.parametrize("url", [
+    "https://unrelated.example/authorize",
+    "https://connect.composio.dev:8443/authorize",
+    "https://user:secret@connect.composio.dev/authorize",
+    "https://connect.composio.dev:invalid/authorize",
+    "http://connect.composio.dev/authorize",
+])
+def test_connect_rejects_unexpected_authorization_destination(monkeypatch, url):
+    fake = _FakeServer([
+        ("COMPOSIO_SEARCH_TOOLS", _search_payload()),
+        ("COMPOSIO_MANAGE_CONNECTIONS", _manage_payload(accounts=[], redirect_url=url)),
+    ])
+    _connect_fixture(monkeypatch, fake)
+    reply = _rpc("composio.connect", provider="gmail")
+    assert reply["error"]["code"] == 5034
+    assert "auth_url" not in repr(reply)
+
+
 def test_remove_checks_exact_account_id_before_calling_remove(monkeypatch):
     account = {"id": "acc_gmail_work", "alias": "work", "status": "EXPIRED"}
     fake = _FakeServer([
@@ -385,6 +439,104 @@ def test_remove_does_not_send_unknown_account_id_to_composio(monkeypatch):
     reply = _rpc("composio.remove", provider="gmail", account_id="acc_other_provider")
     assert reply["result"]["status"] == "not_found"
     assert [call[0] for call in fake.session.calls] == ["COMPOSIO_SEARCH_TOOLS", "COMPOSIO_MANAGE_CONNECTIONS"]
+
+
+def test_tools_discovers_only_provider_schemas_for_the_exact_active_account(monkeypatch):
+    selected = {
+        "id": "acc_gmail_work", "alias": "work", "status": "ACTIVE", "is_default": False,
+        "user_info": {
+            "email": "work@example.test", "name": "Work mailbox", "sub": "never-return-this",
+        },
+    }
+    other = {"id": "acc_gmail_personal", "alias": "personal", "status": "ACTIVE", "is_default": True}
+    search = _search_payload()
+    search["data"]["tool_schemas"] = {
+        "GMAIL_FETCH_EMAILS": {
+            "tool_slug": "GMAIL_FETCH_EMAILS", "toolkit": "GMAIL", "description": "Fetch Gmail messages",
+            "input_schema": {"type": "object", "properties": {"query": {"type": "string"}}},
+        },
+        "GMAIL_LIST_LABELS": {
+            "tool_slug": "GMAIL_LIST_LABELS", "toolkit": "GMAIL", "description": "List Gmail labels",
+            "schemaRef": "schema:gmail-labels", "hasFullSchema": False,
+        },
+        "GOOGLEDRIVE_FIND_FILE": {
+            "tool_slug": "GOOGLEDRIVE_FIND_FILE", "toolkit": "googledrive", "description": "Drive lookup",
+            "input_schema": {"type": "object", "properties": {}},
+        },
+    }
+    full_schema = {
+        "successful": True,
+        "data": {"success": True, "tool_schemas": {
+            "GMAIL_LIST_LABELS": {"input_schema": {"type": "object", "properties": {
+                "user_id": {"type": "string", "description": "Account mailbox"},
+            }, "required": ["user_id"], "x_private": "not schema data"}},
+        }},
+    }
+    fake = _FakeServer([
+        ("COMPOSIO_SEARCH_TOOLS", search),
+        ("COMPOSIO_MANAGE_CONNECTIONS", _manage_payload(accounts=[other, selected])),
+        ("COMPOSIO_GET_TOOL_SCHEMAS", full_schema),
+    ])
+    _connect_fixture(monkeypatch, fake)
+
+    reply = _rpc("composio.tools", provider="gmail", account_id="acc_gmail_work")
+    result = reply["result"]
+    assert result["status"] == "ready"
+    assert result["account"] == {
+            "id": "acc_gmail_work", "alias": "work", "status": "active",
+        "is_default": False, "account_type": None, "display_name": "work@example.test",
+    }
+    assert [tool["tool_slug"] for tool in result["tools"]] == ["GMAIL_FETCH_EMAILS", "GMAIL_LIST_LABELS"]
+    assert "GOOGLEDRIVE_FIND_FILE" not in repr(result)
+    assert "x_private" not in repr(result)
+    assert "work@example.test" in repr(result)
+    assert "never-return-this" not in repr(result)
+    assert fake.session.calls[2][1] == {
+        "tool_slugs": ["GMAIL_LIST_LABELS"], "session_id": "session-safe-test", "include": ["input_schema"],
+    }
+    assert all(name != "COMPOSIO_MULTI_EXECUTE_TOOL" for name, _args in fake.session.calls)
+
+
+def test_tools_requires_the_exact_active_account_before_returning_schemas(monkeypatch):
+    search = _search_payload()
+    search["data"]["tool_schemas"] = {"GMAIL_FETCH_EMAILS": {
+        "tool_slug": "GMAIL_FETCH_EMAILS", "toolkit": "gmail", "description": "Fetch mail",
+        "input_schema": {"type": "object", "properties": {}},
+    }}
+    fake = _FakeServer([
+        ("COMPOSIO_SEARCH_TOOLS", search),
+        ("COMPOSIO_MANAGE_CONNECTIONS", _manage_payload(accounts=[{
+            "id": "acc_gmail_personal", "alias": "personal", "status": "ACTIVE",
+        }]))
+    ])
+    _connect_fixture(monkeypatch, fake)
+
+    reply = _rpc("composio.tools", provider="gmail", account_id="acc_gmail_work")
+    assert reply["result"]["status"] == "account_not_found"
+    assert reply["result"]["account"] is None
+    assert reply["result"]["tools"] == []
+    assert [name for name, _args in fake.session.calls] == ["COMPOSIO_SEARCH_TOOLS", "COMPOSIO_MANAGE_CONNECTIONS"]
+
+
+def test_tools_does_not_discover_for_an_expired_selected_account(monkeypatch):
+    search = _search_payload()
+    search["data"]["tool_schemas"] = {"GMAIL_FETCH_EMAILS": {
+        "tool_slug": "GMAIL_FETCH_EMAILS", "toolkit": "gmail", "description": "Fetch mail",
+        "input_schema": {"type": "object", "properties": {}},
+    }}
+    fake = _FakeServer([
+        ("COMPOSIO_SEARCH_TOOLS", search),
+        ("COMPOSIO_MANAGE_CONNECTIONS", _manage_payload(accounts=[{
+            "id": "acc_gmail_work", "alias": "work", "status": "EXPIRED",
+        }]))
+    ])
+    _connect_fixture(monkeypatch, fake)
+
+    reply = _rpc("composio.tools", provider="gmail", account_id="acc_gmail_work")
+    assert reply["result"]["status"] == "account_inactive"
+    assert reply["result"]["account"]["status"] == "expired"
+    assert reply["result"]["tools"] == []
+    assert [name for name, _args in fake.session.calls] == ["COMPOSIO_SEARCH_TOOLS", "COMPOSIO_MANAGE_CONNECTIONS"]
 
 
 def test_unknown_provider_and_live_schema_mismatch_fail_closed(monkeypatch, caplog):

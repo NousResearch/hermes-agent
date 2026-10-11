@@ -455,6 +455,24 @@ class PlatformConfig:
             value = data.get(key)
             return extra.get(key) if value is None else value
 
+        # Multi-account blocks (#8287): ``accounts:`` may arrive top-level
+        # (``platforms.telegram.accounts`` in YAML) or bridged into extra by
+        # the shared-key loop, so it takes the same two routes as the other
+        # bridged keys. Account names are normalized (lowercased) into
+        # ``extra["accounts"]`` so the adapter registry has a single read path.
+        # Tokens are secrets and load from ``<PLATFORM>_BOT_TOKEN_<ACCOUNT>``
+        # env vars; a ``token`` key inside a YAML account block is honored for
+        # parity but ``.env`` is the supported home for credentials.
+        _accounts = toplevel_or_extra("accounts")
+        if isinstance(_accounts, dict):
+            _norm_accounts: Dict[str, Any] = {}
+            for _acct_name, _acct_block in _accounts.items():
+                _acct_key = str(_acct_name).strip().lower()
+                if _acct_key:
+                    _norm_accounts[_acct_key] = _coerce_dict(_acct_block)
+            if _norm_accounts:
+                extra["accounts"] = _norm_accounts
+
         raw_overrides = data.get("channel_overrides") or {}
         channel_overrides = {
             str(cid): ChannelOverride.from_dict(ov_data)

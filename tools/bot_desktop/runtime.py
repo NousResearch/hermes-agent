@@ -341,6 +341,15 @@ def _allocate_display() -> int:
         return _pick_display()
 
 
+def force_x11(env: dict[str, str]) -> dict[str, str]:
+    """The Bot Desktop is an X11 server: drop the login seat's Wayland socket and override its
+    ``XDG_SESSION_TYPE=wayland``, from which Chromium's default ozone platform hint picks Wayland
+    and dies with "Failed to initialize Wayland platform" on a Wayland login (e.g. Hyprland)."""
+    env.pop("WAYLAND_DISPLAY", None)
+    env["XDG_SESSION_TYPE"] = "x11"
+    return env
+
+
 def desktop_env(base_env: Optional[dict[str, str]] = None) -> dict[str, str]:
     """``base_env`` (default ``os.environ``) with this profile's DISPLAY/XAUTHORITY/DBUS_SESSION_BUS_ADDRESS
     merged in when its desktop is running. Unchanged otherwise, so hosts with a real seat keep it.
@@ -350,7 +359,7 @@ def desktop_env(base_env: Optional[dict[str, str]] = None) -> dict[str, str]:
     if published:
         touch_activity()  # a browser / cua-driver spawn is the agent using its screen
         env.update(published)
-        env.pop("WAYLAND_DISPLAY", None)  # X11 desktop; a leaked Wayland socket flips GTK/Chromium backends
+        force_x11(env)
         from tools.bot_desktop.browser import env_for_agent
         env_for_agent(env)  # same binary + user-data-dir as the dock's Browser icon
     return env

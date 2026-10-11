@@ -573,6 +573,45 @@ def get_custom_provider_context_length(
     return None
 
 
+def get_custom_provider_ollama_num_ctx(
+    model: str,
+    base_url: str,
+    custom_providers: Optional[List[Dict[str, Any]]] = None,
+    config: Optional[Dict[str, Any]] = None) -> Optional[int]:
+    """Per-model ``ollama_num_ctx`` override from a route-matching entry, or ``None``.
+
+    Entry-level is deliberately not read: the entry normalizer keeps only documented scalar
+    keys, while ``models.<model>`` passes through intact — same scoping as the per-model
+    ``context_length`` lookup (#123398).
+    """
+    from hermes_cli.config import get_compatible_custom_providers, load_config_readonly
+    if not model or not base_url:
+        return None
+    if custom_providers is None:
+        try:
+            custom_providers = get_compatible_custom_providers(
+                load_config_readonly() if config is None else config
+            )
+        except Exception:
+            if config is None:
+                return None
+            raw = config.get("custom_providers")
+            custom_providers = raw if isinstance(raw, list) else []
+
+    def _positive_int(raw: Any) -> Optional[int]:
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            return None
+        return value if value > 0 else None
+
+    for model_cfg in _route_model_cfgs(model, base_url, custom_providers, config):
+        value = _positive_int(model_cfg.get("ollama_num_ctx"))
+        if value is not None:
+            return value
+    return None
+
+
 def get_custom_provider_model_capability(
     model: str,
     base_url: str,

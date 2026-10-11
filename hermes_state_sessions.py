@@ -774,7 +774,7 @@ class SessionSessionsMixin:
         leave the stored route untouched.
         """
         # Flush first: a still-queued pre-switch delta applied after this UPDATE would trip the
-        # first_accounted_route overwrite and resurrect the old route.
+        # latest_accounted_route overwrite and resurrect the old route.
         self.flush_token_counts()
         patch: dict[str, Any] = {"browser_model_lock": None}
         if model:

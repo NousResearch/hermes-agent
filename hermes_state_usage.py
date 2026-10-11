@@ -318,15 +318,21 @@ class SessionUsageMixin:
                 "SELECT model, billing_provider, api_call_count FROM sessions WHERE id = ?", (session_id,),
             ).fetchone()
             existing = dict(row) if row is not None else {}
-            # create_session records the requested route before any API call. If that fails
-            # and fallback succeeds, the first accounted usage is the authoritative route;
-            # after that keep the row as is (one row cannot represent mixed usage).
-            first_accounted_route = (
-                not task and int(existing.get("api_call_count") or 0) == 0 and has_accounted_usage and bool(model)
+            # Route reconciliation: the sessions row's route columns follow the LATEST
+            # accounted call's route, not only the first. Configured-route writers
+            # (create_session's COALESCE backfill, update_session_billing_route on /model
+            # switches, /new's config-default reset) can stamp a route that never served
+            # accounted usage; with the old api_call_count == 0 gate such a stamp froze onto
+            # the row forever. Mixed sessions keep the exact per-route split in
+            # session_model_usage; the sessions row reflects the latest accounted call.
+            # Only accounted deltas rewrite the route, so usage-less writes and absolute
+            # gateway totals never stomp it.
+            latest_accounted_route = (
+                not task and has_accounted_usage and bool(model)
                 and bool(billing_provider)
                 and (existing.get("model") != model or existing.get("billing_provider") != billing_provider)
             )
-            if first_accounted_route:
+            if latest_accounted_route:
                 conn.execute("""UPDATE sessions
                        SET model = ?, billing_provider = ?,
                        billing_base_url = ?, billing_mode = ?

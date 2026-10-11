@@ -7,6 +7,7 @@ EXPERIMENTAL: the relay auth scheme may change without a deprecation cycle.
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import socket
@@ -73,6 +74,8 @@ def _post_enroll(
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             payload = json.loads(resp.read().decode())
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise RuntimeError("connector returned a non-JSON response") from exc
     except urllib.error.HTTPError as exc:
         detail = ""
         try:
@@ -93,6 +96,9 @@ def _post_enroll(
         raise RuntimeError(
             f"Could not reach the connector at {connector_base_url}: {exc.reason}"
         ) from exc
+    except (OSError, ValueError, http.client.HTTPException) as exc:
+        # read()-time socket failure, malformed URL, broken HTTP framing
+        raise RuntimeError(f"Connector transport failure: {exc}") from exc
 
     if not isinstance(payload, dict) or not payload.get("secret"):
         raise RuntimeError("Connector returned an unexpected response (no secret).")

@@ -55,6 +55,7 @@ import {
 import { $sessionColorOverrides, setSessionColorOverride } from '@/store/session-color'
 import { $sessionStates, $sessionTiles, closeAllOpenSessionTiles } from '@/store/session-states'
 import { ackStoredSessionId } from '@/store/session-unread'
+import { broadcastSessionsChanged, requestSessionsListRefresh } from '@/store/session-sync'
 import { canOpenSessionInTerminal, canOpenSessionWindow, openSessionInTerminal } from '@/store/windows'
 
 import type { SessionTitleResponse } from '../../types'
@@ -764,6 +765,10 @@ function RenameSessionDialog({ open, onOpenChange, sessionId, currentTitle, prof
       // profile switch forced a refetch (#123337).
       applySessionTitle(sessionId, finalTitle || null)
       applyRenamedSessionTitle(sessionId, finalTitle || null)
+      // The patches above only cover the loaded slices; a row outside them
+      // stays stale until the next poll. Re-pull + tell the other windows.
+      requestSessionsListRefresh()
+      broadcastSessionsChanged()
       notify({ durationMs: 2_000, kind: 'success', message: r.renamed })
       onOpenChange(false)
     } catch (err) {

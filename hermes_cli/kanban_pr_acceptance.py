@@ -121,9 +121,7 @@ def collect_acceptance(contract: str, published_pr: str | None,
         repo, number = match[1], int(match[2])
         receipt["pr_url"] = url
         owner, name = repo.split("/")
-        query = '''{repository(owner:%s,name:%s){pullRequest(number:%d){headRefOid baseRefName state
-            baseRef{branchProtectionRule{requiredStatusChecks{context app{databaseId}}}}}}}''' % (
-                json.dumps(owner), json.dumps(name), number)
+        query = f'{{repository(owner:{json.dumps(owner)},name:{json.dumps(name)}){{pullRequest(number:{number:d}){{headRefOid baseRefName state\n            baseRef{{branchProtectionRule{{requiredStatusChecks{{context app{{databaseId}}}}}}}}}}}}}}'
         repository = _api("graphql", query=query, profile_home=profile_home)["data"]["repository"]
         if repository is None:
             # A private repo the login cannot read resolves to null, not an error.

@@ -23,7 +23,7 @@ import re
 import shutil
 import sqlite3
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any
 
@@ -100,7 +100,7 @@ def _today_start() -> str:
     """Today's package ``period_start``, in the store's stamp format (``shared_metrics._isoformat``)."""
     from .shared_metrics import _isoformat, _utc_now
 
-    return _isoformat(datetime.combine(_utc_now().date(), datetime.min.time(), tzinfo=timezone.utc))
+    return _isoformat(datetime.combine(_utc_now().date(), datetime.min.time(), tzinfo=UTC))
 
 
 def consented_day(home: Path) -> bool:

@@ -22,7 +22,7 @@ from agent import model_metadata_http
 from utils import atomic_json_write, atomic_yaml_write, base_url_host_matches, base_url_hostname
 
 from hermes_constants import OPENROUTER_MODELS_URL, openrouter_variant_base
-from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS, without_persistence_fields
+from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS, UNPRICED_REPLAY_FIELDS, without_persistence_fields
 
 logger = logging.getLogger(__name__)
 
@@ -533,7 +533,7 @@ def _lmstudio_server_root(base_url: str) -> str:
 def _server_root(base_url: str) -> str:
     """Probe root for a local server: IPv4-resolved, ``/v1`` suffix stripped."""
     server_url = _localhost_to_ipv4(base_url.rstrip("/"))
-    return server_url[:-3] if server_url.endswith("/v1") else server_url
+    return server_url.removesuffix("/v1")
 
 
 # Families whose generation digit is part of the name (``solar-mini`` vs ``solar-mini4``): their keys
@@ -2572,7 +2572,7 @@ def _wire_message_shadow(msg: dict[str, Any]) -> dict[str, Any]:
     drop_reasoning_dup = isinstance(_rc, str) and bool(_rc.strip())
     shadow: dict[str, Any] = {}
     for k, v in msg.items():
-        if k in ("_anthropic_content_blocks", "reasoning_details") or k in PERSISTENCE_ONLY_MESSAGE_FIELDS or (k == "reasoning" and drop_reasoning_dup):
+        if k in UNPRICED_REPLAY_FIELDS or k in PERSISTENCE_ONLY_MESSAGE_FIELDS or (k == "reasoning" and drop_reasoning_dup):
             continue
         if k == "api_content":
             if sidecar_wins:

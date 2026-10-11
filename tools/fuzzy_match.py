@@ -526,28 +526,118 @@ def _first_meaningful_line(text: str) -> Optional[str]:
 
 
 def _reindent_replacement(file_region: str, old_string: str, new_string: str) -> str:
-    """Re-anchor ``new_string``'s indentation onto the file's actual base indent after a
-    non-exact match: swap the LLM base prefix (first non-blank old_string line) for the
-    file's, preserving relative nesting; shallower lines anchor to the file base."""
+    """Re-anchor ``new_string`` onto the file's actual indentation after a non-exact match.
+
+    The old prefix-swap only swapped the outer base indent and left interior nesting
+    at the LLM's sent indent, silently corrupting multi-line replacements when the file
+    base differs from ``old_string``.  A blank-line guard also returned ``new_string``
+    unchanged even when every non-blank line needed reindent.  Both are fixed here.
+
+    Non-blank ``new_string`` lines are aligned to the corresponding file-region lines by
+    stripped content (via :class:`difflib.SequenceMatcher`), inheriting each file line's
+    actual whitespace.  Genuine insertions (present in ``new_string`` but absent from the
+    file) inherit the nearest file depth so nested lines sit at a sensible level rather
+    than column 0.  Blank lines inherit whitespace from the nearest non-blank line above
+    or below, preserving their position in the structure.
+
+    No-op cases that return ``new_string`` unchanged:
+        * ``new_string`` is empty
+        * ``old_first`` or ``file_first`` is ``None``
+        * the file region has no non-blank line to anchor against
+    """
     if not new_string:
         return new_string
+
     old_first = _first_meaningful_line(old_string)
     file_first = _first_meaningful_line(file_region)
     if old_first is None or file_first is None:
         return new_string
-    old_indent = _leading_whitespace(old_first)
-    file_indent = _leading_whitespace(file_first)
-    if old_indent == file_indent:
+
+    def _ws(line: str) -> str:
+        return line[:len(line) - len(line.lstrip(" \t"))]
+
+    # Process ALL lines (including blanks) from new_string and file_region
+    new_all = [
+        (i, _ws(l), l.strip())
+        for i, l in enumerate(new_string.split("\n"))
+    ]
+    file_all = [
+        (i, _ws(l), l.strip())
+        for i, l in enumerate(file_region.split("\n"))
+    ]
+
+    if not new_all or not file_all:
         return new_string
 
+    # Use all lines (not just non-blank) for the matcher so blank lines are properly handled
+    matcher = SequenceMatcher(
+        a=[st for _, _, st in new_all],
+        b=[st for _, _, st in file_all],
+        autojunk=False,
+    )
+
+    # file_ws[p] = target whitespace prefix for the p-th line of new_string (including blanks)
+    file_ws: list[str] = [""] * len(new_all)
+
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            # Exact matches: inherit the file's whitespace exactly
+            for k in range(i2 - i1):
+                file_ws[i1 + k] = file_all[j1 + k][1]
+        elif tag == "replace":
+            # Replaced regions: use the file's whitespace from the corresponding position
+            ws = file_all[j1][1] if j1 < len(file_all) else file_base_ws
+            for k in range(i2 - i1):
+                file_ws[i1 + k] = ws
+        elif tag == "delete":
+            # Lines present in new_string but absent from file: genuine insertions
+            # Anchor to the nearest existing file depth so nested lines nest sensibly
+            neighbor = file_base_ws
+            if j1 > 0:
+                neighbor = file_all[j1 - 1][1]
+            elif j1 < len(file_all):
+                neighbor = file_all[j1][1]
+            for k in range(i2 - i1):
+                file_ws[i1 + k] = neighbor
+        # 'insert' tag (present in file but not in new): nothing to emit for them,
+        # the file lines will be handled separately below
+
+    # Build output, applying the computed whitespace to each line
     out_lines: list[str] = []
-    for line in new_string.split("\n"):
-        if not line.strip():
-            out_lines.append(line)
-        elif _leading_whitespace(line).startswith(old_indent):
-            out_lines.append(file_indent + line[len(old_indent):])
+    nb_pos = 0
+    for i, line in enumerate(new_string.split("\n")):
+        if i < len(file_ws):
+            ws = file_ws[i]
+            if line.strip():
+                out_lines.append(ws + line.lstrip(" \t"))
+            else:
+                # Blank line: inherit whitespace from context (nearest non-blank above or below)
+                prev_ws = ""
+                next_ws = ""
+                # Check previous non-blank lines
+                for j in range(i - 1, -1, -1):
+                    if j < len(new_all) and new_all[j][2]:
+                        prev_ws = new_all[j][1]
+                        break
+                # Check next non-blank lines
+                for j in range(i + 1, len(new_all)):
+                    if j < len(new_all) and new_all[j][2]:
+                        next_ws = new_all[j][1]
+                        break
+                # Use whichever is available, preferring non-empty
+                if prev_ws and next_ws:
+                    chosen_ws = prev_ws if len(prev_ws) <= len(next_ws) else next_ws
+                elif prev_ws:
+                    chosen_ws = prev_ws
+                elif next_ws:
+                    chosen_ws = next_ws
+                else:
+                    chosen_ws = file_base_ws
+                out_lines.append(chosen_ws + line if chosen_ws else line)
+            nb_pos += 1
         else:
-            out_lines.append(file_indent + line.lstrip(" \t"))
+            out_lines.append(line)
+
     return "\n".join(out_lines)
 
 

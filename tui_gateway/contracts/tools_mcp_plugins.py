@@ -671,7 +671,13 @@ class AgentPluginRow(Result):
     catalog_tier: str | None = None
     installed_sha: str | None = None
     catalog_sha: str | None = None
-    catalog_version: str | None = None
+    catalog_version: str | None = Field(
+        default=None,
+        description=(
+            "Version label of the catalog pin; null when it equals the installed version, "
+            "so a same-version off-pin install falls back to the catalog SHA for the update label."
+        ),
+    )
     update_available: bool | None = None
     pinned_sha: str | None = None
     settings_schema: list[PluginSettingField] | None = None

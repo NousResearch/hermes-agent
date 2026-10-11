@@ -1814,7 +1814,7 @@ def _plugin_rows() -> list[dict]:
             # Manifest ``config_schema`` + current values: the Plugins hub renders these as a form.
             "settings_schema": _tools_mod("hermes_cli.plugins_settings").plugin_settings_fields(key, _dir_path),
             "servers": _plugin_server_rows(_dir_path, key, portable=portable, catalog_titles=titles),
-            **cat.catalog_row_fields(_dir, pins, versions),
+            **cat.catalog_row_fields(_dir, pins, versions, installed_version=str(version) if version else None),
             **({"pinned_sha": sha} if (sha := pc.pinned_revision(name, ref_pins)) else {})})
     return out
 

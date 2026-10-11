@@ -854,10 +854,15 @@ def installed_catalog_state(installed: dict[str, dict[str, Any]]) -> dict[str, A
     }
 
 
-def catalog_row_fields(dir_path, pins: dict[str, str], versions: Optional[dict[str, str]] = None) -> dict[str, Any]:
+def catalog_row_fields(dir_path, pins: dict[str, str], versions: Optional[dict[str, str]] = None,
+                       installed_version: Optional[str] = None) -> dict[str, Any]:
     """Provenance fields for one installed-plugin row (TUI/desktop ``plugins.manage list``): catalog
     name/tier/installed SHA and, when *pins* has the entry, the current pin (+ its version label from
-    *versions*) and ``update_available``."""
+    *versions*) and ``update_available``. *installed_version* is the installed tree's manifest version.
+    Update detection stays SHA-based: any off-pin install (including a pin that advanced while both
+    commits declare the same version) is offered. When the versions are equal the version label drops
+    so surfaces fall back to the target commit ref ("Update to <sha8>") instead of the false
+    "Update to <same version>"."""
     versions = versions or {}
     sidecar = catalog_install_record(dir_path)
     if not sidecar:
@@ -870,6 +875,9 @@ def catalog_row_fields(dir_path, pins: dict[str, str], versions: Optional[dict[s
     if pin:
         row["catalog_sha"] = pin
         row["catalog_version"] = versions.get(str(sidecar["catalog_name"])) or None
+        # Unknown installed version keeps the version label as-is (SHA-only signal).
+        if installed_version and row["catalog_version"] == installed_version:
+            row["catalog_version"] = None
         row["update_available"] = bool(installed_sha) and not at_catalog_pin(sidecar, pin)
     return row
 

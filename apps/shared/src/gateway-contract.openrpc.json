@@ -4897,6 +4897,7 @@
               }
             ],
             "default": null,
+            "description": "Version label of the catalog pin; null when it equals the installed version, so a same-version off-pin install falls back to the catalog SHA for the update label.",
             "title": "Catalog Version"
           },
           "update_available": {

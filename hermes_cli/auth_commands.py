@@ -154,6 +154,31 @@ def _display_source(source: str) -> str:
     return source.split(":", 1)[1] if source.startswith("manual:") else source
 
 
+def _format_wait(seconds: float) -> str:
+    """``3h 2m`` / ``364d 23h``: the two largest units, the way the exhausted status prints a wait."""
+    remaining = max(0, int(math.ceil(seconds)))
+    minutes, secs = divmod(remaining, 60)
+    hours, minutes = divmod(minutes, 60)
+    days, hours = divmod(hours, 24)
+    parts = [(days, "d"), (hours, "h"), (minutes, "m"), (secs, "s")]
+    first = next(i for i, (value, _) in enumerate(parts) if value or i == 3)
+    return " ".join(f"{value}{unit}" for value, unit in parts[first:first + 2])
+
+
+def _active_model_cooldowns(entry) -> list[tuple[str, float]]:
+    """``(model, seconds left)`` for every model-scoped cooldown still in force on *entry*, soonest first.
+
+    A per-model 429 or a Codex plan-entitlement 400 benches the credential for that model only and
+    leaves ``last_status`` alone, so the exhausted column prints nothing for it — while selection
+    refuses the credential for that model (and for any unscoped caller) until it expires or
+    ``hermes auth reset`` clears it. The entitlement case lasts a year (#71970)."""
+    now = time.time()
+    cooldowns = getattr(entry, "model_cooldowns", None) or {}
+    active = [(str(model), float(until) - now) for model, until in cooldowns.items()
+              if isinstance(until, (int, float)) and until > now]
+    return sorted(active, key=lambda item: item[1])
+
+
 # (label, show_retry_window, http codes, reason substrings, message substrings) — first match wins.
 _EXHAUSTED_CLASSES = (
     ("rate-limited", True, {429},
@@ -542,6 +567,10 @@ def auth_list_command(args) -> None:
                 f"id={entry.id} priority={entry.priority} {source}{status} {marker}"
             )
             print(row.rstrip())
+            for model, left in _active_model_cooldowns(entry):
+                print(f"        cooling down for {model} ({_format_wait(left)} left)")
+        if any(_active_model_cooldowns(entry) for entry in entries):
+            print(f"  Model cooldowns expire on their own; `hermes auth reset {provider}` clears them now.")
         print()
     if not provider_filter or provider_filter in EXTERNAL_LOGIN_PROVIDERS:
         _print_external_login_notice()

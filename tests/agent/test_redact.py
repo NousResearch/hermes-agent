@@ -1437,6 +1437,21 @@ class TestHermesHomePathClassification:
         assert not _is_secret_file_arg(str(tmp_path / "proj" / "config.yaml"))
         assert not _is_secret_file_arg("config.yaml")  # relative, not resolvable to the home
 
+    @pytest.mark.parametrize("name", [
+        "config.yaml.bak", "config.yaml.bak-2026-07-24", "config.yaml.bak.20260901", "config.yaml.backup",
+        "config.yaml.pre-upgrade-20260712", "config.yaml.orig", "config.yaml.old",
+    ])
+    def test_hand_named_config_backups_are_secret_bearing(self, name):
+        """Hand-made copies (``cp config.yaml config.yaml.bak-<date>``) hold the same secrets as the
+        Hermes-written ``.good.``/``.corrupt.`` ones, but read in clear through ``cat`` and read_file."""
+        from agent.redact import _is_secret_file_arg, redact_terminal_output
+
+        assert _is_secret_file_arg(f"/home/u/.hermes/{name}")
+        assert _is_secret_file_arg(f"$HERMES_HOME/{name}")
+        assert not _is_secret_file_arg(f"/srv/proj/{name}")  # only under a Hermes home
+        syn = "3JcQ1UqZ8mNp4Rt6vWx2Yb9Ad0Ef7Gh5Ij2kS"
+        assert syn not in redact_terminal_output(f"  api_key: {syn}", f"cat ~/.hermes/{name}", force=True)
+
 
 class TestFireworksToken:
     KEY = "fw_" + "A" * 40

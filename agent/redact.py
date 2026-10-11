@@ -1082,6 +1082,9 @@ def _is_under_hermes_home(path: str) -> bool:
     return False
 
 
+_CONFIG_YAML_COPY_RE = re.compile(r"config\.yaml\.(?:good\.|corrupt\.|bak|backup|orig|old|pre|save)")
+
+
 def _is_secret_file_arg(arg: str) -> bool:
     """``.env``-style or shell rc basename anywhere; ``config.yaml`` only under a
     ``.hermes`` directory, ``$HERMES_HOME``, or the resolved Hermes home (never arbitrary
@@ -1106,8 +1109,9 @@ def _is_secret_file_arg(arg: str) -> bool:
     if parts[-1] in _ENV_FILE_BASENAMES or parts[-1] in _SHELL_RC_BASENAMES:
         return True
     # ``config.yaml`` plus the ``config.yaml.good.<stamp>`` / ``.corrupt.<stamp>`` copies Hermes
-    # writes under ``backups/config/`` — same contents, same secrets.
-    if parts[-1] != "config.yaml" and not parts[-1].startswith(("config.yaml.good.", "config.yaml.corrupt.")):
+    # writes under ``backups/config/`` and backup-named hand copies (``config.yaml.bak-<date>``,
+    # ``.pre-<change>``, ``.orig``) — same contents, same secrets. Other suffixes (``.pdf``) stay out.
+    if parts[-1] != "config.yaml" and not _CONFIG_YAML_COPY_RE.match(parts[-1]):
         return False
     return hermes_home or ".hermes" in parts[:-1] or _is_under_hermes_home(path)
 

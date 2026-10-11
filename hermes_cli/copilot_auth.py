@@ -77,6 +77,14 @@ def resolve_copilot_token() -> tuple[str, str]:
                      "token` fallback to honor explicit env-var intent (and avoid the subprocess "
                      "cost on cold start, #60800).")
         return "", ""
+    # ``gh auth token`` borrows the host's gh CLI login — a third borrowed login beside the Codex
+    # CLI and Claude Code ones, so the same ``auth.adopt_external_logins: false`` opt-out governs
+    # it (#132992). Env vars are the user's own configuration, never a borrowed login, and stay
+    # readable either way.
+    from agent.credential_sources import adopt_external_logins_enabled
+    if not adopt_external_logins_enabled():
+        logger.debug("Skipping `gh auth token` fallback: auth.adopt_external_logins is false.")
+        return "", ""
     token = _try_gh_cli_token()
     if token:
         valid, msg = validate_copilot_token(token)

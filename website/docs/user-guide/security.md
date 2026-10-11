@@ -665,16 +665,16 @@ terminal:
 
 Paths are relative to `~/.hermes/`. Files are mounted to `/root/.hermes/` inside the container. This list is read by `tools/credential_files.py` (`terminal.credential_files`) — it lives under the `terminal:` block but is loaded by the credential-files module, not the core terminal backend, so it isn't part of the bundled `DEFAULT_CONFIG` snapshot.
 
-### Borrowed CLI logins (Codex CLI, Claude Code) {#borrowed-cli-logins}
+### Borrowed CLI logins (Codex CLI, Claude Code, gh CLI) {#borrowed-cli-logins}
 
-When Hermes has no usable login of its own for `openai-codex` or `anthropic`, it can borrow the Codex CLI's `~/.codex/auth.json` and Claude Code's `~/.claude/.credentials.json` (or Keychain entry) and refresh them on your behalf. Both use single-use, rotating refresh tokens: once two programs hold one token family, whichever refreshes first invalidates the other's copy, which shows up as "I logged in once in the terminal and Hermes keeps failing" (or the reverse). If you run those CLIs alongside Hermes, give Hermes its own login and turn adoption off:
+When Hermes has no usable login of its own for `openai-codex` or `anthropic`, it can borrow the Codex CLI's `~/.codex/auth.json` and Claude Code's `~/.claude/.credentials.json` (or Keychain entry) and refresh them on your behalf. Both use single-use, rotating refresh tokens: once two programs hold one token family, whichever refreshes first invalidates the other's copy, which shows up as "I logged in once in the terminal and Hermes keeps failing" (or the reverse). For `copilot`, when no Copilot env var (`COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, `GITHUB_TOKEN`) is set, Hermes borrows the host `gh` CLI login (`gh auth token`) the same way. If you run those CLIs alongside Hermes, or want a profile that never reaches for host logins, give Hermes its own login and turn adoption off:
 
 ```yaml
 auth:
   adopt_external_logins: false   # default: true
 ```
 
-With the switch off Hermes never reads or refreshes those files: the `claude_code` credential-pool row disappears, `hermes auth list` prints one line saying so, and the log carries one INFO line per process. Only automatic adoption is affected — `hermes auth add openai-codex` still asks before importing an existing Codex CLI login. Automatic recovery also only repairs the credential Hermes already holds: a Codex CLI/Desktop login into a different ChatGPT workspace is refused with a warning (re-authenticate with `hermes auth add openai-codex`), and a login you complete while recovery is running is never overwritten. Add your own logins with `hermes auth add anthropic` / `hermes auth add openai-codex`.
+With the switch off Hermes never reads or refreshes those files and never falls back to the host `gh` login: the `claude_code` and `gh_cli` credential-pool rows disappear, `hermes auth list` prints one line saying so, and the log carries one INFO line per process. Only automatic adoption is affected — `hermes auth add openai-codex` still asks before importing an existing Codex CLI login. Automatic recovery also only repairs the credential Hermes already holds: a Codex CLI/Desktop login into a different ChatGPT workspace is refused with a warning (re-authenticate with `hermes auth add openai-codex`), and a login you complete while recovery is running is never overwritten. Add your own logins with `hermes auth add anthropic` / `hermes auth add openai-codex`.
 
 ### What Each Sandbox Filters
 

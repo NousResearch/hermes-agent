@@ -1753,9 +1753,10 @@ DEFAULT_CONFIG = {
     "personalities": {},
     "auth": {  # Login policy (credentials themselves live in auth.json / .env).
         # Borrow and refresh the Codex CLI (~/.codex/auth.json) and Claude Code (~/.claude/.credentials.json)
-        # logins automatically when Hermes has no usable login of its own. Their refresh tokens are single-use
-        # and rotate, so two programs on one login can log each other out; set false to make Hermes use only
-        # its own logins (`hermes auth add <provider>`). `hermes auth add openai-codex` still offers the import
+        # logins automatically when Hermes has no usable login of its own, and fall back to the host `gh`
+        # CLI login (`gh auth token`) for Copilot. Their refresh tokens are single-use and rotate, so two
+        # programs on one login can log each other out; set false to make Hermes use only its own logins
+        # (`hermes auth add <provider>`). `hermes auth add openai-codex` still offers the import
         # interactively.
         "adopt_external_logins": True,
         # How `hermes auth add openai-codex` / `hermes model` sign in to OpenAI Codex.

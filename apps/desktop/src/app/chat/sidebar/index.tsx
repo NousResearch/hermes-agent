@@ -665,8 +665,15 @@ export function ChatSidebar({
   // last_active immediately. Ordering by status doesn't sort here — it re-slots
   // rows *inside* whatever dividers are on, via sortOrderIds below — so the
   // date buckets stay chronological either way.
+  // The id tie-break matters: cron runs and batch imports can share a
+  // timestamp, and `Array.sort` makes no stability promise for equal keys —
+  // without a deterministic tie-break, equal-recency rows may swap positions
+  // between refreshes, which reads as the sidebar flashing/reordering.
   const sortedSessions = useMemo(
-    () => [...visibleSessions].sort((a, b) => sessionTime(b) - sessionTime(a)),
+    () =>
+      [...visibleSessions].sort(
+        (a, b) => sessionTime(b) - sessionTime(a) || a.id.localeCompare(b.id)
+      ),
     [visibleSessions]
   )
 
@@ -1348,7 +1355,9 @@ export function ChatSidebar({
 
     return [...bySource.entries()]
       .map(([sourceId, list]) => {
-        const ordered = [...list].sort((a, b) => sessionTime(b) - sessionTime(a))
+        const ordered = [...list].sort(
+          (a, b) => sessionTime(b) - sessionTime(a) || a.id.localeCompare(b.id)
+        )
         const known = messagingPlatformTotals[messagingTotalsKey(messagingProfile, sourceId)]
         const unpinnedKnown = known == null ? null : Math.max(0, known - (pinnedBySource.get(sourceId) ?? 0))
         const total = Math.max(ordered.length, unpinnedKnown ?? 0)

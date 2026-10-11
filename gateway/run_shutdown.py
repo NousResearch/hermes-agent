@@ -848,9 +848,9 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         return snapshot, timed_out
 
     def _interrupt_running_agents(self, reason: str) -> None:
-        from gateway.run import _AGENT_PENDING_SENTINEL, _INTERRUPT_TOOL_REASON_GATEWAY_SHUTDOWN, request_hard_interrupt
+        from gateway.run import AGENT_PENDING_SENTINEL, _INTERRUPT_TOOL_REASON_GATEWAY_SHUTDOWN, request_hard_interrupt
         for session_key, agent in list(self._running_agents.items()):
-            if agent is _AGENT_PENDING_SENTINEL:
+            if agent is AGENT_PENDING_SENTINEL:
                 continue
             with _log_suppressed(logging.DEBUG, "Failed interrupting agent during shutdown: %s"):
                 request_hard_interrupt(agent, reason, tool_reason=_INTERRUPT_TOOL_REASON_GATEWAY_SHUTDOWN)
@@ -870,14 +870,14 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
 
     async def _mark_running_sessions_resume_pending(self, log_prefix: str) -> list:
         """Mark every non-pending running session resume_pending; returns the keys marked."""
-        from gateway.run import _AGENT_PENDING_SENTINEL
+        from gateway.run import AGENT_PENDING_SENTINEL
         reason = "restart_timeout" if self._restart_requested else "shutdown_timeout"
         marked: list[str] = []
         # Pre-mark sessions as resume_pending BEFORE the drain wait. If the process is killed by the service
         # manager during the drain, the durable marker is already written so the next gateway boot can
         # recover in-flight sessions (#27856).
         for _sk, _agent in list(self._running_agents.items()):
-            if _agent is _AGENT_PENDING_SENTINEL:
+            if _agent is AGENT_PENDING_SENTINEL:
                 continue
             with _log_suppressed(logging.DEBUG, "%s failed for %s: %s", log_prefix, _sk):
                 await self.async_session_store.mark_resume_pending(_sk, reason)
@@ -1541,7 +1541,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         """Running chat agents with no activity for ``agent.gateway_timeout`` (0 when disabled);
         an unreadable activity summary means "not wedged".
         """
-        from gateway.run import _AGENT_PENDING_SENTINEL, _float_env
+        from gateway.run import AGENT_PENDING_SENTINEL, _float_env
         timeout = _float_env("HERMES_AGENT_TIMEOUT", 1800)
         if timeout <= 0:
             return 0
@@ -1559,7 +1559,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         return sum(
             1
             for agent in list((getattr(self, "_running_agents", None) or {}).values())
-            if agent is not None and agent is not _AGENT_PENDING_SENTINEL
+            if agent is not None and agent is not AGENT_PENDING_SENTINEL
             and (idle := _idle_seconds(agent)) is not None and idle >= timeout
         )
 
@@ -1591,7 +1591,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         handed to a restart-safe scope), ``api`` / ``deferred`` (count only — those sources expose
         no identity). Best-effort: a source that can't be read is omitted, never raises.
         """
-        from gateway.run import _AGENT_PENDING_SENTINEL
+        from gateway.run import AGENT_PENDING_SENTINEL
         now = time.time()
         units: list = []
         for key, state in list(self._sessions_map().items()):
@@ -1601,7 +1601,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
             unit: dict = {"kind": "chat", "session": key, "pid": os.getpid()}
             if state.turn.started_ts:
                 unit["elapsed_s"] = round(now - state.turn.started_ts, 1)
-            if agent is not _AGENT_PENDING_SENTINEL:
+            if agent is not AGENT_PENDING_SENTINEL:
                 unit["model"] = getattr(agent, "model", None)
                 summary_fn = getattr(agent, "get_activity_summary", None)
                 if callable(summary_fn):

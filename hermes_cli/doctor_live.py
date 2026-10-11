@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import Callable, List, Optional
 
 from hermes_cli.browser_runtime import chromium_executable
-from hermes_cli.doctor import _section, check_info
+from hermes_cli.doctor import section, check_info
 from hermes_cli.doctor_report import check_fail, check_ok, check_warn
 from utils import normalize_proxy_env_vars
 
@@ -167,7 +167,7 @@ def run_live_checks(issues: list[str]) -> list[ProbeResult]:
     except (TypeError, ValueError):
         timeout = DEFAULT_PROBE_TIMEOUT
     timeout = max(1.0, timeout)
-    _section("Live Backend Probes (opt-in, real calls)")
+    section("Live Backend Probes (opt-in, real calls)")
     results: list[ProbeResult] = [
         _run_one(name, lambda n=name, spec=spec: _keyed_probe(n, *spec, timeout), issues)
         for name, spec in _KEYED_PROBES.items()

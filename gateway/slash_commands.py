@@ -200,9 +200,9 @@ class GatewaySlashCommandsMixin(
     def _resident_agent_for(self, session_key: str):
         """The live running agent for *session_key*, else the cached one, else None. The pending
         sentinel (a run that is starting) never counts as a usable agent."""
-        from gateway.run import _AGENT_PENDING_SENTINEL
+        from gateway.run import AGENT_PENDING_SENTINEL
         agent = self._running_agents.get(session_key)
-        if agent is not None and agent is not _AGENT_PENDING_SENTINEL:
+        if agent is not None and agent is not AGENT_PENDING_SENTINEL:
             return agent
         return self._cached_agent_for(session_key)
 
@@ -422,7 +422,7 @@ class GatewaySlashCommandsMixin(
         never checking _interrupt_requested) is caught by the early intercept in _handle_message();
         this handler runs via normal dispatch or as a fallback, and force-cleans the session lock in
         all cases.  The session is preserved so the user can continue."""
-        from gateway.run import _AGENT_PENDING_SENTINEL, _INTERRUPT_REASON_STOP
+        from gateway.run import AGENT_PENDING_SENTINEL, _INTERRUPT_REASON_STOP
         source = event.source
         session_entry = await self.async_session_store.get_or_create_session(source)
         session_key = session_entry.session_key
@@ -432,7 +432,7 @@ class GatewaySlashCommandsMixin(
                 key, source, interrupt_reason=_INTERRUPT_REASON_STOP,
                 invalidation_reason=invalidation_reason)
         agent = self._running_agents.get(session_key)
-        if agent is _AGENT_PENDING_SENTINEL:  # force-clean the sentinel so the session is unlocked
+        if agent is AGENT_PENDING_SENTINEL:  # force-clean the sentinel so the session is unlocked
             await _stop(session_key, "stop_command_pending")
             logger.info("STOP (pending) for session %s — sentinel cleared", session_key)
             return EphemeralReply(t("gateway.stop.stopped_pending"))

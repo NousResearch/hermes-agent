@@ -3456,7 +3456,7 @@ class GatewayTurnMixin:
                 # `.turn.agent` stays reachable until the *next* turn is claimed; clearing the
                 # ownership markers now means a /stop on the finished turn no longer reaps background
                 # work it left running.
-                # `.turn.agent` on the session state is only reset to _AGENT_PENDING_SENTINEL when the
+                # `.turn.agent` on the session state is only reset to AGENT_PENDING_SENTINEL when the
                 # *next* turn is claimed (see _session_state(...).turn.agent = ... at claim time), so a
                 # stale reference to this exact agent instance stays reachable from
                 # _interrupt_and_clear_session() until then. See #76115.

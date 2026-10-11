@@ -7,7 +7,7 @@ import os
 import subprocess
 from pathlib import Path
 from hermes_cli.doctor_report import (
-    Finding, _fail_and_issue, _section, check_bool, check_info, check_ok, check_warn, doctor_check, ensure_dir,
+    Finding, _fail_and_issue, section, check_bool, check_info, check_ok, check_warn, doctor_check, ensure_dir,
     warn_on_error,
 )
 from hermes_cli.sizefmt import format_bytes as _human_bytes
@@ -138,7 +138,7 @@ def check_legacy_desktop_checkout() -> None:
     if not (checkout / ".git").exists():
         return
 
-    _section("Legacy Desktop Checkout")
+    section("Legacy Desktop Checkout")
 
     def _git(*args: str):
         try:
@@ -643,7 +643,7 @@ def _check_profiles(should_fix: bool, f: Finding) -> None:
     named_profiles = [p for p in list_profiles() if not p.is_default]
     if not named_profiles:
         return
-    _section("Profiles")
+    section("Profiles")
     check_ok(f"{len(named_profiles)} profile(s) found")
     wrapper_dir = _get_wrapper_dir()
     for p in named_profiles:

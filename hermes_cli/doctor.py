@@ -20,7 +20,7 @@ _env_path = get_env_path()
 load_hermes_dotenv(hermes_home=_env_path.parent, project_env=PROJECT_ROOT / ".env")
 
 from hermes_cli.colors import Colors, color
-from hermes_cli.doctor_report import Finding, _section, check_bool, check_info, doctor_check, warn_on_error
+from hermes_cli.doctor_report import Finding, section, check_bool, check_info, doctor_check, warn_on_error
 from hermes_cli.doctor_connectivity import _has_healthy_oauth_fallback_for_apikey_provider, build_probes, run_probes
 from hermes_cli.doctor_tools import _safe_which
 
@@ -184,7 +184,7 @@ def run_doctor(args):
     total = Finding()
     for title, check in DOCTOR_CHECKS:
         if title:
-            _section(title)
+            section(title)
         total.merge(check(should_fix))
     # Opt-in live probes run AFTER all static checks (`--live`: real network calls; bounded + read-only).
     with warn_on_error(""):

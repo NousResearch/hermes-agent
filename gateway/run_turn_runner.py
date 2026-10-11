@@ -1047,10 +1047,10 @@ class TurnRunner:
         """Evict under the lock but DEFER release (release_clients can block on memory-provider /
         socket teardown while the idle sweeper waits on this lock). The turn rebuilds a fresh agent, so
         the caller does a SOFT release that keeps sandbox / browser / bg processes."""
-        from gateway.run import _AGENT_PENDING_SENTINEL
+        from gateway.run import AGENT_PENDING_SENTINEL
         evicted = self._runner._agent_cache.pop(self._ctx.session_key, None)
         agent = evicted[0] if isinstance(evicted, tuple) and evicted else None
-        return agent if agent and agent is not _AGENT_PENDING_SENTINEL else None
+        return agent if agent and agent is not AGENT_PENDING_SENTINEL else None
 
     def _lookup_cached_agent(self, sig, cache_lock, cache, max_iterations, peek_sid, dead, msg_count):
         ctx = self._ctx

@@ -491,11 +491,11 @@ class GatewayAgentCacheMixin:
         ``tool_reason`` names a system issuer (eviction); ``None`` keeps the user attribution of /stop and /new.
         Returns the post-bump generation."""
         from contextvars import copy_context
-        from gateway.run import _AGENT_PENDING_SENTINEL, _reap_gateway_turn_processes, request_hard_interrupt
+        from gateway.run import AGENT_PENDING_SENTINEL, _reap_gateway_turn_processes, request_hard_interrupt
         state = self._peek_session_state(session_key)
         running_agent = state.turn.agent if state else None
         _process_task_id, _process_baseline = "", None
-        if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
+        if running_agent and running_agent is not AGENT_PENDING_SENTINEL:
             # A raising interrupt implementation must not leave the slot unroutable: the generation
             # bump and release below are the cleanup that matters.
             with _log_suppressed(logging.WARNING, "Failed to interrupt running agent for %s; continuing",
@@ -533,7 +533,7 @@ class GatewayAgentCacheMixin:
         _generation_at_interrupt = self._interrupt_running_turn(
             session_key, interrupt_reason=interrupt_reason, invalidation_reason=invalidation_reason,
         )
-        from gateway.run import _AGENT_PENDING_SENTINEL
+        from gateway.run import AGENT_PENDING_SENTINEL
         # The turn's hard interrupt reaches only its in-turn children; background delegations were
         # detached at dispatch and would otherwise run to completion and wake the session later.
         # Each interrupted unit still returns as a completion (status=interrupted, partial output).
@@ -541,7 +541,7 @@ class GatewayAgentCacheMixin:
         interrupt_for_session(
             session_key=session_key, reason=invalidation_reason,
             parent_session_id=str(getattr(running_agent, "session_id", "") or ""))
-        if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
+        if running_agent and running_agent is not AGENT_PENDING_SENTINEL:
             # Plugins holding a per-turn external resource (an outbound RPC blocked on a tool result
             # the loop will never consume) learn the turn is gone. Fires for /stop and the /new
             # running-agent fast path; the pending-sentinel /stop has no in-flight work, so it stays
@@ -600,7 +600,7 @@ class GatewayAgentCacheMixin:
         But the snapshot is taken at agent-BUILD time — before this turn writes its own user + assistant (+
         tool) rows — and the cache entry is never rewritten on a reuse. See #45966.
         """
-        from gateway.run import _AGENT_PENDING_SENTINEL
+        from gateway.run import AGENT_PENDING_SENTINEL
         _cache_lock = getattr(self, "_agent_cache_lock", None)
         _cache = getattr(self, "_agent_cache", None)
         if self._session_db is None or not session_id or not _cache_lock or _cache is None:
@@ -617,7 +617,7 @@ class GatewayAgentCacheMixin:
             # Only re-baseline a live 3-tuple entry; skip pending sentinels, legacy 2-tuples (they opt
             # out of the guard), and entries evicted/rebuilt mid-turn. A snapshot taken for a different
             # session_id (same session_key, different conversation) is a different DB row — leave it.
-            if not (isinstance(cached, tuple) and len(cached) > 2 and cached[0] is not _AGENT_PENDING_SENTINEL):
+            if not (isinstance(cached, tuple) and len(cached) > 2 and cached[0] is not AGENT_PENDING_SENTINEL):
                 return
             _snapshot_sid = cached[3] if len(cached) > 3 else None
             if (_snapshot_sid is not None and _snapshot_sid != session_id) or cached[2] == _live:
@@ -815,7 +815,7 @@ class GatewayAgentCacheMixin:
         required to keep gateway RSS flat across many /new, /model, undo and reset operations (#29298, same
         leak class as #25315).
         """
-        from gateway.run import _AGENT_PENDING_SENTINEL
+        from gateway.run import AGENT_PENDING_SENTINEL
         # Prompt-stability state rides the agent-cache lifecycle: a fresh agent must re-render its
         # session-context bytes (the pin) and re-see the current voice-channel state once.
         state = self._peek_session_state(session_key)
@@ -835,7 +835,7 @@ class GatewayAgentCacheMixin:
                 evicted = _cache.pop(session_key, None)
         agent = _first_agent(evicted)
         # Never tear down an agent that's mid-turn — its client, sandbox and child subagents are in use.
-        if agent is None or agent is _AGENT_PENDING_SENTINEL or id(agent) in self._running_agent_ids():
+        if agent is None or agent is AGENT_PENDING_SENTINEL or id(agent) in self._running_agent_ids():
             return
         self._spawn_release_thread(
             self._release_evicted_agent_soft, (agent,), f"agent-evict-{str(session_key)[:24]}", inline_fallback=True,
@@ -971,7 +971,7 @@ class GatewayAgentCacheMixin:
         Pressure eviction bounds that heap before the cgroup throttles and SIGTERM can
         no longer flush inside systemd's stop timeout (#80764).
         """
-        from gateway.run import _AGENT_PENDING_SENTINEL
+        from gateway.run import AGENT_PENDING_SENTINEL
         from gateway.agent_cache_pressure import (
             plan_pressure_evictions, read_anon_rss_mb, transcript_persistence_caught_up
         )
@@ -988,7 +988,7 @@ class GatewayAgentCacheMixin:
         running_ids = self._running_agent_ids()
 
         def _is_live(agent: Any) -> bool:
-            return agent is not None and agent is not _AGENT_PENDING_SENTINEL and id(agent) not in running_ids
+            return agent is not None and agent is not AGENT_PENDING_SENTINEL and id(agent) not in running_ids
 
         def _is_evictable(key: str, agent: Any) -> bool:
             return _is_live(agent) and transcript_persistence_caught_up(agent)

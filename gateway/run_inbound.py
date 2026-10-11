@@ -503,7 +503,7 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
         the threshold (active tasks can run for hours), or has no activity tracker and an extreme
         wall-clock age. The pending sentinel is never evicted (no get_activity_summary() → idle
         reads inf and would race the async setup path)."""
-        from gateway.run import _AGENT_PENDING_SENTINEL, _float_env
+        from gateway.run import AGENT_PENDING_SENTINEL, _float_env
         _raw_stale_timeout = _float_env("HERMES_AGENT_TIMEOUT", 1800)
         _quick_state = self._peek_session_state(_quick_key)
         _stale_ts = _quick_state.turn.started_ts if _quick_state else 0
@@ -535,7 +535,7 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
         # progressing turn stale. The emergency wall TTL is only a fallback when the agent cannot
         # report usable activity.
         _wall_ttl = max(_raw_stale_timeout * 10, 7200) if _raw_stale_timeout > 0 else float("inf")
-        _should_evict = _stale_agent is not _AGENT_PENDING_SENTINEL and (
+        _should_evict = _stale_agent is not AGENT_PENDING_SENTINEL and (
             (_activity_summary_valid and _raw_stale_timeout > 0 and _stale_idle >= _raw_stale_timeout)
             or (not _activity_summary_valid and _stale_age > _wall_ttl)
         )
@@ -695,7 +695,7 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
     ) -> Optional[str]:
         """Fast-path while this session's agent is running: interrupt by default (minimal latency);
         busy_input_mode queue/steer, subagent and compression protection demote to queue."""
-        from gateway.run import _AGENT_PENDING_SENTINEL
+        from gateway.run import AGENT_PENDING_SENTINEL
         _handled, _result = await self._hm_busy_slash_or_photo(event, source, _quick_key)
         if _handled:
             return _result
@@ -706,7 +706,7 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
 
         _ra_state = self._peek_session_state(_quick_key)
         running_agent = _ra_state.turn.agent if _ra_state else None
-        if running_agent is _AGENT_PENDING_SENTINEL:  # agent still being set up
+        if running_agent is AGENT_PENDING_SENTINEL:  # agent still being set up
             if event.get_command() == "stop":  # force-clean the sentinel so the session is unlocked
                 self._release_running_agent_state(_quick_key)
                 logger.info("HARD STOP (pending) for session %s — sentinel cleared", _quick_key)
@@ -1285,7 +1285,7 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """Handle an incoming message from any platform: auth → command check → running-agent
         interrupt → get/create session → build context → run agent → return response."""
-        from gateway.run import _AGENT_PENDING_SENTINEL
+        from gateway.run import AGENT_PENDING_SENTINEL
         _admitted = await self._hm_admit_event(event)
         if _admitted is None:
             return None
@@ -1350,7 +1350,7 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
         _claim_state = self._session_state(_quick_key)
         if _active_session_lease is not None:
             _claim_state.turn.lease = _active_session_lease
-        _claim_state.turn.agent = _AGENT_PENDING_SENTINEL
+        _claim_state.turn.agent = AGENT_PENDING_SENTINEL
         _claim_state.turn.event = event
         _claim_state.turn.started_ts = time.time()
         from hermes_cli.observability.shared_metrics_gateway import start_reply_clock

@@ -86,7 +86,7 @@ class GatewayStartupMixin:
     ) -> None:
         """Dispatch one synthetic startup resume and wait for its agent turn (inbound stays queued
         until it finishes, else a user message can race it)."""
-        from gateway.run import _AGENT_PENDING_SENTINEL
+        from gateway.run import AGENT_PENDING_SENTINEL
         try:
             await adapter.handle_message(event)
             session_tasks = getattr(adapter, "_session_tasks", {})
@@ -96,7 +96,7 @@ class GatewayStartupMixin:
         finally:
             # Release the pre-claimed slot if handle_message raised before _handle_message took ownership.
             _pre_state = self._peek_session_state(session_key)
-            if (_pre_state.turn.agent if _pre_state else None) is _AGENT_PENDING_SENTINEL:
+            if (_pre_state.turn.agent if _pre_state else None) is AGENT_PENDING_SENTINEL:
                 self._release_running_agent_state(session_key)
 
     def _queue_startup_restore_event(self, event: MessageEvent) -> None:
@@ -601,7 +601,7 @@ class GatewayStartupMixin:
         ``resume_pending`` for the reconnect watcher, which re-calls this scoped to that ``platform``;
         sessions with a running agent are skipped so none is resumed twice."""
         from gateway.run import (
-            _AGENT_PENDING_SENTINEL, _auto_continue_freshness_window, _is_fresh_gateway_interruption,
+            AGENT_PENDING_SENTINEL, _auto_continue_freshness_window, _is_fresh_gateway_interruption,
         )
         window = _auto_continue_freshness_window()
         candidates = self._resume_pending_candidates(platform)
@@ -630,7 +630,7 @@ class GatewayStartupMixin:
             # Claim the slot *before* spawning so an inbound message arriving before the task's first
             # await queues instead of building a duplicate AIAgent.
             _resume_state = self._session_state(entry.session_key)
-            _resume_state.turn.agent = _AGENT_PENDING_SENTINEL
+            _resume_state.turn.agent = AGENT_PENDING_SENTINEL
             _resume_state.turn.started_ts = time.time()
             self._persist_active_agents()
             # Empty-text internal event: the _is_resume_pending branch prepends the reason-aware note.

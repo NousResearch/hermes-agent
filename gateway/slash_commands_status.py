@@ -106,10 +106,10 @@ def _status_model_route(
     lookup queries the endpoint that serves the displayed model (never a losing route's endpoint);
     a winner without a ``base_url`` leaves the lookup on the default runtime route.
     """
-    from gateway.run import _AGENT_PENDING_SENTINEL, _load_gateway_config, _resolve_gateway_model
+    from gateway.run import AGENT_PENDING_SENTINEL, _load_gateway_config, _resolve_gateway_model
     context_used = context_total = 0
     routes: list[tuple[str, str, dict]] = []
-    if status_agent is not None and status_agent is not _AGENT_PENDING_SENTINEL:
+    if status_agent is not None and status_agent is not AGENT_PENDING_SENTINEL:
         routes.append((_clean_str(getattr(status_agent, "model", "")),
                        _clean_str(getattr(status_agent, "provider", "")),
                        {"base_url": _clean_str(getattr(status_agent, "base_url", "")),
@@ -241,14 +241,14 @@ class GatewayStatusCommandsMixin:
 
     async def _handle_status_command(self, event: MessageEvent) -> str:
         """Handle /status command."""
-        from gateway.run import _AGENT_PENDING_SENTINEL
+        from gateway.run import AGENT_PENDING_SENTINEL
         source = event.source
         session_entry = await self.async_session_store.get_or_create_session(source)
         session_key = session_entry.session_key
         # Keep the sentinel distinct: a starting/pending run is not a usable agent for
         # model/context display, but it still occupies the session slot.
         agent = self._running_agents.get(session_key)
-        is_running = agent is not None and agent is not _AGENT_PENDING_SENTINEL
+        is_running = agent is not None and agent is not AGENT_PENDING_SENTINEL
         # Pending /queue follow-ups (slot + overflow).
         adapter = self.adapters.get(source.platform) if source else None
         queue_depth = self._queue_depth(session_key, adapter=adapter)
@@ -437,14 +437,14 @@ class GatewayStatusCommandsMixin:
 
     async def _handle_agents_command(self, event: MessageEvent) -> str:
         """Handle /agents command - list active agents and running tasks."""
-        from gateway.run import _AGENT_PENDING_SENTINEL
+        from gateway.run import AGENT_PENDING_SENTINEL
         from tools.process_registry import format_uptime_short, process_registry
         now = time.time()
         current_session_key = self._session_key_for_source(event.source)
         running_started: dict = getattr(self, "_running_agents_ts", {}) or {}
         agent_rows: list[dict] = []
         for session_key, agent in (getattr(self, "_running_agents", {}) or {}).items():
-            pending = agent is _AGENT_PENDING_SENTINEL
+            pending = agent is AGENT_PENDING_SENTINEL
             agent_rows.append({
                 "session_key": session_key,
                 "elapsed": max(0, int(now - float(running_started.get(session_key, now)))),

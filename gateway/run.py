@@ -243,7 +243,7 @@ async def run_codex_hygiene_compaction(
         return f"skipped:mode={mode}"
 
     agent = _cached_agent_for_hygiene(gateway, session_key)
-    if agent is None or agent is _AGENT_PENDING_SENTINEL:
+    if agent is None or agent is AGENT_PENDING_SENTINEL:
         # No live agent → no live thread; a detached mirror-only rewrite is the no-op this exists to remove.
         return "skipped:no-cached-agent"
     if getattr(agent, "_codex_session", None) is None:
@@ -2251,7 +2251,7 @@ def _own_policy_open_startup_violation(config) -> Optional[str]:
 
 # Placed into _running_agents *before* any await so a second message can't slip past the "already
 # running" guard before the agent exists.
-_AGENT_PENDING_SENTINEL = object()
+AGENT_PENDING_SENTINEL = _AGENT_PENDING_SENTINEL = object()  # the underscore spelling is the original, kept as an alias
 
 # Conversation-scoped per-session state registry (legacy contract). State lives in
 # ``SessionState.conversation`` (cleared via ``ConversationState.clear()``); this list remains for
@@ -3957,10 +3957,10 @@ class GatewayRunner(
         """``id()`` of every agent mid-turn — identity-keyed so the lookup is O(1) and independent of
         ``AIAgent.__eq__`` (MagicMock overrides it in tests)."""
         return {id(a) for _, a in self._running_agent_items()
-                if a is not None and a is not _AGENT_PENDING_SENTINEL}
+                if a is not None and a is not AGENT_PENDING_SENTINEL}
 
     def _snapshot_running_agents(self) -> dict[str, Any]:
-        return {k: a for k, a in self._running_agent_items() if a is not _AGENT_PENDING_SENTINEL}
+        return {k: a for k, a in self._running_agent_items() if a is not AGENT_PENDING_SENTINEL}
 
     # ---- Tunables consumed by the run_* mixins (kept on the class: tests and plugins patch them) ----
 

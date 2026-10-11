@@ -19,7 +19,7 @@ class TurnState:
     """State scoped to one running gateway turn.  ``lease_tokens`` is NOT touched by
     ``clear()``: ``_release_turn_lease`` owns it (release exactly once)."""
 
-    agent: Any = None  # running AIAgent (or _AGENT_PENDING_SENTINEL); None = idle
+    agent: Any = None  # running AIAgent (or AGENT_PENDING_SENTINEL); None = idle
     # The MessageEvent that opened the running turn and the live TurnContext: a successful busy
     # redirect re-anchors both to the redirecting message (#115001).
     event: Any = None

@@ -52,6 +52,10 @@ def _subagent_auto_approve(command: str, description: str, **kwargs) -> str:
     logger.warning("Subagent auto-approved dangerous command: %s (%s)", command, description)
     return "once"
 
+# Neither answers for a person. The protected-instruction write gate, which never honours auto-approve, reads this
+# mark as "no human channel" and fails closed (tools/file_tools_write_guards.py).
+_subagent_auto_deny.non_interactive = _subagent_auto_approve.non_interactive = True
+
 def _get_subagent_approval_callback():
     """Callback for subagent worker threads per delegation.subagent_auto_approve (default False)."""
     if is_truthy_value(_cfg().get("subagent_auto_approve", False)):

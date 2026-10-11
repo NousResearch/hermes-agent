@@ -681,6 +681,9 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         self._general_request_drain_lock = asyncio.Lock()
         self._dm_topics: dict[str, int] = {}  # topic_name -> message_thread_id
         self._forum_command_registered: set[int] = set()  # forum chats with commands registered
+        # (chat_id, user_id) -> (thread_id, forum_topic_created message_id, monotonic ts): the
+        # client-created DM topic whose thread-less opening message is still expected (#136567).
+        self._pending_topic_openers: dict[tuple[str, str], tuple[str, int, float]] = {}
         self._command_menu_fingerprint: str = ""  # language + menu payload last pushed via set_my_commands
         self._forum_lock = asyncio.Lock()
         # Status indicator: bot short description "Online"/"Offline" on connect/clean disconnect. Off by
@@ -2892,6 +2895,11 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         app.add_handler(TelegramMessageHandler(
             filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL,
             self._handle_media_message))
+        # Client-created DM topic pairing (#136567): fall back to ALL when the narrow filter is
+        # missing on an older python-telegram-bot; the handler itself re-checks forum_topic_created.
+        app.add_handler(TelegramMessageHandler(
+            getattr(filters.StatusUpdate, "FORUM_TOPIC_CREATED", None) or filters.StatusUpdate.ALL,
+            self._handle_status_message))
         app.add_handler(CallbackQueryHandler(self._handle_callback_query))
         # Inline command picker; inert until the owner enables inline mode via BotFather /setinline.
         app.add_handler(InlineQueryHandler(self._handle_inline_query))
@@ -5885,6 +5893,68 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             return None
         return cls._GENERAL_TOPIC_THREAD_ID if is_forum_group else None
 
+    # ── Client-created DM topic openers (#136567) ──────────────────────────────────────────
+    # Since 2026-10-10 Telegram delivers the opening message of a client-created DM topic WITHOUT
+    # message_thread_id, while the forum_topic_created service message for the same event still
+    # carries the new topic id. Without the pairing below, the lobby recovery
+    # (_recover_telegram_topic_thread_id) pins that thread-less opener to the user's most-recent
+    # bound topic: the previous session gets interrupted and the new topic never gets one.
+
+    _TOPIC_OPENER_WINDOW_SECONDS = 120.0
+
+    def _note_forum_topic_created(self, message) -> None:
+        """Remember (chat_id, user_id) → (topic id, service message_id) from a private-chat
+        ``forum_topic_created``. Forum groups need no pairing: their topic messages keep their
+        own ``message_thread_id``."""
+        chat = getattr(message, "chat", None)
+        user = getattr(message, "from_user", None)
+        created = getattr(message, "forum_topic_created", None)
+        thread_id = getattr(created, "message_thread_id", None)
+        if user is None or getattr(user, "is_bot", False) or thread_id is None:
+            return
+        if self._chat_type_str(chat) != "private":
+            return
+        now = time.monotonic()
+        for key, (_tid, _mid, ts) in list(self._pending_topic_openers.items()):
+            if now - ts > self._TOPIC_OPENER_WINDOW_SECONDS:
+                self._pending_topic_openers.pop(key, None)
+        self._pending_topic_openers[(str(chat.id), str(user.id))] = (str(thread_id), message.message_id, now)
+
+    def _pending_topic_opener_thread_id(self, message) -> Optional[str]:
+        """Consume the remembered topic id when ``message`` is the thread-less opening message
+        immediately following its ``forum_topic_created`` service message (message ids are
+        adjacent). Returns ``None`` otherwise — including a stale or non-adjacent message, whose
+        routing then stays exactly as before this pairing."""
+        chat = getattr(message, "chat", None)
+        user = getattr(message, "from_user", None)
+        if user is None or self._chat_type_str(chat) != "private":
+            return None
+        if getattr(message, "message_thread_id", None) is not None:
+            return None  # already threaded; only thread-less openers lost their id
+        key = (str(chat.id), str(user.id))
+        entry = self._pending_topic_openers.get(key)
+        if entry is None:
+            return None
+        thread_id, svc_message_id, ts = entry
+        if int(getattr(message, "message_id", -1) or -1) != svc_message_id + 1:
+            return None
+        self._pending_topic_openers.pop(key, None)
+        if time.monotonic() - ts > self._TOPIC_OPENER_WINDOW_SECONDS:
+            return None
+        logger.info(
+            "[Telegram] Routed thread-less opening message %s to newly created topic %s", message.message_id, thread_id)
+        return thread_id
+
+    async def _handle_status_message(self, update, context) -> None:
+        """Observe ``forum_topic_created`` service messages; never raises into PTB and triggers no
+        agent turn — the pairing is only consumed by the opener's own message event."""
+        msg = self._effective_update_message(update)
+        try:
+            if msg is not None and getattr(msg, "forum_topic_created", None) is not None:
+                self._note_forum_topic_created(msg)
+        except Exception:
+            logger.debug("[Telegram] forum_topic_created pairing failed", exc_info=True)
+
     # Decides only whether a FOREIGN @handle is bot-shaped; our own handle is matched by identity, never
     # shape (collectible/Fragment bot usernames need not end in "bot").
     _FOREIGN_BOT_HANDLE_RE = re.compile(r"[a-z0-9_]{2,29}bot", re.IGNORECASE)
@@ -7079,6 +7149,10 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         # (message_thread_id=None) normalize to the General-topic id so replies route back to General
         # (#22423).
         thread_id_str = self._effective_message_thread_id(message)
+        if thread_id_str is None and chat_type == "dm":
+            # Restore the topic id Telegram dropped from a client-created DM topic's opening
+            # message (see _pending_topic_opener_thread_id); nothing is rewritten on a miss.
+            thread_id_str = self._pending_topic_opener_thread_id(message)
         chat_topic, topic_skill = self._resolve_topic_binding(message, chat_type, thread_id_str)
         has_full_name = hasattr(chat, "full_name")
         if user:

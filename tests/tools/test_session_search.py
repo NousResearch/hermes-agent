@@ -281,6 +281,89 @@ class TestDiscoverySort:
 
 
 # =========================================================================
+# Discover 'when' / 'started_at' field regression
+# =========================================================================
+
+class TestDiscoverWhenTimestamp:
+    """Regression: 'when' should show matched message time, not session creation time.
+
+    https://github.com/NousResearch/hermes-agent/issues/50900
+    """
+
+    def test_when_shows_message_time_not_session_time(self, db):
+        session_start = 1000000000
+        db.create_session("s1", source="cli")
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = ?",
+            (session_start, "s1"),
+        )
+        db.append_message("s1", role="user", content="hello", timestamp=session_start + 10)
+        # This message is 1 day later — the one we'll match
+        msg_ts = session_start + 86400
+        db.append_message("s1", role="user", content="needle in haystack", timestamp=msg_ts)
+        db._conn.commit()
+
+        result = json.loads(session_search(query="needle haystack", db=db))
+        assert result["count"] >= 1
+        hit = result["results"][0]
+
+        # 'when' must reflect the matched message, not session start
+        assert hit["when"] == _format_timestamp(msg_ts)
+        assert "started_at" in hit
+        assert hit["started_at"] == _format_timestamp(session_start)
+
+    def test_started_always_present_in_discover(self, db):
+        db.create_session("s1", source="cli")
+        db.append_message("s1", role="user", content="needle", timestamp=1000000000)
+        db._conn.commit()
+
+        result = json.loads(session_search(query="needle", db=db))
+        assert result["count"] >= 1
+        assert "started_at" in result["results"][0]
+
+    def test_compression_child_hit_when_is_hit_time_not_root_start(self, db):
+        """Compression lineage: the hit lives in the child — `when` must be the child
+        message's time, with `started_at` staying the lineage root's start."""
+        root_start = 1000000000
+        db.create_session("s_root", source="cli")
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = ?",
+            (root_start, "s_root"),
+        )
+        db.append_message("s_root", role="user", content="scaffolding the modpack repo")
+        db.end_session("s_root", "compression")
+        hit_ts = root_start + 86400
+        db.create_session("s_child", source="cli", parent_session_id="s_root")
+        db.append_message("s_child", role="user", content="quetzalcoatl void crystal refinement",
+                          timestamp=hit_ts)
+        db._conn.commit()
+
+        result = json.loads(session_search(query="quetzalcoatl", db=db))
+        assert result["success"] is True
+        assert result["count"] >= 1
+        hit = next(r for r in result["results"] if r["session_id"] == "s_child")
+        assert hit["when"] == _format_timestamp(hit_ts)
+        assert hit["started_at"] == _format_timestamp(root_start)
+
+    def test_title_match_has_started_at_and_session_when(self, db):
+        session_start = 1000000000
+        db.create_session("s_title", source="cli")
+        db.set_session_title("s_title", "Apollo Moon Mission")
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = ?",
+            (session_start, "s_title"),
+        )
+        db.append_message("s_title", role="user", content="some content", timestamp=session_start + 10)
+        db._conn.commit()
+
+        result = json.loads(session_search(query="Apollo Moon Mission", db=db))
+        assert result["count"] >= 1
+        title_hit = next(r for r in result["results"] if r.get("matched_role") == "session_title")
+        assert title_hit["when"] == _format_timestamp(session_start)
+        assert title_hit["started_at"] == _format_timestamp(session_start)
+
+
+# =========================================================================
 # Scroll shape (session_id + around_message_id)
 # =========================================================================
 

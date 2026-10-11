@@ -3,7 +3,8 @@
 An SSE-only MCP server rejects the Streamable HTTP ``initialize`` POST (400-family status,
 or the SDK's opaque -32603 "Server returned an error response"); the client must retry over
 SSE on the initial connect only — never on reconnect after a proven session, never on
-timeout, and a both-transports failure must say so actionably.
+timeout, never on a recorded 5xx (a server fault, not a transport mismatch), and a
+both-transports failure must say so actionably.
 """
 
 import asyncio
@@ -142,3 +143,17 @@ def test_opaque_rejection_without_fallback_surfaces_the_status(monkeypatch):
     with pytest.raises(ConnectionError, match=r"HTTP 503 from POST http://127\.0\.0\.1:1/mcp: upstream down"):
         asyncio.run(task._run_http(dict(_CONFIG)))
     assert "SSE" not in calls
+
+
+def test_opaque_5xx_stays_on_streamable_http_instead_of_falling_back(monkeypatch):
+    """mcp >= 2.0 folds a transient 5xx into the same opaque -32603 as a genuine transport
+    rejection; the recorder's 5xx status must keep the failure on Streamable HTTP (the
+    transient retry ladder) instead of latching a doomed SSE fallback for a
+    Streamable-HTTP-only server (#121933)."""
+    task, calls = _task(monkeypatch, ExceptionGroup("g", [_SdkInternalError()]))
+    monkeypatch.setattr(MCPServerTask, "_streamable_http_transport", lambda self, *a, **k: self._http_rejection.update(
+        status=503, method="POST", url="http://127.0.0.1:1/mcp", body="upstream connect error") or object())
+    with pytest.raises(ConnectionError, match=r"Streamable HTTP connect failed \(.*HTTP 503 from POST"):
+        asyncio.run(task._run_http(dict(_CONFIG)))
+    assert "SSE" not in calls
+    assert task._sse_fallback is False  # a server fault must not latch the SSE path

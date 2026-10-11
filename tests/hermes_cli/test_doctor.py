@@ -204,6 +204,78 @@ class TestDoctorToolAvailabilitySummary:
         rows = doctor_tools._doctor_web_capability_rows()
         assert rows and all(status == "ok" for status, _, _ in rows)
 
+    def test_web_capability_rows_name_missing_ddgs_package_when_not_importable(self, monkeypatch):
+        """#125556: ddgs is keyless — an unavailable ddgs provider means the optional package
+        is not importable in the runtime python, not that a credential is missing."""
+        class _PackageMissing:
+            name = "ddgs"
+
+            def is_available(self):
+                return False
+
+            def is_keyless_available(self):
+                return False
+
+        monkeypatch.setattr(
+            "agent.web_search_registry.get_active_search_provider",
+            lambda: _PackageMissing(),
+        )
+        monkeypatch.setattr(
+            "agent.web_search_registry.get_active_extract_provider",
+            lambda: _PackageMissing(),
+        )
+        monkeypatch.setattr("tools.web_tools._ddgs_package_importable", lambda: False)
+
+        rows = doctor_tools._doctor_web_capability_rows()
+        assert rows and all(status == "warn" for status, _, _ in rows)
+        for _, _, detail in rows:
+            assert "ddgs package not importable" in detail
+            assert "falls back to the keyless ring" in detail
+            assert "provider not configured" not in detail
+
+    def test_web_capability_rows_report_configured_backend_when_not_registered(self, monkeypatch):
+        """#125556: a configured backend whose plugin never registered (e.g. web-tavily
+        without httpx in the runtime python) must not read as "nothing selected"."""
+        monkeypatch.setattr(
+            "agent.web_search_registry.get_active_search_provider",
+            lambda: None,
+        )
+        monkeypatch.setattr(
+            "agent.web_search_registry.get_active_extract_provider",
+            lambda: None,
+        )
+        # Answer only the real capability tokens ("search"/"extract"); a display label
+        # ("web search") must not resolve, so the row cannot fake a configured backend.
+        monkeypatch.setattr(
+            "agent.web_search_registry._configured_backend",
+            lambda capability: "tavily" if capability in ("search", "extract") else None,
+        )
+
+        rows = doctor_tools._doctor_web_capability_rows()
+        assert rows and all(status == "warn" for status, _, _ in rows)
+        for _, _, detail in rows:
+            assert detail.startswith("(tavily selected; not registered")
+            assert "plugin import failed" in detail
+
+    def test_web_capability_rows_say_no_provider_selected_when_unconfigured(self, monkeypatch):
+        monkeypatch.setattr(
+            "agent.web_search_registry.get_active_search_provider",
+            lambda: None,
+        )
+        monkeypatch.setattr(
+            "agent.web_search_registry.get_active_extract_provider",
+            lambda: None,
+        )
+        monkeypatch.setattr(
+            "agent.web_search_registry._configured_backend",
+            lambda capability: None,
+        )
+
+        rows = doctor_tools._doctor_web_capability_rows()
+        assert rows and all(
+            detail == "(no provider selected or registered)" for _, _, detail in rows
+        )
+
 
 class TestDoctorEnvFileEncoding:
     """Regression for #18637 (bug 3): `hermes doctor` crashed on Windows

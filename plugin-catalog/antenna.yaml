@@ -1,0 +1,17 @@
+name: antenna
+repo: https://github.com/ClawReefAntenna/antenna-hermes
+sha: 4deb737fa6ad4a442a72077d1113ce564b196f85
+description: Signed messaging with paired Hermes and OpenClaw agents, with receiver-controlled session delivery.
+maintainer: ClawReefAntenna
+tier: community
+category: automation
+title: Antenna for Hermes
+version: "1.6.9"
+docs_url: https://github.com/ClawReefAntenna/antenna-hermes/blob/4deb737fa6ad4a442a72077d1113ce564b196f85/references/USER-GUIDE.md
+platforms: [linux]
+readme: true
+capabilities:
+  provides_tools: []
+  provides_hooks: [on_session_start, on_session_finalize, on_session_reset, pre_llm_call]
+  provides_middleware: []
+  requires_env: []

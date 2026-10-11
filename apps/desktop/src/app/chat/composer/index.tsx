@@ -545,6 +545,15 @@ export function ChatBar({
   }
 
   const handlePaste = (event: ClipboardEvent<HTMLDivElement>) => {
+    // OS file paste (file-manager copy → paste): the clipboard carries native
+    // File entries plus a filename text form. The text form must never reach
+    // the editor — it garbles the composer while attaching nothing (#128823).
+    if (handlePasteFiles(event.clipboardData)) {
+      event.preventDefault()
+
+      return
+    }
+
     const imageBlobs = extractClipboardImageBlobs(event.clipboardData)
 
     if (imageBlobs.length > 0 && onAttachImageBlob) {
@@ -1042,7 +1051,8 @@ export function ChatBar({
     handleDragOver,
     handleDrop,
     handleInputDragOver,
-    handleInputDrop
+    handleInputDrop,
+    handlePasteFiles
   } = useComposerDrop({ cwd, insertInlineRefs, onAttachDroppedItems, recordUndoPoint, requestMainFocus, sessionId })
 
   // A bot chat is a companion conversation, not a working session, so it has no

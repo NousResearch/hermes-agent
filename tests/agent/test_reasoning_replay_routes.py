@@ -149,3 +149,25 @@ def test_value_complaint_never_strips_reasoning_content_from_a_must_echo_route()
                  "Extra inputs are not permitted, field: 'messages[1].reasoning_content'"):
         assert record_reasoning_field_rejection(agent, body, sent) == frozenset()
     assert agent._reasoning_rejecting_routes == {}
+
+
+def test_duplicate_field_rejection_strips_the_alias_and_keeps_the_must_echo():
+    """A schema that treats ``reasoning`` as an alias of ``reasoning_content`` rejects a replayed message
+    that carries both with ``duplicate field `reasoning_content``` (serde alias collision). The learned
+    strip must drop the alias carrier and keep the must-echo field; an identical repeat must not retry."""
+    from types import SimpleNamespace
+    from agent.message_sanitization import record_reasoning_field_rejection
+
+    agent = SimpleNamespace(provider="custom", model="mimo-v2.6-pro",
+                            base_url="https://api.example-relay.test/v1",
+                            api_mode="chat_completions", _reasoning_rejecting_routes={}, session_id=None)
+    sent = [{"role": "assistant", "content": "", "reasoning": "thought", "reasoning_content": "thought"}]
+    body = ("litellm.BadRequestError: OpenAIException - Invalid JSON data: Failed to deserialize the JSON body "
+            "into the target type: messages[0]: duplicate field `reasoning_content`")
+    assert record_reasoning_field_rejection(agent, body, sent) == frozenset({"reasoning"})
+    # The re-shaped route keeps only the carrier the schema reads, still padded for must-echo.
+    route = reasoning_replay_route("chat_completions", agent.provider, agent.model, agent.base_url,
+                                   rejected=rejected_reasoning_carriers(agent))
+    assert route.carriers == {"reasoning_content"}
+    assert route.pad
+    assert record_reasoning_field_rejection(agent, body, sent) == frozenset()  # already learned -> no loop

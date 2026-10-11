@@ -912,6 +912,9 @@ _UNKNOWN_FIELD_PHRASES = (
     "extra inputs are not permitted", "is unsupported", "no such field", "unknown field",
     "unrecognized request argument", "unrecognized field", "unknown parameter", "unexpected field",
     "additional propert", "unknown key",
+    # Same class of wire rejection from an alias collision: a schema that treats `reasoning` as an alias of
+    # `reasoning_content` rejects a message carrying both with "duplicate field `reasoning_content`" (serde).
+    "duplicate field",
 )
 _NAMED_FIELD_RES = {
     RC: re.compile(r"(?<![\w])reasoning_content(?![\w])"),

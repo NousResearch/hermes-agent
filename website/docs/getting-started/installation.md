@@ -242,6 +242,60 @@ ask an administrator to run. See
 
 For more diagnostics, run `hermes doctor` — it will tell you exactly what's missing and how to fix it.
 
+### Legacy macOS bootstrap installer repeats the same failure
+
+Some older `Hermes-Setup` binaries reuse `bootstrap-cache/install-main.sh`
+while updating the checkout to the current `main`. If the log says
+`via cached`, a successful repository update can therefore be followed by
+an obsolete dependency or desktop-build procedure. One observed failure is
+`Cannot find module '.../apps/desktop/scripts/ensure-rolldown-binding.mjs'`
+after npm installation succeeds. The old procedure can also leave a Python
+environment missing dependencies required by the updated checkout.
+
+Current installer source downloads the script again on each run, but an old
+downloaded installer does not acquire that fix when it updates the checkout.
+See [the published macOS installer report](https://github.com/NousResearch/hermes-agent/issues/134047).
+
+For an **existing source installation whose repository stage already updated
+successfully**, quit Hermes-Setup, back up your configuration, and recover with
+the updated checkout's own installer. These commands use the default checkout location; change
+`hermes_checkout` if you installed the source elsewhere. They apply to the
+mutable `main` cache, not commit-pinned installers or bundled Desktop packages.
+
+```bash
+(
+set -e
+hermes_data_dir="${HERMES_HOME:-$HOME/.hermes}"
+hermes_checkout="$hermes_data_dir/hermes-agent"
+hermes_cached_script="$hermes_data_dir/bootstrap-cache/install-main.sh"
+
+# Check the recovery source before changing the cached script.
+if [ ! -f "$hermes_checkout/scripts/install.sh" ]; then
+  printf 'No installer at %s; check the source checkout location.\n' "$hermes_checkout" >&2
+  exit 1
+fi
+if [ -f "$hermes_cached_script" ]; then
+  hermes_script_backup="$(mktemp "${hermes_cached_script}.backup.XXXXXX")"
+  cp -p "$hermes_cached_script" "$hermes_script_backup"
+  cp "$hermes_checkout/scripts/install.sh" "$hermes_cached_script"
+fi
+
+# Repair dependencies through PM, then build the desktop and publish launchers.
+bash "$hermes_checkout/scripts/install.sh" --dir "$hermes_checkout" \
+  --stage python-deps --non-interactive
+bash "$hermes_checkout/scripts/install.sh" --dir "$hermes_checkout" \
+  --stage desktop --non-interactive
+hermes desktop --skip-build
+)
+```
+
+This runs the normal source-install completion, including configuration
+migrations and bundled-skill updates, against the existing data directory.
+Keep your configuration backup; do not remove the data directory or try to
+repair this mismatch with individual `pip install` commands. If the repository
+stage did not finish, use the [source installation path](#without-hermes-desktop)
+first instead of running a partially updated checkout.
+
 ### Symlinked home directories and external storage
 
 Hermes supports a symlinked `HERMES_HOME` and symlinked home subdirectories,

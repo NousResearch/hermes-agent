@@ -111,6 +111,8 @@ function canonicalBotDelivery(params: Record<string, unknown>): Record<string, u
 }
 
 const BRANCH_METHODS = new Set(['session.branch', 'session.branch_stored', 'session.branch_whole'])
+// Value-setting mutations: re-applying one is harmless, so a later acknowledged edit retires it.
+const VALUE_OPERATIONS = new Set(['rename', 'archive', 'model'])
 const MUTATION_METHODS = new Set(['session.title', 'session.archive', 'session.compress', ...BRANCH_METHODS])
 
 export class CanonicalDesktopProtocol {
@@ -382,13 +384,16 @@ export class CanonicalDesktopProtocol {
   result(method: string, params: Record<string, unknown>, value: any): any {
     if (!value || typeof value !== 'object') { return value }
 
+    const mutation = MUTATION_METHODS.has(method) || ((method === 'slash.exec' || method === 'config.set') && typeof params.operation === 'string')
+
     if (typeof value.session_id === 'string' && typeof value.revision === 'number') {
-      this.revisions.set(canonicalSessionKey(value.session_id, params.profile), value.revision)
+      const owner = canonicalSessionKey(value.session_id, params.profile)
+
+      // An exact-retry receipt replays its ORIGINAL revision; never move the CAS value backwards.
+      if (!mutation || value.revision >= (this.revisions.get(owner) ?? -1)) { this.revisions.set(owner, value.revision) }
     }
 
-    if (MUTATION_METHODS.has(method) || ((method === 'slash.exec' || method === 'config.set') && typeof params.operation === 'string')) {
-      return this.mutationReceipt(method, params, value)
-    }
+    if (mutation) { return this.mutationReceipt(method, params, value) }
 
     if (method === 'session.create') {
       for (const [key, id] of this.creates) { if (id === params.request_id) { this.creates.delete(key) } }
@@ -428,6 +433,7 @@ export class CanonicalDesktopProtocol {
 
     for (const [key, mutation] of this.mutations) { if (mutation.request_id === params.request_id) { this.mutations.delete(key) } }
     this.settleModelConfirmation(params)
+    this.retireSupersededMutations(params, value.revision)
 
     if (params.operation === 'model' && value.status === 'confirmation_required' && typeof value.confirm === 'string') {
       // The owner wrote nothing: answer in the legacy handshake (`confirm_required` +
@@ -445,6 +451,24 @@ export class CanonicalDesktopProtocol {
     if (method === 'slash.exec') { return { ...value, type: 'exec', output: mutationSummary(params.operation as string, value) } }
 
     return { ...value, ok: true }
+  }
+
+  // An acknowledged mutation at revision R settles every older retained value-setting request of
+  // the same owner: it either applied before R or can only be refused, so replaying its request
+  // id would return a stale receipt for a later, equal edit. Its confirmed model token goes with
+  // it. Branch/compress stay retained: a new request id there would execute a second time.
+  private retireSupersededMutations(params: Record<string, unknown>, revision: unknown): void {
+    if (typeof revision !== 'number') { return }
+    const owner = canonicalSessionKey(params.session_id, params.profile)
+
+    for (const [key, mutation] of this.mutations) {
+      const [keyOwner, operation] = JSON.parse(key)
+
+      if (keyOwner === owner && VALUE_OPERATIONS.has(operation) && (mutation.expected_revision as number) < revision) {
+        this.mutations.delete(key)
+        this.settleModelConfirmation({ ...mutation, profile: params.profile })
+      }
+    }
   }
 
   private snapshotResult(value: any, route: unknown): any {

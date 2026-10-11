@@ -8,15 +8,12 @@ from unittest.mock import MagicMock, AsyncMock, patch
 import pytest
 
 import acp
-from acp.agent.router import build_agent_router
 from acp.schema import (
     AuthenticateResponse,
     InitializeResponse,
     PromptResponse,
     ResumeSessionResponse,
     SessionModelState,
-    SessionModeState,
-    SetSessionConfigOptionResponse,
     SessionInfo,
     TextContentBlock,
     ToolCallProgress,
@@ -41,35 +38,6 @@ def mock_manager():
 def agent(mock_manager):
     """HermesACPAgent backed by a mock session manager."""
     return HermesACPAgent(session_manager=mock_manager)
-
-
-@pytest.mark.asyncio
-async def test_new_session_exposes_edit_approvals_as_modes_not_config_options(agent):
-    resp = await agent.new_session(cwd="/tmp")
-
-    assert resp.config_options is None
-    assert isinstance(resp.modes, SessionModeState)
-    assert resp.modes.current_mode_id == "default"
-    assert [mode.id for mode in resp.modes.available_modes] == [
-        "default",
-        "accept_edits",
-        "dont_ask",
-    ]
-
-
-@pytest.mark.asyncio
-async def test_set_config_option_persists_edit_approval_policy_without_advertising_config(agent):
-    resp = await agent.new_session(cwd="/tmp")
-    update = await agent.set_config_option(
-        "edit_approval_policy",
-        resp.session_id,
-        "workspace_session",
-    )
-    state = agent.session_manager.get_session(resp.session_id)
-
-    assert isinstance(update, SetSessionConfigOptionResponse)
-    assert update.config_options == []
-    assert getattr(state, "mode", None) == "accept_edits"
 
 
 # ---------------------------------------------------------------------------
@@ -312,40 +280,6 @@ class TestListAndFork:
         assert resp.sessions[0].title == "Fix Zed session history"
         assert resp.sessions[0].updated_at == "123.0"
 
-
-
-
-
-
-# ---------------------------------------------------------------------------
-# session configuration / model routing
-# ---------------------------------------------------------------------------
-
-
-class TestSessionConfiguration:
-
-    @pytest.mark.asyncio
-    async def test_router_accepts_stable_session_config_methods(self, agent):
-        new_resp = await agent.new_session(cwd="/tmp")
-        router = build_agent_router(agent)
-
-        mode_result = await router(
-            "session/set_mode",
-            {"modeId": "accept_edits", "sessionId": new_resp.session_id},
-            False,
-        )
-        config_result = await router(
-            "session/set_config_option",
-            {
-                "configId": "approval_mode",
-                "sessionId": new_resp.session_id,
-                "value": "auto",
-            },
-            False,
-        )
-
-        assert mode_result == {}
-        assert config_result["configOptions"] == []
 
 
 

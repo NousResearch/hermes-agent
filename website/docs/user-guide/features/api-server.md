@@ -553,10 +553,7 @@ subscriber continues draining normally.
 
 ### POST /v1/runs/\{run_id\}/stop
 
-Interrupt a running agent turn. The endpoint returns immediately with `{"status": "stopping"}` while Hermes asks the active agent to stop at the next safe interruption point.
-The run stays tracked as `stopping` until the executor-backed work exits, then
-settles as `cancelled`; requesting stop never hides a worker that is still
-running.
+Interrupt a running agent turn. A successful response with `{"status": "stopping"}` acknowledges the request, not the end of execution. Poll `GET /v1/runs/{run_id}`: `stop_requested_at` records the first request (Unix seconds); `stop_interrupt_requested` only says the in-process interrupt request was accepted, not that a worker stopped. Repeated stop requests preserve the first receipt. `stop_confirmed` starts as `false` and becomes `true` with `stop_confirmed_at` only when the executor has returned an interrupted result after an accepted request. An uncooperative worker can finish normally or fail instead; cancellation of the async wrapper does not prove its thread ended and never sets `stop_confirmed`. Shutdown-interrupted runs are not confirmed stops either. These fields are persisted for idempotent runs and available to subsequent status polls. Missing or false confirmation must be treated as unresolved; a stale status after process loss cannot prove the worker stopped.
 
 ### POST /v1/runs/\{run_id\}/approval
 

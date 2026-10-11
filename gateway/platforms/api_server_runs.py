@@ -274,7 +274,8 @@ def _set_run_status(self, run_id: str, status: str, **fields: Any) -> dict[str, 
         status != previous_status
         or status in TERMINAL_STATUSES
         or bool(field_names & {
-            "output", "error", "usage", "pending_steer", "session_id", "shutdown_requested_at"}))
+            "output", "error", "usage", "pending_steer", "session_id", "shutdown_requested_at",
+            "stop_interrupt_requested", "stop_confirmed"}))
     if run_id in self._run_idempotency_ids and should_persist:
         try:
             self._run_idempotency_store.update_status(run_id, current)
@@ -941,6 +942,12 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
             status = "interrupted"
             fields = {"error": "Gateway shutdown interrupted the run."}
             extra = {}
+        elif (status == "cancelled" and extra.get("interrupted") is True
+              and self._run_statuses.get(run_id, {}).get("stop_interrupt_requested") is True):
+            # Only the returned executor result can confirm a cooperative stop.
+            # Cancellation of this coroutine does not terminate its worker thread.
+            fields["stop_confirmed"] = True
+            fields["stop_confirmed_at"] = time.time()
         self._set_run_status(run_id, status, **fields, last_event=f"run.{status}", **extra)
         with suppress(Exception):
             # A worker can finish before its Future is wrapped, so awaiting it
@@ -1263,11 +1270,19 @@ async def _handle_stop_run(self, request: web.Request, *, _api_server) -> web.Re
         return _json_error(
             _openai_error, f"Run is not active in this gateway process: {run_id}",
             code="run_not_active", status=409)
-    self._set_run_status(run_id, "stopping", last_event="run.stopping")
+    if status.get("status") == "stopping":
+        return web.json_response({"run_id": run_id, "status": "stopping"})
+    self._set_run_status(run_id, "stopping", last_event="run.stopping",
+                         stop_requested_at=time.time(), stop_confirmed=False,
+                         stop_interrupt_requested=False)
     self._stopping_run_ids.add(run_id)
     if agent is not None:
-        with suppress(Exception):
-            _api_server.request_hard_interrupt(agent, "Stop requested via API")
+        try:
+            requested = bool(_api_server.request_hard_interrupt(agent, "Stop requested via API"))
+        except Exception:
+            logger.exception("[api_server] interrupt request failed for run %s", run_id)
+            requested = False
+        self._set_run_status(run_id, "stopping", stop_interrupt_requested=requested)
         # Reap only this run's background processes (epoch-gated inside, so a concurrent
         # run on the same session_id keeps its own); no-op if the run already finished.
         _api_server._reap_disconnected_agent_processes(agent, source="api_server_run_stop")

@@ -32,7 +32,7 @@ from typing import Any, Dict, List, Literal, NamedTuple, Optional
 
 from hermes_cli.config import get_hermes_home
 
-from tools.process_registry_notifications import format_process_notification
+from tools.process_registry_notifications import format_process_notification, watch_event_base
 from tools.process_registry_checkpoint import ProcessCheckpointMixin
 from tools.process_registry_termination import ProcessTerminationMixin
 from tools.process_registry_results import load_completed_results, save_completed_result
@@ -795,7 +795,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
             output = f"...({cut} earlier characters omitted)\n" + output[-HEARTBEAT_OUTPUT_CHARS:]
         session._heartbeat_seq += 1
         notification = {
-            **self._watch_event_base(session),
+            **watch_event_base(session),
             "type": "heartbeat",
             "seq": session._heartbeat_seq,
             "interval": session.heartbeat_seconds,
@@ -882,7 +882,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
             output = output[:2000] + "\n...(truncated)"
         if self._global_watch_admit(now):
             notification = {
-                **self._watch_event_base(session),
+                **watch_event_base(session),
                 "type": "watch_match",
                 "pattern": matched_pattern,
                 "output": output,
@@ -899,7 +899,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
     def _emit_watch_disabled(self, session: ProcessSession, suppressed: int, why: str) -> None:
         """Queue the one-shot watch_disabled summary (strike-limit or lifetime-cap path)."""
         self.completion_queue.put({
-            **self._watch_event_base(session),
+            **watch_event_base(session),
             "type": "watch_disabled",
             "suppressed": suppressed,
             "message": (
@@ -907,18 +907,6 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
                 f"Falling back to notify_on_complete semantics; you'll get "
                 f"exactly one notification when the process exits."),
         })
-
-    @staticmethod
-    def _watch_event_base(session: ProcessSession) -> dict:
-        """Session identity + watcher routing fields shared by every watch event."""
-        return {
-            "session_id": session.id,
-            "session_key": session.session_key,
-            "task_id": session.task_id,
-            "owner_task_id": session.owner_task_id,
-            "command": session.command,
-            **{key: getattr(session, f"watcher_{key}") for key in _WATCHER_ROUTE_KEYS},
-        }
 
     @staticmethod
     def _global_watch_event(type_: str, message: str, **extra) -> dict:

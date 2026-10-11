@@ -1,0 +1,61 @@
+name: Matrix live client
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/matrix-live.yml'
+      - '.github/actions/setup-pm/**'
+      - '.dockerignore'
+      - '*.py'
+      - 'agent/**'
+      - 'cron/**'
+      - 'gateway/**'
+      - 'hermes_cli/**'
+      - 'hermes_platform/**'
+      - 'locales/**'
+      - 'plugins/**'
+      - 'pm/**'
+      - 'providers/**'
+      - 'scripts/bundles/payload.py'
+      - 'scripts/ci/list_os_marked_tests.py'
+      - 'scripts/ci/setup_toolchain.py'
+      - 'scripts/run_tests.sh'
+      - 'scripts/run_tests_parallel.py'
+      - 'skills/**'
+      - 'tests/conftest.py'
+      - 'tests/fakes/fake_llm_provider.py'
+      - 'tests/integration/matrix_live/**'
+      - 'tools/**'
+      - 'tui_gateway/**'
+      - 'pyproject.toml'
+      - 'uv.lock'
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  plain-exchange:
+    name: Separate client and Linux gateway
+    runs-on: ubuntu-latest-32-core
+    timeout-minutes: 45
+    env:
+      HERMES_TEST_MATRIX_GATEWAY_IMAGE: hermes-matrix-live:ci
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Set up locked Python and Matrix dependencies
+        uses: ./.github/actions/setup-pm
+        with:
+          extras: '["matrix"]'
+          test-environment: 'true'
+      # Build here so that the per-file test timeout does not have to cover a cold image build.
+      - name: Build the Linux gateway image
+        run: '"$HERMES_PYTHON" -m tests.integration.matrix_live.image_build "$HERMES_TEST_MATRIX_GATEWAY_IMAGE"'
+      - name: Run Matrix live client tests
+        run: scripts/run_tests.sh --include-integration tests/integration/matrix_live/
+        env:
+          HERMES_TEST_WORKERS: '1'
+          HERMES_TEST_FILE_TIMEOUT: '300'
+          HERMES_TEST_FILE_RETRIES: '0'

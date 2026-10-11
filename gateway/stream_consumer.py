@@ -151,6 +151,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         # first-send. Used by the fresh-final logic to detect long-lived previews whose edit timestamps
         # would be stale by completion time. Ported from openclaw/openclaw#72038.
         self._preview_message_ids: set[str] = set()
+        self._nonvisible_edit_ids: set[str] = set()
         self._already_sent = False
         self._edit_supported = True  # False once progressive edits stop working
         self._last_edit_time = 0.0
@@ -205,6 +206,15 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         self._tool_progress_lines: list[str] = []
         self._tool_progress_active: bool = False
         self._clear_turn_final_flags()
+
+    @property
+    def final_message_ids(self) -> tuple[str, ...]:
+        """The visible message events in the current final segment."""
+        ids = self._segment_preview_message_ids & self._preview_message_ids
+        ids -= self._nonvisible_edit_ids
+        if self._message_id and self._message_id != "__no_edit__":
+            ids.add(self._message_id)
+        return tuple(sorted(ids))
 
     def _clear_turn_final_flags(self) -> None:
         """Reset every turn-final delivery flag to "nothing delivered yet".
@@ -271,6 +281,17 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
     final_response_sent = property(lambda self: self._final_response_sent)
     message_id = property(lambda self: self._message_id)
     final_content_delivered = property(lambda self: self._final_content_delivered)
+
+    def _requires_edit_finalize(self) -> bool:
+        """Whether the final edit must be sent even when its text is already visible.
+
+        An adapter can require it for every stream with ``REQUIRES_EDIT_FINALIZE`` or for the
+        current reply with ``requires_edit_finalize(chat_id)``, which is read at each finalize.
+        """
+        if self._adapter_requires_finalize:
+            return True
+        hook = getattr(type(self.adapter), "requires_edit_finalize", None)
+        return callable(hook) and hook(self.adapter, self.chat_id) is True
 
     async def _notify_before_finalize(self) -> None:
         """Run the pre-finalize hook exactly once, swallowing hook errors."""
@@ -879,7 +900,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         elif self._final_response_sent:
             # Fresh-final already delivered; a second finalize would duplicate.
             self._mark_final_delivered(record=self._accumulated)
-        elif tick.update_visible and (not self._adapter_requires_finalize
+        elif tick.update_visible and (not self._requires_edit_finalize()
                                       or self._last_edit_overflowed or tick.draft_final_fresh_send):
             # The update already delivered the final.  A second finalize would re-edit
             # it (Telegram: editMessageText after sendRichMessage falls back to the

@@ -31,6 +31,7 @@ import pytest
 from gateway import delivery_ledger as dl
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
+from gateway.session import SessionSource
 
 SESSION_KEY = "agent:main:telegram:dm:5230977008"
 TOPIC_SESSION_KEY = "agent:main:telegram:group:-1001:topic:7"
@@ -60,9 +61,7 @@ def _rows():
 
 
 def _source(*, chat_id=CHAT, thread_id=None, chat_type="dm"):
-    # parent_chat_id is a real SessionSource field; the queued-followup path reads it to pin the
-    # channel inputs, so the stub carries it like every real source does.
-    return SimpleNamespace(platform=Platform.TELEGRAM, chat_id=chat_id, thread_id=thread_id,
+    return SessionSource(platform=Platform.TELEGRAM, chat_id=chat_id, thread_id=thread_id,
                            chat_type=chat_type, parent_chat_id=None)
 
 

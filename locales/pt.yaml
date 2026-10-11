@@ -744,6 +744,7 @@ gateway:
     already_paused: "⏸️ O Hermes já está pausado{suffix}. Use `/pause off` para retomar."
     paused: "⏸️ Pausado{suffix}. Novo trabalho de cron/kanban/gateway está em espera; o trabalho em andamento termina normalmente. Use `/pause off` para retomar."
   queue:
+    full: "A fila de mensagens pendentes está cheia. Esta mensagem não foi adicionada à fila. Aguarde um turno na fila terminar e envie-a novamente."
     usage: "Uso: /queue <prompt>"
     queued: "Enfileirado para o próximo turno."
     queued_depth: " ({depth} na fila)"

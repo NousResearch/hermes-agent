@@ -152,6 +152,22 @@ class TestNormalizeTavilyDocuments:
 class TestWebExtractCacheAttribution:
     """Only cache content under the URL reported by the extract provider."""
 
+    def test_cloudflare_interstitial_is_an_error_and_is_not_cached(self):
+        """Regression for #120502: ``Just a moment...`` plus an empty markdown body is a challenge page."""
+        from tools import web_tools_extract as wte
+
+        class _CloudflareProvider:
+            name = "tavily"
+
+            async def extract(self, urls, format=None):
+                return [{"url": urls[0], "title": "Just a moment...", "raw_content": "##"}]
+
+        with patch("tools.web_result_cache.extract_cache_put") as cache_put:
+            result = asyncio.run(wte._dispatch_extract(_CloudflareProvider(), ["https://example.com/page"], None))
+
+        assert "cloudflare" in result[0]["error"].lower()
+        cache_put.assert_not_called()
+
     def test_partial_result_caches_under_its_own_requested_url(self):
         from tools import web_tools_extract as wte
 

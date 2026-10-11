@@ -560,6 +560,9 @@ def _build_result_entry(
     # responses (usually a transport bug) — a failure, not a success.
     usable_summary = bool(summary) and summary.strip() != "(empty)"
     interrupt_note = ""
+    # Stamped by ``request_subagent_stop``; anything else (absent, a Mock, a stray value) means not a deliberate stop.
+    stopped_by = getattr(child, "_delegate_stopped_by", None) if result.get("interrupted", False) else None
+    stopped_by = stopped_by if stopped_by in ("user", "parent") else None
     if result.get("interrupted", False):
         status, exit_reason = "interrupted", "interrupted"
         # The loop's final_response is a placeholder here ("Operation interrupted…", also appended as the closing
@@ -571,6 +574,15 @@ def _build_result_entry(
                         and (t := flatten_message_text(m.get("content")).strip()) not in placeholders), "")
         if partial:
             interrupt_note, summary = summary.strip(), partial
+        if stopped_by in ("user", "parent"):
+            # A deliberate stop is an instruction, not a fault: without the cause the parent reads a bare
+            # "interrupted" as a failed task and spawns a replacement for work that was just cancelled.
+            who = "the user" if stopped_by == "user" else "you (delegate_task action='stop')"
+            interrupt_note = (
+                f"Stopped by {who} before it finished. This was a deliberate cancellation, not a failure: "
+                "do not re-dispatch or retry this task unless the user asks for it."
+                + (f" ({interrupt_note})" if interrupt_note else "")
+            )
     elif result.get("failed") or result.get("error"):
         # The loop returns the error text as final_response, which would otherwise read as "completed". Never report a
         # provider rejection as "max_iterations" — that is only truthful for real budget exhaustion.
@@ -622,6 +634,8 @@ def _build_result_entry(
             entry["failure_reason"] = _failure_reason
     elif interrupt_note:
         entry["error"] = interrupt_note
+    if stopped_by:
+        entry["stopped_by"] = stopped_by
 
     # Schema-validation outcome — emitted ONLY when a schema was requested, so
     # legacy (schema-less) payloads keep their exact shape.

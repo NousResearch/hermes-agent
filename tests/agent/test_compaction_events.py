@@ -324,9 +324,11 @@ def _prune_after_tool_results(persist_disabled):
     from agent.turn_preflight import compress_after_tool_results
 
     compressor = _compressor(
-        proactive_prune_tokens=48_000, proactive_prune_min_result_chars=8_000, protect_first_n=2, protect_last_n=4,
+        proactive_prune_tokens=48_000, proactive_prune_min_result_chars=8_000, proactive_prune_min_reclaim_tokens=4096,
+        protect_first_n=2, protect_last_n=4,
     )
     compressor.last_prompt_tokens = 120_000
+    compressor._session_db = object()  # a bound store; the prune is skipped without one
     agent = SimpleNamespace(
         context_compressor=compressor, compression_enabled=True, session_id="prune-session", tools=[],
         _persist_disabled=persist_disabled, _usage_anchor=None, _compression_feasibility_checked=True,

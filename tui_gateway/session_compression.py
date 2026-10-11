@@ -75,9 +75,9 @@ def _derived_default_threshold_percent(agent: Any, compression: dict) -> float:
 
 # (config key == compressor attr, ctor-default fallback, min_value)
 _COMPRESSION_INT_KEYS = (
-    ("proactive_prune_tokens", 0, 0),
-    ("proactive_prune_min_result_chars", 8000, 0),
-    ("proactive_prune_min_reclaim_tokens", 4096, 0),
+    ("proactive_prune_tokens", 64000, 0),
+    ("proactive_prune_min_result_chars", 1000, 0),
+    ("proactive_prune_min_reclaim_tokens", 64000, 0),
     ("protect_last_n", 20, 0),
     ("min_tail_user_messages", 1, 1),
 )
@@ -121,6 +121,10 @@ def _apply_live_compression_config(agent: Any, cfg: dict | None) -> None:
     for key, fallback, min_value in _COMPRESSION_INT_KEYS:
         default = int(_compressor_ctor_default(key, fallback))
         raw = compression.get(key, default)
+        if key.startswith("proactive_prune_") and raw is not None:
+            # agent_init's parser for these keys: a bool is never a count; `proactive_prune_tokens: false` = off.
+            from agent.agent_init import _parse_config_int
+            raw = 0 if raw is False and key == "proactive_prune_tokens" else _parse_config_int(raw, default)
         with contextlib.suppress(TypeError, ValueError):
             setattr(cc, key, max(min_value, default if raw is None else int(raw)))
     with contextlib.suppress(TypeError, ValueError):

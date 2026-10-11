@@ -607,18 +607,18 @@ DEFAULT_CONFIG = {
         # max_attempts: retry rounds before a turn gives up with "max compression attempts reached".
         # Raise (e.g. 6) for tool-schema-heavy sessions. Validated >= 1, cap 10.
         "max_attempts": 3,
-        # proactive_prune_tokens: opt-in trigger (tokens) for the deterministic no-LLM tool-result
-        # prune, independent of `threshold` (which rarely fires on large windows, so old tool output
-        # is re-sent every turn); e.g. 48000 reclaims early. 0 = off. Tail protected by
-        # `protect_last_n`. Built-in compressor only. Each committed prune rewrites sent history and
-        # breaks the prompt-cache prefix — the min_reclaim gate below keeps those breaks episodic.
-        "proactive_prune_tokens": 0,
+        # proactive_prune_tokens: trigger (tokens) for the deterministic no-LLM tool-result prune,
+        # independent of `threshold` (which rarely fires on large windows, so old tool output is
+        # re-sent every turn). 0 = off. Tail protected by `protect_last_n`. Built-in compressor only.
+        # Each committed prune rewrites sent history and breaks the prompt-cache prefix — the
+        # min_reclaim gate below keeps those breaks episodic (defaults: replay data in the commit).
+        "proactive_prune_tokens": 64000,
         # Prune's summarize pass only touches tool results larger than this (chars); clamped >= 200
         # so a generated summary can't be re-summarized.
-        "proactive_prune_min_result_chars": 8000,
+        "proactive_prune_min_result_chars": 1000,
         # A prune only commits when it reclaims at least this many tokens, then waits for a
         # trigger-sized runway to regrow before rearming. 0 = no minimum-savings gate.
-        "proactive_prune_min_reclaim_tokens": 4096,
+        "proactive_prune_min_reclaim_tokens": 64000,
         # micro_compact: opt-in — after each turn fold the oldest un-absorbed exchange into a
         # rolling summary, amortizing compression cost. Off by default because every pass rewrites
         # sent history and breaks the prompt-cache prefix EVERY turn; enable only if the amortized

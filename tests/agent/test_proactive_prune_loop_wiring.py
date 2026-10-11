@@ -114,6 +114,7 @@ def agent():
     a.save_trajectories = False
     a.compression_enabled = True
     a.context_compressor = _quiet_compressor()
+    a.context_compressor._session_db = MagicMock()  # the prune only runs where its store archives originals
     return a
 
 
@@ -192,6 +193,17 @@ class TestProactivePruneLoopWiring:
         assert result["completed"] is True
         assert len(calls) == 3  # one shot per tool iteration
         assert all(t == 120_000 for t in calls)  # fed the real usage reading
+
+    @pytest.mark.parametrize("gate", ["no_session_store", "checkpoint_required"])
+    def test_prune_not_consulted_without_store_or_under_checkpoint_gate(self, agent, gate):
+        calls = []
+        agent.context_compressor.prune_tool_results_only = lambda m, current_tokens=None: (calls.append(1), (m, 0))[1]
+        if gate == "no_session_store":
+            agent.context_compressor._session_db = None  # batch runs: demoted bodies would exist nowhere else
+        else:
+            agent.compression_checkpoint_required = True  # prune would bypass the checkpoint hook
+        assert _run_tool_loop(agent, n_tool_iterations=2)["completed"] is True
+        assert calls == []
 
     def test_committed_prune_replaces_messages(self, agent):
         marker = "[old tool output pruned]"

@@ -13,6 +13,7 @@ import {
   RUN_START_SNAP_THRESHOLD_PX,
   shouldAnchorBeforePrepend,
   shouldClampTranscriptBudget,
+  shouldPinOnRunEnd,
   shouldRePinOnTranscriptReload,
   shouldSnapOnRunStart,
   subscribeToThreadForeground,
@@ -536,5 +537,19 @@ describe('first user message is never swallowed (Show-earlier paging)', () => {
     expect(hidden).toBe(0)
     // The first user message survives as a distinct visible group.
     expect(groups.some(g => g.id === 'u1')).toBe(true)
+  })
+})
+
+describe('shouldPinOnRunEnd', () => {
+  it('re-pins a reader who was at the bottom when the turn ended', () => {
+    expect(shouldPinOnRunEnd(true, false)).toBe(true)
+  })
+
+  it('never yanks a reader who is up in history', () => {
+    expect(shouldPinOnRunEnd(false, false)).toBe(false)
+  })
+
+  it('never pins a historical transcript view', () => {
+    expect(shouldPinOnRunEnd(true, true)).toBe(false)
   })
 })

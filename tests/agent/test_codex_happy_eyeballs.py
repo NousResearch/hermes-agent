@@ -21,6 +21,9 @@ def no_proxy_env(monkeypatch):
         "no_proxy",
     ):
         monkeypatch.delenv(name, raising=False)
+    # The no-proxy contract: a Windows dev machine's OS proxy (WinINET registry)
+    # must not leak into these clients either (#124773).
+    monkeypatch.setattr(process_bootstrap, "_os_proxy_for_url", lambda *a, **k: None)
 
 
 def _client_backends(client):

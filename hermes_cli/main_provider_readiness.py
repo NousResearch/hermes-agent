@@ -75,8 +75,8 @@ def _registry_provider_configured(registry, strict_profile_scope: bool, get_auth
             for provider_id, pconfig in registry.items()
             if pconfig.auth_type == "api_key"
         )
-    except Exception as exc:
-        facade.logger.debug("provider auth status sweep failed: %s", type(exc).__name__, exc_info=True)
+    except Exception as exc:  # health: allow BLE001 -- provider auth plugins are third-party boundaries; fail closed after sanitized logging
+        facade.logger.exception("provider auth status sweep failed: %s", type(exc).__name__)
         return False
 
 
@@ -90,8 +90,8 @@ def _claude_code_configured(has_hermes_config: bool, strict_profile_scope: bool,
 
         creds = read_claude_code_credentials()
         return bool(creds and (is_claude_code_token_valid(creds) or creds.get("refreshToken")))
-    except Exception as exc:
-        facade.logger.debug("Claude Code credential check failed: %s", type(exc).__name__, exc_info=True)
+    except Exception as exc:  # health: allow BLE001 -- credential readers include optional integrations; fail closed after sanitized logging
+        facade.logger.exception("Claude Code credential check failed: %s", type(exc).__name__)
         return False
 
 

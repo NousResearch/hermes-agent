@@ -40,6 +40,7 @@ vi.mock('@/i18n', () => ({
           continuationOrigin: 'Automatic continuation — this conversation was compressed and continued',
           messageCount: (count: number) => `${count} messages`,
           needsInput: 'Needs input',
+          ownedByProfile: (profile: string) => `Profile: ${profile}`,
           sessionActions: 'Session actions',
           sessionRunning: 'Running',
           todoProgress: 'Tasks completed',
@@ -56,7 +57,6 @@ vi.mock('@/i18n', () => ({
   })
 }))
 
-vi.mock('@/app/chat/profile-tag', () => ({ ProfileTag: () => null }))
 vi.mock('@/app/chat/session-drag', () => ({ startSessionDrag: vi.fn() }))
 // PlatformAvatar is intentionally NOT mocked (do not reintroduce this — see
 // #67500, Gille's third pass): it's a forwardRef component that spreads its
@@ -161,7 +161,7 @@ function makeSession(overrides: Partial<SessionInfo> & { title: string }): Sessi
 
 const noop = vi.fn()
 
-const renderRow = (session: SessionInfo, extra?: { card?: boolean }) =>
+const renderRow = (session: SessionInfo, extra?: { card?: boolean; showProfile?: boolean }) =>
   render(
     <SidebarSessionRow
       card={extra?.card}
@@ -173,6 +173,7 @@ const renderRow = (session: SessionInfo, extra?: { card?: boolean }) =>
       onResume={noop}
       onToggleUnread={noop}
       session={session}
+      showProfile={extra?.showProfile}
       unread={false}
     />
   )
@@ -435,6 +436,119 @@ describe('SidebarSessionRow decoration slots', () => {
     })
 
     expect(screen.queryByTestId('lead-deco')).toBeNull()
+  })
+})
+
+// The owning-profile chip is UNCONDITIONAL: every row on every surface names
+// its owner, the default profile included. This suite used to stub ProfileTag to
+// null, which made it structurally blind to exactly that regression — a stub that
+// renders nothing cannot fail when the row stops asking for the chip.
+describe('SidebarSessionRow owning-profile chip', () => {
+  // The real ProfileTag (no module mock): the chip is a ProfileGlyph, labelled
+  // through the mocked i18n's `ownedByProfile` as "Profile: <key>".
+  const chips = () => screen.queryAllByRole('img', { name: /^Profile: / })
+  const chip = (profile: string) => screen.queryByRole('img', { name: `Profile: ${profile}` })
+
+  it('chips a default-profile row', () => {
+    renderRow(makeSession({ profile: 'default', title: 'Default owner' }))
+
+    expect(chip('default')).not.toBeNull()
+  })
+
+  it('chips a named-profile row', () => {
+    renderRow(makeSession({ profile: 'offdev', title: 'Named owner' }))
+
+    expect(chip('offdev')).not.toBeNull()
+  })
+
+  // The bug proper: showProfile is the prop that used to gate the chip, and it
+  // defaults to false on every surface that never opted in (projects, messaging,
+  // pins, search). Absent and explicitly-false must BOTH still render it.
+  it('renders with showProfile absent, on every profile', () => {
+    renderRow(makeSession({ profile: 'default', title: 'No flag, default' }))
+
+    expect(chips()).toHaveLength(1)
+
+    cleanup()
+
+    renderRow(makeSession({ profile: 'offdev', title: 'No flag, named' }))
+
+    expect(chips()).toHaveLength(1)
+  })
+
+  it('renders with showProfile explicitly false', () => {
+    renderRow(makeSession({ profile: 'offdev', title: 'Flag off' }), { showProfile: false })
+
+    expect(chip('offdev')).not.toBeNull()
+  })
+
+  it('renders once for a named profile with showProfile true — the flag no longer doubles it', () => {
+    renderRow(makeSession({ profile: 'offdev', title: 'Flag on' }), { showProfile: true })
+
+    expect(chips()).toHaveLength(1)
+  })
+
+  // An unset/blank profile normalizes to the default key, so the row still has
+  // an owner to name — and must still say so.
+  it('chips a row whose profile is blank, normalized to default', () => {
+    renderRow(makeSession({ profile: '', title: 'No owner' }))
+
+    expect(chip('default')).not.toBeNull()
+  })
+
+  // The chip shares ONE right-aligned slot with the figures and the kebab. The
+  // chip renders FIRST, so it must not claim the tail the figures own: if the
+  // chip swallowed the hover-hand-off the age would stop fading for the kebab.
+  it('leaves the slot tail to the figures rather than the chip', () => {
+    const { container } = renderRow(makeSession({ profile: 'offdev', title: 'Shared tail' }))
+
+    const tail = container.querySelector('.session-row-tail')
+
+    // The figures node owns the tail (it fades to make room for the kebab).
+    expect(tail).not.toBeNull()
+    expect(tail!.textContent).toContain('5m')
+    // …and the chip is not that element: it sits before it in the slot.
+    expect(chip('offdev')!.closest('.session-row-tail')).toBeNull()
+  })
+
+  // An archived row swaps its LEAD slot to the archive glyph (the dot has
+  // nothing to paint). The chip is in the trailing slot, so the two must
+  // coexist without one consuming the other's column.
+  it('keeps the chip alongside the archive glyph on an archived row', () => {
+    const { container } = renderRow(makeSession({ archived: true, profile: 'offdev', title: 'Archived owner' }))
+
+    expect(container.querySelector('.codicon-archive')).not.toBeNull()
+    expect(chip('offdev')).not.toBeNull()
+    // The glyph is the LEAD slot (left of the title), the chip the trailing one.
+    const archive = container.querySelector('.codicon-archive')!
+    const chipEl = chip('offdev')!
+
+    expect(archive.compareDocumentPosition(chipEl) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  // The chip now ends the trailing slot on rows that carry no figures, which is
+  // a row type that previously had an EMPTY slot and so never exercised
+  // `chipEndsSlot` at all. That branch must still fire: the chip is what hands
+  // its place to the kebab on hover, and it must reserve at least the kebab's
+  // width (`min-w-5`) or the row's right edge would jump on hover.
+  it('hands the slot tail to the chip when the row carries no figures', async () => {
+    const layout = await import('@/store/layout')
+
+    layout.$sidebarRowMeta.set(['preview'])
+    const { container } = renderRow(makeSession({ profile: 'offdev', title: 'Chip ends slot' }))
+    const chipEl = chip('offdev')!
+
+    // No figures node at all…
+    expect(screen.queryByText('5m')).toBeNull()
+    // …so the chip IS the last thing in the slot and owns the hover hand-off.
+    const tail = chipEl.closest('.session-row-tail')
+
+    expect(tail).not.toBeNull()
+    expect(tail!.className).toContain('min-w-5')
+    // The kebab rides that same reserved width rather than pushing the row.
+    expect(container.querySelector('[data-row-actions]')).not.toBeNull()
+
+    layout.$sidebarRowMeta.set(['preview', 'updated'])
   })
 })
 

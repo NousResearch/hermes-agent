@@ -508,9 +508,13 @@ describe('profile rail: a fresh Omar chat keeps its exact registry owner across 
     expect(window.hermesDesktop.getConnection).not.toHaveBeenCalledWith('omar')
   })
 
+  // The matrix previously also carried the two variants with
+  // `activeProfile: 'default'` (saved 'omar' while the window lives on
+  // 'default'), which asserted that a conflicting saved default re-homes a
+  // generic New Session. The live window profile wins a conflict instead —
+  // asserted by the dedicated test below. The saved==live variant keeps the
+  // transport-fidelity coverage.
   it.each([
-    { connectionId: null, activeProfile: 'default' },
-    { connectionId: 'local', activeProfile: 'default' },
     { connectionId: null, activeProfile: 'omar' }
   ])(
     'captures the saved $connectionId default before activation from remote $activeProfile',
@@ -586,6 +590,19 @@ describe('profile rail: a fresh Omar chat keeps its exact registry owner across 
       }
     }
   )
+
+  // A saved default profile that conflicts with the window's live profile
+  // must not re-home a generic New Session — the live profile wins and keeps
+  // the window's active source.
+  it('a saved default conflicting with the live profile yields to the live profile', async () => {
+    setPrimaryGateway(makePrimary() as never, 'default')
+    await ensureGatewayAgent(SOURCE_ID, 'default')
+    $defaultProfileRoute.set({ connectionId: 'local', profile: 'omar' })
+
+    act(() => prepareDefaultNewSession())
+
+    expect(resolveNewChatOwnerRoute()).toEqual({ connectionId: SOURCE_ID, profile: 'default' })
+  })
 
   it('dials homelab::omar when boot published homelab on the active primary gateway', async () => {
     const primary = makePrimary()

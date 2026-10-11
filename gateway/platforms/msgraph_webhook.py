@@ -337,7 +337,8 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
             provenance = capture_provenance(authority.runner, event)
             if provenance is None:
                 raise RuntimeStoreError('permission_denied')
-            ref = authority.register(event.source)
+            # The routing reservation writes too: off the owner loop like the admission below.
+            ref = await asyncio.to_thread(authority.register, event.source)
             route = authority.sessions[ref.session_id].route
             source = event.source.to_dict()
             source['is_bot'] = event.source.is_bot
@@ -345,10 +346,14 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
                 'timestamp': datetime.fromtimestamp(0, UTC).isoformat(),
                 'event': {'message_id': event.message_id},
                 'automation': {'identity': event.message_id, 'owner': ref.session_id}}
-            row = admit_session_input(authority.db, epoch=authority.epoch,
-                principal_id='msgraph:' + route, session_id=ref.session_id,
-                request_id=event.message_id, payload={'text': event.text, 'native_text_v1': envelope})
-            event._gateway_accepted = True
-            authority._publish_pending(ref)
-            authority._schedule(ref)
-            return authority._receipt(row)
+            # Off the owner loop and in admission order (``tracked_write``), committed before the
+            # 202: a held SQLite writer must not freeze every session while Graph waits.
+            from functools import partial
+            from gateway.session_runtime_workers import tracked_write
+            return await tracked_write(authority, partial(
+                admit_session_input, authority.db, epoch=authority.epoch,
+                principal_id='msgraph:' + route, session_id=ref.session_id, request_id=event.message_id,
+                payload={'text': event.text, 'native_text_v1': envelope},
+                _authorize_write=authority._admission_gate()),
+                then=partial(authority._admitted, ref, event), ordered=True,
+                after=partial(authority._schedule_admitted, ref))

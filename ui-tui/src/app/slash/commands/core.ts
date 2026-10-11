@@ -686,7 +686,7 @@ export const coreCommands: SlashCommand[] = [
 
   {
     aliases: ['q'],
-    help: 'inspect or enqueue a message',
+    help: 'enqueue a message (bare /queue shows the queue length)',
     name: 'queue',
     run: (arg, ctx) => {
       if (!arg) {

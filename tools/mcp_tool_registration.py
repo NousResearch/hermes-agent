@@ -497,7 +497,7 @@ def _register_connected_into_current_scope(servers: dict) -> int:
     A shared live connection remains owned by the profile that opened it, but a profile with the
     same route must still receive its callable tool entries. The current profile's config is the
     allowlist, and route fingerprints prevent borrowing a differently-authenticated connection.
-    Missing or changed config entries remove only this profile's overlay.
+    Missing or changed config entries remove this profile's overlay of an ADOPTED connection only.
     """
     from tools.registry import registry
 
@@ -536,12 +536,18 @@ def _register_connected_into_current_scope(servers: dict) -> int:
             name = _key_name(key)
             if name not in judged:
                 continue  # attached after the config read; the next pass judges it
+            if _key_scope(key) == scope:
+                # This profile's OWN connection: its run task (park/revive) and the config reconcile
+                # own its lifecycle, as in a single-profile process. Stripping it here left the
+                # connection in ``_servers``, so nothing reconnected it and the profile stayed
+                # tool-less for that server after a rotated ``${VAR}`` token or a pass that landed
+                # mid-reconnect.
+                continue
             server = _core._servers.get(key)
             config = judged[name]
-            cross_profile = _key_scope(key) != scope
             if (config is None or not mcp_server_enabled(config) or server is None
                     or getattr(server, "session", None) is None
-                    or not _same_server_route(server, config, cross_profile=cross_profile,
+                    or not _same_server_route(server, config, cross_profile=True,
                                               resolved_identity=resolved_ids.get(name))):
                 stale.append(key)
     for key in stale:

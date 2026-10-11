@@ -1,0 +1,21 @@
+name: print-job-watch
+repo: https://github.com/TakeshiTGAL/hermes-plugin-print-job-watch
+sha: d5c8ec85ecfd48e970a274368ff32ec75c7575df
+description: "Reads one OctoPrint printer. A cron watch reports printer_disconnected (not a pause); error; complete after Printing, Printing from SD, Pausing, Paused, Resuming, or Finishing; paused after Printing, Printing from SD, Pausing, or Resuming; cancelled; and stalled. This plugin can be used with OctoPrint. OctoPrint is a registered trademark owned by Gina Häußge (https://octoprint.org). Disclosure — Talks to the one OctoPrint origin you set in OCTOPRINT_URL with your OCTOPRINT_API_KEY, plus an optional webcam still from the same host, fetched without the key when it is on another port. Over plain http, that key is sent unencrypted. Pause, resume, and cancel ask for Hermes approval every time and are refused under cron, yolo, approvals off, single-query, unattended sessions and plugins.isolation: host, and when those checks cannot run. The plugin has no user list of its own: anyone you allow on your Hermes gateway can ask for a move and approve it. Running hermes tools does not remove the slash command. Answering \"always\" adds one unused line to config.yaml, and that line does not approve the next move. The optional watch is a cron job you create from the CLI (a model turn every 5 minutes by default) that stays after uninstall until you run unschedule. At that default it is 288 runs a day with no daily cap. The watch needs plugins.isolation: in_process; under host it only posts a notice that it cannot run, on every run. Not tested on a physical printer, with access control off, or with the stock webcam."
+maintainer: TakeshiTGAL
+tier: community
+category: tools
+requires_hermes: ">=0.21.4"
+docs_url: https://github.com/TakeshiTGAL/hermes-plugin-print-job-watch#readme
+version: "0.1.0"
+platforms: []
+capabilities:
+  provides_tools:
+  - print_job_status
+  - print_job_control
+  - print_job_watch
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - OCTOPRINT_URL
+  - OCTOPRINT_API_KEY

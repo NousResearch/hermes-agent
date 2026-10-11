@@ -5,19 +5,19 @@
 # v0.1.0 tag's 40-hex commit SHA); the loader rejects anything but a full SHA.
 name: hermes-rich-ui
 repo: https://github.com/jacobhausler/hermes-rich-ui
-sha: "754ae514005dc99bfaa9af67e7abb53cf2ed05a1"
+sha: "693fe296579ae69cfc78b90624a7b6bfc2564755"
 subdir: ""
-description: "Rich, evidence-backed answer cards — tables, charts, metrics, timelines, sources — rendered inline in the desktop transcript"
+description: "Rich, evidence-backed answer cards — tables, charts, metrics, timelines, sources — rendered inline in the desktop transcript Disclosure — Image and ImageGallery cards load agent-supplied https image URLs (up to 8 per gallery) from any host when the card renders in Desktop"
 maintainer: jacobhausler
 tier: community
 category: desktop                       # README vocabulary: desktop|memory|platform|web|tools|voice|automation|models|general
-requires_hermes: ">=2026.9.24"
-version: "0.1.0"                        # cosmetic label; quoted per README
-image: "https://raw.githubusercontent.com/jacobhausler/hermes-rich-ui/754ae514005dc99bfaa9af67e7abb53cf2ed05a1/assets/screenshot-1.png"
+requires_hermes: ">=0.21.5"
+version: "0.1.4"                        # cosmetic label; quoted per README
+image: "https://raw.githubusercontent.com/jacobhausler/hermes-rich-ui/693fe296579ae69cfc78b90624a7b6bfc2564755/assets/screenshot-1.png"
 screenshots:
-- "https://raw.githubusercontent.com/jacobhausler/hermes-rich-ui/754ae514005dc99bfaa9af67e7abb53cf2ed05a1/assets/screenshot-1.png"
-- "https://raw.githubusercontent.com/jacobhausler/hermes-rich-ui/754ae514005dc99bfaa9af67e7abb53cf2ed05a1/assets/screenshot-2.png"
-- "https://raw.githubusercontent.com/jacobhausler/hermes-rich-ui/754ae514005dc99bfaa9af67e7abb53cf2ed05a1/assets/screenshot-3.png"
+- "https://raw.githubusercontent.com/jacobhausler/hermes-rich-ui/693fe296579ae69cfc78b90624a7b6bfc2564755/assets/screenshot-1.png"
+- "https://raw.githubusercontent.com/jacobhausler/hermes-rich-ui/693fe296579ae69cfc78b90624a7b6bfc2564755/assets/screenshot-2.png"
+- "https://raw.githubusercontent.com/jacobhausler/hermes-rich-ui/693fe296579ae69cfc78b90624a7b6bfc2564755/assets/screenshot-3.png"
 readme: true
 platforms: []
 capabilities:

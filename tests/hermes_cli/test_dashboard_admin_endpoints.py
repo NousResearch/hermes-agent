@@ -694,7 +694,7 @@ class TestSkillsHubPreviewEndpoint:
 
     def test_preview_returns_skill_md_text(self, monkeypatch):
         monkeypatch.setattr(
-            "tools.skills_hub_search.create_source_router", lambda: []
+            "tools.skills_hub_search.create_source_router", list
         )
         bundle = _FakeBundle("github/owner/repo/x")
         meta = _FakeMeta("github/owner/repo/x")
@@ -715,7 +715,7 @@ class TestSkillsHubPreviewEndpoint:
 
     def test_preview_404_when_unresolved(self, monkeypatch):
         monkeypatch.setattr(
-            "tools.skills_hub_search.create_source_router", lambda: []
+            "tools.skills_hub_search.create_source_router", list
         )
         monkeypatch.setattr(
             "hermes_cli.skills_hub._resolve_source_meta_and_bundle",
@@ -735,7 +735,7 @@ class TestSkillsHubScanEndpoint:
         from tools.skills_guard import ScanResult, Finding
 
         monkeypatch.setattr(
-            "tools.skills_hub_search.create_source_router", lambda: []
+            "tools.skills_hub_search.create_source_router", list
         )
         bundle = _FakeBundle("github/owner/repo/x", trust_level="community")
         monkeypatch.setattr(
@@ -804,7 +804,7 @@ class TestUpdateCheckEndpoint:
 
         monkeypatch.setattr(_cfg_mod, "detect_install_method", lambda *a, **k: "git")
         # Stub the shared checker so the contract is deterministic (no network).
-        import hermes_cli.banner as banner
+        from hermes_cli import banner
 
         monkeypatch.setattr("hermes_cli.source_check.check_for_updates", lambda **kw: {"behind": 5, "commits": []})
 
@@ -1005,7 +1005,7 @@ def test_named_profile_action_isolates_parent_env_and_loads_target_env(monkeypat
     import sys
     from pathlib import Path
 
-    import hermes_cli.env_loader as env_loader
+    from hermes_cli import env_loader
     import hermes_cli.web_server as ws
 
     user_home = tmp_path / "user"

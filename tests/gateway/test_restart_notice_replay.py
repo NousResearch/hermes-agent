@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-import gateway.delivery as delivery
+from gateway import delivery
 import gateway.run as gateway_run
 from gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
 from gateway.platforms.base import SendResult

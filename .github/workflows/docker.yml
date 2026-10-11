@@ -25,7 +25,7 @@ on:
         type: string
         default: ''
       tag:
-        description: "Exact stable tag (vX.Y.Z) under release. The caller is dispatched on this tag, so github.sha is the release candidate."
+        description: "Attempt ref (rc.N-vX.Y.Z) under release; the versioned images carry this tag. The caller is dispatched on it, so github.sha is the release candidate."
         required: false
         type: string
         default: ''
@@ -169,6 +169,12 @@ jobs:
           # Dev identity is the distance from the highest reachable final
           # release, so the stamp needs both its ancestry and release tags.
           fetch-depth: 0
+
+      # The stamp and boundary scripts run on the runner's python3, whose
+      # version depends on the runner image. Pin it instead of trusting it.
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
 
       - name: Write install stamp
         env:
@@ -347,6 +353,11 @@ jobs:
         uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           fetch-depth: 0
+
+      # Same python3 steps as the build job; pin it the same way.
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
 
       - name: Write install stamp
         run: |

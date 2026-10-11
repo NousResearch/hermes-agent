@@ -826,6 +826,12 @@ class MatrixAdapter(BasePlatformAdapter):
     def _crypto_db_path(self) -> Path:
         return (self._store_dir or _get_hermes_dir("platforms/matrix/store", "matrix/store")) / "crypto.db"
 
+    @property
+    def _run_state_path(self) -> Path:
+        """In-flight run state (👀 + status bubble), resolved like the crypto store: connect()
+        pins the profile dir, out-of-scope reads fall back to the default one."""
+        return (self._store_dir or _get_hermes_dir("platforms/matrix/store", "matrix/store")) / "in_flight_runs.json"
+
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.MATRIX)
         self.max_message_length = _resolve_max_message_length(config)
@@ -1364,6 +1370,8 @@ class MatrixAdapter(BasePlatformAdapter):
         self._sync_task = asyncio.create_task(self._sync_loop())
         self._mark_connected()
         self._wire_plugin_handlers(self._client)  # plugin-registered native handlers
+        with suppress(Exception):  # best effort: a failed cleanup must not fail the connect
+            await self._settle_orphaned_runs()
         return True
 
     async def disconnect(self) -> None:
@@ -1429,8 +1437,80 @@ class MatrixAdapter(BasePlatformAdapter):
         if (not event_id or not isinstance(status, dict) or status.get("state") != "working"
                 or not status.get("run") or status.get("choices")):  # a settled prompt isn't the bubble
             return
-        bubbles = self.__dict__.setdefault("_agent_status_bubbles", {})
-        bubbles[(chat_id, str(status["run"]))] = (str(event_id), text)
+        self._agent_status_bubbles[(chat_id, str(status["run"]))] = (str(event_id), text)
+        self._save_in_flight_runs()
+
+    def _load_in_flight_runs(self) -> dict[tuple[str, str], tuple[str, str]]:
+        """The status bubbles in flight when the gateway last died, keyed by (room, run).
+        (👀 event ids are recovered separately: see _settle_orphaned_runs.)"""
+        try:
+            raw = json.loads(self._run_state_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return {}
+        except Exception as exc:
+            logger.debug("Matrix: could not read in-flight run state: %s", exc)
+            return {}
+        if not isinstance(raw, dict) or not isinstance(raw.get("bubbles"), dict):
+            return {}
+        out = {}
+        for key, bubble in raw["bubbles"].items():
+            parts = str(key).split("\x1f", 1)
+            if len(parts) == 2 and isinstance(bubble, list) and len(bubble) == 2:
+                out[(parts[0], parts[1])] = (str(bubble[0]), str(bubble[1]))
+        return out
+
+    def _save_in_flight_runs(self) -> None:
+        """Persist the runs still in flight (their 👀 event ids and working bubbles), so a
+        restart can settle them instead of leaving dead runs showing as working on the wire
+        forever. A crash between write and settle re-settles harmlessly: redacting a gone
+        reaction and re-editing a settled bubble are both no-ops."""
+        state = {
+            "runs": [f"{room}\x1f{run}" for room, run in sorted(self._pending_reactions)],
+            "eyes": {f"{room}\x1f{run}": ev for (room, run), ev in self._pending_reactions.items()},
+            "bubbles": {f"{room}\x1f{run}": list(b) for (room, run), b in self._agent_status_bubbles.items()},
+        }
+        try:
+            path = self._run_state_path
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(state), encoding="utf-8")
+            tmp.replace(path)
+        except Exception as exc:
+            logger.debug("Matrix: could not save in-flight run state: %s", exc)
+
+    async def _settle_orphaned_runs(self) -> None:
+        """A gateway killed mid-run never reached on_processing_complete: its 👀 is still on
+        the request and its status bubble still says working. On connect, take both back."""
+        try:
+            raw = json.loads(self._run_state_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return
+        except Exception as exc:
+            logger.debug("Matrix: could not read in-flight run state: %s", exc)
+            return
+        if not isinstance(raw, dict) or not raw.get("runs"):
+            return
+        eyes_map, bubbles = raw.get("eyes") or {}, self._load_in_flight_runs()
+        settled = 0
+        for key in raw.get("runs", []):
+            room, _, run = str(key).partition("\x1f")
+            if not room or not run:
+                continue
+            eyes_event_id = self._pending_reactions.pop((room, run), None) or eyes_map.get(key)
+            if eyes_event_id:
+                await self._redact_reaction(room, eyes_event_id, "gateway restarted mid-run")
+                settled += 1
+            bubble = self._agent_status_bubbles.pop((room, run), None) or bubbles.get((room, run))
+            if bubble:
+                status = {"v": 1, "run": run, "state": "failed", "result": "interrupted by a gateway restart"}
+                with suppress(Exception):
+                    await self.edit_message(room, bubble[0], bubble[1], agent_status=status)
+                settled += 1
+        self._pending_reactions.clear()
+        self._agent_status_bubbles.clear()
+        self._save_in_flight_runs()
+        if settled:
+            logger.info("Matrix: settled %d run signal(s) left over from before the restart", settled)
 
     async def _settle_status_bubble(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         """Agent protocol: edit the run's working message to how the run ended."""
@@ -2534,14 +2614,17 @@ class MatrixAdapter(BasePlatformAdapter):
             reaction_event_id = await self._send_reaction(room_id, msg_id, "\U0001f440")
             if reaction_event_id:
                 self._pending_reactions[(room_id, msg_id)] = reaction_event_id
+                self._save_in_flight_runs()
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         msg_id, room_id = event.message_id, event.source.chat_id
         await self._settle_status_bubble(event, outcome)
+        self._save_in_flight_runs()  # the bubble settled; drop the run from the restart file
         if not self._reactions_enabled or not msg_id or not room_id or outcome == ProcessingOutcome.CANCELLED:
             return
         eyes_event_id = self._pending_reactions.pop((room_id, msg_id), None)
         if eyes_event_id:
+            self._save_in_flight_runs()
             self._schedule_reaction_redaction(room_id, eyes_event_id, "processing complete")
         await self._send_reaction(room_id, msg_id, "\u2705" if outcome == ProcessingOutcome.SUCCESS else "\u274c")
 

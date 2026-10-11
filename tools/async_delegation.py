@@ -50,6 +50,15 @@ _MAX_COMPLETION_REPLAY_AGE_S = 48 * 3600.0
 # A delivery claim older than this is abandoned and may be re-claimed.
 _CLAIM_LEASE_S = 300.0
 _DB_LOCK = threading.Lock()
+_ASYNC_DB_FILENAME = "async_delegations.db"
+_LEGACY_MIGRATION_KEY = "legacy_state_db_v1"
+_ASYNC_COLUMNS = (
+    "delegation_id", "origin_session", "origin_ui_session_id", "parent_session_id",
+    "state", "dispatched_at", "completed_at", "updated_at", "event_json",
+    "result_json", "delivery_state", "delivery_attempts", "delivered_at", "owner_pid",
+    "owner_started_at", "task_json", "delivery_claim", "delivery_claimed_at",
+    "origin_session_id",
+)
 
 # ── Orphaned-completion sweep ────────────────────────────────────────────────
 # Startup replay runs once per process, so a completion whose owner died while THIS process was
@@ -93,44 +102,135 @@ _STALL_FIELD_MAP = (("_stall_quiet_seconds", "stalled_after_quiet_seconds"),
                     ("_stall_threshold_seconds", "stall_threshold_seconds"), ("_stall_in_tool", "stall_in_tool"))
 
 
-# ── Durable ledger (state.db / async_delegations) ───────────────────────────
+# ── Durable ledger (isolated async_delegations.db) ─────────────────────────
 def _db_path():
+    return get_hermes_home() / _ASYNC_DB_FILENAME
+
+
+def _legacy_db_path():
     return get_hermes_home() / "state.db"
 
 
 def _connect() -> sqlite3.Connection:
     from hermes_cli.sqlite_util import open_db
-    # Same state.db as hermes_state.SessionDB -- reuse its owner-only (0600)
-    # hardening so this writer doesn't create/leave the file (and its WAL
-    # sidecars) at the process umask. See hermes_state._secure_state_db_files.
     from hermes_constants import mkdir_under_hermes_home
     from hermes_state import _secure_state_db_files
 
     path = _db_path()
-    # A late replay or writer must not resurrect a removed named profile (#123265).
     mkdir_under_hermes_home(path.parent)
     _secure_state_db_files(path, create_main=True)
-    # wal=False: SessionDB owns state.db's journal mode (_initialize_schema applies the barriers).
-    conn = open_db(path, db_label="state.db (async_delegation)", busy_timeout_ms=10_000,
-                   wal=False, row_factory=None, initialize=_initialize_schema)
+    conn = open_db(
+        path,
+        db_label=_ASYNC_DB_FILENAME,
+        busy_timeout_ms=10_000,
+        wal=True,
+        foreign_keys=True,
+        synchronous_full=True,
+        row_factory=None,
+        initialize=_initialize_schema,
+    )
     _secure_state_db_files(path)
     return conn
 
 
 def _initialize_schema(conn: sqlite3.Connection) -> None:
     from hermes_state_repair import apply_durability_barriers
-    from hermes_state_schema import reconcile_state_schema
-    # Preserve the journal mode SessionDB configured on state.db: forcing WAL from
-    # every short-lived connection collides with live transcript/FTS writers.
+    from hermes_state_common import ASYNC_DELEGATIONS_TABLE_SQL
+
     apply_durability_barriers(conn)
-    # Single durable-shape authority: the canonical SCHEMA_SQL drives both
-    # table creation and column backfill (reconcile_state_schema replays the
-    # canonical DDL and reuses SessionDB's declarative reconciliation). This
-    # module previously carried its own CREATE TABLE + ALTER column list,
-    # which drifted from SCHEMA_SQL — same-name columns with different
-    # nullability/defaults depending on which authority touched the database
-    # first (#94691).
-    reconcile_state_schema(conn)
+    conn.executescript(
+        ASYNC_DELEGATIONS_TABLE_SQL
+        + """
+        CREATE INDEX IF NOT EXISTS idx_async_delegations_delivery
+            ON async_delegations(delivery_state, completed_at);
+        CREATE TABLE IF NOT EXISTS async_delegation_store_meta (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at REAL NOT NULL
+        );
+        """
+    )
+    conn.commit()
+    _migrate_legacy_registry(conn)
+    if conn.execute("PRAGMA quick_check").fetchall() != [("ok",)]:
+        raise sqlite3.DatabaseError("async delegation registry failed SQLite quick_check")
+
+
+def _migrate_legacy_registry(conn: sqlite3.Connection) -> None:
+    """Atomically copy the former shared-state ledger once, preserving it for rollback."""
+    if conn.execute(
+        "SELECT 1 FROM async_delegation_store_meta WHERE key=?",
+        (_LEGACY_MIGRATION_KEY,),
+    ).fetchone():
+        return
+
+    legacy_path = _legacy_db_path()
+    rows: list[tuple] = []
+    source = "absent"
+    if legacy_path.exists() and legacy_path.resolve() != _db_path().resolve():
+        legacy = sqlite3.connect(legacy_path.resolve().as_uri() + "?mode=ro", uri=True, timeout=10)
+        try:
+            table = legacy.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='async_delegations'"
+            ).fetchone()
+            if table:
+                legacy_columns = {
+                    row[1] for row in legacy.execute("PRAGMA table_info(async_delegations)")
+                }
+                if "delegation_id" not in legacy_columns:
+                    raise sqlite3.DatabaseError(
+                        "legacy async delegation registry has no delegation_id"
+                    )
+                defaults = {
+                    "origin_session": "''", "origin_ui_session_id": "''",
+                    "parent_session_id": "NULL", "state": "'unknown'",
+                    "dispatched_at": "0", "completed_at": "NULL", "updated_at": "0",
+                    "event_json": "NULL", "result_json": "NULL",
+                    "delivery_state": "'pending'", "delivery_attempts": "0",
+                    "delivered_at": "NULL", "owner_pid": "NULL", "owner_started_at": "NULL",
+                    "task_json": "NULL", "delivery_claim": "NULL",
+                    "delivery_claimed_at": "NULL", "origin_session_id": "''",
+                }
+                required = {
+                    "origin_session", "origin_ui_session_id", "state", "dispatched_at",
+                    "updated_at", "delivery_state", "delivery_attempts", "origin_session_id",
+                }
+                expressions = [
+                    f'COALESCE("{name}", {defaults[name]})'
+                    if name in legacy_columns and name in required
+                    else f'"{name}"' if name in legacy_columns else defaults[name]
+                    for name in _ASYNC_COLUMNS
+                ]
+                rows = legacy.execute(
+                    "SELECT " + ", ".join(expressions) + " FROM async_delegations"
+                ).fetchall()
+                source = "copied"
+            else:
+                source = "no_table"
+        finally:
+            legacy.close()
+
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        if not conn.execute(
+            "SELECT 1 FROM async_delegation_store_meta WHERE key=?",
+            (_LEGACY_MIGRATION_KEY,),
+        ).fetchone():
+            if rows:
+                placeholders = ", ".join("?" for _ in _ASYNC_COLUMNS)
+                conn.executemany(
+                    f"INSERT OR IGNORE INTO async_delegations "
+                    f"({', '.join(_ASYNC_COLUMNS)}) VALUES ({placeholders})",
+                    rows,
+                )
+            conn.execute(
+                "INSERT INTO async_delegation_store_meta(key, value, updated_at) VALUES (?, ?, ?)",
+                (_LEGACY_MIGRATION_KEY, f"{source}:{len(rows)}", time.time()),
+            )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
 
 
 def _transaction():

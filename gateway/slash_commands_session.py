@@ -19,7 +19,8 @@ from agent.turn_context import extract_api_content_sidecar
 from gateway.config import Platform
 from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType
-from gateway.session import SessionSource, build_session_key, is_shared_multi_user_session
+from gateway.session import (
+    SessionSource, build_session_key, is_internal_subagent_row, is_shared_multi_user_session)
 from gateway.session_transcript import TranscriptReadError
 from gateway.slash_commands_branch_thread import (
     BRANCH_THREAD_PLATFORMS, branch_dest_source, branch_thread_parent, format_thread_ref, parse_branch_args,
@@ -903,6 +904,21 @@ class GatewaySessionCommandsMixin:
         current_entry = await self.async_session_store.get_or_create_session(source)
         if current_entry.session_id == target_id:
             return t("gateway.resume.already_on", name=name)
+        # A delegate/subagent transcript is an internal execution record, not a conversation
+        # (#92859). switch_session() refuses it outright, which would surface here as the
+        # generic "Failed to switch session." Detect it first so an explicit
+        # `/resume <subagent id>` explains itself instead of looking like a transient failure.
+        # Mirrors the guard's own fail-open posture: if the row can't be read, fall through and
+        # let switch_session decide.
+        try:
+            target_row = self._session_db.get_session(target_id)
+            if hasattr(target_row, "__await__"):  # async facade vs plain SessionDB
+                target_row = await target_row
+        except Exception:
+            logger.debug("resume subagent pre-check failed for %s", target_id, exc_info=True)
+            target_row = None
+        if is_internal_subagent_row(target_row):
+            return t("gateway.resume.blocked_subagent", name=name)
         self._release_running_agent_state(session_key)
         new_entry = await self.async_session_store.switch_session(
             session_key, target_id, preserve_prompt_pin=False,

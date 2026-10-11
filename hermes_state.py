@@ -435,7 +435,10 @@ def divert_session_transcript_jsonl(session_id: str, messages) -> Optional[Path]
     if not sid or not messages:
         return None
     sessions_dir = get_hermes_home() / "sessions"
-    sessions_dir.mkdir(parents=True, exist_ok=True)
+    # Gated twin, not a bare mkdir: this flush runs on the interrupt path of a process whose
+    # HERMES_HOME may point at a profile that `profile delete` already retired — an ungated
+    # mkdir(parents=True) rematerialized the whole tombstoned home tree (ghost class, #69934).
+    mkdir_under_hermes_home(sessions_dir)
     path = sessions_dir / f"{sid}.jsonl"
     with path.open("a", encoding="utf-8") as handle:
         for msg in messages:

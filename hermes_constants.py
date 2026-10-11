@@ -903,6 +903,13 @@ def get_scratch_dir(home: str | Path | None = None, *, prune: bool = True) -> Pa
     """
     base = Path(home) if home is not None else get_hermes_home()
     scratch = base / "cache" / "scratch"
+    # Gate first, OUTSIDE the OSError swallow: a named-profile home that 'profile delete'
+    # already retired (or never had) must not be rematerialized by this mkdir — the child-env
+    # export routes here for ANY routed HERMES_HOME (ghost class, completing #69934). The refusal
+    # (FileNotFoundError) propagates; apply_scratch_tmp_env then leaves the child on the OS
+    # temp default. Everything else keeps the old contract: a bare mkdir failure (EACCES,
+    # EROFS, ENOSPC) is still swallowed and the path still returned.
+    assert_named_profile_home_live(scratch)
     try:
         scratch.mkdir(parents=True, exist_ok=True)
         if sys.platform != "win32":
@@ -975,7 +982,15 @@ def apply_scratch_tmp_env(env: MutableMapping[str, str]) -> bool:
         scratch = str(get_scratch_dir(_expand_hermes_home(home) if home else get_process_hermes_home()))
     except (RuntimeError, OSError):
         # No HERMES_HOME and no resolvable user home (a child env built from nothing on
-        # Windows): there is no scratch dir to point at; the child keeps the OS default.
+        # Windows), or the routed home was retired by `profile delete` (the gate's
+        # FileNotFoundError): there is no scratch dir to point at. Drop any values Hermes
+        # exported for a previous home so the child truly falls back to the OS default
+        # (a user/OS-set var bailed out at the top of this function already).
+        if ours:
+            for key in SCRATCH_TMP_ENV_VARS:
+                if env.get(key, "").strip() == ours:
+                    env.pop(key, None)
+            env.pop(SCRATCH_DIR_MARKER_ENV, None)
         return False
     for key in SCRATCH_TMP_ENV_VARS:
         env[key] = scratch

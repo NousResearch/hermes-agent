@@ -2279,6 +2279,7 @@ cli:
     failed: "Verbindung fehlgeschlagen"
     authorized_no_tools: "Autorisiert. Tools nicht verfügbar."
     connected: "Verbunden"
+    named_account: "Hermes hat dieses {name}-Konto {alias} genannt. Du kannst es jederzeit umbenennen."
     waiting: "Warten…"
   editor:
     only_interactive: "Der externe Editor ist nur in der interaktiven CLI verfügbar."

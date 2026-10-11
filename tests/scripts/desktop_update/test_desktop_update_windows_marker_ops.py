@@ -116,7 +116,7 @@ def _harness(tmp_path: Path, body: str, action: str, *extra: str) -> tuple[str, 
     proc = subprocess.run([POWERSHELL, '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', str(harness),
                            '-MarkerPs1', str(MARKER_PS1), '-Marker', str(tmp_path / MARKER),
                            '-Body', body, '-Action', action, *extra],
-                          capture_output=True, text=True, timeout=120)
+                          capture_output=True, text=True, timeout=120, check=False)
     assert proc.returncode == 0, proc.stdout + proc.stderr
     pid, ct = proc.stdout.split()
     return pid, ct

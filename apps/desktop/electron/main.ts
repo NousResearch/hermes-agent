@@ -1,4 +1,4 @@
-import { type ChildProcess, execFileSync, spawn } from 'node:child_process'
+import { type ChildProcess, execFile, execFileSync, spawn } from 'node:child_process'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import http from 'node:http'
@@ -1501,7 +1501,63 @@ function writePersistedThemeSource(mode) {
   }
 }
 
-nativeTheme.themeSource = readPersistedThemeSource()
+function readLinuxPortalTheme(callback: (theme: 'dark' | 'light' | null) => void): void {
+  if (process.platform !== 'linux') {
+    callback(null)
+    return
+  }
+
+  execFile(
+    'gdbus',
+    [
+      'call',
+      '--session',
+      '--dest',
+      'org.freedesktop.portal.Desktop',
+      '--object-path',
+      '/org/freedesktop/portal/desktop',
+      '--method',
+      'org.freedesktop.portal.Settings.Read',
+      'org.freedesktop.appearance',
+      'color-scheme'
+    ],
+    { encoding: 'utf8', timeout: 1000 },
+    (error: Error | null, stdout: string) => {
+      if (error) {
+        callback(null)
+        return
+      }
+      const value = stdout.match(/uint32 (\\d+)/)?.[1]
+      callback(value === '1' ? 'dark' : value === '2' ? 'light' : null)
+    }
+  )
+}
+
+let configuredThemeSource: 'dark' | 'light' | 'system' = 'system'
+let portalThemeReadInFlight = false
+
+function syncLinuxPortalTheme() {
+  if (configuredThemeSource !== 'system' || portalThemeReadInFlight) {
+    return
+  }
+  portalThemeReadInFlight = true
+  readLinuxPortalTheme((portalTheme) => {
+    portalThemeReadInFlight = false
+    if (configuredThemeSource !== 'system' || !portalTheme) {
+      return
+    }
+    if (nativeTheme.shouldUseDarkColors !== (portalTheme === 'dark')) {
+      nativeTheme.themeSource = portalTheme
+    }
+  })
+}
+
+configuredThemeSource = readPersistedThemeSource()
+nativeTheme.themeSource = configuredThemeSource
+if (process.platform === 'linux') {
+  syncLinuxPortalTheme()
+  setInterval(syncLinuxPortalTheme, 500)
+}
 
 // Window translucency (see-through window). One lever, 0–100; 0 = off (the
 // default). Two modes share the lever (see electron/translucency.ts and
@@ -18134,9 +18190,13 @@ ipcMain.on('hermes:native-theme', (_event, mode) => {
     return
   }
 
+  configuredThemeSource = mode
+  writePersistedThemeSource(mode)
   if (nativeTheme.themeSource !== mode) {
     nativeTheme.themeSource = mode
-    writePersistedThemeSource(mode)
+  }
+  if (mode === 'system') {
+    syncLinuxPortalTheme()
   }
 })
 

@@ -1,5 +1,6 @@
 """Tests for hermes backup and import commands."""
 
+import errno
 import json
 import os
 import socket
@@ -322,6 +323,62 @@ class TestIterBackupFiles:
             selected = {str(rel) for _, rel in _iter_backup_files(root, tmp_path / "out.zip")}
 
         assert "gateway.sock" not in selected
+
+    def test_unstatable_socket_is_skipped_not_archived(self, tmp_path, monkeypatch):
+        """#131748: on a virtiofs bind mount (Docker Desktop for Mac) the gateway socket's
+        ``lstat`` itself raises ENOTSUP. The entry must be classified non-regular and skipped,
+        not treated as "presumably regular" so the archive writer then fails every run with
+        ``[Errno 95] Operation not supported`` and flips the backup to incomplete."""
+        import hermes_cli.backup as backup_mod
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        _make_hermes_tree(hermes_home)
+        (hermes_home / "gateway.sock").write_bytes(b"")
+
+        real_lstat = Path.lstat
+
+        def _virtiofs_lstat(self):
+            if self.name == "gateway.sock":
+                raise OSError(errno.ENOTSUP, "Operation not supported")
+            return real_lstat(self)
+
+        monkeypatch.setattr(Path, "lstat", _virtiofs_lstat)
+
+        assert backup_mod._is_non_regular_path(hermes_home / "gateway.sock") is True
+
+        selected = {str(rel) for _, rel in backup_mod._iter_backup_files(
+            hermes_home, tmp_path / "out.zip")}
+        assert "gateway.sock" not in selected
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        out_zip = tmp_path / "backup.zip"
+        assert backup_mod.run_backup(Namespace(output=str(out_zip))) is True
+        assert out_zip.exists()
+
+    @pytest.mark.parametrize(
+        ("lstat_errno", "expected"),
+        [
+            (errno.EOPNOTSUPP, True),
+            (errno.EINVAL, True),
+            # A stat-able file with a problem keeps the #108569 contract: not an exclusion,
+            # the archive writer must see the path and report the read failure itself.
+            (errno.EACCES, False),
+            (errno.ENOENT, False),
+        ],
+    )
+    def test_lstat_errno_classification(self, tmp_path, monkeypatch, lstat_errno, expected):
+        from hermes_cli.backup import _is_non_regular_path
+
+        victim = tmp_path / "gateway.sock"
+        victim.write_bytes(b"")
+
+        def _raise_lstat(self):
+            raise OSError(lstat_errno, "simulated lstat failure")
+
+        monkeypatch.setattr(Path, "lstat", _raise_lstat)
+        assert _is_non_regular_path(victim) is expected
 
 
 # ---------------------------------------------------------------------------

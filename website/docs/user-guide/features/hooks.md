@@ -1730,6 +1730,14 @@ def register(ctx):
 
 The hook is guarded on a non-empty, non-interrupted response — it will not fire on stop-button interrupts or empty turns. Exceptions are logged as warnings and do not break agent execution.
 
+### Blocked-goal policy hooks
+
+`goal_blocked` fires only after the standing goal judge returns `blocked`. Keyword payload: `session_id`, `goal` (serialized goal snapshot including contract/subgoals/gates), `response`, `reason`. This is a bounded Python proposal hook; it is not supported by shell hooks. Return `None` to preserve the normal pause, or `{selected, automatic, options, classifications?, calibration?, record_id?, policy_reason?}`. Each option has a unique `id`, a closed `route` (`block`, `continue_authorized`, `alternative_authorized`, `independent_work`, `gather_evidence`, `wait`, `scope_change`), bounded `plan` and `verification` strings, `effects`, and classification labels `risk`, `authorization`, `reversibility`, `progress`, `evidence`. A wait additionally requires integer `wait_seconds` from 1–1800.
+
+Core validates the proposal, preserves the goal/permissions/checks/budget, saves an expiring revision-bound choice, and admits at most two distinct evidenced low-risk automatic continuations. Automatic effect names are limited to configured `read_only`/`local_edit`; other effects require human selection and existing tool approvals. Unknown/malformed results and hook exceptions/timeouts preserve a pause. Hooks cannot declare a goal done or change its contract. Payloads contain private task text; an external classifier must redact egress and require explicit opt-in.
+
+`goal_recovery_selected` is a bounded observer after a core-admitted automatic or operator-selected path. Payload: `session_id`, `record_id`, `assessment_id`, `option_id`, `route`, `source` (`automatic` or `human`). Returns are ignored. This event records selection, **not ground-truth correctness or execution success**. Both hooks run under the owning profile scope and the existing plugin callback timeout.
+
 ### API-request observer hooks
 
 #### `pre_api_request`

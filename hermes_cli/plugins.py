@@ -200,12 +200,12 @@ VALID_HOOKS: set[str] = {
     # Slash-command dispatch observer (#64204, observer-first per #64182 ground rule 3). Return values are
     # IGNORED in v1 — a plugin returning a directive-shaped dict gets a debug log so future block/rewrite
     # adopters are discoverable once the middleware variant ships against the #64231 taxonomy.
-    "pre_command",
+    "pre_command", "goal_blocked", "goal_recovery_selected",
 }
 
 # Hooks whose directive the shell-hook response parser has no channel for. VALID_HOOKS doubles as
 # the shell-hook allow-list, so these are refused loudly instead of having output silently ignored.
-SHELL_UNSUPPORTED_HOOKS: set[str] = {"transform_api_error_classification"}
+SHELL_UNSUPPORTED_HOOKS: set[str] = {"transform_api_error_classification", "goal_blocked", "goal_recovery_selected"}
 
 _env_enabled = env_var_enabled  # imported by plugins/memory
 _UNSET = object()

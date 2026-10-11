@@ -1895,7 +1895,7 @@ def command_new_thread(args: argparse.Namespace, now: datetime) -> int:
 # MARK: - Autonomous Background Dispatch & LaunchAgent Service
 
 LAUNCH_AGENT_LABEL = "ai.hermes.companion-inbox"
-DAEMON_DEFAULT_INTERVAL: Final[float] = 5.0
+DAEMON_DEFAULT_INTERVAL: Final[float] = 3.0
 DAEMON_MIN_INTERVAL: Final[float] = 0.1
 DAEMON_HEARTBEAT_SECONDS: Final[float] = 300.0
 _STOP_REQUESTED: bool = False
@@ -2350,6 +2350,8 @@ def dispatch_pending_once(args: argparse.Namespace, now: datetime, threads_dir: 
                 cmd.extend(["chat", "-c", session_title, "--create-if-missing", "-Q", "-q", prompt])
 
                 log("INFO", f"auto-replying to thread '{thread_id}' with profile '{target_profile}' in session '{session_title}'...")
+                started = time.monotonic()
+                letter_age = human_age(age_seconds(str(last_msg.get("timestamp") or ""), now))
                 try:
                     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
                     cleaned_reply = clean_hermes_chat_output(proc.stdout)
@@ -2371,7 +2373,7 @@ def dispatch_pending_once(args: argparse.Namespace, now: datetime, threads_dir: 
 
                     if proc.returncode == 0 and cleaned_reply:
                         reply_to_thread(threads_dir, thread_id, cleaned_reply, sender="agent", now=now)
-                        log("INFO", f"successfully auto-replied to thread '{thread_id}' in session '{session_title}'")
+                        log("INFO", f"answered thread '{thread_id}' in {time.monotonic() - started:.1f}s (letter was {letter_age} old when the sweep started)")
                         dispatched_count += 1
                     else:
                         err = proc.stderr.strip() or f"exit code {proc.returncode}"

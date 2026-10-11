@@ -113,7 +113,7 @@ python3 ${HERMES_SKILL_DIR}/scripts/companion.py --service-status     # launchct
 python3 ${HERMES_SKILL_DIR}/scripts/companion.py --dispatch-pending   # one sweep in the foreground
 ```
 
-Structured, timestamped logs land in `~/.hermes/logs/companion-inbox.error.log` and `companion-inbox.log`. A letter the agent cannot answer is marked `status: failed` with `last_error`, `failed_at` and `dispatch_retries`; the iOS inbox shows that banner and its Retry resets the thread to `pending_agent`.
+Structured, timestamped logs land in `~/.hermes/logs/companion-inbox.error.log` and `companion-inbox.log`. Each answered letter logs its own latency: `answered thread '<id>' in Ns (letter was <age> old when the sweep started)`. That age is the phone side; if it reads minutes, the letter was late before the Mac ever saw it (compare the file's `mtime` against its `ctime`, see below). A letter the agent cannot answer is marked `status: failed` with `last_error`, `failed_at` and `dispatch_retries`; the iOS inbox shows that banner and its Retry resets the thread to `pending_agent`.
 
 ## Quick Reference
 

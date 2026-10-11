@@ -218,6 +218,7 @@ def _make_runner():
     adapter = MagicMock()
     adapter.send = AsyncMock()
     adapter._pending_messages = {}
+    adapter._pending_dispatch_reservations = {}
     runner.adapters = {Platform.TELEGRAM: adapter}
     runner._voice_mode = {}
     runner.hooks = SimpleNamespace(

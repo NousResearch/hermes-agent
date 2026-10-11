@@ -8,7 +8,7 @@ single-element lists so mutation stays visible to the outer body.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Callable, List, Optional
+from typing import Any, Callable, Optional
 
 
 @dataclass
@@ -37,6 +37,7 @@ class TurnContext:
     agent_holder: list = field(default_factory=lambda: [None])
     _LONG_TOOL_THRESHOLD_S: float = 30.0
     _cleanup_progress: bool = False
+    _diagnostic_status_enabled: bool = True
     _cleanup_msg_ids: list[str] = field(default_factory=list)
     _progress_metadata: Optional[dict] = None
     _progress_reply_to: Optional[Any] = None

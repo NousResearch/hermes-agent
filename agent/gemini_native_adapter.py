@@ -17,7 +17,9 @@ import uuid
 from types import SimpleNamespace
 from typing import Any, Dict, Iterator, List, Optional
 
-import httpx
+# Lazy httpx proxy (see hermes_cli.auth_constants): bundled provider plugins import this module at
+# plugin-load time (solstice transport), and a hard httpx import fails httpx-less environments.
+from hermes_cli.auth_constants import httpx
 
 from agent.bounded_response import read_streaming_error_body
 from agent.retry_utils import parse_retry_after_seconds

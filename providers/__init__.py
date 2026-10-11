@@ -61,6 +61,10 @@ _current_source: str | None = None
 _PROVIDER_LIST_CACHE: list[ProviderProfile] | None = None
 _discovered = False
 _discovering = False
+# Warn-once bookkeeping for plugin load failures: discovery retries failed imports by
+# design (a plugin landing mid-scan gets picked up), but the warning must not re-spam
+# on every scan (18-19 duplicate lines per `hermes doctor` run otherwise).
+_WARNED_PLUGIN_FAILURES: set[tuple[str, str]] = set()
 _PLUGIN_DIR_STAMP_TTL_SECONDS = 1.0
 
 
@@ -450,6 +454,20 @@ def _user_module_name(plugin_dir: Path, home_key: str) -> str:
     return f"_hermes_user_provider_{digest}_{plugin_dir.name.replace('-', '_')}"
 
 
+def _warn_plugin_failure_once(source: str, name: str, message: str, *args: object) -> None:
+    """Log a plugin load failure once per ``(source, name)``; repeats demote to debug.
+
+    Discovery intentionally re-attempts failed plugin imports on later scans, so without
+    this guard one broken plugin repeats the same warning forever (spotted on a PR review
+    as 18-19 duplicate lines per `hermes doctor`)."""
+    failure = (source, name)
+    if failure in _WARNED_PLUGIN_FAILURES:
+        logger.debug(message + " (repeat, see first warning)", *args)
+        return
+    _WARNED_PLUGIN_FAILURES.add(failure)
+    logger.warning(message, *args)
+
+
 def _import_plugin_dir(plugin_dir: Path, source: str, *, home_key: str = "") -> None:
     """Import a single plugin directory so it self-registers.
 
@@ -468,8 +486,11 @@ def _import_plugin_dir(plugin_dir: Path, source: str, *, home_key: str = "") -> 
                 for profile in load_hosted_profiles(plugin_dir, _user_module_name(plugin_dir, home_key)):
                     register_provider(profile)
             except Exception as exc:
-                logger.warning("Failed to load user provider plugin %s in the plugin host: %s",
-                               plugin_dir.name, exc)
+                _warn_plugin_failure_once(
+                    source, plugin_dir.name,
+                    "Failed to load user provider plugin %s in the plugin host: %s",
+                    plugin_dir.name, exc,
+                )
             finally:
                 _current_source = None
             return
@@ -497,8 +518,9 @@ def _import_plugin_dir(plugin_dir: Path, source: str, *, home_key: str = "") -> 
         sys.modules[module_name] = module
         spec.loader.exec_module(module)
     except Exception as exc:
-        logger.warning(
-            "Failed to load %s provider plugin %s: %s", source, plugin_dir.name, exc
+        _warn_plugin_failure_once(
+            source, plugin_dir.name,
+            "Failed to load %s provider plugin %s: %s", source, plugin_dir.name, exc,
         )
         sys.modules.pop(module_name, None)
     finally:

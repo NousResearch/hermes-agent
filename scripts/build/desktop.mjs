@@ -73,7 +73,14 @@ export async function buildDesktop({ source, out, icons, stamp, nativeDeps, type
     cpSync(publicIcons, publicDir, { recursive: true })
     if (typecheck) {
       const ts = workspaceTool(source, app, 'typescript')
-      execFileSync(process.execPath, [join(dirname(ts), 'tsc.js'), '-p', join(source, app, 'tsconfig.json'),
+      // Packaged renderer builds stage only apps/desktop + apps/shared
+      // (nix/desktop.nix), so the repo-root tests/ fixture a test file
+      // imports is absent there and the full tsconfig.json fails TS2307
+      // (#87692). A build tsconfig excludes the test surface; the regular
+      // config keeps type-checking it on `npm run typecheck`.
+      const buildConfig = join(source, app, 'tsconfig.build.json')
+      const config = existsSync(buildConfig) ? buildConfig : join(source, app, 'tsconfig.json')
+      execFileSync(process.execPath, [join(dirname(ts), 'tsc.js'), '-p', config,
         '--noEmit', '--incremental', '--tsBuildInfoFile', join(scratch, 'renderer.tsbuildinfo')], { cwd: join(source, app), stdio: 'inherit' })
     }
     const { build } = await import(pathToFileURL(workspaceTool(source, app, 'vite')).href)

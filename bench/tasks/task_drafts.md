@@ -43,4 +43,12 @@ Format: id | split-placeholder | check | command
 019 | train | output file exists and is smaller | gzip -k file
 
 020 | train | file contains '#' | findstr "#" doc.md
+# Memory-touching tasks 
+
+021 | train | new session recalls fact from prior session | recall_test
+022 | train | preference applied 5 turns after stated | preference_test
+023 | train | extraction fires on session end | extract_check
+024 | train | retrieval surfaces specific memory | precision_test
+025 | train | cross-agent: agent A writes, agent B reads | cross_agent_test
+026 | heldout | same as 021, unseen variant | recall_heldout
 

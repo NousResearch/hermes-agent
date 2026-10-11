@@ -17,6 +17,8 @@
 
 
 \## Tokens
+- Scope: task tokens only (input + output of the task run).
+  Learning tokens are tracked by B2 separately and are not in ScoreReport.
 
 \- Source: <Hermes model client field — confirm Week 2>
 

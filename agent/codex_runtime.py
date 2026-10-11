@@ -1193,6 +1193,8 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
         if _writer_is_current():
             agent._fire_stream_delta(text)
 
+    decode_started: Dict[str, Any] = {"t": None}  # first substantive event of the current physical attempt
+
     def _on_event(event: Any) -> None:  # TTFB/activity touch — once per SSE event.
         now = time.time()
         # Lifecycle frames can precede text, so the first accepted parsed event is the Responses
@@ -1201,6 +1203,10 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
         if getattr(agent, "_last_api_first_chunk_at", None) is None:
             agent._last_api_first_chunk_at = now
         has_progress = _codex_event_has_content(event)
+        # Decode span for the status-bar tokens/s: first substantive event to stream end, per
+        # physical attempt (reset below with the watchdog), so prefill wait is not read as slow decode.
+        if has_progress and decode_started["t"] is None:
+            decode_started["t"] = now
         first_event = first_progress = False
         if watchdog_state is not None:
             with watchdog_state.lock:
@@ -1358,6 +1364,7 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
         intercepted_events: list = []
         writer_token["value"] = writer_token["raw_stream"] = event_stream = None
         writer_token["superseded_logged"] = False
+        decode_started["t"] = None
         try:
             try:
                 event_stream = relay_llm.stream(
@@ -1378,6 +1385,8 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                     on_first_delta=_live(on_first_delta) if on_first_delta is not None else None,
                     on_event=_fenced(_on_event), interrupt_check=_interrupt_or_superseded,
                 )
+                if decode_started["t"] is not None:
+                    agent._last_api_decode_seconds = max(0.0, time.time() - decode_started["t"])
             except transport_errors as exc:
                 if attempt >= max_stream_retries:
                     _log_failure(exc)

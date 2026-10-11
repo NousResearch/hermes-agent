@@ -36,6 +36,7 @@ def _make_call(api_kwargs, *, deltas_sent=False, api_mode="chat_completions"):
     call.deltas = []
     call.first_delta_fired = {"done": True}
     call.on_first_delta = None
+    call.clients = SimpleNamespace(diag={})  # the replayed delta stamps first_token_at on the diag
     call._stream_stale_timeout = 180.0
     call.api_kwargs = api_kwargs
     call.result = {"response": None, "error": None, "partial_tool_names": []}

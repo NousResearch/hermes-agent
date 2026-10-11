@@ -1,3 +1,4 @@
+from itertools import count
 from types import SimpleNamespace
 
 import httpx
@@ -34,7 +35,7 @@ def _completed_events():
 
 def test_codex_stream_records_first_lifecycle_event_before_text(monkeypatch):
     agent = _agent()
-    ticks = iter((100.0, 200.0, 300.0))
+    ticks = count(100.0, 100.0)  # the stream end is stamped too (decode span), so no finite tick list
     monkeypatch.setattr("agent.codex_runtime.time.time", lambda: next(ticks))
     attempts = 0
 
@@ -55,6 +56,7 @@ def test_codex_stream_records_first_lifecycle_event_before_text(monkeypatch):
     assert result.status == "completed"
     assert attempts == 2
     assert agent._last_api_first_chunk_at == 100.0
+    assert agent._last_api_decode_seconds >= 0.0  # first substantive event → stream end
 
 
 @pytest.mark.parametrize("retire_before_event", [False, True])

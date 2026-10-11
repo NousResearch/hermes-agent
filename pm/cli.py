@@ -781,12 +781,76 @@ def cmd_status(args) -> int:
     return 0
 
 
+def _heal_generation_launcher_service_units() -> None:
+    """Rewrite supervisor definitions still launching from a generation tree.
+
+    A unit poisoned before #131164's fix crash-loops with "no dependency
+    environment is committed" and never reaches the gateway's own boot-time
+    refresh, so repairing the recorded environment alone leaves it broken.
+    Best-effort by design: dependency repair stays this command's contract.
+    """
+    try:
+        from hermes_cli import gateway as gateway_cli
+    except ImportError:
+        return  # early bootstrap contexts import nothing from hermes_cli
+    try:
+        from hermes_cli import gateway_launchd
+    except ImportError:
+        gateway_launchd = None
+    stable = gateway_cli._service_install_root(gateway_cli.PROJECT_ROOT) / ".hermes" / "bin" / "hermes"
+    try:
+        for system in (False, True):
+            unit_path = gateway_cli.get_systemd_unit_path(system=system)
+            try:
+                installed = unit_path.read_text(encoding="utf-8-sig")
+            except OSError:
+                continue
+            if gateway_cli._generation_tree_in_exec_lines(installed) is None:
+                continue
+            gateway_cli.refresh_systemd_unit_if_needed(system=system)
+            # The refresh may refuse (unmappable root) or consider the poisoned
+            # text current (it regenerates the same shape); report what stands.
+            try:
+                still = gateway_cli._generation_tree_in_exec_lines(unit_path.read_text(encoding="utf-8-sig"))
+            except OSError:
+                still = None
+            label = gateway_cli._service_scope_label(system)
+            if still is None:
+                print(f"✓ Rewrote the gateway {label} service off the dependency-generation launcher")
+            else:
+                print(f"⚠ the gateway {label} service still launches from a dependency-generation tree "
+                      f"({still.rstrip('/')}); regenerate it from the stable install launcher: "
+                      f"{stable} gateway install", file=sys.stderr)
+
+        if gateway_launchd is not None:
+            plist_path = gateway_cli.get_launchd_plist_path()
+            try:
+                plist = plist_path.read_text(encoding="utf-8-sig")
+            except OSError:
+                plist = None
+            if plist is not None and gateway_cli._generation_launcher_in_plist(plist) is not None:
+                gateway_launchd.refresh_launchd_plist_if_needed()
+                try:
+                    still = gateway_cli._generation_launcher_in_plist(plist_path.read_text(encoding="utf-8-sig"))
+                except OSError:
+                    still = None
+                if still is None:
+                    print("✓ Rewrote the gateway launchd service off the dependency-generation launcher")
+                else:
+                    print(f"⚠ the gateway launchd service still launches from a dependency-generation tree "
+                          f"({still}); regenerate it from the stable install launcher: {stable} gateway install",
+                          file=sys.stderr)
+    except Exception as exc:  # health: allow BLE001 -- best-effort service-definition heal; dependency repair is this command's contract and must not fail on it
+        print(f"⚠ could not check the gateway service definition: {exc}", file=sys.stderr)
+
+
 def cmd_repair(args) -> int:
     from hermes_cli._early_recovery import recover_if_needed
     from pm.paths import repo_root
 
     if not recover_if_needed(repo_root(), explicit=True):
         return 1
+    _heal_generation_launcher_service_units()
     print("Restart Hermes to use the repaired dependency environment.")
     return 0
 

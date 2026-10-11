@@ -621,8 +621,15 @@ override-dependencies = [
   # Python below 3.14, so PM's `uv pip check` rejects the venv. Nothing
   # imports it: only transformer spaCy models (trf=True) do, and KittenTTS
   # never builds a misaki G2P. The never-true marker removes it from the lock.
+  # Pin the version too: the marker drops the requirement but the resolver
+  # still walks the excluded package's own dependencies while backtracking.
+  # Unpinned it floats to a 2.x release demanding `thinc>=9`, which no spacy 3.x
+  # can share — so the resolver walks spacy itself down the whole 3.x line to
+  # 2.0.17, whose setup.py imports `msvccompiler` out of a distutils setuptools
+  # no longer vendors, and `uv lock --upgrade` dies building a 2017 sdist
+  # instead of resolving the 3.8.16 already in the lock (#133254).
   # Remove this line when misaki drops it or a 3.14-capable release fits.
-  "spacy-curated-transformers; sys_platform == 'never'",
+  "spacy-curated-transformers==0.3.1; sys_platform == 'never'",
 ]
 exclude-newer = "14 days"
 # h2: temporary exclude-newer exception for the CVE-2026-71554 (GHSA-6hr6-w5qg-qmwg,

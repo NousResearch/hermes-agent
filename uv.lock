@@ -118,7 +118,7 @@ youtube-transcript-api = false
 overrides = [
     { name = "cryptography", specifier = "==50.0.1" },
     { name = "pynacl", specifier = ">=1.6,<1.7" },
-    { name = "spacy-curated-transformers", marker = "sys_platform == 'never'" },
+    { name = "spacy-curated-transformers", marker = "sys_platform == 'never'", specifier = "==0.3.1" },
 ]
 
 [[package]]

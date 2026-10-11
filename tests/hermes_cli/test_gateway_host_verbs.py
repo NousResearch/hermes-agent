@@ -278,6 +278,23 @@ def test_named_profile_restart_all_reaches_the_all_aware_branch(monkeypatch):
     assert called == [True]
 
 
+def test_served_profile_restart_keeps_s6_dispatch_before_host_restart(monkeypatch):
+    """A served profile must use its s6 slot before falling back to the host gateway."""
+    order: list[str] = []
+    monkeypatch.setattr(gw, "_refuse_from_inside_gateway", lambda *a, **k: None)
+    monkeypatch.setattr(gw, "_served_by_another_host_gateway", lambda: object())
+    monkeypatch.setattr(gw, "_dispatch_via_service_manager_if_s6",
+                        lambda verb: order.append(f"s6:{verb}") or True)
+    monkeypatch.setattr(gw, "_restart_all",
+                        lambda system: pytest.fail("host restart bypassed s6 dispatch"))
+    monkeypatch.setattr(gw, "_guard_named_profile_under_multiplexer",
+                        lambda **k: pytest.fail("served-profile guard ran after s6 dispatch"))
+
+    gw._cmd_restart(SimpleNamespace(system=False, all=False, force=False))
+
+    assert order == ["s6:restart"]
+
+
 def test_a_supervised_attach_is_retried_not_parked(monkeypatch, capsys):
     """78 parks the unit for good; "someone serves me right now" is a transient observation."""
     owner = host_attach.HostGateway(4321, Path("/somewhere"), ("default", "other"))

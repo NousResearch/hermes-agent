@@ -2254,7 +2254,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             entry = self._find(lambda e: e.runtime_api_key == api_key_hint)
         return entry
 
-    def _rotate_unmatched(self) -> Optional[PooledCredential]:
+    def _rotate_unmatched(self, *, model: Optional[str] = None) -> Optional[PooledCredential]:
         """Rotate without marking anything when the failed identity matches no entry.
 
         Falling through to current()/_select_unlocked() would bench an
@@ -2266,7 +2266,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         available entries, then surface the error; no cooldown is written.
         """
         self._unmatched_rotation_streak += 1
-        available_count = len(self._available_entries()[0])
+        available_count = len(self._available_entries(model=model)[0])
         if self._unmatched_rotation_streak > max(available_count, 1):
             logger.warning(
                 "credential pool: failed credential identity matched no "
@@ -2283,8 +2283,8 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             self.provider,
         )
         self._current_id = None
-        next_entry, _pending = self._select_unlocked(refresh=False)
-        if next_entry is not None and len(self._available_entries()[0]) == 1:
+        next_entry, _pending = self._select_unlocked(refresh=False, model=model)
+        if next_entry is not None and len(self._available_entries(model=model)[0]) == 1:
             # A single-entry pool cannot rotate: returning its only entry would
             # report a recovery without changing the credential, and the
             # caller retries the same 401 indefinitely.
@@ -2307,11 +2307,11 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             identity_supplied = bool(credential_id or api_key_hint)
             entry = self._identify_failed_entry(credential_id, api_key_hint)
             if entry is None and identity_supplied:
-                return self._rotate_unmatched()
+                return self._rotate_unmatched(model=model)
             # A real entry was identified — any prior unmatched streak is stale.
             self._unmatched_rotation_streak = 0
             if entry is None:
-                entry = self._current_unlocked() or self._select_unlocked(refresh=False)[0]
+                entry = self._current_unlocked() or self._select_unlocked(refresh=False, model=model)[0]
             if entry is None:
                 return None
             _label = entry.label or entry.id[:8]
@@ -2353,7 +2353,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             else:
                 logger.info("credential pool: marking %s exhausted (status=%s), rotating", _label, status_code)
             self._current_id = None
-            next_entry, _pending = self._select_unlocked(refresh=False)
+            next_entry, _pending = self._select_unlocked(refresh=False, model=model)
             if next_entry is not None and next_entry.id == entry.id:
                 # No-recovery guard (#97315): selection handed back the very entry that was
                 # just marked (the auth-store sync adopted fresher tokens, or a quota probe

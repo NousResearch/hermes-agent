@@ -1173,6 +1173,16 @@ def _pull_updates(
         _rollback_if_pulled_syntax_error(
             git_cmd, pre_sync_sha or pre_pull_sha, rollback_branch=rollback_branch,
             _windows_gateway_resume=_windows_gateway_resume)
+        # A pull that adds a top-level module leaves the editable finder's map behind:
+        # the file is in the tree and unimportable through the finder until something
+        # reinstalls the editable package (#134413). Repair the map in the same pass
+        # that introduced the drift; never let it fail an otherwise-good update.
+        with _best_effort("Could not refresh the editable install map: %s"):
+            from hermes_cli.editable_mapping import refresh_mapping
+
+            refreshed = refresh_mapping(Path(_m().PROJECT_ROOT))
+            if refreshed:
+                print(f"  ↻ Updated the editable install map for: {', '.join(refreshed)}")
         if sync_upstream:
             # Only a validated update is published to the fork (#97052 sync, after the commit point).
             _push_synced_fork(git_cmd, _m().PROJECT_ROOT)

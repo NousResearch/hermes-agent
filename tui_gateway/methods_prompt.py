@@ -1425,8 +1425,20 @@ def _approval_respond_session_fallback(params: dict):
     the prompt stayed on screen): (1) the ``request_id`` against every live session's
     pending approvals, then (2) ``session_id`` as a STORED id.  Live session or None.
 
-    See #91684.
+    Both lookups honor an explicit ``profile`` the way ``session.resume`` does (#100029):
+    a bare stored id can exist in several profiles' stores, so a decision must not be
+    routed through another profile's runtime.  An omitted ``profile`` stays unscoped
+    (Hermex reconnects without one on non-default profiles), but a stored-id match that
+    is ambiguous across profiles is refused rather than guessed (fail closed, #133972).
+
+    See #91684, #133972.
     """
+    profile_home = _ANY_PROFILE
+    if (name := (params.get("profile") or "").strip()):
+        try:
+            profile_home = _profile_home(name)  # Path, or None = the launch profile
+        except Exception:
+            return None  # unknown profile: fail closed, keep the session-not-found error
     request_id = str(params.get("request_id") or "")
     if request_id:
         try:
@@ -1435,16 +1447,25 @@ def _approval_respond_session_fallback(params: dict):
                 live = list(_sessions.items())
             for sid, session in live:
                 key = str(session.get("session_key") or "")
-                if key and any(
-                    str(pending.get("request_id") or "") == request_id
-                    for pending in list_gateway_approvals(key)):
+                if (key and _live_profile_matches(session, profile_home) and any(
+                        str(pending.get("request_id") or "") == request_id
+                        for pending in list_gateway_approvals(key))):
                     return session
         except Exception:
             logger.debug("approval.respond request_id fallback failed", exc_info=True)
     if target := str(params.get("session_id") or ""):
         try:
-            if (live := _find_live_session_by_key(target)) is not None:
-                return live[1]
+            with _sessions_lock:
+                live = list(_sessions.items())
+            matches = [
+                session for _, session in live
+                if not session.get("_finalized")
+                and _session_lookup_key(session, fallback="") == target
+                and _live_profile_matches(session, profile_home)]
+            if len({(s.get("profile_home") or None) for s in matches}) > 1:
+                return None  # same stored id live under several profiles: refuse to pick
+            if matches:
+                return matches[0]
         except Exception:
             logger.debug("approval.respond stored-id fallback failed", exc_info=True)
     return None

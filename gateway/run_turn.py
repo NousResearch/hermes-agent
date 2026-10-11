@@ -1934,7 +1934,9 @@ class GatewayTurnMixin:
         if not _streaming_tts_done and self._should_send_voice_reply(
             event, response, agent_messages, already_sent=bool(agent_result.get("already_sent")),
         ):
-            await self._send_voice_reply(event, response)
+            # Detached: synthesis can wedge past any tool deadline; the turn (and the session's
+            # busy slot + durable active-turn marker) must not wait on it. Text-first delivery.
+            self._spawn_voice_reply_task(event, response)
 
         # Streamed responses still need MEDIA: files delivered (chunks carry the tags verbatim). Never
         # skip when the agent failed: the error text is new content streaming didn't show.

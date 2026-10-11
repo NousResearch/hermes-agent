@@ -111,18 +111,53 @@ describe("attachPtyTextareaInputGuards", () => {
     cleanup();
   });
 
+  it("arms via document capture when the dashboard host guard stops the 229 keydown", () => {
+    // ChatPage's _imeCompositionGuard (#52111) stops IME-placeholder keydowns
+    // in the capture phase on the terminal host, before they reach the xterm
+    // textarea — the tracker must still observe them (at document capture).
+    const host = document.createElement("div");
+    const textarea = document.createElement("textarea");
+    host.appendChild(textarea);
+    document.body.appendChild(host);
+    const hostGuard = (e: KeyboardEvent) => {
+      if (isImePlaceholderKey(e)) e.stopPropagation();
+    };
+    host.addEventListener("keydown", hostGuard, true);
+    const textareaKeydown = vi.fn();
+    textarea.addEventListener("keydown", textareaKeydown, true);
+
+    const hooks = makeHooks();
+    const cleanup = attachPtyTextareaInputGuards(textarea, hooks);
+
+    textarea.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Unidentified", bubbles: true, composed: true }),
+    );
+    // The host guard swallowed the keydown before the textarea's own listener...
+    expect(textareaKeydown).not.toHaveBeenCalled();
+    // ...but the tracker armed at document capture, so the letter still lands.
+    textarea.dispatchEvent(insertText("l"));
+    expect(hooks.onDanglingInsertText).toHaveBeenCalledExactlyOnceWith("l");
+
+    cleanup();
+    host.removeEventListener("keydown", hostGuard, true);
+    document.body.removeChild(host);
+  });
+
   it("stops listening after cleanup", () => {
     const textarea = document.createElement("textarea");
+    document.body.appendChild(textarea);
     const hooks = makeHooks();
     const cleanup = attachPtyTextareaInputGuards(textarea, hooks);
     cleanup();
 
-    textarea.dispatchEvent(keydown());
+    // Bubbling keydown exercises the document-level listeners too.
+    textarea.dispatchEvent(keydown({ bubbles: true } as Partial<KeyboardEvent>));
     textarea.dispatchEvent(insertText("l"));
     textarea.dispatchEvent(new CompositionEvent("compositionend", { data: "x" }));
 
     expect(hooks.onDanglingInsertText).not.toHaveBeenCalled();
     expect(hooks.onCompositionCommit).not.toHaveBeenCalled();
+    document.body.removeChild(textarea);
   });
 
   it("end-to-end: a Gboard letter reaches the PTY exactly once via the forwarder", () => {

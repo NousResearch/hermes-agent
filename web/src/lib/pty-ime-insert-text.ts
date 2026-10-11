@@ -104,10 +104,18 @@ export function attachPtyTextareaInputGuards(
   textarea.addEventListener("compositionend", onCompositionEnd, true);
   textarea.addEventListener("keydown", onKeydown, true);
   textarea.addEventListener("keyup", onKeyup, true);
+  // The dashboard's host-level IME guard (#52111) stops keyCode-229 keydowns
+  // before they reach the textarea; observe at document capture — above the
+  // guard — so the dangling-229 tracker can arm for Gboard's letters.
+  const keyEventDoc = textarea.ownerDocument;
+  keyEventDoc.addEventListener("keydown", onKeydown, true);
+  keyEventDoc.addEventListener("keyup", onKeyup, true);
   return () => {
     textarea.removeEventListener("beforeinput", onBeforeInput, true);
     textarea.removeEventListener("compositionend", onCompositionEnd, true);
     textarea.removeEventListener("keydown", onKeydown, true);
     textarea.removeEventListener("keyup", onKeyup, true);
+    keyEventDoc.removeEventListener("keydown", onKeydown, true);
+    keyEventDoc.removeEventListener("keyup", onKeyup, true);
   };
 }

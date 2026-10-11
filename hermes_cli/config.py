@@ -3398,6 +3398,17 @@ def _coerce_config_set_value(key: str, value: str) -> Any:
         coerced = coerce(stripped)
         if coerced is not None:
             return coerced
+    # The structured-value refusal hint tells the user to quote a value that merely looks
+    # structured. Honour that verbatim — strip the outer quotes when the quoted text is what
+    # tripped the sniff. The quotes themselves must not be stored, and parsing with yaml would
+    # fold newlines in multi-line quoted scalars to spaces (#134149).
+    if (
+        len(stripped) >= 2
+        and stripped[0] == stripped[-1]
+        and stripped[0] in ('"', "'")
+        and _looks_structured_value(stripped[1:-1])
+    ):
+        return stripped[1:-1]
     if not _looks_structured_value(value):
         return value
     try:
@@ -3412,7 +3423,7 @@ def _coerce_config_set_value(key: str, value: str) -> Any:
             "  Fix the literal, or quote it (e.g. \"'[text'\") to store a plain string.")
     if isinstance(parsed, (list, dict)):
         return parsed
-    # A quoted literal ("'[text'") parses to a scalar: that is the deliberate way to store one.
+    # Bare (unquoted) input that parsed to a scalar: keep the text as typed.
     return value
 
 

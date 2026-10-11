@@ -78,3 +78,40 @@ class TestStringTypedGuardPreserved:
         cfg.set_config_value("approvals.mode", "off")
         v = _read(tmp_path, "approvals", "mode")
         assert v == "off" and isinstance(v, str)  # not bool False
+
+
+class TestQuotedStructuredLookingText:
+    """The structured-value refusal hint says quoting stores a plain string (#134149):
+    the quotes themselves must not be written, and newlines must survive — parsing the
+    quoted literal with yaml would fold its newlines to spaces, so the outer quotes are
+    stripped verbatim instead."""
+
+    def test_quoted_multiline_colon_text_stored_verbatim(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        text = "This topic is X.\nStage: brainstorm and design"
+        cfg.set_config_value("channel_prompts.1", f"'{text}'")
+        assert _read(tmp_path, "channel_prompts", "1") == text
+
+    def test_double_quoted_multiline_stored_verbatim(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        text = "This topic is X.\nStage: brainstorm"
+        cfg.set_config_value("channel_prompts.2", f'"{text}"')
+        assert _read(tmp_path, "channel_prompts", "2") == text
+
+    def test_quoted_bracket_text_stored_without_quotes(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        cfg.set_config_value("channel_prompts.3", "'[text'")
+        assert _read(tmp_path, "channel_prompts", "3") == "[text"
+
+    def test_unquoted_structured_looking_text_still_refused(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        with pytest.raises(SystemExit) as exc:
+            cfg.set_config_value(
+                "channel_prompts.4", "This topic is X.\nStage: brainstorm and design")
+        assert exc.value.code == 1
+
+    def test_bare_list_literal_still_parses(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        cfg.set_config_value("custom_providers", "['alpha', 'beta']")
+        saved = _read(tmp_path, "custom_providers")
+        assert saved == ["alpha", "beta"]

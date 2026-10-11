@@ -361,8 +361,14 @@ class SlashCommandCompleter(Completer):
                 if not expanded or expanded == ".":
                     expanded = "./"
                 # `@folder:` = dirs only, `@file:` = files only (else `@folder:` lists dotfiles).
+                def text_for(fp: str) -> str:
+                    try:
+                        return f"{prefix}{os.path.relpath(fp)}"
+                    except ValueError:  # Windows: relpath raises across mounts/drive letters
+                        return f"{prefix}{fp}"
+
                 yield from _dir_completions(
-                    expanded, word, limit, lambda fp: f"{prefix}{os.path.relpath(fp)}",
+                    expanded, word, limit, text_for,
                     want_dir=(prefix == "@folder:"))
                 return
         yield from self._fuzzy_file_completions(word, word[1:], limit)

@@ -82,7 +82,7 @@ class CredentialPoolAdminMixin:
             # Apply load-time ordering now so the reported position survives reload.
             _normalize_pool_priorities(self.provider, entries)
             self._entries = sorted(entries, key=lambda e: e.priority)
-            self._persist()
+            self._persist(preserve_disk_order=False)
             return self._find(lambda e: e.id == credential_id)
 
     def resolve_target(self, target: Any) -> tuple[Optional[int], Optional[PooledCredential], Optional[str]]:

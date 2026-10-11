@@ -870,6 +870,7 @@ def _update_root_pool_rows(
     provider: str, payloads: list[dict[str, Any]], global_path: Path,
     *, status_cleared_ids: Optional[Iterable[str]] = None,
     token_bases: Optional[dict[str, tuple[Any, Any]]] = None,
+    metadata_bases: Optional[dict[str, dict[str, Any]]] = None,
 ) -> list[dict[str, Any]]:
     """UPDATE-ONLY merge of *payloads* into the root store's rows for *provider*.
 
@@ -901,6 +902,9 @@ def _update_root_pool_rows(
                 incoming, disk_entry, provider,
                 base_pair=bases.get(did), status_cleared=did in cleared,
             )
+            updated = auth_mod._merge_pool_runtime_metadata(
+                updated, disk_entry, (metadata_bases or {}).get(did), incoming=incoming,
+            )
             if updated != disk_entry:
                 changed = True
             merged.append(updated)
@@ -917,6 +921,8 @@ def persist_pool_entries(
     removed_ids: Optional[Iterable[str]] = None,
     status_cleared_ids: Optional[Iterable[str]] = None,
     token_bases: Optional[dict[str, tuple[Any, Any]]] = None,
+    preserve_disk_order: bool = False,
+    metadata_bases: Optional[dict[str, dict[str, Any]]] = None,
 ) -> Optional[list[dict[str, Any]]]:
     """Persist a provider's pool rows to the store that OWNS them.
 
@@ -935,6 +941,7 @@ def persist_pool_entries(
                 return _update_root_pool_rows(
                     provider, payloads, global_path,
                     status_cleared_ids=status_cleared_ids, token_bases=token_bases,
+                    metadata_bases=metadata_bases,
                 )
             except Exception as exc:
                 # Fail closed on the FORK, not on the save: never fall back to
@@ -948,7 +955,8 @@ def persist_pool_entries(
             return None
     return write_credential_pool(
         provider, payloads, removed_ids=removed_ids, status_cleared_ids=status_cleared_ids,
-        token_bases=token_bases,
+        token_bases=token_bases, preserve_disk_order=preserve_disk_order,
+        metadata_bases=metadata_bases,
     )
 
 
@@ -1013,6 +1021,9 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         # providers only); set by load_pool(), consumed by add_entry().
         self._borrowed_root_ids: set[str] = set()
         self._persisted_token_pairs: dict[str, tuple[Any, Any]] = {}
+        self._persisted_metadata = {
+            e.id: {"request_count": e.request_count, "label": e.label} for e in entries
+        }
         self._strategy = get_pool_strategy(provider)
         # RLock: _replace_entry/_persist self-acquire it so the DEFERRED
         # single-use-token refresh path (network I/O outside the lock by
@@ -1148,6 +1159,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         *,
         removed_ids: Optional[list[str]] = None,
         status_cleared_ids: Optional[list[str]] = None,
+        preserve_disk_order: bool = True,
     ) -> None:
         # Self-locking: snapshotting self._entries must not race a rotation.
         with self._lock:
@@ -1157,13 +1169,25 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                 removed_ids=removed_ids,
                 status_cleared_ids=status_cleared_ids,
                 token_bases=self._persisted_token_pairs,
+                preserve_disk_order=preserve_disk_order,
+                metadata_bases=self._persisted_metadata,
             )
             if written is None:
                 return
             rows = auth_mod._entry_ids(written)
             self._persisted_token_pairs = auth_mod._token_pairs_by_id(written)
+            self._persisted_metadata = {
+                sid: {"request_count": row.get("request_count", 0), "label": row.get("label")}
+                for sid, row in rows.items()
+            }
             for entry in self._entries:
                 row = rows.get(entry.id)
+                if row is not None:
+                    updated = replace(entry, request_count=row.get("request_count", entry.request_count),
+                                      label=row.get("label", entry.label))
+                    if updated != entry:
+                        self._replace_entry(entry, updated)
+                        entry = updated
                 pair = self._persisted_token_pairs.get(entry.id, (None, None))
                 # Reference-only rows are intentionally secret-free on disk; never dehydrate
                 # their live in-memory credential while adopting a concurrent generation.
@@ -2196,7 +2220,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             rotated = [candidate for candidate in self._entries if candidate.id != entry.id]
             rotated.append(replace(entry, priority=len(self._entries) - 1))
             self._entries = [replace(candidate, priority=idx) for idx, candidate in enumerate(rotated)]
-            self._persist()
+            self._persist(preserve_disk_order=False)
             entry = self._find(lambda candidate: candidate.id == entry.id) or entry
         self._current_id = entry.id
         return entry, pending_refresh

@@ -64,3 +64,37 @@ def test_skip_build_source_checks_artifacts_without_provisioning(desktop_source)
     (electron / "package.json").write_text('{}')
     main_desktop.cmd_gui(Namespace(source=True, skip_build=True, build_only=True))
     assert acquired == []
+
+
+def test_desktop_build_checks_prune_stale_legacy_stamp_from_hermes_home(tmp_path, monkeypatch):
+    """A stale legacy desktop-build-stamp.json under HERMES_HOME is cleaned up on build/status checks."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    stale_stamp = home / "desktop-build-stamp.json"
+    stale_stamp.write_text('{"commit": "ancient", "builtAt": 123456789}', encoding="utf-8")
+    assert stale_stamp.exists()
+
+    desktop_dir = tmp_path / "checkout/apps/desktop"
+    project_root = tmp_path / "checkout"
+    desktop_dir.mkdir(parents=True)
+
+    # 1. Status / build check in source mode prunes the legacy stamp
+    main_desktop._desktop_build_needed(desktop_dir, project_root, source_mode=True)
+    assert not stale_stamp.exists()
+
+    # 2. Status / build check in packaged mode prunes the legacy stamp
+    stale_stamp.write_text('{"commit": "ancient"}', encoding="utf-8")
+    assert stale_stamp.exists()
+    main_desktop._desktop_build_needed(desktop_dir, project_root, source_mode=False)
+    assert not stale_stamp.exists()
+
+    # 3. Skip-build check prunes the legacy stamp
+    stale_stamp.write_text('{"commit": "ancient"}', encoding="utf-8")
+    assert stale_stamp.exists()
+    with pytest.raises(SystemExit):
+        main_desktop._check_desktop_skip_build(
+            desktop_dir, project_root, source_mode=True, packaged_executable=None
+        )
+    assert not stale_stamp.exists()
+

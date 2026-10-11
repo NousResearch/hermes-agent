@@ -139,9 +139,11 @@ def build_update_products(project_root: Path, *, desktop: bool) -> None:
     """
     # Both current updates and historical takeover reach this in a fresh target
     # interpreter, never in the updater's pre-sync import graph.
+    from hermes_cli.main_desktop import _prune_legacy_desktop_build_stamp
     from hermes_cli.main_install_repair import _install_configured_features_missing_deps
     from hermes_cli.update_stage import publish_stage
 
+    _prune_legacy_desktop_build_stamp()
     failures: list[tuple[str, BaseException]] = []
 
     def attempt(name: str, step) -> bool:

@@ -969,9 +969,15 @@ def _print_post_update_notices_and_self_heals() -> None:
         # Legacy HERMES_NEMO_RELAY_ATIF_*/ATOF_* vars produce no traces since the Relay cutover;
         # generate each profile's relay-plugins.toml instead of leaving exports silently dead.
         ('Relay exporter migration failed: %s', _migrate_relay_exporter_env),
+        ('Legacy desktop stamp prune failed: %s', _prune_legacy_desktop_stamp),
     ):
         with _best_effort(message):
             step()
+
+
+def _prune_legacy_desktop_stamp() -> None:
+    from hermes_cli.main_desktop import _prune_legacy_desktop_build_stamp
+    _prune_legacy_desktop_build_stamp()
 
 
 def _migrate_relay_exporter_env() -> None:

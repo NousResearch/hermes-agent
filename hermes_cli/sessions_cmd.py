@@ -262,6 +262,26 @@ def _default_exclude(args):
     return None if getattr(args, "source", None) else ["tool"]
 
 
+_SESSION_LIST_COLUMNS = ("id", "title", "preview", "last_active", "source")
+
+
+def _clean_tsv_cell(value) -> str:
+    """Normalize row and column separators without changing other content."""
+    if value is None:
+        return ""
+    return str(value).replace("\t", " ").replace("\r", " ").replace("\n", " ")
+
+
+def _print_sessions_machine(sessions, output_format):
+    if output_format == "json":
+        records = [{column: s.get(column) for column in _SESSION_LIST_COLUMNS} for s in sessions]
+        print(json.dumps(records, ensure_ascii=False))
+    elif output_format == "tsv":
+        print("\t".join(_SESSION_LIST_COLUMNS))
+        for s in sessions:
+            print("\t".join(_clean_tsv_cell(s.get(column)) for column in _SESSION_LIST_COLUMNS))
+
+
 def _cmd_list(db, args):
     from hermes_state_sessions import workspace_key as _ws_key
     # LIMIT lives in the query, so probe one row past the cap: it is the only way to know the
@@ -281,6 +301,10 @@ def _cmd_list(db, args):
         sessions = [
             s for s, key in keyed if key and (_needle in key or _needle == os.path.basename(key.rstrip("/\\")))
         ]
+    output_format = getattr(args, "format", "table")
+    if output_format in ("json", "tsv"):
+        _print_sessions_machine(sessions, output_format)
+        return
     if not sessions:
         print("No sessions found.")
         return
@@ -1205,6 +1229,8 @@ def _print_empty_store(action: str, args) -> None:
     """A profile that never created state.db: report empty instead of opening a writer that creates it."""
     if action == "stats":
         print("Total sessions: 0\nTotal messages: 0")
+    elif action == "list" and getattr(args, "format", "table") in ("json", "tsv"):
+        _print_sessions_machine([], args.format)
     elif action == "pinned":
         print("[]" if getattr(args, "json", False) else "No pinned sessions. Pin one with: hermes sessions pin <session_id>")
     else:

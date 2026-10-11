@@ -424,7 +424,9 @@ def _dispatch_followup_turn(rid, sid: str, session: dict, prompt: Any, what: str
     release ``running``."""
     try:
         _emit("message.start", sid)
-        _run_prompt_submit(rid, sid, session, prompt)
+        # Goal continuations are synthesized by the agent, not typed by a human:
+        # literal text, no @-expansion (#134703).
+        _run_prompt_submit(rid, sid, session, prompt, expand_references=False)
         if on_done is not None:
             on_done()
     except Exception as exc:
@@ -654,9 +656,17 @@ def _stage_first_contact_onboarding_note(session: dict, agent, history_empty: bo
         logger.debug("first-contact onboarding note failed", exc_info=True)
 
 
-def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images: list[str]):
+def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images: list[str],
+                        expand_references: bool = True):
     """Bind scopes, sync the agent, snapshot history, build the run message; returns
     ``(prompt, run_message, cols, streamer)`` or None when @-expansion was refused.
+    ``expand_references=False`` keeps the text literal: synthesized turns (Kanban
+    completions, process batches, wake-ups, bot-live redelivery, goal follow-ups)
+    carry worker- or machine-generated text, and expanding it would let a worker
+    summary attach local files or run git in the session cwd — and a refused
+    expansion returns None after the event was already claimed, silently dropping
+    it (#134703). Only composer text (prompt.submit and its queued/compute-host
+    drain paths) expands.
     Scopes fill field by field so a failure midway still leaves every bound token for the
     finally; the profile's terminal policy is bound too (a failed install leaves a
     fail-closed refusal scope).  The config-model sync is skipped under a /model --once
@@ -702,7 +712,7 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
     cols = session.get("cols", 80)
     streamer = make_stream_renderer(cols)
     prompt = text
-    if isinstance(prompt, str) and "@" in prompt:
+    if expand_references and isinstance(prompt, str) and "@" in prompt:
         from agent.context_references import preprocess_context_references
         from agent.model_metadata import get_model_context_length
         ctx_len = get_model_context_length(
@@ -1123,7 +1133,8 @@ def _run_prompt_submit(
     display_metadata: dict | None = None, image_paths: list[str] | None = None,
     queued_prompt_generation: int | None = None,
     terminal_callback: Callable[[dict[str, Any]], None] | None = None,
-    turn_author: dict | None = None) -> bool:
+    turn_author: dict | None = None,
+    expand_references: bool = True) -> bool:
     # Every dispatch binds the session's own row (session_key, real source) before the turn writes:
     # the synthesized turns that enter here directly (crash auto-continue, queued-prompt drain,
     # wake-ups) bypass prompt.submit's persist, and a row-less turn is otherwise materialized by
@@ -1173,7 +1184,8 @@ def _run_prompt_submit(
             notification_category=(display_metadata or {}).get("notification_category"))
         goal_followup = None
         try:
-            prepared = _prepare_turn_input(sid, session, st, text, images)
+            prepared = _prepare_turn_input(sid, session, st, text, images,
+                                           expand_references=expand_references)
             if prepared is None:
                 if st.terminal_callback is not None and not st.receipt_attempted:
                     st.receipt_attempted = True

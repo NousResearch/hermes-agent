@@ -63,6 +63,54 @@ def test_cron_tick_homes_include_active_named_host(tmp_path, monkeypatch):
     assert cron_by_name["host"] == default_home / "profiles" / "host"
 
 
+def test_cron_tick_homes_of_a_standalone_gateway_are_only_its_own(
+    tmp_path, monkeypatch
+):
+    """A `gateway.standalone` profile serves only itself, so its ticker must not visit the host's
+    profiles: whenever the host gateway is down, every standalone gateway would otherwise pass the
+    per-tick liveness gate, race for the host's jobs and deliver them without their profile's
+    adapters."""
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    default_home = tmp_path / ".hermes"
+    for name in ("solo", "other_solo", "worker"):
+        home = default_home / "profiles" / name
+        home.mkdir(parents=True)
+        (home / "config.yaml").write_text("{}\n")  # identity marker
+    standalone = "gateway:\n  standalone: true\n"
+    for name in ("solo", "other_solo"):
+        (default_home / "profiles" / name / "config.yaml").write_text(standalone)
+    monkeypatch.setenv("HERMES_HOME", str(default_home / "profiles" / "solo"))
+
+    import gateway.run as gateway_run
+
+    cfg = GatewayConfig(multiplex_profiles=False)
+    cron_homes = gateway_run._cron_tick_profile_homes(cfg)
+
+    assert cron_homes == [("solo", default_home / "profiles" / "solo")]
+
+
+def test_cron_tick_homes_of_the_host_still_skip_standalone_profiles(
+    tmp_path, monkeypatch
+):
+    """Control: the host gateway keeps ticking default + every non-standalone profile."""
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    default_home = tmp_path / ".hermes"
+    for name in ("solo", "worker"):
+        home = default_home / "profiles" / name
+        home.mkdir(parents=True)
+        (home / "config.yaml").write_text("{}\n")  # identity marker
+    standalone = "gateway:\n  standalone: true\n"
+    (default_home / "profiles" / "solo" / "config.yaml").write_text(standalone)
+    monkeypatch.setenv("HERMES_HOME", str(default_home))
+
+    import gateway.run as gateway_run
+
+    cfg = GatewayConfig(multiplex_profiles=True)
+    cron_names = [name for name, _home in gateway_run._cron_tick_profile_homes(cfg)]
+
+    assert cron_names == ["default", "worker"]
+
+
 class TestNamedProfileMultiplexerGuard:
     """_guard_named_profile_under_multiplexer is inert unless all conditions hold."""
 
@@ -151,5 +199,3 @@ class TestNamedProfileMultiplexerGuard:
 
         monkeypatch.setattr(gw, "_profile_suffix", lambda: "")
         assert gw.named_profile_served_by_running_multiplexer() is False
-
-

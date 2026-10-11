@@ -39,8 +39,15 @@ Hardening invariants — each guards a real failure; don't weaken without answer
   process. Why: a store opened before the scope was entered wrote a secondary profile's run
   records into the launch profile's `jobs.json`.
 - **Cron ownership is not gated on `gateway.multiplex_profiles`.** That flag gates ADAPTERS; one
-  host gateway process ticks EVERY profile's store either way (`run.py::_cron_tick_profile_homes`).
-  Gating the tick set on it left every non-launch profile's jobs in a store no ticker visited.
+  host gateway process ticks EVERY profile's store either way
+  (`run_cron_ticker.py::_cron_tick_profile_homes`). Gating the tick set on it left every non-launch
+  profile's jobs in a store no ticker visited.
+- **A `gateway.standalone` gateway ticks only its own store.** Its tick set is its launch profile
+  alone, never the host's: the per-tick liveness gate only stands it down while the host gateway is
+  alive, so a stopped host's jobs would otherwise fire from every standalone gateway, leave through
+  `SharedRouteAdapters` or fail closed, and race for each store's `cron/.tick.lock`. Consequences:
+  with one home, an external `cron.provider` is honoured there, and host jobs wait while only
+  standalone gateways run.
 - **Per-profile process assumptions are the bug class.** One process ticks N homes, so anything
   keyed on "this process's profile" is wrong: in-flight state (`_running_job_ids`,
   `_running_since`, `_running_futures`, `_running_worker_pids`, `_running_fire_owners`,

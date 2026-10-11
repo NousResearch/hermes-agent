@@ -172,6 +172,11 @@ parallel worker pool, the stale-code yield decision) is keyed by profile home,
 so two profiles may carry identically named jobs without colliding. A profile
 that runs its own gateway is skipped per tick, so the two processes never race
 its store and its deliveries always leave through its own live adapters.
+The reverse holds too: a `gateway.standalone: true` profile's gateway ticks
+only its own store. While the host gateway is stopped, the host's jobs wait
+for it instead of firing from standalone gateways through the wrong adapters,
+and because a standalone gateway ticks a single home, an external
+`cron.provider` configured for it is used as is.
 
 **Fire-claim lease during a run.** A firing run holds `fire_claim = {at, by}` and
 a heartbeat thread refreshes `at` every 60 s (the lease is 300 s). A heartbeat

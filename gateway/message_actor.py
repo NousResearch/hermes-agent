@@ -1,7 +1,10 @@
 """Separate the authenticated message actor from its conversation route."""
 import copy
 import dataclasses
+import logging
 from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
 
 def _identity_string(value: Any) -> Optional[str]:
     """Return a concrete actor identifier, ignoring dynamic mock attributes."""
@@ -46,7 +49,7 @@ def copy_session_source_with(source: Any, **changes: Any) -> Any:
         if all(getattr(source, name, None) == value for name, value in changes.items()):
             return source
     except Exception:
-        pass
+        logger.debug("Actor source comparison failed", exc_info=True)
     try:
         if dataclasses.is_dataclass(source) and not isinstance(source, type):
             from gateway.session_identity import replace_source
@@ -59,11 +62,12 @@ def copy_session_source_with(source: Any, **changes: Any) -> Any:
             setattr(copied, name, value)
         return copied
     except Exception:
+        logger.debug("Actor source copy failed", exc_info=True)
         try:
             if dataclasses.is_dataclass(source) and not isinstance(source, type):
                 return dataclasses.replace(source, **changes)
         except Exception:
-            pass
+            logger.debug("Actor source dataclass fallback failed", exc_info=True)
     return source
 
 

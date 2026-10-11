@@ -115,7 +115,7 @@ class GatewaySlashPolicyMixin:
                 from hermes_cli.profiles import normalize_profile_name
 
                 cfg = registry.get(normalize_profile_name(profile_name))
-            except Exception:
+            except ValueError:
                 cfg = None
         if cfg is not None:
             return cfg, True
@@ -145,6 +145,7 @@ class GatewaySlashPolicyMixin:
                 "failing closed for authorization-sensitive paths: %s",
                 profile_name,
                 exc,
+                exc_info=True,
             )
         return None, False
 

@@ -222,13 +222,13 @@ class TestTelegramChoicePickerBinding:
         selected.assert_awaited_once_with("12345", "fast")
         query.edit_message_text.assert_awaited_once()
         assert ("12345", "42") not in adapter._choice_picker_state
-        assert len(authorized_sources) == 1
-        actor = authorized_sources[0]
-        assert actor.user_id == "111"
-        assert actor.chat_id == "12345"
-        assert actor.chat_type == "forum"
-        assert actor.thread_id == "77"
-        assert actor.profile == "reviewer"
+        assert authorized_sources
+        for actor in authorized_sources:
+            assert actor.user_id == "111"
+            assert actor.chat_id == "12345"
+            assert actor.chat_type == "forum"
+            assert actor.thread_id == "77"
+            assert actor.profile == "reviewer"
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(

@@ -358,14 +358,7 @@ def _gateway_compression_progress_notices_enabled() -> bool:
         pass
     return False
 
-# Surfaces consuming gateway text programmatically must keep RAW status/error text; unknown/empty -> chat.
-_GATEWAY_RAW_TEXT_PLATFORMS = frozenset({"local", "api_server", "webhook", "msgraph_webhook"})
-
-
-def _gateway_surface_passes_raw_text(platform: Any) -> bool:
-    """True only for programmatic/local surfaces that must keep raw text."""
-    return _gateway_platform_value(platform) in _GATEWAY_RAW_TEXT_PLATFORMS
-
+from gateway.response_filters import surface_passes_raw_text
 
 _GATEWAY_PROVIDER_POLICY_RE = re.compile(
     r"("  # raw provider policy/safety bodies are noisy and may be sensitive
@@ -686,7 +679,7 @@ def _looks_like_gateway_provider_error(text: str) -> bool:
 def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     """Sanitize final gateway replies for chat surfaces: concise, secret-redacted provider failure
     categories instead of raw HTTP bodies, request IDs, leaked credentials, or policy text."""
-    if not text or _gateway_surface_passes_raw_text(platform):
+    if not text or surface_passes_raw_text(platform):
         return text
 
     # Lone UTF-16 surrogates make Telegram/Signal ``.encode()`` raise; last defense for legacy/plugin paths.
@@ -727,7 +720,7 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
     text = str(message or "").strip()
     if not text:
         return None
-    if _gateway_surface_passes_raw_text(platform):
+    if surface_passes_raw_text(platform):
         return text
 
     text = _redact_gateway_user_facing_secrets(text)

@@ -424,6 +424,7 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Any, Callable, Awaitable
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
+from gateway.platforms.base_authorization import BaseAuthorizationMixin
 from gateway.platforms.helpers import fence_state_after
 from gateway.platforms.base_exec_approval import (
     approval_timeout_seconds, ea_action_labels, ea_default_reason_text, ea_header_text,
@@ -1914,7 +1915,7 @@ def _lazy_attr(obj: Any, name: str, factory: Callable[[], Any]) -> Any:
 _strip_media_directives = _strip_media_tag_directives
 
 
-class BasePlatformAdapter(ABC):
+class BasePlatformAdapter(BaseAuthorizationMixin, ABC):
     """Base class for platform adapters: connect/auth, receive, send, handle media."""
 
     # ``format_message`` renders ``` fences as real code blocks (tool-progress then sends a bare
@@ -2361,19 +2362,6 @@ class BasePlatformAdapter(ABC):
         """Set the incoming-message handler (MessageEvent -> optional response str)."""
         self._message_handler = handler
 
-    def set_slash_access_check(
-        self,
-        check: Optional[Callable[[Any, str], Optional[str]]],
-    ) -> None:
-        """Install the runner-owned slash-policy checker for native callbacks.
-
-        The checker receives an actor-bearing ``SessionSource`` and a canonical
-        command name.  It returns ``None`` when allowed and a denial string
-        otherwise, matching ``GatewayRunner._check_slash_access``.
-        """
-        self._slash_access_check = check
-
-
     def set_platform_event_handler(
         self, handler: Optional[Callable[[dict[str, Any], Any], Awaitable[None]]]) -> None:
         """Install the gateway-owned normalized platform-event boundary (stable dicts + internal
@@ -2416,38 +2404,6 @@ class BasePlatformAdapter(ABC):
         ``user_id``, ``item_user_id``, ``channel_id``, ``message_ts``, ``event_ts``, ``raw_event``)
         fanned out via ``HookRegistry.emit``."""
         self._reaction_handler = handler
-
-    def set_authorization_check(
-        self, callback: Optional[Callable[[str, Optional[str], Optional[str]], bool]]) -> None:
-        """Register ``(user_id, chat_type, chat_id) -> bool``; adapters pulling external context
-        (Slack thread replies) use it to flag non-allowlisted senders as unverified background."""
-        self._authorization_check = callback
-
-    def _is_sender_authorized(self, user_id: Optional[str], chat_type: Optional[str] = None,
-                              chat_id: Optional[str] = None, *, is_bot: bool = False,
-                              thread_id: Optional[str] = None) -> Optional[bool]:
-        """True/False from the registered check, or None when no check exists ("trust unknown",
-        legacy). ``is_bot``/``thread_id`` are forwarded as keywords only when set so legacy
-        three-positional callbacks keep working. Only literal booleans propagate: a truthy
-        non-boolean is "unknown", never an authorization that gates a credentialed side effect."""
-        if not user_id or self._authorization_check is None:
-            return None
-        extra: dict[str, Any] = {}
-        if is_bot:
-            extra["is_bot"] = True
-        if thread_id is not None:
-            extra["thread_id"] = thread_id
-        try:
-            result = self._authorization_check(user_id, chat_type, chat_id, **extra)
-        except Exception:
-            logger.warning("[%s] Authorization check raised for user %s; treating as unknown",
-                           self.name, user_id, exc_info=True)
-            return None
-        if result is True or result is False:
-            return result
-        logger.warning("[%s] Authorization check returned %s for user %s; treating as unknown",
-                       self.name, type(result).__name__, user_id)
-        return None
 
     def set_session_store(self, session_store: Any) -> None:
         """Set the session store (e.g. Slack checks for an active thread session

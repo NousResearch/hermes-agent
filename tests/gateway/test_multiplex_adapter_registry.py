@@ -1096,7 +1096,7 @@ class TestSecondaryProfileConfigHandling:
         monkeypatch.setattr(runner, "_create_adapter", _create_adapter)
         monkeypatch.setattr(runner, "_connect_initial_adapter_with_timeout", _connect)
 
-        monkeypatch.setattr(runner, "_configure_profile_adapter", lambda *a: None)
+        monkeypatch.setattr(runner, "_configure_profile_adapter", lambda *a, **kw: None)
         connected = await runner._start_one_profile_adapters("clientbot", home, {})
 
         assert connected == (2 if paired else 1)

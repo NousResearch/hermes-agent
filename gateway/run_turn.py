@@ -9,6 +9,7 @@ from pm import install_hint
 import logging
 from typing import TYPE_CHECKING
 import asyncio
+from gateway.run_turn_bg import bg_prompt_preview
 import dataclasses
 import inspect
 import json
@@ -88,12 +89,6 @@ _CONTEXT_OVERFLOW_ERROR_PHRASES = (
 def _unexpected_silence_reply() -> str:
     """Reply when the model returned only a silence marker for a message that needed an answer."""
     return t("gateway.errors.unexpected_silence")
-
-
-def _bg_prompt_preview(prompt: str, limit: int = 60) -> str:
-    """Short single-line quote of a /bg prompt for its failure notice (the task id means nothing to the user)."""
-    text = " ".join(str(prompt or "").split())
-    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
 
 
 def is_context_overflow_failure_result(agent_result: dict, history_len: int) -> bool:
@@ -2545,7 +2540,7 @@ class GatewayTurnMixin:
             with suppress(Exception):
                 await adapter.emit_warning(
                     source.chat_id,
-                    t("gateway.background.failed", preview=_bg_prompt_preview(prompt)),
+                    t("gateway.background.failed", preview=bg_prompt_preview(prompt)),
                     metadata=_thread_metadata, logical_platform=source.platform,
                 )
 

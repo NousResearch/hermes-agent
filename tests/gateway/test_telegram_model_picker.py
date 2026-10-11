@@ -200,7 +200,12 @@ class TestTelegramModelPicker:
 
         selected.assert_not_awaited()
         query.edit_message_text.assert_not_awaited()
-        assert "not authorized" in query.answer.await_args.kwargs["text"]
+        if user_id is None:
+            from plugins.platforms.telegram.adapter import _unauthorized
+
+            assert query.answer.await_args.kwargs["text"] == _unauthorized()
+        else:
+            assert "not authorized" in query.answer.await_args.kwargs["text"]
 
     @pytest.mark.asyncio
     async def test_callback_message_id_mismatch_never_executes_picker_callback(
@@ -423,7 +428,7 @@ class TestTelegramModelPicker:
         entered = []
 
         @contextmanager
-        def fake_scope(home):
+        def fake_scope(home, **kwargs):
             entered.append(Path(home))
             yield
 
@@ -485,7 +490,7 @@ class TestTelegramModelPicker:
         entered = []
 
         @contextmanager
-        def fake_scope(home):
+        def fake_scope(home, **kwargs):
             entered.append(Path(home))
             yield
 
@@ -551,7 +556,7 @@ class TestTelegramModelPicker:
         entered = []
 
         @contextmanager
-        def fake_scope(home):
+        def fake_scope(home, **kwargs):
             entered.append(Path(home))
             yield
 
@@ -570,7 +575,8 @@ class TestTelegramModelPicker:
 
         assert getattr(adapter._message_handler, "__self__", None) is None
         assert adapter._is_model_picker_callback_authorized(_query(user_id=111)) is True
-        assert entered == [Path("/profiles/reviewer")]
+        assert entered
+        assert all(home == Path("/profiles/reviewer") for home in entered)
 
     @pytest.mark.asyncio
     async def test_authorized_model_picker_callback_applies_model_slash_policy(

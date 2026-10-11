@@ -335,7 +335,10 @@ async def test_shared_catalog_matches_actor_and_serving_policy(
         assert Path(get_hermes_home()) == home
 
     # An unresolved profile must not borrow primary policy, even at the renderer boundary.
-    event.source.profile = "ghost"
+    # A resolved source pins its runtime identity; use fresh ingress for another profile.
+    event.source = SessionSource(
+        platform=Platform.TELEGRAM, chat_id="-100", chat_type="group", profile="ghost",
+    )
     event.text = "/help"
     assert "policy context" in await runner._handle_message(event)
     assert "`/model" not in await handler(event)

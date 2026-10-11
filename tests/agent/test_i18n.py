@@ -176,3 +176,53 @@ def test_locales_dir_env_override_ignored_when_missing(tmp_path, monkeypatch):
     assert result.name == "locales"
 
 
+
+# ---------------------------------------------------------------------------
+# Code-to-catalog sync for agent/display.py's dynamic keys (#134523).
+# The verb labels are built with f-strings at call time, so locale parity
+# alone can't catch a drift: every locale matches en, gaps included. If a
+# tool joins _TOOL_VERB_TOOLS (or bridge/_status fixed keys change) without
+# its catalog entry, t() falls back to the bare key and the literal
+# "display.verb.<tool>" leaks into Telegram/Slack/Discord bubbles.
+# ---------------------------------------------------------------------------
+
+
+def _en_catalog_keys() -> set:
+    return set(_flatten(_load_raw("en")).keys())
+
+
+def test_display_verb_keys_cover_curated_tool_set():
+    """Every tool with a curated verb must have a display.verb.<tool> entry in en.yaml."""
+    from agent.display import _TOOL_VERB_TOOLS
+
+    missing = {f"display.verb.{tool}" for tool in _TOOL_VERB_TOOLS} - _en_catalog_keys()
+    assert not missing, (
+        "agent/display.py curates verbs for these tools but en.yaml ships no "
+        f"display.verb.* entry (the bare key leaks into chat): {sorted(missing)}"
+    )
+
+
+def test_display_connector_and_status_phrase_keys_exist():
+    """tool_verb_connector()/build_status_phrase() resolve fixed display keys."""
+    required = {
+        "display.verb_connector.search",
+        "display.verb_connector.default",
+        "display.status_phrase.verb",
+        "display.status_phrase.using_tool",
+    }
+    missing = required - _en_catalog_keys()
+    assert not missing, (
+        f"en.yaml missing display keys resolved by agent/display.py: {sorted(missing)}"
+    )
+
+
+def test_display_bridge_generating_keys_cover_generating_tool_set():
+    """bridge_generating_phrase() builds display.bridge_generating.<tool> per member."""
+    from agent.display import _BRIDGE_GENERATING_TOOLS
+
+    missing = {
+        f"display.bridge_generating.{tool}" for tool in _BRIDGE_GENERATING_TOOLS
+    } - _en_catalog_keys()
+    assert not missing, (
+        f"en.yaml missing display.bridge_generating.* keys: {sorted(missing)}"
+    )

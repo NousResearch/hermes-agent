@@ -71,14 +71,14 @@ class StreamFallbackMixin:
         return final_text
 
     @staticmethod
-    def _split_text_chunks(text: str, limit: int, len_fn: "Callable[[str], int]" = len,
+    def _split_text_chunks(text: str, limit: int, len_fn: Callable[[str], int] = len,
                            ) -> list[str]:
         """Split text for fallback sends: newline-preferred, fence-balanced across chunks."""
         from gateway.platforms.helpers import split_text_fence_aware
         return split_text_fence_aware(text, limit, len_fn, prefer_paragraphs=False,
                                       balance_fences=True)
 
-    def _truncate_for_stream(self, text: str, limit: int, len_fn: "Callable[[str], int]",
+    def _truncate_for_stream(self, text: str, limit: int, len_fn: Callable[[str], int],
                              ) -> list[str]:
         """Split via the adapter's canonical truncate_message (platform-specific rules);
         non-base test doubles / legacy adapters keep the two-argument call shape."""
@@ -208,10 +208,10 @@ class StreamFallbackMixin:
         self._mark_final_delivered(record=final_text)
         return None
 
-    def _fallback_len_budget(self) -> "tuple[Callable[[str], int], int]":
+    def _fallback_len_budget(self) -> tuple[Callable[[str], int], int]:
         """(len_fn, raw_limit) for fallback chunking — per-chat cap/unit on base adapters."""
         raw_limit = getattr(self.adapter, "MAX_MESSAGE_LENGTH", 4096)
-        _len_fn: "Callable[[str], int]" = len
+        _len_fn: Callable[[str], int] = len
         if isinstance(self.adapter, _BasePlatformAdapter):
             _len_fn = self.adapter.message_len_fn
             try:  # per-chat cap/unit (relay adapter fronting N platforms)

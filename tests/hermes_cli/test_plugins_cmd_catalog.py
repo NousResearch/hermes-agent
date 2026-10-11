@@ -15,7 +15,7 @@ import pytest
 from hermes_cli import plugin_catalog as pc_cat
 from hermes_cli import plugins_cmd as pc
 from hermes_cli import plugins_cmd_catalog as cat
-from tests.pm._fixtures import client, isolated_python  # noqa: F401
+from tests.pm._fixtures import client, isolated_python
 
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git not available")
 
@@ -81,7 +81,7 @@ def world(client, tmp_path, monkeypatch):
 
 
 def _head(path: Path) -> str:
-    return sp.run(["git", "rev-parse", "HEAD"], cwd=path, capture_output=True, text=True).stdout.strip()
+    return sp.run(["git", "rev-parse", "HEAD"], cwd=path, capture_output=True, text=True, check=False).stdout.strip()
 
 
 def test_catalog_platform_mismatch_refuses_before_install(world):
@@ -206,6 +206,25 @@ def test_in_tree_sidecar_cannot_forge_catalog_provenance(world, tmp_path):
     # Control: a real catalog install is still recognised through the metadata record.
     real, _m, _n = cat.install_catalog_entry(pc_cat.get_live_catalog_entry("cat-plugin"), force=False)
     assert cat.catalog_annotation(real) == f"catalog:community@{world['sha1'][:8]}"
+
+
+def test_url_install_of_an_archived_handoff_repo_is_repinned_to_its_catalog_entry(world, tmp_path, monkeypatch):
+    """A provider that left core was first handed off through a Nous repo that is now archived; a URL install of
+    it has no catalog record, so `update` would keep pulling the archive. It is adopted as the catalog entry that
+    superseded it, and `update` re-pins it to the maintained repo at the reviewed sha."""
+    archived = tmp_path / "archived"
+    target = _install_url(archived, "cat-plugin", {"ARCHIVED.md": "moved\n"})
+    assert cat.read_catalog_sidecar(target) is None  # control: an unknown repo stays a plain URL install
+    monkeypatch.setitem(cat._HANDOFF_REPOS, pc_cat._normalize_repo(archived.as_uri()), "cat-plugin")
+    assert cat.read_catalog_sidecar(target)["catalog_name"] == "cat-plugin"
+    seen = {}
+    real_scan = pc._scan_plugin_tree
+    monkeypatch.setattr(pc, "_scan_plugin_tree", lambda *a, **k: seen.update(k) or real_scan(*a, **k))
+    result = pc.dashboard_update_user_plugin("cat-plugin")
+    assert result["ok"] and result["unchanged"] is False and _head(target) == world["sha1"]
+    assert seen["reviewed_pin"] is True  # the re-pinned tree IS the reviewed sha: caution findings don't block it
+    record = pc._read_install_metadata()["cat-plugin"]
+    assert record["source"] == world["repo"].as_uri() and record["catalog"]["repo"] == world["repo"].as_uri()
 
 
 def test_ref_install_records_installed_sha_so_update_is_offered(world):

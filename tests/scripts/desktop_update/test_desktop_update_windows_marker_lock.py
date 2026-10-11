@@ -90,7 +90,7 @@ def test_a7_concurrent_claimants_over_a_dead_marker_yield_one_owner(tmp_path: Pa
                 try:
                     c.wait(timeout=120)
                 except subprocess.TimeoutExpired:
-                    subprocess.run(['taskkill', '/T', '/F', '/PID', str(c.pid)], capture_output=True)
+                    subprocess.run(['taskkill', '/T', '/F', '/PID', str(c.pid)], capture_output=True, check=False)
     assert running[0].returncode == 0
     assert not marker.exists()
 
@@ -135,7 +135,7 @@ def test_script_killed_before_publishing_the_delegate_runs_no_update(tmp_path: P
         lock = _HeldLock(home)   # after the claim, before the delegate publication
         child = subprocess.run([POWERSHELL, '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', str(finder),
                                 '-Parent', str(script.pid), '-Seconds', '60'],
-                               capture_output=True, text=True, timeout=90)
+                               capture_output=True, text=True, timeout=90, check=False)
         assert child.returncode == 0, 'the update child never appeared'
         child_pid = int(child.stdout)
         subprocess.run(['taskkill', '/F', '/PID', str(script.pid)], capture_output=True, check=True)
@@ -151,7 +151,7 @@ def test_script_killed_before_publishing_the_delegate_runs_no_update(tmp_path: P
             lock.release()
         hold.touch()
         if script.poll() is None:
-            subprocess.run(['taskkill', '/T', '/F', '/PID', str(script.pid)], capture_output=True)
+            subprocess.run(['taskkill', '/T', '/F', '/PID', str(script.pid)], capture_output=True, check=False)
             script.wait()
     deadline = time.monotonic() + 60   # the custodian releases the marker once the lock is free
     while (verdict := _op(home, '-MarkerOp', 'reclaim')[1]).startswith('live '):

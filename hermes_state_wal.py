@@ -182,7 +182,7 @@ class WalUnsupportedError(sqlite3.OperationalError):
 # unreadable, the answer is False and behaviour is unchanged. Nothing else (ext4/btrfs/xfs/zfs/tmpfs/overlay/nfs)
 # is ever flagged here — those keep the existing reactive paths.
 _CROSS_VM_FSTYPES = frozenset({"virtiofs", "fuse.virtiofs", "9p", "9p2000", "9p2000.l", "9p2000.u"})
-_cross_vm_fs_cache: Dict[str, bool] = {}  # per DB directory; kanban_db.connect() opens per operation
+_cross_vm_fs_cache: dict[str, bool] = {}  # per DB directory; kanban_db.connect() opens per operation
 _cross_vm_fs_cache_lock = threading.Lock()
 _cross_vm_warned_paths: set[str] = set()
 _cross_vm_warned_lock = threading.Lock()
@@ -577,8 +577,8 @@ _log_configured_delete_overridden_once = functools.partial(_log_once, "delete_ov
 
 
 # Operators write synchronous as a name; mapped so a typo becomes a warning, not a silently different level.
-_SYNCHRONOUS_LEVELS: Dict[str, int] = {"OFF": 0, "NORMAL": 1, "FULL": 2, "EXTRA": 3}
-_SYNCHRONOUS_NAMES: Dict[int, str] = {v: k for k, v in _SYNCHRONOUS_LEVELS.items()}
+_SYNCHRONOUS_LEVELS: dict[str, int] = {"OFF": 0, "NORMAL": 1, "FULL": 2, "EXTRA": 3}
+_SYNCHRONOUS_NAMES: dict[int, str] = {v: k for k, v in _SYNCHRONOUS_LEVELS.items()}
 _SYNCHRONOUS_FULL = 2
 
 

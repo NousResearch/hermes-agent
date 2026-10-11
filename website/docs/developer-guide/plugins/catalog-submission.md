@@ -136,13 +136,19 @@ the gallery. There is no separate listing to maintain.
    their CI) — see the developer guide's *Dependency security policy*. A
    recent floor alone is not grounds to hold an entry.
 
-11. **Credentials stay with their owner.** A plugin reads the credentials it is
-   configured with: the env vars in `requires_env` and its own `config_schema`
-   secrets. Reading another tool's login (a vendor CLI's token file, a browser
-   profile) must be disclosed in the PR and is a trust-tier call for a
-   maintainer. Refreshing, rotating or writing another client's OAuth tokens, or
-   presenting itself as another vendor's client, is not admitted without an
-   explicit maintainer ruling; a read-only build is the usual way through.
+11. **Credentials come through Hermes, never from files.** A plugin gets
+   secrets only through Hermes's routes. Its declared `requires_env` and
+   `config_schema` secrets are read with `agent.secret_scope.get_secret(NAME)`,
+   which honours the active profile (a bare `os.environ` read can pick up another
+   profile's key under multiplexing). A subscription sign-in (Codex / ChatGPT
+   today) is used only through `credentialed_provider_request` with
+   `requires_auth`, so Hermes attaches the token and the plugin never holds it. A
+   plugin never reads `.env` files, Hermes's `auth.json`, another tool's login (a
+   vendor CLI's token file, a browser profile, a keychain) or any other
+   credential store directly, and never refreshes, rotates or writes OAuth tokens
+   or presents itself as another vendor's client. If Hermes has no route for a
+   credential a plugin needs, ask for one in a Hermes issue or PR; the plugin
+   does not work around it.
 12. **Approvals and unattended runs are respected.** A plugin never routes around
    Hermes's approval system: no auto-approving, no disabling guards, and no
    spawning Hermes or shell children that inherit YOLO or non-interactive mode

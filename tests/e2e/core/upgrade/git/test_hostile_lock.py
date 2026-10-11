@@ -151,7 +151,7 @@ class Rig:
         wrap = root / "wrap"
         wrap.mkdir()
         real_git = subprocess.run(["sh", "-c", "command -v git"], text=True, encoding="utf-8",
-                                  capture_output=True).stdout.strip()
+                                  capture_output=True, check=False).stdout.strip()
         (wrap / "git").write_text(
             "#!/usr/bin/env bash\n"
             'for a in "$@"; do if [ "$a" = fetch ]; then\n'
@@ -174,7 +174,7 @@ class Rig:
         argv = H.sandbox_argv([sys.executable, str(self.root / "driver.py"), str(self.root), str(self.checkout), *args],
                               writable=[self.root])
         cp = subprocess.run(argv, env=envs["home-a"], cwd=self.checkout, stdin=subprocess.DEVNULL,
-                            capture_output=True, text=True, timeout=timeout)
+                            capture_output=True, text=True, timeout=timeout, check=False)
         assert cp.returncode == 0, f"driver failed:\n{cp.stdout[-3000:]}\n{cp.stderr[-3000:]}"
         return json.loads(cp.stdout.strip().splitlines()[-1])
 

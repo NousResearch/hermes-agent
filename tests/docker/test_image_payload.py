@@ -24,6 +24,7 @@ print('PM interpreter and application dependencies load as hermes')
         ["docker", "run", "--rm", "--network", "none", "--user", "hermes",
          "--entrypoint", "/opt/hermes/.venv/bin/python", built_image, "-c", probe],
         capture_output=True, text=True, timeout=60,
+        check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
 
@@ -44,5 +45,6 @@ assert Path('/opt/hermes/node_modules/typescript/bin/tsc').is_file()
         ["docker", "run", "--rm", "--network", "none", "--user", "hermes",
          "--entrypoint", "/opt/hermes/.venv/bin/python", built_image, "-c", probe],
         capture_output=True, text=True, timeout=60,
+        check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr

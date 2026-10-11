@@ -138,7 +138,7 @@ def _is_production_state_db(resolved: Path, root: Path) -> bool:
 # Population is gated on the isolation marker (exported by tests/conftest.py
 # before any test module imports). Production processes never populate it;
 # do not "simplify" the gate away. WeakSet membership never pins an instance.
-_test_instance_registry: "weakref.WeakSet[Any]" = weakref.WeakSet()
+_test_instance_registry: weakref.WeakSet[Any] = weakref.WeakSet()
 
 
 def _register_test_instance(db: Any) -> None:

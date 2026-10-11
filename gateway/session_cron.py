@@ -172,7 +172,9 @@ async def operation(authority, name, params, actor=None):
         flags = (saved['result'].get('cron_job_flags') or {}) if saved else {}
         if result is None:
             result = [False, '', '', row.get('outcome') or 'unknown_execution']
-    return {'status': row['status'], 'result': result, 'job_flags': flags}
+    from cron.scheduler_liveness import owner_progress
+    return {'status': row['status'], 'result': result, 'job_flags': flags,
+            'progress_at': owner_progress.get(row['request_id'].rsplit(':', 1)[-1])}
 
 
 def _cancellations(authority):
@@ -218,8 +220,9 @@ async def execute(authority, ref, row, policy):
         raise RuntimeStoreError('admission_conflict')
     cancellations = _cancellations(authority)
     cancel = cancellations.setdefault(row['admission_id'], threading.Event())
-    job = data['cron_job']
-    execution_id = scheduler_execution_id(job['id'], row['request_id'])
+    execution_id = scheduler_execution_id(data['cron_job']['id'], row['request_id'])
+    # The frozen snapshot predates the fire's ledger row; the run's progress stamps need its id.
+    job = dict(data['cron_job'], execution_id=execution_id)
     token = _execution.set((authority, ref.session_id, job['id'], execution_id))
     try:
         db_path = await asyncio.to_thread(Path(authority.db.db_path).resolve)
@@ -236,5 +239,7 @@ async def execute(authority, ref, row, policy):
             raise RuntimeError(result[3] or 'cron execution failed')
         return result[2]
     finally:
+        from cron.scheduler_liveness import owner_progress
+        owner_progress.pop(execution_id, None)
         _execution.reset(token)
         cancellations.pop(row['admission_id'], None)

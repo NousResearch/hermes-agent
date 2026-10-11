@@ -62,11 +62,18 @@ def run_canonical_job(job, *, extra_prompt=None, cancel_event=None, execution_id
             raise
         record['receipt'] = receipt
         save()
-        delay = .1
+        delay, progress = .1, None
         while True:
             if cancel_event is not None and cancel_event.is_set():
                 await call('cancel', receipt)
             state = await call('status', receipt)
+            if state.get('progress_at') not in (None, progress):
+                # The owner's agent is still working: refresh OUR ledger row (the owner's stamp is
+                # fenced to the row's owner), once per owner stamp, so the stale-claim sweep measures
+                # the run's silence. A wedged owner stops stamping and the sweep still fires.
+                from cron.executions import touch_execution_progress
+                progress = state['progress_at']
+                await asyncio.to_thread(touch_execution_progress, request_id)
             if state['status'] == 'terminal':
                 job.update(state.get('job_flags') or {})
                 return tuple(state['result'])

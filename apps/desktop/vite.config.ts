@@ -198,15 +198,13 @@ export default defineConfig(({ command }) => ({
               test: /node_modules[\\/](lodash-es|es-toolkit|uuid|dayjs|d3-array|d3-color|d3-force|d3-interpolate|d3-time[^\\/]*|dompurify|stylis)[\\/]/
             },
             // One chunk per heavyweight, lazy-only library family.
-            // @streamdown/code lives WITH shiki because it statically imports
-            // the full shiki bundle.
             {
               name: 'mermaid',
               test: /node_modules[\\/](mermaid|cytoscape|dagre|khroma|elkjs|d3|d3-[^\\/]+|@mermaid-js)[\\/]/
             },
             {
               name: 'shiki',
-              test: /node_modules[\\/](shiki|@shikijs|react-shiki|@streamdown[\\/]code|oniguruma-to-es|oniguruma-parser|regex(-[^\\/]+)?)[\\/]/
+              test: /node_modules[\\/](shiki|@shikijs|react-shiki|oniguruma-to-es|oniguruma-parser|regex(-[^\\/]+)?)[\\/]/
             },
             { name: 'katex', test: /node_modules[\\/]katex[\\/]/ }
           ]

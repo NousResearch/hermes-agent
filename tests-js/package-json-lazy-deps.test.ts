@@ -25,7 +25,7 @@
  *
  * - ``@streamdown/math`` is NOT a root dependency either. It's imported only
  *   by desktop's own TS code (``apps/desktop/src/...``), so it belongs in
- *   ``apps/desktop/package.json`` (alongside its sibling ``@streamdown/code``)
+ *   ``apps/desktop/package.json``
  *   — not root, where it was subject to the exact same pruning risk.
  *
  * - ``@askjo/camofox-browser`` is NOT eager. It is an explicit opt-in

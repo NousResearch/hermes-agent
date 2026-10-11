@@ -5161,6 +5161,7 @@ export interface CanonicalCreateParams {
   cwd_explicit?: boolean | null
   run_budget?: number | null
   verbose?: boolean
+  cache_scope?: string | null
   client_env?: Record<string, string> | null
   client?: CanonicalClientIdentity | null
 }

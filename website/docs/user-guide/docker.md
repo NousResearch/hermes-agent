@@ -896,6 +896,25 @@ docker run -d \
 
 `docker exec hermes <cmd>` automatically drops to UID 10000 too — see [`docker exec` automatically drops to the `hermes` user](#docker-exec-automatically-drops-to-the-hermes-user) for details and the per-invocation opt-out.
 
+### Starting the container non-root (Kubernetes `runAsNonRoot`, `--user`)
+
+The image does not require root. Starting as root is the default because that is what lets the boot hook remap the `hermes` user (`HERMES_UID`/`PUID`) and `chown` the data volume for you; the image itself ships no `USER` instruction. A restricted pod security context works when the container starts as **the `hermes` user, UID 10000** and the data volume is already writable by that UID — the boot hook detects it is unprivileged, skips every privilege drop, and runs the whole bootstrap (first-boot seeding, config-schema migration, dependency refresh, skills sync) directly as UID 10000:
+
+```yaml
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 10000
+  runAsGroup: 10000
+  fsGroup: 10000            # the hermes user is UID/GID 10000, not 1000
+```
+
+Equivalent Docker invocation: `chown 10000:10000 ./data` once, then `docker run --user 10000:10000 -v ./data:/opt/data …`.
+
+Two constraints follow from "nobody is root":
+
+- Only UID 10000 is supported. Any other `--user`/`runAsUser` is refused at boot with an explanatory error, because the baked `/opt/hermes` install tree is root-owned and read-only and a stray UID cannot repair the volume. Use `HERMES_UID`/`PUID` (root start) when the files must be owned by some other host UID.
+- A volume the container cannot write as UID 10000 fails fast (`mkdir: cannot create directory '/opt/data/…': Permission denied`) instead of being chowned. Fix the ownership on the host or let `fsGroup` do it.
+
 ### Shared data directory keeps resetting to `0700`
 
 Outside a container Hermes locks `HERMES_HOME` (and its `cron/`, `sessions/`, `logs/`, `memories/` subdirectories) to owner-only `0700` on every start. Inside a container it leaves directory modes alone, so a bind mount shared with a sibling container running as a different UID (a web UI, a permissions fixer) keeps whatever mode and ACLs you set on the host. To force a specific directory mode anyway, set `HERMES_HOME_MODE` (octal, e.g. `HERMES_HOME_MODE=0755`); it is applied in containers too.

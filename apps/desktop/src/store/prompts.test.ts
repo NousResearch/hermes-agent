@@ -327,6 +327,48 @@ describe('answerApproval', () => {
     expect(calls).toBe(2)
   })
 
+  it('retires a legacy approval after an ambiguous timeout and replays the newer pending approval', async () => {
+    const legacy = { command: 'old command', description: 'old approval', sessionId: 's1' }
+    setApprovalRequest(legacy)
+
+    const timeout = new Error('request timed out after 330s: approval.respond')
+    let finishPending!: (value: unknown) => void
+
+    const pending = new Promise(resolve => {
+      finishPending = resolve
+    })
+
+    let serverPending = [{ command: legacy.command, description: legacy.description, request_id: 'old' }]
+
+    const request = vi.fn(async (method: string) => {
+      if (method === 'approval.respond') {
+        // The first answer landed; the next FIFO entry is now pending, but the reply was lost.
+        serverPending = [{ command: 'new command', description: 'new approval', request_id: 'new' }]
+        throw timeout
+      }
+
+      if (method === 'approval.pending') {
+        return pending
+      }
+
+      return { acknowledged: true }
+    })
+
+    await expect(answerApproval({ request }, legacy, 'once')).rejects.toBe(timeout)
+    expect(request.mock.calls.filter(([method]) => method === 'approval.respond')).toHaveLength(1)
+    // While the authoritative fetch is in flight, the old UI has nothing to resubmit.
+    expect(sessionApprovalRequests('s1').get()).toEqual([])
+    expect(request).toHaveBeenCalledWith('approval.pending', { session_id: 's1' })
+
+    finishPending({ approvals: serverPending })
+    await vi.waitFor(() => {
+      expect(sessionApprovalRequests('s1').get()).toEqual([
+        expect.objectContaining({ command: 'new command', description: 'new approval', requestId: 'new' })
+      ])
+    })
+    expect(request.mock.calls.filter(([method]) => method === 'approval.respond')).toHaveLength(1)
+  })
+
   it('propagates non-timeout failures without a retry', async () => {
     let calls = 0
 

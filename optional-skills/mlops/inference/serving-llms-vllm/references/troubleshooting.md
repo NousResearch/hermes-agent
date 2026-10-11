@@ -209,18 +209,17 @@ curl http://localhost:8000/health
 
 2. **Check port binding**:
 ```bash
-# Bind to all interfaces for remote access
-vllm serve MODEL --host 0.0.0.0 --port 8000
+# Keep local troubleshooting traffic on loopback
+vllm serve MODEL --host 127.0.0.1 --port 8000 \
+  --api-key "replace-with-a-session-secret"
 
 # Check if port is in use
 lsof -i :8000
 ```
 
-3. **Check firewall**:
-```bash
-# Allow port through firewall
-sudo ufw allow 8000
-```
+3. **Check firewall and proxy policy**: do not open the inference port directly.
+   For remote clients, use an authenticated TLS proxy or private network and
+   ask the user or administrator to approve any network-policy change.
 
 ### Symptom: Slow response times over network
 
@@ -232,7 +231,7 @@ from openai import OpenAI
 
 client = OpenAI(
     base_url="http://localhost:8000/v1",
-    api_key="EMPTY",
+    api_key="<session-key>",
     timeout=300.0  # 5 minute timeout
 )
 ```

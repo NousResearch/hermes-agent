@@ -161,6 +161,7 @@ python scripts/run_workflow.py \
   --workflow workflow_api.json \
   --args '{"prompt": "..."}' \
   --host https://cloud.comfy.org \
+  --api-key "$COMFY_CLOUD_API_KEY" \
   --output-dir ./outputs
 
 # Real-time progress via WebSocket (requires `pip install websocket-client`)
@@ -332,6 +333,7 @@ For users without a capable GPU or who want zero setup. Hosted on RTX 6000 Pro.
      --workflow workflows/flux_dev_txt2img.json \
      --args '{"prompt": "..."}' \
      --host https://cloud.comfy.org \
+     --api-key "$COMFY_CLOUD_API_KEY" \
      --output-dir ./outputs
    ```
 
@@ -515,7 +517,8 @@ curl -X POST "https://cloud.comfy.org/api/upload/image" \
 
 - **Base URL:** `https://cloud.comfy.org`
 - **Auth:** `X-API-Key` header (or `?token=KEY` for WebSocket)
-- **API key:** set `$COMFY_CLOUD_API_KEY` once and the scripts pick it up automatically
+- **API key:** pass it explicitly with `--api-key`; shell variables may be used
+  to avoid writing the value into a script
 - **Output download:** `/api/view` returns a 302 to a signed URL; the scripts
   follow it and strip `X-API-Key` before fetching from the storage backend
   (don't leak the API key to S3/CloudFront).
@@ -536,7 +539,8 @@ curl -X POST "https://cloud.comfy.org/api/upload/image" \
 
 ```bash
 # Local
-curl -s http://127.0.0.1:8188/queue | python -m json.tool
+curl -s http://127.0.0.1:8188/queue -o queue.json
+python -m json.tool queue.json
 curl -X POST http://127.0.0.1:8188/queue -d '{"clear": true}'    # cancel pending
 curl -X POST http://127.0.0.1:8188/interrupt                      # cancel running
 curl -X POST http://127.0.0.1:8188/free \
@@ -544,7 +548,8 @@ curl -X POST http://127.0.0.1:8188/free \
   -d '{"unload_models": true, "free_memory": true}'
 
 # Cloud — same paths under /api/, plus:
-python scripts/fetch_logs.py --tail-queue --host https://cloud.comfy.org
+python scripts/fetch_logs.py --tail-queue --host https://cloud.comfy.org \
+  --api-key "$COMFY_CLOUD_API_KEY"
 ```
 
 ## Pitfalls

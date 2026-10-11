@@ -47,7 +47,7 @@ def _make_adapter(monkeypatch: pytest.MonkeyPatch) -> PhotonAdapter:
 def _run_staleness_harness(script: str) -> dict[str, Any]:
     harness = (
         "import { classifyProbeRejection, shouldProbe, isZombieSuspect, "
-        "createProbeMessageId } "
+        "createProbeMessageId, heartbeatStall } "
         f"from {json.dumps(_MODULE.as_uri())};\n"
         + script
     )
@@ -148,6 +148,35 @@ def test_zombie_requires_probe_proven_connectivity_never_silence_alone() -> None
     assert out["hoursOfSilenceInconclusive"] is False
     assert out["notSilentEnough"] is False
     assert out["disabled"] is False
+
+def test_heartbeat_stall_replaces_silence_rule_once_heartbeats_arrive() -> None:
+    """Issue #124010: a quiet line with a live probe was restarted every ~10
+    min. Once the stream has sent one server heartbeat, silence is benign and
+    only a missing heartbeat (or message) counts; before that, the rule stays
+    out of the way so the silence probe remains the fallback."""
+    out = _run_staleness_harness(
+        """
+        const STALL = 65000;
+        const now = 10 * 60 * 60 * 1000;
+        const quietLine = { heartbeatCount: 1200, lastHeartbeatAt: now - 20000, lastInboundAt: now - 6 * 60 * 60 * 1000 };
+        const results = {
+          quietLine: heartbeatStall(now, quietLine, STALL),
+          missedBeats: heartbeatStall(now, { ...quietLine, lastHeartbeatAt: now - STALL }, STALL),
+          recentMessage: heartbeatStall(now, { ...quietLine, lastHeartbeatAt: now - STALL * 3, lastInboundAt: now - 1000 }, STALL),
+          noHeartbeatYet: heartbeatStall(now, { heartbeatCount: 0, lastHeartbeatAt: 0, lastInboundAt: 0 }, STALL),
+          disabled: heartbeatStall(now, { ...quietLine, lastHeartbeatAt: 0 }, 0),
+          disabledNegative: heartbeatStall(now, { ...quietLine, lastHeartbeatAt: 0 }, -1),
+        };
+        process.stdout.write(JSON.stringify(results));
+        """
+    )
+    assert out["quietLine"] == {"stalled": False, "stalledForMs": 20000}
+    assert out["missedBeats"] == {"stalled": True, "stalledForMs": 65000}
+    assert out["recentMessage"]["stalled"] is False
+    # No heartbeat seen yet, or the rule disabled: defer to the silence probe.
+    assert out["noHeartbeatYet"] is None
+    assert out["disabled"] is None
+    assert out["disabledNegative"] is None
 
 # -- Adapter surfacing of the new /healthz staleness fields ------------------
 

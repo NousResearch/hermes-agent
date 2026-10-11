@@ -331,6 +331,7 @@ RUN mkdir -p /opt/hermes/node_modules/.bin && \
 COPY plugins/platforms/photon/sidecar/package.json \
      plugins/platforms/photon/sidecar/package-lock.json \
      plugins/platforms/photon/sidecar/patch-spectrum-mixed-attachments.mjs \
+     plugins/platforms/photon/sidecar/patch-spectrum-stream-heartbeat.mjs \
      plugins/platforms/photon/sidecar/
 RUN cd plugins/platforms/photon/sidecar && \
     npm ci --no-audit --fetch-retries=5 && \

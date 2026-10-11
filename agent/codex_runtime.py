@@ -951,10 +951,10 @@ class _CodexResponseAssembler:
         if "delta" in event_type:
             pending["arguments"] += _event_field(event, "delta", "") or ""
         elif event_type.endswith("function_call_arguments.done"):
-            # Authoritative for the accumulated string; an explicit "" (zero-arg call) counts, only a
-            # missing field keeps the streamed deltas.
-            if (done_args := _event_field(event, "arguments", None)) is not None:
-                pending["arguments"] = str(done_args)
+            # Authoritative only when non-blank: compatible hosts/proxies that rebuild the stream close the
+            # call with "" after streaming the real deltas, and a zero-arg call has no deltas to lose.
+            if str(_event_field(event, "arguments", None) or "").strip():
+                pending["arguments"] = str(_event_field(event, "arguments"))
 
     def _on_reasoning_delta(self, event: Any, event_type: str) -> None:
         reasoning_text = _event_field(event, "delta", "")
@@ -1006,7 +1006,15 @@ class _CodexResponseAssembler:
             announced_sequence, self.next_output_sequence = self.next_output_sequence, self.next_output_sequence + 1
         self.output_indexes.append(_event_field(event, "output_index", announced_index))
         self.output_sequences.append(announced_sequence)
-        # The done payload is authoritative for every pending alias of this call.
+        # The done payload is authoritative for every pending alias of this call, except blank arguments:
+        # a host that empties the final item after streaming them must not run the tool with {}.
+        streamed = next((args for key in pending_keys
+                         if (args := self.pending_function_calls[key]["arguments"]).strip()), "")
+        if streamed and not str(_event_field(done_item, "arguments", "") or "").strip():
+            if isinstance(done_item, dict):
+                self.output_items[-1] = {**done_item, "arguments": streamed}
+            else:
+                done_item.arguments = streamed
         for pending_key in pending_keys:
             self.pending_function_calls.pop(pending_key, None)
         if _message_phase(done_item) == "commentary" and self.on_commentary_message is not None:

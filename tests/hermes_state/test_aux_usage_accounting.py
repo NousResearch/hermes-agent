@@ -355,6 +355,13 @@ class TestModelsPageAuxCards:
             "s2", "compression", model="chat-model",
             billing_provider="xiaomi", input_tokens=200, output_tokens=20,
         )
+        # Cards are built from the per-call rows in session_model_usage whenever the
+        # DB has them (#71778), and those only appear once a billable call lands — so
+        # s1's not-yet-billed row never reaches the fold at all. Drop the per-call
+        # rows to exercise the sessions-aggregate path (pre-v17 DB), where that row
+        # still has to fold into the one provider card instead of minting a second.
+        with db._lock:
+            db._conn.execute("DELETE FROM session_model_usage WHERE task = ''")
 
         report = self._report(db, monkeypatch)
         names = [card["model"] for card in report["models"]]

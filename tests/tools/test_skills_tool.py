@@ -1146,21 +1146,23 @@ class TestNonStringFrontmatterScalars:
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             for dirname, header in (("null-name", "name:\ndescription: Has a null name."),
                                     ("game", "name: 2048\ndescription: Numeric name."),
-                                    ("num-desc", "name: num-desc\ndescription: 42")):
+                                    ("num-desc", "name: num-desc\ndescription: 42"),
+                                    ("list-name", "name: [a, b]\ndescription: Sequence name.")):
                 (tmp_path / dirname).mkdir()
                 (tmp_path / dirname / "SKILL.md").write_text(f"---\n{header}\n---\n\n# T\n\nBody.\n")
             listed = {s["name"] for s in json.loads(skills_list())["skills"]}
             commands = scan_skill_commands()
             viewed = json.loads(skill_view("2048"))
 
-        assert listed == {"null-name", "2048", "num-desc"}
-        assert {"/null-name", "/2048", "/num-desc"} <= set(commands)
+        assert listed == {"null-name", "2048", "num-desc", "list-name"}
+        assert {"/null-name", "/2048", "/num-desc", "/list-name"} <= set(commands)
         assert viewed["success"] is True and viewed["name"] == "2048"
 
     def test_unquoted_date_metadata_does_not_break_skill_view(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
-            _make_skill(tmp_path, "dated", frontmatter_extra="metadata:\n  updated: 2025-12-01\n")
+            _make_skill(tmp_path, "dated",
+                        frontmatter_extra="metadata:\n  updated: 2025-12-01\n  aliases: !!set {alpha}\n")
             result = json.loads(skill_view("dated"))
 
         assert result["success"] is True, result
-        assert result["metadata"]["updated"] == "2025-12-01"
+        assert result["metadata"] == {"updated": "2025-12-01", "aliases": ["alpha"]}

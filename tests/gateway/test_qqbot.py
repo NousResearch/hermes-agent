@@ -165,7 +165,7 @@ class TestVoiceAttachmentTempCleanup:
 
 class TestQQWebSocketProxy:
     @pytest.mark.asyncio
-    async def test_open_ws_honors_proxy_env(self, monkeypatch):
+    async def test_open_ws_delegates_proxy_env_to_aiohttp(self, monkeypatch):
         from gateway.platforms.qqbot import QQAdapter
 
         for key in (
@@ -200,7 +200,7 @@ class TestQQWebSocketProxy:
             await adapter._open_ws("wss://api.sgroup.qq.com/websocket")
 
         assert seen_session_kwargs.get("trust_env") is True
-        assert seen_ws_kwargs.get("proxy") == "http://127.0.0.1:7897"
+        assert "proxy" not in seen_ws_kwargs
 
 # ---------------------------------------------------------------------------
 # _strip_at_mention
@@ -1252,4 +1252,3 @@ class TestReadEventsClosedWsGuard:
         adapter._ws = SimpleNamespace(closed=True)
         with pytest.raises(RuntimeError):
             asyncio.run(adapter._read_events())
-

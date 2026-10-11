@@ -163,11 +163,35 @@ def _unwrap_batch_result(result: Any, command: str) -> dict[str, Any]:
     return {"success": bool(entry.get("success")), "data": entry.get("result"), "error": entry.get("error")}
 
 
+# agent-browser refuses socket paths over 103 bytes ("Socket path would be N bytes (max
+# 103)"). Its daemon binds ``<socket_dir>/<daemon-session>.sock``, where the daemon session
+# repeats this session name for local sessions and stays at the short CLI default for
+# cloud ``--cdp`` ones, so sizing the root by the session name covers both.
+_AGENT_BROWSER_SOCKET_PATH_CAP = 103
+
+
+def _session_socket_root(session_name: str) -> str:
+    """Temp root the producer sizes for this session's socket dir — the single source of
+    truth shared with teardown and the orphan reaper so all three agree on where
+    ``agent-browser-<session>`` lives. Clamped to ``SOCKET_TMPDIR_MAX_LEN``: a short
+    session name must never LOOSEN the default budget, or a deeper scratch root would
+    hide local socket dirs from consumers that only know the default root."""
+    from hermes_constants import SOCKET_TMPDIR_MAX_LEN
+
+    suffix = f"agent-browser-{session_name}/{session_name}.sock"
+    budget = _AGENT_BROWSER_SOCKET_PATH_CAP - 1 - len(suffix)
+    return _bt._socket_safe_tmpdir(max_len=min(budget, SOCKET_TMPDIR_MAX_LEN))
+
+
 def _prepare_session_socket_dir(session_name: str) -> str:
     """Create the per-session socket dir (parallel workers must not share one) and claim it
     with our PID BEFORE first use — another hermes process's orphan reaper rmtree's any
     ownerless agent-browser-* dir in the shared tmpdir."""
-    socket_dir = os.path.join(_bt._socket_safe_tmpdir(), f"agent-browser-{session_name}")
+    # Size the temp root for the full ``agent-browser-<session>/<session>.sock`` layout: the
+    # default budget only covers the shorter RPC-socket suffix, so a deep scratch root plus
+    # a long session name overflows the cap and every browser tool dies at daemon bind.
+    socket_dir = os.path.join(
+        _session_socket_root(session_name), f"agent-browser-{session_name}")
     os.makedirs(socket_dir, mode=0o700, exist_ok=True)
     _lifecycle._write_owner_pid(socket_dir, session_name)
     return socket_dir

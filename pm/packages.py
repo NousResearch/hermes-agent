@@ -703,9 +703,13 @@ class Git(BinaryPackage):
     def fetch_url(self, version: str, target: str) -> str:
         tag, build = version.split("+")
         arch = "arm64" if target.endswith("arm64") else "64-bit"
+        # Git for Windows drops the revision from the artifact name on the
+        # first build of a tag (PortableGit-2.56.0, not 2.56.0.1); the
+        # release directory keeps it (v2.56.0.windows.1).
+        file_rev = "" if build == "1" else f".{build}"
         return (
             f"https://github.com/git-for-windows/git/releases/download/"
-            f"v{tag}.windows.{build}/PortableGit-{tag}.{build}-{arch}.7z.exe"
+            f"v{tag}.windows.{build}/PortableGit-{tag}{file_rev}-{arch}.7z.exe"
         )
 
     def latest_versions(self, target: str, locked=None) -> list[str]:

@@ -696,6 +696,68 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.unknown
         assert result.retryable is True
 
+    def test_404_structured_model_not_available_code_not_retryable(self):
+        """A structured ``error.code`` on a 404 must not be swallowed by the
+        status handler.
+
+        Regression for #133447: a custom OpenAI-compatible provider answers
+        ``404`` with ``{"error": {"code": "model_not_available", ...}}``. The
+        ``_status_404`` handler always returns, so ``_by_error_code`` — which
+        maps ``model_not_available`` → model_not_found (non-retryable +
+        fallback) — never runs, and the bare message ("local-agent is not
+        served now") matches no ``_404_RULES`` pattern. The verdict fell to
+        ``unknown``/retryable and burned the full retry budget on a
+        deterministic failure. Structured code outranks prose (same
+        billing-code-first priority the handler already applies).
+        """
+        e = MockAPIError(
+            "local-agent is not served now",
+            status_code=404,
+            body={
+                "error": {
+                    "type": "not_found_error",
+                    "code": "model_not_available",
+                    "message": "local-agent is not served now",
+                },
+            },
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.model_not_found
+        assert result.retryable is False
+        assert result.should_fallback is True
+
+    def test_404_structured_unknown_code_stays_generic(self):
+        """Invariant guard (#14013 family): a structured code the verdict table
+        doesn't know must keep the generic 404 verdict — the code consultation
+        may not silently reclassify unrelated structured bodies."""
+        e = MockAPIError(
+            "Not Found",
+            status_code=404,
+            body={"error": {"code": "totally_unknown_code", "message": "Not Found"}},
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.unknown
+        assert result.retryable is True
+        assert result.should_fallback is False
+
+    def test_404_structured_rate_limit_code_rotates(self):
+        """Pin the full table-driven contract on 404: the code consultation
+        reclassifies *every* known structured code, not just
+        ``model_not_available``. ``rate_limit_exceeded`` is the sharpest row —
+        it carries ``should_rotate_credential=True`` (rotate a credential key
+        on a 404 status), which is intentional, not a side effect; a future
+        refactor that silently drops it must fail here."""
+        e = MockAPIError(
+            "rate limited",
+            status_code=404,
+            body={"error": {"code": "rate_limit_exceeded", "message": "rate limited"}},
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is True
+        assert result.should_rotate_credential is True
+        assert result.should_fallback is False
+
     # ── Provider policy-block (OpenRouter privacy/guardrail) ──
 
 

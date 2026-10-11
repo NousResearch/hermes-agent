@@ -1046,6 +1046,13 @@ def _status_404(c: _Ctx) -> Verdict:
     # so _by_error_code never sees it; a bare "Not Found" message has nothing to match.
     if c.code in _BILLING_ERROR_CODES:
         return _V_BILLING
+    # Structured non-billing codes are equally decisive: consult the verdict table
+    # before the prose rules (code > message), or _by_error_code never sees a code
+    # this always-returning handler has already consumed — a 404 body carrying
+    # ``model_not_available`` burned the retry budget as unknown (#133447).
+    code_verdict = _ERROR_CODE_VERDICTS.get(c.code)
+    if code_verdict is not None:
+        return code_verdict
     verdict = _first_match(c.msg, _404_RULES)
     if verdict is not None:
         return verdict

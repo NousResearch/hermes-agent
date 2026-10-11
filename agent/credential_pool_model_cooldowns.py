@@ -60,19 +60,30 @@ class CredentialPoolModelCooldownMixin:
 
     def _is_model_scoped_failure(
         self, status_code: Optional[int], model: Optional[str], failure_reason: Optional[str],
+        error_context: Optional[Dict[str, Any]] = None,
     ) -> bool:
-        """Anthropic per-model 429s, and a Codex ChatGPT-account model entitlement 400: the
-        account cannot use *model*, but the credential stays valid for every other model (#71970)."""
+        """Anthropic per-model 429s, a Codex ChatGPT-account model entitlement 400, and any
+        throttle whose classification says ``quota_scope: "model"``: the account cannot use
+        *model*, but the credential stays valid for every other model (#71970).
+
+        ``quota_scope`` comes from a ``transform_api_error_classification`` hook or a provider
+        profile's ``classify_api_error`` — e.g. a Gemini ``QuotaFailure`` whose quota id is
+        ``...PerProjectPerModel...``. Only a rate limit narrows this way: billing and auth
+        failures are about the credential itself."""
         from agent.credential_pool import FAILURE_REASON_BILLING, FAILURE_REASON_BILLING_UNVERIFIED
 
         if not model:
             return False
         if failure_reason == "model_entitlement":
             return True
-        return (
-            self.provider == "anthropic" and status_code == 429
-            and failure_reason not in (FAILURE_REASON_BILLING, FAILURE_REASON_BILLING_UNVERIFIED)
-        )
+        if failure_reason in (FAILURE_REASON_BILLING, FAILURE_REASON_BILLING_UNVERIFIED):
+            return False
+        if (
+            failure_reason == "rate_limit"
+            and isinstance(error_context, dict) and error_context.get("quota_scope") == "model"
+        ):
+            return True
+        return self.provider == "anthropic" and status_code == 429
 
     def _cool_down_model(
         self, entry: PooledCredential, model: str, error_context: Optional[dict[str, Any]],

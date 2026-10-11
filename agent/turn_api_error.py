@@ -27,6 +27,25 @@ from agent.turn_recovery import (
 
 logger = logging.getLogger("agent.conversation_loop")
 
+#: Keys of a classification's ``error_context`` that recovery acts on. A
+#: ``transform_api_error_classification`` hook or a provider profile's ``classify_api_error``
+#: may return them; the turn's own context only holds what ``extract_api_error_context`` read
+#: off the exception, so without this merge a classifier's timing and scope never reached the
+#: credential pool.
+_CLASSIFIED_CONTEXT_KEYS = ("reset_at", "quota_scope")
+
+
+def merge_classified_error_context(error_context: Any, classified: Any) -> Dict[str, Any]:
+    """The turn's extracted context, with the classifier's ``reset_at`` / ``quota_scope`` winning."""
+    merged: Dict[str, Any] = dict(error_context) if isinstance(error_context, dict) else {}
+    ctx = getattr(classified, "error_context", None)
+    if isinstance(ctx, dict):
+        for key in _CLASSIFIED_CONTEXT_KEYS:
+            value = ctx.get(key)
+            if value not in (None, ""):
+                merged[key] = value
+    return merged
+
 
 @dataclass
 class ApiErrorVerdict:
@@ -115,6 +134,7 @@ def handle_api_error(
         base_url=str(getattr(agent, "base_url", "") or ""),
         api_key=getattr(agent, "api_key", None),
     )
+    error_context = merge_classified_error_context(error_context, classified)
     logger.debug(
         "Error classified: reason=%s status=%s retryable=%s compress=%s rotate=%s fallback=%s",
         classified.reason.value, classified.status_code,

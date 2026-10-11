@@ -13,7 +13,7 @@ import re
 from pathlib import Path
 from contextlib import contextmanager
 from contextvars import ContextVar
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from decimal import Decimal, InvalidOperation
 from types import MappingProxyType
 from typing import Any, Iterator, Mapping
@@ -157,24 +157,24 @@ def _canonical_hash(value: Any) -> str:
 
 
 def _utc(value: datetime | None = None) -> datetime:
-    current = value or datetime.now(timezone.utc)
+    current = value or datetime.now(UTC)
     if current.tzinfo is None:
         raise AuthorityError("authority timestamps must be timezone-aware")
-    return current.astimezone(timezone.utc)
+    return current.astimezone(UTC)
 
 
 def _iso(value: datetime) -> str:
-    return value.astimezone(timezone.utc).isoformat()
+    return value.astimezone(UTC).isoformat()
 
 
 def _parse_time(value: Any) -> datetime:
     try:
-        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(str(value))
     except (TypeError, ValueError) as exc:
         raise AuthorityError("invalid authority timestamp") from exc
     if parsed.tzinfo is None:
         raise AuthorityError("authority timestamp must be timezone-aware")
-    return parsed.astimezone(timezone.utc)
+    return parsed.astimezone(UTC)
 
 
 def _nonnegative_number(value: Any, field: str) -> float:
@@ -254,7 +254,7 @@ def _bounded_repr(value: Any) -> str:
 
     try:
         text = repr(value)
-    except Exception:  # pragma: no cover - defensive: hostile __repr__
+    except Exception:  # health: allow BLE001 -- hostile __repr__ is an untrusted diagnostic boundary
         return f"<unrepresentable {type(value).__name__}>"
     if len(text) > _FENCE_REPR_MAX:
         text = text[: _FENCE_REPR_MAX - 3] + "..."
@@ -322,7 +322,7 @@ def _valid_sha256(value: Any, field: str) -> str:
 
 def _env_aware_datetime(value: Any) -> datetime | None:
     try:
-        parsed = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(str(value or ""))
     except ValueError:
         return None
     return parsed if parsed.tzinfo is not None else None
@@ -347,6 +347,7 @@ def _env_nonempty_strings(value: Any, *, allow_empty: bool = True) -> bool:
     )
 
 
+# health: allow CC -- one fail-closed pass preserves complete field-level diagnostics
 def validate_sealed_envelope(envelope: Mapping[str, Any]) -> list[str]:
     """Return a sorted list of field-level errors in a sealed task envelope v2.
 
@@ -370,9 +371,7 @@ def validate_sealed_envelope(envelope: Mapping[str, Any]) -> list[str]:
         errors.append("execution_surface")
     if envelope.get("lane") not in _ALLOWED_LANES:
         errors.append("lane")
-    if not _env_nonempty_strings(envelope.get("roots"), allow_empty=False):
-        errors.append("roots")
-    elif any(not Path(root).expanduser().is_absolute() for root in envelope["roots"]):
+    if not _env_nonempty_strings(envelope.get("roots"), allow_empty=False) or any(not Path(root).expanduser().is_absolute() for root in envelope["roots"]):
         errors.append("roots")
 
     permissions = envelope.get("permissions")
@@ -381,9 +380,7 @@ def validate_sealed_envelope(envelope: Mapping[str, Any]) -> list[str]:
         permissions = {}
     for field in ("read", "write", "spawn"):
         values = permissions.get(field)
-        if not _env_nonempty_strings(values):
-            errors.append(f"permissions.{field}")
-        elif field in {"read", "write"} and any(
+        if not _env_nonempty_strings(values) or field in {"read", "write"} and any(
             not Path(value).expanduser().is_absolute() for value in (values or [])
         ):
             errors.append(f"permissions.{field}")

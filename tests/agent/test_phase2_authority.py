@@ -7,7 +7,7 @@ import sqlite3
 import stat
 import sys
 import threading
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 
 import pytest
 
@@ -77,7 +77,7 @@ def test_seal_and_grant_produces_full_nested_v2_envelope(tmp_path):
         holder="hermes:session-1",
         ttl_s=300,
         attempt_id="at-1",
-        now=datetime(2026, 7, 30, tzinfo=timezone.utc),
+        now=datetime(2026, 7, 30, tzinfo=UTC),
     )
 
     assert len(planner_hash) == 64
@@ -104,7 +104,7 @@ def test_grant_rejects_unrepresentable_finite_ttl_with_typed_error(tmp_path):
             holder="hermes:session-1",
             ttl_s=1e300,
             attempt_id="at-1",
-            now=datetime(2026, 7, 30, tzinfo=timezone.utc),
+            now=datetime(2026, 7, 30, tzinfo=UTC),
         )
 
     assert [event["kind"] for event in store.read_events("g-authority")] == [
@@ -118,7 +118,7 @@ def test_model_and_tool_work_are_distinct_nodes_and_envelopes(tmp_path):
         _plan(_node("n-model", "direct_model"), _node("n-tool", "local_tool")),
         policy_hash="d" * 64,
     )
-    now = datetime(2026, 7, 30, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 30, tzinfo=UTC)
     model = store.grant_node(
         "g-authority",
         "n-model",
@@ -229,7 +229,7 @@ def test_validate_current_reports_unrepresentable_finite_ttl(tmp_path):
     }
 
     errors = store.validate_current(
-        malformed, now=datetime(2026, 7, 30, tzinfo=timezone.utc)
+        malformed, now=datetime(2026, 7, 30, tzinfo=UTC)
     )
 
     assert "lease_or_deadline_invalid" in errors
@@ -272,7 +272,7 @@ def test_grant_must_fit_strictly_before_node_deadline(tmp_path):
     node = _node("n-tool")
     node["deadline_utc"] = "2026-07-30T00:01:00+00:00"
     store.seal_plan(_plan(node), policy_hash="d" * 64)
-    now = datetime(2026, 7, 30, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 30, tzinfo=UTC)
 
     with pytest.raises(AuthorityError, match="strictly before"):
         store.grant_node(
@@ -307,10 +307,10 @@ def test_sealed_plan_is_immutable_and_reseal_is_rejected(tmp_path):
 # ── Lease lifecycle ───────────────────────────────────────────────────────────
 
 
-def test_active_lease_blocks_regrant_and_expired_regrant_increments_fence(tmp_path):
+def test_expiry_does_not_bypass_retry_policy_without_readmission(tmp_path):
     store = Phase2AuthorityStore(tmp_path / "authority.db")
     store.seal_plan(_plan(_node("n-tool")), policy_hash="d" * 64)
-    now = datetime(2026, 7, 30, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 30, tzinfo=UTC)
     first = store.grant_node(
         "g-authority",
         "n-tool",
@@ -329,12 +329,40 @@ def test_active_lease_blocks_regrant_and_expired_regrant_increments_fence(tmp_pa
             now=now,
         )
 
+    with pytest.raises(AuthorityError, match="explicit readmission"):
+        store.grant_node(
+            "g-authority",
+            "n-tool",
+            holder="hermes:two",
+            ttl_s=30,
+            attempt_id="at-2",
+            now=now + timedelta(seconds=31),
+        )
+    store.settle_attempt(first, state="indeterminate", now=now + timedelta(seconds=31))
+    with pytest.raises(AuthorityError, match="explicit readmission"):
+        store.grant_node(
+            "g-authority",
+            "n-tool",
+            holder="hermes:two",
+            ttl_s=30,
+            attempt_id="at-2",
+            now=now + timedelta(seconds=31),
+        )
+    assert store.record_readmission(
+        "g-authority",
+        "n-tool",
+        prior_attempt_id="at-1",
+        readmission_id="operator-expiry-1",
+        reason="operator reconciled external state",
+        now=now + timedelta(seconds=31),
+    )
     second = store.grant_node(
         "g-authority",
         "n-tool",
         holder="hermes:two",
         ttl_s=30,
         attempt_id="at-2",
+        readmission_id="operator-expiry-1",
         now=now + timedelta(seconds=31),
     )
     assert first["fence"] == 1
@@ -349,7 +377,7 @@ def test_active_lease_blocks_regrant_and_expired_regrant_increments_fence(tmp_pa
 def test_attempt_id_is_globally_unique_across_nodes(tmp_path):
     store = Phase2AuthorityStore(tmp_path / "authority.db")
     store.seal_plan(_plan(_node("n-a"), _node("n-b")), policy_hash="d" * 64)
-    now = datetime(2026, 7, 30, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 30, tzinfo=UTC)
     store.grant_node(
         "g-authority", "n-a", holder="h", ttl_s=60, attempt_id="uniq-1", now=now
     )
@@ -359,10 +387,10 @@ def test_attempt_id_is_globally_unique_across_nodes(tmp_path):
         )
 
 
-def test_revoke_allows_immediate_regrant_at_next_fence(tmp_path):
+def test_revoke_requires_explicit_readmission_at_next_fence(tmp_path):
     store = Phase2AuthorityStore(tmp_path / "authority.db")
     store.seal_plan(_plan(_node("n-tool")), policy_hash="d" * 64)
-    now = datetime(2026, 7, 30, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 30, tzinfo=UTC)
     envelope = store.grant_node(
         "g-authority",
         "n-tool",
@@ -372,12 +400,40 @@ def test_revoke_allows_immediate_regrant_at_next_fence(tmp_path):
         now=now,
     )
     store.revoke_node(envelope, now=now)
+    with pytest.raises(AuthorityError, match="explicit readmission"):
+        store.grant_node(
+            "g-authority",
+            "n-tool",
+            holder="hermes:two",
+            ttl_s=60,
+            attempt_id="at-2",
+            now=now,
+        )
+    store.settle_attempt(envelope, state="cancelled_before_effect", now=now)
+    with pytest.raises(AuthorityError, match="retry policy"):
+        store.grant_node(
+            "g-authority",
+            "n-tool",
+            holder="hermes:two",
+            ttl_s=60,
+            attempt_id="at-2",
+            now=now,
+        )
+    store.record_readmission(
+        "g-authority",
+        "n-tool",
+        prior_attempt_id="at-1",
+        readmission_id="operator-revoke-1",
+        reason="operator approved another attempt",
+        now=now,
+    )
     second = store.grant_node(
         "g-authority",
         "n-tool",
         holder="hermes:two",
         ttl_s=60,
         attempt_id="at-2",
+        readmission_id="operator-revoke-1",
         now=now,
     )
     assert second["fence"] == 2
@@ -390,7 +446,7 @@ def test_revoke_allows_immediate_regrant_at_next_fence(tmp_path):
 def test_renewal_extends_effective_expiry_and_envelope_stays_immutable(tmp_path):
     store = Phase2AuthorityStore(tmp_path / "authority.db")
     store.seal_plan(_plan(_node("n-tool")), policy_hash="d" * 64)
-    now = datetime(2026, 7, 30, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 30, tzinfo=UTC)
     envelope = store.grant_node(
         "g-authority",
         "n-tool",
@@ -413,7 +469,7 @@ def test_renewal_extends_effective_expiry_and_envelope_stays_immutable(tmp_path)
 def test_renewal_rejects_unrepresentable_finite_ttl_with_typed_error(tmp_path):
     store = Phase2AuthorityStore(tmp_path / "authority.db")
     store.seal_plan(_plan(_node("n-tool")), policy_hash="d" * 64)
-    now = datetime(2026, 7, 30, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 30, tzinfo=UTC)
     envelope = store.grant_node(
         "g-authority",
         "n-tool",
@@ -435,7 +491,7 @@ def test_renewal_rejects_unrepresentable_finite_ttl_with_typed_error(tmp_path):
 def test_terminal_node_cannot_be_regranted(tmp_path):
     store = Phase2AuthorityStore(tmp_path / "authority.db")
     store.seal_plan(_plan(_node("n-tool")), policy_hash="d" * 64)
-    now = datetime(2026, 7, 30, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 30, tzinfo=UTC)
     envelope = store.grant_node(
         "g-authority",
         "n-tool",
@@ -464,7 +520,7 @@ def test_terminal_node_cannot_be_regranted(tmp_path):
 def test_bind_current_node_sources_authoritative_fence_from_durable_store(tmp_path):
     store = Phase2AuthorityStore(tmp_path / "authority.db")
     store.seal_plan(_plan(_node("n-tool")), policy_hash="d" * 64)
-    now = datetime(2026, 7, 30, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 30, tzinfo=UTC)
     envelope = store.grant_node(
         "g-authority",
         "n-tool",
@@ -487,7 +543,7 @@ def test_bind_current_node_sources_authoritative_fence_from_durable_store(tmp_pa
 
 
 def test_bind_current_never_pairs_stale_envelope_with_newer_fence(tmp_path):
-    now = datetime(2026, 7, 30, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 30, tzinfo=UTC)
 
     interleaved = False
 
@@ -500,12 +556,21 @@ def test_bind_current_never_pairs_stale_envelope_with_newer_fence(tmp_path):
                 interleaved = True
                 writer = Phase2AuthorityStore(tmp_path / "authority.db")
                 writer.revoke_node(envelope, now=current + timedelta(seconds=1))
+                writer.record_readmission(
+                    "g-authority",
+                    "n-tool",
+                    prior_attempt_id="at-1",
+                    readmission_id="interleaved-readmission",
+                    reason="exercise snapshot race",
+                    now=current + timedelta(seconds=2),
+                )
                 writer.grant_node(
                     "g-authority",
                     "n-tool",
                     holder="hermes:two",
                     ttl_s=60,
                     attempt_id="at-2",
+                    readmission_id="interleaved-readmission",
                     now=current + timedelta(seconds=2),
                 )
             return result
@@ -531,7 +596,7 @@ def test_bind_current_never_pairs_stale_envelope_with_newer_fence(tmp_path):
 
 
 def test_bind_current_publishes_the_exact_validated_envelope_snapshot(tmp_path):
-    now = datetime(2026, 7, 30, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 30, tzinfo=UTC)
 
     class MutatingStore(Phase2AuthorityStore):
         @staticmethod
@@ -561,7 +626,7 @@ def test_bind_current_publishes_the_exact_validated_envelope_snapshot(tmp_path):
 def test_bind_current_rejects_stale_envelope_before_context_is_published(tmp_path):
     store = Phase2AuthorityStore(tmp_path / "authority.db")
     store.seal_plan(_plan(_node("n-tool")), policy_hash="d" * 64)
-    now = datetime(2026, 7, 30, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 30, tzinfo=UTC)
     stale = store.grant_node(
         "g-authority",
         "n-tool",
@@ -570,12 +635,21 @@ def test_bind_current_rejects_stale_envelope_before_context_is_published(tmp_pat
         attempt_id="at-1",
         now=now,
     )
+    store.record_readmission(
+        "g-authority",
+        "n-tool",
+        prior_attempt_id="at-1",
+        readmission_id="stale-bind-readmission",
+        reason="exercise stale bind",
+        now=now + timedelta(seconds=2),
+    )
     store.grant_node(
         "g-authority",
         "n-tool",
         holder="hermes:two",
         ttl_s=60,
         attempt_id="at-2",
+        readmission_id="stale-bind-readmission",
         now=now + timedelta(seconds=2),
     )
 
@@ -592,7 +666,7 @@ def test_bind_current_rejects_stale_envelope_before_context_is_published(tmp_pat
 def test_concurrent_grant_has_exactly_one_winner(tmp_path):
     store = Phase2AuthorityStore(tmp_path / "authority.db")
     store.seal_plan(_plan(_node("n-tool")), policy_hash="d" * 64)
-    now = datetime(2026, 7, 30, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 30, tzinfo=UTC)
     barrier = threading.Barrier(8)
     winners: list[dict] = []
     failures: list[str] = []
@@ -632,7 +706,7 @@ def test_concurrent_grant_has_exactly_one_winner(tmp_path):
 def test_complete_node_accepts_exactly_once_and_idempotent_redelivery_is_safe(tmp_path):
     store = Phase2AuthorityStore(tmp_path / "authority.db")
     store.seal_plan(_plan(_node("n-tool")), policy_hash="d" * 64)
-    now = datetime(2026, 7, 30, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 30, tzinfo=UTC)
     envelope = store.grant_node(
         "g-authority",
         "n-tool",
@@ -659,7 +733,7 @@ def test_complete_node_accepts_exactly_once_and_idempotent_redelivery_is_safe(tm
 def test_stale_fence_completion_appends_rejection_event(tmp_path):
     store = Phase2AuthorityStore(tmp_path / "authority.db")
     store.seal_plan(_plan(_node("n-tool")), policy_hash="d" * 64)
-    now = datetime(2026, 7, 30, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 30, tzinfo=UTC)
     stale = store.grant_node(
         "g-authority",
         "n-tool",
@@ -668,12 +742,21 @@ def test_stale_fence_completion_appends_rejection_event(tmp_path):
         attempt_id="at-1",
         now=now,
     )
+    store.record_readmission(
+        "g-authority",
+        "n-tool",
+        prior_attempt_id="at-1",
+        readmission_id="stale-result-readmission",
+        reason="exercise stale result rejection",
+        now=now + timedelta(seconds=2),
+    )
     store.grant_node(
         "g-authority",
         "n-tool",
         holder="hermes:two",
         ttl_s=60,
         attempt_id="at-2",
+        readmission_id="stale-result-readmission",
         now=now + timedelta(seconds=2),
     )
     with pytest.raises(ResultRejection, match="stale_fence"):
@@ -686,7 +769,7 @@ def test_stale_fence_completion_appends_rejection_event(tmp_path):
 def test_malformed_fence_raises_typed_exception_and_records_null_fence(tmp_path):
     store = Phase2AuthorityStore(tmp_path / "authority.db")
     store.seal_plan(_plan(_node("n-tool")), policy_hash="d" * 64)
-    now = datetime(2026, 7, 30, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 30, tzinfo=UTC)
     envelope = store.grant_node(
         "g-authority",
         "n-tool",
@@ -710,7 +793,7 @@ def test_malformed_fence_raises_typed_exception_and_records_null_fence(tmp_path)
 def test_out_of_range_fence_is_malformed(tmp_path):
     store = Phase2AuthorityStore(tmp_path / "authority.db")
     store.seal_plan(_plan(_node("n-tool")), policy_hash="d" * 64)
-    now = datetime(2026, 7, 30, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 30, tzinfo=UTC)
     envelope = store.grant_node(
         "g-authority",
         "n-tool",
@@ -733,7 +816,7 @@ def test_hostile_fence_repr_cannot_abort_rejection_audit(tmp_path):
 
     store = Phase2AuthorityStore(tmp_path / "authority.db")
     store.seal_plan(_plan(_node("n-tool")), policy_hash="d" * 64)
-    now = datetime(2026, 7, 30, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 30, tzinfo=UTC)
     envelope = store.grant_node(
         "g-authority",
         "n-tool",
@@ -764,7 +847,7 @@ def test_hostile_fence_repr_cannot_abort_rejection_audit(tmp_path):
 def test_hostile_recursive_envelope_is_typed_rejection_and_audited(tmp_path):
     store = Phase2AuthorityStore(tmp_path / "authority.db")
     store.seal_plan(_plan(_node("n-tool")), policy_hash="d" * 64)
-    now = datetime(2026, 7, 30, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 30, tzinfo=UTC)
     envelope = store.grant_node(
         "g-authority",
         "n-tool",
@@ -792,7 +875,7 @@ def test_hostile_recursive_envelope_is_typed_rejection_and_audited(tmp_path):
 def test_bind_current_converts_serialization_failures_to_authority_error(tmp_path):
     store = Phase2AuthorityStore(tmp_path / "authority.db")
     store.seal_plan(_plan(_node("n-tool")), policy_hash="d" * 64)
-    now = datetime(2026, 7, 30, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 30, tzinfo=UTC)
     envelope = store.grant_node(
         "g-authority",
         "n-tool",
@@ -816,7 +899,7 @@ def test_bind_current_converts_serialization_failures_to_authority_error(tmp_pat
 def test_budget_reservation_reconciliation_is_durable_and_fail_closed(tmp_path):
     store = Phase2AuthorityStore(tmp_path / "authority.db")
     store.seal_plan(_plan(_node("n-tool")), policy_hash="d" * 64)
-    now = datetime(2026, 7, 30, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 30, tzinfo=UTC)
     envelope = store.grant_node(
         "g-authority",
         "n-tool",
@@ -847,7 +930,7 @@ def test_budget_reservation_reconciliation_is_durable_and_fail_closed(tmp_path):
 def test_unknown_reconciled_cost_poisons_future_reservations(tmp_path):
     store = Phase2AuthorityStore(tmp_path / "authority.db")
     store.seal_plan(_plan(_node("n-tool")), policy_hash="d" * 64)
-    now = datetime(2026, 7, 30, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 30, tzinfo=UTC)
     envelope = store.grant_node(
         "g-authority",
         "n-tool",
@@ -867,7 +950,7 @@ def test_unknown_reconciled_cost_poisons_future_reservations(tmp_path):
 def test_node_budget_is_cumulative_across_regranted_fences(tmp_path):
     store = Phase2AuthorityStore(tmp_path / "authority.db")
     store.seal_plan(_plan(_node("n-tool")), policy_hash="d" * 64)
-    now = datetime(2026, 7, 30, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 30, tzinfo=UTC)
     first = store.grant_node(
         "g-authority",
         "n-tool",
@@ -879,12 +962,21 @@ def test_node_budget_is_cumulative_across_regranted_fences(tmp_path):
     reservation = store.reserve_budget(first, tokens=600, usd=0.6, now=now)
     store.reconcile_budget(reservation, actual_tokens=600, actual_usd=0.6, now=now)
     store.revoke_node(first, now=now + timedelta(seconds=1))
+    store.record_readmission(
+        "g-authority",
+        "n-tool",
+        prior_attempt_id="at-1",
+        readmission_id="budget-readmission-1",
+        reason="exercise cumulative budget across fences",
+        now=now + timedelta(seconds=2),
+    )
     second = store.grant_node(
         "g-authority",
         "n-tool",
         holder="hermes:two",
         ttl_s=60,
         attempt_id="at-2",
+        readmission_id="budget-readmission-1",
         now=now + timedelta(seconds=2),
     )
 
@@ -920,7 +1012,7 @@ def test_node_budget_is_cumulative_across_regranted_fences(tmp_path):
 def test_unknown_cost_poison_survives_regrant(tmp_path):
     store = Phase2AuthorityStore(tmp_path / "authority.db")
     store.seal_plan(_plan(_node("n-tool")), policy_hash="d" * 64)
-    now = datetime(2026, 7, 30, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 30, tzinfo=UTC)
     first = store.grant_node(
         "g-authority",
         "n-tool",
@@ -932,12 +1024,21 @@ def test_unknown_cost_poison_survives_regrant(tmp_path):
     reservation = store.reserve_budget(first, tokens=100, usd=0.1, now=now)
     store.reconcile_budget(reservation, actual_tokens=80, actual_usd=None, now=now)
     store.revoke_node(first, now=now + timedelta(seconds=1))
+    store.record_readmission(
+        "g-authority",
+        "n-tool",
+        prior_attempt_id="at-1",
+        readmission_id="unknown-cost-readmission",
+        reason="exercise unknown-cost poison across fences",
+        now=now + timedelta(seconds=2),
+    )
     second = store.grant_node(
         "g-authority",
         "n-tool",
         holder="hermes:two",
         ttl_s=60,
         attempt_id="at-2",
+        readmission_id="unknown-cost-readmission",
         now=now + timedelta(seconds=2),
     )
 
@@ -953,7 +1054,7 @@ def test_unknown_cost_poison_survives_regrant(tmp_path):
 def test_outstanding_budget_survives_expiry_regrant_and_bounds_allocations(tmp_path):
     store = Phase2AuthorityStore(tmp_path / "authority.db")
     store.seal_plan(_plan(_node("n-tool")), policy_hash="d" * 64)
-    now = datetime(2026, 7, 30, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 30, tzinfo=UTC)
     first = store.grant_node(
         "g-authority",
         "n-tool",
@@ -963,12 +1064,21 @@ def test_outstanding_budget_survives_expiry_regrant_and_bounds_allocations(tmp_p
         now=now,
     )
     store.reserve_budget(first, tokens=600, usd=0.6, now=now)
+    store.record_readmission(
+        "g-authority",
+        "n-tool",
+        prior_attempt_id="at-1",
+        readmission_id="outstanding-budget-readmission",
+        reason="exercise outstanding reservation across fences",
+        now=now + timedelta(seconds=2),
+    )
     second = store.grant_node(
         "g-authority",
         "n-tool",
         holder="hermes:two",
         ttl_s=60,
         attempt_id="at-2",
+        readmission_id="outstanding-budget-readmission",
         now=now + timedelta(seconds=2),
     )
 
@@ -991,7 +1101,7 @@ def test_budget_decimal_boundary_is_exact(tmp_path):
     node = _node("n-tool")
     node["budgets"]["usd_max"] = 0.3
     store.seal_plan(_plan(node), policy_hash="d" * 64)
-    now = datetime(2026, 7, 30, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 30, tzinfo=UTC)
     envelope = store.grant_node(
         "g-authority",
         "n-tool",
@@ -1015,7 +1125,7 @@ def test_budget_decimal_preserves_large_integer_boundary(tmp_path):
     node = _node("n-tool")
     node["budgets"]["usd_max"] = 2**53 + 1
     store.seal_plan(_plan(node), policy_hash="d" * 64)
-    now = datetime(2026, 7, 30, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 30, tzinfo=UTC)
     envelope = store.grant_node(
         "g-authority",
         "n-tool",
@@ -1035,7 +1145,7 @@ def test_authority_startup_rejects_tampered_event_chain(tmp_path):
     path = tmp_path / "authority.db"
     store = Phase2AuthorityStore(path)
     store.seal_plan(_plan(_node("n-tool")), policy_hash="d" * 64)
-    now = datetime(2026, 7, 30, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 30, tzinfo=UTC)
     store.grant_node(
         "g-authority",
         "n-tool",
@@ -1056,7 +1166,7 @@ def test_recovery_reconciles_orphaned_budget_reservation_exactly_once(tmp_path):
     path = tmp_path / "authority.db"
     store = Phase2AuthorityStore(path)
     store.seal_plan(_plan(_node("n-tool")), policy_hash="d" * 64)
-    now = datetime(2026, 7, 30, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 30, tzinfo=UTC)
     envelope = store.grant_node(
         "g-authority",
         "n-tool",
@@ -1094,7 +1204,7 @@ def test_migration_report_is_read_only_and_describes_violations(tmp_path):
     path = tmp_path / "authority.db"
     store = Phase2AuthorityStore(path)
     store.seal_plan(_plan(_node("n-tool")), policy_hash="d" * 64)
-    now = datetime(2026, 7, 30, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 30, tzinfo=UTC)
     store.grant_node(
         "g-authority",
         "n-tool",
@@ -1155,7 +1265,7 @@ def _grant(store, tokens_max: int):
         "nodes": [node],
     }
     store.seal_plan(plan, policy_hash="d" * 64)
-    now = datetime(2026, 7, 30, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 30, tzinfo=UTC)
     return store.grant_node(
         f"g-tok-{tokens_max}",
         "n-tool",
@@ -1263,7 +1373,7 @@ def test_tokens_max_non_integer_is_rejected_before_plan_is_sealed(tmp_path, toke
 def test_reservation_metadata_recursion_is_rejected_typed(tmp_path):
     store = Phase2AuthorityStore(tmp_path / "authority.db")
     store.seal_plan(_plan(_node("n-tool")), policy_hash="d" * 64)
-    now = datetime(2026, 7, 30, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 30, tzinfo=UTC)
     envelope = store.grant_node(
         "g-authority",
         "n-tool",
@@ -1286,7 +1396,7 @@ def test_reservation_metadata_recursion_is_rejected_typed(tmp_path):
 def test_allocation_metadata_recursion_is_rejected_typed(tmp_path):
     store = Phase2AuthorityStore(tmp_path / "authority.db")
     store.seal_plan(_plan(_node("n-tool")), policy_hash="d" * 64)
-    now = datetime(2026, 7, 30, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 30, tzinfo=UTC)
     envelope = store.grant_node(
         "g-authority",
         "n-tool",

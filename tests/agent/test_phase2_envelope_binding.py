@@ -8,7 +8,7 @@ session wiring.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 
 import pytest
 
@@ -27,7 +27,7 @@ def _envelope(
     surface: str = "local_tool",
     fence: int = 1,
 ) -> dict:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     return {
         "envelope_version": 2,
         "graph_id": "g-bound-graph",

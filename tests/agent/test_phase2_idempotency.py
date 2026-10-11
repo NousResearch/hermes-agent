@@ -1,44 +1,76 @@
-"""Atomic idempotency claims for Phase 2 mutating tool calls."""
+"""Durable idempotency lifecycle tests for Phase 2 mutating tool calls."""
 
 from __future__ import annotations
 
 import sqlite3
 import stat
 import threading
+
 import pytest
 
-from agent.phase2_idempotency import MutationClaimError, MutationClaimStore
+from agent.phase2_idempotency import (
+    MutationClaimError,
+    MutationClaimStore,
+    MutationState,
+)
 
 
-def test_first_mutation_claim_wins_and_duplicate_is_denied(tmp_path):
-    store = MutationClaimStore(tmp_path / "phase2.db")
-    envelope = {
-        "graph_id": "g-1",
-        "node_id": "n-1",
-        "attempt_id": "a-1",
-        "idempotency_key": "d" * 64,
-        "fence": 1,
+def _envelope(
+    *,
+    key: str = "d" * 64,
+    attempt_id: str = "a-1",
+    fence: int = 1,
+    graph_id: str = "g-1",
+    node_id: str = "n-1",
+):
+    return {
+        "graph_id": graph_id,
+        "node_id": node_id,
+        "attempt_id": attempt_id,
+        "idempotency_key": key,
+        "fence": fence,
     }
 
-    assert (
-        store.try_claim(envelope, tool_name="write_file", args={"path": "one"}) is True
+
+def test_crash_before_effect_replay_returns_durable_in_progress_attempt(tmp_path):
+    store = MutationClaimStore(tmp_path / "phase2.db")
+    first = store.try_claim(
+        _envelope(), tool_name="write_file", args={"path": "one"}
     )
-    assert (
-        store.try_claim(envelope, tool_name="write_file", args={"path": "one"}) is False
+    replay = store.try_claim(
+        _envelope(attempt_id="a-2", fence=2),
+        tool_name="write_file",
+        args={"path": "one"},
+    )
+
+    assert first.state is MutationState.IN_PROGRESS
+    assert first.created is True
+    assert replay.state is MutationState.IN_PROGRESS
+    assert replay.attempt_id == "a-1"
+    assert replay.fence == 1
+    assert replay.created is False
+    assert len(store.read_attempts("d" * 64)) == 1
+
+
+def test_exact_replay_returns_same_attempt_and_state(tmp_path):
+    store = MutationClaimStore(tmp_path / "phase2.db")
+    first = store.try_claim(_envelope(), tool_name="patch", args={"path": "one"})
+    replay = store.try_claim(_envelope(), tool_name="patch", args={"path": "one"})
+
+    assert replay == type(first)(
+        idempotency_key="d" * 64,
+        attempt_id="a-1",
+        fence=1,
+        state=MutationState.IN_PROGRESS,
+        created=False,
     )
 
 
 def test_mutation_claim_is_atomic_under_concurrency(tmp_path):
     store = MutationClaimStore(tmp_path / "phase2.db")
-    envelope = {
-        "graph_id": "g-1",
-        "node_id": "n-1",
-        "attempt_id": "a-1",
-        "idempotency_key": "e" * 64,
-        "fence": 4,
-    }
+    envelope = _envelope(key="e" * 64, fence=4)
     barrier = threading.Barrier(8)
-    outcomes: list[bool] = []
+    outcomes = []
     lock = threading.Lock()
 
     def worker() -> None:
@@ -53,19 +85,147 @@ def test_mutation_claim_is_atomic_under_concurrency(tmp_path):
     for thread in threads:
         thread.join()
 
-    assert outcomes.count(True) == 1
-    assert outcomes.count(False) == 7
+    assert sum(outcome.created for outcome in outcomes) == 1
+    assert all(outcome.state is MutationState.IN_PROGRESS for outcome in outcomes)
+    assert len(store.read_attempts("e" * 64)) == 1
+
+
+@pytest.mark.parametrize(
+    "terminal",
+    [MutationState.COMPLETED, MutationState.INDETERMINATE],
+)
+def test_effect_possible_terminal_state_suppresses_new_attempt(tmp_path, terminal):
+    store = MutationClaimStore(tmp_path / "phase2.db")
+    first_env = _envelope()
+    store.try_claim(first_env, tool_name="write_file", args={"path": "one"})
+    store.settle(first_env, state=terminal)
+
+    replay = store.try_claim(
+        _envelope(attempt_id="a-2", fence=2),
+        tool_name="write_file",
+        args={"path": "one"},
+    )
+
+    assert replay.attempt_id == "a-1"
+    assert replay.state is terminal
+    assert replay.created is False
+    assert len(store.read_attempts("d" * 64)) == 1
+
+
+@pytest.mark.parametrize(
+    "terminal",
+    [
+        MutationState.FAILED_PROVEN_NO_EFFECT,
+        MutationState.CANCELLED_BEFORE_EFFECT,
+    ],
+)
+def test_proven_non_effect_admits_exactly_one_next_attempt(tmp_path, terminal):
+    store = MutationClaimStore(tmp_path / "phase2.db")
+    first_env = _envelope()
+    store.try_claim(first_env, tool_name="write_file", args={})
+    store.settle(first_env, state=terminal)
+
+    second_env = _envelope(attempt_id="a-2", fence=2)
+    second = store.try_claim(second_env, tool_name="write_file", args={})
+    suppressed = store.try_claim(
+        _envelope(attempt_id="a-3", fence=3), tool_name="write_file", args={}
+    )
+
+    assert second.created is True
+    assert second.state is MutationState.IN_PROGRESS
+    assert suppressed.attempt_id == "a-2"
+    assert suppressed.created is False
+    assert len(store.read_attempts("d" * 64)) == 2
+
+
+def test_explicit_readmission_is_durable_and_single_use(tmp_path):
+    store = MutationClaimStore(tmp_path / "phase2.db")
+    first_env = _envelope()
+    store.try_claim(first_env, tool_name="write_file", args={})
+    store.settle(first_env, state=MutationState.INDETERMINATE)
+    assert store.record_readmission(
+        "d" * 64,
+        prior_attempt_id="a-1",
+        readmission_id="operator-decision-1",
+        reason="operator verified external state",
+    )
+    assert not store.record_readmission(
+        "d" * 64,
+        prior_attempt_id="a-1",
+        readmission_id="operator-decision-1",
+        reason="operator verified external state",
+    )
+
+    second = store.try_claim(
+        _envelope(attempt_id="a-2", fence=2),
+        tool_name="write_file",
+        args={},
+        readmission_id="operator-decision-1",
+    )
+    assert second.created is True
+    with pytest.raises(MutationClaimError, match="latest attempt|already consumed"):
+        store.try_claim(
+            _envelope(attempt_id="a-3", fence=3),
+            tool_name="write_file",
+            args={},
+            readmission_id="operator-decision-1",
+        )
+
+
+def test_settlement_is_append_only_and_idempotent_only_when_identical(tmp_path):
+    store = MutationClaimStore(tmp_path / "phase2.db")
+    envelope = _envelope()
+    store.try_claim(envelope, tool_name="write_file", args={})
+    first = store.settle(
+        envelope,
+        state=MutationState.COMPLETED,
+        outcome_hash="a" * 64,
+    )
+    replay = store.settle(
+        envelope,
+        state=MutationState.COMPLETED,
+        outcome_hash="a" * 64,
+    )
+
+    assert first.created is True
+    assert first.state is MutationState.COMPLETED
+    assert replay.created is False
+    with pytest.raises(MutationClaimError, match="different settlement"):
+        store.settle(envelope, state=MutationState.INDETERMINATE)
+    with pytest.raises(MutationClaimError, match="terminal"):
+        store.settle(envelope, state=MutationState.IN_PROGRESS)
+
+
+def test_invalid_readmission_fails_closed(tmp_path):
+    store = MutationClaimStore(tmp_path / "phase2.db")
+    with pytest.raises(MutationClaimError, match="does not exist"):
+        store.record_readmission(
+            "d" * 64,
+            prior_attempt_id="missing",
+            readmission_id="decision",
+            reason="operator decision",
+        )
+
+    envelope = _envelope()
+    store.try_claim(envelope, tool_name="write_file", args={})
+    store.record_readmission(
+        "d" * 64,
+        prior_attempt_id="a-1",
+        readmission_id="decision",
+        reason="first reason",
+    )
+    with pytest.raises(MutationClaimError, match="another decision"):
+        store.record_readmission(
+            "d" * 64,
+            prior_attempt_id="a-1",
+            readmission_id="decision",
+            reason="changed reason",
+        )
 
 
 def test_claim_persists_canonical_identity_without_raw_arguments(tmp_path):
     store = MutationClaimStore(tmp_path / "phase2.db")
-    envelope = {
-        "graph_id": "g-1",
-        "node_id": "n-1",
-        "attempt_id": "a-secret",
-        "idempotency_key": "f" * 64,
-        "fence": 2,
-    }
+    envelope = _envelope(key="f" * 64, attempt_id="a-secret", fence=2)
     store.try_claim(
         envelope,
         tool_name="write_file",
@@ -78,43 +238,39 @@ def test_claim_persists_canonical_identity_without_raw_arguments(tmp_path):
     assert claims[0]["attempt_id"] == "a-secret"
     assert claims[0]["tool_name"] == "write_file"
     assert claims[0]["fence"] == 2
+    assert claims[0]["state"] == "in_progress"
     assert len(claims[0]["args_hash"]) == 64
     assert "do-not-store-this" not in repr(claims)
 
 
 def test_distinct_idempotency_keys_are_independent(tmp_path):
     store = MutationClaimStore(tmp_path / "phase2.db")
-    base = {
-        "graph_id": "g-1",
-        "node_id": "n-1",
-        "attempt_id": "a-1",
-        "fence": 1,
-    }
-    env_a = {**base, "idempotency_key": "a" * 64}
-    env_b = {**base, "idempotency_key": "b" * 64}
+    first_a = store.try_claim(
+        _envelope(key="a" * 64), tool_name="write_file", args={}
+    )
+    first_b = store.try_claim(
+        _envelope(key="b" * 64), tool_name="write_file", args={}
+    )
+    replay_a = store.try_claim(
+        _envelope(key="a" * 64), tool_name="write_file", args={}
+    )
 
-    assert store.try_claim(env_a, tool_name="write_file", args={}) is True
-    assert store.try_claim(env_b, tool_name="write_file", args={}) is True
-    assert store.try_claim(env_a, tool_name="write_file", args={}) is False
-    assert store.try_claim(env_b, tool_name="write_file", args={}) is False
+    assert first_a.created and first_b.created
+    assert not replay_a.created
     assert len(store.read_all()) == 2
 
 
-def test_claim_store_is_append_only_and_rejects_updates(tmp_path):
+def test_logical_operation_store_is_append_only(tmp_path):
     store = MutationClaimStore(tmp_path / "phase2.db")
-    envelope = {
-        "graph_id": "g-1",
-        "node_id": "n-1",
-        "attempt_id": "a-1",
-        "idempotency_key": "c" * 64,
-        "fence": 1,
-    }
-    store.try_claim(envelope, tool_name="delete_file", args={"path": "/tmp/x"})
+    store.try_claim(
+        _envelope(key="c" * 64), tool_name="delete_file", args={"path": "/tmp/x"}
+    )
 
     with sqlite3.connect(tmp_path / "phase2.db") as conn:
         with pytest.raises(sqlite3.DatabaseError, match="append-only"):
             conn.execute(
-                "UPDATE mutation_claims SET tool_name = 'tampered' WHERE idempotency_key = ?",
+                "UPDATE mutation_operations SET tool_name = 'tampered' "
+                "WHERE idempotency_key = ?",
                 ("c" * 64,),
             )
 
@@ -133,13 +289,7 @@ def test_claim_store_is_append_only_and_rejects_updates(tmp_path):
 )
 def test_invalid_claim_envelope_is_rejected_typed(tmp_path, field, value, message):
     store = MutationClaimStore(tmp_path / "phase2.db")
-    envelope = {
-        "graph_id": "g-1",
-        "node_id": "n-1",
-        "attempt_id": "a-1",
-        "idempotency_key": "a" * 64,
-        "fence": 1,
-    }
+    envelope = _envelope()
     envelope[field] = value
 
     with pytest.raises(MutationClaimError, match=message):
@@ -149,13 +299,7 @@ def test_invalid_claim_envelope_is_rejected_typed(tmp_path, field, value, messag
 
 def test_invalid_tool_and_args_are_rejected_typed(tmp_path):
     store = MutationClaimStore(tmp_path / "phase2.db")
-    envelope = {
-        "graph_id": "g-1",
-        "node_id": "n-1",
-        "attempt_id": "a-1",
-        "idempotency_key": "a" * 64,
-        "fence": 1,
-    }
+    envelope = _envelope()
     with pytest.raises(MutationClaimError, match="tool_name"):
         store.try_claim(envelope, tool_name="", args={})
     with pytest.raises(MutationClaimError, match="args must be a mapping"):
@@ -168,32 +312,55 @@ def test_invalid_tool_and_args_are_rejected_typed(tmp_path):
         store.try_claim(envelope, tool_name="write_file", args={1: "ambiguous"})  # type: ignore[arg-type]
 
 
-def test_non_key_integrity_error_is_not_misclassified_as_duplicate(tmp_path):
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ({"graph_id": "g-other"}, "collision"),
+        ({"node_id": "n-other"}, "collision"),
+    ],
+)
+def test_different_logical_intent_raises_collision(tmp_path, change, message):
     store = MutationClaimStore(tmp_path / "phase2.db")
-    envelope = {
-        "graph_id": "g-1",
-        "node_id": "n-1",
-        "attempt_id": "a-1",
-        "idempotency_key": "a" * 64,
-        "fence": 1,
-    }
-    conn = store._connect()
-    try:
-        conn.execute(
-            """
-            CREATE TRIGGER mutation_claims_reject_tool
-            BEFORE INSERT ON mutation_claims
-            WHEN NEW.tool_name = 'reject'
-            BEGIN
-                SELECT RAISE(ABORT, 'tool rejected');
-            END
-            """
-        )
-    finally:
-        conn.close()
+    envelope = _envelope(key="9" * 64, attempt_id="a-col", fence=7)
+    store.try_claim(envelope, tool_name="write_file", args={"k": "v"})
 
-    with pytest.raises(sqlite3.DatabaseError, match="tool rejected"):
-        store.try_claim(envelope, tool_name="reject", args={})
+    collision = {**envelope, **change}
+    with pytest.raises(MutationClaimError, match=message):
+        store.try_claim(collision, tool_name="write_file", args={"k": "v"})
+
+
+def test_changed_tool_or_args_raises_collision(tmp_path):
+    store = MutationClaimStore(tmp_path / "phase2.db")
+    envelope = _envelope(key="9" * 64, attempt_id="a-col", fence=7)
+    store.try_claim(envelope, tool_name="write_file", args={"k": "v"})
+
+    with pytest.raises(MutationClaimError, match="collision"):
+        store.try_claim(envelope, tool_name="delete_file", args={"k": "v"})
+    with pytest.raises(MutationClaimError, match="collision"):
+        store.try_claim(envelope, tool_name="write_file", args={"k": "changed"})
+
+
+def test_attempt_and_fence_are_not_part_of_logical_intent(tmp_path):
+    store = MutationClaimStore(tmp_path / "phase2.db")
+    envelope = _envelope(key="9" * 64, attempt_id="a-1", fence=7)
+    store.try_claim(envelope, tool_name="write_file", args={})
+
+    replay = store.try_claim(
+        _envelope(key="9" * 64, attempt_id="a-2", fence=8),
+        tool_name="write_file",
+        args={},
+    )
+    assert replay.attempt_id == "a-1"
+    assert replay.state is MutationState.IN_PROGRESS
+
+
+def test_attempt_id_cannot_move_to_another_fence(tmp_path):
+    store = MutationClaimStore(tmp_path / "phase2.db")
+    store.try_claim(_envelope(), tool_name="write_file", args={})
+    with pytest.raises(MutationClaimError, match="cannot be reused"):
+        store.try_claim(
+            _envelope(fence=2), tool_name="write_file", args={}
+        )
 
 
 def test_claim_database_files_are_owner_only(tmp_path):
@@ -212,14 +379,7 @@ def test_claim_database_files_are_owner_only(tmp_path):
 def test_claim_reader_does_not_require_write_access(tmp_path):
     db = tmp_path / "phase2.db"
     store = MutationClaimStore(db)
-    envelope = {
-        "graph_id": "g-1",
-        "node_id": "n-1",
-        "attempt_id": "a-1",
-        "idempotency_key": "a" * 64,
-        "fence": 1,
-    }
-    store.try_claim(envelope, tool_name="write_file", args={})
+    store.try_claim(_envelope(key="a" * 64), tool_name="write_file", args={})
     db.chmod(0o400)
 
     assert store.read_all()[0]["idempotency_key"] == "a" * 64
@@ -234,106 +394,12 @@ def test_claim_database_rejects_last_component_symlink(tmp_path):
         MutationClaimStore(link)._connect()
 
 
-# ── Typed collision vs same-effect replay ────────────────────────────────────
+def test_legacy_boolean_claim_schema_requires_explicit_migration(tmp_path):
+    db = tmp_path / "phase2.db"
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "CREATE TABLE mutation_claims (idempotency_key TEXT PRIMARY KEY)"
+        )
 
-
-_BASE_ENVELOPE = {
-    "graph_id": "g-col",
-    "node_id": "n-col",
-    "attempt_id": "a-col",
-    "idempotency_key": "9" * 64,
-    "fence": 7,
-}
-
-
-def test_same_intent_replay_returns_false(tmp_path):
-    """Exact same envelope + tool_name + args is a safe replay: must return False."""
-    store = MutationClaimStore(tmp_path / "phase2.db")
-    assert store.try_claim(_BASE_ENVELOPE, tool_name="write_file", args={"k": "v"}) is True
-    assert store.try_claim(_BASE_ENVELOPE, tool_name="write_file", args={"k": "v"}) is False
-    # Multiple replays are all False; the store remains consistent.
-    assert store.try_claim(_BASE_ENVELOPE, tool_name="write_file", args={"k": "v"}) is False
-
-
-@pytest.mark.parametrize(
-    ("field", "new_value"),
-    [
-        ("graph_id", "g-other"),
-        ("node_id", "n-other"),
-        ("attempt_id", "a-other"),
-        ("fence", 8),
-    ],
-)
-def test_changed_envelope_field_raises_collision_error(tmp_path, field, new_value):
-    """Changing any identity field on the envelope must raise MutationClaimError."""
-    store = MutationClaimStore(tmp_path / "phase2.db")
-    store.try_claim(_BASE_ENVELOPE, tool_name="write_file", args={})
-
-    collision_env = {**_BASE_ENVELOPE, field: new_value}
-    with pytest.raises(MutationClaimError, match="collision"):
-        store.try_claim(collision_env, tool_name="write_file", args={})
-
-
-def test_changed_tool_name_raises_collision_error(tmp_path):
-    """Changing tool_name for the same idempotency_key must raise MutationClaimError."""
-    store = MutationClaimStore(tmp_path / "phase2.db")
-    store.try_claim(_BASE_ENVELOPE, tool_name="write_file", args={})
-
-    with pytest.raises(MutationClaimError, match="collision"):
-        store.try_claim(_BASE_ENVELOPE, tool_name="delete_file", args={})
-
-
-def test_changed_args_raises_collision_error(tmp_path):
-    """Changing args for the same idempotency_key must raise MutationClaimError."""
-    store = MutationClaimStore(tmp_path / "phase2.db")
-    store.try_claim(_BASE_ENVELOPE, tool_name="write_file", args={"path": "one"})
-
-    with pytest.raises(MutationClaimError, match="collision"):
-        store.try_claim(_BASE_ENVELOPE, tool_name="write_file", args={"path": "two"})
-
-
-def test_collision_does_not_corrupt_store(tmp_path):
-    """A MutationClaimError collision must not prevent future reads or correct claims."""
-    store = MutationClaimStore(tmp_path / "phase2.db")
-    store.try_claim(_BASE_ENVELOPE, tool_name="write_file", args={"k": "v"})
-
-    with pytest.raises(MutationClaimError, match="collision"):
-        store.try_claim(_BASE_ENVELOPE, tool_name="write_file", args={"k": "changed"})
-
-    # The store is still readable.
-    claims = store.read_all()
-    assert len(claims) == 1
-    assert claims[0]["idempotency_key"] == "9" * 64
-    # A new key can still be claimed.
-    new_env = {**_BASE_ENVELOPE, "idempotency_key": "8" * 64}
-    assert store.try_claim(new_env, tool_name="write_file", args={"k": "v"}) is True
-
-
-def test_conflict_without_readable_prior_is_not_a_safe_replay(tmp_path, monkeypatch):
-    """A conflicted insert without an inspectable row must fail closed."""
-    store = MutationClaimStore(tmp_path / "phase2.db")
-    store.try_claim(_BASE_ENVELOPE, tool_name="write_file", args={"k": "v"})
-    real_connect = store._connect
-
-    class MissingPriorConnection:
-        def __init__(self, conn):
-            self._conn = conn
-
-        def execute(self, sql, parameters=()):
-            result = self._conn.execute(sql, parameters)
-            if "FROM mutation_claims" in sql and sql.lstrip().startswith("SELECT"):
-                class MissingPriorCursor:
-                    @staticmethod
-                    def fetchone():
-                        return None
-
-                return MissingPriorCursor()
-            return result
-
-        def close(self):
-            self._conn.close()
-
-    monkeypatch.setattr(store, "_connect", lambda: MissingPriorConnection(real_connect()))
-
-    with pytest.raises(MutationClaimError, match="without a readable prior claim"):
-        store.try_claim(_BASE_ENVELOPE, tool_name="write_file", args={"k": "v"})
+    with pytest.raises(MutationClaimError, match="explicit migration"):
+        MutationClaimStore(db)._connect()

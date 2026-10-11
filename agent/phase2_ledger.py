@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterator, Mapping, NamedTuple
@@ -55,6 +55,12 @@ from agent.phase2_sqlite import (
 )
 
 _ACCEPTED_KINDS = ("RESULT_ACCEPTED", "NODE_COMPLETED")
+_ATTEMPT_SETTLEMENTS = frozenset({
+    "failed_proven_no_effect",
+    "cancelled_before_effect",
+    "indeterminate",
+})
+_NON_EFFECT_SETTLEMENTS = _ATTEMPT_SETTLEMENTS - {"indeterminate"}
 
 
 class _IntegrityIndex(NamedTuple):
@@ -271,12 +277,12 @@ class Phase2AuthorityStore(Phase2BudgetMixin):
         violations: list[dict[str, Any]] = []
         for index in indexes:
             groups = conn.execute(
-                f"SELECT COUNT(*) FROM ({index.scan_sql})"  # noqa: S608
+                f"SELECT COUNT(*) FROM ({index.scan_sql})"
             ).fetchone()[0]
             if not groups:
                 continue
             sample = conn.execute(
-                f"{index.scan_sql} LIMIT ?",  # noqa: S608
+                f"{index.scan_sql} LIMIT ?",
                 (_MIGRATION_SAMPLE_MAX,),
             ).fetchall()
             violations.append({
@@ -312,10 +318,8 @@ class Phase2AuthorityStore(Phase2BudgetMixin):
         except AuthorityMigrationRequired:
             raise
         except Exception:
-            try:
+            with suppress(Exception):
                 conn.execute("ROLLBACK")
-            except Exception:
-                pass
             raise
 
     @staticmethod
@@ -510,10 +514,8 @@ class Phase2AuthorityStore(Phase2BudgetMixin):
                 conn.execute("COMMIT")
                 return planner_hash
             except Exception:
-                try:
+                with suppress(Exception):
                     conn.execute("ROLLBACK")
-                except Exception:
-                    pass
                 raise
             finally:
                 conn.close()
@@ -559,12 +561,14 @@ class Phase2AuthorityStore(Phase2BudgetMixin):
             """SELECT kind, payload_json FROM authority_events
                WHERE graph_id = ? AND node_id = ? AND fence = ?
                  AND kind IN ('LEASE_RENEWED', 'LEASE_REVOKED',
-                              'RESULT_ACCEPTED', 'NODE_COMPLETED')
+                              'RESULT_ACCEPTED', 'NODE_COMPLETED',
+                              'ATTEMPT_SETTLED')
                ORDER BY id""",
             (graph_id, node_id, fence),
         ).fetchall()
         revoked = False
         completed = False
+        settlement: str | None = None
         accepted_result_hash: str | None = None
         new_expires_utc: str | None = None
         for row in rows:
@@ -573,6 +577,8 @@ class Phase2AuthorityStore(Phase2BudgetMixin):
                 new_expires_utc = payload["new_expires_utc"]
             elif row["kind"] == "LEASE_REVOKED":
                 revoked = True
+            elif row["kind"] == "ATTEMPT_SETTLED":
+                settlement = str(payload["state"])
             elif row["kind"] in _ACCEPTED_KINDS:
                 completed = True
                 accepted_result_hash = payload.get("result_hash")
@@ -587,6 +593,7 @@ class Phase2AuthorityStore(Phase2BudgetMixin):
             "effective_expires": effective_expiry,
             "revoked": revoked,
             "completed": completed,
+            "settlement": settlement,
             "accepted_result_hash": accepted_result_hash,
         }
 
@@ -629,6 +636,39 @@ class Phase2AuthorityStore(Phase2BudgetMixin):
             is not None
         )
 
+    @staticmethod
+    def _readmission_authorizes(
+        conn: sqlite3.Connection,
+        graph_id: str,
+        node_id: str,
+        prior_attempt_id: str,
+        readmission_id: str,
+    ) -> bool:
+        """Return whether one recorded readmission remains unused."""
+
+        recorded = False
+        used = False
+        rows = conn.execute(
+            """SELECT kind, payload_json FROM authority_events
+               WHERE graph_id = ? AND node_id = ?
+                 AND kind IN ('ATTEMPT_READMITTED',
+                              'ATTEMPT_READMISSION_USED')
+               ORDER BY id""",
+            (graph_id, node_id),
+        ).fetchall()
+        for row in rows:
+            payload = json.loads(row["payload_json"])
+            if (
+                payload.get("readmission_id") != readmission_id
+                or payload.get("prior_attempt_id") != prior_attempt_id
+            ):
+                continue
+            if row["kind"] == "ATTEMPT_READMITTED":
+                recorded = True
+            else:
+                used = True
+        return recorded and not used
+
     def grant_node(
         self,
         graph_id: str,
@@ -637,13 +677,16 @@ class Phase2AuthorityStore(Phase2BudgetMixin):
         holder: str,
         ttl_s: float,
         attempt_id: str,
+        readmission_id: str | None = None,
         now: datetime | None = None,
     ) -> dict[str, Any]:
         """Atomically grant the next monotonic fence and return its sealed envelope.
 
-        A node closed by terminal completion can never be regranted. Attempt IDs
-        are single-use across the whole graph/node history and are never reused,
-        including after revocation or natural expiry.
+        Expiry and revocation do not prove that no effect occurred. A later
+        attempt therefore requires either a proven-non-effect settlement allowed
+        by the sealed retry policy, or a separately recorded explicit
+        readmission. Terminal completion can never be regranted. Attempt IDs
+        remain globally single-use.
         """
 
         granted_at = _utc(now)
@@ -651,6 +694,10 @@ class Phase2AuthorityStore(Phase2BudgetMixin):
             raise AuthorityError("lease holder is required")
         if not isinstance(attempt_id, str) or not attempt_id.strip():
             raise AuthorityError("attempt_id is required")
+        if readmission_id is not None and (
+            not isinstance(readmission_id, str) or not readmission_id.strip()
+        ):
+            raise AuthorityError("readmission_id must be a non-empty string")
         ttl = _nonnegative_number(ttl_s, "ttl_s")
         if ttl == 0:
             raise AuthorityError("ttl_s must be greater than zero")
@@ -676,8 +723,41 @@ class Phase2AuthorityStore(Phase2BudgetMixin):
                     if not authority["revoked"] and not authority["completed"]:
                         if granted_at < authority["effective_expires"]:
                             raise AuthorityError("node already has an active lease")
+                    prior_attempt_id = str(authority["envelope"]["attempt_id"])
+                    grant_count = int(
+                        conn.execute(
+                            """SELECT COUNT(*) FROM authority_events
+                               WHERE graph_id = ? AND node_id = ?
+                                 AND kind = 'LEASE_GRANTED'""",
+                            (graph_id, node_id),
+                        ).fetchone()[0]
+                    )
+                    retry_policy = node["retry_policy"]
+                    policy_retry = (
+                        authority["settlement"] in _NON_EFFECT_SETTLEMENTS
+                        and retry_policy["retry_eligible"] is True
+                        and grant_count < retry_policy["max_attempts"]
+                    )
+                    explicit_readmission = (
+                        readmission_id is not None
+                        and self._readmission_authorizes(
+                            conn,
+                            graph_id,
+                            node_id,
+                            prior_attempt_id,
+                            readmission_id,
+                        )
+                    )
+                    if not policy_retry and not explicit_readmission:
+                        raise AuthorityError(
+                            "prior attempt is unsettled or retry policy is exhausted; "
+                            "explicit readmission required"
+                        )
                     fence = authority["fence"] + 1
                 else:
+                    if readmission_id is not None:
+                        raise AuthorityError("cannot readmit a node without a prior attempt")
+                    explicit_readmission = False
                     fence = 1
                 envelope = {
                     "envelope_version": 2,
@@ -709,13 +789,168 @@ class Phase2AuthorityStore(Phase2BudgetMixin):
                     payload={"envelope": envelope},
                     now=granted_at,
                 )
+                if explicit_readmission:
+                    self._append_event(
+                        conn,
+                        kind="ATTEMPT_READMISSION_USED",
+                        graph_id=graph_id,
+                        node_id=node_id,
+                        attempt_id=attempt_id,
+                        fence=fence,
+                        payload={
+                            "readmission_id": readmission_id,
+                            "prior_attempt_id": prior_attempt_id,
+                        },
+                        now=granted_at,
+                    )
                 conn.execute("COMMIT")
                 return envelope
             except Exception:
-                try:
+                with suppress(Exception):
                     conn.execute("ROLLBACK")
-                except Exception:
-                    pass
+                raise
+            finally:
+                conn.close()
+
+    def settle_attempt(
+        self,
+        envelope: Mapping[str, Any],
+        *,
+        state: str,
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        """Append an explicit non-completion settlement for one exact attempt.
+
+        Expiry and revocation never call this automatically: neither proves
+        whether the effect happened. Indeterminate is terminal evidence but
+        does not make an automatic retry safe.
+        """
+
+        if state not in _ATTEMPT_SETTLEMENTS:
+            raise AuthorityError("invalid attempt settlement state")
+        settled_at = _utc(now)
+        with _DB_LOCK:
+            conn = self._connect()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                graph_id, node_id, authority = self._authority_gate(
+                    conn, envelope, action="settle"
+                )
+                if authority["completed"]:
+                    raise AuthorityError("completed attempt cannot be resettled")
+                existing = authority["settlement"]
+                if existing is not None:
+                    if existing != state:
+                        raise AuthorityError(
+                            "attempt already has a different settlement"
+                        )
+                    conn.execute("COMMIT")
+                    return {
+                        "graph_id": graph_id,
+                        "node_id": node_id,
+                        "attempt_id": str(envelope["attempt_id"]),
+                        "fence": authority["fence"],
+                        "state": state,
+                        "idempotent": True,
+                    }
+                self._append_event(
+                    conn,
+                    kind="ATTEMPT_SETTLED",
+                    graph_id=graph_id,
+                    node_id=node_id,
+                    attempt_id=str(envelope["attempt_id"]),
+                    fence=authority["fence"],
+                    payload={"state": state},
+                    now=settled_at,
+                )
+                conn.execute("COMMIT")
+                return {
+                    "graph_id": graph_id,
+                    "node_id": node_id,
+                    "attempt_id": str(envelope["attempt_id"]),
+                    "fence": authority["fence"],
+                    "state": state,
+                    "idempotent": False,
+                }
+            except Exception:
+                with suppress(Exception):
+                    conn.execute("ROLLBACK")
+                raise
+            finally:
+                conn.close()
+
+    def record_readmission(
+        self,
+        graph_id: str,
+        node_id: str,
+        *,
+        prior_attempt_id: str,
+        readmission_id: str,
+        reason: str,
+        now: datetime | None = None,
+    ) -> bool:
+        """Persist an explicit operator decision allowing one later attempt."""
+
+        for field, value in (
+            ("prior_attempt_id", prior_attempt_id),
+            ("readmission_id", readmission_id),
+            ("reason", reason),
+        ):
+            if not isinstance(value, str) or not value.strip():
+                raise AuthorityError(f"{field} must be a non-empty string")
+        recorded_at = _utc(now)
+        with _DB_LOCK:
+            conn = self._connect()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                self._load_plan_node(conn, graph_id, node_id)
+                authority = self._node_authority(conn, graph_id, node_id)
+                if (
+                    authority is None
+                    or authority["envelope"]["attempt_id"] != prior_attempt_id
+                ):
+                    raise AuthorityError(
+                        "readmission must name the latest durable attempt"
+                    )
+                rows = conn.execute(
+                    """SELECT payload_json FROM authority_events
+                       WHERE graph_id = ? AND node_id = ?
+                         AND kind = 'ATTEMPT_READMITTED'
+                       ORDER BY id""",
+                    (graph_id, node_id),
+                ).fetchall()
+                for row in rows:
+                    payload = json.loads(row["payload_json"])
+                    if payload.get("readmission_id") != readmission_id:
+                        continue
+                    if (
+                        payload.get("prior_attempt_id") != prior_attempt_id
+                        or payload.get("reason") != reason
+                    ):
+                        raise AuthorityError(
+                            "readmission_id is already bound to another decision"
+                        )
+                    conn.execute("COMMIT")
+                    return False
+                self._append_event(
+                    conn,
+                    kind="ATTEMPT_READMITTED",
+                    graph_id=graph_id,
+                    node_id=node_id,
+                    attempt_id=prior_attempt_id,
+                    fence=authority["fence"],
+                    payload={
+                        "readmission_id": readmission_id,
+                        "prior_attempt_id": prior_attempt_id,
+                        "reason": reason,
+                    },
+                    now=recorded_at,
+                )
+                conn.execute("COMMIT")
+                return True
+            except Exception:
+                with suppress(Exception):
+                    conn.execute("ROLLBACK")
                 raise
             finally:
                 conn.close()
@@ -843,10 +1078,8 @@ class Phase2AuthorityStore(Phase2BudgetMixin):
                     "effective_expires_utc": _iso(new_expires),
                 }
             except Exception:
-                try:
+                with suppress(Exception):
                     conn.execute("ROLLBACK")
-                except Exception:
-                    pass
                 raise
             finally:
                 conn.close()
@@ -893,10 +1126,8 @@ class Phase2AuthorityStore(Phase2BudgetMixin):
                     "fence": authority["fence"],
                 }
             except Exception:
-                try:
+                with suppress(Exception):
                     conn.execute("ROLLBACK")
-                except Exception:
-                    pass
                 raise
             finally:
                 conn.close()
@@ -953,10 +1184,8 @@ class Phase2AuthorityStore(Phase2BudgetMixin):
                 conn.execute("COMMIT")
                 return record
             except Exception:
-                try:
+                with suppress(Exception):
                     conn.execute("ROLLBACK")
-                except Exception:
-                    pass
                 raise
             finally:
                 conn.close()
@@ -1092,6 +1321,7 @@ class Phase2AuthorityStore(Phase2BudgetMixin):
                 "effective_expires_utc": _iso(authority["effective_expires"]),
                 "revoked": authority["revoked"],
                 "completed": authority["completed"],
+                "settlement": authority["settlement"],
                 "accepted_result_hash": authority["accepted_result_hash"],
             }
         finally:
@@ -1163,10 +1393,8 @@ class Phase2AuthorityStore(Phase2BudgetMixin):
             conn.execute("COMMIT")
             return errors
         except Exception:
-            try:
+            with suppress(Exception):
                 conn.execute("ROLLBACK")
-            except Exception:
-                pass
             raise
         finally:
             conn.close()
@@ -1193,10 +1421,8 @@ class Phase2AuthorityStore(Phase2BudgetMixin):
             errors, fence = self._validate_current_snapshot(conn, snapshot, current)
             conn.execute("COMMIT")
         except Exception:
-            try:
+            with suppress(Exception):
                 conn.execute("ROLLBACK")
-            except Exception:
-                pass
             raise
         finally:
             conn.close()
@@ -1320,10 +1546,8 @@ class Phase2AuthorityStore(Phase2BudgetMixin):
                     reconciled_count += 1
                 conn.execute("COMMIT")
             except Exception:
-                try:
+                with suppress(Exception):
                     conn.execute("ROLLBACK")
-                except Exception:
-                    pass
                 raise
             finally:
                 conn.close()

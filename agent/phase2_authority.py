@@ -61,7 +61,7 @@ from agent.phase2_errors import (
     ResultRejection,
 )
 from agent.phase2_ledger import Phase2AuthorityStore, default_db_path
-from agent.phase2_sqlite import (  # noqa: F401  (shared-store private surface)
+from agent.phase2_sqlite import (
     _check_phase2_db_files,
     _open_phase2_sqlite,
 )

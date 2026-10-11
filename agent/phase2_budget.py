@@ -11,6 +11,7 @@ import json
 import sqlite3
 import uuid
 from abc import ABC, abstractmethod
+from contextlib import suppress
 from datetime import datetime
 from decimal import Decimal
 from typing import Any, Mapping
@@ -183,10 +184,8 @@ class Phase2BudgetMixin(ABC):
                 conn.execute("COMMIT")
                 return reservation_ids
             except Exception:
-                try:
+                with suppress(Exception):
                     conn.execute("ROLLBACK")
-                except Exception:
-                    pass
                 raise
             finally:
                 conn.close()
@@ -260,10 +259,8 @@ class Phase2BudgetMixin(ABC):
                 conn.execute("COMMIT")
                 return reservation_id
             except Exception:
-                try:
+                with suppress(Exception):
                     conn.execute("ROLLBACK")
-                except Exception:
-                    pass
                 raise
             finally:
                 conn.close()
@@ -326,10 +323,8 @@ class Phase2BudgetMixin(ABC):
                 )
                 conn.execute("COMMIT")
             except Exception:
-                try:
+                with suppress(Exception):
                     conn.execute("ROLLBACK")
-                except Exception:
-                    pass
                 raise
             finally:
                 conn.close()

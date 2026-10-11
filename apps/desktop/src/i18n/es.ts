@@ -1,4 +1,5 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
+import { esSettingsConfig } from './es_settings_config'
 
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { esAuxTasks } from './es_aux_tasks'
@@ -1583,15 +1584,10 @@ export const esOverrides = {
       failedLoad: 'No se pudo cargar la configuración',
       autosaveFailed: 'Falló el autoguardado',
       imported: 'Configuración importada',
+      ...esSettingsConfig,
       invalidJson: 'JSON de configuración no válido',
       toolsetsWipeConfirm:
         '¿Quitar todos los conjuntos de herramientas activados? Esto desactiva la memoria, el terminal, la búsqueda web, la delegación y la mayoría de las demás herramientas hasta que los vuelvas a activar.',
-      keepAwakeTitle: 'Mantener el equipo activo',
-      keepAwakeDesc:
-        'Impide que este equipo entre en reposo. «Mientras trabaja» solo se aplica mientras hay un turno en curso: las ejecuciones nocturnas continúan sin mantener el portátil despierto toda la semana. La pantalla puede seguir atenuándose.',
-      keepAwakeOff: 'Desactivado',
-      keepAwakeWhileWorking: 'Mientras trabaja',
-      keepAwakeAlways: 'Siempre',
       disableF12Title: 'Desactivar DevTools con F12',
       disableF12Desc:
         'Impide que F12 abra las herramientas para desarrolladores. Ctrl+Shift+I (o Cmd+Opt+I en Mac) sigue funcionando.',

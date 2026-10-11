@@ -1,4 +1,5 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
+import { deSettingsConfig } from './de_settings_config'
 
 import { deAuxTasks } from './de_aux_tasks'
 import { deBoot } from './de_boot'
@@ -1580,15 +1581,10 @@ export const deOverrides = {
       failedLoad: 'Einstellungen konnten nicht geladen werden',
       autosaveFailed: 'Autospeichern fehlgeschlagen',
       imported: 'Konfiguration importiert',
+      ...deSettingsConfig,
       invalidJson: 'Ungültige Konfigurations-JSON',
       toolsetsWipeConfirm:
         'Alle aktivierten Toolsets entfernen? Das deaktiviert Speicher, Terminal, Websuche, Delegation und die meisten anderen Tools, bis Sie sie wieder aktivieren.',
-      keepAwakeTitle: 'Computer wach halten',
-      keepAwakeDesc:
-        'Verhindert, dass dieser Rechner in den Ruhezustand wechselt. „Während der Arbeit“ gilt nur, solange ein Durchlauf läuft: Läufe über Nacht laufen weiter, ohne den Laptop die ganze Woche wach zu halten. Der Bildschirm kann trotzdem abdunkeln.',
-      keepAwakeOff: 'Aus',
-      keepAwakeWhileWorking: 'Während der Arbeit',
-      keepAwakeAlways: 'Immer',
       disableF12Title: 'F12-DevTools deaktivieren',
       disableF12Desc:
         'Verhindert, dass F12 die Entwicklertools öffnet. Strg+Umschalt+I (bzw. Cmd+Opt+I auf dem Mac) funktioniert weiterhin.',

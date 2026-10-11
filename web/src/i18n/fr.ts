@@ -409,6 +409,8 @@ export const fr: Translations = {
     failedToLoadRaw: "Échec du chargement de la configuration brute",
     configImported: "Configuration importée — vérifiez et enregistrez",
     invalidJson: "Fichier JSON invalide",
+    managedFieldHint: "Géré par votre administrateur{source} — lecture seule",
+    managedRejectedToast: "Enregistré, mais ces paramètres sont gérés par votre administrateur et n'ont pas été modifiés : {keys}",
     categories: {
       general: "Général",
       agent: "Agent",

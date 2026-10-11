@@ -1,4 +1,5 @@
 import { FIELD_DESCRIPTIONS, FIELD_LABELS } from '@/app/settings/constants'
+import { enSettingsConfig } from './en_settings_config'
 
 import { enAppTour, enHandoffTour } from './en_app_tour'
 import { enAuxTasks } from './en_aux_tasks'
@@ -1234,15 +1235,10 @@ export const en: Translations = {
       failedLoad: 'Settings failed to load',
       autosaveFailed: 'Autosave failed',
       imported: 'Config imported',
+      ...enSettingsConfig,
       invalidJson: 'Invalid config JSON',
       toolsetsWipeConfirm:
         'Remove all enabled toolsets? This disables memory, terminal, web search, delegation, and most other tools until you re-enable them.',
-      keepAwakeTitle: 'Keep computer awake',
-      keepAwakeDesc:
-        'Stop this machine from sleeping. "While working" holds it only while a turn is in flight, so overnight runs survive without pinning the laptop awake all week. The display can still dim.',
-      keepAwakeOff: 'Off',
-      keepAwakeWhileWorking: 'While working',
-      keepAwakeAlways: 'Always',
       disableF12Title: 'Disable F12 DevTools',
       disableF12Desc: 'Block F12 from opening Developer Tools. Ctrl+Shift+I (or Cmd+Opt+I on Mac) still works.',
       alwaysExternalLinksTitle: 'Always open links in external browser',

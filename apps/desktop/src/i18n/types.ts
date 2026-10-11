@@ -22,6 +22,10 @@ import type { UninstallSectionTranslations } from './types_uninstall_section'
 import type { UpdateChannelCopy } from './types_update_channel'
 
 /** The locales compiled into the app (`TRANSLATIONS`). */
+import type { ErrorCardCopy, ModeOptionCopy, ToolTitleCopy } from './types_copy_shapes'
+
+export type { ErrorCardCopy } from './types_copy_shapes'
+
 export type BundledLocale = 'en' | 'zh' | 'zh-hant' | 'ja' | 'ar' | 'ru' | 'fr' | 'de' | 'es'
 
 /** Any language id the app can render: a bundled locale, or one a plugin /
@@ -29,13 +33,6 @@ export type BundledLocale = 'en' | 'zh' | 'zh-hant' | 'ja' | 'ar' | 'ru' | 'fr' 
  *  BCP-47-ish (`pl`, `pt-br`). Resolve strings through the registry, never
  *  by indexing `TRANSLATIONS` directly. */
 export type Locale = string
-
-/** One error-card entry: a short title and one plain sentence. Either may
- *  take the failing provider's display name (falls back to "the AI service"). */
-export interface ErrorCardCopy {
-  title: string | ((provider: string) => string)
-  body: string | ((provider: string) => string)
-}
 
 export type ToolTitleKey =
   | 'browser_click'
@@ -63,17 +60,6 @@ export type ToolTitleKey =
   | 'web_extract'
   | 'web_search'
   | 'write_file'
-
-interface ToolTitleCopy {
-  done: string
-  pending: string
-  pendingAction: string
-}
-
-interface ModeOptionCopy {
-  label: string
-  description: string
-}
 
 export interface Translations extends NoticeTranslations {
   /** Shared-metrics consent: first-run dialog + Settings › Safety toggles. */
@@ -1021,6 +1007,9 @@ export interface Translations extends NoticeTranslations {
       emptyDesc: string
       failedLoad: string
       autosaveFailed: string
+      managedFieldHint: string
+      managedRejectedTitle: string
+      managedRejectedNotice: string
       imported: string
       invalidJson: string
       toolsetsWipeConfirm: string

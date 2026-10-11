@@ -1,3 +1,4 @@
+import { Lock } from "lucide-react";
 import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
 import { Switch } from "@nous-research/ui/ui/components/switch";
 import { Input } from "@nous-research/ui/ui/components/input";
@@ -87,10 +88,13 @@ export function AutoField({
   schema,
   value,
   onChange,
+  managed = false,
+  managedHint,
 }: AutoFieldProps) {
   const rawLabel = schemaKey.split(".").pop() ?? schemaKey;
   const label = rawLabel.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 
+  const renderField = () => {
   if (isRecord(value) || (Array.isArray(value) && value.some((item) => isRecord(item)))) {
     return (
       <div className="grid gap-3 border border-border p-3">
@@ -196,6 +200,24 @@ export function AutoField({
       <Input value={String(value ?? "")} onChange={(e) => onChange(e.target.value)} />
     </div>
   );
+  };
+
+  // Managed-scope pinned leaf (#135859): render the control inert and say why,
+  // instead of editable-but-silently-dropped. ``fieldset disabled`` covers the
+  // native inputs and the radix buttons; ``pointer-events-none`` covers the
+  // custom editors that don't map to a disabled-aware element.
+  if (managed) {
+    return (
+      <fieldset className="min-w-0 border-0 p-0" disabled>
+        <div className="pointer-events-none opacity-60">{renderField()}</div>
+        <div className="flex items-center gap-1.5 pt-0.5 text-xs text-text-secondary">
+          <Lock className="h-3 w-3 shrink-0" />
+          {managedHint}
+        </div>
+      </fieldset>
+    );
+  }
+  return renderField();
 }
 
 interface AutoFieldProps {
@@ -203,4 +225,8 @@ interface AutoFieldProps {
   schema: Record<string, unknown>;
   value: unknown;
   onChange: (v: unknown) => void;
+  /** Rendered read-only with a lock hint: the managed scope pins this key. */
+  managed?: boolean;
+  /** Why the field is read-only (already localized, includes the source). */
+  managedHint?: string;
 }

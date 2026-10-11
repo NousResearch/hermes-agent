@@ -1,4 +1,5 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
+import { jaSettingsConfig } from './ja_settings_config'
 
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introJa } from './intro-ja'
@@ -1005,6 +1006,7 @@ export const jaOverrides = {
       failedLoad: '設定の読み込みに失敗しました',
       autosaveFailed: '自動保存に失敗しました',
       imported: '設定をインポートしました',
+      ...jaSettingsConfig,
       invalidJson: '設定 JSON が無効です',
       developerTitle: '開発者',
       resetOnboardingTitle: 'オンボーディングをリセット',
@@ -1012,12 +1014,6 @@ export const jaOverrides = {
         'セットアップ用のチャットを削除し、セットアッププロファイルを作り直して、初回セットアップをもう一度実行します。自分で作成したプロファイル、チャット、プラグインはそのまま残ります。',
       resetOnboardingAction: 'リセット',
       resetOnboardingFailed: 'オンボーディングをリセットできませんでした',
-      keepAwakeTitle: 'コンピューターをスリープさせない',
-      keepAwakeDesc:
-        '本体のスリープを防ぎます。「実行中のみ」はターンの実行中だけ有効になるため、夜通しの実行を継続しつつ、ノートPCを一週間つけたままにはしません。画面は暗転できます。',
-      keepAwakeOff: 'オフ',
-      keepAwakeWhileWorking: '実行中のみ',
-      keepAwakeAlways: '常に',
       voiceShortcutHintTitle: '音声録音ショートカット',
       voiceShortcutHintDesc:
         '「設定 → キーボードショートカット」で音声録音ショートカット（「Start / stop voice conversation」）を設定します。voice.record_key は CLI と TUI 専用です。'

@@ -349,6 +349,8 @@ export const ar = defineLocale({
     failedToLoadRaw: "فشل تحميل الإعدادات الأولية",
     configImported: "تم استيراد الإعدادات — راجع واحفظ",
     invalidJson: "ملف JSON غير صالح",
+    managedFieldHint: "يديره المسؤول{source} — للقراءة فقط",
+    managedRejectedToast: "تم الحفظ، لكن هذه الإعدادات يديرها المسؤول ولم يتم تغييرها: {keys}",
     categories: {
       general: "عام",
       agent: "العامل",

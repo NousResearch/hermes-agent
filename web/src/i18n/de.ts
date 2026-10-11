@@ -408,6 +408,8 @@ export const de: Translations = {
     failedToLoadRaw: "Rohe Konfiguration konnte nicht geladen werden",
     configImported: "Konfiguration importiert — überprüfen und speichern",
     invalidJson: "Ungültige JSON-Datei",
+    managedFieldHint: "Von Ihrem Administrator verwaltet{source} — schreibgeschützt",
+    managedRejectedToast: "Gespeichert, aber diese Einstellungen werden von Ihrem Administrator verwaltet und wurden nicht geändert: {keys}",
     categories: {
       general: "Allgemein",
       agent: "Agent",

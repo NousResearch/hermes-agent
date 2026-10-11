@@ -530,6 +530,8 @@ export interface Translations {
     failedToLoadRaw: string;
     configImported: string;
     invalidJson: string;
+    managedFieldHint: string;
+    managedRejectedToast: string;
     categories: {
       general: string;
       agent: string;

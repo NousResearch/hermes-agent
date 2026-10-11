@@ -1,4 +1,5 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
+import { ruSettingsConfig } from './ru_settings_config'
 
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { ruAuxTasks } from './ru_aux_tasks'
@@ -1013,15 +1014,10 @@ export const ruOverrides = {
       failedLoad: 'Не удалось загрузить настройки',
       autosaveFailed: 'Не удалось сохранить автоматически',
       imported: 'Конфигурация импортирована',
+      ...ruSettingsConfig,
       invalidJson: 'Неверный JSON конфигурации',
       toolsetsWipeConfirm:
         'Удалить все включённые наборы инструментов? Это отключит память, терминал, веб-поиск, делегирование и большинство других инструментов, пока вы не включите их снова.',
-      keepAwakeTitle: 'Не давать компьютеру засыпать',
-      keepAwakeDesc:
-        'Не давать этому компьютеру засыпать. «Во время работы» держит его только пока выполняется ход — ночные запуски переживут сон, а ноутбук не останется включённым всю неделю. Экран по‑прежнему может гаснуть.',
-      keepAwakeOff: 'Выкл',
-      keepAwakeWhileWorking: 'Во время работы',
-      keepAwakeAlways: 'Всегда',
       disableF12Title: 'Отключить F12 DevTools',
       disableF12Desc:
         'Блокирует открытие Developer Tools по F12. Ctrl+Shift+I (на Mac — Cmd+Opt+I) продолжает работать.',

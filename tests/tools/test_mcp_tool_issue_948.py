@@ -175,6 +175,7 @@ def test_run_stdio_malware_check_times_out_fail_open():
     """A check that hangs past the timeout must NOT freeze startup: it times
     out, logs, and proceeds (fail-open) so the server still starts."""
     import time
+    from hermes_cli.plugins import discover_plugins
     mock_stdio_cm, mock_session_cm = _stdio_mocks()
 
     def hung_check(_command, _args):
@@ -189,6 +190,7 @@ def test_run_stdio_malware_check_times_out_fail_open():
              patch("tools.mcp_tool.stdio_client", return_value=mock_stdio_cm), \
              patch("tools.mcp_tool.ClientSession", return_value=mock_session_cm):
             server = MCPServerTask("srv")
+            discover_plugins()  # the child-env hook's one-time lazy discovery is not the fail-open under test
             start = time.monotonic()
             await server.start({"command": "npx", "args": ["-y", "pkg"]})
             elapsed = time.monotonic() - start

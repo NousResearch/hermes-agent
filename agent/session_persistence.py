@@ -201,7 +201,7 @@ def _db_flush_scan_start(agent, messages: list[dict]) -> int:
     return scan_start
 
 
-def _db_flush_row(agent, msg: dict, is_current_turn_user: bool) -> dict[str, Any]:
+def _db_flush_row(agent, msg: dict, is_current_turn_user: bool, msg_idx: int = 0) -> dict[str, Any]:
     """Build the session-db row for ``msg``, applying the persist override to THIS row only."""
     role = msg.get("role", "unknown")
     content = msg.get("content")
@@ -243,6 +243,10 @@ def _db_flush_row(agent, msg: dict, is_current_turn_user: bool) -> dict[str, Any
     copy_identity_fields(msg, row)
     if isinstance(msg.get(DB_ROW_SNAPSHOT), str):
         row[DB_ROW_SNAPSHOT] = msg[DB_ROW_SNAPSHOT]
+    from hermes_cli.lifecycle import has_hook, invoke_hook
+    if has_hook("transform_persisted_row"):
+        results = invoke_hook("transform_persisted_row", agent=agent, message=dict(msg), row=dict(row), msg_idx=msg_idx)
+        row = next((r for r in results if isinstance(r, dict)), row)
     return row
 
 
@@ -282,7 +286,7 @@ def _db_flush_collect(agent, messages: list[dict], conversation_history: Optiona
             # minted (same-batch pairing happens inside the insert).
             if (tool_uid := tool_call_uid_from_history(messages, msg_idx, tool_uid_owners)) is not None:
                 msg[TOOL_CALL_UID] = tool_uid
-        batch_rows.append(_db_flush_row(agent, msg, ov_idx == msg_idx or msg is pending_cli_message))
+        batch_rows.append(_db_flush_row(agent, msg, ov_idx == msg_idx or msg is pending_cli_message, msg_idx))
         batch_msgs.append(msg)
     return batch_rows, batch_msgs
 

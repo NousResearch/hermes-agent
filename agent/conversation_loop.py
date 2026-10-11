@@ -1559,6 +1559,7 @@ def _run_conversation_turn(
     turn_author: Optional[dict[str, Any]] = None,
     moa_config: Optional[dict[str, Any]] = None,
     title_user_message: Optional[str] = None,
+    reuse_current_user_message: bool = False,
     prelude: Optional[Prelude] = None,
 ) -> dict[str, Any]:
     """Run a complete conversation with tool calling until completion; returns the result dict.
@@ -1609,6 +1610,7 @@ def _run_conversation_turn(
             # user message, so no byte-stable api_content sidecar can be stamped.
             moa_active=bool(moa_config),
             title_user_message=title_user_message,
+            reuse_current_user_message=reuse_current_user_message,
         )
     except PreflightCompressionTimedOut as _preflight_timeout_exc:
         return _preflight_timeout_result(agent, _preflight_timeout_exc, conversation_history)
@@ -1721,6 +1723,7 @@ def run_conversation(
     moa_config: Optional[dict[str, Any]] = None,
     turn_author: Optional[dict[str, Any]] = None,
     title_user_message: Optional[str] = None,
+    reuse_current_user_message: bool = False,
     prelude: Optional[Prelude] = None,
 ) -> dict[str, Any]:
     """Run one turn (see ``_run_conversation_turn``) and export the current-turn boundary.
@@ -1755,6 +1758,7 @@ def run_conversation(
                 moa_config=moa_config,
                 turn_author=turn_author,
                 title_user_message=title_user_message,
+                reuse_current_user_message=reuse_current_user_message,
                 prelude=prelude,
             )
         finally:

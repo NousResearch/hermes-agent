@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- registering the three embedder transform hooks needs their entries and contract comment in VALID_HOOKS, the one hook registry; no code grows here
 """Hermes Plugin System — discovers, loads, and manages plugins.
 
 Sources, later overriding earlier on key collision: bundled ``<repo>/plugins/<name>/`` (``memory/``
@@ -145,6 +146,12 @@ VALID_HOOKS: set[str] = {
     # pattern_keys, session_key, surface ("cli"|"gateway"|"smart"|"mcp-elicitation/<server>"|"mcp-trust/<server>"|
     # "vault-payment"); post_approval_response adds choice/decided_by. on_human_input_*: tools/human_input_hooks.py.
     "pre_approval_request", "post_approval_response", "on_human_input_request", "on_human_input_resolved",
+    # Embedder transforms; return a replacement dict (first dict wins) or None. Callbacks get copies.
+    # transform_persisted_row: once per session-db row at flush. Kwargs: agent, message, row, msg_idx.
+    # transform_mcp_servers: once per mcp_servers load, BEFORE the suspicious-server filter; may add,
+    #   drop or rewrite servers. Kwargs: servers. transform_mcp_child_env: once per stdio child spawn,
+    #   after the server's own env, before delegated-child scrubbing. Kwargs: server_name, env.
+    "transform_persisted_row", "transform_mcp_servers", "transform_mcp_child_env",
     # on_room_member_activity: a hosted Group Chat member's live runtime events (tool.started/completed,
     # request.opened, message.delta, reasoning.delta, turn.error, ...) stamped with room_id, thread_id,
     # member_id, turn_id, task_id, execution_generation. Observer, queued per consumer off the token

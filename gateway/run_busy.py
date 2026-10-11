@@ -158,6 +158,13 @@ class GatewayBusySessionMixin:
         return (source.platform, source.chat_id, source.thread_id) != (
             running.platform, running.chat_id, running.thread_id)
 
+    def _queue_if_crosses_turn_origin(self, event: "MessageEvent", session_key: str) -> bool:
+        """Queue *event* as its own turn when it crosses the running turn's origin; True if queued."""
+        if not self._crosses_turn_origin(event, session_key):
+            return False
+        self._queue_or_replace_pending_event(session_key, event)
+        return True
+
     def _queue_depth(self, session_key: str, *, adapter: Any = None) -> int:
         """Total pending /queue items for a session — slot + overflow."""
         depth = len(self._overflow_queue(session_key) or ())
@@ -870,8 +877,7 @@ class GatewayBusySessionMixin:
         adapter = self._delivery_adapter_for(event.source)
         if not adapter:
             return False  # let default path handle it
-        if self._crosses_turn_origin(event, session_key):
-            self._queue_or_replace_pending_event(session_key, event)
+        if self._queue_if_crosses_turn_origin(event, session_key):
             return True
         # Internal synthetic events (delegation / background completions) must never interrupt or
         # steer; they surface as a NEW turn when idle. Plugin events carry untrusted payload text, so

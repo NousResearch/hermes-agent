@@ -20,6 +20,7 @@ import shutil
 import socket
 import sqlite3
 import subprocess
+import sys
 import time
 import urllib.parse
 import urllib.request
@@ -457,8 +458,14 @@ def _copy_auth_file(src_file: str, dst_file: str) -> str | None:
             # SQLite must coordinate both ends: immutable ignores committed source WAL,
             # while replacing only the destination file can replay its abandoned WAL.
             # Connection busy timeouts do not bound backup's retry loop; its callback does.
-            with contextlib.closing(sqlite3.connect(
-                    Path(src_file).resolve().as_uri() + "?mode=ro", uri=True, timeout=0.0)) as source:
+            # file:// URI causes backup to hang on macOS (Darwin); direct path without URI works.
+            # On Linux/Windows, file:// URI works correctly and respects the deadline callback.
+            if sys.platform == "darwin":
+                source_conn = contextlib.closing(sqlite3.connect(src_file, timeout=0.0))
+            else:
+                source_conn = contextlib.closing(sqlite3.connect(
+                    Path(src_file).resolve().as_uri() + "?mode=ro", uri=True, timeout=0.0))
+            with source_conn as source:
                 with contextlib.closing(sqlite3.connect(dst_file, timeout=0.0)) as out:
                     source.backup(out, pages=256, progress=check_deadline, sleep=0.1)
         else:

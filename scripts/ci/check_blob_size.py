@@ -155,15 +155,32 @@ def _sizes(repo: Path, blobs: list[str]) -> dict[str, int]:
     return sizes
 
 
-def read_allowlist(path: Path) -> set[str]:
-    if not path.is_file():
-        return set()
+def _hash_file(repo: Path, rel: str) -> str:
+    """The blob sha ``git add`` would store for a working-tree file (clean filters applied)."""
+    return _git(repo, "hash-object", "--", rel).strip()
+
+
+def parse_allowlist(text: str) -> set[str]:
     entries = set()
-    for line in path.read_text(encoding="utf-8-sig").splitlines():
+    for line in text.lstrip("\ufeff").splitlines():
         line = line.strip()
         if line and not line.startswith("#"):
             entries.add(line)
     return entries
+
+
+def read_allowlist(path: Path) -> set[str]:
+    if not path.is_file():
+        return set()
+    return parse_allowlist(path.read_text(encoding="utf-8-sig"))
+
+
+def allowlist_at(repo: Path, rev: str) -> set[str]:
+    """The allowlist as revision ``rev`` holds it (empty when ``rev`` has none)."""
+    if not _git(repo, "rev-parse", "--verify", "--quiet", f"{rev}:{ALLOWLIST}", check=False).strip():
+        _git(repo, "rev-parse", "--verify", f"{rev}^{{tree}}")  # a bad revision is a usage error
+        return set()
+    return parse_allowlist(_git(repo, "cat-file", "blob", f"{rev}:{ALLOWLIST}"))
 
 
 def find_offenders(repo: Path, base: str, head: str | None, limit: int = MAX_BYTES,
@@ -190,7 +207,7 @@ def find_offenders(repo: Path, base: str, head: str | None, limit: int = MAX_BYT
             if rel in allowlist or not disk.is_file() or disk.is_symlink():
                 continue
             size = disk.stat().st_size
-            if size > limit:
+            if size > limit and _hash_file(repo, rel) not in known:  # an untracked copy adds nothing
                 kind = "binary" if _sniff_binary(disk) else "new file"
                 offenders.append(Offender(rel, size, kind, "A"))
     return sorted(offenders, key=lambda o: (-o.size, o.path))
@@ -236,7 +253,8 @@ def main(argv: list[str] | None = None) -> int:
     repo = args.repo.resolve()
     try:
         base = args.base or default_base(repo, args.head)
-        allowlist = read_allowlist(repo / ALLOWLIST)
+        # The judged side's own exceptions: the revision's list, or the working tree's.
+        allowlist = allowlist_at(repo, args.head) if args.head else read_allowlist(repo / ALLOWLIST)
         offenders = find_offenders(repo, base, args.head, args.limit, allowlist)
     except GitError as exc:
         print(f"check_blob_size: {exc}", file=sys.stderr)

@@ -141,6 +141,43 @@ def test_working_tree_mode_sees_unstaged_and_untracked_files(repo):
     ]
 
 
+def test_untracked_copy_of_base_content_adds_no_bytes(repo):
+    # Staging the copy would pass (its blob is already in the base); so must leaving it untracked.
+    base = _git(repo, "rev-parse", "HEAD")
+    (repo / "copies").mkdir()
+    (repo / "copies/icon.icns").write_bytes((repo / "assets/icon.icns").read_bytes())
+    (repo / "copies/big.lock").write_bytes((repo / "big.lock").read_bytes())
+    (repo / "copies/icon-edited.icns").write_bytes(_binary(LIMIT * 2, 11))
+    assert _offenders(repo, base, None) == [("copies/icon-edited.icns", "binary", "A")]
+    _git(repo, "add", "--", "copies/icon.icns", "copies/big.lock")
+    assert _offenders(repo, base, None) == [("copies/icon-edited.icns", "binary", "A")]
+
+
+def test_cli_with_head_reads_the_allowlist_from_head_not_the_checkout(repo):
+    base = _git(repo, "rev-parse", "HEAD")
+    head = _commit(repo, {".github/blob-size-allowlist.txt": b"pr-assets/kept.png\n",
+                          "pr-assets/kept.png": _binary(LIMIT * 2, 1), "pr-assets/shot.png": _binary(LIMIT * 2, 2)})
+    # The checkout now exempts the other file and not the one head exempts.
+    _git(repo, "checkout", "-q", base)
+    (repo / ".github").mkdir(exist_ok=True)
+    (repo / ".github/blob-size-allowlist.txt").write_text("pr-assets/shot.png\n", encoding="utf-8")
+
+    def run(*extra: str) -> subprocess.CompletedProcess:
+        return subprocess.run([sys.executable, str(SCRIPT), "--base", base, *extra, "--limit", str(LIMIT)],
+                              cwd=repo, env=_env(), capture_output=True, text=True, encoding="utf-8",
+                              timeout=60, check=False)
+
+    proc = run("--head", head)
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert "::error file=pr-assets/shot.png::" in proc.stdout
+    assert "pr-assets/kept.png" not in proc.stdout
+    # A head without the list exempts nothing, whatever the checkout says.
+    bare = _commit(repo, {"pr-assets/shot.png": _binary(LIMIT * 2, 2)})
+    assert run("--head", bare).returncode == 1
+    # Working-tree mode keeps reading the list from disk.
+    assert run().returncode == 0
+
+
 def test_cli_fails_with_fix_text_and_writes_step_summary(repo, tmp_path):
     base = _git(repo, "rev-parse", "HEAD")
     (repo / ".github").mkdir()

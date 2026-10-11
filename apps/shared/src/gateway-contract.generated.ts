@@ -1043,6 +1043,7 @@ export interface ConnectionOperationTarget {
   discovery_error?: string | null
   connect_url?: string | null
   connection_id?: string | null
+  alias?: string | null
   attempt?: string | null
   required_env?: ConnectionTargetEnvField[] | null
   tools?: string[] | null
@@ -1149,6 +1150,8 @@ export interface ConnectorsConnectParams {
   owner: SessionOwner | AccountOwner
   connectors: string[]
   reconnect?: boolean
+  alias?: string | null
+  connection_id?: string | null
 }
 /** ``methods_connectors._reissue`` / ``managed._off_desktop_result``: the operation the connect opened; ``status``/``note`` ride along from the tool result. */
 export interface ConnectorsConnectResult {
@@ -1213,6 +1216,7 @@ export interface ConnectorAccountRow {
   label: string
   alias?: string | null
   active: boolean
+  disabled?: boolean
   created_at: string
   updated_at: string
 }
@@ -1225,6 +1229,11 @@ export interface ConnectorAccountsRemoveResult {
   connection_id: string
   connector: string
   status: 'removed'
+}
+export interface ConnectorAccountsRenameParams {
+  profile?: string | null
+  connection_id: string
+  alias: string
 }
 export interface ConnectorPolicyGetResult {
   layers: ConnectorPolicyLayer[]
@@ -4997,7 +5006,7 @@ export interface PetHatchProgressPayload {
 }
 /** ``change_watcher._CHANGE_WATCHES`` payload fn — ``{}`` for every watch except pet.changed. */
 export type ChangeSignalPayload = Record<string, unknown>
-export type ConnectorErrorReason = 'INVALID_PARAMS' | 'NOT_OWNER' | 'UNSUPPORTED_RUNTIME' | 'CONNECTOR_REQUEST_FAILED' | 'INVALID_CONNECTOR_RESPONSE' | 'UNKNOWN_TARGET' | 'LINK_STILL_VALID' | 'REISSUE_REFUSED' | 'UNKNOWN_OPERATION' | 'INVALID_ANSWER' | 'NEEDS_NOUS_AUTH' | 'CONNECTOR_NOT_FOUND' | 'TOOLS_UNAVAILABLE' | 'CONNECTORS_UNAVAILABLE' | 'CATALOG_UNAVAILABLE' | 'ACCOUNTS_UNAVAILABLE' | 'CONNECTION_NOT_FOUND' | 'POLICY_UNAVAILABLE' | 'POLICY_CONFLICT' | 'FORBIDDEN_SCOPE' | 'ORG_REQUIRED' | 'ORG_ACCESS_DENIED' | 'INVALID_POLICY'
+export type ConnectorErrorReason = 'INVALID_PARAMS' | 'NOT_OWNER' | 'UNSUPPORTED_RUNTIME' | 'CONNECTOR_REQUEST_FAILED' | 'INVALID_CONNECTOR_RESPONSE' | 'UNKNOWN_TARGET' | 'LINK_STILL_VALID' | 'REISSUE_REFUSED' | 'UNKNOWN_OPERATION' | 'INVALID_ANSWER' | 'NEEDS_NOUS_AUTH' | 'CONNECTOR_NOT_FOUND' | 'TOOLS_UNAVAILABLE' | 'CONNECTORS_UNAVAILABLE' | 'CATALOG_UNAVAILABLE' | 'ACCOUNTS_UNAVAILABLE' | 'CONNECTION_NOT_FOUND' | 'POLICY_UNAVAILABLE' | 'POLICY_CONFLICT' | 'FORBIDDEN_SCOPE' | 'ORG_REQUIRED' | 'ORG_ACCESS_DENIED' | 'INVALID_POLICY' | 'ALIAS_TAKEN'
 
 // ── Client→server methods ──
 export interface RpcMethods {
@@ -5067,6 +5076,8 @@ export interface RpcMethods {
   'connectors.accounts': { params: ConnectorAccountsParams; result: ConnectorAccountsResult }
   /** Remove one hosted connector account owned by the scoped member. */
   'connectors.accounts.remove': { params: ConnectorAccountsRemoveParams; result: ConnectorAccountsRemoveResult }
+  /** Name or rename one hosted connector account owned by the scoped member. */
+  'connectors.accounts.rename': { params: ConnectorAccountsRenameParams; result: ConnectorAccountRow }
   /** The hosted connector catalog available to the scoped member. */
   'connectors.catalog': { params: ProfileParams; result: ConnectorsCatalogResult }
   /** Start or re-initiate authorization for named connectors on a session or account operation. */
@@ -5547,6 +5558,7 @@ export const RPC_METHODS = [
   'connection.respond',
   'connectors.accounts',
   'connectors.accounts.remove',
+  'connectors.accounts.rename',
   'connectors.catalog',
   'connectors.connect',
   'connectors.list',

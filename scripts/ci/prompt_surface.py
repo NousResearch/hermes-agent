@@ -10,7 +10,7 @@ both through the production code into ``tests/fixtures/prompt_surface/``, which 
 * ``tests/ci/test_prompt_surface.py`` fails when the committed render is stale, so every change
   to the surface lands as a reviewable diff of real prompt text and tool schemas;
 * ``.github/workflows/prompt-surface-diff.yml`` posts the per-surface summary on the PR;
-* a repository ruleset requires two hermes-agent-core approvals for that directory.
+* a repository ruleset requires a hermes-agent-core approval for that directory.
 
     python scripts/ci/prompt_surface.py render            # regenerate the committed snapshot
     python scripts/ci/prompt_surface.py diff BASE HEAD --output FILE   # Markdown summary

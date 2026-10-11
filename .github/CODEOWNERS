@@ -16,7 +16,7 @@
 /scripts/code_health/           @NousResearch/hermes-agent-core
 
 # The committed system prompt + tools[] render every session sends (scripts/ci/prompt_surface.py).
-# The dep-version-gate ruleset raises this path to TWO core approvals; this line requests them.
+# The prompt-surface-review ruleset requires one hermes-agent-core approval here; this line requests it.
 /tests/fixtures/prompt_surface/ @NousResearch/hermes-agent-core
 
 # eslint configs can define custom ``fix`` functions that run arbitrary code.

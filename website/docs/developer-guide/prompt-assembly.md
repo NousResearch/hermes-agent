@@ -333,7 +333,7 @@ The **prompt surface** is what a stock install sends before the first user messa
 - `scripts/ci/prompt_surface.py render` builds the surface through the production assembly code (`build_system_prompt_parts` and the agent's own `tools[]`) and writes it to `tests/fixtures/prompt_surface/`. It renders nine surfaces: `cli` with four model families (the model name gates guidance and the patch dialect), `cli` inside a code workspace, `desktop`, `telegram`, `discord` and `cron`. The render uses a fresh home. The clock, host OS, network, tool availability and machine paths are pinned, so a laptop and CI produce the same bytes. Every registered tool counts as available, so credential-gated schemas get reviewed too.
 - `tests/ci/test_prompt_surface.py` fails when the committed snapshot is stale. A PR that changes the surface carries the regenerated snapshot, and reviewers read the real prompt text and schemas in the Files tab.
 - The **Prompt surface diff** CI job posts a per-surface summary to the PR review comment: token deltas, prompt hunks, and added or removed tools and parameters.
-- Changes under `tests/fixtures/prompt_surface/` need **two approvals from hermes-agent-core** before they can merge.
+- Changes under `tests/fixtures/prompt_surface/` need **an approval from hermes-agent-core** before they can merge.
 
 Regenerate after any change that moves the surface:
 

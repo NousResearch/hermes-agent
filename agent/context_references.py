@@ -76,16 +76,22 @@ def get_context_reference_providers() -> dict[str, ContextReferenceProvider]:
 
 
 _QUOTED_REFERENCE_VALUE = r'(?:`[^`\n]+`|"[^"\n]+"|\'[^\'\n]+\')'
+# Line suffix on an ``@file:`` path, in the shapes users paste from compilers, editors and code
+# hosts: ``:10``, ``:10-25``, ``:10:5``, ``:10:5-25:3`` (columns ignored, optional trailing ``:``)
+# and ``#L10``, ``#L10-L25``, ``#L10-25``, ``#L10-#L25``.
+_LINE_SUFFIX = (r"(?::(?P<start>\d+)(?::\d+)?(?:-(?P<end>\d+)(?::\d+)?)?:?"
+                r"|#[Ll](?P<hstart>\d+)(?:-(?:#?[Ll])?(?P<hend>\d+))?)")
+_LINE_SUFFIX_ANY = re.sub(r"\?P<\w+>", "", _LINE_SUFFIX)
 REFERENCE_PATTERN = re.compile(
-    rf"(?<![\w/])@(?:(?P<simple>diff|staged)\b|(?P<kind>file|folder|git|url):(?P<value>{_QUOTED_REFERENCE_VALUE}(?::\d+(?:-\d+)?)?|\S+))"
+    rf"(?<![\w/])@(?:(?P<simple>diff|staged)\b|(?P<kind>file|folder|git|url):(?P<value>{_QUOTED_REFERENCE_VALUE}{_LINE_SUFFIX_ANY}?|\S+))"
 )
 # Plugin fallback: any @<word>:<value> the built-in regex did not claim.
 _PLUGIN_REFERENCE_PATTERN = re.compile(
-    rf"(?<![\w/])@(?P<kind>[a-zA-Z][a-zA-Z0-9_-]*):(?P<value>{_QUOTED_REFERENCE_VALUE}(?::\d+(?:-\d+)?)?|\S+)"
+    rf"(?<![\w/])@(?P<kind>[a-zA-Z][a-zA-Z0-9_-]*):(?P<value>{_QUOTED_REFERENCE_VALUE}{_LINE_SUFFIX_ANY}?|\S+)"
 )
-# ``@file:`` value: quoted path or bare path, each with an optional ``:start[-end]`` range.
+# ``@file:`` value: quoted path or bare path, each with an optional line suffix.
 _FILE_VALUE_PATTERN = re.compile(
-    r'^(?:(?P<quote>`|"|\')(?P<qpath>.+?)(?P=quote)|(?P<path>.+?))(?::(?P<start>\d+)(?:-(?P<end>\d+))?)?$'
+    rf'^(?:(?P<quote>`|"|\')(?P<qpath>.+?)(?P=quote)|(?P<path>.+?)){_LINE_SUFFIX}?$'
 )
 
 TRAILING_PUNCTUATION = ",.;!?"
@@ -560,10 +566,10 @@ def _strip_reference_wrappers(value: str) -> str:
 
 def _parse_file_reference_value(value: str) -> tuple[str, int | None, int | None]:
     m = _FILE_VALUE_PATTERN.match(value)
-    start = m and m.group("start")
+    start = m and (m.group("start") or m.group("hstart"))
     if not start:  # no line range: the whole value is the (possibly quoted) path
         return _strip_reference_wrappers(value), None, None
-    return m.group("qpath") or m.group("path"), int(start), int(m.group("end") or start)
+    return m.group("qpath") or m.group("path"), int(start), int(m.group("end") or m.group("hend") or start)
 
 
 def _is_binary_file(path: Path) -> bool:

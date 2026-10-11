@@ -173,7 +173,7 @@ def test_telegram_forum_handoff_key_matches_the_topic_reply_key():
 
 
 def _matrix_adapter(room_id: str, *, is_dm: bool, monkeypatch):
-    """A real MatrixAdapter with a fake client: the room's DM flag comes from the m.direct cache."""
+    """A real MatrixAdapter with a fake client: the room is a DM when only the bot and alice have joined."""
     from plugins.platforms.matrix.adapter import MatrixAdapter
 
     monkeypatch.setenv("MATRIX_REQUIRE_MENTION", "false")
@@ -183,7 +183,10 @@ def _matrix_adapter(room_id: str, *, is_dm: bool, monkeypatch):
     adapter._text_batch_delay_seconds = 0
     adapter._startup_ts = 0
     adapter._dm_rooms[room_id] = is_dm
-    adapter._client = SimpleNamespace(send_message_event=AsyncMock(return_value="$seed"), crypto=None)
+    members = ["@hermes:example.org", "@alice:example.org"] + ([] if is_dm else ["@bob:example.org"])
+    adapter._client = SimpleNamespace(
+        send_message_event=AsyncMock(return_value="$seed"), crypto=None,
+        get_joined_members=AsyncMock(return_value=dict.fromkeys(members, {})))
     adapter._get_display_name = AsyncMock(return_value="alice")
     adapter._background_read_receipt = lambda *_a: None
     adapter.handle_message = AsyncMock()

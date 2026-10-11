@@ -151,7 +151,7 @@ def test_matrix_yaml_lists_gate_intake_and_approval(homes):
         event = types.SimpleNamespace(room_id="!r:example.org", sender="@ignored:example.org", event_id="$1",
                                       content={"msgtype": "m.text", "body": "hello"})
         asyncio.run(a._on_room_message(event))
-        prompt = types.SimpleNamespace(requester_user_id="@owner:example.org")
+        prompt = types.SimpleNamespace(requester_user_id="@owner:example.org", notice_metadata=None)
         owner_ok = asyncio.run(a._validate_matrix_prompt_reactor("!r:example.org", "$a", "@owner:example.org", prompt, "approval"))
         other_ok = asyncio.run(a._validate_matrix_prompt_reactor("!r:example.org", "$a", "@other:example.org", prompt, "approval"))
     assert a._handle_text_message.await_count == 0 and owner_ok and not other_ok
@@ -161,7 +161,7 @@ def test_yuanbao_secondary_home_channel_is_live_and_reloadable(homes):
     """Auto-sethome from a secondary lands in ``platforms.yuanbao.home_channel`` of ITS config (read back
     by ``load_gateway_config``) and on the live PlatformConfig; the process env stays untouched."""
     import os
-    from gateway.platforms.yuanbao import AutoSetHomeMiddleware
+    from gateway.platforms.yuanbao_inbound import (AutoSetHomeMiddleware)
     _, secondary = homes
     (secondary / "config.yaml").write_text(
         "platforms:\n  yuanbao:\n    enabled: true\n    extra:\n      app_id: a\n      app_secret: b\n", encoding="utf-8")

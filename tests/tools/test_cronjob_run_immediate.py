@@ -14,9 +14,10 @@ import json
 import sys
 import threading
 import time
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 from unittest.mock import patch
 
+from gateway.authz_mixin import GatewayAuthorizationMixin
 from tools.cronjob_tools import cronjob, _execute_job_now
 from tools.environments.base import set_activity_callback
 
@@ -145,7 +146,9 @@ class TestCronjobRunExecutesImmediately:
             adapters=default_adapters,
             _gateway_loop=gateway_loop,
             _adapters_for_profile=lambda profile: work_adapters if profile == "work" else default_adapters,
+            _is_shared_bot_satellite=lambda profile: False,
         )
+        runner._cron_delivery_adapters = MethodType(GatewayAuthorizationMixin._cron_delivery_adapters, runner)
         completed = {"id": "job-run-1", "last_status": "ok", "last_error": None}
 
         with patch("tools.cronjob_tools.claim_job_for_fire", return_value={**_JOB, "fire_claim": {"by": "manual-owner"}}), \
@@ -174,6 +177,7 @@ class TestCronjobRunExecutesImmediately:
             _adapters_for_profile=lambda profile: default_adapters,  # what authz hands a shared-bot satellite
             _is_shared_bot_satellite=lambda profile: profile == "keeper",
         )
+        runner._cron_delivery_adapters = MethodType(GatewayAuthorizationMixin._cron_delivery_adapters, runner)
         route = ProfileRoute(name="ops", platform="telegram", profile="keeper", chat_id="-100")
         completed = {"id": "job-run-1", "last_status": "ok", "last_error": None}
 
@@ -202,6 +206,7 @@ class TestCronjobRunExecutesImmediately:
 
         runner = SimpleNamespace(adapters=default_adapters, _gateway_loop=object(),
                                  _adapters_for_profile=boom)
+        runner._cron_delivery_adapters = MethodType(GatewayAuthorizationMixin._cron_delivery_adapters, runner)
 
         with patch("tools.cronjob_tools.claim_job_for_fire", return_value={**_JOB, "fire_claim": {"by": "manual-owner"}}), \
              patch("gateway.run._gateway_runner_ref", return_value=runner), \

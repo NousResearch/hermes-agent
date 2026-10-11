@@ -35,7 +35,7 @@ def _make_phase_runner(monkeypatch, events):
 
     monkeypatch.setattr(_pr.process_registry, "kill_all", _fake_kill_all)
     monkeypatch.setattr(
-        "cron.scheduler.mark_running_jobs_interrupted", lambda *a, **k: []
+        "cron.scheduler_interrupt.mark_running_jobs_interrupted", lambda *a, **k: []
     )
     monkeypatch.setattr("tools.async_delegation.interrupt_all", lambda *a, **k: 0)
     monkeypatch.setattr(

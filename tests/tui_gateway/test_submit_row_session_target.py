@@ -103,7 +103,7 @@ def test_submit_user_row_lands_where_the_turns_tool_rows_land(monkeypatch, tmp_p
         with session["history_lock"]:
             session["running"] = True
             server._start_inflight_turn(session, "Lets make things right")
-        assert server._persist_session_row_for_submit("rid", session, "Lets make things right", None) is None
+        assert server._persist_session_row_for_submit("rid", session, "Lets make things right", None, turn_claim=None) is None
 
         server._adopt_submit_user_row(session, agent, "Lets make things right", "Lets make things right")
         user_msg, _pending = _stage_turn_user_message(
@@ -150,7 +150,7 @@ def test_expanded_submit_row_is_rewritten_on_the_session_that_owns_it(monkeypatc
         with session["history_lock"]:
             session["running"] = True
             server._start_inflight_turn(session, "look at @notes.md")
-        assert server._persist_session_row_for_submit("rid", session, "look at @notes.md", None) is None
+        assert server._persist_session_row_for_submit("rid", session, "look at @notes.md", None, turn_claim=None) is None
 
         expanded = "look at @notes.md\n\n<file notes.md>todo</file>"
         server._adopt_submit_user_row(session, agent, expanded, "look at @notes.md")
@@ -315,7 +315,7 @@ def test_unrotated_session_keeps_writing_to_session_key(monkeypatch, tmp_path):
             server._start_inflight_turn(session, "plain send")
         agent = _flush_agent(db, key)
         session["agent"] = agent
-        assert server._persist_session_row_for_submit("rid", session, "plain send", None) is None
+        assert server._persist_session_row_for_submit("rid", session, "plain send", None, turn_claim=None) is None
         assert _rows(db, key) == [("user", "plain send")]
     finally:
         server._sessions.pop(sid, None)

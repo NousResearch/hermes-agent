@@ -119,7 +119,7 @@ def test_process_completion_display_keeps_payload_separate_across_surfaces(monke
     emitted, submitted = [], []
     monkeypatch.setattr(server, "_emit", lambda *args: emitted.append(args))
     monkeypatch.setattr(server, "_notif_submit", lambda *args, **kw: submitted.append((args, kw)))
-    monkeypatch.setattr(server, "_notif_claim_turn", lambda session: True)
+    monkeypatch.setattr(server, "_notif_claim_turn", lambda session: 1)
     session = {"session_key": "display-session", "history_lock": threading.RLock()}
     server._notif_handle_ready("ui-session", session, events, set(), registry, format_process_notification, None,
                                owned=True)

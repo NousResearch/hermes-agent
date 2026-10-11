@@ -91,7 +91,7 @@ def _make_adapter(**overrides):
 
     # Phase 9 state — interactive-button correlation dicts.
     adapter._clarify_state = {}
-    adapter._exec_approval_state = {}
+    adapter._exec_approval_state = OrderedDict()
     adapter._slash_confirm_state = {}
 
     # BasePlatformAdapter contract — minimum to keep send/lifecycle happy
@@ -1097,7 +1097,7 @@ class TestSendExecApprovalButtons:
         body = payload["interactive"]["body"]["text"]
         assert "rm -rf /tmp/foo" in body
         assert "cleanup script" in body
-        assert adapter._exec_approval_state[approval_id] == "sess-app-1"
+        assert adapter._exec_approval_state[approval_id] == ("sess-app-1", None)
 
 
 class TestSendSlashConfirmButtons:
@@ -1198,7 +1198,7 @@ class TestDispatchInteractiveReplyApproval:
     @pytest.mark.asyncio
     async def test_approve_tap_calls_resolver_and_confirms(self, monkeypatch):
         adapter = _make_adapter()
-        adapter._exec_approval_state["app1"] = "sess-app-1"
+        adapter._exec_approval_state["app1"] = ("sess-app-1", "rid-app-1")
         adapter._http_client = MagicMock()
         adapter._http_client.post = AsyncMock(
             return_value=_mock_httpx_response(200, {"messages": [{"id": "x"}]})
@@ -1207,7 +1207,7 @@ class TestDispatchInteractiveReplyApproval:
         calls = []
         monkeypatch.setattr(
             "tools.approval.resolve_gateway_approval",
-            lambda session_key, choice: calls.append((session_key, choice)) or 1,
+            lambda session_key, choice, request_id=None: calls.append((session_key, choice, request_id)) or 1,
         )
 
         raw = {
@@ -1221,7 +1221,7 @@ class TestDispatchInteractiveReplyApproval:
         handled = await adapter._dispatch_interactive_reply(raw, {})
 
         assert handled is True
-        assert calls == [("sess-app-1", "approve")]
+        assert calls == [("sess-app-1", "approve", "rid-app-1")]
         assert "app1" not in adapter._exec_approval_state
         confirm_payload = adapter._http_client.post.call_args.kwargs["json"]
         assert confirm_payload["type"] == "text"
@@ -1282,7 +1282,7 @@ class TestDispatchInteractiveReplyAuthorization:
             _dm_policy="allowlist",
             _allow_from={"15551234567"},
         )
-        adapter._exec_approval_state["app1"] = "sess-app-1"
+        adapter._exec_approval_state["app1"] = ("sess-app-1", "rid-app-1")
         adapter._http_client = MagicMock()
         adapter._http_client.post = AsyncMock(
             return_value=_mock_httpx_response(200, {"messages": [{"id": "x"}]})
@@ -1290,7 +1290,7 @@ class TestDispatchInteractiveReplyAuthorization:
         calls = []
         monkeypatch.setattr(
             "tools.approval.resolve_gateway_approval",
-            lambda session_key, choice: calls.append((session_key, choice)) or 1,
+            lambda session_key, choice, request_id=None: calls.append((session_key, choice, request_id)) or 1,
         )
 
         raw = {
@@ -1304,7 +1304,7 @@ class TestDispatchInteractiveReplyAuthorization:
         handled = await adapter._dispatch_interactive_reply(raw, {})
 
         assert handled is True
-        assert calls == [("sess-app-1", "approve")]
+        assert calls == [("sess-app-1", "approve", "rid-app-1")]
 
 
 @pytest.mark.usefixtures("authorized_interactive_env")

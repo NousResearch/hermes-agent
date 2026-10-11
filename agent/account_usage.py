@@ -647,13 +647,37 @@ def _fetch_anthropic_account_usage(
     payload = _get_json("https://api.anthropic.com/api/oauth/usage", headers, timeout=15.0)
     windows = _usage_windows(
         payload, (("five_hour", "Current session"), ("seven_day", "Current week"), ("seven_day_opus", "Opus week"),
-                  ("seven_day_sonnet", "Sonnet week")), "utilization", "resets_at", fraction=True,
+                  ("seven_day_sonnet", "Sonnet week")), "utilization", "resets_at",
         model_scoped={"seven_day_opus", "seven_day_sonnet"},
     )
     details: list[str] = []
     extra = payload.get("extra_usage") or {}
     used_credits, monthly_limit = extra.get("used_credits"), extra.get("monthly_limit")
     if extra.get("is_enabled") and _is_num(used_credits) and _is_num(monthly_limit):
+        spend = payload.get("spend") or {}
+        used_spend = spend.get("used") if isinstance(spend, dict) else None
+        limit_spend = spend.get("limit") if isinstance(spend, dict) else None
+        exponent = used_spend.get("exponent") if isinstance(used_spend, dict) else None
+        currencies = {
+            str(currency).upper()
+            for currency in (
+                extra.get("currency"),
+                used_spend.get("currency") if isinstance(used_spend, dict) else None,
+                limit_spend.get("currency") if isinstance(limit_spend, dict) else None,
+            )
+            if currency
+        }
+        if (
+            isinstance(exponent, int) and not isinstance(exponent, bool) and exponent >= 0
+            and isinstance(limit_spend, dict)
+            and len(currencies) <= 1
+            and used_spend.get("amount_minor") == used_credits
+            and limit_spend.get("amount_minor") == monthly_limit
+            and limit_spend.get("exponent") == exponent
+        ):
+            divisor = 10 ** exponent
+            used_credits /= divisor
+            monthly_limit /= divisor
         details.append(f"Extra usage: {used_credits:.2f} / {monthly_limit:.2f} {extra.get('currency') or 'USD'}")
     return _snapshot("anthropic", "oauth_usage_api", windows, details)
 

@@ -219,6 +219,25 @@ class TestMissingProviderKeyBlocks:
         assert "openrouter" not in calls
 
 
+class TestModelScopedCooldown:
+    def test_model_scoped_cooldown_is_not_a_missing_credential(self):
+        """A pool key benched for the pinned model only (others healthy) is a cooldown, not a
+        missing credential: preflight must not BLOCK the tick."""
+        from cron.scheduler_preflight import _preflight_check_provider_key
+        from hermes_cli import runtime_provider
+
+        def resolve(**kwargs):
+            return runtime_provider._anthropic_token_or_raise(model=kwargs["target_model"])
+
+        def token(model=None):
+            return None if model else "sk-healthy"
+
+        job = _job(provider="anthropic", model="claude-opus-5-5")
+        with patch("agent.anthropic_credentials.resolve_anthropic_token", token), \
+                patch("hermes_cli.runtime_provider.resolve_runtime_provider", resolve):
+            assert _preflight_check_provider_key(job, {}) is None
+
+
 class TestHealthyJobUnaffected:
     def test_healthy_job_runs_normally(self, tmp_path):
         job = _job()

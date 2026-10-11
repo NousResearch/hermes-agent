@@ -1,13 +1,14 @@
 """Session override notices and held-message lifecycle."""
 from __future__ import annotations
 import asyncio
-import dataclasses
+
 from copy import copy
 import logging
 import time
 from typing import Optional
 from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource
+from gateway.session_identity import replace_source
 
 logger = logging.getLogger("gateway.run")
 _STALE_OVERRIDE_LAST_COMPLETED_KEY = "stale_override_last_completed_at"
@@ -456,7 +457,7 @@ class GatewayStaleOverrideMixin:
             recovered = self._recover_telegram_topic_thread_id(source)
         except Exception:
             return source
-        return source if recovered is None else dataclasses.replace(source, thread_id=recovered)
+        return source if recovered is None else replace_source(source, thread_id=recovered)
 
     def _hm_rescue_orphaned_fifo(
         self, event: MessageEvent, source: SessionSource, is_internal: bool, _quick_key: str

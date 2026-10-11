@@ -3,6 +3,7 @@
 import dataclasses
 import json
 import time
+import weakref
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -249,3 +250,67 @@ async def test_topic_recovered_busy_ingress_preserves_original_active_agent(
     runner._claim_active_session_slot.assert_not_called()
     runner._handle_message_with_agent.assert_not_awaited()
     assert runner._peek_session_state(canonical_key).turn.agent is active_agent
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["command_key", "turn_entry"])
+async def test_topic_recovery_preserves_pinned_transport_identity(
+    tmp_path, monkeypatch, phase
+):
+    from gateway.session_identity import RoutingIdentity, identity_of
+
+    hermes_home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    config = GatewayConfig(sessions_dir=hermes_home / "sessions")
+    store = SessionStore(config.sessions_dir, config)
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="topic-chat",
+        chat_type="dm",
+        user_id="topic-user",
+    )
+    db = store._db
+    db.enable_telegram_topic_mode(chat_id=source.chat_id, user_id=source.user_id)
+    canonical = dataclasses.replace(source, thread_id="42")
+    entry = store.get_or_create_session(canonical)
+    db.bind_telegram_topic(
+        chat_id=source.chat_id,
+        thread_id="42",
+        user_id=source.user_id,
+        session_key=entry.session_key,
+        session_id=entry.session_id,
+    )
+    transport = TelegramAdapter(PlatformConfig(enabled=True, token="e2e-test-token"))
+    transport_ref = weakref.ref(transport)
+    authorization_home = tmp_path / "receiving-bot"
+    pinned = RoutingIdentity(
+        transport_profile="receiver",
+        runtime_profile="default",
+        authorization_home=authorization_home,
+        runtime_home=hermes_home,
+        multiplexed=False,
+        transport=transport_ref,
+    )
+    source._identity = pinned
+    source._transport_adapter_ref = transport_ref
+    source._authorization_profile_home = authorization_home
+    runner = _runner_with_store(config, store, db)
+    event = MessageEvent(text="ordinary message", source=source)
+
+    if phase == "command_key":
+        recovered = runner._normalize_source_for_session_key(source)
+    else:
+        resolved = await runner._hmwa_resolve_session(event, source)
+        assert resolved is not None
+        recovered, resolved_entry, session_key = resolved
+        assert resolved_entry.session_id == entry.session_id
+        assert session_key == entry.session_key
+        assert event.source is recovered
+
+    assert recovered is not source
+    assert recovered.thread_id == "42"
+    assert source.thread_id is None
+    assert identity_of(recovered) is pinned
+    assert recovered._transport_adapter_ref is transport_ref
+    assert recovered._authorization_profile_home == authorization_home
+    assert identity_of(recovered).adapter() is transport

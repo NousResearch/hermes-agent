@@ -34,6 +34,7 @@ from gateway.session import (
     build_session_context,
 )
 from gateway.session_transcript import TranscriptReadError
+from gateway.session_identity import replace_source
 from gateway.turn_context import TurnContext
 from gateway.turn_lease import DEFAULT_LEASE_WAIT, TurnLeaseTimeoutError
 from hermes_constants import get_hermes_home_override
@@ -417,7 +418,7 @@ class GatewayTurnMixin:
                 "telegram topic recovery: chat=%s user=%s %r -> %s",
                 source.chat_id, source.user_id, source.thread_id, recovered,
             )
-            source = dataclasses.replace(source, thread_id=recovered)
+            source = replace_source(source, thread_id=recovered)
             with suppress(Exception):
                 event.source = source
 

@@ -106,6 +106,22 @@ def test_native_runner_honours_deadline_and_interrupt_while_rg_is_silent(tree, o
     assert result.exit_code == 130 and time.monotonic() - started < 5
 
 
+def test_native_runner_tolerates_rg_exiting_before_the_bound_kill(tree, ops_factory, monkeypatch):
+    """rg can finish between the ``poll() is None`` check and the group kill (macOS
+    ``getpgid`` raises ESRCH on the reaped/zombie pid). That race must yield the
+    bounded results, not a ``[Errno 3] No such process`` error on every large tree."""
+    from tools.environments import local as local_env
+
+    def racing_kill(proc):
+        raise ProcessLookupError(3, "No such process")
+
+    monkeypatch.setattr(local_env, "_kill_process_group_posix", racing_kill)
+    ops = ops_factory(tree, [])
+    result = ops._run_rg_native(["sh", "-c", "'printf \"a\\nb\\nc\\n\"; sleep 5'"], 2, timeout=10)
+    assert result.exit_code == 0
+    assert result.stdout.splitlines() == ["a", "b"]
+
+
 def test_kill_switch_routes_search_back_to_the_shell(tree, ops_factory, monkeypatch):
     monkeypatch.setenv("HERMES_NATIVE_FILE_READ", "0")
     calls = []

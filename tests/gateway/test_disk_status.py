@@ -69,7 +69,7 @@ class TestCollectDiskStatus:
     def test_unreadable_filesystem_degrades_to_unknown(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        def _boom(_path):  # noqa: ANN001, ANN202
+        def _boom(_path):
             raise OSError("statvfs failed")
 
         monkeypatch.setattr(shutil, "disk_usage", _boom)

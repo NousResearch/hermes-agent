@@ -16,8 +16,8 @@ it('the production runner passes modes, full HWND and isolated payload imports',
 
   const strategy = createStoreStrategy({
     python: 'packaged-python.exe',
-    script: 'check-store-update.py',
-    sitePackages: 'payload-deps',
+    module: 'hermes_cli.windows_store_update',
+    pythonPath: 'payload-core;payload-deps',
     env: { PYTHONHOME: 'foreign', VIRTUAL_ENV: 'foreign', PYTHONPATH: 'foreign' },
     windowHandle: () => handle,
     appVersion: '1.0.0',
@@ -46,7 +46,7 @@ it('the production runner passes modes, full HWND and isolated payload imports',
   await strategy.apply()
   expect(calls.map(call => call.args)).toEqual(
     ['check', 'download', 'install'].map(mode => [
-      'check-store-update.py',
+      'hermes_cli.windows_store_update',
       '--mode',
       mode,
       '--hwnd',
@@ -55,7 +55,9 @@ it('the production runner passes modes, full HWND and isolated payload imports',
   )
   expect(calls.every(call => call.python === 'packaged-python.exe')).toBe(true)
   expect(
-    calls.every(call => call.env?.PYTHONPATH === 'payload-deps' && !call.env.PYTHONHOME && !call.env.VIRTUAL_ENV)
+    calls.every(
+      call => call.env?.PYTHONPATH === 'payload-core;payload-deps' && !call.env.PYTHONHOME && !call.env.VIRTUAL_ENV
+    )
   ).toBe(true)
   expect(calls[1].timeout).toBeGreaterThan(calls[0].timeout!)
   expect(calls.map(call => call.waitForExit)).toEqual([false, true, true])
@@ -69,8 +71,8 @@ describe('Store runner refuses unusable replies', () => {
   ])('does not turn $stdout into a current-version verdict', async response => {
     const strategy = createStoreStrategy({
       python: 'python',
-      script: 'checker',
-      sitePackages: 'deps',
+      module: 'checker',
+      pythonPath: 'deps',
       env: {},
       windowHandle: () => Buffer.alloc(8, 1),
       appVersion: '1',

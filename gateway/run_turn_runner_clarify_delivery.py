@@ -34,7 +34,9 @@ def text_fallback_coro(adapter, **send_kwargs):
     if not isinstance(adapter, BasePlatformAdapter) \
             or type(adapter).send_clarify is BasePlatformAdapter.send_clarify:
         return None
-    return BasePlatformAdapter.send_clarify(adapter, **send_kwargs)
+    # A human-decision prompt: Telegram's "important" mode must push it, not deliver it silently (#132516).
+    metadata = {**(send_kwargs.pop("metadata", None) or {}), "is_approval_prompt": True}
+    return BasePlatformAdapter.send_clarify(adapter, metadata=metadata, **send_kwargs)
 
 
 def _abort_for_outcome(outcome: str, *, session_key: str, clarify_mod) -> Optional[str]:

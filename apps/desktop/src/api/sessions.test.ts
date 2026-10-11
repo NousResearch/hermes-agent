@@ -21,6 +21,8 @@ const {
   deleteSession,
   getSession,
   getLatestSessionMessages,
+  renameSession,
+  searchSessions,
   setSessionArchived,
   setSessionPinnedRemote,
   setSessionUnreadRemote,
@@ -202,6 +204,36 @@ describe('setSessionPinnedRemote / setSessionUnreadRemote profile scoping', () =
   })
 })
 
+describe('renameSession profile scoping', () => {
+  it('carries the owning profile in the PATCH body and request', async () => {
+    hermesApi.mockResolvedValue({ ok: true, title: 'Prep Butler' } as never)
+
+    await renameSession('sess-r', 'Prep Butler', 'personal')
+
+    expect(hermesApi.mock.calls[0][0]).toMatchObject({
+      method: 'PATCH',
+      path: '/api/sessions/sess-r',
+      profile: 'personal',
+      body: { title: 'Prep Butler', profile: 'personal' }
+    })
+  })
+
+  it('falls back to the active request profile when the argument is omitted', async () => {
+    hermesApi.mockResolvedValue({ ok: true, title: 'Prep Butler' } as never)
+    vi.mocked(client.getApiRequestProfile).mockReturnValue('personal')
+
+    await renameSession('sess-r2', 'Prep Butler')
+
+    expect(hermesApi.mock.calls[0][0]).toMatchObject({
+      method: 'PATCH',
+      path: '/api/sessions/sess-r2',
+      profile: 'personal',
+      body: { title: 'Prep Butler', profile: 'personal' }
+    })
+    vi.mocked(client.getApiRequestProfile).mockReturnValue(null)
+  })
+})
+
 describe('listSidebarSessions remote ownership', () => {
   it('stamps active remote rows so a later resume stays on their gateway', async () => {
     hermesApi.mockResolvedValue({
@@ -287,6 +319,21 @@ describe('session reads pin the owner connection (#125372)', () => {
     expect(hermesApi.mock.calls[0][0]).toMatchObject({
       connectionId: 'other-conn',
       profile: 'tommy'
+    })
+  })
+})
+
+describe('searchSessions profile scope', () => {
+  it('searches the given profile instead of the primary backend', async () => {
+    // Unscoped, the primary searched its launch profile while the sidebar showed another.
+    hermesApi.mockResolvedValue({ results: [] } as never)
+    vi.mocked(client.profileScoped).mockImplementation(profile => (profile ? { priority: 'foreground', profile } : {}))
+
+    await searchSessions('zebra', 'research')
+
+    expect(hermesApi.mock.calls[0][0]).toMatchObject({
+      path: '/api/sessions/search?q=zebra&profile=research',
+      profile: 'research'
     })
   })
 })

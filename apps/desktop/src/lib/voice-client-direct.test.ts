@@ -218,6 +218,23 @@ describe('transcribeAudioClientDirect', () => {
     expect(isSttSilenceHallucination('Thank you.', null)).toBe(false)
   })
 
+  it('strips only trailing .! like the relay rstrip — internal punctuation is a real turn', () => {
+    const filter = {
+      phrases: ['thank you', 'bye', 'you', 'the end'],
+      repeat_regex: '^(?:thank you|thanks|bye|you|ok|okay|the end|[.,!\\\\s])+$'
+    }
+
+    // Internal punctuation survives the strip, so `thank. you` is not the
+    // phrase `thank you` — the relay keeps it as a real turn, and the
+    // client-direct path must agree (wire parity).
+    expect(isSttSilenceHallucination('thank. you', filter)).toBe(false)
+    expect(isSttSilenceHallucination('Than-k you. thank! you', filter)).toBe(false)
+
+    // Trailing punctuation is still stripped the way `rstrip('.!')` does.
+    expect(isSttSilenceHallucination('Thank you.!', filter)).toBe(true)
+    expect(isSttSilenceHallucination('The end...', filter)).toBe(true)
+  })
+
   it('surfaces provider rejections instead of silently relaying', async () => {
     mockDesktopApi({ ok: true, stt: directStt, tts: relay })
     vi.stubGlobal(
@@ -231,7 +248,13 @@ describe('transcribeAudioClientDirect', () => {
   it('speaks the xai wire shape', async () => {
     mockDesktopApi({
       ok: true,
-      stt: { ...directStt, wire: 'xai-stt', provider: 'xai', base_url: 'https://api.x.ai/v1', model: null },
+      stt: {
+        ...directStt,
+        wire: 'xai-stt',
+        provider: 'xai',
+        base_url: 'https://api.x.ai/v1',
+        model: 'grok-voice-transcribe-2.0'
+      },
       tts: relay
     })
 
@@ -243,6 +266,31 @@ describe('transcribeAudioClientDirect', () => {
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
     expect(url).toBe('https://api.x.ai/v1/stt')
     expect((init.body as FormData).get('format')).toBe('true')
+    expect((init.body as FormData).get('model')).toBe('grok-voice-transcribe-2.0')
+  })
+
+  it('drops format=true on the xai wire when no language is set (xAI answers HTTP 400 otherwise)', async () => {
+    mockDesktopApi({
+      ok: true,
+      stt: {
+        ...directStt,
+        wire: 'xai-stt',
+        provider: 'xai',
+        base_url: 'https://api.x.ai/v1',
+        model: 'grok-voice-transcribe-2.0',
+        language: ''
+      },
+      tts: relay
+    })
+
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ text: 'auto detected' }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    expect(await transcribeAudioClientDirect(new Blob(['x']))).toBe('auto detected')
+
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect((init.body as FormData).has('format')).toBe(false)
+    expect((init.body as FormData).has('language')).toBe(false)
   })
 
   it('speaks the elevenlabs wire shape with xi-api-key auth', async () => {

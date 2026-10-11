@@ -41,7 +41,7 @@ def _note_dashboard_client_activity(*, force: bool = False) -> None:
     try:
         from gateway.scale_to_zero import touch_dashboard_client_heartbeat
         touch_dashboard_client_heartbeat()
-    except Exception:  # noqa: BLE001 - liveness garnish must never break the WS
+    except Exception:
         _log.debug("dashboard client heartbeat touch failed", exc_info=True)
 
 
@@ -203,7 +203,7 @@ class WSTransport:
                 payload = _sanitize_ws_text(line)
                 try:
                     await asyncio.wait_for(self._ws.send_text(payload), timeout=_WS_SEND_DEADLINE_S)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     # The loop is responsive (the timer fired) but the socket never drained: unlike the
                     # loop-stall wait in write(), this is a dead peer. Latch under the writer lock so queued
                     # batches bail, and close the socket so handle_ws's read loop ends and its teardown
@@ -253,7 +253,7 @@ class WSTransport:
         runs. The server library bounds this (websockets ``close_timeout`` → abort)."""
         try:
             await self._ws.close(code=code)
-        except Exception as exc:  # noqa: BLE001 - the peer is already gone; teardown is what matters
+        except Exception as exc:
             _log.debug("ws close after %s failed peer=%s error=%s", reason, self._peer, exc)
 
 

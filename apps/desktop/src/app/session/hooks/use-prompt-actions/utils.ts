@@ -3,6 +3,7 @@ import { JsonRpcGatewayError } from '@hermes/shared'
 
 import { translateNow, type Translations } from '@/i18n'
 import type { ChatMessage } from '@/lib/chat-messages'
+import { isReadFileErrorResult } from '@/lib/desktop-fs'
 import { type CommandsCatalogLike, filterDesktopCommandsCatalog } from '@/lib/desktop-slash-commands'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import type { ComposerAttachment } from '@/store/composer'
@@ -278,6 +279,18 @@ export function isGatewayTimeoutError(error: unknown): boolean {
 export const SESSION_BUSY_RETRY_TIMEOUT_MS = 6_000
 export const SESSION_BUSY_RETRY_INTERVAL_MS = 150
 
+/**
+ * prompt.submit refused an unconfirmed truncation that would archive later user turns (#133716).
+ * The server counts turns with its own predicate, so it can refuse a cut the client judged shallow:
+ * callers roll back at once (the submit wrote nothing), ask, and re-run the action with the deep cut
+ * forced, so the retry re-reads and re-validates the session like any first attempt.
+ */
+export const GATEWAY_DEEP_TRUNCATE_REFUSED_CODE = 4033
+
+export function isDeepTruncateRefusal(error: unknown): boolean {
+  return error instanceof JsonRpcGatewayError && error.code === GATEWAY_DEEP_TRUNCATE_REFUSED_CODE
+}
+
 export function isSessionBusyError(error: unknown): boolean {
   return /session busy/i.test(error instanceof Error ? error.message : String(error))
 }
@@ -430,6 +443,11 @@ export async function readImageForRemoteAttach(
   filePath: string
 ): Promise<{ contentBase64: string; filename: string } | null> {
   const dataUrl = await window.hermesDesktop?.readFileDataUrl(filePath)
+
+  if (isReadFileErrorResult(dataUrl)) {
+    return null
+  }
+
   const contentBase64 = dataUrl ? base64FromDataUrl(dataUrl) : ''
 
   return contentBase64 ? { contentBase64, filename: imageFilenameFromPath(filePath) } : null
@@ -447,6 +465,10 @@ export async function readFileDataUrlForAttach(filePath: string): Promise<string
   }
 
   const dataUrl = await reader(filePath)
+
+  if (isReadFileErrorResult(dataUrl)) {
+    return null
+  }
 
   return dataUrl || null
 }
@@ -721,7 +743,17 @@ export interface SubmitTextOptions {
   /** With `surface: 'voice-live'`: the recent spoken exchange, appended to the
    *  model-bound note by the gateway (never persisted, never rendered). */
   voiceContext?: string
+  /** A spoken turn from the chained voice conversation: the gateway runs it on
+   *  `auxiliary.voice_chat` (the session model when that slot is on auto). */
+  voiceTurn?: boolean
   fromQueue?: boolean
+  /** Called once with the EXACT session identity the backend accepted the
+   *  prompt into — the live runtime id after any stale-runtime recovery, plus
+   *  the durable stored id when the caller knows it. A caller that must prove
+   *  delivery to another surface (Quick Entry) uses this instead of guessing
+   *  from the foreground session. Never called for a rejected or aborted
+   *  submit, and never for slash commands, which never reach prompt.submit. */
+  onAccepted?: (identity: { runtimeSessionId: string; storedSessionId: null | string }) => void
   /** Runtime session id to submit into. Queue drains pass this so a
    *  backgrounded/source session cannot be replaced by the current foreground
    *  session between enqueue and drain. */

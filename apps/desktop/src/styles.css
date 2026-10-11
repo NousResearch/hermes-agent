@@ -558,8 +558,17 @@
       calc(100% - var(--composer-measured-height) + var(--composer-surface-measured-height))
     );
     --vsq: min(0.5vh, 0.5vw);
-    --image-preview-max-width: 34rem;
-    --image-preview-height: clamp(16.25rem, calc(var(--vsq) * 100), 26.25rem);
+    /* The inline image preview envelope (#74564): agent-generated image SETS
+       arrive stacked in one message, and the old 34rem x ~16-26rem clamp left
+       each landscape image readable only through a small letterbox (the
+       lightbox existed, but inline inspection was impractical). Width now
+       fills most of the ~44rem message column, and the height floor is the
+       old CAP — every viewport gets at least what only tall windows got
+       before, so a 16:9 landscape frame always spans the full preview width
+       (floor 26.25rem × 16/9 ≥ 40rem). Images are never upscaled: the frame
+       width min() still caps at the natural px size. */
+    --image-preview-max-width: 40rem;
+    --image-preview-height: clamp(26.25rem, calc(var(--vsq) * 140), 40rem);
 
     --sidebar-width: 14.8125rem;
     --chat-min-width: 28rem;
@@ -1093,6 +1102,62 @@
   }
 }
 
+/* Pure-CSS edge fade for a scroller (FadeScroll). From each edge inward the
+   mask is `pad` of fully hidden content, then `size` of gradient up to fully
+   visible. The pad is for the scroller's own padding, so the gradient starts
+   at the content instead of spending itself on empty space. Both lengths are
+   scaled by a 0..1 progress that the scroller's own scroll position animates
+   (scroll-driven animations, Chromium 115+), so an edge only fades while
+   content is clipped behind it: progress rests at 0, so a list that fits
+   (inactive timeline, no animation) and a browser without support are never
+   dimmed. The progress is a registered <number> so the keyframes can
+   interpolate it, and an edge is fully faded in once `pad + size` px have
+   been scrolled. */
+@property --scroll-fade-top {
+  syntax: '<number>';
+  initial-value: 0;
+  inherits: false;
+}
+
+@property --scroll-fade-bottom {
+  syntax: '<number>';
+  initial-value: 0;
+  inherits: false;
+}
+
+@keyframes scroll-fade-top {
+  to {
+    --scroll-fade-top: 1;
+  }
+}
+
+@keyframes scroll-fade-bottom {
+  from {
+    --scroll-fade-bottom: 1;
+  }
+}
+
+@utility scroll-fade-y {
+  --scroll-fade-size: 1.25rem;
+  --scroll-fade-pad: 0px;
+
+  mask-image: linear-gradient(
+    to bottom,
+    transparent calc(var(--scroll-fade-pad) * var(--scroll-fade-top)),
+    #000 calc((var(--scroll-fade-pad) + var(--scroll-fade-size)) * var(--scroll-fade-top)),
+    #000 calc(100% - (var(--scroll-fade-pad) + var(--scroll-fade-size)) * var(--scroll-fade-bottom)),
+    transparent calc(100% - var(--scroll-fade-pad) * var(--scroll-fade-bottom))
+  );
+  animation:
+    scroll-fade-top linear both,
+    scroll-fade-bottom linear both;
+  /* After the shorthand: it resets the timeline. */
+  animation-timeline: scroll(self y), scroll(self y);
+  animation-range:
+    0 calc(var(--scroll-fade-pad) + var(--scroll-fade-size)),
+    calc(100% - var(--scroll-fade-pad) - var(--scroll-fade-size)) 100%;
+}
+
 /* The guided-onboarding thread is marked with [data-thread-type='onboarding']
    — the hook for onboarding-only transcript styling. */
 
@@ -1111,6 +1176,17 @@
    the air back, and only in this thread. */
 [data-slot='aui_thread-content'][data-thread-type='onboarding'] {
   padding-top: calc(var(--titlebar-height) + 1rem);
+}
+
+/* The setup chat is a first conversation read at arm's length in a small
+   window, so its transcript, cards and composer run a size up. It sets the
+   base tokens: the thread and composer scopes derive the final ones from
+   these times the chat text scale. */
+[data-setup-chat] {
+  --conversation-text-base-size: 0.9375rem;
+  --conversation-tool-base-size: 0.75rem;
+  --conversation-caption-base-size: 0.8125rem;
+  --conversation-base-line-height: 1.375rem;
 }
 
 @keyframes arc-border {
@@ -1342,6 +1418,17 @@ button {
   box-shadow: var(--shadow-md);
   backdrop-filter: blur(0.75rem) saturate(1.08);
   -webkit-backdrop-filter: blur(0.75rem) saturate(1.08);
+}
+
+/* Invisible dialog shells (the image lightbox). The rule above paints the
+   shell so a zoomed/panned image that moves inside it exposes a stray box of
+   shell paint; the variant opts out entirely — no background, no shadow, no
+   backdrop blur. */
+[data-slot='dialog-content'][data-variant='media-lightbox'] {
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 
 [data-slot='dropdown-menu-item']:focus,
@@ -1668,14 +1755,6 @@ body.guest-pointer-lock :is(webview, iframe) {
 [data-slot='aui_assistant-message-content'] .aui-md,
 [data-slot='aui_assistant-message-content'] .aui-md :where(p, li, blockquote, table, pre) {
   font-size: inherit;
-}
-
-/* Ask / onboarding pills sit flush with the prose left edge. `.aui-md` is
-   `overflow-hidden` so wide code/tables don't blow the column; that same clip
-   shears the first pill's left cap. Cards opt the surface out; tables/code keep
-   their own overflow. */
-[data-slot='aui_assistant-message-content'] .aui-md:has([data-onboarding-card]) {
-  overflow: visible;
 }
 
 /* Tailwind Typography sets `.prose :where(p) { margin: 1.25em }` (~16px). That
@@ -2035,6 +2114,10 @@ body.guest-pointer-lock :is(webview, iframe) {
 
 [data-slot='composer-root'][data-thread-scrolled-up] {
   --composer-fill: color-mix(in srgb, var(--dt-card) 80%, transparent);
+}
+
+[data-slot='composer-dock']:is(:hover, :focus-within) [data-slot='composer-root'][data-thread-scrolled-up] {
+  --composer-fill: color-mix(in srgb, var(--dt-card) 88%, transparent);
 }
 
 /* Tool/thinking blocks now live at message-text alignment (no leading
@@ -3791,4 +3874,15 @@ html[data-hud-window] [data-slot='popover-content'] {
 
 [data-hud-shell] [data-slot='composer-bounds'] *::-webkit-scrollbar {
   display: none;
+}
+
+/* Keep-alive hidden panes (see pane-visibility.ts) hide with `visibility:
+   hidden` so the layout box — and with it scroll positions — survives a tab
+   round-trip. But `visibility` is inherited-and-overridable: third-party
+   widget scripts (Twitter's embed injects its rendered card with an inline
+   `visibility: visible`) can paint through the hidden pane over the active
+   view (#79833). Force every descendant to follow the pane's visibility; an
+   author `!important` rule beats the widget's inline non-important style. */
+[data-pane-hidden] * {
+  visibility: inherit !important;
 }

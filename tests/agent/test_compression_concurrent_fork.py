@@ -183,11 +183,7 @@ def test_compression_activity_heartbeat_emits_client_status_events(tmp_path: Pat
     touch_calls: list[str] = []
     agent._touch_activity = lambda desc, **_kw: touch_calls.append(desc)
     status_events: list[tuple[str, str]] = []
-    setattr(
-        agent,
-        "status_callback",
-        lambda event, message: status_events.append((event, message)),
-    )
+    agent.status_callback = lambda event, message: status_events.append((event, message))
 
     def _slow_compress(*_a, **_kw):
         _wait_for_touch(touch_calls, "context compression in progress")
@@ -232,11 +228,7 @@ def test_compression_heartbeat_is_silent_for_quiet_context_engines(tmp_path: Pat
     touch_calls: list[str] = []
     agent._touch_activity = lambda desc, **_kw: touch_calls.append(desc)
     status_events: list[tuple[str, str]] = []
-    setattr(
-        agent,
-        "status_callback",
-        lambda event, message: status_events.append((event, message)),
-    )
+    agent.status_callback = lambda event, message: status_events.append((event, message))
 
     def _slow_compress(*_a, **_kw):
         _wait_for_touch(touch_calls, "context compression in progress")
@@ -273,11 +265,7 @@ def test_lock_contender_preserves_terminal_compaction_lifecycle(tmp_path: Path) 
 
     agent = _build_agent_with_db(db, session_id)
     status_events: list[tuple[str, str]] = []
-    setattr(
-        agent,
-        "status_callback",
-        lambda event, message: status_events.append((event, message)),
-    )
+    agent.status_callback = lambda event, message: status_events.append((event, message))
     messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
 
     returned, _system_prompt = agent._compress_context(
@@ -298,14 +286,10 @@ def test_failed_session_split_does_not_announce_compaction_complete(tmp_path: Pa
     session_id = "FAILED_SPLIT_STATUS_TEST"
     db.create_session(session_id, source="discord")
     agent = _build_agent_with_db(db, session_id)
-    setattr(agent, "compression_in_place", False)
+    agent.compression_in_place = False
     db.publish_compression_child = MagicMock(side_effect=RuntimeError("split boom"))
     status_events: list[tuple[str, str]] = []
-    setattr(
-        agent,
-        "status_callback",
-        lambda event, message: status_events.append((event, message)),
-    )
+    agent.status_callback = lambda event, message: status_events.append((event, message))
     messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
 
     agent._compress_context(
@@ -327,14 +311,10 @@ def test_failed_in_place_split_does_not_announce_compaction_complete(tmp_path: P
     session_id = "FAILED_IN_PLACE_STATUS_TEST"
     db.create_session(session_id, source="discord")
     agent = _build_agent_with_db(db, session_id)
-    setattr(agent, "compression_in_place", True)
+    agent.compression_in_place = True
     db.archive_and_compact = MagicMock(side_effect=RuntimeError("archive boom"))
     status_events: list[tuple[str, str]] = []
-    setattr(
-        agent,
-        "status_callback",
-        lambda event, message: status_events.append((event, message)),
-    )
+    agent.status_callback = lambda event, message: status_events.append((event, message))
     messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
 
     agent._compress_context(
@@ -1058,9 +1038,9 @@ def test_equal_copy_compression_result_does_not_rewrite_session(
     db.create_session(parent_sid, source="cli")
 
     agent = _build_agent_with_db(db, parent_sid)
-    setattr(agent, "compression_in_place", in_place)
+    agent.compression_in_place = in_place
     messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
-    compressor = getattr(agent, "context_compressor")
+    compressor = agent.context_compressor
     compressor.compress.side_effect = lambda incoming, **_kw: list(incoming)
 
     with patch.object(
@@ -1075,7 +1055,7 @@ def test_equal_copy_compression_result_does_not_rewrite_session(
         )
 
     assert returned is messages
-    assert getattr(agent, "session_id") == parent_sid
+    assert agent.session_id == parent_sid
     assert _count_children(db, parent_sid) == 0
     parent = db.get_session(parent_sid)
     assert parent is not None

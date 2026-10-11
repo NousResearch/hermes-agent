@@ -25,6 +25,7 @@ def test_shell_runner_executes_tests_and_propagates_failure(tmp_path):
         cwd=tmp_path, capture_output=True, text=True, timeout=180,
         env={**os.environ, "HERMES_PYTHON": sys.executable, "HERMES_TEST_FILE_RETRIES": "0",
              "PATHEXT": ".COM;.EXE;.BAT;.CMD"},
+             check=False,
     )
     assert marker.read_text(encoding="utf-8") == "executed", result.stdout + result.stderr
     assert result.returncode != 0, result.stdout + result.stderr

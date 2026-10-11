@@ -53,7 +53,23 @@ export function takeQueueItem(queue: QueueItem[], index: number, editedDisplay?:
 
   const text = editedDisplay.includes(item.display) ? editedDisplay.replace(item.display, item.text) : editedDisplay
 
-  return text === item.text ? { ...item, display: editedDisplay } : { display: editedDisplay, text }
+  if (text === item.text) {
+    return { ...item, display: editedDisplay }
+  }
+
+  // New text is a new submission (fresh id, no prior attempt), but the edit keeps what the
+  // user queued it with: attachments, destination and the busy-control intent.
+  const {
+    failed: _f,
+    inFlight: _i,
+    legacyAttempted: _l,
+    preparedText: _p,
+    settle: _s,
+    submissionId: _id,
+    ...kept
+  } = item
+
+  return { ...kept, display: editedDisplay, text }
 }
 
 // Mutates `arr` in place; returned reference is the same input array, kept

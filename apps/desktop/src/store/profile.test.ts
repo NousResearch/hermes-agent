@@ -12,6 +12,7 @@ const openGatewayForProfile = vi.fn(async (_profile: string) => undefined)
 const openGatewayForAgent = vi.fn(async (_connectionId: null | string, _profile: string) => undefined)
 const openSecondaryCount = vi.fn(() => 0)
 const activeGatewayConnectionId = vi.fn((): null | string => null)
+const isActivePrimary = vi.fn((): boolean => true)
 const $gateway = atom<unknown>({ id: 'live-socket', connectionState: 'open' })
 const resetStarmapGraph = vi.fn()
 
@@ -23,6 +24,7 @@ vi.mock('@/store/gateway', () => ({
   activeGatewayProfileKey: () => ensureGatewayForProfile.mock.lastCall?.[0] ?? $activeGatewayProfile.get(),
   ensureGatewayForAgent,
   ensureGatewayForProfile,
+  isActivePrimary,
   openGatewayForAgent,
   openGatewayForProfile,
   openSecondaryCount
@@ -256,6 +258,7 @@ describe('prewarmProfileBackend (hover-intent pool spawn)', () => {
   // `default` spawned This device's default instead (#100098 review).
   it('warms the same (connection, profile) a current-source pick activates', async () => {
     activeGatewayConnectionId.mockReturnValue('gateway')
+    isActivePrimary.mockReturnValue(false)
     $activeGatewayProfile.set('research')
     openGatewayForAgent.mockClear()
     ensureGatewayForAgent.mockClear()
@@ -271,6 +274,7 @@ describe('prewarmProfileBackend (hover-intent pool spawn)', () => {
       )
     } finally {
       activeGatewayConnectionId.mockReturnValue(null)
+      isActivePrimary.mockReturnValue(true)
     }
   })
 })

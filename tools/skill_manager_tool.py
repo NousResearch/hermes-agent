@@ -517,6 +517,14 @@ def _patch_skill(name: str, old_string: str, new_string: str, file_path: str | N
     skill_dir, guard = _locate_for_write(name, "patch")
     if guard:
         return guard
+    # Distinguish explicitly-supplied empty string from omitted (None).
+    # An empty string is a caller mistake; reject it so the write never
+    # silently falls through to SKILL.md.
+    if file_path is not None and not file_path.strip():
+        return _err(
+            "file_path must not be empty when supplied. "
+            "Omit it to patch SKILL.md, or give a path like 'references/api-guide.md'."
+        )
     target_label = file_path or "SKILL.md"
     if file_path:
         target, err = _resolve_supporting_file(skill_dir, file_path)

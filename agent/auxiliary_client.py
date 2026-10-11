@@ -4836,7 +4836,10 @@ def _build_bedrock_client(provider: str, model: Optional[str], *, raw_codex: boo
         logger.debug("resolve_provider_client: bedrock-openai (%s, %s)", final_model, region)
         return (client if raw_codex else CodexAuxiliaryClient(client, final_model)), final_model
     base_url = f"https://bedrock-runtime.{region}.amazonaws.com"
-    if is_anthropic_bedrock_model(final_model):
+    # The AnthropicBedrock SDK signs with SigV4 only; a bearer-token-only host fails every call
+    # with "could not resolve credentials from session" (#29309). Route Claude through Converse
+    # there, as the main runtime does (runtime_provider_backends: bedrock_converse when bearer).
+    if is_anthropic_bedrock_model(final_model) and not resolve_bedrock_bearer_token():
         try:
             real_client = build_anthropic_bedrock_client(region)
         except ImportError as exc:

@@ -10,6 +10,7 @@ import { resetSessionsLimit } from '@/store/layout'
 import { resetLiveSync } from '@/store/live-sync'
 import { invalidateProfileListFetches } from '@/store/profile'
 import { exitProjectScope } from '@/store/project-scope'
+import { resetProjectsCache } from '@/store/projects'
 import { clearLiveReactionOverlays } from '@/store/reactions-local'
 import {
   $unreadFinishedSessionIds,
@@ -202,6 +203,12 @@ export function wipeSessionListsForGatewaySwitch(): void {
   // Project ids belong to the outgoing backend's projects.db; a scope left
   // entered would root the next draft's cwd in the old source's project.
   exitProjectScope()
+  // The cached project catalog (list + tree + active pointer) belongs to the
+  // outgoing backend too. A connection switch can keep the same profile name,
+  // so the profile-change reset in store/projects never fires here — without
+  // this wipe the tree left behind keeps answering the next source's drafts
+  // with the old backend's projects (#79406).
+  resetProjectsCache()
   setSessions([])
   // Reset AFTER the wipe: the wipe's empty payload schedules a sweep, and
   // resetting first would leave that timer live — sweeping every stored id

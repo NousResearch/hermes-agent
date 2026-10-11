@@ -152,3 +152,16 @@ def test_undo_after_an_unanswered_turn_rewinds_the_merged_turn_on_every_surface(
     assert [c for _i, _r, c, a in _active_rows(db, sid) if a] == ["q1", "a1"]
     assert _rewind_via(surface, db, sid, 1) is not None
     assert [c for _i, _r, c, a in _active_rows(db, sid) if a] == []
+
+
+def test_rewind_rejects_a_warm_prefix_with_a_different_earlier_user_turn(db):
+    """Same user-turn count is not the same conversation. A stale first ask must not be installed."""
+    sid = "stale-prefix"
+    _seed(db, sid, turns=3)
+    before = _active_rows(db, sid)
+    warm = [dict(m) for m in db.get_messages_as_conversation(sid)]
+    assert warm[0]["role"] == "user" and warm[0]["content"] == "q1"
+    warm[0]["content"] = "different-q1"
+    with pytest.raises(RuntimeError, match="session history changed"):
+        db.rewind_user_turn(sid, 2, warm_history=warm)
+    assert _active_rows(db, sid) == before

@@ -87,6 +87,10 @@ class SessionRewindMixin:
             warm_user = _user_indices(warm)
             if len(warm_user) != len(durable_user):
                 raise RuntimeError(_HISTORY_CHANGED)
+            # Count is not identity: an earlier user turn can differ while the target text matches.
+            for k in range(user_ordinal + 1):
+                if _comparison_content(warm[warm_user[k]]) != _comparison_content(durable[durable_user[k]]):
+                    raise RuntimeError(_HISTORY_CHANGED)
             prefix, warm_live_view = history_before_user_originated_turn(warm, warm_user[user_ordinal])
             if _comparison_content(live_view) != _comparison_content(warm_live_view):
                 raise RuntimeError(_HISTORY_CHANGED)

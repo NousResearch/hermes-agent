@@ -76,9 +76,96 @@ function applyChangedMessages(
   return true
 }
 
+/**
+ * True when a message carries user-visible text — the floor for pinning a
+ * message across an adapter sync. Empty rows (optimistic placeholders, bare
+ * tool-only rows) stay ephemeral.
+ */
+function hasVisibleText(message: ThreadMessage): boolean {
+  return message.content.some(part => part.type === 'text' && part.text.trim() !== '')
+}
+
+/**
+ * While a turn is running, a store snapshot can briefly omit the in-flight
+ * streamed row (#119686): a rewrite/tool-phase snapshot, an interrupt-driven
+ * re-hydration or a compaction refresh all predate the live turn. Reconciling
+ * "absent from the incoming set" as "must be deleted" wiped the bubble the
+ * user had just watched stream. The reconcile still has to delete genuinely
+ * abandoned rows, so the pin is deliberately narrow: only assistant messages
+ * with user-visible text ON THE VISIBLE HEAD BRANCH that are newer than
+ * everything in the incoming snapshot (the last synced anchor). A replacement
+ * reply the store has already accepted carries a later-or-equal timestamp, so
+ * it lands outside the pin window and the abandoned draft prunes as before.
+ *
+ * Returns the pinned ids plus the deepest pinned id — the reconcile's
+ * `resetHead(incoming head)` would otherwise delete the pinned tail as a
+ * descendant of the incoming head, so the head must move to the pinned tail
+ * instead while it survives.
+ */
+function pinnedLiveTail(
+  repository: ExternalStoreThreadRuntimeCore['repository'],
+  incomingIds: ReadonlySet<string>,
+  incoming: readonly { message: ThreadMessage; parentId: string | null }[]
+): { ids: Set<string>; headId: string | null } {
+  // The incoming snapshot still owes this turn's reply when it does not end
+  // with a non-empty assistant row: the reply the user watched stream has not
+  // landed in the store yet (mid-rewrite snapshot, interrupt re-hydration,
+  // compaction refresh). Timestamps alone cannot draw that line — a fast
+  // reply can land within the same second (or millisecond) the draft started,
+  // and a missing ChatMessage.timestamp makes createdAt a fresh Date.now()
+  // (milliseconds) next to second-granularity anchors. Structure first,
+  // timestamps only to keep a strictly-newer draft when a replacement reply
+  // HAS landed (multi-turn: the snapshot ends with the previous turn's reply
+  // while the new turn's row is still in flight).
+  const lastIncoming = incoming.at(-1)?.message
+  const replyLanded = Boolean(
+    lastIncoming && lastIncoming.role === 'assistant' && hasVisibleText(lastIncoming)
+  )
+
+  // Anchor = the NEWEST incoming message still present in the repository. A
+  // snapshot that has not caught up drops its old tail, so its newest
+  // remaining row predates the live streamed turn; anchor on what actually
+  // made it into the tree, not on what the snapshot claims is newest.
+  let anchorTime = 0
+
+  for (const { message } of incoming) {
+    if (repositoryHasId(repository, message.id)) {
+      anchorTime = Math.max(anchorTime, message.createdAt?.getTime() ?? 0)
+    }
+  }
+
+  // The head branch is what the user is looking at; off-branch drafts stay
+  // prunable.
+  const headBranch = repository.getMessages()
+  const ids = new Set<string>()
+  let headId: string | null = null
+
+  for (const message of headBranch) {
+    if (
+      !incomingIds.has(message.id) &&
+      message.role === 'assistant' &&
+      hasVisibleText(message) &&
+      (!replyLanded || (message.createdAt?.getTime() ?? 0) > anchorTime)
+    ) {
+      ids.add(message.id)
+      headId = message.id
+    }
+  }
+
+  return { ids, headId }
+}
+
+function repositoryHasId(
+  repository: ExternalStoreThreadRuntimeCore['repository'],
+  id: string
+): boolean {
+  return repository.export().messages.some(({ message }) => message.id === id)
+}
+
 export function syncRepositoryIncrementally(
   runtime: ExternalStoreThreadRuntimeCore,
-  messageRepository: NonNullable<ExternalStoreAdapter['messageRepository']>
+  messageRepository: NonNullable<ExternalStoreAdapter['messageRepository']>,
+  { pinLiveTail = false }: { pinLiveTail?: boolean } = {}
 ): readonly ThreadMessage[] {
   const repository = (runtime as unknown as { repository: ExternalStoreThreadRuntimeCore['repository'] }).repository
   const incoming = messageRepository.messages
@@ -91,6 +178,11 @@ export function syncRepositoryIncrementally(
   // to preserve: clear the tree first (leaves→root), then rebuild clean.
   const incomingIds = new Set(incoming.map(({ message }) => message.id))
   const disjoint = existing.length > 0 && !existing.some(({ message }) => incomingIds.has(message.id))
+  // Mid-run, an incoming snapshot that omits the live streamed tail must not
+  // delete it (#119686). The pin only ever applies to the reconcile below —
+  // a fully disjoint thread switch still clears the tree (the transcript
+  // moved to an unrelated conversation).
+  const pinned = pinLiveTail ? pinnedLiveTail(repository, incomingIds, incoming) : { ids: new Set<string>(), headId: null }
 
   // Steady-state streaming: same message set, one item changed. Skip the
   // whole-transcript rewrite, the prune scan, and the second export. resetHead
@@ -114,12 +206,14 @@ export function syncRepositoryIncrementally(
   }
 
   for (const { message } of repository.export().messages) {
-    if (!incomingIds.has(message.id)) {
+    if (!incomingIds.has(message.id) && !pinned.ids.has(message.id)) {
       repository.deleteMessage(message.id)
     }
   }
 
-  repository.resetHead(headId)
+  // While the pinned tail survives, the visible head stays on it: resetting
+  // to the incoming head would delete the pinned draft as its descendant.
+  repository.resetHead(pinned.headId ?? headId)
 
   return repository.getMessages()
 }
@@ -210,7 +304,10 @@ class IncrementalExternalStoreThreadRuntimeCore extends ExternalStoreThreadRunti
       self._assistantOptimisticId = null
     }
 
-    const messages = syncRepositoryIncrementally(this, store.messageRepository)
+    // Mid-run, the incoming snapshot can briefly omit the live streamed tail
+    // (#119686) — pin it so the reconcile below cannot delete a non-empty
+    // streamed reply. Not running: the snapshot is the transcript truth.
+    const messages = syncRepositoryIncrementally(this, store.messageRepository, { pinLiveTail: isRunning })
 
     if (messages.length > 0) {
       this.ensureInitialized()

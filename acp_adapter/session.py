@@ -535,9 +535,33 @@ class SessionManager:
             "reasoning_config": resolve_reasoning_config(config, model or default_model),
         }
         resolve_error: Exception | None = None
+        # ``_persist`` stores the agent's RESOLVED provider, which for a named custom entry
+        # (``custom:<name>``) is the bare billing class ``custom``. ``resolve_runtime_provider``
+        # cannot route that bare label: without ``model.base_url`` it raises AuthError (and the
+        # agent is then built with no provider, falling back to OpenRouter), with it but a
+        # key_cmd/key_env-fed entry it resolves the keyless placeholder — either way the first
+        # restored prompt dies with 401. Recover the configured identity from the persisted
+        # base_url/model, the same heal the TUI gateway's resume path applies (#132937).
+        resolve_requested = requested_provider or config_provider
+        resolve_kwargs: dict = {
+            "requested": resolve_requested,
+            "target_model": (model or default_model) or None,
+        }
+        if str(resolve_requested or "").strip().lower() == "custom":
+            from hermes_cli.runtime_provider import canonical_custom_identity
+
+            if recovered := canonical_custom_identity(
+                base_url=base_url or None,
+                config_provider=config_provider,
+                model=(model or default_model) or None,
+            ):
+                resolve_kwargs["requested"] = recovered
+            if base_url:
+                # Failing identity recovery, still hand the endpoint to the direct-alias branch
+                # so pool/env credentials resolve.
+                resolve_kwargs["explicit_base_url"] = base_url
         try:
-            runtime = resolve_runtime_provider(
-                requested=requested_provider or config_provider, target_model=(model or default_model) or None)
+            runtime = resolve_runtime_provider(**resolve_kwargs)
             kwargs.update({
                 "provider": runtime.get("provider"), "api_mode": api_mode or runtime.get("api_mode"),
                 "base_url": base_url or runtime.get("base_url"), "api_key": runtime.get("api_key"),

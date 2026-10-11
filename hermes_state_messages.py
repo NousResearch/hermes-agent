@@ -373,9 +373,14 @@ class SessionMessagesMixin:
                     )
         return msg
 
-    @staticmethod
-    def _bump_session_counters(conn, session_id: str, inserted: int, tool_calls: int, *, unit: bool) -> None:
-        """Bump sessions.* counters after an insert; *unit* bakes the ``+ 1`` literal into the SQL."""
+    @classmethod
+    def _bump_session_counters(cls, conn, session_id: str, inserted: int, tool_calls: int, *, unit: bool) -> None:
+        """Bump sessions.* counters after an insert; *unit* bakes the ``+ 1`` literal into the SQL.
+
+        A landed row is also activity: un-hide a lineage the idle sweep archived (#133307). Long-lived
+        DM sessions never ``reopen_session`` (``ended_at IS NULL``), so without this the sweep's
+        archive would outlive the chat's own new messages. Deliberate archives keep hiding — the
+        lineage check inside refuses mixed provenance."""
         inc, params = ("1", ()) if unit else ("?", (inserted,))
         if tool_calls > 0:
             conn.execute(
@@ -385,6 +390,10 @@ class SessionMessagesMixin:
         elif inserted > 0:
             conn.execute(
                 f"UPDATE sessions SET message_count = message_count + {inc} WHERE id = ?", (*params, session_id))
+        if inserted > 0:  # replay/dedup land nothing: no new row, no re-activation
+            row = conn.execute("SELECT archived FROM sessions WHERE id = ?", (session_id,)).fetchone()
+            if row is not None and row[0]:
+                cls._unarchive_auto_archived_lineage(conn, session_id)
 
     def append_message(
         self, session_id: str, role: str, content: str | None = None, tool_name: str | None = None, tool_calls: Any = None,

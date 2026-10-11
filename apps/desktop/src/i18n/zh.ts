@@ -1410,6 +1410,7 @@ export const zhOverrides = {
       updateAllDone: '更新已分发',
       updateAllFailed: '批量更新失败',
       updateSkippedCloud: '由 Hermes Cloud 托管',
+      updateSkippedExternal: (command: string) => (command ? `由外部工具管理。更新请运行 ${command}` : '由外部工具管理。请用其自身工具更新。'),
       kindLocal: '本地',
       kindRemote: '远程网关',
       kindCloud: 'Hermes Cloud',

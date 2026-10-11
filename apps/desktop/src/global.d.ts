@@ -871,6 +871,8 @@ export interface DesktopUpdateStatus {
   currentBranch?: string
   reason?: string
   message?: string
+  /** With `reason: 'external'`: the command the checkout names for its updates. */
+  advice?: string
   error?: string
   /** Exact commits behind. null = update available, but the count is
    *  unknowable (shallow clone without a merge-base) — never render it as a
@@ -1239,8 +1241,11 @@ export interface DesktopConnectionUpdateResult {
   kind: DesktopConnectionKind
   ok: boolean
   skipped?: boolean
+  /** `managed-externally`: the install declared another tool owns its updates. */
   reason?: string
   detail?: string
+  /** The command that updates this install instead, when it named one. */
+  command?: string
   error?: string
 }
 

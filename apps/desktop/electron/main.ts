@@ -16680,6 +16680,18 @@ ipcMain.handle('hermes:connections:update-all', async (_event, payload) => {
           // Settings → Updates button (marker + venv gate + relaunch flow).
           const result: any = await applyUpdates()
 
+          if (result?.error === 'external') {
+            // The checkout declared another tool owns its updates: a skip, not a failure.
+            return {
+              ...base,
+              ok: false,
+              skipped: true,
+              reason: 'managed-externally',
+              detail: result.message,
+              ...(result.command ? { command: result.command } : {})
+            }
+          }
+
           return { ...base, ok: result?.ok !== false, detail: result?.message || 'update started' }
         }
 
@@ -16702,8 +16714,9 @@ ipcMain.handle('hermes:connections:update-all', async (_event, payload) => {
             ...base,
             ok: false,
             skipped: true,
-            reason: body?.error || 'backend-refused',
-            detail: body?.message
+            reason: body?.error === 'update_managed_externally' ? 'managed-externally' : body?.error || 'backend-refused',
+            detail: body?.message,
+            ...(body?.update_command ? { command: String(body.update_command) } : {})
           }
         }
 

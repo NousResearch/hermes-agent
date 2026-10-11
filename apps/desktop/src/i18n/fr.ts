@@ -1710,6 +1710,8 @@ export const frOverrides = {
       updateAllDone: 'Mises à jour envoyées',
       updateAllFailed: "L'envoi groupé des mises à jour a échoué",
       updateSkippedCloud: 'Gérée par Hermes Cloud',
+      updateSkippedExternal: (command: string) =>
+        command ? `Gérée en externe. Mettre à jour avec ${command}` : 'Gérée en externe. Mettez-la à jour avec son propre outil.',
       kindLocal: 'Locale',
       kindRemote: 'Gateway distante',
       kindCloud: 'Hermes Cloud',

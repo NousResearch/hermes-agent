@@ -252,8 +252,37 @@ def get_managed_update_command() -> Optional[str]:
 
 # "apt" is the Termux APT distribution identifier, not a generic Debian/Ubuntu signal; another
 # APT distribution needs its own method. "home-manager" is listed because the managed marker can
-# return it and a stamp must name every method this function returns.
-_SUPPORTED_INSTALL_METHODS = frozenset({"apt", "docker", "nix", "nixos", "home-manager", "git", "unknown"})
+# return it and a stamp must name every method this function returns. "external" is a source
+# checkout whose updates another tool owns (e.g. a script that rebuilds upstream + local branches).
+_SUPPORTED_INSTALL_METHODS = frozenset({"apt", "docker", "nix", "nixos", "home-manager", "git", "external", "unknown"})
+
+# Beside ``.install_method``: the command that updates an ``external`` checkout, kept verbatim in its
+# own file so the method stamp stays one lowercase token for every reader.
+_EXTERNAL_UPDATE_COMMAND_FILE = ".update_command"
+_EXTERNAL_UPDATE_FALLBACK = "the tool that manages this checkout"
+
+
+def external_update_command(project_root: Optional[Path] = None) -> str:
+    """The command named in ``<install tree>/.update_command``, or ``""`` when absent/empty."""
+    root = project_root if project_root is not None else get_project_root()
+    try:
+        text = (root / _EXTERNAL_UPDATE_COMMAND_FILE).read_text(encoding="utf-8-sig")
+    except OSError:
+        return ""
+    return next((line.strip() for line in text.splitlines() if line.strip()), "")
+
+
+def is_external_install(project_root: Path) -> bool:
+    """True when the code-scoped stamp hands this checkout's updates to another tool."""
+    return _install_method_stamp(Path(project_root) / ".install_method") == "external"
+
+
+def external_update_message(project_root: Optional[Path] = None) -> str:
+    """What ``hermes update`` says in an ``external`` checkout."""
+    command = external_update_command(project_root)
+    if command:
+        return f"This checkout's updates are managed externally — run: {command}"
+    return f"This checkout's updates are managed externally — update it with {_EXTERNAL_UPDATE_FALLBACK}."
 
 
 def _install_method_stamp(path: Path) -> Optional[str]:
@@ -265,7 +294,7 @@ def _install_method_stamp(path: Path) -> Optional[str]:
 
 
 def detect_install_method(project_root: Optional[Path] = None) -> str:
-    """Detect how Hermes was installed: apt/docker/nix/nixos/home-manager/git/unknown.
+    """Detect how Hermes was installed: apt/docker/nix/nixos/home-manager/git/external/unknown.
     Order: code-scoped ``<install tree>/.install_method`` stamp (authoritative) -> legacy
     ``$HERMES_HOME/.install_method`` -> managed marker -> /nix/store path -> .git dir -> unknown.
     The stamp lives next to the code because HERMES_HOME is shared data: a container and a host
@@ -288,7 +317,8 @@ def detect_install_method(project_root: Optional[Path] = None) -> str:
         return method
 
     method = _install_method_stamp(get_hermes_home() / ".install_method")
-    if method and not (method == "docker" and not _running_in_container()):
+    # "external" names one code tree's update owner; a shared home must not hand it to every install.
+    if method and method != "external" and not (method == "docker" and not _running_in_container()):
         return method
 
     managed = get_managed_system()
@@ -334,10 +364,14 @@ _UPDATE_COMMAND_BY_METHOD = {
 }
 
 
-def recommended_update_command_for_method(method: str) -> str:
-    """Return the update command or guidance for a given install method."""
+def recommended_update_command_for_method(method: str, project_root: Optional[Path] = None) -> str:
+    """Return the update command or guidance for a given install method.
+
+    ``project_root`` only matters for ``external``, whose command lives in that tree."""
     if is_nix_install_method(method):
         return _NIX_UPDATE_MSG
+    if method == "external":
+        return external_update_command(project_root) or _EXTERNAL_UPDATE_FALLBACK
     return _UPDATE_COMMAND_BY_METHOD.get(method, "hermes update")
 
 
@@ -345,8 +379,8 @@ def recommended_update_command() -> str:
     """Return the best update command for the current installation.
     Managed state wins over the code-scoped stamp: a managed install can carry a stale stamp
     naming an update path the managed guard refuses."""
-    return get_managed_update_command() or recommended_update_command_for_method(
-        detect_install_method(get_project_root()))
+    root = get_project_root()
+    return get_managed_update_command() or recommended_update_command_for_method(detect_install_method(root), root)
 
 
 # Shared by ``cmd_update`` and ``_cmd_update_check`` (hermes_cli/main.py) so the wording never

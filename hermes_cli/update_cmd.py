@@ -652,7 +652,7 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False, ch
     if refusal is not None:
         print(refusal.message)
         record_refusal_receipt(refusal)
-        sys.exit(2)
+        sys.exit(refusal.exit_code)
 
     root = _m().PROJECT_ROOT
     if not (root / ".git").exists():

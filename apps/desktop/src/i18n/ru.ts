@@ -1142,6 +1142,8 @@ export const ruOverrides = {
       updateAllDone: 'Обновления разосланы',
       updateAllFailed: 'Не удалось разослать обновления',
       updateSkippedCloud: 'Управляется Hermes Cloud',
+      updateSkippedExternal: (command: string) =>
+        command ? `Управляется извне. Обновление: ${command}` : 'Управляется извне. Обновляйте его собственным инструментом.',
       kindLocal: 'Локальный',
       kindRemote: 'Удалённый шлюз',
       kindCloud: 'Hermes Cloud',

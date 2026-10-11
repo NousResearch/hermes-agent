@@ -2379,7 +2379,7 @@ def _update_preflight_handled(args) -> bool:
     if refusal is not None:
         print(refusal.message)
         record_refusal_receipt(refusal)
-        sys.exit(2)
+        sys.exit(refusal.exit_code)
 
     if getattr(args, "check", False):
         # --check honors --branch so its answer matches what update would pull.

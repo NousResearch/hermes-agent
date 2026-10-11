@@ -1707,6 +1707,8 @@ export const deOverrides = {
       updateAllDone: 'Updates versendet',
       updateAllFailed: 'Update-Verteilung fehlgeschlagen',
       updateSkippedCloud: 'Wird von Hermes Cloud verwaltet',
+      updateSkippedExternal: (command: string) =>
+        command ? `Extern verwaltet. Aktualisieren mit ${command}` : 'Extern verwaltet. Mit dem eigenen Werkzeug aktualisieren.',
       kindLocal: 'Lokal',
       kindRemote: 'Remote-Gateway',
       kindCloud: 'Hermes Cloud',

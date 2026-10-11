@@ -15,6 +15,11 @@ from pathlib import Path
 from hermes_cli.steward import UPDATE_MECHANISMS
 
 
+# Set by hermes_bootstrap just before it relaunches; consumed by prepare_launch() in the
+# child so the child's own children never inherit it.
+RELAUNCH_MARKER = "_HERMES_RELAUNCHED"
+
+
 def _project_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
@@ -350,6 +355,11 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
     """
     import os
     import sys
+
+    # A process this one relaunched never relaunches again. Without this, a venv
+    # that stays not current re-execs the same interpreter forever (one more -I each time).
+    if os.environ.pop(RELAUNCH_MARKER, None):
+        return None
 
     root = Path(project_root).resolve()
     # sys.argv[0] is this process's script identity; *argv* carries only the command.

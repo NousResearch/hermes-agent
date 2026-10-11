@@ -2124,13 +2124,19 @@ def check_respawn_guard(
     #    so the worker that opened the PR is still not re-spawned against it.
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
     for c in conn.execute(
-        "SELECT body, created_at FROM task_comments "
+        "SELECT author, body, created_at FROM task_comments "
         "WHERE task_id = ? AND created_at >= ? ORDER BY created_at DESC",
         (task_id, pr_cutoff),
     ).fetchall():
         body = _kb._lossy_text(c["body"])
-        if not (body and _RESPAWN_GUARD_PR_URL_RE.search(body)):
+        match = _RESPAWN_GUARD_PR_URL_RE.search(body or "")
+        if not match:
             continue
+        if _is_explicit_pr_continuation(
+            conn, task_id, comment_author=_kb._lossy_text(c["author"]),
+            pr_url=match.group(0),
+        ):
+            return None
         events = conn.execute(
             # Strictly after: a same-second tie stays guarded (fail closed).
             # 'promoted' covers the ad-hoc-review-child shape: the owner
@@ -2149,6 +2155,89 @@ def check_respawn_guard(
         return "active_pr"
 
     return None
+
+
+def _is_explicit_pr_continuation(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    comment_author: Optional[str],
+    pr_url: str,
+) -> bool:
+    """Whether a ready card is explicitly targeted to continue this exact PR.
+
+    ``active_pr`` is a duplicate-implementation guard, not a general PR-work
+    detector.  A ready continuation may bypass it only when its immutable
+    creation declaration names the exact linked PR and explicitly calls for an
+    independent/non-implementer/exact-head review or a merge continuation.
+    The named continuation worker must differ from the PR-comment author.
+    Generic review prose, a handoff event, a merely similar PR URL, or a body
+    edited after the task was created remain guarded so they cannot turn the
+    exception into a duplicate-work escape.
+    """
+    task = conn.execute(
+        "SELECT assignee, body, completion_contract FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if task is None:
+        return False
+    assignee = _kb._lossy_text(task["assignee"])
+    if not assignee or not comment_author or assignee == comment_author:
+        return False
+    created = conn.execute(
+        "SELECT payload FROM task_events WHERE task_id = ? AND kind = 'created' "
+        "ORDER BY id ASC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    created_payload = _kb._json_or(created["payload"], {}) if created else {}
+    if not isinstance(created_payload, dict):
+        created_payload = {}
+
+    # New rows persist their creation declaration in the event ledger.  For
+    # legacy rows written before that field existed, current values are safe
+    # only while the ledger proves neither part has ever been changed; otherwise
+    # fail closed rather than letting an edit manufacture an exception.
+    initial_body = created_payload.get("body")
+    initial_contract = created_payload.get("completion_contract")
+    if "body" not in created_payload:
+        body_edited = any(
+            "body" in (_kb._json_or(event["payload"], {}).get("fields") or [])
+            for event in conn.execute(
+                "SELECT payload FROM task_events WHERE task_id = ? AND kind = 'edited'",
+                (task_id,),
+            ).fetchall()
+        )
+        if body_edited:
+            return False
+        initial_body = task["body"]
+    if "completion_contract" not in created_payload:
+        contract_rebound = conn.execute(
+            "SELECT 1 FROM task_events WHERE task_id = ? AND kind = 'contract_rebound' LIMIT 1",
+            (task_id,),
+        ).fetchone()
+        if contract_rebound:
+            return False
+        initial_contract = task["completion_contract"]
+
+    declaration = "\n".join(filter(None, (
+        _kb._lossy_text(initial_body),
+        _kb._lossy_text(initial_contract),
+    )))
+    declared_urls = {match.group(0) for match in _RESPAWN_GUARD_PR_URL_RE.finditer(declaration)}
+    if pr_url not in declared_urls:
+        return False
+    normalized = re.sub(r"[^a-z0-9]+", " ", declaration.casefold())
+    explicit_review = bool(re.search(
+        r"\b(?:independent|non\s+implementer|exact\s+head)(?:\s+\w+){0,4}\s+review\b"
+        r"|\breview(?:\s+\w+){0,4}\s+(?:independent|non\s+implementer|exact\s+head)\b",
+        normalized,
+    ))
+    explicit_merge_continuation = bool(re.search(
+        r"\bmerge(?:\s+\w+){0,4}\s+continuation\b"
+        r"|\bcontinuation(?:\s+\w+){0,4}\s+merge\b",
+        normalized,
+    ))
+    return explicit_review or explicit_merge_continuation
 
 
 def _is_handoff_event(kind: str, payload: Optional[str]) -> bool:

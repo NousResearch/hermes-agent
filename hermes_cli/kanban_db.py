@@ -1421,6 +1421,11 @@ def create_task(
                         "workspace_path": workspace_path,
                         "branch_name": branch_name,
                         "project_id": project_id,
+                        # The dispatcher uses this immutable declaration to
+                        # distinguish an already-requested PR continuation
+                        # from a task body edited after a PR was announced.
+                        "body": body,
+                        "completion_contract": completion_contract,
                         "skills": list(skills_list) if skills_list else None,
                         "goal_mode": bool(goal_mode) or None,
                         "model_override": model_override,

@@ -11,12 +11,14 @@
  *  - `ctx.i18n.t` — module-level translator for handlers/stores (non-reactive).
  */
 
+import { adaptStringOverrides } from '@hermes/shared/i18n'
 import { useStore } from '@nanostores/react'
 import { atom } from 'nanostores'
 import { useCallback } from 'react'
 
 import { useI18n } from './context'
-import { type AppLocaleRegistration, registerAppLocale } from './registry'
+import { DEFAULT_LOCALE } from './languages'
+import { $appLocaleVersion, type AppLocaleRegistration, registerAppLocale, registeredPluginMessages } from './registry'
 import { getRuntimeI18nLocale, subscribeRuntimeI18nLocale, translateFrom } from './runtime'
 import type { BundledLocale, Locale } from './types'
 
@@ -103,7 +105,39 @@ export function registerPluginLocales(pluginId: string, bundles: PluginLocaleBun
 }
 
 export function translatePlugin(pluginId: string, locale: Locale, key: string, args: unknown[]): string {
-  return translateFrom(l => registry.get(pluginId)?.get(l), locale, key, args)
+  return translateFrom(l => pluginMessages(pluginId, l), locale, key, args)
+}
+
+const composed = new Map<string, { app: number; own: number; value: PluginMessages | undefined }>()
+
+/** The plugin's own bundle for `locale` with any language-pack strings for it
+ *  (`plugins.<id>.*` in a `.desktop.yaml`) layered on top. Pack strings are
+ *  adapted against the plugin's bundle shape so a YAML string standing where
+ *  the plugin has a function becomes a positional `{0}` formatter. Memoized on
+ *  both registries' versions — the bound kanban/bots translators call this
+ *  once per key per render. */
+function pluginMessages(pluginId: string, locale: Locale): PluginMessages | undefined {
+  const app = $appLocaleVersion.get()
+  const own = $version.get()
+  const cacheKey = `${pluginId}\u0000${locale}`
+  const cached = composed.get(cacheKey)
+
+  if (cached && cached.app === app && cached.own === own) {
+    return cached.value
+  }
+
+  const bundles = registry.get(pluginId)
+  const bundled = bundles?.get(locale)
+  const shape = bundled ?? bundles?.get(DEFAULT_LOCALE)
+  let value = bundled
+
+  for (const layer of registeredPluginMessages(locale, pluginId)) {
+    value = mergeMessages(value ?? {}, adaptStringOverrides(shape, layer) as PluginMessages)
+  }
+
+  composed.set(cacheKey, { app, own, value })
+
+  return value
 }
 
 /** Build the `ctx.i18n` door for a plugin. `track` records the disposer so the
@@ -122,14 +156,16 @@ export function createPluginI18n(pluginId: string, track: (dispose: () => void) 
 export function usePluginI18n(pluginId: string): PluginTranslate {
   const { locale } = useI18n()
   const version = useStore($version)
+  const packVersion = useStore($appLocaleVersion)
 
   // `version` is the registry's change token and must key the translator's
   // identity: memoized consumers (React.memo, React Compiler output) cache
   // render slices on `t` itself, so a stable `t` over a mutated registry
-  // serves stale strings after a late bundle registration.
+  // serves stale strings after a late bundle registration. A language pack
+  // landing later (`packVersion`) is the same case.
   return useCallback(
     (key: string, ...args: unknown[]) => translatePlugin(pluginId, locale, key, args),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [pluginId, locale, version]
+    [pluginId, locale, version, packVersion]
   )
 }

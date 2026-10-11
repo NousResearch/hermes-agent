@@ -1352,24 +1352,87 @@ def _resolve_last_session(source: str = "cli") -> Optional[str]:
     return None
 
 
-def _resolve_session_by_name_or_id(name_or_id: str) -> Optional[str]:
+class SessionOwnedByGuiError(Exception):
+    """A session *title* resolved to a session a GUI surface created (``source`` in
+    :data:`_GUI_OWNED_SESSION_SOURCES`).
+
+    The desktop app's backend holds its sessions live; a CLI turn landing in one by
+    *title* (``-c "<window title>"``, ``--resume "<title>"``, ``/resume <title>``) is a
+    second writer on the same conversation — the holder parks on the turn lease for
+    the whole wait window while a headless copy answers in its window. Titles are
+    not ownership: the refusal keys on the persisted ``source`` (who *created* the
+    session, which a compression child inherits from its parent, #112550), so it
+    covers dormant desktop sessions too — provenance is the only signal reachable
+    from a title lookup, and the deliberate override is naming the session by id.
+
+    Carries data only; :meth:`describe` renders the message with the override
+    spelled for the asking surface (``--resume <id>`` at the CLI, ``/resume <id>``
+    in the REPL).
+    """
+
+    def __init__(self, title: str, session_id: str, source: str):
+        self.title, self.session_id, self.source = title, session_id, source
+        super().__init__(self.describe())
+
+    def describe(self, override_command: str = "--resume") -> str:
+        return (
+            f"Session '{self.title}' resolves to {self.session_id}, which was created "
+            f"by the {self.source} app; the CLI will not run a turn, by title alone, "
+            "in a session another surface created. To resume it anyway, name it by "
+            f"id: `{override_command} {self.session_id}`."
+        )
+
+
+# Sessions whose creating surface runs them live out of its own process. Deliberately
+# narrow: gateway-platform sessions (source="telegram" …) are addressed by title on
+# purpose — `chat -c "<channel session>" --create-if-missing` is that contract
+# (#86794) — while a *desktop* window is the one surface a terminal caller has no
+# reason (and no safe way) to write into.
+_GUI_OWNED_SESSION_SOURCES = frozenset({"desktop"})
+
+
+def _resolve_session_by_name_or_id(
+    name_or_id: str, *, refuse_gui_owned: bool = True
+) -> Optional[str]:
     """Resolve a session title or ID to a session ID (None if neither matches).
 
     A compression root is followed forward to its latest continuation so an
-    old root ID (exit summary, notes) resumes at the live tip.
+    old root ID (exit summary, notes) resumes at the live tip. A *title* that
+    matches a GUI-owned session raises :class:`SessionOwnedByGuiError` (callers
+    that start turns all handle it; a lookup-only caller opts out with
+    ``refuse_gui_owned=False``); an exact ID never refuses, and a source probe
+    that errors falls back to resolving (the pre-existing behaviour), never to
+    reporting a miss — a miss would send ``--create-if-missing`` down its
+    duplicate-creation path.
     """
+    gui_owner = None  # (title, id, source) — raised OUTSIDE the lookup block, which swallows errors
+    resolved_id = None
     with _session_db() as db:
         # Exact session ID first, then title (with auto-latest for lineage).
         session = db.get_session(name_or_id)
-        resolved_id = session["id"] if session else db.resolve_session_by_title(name_or_id)
-        if resolved_id:
+        if session:
+            resolved_id = session["id"]
+        else:
+            resolved_id = db.resolve_session_by_title(name_or_id)
+            if resolved_id and refuse_gui_owned:
+                source = None
+                try:  # own guard: a probe failure must not turn a hit into a miss
+                    source = str((db.get_session(resolved_id) or {}).get("source") or "")
+                except Exception:
+                    source = None
+                if source in _GUI_OWNED_SESSION_SOURCES:
+                    gui_owner = (name_or_id, str(resolved_id), source)
+        if resolved_id and gui_owner is None:
             # Project forward through compression chain so resumes land on
             # the live tip instead of a dead compressed parent.
             try:
                 resolved_id = db.get_compression_tip(resolved_id) or resolved_id
             except Exception:
                 pass
-        return resolved_id
+        if gui_owner is None:
+            return resolved_id
+    if gui_owner is not None:
+        raise SessionOwnedByGuiError(*gui_owner)
     return None
 
 
@@ -1423,7 +1486,13 @@ def _resolve_continue_arg(args, *, use_tui: bool) -> None:
     continue_val = getattr(args, "continue_last", None)
     if continue_val and not getattr(args, "resume", None):
         if isinstance(continue_val, str):
-            resolved = _resolve_session_by_name_or_id(continue_val)
+            try:
+                resolved = _resolve_session_by_name_or_id(continue_val)
+            except SessionOwnedByGuiError as exc:
+                # A programmatic `-c "<window title>"` must never answer inside the
+                # desktop's own conversation; say whose it is and how to override.
+                print(str(exc), file=sys.stderr)
+                sys.exit(1)
             if resolved:
                 args.resume = resolved
             elif getattr(args, "create_if_missing", False):
@@ -1565,7 +1634,11 @@ def _resolve_chat_session_args(args, use_tui: bool) -> None:
     resume_val = getattr(args, "resume", None)
     if resume_val:
         # On miss keep the original so _init_agent reports "Session not found" with it.
-        args.resume = _resolve_session_by_name_or_id(resume_val) or resume_val
+        try:
+            args.resume = _resolve_session_by_name_or_id(resume_val) or resume_val
+        except SessionOwnedByGuiError as exc:
+            print(str(exc), file=sys.stderr)
+            sys.exit(1)
 
     # cd back into a resumed session's recorded cwd (opt out: --no-restore-cwd;
     # --worktree owns its own dir). A missing dir warns and stays put.

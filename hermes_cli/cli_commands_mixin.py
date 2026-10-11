@@ -1052,8 +1052,12 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
                 return _cp(*_lines(_gt("resume.out_of_range", index=index)))
             target_id = sessions[index - 1]["id"]
         else:
-            from hermes_cli.main import _resolve_session_by_name_or_id
-            target_id = _resolve_session_by_name_or_id(target) or target
+            from hermes_cli.main import SessionOwnedByGuiError, _resolve_session_by_name_or_id
+            try:
+                target_id = _resolve_session_by_name_or_id(target) or target
+            except SessionOwnedByGuiError as exc:
+                # In the REPL the override is /resume <id>, not the launch flag.
+                return _cp(f"  {exc.describe(override_command='/resume')}")
         session_meta = self._session_db.get_session(target_id)
         if not session_meta:
             return _cp(f"  {_t('resume.not_found', target=target)}", f"  {_t('resume.not_found_hint')}")

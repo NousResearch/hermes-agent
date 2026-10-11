@@ -403,7 +403,16 @@ def _run_claimed_job(job: dict[str, Any], extra_prompt: Optional[str] = None) ->
         if execution is not None and execution.get("status") != "completed":
             ok = False
             run_error = execution.get("error") or f"execution ended in {execution.get('status') or 'unknown'} state"
-        return {"claimed": True, "success": bool(processed and ok), "error": run_error}
+        # Real inference-call count for the completion block (#100180):
+        # run_job stamps it on this same claimed-job dict from the
+        # conversation-loop result (agent/conversation_loop.py sets api_calls
+        # on every return path). Transient — never persisted by the store.
+        api_calls = job.get("_run_api_calls")
+        if not isinstance(api_calls, int) or isinstance(api_calls, bool):
+            api_calls = None
+        job.pop("_run_api_calls", None)
+        return {"claimed": True, "success": bool(processed and ok), "error": run_error,
+                "api_calls": api_calls}
     except Exception as e:
         logger.error("Failed to execute cron job %s immediately: %s", job_id, e)
         with contextlib.suppress(Exception):
@@ -448,9 +457,10 @@ def execute_job_for_event(
     return _execute_job_now(job, extra_prompt=extra_prompt)
 
 
-def _latest_job_output_excerpt(job_id: str, max_chars: int = 2000) -> Optional[str]:
-    """Excerpt of the job's most recent saved output file for the background completion
-    block (parent sees what the job produced). Never raises."""
+def _latest_job_output_excerpt(job_id: str, max_chars: int = 20000) -> Optional[str]:
+    """Best-effort excerpt of the job's most recent saved output file for the background completion
+    block (parent sees what the job produced). Never raises. 20k chars: the old 2k cap cut
+    mid-tool-call, so the parent agent saw a truncated transcript with no diagnosis (#100180)."""
     try:
         from cron.jobs import get_cron_output_dir
 
@@ -521,7 +531,12 @@ def _manual_run_completion(
         lines += ["--- JOB OUTPUT ---", excerpt]
     return {
         "status": "completed" if res.get("success") else "error", "summary": "\n".join(lines),
-        "error": res.get("error"), "api_calls": 0, "duration_seconds": duration,
+        "error": res.get("error"),
+        # The run's real inference-call count, plumbed from run_job's result
+        # via _run_claimed_job (#100180) — never a hardcoded 0. None (count
+        # unreported: external worker, no_agent) renders as 0 downstream.
+        "api_calls": res.get("api_calls") or 0,
+        "duration_seconds": duration,
     }
 
 

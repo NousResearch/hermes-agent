@@ -40,6 +40,8 @@ from cron.worker_bootstrap import WORKER_MARKER, finish_worker_boot
 from hermes_constants import get_hermes_home, hermes_home_key
 from hermes_cli.observability.shared_metrics_gateway import note_cron_execution, note_cron_skipped
 from cron.env_settings import cron_env_setting
+from cron.scheduler_zero_inference import (
+    cron_failure_marker_error as _cron_failure_marker_error, zero_inference_failure_reason)
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import (
     load_config, load_config_readonly)
@@ -527,22 +529,6 @@ SILENT_MARKER = "[SILENT]"
 
 # Agent-declared failure marker for cron runs. Unlike SILENT, it is deliberately strict so a
 # report that merely quotes the token cannot turn a healthy run into a failed one.
-CRON_FAILURE_MARKER = "[CRON_FAILURE]"
-
-
-def _cron_failure_marker_error(text: str) -> Optional[str]:
-    """Return failure evidence when an agent response declares a cron failure.
-
-    Only the exact, standalone first line is control text. The caller keeps the complete response
-    in the saved run output while routing this evidence through normal failure bookkeeping.
-    """
-    lines = (text or "").splitlines()
-    if not lines or lines[0].rstrip() != CRON_FAILURE_MARKER:
-        return None
-    evidence = "\n".join(lines[1:]).strip()
-    return evidence or "Cron agent reported failure."
-
-
 def _is_cron_silence_response(text: str) -> bool:
     """True when a cron final response should suppress delivery: ``[SILENT]`` (or SILENT /
     NO_REPLY / NO REPLY) as the whole response OR its own first/last line — NOT mid-sentence.
@@ -2515,6 +2501,7 @@ class _FireAudit:
             "prompt_tokens": result.get("prompt_tokens"),
             "completion_tokens": result.get("completion_tokens"),
             "total_tokens": result.get("total_tokens"),
+            "api_calls": result.get("api_calls"),
             "response_silent": bool(result.get("response_silent")),
             "deliver_target": self.job.get("deliver"),
             "model": self.model or None,
@@ -2584,7 +2571,19 @@ def run_job(
         result = _run_agent_with_watchdog(
             agent, prompt, job, job_id, job_name, scope.task_id, cancel_event,
             worker_state=_worker_state)
+        # Transient per-fire fact (#100180): the run's real inference-call count,
+        # read by the manual-run wrapper (tools/cronjob_tools) so its completion
+        # block reports a real number instead of a hardcoded 0. Never persisted
+        # (mark_job_run writes by id from the store's own copy).
+        job["_run_api_calls"] = result.get("api_calls")
         final_response = _final_response_from_result(result, job_id, job_name, AIAgent)
+        # A zero-inference run never reached the model — recording it as ``ok``
+        # would show green to an operator while the work silently never ran
+        # (#100180). Raise so the except handler below builds the proper
+        # failure tuple and last_status.
+        _zero_inference = zero_inference_failure_reason(result)
+        if _zero_inference:
+            raise RuntimeError(_zero_inference)
         if (setup.fallback_notice and final_response.strip() and not _is_cron_silence_response(final_response)
                 and _cron_failure_marker_error(final_response) is None):
             # Pre-agent provider switch (#74349) rides with the delivered report; silence and the

@@ -251,6 +251,62 @@ class TestInFlightDedupe:
         assert res["success"] is False
         assert res["error"] == "worker owner exited"
 
+    def test_run_claimed_job_plumbs_real_api_calls_into_completion(self):
+        """The completion block's 'API calls' must be the run's own count,
+        not a hardcoded 0 (#100180): run_job stamps _run_api_calls on the
+        claimed-job dict from the conversation-loop result, and
+        _run_claimed_job carries it into the runner result."""
+        from tools.cronjob_tools import _run_claimed_job
+
+        def probe_run(job, **_kwargs):
+            job["_run_api_calls"] = 4
+            return True
+
+        with patch("cron.scheduler.run_one_job", side_effect=probe_run), \
+             patch("tools.cronjob_tools.get_job", return_value={
+                 "last_status": "ok",
+                 "last_error": None,
+             }):
+            res = _run_claimed_job(_job("job-bg-api-calls"))
+
+        assert res["success"] is True
+        assert res["api_calls"] == 4
+
+    def test_run_claimed_job_reports_zero_api_calls_when_run_made_none(self):
+        """The interrupted-run case the issue reported: the turn 'completed'
+        with zero inference. The plumb carries the explicit 0 through so the
+        completion block shows the honest number (the scheduler-side guard
+        separately refuses to record the run itself as ok)."""
+        from tools.cronjob_tools import _run_claimed_job
+
+        def probe_run(job, **_kwargs):
+            job["_run_api_calls"] = 0
+            return True
+
+        with patch("cron.scheduler.run_one_job", side_effect=probe_run), \
+             patch("tools.cronjob_tools.get_job", return_value={
+                 "last_status": "ok",
+                 "last_error": None,
+             }):
+            res = _run_claimed_job(_job("job-bg-api-zero"))
+
+        assert res["api_calls"] == 0
+
+    def test_run_claimed_job_omits_api_calls_when_unreported(self):
+        """No count (external worker handoff, no_agent script job, older
+        callers): the field is absent, not a fabricated 0-vs-more."""
+        from tools.cronjob_tools import _run_claimed_job
+
+        with patch("cron.scheduler.run_one_job", return_value=True), \
+             patch("tools.cronjob_tools.get_job", return_value={
+                 "last_status": "ok",
+                 "last_error": None,
+             }):
+            res = _run_claimed_job(_job("job-bg-api-absent"))
+
+        assert res["success"] is True
+        assert res.get("api_calls") is None
+
     def test_background_dispatch_reports_running_job_immediately(self):
         """The dispatch path pre-checks the running set so a mid-run job
         reports in the tool response, not as a delayed completion event."""

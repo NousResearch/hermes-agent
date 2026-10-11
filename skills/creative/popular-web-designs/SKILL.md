@@ -1,21 +1,11 @@
 ---
 name: popular-web-designs
-description: 54 real design systems (Stripe, Linear, Vercel) as HTML/CSS.
+description: Landing pages and UIs from 54 design systems like Stripe.
 version: 1.0.0
 author: Hermes Agent + Teknium (design systems sourced from VoltAgent/awesome-design-md)
 license: MIT
 tags: [design, css, html, ui, web-development, design-systems, templates]
 platforms: [linux, macos, windows]
-triggers:
-  - build a page that looks like
-  - make it look like stripe
-  - design like linear
-  - vercel style
-  - create a UI
-  - web design
-  - landing page
-  - dashboard design
-  - website styled like
 ---
 
 # Popular Web Designs
@@ -39,7 +29,7 @@ system, shadows, responsive behavior, and practical agent prompts with exact CSS
 1. Pick a design from the catalog below
 2. Load it: `skill_view(name="popular-web-designs", file_path="templates/<site>.md")`
 3. Use the design tokens and component specs when generating HTML
-4. Pair with the `generative-widgets` skill to serve the result via cloudflared tunnel
+4. Open the saved file with `browser_navigate(url="file:///abs/path/index.html")` and check it with `browser_vision`
 
 Each template includes a **Hermes Implementation Notes** block at the top with:
 - CDN font substitute and Google Fonts `<link>` tag (ready to paste)
@@ -82,7 +72,7 @@ Each template includes a **Hermes Implementation Notes** block at the top with:
 </html>
 ```
 
-Write the file with `write_file`, serve with the `generative-widgets` workflow (cloudflared tunnel),
+Write the file with `write_file`, open it with `browser_navigate(url="file:///abs/path/index.html")`,
 and verify the result with `browser_vision` to confirm visual accuracy.
 
 ## Font Substitution Reference

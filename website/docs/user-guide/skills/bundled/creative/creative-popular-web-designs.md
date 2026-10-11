@@ -1,14 +1,14 @@
 ---
-title: "Popular Web Designs — 54 real design systems (Stripe, Linear, Vercel) as HTML/CSS"
+title: "Popular Web Designs — Landing pages and UIs from 54 design systems like Stripe"
 sidebar_label: "Popular Web Designs"
-description: "54 real design systems (Stripe, Linear, Vercel) as HTML/CSS"
+description: "Landing pages and UIs from 54 design systems like Stripe"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Popular Web Designs
 
-54 real design systems (Stripe, Linear, Vercel) as HTML/CSS.
+Landing pages and UIs from 54 design systems like Stripe.
 
 ## Skill metadata
 
@@ -48,7 +48,7 @@ system, shadows, responsive behavior, and practical agent prompts with exact CSS
 1. Pick a design from the catalog below
 2. Load it: `skill_view(name="popular-web-designs", file_path="templates/<site>.md")`
 3. Use the design tokens and component specs when generating HTML
-4. Pair with the `generative-widgets` skill to serve the result via cloudflared tunnel
+4. Open the saved file with `browser_navigate(url="file:///abs/path/index.html")` and check it with `browser_vision`
 
 Each template includes a **Hermes Implementation Notes** block at the top with:
 - CDN font substitute and Google Fonts `<link>` tag (ready to paste)
@@ -91,7 +91,7 @@ Each template includes a **Hermes Implementation Notes** block at the top with:
 </html>
 ```
 
-Write the file with `write_file`, serve with the `generative-widgets` workflow (cloudflared tunnel),
+Write the file with `write_file`, open it with `browser_navigate(url="file:///abs/path/index.html")`,
 and verify the result with `browser_vision` to confirm visual accuracy.
 
 ## Font Substitution Reference

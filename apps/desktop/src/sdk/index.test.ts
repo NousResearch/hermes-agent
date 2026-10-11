@@ -265,6 +265,39 @@ describe('host workspace scope', () => {
   })
 })
 
+describe('host.openWorkspace background tabs', () => {
+  it('registers a tab without switching the active workspace, then allows an explicit reveal', async () => {
+    const tree = await import('@/components/pane-shell/tree/store')
+    const model = await import('@/components/pane-shell/tree/model')
+    const { registry } = await import('@/contrib/registry')
+
+    const disposeWorkspace = registry.register({
+      area: 'panes', data: { placement: 'main', uncloseable: true },
+      id: 'workspace', render: () => null, title: 'Chat'
+    })
+
+    tree.declareDefaultTree(model.group(['workspace'], { active: 'workspace', id: 'grp-background-test' }))
+
+    const close = host.openWorkspace('background-test', {
+      activate: false, render: () => null, title: 'Screen'
+    })
+
+    try {
+      tree.adoptContributedPanes()
+      const paneId = 'plugin-workspace:background-test'
+      const current = model.findGroupOfPane(tree.$layoutTree.get()!, paneId)
+      expect(current?.panes).toContain(paneId)
+      expect(current?.active).toBe('workspace')
+
+      host.revealPane(paneId)
+      expect(model.findGroupOfPane(tree.$layoutTree.get()!, paneId)?.active).toBe(paneId)
+    } finally {
+      close()
+      disposeWorkspace()
+    }
+  })
+})
+
 describe('host.composer draft facade', () => {
   afterEach(() => {
     setActiveSessionId(null)

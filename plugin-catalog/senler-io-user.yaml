@@ -1,0 +1,25 @@
+name: senler-io-user
+title: Senler.io
+repo: https://github.com/SenlerBot/senler-io-user-hermes-plugin
+sha: d36f1bff7714549c8f388099ee96ecdbe7eff595
+description: >-
+  Connect your Senler.io account through MCP OAuth and automate selected
+  webhook events with an outbound Relay connection.
+maintainer: SenlerBot
+tier: community
+category: automation
+version: "0.4.1"
+docs_url: https://github.com/SenlerBot/senler-io-user-hermes-plugin/blob/d36f1bff7714549c8f388099ee96ecdbe7eff595/README.md
+image: https://raw.githubusercontent.com/SenlerBot/senler-io-user-hermes-plugin/d36f1bff7714549c8f388099ee96ecdbe7eff595/assets/catalog-banner.png
+readme: true
+known_issues:
+  - "Preview: Windows Desktop sign-in is confirmed; a real Senler Relay workflow still needs end-to-end verification."
+  - "Requires current Hermes with native MCP OAuth and Relay transport; gateway proxy mode and multiplexed profiles are unsupported."
+capabilities:
+  provides_tools:
+    - senler_connect
+  provides_hooks:
+    - pre_tool_call
+    - on_session_end
+  provides_middleware: []
+  requires_env: []

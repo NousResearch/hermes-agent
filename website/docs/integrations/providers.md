@@ -808,7 +808,7 @@ echo -e "FROM qwen2.5-coder:32b\nPARAMETER num_ctx 64000" > Modelfile
 ollama create qwen2.5-coder-64k -f Modelfile
 ```
 
-**You cannot set context length through the OpenAI-compatible API** (`/v1/chat/completions`). It must be configured server-side or via a Modelfile. This is the #1 source of confusion when integrating Ollama with tools like Hermes.
+**You cannot set context length through the OpenAI-compatible API** (`/v1/chat/completions`). It must be configured server-side or via a Modelfile. This is the #1 source of confusion when integrating Ollama with tools like Hermes. Hermes detects the model's window from `/api/show` and sends it as `num_ctx` on every request, but Ollama's `/v1` route drops that field, so the model still loads at the server default and silently truncates long prompts. After the first response of a session Hermes reads the window Ollama actually loaded from `/api/ps`; when it is smaller than the detected one you get a one-time warning with the two numbers and the server-side fix, and compaction retargets the served window.
 :::
 
 **Verify your context is set correctly:**

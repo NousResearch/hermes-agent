@@ -213,6 +213,11 @@ def record_response_usage(
         with suppress(Exception):
             from agent.nous_wire import maybe_switch_wire_after_first_response
             maybe_switch_wire_after_first_response(agent, response, agent.session_api_calls)
+    # Local Ollama: the model is loaded now, so /api/ps can say whether /v1 honoured the num_ctx we sent.
+    if agent.session_api_calls == 1 and getattr(agent, "_ollama_num_ctx", None):
+        with suppress(Exception):
+            from agent.ollama_served_context import reconcile_served_context_after_response
+            reconcile_served_context_after_response(agent, agent.session_api_calls)
 
     # MoA: agent.model/provider are the virtual preset/"moa" with no pricing entry, silently
     # dropping aggregator spend. Price at the REAL model/provider from the aggregator slot.

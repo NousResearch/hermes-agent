@@ -5,7 +5,8 @@ import {
   isStableOpen,
   JSON_RPC_METHOD_NOT_FOUND,
   JsonRpcGatewayError,
-  reconnectBackoffDelayMs
+  reconnectBackoffDelayMs,
+  registryBackendScopeKey
 } from '@hermes/shared'
 import { useEffect, useRef } from 'react'
 
@@ -37,7 +38,6 @@ import { noteBackendDrop, noteBackendExited } from '@/store/desktop-metrics'
 import {
   $gateway,
   activeGateway,
-  activeGatewayConnectionId,
   closeLegacySecondaryGateways,
   closeSecondaryGateways,
   configureGatewayRegistry,
@@ -68,12 +68,7 @@ import {
 import { watchLocalRuntimeJobs } from '@/store/local-runtime-jobs'
 import { notify, notifyError, RECOVERY_ACTIONS } from '@/store/notifications'
 import { loadPoolLimits } from '@/store/pool-limits'
-import {
-  $activeGatewayProfile,
-  normalizeProfileKey,
-  refreshActiveProfile,
-  touchActiveGatewayBackend
-} from '@/store/profile'
+import { $activeGatewayProfile, normalizeProfileKey, refreshActiveProfile } from '@/store/profile'
 import { requestBackendRestart } from '@/store/recovery-requests'
 import {
   $activeSessionId,
@@ -89,6 +84,7 @@ import {
   setCurrentCwd,
   setSessionsLoading
 } from '@/store/session'
+import { $delegatingSessionIds } from '@/store/session-dot-state'
 import { stampSecondaryProfileOwner } from '@/store/session-event-provenance'
 import {
   $attentionSessionIds,
@@ -109,6 +105,15 @@ import { isPeerInstanceWindow, windowProfileOverride } from '@/store/windows'
 import { stashGatewaySurvivor, survivorIsStale, takeGatewaySurvivor } from './gateway-hmr-survivor'
 import { useConnectionsRegistry } from './use-connections-registry'
 import { useDefaultProfilePreference } from './use-default-profile-preference'
+
+const POOL_ACTIVITY_EVENTS = new Set([
+  'message.start',
+  'session.info',
+  'session.reclaimed',
+  'subagent.spawn_requested',
+  'subagent.start',
+  'subagent.complete'
+])
 
 // After the reconnect loop has been failing for this long, raise a NON-blocking
 // warning toast. Full-screen BootFailureOverlay used to lock the user out of
@@ -1003,13 +1008,23 @@ export function useGatewayBoot({
     // (#120005). Keyed by the backend's own (epoch, session, seq) stamp.
     const eventDedupe = createGatewayEventDedupe()
 
-    const deliverGatewayEvent = (event: GatewayEvent) => {
+    const deliverGatewayEvent = (
+      event: GatewayEvent,
+      poolScope = registryBackendScopeKey(event.connectionId, event.profile)
+    ) => {
       if (!eventDedupe.admit(event)) {
         return
       }
 
       recordSessionEventScope(event)
       callbacksRef.current.handleGatewayEvent(event)
+
+      // A continuation can start after its submit lease settled. Publish both
+      // activity edges now: settlement may prune the socket before another tick.
+      if (event.session_id && POOL_ACTIVITY_EVENTS.has(event.type)) {
+        const scope = registryBackendScopeKey(event.connectionId, event.profile)
+        void desktop.touchBackend?.(poolScope, { activeTurn: liveWorkScopes().has(scope) }).catch(() => undefined)
+      }
     }
 
     callbacksRef.current.onGatewayReady(gateway)
@@ -1125,14 +1140,30 @@ export function useGatewayBoot({
       }
     })
 
-    // Read PER EVENT, never once at boot: under multiplex-only this one socket
-    // serves every local profile, and the profile moves under it while the
-    // socket stays open. A boot-time capture stamps every later profile's
-    // events with whatever was active when the gateway booted.
-    const sourceProfileNow = () => normalizeProfileKey($activeGatewayProfile.get())
+    // A shared route can be discovered only on a later profile selection.
+    // Remember that selection for this socket, including while a secondary is
+    // foregrounded. A dedicated pooled primary never follows that descriptor.
+    const offPrimaryProfile = $connection.subscribe(connection => {
+      if (
+        connection &&
+        activeGateway() === gateway &&
+        connection.connectionId === primaryConnection?.connectionId &&
+        // Reconnect/window-state publication is not a new profile selection;
+        // recording it again would invalidate the reconnect's own revision.
+        normalizeProfileKey(connection.profile) !== normalizeProfileKey(primaryConnection?.profile) &&
+        (connection.sharedPrimary ||
+          connection.sharedRemote ||
+          primaryConnection?.sharedPrimary ||
+          primaryConnection?.sharedRemote)
+      ) {
+        recordPrimaryConnection(connection)
+      }
+    })
+
+    const sourceProfileNow = () => normalizeProfileKey(primaryConnection?.profile)
 
     const offEvent = gateway.onEvent(event => {
-      const connectionId = activeGatewayConnectionId()
+      const connectionId = primaryConnection?.connectionId
       const sourceProfile = sourceProfileNow()
 
       const scopedEvent = {
@@ -1150,9 +1181,12 @@ export function useGatewayBoot({
       // LAST rung of knownOwnerForSession, so durable stored identity still
       // outranks it — #97511.)
       const ownedEvent =
-        $connection.get()?.sharedPrimary === true ? stampSecondaryProfileOwner(scopedEvent, sourceProfile) : scopedEvent
+        primaryConnection?.sharedPrimary === true ? stampSecondaryProfileOwner(scopedEvent, sourceProfile) : scopedEvent
 
-      deliverGatewayEvent(ownedEvent)
+      deliverGatewayEvent(
+        ownedEvent,
+        registryBackendScopeKey(primaryConnection?.connectionId, primaryConnection?.profile)
+      )
     })
 
     // Secondary sockets reach the same handler through the registry's onServerRequest.
@@ -1343,10 +1377,14 @@ export function useGatewayBoot({
     // rows and prewarmProfileBackend's saturation guard.
     void loadPoolLimits()
 
-    // Keep live pool backends alive while this window is open (the main process
-    // can't observe the direct renderer↔backend WS). No-op for the primary.
+    // The window primary can itself ride a pooled backend. Touch its owner,
+    // not the foreground route, which may now be a different secondary.
     const keepaliveTimer = setInterval(() => {
-      touchActiveGatewayBackend()
+      if (gateway.connectionState === 'open' && primaryConnection) {
+        const scope = registryBackendScopeKey(primaryConnection.connectionId, primaryConnection.profile)
+        void desktop.touchBackend?.(scope, { activeTurn: liveWorkScopes().has(scope) }).catch(() => undefined)
+      }
+
       touchSecondaryGateways()
       // The pruner is otherwise event-driven: a socket spared by the
       // min-lifetime grace with no store change afterwards would hold its
@@ -1368,8 +1406,9 @@ export function useGatewayBoot({
     // source's liveness without keeping the wrong gateway alive. Feeds the
     // pruner's keep-set and the wake probe's in-flight-work signal.
     const liveWorkScopes = (): Set<string> => {
-      const live = new Set([...$workingSessionIds.get(), ...$attentionSessionIds.get()])
-      const scopes = liveSessionScopes()
+      const delegating = $delegatingSessionIds.get()
+      const live = new Set([...$workingSessionIds.get(), ...$attentionSessionIds.get(), ...delegating])
+      const scopes = liveSessionScopes(delegating)
 
       for (const session of $sessions.get()) {
         if (live.has(session.id)) {
@@ -1395,6 +1434,7 @@ export function useGatewayBoot({
       pruneSecondaryGateways(keep)
     }
 
+    const offDelegating = $delegatingSessionIds.subscribe(() => recomputeKeptGateways())
     const offWorking = $workingSessionIds.subscribe(() => recomputeKeptGateways())
     const offAttention = $attentionSessionIds.subscribe(() => recomputeKeptGateways())
     const offActiveSession = $activeSessionId.subscribe(() => recomputeKeptGateways())
@@ -1688,6 +1728,8 @@ export function useGatewayBoot({
       clearBootRetryTimer()
       clearLivenessReprobeTimer()
       clearInterval(keepaliveTimer)
+      offPrimaryProfile()
+      offDelegating()
       offWorking()
       offAttention()
       offActiveSession()

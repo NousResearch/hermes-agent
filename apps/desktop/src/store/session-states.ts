@@ -195,18 +195,14 @@ export function forgetProfileOnlyRuntimeOwners(profile: string): void {
   }
 }
 
-/** Composite scopes of registry-sourced sessions that are live (busy or
- * waiting on input) — the (connectionId, profile) half of the gateway
- * keep-set. Local-source live work keeps flowing through profile names. */
-export function liveSessionScopes(): Set<string> {
+/** Source scopes with a running, input-blocked or delegating session. Remote
+ * owners keep their connection identity; local/legacy owners use profiles. */
+export function liveSessionScopes(delegatingSessionIds: readonly string[] = []): Set<string> {
   const scopes = new Set<string>()
 
   for (const [runtimeId, state] of Object.entries($sessionStates.get())) {
-    if (!state || (!state.busy && !state.needsInput)) {
-      continue
-    }
-
-    const scope = sessionScopeByRuntimeId.get(runtimeId)
+    const live = state?.busy || state?.needsInput || delegatingSessionIds.includes(state?.storedSessionId ?? runtimeId)
+    const scope = live ? sessionScopeByRuntimeId.get(runtimeId) : undefined
 
     if (scope) {
       scopes.add(scope)

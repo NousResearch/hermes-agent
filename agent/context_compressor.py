@@ -330,6 +330,8 @@ _DB_PERSISTED_MARKER = "_db_persisted"
 # they don't duplicate live copies in recall; never persisted (unknown column).
 _COMPACTION_TAIL_MARKER = "_compaction_tail"
 PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY = "_proactive_prune_rearm_tokens"
+# Reclaim gate for a prune on an already-expired provider cache (no cache break to amortize).
+_COLD_CACHE_MIN_RECLAIM_TOKENS = 16_000
 
 _NO_USER_TASK_SENTINEL = "None. This session contains no user-authored turns."
 COMPRESSION_CONTINUATION_USER_CONTENT = (
@@ -2831,8 +2833,9 @@ class ContextCompressor(
         self.proactive_prune_min_result_chars = max(_PRUNE_MIN_CHARS, int(proactive_prune_min_result_chars or 1000))
         # Every commit breaks the prompt-cache prefix; require a meaningful reclaim batch so fires are episodic.
         self.proactive_prune_min_reclaim_tokens = max(0, int(proactive_prune_min_reclaim_tokens or 0))
-        # A committed prune is a cache boundary: rearm only after the prompt regrows the reclaimed tokens.
+        # Rearm after a committed prune only once the prompt regrows; cold prunes credit the next warm gate.
         self._proactive_prune_rearm_tokens: int = 0
+        self._proactive_prune_cold_credit: int = 0
         # Dedup key for the over-threshold "reclamation no-oped" warning
         # (#101889) so a tool loop riding above the threshold warns once per
         # distinct reason + rearm snapshot instead of every iteration.
@@ -3320,7 +3323,7 @@ class ContextCompressor(
         otherwise an identical lockout after a full compaction (rearm back
         at 0) would be silent (#101889).
         """
-        self._proactive_prune_rearm_tokens = 0
+        self._proactive_prune_rearm_tokens = self._proactive_prune_cold_credit = 0
         self._last_reclaim_block_warn = None
 
     def _billed_basis_over_threshold(self, current_tokens: int | None) -> bool:

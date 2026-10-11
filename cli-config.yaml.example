@@ -853,7 +853,10 @@ compression:
   # (measured on the pruned output). This is the prompt-cache hysteresis gate:
   # one meaningful, amortized cache break per batch of stale tool output
   # instead of a tiny break on every tool iteration. 0 = commit any non-zero
-  # prune. Default 64000.
+  # prune. Default 64000. When the provider's prompt cache has already expired
+  # (prompt caching on, no response for longer than its 5m/1h TTL), a rewrite
+  # breaks nothing: the prune then commits at 16000 (or this value, if lower),
+  # also at turn start, and what it frees counts toward the next 64K gate.
   proactive_prune_min_reclaim_tokens: 64000
 
   # To pin a specific model/provider for compression summaries, use the

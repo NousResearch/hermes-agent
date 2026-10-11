@@ -631,6 +631,11 @@ def _kill_stale_dashboard_processes(
     pid_launchd: dict[int, tuple[str, str, int | None]] = {}
     pid_cmdline: dict[int, list[str]] = {}
     pid_home: dict[int, str | None] = {}
+    pid_env: dict[int, dict[str, str] | None] = {}
+    # R1 (#121596): a launchd-owned candidate that IS the job's live process and holds its fixed
+    # port is NOT killed by us — the updater's kill + kickstart leaves an unsupervised window on
+    # the port; ``kickstart -k`` makes launchd do the kill+respawn as one supervised action.
+    launchd_live_port_holders: set[int] = set()
     # macOS: a backend supervised by a launchd job (LaunchAgent / LaunchDaemon) must come back
     # through launchd, never as a detached argv respawn — the respawn holds the job's port, the
     # job then fails every KeepAlive restart with "port already in use", and the running backend
@@ -650,33 +655,47 @@ def _kill_stale_dashboard_processes(
             cmdline = _dash._dashboard_cmdline_for_pid(pid)
             if launchd_jobs and (job := _launchd_owner(pid, cmdline)):
                 pid_launchd[pid] = job
+                live_pid = job[2]
+                if (live_pid == pid and cmdline
+                        and (port := _dash._fixed_port_for_dashboard_argv(cmdline))
+                        and _dash._pid_holds_tcp_port(pid, port)):
+                    launchd_live_port_holders.add(pid)
             elif cmdline:
                 # Manual process: exact argv + HERMES_HOME for the respawn and its profile cap.
                 # Manually-started process: preserve its exact argv so we can respawn it after the update
                 # (#40449, #68934). Snapshot HERMES_HOME before the kill so per-profile caps still work
-                # after the process is gone (#78821).
+                # after the process is gone (#78821). Snapshot the whole environ too: a respawn without
+                # the victim's HERMES_* environment is the token-less impostor of #121596.
                 pid_cmdline[pid] = cmdline
                 pid_home[pid] = _hermes_home_for_pid(pid)
+                pid_env[pid] = _dash._respawn_env_for_pid(pid)
         if already_restarted_units:
             pids = [pid for pid in pids if (pid_service.get(pid) or "").removesuffix(".service")
                     not in already_restarted_units]
-            if not pids:
+            if not pids and not launchd_live_port_holders:
                 return _empty_result()
     elif launchd_jobs:
         for pid in pids:
             if job := _launchd_owner(pid, _dash._dashboard_cmdline_for_pid(pid)):
                 pid_launchd[pid] = job
+    kill_pids = [pid for pid in pids if pid not in launchd_live_port_holders]
     print(f"\n⟲ Stopping {len(pids)} dashboard process(es) ({reason})")
+    for pid in sorted(launchd_live_port_holders):
+        domain, label, _ = pid_launchd[pid]
+        print(f"    ✓ PID {pid} is launchd job {domain}/{label}'s live port holder — "
+              f"restarting through kickstart -k, not killing it ourselves")
     killed: list[int] = []
     failed: list[tuple[int, str]] = []
-    (_kill_pids_windows if sys.platform == "win32" else _kill_pids_posix)(pids, killed, failed)
+    if kill_pids:
+        (_kill_pids_windows if sys.platform == "win32" else _kill_pids_posix)(kill_pids, killed, failed)
     for pid in killed:
         print(f"    ✓ stopped PID {pid}")
     for pid, err_msg in failed:
         print(f"    ✗ failed to stop PID {pid}: {err_msg}")
-    if killed and restart_managed:
+    if (killed or launchd_live_port_holders) and restart_managed:
         unrecovered = _restart_killed_backends(
-            killed, pid_service, pid_cgroup, pid_cmdline, pid_home, pid_launchd=pid_launchd)
+            killed, pid_service, pid_cgroup, pid_cmdline, pid_home, pid_launchd=pid_launchd,
+            pid_env=pid_env, force_kickstart_pids=launchd_live_port_holders)
     else:
         unrecovered = list(killed)
         # A stopped launchd job with KeepAlive restarts itself: say so instead of a misleading
@@ -693,10 +712,12 @@ def _kill_stale_dashboard_processes(
 def _restart_killed_backends(
     killed: list[int], pid_service: dict[int, str | None], pid_cgroup: dict[int, str | None],
     pid_cmdline: dict[int, list[str]], pid_home: dict[int, str | None], *,
-    pid_launchd: dict[int, tuple[str, str, int | None]] | None = None) -> list[int]:
+    pid_launchd: dict[int, tuple[str, str, int | None]] | None = None,
+    pid_env: dict[int, dict[str, str] | None] | None = None,
+    force_kickstart_pids: "set[int] | None" = None) -> list[int]:
     """Update path: restart systemd units, kickstart launchd jobs (macOS), respawn manual argv
-    (detached, headless, logged to logs/dashboard-restart.log; one per profile, no ``--port 0``).
-    Returns PIDs not brought back."""
+    (detached, headless, logged to logs/dashboard-restart.log; one per profile, no ``--port 0``;
+    with the victim's captured environment — #121596). Returns PIDs not brought back."""
     # Two categories: Without this, a remote backend (hermes serve) under Restart=on-failure never comes
     # back after our clean SIGTERM, and the Desktop can't reconnect (#68934). Filtered so Desktop
     # ``serve|dashboard --port 0`` backends are not resurrected and duplicates collapse to one per profile
@@ -705,8 +726,8 @@ def _restart_killed_backends(
     unrecovered: list[int] = []
     failed_restarts: list[tuple[str, str]] = []
     seen_services: set[str] = set()
-    respawn_candidates: list[tuple[int, list[str], str | None]] = []
-    for pid in killed:
+    respawn_candidates: list[tuple[int, list[str], str | None, "dict[str, str] | None"]] = []
+    for pid in [*killed, *sorted(force_kickstart_pids or ())]:
         svc_name = pid_service.get(pid)
         launchd_job = (pid_launchd or {}).get(pid)
         if svc_name:
@@ -727,7 +748,11 @@ def _restart_killed_backends(
             if target in seen_services:
                 continue
             seen_services.add(target)
-            if _dash._restart_launchd_job(domain, label, old_pid):
+            # A live port holder we deliberately did not kill (#121596): only ``kickstart -k`` —
+            # which restarts the job even though its process is still up — hands the port from
+            # the old incarnation straight to the new supervised one.
+            force = pid in (force_kickstart_pids or ())
+            if _dash._restart_launchd_job(domain, label, old_pid, force_kill=force):
                 print(f"    ✓ restarted launchd job {target}")
             else:
                 # A LaunchDaemon (system domain) can only be kickstarted by root; the hint must
@@ -737,13 +762,21 @@ def _restart_killed_backends(
                     (target, f"launchd is not supervising a fresh process; run: {sudo}launchctl kickstart -k {target}"))
                 unrecovered.append(pid)
         elif pid in pid_cmdline:
-            respawn_candidates.append((pid, pid_cmdline[pid], pid_home.get(pid)))
+            respawn_candidates.append((pid, pid_cmdline[pid], pid_home.get(pid), (pid_env or {}).get(pid)))
         else:
             unrecovered.append(pid)
     for svc, err in failed_restarts:
         print(f"    ⚠ {svc}: {err}")
-    respawn_cmds = _filter_dashboard_respawn_candidates(respawn_candidates)
-    failed_cmds = _dash._respawn_dashboard_processes(respawn_cmds) if respawn_cmds else None
+    # Re-apply the same per-profile/port dedupe to the captured envs (the filter's selection must
+    # drive both lists, or a filtered-out candidate's env would shift onto another's respawn).
+    selected = _filter_dashboard_respawn_candidates([(pid, argv, home) for pid, argv, home, _ in respawn_candidates])
+    respawn_envs: list[dict[str, str] | None] = []
+    respawn_by_norm: dict[tuple[str, ...], "dict[str, str] | None"] = {}
+    for pid, argv, _home, env in respawn_candidates:
+        respawn_by_norm.setdefault(_normalize_dashboard_cmdline(argv), env)
+    for argv in selected:
+        respawn_envs.append(respawn_by_norm.get(_normalize_dashboard_cmdline(argv)))
+    failed_cmds = _dash._respawn_dashboard_processes(selected, respawn_envs) if selected else None
     if failed_cmds:
         unrecovered.extend(p for p in killed if pid_cmdline.get(p) in failed_cmds)
     if failed_restarts or unrecovered:

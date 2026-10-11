@@ -398,7 +398,8 @@ class TestSupervisedBackendRestart:
             respawn.assert_not_called()
         else:
             assert restarts == [], f"restarted a unit that does not supervise the dashboard: {restarts}"
-            respawn.assert_called_once_with([argv])
+            respawn.assert_called_once()
+            assert respawn.call_args.args[0] == [argv]
         assert result["unrecovered"] == []
 
 
@@ -452,7 +453,8 @@ class TestManualBackendRespawn:
              patch("time.sleep"):
             _kill_stale_dashboard_processes(restart_managed=True)
 
-        respawn.assert_called_once_with([argv])
+        respawn.assert_called_once()
+        assert respawn.call_args.args[0] == [argv]
         assert "when you're ready" not in capsys.readouterr().out
 
     @pytest.mark.skipif(sys.platform == "win32", reason="POSIX cmdline capture + respawn")
@@ -898,7 +900,7 @@ class TestLaunchdSupervisedBackends:
         job = ("system", "ai.hermes.dashboard", list(self.ARGV), None)
         result, restart, respawn = self._run(9102, [job])
         respawn.assert_not_called()
-        restart.assert_called_once_with("system", "ai.hermes.dashboard", None)
+        restart.assert_called_once_with("system", "ai.hermes.dashboard", None, force_kill=False)
         assert result["killed"] == [9102] and result["unrecovered"] == []
         assert "when you're ready" not in capsys.readouterr().out
 
@@ -916,7 +918,8 @@ class TestLaunchdSupervisedBackends:
         other = ("gui/501", "ai.hermes.other", ["hermes", "dashboard", "--port", "8300"], 777)
         result, restart, respawn = self._run(9104, [other])
         restart.assert_not_called()
-        respawn.assert_called_once_with([list(self.ARGV)])
+        respawn.assert_called_once()
+        assert respawn.call_args.args[0] == [list(self.ARGV)]
         assert result["unrecovered"] == []
 
     def test_launchd_job_attribution_is_by_live_pid_ancestor_or_exact_argv(self):
@@ -941,3 +944,193 @@ class TestLaunchdSupervisedBackends:
         assert owning(9999, serve_argv[:-1] + ["8643"], jobs) is None
         assert owning(9999, None, jobs) is None
         assert owning(4242, None, []) is None
+
+    def test_launchd_job_attribution_ignores_launcher_spelling(self):
+        """#121596 (same-home variant): the plist spells the interpreter ``python`` while the live
+        process argv carries the absolute venv path (or the ``hermes`` shim). Exact-argv comparison
+        then misclassifies the previous update's detached respawn as manual, so every update kills
+        and re-orphans it onto the launchd job's fixed port. Attribution must compare the backend
+        shape (profile + serve tail), not the launcher prefix."""
+        uid = 501
+        plist_argv = ["python", "-m", "hermes_cli.main", "-p", "default", "serve",
+                      "--host", "127.0.0.1", "--port", "9119", "--skip-build"]
+        jobs: list[tuple[str, str, list[str], int | None]] = [
+            (f"gui/{uid}", "ai.hermes.serve", plist_argv, 80668)]
+        owning = main_dashboard._launchd_job_owning_backend
+        # Previous update's respawn as seen via ps: absolute interpreter, fresh launchd child elsewhere.
+        orphan = ["/Users/me/.venv/bin/python", "-m", "hermes_cli.main", "-p", "default",
+                  "serve", "--host", "127.0.0.1", "--port", "9119", "--skip-build"]
+        assert owning(76554, orphan, jobs) == (f"gui/{uid}", "ai.hermes.serve", 80668)
+        # Same backend launched through the entry-point shim: still the job's shape.
+        shim = ["hermes", "-p", "default", "serve",
+                "--host", "127.0.0.1", "--port", "9119", "--skip-build"]
+        assert owning(76554, shim, jobs) == (f"gui/{uid}", "ai.hermes.serve", 80668)
+        # A genuinely different endpoint must NOT be claimed by the job.
+        other_port = [x if x != "9119" else "9220" for x in orphan]
+        assert owning(76554, other_port, jobs) is None
+
+
+class TestLaunchdLivePortHolder:
+    """#121596 R1: when the sweep's candidate IS the launchd job's live process AND holds the
+    job's fixed port, killing it ourselves seeds an unsupervised window (and historically a
+    token-less respawn). The sweep must skip its own kill and hand the port to launchd via
+    ``kickstart -k`` as one supervised action."""
+
+    ARGV = [
+        "/opt/hermes/venv/bin/python", "-m", "hermes_cli.main",
+        "serve", "--host", "127.0.0.1", "--port", "9119", "--skip-build",
+    ]
+
+    @staticmethod
+    def _fake_kill(pid, sig):
+        if sig == 0:
+            raise ProcessLookupError
+
+    def test_live_port_holder_is_kickstarted_not_killed(self, capsys):
+        """The reporter's second repro: the victim was the supervisor's own current PID
+        (launchctl print reports pid = 89756) and it held port 9119. The sweep must not SIGTERM
+        it; launchd's ``kickstart -k`` does the kill+respawn atomically."""
+        pid = 89756
+        job = ("gui/501", "com.hermes.nova-serve", list(self.ARGV), pid)
+        with patch.object(main_dashboard, "_restart_managed_dashboard_service", return_value=False), \
+             patch.object(main_dashboard, "_find_stale_dashboard_pids", return_value=[pid]), \
+             patch.object(main_dashboard, "_get_pid_cgroup_path", return_value=None), \
+             patch.object(main_dashboard, "_get_systemd_service_for_pid", return_value=None), \
+             patch.object(main_dashboard, "_dashboard_cmdline_for_pid", return_value=list(self.ARGV)), \
+             patch.object(main_dashboard, "_loaded_launchd_backend_jobs", return_value=[job]), \
+             patch.object(main_dashboard, "_pid_holds_tcp_port", return_value=True), \
+             patch.object(main_dashboard, "_restart_launchd_job", return_value=True) as restart, \
+             patch("hermes_cli.dashboard_procs._process_ancestors", return_value=[]), \
+             patch("hermes_cli.dashboard_procs._hermes_home_for_pid", return_value=None), \
+             patch.object(main_dashboard, "_respawn_dashboard_processes") as respawn, \
+             patch("os.kill", side_effect=self._fake_kill) as kill, \
+             patch("time.sleep"):
+            result = _kill_stale_dashboard_processes(restart_managed=True)
+
+        kill.assert_not_called()  # R1: the live port holder is never SIGTERMed by the sweep
+        restart.assert_called_once_with("gui/501", "com.hermes.nova-serve", pid, force_kill=True)
+        respawn.assert_not_called()
+        assert result["matched"] == [pid] and result["killed"] == [] and result["unrecovered"] == []
+        out = capsys.readouterr().out
+        assert "kickstart -k, not killing it ourselves" in out
+        assert f"✓ stopped PID {pid}" not in out
+
+    def test_live_child_not_holding_port_still_killed_normally(self, capsys):
+        """Control: launchd reports the candidate as the job's live PID but the port probe says
+        it is NOT listening (mid-crash, port lost) — the ordinary kill + kickstart path runs."""
+        pid = 89757
+        job = ("gui/501", "com.hermes.nova-serve", list(self.ARGV), pid)
+        with patch.object(main_dashboard, "_restart_managed_dashboard_service", return_value=False), \
+             patch.object(main_dashboard, "_find_stale_dashboard_pids", return_value=[pid]), \
+             patch.object(main_dashboard, "_get_pid_cgroup_path", return_value=None), \
+             patch.object(main_dashboard, "_get_systemd_service_for_pid", return_value=None), \
+             patch.object(main_dashboard, "_dashboard_cmdline_for_pid", return_value=list(self.ARGV)), \
+             patch.object(main_dashboard, "_loaded_launchd_backend_jobs", return_value=[job]), \
+             patch.object(main_dashboard, "_pid_holds_tcp_port", return_value=False), \
+             patch.object(main_dashboard, "_restart_launchd_job", return_value=True) as restart, \
+             patch("hermes_cli.dashboard_procs._process_ancestors", return_value=[]), \
+             patch("hermes_cli.dashboard_procs._hermes_home_for_pid", return_value=None), \
+             patch.object(main_dashboard, "_respawn_dashboard_processes", return_value=[]), \
+             patch("os.kill", side_effect=self._fake_kill), \
+             patch("time.sleep"):
+            result = _kill_stale_dashboard_processes(restart_managed=True)
+
+        restart.assert_called_once_with("gui/501", "com.hermes.nova-serve", pid, force_kill=False)
+        assert result["killed"] == [pid]
+
+
+class TestRespawnEnvPreservation:
+    """#121596 R3/R4: the detached respawn must carry the victim's environment (session token
+    included), and a fixed-port respawn with a readable-but-token-less environment must be
+    refused outright instead of spawning the 401-storm impostor."""
+
+    @staticmethod
+    def _respawn_env(monkeypatch, env):
+        from hermes_cli import dashboard_procs as procs
+        monkeypatch.setattr(procs, "_pid_environ", lambda _pid: env)
+        monkeypatch.setattr(procs, "_hermes_home_for_pid", lambda _pid: None)
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX respawn path")
+    def test_respawn_replays_the_captured_environment(self, monkeypatch, capsys):
+        """A token-carrying manual backend is respawned with its full env: the new process
+        answers the fixed port with the token the Desktop already knows (#121596 R3)."""
+        argv = ["hermes", "dashboard", "--port", "8300"]
+        self._respawn_env(monkeypatch, {"HERMES_HOME": "/Users/me/.hermes",
+                                        "HERMES_DASHBOARD_SESSION_TOKEN": "tok-1"})
+        spawn_calls = []
+
+        class _LiveProc:
+            returncode = None
+
+            def poll(self):
+                return None
+
+        with patch.object(main_dashboard, "_respawnable_command_for_current_install",
+                          side_effect=lambda a: list(a)), \
+             patch("subprocess.Popen", side_effect=lambda cmd, **kw: (spawn_calls.append((cmd, kw)) or _LiveProc())):
+            failed = main_dashboard._respawn_dashboard_processes([list(argv)], [{"HERMES_HOME": "/Users/me/.hermes",
+                                                                                 "HERMES_DASHBOARD_SESSION_TOKEN": "tok-1"}])
+        assert failed == []
+        (cmd, kw), = spawn_calls
+        assert kw["env"]["HERMES_DASHBOARD_SESSION_TOKEN"] == "tok-1"
+        assert kw["env"]["HERMES_HOME"] == "/Users/me/.hermes"
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX respawn path")
+    def test_tokenless_fixed_port_respawn_is_refused(self, capsys):
+        """R4 self-negation, narrowed: the environment was readable, carries NO session token,
+        AND the fixed port belongs to a loaded launchd job — that respawn would mint an
+        unknown token and 401 the Desktop while fighting the job. Refuse it (and say so)
+        instead of spawning the impostor."""
+        argv = ["hermes", "serve", "--host", "127.0.0.1", "--port", "9119"]
+        job = ("gui/501", "com.hermes.nova-serve",
+               ["hermes", "serve", "--host", "127.0.0.1", "--port", "9119"], 89757)
+        with patch.object(main_dashboard, "_respawnable_command_for_current_install",
+                          side_effect=lambda a: list(a)), \
+             patch.object(main_dashboard, "_loaded_launchd_backend_jobs", return_value=[job]), \
+             patch("subprocess.Popen") as popen:
+            failed = main_dashboard._respawn_dashboard_processes([list(argv)], [{"HERMES_HOME": "/Users/me/.hermes"}])
+        popen.assert_not_called()
+        assert failed == [argv]
+        assert "session token" in capsys.readouterr().out
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX respawn path")
+    def test_tokenless_fixed_port_respawn_without_supervisor_still_spawns(self):
+        """The refusal is only the launchd conflict case (#121596): with no loaded launchd
+        job claiming the port, a token-less respawn is no worse than what was killed — the
+        victim may predate session tokens, or (e2e-upgrade) have been started from a clean
+        env. Refusing it meant the dashboard never came back (#40449 regression)."""
+
+        class _LiveProc:
+            returncode = None
+
+            def poll(self):
+                return None
+
+        argv = ["hermes", "serve", "--host", "127.0.0.1", "--port", "9119"]
+        with patch.object(main_dashboard, "_respawnable_command_for_current_install",
+                          side_effect=lambda a: list(a)), \
+             patch.object(main_dashboard, "_loaded_launchd_backend_jobs", return_value=[]), \
+             patch("subprocess.Popen", return_value=_LiveProc()) as popen:
+            failed = main_dashboard._respawn_dashboard_processes(
+                [list(argv)], [{"HERMES_HOME": "/Users/me/.hermes"}])
+        popen.assert_called_once()
+        assert failed == []
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX respawn path")
+    def test_tokenless_fixed_port_respawn_with_unreadable_env_still_spawns(self):
+        """Unreadable environment (``None``): the old argv-only behavior is preserved — the
+        victim may predate session tokens entirely, and refusing would regress #40449."""
+
+        class _LiveProc:
+            returncode = None
+
+            def poll(self):
+                return None
+
+        argv = ["hermes", "dashboard", "--port", "8300"]
+        with patch.object(main_dashboard, "_respawnable_command_for_current_install",
+                          side_effect=lambda a: list(a)), \
+             patch("subprocess.Popen", return_value=_LiveProc()) as popen:
+            failed = main_dashboard._respawn_dashboard_processes([list(argv)], [None])
+        popen.assert_called_once()
+        assert failed == []

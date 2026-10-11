@@ -7,6 +7,7 @@ import asyncio
 import ipaddress
 import logging
 import socket
+import time
 from typing import Iterable, Optional
 
 import httpx
@@ -75,8 +76,17 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
     # See #63311.
     _POOL_LIMITS = httpx.Limits(max_connections=8, max_keepalive_connections=4)
 
-    def __init__(self, fallback_ips: Iterable[str], **transport_kwargs):
+    def __init__(self, fallback_ips: Iterable[str], *, connect_budget: Optional[float] = None, **transport_kwargs):
         self._fallback_ips = list(dict.fromkeys(_normalize_fallback_ips(fallback_ips)))
+        # One request's whole path walk (sticky → IPv4 literals → hostname) shares this many seconds
+        # of CONNECT budget (#136412). The adapter bounds the entire send with a wall-clock deadline;
+        # the httpx client's per-request connect timeout applies PER PATH, so several hung paths can
+        # sum past that deadline — it then fires mid-walk and surfaces as a bare TimeoutError with no
+        # cause, which the send classifier must treat as non-retryable (a read timeout may already
+        # have delivered). Bounding the walk guarantees either a live path connects or the underlying
+        # ConnectTimeout surfaces, and that one is classified safely retryable. ``None`` keeps the
+        # legacy unbounded behavior.
+        self._connect_budget = connect_budget
         proxy_url = _resolve_proxy_url(target_hosts=[_TELEGRAM_API_HOST, *self._fallback_ips])
         if proxy_url and "proxy" not in transport_kwargs:
             transport_kwargs["proxy"] = proxy_url
@@ -144,8 +154,20 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
         if request.url.host != _TELEGRAM_API_HOST or not self._fallback_ips:
             return await self._primary.handle_async_request(request)
         last_error: Exception | None = None
-        for ip in self._attempt_order():
-            candidate = request if ip is None else _rewrite_request_for_ip(request, ip)
+        order = self._attempt_order()
+        walk_started = time.monotonic()
+        for index, ip in enumerate(order):
+            share: Optional[float] = None
+            if self._connect_budget is not None:
+                share = (self._connect_budget - (time.monotonic() - walk_started)) / (len(order) - index)
+                if share <= 0 and last_error is not None:
+                    # Budget spent: surface the underlying connect error now (it classifies as
+                    # safely retryable) instead of arming another attempt the caller's wall-clock
+                    # send deadline would interrupt and mask (#136412).
+                    break
+            candidate = _request_with_connect_budget(request, share) if share is not None else request
+            if ip is not None:
+                candidate = _rewrite_request_for_ip(candidate, ip)
             transport = self._primary if ip is None else await self._get_fallback(ip)
             try:
                 response = await transport.handle_async_request(candidate)
@@ -303,5 +325,48 @@ def _rewrite_request_for_ip(request: httpx.Request, ip: str) -> httpx.Request:
     return httpx.Request(method=request.method, url=url, headers=headers, stream=request.stream, extensions=extensions)
 
 
+def _request_with_connect_budget(request: httpx.Request, connect_budget: float) -> httpx.Request:
+    """A copy of ``request`` whose httpx ``timeout`` extension narrows the CONNECT phase to
+    ``connect_budget`` seconds — httpx stores the per-phase budget dict in
+    ``extensions["timeout"]`` (``AsyncClient._set_timeout``) and the transport honours it per
+    request, so the fallback walk can bound each path without touching the shared client config.
+
+    A tighter configured connect stays; a request with no timeout dict is returned untouched —
+    injecting a fresh one would drop the other phases' transport defaults.
+    """
+    timeout = request.extensions.get("timeout")
+    if not isinstance(timeout, dict):
+        return request
+    if timeout.get("connect") is not None and timeout["connect"] <= connect_budget:
+        return request
+    extensions = dict(request.extensions)
+    extensions["timeout"] = {**timeout, "connect": connect_budget}
+    return httpx.Request(
+        method=request.method, url=request.url, headers=request.headers,
+        stream=request.stream, extensions=extensions)
+
+
 def _is_retryable_connect_error(exc: Exception) -> bool:
     return isinstance(exc, (httpx.ConnectTimeout, httpx.ConnectError))
+
+
+async def _shutdown_abandoned_app(app) -> None:
+    """Release a half-built PTB app's httpx transports after an abandoned init: ``app.shutdown()``
+    no-ops when ``_initialized`` was never set, so the request transports are closed directly."""
+    if app is None:
+        return
+    try:
+        await app.shutdown()
+    except Exception:
+        logger.debug("Abandoned Telegram app.shutdown() failed", exc_info=True)
+    bot = getattr(app, "bot", None)
+    for request in (getattr(bot, "_request", None) if bot is not None else None) or ():
+        shutdown = getattr(request, "shutdown", None)
+        if shutdown is None:
+            continue
+        try:
+            result = shutdown()
+            if asyncio.iscoroutine(result) or asyncio.isfuture(result):
+                await result
+        except Exception:
+            logger.debug("Abandoned Telegram request shutdown failed", exc_info=True)

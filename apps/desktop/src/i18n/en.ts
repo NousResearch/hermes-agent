@@ -4700,7 +4700,7 @@ export const en: Translations = {
         },
         content_policy_blocked: {
           title: 'The AI service declined this request',
-          body: provider => `${provider} would not answer this message. Edit it and send again.`
+          body: provider => `${provider} would not answer this message. A blocked pattern from earlier tool results may be re-sent every turn — start a new chat, or switch provider.`
         },
         format_error: {
           title: 'The AI service rejected the request',

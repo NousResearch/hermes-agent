@@ -865,7 +865,12 @@ _RENAMED_TASK_COLUMNS = (
 # column existed.
 _LATER_TASK_COLUMNS = (
     ("max_runtime_seconds", "max_runtime_seconds INTEGER"),
+    ("estimated_runtime_seconds", "estimated_runtime_seconds INTEGER"),
     ("last_heartbeat_at", "last_heartbeat_at INTEGER"),
+    # Forward-progress signal (kanban_progress); NULL/0 = legacy row, unknown.
+    ("last_progress_at", "last_progress_at INTEGER"),
+    ("progress_repeat_count", "progress_repeat_count INTEGER NOT NULL DEFAULT 0"),
+    ("tool_calls_total", "tool_calls_total INTEGER NOT NULL DEFAULT 0"),
     ("current_run_id", "current_run_id INTEGER"),
     ("workflow_template_id", "workflow_template_id TEXT"),
     ("current_step_key", "current_step_key TEXT"),
@@ -905,6 +910,11 @@ _TASK_RUN_COLUMNS = (
     # Spawn-time start fingerprint of the run's worker_pid (PID-reuse guard for the
     # terminal-worker reaper; NULL = legacy row, never signalled).
     ("worker_started_at", "worker_started_at INTEGER"),
+    # Forward-progress signal mirrored from tasks (kanban_progress); NULL/0 = unknown.
+    ("last_progress_at", "last_progress_at INTEGER"),
+    ("progress_repeat_count", "progress_repeat_count INTEGER NOT NULL DEFAULT 0"),
+    ("tool_calls_total", "tool_calls_total INTEGER NOT NULL DEFAULT 0"),
+    ("estimated_runtime_seconds", "estimated_runtime_seconds INTEGER"),
 )
 
 
@@ -1083,7 +1093,11 @@ _REBUILD_SPECS = {
         " task_id TEXT NOT NULL, profile TEXT, step_key TEXT,"
         " status TEXT NOT NULL, claim_lock TEXT, claim_expires INTEGER,"
         " worker_pid INTEGER, worker_started_at INTEGER, max_runtime_seconds INTEGER,"
-        " last_heartbeat_at INTEGER, started_at INTEGER NOT NULL,"
+        " estimated_runtime_seconds INTEGER,"
+        " last_heartbeat_at INTEGER, last_progress_at INTEGER,"
+        " progress_repeat_count INTEGER NOT NULL DEFAULT 0,"
+        " tool_calls_total INTEGER NOT NULL DEFAULT 0,"
+        " started_at INTEGER NOT NULL,"
         " ended_at INTEGER, outcome TEXT, summary TEXT, metadata TEXT,"
         " error TEXT)",
         (

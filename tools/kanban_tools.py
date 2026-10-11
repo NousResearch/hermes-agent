@@ -12,10 +12,11 @@ import json
 import logging
 import os
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from typing import Any, Callable, Optional
 
 from agent.redact import redact_sensitive_text
+from hermes_cli import kanban_progress as _kprog
 from hermes_cli.goals import judge_goal
 from tools.registry import no_cache_check_fn, registry, tool_error
 from hermes_cli.config import cfg_get, load_config
@@ -540,6 +541,32 @@ _AUTO_HEARTBEAT_MIN_INTERVAL_SECONDS = 60.0
 _auto_heartbeat_last_attempt: float = 0.0
 _auto_heartbeat_fence_warned = False
 
+# Forward-progress signal (#kanban-progress). A tool-call signature per call (see
+# ``hermes_cli.kanban_progress``); the auto-heartbeat above writes the rollup to the board so
+# the dispatcher/dashboard can tell a worker looping on the same call from one making progress.
+# Process-local: one dispatcher-spawned worker per process.
+_progress_tracker: Optional[_kprog.ProgressTracker] = None
+
+
+def _current_progress_tracker() -> _kprog.ProgressTracker:
+    global _progress_tracker
+    if _progress_tracker is None:
+        _progress_tracker = _kprog.ProgressTracker()
+    return _progress_tracker
+
+
+def note_tool_call_progress(tool_name: str, args: Any = None) -> None:
+    """Record one tool call for the board's forward-progress signal.
+
+    Called by the agent's tool executor for every tool call; no-op outside a
+    dispatcher-spawned worker (``HERMES_KANBAN_TASK``). Never raises — a tracker
+    bug must not break the agent loop.
+    """
+    if not os.environ.get("HERMES_KANBAN_TASK"):
+        return
+    with suppress(Exception):
+        _current_progress_tracker().note(tool_name, args)
+
 
 def register_current_worker_from_env() -> bool:
     """Record this worker's pid on its run when the dispatcher died before it could
@@ -577,7 +604,8 @@ def heartbeat_current_worker_from_env() -> bool:
         from hermes_cli import kanban_db_dispatch as kbd
         with _board(None, quiet_close=True) as (kb, conn):
             ops = ((kb.heartbeat_claim, {"claimer": os.environ.get("HERMES_KANBAN_CLAIM_LOCK")}),
-                   (kbd.heartbeat_worker, {"note": None, "expected_run_id": _worker_run_id(tid)}))
+                   (kbd.heartbeat_worker, {"note": None, "expected_run_id": _worker_run_id(tid),
+                                           "progress": _current_progress_tracker().snapshot()}))
             succeeded = True
             for fn, kwargs in ops:
                 op = fn.__name__
@@ -941,7 +969,8 @@ def _handle_heartbeat(args: dict, **kw) -> str:
         # claimer covers locally-driven workers that bypassed the dispatcher.
         kb.heartbeat_claim(conn, tid, claimer=os.environ.get("HERMES_KANBAN_CLAIM_LOCK"))
         ok = kbd.heartbeat_worker(
-            conn, tid, note=args.get("note"), expected_run_id=_worker_run_id(tid))
+            conn, tid, note=args.get("note"), expected_run_id=_worker_run_id(tid),
+            estimated_runtime_seconds=args.get("expected_runtime_seconds"))
         _check(ok, f"could not heartbeat {tid} (unknown id or not running)")
         return _ok(task_id=tid)
 

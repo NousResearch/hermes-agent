@@ -2548,15 +2548,17 @@ def normalize_opencode_model_id(provider_id: Optional[str], model_id: Optional[s
 
 # Per-family (model-id prefix → api_mode) routing from OpenCode's published Zen/Go endpoint
 # tables, checked in order. GPT/Codex/Grok and Muse Spark use /v1/responses (Muse Spark 503s on
-# chat/completions); Claude (Zen), MiniMax (Go), Union Alpha, and Qwen use /v1/messages;
-# everything else falls through to /v1/chat/completions.
+# chat/completions); Claude (Zen), Space Bunny (Zen), MiniMax (Go), Union Alpha, and Qwen use
+# /v1/messages; everything else falls through to /v1/chat/completions. space-bunny-* is listed
+# because the relay serves it on /v1/messages only, so without the prefix it falls through to
+# chat_completions and the model is unreachable (the relay 401s that wire).
 _OPENCODE_API_MODE_PREFIXES: dict[str, tuple[tuple[tuple[str, ...], str], ...]] = {
     "opencode-go": (
         (("gpt-", "grok-", "muse-spark"), "codex_responses"),
         (("minimax-", "qwen", "union-alpha"), "anthropic_messages")),
     "opencode-zen": (
-        (("claude-", "union-alpha"), "anthropic_messages"), (("gpt-", "grok-", "muse-spark"), "codex_responses"),
-        (("qwen",), "anthropic_messages"))}
+        (("claude-", "union-alpha", "space-bunny-"), "anthropic_messages"),
+        (("gpt-", "grok-", "muse-spark"), "codex_responses"), (("qwen",), "anthropic_messages"))}
 
 
 def opencode_model_api_mode(provider_id: Optional[str], model_id: Optional[str]) -> str:

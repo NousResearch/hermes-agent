@@ -122,11 +122,15 @@ def _is_nous_portal_endpoint(base_url: str | None) -> bool:
 
 def _requires_bearer_auth(base_url: str | None) -> bool:
     """Providers needing ``Authorization: Bearer`` instead of ``x-api-key``: MiniMax, Azure AI
-    Foundry, Palantir Foundry's LLM proxy, CommandCode, Nous Portal. Palantir/CommandCode use
+    Foundry, Palantir Foundry's LLM proxy, CommandCode, Nous Portal, OpenCode Zen/Go. The
+    opencode.ai relay serves its Anthropic-wire models on Bearer only -- it 401s on x-api-key --
+    so it must be matched by hostname here rather than falling through to the third-party
+    ``x-api-key`` branch. Palantir/CommandCode use
     hostname matching (not substring) so ``evil.com/palantirfoundry`` paths don't trigger it."""
     normalized = _normalized_lower(base_url)
     return (
         _is_nous_portal_endpoint(base_url)
+        or _is_opencode_endpoint(base_url)
         or normalized.startswith(_MINIMAX_ANTHROPIC_PREFIXES)
         or "azure.com" in normalized
         or base_url_host_matches(normalized, "palantirfoundry.com")

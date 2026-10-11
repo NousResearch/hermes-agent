@@ -214,6 +214,12 @@ _NONRETRYABLE_COPY: dict[str, str] = {
         "your key is probably fine. Set a custom User-Agent via the provider's extra_headers, check "
         "the proxy/WAF rules, or switch providers with /model."
     ),
+    FailoverReason.local_backend_poisoned.value: (
+        "The local llama-server worker for '{model}' hit a GPU compute error its backend cannot "
+        "recover from (usually an out-of-memory). Hermes replaced the worker once and the "
+        "replacement failed the same way, so it stopped retrying. Free up GPU memory (close other "
+        "models or apps, or pick a smaller context) and try again, or switch models with /model."
+    ),
 }
 _NONRETRYABLE_DEFAULT_COPY = (
     "{label} rejected the request and retrying won't help. Pick another model with /model, "

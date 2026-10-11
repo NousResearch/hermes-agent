@@ -969,6 +969,7 @@ _NONRETRYABLE_LABELS = {
     FailoverReason.ssl_cert_verification: "The provider's security certificate could not be verified",
     # Only reached after the one-shot image shrink ran (recover_after_classification sets the flag first).
     FailoverReason.image_too_large: "Request still exceeded the provider's size limit after shrinking images",
+    FailoverReason.local_backend_poisoned: "The local model's GPU backend is in an unrecoverable error state",
 }
 
 

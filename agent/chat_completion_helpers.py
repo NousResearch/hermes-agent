@@ -27,8 +27,8 @@ from typing import Any, Dict, Optional
 from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale_timeout
 from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
 from agent.error_classifier import (
-    FailoverReason, PROVIDER_STREAM_EMPTY_FRAME_ERROR_CODE, PROVIDER_STREAM_NON_JSON_ERROR_CODE,
-    _extract_status_code)
+    FailoverReason, ManagedWorkerPoisonedError, PROVIDER_STREAM_EMPTY_FRAME_ERROR_CODE,
+    PROVIDER_STREAM_NON_JSON_ERROR_CODE, _extract_status_code)
 from agent.sdk_transform_bypass import bypass_chat_sdk_request_transform
 from agent.errors import EmptyStreamError
 from agent.chat_completion_stream_monitor import StreamingWaitMonitor
@@ -861,6 +861,27 @@ def _managed_local_load_notice(agent, api_kwargs: dict) -> Optional[str]:
         # Counter past the estimate (estimator undercounted): no honest denominator, label-only.
         return "⚙ processing prompt"
     except Exception:
+        return None
+
+
+def _is_compute_error(e: Exception) -> bool:
+    """llama-server's 5xx for a failed decode (``srv send_error: ... Compute error.``)."""
+    status = _extract_status_code(e)
+    return status is not None and status >= 500 and "compute error" in str(e).lower()
+
+
+def _managed_supervisor_for(agent) -> "Optional[Any]":
+    """This process's ``LlamaServerSupervisor`` when ``agent.base_url`` is its router, else None.
+    A router another Hermes process owns (state file only) cannot be recycled from here."""
+    try:
+        from hermes_cli.local_runtime.bootstrap import get_supervisor
+        sup = get_supervisor()
+        if sup is None:
+            return None
+        from urllib.parse import urlparse
+        base = urlparse(str(getattr(agent, "base_url", "") or "")).netloc.lower()
+        return sup if base and base == urlparse(sup.base_url).netloc.lower() else None
+    except Exception:  # noqa: BLE001 — never let runtime lookup break a call
         return None
 
 
@@ -2762,6 +2783,8 @@ class _StreamingCall(StreamingWaitMonitor):
         self._writer_token = self._attempt_request_client = self._attempt_stream_response = None
         # The route ``api_kwargs`` was assembled for; a retry must not replay it on another one.
         self._request_route = self._live_route()
+        # Generation of the managed worker this call already had replaced (#132778); None = not yet.
+        self._worker_recycled: Optional[int] = None
 
     # ── shared small helpers ────────────────────────────────────────────
 
@@ -3653,6 +3676,9 @@ class _StreamingCall(StreamingWaitMonitor):
                 from agent.stream_diag import buffer_connect_exhausted_notice
                 buffer_connect_exhausted_notice(self.agent, e, attempts=max_retries + 1, base_url=self.agent.base_url)
         else:
+            recycled = self._recover_poisoned_managed_worker(e)
+            if recycled is not None:
+                return recycled
             self._maybe_disable_streaming(e)
             logger.exception("Streaming failed before delivery: %s", e)
             if self._unmask_server_error_with_nonstreaming(e):
@@ -3660,6 +3686,60 @@ class _StreamingCall(StreamingWaitMonitor):
         # Propagate to the main retry loop (credential rotation, fallback, backoff).
         self.result["error"] = e
         return False
+
+    def _recover_poisoned_managed_worker(self, e: Exception) -> Optional[bool]:
+        """A pre-delivery ``Compute error`` 5xx from the MANAGED llama-server whose router log
+        shows the backend in error state (Metal after an OOM: "backend is in error state from a
+        previous command buffer failure - recreate the backend to recover", #132778).
+
+        A dead connection, a healthy server's 5xx and a poisoned GPU backend are three failure
+        classes; this one is deterministic for the child, so retrying the same worker (stream
+        retries, the non-streaming unmask probe, the turn loop's backoff) can only repeat the 500.
+        Instead: replace the worker (unload + load = a fresh child process and backend), retry
+        ONCE on it, and on a second strike stop with ``ManagedWorkerPoisonedError`` (classified
+        non-retryable) so the failure is visible. None = not this failure class: the ordinary
+        policy applies, including a Compute error with no backend verdict in the log.
+        """
+        if self.deltas_were_sent["yes"] or not _is_compute_error(e):
+            return None
+        if getattr(self.agent, "_interrupt_requested", False):
+            return None  # the loop's pre-retry interrupt check owns a pending /stop
+        sup = _managed_supervisor_for(self.agent)
+        if sup is None:
+            return None
+        model = str(self.api_kwargs.get("model") or "")
+        evidence = sup.backend_error_evidence()
+        if self._worker_recycled is not None:
+            # Second strike on the replacement child: the budget is spent, fail visibly.
+            logger.error("Managed worker for %s failed again after recycle (generation %d): %s%s",
+                         model, self._worker_recycled, e, f" [{evidence}]" if evidence else "")
+            self.result["error"] = ManagedWorkerPoisonedError(model, str(e), generation=self._worker_recycled)
+            return False
+        if evidence is None:
+            return None
+        logger.warning("Managed worker for %s is poisoned (%s); recycling it before one retry", model, evidence)
+        self._quiet(self.agent._emit_warning,
+                    f"⚠️ The local model worker for {model} hit an unrecoverable GPU compute error "
+                    "(out of memory) — replacing it and retrying once.")
+        self._cancel_current_stream_attempt("poisoned_worker_recycle")
+        self.clients.close_once("poisoned_worker_recycle")
+        stale_timeout = self._stream_stale_timeout
+        self._stream_stale_timeout = float("inf")  # a model load is not the dead attempt's silence
+        try:
+            self._worker_recycled = sup.recycle_model(model)
+        except Exception as exc:  # noqa: BLE001 — a failed replacement is the terminal answer
+            logger.error("Managed worker for %s could not be recycled: %s", model, exc)
+            self._worker_recycled = sup.worker_generation(model)
+            self.result["error"] = ManagedWorkerPoisonedError(
+                model, f"the replacement could not be started: {exc}", generation=self._worker_recycled)
+            return False
+        finally:
+            self._stream_stale_timeout = stale_timeout
+            self.last_chunk_time["t"] = time.time()
+        # Not a network retry: like the stream_options compat retry it must not consume (or
+        # overrun) the transient budget, or a last-attempt strike ends the loop with no result.
+        self._compat_retries += 1
+        return True
 
     def _unmask_server_error_with_nonstreaming(self, e: Exception) -> bool:
         """One non-streaming re-issue when a 5xx killed the stream before any delta.

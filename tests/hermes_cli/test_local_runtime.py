@@ -102,6 +102,10 @@ class _StubHandler(BaseHTTPRequestHandler):
             self._send(200, {"choices": [{"message": {
                 "role": "assistant", "content": self.chat_answer}}]})
         elif self.path == "/models/load":
+            type(self).loaded = getattr(type(self), "loaded", [])
+            length = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(length)) if length else {}
+            type(self).loaded.append(body.get("model"))
             self._send(200, {"success": True})
         elif self.path == "/models/unload":
             type(self).unloaded = getattr(type(self), "unloaded", [])
@@ -229,6 +233,65 @@ def _make_supervisor(tmp_path, port):
     sup = LlamaServerSupervisor(
         binary=tmp_path / "llama-server", models_dir=tmp_path, port=port)
     return sup
+
+
+def test_backend_error_evidence_is_the_newest_verdict_since_the_last_recycle(tmp_path):
+    """The poisoned-worker verdict (#132778) is read from the router log incrementally and
+    remembered, so every session that strikes the same poisoned child sees it (not just the first
+    reader); a truncated log restarts the scan; no log is no verdict."""
+    from hermes_cli.local_runtime.supervisor import BACKEND_ERROR_STATE_MARKER
+
+    sup = _make_supervisor(tmp_path, port=1)
+    sup.log_path = tmp_path / "llama-server.log"
+    assert sup.backend_error_evidence() is None  # nothing spawned yet
+
+    verdict = f"E ggml_metal_graph_compute: {BACKEND_ERROR_STATE_MARKER} from a previous command buffer failure"
+    with open(sup.log_path, "a", encoding="utf-8") as fh:
+        fh.write("E error: Insufficient Memory (00000008:kIOGPUCommandBufferCallbackErrorOutOfMemory)\n")
+        fh.write(verdict + "\n")
+        fh.write("E srv send_error: task id = 5016, error: Compute error.\n")
+    assert sup.backend_error_evidence() == verdict
+    assert sup.backend_error_evidence() == verdict  # a sibling session's strike sees the same verdict
+
+    with open(sup.log_path, "a", encoding="utf-8") as fh:
+        fh.write(verdict + " #2\n" + "E srv send_error: task id = 5017, error: Compute error.\n")
+    assert sup.backend_error_evidence() == verdict + " #2"  # the newest line wins
+
+    sup.log_path.write_text(verdict + " after rotation\n", encoding="utf-8")  # shorter than the offset
+    assert sup.backend_error_evidence() == verdict + " after rotation"
+
+
+def test_recycle_model_replaces_the_child_once_per_window(stub_server, tmp_path):
+    """Recycling = unload then load (the router starts a fresh child, i.e. a fresh backend) and a
+    new generation; the model's idle clock is dropped. Sessions sharing the router share ONE
+    replacement: a second recycle inside ``min_interval_s`` rides on the fresh child."""
+    from hermes_cli.local_runtime.supervisor import BACKEND_ERROR_STATE_MARKER
+
+    port, handler = stub_server
+    handler.models = {"data": [{"id": "m", "status": {"value": "unloaded"}}]}
+    handler.unloaded, handler.loaded = [], []
+    sup = _make_supervisor(tmp_path, port)
+    sup.log_path = tmp_path / "llama-server.log"
+    sup.log_path.write_text(f"E ggml_metal_graph_compute: {BACKEND_ERROR_STATE_MARKER}\n", encoding="utf-8")
+    sup._idle_since["m"] = 1.0
+    assert sup.backend_error_evidence() is not None
+
+    assert sup.worker_generation("m") == 0
+    assert sup.recycle_model("m") == 1
+    assert (handler.unloaded, handler.loaded) == (["m"], ["m"])
+    assert "m" not in sup._idle_since
+    assert sup.worker_generation("m") == 1
+    # The verdict condemned the replaced child; the replacement starts with a clean record.
+    assert sup.backend_error_evidence() is None
+    with open(sup.log_path, "a", encoding="utf-8") as fh:
+        fh.write(f"E ggml_metal_graph_compute: {BACKEND_ERROR_STATE_MARKER} (replacement)\n")
+    assert sup.backend_error_evidence().endswith("(replacement)")
+
+    assert sup.recycle_model("m") == 1  # a sibling session's strike within the window: no second kill
+    assert (handler.unloaded, handler.loaded) == (["m"], ["m"])
+
+    assert sup.recycle_model("m", min_interval_s=0) == 2  # the window elapsed: a real replacement
+    assert (handler.unloaded, handler.loaded) == (["m", "m"], ["m", "m"])
 
 
 def test_touch_generate_is_the_readiness_proof(stub_server, tmp_path):

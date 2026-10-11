@@ -136,6 +136,21 @@ def is_compute_host_identity(pid: int) -> bool:
     return "tui_gateway.compute_host" in _pid_command(pid)
 
 
+def _same_home(a: str, b: str) -> bool:
+    """Compare HERMES_HOME values as paths, not strings.
+
+    The child hello reports the raw ``HERMES_HOME`` env value (``D:/x``) while
+    the parent holds ``str(get_hermes_home())`` (``D:\\x`` on Windows); the same
+    directory must still pass the hello check."""
+    if a == b:
+        return True
+
+    def norm(p: str) -> str:
+        return os.path.normcase(os.path.normpath(os.path.expanduser(p)))
+
+    return norm(a) == norm(b)
+
+
 class HostSupervisor:
     """Own one persistent compute-host child and relay its frames."""
 
@@ -356,7 +371,7 @@ class HostSupervisor:
         if not hello:
             raise RuntimeError("compute host missing hello")
         got_home = str(hello.get("hermes_home") or "")
-        if got_home and got_home != self.expected_hermes_home:
+        if got_home and not _same_home(got_home, self.expected_hermes_home):
             raise RuntimeError(
                 f"compute host HERMES_HOME mismatch: {got_home} != {self.expected_hermes_home}")
         got_sha = str(hello.get("build_sha") or "")

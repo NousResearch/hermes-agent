@@ -556,34 +556,10 @@ def _build_result_entry(
     ``status``/``exit_reason``/``truncated`` follow the ``_run_single_child`` contract; a structured failure always
     wins over the summary-presence heuristic (a fallback for legacy/mock results only)."""
     summary = result.get("final_response") or ""
-    # "(empty)" is run_agent's give-up sentinel after repeated empty LLM
-    # responses (usually a transport bug) — a failure, not a success.
     usable_summary = bool(summary) and summary.strip() != "(empty)"
-    interrupt_note = ""
-    if result.get("interrupted", False):
-        status, exit_reason = "interrupted", "interrupted"
-        # The loop's final_response is a placeholder here ("Operation interrupted…", also appended as the closing
-        # assistant row); the completion must carry what the child actually had so far — its last real assistant
-        # text — and keep the placeholder as the error.
-        from agent.message_content import flatten_message_text
-        placeholders = {"", summary.strip(), "Operation interrupted."}
-        partial = next((t for m in reversed(result.get("messages") or []) if m.get("role") == "assistant"
-                        and (t := flatten_message_text(m.get("content")).strip()) not in placeholders), "")
-        if partial:
-            interrupt_note, summary = summary.strip(), partial
-    elif result.get("failed") or result.get("error"):
-        # The loop returns the error text as final_response, which would otherwise read as "completed". Never report a
-        # provider rejection as "max_iterations" — that is only truthful for real budget exhaustion.
-        status, exit_reason = "failed", "error"
-    else:
-        # exit_reason ("completed" vs "max_iterations") tells the parent HOW the task ended; completed=False with no
-        # failure = budget exhaustion. A declared schema still violated after the bounded retry does NOT fail the
-        # run: the child's raw final text is the deliverable (audits of up to 68 min were written off as "failed"
-        # over a stray code fence or one missing field); ``schema_valid: false`` + ``schema_errors`` carry the
-        # contract verdict, and the summary is prefixed with a notice so a status-only reader cannot mistake it
-        # for validated output.
-        exit_reason = "completed" if result.get("completed", False) else "max_iterations"
-        status = "completed" if usable_summary else "failed"
+    from tools.delegate_tool_child_status import MANGLED_REASONING_ERROR, child_result_outcome
+
+    status, exit_reason, summary, interrupt_note = child_result_outcome(result, summary)
 
     _cost = getattr(child, "session_estimated_cost_usd", 0.0)
     _cost_status = getattr(child, "session_cost_status", None)
@@ -614,7 +590,8 @@ def _build_result_entry(
     entry["cost_usd"] = round(entry["_child_cost_usd"], 6)
     entry["cost_status"] = _cost_status if isinstance(_cost_status, str) and _cost_status else "unknown"
     if status == "failed":
-        entry["error"] = result.get("error", "Subagent did not produce a response.")
+        entry["error"] = (MANGLED_REASONING_ERROR if exit_reason == "mangled"
+                          else result.get("error", "Subagent did not produce a response."))
         # Classified reason from the child loop (e.g. "rate_limit", "billing")
         # lets the parent tell a quota wall from a task error without parsing prose.
         _failure_reason = result.get("failure_reason")

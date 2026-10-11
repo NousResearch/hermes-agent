@@ -67,7 +67,7 @@ def finish_text_response(
     iteration-limit summarization; the final message is appended and flushed only after the
     stop gates accept it."""
     from agent.conversation_loop import (
-        _CODEX_ACK_CONTINUATION_NUDGE, _DEGENERATE_FINAL_NUDGE, _DROPPED_TOOLCALL_NUDGE_CONTENT,
+        _DROPPED_TOOLCALL_NUDGE_CONTENT,
         _join_truncated_parts
     )
 
@@ -117,8 +117,8 @@ def finish_text_response(
             # WARNING, not INFO: a model that keeps ending turns this way is stalled
             # (planning monologue, zero tool calls) while the turn reports "complete".
             logger.warning(
-                "Reasoning-only clean stop (%d chars) — returning the reasoning as the final "
-                "response (model=%s provider=%s api_calls=%d tool_turns=%d)",
+                "Reasoning-only clean stop (%d chars) "
+                "(model=%s provider=%s api_calls=%d tool_turns=%d)",
                 len(_promoted), agent.model, agent.provider, api_call_count,
                 sum(1 for m in messages if isinstance(m, dict) and m.get("role") == "assistant" and m.get("tool_calls")),
             )
@@ -164,87 +164,14 @@ def finish_text_response(
     # heal threshold, deliver the queued notice through the status/warning callback — the normal out-of-band
     # delivery channel (gateway status message / CLI print). NEVER appended to messages/api_messages:
     # conversation context and the cached prompt prefix stay byte-identical.
-    from agent.agent_runtime_helpers import (
-        intent_ack_continuation_mode, looks_like_degenerate_final, promoted_reasoning_announces_action,
-        tool_results_this_turn, trailing_continue_intent,
-    )
+    from agent.turn_final_response_stalls import MANGLED_REASONING_EXIT, handle_final_stall
 
-    _ack_mode = intent_ack_continuation_mode(agent)
-    # Said-continue-but-stopped guard: no tool calls but the short reply TAILS with an
-    # announced next action. Reuses the SAME bounded continuation counter (max 2 per turn).
-    # Promoted reasoning gets the broader first-person-plan tail detector: with tools offered
-    # and zero tool calls, chain-of-thought ending on "Let me batch the terminal calls..." is a
-    # stalled model, and returning it as the answer aborts the tool loop while reporting
-    # "complete" (#111761). Same cap, so a model that never acts still ends after 2 nudges.
-    _stall_text = agent._strip_think_blocks(final_response or "")
-    _stall_continue_intent = (
-        bool(getattr(agent, "_stall_guards", True))
-        and agent.valid_tool_names
-        and codex_ack_continuations < 2
-        and (
-            trailing_continue_intent(_stall_text)
-            or (bool(_promoted) and promoted_reasoning_announces_action(_stall_text))
-        )
+    _stall = handle_final_stall(
+        agent, assistant_message=assistant_message, messages=messages, user_message=user_message,
+        final_response=final_response, promoted=_promoted, continuations=codex_ack_continuations,
     )
-    # Degenerate-final guard (#103483): the turn did real tool work and then stopped on a
-    # fragment. Same scope knob and the SAME bounded counter as the ack continuation; the nudge
-    # row itself closes the tool-work window, so a second fragment ends the turn as the answer.
-    _tool_rows = tool_results_this_turn(messages)
-    _degenerate_final = (
-        bool(getattr(agent, "_stall_guards", True))
-        and _ack_mode != "off"
-        and codex_ack_continuations < 2
-        and _tool_rows > 0
-        and looks_like_degenerate_final(_stall_text, user_message=user_message)
-    )
-    # Precedence: an announced next action outranks the fragment shape; the codex ack is last.
-    if _stall_continue_intent:
-        _continuation_kind = "stall"
-    elif _degenerate_final:
-        _continuation_kind = "degenerate"
-    elif (
-        _ack_mode != "off"
-        and agent.valid_tool_names
-        and codex_ack_continuations < 2
-        and agent._looks_like_codex_intermediate_ack(
-            user_message=user_message, assistant_content=final_response, messages=messages,
-            require_workspace=(_ack_mode == "codex_only"),
-        )
-    ):
-        _continuation_kind = "ack"
-    else:
-        _continuation_kind = None
-    if _continuation_kind:
-        if _continuation_kind == "stall":
-            logger.info(
-                "Stall guard: turn ending on trailing continue-"
-                "intent with no tool calls — re-prompting to act "
-                "(%d/2)", codex_ack_continuations + 1,
-            )
-        elif _continuation_kind == "degenerate":
-            logger.warning(
-                "Degenerate final: %d-char fragment %r ended the turn after %d tool result(s) — "
-                "re-prompting (%d/2)", len(_stall_text), _stall_text[:40], _tool_rows,
-                codex_ack_continuations + 1,
-            )
-        codex_ack_continuations += 1
-        interim_msg = agent._build_assistant_message(assistant_message, "incomplete")
-        if _promoted:
-            # Same sidecar as the final row: the wire copy must carry the promoted text, not only
-            # ``reasoning_content``, or the continuation replays an empty assistant turn.
-            interim_msg["api_content"] = final_response
-        append_message(messages, interim_msg)
-        agent._emit_interim_assistant_message(interim_msg)
-        append_message(messages, {
-            "role": "user",
-            "content": (
-                _DEGENERATE_FINAL_NUDGE if _continuation_kind == "degenerate"
-                else _CODEX_ACK_CONTINUATION_NUDGE
-            ),
-        })
-        agent._session_messages = messages
-        # An acknowledgment is non-final: its text must not suppress iteration-limit
-        # summarization if the continuation exhausts budget.
+    codex_ack_continuations = _stall.continuations
+    if _stall.continued:
         final_response = None
         return _verdict("continue")
 
@@ -370,7 +297,7 @@ def finish_text_response(
             exc_info=True,
         )
 
-    _turn_exit_reason = f"text_response(finish_reason={finish_reason})"
+    _turn_exit_reason = MANGLED_REASONING_EXIT if _stall.mangled else f"text_response(finish_reason={finish_reason})"
     if not agent.quiet_mode:
         agent._safe_print(f"🎉 Conversation completed after {api_call_count} OpenAI-compatible API call(s)")
     return _verdict("break")

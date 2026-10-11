@@ -446,6 +446,10 @@ def _last_turn_reasoning(messages) -> Optional[Any]:
         if msg.get("role") == "user":
             return None  # turn boundary — don't cross into prior turns
         if msg.get("role") == "assistant" and msg.get("reasoning"):
+            # A promoted reply is already delivered as final_response. Keep its replay fields
+            # intact, but consume the display copy so show_reasoning cannot repeat the answer.
+            if not msg.get("content") and msg.get("api_content"):
+                return None
             return msg["reasoning"]
     return None
 

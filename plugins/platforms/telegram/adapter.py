@@ -703,6 +703,9 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         self._approval_state: dict[int, str] = {}  # message_id → session_key
         self._slash_confirm_state: dict[str, str] = {}  # confirm_id → session_key
         self._clarify_state: dict[str, str] = {}  # clarify_id → session_key
+        # clarify_id → (chat_id, message_id, question_text): the persistent clarify card, so
+        # retire_clarify_card can strip its keyboard when the clarify ends without a click.
+        self._clarify_messages: dict[str, tuple] = {}
         # "important" (default): only final responses, approvals and slash confirmations notify;
         # "all": every message notifies (display.platforms.telegram.notifications).
         self._notifications_mode: str = "important"
@@ -4278,9 +4281,31 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
                 rows = [[InlineKeyboardButton(str(idx + 1), callback_data=f"cl:{clarify_id}:{idx}")] for idx in range(len(choices))]
                 rows.append([InlineKeyboardButton(t("platform.telegram.prompt.other"), callback_data=f"cl:{clarify_id}:other")])
                 keyboard = InlineKeyboardMarkup(rows)
-            return text, keyboard, lambda msg: self._clarify_state.__setitem__(clarify_id, session_key)
+            def on_sent(msg):
+                self._clarify_state[clarify_id] = session_key
+                self._clarify_messages[clarify_id] = (chat_id, msg.message_id, text)
+
+            return text, keyboard, on_sent
         return await self._send_prompt(
             "send_clarify", chat_id, metadata, build, parse_mode=ParseMode.HTML, thread_id=self._metadata_thread_id(metadata))
+
+    async def retire_clarify_card(self, clarify_id: str, notice: str) -> None:
+        """Rewrite a still-live clarify card into a terminal, button-less state.
+
+        The gateway calls this whenever a clarify ends without a click — timeout, session
+        reset, or superseding prose — so the card stops advertising an answer path it can
+        no longer accept (mirrors the Slack adapter's retire_clarify_card).
+        """
+        target = self._clarify_messages.pop(clarify_id, None)
+        if target is None:
+            return
+        chat_id, message_id, question_text = target
+        self._clarify_state.pop(clarify_id, None)
+        with contextlib.suppress(Exception):
+            await self._bot.edit_message_text(
+                chat_id=chat_id, message_id=int(message_id),
+                text=f"❓ {question_text}\n\n<i>{_html.escape(notice)}</i>",
+                parse_mode=ParseMode.HTML, reply_markup=None)
 
     @staticmethod
     def _provider_get_label():
@@ -4831,6 +4856,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             if not flipped:
                 # Entry evicted / gateway restarted — a typed answer would go nowhere.
                 self._clarify_state.pop(clarify_id, None)
+                self._clarify_messages.pop(clarify_id, None)
                 await self._notify_clarify_expired(query, user_display)
                 return
             await query.answer(text=_toast("platform.telegram.prompt.type_answer"))
@@ -4857,6 +4883,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             # Race (timeout / session reset): echo the index so the agent sees an intentional response.
             resolved_text = f"choice {idx + 1}"
         self._clarify_state.pop(clarify_id, None)
+        self._clarify_messages.pop(clarify_id, None)
         try:
             from tools.clarify_gateway import resolve_gateway_clarify
             resolved = resolve_gateway_clarify(clarify_id, resolved_text)

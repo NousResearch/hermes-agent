@@ -55,6 +55,12 @@ on:
         type: boolean
         required: false
         default: true
+      strict_acceptance:
+        description: >-
+          Acceptance runs only: known_failure owners whose gaps FAIL this run instead of xfailing ('upd-txn', a comma list, or '1' for every gap). Sets HERMES_E2E_STRICT_ACCEPTANCE for the E2E suites (tests/e2e/core/_pending_fixes.py).
+        type: string
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -72,9 +78,16 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: macOS-only tests
+          # Two slices on the free standard runner (3 cores, 3 workers): one lane ran
+          # ~7.5 min and became the slowest required job once the Linux suite split.
+          - name: macOS-only tests (1/2)
             runner: macos-latest
             marker: macos
+            slice: 1/2
+          - name: macOS-only tests (2/2)
+            runner: macos-latest
+            marker: macos
+            slice: 2/2
           - name: Windows-only tests
             runner: windows-latest-32-core
             marker: windows
@@ -175,6 +188,7 @@ jobs:
           # These files spawn nested PowerShell trees. CPU-count parallelism
           # starves cold child startup before the fixture's idle deadline.
           HERMES_TEST_WORKERS: ${{ matrix.marker == 'windows' && (runner.arch == 'ARM64' && '16' || '16') || '' }}
+          HERMES_TEST_SLICE: ${{ matrix.slice || '' }}
           # Belt-and-suspenders with tests/conftest.py's env blanking: no
           # test may reach a real provider API.
           OPENROUTER_API_KEY: ''
@@ -189,6 +203,8 @@ jobs:
     name: Windows install + update E2E
     if: inputs.e2e_upgrade
     uses: ./.github/workflows/windows-install-update-e2e.yml
+    with:
+      strict_acceptance: ${{ inputs.strict_acceptance }}
 
   e2e-windows:
     # Real Hermes processes on a real Windows host (tests/e2e/core/windows): hermes.exe,
@@ -228,6 +244,7 @@ jobs:
           scripts/run_tests.sh tests/e2e/core/windows/ -- \
             -m "platforms and integration" -v --tb=short -rA
         env:
+          HERMES_E2E_STRICT_ACCEPTANCE: ${{ inputs.strict_acceptance }}
           HERMES_TEST_WORKERS: '6'
           HERMES_TEST_FILE_TIMEOUT: '900'
           HERMES_TEST_FILE_RETRIES: '0'

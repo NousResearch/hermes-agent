@@ -15,7 +15,7 @@ from tools.mcp_tool_common import _resolve_tool_timeout
 
 class TestMcpToolTimeoutResolution:
     def test_default_unchanged_with_nothing_configured(self, monkeypatch):
-        monkeypatch.setattr("agent.deadline._timeouts_section", lambda: {})
+        monkeypatch.setattr("agent.deadline._timeouts_section", dict)
         assert _resolve_tool_timeout({}) == _DEFAULT_TOOL_TIMEOUT
 
     def test_per_server_timeout_always_wins(self, monkeypatch):

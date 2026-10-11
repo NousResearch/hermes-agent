@@ -51,7 +51,7 @@ class PreflightGateVerdict:
     _preflight_compression_blocked: Any
     _provider_overflow_recovery_pending: Any
     _last_preflight_pressure: Any
-    result: Optional[Dict[str, Any]] = None
+    result: Optional[dict[str, Any]] = None
 
 
 def run_preflight_compression(
@@ -72,11 +72,11 @@ def run_preflight_compression(
         _should_skip_model_call_for_reference_handoff,
     )
 
-    def _done(action: str, result: Optional[Dict[str, Any]] = None) -> PreflightGateVerdict:
+    def _done(action: str, result: Optional[dict[str, Any]] = None) -> PreflightGateVerdict:
         v.action, v.result = action, result
         return v
 
-    def _exhausted_result() -> Dict[str, Any]:
+    def _exhausted_result() -> dict[str, Any]:
         return _provider_overflow_exhausted_result(
             agent, v.messages, v.conversation_history, v.api_call_count, request_pressure_tokens,
             max_compression_attempts,
@@ -146,7 +146,7 @@ def run_preflight_compression(
         _pre_api_input = v.messages
         v.messages, v.active_system_prompt = agent._compress_context(
             v.messages, system_message, approx_tokens=request_pressure_tokens,
-            task_id=effective_task_id,
+            task_id=effective_task_id, trigger="pre_api",
         )
         if context_compression_timed_out(agent):
             # Progress-aware timeout: never reached the provider — refund the
@@ -232,7 +232,7 @@ class PostToolCompressionVerdict:
     ``turn_exit_reason`` set)."""
 
     end_turn: bool
-    messages: List[Dict[str, Any]]
+    messages: list[dict[str, Any]]
     active_system_prompt: Any
     conversation_history: Any
     compression_attempts: int
@@ -242,7 +242,7 @@ class PostToolCompressionVerdict:
 
 
 def compress_after_tool_results(
-    agent: Any, *, messages: List[Dict[str, Any]], system_message: Any, user_message: Any,
+    agent: Any, *, messages: list[dict[str, Any]], system_message: Any, user_message: Any,
     active_system_prompt: Any, conversation_history: Any, compression_attempts: int,
     max_compression_attempts: int, effective_task_id: Any, final_response: Any,
     turn_exit_reason: Any, current_turn_user_idx: int,
@@ -313,7 +313,7 @@ def compress_after_tool_results(
         # Pass overhead-aware _real_tokens, not last_prompt_tokens (0 in the
         # no-usage fallback), so the overflow guard sees the true size.
         messages, active_system_prompt = agent._compress_context(
-            messages, system_message, approx_tokens=_real_tokens, task_id=effective_task_id
+            messages, system_message, approx_tokens=_real_tokens, task_id=effective_task_id, trigger="post_tool",
         )
         if messages is _post_tool_input and compression_skipped_due_to_lock(agent):
             # Lock-skip no-op is a temporary defer, not evidence about compressibility:
@@ -385,6 +385,9 @@ def compress_after_tool_results(
             # conversation_history: rows already carry _DB_PERSISTED_MARKER, and on a
             # stale in-place flag the helper could seed unpersisted rows.
             if _pruned_n and _pruned_msgs is not messages:
+                from agent.compaction_events import publish_prune
+
+                publish_prune(agent, messages, _pruned_msgs, _pruned_n)
                 messages = _pruned_msgs
                 # A committed prune is a content-loss boundary like compaction: demoted skill_view /
                 # read_file bodies survive only as one-line markers, so the repeat-read dedup must

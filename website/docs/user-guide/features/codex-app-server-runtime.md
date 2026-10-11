@@ -125,6 +125,7 @@ The kanban tools are gated by `HERMES_KANBAN_TASK` env var the dispatcher sets �
 | Codex sandbox (seatbelt/landlock, profiles) | — | yes (Codex built-in) |
 | ChatGPT subscription auth | — | yes (via `openai-codex` provider) |
 | Model selection (`model.default`, `/model`) | yes | yes — sent on `thread/start` and every `turn/start`, so a mid-session `/model` applies to the next turn; a `-900k` variant goes out as its base slug (codex applies the extended window itself), and on codex's own provider an `openai/` prefix is dropped |
+| Reasoning effort and `/fast` | yes | yes — an explicit `reasoning_effort` (clamped to what the model accepts; `ultra` goes out as codex's own Ultra mode on models whose ladder reaches `max`; disabled reasoning goes out as `none`) and `/fast` ride on `turn/start`; without a Hermes setting, codex's own configured defaults apply |
 | Native Codex plugins (Linear, GitHub, etc.) | — | yes (auto-migrated) |
 | User MCP servers | yes | yes (auto-migrated to codex) |
 | Memory + skill review (background) | yes | yes (via item projection) |

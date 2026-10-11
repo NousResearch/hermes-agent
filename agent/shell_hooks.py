@@ -17,7 +17,7 @@ import threading
 import time
 from contextlib import ExitStack, contextmanager, suppress
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional, Set, Tuple
 
@@ -50,7 +50,7 @@ _TOP_LEVEL_PAYLOAD_KEYS = {"tool_name", "args", "session_id", "parent_session_id
 
 # (home, event, matcher, command) wired in this process: matcher in the key (one script may register
 # per-tool under one event), home so multiplexed-gateway profiles can register identical triples.
-_registered: Set[Tuple[str, str, Optional[str], str]] = set()
+_registered: set[tuple[str, str, Optional[str], str]] = set()
 _registered_lock = threading.Lock()
 # Non-POSIX fallback for allowlist read-modify-write. Must be separate from _registered_lock, which
 # register_from_config already holds when it triggers _record_approval (Lock is non-reentrant).
@@ -61,7 +61,7 @@ def _home_key() -> str:
     return str(get_hermes_home().expanduser().resolve())
 
 
-def _forget_home_registrations(registry: Set[tuple], lock: threading.Lock) -> None:
+def _forget_home_registrations(registry: set[tuple], lock: threading.Lock) -> None:
     """Drop the current home's keys only (shared with outbound webhooks): profile A's reload must not drop B."""
     home_key = _home_key()
     with lock:
@@ -73,10 +73,10 @@ def _entry_matches(e: Any, event: Optional[str], command: str) -> bool:
 
 
 def _utc_now_iso() -> str:
-    return datetime.now(tz=timezone.utc).isoformat().replace("+00:00", "Z")
+    return datetime.now(tz=UTC).isoformat().replace("+00:00", "Z")
 
 
-def _payload_fields(kwargs: Dict[str, Any]) -> Dict[str, Any]:
+def _payload_fields(kwargs: dict[str, Any]) -> dict[str, Any]:
     """Common stdin/POST payload fields (shared with outbound webhooks); key order is wire order."""
     try:
         cwd = str(Path.cwd())
@@ -138,7 +138,7 @@ class ShellHookSpec(_ToolMatcherMixin):
 
 # --- Public API ---
 
-def register_from_config(cfg: Optional[Dict[str, Any]], *, accept_hooks: bool = False) -> List[ShellHookSpec]:
+def register_from_config(cfg: Optional[dict[str, Any]], *, accept_hooks: bool = False) -> list[ShellHookSpec]:
     """Register every configured shell hook (idempotent); returns the newly wired specs. Skipped
     entries (unknown, malformed, not allowlisted, already registered) are logged only."""
     if not isinstance(cfg, dict):
@@ -176,7 +176,7 @@ def register_from_config(cfg: Optional[Dict[str, Any]], *, accept_hooks: bool = 
     return registered
 
 
-def iter_configured_hooks(cfg: Optional[Dict[str, Any]]) -> List[ShellHookSpec]:
+def iter_configured_hooks(cfg: Optional[dict[str, Any]]) -> list[ShellHookSpec]:
     """Parse config hooks without registering (``hermes hooks list`` / doctor)."""
     return _parse_hooks_block(cfg.get("hooks")) if isinstance(cfg, dict) else []
 
@@ -208,12 +208,12 @@ def reset_for_tests() -> None:
 
 # --- Config parsing ---
 
-def _parse_hooks_block(hooks_cfg: Any) -> List[ShellHookSpec]:
+def _parse_hooks_block(hooks_cfg: Any) -> list[ShellHookSpec]:
     """Normalise ``hooks:`` into specs; malformed entries warn-and-skip, never raise."""
     from hermes_cli.plugins import SHELL_UNSUPPORTED_HOOKS, VALID_HOOKS
     if not isinstance(hooks_cfg, dict):
         return []
-    specs: List[ShellHookSpec] = []
+    specs: list[ShellHookSpec] = []
     for event_name, entries in hooks_cfg.items():
         if event_name in ("output_spill", "outbound"):  # reserved non-event sub-sections under `hooks:`
             continue
@@ -310,11 +310,11 @@ def _windows_script_argv(argv: list[str]) -> list[str]:
     return [_find_bash(), *argv]
 
 
-def _spawn(spec: ShellHookSpec, stdin_json: str) -> Dict[str, Any]:
+def _spawn(spec: ShellHookSpec, stdin_json: str) -> dict[str, Any]:
     """The single subprocess site: run ``spec.command`` with ``stdin_json`` on stdin. Same result keys for every outcome."""
-    result: Dict[str, Any] = {"returncode": None, "stdout": "", "stderr": "", "timed_out": False, "elapsed_seconds": 0.0, "error": None}
+    result: dict[str, Any] = {"returncode": None, "stdout": "", "stderr": "", "timed_out": False, "elapsed_seconds": 0.0, "error": None}
 
-    def failed(error: str) -> Dict[str, Any]:
+    def failed(error: str) -> dict[str, Any]:
         result["error"] = error
         return result
 
@@ -327,7 +327,7 @@ def _spawn(spec: ShellHookSpec, stdin_json: str) -> Dict[str, Any]:
     t0 = time.monotonic()
     # Own process group on POSIX so a timed-out hook's descendants are reaped with it (Windows: kill_process_tree
     # / taskkill /T). Hooks that finish in time keep detached helpers alive.
-    popen_kwargs: Dict[str, Any] = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {"process_group": 0}
+    popen_kwargs: dict[str, Any] = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {"process_group": 0}
     # HERMES_HOME follows the routed profile (the import-time environ holds the launch profile's), and
     # under multiplexing os.environ carries the DEFAULT profile's secrets, which a secondary's hook
     # script must not inherit; single-profile runs keep the process env byte-for-byte as before.
@@ -365,10 +365,10 @@ def _spawn(spec: ShellHookSpec, stdin_json: str) -> Dict[str, Any]:
     return result
 
 
-def _make_callback(spec: ShellHookSpec) -> Callable[..., Optional[Dict[str, Any]]]:
+def _make_callback(spec: ShellHookSpec) -> Callable[..., Optional[dict[str, Any]]]:
     """Build the closure that ``invoke_hook()`` will call per firing."""
 
-    def _callback(**kwargs: Any) -> Optional[Dict[str, Any]]:
+    def _callback(**kwargs: Any) -> Optional[dict[str, Any]]:
         if spec.event in _TOOL_EVENTS and not spec.matches_tool(kwargs.get("tool_name")):
             return None
         return _evaluate_result(spec, _spawn(spec, _serialize_payload(spec.event, kwargs)))
@@ -377,14 +377,32 @@ def _make_callback(spec: ShellHookSpec) -> Callable[..., Optional[Dict[str, Any]
     return _callback
 
 
-def _fail_closed_block(spec: ShellHookSpec, reason: str) -> Dict[str, Any]:
+def _fail_closed_block(spec: ShellHookSpec, reason: str) -> dict[str, Any]:
     return {"action": "block", "message": f"hook {spec.command} failed closed: {reason}"}
 
 
-def _evaluate_result(spec: ShellHookSpec, r: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """``_spawn`` result → hook contribution (live callback and ``run_once``). Spawn error/timeout fail
-    open unless fail_closed; exit 2 on a blocking event blocks (message: stdout JSON, then stderr, then
-    default); other non-zero exits warn then parse stdout; unparseable stdout on a fail_closed hook blocks."""
+def _evaluate_result(
+    spec: ShellHookSpec, r: dict[str, Any],
+) -> Optional[dict[str, Any]]:
+    """Turn a :func:`_spawn` diagnostic dict into the hook's contribution.
+
+    Single place that encodes the failure semantics:
+
+    * spawn error / timeout — fail open (log + ``None``) unless the spec
+      is ``fail_closed`` on a blocking-capable event, in which case a
+      canonical block shape is returned;
+    * exit code 2 on a blocking-capable event — block, with the message
+      taken from stdout block JSON, then stderr, then a default
+      (Claude-Code / Cursor compatible);
+    * other non-zero exits — warn, then parse stdout normally; a
+      ``fail_closed`` hook blocks if no directive was produced;
+    * non-JSON / unparseable stdout on a ``fail_closed`` blocking hook —
+      block instead of silently contributing nothing.
+
+    Shared by the live callback path (:func:`_make_callback`) and the CLI
+    test helper (:func:`run_once`) so ``hermes hooks test`` reflects
+    production behaviour exactly.
+    """
     blocking_event = spec.event in _BLOCKING_EVENTS
     fail_closed = spec.fail_closed and blocking_event
     if r["error"]:
@@ -409,8 +427,15 @@ def _evaluate_result(spec: ShellHookSpec, r: Dict[str, Any]) -> Optional[Dict[st
                        r["returncode"], spec.event, spec.command, stderr[:_STDERR_MESSAGE_LIMIT])
     stdout = (r["stdout"] or "").strip()
     parsed = _parse_response(spec.event, stdout)
+    if parsed is None and fail_closed and r["returncode"] != 0:
+        return _fail_closed_block(
+            spec, f"hook exited {r['returncode']} with no directive",
+        )
+
     if parsed is None and fail_closed and stdout and not _is_json_object(stdout):
-        # A fail-closed gate must not silently allow on garbage stdout (e.g. a stack trace).
+        # The hook produced output we could not turn into a directive.
+        # A fail-closed gate must not silently allow the action on
+        # garbage output (e.g. a stack trace on stdout).
         return _fail_closed_block(spec, "unparseable stdout (expected a JSON object)")
     return parsed
 
@@ -422,7 +447,7 @@ def _is_json_object(text: str) -> bool:
         return False
 
 
-def _serialize_payload(event: str, kwargs: Dict[str, Any]) -> str:
+def _serialize_payload(event: str, kwargs: dict[str, Any]) -> str:
     """Render the stdin JSON payload; unserialisable values are stringified."""
     return json.dumps({"hook_event_name": event, **_payload_fields(kwargs)}, ensure_ascii=False, default=str)
 
@@ -438,7 +463,7 @@ def _block_message(primary: Any, secondary: Any) -> str:
 _PRE_TOOL_DIALECTS = (("action", "message", "reason", "args"), ("decision", "reason", "message", "tool_input"))
 
 
-def _parse_pre_tool_call(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def _parse_pre_tool_call(data: dict[str, Any]) -> Optional[dict[str, Any]]:
     for verb, primary, secondary, _ in _PRE_TOOL_DIALECTS:
         if data.get(verb) == "block":
             return {"action": "block", "message": _block_message(data.get(primary), data.get(secondary))}
@@ -448,7 +473,7 @@ def _parse_pre_tool_call(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     # Hermes-only escalation to the human-approval gate (#92553). Claude-Code's ``decision:
     # approve`` means auto-ALLOW, so it is deliberately not mapped onto this.
     if data.get("action") == "approve":
-        directive: Dict[str, Any] = {"action": "approve"}
+        directive: dict[str, Any] = {"action": "approve"}
         for key in ("message", "rule_key"):
             value = data.get(key)
             if isinstance(value, str) and value.strip():
@@ -457,7 +482,7 @@ def _parse_pre_tool_call(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     return None
 
 
-def _parse_pre_verify(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def _parse_pre_verify(data: dict[str, Any]) -> Optional[dict[str, Any]]:
     # "continue" (Hermes) / "block" (Claude-Code Stop) both mean keep going; no message is a no-op.
     action = str(data.get("action") or data.get("decision") or "").strip().lower()
     message = data.get("message") or data.get("reason")
@@ -466,15 +491,15 @@ def _parse_pre_verify(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     return None
 
 
-def _parse_context(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def _parse_context(data: dict[str, Any]) -> Optional[dict[str, Any]]:
     context = data.get("context")
     return {"context": context} if isinstance(context, str) and context.strip() else None
 
 
-_RESPONSE_PARSERS: Dict[str, Callable[[Dict[str, Any]], Optional[Dict[str, Any]]]] = {"pre_tool_call": _parse_pre_tool_call, "pre_verify": _parse_pre_verify}
+_RESPONSE_PARSERS: dict[str, Callable[[dict[str, Any]], Optional[dict[str, Any]]]] = {"pre_tool_call": _parse_pre_tool_call, "pre_verify": _parse_pre_verify}
 
 
-def _parse_response(event: str, stdout: str) -> Optional[Dict[str, Any]]:
+def _parse_response(event: str, stdout: str) -> Optional[dict[str, Any]]:
     """Translate stdout JSON into a Hermes wire-shape dict, or ``None``."""
     stdout = (stdout or "").strip()
     if not stdout:
@@ -494,7 +519,7 @@ def allowlist_path() -> Path:
     return get_hermes_home() / ALLOWLIST_FILENAME
 
 
-def load_allowlist() -> Dict[str, Any]:
+def load_allowlist() -> dict[str, Any]:
     """Return the parsed allowlist, or an empty skeleton if absent."""
     try:
         raw = json.loads(allowlist_path().read_text(encoding="utf-8-sig"))
@@ -507,7 +532,7 @@ def load_allowlist() -> Dict[str, Any]:
     return raw
 
 
-def save_allowlist(data: Dict[str, Any]) -> None:
+def save_allowlist(data: dict[str, Any]) -> None:
     """Atomic write; on OSError log and keep the in-process approval."""
     p = allowlist_path()
     try:
@@ -523,7 +548,7 @@ def _is_allowlisted(event: str, command: str) -> bool:
 
 
 @contextmanager
-def _locked_update_approvals() -> Iterator[Dict[str, Any]]:
+def _locked_update_approvals() -> Iterator[dict[str, Any]]:
     """Serialise allowlist read-modify-write across processes via a sibling flock file."""
     p = allowlist_path()
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -581,7 +606,7 @@ def revoke(command: str) -> int:
         return before - len(data["approvals"])
 
 
-_SCRIPT_EXTENSIONS: Tuple[str, ...] = (".sh", ".bash", ".zsh", ".fish", ".py", ".pyw", ".rb", ".pl", ".lua", ".js", ".mjs", ".cjs", ".ts")
+_SCRIPT_EXTENSIONS: tuple[str, ...] = (".sh", ".bash", ".zsh", ".fish", ".py", ".pyw", ".rb", ".pl", ".lua", ".js", ".mjs", ".cjs", ".ts")
 
 
 def _command_script_path(command: str) -> str:
@@ -594,7 +619,7 @@ def _command_script_path(command: str) -> str:
             or next((p for p in parts if "/" in p or p.startswith("~")), None) or parts[0])
 
 
-def _resolve_effective_accept(cfg: Dict[str, Any], accept_hooks_arg: bool) -> bool:
+def _resolve_effective_accept(cfg: dict[str, Any], accept_hooks_arg: bool) -> bool:
     """Any truthy opt-in channel wins: explicit arg, HERMES_ACCEPT_HOOKS, hooks_auto_accept."""
     if accept_hooks_arg or os.environ.get("HERMES_ACCEPT_HOOKS", "").strip().lower() in _TRUTHY:
         return True
@@ -604,7 +629,7 @@ def _resolve_effective_accept(cfg: Dict[str, Any], accept_hooks_arg: bool) -> bo
 
 # --- Introspection (used by `hermes hooks` CLI) ---
 
-def allowlist_entry_for(event: str, command: str) -> Optional[Dict[str, Any]]:
+def allowlist_entry_for(event: str, command: str) -> Optional[dict[str, Any]]:
     """Return the allowlist record for this pair, if any."""
     return next((e for e in load_allowlist().get("approvals", []) if _entry_matches(e, event, command)), None)
 
@@ -616,7 +641,7 @@ def script_mtime_iso(command: str) -> Optional[str]:
         mtime = os.path.getmtime(os.path.expanduser(path)) if path else None
     except OSError:
         return None
-    return None if mtime is None else datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+    return None if mtime is None else datetime.fromtimestamp(mtime, tz=UTC).isoformat().replace("+00:00", "Z")
 
 
 def script_is_executable(command: str) -> bool:
@@ -630,7 +655,7 @@ def script_is_executable(command: str) -> bool:
     return argv is not None and os.access(expanded, os.X_OK if argv and argv[0] == path else os.R_OK)
 
 
-def run_once(spec: ShellHookSpec, kwargs: Dict[str, Any]) -> Dict[str, Any]:
+def run_once(spec: ShellHookSpec, kwargs: dict[str, Any]) -> dict[str, Any]:
     """Fire one hook with a synthetic payload (``hermes hooks test`` / doctor) through the production path."""
     result = _spawn(spec, _serialize_payload(spec.event, kwargs))
     result["parsed"] = _evaluate_result(spec, result)

@@ -67,9 +67,9 @@ class _TeardownBarrier:
 class _Generation:
     """One shared SessionDB generation: instance, refcount, file identity."""
 
-    __slots__ = ("path", "db", "refcount", "identity", "retired")
+    __slots__ = ("db", "identity", "path", "refcount", "retired")
 
-    def __init__(self, path: Path, db: "SessionDB", identity: Optional[Tuple[int, int]]) -> None:
+    def __init__(self, path: Path, db: SessionDB, identity: Optional[tuple[int, int]]) -> None:
         self.path = path
         self.db = db
         self.refcount = 1
@@ -80,39 +80,39 @@ class _Generation:
 _lock = threading.Lock()
 # path → live generation; retired generations move to _retired (keyed by id(db)) until
 # their last holder releases.
-_generations: Dict[Path, _Generation] = {}
-_retired: Dict[int, _Generation] = {}
+_generations: dict[Path, _Generation] = {}
+_retired: dict[int, _Generation] = {}
 # Paths whose next generation is being constructed. Construction runs outside _lock
 # (schema reconciliation can take seconds), but peers for the SAME file must wait or
 # every cold caller opens its own writer before a winner is chosen.
-_opening: Dict[Path, threading.Event] = {}
+_opening: dict[Path, threading.Event] = {}
 # A final close/checkpoint must finish before a replacement writer is opened
 # for the same path. The barrier is admitted while holding _lock and lifted
 # only after the LAST admitted physical teardown, so acquire cannot slip
 # through the generation-removal/open gap and close_all cannot report a
 # finished sweep over a close that is still running.
-_tearing_down: Dict[Path, _TeardownBarrier] = {}
+_tearing_down: dict[Path, _TeardownBarrier] = {}
 # Open and close are both performed outside _lock. This per-path mutex closes
 # the race between checking _tearing_down and entering sqlite3.connect(),
 # including retired-generation drains after an inode replacement.
-_path_lifecycle_locks: Dict[Path, threading.Lock] = {}
+_path_lifecycle_locks: dict[Path, threading.Lock] = {}
 
 
-def _open_session_db(path: Path) -> "SessionDB":
+def _open_session_db(path: Path) -> SessionDB:
     """Construct the SessionDB for *path* (call-time import avoids cycles; tests patch this)."""
     from hermes_state import SessionDB
 
     return SessionDB(db_path=path)
 
 
-def _teardown(db: "SessionDB") -> None:
+def _teardown(db: SessionDB) -> None:
     """Close a shared instance, clearing its registry-owned flag first."""
     with contextlib.suppress(Exception):
         db._shared_registry_owned = False
     _close_quietly(db, "Error closing shared SessionDB")
 
 
-def _close_quietly(db: "SessionDB", debug_message: str) -> None:
+def _close_quietly(db: SessionDB, debug_message: str) -> None:
     """close() that never propagates. A lost WAL generation whose capture failed is data at risk,
     not teardown noise: the handle stays open and the operator has to act, so that one surfaces."""
     try:
@@ -161,7 +161,7 @@ def _finish_teardown(path: Path, barrier: _TeardownBarrier) -> None:
 
 def _teardown_generation(
     path: Path,
-    db: "SessionDB",
+    db: SessionDB,
     *,
     barrier: Optional[_TeardownBarrier] = None,
 ) -> None:
@@ -176,7 +176,7 @@ def _teardown_generation(
             _finish_teardown(path, barrier)
 
 
-def _db_path_of(db: "SessionDB") -> Optional[Path]:
+def _db_path_of(db: SessionDB) -> Optional[Path]:
     """``Path(db.db_path)`` or None when absent/unconvertible."""
     path = getattr(db, "db_path", None)
     try:
@@ -192,7 +192,7 @@ def _finish_opening(path: Path, opening: threading.Event) -> None:
     opening.set()
 
 
-def acquire(db_path: Optional[Path] = None) -> "SessionDB":
+def acquire(db_path: Optional[Path] = None) -> SessionDB:
     """Return the shared SessionDB for *db_path*, incrementing its refcount. If the file was
     replaced (different inode) since the generation opened, that generation is RETIRED
     but stays alive for its holders, and a fresh one is opened in its place. Raises
@@ -273,7 +273,7 @@ def acquire(db_path: Optional[Path] = None) -> "SessionDB":
         return winner
 
 
-def release(db: "SessionDB") -> bool:
+def release(db: SessionDB) -> bool:
     """Decrement the refcount of a shared SessionDB. ``True`` if *db* was shared; ``False``
     if it is not registry-managed (caller owns close()). The final release tears the
     generation down OUTSIDE the registry lock. Lookup is object-keyed, so holders of an
@@ -321,12 +321,12 @@ def _path_is_under(path: Path, root: Path) -> bool:
 
 
 def _teardown_swept_generations(
-    generations: List[_Generation],
-    teardown_barriers: Dict[Path, _TeardownBarrier],
-    active_teardowns: List[_TeardownBarrier],
+    generations: list[_Generation],
+    teardown_barriers: dict[Path, _TeardownBarrier],
+    active_teardowns: list[_TeardownBarrier],
 ) -> int:
     """Close *generations* outside the registry lock; wait for already-admitted teardowns."""
-    by_path: Dict[Path, List[_Generation]] = {}
+    by_path: dict[Path, list[_Generation]] = {}
     for generation in generations:
         by_path.setdefault(generation.path, []).append(generation)
     for path, path_generations in by_path.items():
@@ -346,7 +346,7 @@ def _teardown_swept_generations(
 def close_all() -> int:
     """Close every shared SessionDB regardless of refcount; returns the count. For gateway
     shutdown, after all agents and cron jobs finished. Idempotent."""
-    teardown_barriers: Dict[Path, _TeardownBarrier] = {}
+    teardown_barriers: dict[Path, _TeardownBarrier] = {}
     with _lock:
         active_teardowns = list(_tearing_down.values())
         generations = list(_generations.values()) + list(_retired.values())
@@ -374,7 +374,7 @@ def close_all_under(directory: str | Path) -> int:
         root = Path(directory).expanduser().resolve()
     except OSError:
         root = Path(directory).expanduser()
-    teardown_barriers: Dict[Path, _TeardownBarrier] = {}
+    teardown_barriers: dict[Path, _TeardownBarrier] = {}
     with _lock:
         generations = [
             generation
@@ -399,8 +399,8 @@ def close_all_under(directory: str | Path) -> int:
 
 
 def other_generations_for_path(
-    db_path: Path, *, exclude: Optional["SessionDB"] = None
-) -> List[str]:
+    db_path: Path, *, exclude: Optional[SessionDB] = None
+) -> list[str]:
     """Describe every other LIVE SessionDB generation THIS process holds for *db_path*.
 
     The registry is path-keyed, so it can answer the in-process half of "is this store quiet?"
@@ -430,7 +430,7 @@ def other_generations_for_path(
         ]
 
 
-def live_shared_session_dbs() -> List["SessionDB"]:
+def live_shared_session_dbs() -> list[SessionDB]:
     """Snapshot of every live (non-retired) shared SessionDB (refcounts untouched), for
     in-process maintenance. A concurrent final release may close an instance, in which
     case the callee sees ``_conn is None``."""
@@ -439,7 +439,7 @@ def live_shared_session_dbs() -> List["SessionDB"]:
 
 
 @contextlib.contextmanager
-def borrow_live_shared_session_dbs() -> Iterator[List["SessionDB"]]:
+def borrow_live_shared_session_dbs() -> Iterator[list[SessionDB]]:
     """Borrow live handles with registry references pinned for the whole block.
 
     Maintenance must not operate on the unowned snapshot returned by
@@ -462,7 +462,7 @@ def borrow_live_shared_session_dbs() -> Iterator[List["SessionDB"]]:
             release(db)
 
 
-def stats() -> Dict[str, int]:
+def stats() -> dict[str, int]:
     """Registry census for tests and diagnostics (no locks held long)."""
     with _lock:
         return {
@@ -471,7 +471,7 @@ def stats() -> Dict[str, int]:
         }
 
 
-def release_or_close(db: "SessionDB") -> None:
+def release_or_close(db: SessionDB) -> None:
     """Release a shared instance, or close it when it is not registry-managed. Drop-in for a
     plain ``db.close()``: read-only opens, CLI one-shots and test fakes fall back."""
     if not release(db):

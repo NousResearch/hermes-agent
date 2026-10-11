@@ -84,7 +84,8 @@ def test_every_surface_persists_the_same_active_set(db, n, rich):
         _seed(db, sid, rich=rich)
         assert _rewind_via(surface, db, sid, n)
         rows = [(role, content, active) for _id, role, content, active in _active_rows(db, sid)]
-        assert rows == (expected := expected or rows), surface
+        expected = expected or rows
+        assert rows == expected, surface
     active = [(r, c) for r, c, a in expected if a]
     if not rich:
         assert [c for _r, c in active] == [f"q{i}" if k == 0 else f"a{i}" for i in range(1, 4 - n) for k in (0, 1)]

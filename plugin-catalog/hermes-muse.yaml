@@ -1,7 +1,7 @@
 name: hermes-muse
 repo: https://github.com/xiaohei-info/hermes-muse
-sha: 91630cef34da4660163325da8fb220e4b1501cfa
-version: "0.1.23"
+sha: 349483b026a763108d44d865315ad49dbd1f530c
+version: "0.1.24"
 description: >-
   A proactive personal agent for Hermes, inspired by Meta Muse. It follows goals
   and temporary interests, prepares reminders, maintains memory and a quiet Feed,
@@ -20,6 +20,8 @@ description: >-
   scripts/Cron jobs; conversation hooks retain short real-user excerpts for upkeep;
   self-review reads profile-local native tool calls/results and owned Cron outcomes,
   splitting audit work across native read-only delegates, with chunked evidence reads;
+  Muse Cron workers launched through the plugin inherit the actual parent model and
+  connection, while ordinary chat retains profile delegation routing;
   keeping checkpoints, seven-day page receipts, task-stage outcomes and minimal
   findings rather than a second transcript;
   scheduled work uses the user's configured model/tools and may incur their normal
@@ -30,7 +32,7 @@ maintainer: xiaohei-info
 tier: community
 category: automation
 requires_hermes: ">=0.21.5"
-docs_url: https://github.com/xiaohei-info/hermes-muse/blob/91630cef34da4660163325da8fb220e4b1501cfa/README.md
+docs_url: https://github.com/xiaohei-info/hermes-muse/blob/349483b026a763108d44d865315ad49dbd1f530c/README.md
 platforms: [linux, macos, windows]
 capabilities:
   provides_tools: [muse_manage]

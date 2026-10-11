@@ -18,8 +18,8 @@ logger = logging.getLogger("gateway.run")
 
 class GatewayPreDispatchMixin:
     async def _hm_pre_gateway_dispatch_hook(
-        self, event: "MessageEvent", source: SessionSource
-    ) -> Optional["MessageEvent"]:
+        self, event: MessageEvent, source: SessionSource
+    ) -> Optional[MessageEvent]:
         """Run the ``pre_gateway_dispatch`` plugin hook; None = drop, else the (maybe rewritten) event.
         Results: ``{"action": "skip"}`` → drop; ``{"action": "rewrite", "text"}`` → replace ``event.text``;
         ``allow``/None → normal dispatch. Runs BEFORE auth so plugins can handle unauthorized senders."""
@@ -31,7 +31,7 @@ class GatewayPreDispatchMixin:
                 session_store=getattr(self, "session_store", None),
             )
         except Exception as _hook_exc:
-            logger.warning("pre_gateway_dispatch invocation failed: %s", _hook_exc)
+            logger.warning("pre_gateway_dispatch invocation failed: %s", _hook_exc, exc_info=True)
             _hook_results = []
 
         for _result in _hook_results:
@@ -55,8 +55,8 @@ class GatewayPreDispatchMixin:
         return event
 
     async def _hm_pre_gateway_dispatch_once(
-        self, event: "MessageEvent", source: SessionSource
-    ) -> Optional["MessageEvent"]:
+        self, event: MessageEvent, source: SessionSource
+    ) -> Optional[MessageEvent]:
         """Apply the pre-dispatch hook once to one process-local inbound event."""
         if getattr(event, "_pre_gateway_dispatch_applied", False):
             return event
@@ -66,8 +66,8 @@ class GatewayPreDispatchMixin:
         return event
 
     async def _hm_admit_busy_ingress(
-        self, event: "MessageEvent"
-    ) -> Optional["MessageEvent"]:
+        self, event: MessageEvent
+    ) -> Optional[MessageEvent]:
         """Run the normal pre-dispatch contract before an active-session diversion."""
         if getattr(event, "internal", False):
             return event

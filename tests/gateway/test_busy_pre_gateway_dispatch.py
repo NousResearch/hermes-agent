@@ -139,7 +139,7 @@ async def test_busy_arrival_runs_hook_once_across_queue_and_drain(monkeypatch):
         delivered.append(event.text)
         return "ok"
 
-    runner._handle_message_with_agent = _capture  # noqa: SLF001
+    runner._handle_message_with_agent = _capture
     adapter = _busy_adapter(Platform.WHATSAPP, runner, runner._primary_pre_gateway_dispatch_handler())
 
     session_key = await _arrive_while_busy(adapter, _whatsapp_event("sent mid-turn"))
@@ -189,7 +189,6 @@ async def test_busy_approval_dispatched_inline_runs_hook_once(monkeypatch):
     async def _runner_handler(event):
         # The runner's ``_handle_message`` opens with this gate; record what passes it.
         handled.append(await runner._hm_pre_gateway_dispatch_once(event, event.source))
-        return None
 
     adapter.set_message_handler(_runner_handler)
     session_key = await _arrive_while_busy(adapter, _whatsapp_event("/approve"))
@@ -277,7 +276,7 @@ async def test_secondary_profile_busy_arrival_runs_hook_once_in_its_own_scope(mu
         reached_cold_path.append(event)
         return "ok"
 
-    runner._handle_message = _cold_path  # noqa: SLF001
+    runner._handle_message = _cold_path
 
     adapter = _busy_adapter(
         Platform.FEISHU, runner, runner._make_profile_pre_gateway_dispatch_handler("secondary"))
@@ -358,7 +357,7 @@ async def test_real_plugin_rewrites_busy_arrival_once_through_queue_and_drain(re
         delivered.append(event.text)
         return "ok"
 
-    runner._handle_message_with_agent = _agent  # noqa: SLF001
+    runner._handle_message_with_agent = _agent
     adapter = _busy_adapter(Platform.WHATSAPP, runner, runner._primary_pre_gateway_dispatch_handler())
     adapter.set_message_handler(runner._handle_message)
 
@@ -381,7 +380,7 @@ async def test_stop_mid_turn_survives_the_hook_and_reaches_the_stop_handler(real
         stopped.append(event.text)
         return "Stopped."
 
-    runner._handle_stop_command = _stop_handler  # noqa: SLF001
+    runner._handle_stop_command = _stop_handler
     adapter = _busy_adapter(Platform.WHATSAPP, runner, runner._primary_pre_gateway_dispatch_handler())
     adapter.set_message_handler(runner._handle_message)
 
@@ -432,7 +431,7 @@ async def test_real_plugin_installed_only_in_secondary_profile_runs_once_for_its
             drained.append(await runner._hm_pre_gateway_dispatch_once(event, event.source))
             return "ok"
 
-        runner._handle_message = _cold_path  # noqa: SLF001
+        runner._handle_message = _cold_path
         adapter = _busy_adapter(
             Platform.FEISHU, runner, runner._make_profile_pre_gateway_dispatch_handler("secondary"))
         adapter._owner_profile = "secondary"

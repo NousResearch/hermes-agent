@@ -36,6 +36,8 @@ export interface QueuedPromptEntry {
   drainFailures?: number
   attachments: ComposerAttachment[]
   queuedAt: number
+  confirmedExternal?: boolean
+  dispatchStarted?: boolean
 }
 
 export interface EnqueueQueuedPromptPayload {
@@ -45,6 +47,7 @@ export interface EnqueueQueuedPromptPayload {
   displayKind?: 'hidden'
   /** Fenced `@terminal` transport. Runtime-only; never written to localStorage. */
   frozenTransport?: string
+  confirmedExternal?: boolean
 }
 
 export type ResolvedQueuedPromptTransport =
@@ -85,7 +88,7 @@ export const queuedEntryHasTerminalChips = (entry: Pick<QueuedPromptEntry, 'disp
   draftHasTerminalChips(entry.displayText ?? '') || draftHasTerminalChips(entry.text)
 
 export const resolveQueuedPromptTransport = (entry: QueuedPromptEntry): ResolvedQueuedPromptTransport => {
-  if (!queuedEntryHasTerminalChips(entry)) {
+  if (entry.confirmedExternal || !queuedEntryHasTerminalChips(entry)) {
     return {
       ok: true,
       transportText: entry.text,
@@ -139,10 +142,12 @@ const toPersistedEntry = (entry: QueuedPromptEntry): QueuedPromptEntry => {
 /** Whether a queued entry can ride a mid-turn redirect: text-only, non-empty,
  *  not a slash command — the same gate `steerDraft` applies to the live draft
  *  (attachments can't ride a redirect; slash commands execute, not steer). */
-export const isSteerableEntry = (entry: Pick<QueuedPromptEntry, 'attachments' | 'text'>): boolean => {
+export const isSteerableEntry = (
+  entry: Pick<QueuedPromptEntry, 'attachments' | 'text' | 'confirmedExternal'>
+): boolean => {
   const text = entry.text.trim()
 
-  return Boolean(text) && entry.attachments.length === 0 && !SLASH_COMMAND_RE.test(text)
+  return !entry.confirmedExternal && Boolean(text) && entry.attachments.length === 0 && !SLASH_COMMAND_RE.test(text)
 }
 
 type QueueState = Record<string, QueuedPromptEntry[]>
@@ -335,7 +340,8 @@ export const enqueueQueuedPrompt = (
     ...(payload.displayText ? { displayText: payload.displayText } : {}),
     ...(payload.displayKind ? { displayKind: payload.displayKind } : {}),
     attachments: cloneAttachments(payload.attachments),
-    queuedAt: Date.now()
+    queuedAt: Date.now(),
+    ...(payload.confirmedExternal ? { confirmedExternal: true } : {})
   }
 
   if (payload.frozenTransport?.trim()) {
@@ -355,6 +361,48 @@ export const enqueueQueuedPrompt = (
   setParked(sid, false)
 
   return entry
+}
+
+/** Called inside withQueueDrainClaim: merge the live cross-window queue and
+ * retain the store's runtime-only terminal-payload persistence policy. */
+const setConfirmedDispatchClaim = (key: string, id: string, started: boolean): boolean => {
+  const live = current()
+  const entries = live[key] ?? []
+  const entry = entries.find(item => item.id === id)
+
+  if (!entry?.confirmedExternal || Boolean(entry.dispatchStarted) === started) {
+    return false
+  }
+
+  const next = {
+    ...live,
+    [key]: entries.map(item => (item.id === id ? { ...item, dispatchStarted: started } : item))
+  }
+
+  try {
+    const payload = JSON.stringify(persistableState(next))
+    window.localStorage.setItem(STORAGE_KEY, payload)
+
+    if (window.localStorage.getItem(STORAGE_KEY) !== payload) {
+      return false
+    }
+  } catch {
+    return false
+  }
+
+  storageCurrent = true
+  $queuedPromptsBySession.set(next)
+
+  return true
+}
+
+/** Durable intent before dispatch; an uncertain confirmed instruction cannot be replayed. */
+export const claimConfirmedQueuedPrompt = (key: string, id: string): boolean => setConfirmedDispatchClaim(key, id, true)
+
+/** Only a pre-dispatch false result may release a confirmed entry. Throws and
+ * lost acknowledgements retain dispatchStarted until explicitly reconciled. */
+export const releaseConfirmedQueuedPrompt = (key: string, id: string): void => {
+  setConfirmedDispatchClaim(key, id, false)
 }
 
 export const dequeueQueuedPrompt = (key: string | null | undefined): null | QueuedPromptEntry => {

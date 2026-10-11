@@ -62,6 +62,12 @@ user-activated extensions. If you tighten `desktop-slash-commands.ts`, keep
 `isDesktopSlashExtensionCommand` flowing into both paths. Test: from `apps/desktop`,
 `npx vitest run src/lib/desktop-slash-commands.test.ts` (workspace deps install at the repo root).
 
+## Plugin native text submission
+
+`host.submitPrompt`: exact focused owner, native FIFO, draft/chips preserved,
+no steer/replay. Carry `confirmedExternal` through both drains; unknown stays held.
+Contract: `website/docs/developer-guide/desktop-plugin-sdk.md`.
+
 ## Bot Mode (`src/plugins/hermes-bots/`) — one bot = ONE canonical forever-chat, identified by NAME
 
 Each bot is a Hermes **profile** with a persistent identity. This invariant regressed repeatedly,

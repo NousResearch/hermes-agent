@@ -10,6 +10,7 @@ import { resetBrowseState } from '@/store/composer-input-history'
 import {
   $parkedQueueSessions,
   $queuedPromptsBySession,
+  claimConfirmedQueuedPrompt,
   clearQueuedPromptDrainFailures,
   enqueueQueuedPrompt,
   getQueuedPrompts,
@@ -18,6 +19,7 @@ import {
   migrateQueuedPrompts,
   promoteQueuedPrompt,
   type QueuedPromptEntry,
+  releaseConfirmedQueuedPrompt,
   removeQueuedPrompt,
   resolveQueuedPromptTransport,
   shouldAutoDrain,
@@ -342,18 +344,27 @@ export function useComposerQueue({
             return false
           }
 
+          if (entry.confirmedExternal && !claimConfirmedQueuedPrompt(drainQueueSessionKey, entry.id)) {
+            return null
+          }
+
           const accepted = await Promise.resolve(
             onSubmit(resolved.transportText, {
               attachments: entry.attachments,
               ...(resolved.displayText ? { displayText: resolved.displayText } : {}),
               ...(entry.displayKind ? { displayKind: entry.displayKind } : {}),
               fromQueue: true,
+              ...(entry.confirmedExternal ? { confirmedExternal: true } : {}),
               sessionId: drainRuntimeSessionId,
               storedSessionId: drainQueueSessionKey
             })
           )
 
           if (accepted === false) {
+            if (entry.confirmedExternal) {
+              releaseConfirmedQueuedPrompt(drainQueueSessionKey, entry.id)
+            }
+
             return false
           }
 
@@ -390,6 +401,10 @@ export function useComposerQueue({
   const sendQueuedNow = useCallback(
     (id: string) => {
       if (!activeQueueSessionKey || id === queueEdit?.entryId) {
+        return false
+      }
+
+      if (busy && getQueuedPrompts(activeQueueSessionKey).find(entry => entry.id === id)?.confirmedExternal) {
         return false
       }
 

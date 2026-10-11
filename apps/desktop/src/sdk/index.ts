@@ -109,6 +109,7 @@ import type { PaginatedSessions, UsageStats } from '@/types/hermes'
 
 import { pluginDecisions, profiles, skills, toolsets } from './bridge'
 import { composerHost } from './composer'
+import { createConfirmedSubmitPrompt, type PluginFocusedSessionOwner } from './confirmed-submit'
 import { i18nHost } from './i18n'
 import { planPluginOpenSession } from './plugin-open-session-plan'
 import { sessionsHost } from './sessions'
@@ -144,11 +145,6 @@ const $focusedAwaitingResponse = focusedTurnFlag(
   state => state.awaitingResponse,
   PRIMARY_SESSION_VIEW.$awaitingResponse
 )
-
-export interface PluginFocusedSessionOwner {
-  connectionId: string
-  profile: string
-}
 
 /**
  * Connection-qualified owner of the FOCUSED chat. The gateway-routing atom
@@ -1615,6 +1611,9 @@ export const host = {
       body: { hidden: options.hidden, profile }
     })
   },
+
+  /** Confirmed text, native FIFO and receipts; never navigate or replay. */
+  submitPrompt: createConfirmedSubmitPrompt($focusedRuntimeId, $focusedSessionOwner),
 
   /** Gateway JSON-RPC — sessions, config, skills, cron, kanban, everything
    *  the app itself uses. Lazy: resolves the LIVE socket per call. `timeoutMs`

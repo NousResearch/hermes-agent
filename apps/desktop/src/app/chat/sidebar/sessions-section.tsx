@@ -35,6 +35,7 @@ import { GatewayProfileGroups } from './gateway-groups'
 import { mergeVisibleReorder, orderRowsWithinGroups, reorderableRowIds } from './order'
 import {
   EnteredProjectContent,
+  NO_PROJECT_ID,
   ProjectOverviewRow,
   type SidebarProjectTree,
   type SidebarSessionGroup,
@@ -513,12 +514,9 @@ export function SidebarSessionsSection({
   } else if (showEmptyState) {
     inner = emptyState
   } else if (projectOverview?.length) {
-    // The model is already ordered (Home leads; then the default sort groups
-    // explicit-before-auto, with a manual drag-order winning when present).
-    // Render in that order and make rows drag-to-reorder when a handler is
-    // wired — Home stays outside the sortable list, it's a fixture.
-    const home = projectOverview[0]?.isNoProject ? projectOverview[0] : undefined
-    const sortableProjects = home ? projectOverview.slice(1) : projectOverview
+    // Home renders above every section. Only real projects enter this sortable
+    // list, even when the backend returned Home in the project tree.
+    const sortableProjects = projectOverview.filter(project => project.id !== NO_PROJECT_ID)
     const projectsDraggable = sortableProjects.length > 1 && !!onReorderProjects
     const Row = projectsDraggable ? SortableProjectOverviewRow : ProjectOverviewRow
 
@@ -545,7 +543,6 @@ export function SidebarSessionsSection({
 
     inner = (
       <>
-        {home && projectRow(home, ProjectOverviewRow)}
         {projectsDraggable && onReorderProjects ? (
           <ReorderableList
             ids={sortableProjects.map(project => project.id)}

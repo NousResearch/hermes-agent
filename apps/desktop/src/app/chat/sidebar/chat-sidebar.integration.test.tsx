@@ -8,7 +8,13 @@ import { $layoutTree, noteActiveTreeGroup } from '@/components/pane-shell/tree/s
 import { SidebarProvider } from '@/components/ui/sidebar'
 import { registry } from '@/contrib/registry'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
-import { $sidebarMessagingOpenIds, setSidebarAgentsGrouped, setSidebarGrouping } from '@/store/layout'
+import {
+  $sidebarMessagingOpenIds,
+  $sidebarShowArchived,
+  setSidebarAgentsGrouped,
+  setSidebarGrouping,
+  setSidebarShowArchived
+} from '@/store/layout'
 import { $activeGatewayProfile, $profiles, setShowAllProfiles } from '@/store/profile'
 import { $projectScope, ALL_PROJECTS } from '@/store/project-scope'
 import { $projectTree } from '@/store/projects'
@@ -29,6 +35,7 @@ import { makeSessionInfo } from '@/test/session-info'
 import { type AppView, ROUTES_AREA, SIDEBAR_NAV_AREA } from '../../routes'
 
 import { $gatewayGroupCollapsed } from './gateway-group-preferences'
+import { NO_PROJECT_ID, type SidebarProjectTree } from './projects'
 
 import { ChatSidebar } from './index'
 
@@ -41,8 +48,20 @@ const sessionRows = [
   makeSessionInfo({ id: 'tile-two', last_active: 2, profile: 'default', started_at: 1, title: 'Tile two' })
 ]
 
-const renderSidebar = (pathname: string, currentView: AppView, onRetrySessions: () => Promise<void> = noopAsync) =>
-  render(
+const renderSidebar = (
+  pathname: string,
+  currentView: AppView,
+  options:
+    | {
+        onNavigate?: (item: { route?: string }) => void
+        onRetrySessions?: () => Promise<void>
+      }
+    | (() => Promise<void>) = {}
+) => {
+  const { onNavigate = noop, onRetrySessions = noopAsync } =
+    typeof options === 'function' ? { onRetrySessions: options } : options
+
+  return render(
     <MemoryRouter initialEntries={[pathname]}>
       <SidebarProvider>
         <ChatSidebar
@@ -52,7 +71,7 @@ const renderSidebar = (pathname: string, currentView: AppView, onRetrySessions: 
           onDeleteSession={noop}
           onLoadMoreSessions={noop}
           onManageCronJob={noop}
-          onNavigate={noop}
+          onNavigate={onNavigate}
           onNewSessionInWorkspace={noop}
           onNewSessionSplit={noop}
           onResumeSession={noop}
@@ -62,6 +81,7 @@ const renderSidebar = (pathname: string, currentView: AppView, onRetrySessions: 
       </SidebarProvider>
     </MemoryRouter>
   )
+}
 
 const currentButtons = () =>
   screen.queryAllByRole('button').filter(button => button.classList.contains('bg-(--ui-control-active-background)'))
@@ -197,6 +217,116 @@ describe('ChatSidebar navigation activity', () => {
 
     act(() => dispose())
     expect(screen.getByRole('button', { name: 'Kanban' })).toBeTruthy()
+  })
+})
+
+describe('ChatSidebar Home navigation', () => {
+  const home = {
+    id: NO_PROJECT_ID,
+    isNoProject: true,
+    label: 'Home',
+    path: null,
+    previewSessions: [],
+    repos: [],
+    sessionCount: 1
+  } satisfies SidebarProjectTree
+
+  beforeEach(() => {
+    setSidebarGrouping('project')
+    setSidebarShowArchived(false)
+    $projectScope.set(ALL_PROJECTS)
+    $projectTree.set([home])
+  })
+
+  afterEach(() => {
+    cleanup()
+    setSidebarGrouping('date')
+    setSidebarShowArchived(false)
+    $projectScope.set(ALL_PROJECTS)
+    $projectTree.set([])
+  })
+
+  it.each([['/capabilities', 'capabilities'] as const, ['/messaging', 'messaging'] as const])(
+    'uses the workspace navigation path from %s',
+    (pathname, currentView) => {
+      const onNavigate = vi.fn()
+      renderSidebar(pathname, currentView, { onNavigate })
+
+      fireEvent.click(screen.getByRole('button', { name: 'Open Home' }))
+
+      expect(onNavigate).toHaveBeenCalledWith(expect.objectContaining({ route: '/' }))
+      expect($projectScope.get()).toBe(NO_PROJECT_ID)
+    }
+  )
+
+  it('leaves Archived before entering Home and exposes current-page semantics only at Home', () => {
+    const onNavigate = vi.fn()
+    setSidebarShowArchived(true)
+    const { rerender } = renderSidebar('/capabilities', 'capabilities', { onNavigate })
+
+    const homeButton = screen.getByRole('button', { name: 'Open Home' })
+    expect(homeButton.getAttribute('aria-current')).toBeNull()
+
+    fireEvent.click(homeButton)
+
+    expect($sidebarShowArchived.get()).toBe(false)
+    expect(onNavigate).toHaveBeenCalledWith(expect.objectContaining({ route: '/' }))
+
+    rerender(
+      <MemoryRouter initialEntries={['/']}>
+        <SidebarProvider>
+          <ChatSidebar
+            currentView="chat"
+            onArchiveSession={noop}
+            onBranchSession={noop}
+            onDeleteSession={noop}
+            onLoadMoreSessions={noop}
+            onManageCronJob={noop}
+            onNavigate={onNavigate}
+            onNewSessionInWorkspace={noop}
+            onNewSessionSplit={noop}
+            onResumeSession={noop}
+            onRetrySessions={noopAsync}
+            onTriggerCronJob={noopAsync}
+          />
+        </SidebarProvider>
+      </MemoryRouter>
+    )
+
+    expect(screen.getByRole('button', { name: 'Open Home' }).getAttribute('aria-current')).toBe('page')
+  })
+
+  it('keeps Home visible and detached when the project tree is empty', () => {
+    const onNewSessionInWorkspace = vi.fn()
+    setSidebarGrouping('date')
+    $projectTree.set([])
+
+    const { container } = render(
+      <MemoryRouter initialEntries={['/']}>
+        <SidebarProvider>
+          <ChatSidebar
+            currentView="chat"
+            onArchiveSession={noop}
+            onBranchSession={noop}
+            onDeleteSession={noop}
+            onLoadMoreSessions={noop}
+            onManageCronJob={noop}
+            onNavigate={noop}
+            onNewSessionInWorkspace={onNewSessionInWorkspace}
+            onNewSessionSplit={noop}
+            onResumeSession={noop}
+            onRetrySessions={noopAsync}
+            onTriggerCronJob={noopAsync}
+          />
+        </SidebarProvider>
+      </MemoryRouter>
+    )
+
+    expect(screen.getByRole('button', { name: 'Open Home' })).toBeTruthy()
+    expect(container.querySelectorAll('[data-sidebar-home="__no_project__"]')).toHaveLength(1)
+
+    fireEvent.click(screen.getByRole('button', { name: 'New session in Home' }))
+    expect(onNewSessionInWorkspace).toHaveBeenCalledWith(null)
   })
 })
 

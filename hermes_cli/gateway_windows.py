@@ -180,6 +180,28 @@ def _quote_vbs_string(value: str) -> str:
     return '"' + value.replace('"', '""') + '"'
 
 
+def _quote_js_string(value: str) -> str:
+    """Quote a JScript double-quoted literal without accepting a second statement."""
+    if "\r" in value or "\n" in value:
+        raise ValueError(f"refusing to quote JScript value containing newline: {value!r}")
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _vbscript_engine_available() -> bool:
+    """Return false only when Windows positively lacks the VBScript engine."""
+    if sys.platform != "win32":
+        return True
+    try:
+        root = os.environ.get("SystemRoot") or os.environ.get("WINDIR") or r"C:\\Windows"
+        return (Path(root) / "System32" / "vbscript.dll").is_file()
+    except Exception:
+        return True
+
+
+def _wscript_launcher_suffix() -> str:
+    return ".js" if not _vbscript_engine_available() else ".vbs"
+
+
 # ── schtasks.exe wrapper
 
 def _exec_schtasks(args: list[str]) -> tuple[int, str, str]:
@@ -318,7 +340,13 @@ def _startup_dir() -> Path:
 
 def get_startup_entry_path() -> Path:
     _assert_windows()
-    return _startup_dir() / f"{_sanitize_filename(get_task_name())}.vbs"
+    return _startup_dir() / f"{_sanitize_filename(get_task_name())}{_wscript_launcher_suffix()}"
+
+
+def _startup_entry_candidates() -> list[Path]:
+    stem = _startup_dir() / _sanitize_filename(get_task_name())
+    # Include the public resolver too: tests and integrations may provide a custom Startup path.
+    return list(dict.fromkeys([get_startup_entry_path(), stem.with_suffix(".vbs"), stem.with_suffix(".js")]))
 
 
 def _legacy_startup_entry_path() -> Path:
@@ -443,10 +471,44 @@ def _build_gateway_vbs_script(python_path: str, working_dir: str, hermes_home: s
     return "\r\n".join(lines) + "\r\n"
 
 
+def _build_gateway_js_script(python_path: str, working_dir: str, hermes_home: str, profile_arg: str) -> str:
+    """Build the hidden-console JScript launcher used when VBScript is unavailable."""
+    python_exe_path, venv_dir, extra_pythonpath = _resolve_detached_python(python_path)
+    command_line = subprocess.list2cmdline(_gateway_run_argv(python_exe_path, profile_arg))
+    static_pythonpath = os.pathsep.join(_launcher_pythonpath_entries(extra_pythonpath))
+    q = _quote_js_string
+    lines = [
+        f"// {_TASK_DESCRIPTION}",
+        "var sh, env, existing_pp;",
+        'sh = WScript.CreateObject("WScript.Shell");',
+        'env = sh.Environment("PROCESS");',
+        f"env({q('HERMES_HOME')}) = {q(hermes_home)};",
+        *[f"env({q(k)}) = {q(v)};" for k, v in _GATEWAY_ENV],
+        f"env({q('VIRTUAL_ENV')}) = {q(_preserve_hermes_home_path(venv_dir))};",
+        f"existing_pp = env({q('PYTHONPATH')});",
+        "if (existing_pp) {",
+        f"  env({q('PYTHONPATH')}) = {q(static_pythonpath + os.pathsep)} + existing_pp;",
+        "} else {",
+        f"  env({q('PYTHONPATH')}) = {q(static_pythonpath)};",
+        "}",
+        f"sh.CurrentDirectory = {q(working_dir)};",
+        f"sh.Run({q(command_line)}, 0, false);",
+    ]
+    return "\r\n".join(lines) + "\r\n"
+
+
 def _build_startup_launcher(script_path: Path) -> str:
-    """The tiny Startup-folder .vbs that chains hidden. Quits silently if the target is gone so a
-    stale entry doesn't error on every login."""
-    target = str(script_path.with_suffix(".vbs"))
+    """Build the matching Startup launcher without relying on a file association."""
+    target = str(script_path.with_suffix(_wscript_launcher_suffix()))
+    command = subprocess.list2cmdline(["wscript.exe", "//B", "//E:JScript", target])
+    if not _vbscript_engine_available():
+        q = _quote_js_string
+        return "\r\n".join([
+            f"// {_TASK_DESCRIPTION}", "var fso, sh, target;", f"target = {q(target)};",
+            'fso = WScript.CreateObject("Scripting.FileSystemObject");',
+            "if (!fso.FileExists(target)) { WScript.Quit(0); }",
+            'sh = WScript.CreateObject("WScript.Shell");', f"sh.Run({q(command)}, 0, false);",
+        ]) + "\r\n"
     command = subprocess.list2cmdline(["wscript.exe", target])
     lines = [
         f"' {_TASK_DESCRIPTION}",
@@ -468,10 +530,14 @@ def _write_task_script() -> Path:
     settings = _launcher_settings()
     script_path = get_task_script_path()
     _atomic_write(script_path, _build_gateway_cmd_script(*settings), script_path.with_suffix(".tmp"))
-    # Also render the console-less .vbs launcher used by Scheduled Task and the Startup-folder fallback via
-    # wscript.exe (issue #45599 fix A). The .cmd wrapper stays as a generated helper/compatibility artifact.
-    vbs_path = script_path.with_suffix(".vbs")
-    _atomic_write(vbs_path, _build_gateway_vbs_script(*settings), vbs_path.with_name(vbs_path.name + ".tmp"))
+    launcher_path = script_path.with_suffix(_wscript_launcher_suffix())
+    builder = _build_gateway_js_script if launcher_path.suffix == ".js" else _build_gateway_vbs_script
+    _atomic_write(launcher_path, builder(*settings), launcher_path.with_name(launcher_path.name + ".tmp"))
+    inactive = script_path.with_suffix(".vbs" if launcher_path.suffix == ".js" else ".js")
+    try:
+        inactive.unlink(missing_ok=True)
+    except OSError:
+        pass
     return script_path
 
 
@@ -512,6 +578,7 @@ def _build_scheduled_task_xml(task_name: str, launcher_path: Path, user: str | N
     See #45599.
     """
     user_principal = f"\n      <UserId>{escape(user)}</UserId>" if user else ""
+    engine = " //E:JScript" if launcher_path.suffix.lower() == ".js" else ""
     return f"""<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
@@ -555,7 +622,7 @@ def _build_scheduled_task_xml(task_name: str, launcher_path: Path, user: str | N
   <Actions Context="Author">
     <Exec>
       <Command>wscript.exe</Command>
-      <Arguments>//B //Nologo "{escape(str(launcher_path))}"</Arguments>
+      <Arguments>//B //Nologo{engine} "{escape(str(launcher_path))}"</Arguments>
     </Exec>
   </Actions>
 </Task>
@@ -573,7 +640,7 @@ def _install_scheduled_task(task_name: str, script_path: Path) -> tuple[bool, st
         return (False, f"schtasks /Delete failed (code {delete_code}): {delete_detail}")
     # Other /Delete failures are non-fatal: /Create /F may still replace it; keep the detail.
     user = _resolve_task_user()
-    launcher_path = script_path.with_suffix(".vbs")   # the task launches the console-less .vbs
+    launcher_path = script_path.with_suffix(_wscript_launcher_suffix())
     xml_path = launcher_path.with_suffix(".task.xml")
     xml_path.write_text(_build_scheduled_task_xml(task_name, launcher_path, user), encoding="utf-16", newline="")
     # Immediate manual starts use _spawn_detached(). See #45599.
@@ -601,12 +668,11 @@ def _install_startup_entry(script_path: Path) -> Path:
     entry = get_startup_entry_path()
     entry.parent.mkdir(parents=True, exist_ok=True)
     _atomic_write(entry, _build_startup_launcher(script_path), _startup_staging_path())
-    legacy_entry = _legacy_startup_entry_path()
-    try:
-        if legacy_entry.exists():
-            legacy_entry.unlink()
-    except OSError:
-        pass
+    for leftover in (_legacy_startup_entry_path(), *[p for p in _startup_entry_candidates() if p != entry]):
+        try:
+            leftover.unlink(missing_ok=True)
+        except OSError:
+            pass
     return entry
 
 
@@ -618,7 +684,7 @@ def _remove_startup_entries() -> tuple[list[str], list[str]]:
     """
     done: list[str] = []
     warnings: list[str] = []
-    for path in (get_startup_entry_path(), _legacy_startup_entry_path()):
+    for path in (*_startup_entry_candidates(), _legacy_startup_entry_path()):
         try:
             path.unlink()
             done.append(f"Removed redundant Windows login item: {path}")
@@ -632,10 +698,10 @@ def _remove_startup_entries() -> tuple[list[str], list[str]]:
 def redundant_autostart_entries() -> list[Path]:
     """Startup-folder entries that fire the gateway a second time at logon: every entry beside a
     registered Scheduled Task, or a legacy ``.cmd`` beside the ``.vbs`` fallback."""
-    entries = [p for p in (get_startup_entry_path(), _legacy_startup_entry_path()) if p.exists()]
+    entries = [p for p in (*_startup_entry_candidates(), _legacy_startup_entry_path()) if p.exists()]
     if is_task_registered():
         return entries
-    return entries[1:]
+    return [p for p in entries if p.suffix.lower() == ".cmd"]
 
 
 def reconcile_autostart_launchers() -> tuple[list[str], list[str]]:
@@ -644,17 +710,24 @@ def reconcile_autostart_launchers() -> tuple[list[str], list[str]]:
     The Scheduled Task and the Startup-folder entry are alternatives, but a successful task install
     never removed an earlier fallback and pre-#45610 installs left a ``cmd.exe`` launcher behind, so
     logon could fire the launcher twice (#80569). Task registered: remove the Startup entries. No
-    task but a legacy ``.cmd``: rewrite it as the console-less ``.vbs`` fallback. File operations
-    only (no schtasks mutation, no elevation), so install, update and doctor can all run it.
+    task but an obsolete Startup entry: rewrite it as the current console-less fallback. This also
+    migrates an existing ``.vbs`` entry to ``.js`` when Windows no longer provides VBScript. File
+    operations only (no schtasks mutation, no elevation), so install, update and doctor can all run it.
     """
     if is_task_registered():
         return _remove_startup_entries()
-    legacy = _legacy_startup_entry_path()
-    if legacy.exists():
+    entry = get_startup_entry_path()
+    obsolete = [
+        path for path in (_legacy_startup_entry_path(), *_startup_entry_candidates())
+        if path != entry and path.exists()
+    ]
+    if obsolete:
         entry = _install_startup_entry(_write_task_script())
-        if legacy.exists():  # _install_startup_entry swallows the unlink failure; both would fire at logon
-            return [], [f"Could not remove legacy Windows login item: {legacy} (locked or access denied; it still fires at logon beside {entry})"]
-        return [f"Migrated legacy Windows login item to: {entry}"], []
+        survivors = [path for path in obsolete if path.exists()]
+        if survivors:  # _install_startup_entry swallows unlink failures; both would fire at logon
+            names = ", ".join(str(path) for path in survivors)
+            return [], [f"Could not remove obsolete Windows login item(s): {names} (locked or access denied; they still fire at logon beside {entry})"]
+        return [f"Migrated obsolete Windows login item(s) to: {entry}"], []
     return [], []
 
 
@@ -1345,9 +1418,11 @@ def uninstall() -> None:
             print(f"⚠ schtasks /Delete returned code {code}: {detail}")
 
     for path, label in (
-        (get_startup_entry_path(), "Windows login item"), (_legacy_startup_entry_path(), "legacy Windows login item"),
+        *[(entry, "Windows login item") for entry in _startup_entry_candidates()],
+        (_legacy_startup_entry_path(), "legacy Windows login item"),
         (_startup_staging_path(), "Windows login item staging file"),
         (script_path, "Task script"), (script_path.with_suffix(".vbs"), "Task launcher"),
+        (script_path.with_suffix(".js"), "Task launcher"),
     ):
         try:
             path.unlink()
@@ -1370,7 +1445,7 @@ def is_task_registered() -> bool:
 
 
 def is_startup_entry_installed() -> bool:
-    return get_startup_entry_path().exists() or _legacy_startup_entry_path().exists()
+    return any(path.exists() for path in (*_startup_entry_candidates(), _legacy_startup_entry_path()))
 
 
 def _query_scheduled_task_xml(task_name: str) -> str | None:
@@ -1439,7 +1514,7 @@ def scheduled_task_drift(task_name: str) -> list[str]:
     registered = _query_scheduled_task_xml(task_name)
     if registered is None:
         return []
-    template = _build_scheduled_task_xml(task_name, get_task_script_path().with_suffix(".vbs"), _resolve_task_user())
+    template = _build_scheduled_task_xml(task_name, get_task_script_path().with_suffix(_wscript_launcher_suffix()), _resolve_task_user())
     return compare_scheduled_task_drift(registered, template)
 
 

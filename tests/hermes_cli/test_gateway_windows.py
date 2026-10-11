@@ -312,6 +312,7 @@ def test_install_scheduled_task_recreates_instead_of_change(monkeypatch, tmp_pat
     script_path = tmp_path / "Hermes_Gateway_alice.cmd"
     xml_seen = {}
 
+    monkeypatch.setattr(gateway_windows, "_vbscript_engine_available", lambda: True)
     monkeypatch.setattr(gateway_windows, "_resolve_task_user", lambda: r"DOMAIN\\alice")
 
     def fake_schtasks(args):
@@ -347,6 +348,41 @@ def test_install_scheduled_task_recreates_instead_of_change(monkeypatch, tmp_pat
     assert "//B //Nologo" in xml_seen["text"]
     assert "Hermes_Gateway_alice.vbs" in xml_seen["text"]
     assert "cmd.exe" not in xml_seen["text"]
+
+
+def test_jscript_launcher_is_explicit_and_task_drift_converges(monkeypatch, tmp_path):
+    """A missing VBScript engine selects JScript without depending on .js association."""
+    script = tmp_path / "Hermes_Gateway.cmd"
+    monkeypatch.setattr(gateway_windows, "_vbscript_engine_available", lambda: False)
+    monkeypatch.setattr(gateway_windows, "_resolve_task_user", lambda: None)
+    monkeypatch.setattr(
+        gateway_windows, "_resolve_detached_python", lambda exe: (r"C:\\venv\\Scripts\\python.exe", Path(r"C:\\venv"), [])
+    )
+    xml = gateway_windows._build_scheduled_task_xml("Hermes_Gateway", script.with_suffix(".js"), None)
+    assert "//B //Nologo //E:JScript" in xml
+    assert "Hermes_Gateway.js" in xml
+    assert gateway_windows.compare_scheduled_task_drift(xml, xml) == []
+
+    js = gateway_windows._build_gateway_js_script(
+        r"C:\\venv\\Scripts\\python.exe", r"C:\\Hermes", r"C:\\Hermes", "--profile work"
+    )
+    assert 'WScript.CreateObject("WScript.Shell")' in js
+    assert "sh.Run(" in js and ", 0, false" in js.lower()
+    assert "cmd.exe" not in js.lower()
+
+
+def test_engine_switch_cleanup_removes_both_startup_launcher_extensions(monkeypatch, tmp_path):
+    vbs, js = tmp_path / "Hermes_Gateway.vbs", tmp_path / "Hermes_Gateway.js"
+    for path in (vbs, js):
+        path.write_text("stale", encoding="utf-8")
+    monkeypatch.setattr(gateway_windows, "_startup_entry_candidates", lambda: [vbs, js])
+    monkeypatch.setattr(gateway_windows, "_legacy_startup_entry_path", lambda: tmp_path / "Hermes_Gateway.cmd")
+    monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: True)
+
+    assert gateway_windows.redundant_autostart_entries() == [vbs, js]
+    done, warnings = gateway_windows._remove_startup_entries()
+    assert warnings == [] and len(done) == 2
+    assert not vbs.exists() and not js.exists()
 
 
 def test_gateway_vbs_script_is_console_less(monkeypatch):
@@ -509,6 +545,7 @@ def test_status_names_and_uninstall_removes_pre_suffix_launchers(monkeypatch, tm
     per-profile suffixes are invisible to every ``get_task_name()``-keyed operation. ``status`` must name
     them and ``uninstall`` must remove them (files unlinked, ``schtasks /Delete`` issued for the task)."""
     startup, home = tmp_path / "Startup", tmp_path / "home"
+    monkeypatch.setattr(gateway_windows, "_vbscript_engine_available", lambda: True)
     (home / "gateway-service").mkdir(parents=True)
     startup.mkdir()
     legacy_vbs = startup / "Hermes_Gateway.vbs"
@@ -663,6 +700,7 @@ def test_reconcile_scheduled_task_reregisters_only_on_drift(monkeypatch, tmp_pat
     calls: list[list[str]] = []
     registered = {"xml": _PRE_HARDENING_TASK_XML}
 
+    monkeypatch.setattr(gateway_windows, "_vbscript_engine_available", lambda: True)
     def fake_schtasks(args):
         calls.append(list(args))
         if "/XML" in args and "/Query" in args:
@@ -685,6 +723,36 @@ def test_reconcile_scheduled_task_reregisters_only_on_drift(monkeypatch, tmp_pat
     calls.clear()
     assert gateway_windows.reconcile_scheduled_task("Hermes_Gateway") is False
     assert not any(c[0] in ("/Delete", "/Create") for c in calls)
+
+
+def test_reconcile_migrates_vbs_startup_entry_to_js_without_task(monkeypatch, tmp_path):
+    """An upgrade on a host without VBScript replaces its Startup fallback exactly once."""
+    startup = tmp_path / "Startup"
+    startup.mkdir()
+    script = tmp_path / "gateway-service" / "Hermes_Gateway_alice.cmd"
+    old_entry = startup / "Hermes_Gateway_alice.vbs"
+    old_entry.write_text("legacy vbs", encoding="utf-8")
+    new_entry = startup / "Hermes_Gateway_alice.js"
+
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(gateway_windows, "_vbscript_engine_available", lambda: False)
+    monkeypatch.setattr(gateway_windows, "get_task_name", lambda: "Hermes_Gateway_alice")
+    monkeypatch.setattr(gateway_windows, "_startup_dir", lambda: startup)
+    monkeypatch.setattr(gateway_windows, "get_startup_entry_path", lambda: new_entry)
+    monkeypatch.setattr(gateway_windows, "_legacy_startup_entry_path", lambda: startup / "Hermes_Gateway_alice.cmd")
+    monkeypatch.setattr(gateway_windows, "_write_task_script", lambda: script)
+    monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: False)
+
+    done, warnings = gateway_windows.reconcile_autostart_launchers()
+
+    assert warnings == []
+    assert len(done) == 1
+    assert not old_entry.exists()
+    assert "//E:JScript" in new_entry.read_text(encoding="utf-8")
+    assert gateway_windows.redundant_autostart_entries() == []
+
+    assert gateway_windows.reconcile_autostart_launchers() == ([], [])
+    assert sorted(path.name for path in startup.iterdir()) == ["Hermes_Gateway_alice.js"]
 
 
 def _arrange_uninstalled_start(monkeypatch):

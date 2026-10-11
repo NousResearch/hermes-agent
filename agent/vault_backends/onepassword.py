@@ -1,8 +1,10 @@
 """1Password Login items as a vault backend (``op`` CLI).
 
-Unlock: ``op signin --raw`` with the master password on stdin (desktop-app
-integration or account-level auth) mints an ``OP_SESSION_<account>`` token.
-A configured service-account token skips the prompt entirely (headless).
+Unlock, in order: a configured service-account token (headless, no prompt);
+the desktop app's CLI integration ("Integrate with 1Password CLI"), where
+``op`` talks to the app over its daemon socket and no token exists, so a
+successful ``op account get`` is the unlock; else ``op signin --raw`` with the
+master password on stdin mints an ``OP_SESSION_<account>`` token.
 List: ``op item list --categories Login --format json`` → title, urls,
 username. Resolve: ``op item get <id> --fields label=password --reveal``.
 """
@@ -25,6 +27,7 @@ from agent.vault_store import VaultItemMeta, normalize_origin
 logger = logging.getLogger(__name__)
 
 _TIMEOUT = 30.0
+_APP_PROBE_TTL = 60.0
 
 
 class OnePasswordLoginBackend(LoginBackend):
@@ -38,6 +41,9 @@ class OnePasswordLoginBackend(LoginBackend):
         from agent.secret_scope import get_secret
         env_name = str(self.cfg.get("service_account_token_env") or "OP_SERVICE_ACCOUNT_TOKEN")
         self._service_token = get_secret(env_name, "") or ""
+        # item id -> vault id, filled by list_items. Service accounts must pass --vault to `op item get`.
+        self._item_vaults: Dict[str, str] = {}
+        self._app_probe: tuple = (0.0, False)  # (monotonic time, result) of the last desktop-app probe
 
     # ── auth ────────────────────────────────────────────────────────────────
 
@@ -67,8 +73,28 @@ class OnePasswordLoginBackend(LoginBackend):
             env[f"OP_SESSION_{account}" if account else "OP_SESSION"] = session_token
         return env
 
+    def _app_integration_ok(self) -> bool:
+        """True when ``op`` is authorised through the desktop app (no token needed). Probed with
+        ``op account get`` (``op whoami`` reports "not signed in" under app integration even while
+        item reads succeed); cached briefly. A locked app would raise its own unlock window, so the
+        probe only runs where a human can answer it, never from cron/webhook/-q."""
+        import time
+        if not _unlock.can_prompt_here():
+            return False
+        at, ok = self._app_probe
+        if time.monotonic() - at < _APP_PROBE_TTL:
+            return ok
+        try:
+            proc = run_cli([str(self._op()), "account", "get", "--format", "json"], env=self._env(None),
+                           timeout=_TIMEOUT, label="op", timeout_message="op timed out", stdin=subprocess.DEVNULL)
+            ok = proc.returncode == 0
+        except RuntimeError:
+            ok = False
+        self._app_probe = (time.monotonic(), ok)
+        return ok
+
     def is_unlocked(self) -> bool:
-        return bool(self._service_token) or _unlock.is_unlocked(self.name)
+        return bool(self._service_token) or _unlock.is_unlocked(self.name) or self._app_integration_ok()
 
     def unlock(self, master_password: str) -> None:
         """Mint a session token from the master password (consumed on stdin, never argv)."""
@@ -85,7 +111,7 @@ class OnePasswordLoginBackend(LoginBackend):
 
     def _run(self, *args: str) -> str:
         token = None if self._service_token else _unlock.get_session_token(self.name)
-        if not self._service_token and not token:
+        if not self._service_token and not token and not self._app_integration_ok():
             raise UnlockRequired(self)
         proc = run_cli([str(self._op()), *args], env=self._env(token), timeout=_TIMEOUT, label="op",
                        timeout_message="op timed out", stdin=subprocess.DEVNULL)
@@ -93,6 +119,7 @@ class OnePasswordLoginBackend(LoginBackend):
             err = _scrub(proc.stderr or "")
             if "session" in err.lower() or "sign in" in err.lower() or "not signed in" in err.lower():
                 _unlock.lock(self.name)
+                self._app_probe = (0.0, False)
                 raise UnlockRequired(self)
             raise RuntimeError(f"op failed: {err[:200]}")
         return proc.stdout or ""
@@ -109,6 +136,9 @@ class OnePasswordLoginBackend(LoginBackend):
             if not origins:
                 continue
             username = str(item.get("additional_information") or "").strip() or None
+            vault = item.get("vault") if isinstance(item.get("vault"), dict) else {}
+            if vault.get("id"):
+                self._item_vaults[str(item.get("id"))] = str(vault["id"])
             out.append(VaultItemMeta(
                 id=f"{self.prefix}{item.get('id')}", kind="login", label=str(item.get("title") or origins[0]),
                 origin=origins[0], created_at=str(item.get("created_at") or ""),
@@ -119,14 +149,23 @@ class OnePasswordLoginBackend(LoginBackend):
     def get_meta(self, handle: str) -> Optional[VaultItemMeta]:
         return next((m for m in self.list_items() if m.id == handle), None)
 
+    def _vault_args(self, item_id: str) -> List[str]:
+        """``--vault <id>`` for ``op item get``: mandatory for service accounts, harmless otherwise."""
+        if item_id not in self._item_vaults:
+            self.list_items()
+        vault_id = self._item_vaults.get(item_id)
+        return ["--vault", vault_id] if vault_id else []
+
     def resolve_password(self, handle: str) -> str:
         item_id = handle[len(self.prefix):]
-        return self._run("item", "get", item_id, "--fields", "label=password", "--reveal").rstrip("\r\n")
+        return self._run("item", "get", item_id, *self._vault_args(item_id),
+                         "--fields", "label=password", "--reveal").rstrip("\r\n")
 
     def resolve_otp(self, handle: str) -> Optional[str]:
         # `--otp` mints the current TOTP from the item's one-time-password field; items without one error out.
+        item_id = handle[len(self.prefix):]
         try:
-            code = self._run("item", "get", handle[len(self.prefix):], "--otp").strip()
+            code = self._run("item", "get", item_id, *self._vault_args(item_id), "--otp").strip()
         except Exception:
             return None
         return code if code.isdigit() else None

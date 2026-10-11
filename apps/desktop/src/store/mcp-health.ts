@@ -150,6 +150,14 @@ function recordResult(profileKey: string, name: string, status: McpHealthStatus)
 const isUrlServer = (server: Record<string, unknown>): boolean =>
   typeof server.url === 'string' && serverEnabled(server)
 
+async function probeServer(name: string): Promise<McpTestResult> {
+  try {
+    return await testMcpServer(name)
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err), tools: [] }
+  }
+}
+
 async function sweep(): Promise<void> {
   const epoch = sweepEpoch
   const profileKey = normalizeProfileKey($activeGatewayProfile.get())
@@ -183,18 +191,30 @@ async function sweep(): Promise<void> {
 
     const key = probeKey(name, server, profileKey)
     let result = freshProbe(key)
+    let probed = false
 
     if (!result) {
-      try {
-        result = await testMcpServer(name)
-      } catch (err) {
-        result = { ok: false, error: err instanceof Error ? err.message : String(err), tools: [] } as McpTestResult
-      }
+      result = await probeServer(name)
+      probed = true
+    }
 
-      if (epoch !== sweepEpoch) {
+    if (epoch !== sweepEpoch || $gatewayState.get() !== 'open') {
+      return
+    }
+
+    // A cold backend can interrupt the first probe even while the server is
+    // healthy. Confirm a first generic failure with ONE fresh probe, not the
+    // cached failure. Authentication failures still need immediate action.
+    if (!lastStatus.has(`${profileKey}::${name}`) && classifyProbe(result) === 'error') {
+      result = await probeServer(name)
+      probed = true
+
+      if (epoch !== sweepEpoch || $gatewayState.get() !== 'open') {
         return
       }
+    }
 
+    if (probed) {
       probeCache.set(key, { at: Date.now(), result })
     }
 
@@ -255,6 +275,8 @@ export function startMcpHealthChecker(): void {
     if (state === 'open') {
       arm()
     } else {
+      // A reconnect must not accept a confirmation from the previous socket.
+      sweepEpoch += 1
       disarm()
     }
   })

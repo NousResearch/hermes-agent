@@ -2892,7 +2892,8 @@ def _checkpoint_agent_kwargs(config: dict | None) -> dict:
         "checkpoints_enabled": cp_cfg.get("enabled", defaults["enabled"]),
         "checkpoint_max_snapshots": cp_cfg.get("max_snapshots", defaults["max_snapshots"]),
         "checkpoint_max_total_size_mb": cp_cfg.get("max_total_size_mb", defaults["max_total_size_mb"]),
-        "checkpoint_max_file_size_mb": cp_cfg.get("max_file_size_mb", defaults["max_file_size_mb"])}
+        "checkpoint_max_file_size_mb": cp_cfg.get("max_file_size_mb", defaults["max_file_size_mb"]),
+        "checkpoint_exclude_paths": cp_cfg.get("exclude_paths", defaults["exclude_paths"])}
 
 
 def _resolve_gateway_model(config: dict | None = None) -> str:

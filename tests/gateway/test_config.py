@@ -1352,6 +1352,47 @@ class TestHomeChannelEnvOverrides:
             assert (home.chat_id, home.name) == expected, platform.value
 
 
+class TestCredFixedPreservesYamlExtra:
+    """_Cred.fixed must not clobber config.yaml extra with blank env (#135509).
+
+    Regression: _Cred.__call__ wrote every ``fixed`` entry unconditionally, so
+    ``extra["homeserver"] = ""`` when MATRIX_HOMESERVER was unset — discarding
+    ``platforms.matrix.homeserver`` from config.yaml that from_dict had
+    promoted into extra.
+    """
+
+    def test_blank_env_preserves_yaml_homeserver(self):
+        config = GatewayConfig(platforms={
+            Platform.MATRIX: PlatformConfig(
+                enabled=True,
+                token="syt_abc123",
+                extra={"homeserver": "https://matrix.example.org"},
+            ),
+        })
+        with patch.dict(os.environ, {
+            "HERMES_HOME": os.environ["HERMES_HOME"],
+            "MATRIX_ACCESS_TOKEN": "syt_abc123",
+        }, clear=True):
+            _apply_env_overrides(config)
+        assert config.platforms[Platform.MATRIX].extra["homeserver"] == "https://matrix.example.org"
+
+    def test_set_env_still_wins_over_yaml(self):
+        config = GatewayConfig(platforms={
+            Platform.MATRIX: PlatformConfig(
+                enabled=True,
+                token="syt_abc123",
+                extra={"homeserver": "https://matrix.example.org"},
+            ),
+        })
+        with patch.dict(os.environ, {
+            "HERMES_HOME": os.environ["HERMES_HOME"],
+            "MATRIX_ACCESS_TOKEN": "syt_abc123",
+            "MATRIX_HOMESERVER": "https://env.example.org",
+        }, clear=True):
+            _apply_env_overrides(config)
+        assert config.platforms[Platform.MATRIX].extra["homeserver"] == "https://env.example.org"
+
+
 class TestMultiplexProfilesEnvOverride:
     """GATEWAY_MULTIPLEX_PROFILES env override — the 3-tier precedence chain.
 

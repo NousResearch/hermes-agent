@@ -86,6 +86,37 @@ class TestInertQuotedHeredocPayloadAllowed:
         assert guidance(cmd) is None
 
     @pytest.mark.parametrize(
+        "interpreter",
+        [
+            pytest.param("~/proj/.venv/bin/python", id="tilde-venv-python"),
+            pytest.param("~/.venv/bin/python3", id="tilde-home-venv-python3"),
+            pytest.param(
+                "/Users/me/Documents/proj/work/.venv/bin/python",
+                id="nested-venv-python",
+            ),
+            pytest.param(
+                "/opt/homebrew/opt/python@3.11/bin/python3.11",
+                id="homebrew-at-sign-versioned-python",
+            ),
+            pytest.param(
+                "/opt/python-3.14.7+build/bin/python3",
+                id="plus-sign-build-python",
+            ),
+            pytest.param(
+                "C:/Users/name/.venv/Scripts/python.exe",
+                id="windows-drive-scripts-python-exe",
+            ),
+        ],
+    )
+    def test_path_qualified_and_custom_interpreters(self, interpreter):
+        cmd = (
+            interpreter + " - <<'PY'" + NL
+            + "x = a " + AMP + " b" + NL
+            + "PY"
+        )
+        assert guidance(cmd) is None
+
+    @pytest.mark.parametrize(
         "prefix",
         [
             pytest.param("cd /tmp && ", id="and-list-prefix"),
@@ -134,6 +165,14 @@ class TestUnsafeHeredocPayloadRemainsVisible:
     def test_shell_interpreter_payload_is_still_scanned(self):
         cmd = (
             "bash <<'EOF'" + NL
+            + "nohup sleep 10 >/dev/null 2>" + AMP + "1 " + AMP + NL
+            + "EOF"
+        )
+        assert guidance(cmd) is not None
+
+    def test_path_qualified_shell_interpreter_is_still_scanned(self):
+        cmd = (
+            "~/bin/bash <<'EOF'" + NL
             + "nohup sleep 10 >/dev/null 2>" + AMP + "1 " + AMP + NL
             + "EOF"
         )

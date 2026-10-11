@@ -3201,6 +3201,7 @@ def block_task(
         new_status, event_kind, set_sql, params, payload = _route_block(
             kind, reason, source_status, prev_kind=_row_get(cur_row, "block_kind"),
             prev_recurrences=int(_row_get(cur_row, "block_recurrences") or 0),
+            triage_round_trips=triage_round_trips(conn, task_id),
         )
         if rekind_reason:
             payload["requested_kind"] = requested_kind
@@ -3236,7 +3237,7 @@ def block_task(
 
 def _route_block(
     kind: Optional[str], reason: Optional[str], source_status: str, *,
-    prev_kind: Optional[str], prev_recurrences: int,
+    prev_kind: Optional[str], prev_recurrences: int, triage_round_trips: int = 0,
 ) -> tuple[str, str, str, tuple, dict]:
     """``(new_status, event_kind, set_sql, params, payload)`` for :func:`block_task`.
 
@@ -3250,6 +3251,9 @@ def _route_block(
     incoming one means blocked -> unblocked -> re-block for the same cause
     (un-typed None compares equal to a prior un-typed block). At
     ``BLOCK_RECURRENCE_LIMIT`` the task routes to ``triage`` for a human.
+    ``triage_round_trips`` is read from the card's own escalation history (see
+    :func:`triage_round_trips`) and lands on the ``block_loop_detected`` payload, so
+    a count that spans a triage trip is not read as N consecutive honest blocks.
     """
     payload = {"reason": reason, "kind": kind, "source_status": source_status}
     if kind == "dependency":
@@ -3259,8 +3263,370 @@ def _route_block(
     payload = {"reason": reason, "kind": kind, "recurrences": recurrences, "source_status": source_status}
     if recurrences >= BLOCK_RECURRENCE_LIMIT:
         payload["limit"] = BLOCK_RECURRENCE_LIMIT
+        # ``recurrences`` alone reads as N consecutive honest blocks. Record how many
+        # triage round-trips the count already spans, so the reader who re-blocks this
+        # card after a trip cannot describe it as a state that never changed.
+        payload["triage_round_trips"] = triage_round_trips
         return "triage", "block_loop_detected", set_sql, (kind, recurrences), payload
     return "blocked", "blocked", set_sql, (kind, recurrences), payload
+
+
+# --- The triage escalation guard -------------------------------------------------------
+#
+# ``_route_block`` parks a repeating card in ``triage`` for a HUMAN. Every promotion path
+# out of ``triage`` therefore has to refuse such a card: promoting it hands the same
+# unchanged card — and the same failing context — straight back to the board, where it
+# blocks again and manufactures a fresh graph of children on each pass. The promotion
+# paths are ``specify_triage_task`` and ``kanban_db_graph.decompose_triage_task``; both
+# call :func:`triage_escalation_refusal` inside their own write txn, so the refusal is
+# atomic with the read that decided it and no caller can forget the guard.
+
+TRIAGE_ESCALATION_EVENT_KIND = "block_loop_detected"
+BLOCK_ROUTING_EVENT_KINDS = ("blocked", "dependency_wait", TRIAGE_ESCALATION_EVENT_KIND, "gave_up")
+TRIAGE_ESCALATION_CAUSE = "block_loop_escalation"
+
+
+class TriageEscalationRefusal:
+    """Why a promotion out of ``triage`` refused: the block-loop breaker parked the card.
+
+    Falsy, so every existing ``if not specify_triage_task(...)`` caller keeps its meaning,
+    while the operator-facing surfaces can name the triggering event and the card. A bare
+    ``False`` cannot tell "already promoted / moved out" from "escalated to a human", and
+    that ambiguity is how the auto-decompose hook silently fanned out a card the board had
+    already handed to a person.
+    """
+
+    __slots__ = ("task_id", "cause", "detail", "event_id", "payload")
+
+    def __init__(self, task_id: str, event_id: int, payload: Optional[dict]):
+        payload = payload or {}
+        self.task_id = task_id
+        self.cause = TRIAGE_ESCALATION_CAUSE
+        self.event_id = event_id
+        self.payload = payload
+        self.detail = (
+            f"{task_id} is parked in triage by the block-loop breaker (event {event_id} "
+            f"'{TRIAGE_ESCALATION_EVENT_KIND}': kind={payload.get('kind')!r}, "
+            f"recurrences={payload.get('recurrences')}/{payload.get('limit')}, "
+            f"triage_round_trips={payload.get('triage_round_trips')}) — an escalation for a "
+            f"human to dispose of with a board edit: archive the card, or move it out of the "
+            f"triage column (to todo/ready). unblock / complete / reassign do not clear the "
+            f"park — the card stays in triage. Promoting the unchanged card back onto the "
+            f"board re-arms the block it was escalated for"
+        )
+
+    def __bool__(self) -> bool:
+        return False
+
+    def __repr__(self) -> str:
+        return f"TriageEscalationRefusal(task_id={self.task_id!r}, event_id={self.event_id!r})"
+
+
+def triage_escalation_refusal(
+    conn: sqlite3.Connection, task_id: str,
+) -> Optional[TriageEscalationRefusal]:
+    """The breaker's park for ``task_id`` when that is why it sits in ``triage``; else None.
+
+    The predicate is the NEWEST block-routing event, never the merely-newest-one-that-happens
+    -to-exist: a card that once escalated and later blocked again for another cause is
+    triaged by whichever routing decision came last. Sticky by construction — nothing in the
+    promotion paths clears the event, so a card stays refused until a human edits the column.
+    """
+    placeholders = ",".join("?" * len(BLOCK_ROUTING_EVENT_KINDS))
+    row = conn.execute(
+        f"SELECT id, kind, payload FROM task_events WHERE task_id = ? "
+        f"AND kind IN ({placeholders}) ORDER BY id DESC LIMIT 1",
+        (task_id, *BLOCK_ROUTING_EVENT_KINDS),
+    ).fetchone()
+    if row is None or row["kind"] != TRIAGE_ESCALATION_EVENT_KIND:
+        return None
+    return TriageEscalationRefusal(
+        task_id, int(row["id"]), _json_or(_lossy_text(row["payload"])),
+    )
+
+
+def triage_round_trips(conn: sqlite3.Connection, task_id: str) -> int:
+    """How many times this card has already been through triage and come back to work.
+
+    Every prior ``block_loop_detected`` event is one COMPLETED round-trip: the card can only
+    block again after it left ``triage``, whether the exit was the decomposer/specifier or a
+    human editing the column directly. Counted *before* the current escalation is appended
+    (``block_task`` reads it, then ``_route_block`` writes the new event), so the payload
+    says how many times the board has already handed this card to a person.
+    """
+    row = conn.execute(
+        "SELECT COUNT(*) FROM task_events WHERE task_id = ? AND kind = ?",
+        (task_id, TRIAGE_ESCALATION_EVENT_KIND),
+    ).fetchone()
+    return int(row[0] or 0)
+
+
+# ---------------------------------------------------------------------------
+# The decompose RECORD guard (card t_9cb7f0b9)
+#
+# The escalation guard above answers ONE question: "did the block-loop breaker park this
+# card in triage?". It does not answer "has this card's work already been decided?" — and
+# the auto-decomposer claimed a review-blocked card out of triage whose newest comments said
+# in as many words "the CODE HALF IS APPROVED at 3ce158d8" / "Do NOT decompose or
+# re-implement this card", and minted four children off the root BODY alone: work a
+# reviewer had already ruled on, invented a second time by an LLM that never read the
+# thread.
+#
+# So every promotion path out of triage — the decomposer AND the specifier — READS THE RECORD
+# (the card's comments and its run history) and REFUSES, DETERMINISTICALLY (a fixed marker
+# table; no inference, no prose in the triage prompt), when ANY of these hold:
+#
+#   live_run       a live run owns the card (status 'running', or a held claim)
+#   in_review      the card sits in the review column, or its newest review-lifecycle event
+#                  is a REQUEST (handed to a reviewer, with no decision since)
+#   approved       the thread carries the estate's APPROVED verdict — WHOLE thread
+#   superseded     the thread carries a superseded / withdrawn / do-not-implement note —
+#                  WHOLE thread (a decision does not expire)
+#   live_artifact  the newest comments name a live branch (<namespace>/t_<task-id>[-<slug>])
+#                  or a GitHub PR URL — the tail window only (perishable)
+#
+# The refusal is RECORDED as a ``decompose_refused`` event carrying every matched cause, the
+# matched line and its comment id, so a blocked loop stays VISIBLE instead of being papered
+# over with invented work. Sticky by construction — nothing in the promotion paths clears
+# it, so a human disposes of the card with a board edit (archive it, or move it out of the
+# triage column), exactly like the escalation park.
+# ---------------------------------------------------------------------------
+
+DECOMPOSE_REFUSAL_EVENT_KIND = "decompose_refused"
+# How far back into the thread the PERISHABLE marker scan reads (``live_artifact`` only): a
+# stale branch mention is not the card's current state, so it counts as evidence only near the
+# tail. DURABLE decisions (``approved`` / ``superseded`` — see ``_DECOMPOSE_DURABLE_CAUSES``)
+# are scanned over the WHOLE thread: a decision does not expire.
+DECOMPOSE_RECORD_SCAN_DEPTH = 5
+
+DECOMPOSE_CAUSE_LIVE_RUN = "live_run"
+DECOMPOSE_CAUSE_IN_REVIEW = "in_review"
+DECOMPOSE_CAUSE_APPROVED = "approved"
+DECOMPOSE_CAUSE_SUPERSEDED = "superseded"
+DECOMPOSE_CAUSE_LIVE_ARTIFACT = "live_artifact"
+
+# A DECISION does not expire: these causes are scanned over the WHOLE comment thread. The
+# perishable ``live_artifact`` cause above stays bounded by ``DECOMPOSE_RECORD_SCAN_DEPTH``.
+_DECOMPOSE_DURABLE_CAUSES = frozenset({DECOMPOSE_CAUSE_APPROVED, DECOMPOSE_CAUSE_SUPERSEDED})
+
+# A review handoff leaves the card with a reviewer; these kinds settle it. The newest
+# lifecycle event decides, so a review that was handed back (or closed) is not a park.
+REVIEW_REQUEST_EVENT_KINDS = ("review_requested", "review_reopened")
+REVIEW_SETTLED_EVENT_KINDS = ("changes_requested", "completed", "archived")
+REVIEW_LIFECYCLE_EVENT_KINDS = REVIEW_REQUEST_EVENT_KINDS + REVIEW_SETTLED_EVENT_KINDS
+
+# The estate's verdict vocabulary. APPROVED is case-sensitive on purpose: the review lanes
+# write the verdict in caps, and "needs an approval"/"the approval is pending" must not
+# refuse a card that is still open.
+#
+# The estate mints branch names as "<namespace>/<task_id>[-<title-slug>]": the auto "wt"
+# (kanban_db_workspace) or a user-chosen project slug (projects_db.branch_name_for). The stable
+# discriminator is the card-id segment, not the namespace, so this matches any slash-prefixed
+# "t_<id>" token rather than enumerating prefixes.
+_LIVE_BRANCH_MARKER = re.compile(r"[A-Za-z0-9._-]+/t_[A-Za-z0-9][A-Za-z0-9_.-]*")
+_LIVE_PR_MARKER = re.compile(r"https?://github\.com/[^\s/]+/[^\s/]+/pull/\d+")
+
+_DECOMPOSE_RECORD_MARKERS: tuple[tuple[str, "re.Pattern[str]"], ...] = (
+    (DECOMPOSE_CAUSE_APPROVED, re.compile(r"\bAPPROVED\b")),
+    (
+        DECOMPOSE_CAUSE_SUPERSEDED,
+        re.compile(
+            r"\bsuperseded\b|\bwithdrawn\b"
+            r"|\bDo NOT\s+(?:decompose|re-?implement|implement|start)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (DECOMPOSE_CAUSE_LIVE_ARTIFACT, _LIVE_BRANCH_MARKER),
+    (DECOMPOSE_CAUSE_LIVE_ARTIFACT, _LIVE_PR_MARKER),
+)
+
+
+def _matched_line(body: str, match: "re.Match[str]") -> str:
+    """The whole line of ``body`` the marker matched, stripped and clipped for a payload."""
+    start = body.rfind("\n", 0, match.start()) + 1
+    end = body.find("\n", match.end())
+    line = body[start:end if end != -1 else len(body)].strip()
+    return line[:240]
+
+
+class DecomposeRefusal:
+    """Why the auto-decomposer refused: the card's RECORD says the work is already decided.
+
+    Falsy, like :class:`TriageEscalationRefusal`, so every existing ``if not
+    decompose_triage_task(...)`` caller keeps its meaning while an operator-facing surface
+    can name the causes and the rows that carried them. A bare ``False``/``None`` cannot
+    tell "nothing to decompose" from "already approved" — and that ambiguity is exactly how
+    a review-blocked card got fanned out into fresh children.
+    """
+
+    __slots__ = ("task_id", "causes", "matches", "detail")
+
+    def __init__(self, task_id: str, matches: list[dict]):
+        self.task_id = task_id
+        self.matches = matches
+        # One entry per cause, newest evidence first, so the payload stays readable.
+        causes: list[str] = []
+        for match in matches:
+            cause = str(match.get("cause"))
+            if cause not in causes:
+                causes.append(cause)
+        self.causes = causes
+        evidence = "; ".join(
+            f"{m['cause']} @ "
+            + (
+                f"comment {m['comment_id']} ({m.get('author')}): {m.get('line')!r}"
+                if m.get("comment_id") is not None
+                else f"event {m.get('event_id')} '{m.get('event_kind')}'"
+                if m.get("event_id") is not None
+                else f"tasks.{m.get('field')}={m.get('value')!r}"
+            )
+            for m in matches
+        )
+        self.detail = (
+            f"{task_id} is refused auto-decomposition: the card's RECORD says the work is "
+            f"already decided (causes: {', '.join(causes)}). A card carrying an approval, a "
+            f"superseded note or a live branch/PR — or one that sits in review, or that a "
+            f"live run owns — is not a triage card: decomposing it mints children off the "
+            f"unchanged root BODY, which is work invented a second time. Evidence: "
+            f"{evidence}. Disposals: archive the card, or move it out of the triage column "
+            f"(to todo/ready). unblock / complete / reassign do not clear this refusal"
+        )
+
+    def __bool__(self) -> bool:
+        return False
+
+    def __repr__(self) -> str:
+        return f"DecomposeRefusal(task_id={self.task_id!r}, causes={self.causes!r})"
+
+
+def decompose_refusal(
+    conn: sqlite3.Connection, task_id: str, *,
+    scan_depth: int = DECOMPOSE_RECORD_SCAN_DEPTH,
+) -> Optional[DecomposeRefusal]:
+    """The RECORD refusal for ``task_id``, or None when the card is a plain triage card.
+
+    Read-only: it answers from ``tasks`` (live claim / review column), ``task_events`` (the
+    review lifecycle) and the comment thread — the WHOLE thread for durable decisions
+    (``approved`` / ``superseded``), the newest ``scan_depth`` comments for perishable evidence
+    (``live_artifact``). The caller records the refusal; see :func:`decompose_refusal_guard`.
+    """
+    row = conn.execute(
+        "SELECT status, claim_lock, current_run_id, worker_pid FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if row is None:
+        return None
+
+    matches: list[dict] = []
+    seen: set[str] = set()
+
+    def _add(cause: str, **evidence: Any) -> None:
+        if cause in seen:
+            return
+        seen.add(cause)
+        matches.append({"cause": cause, **evidence})
+
+    status = row["status"]
+    if status == "running" or row["claim_lock"]:
+        _add(
+            DECOMPOSE_CAUSE_LIVE_RUN, field="status", value=status,
+            run_id=row["current_run_id"], worker_pid=row["worker_pid"],
+            claim_lock=row["claim_lock"],
+        )
+    if status == "review":
+        _add(DECOMPOSE_CAUSE_IN_REVIEW, field="status", value=status)
+    else:
+        placeholders = ",".join("?" * len(REVIEW_LIFECYCLE_EVENT_KINDS))
+        event = conn.execute(
+            f"SELECT id, kind FROM task_events WHERE task_id = ? "
+            f"AND kind IN ({placeholders}) ORDER BY id DESC LIMIT 1",
+            (task_id, *REVIEW_LIFECYCLE_EVENT_KINDS),
+        ).fetchone()
+        if event is not None and event["kind"] in REVIEW_REQUEST_EVENT_KINDS:
+            _add(
+                DECOMPOSE_CAUSE_IN_REVIEW, event_id=int(event["id"]),
+                event_kind=str(event["kind"]),
+            )
+
+    comments = conn.execute(
+        "SELECT id, author, body FROM task_comments WHERE task_id = ? "
+        "ORDER BY created_at DESC, id DESC",
+        (task_id,),
+    ).fetchall()
+    for depth, comment in enumerate(comments):
+        # Durable decisions are read over the WHOLE thread; perishable evidence only in the
+        # tail, so a stale branch mention cannot pin a card that has moved past it.
+        in_tail = depth < int(scan_depth)
+        body = _lossy_text(comment["body"]) or ""
+        if not isinstance(body, str):
+            continue
+        for cause, pattern in _DECOMPOSE_RECORD_MARKERS:
+            if cause in seen:
+                continue
+            if not in_tail and cause not in _DECOMPOSE_DURABLE_CAUSES:
+                continue
+            match = pattern.search(body)
+            if match is None:
+                continue
+            _add(
+                cause, comment_id=int(comment["id"]),
+                author=_lossy_text(comment["author"]), line=_matched_line(body, match),
+            )
+
+    if not matches:
+        return None
+    return DecomposeRefusal(task_id, matches)
+
+
+def record_decompose_refusal(
+    conn: sqlite3.Connection, refusal: DecomposeRefusal, *, author: Optional[str] = None,
+) -> Optional[int]:
+    """Append the ``decompose_refused`` event inside the caller's txn; the new id, or None.
+
+    None means the newest recorded refusal already carries this cause set: the decomposer is
+    retried by the tick, the CLI sweep and the dashboard, and the record must not grow one
+    row per attempt over an unchanged card. No txn of its own — the callers (the promotion
+    paths) are already inside one, or open one around it.
+    """
+    previous = conn.execute(
+        "SELECT payload FROM task_events WHERE task_id = ? AND kind = ? ORDER BY id DESC LIMIT 1",
+        (refusal.task_id, DECOMPOSE_REFUSAL_EVENT_KIND),
+    ).fetchone()
+    if previous is not None:
+        payload = _json_or(_lossy_text(previous["payload"]), {}) or {}
+        if list(payload.get("causes") or []) == list(refusal.causes):
+            return None
+    _append_event(
+        conn, refusal.task_id, DECOMPOSE_REFUSAL_EVENT_KIND,
+        {
+            "causes": refusal.causes,
+            "matches": refusal.matches,
+            "detail": refusal.detail,
+            "author": author,
+        },
+    )
+    row = conn.execute("SELECT last_insert_rowid()").fetchone()
+    return int(row[0]) if row is not None else None
+
+
+def decompose_refusal_guard(
+    conn: sqlite3.Connection, task_id: str, *, author: Optional[str] = None,
+) -> Optional[TriageEscalationRefusal | DecomposeRefusal]:
+    """The refusal that keeps ``task_id`` in ``triage``, and record it; else None.
+
+    The ONE entrance both promotion paths use, so neither can forget a guard. The escalation
+    park comes first and is returned WITHOUT a new event — its own ``block_loop_detected``
+    payload already carries the reason and the operator's disposal instructions. Anything
+    else the record refuses is recorded here (idempotently).
+    """
+    escalation = triage_escalation_refusal(conn, task_id)
+    if escalation is not None:
+        return escalation
+    refusal = decompose_refusal(conn, task_id)
+    if refusal is None:
+        return None
+    record_decompose_refusal(conn, refusal, author=author)
+    return refusal
 
 
 def redact_review_value(value: Any) -> Any:
@@ -3754,10 +4120,17 @@ def invalidate_descendants_for_parent_reopen(
 def specify_triage_task(
     conn: sqlite3.Connection, task_id: str, *, title: Optional[str] = None,
     body: Optional[str] = None, assignee: Optional[str] = None, author: Optional[str] = None,
-) -> bool:
+) -> bool | TriageEscalationRefusal | DecomposeRefusal:
     """Update title/body/assignee (when given) and move ``triage -> todo`` in one
     txn; False when not in triage. Lands in ``todo`` (not ``ready``) so parent
     gating still applies; the audit comment is written only when a field changed.
+
+    A card the RECORD has already decided refuses with a :class:`DecomposeRefusal`
+    (falsy, and recorded here), and a card the block-loop breaker parked with a
+    :class:`TriageEscalationRefusal` (falsy) — either way it stays in ``triage``.
+    Specification cannot fix a card whose state has not changed since the block it
+    was escalated for, nor one whose work is already decided; promoting either
+    re-arms the very loop the guard exists to stop.
     """
     if title is not None and not title.strip():
         raise ValueError("title cannot be blank")
@@ -3769,6 +4142,9 @@ def specify_triage_task(
         ).fetchone()
         if existing is None:
             return False
+        refusal = decompose_refusal_guard(conn, task_id, author=author)
+        if refusal is not None:
+            return refusal
         sets: list[str] = ["status = 'todo'"]
         params: list[Any] = []
         changed_fields: list[str] = []

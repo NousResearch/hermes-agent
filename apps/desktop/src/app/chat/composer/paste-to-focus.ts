@@ -16,7 +16,8 @@ import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { isEditableTarget } from '@/lib/keybinds/combo'
 import { composerFocusBlockedBySurface } from '@/lib/keybinds/composer-focus-keys'
 
-import { requestComposerAttachImages, requestComposerFocus, requestComposerInsert } from './focus'
+import { extractDroppedFiles } from '../hooks/use-composer-actions'
+import { requestComposerAttachFiles, requestComposerAttachImages, requestComposerFocus, requestComposerInsert } from './focus'
 import { pathifyRefs } from './path-refs'
 import { extractClipboardImageBlobs } from './text-utils'
 import { linkifyUrls } from './url-refs'
@@ -24,8 +25,16 @@ import { linkifyUrls } from './url-refs'
 /** Route clipboard contents to the active composer. True when it carried
  *  something a composer can take (the caller should swallow the event). */
 export function routeClipboardToComposer(clipboard: DataTransfer): boolean {
-  const blobs = extractClipboardImageBlobs(clipboard)
+  // Electron exposes Finder/Explorer copies as native File handles. Resolve
+  // their paths synchronously, just as the drop handler does, before the
+  // clipboard DataTransfer is invalidated after this event returns.
+  const files = extractDroppedFiles(clipboard).filter(candidate => Boolean(candidate.path))
+  const blobs = files.length ? [] : extractClipboardImageBlobs(clipboard)
   const text = sanitizeComposerInput(clipboard.getData('text').trim())
+
+  if (files.length > 0) {
+    requestComposerAttachFiles(files)
+  }
 
   if (blobs.length > 0) {
     requestComposerAttachImages(blobs)
@@ -40,7 +49,7 @@ export function routeClipboardToComposer(clipboard: DataTransfer): boolean {
     return true
   }
 
-  if (blobs.length > 0) {
+  if (files.length > 0 || blobs.length > 0) {
     // Image-only paste: pull focus so the attach lands somewhere visible.
     requestComposerFocus('active')
 

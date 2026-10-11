@@ -12,7 +12,10 @@ Mirrors ``kanban_specify`` (lazy aux import, lenient parse, never raises on
 expected failures). ``fanout=false`` collapses to the ``specify`` behaviour
 (tighten + promote, no children), making ``decompose`` a strict superset.
 Unknown assignees are rewritten to ``default_assignee`` — a child NEVER ends
-up with ``assignee=None``.
+up with ``assignee=None``. When ``kanban.default_assignee`` names a different
+profile, that profile is the nominated catch-all and ``default`` is hidden
+from the roster, so generic children route to it instead of to the box's own
+general-purpose ``default`` profile.
 """
 
 from __future__ import annotations
@@ -153,23 +156,28 @@ def _resolve_profile_from_cfg(cfg: dict, key: str, *, fallback: Optional[str] = 
         return "default"
 
 
-def _build_roster() -> tuple[list[dict], set[str]]:
+def _build_roster(*, exclude: Optional[set[str]] = None) -> tuple[list[dict], set[str]]:
     """``(roster_for_prompt, valid_assignee_names)``; entries are
-    ``{name, description, has_description}``."""
+    ``{name, description, has_description}``. ``exclude`` names are hidden
+    from both the prompt and the valid set — a pick of one normalizes to the
+    default assignee like any other unroutable name."""
     try:
         all_profiles = profiles_mod.list_profiles()
     except Exception as exc:
         logger.warning("decompose: failed to list profiles: %s", exc)
         return [], set()
+    hidden = exclude or set()
     roster = []
     for p in all_profiles:
+        if p.name in hidden:
+            continue
         desc = (p.description or "").strip()
         roster.append({
             "name": p.name,
             "description": desc or f"(no description; profile named {p.name!r})",
             "has_description": bool(desc),
         })
-    return roster, {p.name for p in all_profiles}
+    return roster, {p.name for p in all_profiles if p.name not in hidden}
 
 
 def _format_roster(roster: list[dict]) -> str:
@@ -182,7 +190,7 @@ def _format_roster(roster: list[dict]) -> str:
 
 
 def _normalize_assignee_choice(assignee: object, *, default_assignee: str, valid_names: set[str]) -> str:
-    """A valid assignee, else ``default_assignee`` — promoted work is never
+    """A routable assignee, else ``default_assignee`` — promoted work is never
     left unassigned."""
     if not isinstance(assignee, str) or not assignee.strip():
         return default_assignee
@@ -208,7 +216,21 @@ def _load_routing(*, root_assignee: Optional[str] = None) -> _Routing:
     except Exception:  # decompose_task promises ok=False, never a raise, on config trouble
         cfg = {}
     kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
-    roster, valid_names = _build_roster()
+    # `kanban.default_assignee` is the operator's nominated catch-all, but a
+    # `default` profile left in the roster out-competes it for generic tasks —
+    # its description reads general-purpose, so the LLM picks it outright and
+    # the catch-all only ever sees null/unknown names (a fallback, not a
+    # floor). When the config names a different, existing profile, hide
+    # `default` so generic children reach the nominated profile.
+    hide_default = False
+    raw_default = kanban_cfg.get("default_assignee")
+    explicit_default = raw_default.strip() if isinstance(raw_default, str) else ""
+    if explicit_default and explicit_default != "default":
+        try:
+            hide_default = profiles_mod.profile_exists(explicit_default)
+        except Exception:  # unreadable profile home, etc. — treat as unset
+            hide_default = False
+    roster, valid_names = _build_roster(exclude={"default"} if hide_default else None)
     return _Routing(
         orchestrator=_resolve_profile_from_cfg(cfg, "orchestrator_profile", fallback=root_assignee),
         default_assignee=_resolve_profile_from_cfg(cfg, "default_assignee", fallback=root_assignee),
@@ -254,7 +276,7 @@ def _clean_children(task_id: str, raw_tasks: list, routing: _Routing) -> tuple[l
         )
         if isinstance(assignee, str) and assignee.strip() and assignee.strip() not in routing.valid_names:
             logger.info(
-                "decompose: task %s child %d picked unknown assignee %r — "
+                "decompose: task %s child %d picked non-routable assignee %r — "
                 "routing to default_assignee %r",
                 task_id, idx, assignee, routing.default_assignee,
             )

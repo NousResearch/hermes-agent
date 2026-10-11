@@ -228,6 +228,87 @@ def test_decompose_fanout_false_invalid_llm_assignee_uses_default(kanban_home):
     assert task.assignee == "fallback"
 
 
+def test_decompose_hides_default_profile_when_default_assignee_configured(kanban_home):
+    """With a configured catch-all, the box's own `default` profile must not
+    stay routable: an explicit `default` pick normalizes to the catch-all
+    instead of owning the child (drill finding: decomposed children went to
+    `default`, never to `default_assignee`)."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="generic work", triage=True)
+
+    llm_payload = jsonlib.dumps({
+        "fanout": True,
+        "rationale": "test split",
+        "tasks": [
+            {"title": "generic one", "body": "do it", "assignee": "default", "parents": []},
+            {"title": "generic two", "body": "do it", "assignee": None, "parents": []},
+            {"title": "review", "body": "check it", "assignee": "reviewer", "parents": [0]},
+        ],
+    })
+
+    patches = _patch_list_profiles(["default", "libby", "reviewer"])
+    for p in patches:
+        p.start()
+    try:
+        aux = MagicMock(return_value=_fake_aux_response(llm_payload))
+        with patch("agent.auxiliary_client.call_llm", aux), _patch_extra_body(), patch(
+            "hermes_cli.config.load_config_readonly",
+            return_value={"kanban": {"default_assignee": "libby"}},
+        ):
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok, outcome.reason
+    with kbc.connect() as conn:
+        c0 = kb.get_task(conn, outcome.child_ids[0])
+        c1 = kb.get_task(conn, outcome.child_ids[1])
+        c2 = kb.get_task(conn, outcome.child_ids[2])
+    assert c0.assignee == "libby"  # an explicit `default` pick routes to the catch-all
+    assert c1.assignee == "libby"  # null routes to the catch-all
+    assert c2.assignee == "reviewer"
+    user_prompt = aux.call_args.kwargs["messages"][1]["content"]
+    assert "  - default" not in user_prompt
+    assert "  - libby" in user_prompt
+
+
+def test_decompose_default_profile_stays_routable_without_configured_default(kanban_home):
+    """Without a configured catch-all, `default` stays a normal roster choice
+    (boxes that deliberately leave `default_assignee` unset are unchanged)."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="generic work", triage=True)
+
+    llm_payload = jsonlib.dumps({
+        "fanout": True,
+        "rationale": "test split",
+        "tasks": [
+            {"title": "generic one", "body": "do it", "assignee": "default", "parents": []},
+        ],
+    })
+
+    patches = _patch_list_profiles(["default", "libby"])
+    for p in patches:
+        p.start()
+    try:
+        aux = MagicMock(return_value=_fake_aux_response(llm_payload))
+        with patch("agent.auxiliary_client.call_llm", aux), _patch_extra_body(), patch(
+            "hermes_cli.config.load_config_readonly",
+            return_value={},
+        ):
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok, outcome.reason
+    with kbc.connect() as conn:
+        c0 = kb.get_task(conn, outcome.child_ids[0])
+    assert c0.assignee == "default"
+    user_prompt = aux.call_args.kwargs["messages"][1]["content"]
+    assert "  - default" in user_prompt
+
+
 def test_load_routing_falls_back_to_defaults_when_config_unreadable(kanban_home, monkeypatch):
     """decompose_task promises ok=False on expected failures; a config read that raises (missing
     profile home, HomeInitializationError) must not escape _load_routing as an exception."""

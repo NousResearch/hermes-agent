@@ -215,8 +215,30 @@ class TestTelegramColdStartCap:
         monkeypatch.delenv("HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT", raising=False)
         runner = self._runner(tmp_path)
         assert runner._platform_connect_timeout_secs(
+            Platform.SLACK, initial=True
+        ) == runner._platform_connect_timeout_secs(Platform.SLACK)
+
+    def test_discord_reconnect_budget_is_extended(self, tmp_path, monkeypatch):
+        """Discord's ready-wait covers slash-command registration, which walks the
+        skill catalog on disk (#132033): the reconnect attempt gets 90s instead of
+        the 30s global default, mirroring Telegram's extended full budget."""
+        monkeypatch.delenv("HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT", raising=False)
+        runner = self._runner(tmp_path)
+        full = runner._platform_connect_timeout_secs(Platform.DISCORD)
+        assert full == 90.0
+
+    def test_discord_cold_start_budget_stays_capped(self, tmp_path, monkeypatch):
+        """An unreachable Discord must not hold `running` hostage: the cold-start
+        attempt keeps the 30s global cap and the watcher retries with the 90s
+        full budget (#132033)."""
+        monkeypatch.delenv("HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT", raising=False)
+        runner = self._runner(tmp_path)
+        initial = runner._platform_connect_timeout_secs(
             Platform.DISCORD, initial=True
-        ) == runner._platform_connect_timeout_secs(Platform.DISCORD)
+        )
+        full = runner._platform_connect_timeout_secs(Platform.DISCORD)
+        assert initial <= 60.0  # gateway reaches `running` within a minute
+        assert initial < full
 
     def test_env_override_applies_to_initial(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT", "12")

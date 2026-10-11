@@ -546,7 +546,13 @@ _URL_BARE_TOKEN_RE = re.compile(
 )
 
 # JWTs always start with "eyJ" (base64 "{"); 1-, 2- and 3-part forms.
-_JWT_RE = re.compile(r"eyJ[A-Za-z0-9_-]{10,}(?:\.[A-Za-z0-9_=-]{4,}){0,2}")
+# A bare ``eyJ…`` run only counts when it starts a token: inside a base64 blob (an image, a data
+# URI) ``eyJ`` turns up every few hundred KB and masking it corrupts the payload. The dotted
+# header.payload[.signature] shape never occurs in plain base64, so it matches anywhere.
+_JWT_RE = re.compile(
+    r"(?<![A-Za-z0-9+/])eyJ[A-Za-z0-9_-]{10,}(?:\.[A-Za-z0-9_=-]{4,}){0,2}"
+    r"|eyJ[A-Za-z0-9_-]{10,}(?:\.[A-Za-z0-9_=-]{4,}){1,2}"
+)
 
 # E.164 phone numbers, 7-15 digits; the lookahead rejects hex strings / identifiers.
 _SIGNAL_PHONE_RE = re.compile(r"(\+[1-9]\d{6,14})(?![A-Za-z0-9])")

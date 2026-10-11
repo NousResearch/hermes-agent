@@ -16,7 +16,7 @@ from typing import Any, Optional
 from gateway.session import key_source_for
 
 # One turn lock per shared key across all adapters; held by live turns only.
-_GROUP_TURN_LOCKS: "weakref.WeakValueDictionary[str, asyncio.Lock]" = weakref.WeakValueDictionary()
+_GROUP_TURN_LOCKS: weakref.WeakValueDictionary[str, asyncio.Lock] = weakref.WeakValueDictionary()
 
 
 def group_turn_lock_for(event: Any, session_key: str) -> Optional[asyncio.Lock]:

@@ -1064,6 +1064,12 @@ class GatewayBusySessionMixin:
         # /steer lands BETWEEN tool-call iterations of the same run (appended to the last tool
         # result) — no interrupt, no new user turn, no role-alternation violation.
         from gateway.run import _AGENT_PENDING_SENTINEL
+
+        # A steer carries text only; media cannot ride one. The plain-message busy gate already
+        # demotes non-text input to queue for exactly this reason (#70253) — a /steer caption must
+        # not be the one path that still drops the photo: queue the whole event instead (#132371).
+        if getattr(event, "media_urls", None) or getattr(event, "media_types", None):
+            return await self._busy_queue_command(event, quick_key, source)
         steer_text = event.get_command_args().strip()
         if not steer_text:
             return t("gateway.steer.usage")

@@ -48,16 +48,11 @@ from agent.sdk_transform_bypass import bypass_chat_sdk_request_transform
 if TYPE_CHECKING:
     from openai import OpenAI
 
-_OPENAI_CLS_CACHE: Optional[type] = None
-
-
 def _load_openai_cls() -> type:
-    """Import and cache ``openai.OpenAI``."""
-    global _OPENAI_CLS_CACHE
-    if _OPENAI_CLS_CACHE is None:
-        from openai import OpenAI as _cls
-        _OPENAI_CLS_CACHE = _cls
-    return _OPENAI_CLS_CACHE
+    """Import ``openai.OpenAI`` through the shared loader, which also prewarms the SDK's resources."""
+    from agent.process_bootstrap import _load_openai_cls as _shared_load
+
+    return _shared_load()
 
 
 class _OpenAIProxy:

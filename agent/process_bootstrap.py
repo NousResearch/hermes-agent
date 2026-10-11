@@ -9,6 +9,7 @@ runs sync httpx connects through the process-wide Happy Eyeballs racer
 
 from __future__ import annotations
 
+import logging
 import socket
 import sys
 import threading
@@ -17,6 +18,8 @@ from typing import Any, Optional
 from hermes_bootstrap import _happy_eyeballs_create_connection
 from utils import base_url_hostname, normalize_proxy_url
 from agent.proxy_bypass import first_proxy_env_value, should_bypass_proxy
+
+logger = logging.getLogger(__name__)
 
 
 _OPENAI_CLS_CACHE = None
@@ -111,6 +114,8 @@ def _load_openai_cls() -> type:
     global _OPENAI_CLS_CACHE
     if _OPENAI_CLS_CACHE is None:
         from openai import OpenAI as _OPENAI_CLS_CACHE
+
+        prewarm_openai_resource_modules()
     return _OPENAI_CLS_CACHE
 
 
@@ -332,6 +337,27 @@ def _install_safe_stdio() -> None:
             setattr(sys, stream_name, _SafeWriter(stream))
 
 
+def prewarm_openai_resource_modules() -> None:
+    """Import the OpenAI SDK's lazily-loaded resource packages on the calling thread.
+
+    The SDK resolves ``client.chat`` and ``client.responses`` through
+    ``cached_property`` bodies that import on first touch. When two threads
+    first-touch different properties at once, each ends up holding one module
+    lock and waiting for the other's (``openai.resources`` and ``resources.chat``
+    via ``resources.beta``), and CPython raises ``_DeadlockError`` in the
+    loser. The auto-title thread loses that race today. Importing both subtrees once,
+    single-threaded, up front turns every later access into a plain attribute
+    read with no module lock in play. ``_load_openai_cls`` calls this right
+    after the first ``openai`` import, before any client exists. Failure is
+    non-fatal: the lazy paths still work without the prewarm.
+    """
+    try:
+        import openai.resources.chat
+        import openai.resources.responses
+    except (ImportError, RuntimeError):
+        logger.debug("OpenAI resource prewarm failed; resources will import lazily", exc_info=True)
+
+
 # Drop-in for ``openai.OpenAI``.
 OpenAI = _OpenAIProxy()
 
@@ -347,4 +373,5 @@ __all__ = [
     "build_keepalive_http_client",
     "close_shared_transports",
     "enable_happy_eyeballs_on_client",
+    "prewarm_openai_resource_modules",
 ]

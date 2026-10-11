@@ -88,6 +88,28 @@ function branchBoundary(params: Record<string, unknown>): Record<string, unknown
   return {}
 }
 
+const RELAY_HANDLE = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/
+const RELAY_SENDER_STAMP = /^(Message from 🤖 [\s\S]+? \(@)[A-Za-z0-9_-]+(\): )/u
+
+// The canonical `bot_relay.deliver` is a closed key set without the legacy `from_*` sender
+// fields. Translate them as the legacy bridge did (tui_gateway/methods_bot_relay.py): a bot
+// author keyed by the sender's connection (`delivery_turn_author`), and the message's
+// `(@handle)` stamp qualified with that connection so a reply never lands on the recipient's
+// own same-named bot (#103731; `<handle>@<connection>` always resolves there).
+function canonicalBotDelivery(params: Record<string, unknown>): Record<string, unknown> {
+  const { from_profile: rawProfile, from_handle: rawHandle, from_connection: rawConnection, ...rest } = params
+  const [profile, connection] = [String(rawProfile ?? '').trim(), String(rawConnection ?? '').trim()]
+  const handle = String(rawHandle ?? '').trim().replace(/^@/, '')
+
+  if (!profile) { return rest }
+
+  const author = { id: connection ? `bot:${connection}/${profile}` : `bot:${profile}`, name: handle || profile, is_bot: true }
+  const qualify = typeof rest.message === 'string' && RELAY_HANDLE.test(handle) && RELAY_HANDLE.test(connection)
+  const message = qualify ? String(rest.message).replace(RELAY_SENDER_STAMP, `$1${handle}@${connection}$2`) : rest.message
+
+  return { ...rest, message, author }
+}
+
 const BRANCH_METHODS = new Set(['session.branch', 'session.branch_stored', 'session.branch_whole'])
 const MUTATION_METHODS = new Set(['session.title', 'session.archive', 'session.compress', ...BRANCH_METHODS])
 
@@ -197,7 +219,7 @@ export class CanonicalDesktopProtocol {
 
     if (method === 'approval.respond' || method === 'clarify.respond') { return this.preparePromptResponse(method, params) }
 
-    return params
+    return method === 'bot_relay.deliver' ? canonicalBotDelivery(params) : params
   }
 
   // Metadata, branch and typed slash directives that travel as canonical `session.mutate`; null otherwise.

@@ -10,6 +10,7 @@ import atexit
 import contextlib
 import copy
 import io
+import json
 import logging
 import os
 import queue
@@ -33,6 +34,7 @@ _logging_initialized = False
 _WINDOWS_CLH_FALLBACK = False
 _WINDOWS_CLH_FALLBACK_REASON = ""
 _fallback_warned = False
+_exit_diag_fallback_warned = False
 
 
 def _portalocker_probe() -> bool:
@@ -594,6 +596,74 @@ def _new_file_handler(
     handler.setLevel(level)
     handler.setFormatter(formatter)
     return handler
+
+
+class _RawLineFormatter(logging.Formatter):
+    """Emit ``record.msg`` verbatim — no ``%``-style interpolation.
+
+    The exit-diagnostic recorder writes pre-serialized JSON lines whose payloads
+    routinely contain literal ``%`` (tracebacks, paths); the default formatter's
+    ``getMessage()`` would interpolate them and corrupt or drop the line.
+    """
+
+    def format(self, record: logging.LogRecord) -> str:
+        return record.msg
+
+
+def append_json_line_rotating(
+    path: Path,
+    payload: object,
+    *,
+    max_bytes: int = 2 * 1024 * 1024,
+    backup_count: int = 2,
+) -> None:
+    """Append one JSON line to *path*, rotating it like the other ``logs/`` files.
+
+    Best-effort: never raises. The gateway exit-diagnostic recorder
+    (``gateway-exit-diag.log``) previously appended through a bare
+    ``open(path, "a")``, so a crash loop grew it without bound (130 MB on one
+    host). Routing it through the same rotating handler factory the other
+    ``logs/`` files use caps it at ``max_bytes`` × ``backup_count`` and reuses
+    their rollover machinery.
+
+    On Windows CLH-fallback installs (``_WINDOWS_CLH_FALLBACK``) rollover is
+    disabled at the factory (multi-process renames would hit WinError 32), so
+    the cap silently vanishes and this file can still grow without bound. We
+    cannot fix that here — the rename trap is why the fallback exists — so we
+    warn once instead of letting the cap disappear invisibly.
+    """
+    global _exit_diag_fallback_warned
+    if _WINDOWS_CLH_FALLBACK and not _exit_diag_fallback_warned:
+        _exit_diag_fallback_warned = True
+        logging.getLogger("hermes_logging").warning(
+            "gateway-exit-diag.log rotation is disabled on this Windows install "
+            "(%s): the exit-diagnostic recorder will grow without bound. "
+            "concurrent-log-handler is unavailable, so stdlib rollover would hit "
+            "WinError 32 on every multi-process append.",
+            _WINDOWS_CLH_FALLBACK_REASON or "portalocker probe failed",
+        )
+    try:
+        handler = _new_file_handler(
+            path,
+            level=logging.INFO,
+            max_bytes=max_bytes,
+            backup_count=backup_count,
+            formatter=_RawLineFormatter(),
+        )
+        handler.emit(
+            logging.LogRecord(
+                name="hermes.exit_diag",
+                level=logging.INFO,
+                pathname="",
+                lineno=0,
+                msg=json.dumps(payload, default=str),
+                args=(),
+                exc_info=None,
+            )
+        )
+        handler.close()
+    except Exception:
+        pass
 
 
 # A routed profile home is re-checked for an out-of-band delete (missing dir or tombstone) at

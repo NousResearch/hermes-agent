@@ -57,6 +57,7 @@ import { SettingsProfileScope } from './profile-scope'
 import { QuickEntrySettings } from './quick-entry-settings'
 import { SETTING_IDS, settingElementId } from './settings-manifest'
 import { SharedMetricsSettings } from './shared-metrics-settings'
+import type { UseMoaPresetHandler } from './types'
 import { useSettingDeepLink } from './use-setting-deep-link'
 
 export function ConfigSettings({
@@ -64,6 +65,7 @@ export function ConfigSettings({
   subpage,
   onConfigSaved,
   onMainModelChanged,
+  onUseMoaPreset,
   importInputRef
 }: ConfigSettingsProps) {
   // Shared "Applies to" scope (null → the app's active profile). Remount the
@@ -79,6 +81,7 @@ export function ConfigSettings({
       key={scopeProfile ?? '__active__'}
       onConfigSaved={onConfigSaved}
       onMainModelChanged={onMainModelChanged}
+      onUseMoaPreset={onUseMoaPreset}
       scopeProfile={scopeProfile}
       subpage={subpage}
     />
@@ -91,6 +94,7 @@ interface ConfigSettingsProps {
   subpage?: string
   onConfigSaved?: () => void
   onMainModelChanged?: (provider: string, model: string) => void
+  onUseMoaPreset?: UseMoaPresetHandler
   importInputRef: React.RefObject<HTMLInputElement | null>
 }
 
@@ -99,6 +103,7 @@ function ConfigSettingsInner({
   subpage,
   onConfigSaved,
   onMainModelChanged,
+  onUseMoaPreset,
   importInputRef,
   scopeProfile
 }: ConfigSettingsProps & { scopeProfile: string | undefined }) {
@@ -387,7 +392,12 @@ function ConfigSettingsInner({
       <SettingsProfileScope className="mb-5" />
       {activeSectionId === 'model' && (
         <div className={showModelSettings ? 'mb-6' : undefined}>
-          <ModelSettings onMainModelChanged={onMainModelChanged} scopeProfile={scopeProfile} subpage={subpage} />
+          <ModelSettings
+            onMainModelChanged={onMainModelChanged}
+            onUseMoaPreset={onUseMoaPreset}
+            scopeProfile={scopeProfile}
+            subpage={subpage}
+          />
         </div>
       )}
       {children}

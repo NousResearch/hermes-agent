@@ -1367,6 +1367,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
               void refreshCurrentModel()
               void queryClient.invalidateQueries({ queryKey: ['model-options'] })
             }}
+            onUseMoaPreset={name => actions.selectModel({ model: name, provider: 'moa' })}
           />
         </Suspense>
       )}

@@ -9,7 +9,15 @@ import type {
   ModelInfoResponse
 } from '@/types/hermes'
 
-import { capabilityScoped, hermesApi, type ProfileScope, profileScoped, STARTUP_REQUEST_TIMEOUT_MS } from './client'
+import {
+  capabilityScoped,
+  hermesApi,
+  hermesApiAs,
+  type ProfileScope,
+  profileScoped,
+  resolveOwnerNow,
+  STARTUP_REQUEST_TIMEOUT_MS
+} from './client'
 
 // /api/model/info resolves the live context window, which probes the configured
 // provider's /models endpoint. An unreachable provider must not hold the Model
@@ -108,16 +116,42 @@ export function getMoaModels(profile?: null | string): Promise<MoaConfigResponse
   })
 }
 
-export function saveMoaModels(
-  body: MoaConfigResponse,
-  profile?: null | string
-): Promise<MoaConfigResponse & { ok: boolean }> {
-  return hermesApi<MoaConfigResponse & { ok: boolean }>({
-    ...profileScoped(profile),
-    path: '/api/model/moa',
-    method: 'PUT',
-    body
-  })
+const moaSaveTails = new Map<string, Promise<void>>()
+
+export function createMoaModelsSaveRequest(body: MoaConfigResponse, profile?: null | string) {
+  const ambient = resolveOwnerNow()
+  const owner = { ...ambient, profile: profile === undefined ? ambient.profile : profile }
+  const key = JSON.stringify([owner.connectionId, owner.profile])
+
+  return () => {
+    const dispatch = () =>
+      hermesApiAs<MoaConfigResponse & { ok: boolean }>(owner, {
+        path: '/api/model/moa',
+        method: 'PUT',
+        body
+      })
+
+    const previous = moaSaveTails.get(key)
+    const request = previous ? previous.then(dispatch) : dispatch()
+
+    const tail = request.then(
+      () => undefined,
+      () => undefined
+    )
+
+    moaSaveTails.set(key, tail)
+    void tail.then(() => {
+      if (moaSaveTails.get(key) === tail) {
+        moaSaveTails.delete(key)
+      }
+    })
+
+    return request
+  }
+}
+
+export function saveMoaModels(body: MoaConfigResponse, profile?: null | string) {
+  return createMoaModelsSaveRequest(body, profile)()
 }
 
 export function setModelAssignment(

@@ -801,6 +801,7 @@ describe('ModelSettings MoA preset editor', () => {
     async locale => {
       const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
       const m = TRANSLATIONS[locale].settings.model
+      const studio = TRANSLATIONS[locale].settings.moa
       render(
         <MemoryRouter>
           <I18nProvider configClient={null} initialLocale={locale}>
@@ -813,16 +814,17 @@ describe('ModelSettings MoA preset editor', () => {
       expect(m.moaDescription).not.toBe(TRANSLATIONS.en.settings.model.moaDescription)
       expect(m.moaReferenceHint).not.toBe(TRANSLATIONS.en.settings.model.moaReferenceHint)
       expect(m.moaAggregatorBilled).not.toBe(TRANSLATIONS.en.settings.model.moaAggregatorBilled)
-      await screen.findByText(m.moaDescription)
+      await screen.findByText(studio.title)
       expect(screen.getByText(m.moaReferenceTitle(1))).toBeTruthy()
-      expect(screen.getByText(m.moaAggregator)).toBeTruthy()
-      expect(screen.getByRole('button', { name: m.moaAddReference })).toBeTruthy()
-      expect(screen.getByRole('button', { name: m.moaSetDefault })).toBeTruthy()
-      expect(screen.getByPlaceholderText(m.moaNewPresetPlaceholder)).toBeTruthy()
-      fireEvent.click(screen.getByRole('switch', { name: m.moaReferenceToggle(true, 1) }))
-      expect(screen.getByRole('switch', { name: m.moaReferenceToggle(false, 1) }).getAttribute('aria-checked')).toBe(
+      expect(screen.getByText(studio.aggregator)).toBeTruthy()
+      expect(screen.getByRole('button', { name: studio.addReference })).toBeTruthy()
+      expect(screen.getByRole('button', { name: studio.setDefault })).toBeTruthy()
+      expect(screen.getByRole('textbox', { name: studio.newPresetName })).toBeTruthy()
+      fireEvent.click(screen.getByRole('switch', { name: studio.referenceEnabled(1) }))
+      expect(screen.getByRole('switch', { name: studio.referenceEnabled(1) }).getAttribute('aria-checked')).toBe(
         'false'
       )
+      fireEvent.click(screen.getByRole('button', { name: studio.saveChanges }))
       await waitFor(() => expect(saveMoaModels).toHaveBeenCalled())
       const saved = saveMoaModels.mock.calls.at(-1)![0] as ReturnType<typeof moaConfig>
       expect(saved.default_preset).toBe('default')
@@ -840,15 +842,13 @@ describe('ModelSettings MoA preset editor', () => {
   }
 
   function slotSelects() {
-    // Combobox order in the MoA section (last 7 on the page): preset select,
-    // then provider+model per reference (2 refs), then aggregator
-    // provider+model. Reference 1's pair is therefore at -6 / -5.
-    const all = screen.getAllByRole('combobox')
-
-    return { ref1Provider: all.at(-6)!, ref1Model: all.at(-5)! }
+    return {
+      ref1Provider: screen.getByRole('combobox', { name: 'Reference 1 provider' }),
+      ref1Model: screen.getByRole('combobox', { name: 'Reference 1 model' })
+    }
   }
 
-  it('holds the autosave while a slot is half-filled (provider changed, model pending)', async () => {
+  it('holds Save while a slot is half-filled (provider changed, model pending)', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
 
     try {
@@ -866,7 +866,7 @@ describe('ModelSettings MoA preset editor', () => {
     }
   })
 
-  it('saves once the model pick completes the slot', async () => {
+  it('saves a completed slot only after explicit Save', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
 
     try {
@@ -880,6 +880,8 @@ describe('ModelSettings MoA preset editor', () => {
       fireEvent.click(await screen.findByRole('option', { name: 'anthropic/claude-opus-4.8' }))
       await vi.advanceTimersByTimeAsync(700)
 
+      fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+      await vi.advanceTimersByTimeAsync(1)
       expect(saveMoaModels).toHaveBeenCalledTimes(1)
       const sent = saveMoaModels.mock.calls[0][0] as ReturnType<typeof moaConfig>
       expect(sent.presets.default.reference_models[0]).toEqual({
@@ -900,15 +902,17 @@ describe('ModelSettings MoA preset editor', () => {
     }
   })
 
-  it('autosaves the selected preset when its enabled switch is toggled', async () => {
+  it('saves the selected preset toggle only after explicit Save', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
 
     try {
       await openReferenceEditor()
 
-      fireEvent.click(screen.getByRole('switch', { name: 'Enabled' }))
+      fireEvent.click(screen.getByRole('switch', { name: 'Preset enabled' }))
       await vi.advanceTimersByTimeAsync(700)
 
+      fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+      await vi.advanceTimersByTimeAsync(1)
       expect(saveMoaModels).toHaveBeenCalledWith(
         expect.objectContaining({
           presets: expect.objectContaining({
@@ -927,9 +931,11 @@ describe('ModelSettings MoA preset editor', () => {
     try {
       await openReferenceEditor()
 
-      fireEvent.click(screen.getByRole('switch', { name: 'Disable reference 1' }))
+      fireEvent.click(screen.getByRole('switch', { name: 'Enable reference 1' }))
       await vi.advanceTimersByTimeAsync(700)
 
+      fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+      await vi.advanceTimersByTimeAsync(1)
       expect(saveMoaModels).toHaveBeenCalledWith(
         expect.objectContaining({
           presets: expect.objectContaining({

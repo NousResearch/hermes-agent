@@ -98,7 +98,7 @@ const SUBPAGE_VIEWS: Partial<Record<SettingsViewId, ComponentType<{ subpage?: st
   notifications: NotificationsSettings
 }
 
-export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: SettingsPageProps) {
+export function SettingsView({ onClose, onConfigSaved, onMainModelChanged, onUseMoaPreset }: SettingsPageProps) {
   const scopeProfile = useStore($settingsScopeProfile)
   const activeConnectionId = useStore($activeConnectionId)
   const { t } = useI18n()
@@ -545,6 +545,7 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
       importInputRef={importInputRef}
       onConfigSaved={onConfigSaved}
       onMainModelChanged={onMainModelChanged}
+      onUseMoaPreset={onUseMoaPreset}
       subpage={subpage}
     />
   ) : activeView === 'providers' ? (

@@ -53,7 +53,7 @@ async def test_new_session_keeps_the_event_loop_free():
 @pytest.mark.parametrize("call", [
     lambda s: s.prompt([TextContentBlock(type="text", text="hi")], "gone"),
     lambda s: s.cancel("gone"),
-    lambda s: s.set_session_model("m", "gone"),
+    lambda s: s.set_config_option("model", "gone", "m"),
     lambda s: s.set_session_mode("ask", "gone"),
     lambda s: s.set_config_option("edit_approval_policy", "gone", "ask"),
 ])

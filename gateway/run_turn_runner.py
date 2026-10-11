@@ -1243,6 +1243,13 @@ class TurnRunner:
             if overrides.get(key) == value:
                 overrides.pop(key, None)
         turn_overrides = dict(turn_route.get("request_overrides") or {})
+        if getattr(agent, "_fallback_activated", False):
+            # The cached agent is still on its fallback route (primary restore gated this
+            # turn), but the freshly resolved turn route describes the PRIMARY provider.
+            # Re-applying its extra_body would undo the fallback rescope and clobber the
+            # fallback provider's own body (#136554); the primary's body re-applies through
+            # this same merge on the turn restore actually succeeds.
+            turn_overrides.pop("extra_body", None)
         overrides.update(turn_overrides)
         agent.request_overrides = overrides
         agent._gateway_turn_request_overrides = turn_overrides

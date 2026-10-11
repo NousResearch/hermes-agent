@@ -545,3 +545,51 @@ class TestMoaPresetFallback:
                             fallback_model={"provider": "moa", "model": "default"})
         _assert_bound_to_moa_preset(agent)
         assert agent._fallback_activated is True
+
+
+# ── Gateway turn merge on a gated fallback (regression, #136554) ──────────
+
+
+OLD_URL = "https://old-llm.example.com/v1"
+FB_URL = "https://fb-llm.example.com/v1"
+
+
+class TestTurnMergeOnGatedFallback:
+    """A cached gateway agent still on its fallback route (primary restore gated by the
+    rate-limit cooldown) must keep the fallback-rescoped extra_body: the per-turn route
+    merge describes the PRIMARY provider and must not re-apply its body mid-fallback."""
+
+    def test_turn_merge_keeps_fallback_extra_body_on_gated_restore(self):
+        import time
+
+        from gateway.run_turn_runner import TurnRunner
+
+        agent = _make_agent(fallback_model={"provider": "custom:fbprov", "model": "fb-model", "base_url": FB_URL})
+        agent.provider, agent.model, agent.base_url = "custom", "old-model", OLD_URL
+        agent._custom_providers = [
+            {"name": "oldprov", "base_url": OLD_URL, "extra_body": {"old_only": 1}},
+            {"provider_key": "fbprov", "base_url": FB_URL, "extra_body": {"top_k": 20}},
+        ]
+        # What the gateway resolves for the primary route every turn.
+        turn_route = {"request_overrides": {"extra_body": {"old_only": 1}}}
+
+        TurnRunner._merge_turn_request_overrides(agent, turn_route)  # turn 1 on the primary
+        with (
+            patch(
+                "agent.auxiliary_client.resolve_provider_client",
+                return_value=(_mock_client(base_url=FB_URL), "fb-model"),
+            ),
+            patch("agent.model_metadata.get_model_context_length", return_value=128_000),
+        ):
+            assert agent._try_activate_fallback() is True
+        fb_body = agent.request_overrides.get("extra_body") or {}
+        assert "old_only" not in fb_body and fb_body.get("top_k") == 20  # rescoped to the fallback route
+
+        agent._rate_limited_until = time.monotonic() + 600  # primary still cooling down
+        assert agent._restore_primary_runtime() is False  # restore gated: stays on the fallback
+        TurnRunner._merge_turn_request_overrides(agent, turn_route)  # turn 2 reuses the cached agent
+        assert agent.base_url.rstrip("/") == FB_URL
+
+        # The fallback route keeps only its own body; the primary's body re-applies when
+        # restore actually succeeds, through the same merge on that turn's route.
+        assert agent.request_overrides.get("extra_body") == {"top_k": 20}, agent.request_overrides

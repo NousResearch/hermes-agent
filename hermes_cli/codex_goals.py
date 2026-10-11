@@ -59,6 +59,14 @@ def adopt_native_goal(session_id, native, *, thread_id, previous):
         return persisted
 
 
+def native_goal_resource_limited(native):
+    """A budgetLimited label can remain sticky after an authorized ceiling correction."""
+    budget = native.get("tokenBudget")
+    exhausted = budget is not None and native.get("tokensUsed", 0) >= budget
+    return (native.get("status") == "usageLimited" or exhausted
+            or (native.get("status") == "budgetLimited" and budget is None))
+
+
 class CodexGoalManager(GoalManager):
     """Mirror lifecycle for UI/controls only; never run Hermes' aux judge or FIFO loop."""
     runtime_name = "codex"
@@ -92,7 +100,8 @@ class CodexGoalManager(GoalManager):
             self._state = load_goal(self.session_id)
             if self._state is None or self._state.status in {"done", "cleared"}:
                 return None
-            if (self._state.native_goal or {}).get("status") in {"budgetLimited", "usageLimited", "complete"}:
+            native = self._state.native_goal or {}
+            if native.get("status") == "complete" or native_goal_resource_limited(native):
                 raise ValueError("Native Goal is terminal or resource-limited; set a new authorized goal/budget instead")
             return super().resume(reset_budget=False)
 

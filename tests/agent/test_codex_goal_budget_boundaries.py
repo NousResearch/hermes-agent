@@ -111,3 +111,16 @@ def test_adopted_turn_output_is_saved_even_when_native_goal_has_just_hit_limit(t
     assert saved == ['STAGE-1'] and result.native_turns == 1
     assert result.error and 'budgetLimited' in result.error
     assert load_goal('adopt-limited').status == 'paused'
+
+
+def test_authorized_ceiling_correction_can_resume_sticky_budget_limited_label():
+    mgr = bound_manager('ceiling-corrected',status='budgetLimited',budget=5000000,used=4372489)
+    # The native API can retain its limit label after raising a previously incorrect
+    # ceiling. The corrected native ledger, not the profile default, authorizes resume.
+    mgr.resume()
+    client = CumulativeClient(stages=1);client.goal=dict(mgr.state.native_goal)
+    result = run(client,mgr)
+    assert result.error is None
+    assert not any(m == 'thread/goal/clear' for m,_ in client.requests)
+    state = load_goal(mgr.session_id)
+    assert state.token_budget == 5000000 and state.native_goal['tokensUsed'] == 4372489

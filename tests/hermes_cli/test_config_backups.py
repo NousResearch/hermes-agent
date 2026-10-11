@@ -1,7 +1,9 @@
 """config.yaml backups: one dir, deduped, bounded — never a pile of siblings in HERMES_HOME."""
 from pathlib import Path
 
-from hermes_cli.config_backups import backup_config, list_config_backups
+import pytest
+
+from hermes_cli.config_backups import backup_config, list_config_backups, load_newest_good_backup
 
 
 def test_repeat_backups_dedupe_and_rotate(tmp_path: Path, monkeypatch):
@@ -38,3 +40,44 @@ def test_legacy_siblings_move_but_user_named_copies_stay(tmp_path: Path):
     assert (root / "config.yaml.corrupt.20260729-093706.bak").exists()
     assert (tmp_path / "config.yaml.bak-my-note").read_text() == "mine"
     assert not list(tmp_path.glob("config.yaml.bak.*")) and not list(tmp_path.glob("config.yaml.corrupt.*"))
+
+
+def _stamped_backups(monkeypatch):
+    stamps = iter(f"20260101-00000{i}" for i in range(10))
+    monkeypatch.setattr("hermes_cli.config_backups.time.strftime", lambda _fmt: next(stamps))
+
+
+def test_newest_good_backup_wins_over_older_good_and_later_other_reason(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _stamped_backups(monkeypatch)
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("display:\n  skin: ares\nmodel:\n  default: old-model\n")
+    older = backup_config(cfg, "good")
+    cfg.write_text("display:\n  skin: mono\nmodel:\n  default: new-model\n")
+    newer = backup_config(cfg, "good")
+    cfg.write_text("display:\n  skin: slate\nmodel:\n  default: setup-model\n")
+    setup = backup_config(cfg, "pre-setup")
+    before = {p: p.read_bytes() for p in (cfg, older, newer, setup)}
+
+    assert load_newest_good_backup(cfg) == {"display": {"skin": "mono"}, "model": {"default": "new-model"}}
+    assert {p: p.read_bytes() for p in before} == before
+
+
+@pytest.mark.parametrize("damage", ["model: [unclosed\n  default: x\n", "- display\n- model\n", ""],
+                                    ids=["malformed-yaml", "sequence", "empty"])
+def test_damaged_newest_good_backup_is_refused_not_replaced_by_older(tmp_path: Path, monkeypatch, damage):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _stamped_backups(monkeypatch)
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("display:\n  skin: ares\nmodel:\n  default: old-model\n")
+    older = backup_config(cfg, "good")
+    cfg.write_text("display:\n  skin: mono\nmodel:\n  default: new-model\n")
+    newest = backup_config(cfg, "good")
+    newest.write_text(damage)
+    before = {p: p.read_bytes() for p in (cfg, older, newest)}
+
+    assert load_newest_good_backup(cfg) is None
+    assert {p: p.read_bytes() for p in before} == before
+
+    newest.write_text("display:\n  skin: slate\nmodel:\n  default: repaired-model\n")
+    assert load_newest_good_backup(cfg) == {"display": {"skin": "slate"}, "model": {"default": "repaired-model"}}

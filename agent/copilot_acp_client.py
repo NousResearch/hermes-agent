@@ -342,7 +342,8 @@ class CopilotACPClient:
         )
         completion = SimpleNamespace(
             choices=[SimpleNamespace(message=message, finish_reason="tool_calls" if tool_calls else "stop")],
-            usage=SimpleNamespace(prompt_tokens=0, completion_tokens=0, total_tokens=0, prompt_tokens_details=SimpleNamespace(cached_tokens=0)),
+            # ACP reports no usage. A fabricated zero suppresses estimate-driven compaction.
+            usage=None,
             model=model or "copilot-acp",
         )
         return _completion_to_stream_chunks(completion) if stream else completion

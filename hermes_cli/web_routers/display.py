@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -89,24 +90,35 @@ async def display_ws(ws: WebSocket) -> None:
     await _bridge(ws, info)
 
 
+def _profile_runtime_scope(profile_home: Path):
+    """The scope every ``display.*`` RPC runs under (``tui_gateway.server._profile_scoped``): HERMES_HOME,
+    secrets AND terminal policy. Home alone left ``TERMINAL_*`` on the launch profile's, so a Docker
+    profile served beside a local launch profile looked its sandbox up as a local one and the relay never
+    reached the container. The launch home binds as None, exactly as ``_profile_home`` maps it for an RPC."""
+    import tui_gateway.server as gateway
+    launch = profile_home.resolve() == gateway._launch_home().resolve()
+    # No provider is called on this path, so the profile's external secret sources are not re-pulled.
+    return gateway._session_profile_runtime_scope({"profile_home": None if launch else str(profile_home)},
+                                                  hydrate_secrets=False)
+
+
 async def _open_rfb(profile_home: Path):
     """``(reader, writer, relay)`` for THIS profile's Xvnc. Gateway-hosted screen: its unix socket. Screen inside
     the terminal backend: a ``docker exec`` / ``ssh`` relay whose stdio IS the RFB stream (``relay`` is that
     Popen; None for a socket). Raises OSError when nothing is running."""
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from tools.bot_desktop import runtime as _bd_runtime
-    token = set_hermes_home_override(profile_home)
-    try:
+    with _profile_runtime_scope(profile_home):
         if _bd_runtime.sandbox_screen_running():
-            relay = _bd_runtime.open_rfb_stream()
+            try:
+                relay = _bd_runtime.open_rfb_stream()
+            except RuntimeError as exc:  # the sandbox's environment went away after display.observe
+                raise OSError(str(exc)) from exc
         else:
             sock = profile_home / "bot-desktop" / "rfb.sock"
             if not sock.exists():
                 raise OSError("rfb.sock missing")
             reader, writer = await asyncio.open_unix_connection(str(sock))
             return reader, writer, None
-    finally:
-        reset_hermes_home_override(token)
     loop = asyncio.get_running_loop()
     reader = asyncio.StreamReader()
     await loop.connect_read_pipe(lambda: asyncio.StreamReaderProtocol(reader), relay.stdout)

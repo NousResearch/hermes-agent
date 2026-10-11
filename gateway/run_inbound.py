@@ -397,9 +397,9 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
 
         if _clarify_has_audio and not _raw_clarify_reply:
             return _retain("voice transcription produced no usable text")
-        # Slash commands: the user wanted a command, not to answer the clarify. Leave it pending so
-        # they can retry; on timeout the agent unblocks with an empty response.
-        if not _raw_clarify_reply or _raw_clarify_reply.startswith("/"):
+        # Use the command parser on prepared text (which may be a voice transcript): absolute
+        # paths are answers, while command spellings leave the clarify pending for a retry.
+        if not _raw_clarify_reply or dataclasses.replace(event, text=_raw_clarify_reply).get_command():
             return None
         _text_outcome = _clarify_mod.attempt_text_response_for_session(_quick_key, _raw_clarify_reply)
         if _text_outcome == _clarify_mod.TEXT_RESOLVED:

@@ -397,13 +397,29 @@ def _pid_recycled(pid: Optional[int], started_at) -> bool:
     """True when a live ``pid`` is NOT the process fingerprinted at spawn (or the fingerprint can no
     longer be read). Signalling it would hit a stranger. ``None`` fingerprint = legacy row, never
     recycled; the UNVERIFIED marker is always foreign. An integer fingerprint (rows written before the
-    boot witness was added) compares the start time only."""
+    boot witness was added) compares the start time only. In the composed fingerprint the epoch half is
+    the reboot witness and stays exact, while the start-time half goes through the same drift-tolerant
+    comparator (``start_time_fingerprints_match``, macOS ``kern.boottime`` #117505): an exact compare
+    read a live worker as recycled whenever the reading drifted a few ticks between claim and liveness
+    check, reaping it and spawning a duplicate (#135344)."""
     if started_at is None or not pid:
         return False
     if started_at == UNVERIFIED_WORKER_FINGERPRINT:
         return True
     if isinstance(started_at, str) and "|" in started_at:
-        return _process_fingerprint(int(pid)) != started_at
+        from gateway.status import start_time_fingerprints_match
+
+        current = _process_fingerprint(int(pid))
+        if current is None:
+            return True
+        recorded_epoch, _, recorded_start = started_at.partition("|")
+        current_epoch, _, current_start = current.partition("|")
+        if recorded_epoch != current_epoch:
+            return True
+        try:
+            return not start_time_fingerprints_match(recorded_start, current_start)
+        except (TypeError, ValueError):
+            return True
     from gateway.status import _start_times_agree, get_process_start_time
     current = get_process_start_time(int(pid))
     if current is None:

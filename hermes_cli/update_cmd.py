@@ -102,7 +102,7 @@ from hermes_cli.update_cmd_git import (
     _normalize_managed_eol, _park_detached_head, _portable_git_candidates, _print_fetch_failure,
     _print_parked_branch_kept_notice, _print_parked_branch_skip_warning,
     _prune_orphan_rescue_refs, _push_synced_fork, _should_skip_upstream_prompt, _sync_fork_with_upstream,
-    _sync_with_upstream_if_needed, UpstreamTargetBroken)
+    _sync_with_upstream_if_needed, resolve_update_origin_or_exit, UpstreamTargetBroken)
 from hermes_cli.update_cmd_maint import (
     _PRE_UPDATE_SNAPSHOT_KEEP, _PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE, _clear_stale_sqlite_sidecars,
     _checkout_version, _ensure_acp_launcher, _ensure_fhs_path_guard, _finish_dashboard_update_cleanup,
@@ -671,6 +671,12 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False, ch
         branch = _check.channel_compare_branch(selected_channel, git_cmd, root)
         if branch is None:
             return
+
+    # A release-swap payload ships a valid .git with no remotes (#134843); the fetch
+    # below needs a remote-bearing source. Resolve it first, so --check and the apply
+    # path share one update authority (a missing origin is repaired from the canonical
+    # repo; normal clones and forks are untouched).
+    resolve_update_origin_or_exit(git_cmd, root)
 
     # Installer checkouts are shallow (`git clone --depth 1`). A plain fetch would unshallow
     # the repo (the exact cost the shallow clone avoided) and rev-list would then report a
@@ -1886,6 +1892,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # Surface autostash entries left behind by earlier updates (#63717 problem 6) — parked --keep-stash
         # runs and failed restores preserve the stash but nothing ever mentioned it again.
         _m()._warn_orphaned_update_autostashes(git_cmd, _m().PROJECT_ROOT)
+
+        # A release-swap payload ships a valid .git with no remotes (#134843); both the
+        # unshallow below and the bounded fetch after it need a fetchable origin.
+        # Resolve the update source before either runs (the same resolution --check uses).
+        resolve_update_origin_or_exit(git_cmd, _m().PROJECT_ROOT, stop_reason="fetch_failed")
 
         # A shallow checkout's plain fetch drags in ~the whole history and cannot finish inside
         # the network cap (#123254); its grafts also make merge-base report orphan divergence

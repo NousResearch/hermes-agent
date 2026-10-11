@@ -306,6 +306,55 @@ def _add_upstream_remote(git_cmd: list[str], cwd: Path) -> bool:
     return _git_ok(git_cmd, ["remote", "add", "upstream", OFFICIAL_REPO_URL], cwd)
 
 
+NO_UPDATE_SOURCE_MESSAGE = (
+    "✗ No usable update source: this checkout has no `origin` remote and Hermes\n"
+    "  could not add one. Check that the checkout is writable, then repair it:\n"
+    "    git remote add origin https://github.com/NousResearch/hermes-agent.git"
+)
+
+
+def resolve_update_origin(git_cmd: list[str], cwd: Path) -> Optional[str]:
+    """Resolve the ``origin`` remote the updater fetches from, repairing a remote-less checkout.
+
+    Release-swap/bootstrap payloads are published with a valid ``.git`` but no remotes
+    (#134843): both ``hermes update --check`` and the apply path fetch ``origin``
+    unconditionally, and such an install died with the raw
+    ``fatal: 'origin' does not appear to be a git repository``. When ``origin`` is
+    missing, resolve the canonical source -- an existing ``upstream`` remote's URL when
+    present, else ``OFFICIAL_REPO_URL`` -- and add it, so check and apply share one
+    persistent update authority. Returns ``None`` when no source could be resolved
+    (:func:`resolve_update_origin_or_exit` prints :data:`NO_UPDATE_SOURCE_MESSAGE`
+    and exits).
+
+    An existing ``origin`` (a normal clone's or a fork's) is returned untouched: the
+    updater never rewrites a user's remotes.
+    """
+    origin_url = _get_origin_url(git_cmd, cwd)
+    if origin_url:
+        return origin_url
+    resolved = _git_stdout(git_cmd, ["remote", "get-url", "upstream"], cwd) or OFFICIAL_REPO_URL
+    if not _git_ok(git_cmd, ["remote", "add", "origin", resolved], cwd):
+        return None
+    print(f"  (this checkout had no origin remote; resolved the update source: {resolved})")
+    return resolved
+
+
+def resolve_update_origin_or_exit(
+    git_cmd: list[str], cwd: Path, *, stop_reason: str | None = None
+) -> None:
+    """Resolve (repair) the origin remote before any fetch; exit with the installation-contract
+    diagnostic when no source can be resolved (#134843).
+
+    A release-swap/bootstrap payload ships a valid .git with no remotes; without this the
+    updater's fetches die with git's raw "'origin' does not appear to be a git repository".
+    """
+    if resolve_update_origin(git_cmd, cwd) is None:
+        print(NO_UPDATE_SOURCE_MESSAGE)
+        if stop_reason is not None:
+            _record_stop(stop_reason)
+        sys.exit(1)
+
+
 def _count_commits_between(git_cmd: list[str], cwd: Path, base: str, head: str) -> int:
     """Count commits on `head` that are not on `base`. Returns -1 on error."""
     with suppress(Exception):
@@ -521,6 +570,16 @@ _FETCH_FAILURE_RULES = (
     (lambda s: "Permission denied (publickey)" in s or "Host key verification failed" in s,
      "✗ SSH authentication failed — check your SSH key is added to GitHub, or switch"
      " `origin` to HTTPS: `git remote set-url origin https://github.com/NousResearch/hermes-agent.git`."),
+    # A checkout with no fetchable origin — a release-swap payload published without
+    # its remote config (#134843) — reports git's raw "does not appear to be a git
+    # repository": a missing `origin`, or one whose local path no longer resolves (a
+    # dead HTTPS/SSH remote reports its own access error instead). Name the
+    # installation contract instead of falling through to the generic message.
+    (lambda s: "does not appear to be a git repository" in s,
+     "✗ No usable update source — this checkout's `origin` remote is missing or does not"
+     " point at a fetchable repository. Repair it: `git remote add origin"
+     " https://github.com/NousResearch/hermes-agent.git` (when missing), or `git remote"
+     " set-url origin <same URL>` (when it points elsewhere)."),
 )
 
 

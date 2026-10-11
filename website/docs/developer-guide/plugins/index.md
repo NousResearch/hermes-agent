@@ -193,6 +193,23 @@ the same seam. The plugin catalog refuses it at admission (`hermes plugins
 validate`, `no core override` check). If a public hook you need is missing,
 open an issue describing it.
 
+### Conditional batches against built-in memory
+
+Plugins that let a user review a proposed change to the built-in `MEMORY.md` or
+`USER.md` store can use the native `MemoryStore.apply_batch(target, operations,
+expected_entries=reviewed_entries)` API. The optional `expected_entries` list
+must exactly match the ordered entries reloaded after acquiring Hermes' file
+lock; otherwise the entire batch aborts without writing. Omit the parameter
+(or pass `None`) for the original unconditional operation. An empty list is an
+explicit precondition. This avoids overriding `MemoryStore._mutate` to guard
+against concurrent additions between preview and apply.
+
+Import the supported store class from `tools.memory_tool_store`:
+
+```python
+from tools.memory_tool_store import MemoryStore
+```
+
 ### Deprecation policy
 
 A documented native plugin behavior may be deprecated only with all of the

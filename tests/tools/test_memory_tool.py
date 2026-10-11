@@ -527,6 +527,48 @@ class TestMemoryToolDispatcher:
 class TestMemoryBatch:
     """The 'operations' batch shape: atomic, all-or-nothing, final-budget."""
 
+    def test_conditional_batch_rejects_second_writer_without_data_loss(self, store):
+        assert store.add("memory", "first durable fact")["success"]
+        assert store.add("memory", "second durable fact")["success"]
+        reviewed = list(store.memory_entries)
+
+        # Separate instance writes after review and before the conditional batch.
+        writer = MemoryStore(memory_char_limit=500, user_char_limit=300)
+        writer.load_from_disk()
+        assert writer.add("memory", "third concurrent fact")["success"]
+
+        ops = [
+            {"action": "remove", "old_text": "first durable fact"},
+            {"action": "remove", "old_text": "second durable fact"},
+            {"action": "add", "content": "reviewed compacted facts"},
+        ]
+        result = store.apply_batch("memory", ops, expected_entries=reviewed)
+        assert result["success"] is False
+        assert result["failure_class"] == "stale_source"
+        assert "changed since the reviewed snapshot" in result["error"]
+        persisted = MemoryStore(memory_char_limit=500, user_char_limit=300)
+        persisted.load_from_disk()
+        assert persisted.memory_entries == reviewed + ["third concurrent fact"]
+
+        refreshed = list(persisted.memory_entries)
+        assert persisted.apply_batch("memory", ops, expected_entries=refreshed)["success"]
+        persisted.load_from_disk()
+        assert persisted.memory_entries == ["third concurrent fact", "reviewed compacted facts"]
+
+    def test_conditional_batch_empty_precondition_and_legacy_call(self, store):
+        assert store.add("user", "existing user fact")["success"]
+        ops = [{"action": "add", "content": "another user fact"}]
+        rejected = store.apply_batch("user", ops, expected_entries=[])
+        assert rejected["success"] is False
+        assert store.user_entries == ["existing user fact"]
+
+        reviewed = list(store.user_entries)
+        assert store.apply_batch("user", ops, expected_entries=reviewed)["success"]
+        assert store.user_entries == reviewed + ["another user fact"]
+        assert store.apply_batch("user", [{"action": "add", "content": "legacy batch"}])["success"]
+        assert store.user_entries == reviewed + ["another user fact", "legacy batch"]
+
+
     def test_batch_add_and_remove_atomic(self, store):
         store.add("memory", "stale one")
         store.add("memory", "stale two")

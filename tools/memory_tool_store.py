@@ -10,7 +10,7 @@ import time
 from contextlib import contextmanager, suppress
 from contextvars import ContextVar
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from utils import atomic_write_text
 from tools.threat_patterns import first_threat_message as _first_threat_message
@@ -455,12 +455,16 @@ class MemoryStore:
         working[idx:idx + 1] = [content] if act == "replace" else []
         return None, previous_content, "none"
 
-    def apply_batch(self, target: str, operations: list[dict[str, Any]]) -> dict[str, Any]:
-        """Apply add/replace/remove ops atomically against the FINAL budget, so one call
-        can free space and add entries. All-or-nothing: any malformed / unmatched op or
-        an over-limit result writes NOTHING and returns the first failure. Aborts do not
-        echo ``current_entries`` — the store is unchanged and the model already has it."""
-        return self._batch(target, operations, commit=True)
+    def apply_batch(self, target: str, operations: list[dict[str, Any]], *,
+                    expected_entries: Optional[Sequence[str]] = None) -> dict[str, Any]:
+        """Apply an all-or-nothing batch, optionally against a reviewed snapshot.
+
+        ``expected_entries`` requires an exact ordered match after the native file
+        lock re-reads disk; a mismatch aborts without writing. ``None`` preserves
+        the historical unconditional behavior, while an empty list is a real
+        precondition. Aborts never echo the full store to the caller.
+        """
+        return self._batch(target, operations, commit=True, expected_entries=expected_entries)
 
     def resolve_batch_entries(self, target: str, operations: list[dict[str, Any]]) -> dict[str, Any]:
         """Dry-run ``apply_batch`` under the lock without persisting: the same content scan,
@@ -469,10 +473,13 @@ class MemoryStore:
         entry its replace/remove selects now (None for add), in batch order."""
         return self._batch(target, operations, commit=False)
 
-    def _batch(self, target: str, operations: list[dict[str, Any]], *, commit: bool) -> dict[str, Any]:
+    def _batch(self, target: str, operations: list[dict[str, Any]], *, commit: bool,
+               expected_entries: Optional[Sequence[str]] = None) -> dict[str, Any]:
         if not operations:
             return _error("operations list is empty.", "invalid_args")
         ops = [op or {} for op in operations]
+        # Freeze caller-owned input so it cannot change while the file lock is acquired.
+        expected_snapshot = tuple(expected_entries) if expected_entries is not None else None
         # Scan every add/replace content BEFORE touching disk -- one poisoned op rejects the batch.
         for i, op in enumerate(ops):
             scan_error = op.get("action") in {"add", "replace"} and op.get("content") and _scan_memory_content(op["content"])
@@ -480,6 +487,12 @@ class MemoryStore:
                 return _error(f"Operation {i + 1}: {scan_error}", "scan_blocked")
 
         def _apply(entries, limit):
+            if expected_snapshot is not None and tuple(entries) != expected_snapshot:
+                failure = self._batch_failure(
+                    target, "Stored memory changed since the reviewed snapshot; refresh before applying.",
+                    "stale_source")
+                failure["failure_class"] = "stale_source"
+                return failure
             working = list(entries)  # only committed if the whole batch validates
             matched = []  # per op, the entry a replace/remove selected (None for add)
             for i, op in enumerate(ops):

@@ -4483,6 +4483,15 @@
   "high": {
    "__bedrock_converse__": true,
    "__bedrock_region__": "us-east-1",
+   "additionalModelRequestFields": {
+    "output_config": {
+     "effort": "high"
+    },
+    "thinking": {
+     "display": "summarized",
+     "type": "adaptive"
+    }
+   },
    "messages": [
     {
      "content": [
@@ -7059,6 +7068,7 @@
   "unset": {
    "extra_body": {
     "thinking": {
+     "keep": "all",
      "type": "enabled"
     }
    },
@@ -9076,6 +9086,7 @@
    "parallel_tool_calls": true,
    "prompt_cache_key": "pck_f6d11aab44ec88459ba6fe2e",
    "reasoning": {
+    "context": "all_turns",
     "effort": "high",
     "summary": "auto"
    },
@@ -9190,6 +9201,7 @@
    "parallel_tool_calls": true,
    "prompt_cache_key": "pck_f6d11aab44ec88459ba6fe2e",
    "reasoning": {
+    "context": "all_turns",
     "effort": "medium",
     "summary": "auto"
    },
@@ -12184,6 +12196,7 @@
   "high": {
    "extra_body": {
     "thinking": {
+     "clear_thinking": false,
      "type": "enabled"
     }
    },

@@ -185,6 +185,7 @@ class TestAncestorExclusion:
             text=True,
             cwd=str(PROJECT_ROOT),
             timeout=120,
+            check=False,
         )
         import json
 

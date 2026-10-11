@@ -414,8 +414,10 @@ class SessionGatewayMixin:
             return (0, 0, 0)
         ids = {str(row["id"]) for row in candidates}
         skipped: list[str] = []
+        # Housekeeping, not a user delete: a never-active row recreated empty loses nothing.
         deleted = self.delete_sessions(
-            list(ids), sessions_dir=sessions_dir, exclude_active_write_guards=True, skipped_ids=skipped)
+            list(ids), sessions_dir=sessions_dir, exclude_active_write_guards=True, skipped_ids=skipped,
+            record_deleted=False)
         routing_deleted = self._delete_routing_entries_for_sessions(ids - set(skipped))
         return (deleted, routing_deleted, len(skipped))
 

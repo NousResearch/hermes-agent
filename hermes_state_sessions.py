@@ -1692,13 +1692,14 @@ class SessionSessionsMixin:
         expected_delete_ids: Optional[list[str]] = None,
         expected_display_messages: Optional[dict[str, list[dict[str, Any]]]] = None,
         exclude_active_write_guards: bool = False,
-        include_compression_chain: bool = False,
+        include_compression_chain: bool = False, record_deleted: bool = True,
     ) -> bool:
         """Delete a session and its messages; delegate children cascade, branch/compression children
         are orphaned. Optional expected ids fence delegate drift; expected display snapshots fence
         transcript drift. Both checks run inside the same write transaction as deletion.
         With ``exclude_active_write_guards``, raises :class:`SessionActiveWriteGuardError` if the row
-        is protected by an active turn lease or compression lock.
+        is protected by an active turn lease or compression lock. ``record_deleted`` remembers every
+        removed id (see :meth:`was_deleted`); a rollback of a row the caller just wrote passes False.
 
         With ``include_compression_chain=True`` the whole compression chain the session belongs to
         is deleted with it (root and every continuation) — the dashboard delete endpoints use this
@@ -1712,7 +1713,7 @@ class SessionSessionsMixin:
             return self.delete_sessions(
                 [session_id], sessions_dir=sessions_dir,
                 exclude_active_write_guards=exclude_active_write_guards,
-                include_compression_chain=True,
+                include_compression_chain=True, record_deleted=record_deleted,
             ) > 0
         removed_ids: list[str] = []
         expected_ids = set(expected_delete_ids) if expected_delete_ids is not None else None
@@ -1743,11 +1744,33 @@ class SessionSessionsMixin:
             conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
             self._delete_unreferenced_system_prompts(conn)
             removed_ids.append(session_id)
+            if record_deleted:
+                self._record_deleted(conn, removed_ids)
             return True
         deleted = self._execute_write(_do)
         for sid in removed_ids:
             self._remove_session_files(sessions_dir, sid)
         return bool(deleted)
+
+    # A deleted row leaves nothing behind, so a stored id (a Desktop tile, the last-session key,
+    # /resume) would look like a key that was minted but never persisted, and session.resume
+    # recreates those as an empty row. User deletes (delete_session, delete_sessions,
+    # delete_empty_sessions, prune_sessions, a profile move) record the ids they remove, delegate
+    # children included; housekeeping sweeps and rollbacks of a just-written row do not. One
+    # state_meta row per id, expired with the session retention by auto-maintenance.
+    _DELETED_SESSION_META_PREFIX = "deleted_session:"
+
+    def _record_deleted(self, conn, session_ids) -> None:
+        # Batched: a retention prune can remove tens of thousands of ids in one transaction.
+        stamp = str(time.time())
+        conn.executemany(
+            "INSERT INTO state_meta (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [(f"{self._DELETED_SESSION_META_PREFIX}{sid}", stamp) for sid in session_ids])
+
+    def was_deleted(self, session_id: str) -> bool:
+        """True if a user delete removed *session_id* (see ``_DELETED_SESSION_META_PREFIX``)."""
+        return bool(session_id) and self.get_meta(f"{self._DELETED_SESSION_META_PREFIX}{session_id}") is not None
 
     def delete_session_if_empty(self, session_id: str, sessions_dir: Optional[Path] = None) -> bool:
         """Delete *session_id* only if it has no messages, no title and no children; check and delete
@@ -1784,7 +1807,7 @@ class SessionSessionsMixin:
     def delete_sessions(
         self, session_ids: list[str], sessions_dir: Optional[Path] = None,
         exclude_active_write_guards: bool = False, skipped_ids: Optional[list[str]] = None,
-        include_compression_chain: bool = False,
+        include_compression_chain: bool = False, record_deleted: bool = True,
     ) -> int:
         """Bulk delete with :meth:`delete_session` semantics per row, in ONE transaction. Unknown ids
         are skipped (UI selection can race another tab's delete). With ``exclude_active_write_guards``, rows
@@ -1853,6 +1876,8 @@ class SessionSessionsMixin:
                 conn.execute(f"DELETE FROM sessions WHERE id IN ({ph})", chunk)
             self._delete_unreferenced_system_prompts(conn)
             removed_ids.extend(expanded)
+            if record_deleted:
+                self._record_deleted(conn, removed_ids)
             # Count the ids the CALLER asked for, not the expanded chain links —
             # the dashboard toast should say "3 deleted" when the user selected
             # 3 rows, however many physical links those rows had.
@@ -1894,6 +1919,7 @@ class SessionSessionsMixin:
                 conn.execute(f"DELETE FROM sessions WHERE id IN ({ph})", chunk)
                 removed_ids.extend(chunk)
             self._delete_unreferenced_system_prompts(conn)
+            self._record_deleted(conn, removed_ids)
             return len(session_ids)
         count = self._execute_write(_do)
         for sid in removed_ids:

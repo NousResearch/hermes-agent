@@ -319,6 +319,16 @@ class SessionMaintenanceMixin:
             self._auto_archive_lineage(row[0])
         return len(rows)
 
+    def _expire_deleted_markers(self, *, older_than_days: float) -> int:
+        """Drop :meth:`was_deleted` markers older than the session retention window."""
+        prefix = self._DELETED_SESSION_META_PREFIX
+        cutoff = time.time() - float(older_than_days) * 86400.0
+        def _do(conn):
+            return conn.execute(
+                "DELETE FROM state_meta WHERE key >= ? AND key < ? AND CAST(value AS REAL) < ?",
+                (prefix, prefix[:-1] + chr(ord(prefix[-1]) + 1), cutoff)).rowcount
+        return self._execute_write(_do)
+
     def prune_sessions(self, older_than_days: Optional[float] = 90, source: str | None = None,
                        sessions_dir: Optional[Path] = None, exclude_active_write_guards: bool = False,
                        **filters) -> int:
@@ -346,6 +356,7 @@ class SessionMaintenanceMixin:
                 conn.execute(f"DELETE FROM sessions WHERE id IN ({ph})", chunk)
                 removed_ids.extend(chunk)
             self._delete_unreferenced_system_prompts(conn)
+            self._record_deleted(conn, removed_ids)
             return len(session_ids)
         count = self._execute_write(_do)
         for sid in removed_ids:
@@ -470,6 +481,7 @@ class SessionMaintenanceMixin:
             report_startup_progress(900.0, phase="state_db_auto_prune")
             result["pruned"] = pruned = self.prune_sessions(
                 older_than_days=retention_days, sessions_dir=sessions_dir, exclude_active_write_guards=True)
+            self._expire_deleted_markers(older_than_days=retention_days)
             report_startup_progress(900.0, phase="state_db_auto_sweep")
             closed = self.sweep_orphaned_sessions(
                 max_idle_seconds=float(retention_days) * 86400.0,

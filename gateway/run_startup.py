@@ -58,6 +58,21 @@ def recover_left_core_at_gateway_start() -> None:
     root = Path(get_default_hermes_root())
     if root.resolve() != Path(get_hermes_home()).resolve():
         recover_left_core_in(root)
+def _plugin_disabled_key(platform_value: str) -> Optional[str]:
+    """The ``plugins.disabled`` entry holding *platform_value*'s plugin out of the registry, if any.
+
+    A configured platform can reach startup with no registry entry and no builtin adapter purely
+    because a ``hermes plugins`` save (or a manual disable) put its canonical key
+    (``platforms/<name>``) on the deny-list, which ``gate_manifest`` honours before the bundled
+    platform deferral (#131974) — the only other trace is a DEBUG-level discovery skip.
+    """
+    with suppress(Exception):
+        from hermes_cli.plugins_cmd import _get_disabled_set
+        disabled = _get_disabled_set()
+        for candidate in (f"platforms/{platform_value}", platform_value):
+            if candidate in disabled:
+                return candidate
+    return None
 
 
 class GatewayStartupMixin:
@@ -1214,8 +1229,15 @@ class GatewayStartupMixin:
             enabled_platform_count += 1
             adapter = self._create_adapter(platform, platform_config)
             if not adapter:
-                # Distinguish between missing builtin deps and missing plugin
-                if platform.value in {m.value for m in Platform.__members__.values()}:
+                # Distinguish between an explicit plugins.disabled entry, missing builtin deps
+                # and a missing plugin (#131974).
+                disabled_key = _plugin_disabled_key(platform.value)
+                if disabled_key:
+                    logger.warning(
+                        "No adapter available for %s: '%s' is on plugins.disabled — "
+                        "run `hermes plugins enable %s`", platform.value, disabled_key, disabled_key,
+                    )
+                elif platform.value in {m.value for m in Platform.__members__.values()}:
                     logger.warning("No adapter available for %s", platform.value)
                 else:
                     logger.warning(

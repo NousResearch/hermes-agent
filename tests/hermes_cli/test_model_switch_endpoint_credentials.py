@@ -42,6 +42,34 @@ def _run_custom_flow(monkeypatch, url: str) -> None:
     flows._model_flow_custom(load_config())
 
 
+@pytest.mark.parametrize(("url", "keeps_a_key"), [(B_URL, False), (A_URL, True)])
+def test_blank_key_probes_only_with_a_key_entered_for_that_endpoint(monkeypatch, url, keeps_a_key):
+    """The legacy OPENAI_API_KEY slot was entered for OPENAI_BASE_URL; the flow probes the URL it
+    is given (``/models``, context-length detection) before anything is saved."""
+    import agent.model_metadata as metadata
+    import hermes_cli.main_provider_setup as mps
+    import hermes_cli.model_setup_flows_custom as flows
+    import hermes_cli.models as models
+    import hermes_cli.secret_prompt as secret_prompt
+    from hermes_cli.config import get_env_value, load_config
+
+    (get_hermes_home() / ".env").write_text(f"OPENAI_BASE_URL={A_URL}\nOPENAI_API_KEY={A_SECRET}\n")
+    sent = []
+    monkeypatch.setattr(models, "probe_api_models", lambda key, u, **k: sent.append(key) or {"models": ["m"]})
+    monkeypatch.setattr(metadata, "get_model_context_length", lambda *a, api_key="", **k: sent.append(api_key) or 0)
+    answers = iter([url, "", "endpoint"])
+    monkeypatch.setattr(flows, "line_input", lambda *a, **k: next(answers))
+    monkeypatch.setattr(secret_prompt, "masked_secret_prompt", lambda *a, **k: "")
+    monkeypatch.setattr(flows, "_pick_detected_model", lambda found: "m")
+    monkeypatch.setattr(mps, "_prompt_custom_api_mode_selection", lambda *a, **k: "")
+
+    flows._model_flow_custom(load_config())
+
+    assert len(sent) == 2
+    assert all((key == A_SECRET) is keeps_a_key for key in sent), sent
+    assert (get_env_value(flows._endpoint_key_env(url)) == A_SECRET) is keeps_a_key
+
+
 def _run_named_custom_flow(monkeypatch) -> None:
     from hermes_cli.model_setup_flows_custom import _model_flow_named_custom
 

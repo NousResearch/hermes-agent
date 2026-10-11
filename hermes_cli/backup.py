@@ -107,12 +107,12 @@ _KEPT_CACHE_SUBDIRS = {
 
 
 def _in_excluded_root_dir(rel_path: Path) -> bool:
-    """True for regenerable trees or consumed cron handoffs at a profile-home root."""
+    """True for regenerable trees or consumed control state at a profile-home root."""
     if profile_root_entry(rel_path.parts) in _EXCLUDED_ROOT_DIRS | _EXCLUDED_BACKUP_ROOT_DIRS:
         return True
     parts = rel_path.parts
     parts = parts[2:] if len(parts) >= 3 and parts[0] == "profiles" else parts
-    return (parts[:2] == ("cron", "external-workers")
+    return (parts[:2] == ("cron", "external-workers") or parts == (".restart_pending.json",)
         or len(parts) >= 2 and parts[0] == "cache" and parts[1] not in _KEPT_CACHE_SUBDIRS
     )
 

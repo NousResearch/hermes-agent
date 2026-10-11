@@ -720,7 +720,7 @@ _server_requests.bind_sinks(lambda frame: write_json(frame), lambda event, sid, 
 
 # Live WS peer transports (maintained by tui_gateway.ws): the only route for session-less background
 # events, which write_json would otherwise drop on stdio (see _broadcast_global_event).
-_live_transports: set[Transport] = set()
+_live_transports = FanoutTransport(coalesce_events=True)
 _live_transports_lock = threading.Lock()
 # True only when real stdout IS the JSON-RPC client channel (``tui_gateway.entry.main``, the stdio TUI).
 # `hermes serve` / dashboard processes speak JSON-RPC over WS only: their stdout is captured into
@@ -733,13 +733,14 @@ def register_live_transport(transport: Transport | None) -> None:
     """Track a connected client transport for global broadcasts. Idempotent."""
     if transport is not None:
         with _live_transports_lock:
-            _live_transports.add(transport)
+            _live_transports.attach(transport)
 
 
 def unregister_live_transport(transport: Transport | None) -> None:
     """Stop tracking a transport (call on disconnect). Idempotent."""
-    with _live_transports_lock:
-        _live_transports.discard(transport)
+    if transport is not None:
+        with _live_transports_lock:
+            _live_transports.detach(transport)
     _server_requests.forget(transport)
 
 
@@ -748,18 +749,14 @@ def _broadcast_global_event(event: str, payload: dict | None = None) -> None:
     emitters bottom out at stdio in ``write_json``'s ladder. No registered transports → ``_emit`` when stdout is the
     stdio TUI's JSON-RPC channel, else dropped (nobody is listening; stdout is a log sink)."""
     with _live_transports_lock:
-        targets = list(_live_transports)
-    if not targets:
+        has_targets = bool(_live_transports)
+    if not has_targets:
         if _stdio_is_rpc_channel:
             return _emit(event, "", payload)
         logger.debug("global-event broadcast dropped (no connected client) type=%s", event)
         return None
-    frame = _event_frame(event, "", payload)
-    for transport in targets:
-        try:
-            transport.write(frame)
-        except Exception:  # one wedged peer must not stall the rest; disconnect teardown unregisters it
-            logger.debug("global-event broadcast write failed type=%s", event, exc_info=True)
+    # The fanout queues per peer, so one blocked peer cannot stall the caller or the other peers.
+    _live_transports.write(_event_frame(event, "", payload))
 
 
 def _approval_request_payload(data: dict | None) -> dict:

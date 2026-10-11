@@ -288,11 +288,11 @@ def _job_warnings(job: dict[str, Any]) -> list[str]:
     if job.get("last_delivery_error"):
         lines.append(f"{color('⚠ The result was not delivered:', Colors.YELLOW)} "
                      f"{_short_reason(job['last_delivery_error'])}. {_delivery_fix_hint(job)}")
-    # A live adapter acked the last send but returned no message_id / raw_response
-    # (Slack/Matrix/Mattermost shape): accepted as delivered, but say so here.
+    # The last send was accepted but not confirmed: the adapter acked without message_id /
+    # raw_response (Slack/Matrix/Mattermost shape), or a started send outlasted the wait.
     if unverified := job.get("last_delivery_unverified"):
-        lines.append(f"{color('⚠ Delivery UNVERIFIED:', Colors.YELLOW)} adapter acked "
-                     f"{_unverified_targets(unverified)} without message_id/raw_response")
+        lines.append(f"{color('⚠ Delivery UNVERIFIED:', Colors.YELLOW)} {_unverified_targets(unverified)} — "
+                     "delivery not confirmed (no message_id/raw_response, or confirmation timed out)")
     fire_err = job.get("last_fire_error")
     if isinstance(fire_err, dict) and fire_err.get("detail"):
         lines.append(color(f"⚠ {_missed_fire_issue(job, fire_err)}", Colors.RED))
@@ -705,7 +705,7 @@ def _cron_doctor_issues_for_job(job: dict[str, Any]) -> list[str]:
         issues.append(f"last run finished but the result was not delivered ({_short_reason(delivery_err)}). "
                       f"{_delivery_fix_hint(job)}")
     if unverified := job.get("last_delivery_unverified"):
-        issues.append("last delivery unverified (adapter acked without evidence): "
+        issues.append("last delivery unverified (not confirmed by the adapter): "
                       + _unverified_targets(unverified))
     # Dispatch records measure lateness, not whether the scheduler process was running.
     if isinstance(dispatch := job.get("last_dispatch"), dict):

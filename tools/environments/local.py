@@ -486,10 +486,15 @@ def strip_launch_profile_env(env: dict, target_home: str | Path | None = None) -
     # it last, with override, so it beats the user's own .env) — leave them in place.
     from hermes_cli.env_loader import launch_dotenv_keys, managed_dotenv_keys, source_supplied_names
     managed_names = {key.upper() for key in managed_dotenv_keys()}
+    # The gateway's config bridge also writes the LAUNCH profile's aux routes into os.environ
+    # (``AUXILIARY_<TASK>_PROVIDER``/``_MODEL``; ``_BASE_URL``/``_API_KEY`` are scrubbed as secrets).
+    # Inherited by a routed child, vision paired the launch model with the child's own provider.
+    aux_route_names = {key for key in env
+                       if key.upper().startswith("AUXILIARY_") and key.upper().endswith(("_PROVIDER", "_MODEL"))}
     residue_names = {
         key.upper() for key in
         set(load_env_file(launch_home / ".env")) | set(launch_dotenv_keys())
-        | set(TERMINAL_CONFIG_ENV_MAP.values()) | set(source_supplied_names())
+        | set(TERMINAL_CONFIG_ENV_MAP.values()) | set(source_supplied_names()) | aux_route_names
         if not _is_global_env(key.upper()) or key.upper().startswith("TERMINAL_")} - managed_names
     for key in [k for k in env if k.upper() in residue_names]:
         del env[key]

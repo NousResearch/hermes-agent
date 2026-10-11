@@ -76,6 +76,32 @@ def test_cron_env_settings_resolve_from_the_served_profile(two_homes):
         rp.resolve_runtime_provider = original
 
 
+def test_child_env_for_served_profile_drops_launch_aux_routes(two_homes, monkeypatch):
+    """The gateway bridges the default profile's ``auxiliary.<task>`` routes into os.environ. A
+    ``hermes -p alpha`` child inheriting ``AUXILIARY_VISION_MODEL`` passed the default's model to
+    alpha's own vision provider (a local GLM id sent through the Claude CLI → 404)."""
+    from tools.environments.local import build_subprocess_env, strip_launch_profile_env
+
+    root, alpha = two_homes
+    monkeypatch.setenv("AUXILIARY_VISION_MODEL", "GLM-5.3-Flash-EXL3")
+    monkeypatch.setenv("AUXILIARY_VISION_PROVIDER", "glm53-c2")
+    token = set_secret_scope(build_profile_secret_scope(alpha))
+    try:
+        env = strip_launch_profile_env(build_subprocess_env(scrub_secrets=True, inherit_profile_home=True))
+    finally:
+        reset_secret_scope(token)
+    assert "AUXILIARY_VISION_MODEL" not in env
+    assert "AUXILIARY_VISION_PROVIDER" not in env
+
+    # The default profile's own children keep its routes.
+    home_token = set_hermes_home_override(str(root))
+    try:
+        env = strip_launch_profile_env(build_subprocess_env(scrub_secrets=True, inherit_profile_home=True))
+    finally:
+        reset_hermes_home_override(home_token)
+    assert env["AUXILIARY_VISION_MODEL"] == "GLM-5.3-Flash-EXL3"
+
+
 def test_child_env_for_served_profile_drops_launch_profile_settings(two_homes):
     """A worker/bot-chat child spawned for served alpha must not inherit the default profile's
     non-credential ``.env`` settings or bridged ``TERMINAL_*`` policy — a standalone alpha never

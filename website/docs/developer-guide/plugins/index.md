@@ -824,12 +824,21 @@ Every entry also accepts `label` (or `title`; without one the key is shown in
 sentence case, `maps_api_key` → "Maps API key"), `description` (help text under
 the label), `default` and `required` (marks the row **Required**).
 
+Declare `section:` (or its alias `group:`) on a key to group it under a heading
+in the form. Consecutive keys sharing a section render together beneath that
+heading; keys that declare none stay in a single flat list, so adding sections to
+one part of a manifest leaves the rest looking exactly as before. Sectioning is
+presentation only — it never changes where a value is read from or written to.
+
 ```yaml
 config_schema:
   api_url: {type: str, default: "https://api.example.com", label: "API URL", description: "Service endpoint"}
   retries: {type: int, default: 3}
   mode: {type: str, choices: [fast, careful], default: fast}
   api_key: {type: secret, env: MY_PLUGIN_API_KEY, description: "Personal access token"}
+  # ── grouped under a "Rendering" heading ──
+  bar_width: {type: int, default: 10, section: Rendering, label: "Bar width"}
+  emoji: {type: str, default: "📊", section: Rendering, label: "Status emoji"}
 ```
 
 **Secrets never touch `config.yaml`.** A `secret` field carries only the `.env`

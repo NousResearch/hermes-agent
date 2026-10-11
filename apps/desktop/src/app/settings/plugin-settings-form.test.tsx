@@ -6,6 +6,7 @@ import type { PluginSettingField } from '@/store/agent-plugins'
 import {
   collectChanges,
   fieldLabel,
+  groupFieldsBySection,
   humanizeSettingKey,
   initialDraft,
   joinSentences,
@@ -147,5 +148,69 @@ describe('plugin settings labels and helper copy', () => {
     expect(joinSentences('Ask first?', 'Then save.')).toBe('Ask first? Then save.')
     expect(joinSentences('', '  Only this  ', undefined)).toBe('Only this')
     expect(joinSentences('Lone description')).toBe('Lone description')
+  })
+})
+
+describe('plugin settings section grouping', () => {
+  const field = (key: string, section?: string): PluginSettingField => ({
+    description: '',
+    key,
+    label: key,
+    required: false,
+    section,
+    type: 'boolean',
+    value: false
+  })
+
+  it('renders a manifest with no sections as ONE flat group', () => {
+    const groups = groupFieldsBySection([field('a'), field('b'), field('c')])
+
+    expect(groups).toHaveLength(1)
+    expect(groups[0].section).toBeUndefined()
+    expect(groups[0].fields.map(f => f.key)).toEqual(['a', 'b', 'c'])
+  })
+
+  it('collects each run of same-section fields under one heading', () => {
+    const groups = groupFieldsBySection([
+      field('enabled', 'Behaviour'),
+      field('mode', 'Behaviour'),
+      field('bar_width', 'Appearance'),
+      field('emoji', 'Appearance')
+    ])
+
+    expect(groups.map(g => g.section)).toEqual(['Behaviour', 'Appearance'])
+    expect(groups[0].fields.map(f => f.key)).toEqual(['enabled', 'mode'])
+    expect(groups[1].fields.map(f => f.key)).toEqual(['bar_width', 'emoji'])
+  })
+
+  it('starts a new group when the section changes back', () => {
+    const groups = groupFieldsBySection([
+      field('a', 'One'),
+      field('b', 'Two'),
+      field('c', 'One')
+    ])
+
+    expect(groups.map(g => g.section)).toEqual(['One', 'Two', 'One'])
+  })
+
+  it('keeps ungrouped fields together in their own trailing group', () => {
+    const groups = groupFieldsBySection([field('a', 'X'), field('b'), field('c')])
+
+    expect(groups.map(g => g.section)).toEqual(['X', undefined])
+    expect(groups[1].fields.map(f => f.key)).toEqual(['b', 'c'])
+  })
+
+  it('treats a blank section as ungrouped rather than an empty heading', () => {
+    const groups = groupFieldsBySection([field('a', '   '), field('b')])
+
+    expect(groups).toHaveLength(1)
+    expect(groups[0].section).toBeUndefined()
+  })
+
+  it('preserves order and loses no field', () => {
+    const fields = [field('a'), field('b', 'S'), field('c', 'S'), field('d'), field('e', 'T')]
+    const flattened = groupFieldsBySection(fields).flatMap(g => g.fields)
+
+    expect(flattened.map(f => f.key)).toEqual(['a', 'b', 'c', 'd', 'e'])
   })
 })

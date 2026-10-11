@@ -99,6 +99,13 @@ def plugin_settings_fields(plugin_id: str, plugin_dir: Optional[Path]) -> list[d
             "description": str(spec.get("description") or ""),
             "required": bool(spec.get("required")),
         }
+        # Optional grouping heading for the Plugins hub. A manifest declares
+        # ``section:`` (or ``group:``) on a key and the hub renders it under that
+        # heading; keys without one stay in a single flat list, so existing
+        # manifests are byte-for-byte unchanged on the wire.
+        section = spec.get("section") or spec.get("group")
+        if isinstance(section, str) and section.strip():
+            field["section"] = section.strip()
         if kind == "secret":
             env = secret_env_name(plugin_id, key, spec)
             field.update({"env": env, "has_value": get_env_value(env) is not None})

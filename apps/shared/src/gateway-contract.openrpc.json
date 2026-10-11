@@ -22389,7 +22389,7 @@
       },
       "PluginSettingField": {
         "additionalProperties": false,
-        "description": "One ``config_schema`` key of a plugin manifest, rendered by the Plugins hub\n(``hermes_cli.plugins_settings.plugin_settings_fields``). ``secret`` fields carry no value: ``env``\nnames the ``.env`` variable and ``has_value`` whether it is set.",
+        "description": "One ``config_schema`` key of a plugin manifest, rendered by the Plugins hub\n(``hermes_cli.plugins_settings.plugin_settings_fields``). ``secret`` fields carry no value: ``env``\nnames the ``.env`` variable and ``has_value`` whether it is set.\n\n``section`` groups consecutive fields under a heading in the Plugins hub. It is the manifest's\n``section`` (or ``group``) key when it declares one, else ``None`` \u2014 an undeclared section renders\nflat, exactly as before, so existing manifests are unaffected.",
         "properties": {
           "key": {
             "title": "Key",
@@ -22468,6 +22468,18 @@
             ],
             "default": null,
             "title": "Has Value"
+          },
+          "section": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Section"
           }
         },
         "required": [

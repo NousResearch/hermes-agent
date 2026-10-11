@@ -31,6 +31,7 @@ import pytest
 from gateway import delivery_ledger as dl
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
+from gateway.session_context import clear_session_vars, get_session_env, set_session_vars
 
 SESSION_KEY = "agent:main:telegram:dm:5230977008"
 TOPIC_SESSION_KEY = "agent:main:telegram:group:-1001:topic:7"
@@ -250,6 +251,36 @@ async def test_a_chained_queued_turn_carries_its_own_inbound_id():
     runner._run_agent.assert_awaited_once()
     assert runner._run_agent.await_args.kwargs["inbound_message_id"] == "6002"
     assert runner._run_agent.await_args.kwargs["event_message_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_queued_followup_rebinds_message_and_sender_context_for_recursive_turn():
+    GatewayRunner, runner, turn_ctx, pending_event = _chain_runner_and_ctx(
+        {"final_response": "done", "messages": []})
+    turn_ctx.source.user_id = "sender-1"
+    pending_event.source = _source(chat_id="-1001", thread_id="7", chat_type="supergroup")
+    pending_event.source.user_id = "sender-2"
+    observed = {}
+
+    async def capture_recursive_context(**_kwargs):
+        observed["message_id"] = get_session_env("HERMES_SESSION_MESSAGE_ID")
+        observed["user_id"] = get_session_env("HERMES_SESSION_USER_ID")
+        return {"final_response": "done", "messages": []}
+
+    runner._run_agent = AsyncMock(side_effect=capture_recursive_context)
+    tokens = set_session_vars(
+        platform="telegram", chat_id="-1001", thread_id="7", user_id="sender-1",
+        session_key=TOPIC_SESSION_KEY, message_id="6001")
+    try:
+        await GatewayRunner._run_agent_queued_followup(
+            runner, turn_ctx, adapter=None, pending="hi again", pending_event=pending_event,
+            response="resp", result={"interrupted": True, "messages": []}, stream_task=None)
+        assert observed == {"message_id": "6002", "user_id": "sender-2"}
+        assert get_session_env("HERMES_SESSION_MESSAGE_ID") == "6001"
+        assert get_session_env("HERMES_SESSION_USER_ID") == "sender-1"
+    finally:
+        clear_session_vars(tokens)
+    assert get_session_env("HERMES_SESSION_MESSAGE_ID") == ""
 
 
 # ---------------------------------------------------------------------------

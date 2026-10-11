@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import os
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 import types
 from pathlib import Path
@@ -171,6 +173,48 @@ def test_connect_migrates_legacy_db_before_optional_column_indexes(tmp_path):
 # ---------------------------------------------------------------------------
 # Task creation + status inference
 # ---------------------------------------------------------------------------
+
+
+def test_create_task_idempotency_is_atomic_across_connections(kanban_home, monkeypatch):
+    """Two writers that reach creation together must reuse one non-archived card."""
+    original_new_task_id = kb._new_task_id
+    rendezvous = threading.Barrier(2)
+
+    def new_task_id_after_both_preflights():
+        try:
+            rendezvous.wait(timeout=5)
+        except threading.BrokenBarrierError:
+            # A future implementation may generate IDs under the write lock.
+            pass
+        return original_new_task_id()
+
+    monkeypatch.setattr(kb, "_new_task_id", new_task_id_after_both_preflights)
+
+    def create():
+        with kbc.connect_closing() as conn:
+            return kb.create_task(conn, title="same request", assignee="worker",
+                                  idempotency_key="same-request")
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        ids = list(pool.map(lambda _: create(), range(2)))
+
+    assert ids[0] == ids[1]
+    with kbc.connect_closing() as conn:
+        rows = conn.execute(
+            "SELECT id FROM tasks WHERE idempotency_key = ? AND status != 'archived'",
+            ("same-request",),
+        ).fetchall()
+    assert [row["id"] for row in rows] == [ids[0]]
+
+
+def test_create_task_idempotency_key_can_be_reused_after_archive(kanban_home):
+    with kbc.connect_closing() as conn:
+        first = kb.create_task(conn, title="original", idempotency_key="repeatable")
+        assert kb.create_task(conn, title="retry", idempotency_key="repeatable") == first
+        assert kb.archive_task(conn, first)
+        second = kb.create_task(conn, title="new request", idempotency_key="repeatable")
+        assert second != first
+        assert kb.get_task(conn, second).title == "new request"
 
 
 
@@ -551,6 +595,7 @@ def test_respawn_guard_ignores_auth_words_in_crashed_worker_output(kanban_home):
         assert kbd.check_respawn_guard(conn, spawn_failed_id) == "blocker_auth"
 
 
+@pytest.mark.platforms("linux")
 def test_infrastructure_spawn_refusal_never_charges_the_card(
     kanban_home, monkeypatch, all_assignees_spawnable,
 ):

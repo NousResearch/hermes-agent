@@ -471,7 +471,7 @@ Dispatcher-owned workers receive their task lifecycle tools automatically.
 | `kanban_attach` | Attach a file to a task by passing its bytes inline (base64); stored under the task's attachments dir (25 MB cap). | file bytes + name |
 | `kanban_attach_url` | Attach a file to a task by URL. | `url` |
 | `kanban_attachments` | List a task's attachments. | — |
-| `kanban_create` | (Orchestrators) fan out into child tasks with an `assignee`, optional `parents`, `skills`, etc. Returns `gated: true` + `gated_by` when an open parent parked the new card in `todo`. | `title`, `assignee` |
+| `kanban_create` | Create a task with an `assignee`. Generic orchestrators can fan out with optional `parents`, `skills`, etc.; direct-delivery admission uses `one_per_request=True` to create one card for the originating request. Returns `gated: true` + `gated_by` when an open parent parked the new card in `todo`. | `title`, `assignee` |
 | `kanban_link` | (Orchestrators) add a `parent_id → child_id` dependency edge after the fact. Returns `gated: true` when the child was `ready` and got demoted back to `todo` because the parent is not done — the child will only run after the parent completes. Refused with `child is already running` when the child is already claimed — an edge added after the claim cannot serialise the run (a worker may still link its *own* running card ahead of a `kind=dependency` block). | `parent_id`, `child_id` |
 | `kanban_unblock` | (Orchestrators) restore a blocked task to its source phase (`review` or `ready`), or `todo` while a parent remains open. | `task_id` |
 
@@ -511,6 +511,22 @@ kanban_complete(summary="decomposed into 2 research tasks + 1 writer; linked dep
 ```
 
 The "(Orchestrators)" tools — `kanban_list`, `kanban_create`, `kanban_link`, `kanban_unblock`, and `kanban_comment` on foreign tasks — are available through the same toolset; the convention (encoded in the auto-injected kanban guidance) is that worker profiles don't fan out or route unrelated work, and orchestrator profiles don't execute implementation work. Dispatcher-spawned workers are still task-scoped for destructive lifecycle operations and cannot mutate unrelated tasks.
+
+For **direct-delivery admission**, a request-facing software agent first checks for a matching active card and reuses it. Only when none exists does it make one `kanban_create` call for the whole outcome:
+
+```python
+kanban_create(
+    title="<one outcome>",
+    assignee="<accountable project profile>",
+    body="<request, repo, acceptance, release and live proof>",
+    one_per_request=True,
+    max_retries=1,
+    max_runtime_seconds=28800,
+    completion_contract="OWNER/REPO",
+)
+```
+
+`one_per_request` deduplicates direct admission by the originating gateway message; it is not for decomposition or fan-out. It requires durable gateway message identity and deduplicates only non-archived cards on the same board; archiving permits recreation. `max_retries=1` blocks the card after its first failed worker attempt. These fields do not add a model poller or retry loop. Generic orchestrators can still create intentional task graphs without `one_per_request`.
 
 ### Why tools instead of shelling to `hermes kanban`
 
@@ -578,8 +594,9 @@ protocol. If the worker process exits with status 0 while the task is still
 therefore exits non-zero: `1` for an ordinary failure, `75`
 (`EX_TEMPFAIL`) when the provider was rate-limited, overloaded, returning
 5xx or timing out, or the account hit a billing/quota wall — the dispatcher records that run as `rate_limited` and
-requeues the task without counting a failure, so a quota window is never
-booked as a protocol violation — and `78` (`EX_CONFIG`) when the provider
+releases the task to its source phase. A card with an explicit `max_retries`
+spends one attempt and blocks at its limit; other cards do not spend the failure
+budget. Neither case is booked as a protocol violation. Exit `78` (`EX_CONFIG`) means the provider
 rejected something a retry cannot fix: the profile's credential (401/403,
 revoked or invalid key), the model (404 / model not found) or the TLS chain.
 That **terminal provider error** trips the circuit breaker on the first

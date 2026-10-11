@@ -7,7 +7,7 @@ from __future__ import annotations
 import contextlib
 import json
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Optional
 
 from tools.computer_use.backend import ActionResult, UIElement, image_dimensions_from_bytes
 
@@ -130,19 +130,58 @@ def _split_tree_text(full_text: str) -> tuple[str, str]:
     summary, _, tree = full_text.partition("\n")
     return summary, tree
 
-_MODIFIER_NAMES = frozenset({"cmd", "command", "shift", "option", "alt", "ctrl", "control", "fn"})
-_KEY_ALIASES = {"command": "cmd", "alt": "option", "control": "ctrl"}
+# Canonical names the driver hotkey list can carry. Aliases collapse before the
+# membership check so "windows"/"super"/"meta" are the same modifier as "win"
+# (the name the safety block already uses) and are never thrown away.
+_MODIFIER_NAMES = frozenset({"cmd", "shift", "option", "ctrl", "fn", "win"})
+_KEY_ALIASES = {
+    "command": "cmd", "alt": "option", "control": "ctrl",
+    "windows": "win", "super": "win", "meta": "win",
+}
+
+def _combo_parts(keys: str) -> list[str]:
+    """Split a combo on ``+`` and on ``-`` used as a separator.
+
+    A ``-`` token is the minus key (``cmd+-``), not another separator. Hyphenated
+    modifier chains (``ctrl-alt-delete``) still split, so the safety block and
+    the driver see the same keys.
+    """
+    parts: list[str] = []
+    for plus_part in keys.split("+"):
+        token = plus_part.strip()
+        if token == "-":
+            parts.append("-")
+        elif "-" in token:
+            parts.extend(piece for piece in (p.strip() for p in token.split("-")) if piece)
+        elif token:
+            parts.append(token)
+    return parts
+
+def _normalize_key_part(part: str) -> str:
+    if part == "-":
+        return part
+    lowered = part.lower()
+    return _KEY_ALIASES.get(lowered, lowered)
 
 def _parse_key_combo(keys: str) -> tuple[Optional[str], list[str]]:
-    """Parse 'cmd+s' / 'ctrl-alt-t' into (key, modifiers); last non-modifier wins."""
+    """Parse 'cmd+s' / 'ctrl-alt-t' / 'cmd+-' / 'win+d' into (key, modifiers).
+
+    Every part but the last must be a known modifier. An unknown one fails the
+    parse (the caller refuses) instead of being dropped while the bare key is
+    reported as a success. A lone modifier is not a key.
+    """
+    parts = _combo_parts(keys)
+    if not parts:
+        return None, []
     modifiers: list[str] = []
-    key = None
-    for part in (p.strip().lower() for p in re.split(r'[+\-]', keys) if p.strip()):
-        normalized = _KEY_ALIASES.get(part, part)
-        if normalized in _MODIFIER_NAMES:
-            modifiers.append(normalized)
-        else:
-            key = part
+    for part in parts[:-1]:
+        normalized = _normalize_key_part(part)
+        if normalized not in _MODIFIER_NAMES:
+            return None, []
+        modifiers.append(normalized)
+    key = _normalize_key_part(parts[-1])
+    if key in _MODIFIER_NAMES:
+        return None, []
     return key, modifiers
 
 def _tool_envelope(data: Any, images: list[str], structured: Any, is_error: bool,
@@ -210,6 +249,68 @@ def _int_or_none(value: Any) -> Optional[int]:
     except ValueError:
         return None
 
+def _finite_int(value: Any) -> Optional[int]:
+    """Nearest int for a finite number. Bools are not numbers here."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if value != value or value in (float("inf"), float("-inf")):
+            return None
+        return int(round(value))
+    return _int_or_none(value) if isinstance(value, str) else None
+
+def _mapped_int(raw: dict[str, Any], *keys: str) -> Optional[int]:
+    for key in keys:
+        if key not in raw:
+            continue
+        parsed = _finite_int(raw[key])
+        if parsed is not None:
+            return parsed
+    return None
+
+def _screen_rect(raw: Any) -> Optional[tuple[int, int, int, int]]:
+    """``{x,y,width,height}`` or ``{x,y,w,h}`` → ``(x, y, w, h)``.
+
+    x/y may be negative (a window on a display left of the origin). A missing
+    or non-positive size is not a frame the drag converter can use.
+    """
+    if not isinstance(raw, dict):
+        return None
+    x, y = _mapped_int(raw, "x"), _mapped_int(raw, "y")
+    w, h = _mapped_int(raw, "width", "w"), _mapped_int(raw, "height", "h")
+    if None in (x, y, w, h) or w <= 0 or h <= 0:
+        return None
+    return (x, y, w, h)
+
+def _screenshot_size(structured: Any) -> Optional[tuple[int, int]]:
+    """Delivered screenshot ``(width, height)`` from a get_window_state payload."""
+    if not isinstance(structured, dict):
+        return None
+    width, height = _positive_int(structured.get("screenshot_width")), _positive_int(structured.get("screenshot_height"))
+    if width is None or height is None:
+        return None
+    return (width, height)
+
+def _window_local_point(center: tuple[int, int], frame: Optional[tuple[int, int, int, int]],
+                        shot: Optional[tuple[int, int]]) -> Optional[tuple[int, int]]:
+    """Screen point → window-local screenshot pixels, or None without a frame.
+
+    Element frames are screen rectangles. ``drag`` from_x/from_y are offsets
+    from the window screenshot's top-left; the driver adds the window origin
+    again, so a raw screen centre misses by that origin. ``shot`` is the
+    delivered image size: dividing by the window size maps a screen point onto
+    that image (Retina and a downscaled capture included).
+    """
+    if frame is None:
+        return None
+    origin_x, origin_y, width, height = frame
+    scale_x = scale_y = 1.0
+    if shot is not None and width > 0 and height > 0 and shot[0] > 0 and shot[1] > 0:
+        scale_x, scale_y = shot[0] / width, shot[1] / height
+    return (int(round((center[0] - origin_x) * scale_x)), int(round((center[1] - origin_y) * scale_y)))
+
 def _positive_int(value: Any) -> Optional[int]:
     """Return a positive integer, rejecting booleans and malformed values."""
     parsed = _int_or_none(value)
@@ -235,7 +336,7 @@ def _ingest_windows(raw_windows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if pid_int is None or window_id_int is None:
             continue
         z_raw, app_name, title = w.get("z_index"), w.get("app_name", ""), w.get("title", "")
-        windows.append({
+        record = {
             "app_name": app_name if isinstance(app_name, str) else "",
             "pid": pid_int,
             "window_id": window_id_int,
@@ -243,7 +344,10 @@ def _ingest_windows(raw_windows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "off_screen": w.get("is_on_screen") is False,
             "title": title if isinstance(title, str) else "",
             "z_index": z_raw if isinstance(z_raw, (int, float)) and not isinstance(z_raw, bool) else 0,
-        })
+        }
+        if (bounds := _screen_rect(w.get("bounds"))) is not None:
+            record["bounds"] = bounds
+        windows.append(record)
     return windows
 
 def _windows_from_tool_result(out: dict[str, Any]) -> list[dict[str, Any]]:

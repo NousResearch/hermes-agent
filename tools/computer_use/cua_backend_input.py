@@ -3,10 +3,10 @@ value-setter methods (mixed into ``CuaDriverBackend``)."""
 
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Optional, Sequence
 
 from tools.computer_use.backend import ActionResult
-from tools.computer_use.cua_backend_parse import _parse_key_combo
+from tools.computer_use.cua_backend_parse import _parse_key_combo, _window_local_point
 
 _NO_TARGET_MSG = "No active window — call capture() first."
 _BTF_UNSUPPORTED_MSG = "The connected cua-driver does not advertise the standalone bring_to_front tool."
@@ -19,6 +19,52 @@ _Variant = tuple[str, None | dict[str, Any] | Callable[[], dict[str, Any]]]
 
 def _refuse(action: str, message: str, **fields: Any) -> ActionResult:
     return ActionResult(ok=False, action=action, message=message, **fields)
+
+def _frame_center(bounds: Any) -> Optional[tuple[int, int]]:
+    """Centre of an element frame, or None when the snapshot has no usable size.
+
+    Markdown-fallback elements are stored as ``(0, 0, 0, 0)``; those cannot be
+    dragged because the driver only accepts coordinates.
+    """
+    if not isinstance(bounds, tuple) or len(bounds) != 4:
+        return None
+    try:
+        x, y, w, h = (int(bounds[0]), int(bounds[1]), int(bounds[2]), int(bounds[3]))
+    except (TypeError, ValueError):
+        return None
+    if w <= 0 or h <= 0:
+        return None
+    return (x + w // 2, y + h // 2)
+
+def _element_drag_xy(backend: Any, from_element: int, to_element: int,
+                     from_xy: Optional[tuple[int, int]], to_xy: Optional[tuple[int, int]]):
+    """``(refusal, from_xy, to_xy)``. Element frames win when they convert.
+
+    Screen centres are not drag coordinates. A missing window rectangle refuses
+    unless the caller already passed window-local coordinates.
+    """
+    bounds = getattr(backend, "_snapshot_bounds", {}) or {}
+    centers = (_frame_center(bounds.get(from_element)), _frame_center(bounds.get(to_element)))
+    if centers[0] is None or centers[1] is None:
+        if from_xy is None or to_xy is None:
+            return _refuse(
+                "drag",
+                "element-index drag needs frame bounds from the last capture; "
+                "pass from_coordinate and to_coordinate.",
+            ), from_xy, to_xy
+        return None, from_xy, to_xy
+    frame = getattr(backend, "_snapshot_window_frame", None)
+    shot = getattr(backend, "_snapshot_screenshot_size", None)
+    local = (_window_local_point(centers[0], frame, shot), _window_local_point(centers[1], frame, shot))
+    if local[0] is None or local[1] is None:
+        if from_xy is None or to_xy is None:
+            return _refuse(
+                "drag",
+                "element-index drag needs the captured window frame to convert "
+                "screen bounds into window-local pixels; pass from_coordinate and to_coordinate.",
+            ), from_xy, to_xy
+        return None, from_xy, to_xy
+    return None, local[0], local[1]
 
 
 class _InputMixin:
@@ -115,10 +161,10 @@ class _InputMixin:
              button: str = "left", modifiers: Optional[list[str]] = None,
              delivery_mode: Optional[str] = None, bring_to_front: bool = False) -> ActionResult:
         refusal, args = self._target_args("drag")
+        if refusal is None and from_element is not None and to_element is not None:
+            refusal, from_xy, to_xy = _element_drag_xy(self, from_element, to_element, from_xy, to_xy)
         if refusal is None:
             refusal = self._pointer_args("drag", args, (
-                ("element-based drag", {"from_element": from_element, "to_element": to_element}
-                 if from_element is not None and to_element is not None else None),
                 ("coordinate drag", {"from_x": int(from_xy[0]), "from_y": int(from_xy[1]),
                                      "to_x": int(to_xy[0]), "to_y": int(to_xy[1])}
                  if from_xy is not None and to_xy is not None else None),

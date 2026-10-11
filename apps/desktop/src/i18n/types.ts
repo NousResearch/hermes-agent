@@ -1,11 +1,10 @@
+import type { ErrorCodeKey } from '@/lib/error-surface'
 // Desktop i18n type contract.
 //
 // `Translations` is the single source of truth for every translatable string
 // surface. Fully translated locale files may satisfy this interface directly;
 // partial locales should use `defineLocale()` so missing desktop-only strings
 // fall back to English while new keys remain type-checked.
-
-import type { ErrorCodeKey } from '@/lib/error-surface'
 import type { TipId } from '@/lib/tips/catalog'
 
 import type { AppTourTranslations, HandoffTourTranslations } from './types_app_tour'
@@ -13,6 +12,7 @@ import type { AuxTaskCopyMap } from './types_aux_tasks'
 import type { BillingTranslations } from './types_billing'
 import type { BootTranslations } from './types_boot'
 import type { CatalogInstallTranslations } from './types_catalog_install'
+import type { CodingTranslations } from './types_coding'
 import type { ModelMenuTranslations } from './types_model_menu'
 import type { NoticeTranslations } from './types_notices'
 import type { OnboardingTranslations } from './types_onboarding'
@@ -3233,52 +3233,7 @@ export interface Translations extends NoticeTranslations {
       dismissError: string
       add: string
     }
-    coding: {
-      title: string
-      noBranch: string
-      detached: string
-      clean: string
-      changed: (count: number) => string
-      ahead: (count: number) => string
-      behind: (count: number) => string
-      review: string
-      close: string
-      openChanges: string
-      openFile: string
-      stage: string
-      unstage: string
-      stageAll: string
-      viewAsTree: string
-      viewAsList: string
-      revert: string
-      revertAll: string
-      revertConfirm: string
-      revertAllConfirm: string
-      staged: string
-      noChanges: string
-      notRepo: string
-      noDiff: string
-      scopeUncommitted: string
-      scopeBranch: string
-      scopeLastTurn: string
-      readOnlyScope: string
-      commit: string
-      commitAndPush: string
-      commitPlaceholder: (shortcut: string) => string
-      generateCommitMessage: string
-      stopGenerating: string
-      createPr: string
-      openPr: string
-      ghMissing: string
-      agentShip: string
-      agentShipUnavailable: string
-      agentShipPrompt: string
-      newBranch: string
-      branchOffFrom: (base: string) => string
-      switchTo: (branch: string) => string
-      switchFailed: (branch: string) => string
-      worktrees: string
-    }
+    coding: CodingTranslations
   }
 
   updates: {

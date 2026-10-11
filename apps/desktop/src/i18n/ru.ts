@@ -2,6 +2,7 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { ruAuxTasks } from './ru_aux_tasks'
+import { ruCoding } from './ru_coding'
 import { ruModelMenu } from './ru_model_menu'
 import { ruNotices } from './ru_notices'
 import { ruOnboarding } from './ru_onboarding'
@@ -3056,53 +3057,7 @@ export const ruOverrides = {
       dismissError: 'Скрыть ошибку',
       add: 'Добавить'
     },
-    coding: {
-      title: 'Рабочее дерево',
-      noBranch: 'Без ветки',
-      detached: 'отсоединена',
-      clean: 'Чисто',
-      changed: count => `${count} изменено`,
-      ahead: count => `${count} впереди`,
-      behind: count => `${count} позади`,
-      review: 'Проверить',
-      close: 'Закрыть',
-      openChanges: 'Открыть изменения',
-      openFile: 'Открыть файл',
-      stage: 'Добавить в индекс',
-      unstage: 'Убрать из индекса',
-      stageAll: 'Добавить всё в индекс',
-      viewAsTree: 'Вид деревом',
-      viewAsList: 'Вид списком',
-      revert: 'Отменить',
-      revertAll: 'Отменить всё',
-      revertConfirm:
-        'Сбросить изменения в этом файле и вернуть его в закоммиченное состояние? Это действие необратимо.',
-      revertAllConfirm: 'Сбросить все изменения и вернуть файлы в закоммиченное состояние? Это действие необратимо.',
-      staged: 'В индексе',
-      noChanges: 'Изменений нет',
-      notRepo: 'Не git-репозиторий',
-      noDiff: 'Нет diff для показа',
-      scopeUncommitted: 'Незакоммиченные',
-      scopeBranch: 'Ветка',
-      scopeLastTurn: 'Последний ход',
-      commit: 'Коммит',
-      commitAndPush: 'Коммит и Push',
-      commitPlaceholder: shortcut => `Сообщение (${shortcut} — коммит)`,
-      generateCommitMessage: 'Сгенерировать сообщение коммита',
-      stopGenerating: 'Остановить генерацию',
-      createPr: 'Создать PR',
-      openPr: 'Открыть PR',
-      ghMissing: 'Установите GitHub CLI (gh) и войдите, чтобы открывать PR',
-      agentShip: 'Попросить Hermes открыть PR',
-      agentShipUnavailable: 'Чат, которому принадлежат эти изменения, не на экране.',
-      agentShipPrompt:
-        'Проверьте текущие изменения, закоммитьте их с ясным conventional-commit сообщением, запушьте ветку и создайте pull request.',
-      newBranch: 'Новая ветка',
-      branchOffFrom: base => `Новая ветка от ${base}`,
-      switchTo: branch => `Переключиться на ${branch}`,
-      switchFailed: branch => `Не удалось переключиться на ${branch}`,
-      worktrees: 'Worktrees'
-    }
+    coding: ruCoding
   },
   updates: {
     discontinuedTitle: 'Эта сборка Hermes больше не поддерживается',

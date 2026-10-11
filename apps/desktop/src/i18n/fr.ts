@@ -3,6 +3,7 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { frAuxTasks } from './fr_aux_tasks'
 import { frBoot } from './fr_boot'
+import { frCoding } from './fr_coding'
 import { frLocalModels } from './fr_local_models'
 import { frModelMenu } from './fr_model_menu'
 import { frNotices } from './fr_notices'
@@ -4211,54 +4212,7 @@ export const frOverrides = {
       dismissError: "Masquer l'erreur",
       add: 'Ajouter'
     },
-    coding: {
-      title: 'Arbre de travail',
-      noBranch: 'Aucune branche',
-      detached: 'détaché',
-      clean: 'Propre',
-      changed: count => `${count} ${count === 1 ? 'modifié' : 'modifiés'}`,
-      ahead: count => `${count} en avance`,
-      behind: count => `${count} en retard`,
-      review: 'Revoir',
-      close: 'Fermer',
-      openChanges: 'Ouvrir les modifications',
-      openFile: 'Ouvrir le fichier',
-      stage: 'Mettre en zone de préparation',
-      unstage: 'Retirer de la zone de préparation',
-      stageAll: 'Tout mettre en zone de préparation',
-      viewAsTree: 'Voir en arbre',
-      viewAsList: 'Voir en liste',
-      revert: 'Rétablir',
-      revertAll: 'Tout rétablir',
-      revertConfirm:
-        "Abandonner les modifications de ce fichier et le rétablir à l'état validé ? Cela ne peut pas être annulé.",
-      revertAllConfirm:
-        "Abandonner toutes les modifications et rétablir les fichiers à l'état validé ? Cela ne peut pas être annulé.",
-      staged: 'En zone de préparation',
-      noChanges: 'Aucune modification',
-      notRepo: 'Pas un dépôt git',
-      noDiff: 'Aucune différence à afficher',
-      scopeUncommitted: 'Non validé',
-      scopeBranch: 'Branche',
-      scopeLastTurn: 'Dernier tour',
-      commit: 'Valider',
-      commitAndPush: 'Valider et pousser',
-      commitPlaceholder: shortcut => `Message (${shortcut} pour valider)`,
-      generateCommitMessage: 'Générer un message de validation',
-      stopGenerating: 'Arrêter la génération',
-      createPr: 'Créer une PR',
-      openPr: 'Ouvrir une PR',
-      ghMissing: 'Installez la CLI GitHub (gh) et connectez-vous pour ouvrir des PR',
-      agentShip: "Demander à Hermes d'ouvrir une PR",
-      agentShipUnavailable: "La conversation à l'origine de ces modifications n'est pas affichée.",
-      agentShipPrompt:
-        'Passez en revue les modifications actuelles, validez-les avec un message de validation conventionnel clair, poussez la branche, puis ouvrez une pull request.',
-      newBranch: 'Nouvelle branche',
-      branchOffFrom: base => `Nouvelle branche à partir de ${base}`,
-      switchTo: branch => `Basculer vers ${branch}`,
-      switchFailed: branch => `Impossible de basculer vers ${branch}`,
-      worktrees: 'Worktrees'
-    }
+    coding: frCoding
   },
   updates: {
     discontinuedTitle: "Cette version de Hermes n'est plus prise en charge",

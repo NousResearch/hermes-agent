@@ -3,6 +3,7 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { esAuxTasks } from './es_aux_tasks'
 import { esBoot } from './es_boot'
+import { esCoding } from './es_coding'
 import { esLocalModels } from './es_local_models'
 import { esModelMenu } from './es_model_menu'
 import { esNotices } from './es_notices'
@@ -4194,54 +4195,7 @@ export const esOverrides = {
       dismissError: 'Descartar error',
       add: 'Añadir'
     },
-    coding: {
-      title: 'Árbol de trabajo',
-      noBranch: 'Sin rama',
-      detached: 'separada',
-      clean: 'Limpio',
-      changed: count => `${count} cambio${count === 1 ? '' : 's'}`,
-      ahead: count => `${count} por delante`,
-      behind: count => `${count} por detrás`,
-      review: 'Revisar',
-      close: 'Cerrar',
-      openChanges: 'Abrir cambios',
-      openFile: 'Abrir archivo',
-      stage: 'Preparar',
-      unstage: 'Quitar de preparación',
-      stageAll: 'Preparar todo',
-      viewAsTree: 'Ver como árbol',
-      viewAsList: 'Ver como lista',
-      revert: 'Revertir',
-      revertAll: 'Revertir todo',
-      revertConfirm:
-        '¿Descartar los cambios en este archivo y restaurarlo al estado comprometido? Esto no se puede deshacer.',
-      revertAllConfirm:
-        '¿Descartar todos los cambios y restaurar archivos al estado comprometido? Esto no se puede deshacer.',
-      staged: 'Preparados',
-      noChanges: 'Sin cambios',
-      notRepo: 'No es un repositorio Git',
-      noDiff: 'No hay diferencias que mostrar',
-      scopeUncommitted: 'Sin confirmar',
-      scopeBranch: 'Rama',
-      scopeLastTurn: 'Último turno',
-      commit: 'Hacer commit',
-      commitAndPush: 'Hacer commit y enviar',
-      commitPlaceholder: (shortcut: string) => `Mensaje (${shortcut} para hacer commit)`,
-      generateCommitMessage: 'Generar mensaje de commit',
-      stopGenerating: 'Dejar de generar',
-      createPr: 'Crear PR',
-      openPr: 'Abrir PR',
-      ghMissing: 'Instala GitHub CLI (gh) e inicia sesión para abrir PR',
-      agentShip: 'Pedir a Hermes que abra un PR',
-      agentShipUnavailable: 'El chat al que pertenecen estos cambios no está en pantalla.',
-      agentShipPrompt:
-        'Revisa los cambios actuales, haz un commit con un mensaje convencional claro, envía la rama y abre un pull request.',
-      newBranch: 'Nueva rama',
-      branchOffFrom: base => `Nueva rama desde ${base}`,
-      switchTo: branch => `Cambiar a ${branch}`,
-      switchFailed: branch => `No se pudo cambiar a ${branch}`,
-      worktrees: 'Worktrees'
-    }
+    coding: esCoding
   },
   updates: {
     discontinuedTitle: 'Esta versión de Hermes ya no tiene soporte',

@@ -2,6 +2,7 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { deAuxTasks } from './de_aux_tasks'
 import { deBoot } from './de_boot'
+import { deCoding } from './de_coding'
 import { deLocalModels } from './de_local_models'
 import { deModelMenu } from './de_model_menu'
 import { deNotices } from './de_notices'
@@ -4200,54 +4201,7 @@ export const deOverrides = {
       dismissError: 'Fehler verwerfen',
       add: 'Hinzufügen'
     },
-    coding: {
-      title: 'Arbeitsverzeichnis',
-      noBranch: 'Kein Branch',
-      detached: 'losgelöst',
-      clean: 'Sauber',
-      changed: count => `${count} geändert`,
-      ahead: count => `${count} voraus`,
-      behind: count => `${count} zurück`,
-      review: 'Überprüfen',
-      close: 'Schließen',
-      openChanges: 'Änderungen öffnen',
-      openFile: 'Datei öffnen',
-      stage: 'Stagen',
-      unstage: 'Unstagen',
-      stageAll: 'Alles stagen',
-      viewAsTree: 'Als Baum ansehen',
-      viewAsList: 'Als Liste ansehen',
-      revert: 'Zurücksetzen',
-      revertAll: 'Alles zurücksetzen',
-      revertConfirm:
-        'Änderungen an dieser Datei verwerfen und sie in den committeten Zustand zurücksetzen? Das kann nicht rückgängig gemacht werden.',
-      revertAllConfirm:
-        'Alle Änderungen verwerfen und alle Dateien in den committeten Zustand zurücksetzen? Das kann nicht rückgängig gemacht werden.',
-      staged: 'Gestaged',
-      noChanges: 'Keine Änderungen',
-      notRepo: 'Kein git-Repository',
-      noDiff: 'Kein Diff zum Anzeigen',
-      scopeUncommitted: 'Nicht committet',
-      scopeBranch: 'Branch',
-      scopeLastTurn: 'Letzte Runde',
-      commit: 'Commit',
-      commitAndPush: 'Commit & Push',
-      commitPlaceholder: shortcut => `Nachricht (${shortcut} zum Committen)`,
-      generateCommitMessage: 'Commit-Message generieren',
-      stopGenerating: 'Generieren stoppen',
-      createPr: 'PR erstellen',
-      openPr: 'PR öffnen',
-      ghMissing: 'Installieren Sie die GitHub CLI (gh) und melden Sie sich an, um PRs zu öffnen',
-      agentShip: 'Hermes bitten, einen PR zu öffnen',
-      agentShipUnavailable: 'Der Chat, der diese Änderungen besitzt, ist nicht auf dem Bildschirm.',
-      agentShipPrompt:
-        'Überprüfe die aktuellen Änderungen, committe sie mit einer klaren Conventional-Commit-Message, pushe den Branch und öffne einen Pull Request.',
-      newBranch: 'Neuer Branch',
-      branchOffFrom: base => `Neuer Branch von ${base}`,
-      switchTo: branch => `Zu ${branch} wechseln`,
-      switchFailed: branch => `Zu ${branch} konnte nicht gewechselt werden`,
-      worktrees: 'Worktrees'
-    }
+    coding: deCoding
   },
   updates: {
     discontinuedTitle: 'Dieser Hermes-Build wird nicht mehr unterstützt',

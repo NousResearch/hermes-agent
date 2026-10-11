@@ -1,6 +1,5 @@
 import { useStore } from '@nanostores/react'
 
-import { FileDiffPanel } from '@/components/chat/diff-lines'
 import { DiffSkeleton, TreeSkeleton } from '@/components/chat/skeletons'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -37,6 +36,7 @@ import {
 import { SidebarPanelLabel } from '../../shell/sidebar-label'
 import { PaneEmptyState, RightSidebarSectionHeader } from '../index'
 
+import { ReviewDiff, ReviewDiffLayoutControl } from './diff-layout'
 import { ReviewFileTree } from './file-tree'
 import { ReviewScopeRow } from './scope-row'
 import { ReviewShipBar } from './ship-bar'
@@ -160,9 +160,9 @@ export function ReviewPane() {
         <PaneEmptyState label={t.rightSidebar.noDiffs} />
       )}
 
-      {/* Selected file's diff — reuses the shiki-highlighted FileDiffPanel. */}
+      {/* Selected file's diff, with a bounded viewport in either layout. */}
       {selectedFile && (
-        <div className="flex max-h-[55%] shrink-0 flex-col border-t border-(--ui-stroke-secondary)">
+        <div className="flex h-[55%] min-h-0 shrink-0 flex-col border-t border-(--ui-stroke-secondary)">
           <div className="flex items-center gap-1 px-2.5 py-1.5" data-suppress-pane-reveal-side="">
             <span
               className="min-w-0 flex-1 truncate font-mono text-[0.66rem] text-(--ui-text-secondary)"
@@ -198,13 +198,14 @@ export function ReviewPane() {
               <Codicon name="close" size="0.8rem" />
             </Button>
           </div>
+          <ReviewDiffLayoutControl />
           <div className="min-h-0 flex-1 overflow-auto px-1 pb-1">
             {diffLoading ? (
               showDiffSkeleton ? (
                 <DiffSkeleton />
               ) : null
             ) : diff ? (
-              <FileDiffPanel className="mx-0 mb-0 h-full max-h-none" diff={diff} path={selectedFile.path} virtualized />
+              <ReviewDiff diff={diff} path={selectedFile.path} />
             ) : (
               <div className="py-6 text-center text-[0.66rem] text-muted-foreground/60">{c.noDiff}</div>
             )}

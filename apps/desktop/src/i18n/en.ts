@@ -5,6 +5,7 @@ import { enAuxTasks } from './en_aux_tasks'
 import { enBilling } from './en_billing'
 import { enBoot } from './en_boot'
 import { enCatalogInstall } from './en_catalog_install'
+import { enCoding } from './en_coding'
 import { enLocalModels } from './en_local_models'
 import { enModelMenu } from './en_model_menu'
 import { enNotices } from './en_notices'
@@ -3764,53 +3765,7 @@ export const en: Translations = {
       dismissError: 'Dismiss error',
       add: 'Add'
     },
-    coding: {
-      title: 'Working tree',
-      noBranch: 'No branch',
-      detached: 'detached',
-      clean: 'Clean',
-      changed: count => `${count} changed`,
-      ahead: count => `${count} ahead`,
-      behind: count => `${count} behind`,
-      review: 'Review',
-      close: 'Close',
-      openChanges: 'Open changes',
-      openFile: 'Open file',
-      stage: 'Stage',
-      unstage: 'Unstage',
-      stageAll: 'Stage all',
-      viewAsTree: 'View as tree',
-      viewAsList: 'View as list',
-      revert: 'Revert',
-      revertAll: 'Revert all',
-      revertConfirm: 'Discard changes to this file and restore it to the committed state? This cannot be undone.',
-      revertAllConfirm: 'Discard every change and restore files to the committed state? This cannot be undone.',
-      staged: 'Staged',
-      noChanges: 'No changes',
-      notRepo: 'Not a git repository',
-      noDiff: 'No diff to show',
-      scopeUncommitted: 'Uncommitted',
-      scopeBranch: 'Branch',
-      scopeLastTurn: 'Last turn',
-      readOnlyScope: 'Read-only view — stage, revert, and commit apply to Uncommitted',
-      commit: 'Commit',
-      commitAndPush: 'Commit & Push',
-      commitPlaceholder: shortcut => `Message (${shortcut} to commit)`,
-      generateCommitMessage: 'Generate commit message',
-      stopGenerating: 'Stop generating',
-      createPr: 'Create PR',
-      openPr: 'Open PR',
-      ghMissing: 'Install the GitHub CLI (gh) and sign in to open PRs',
-      agentShip: 'Ask Hermes to open PR',
-      agentShipUnavailable: "The chat that owns these changes isn't on screen.",
-      agentShipPrompt:
-        'Review the current changes, commit them with a clear conventional-commit message, push the branch, and open a pull request.',
-      newBranch: 'New branch',
-      branchOffFrom: base => `New branch from ${base}`,
-      switchTo: branch => `Switch to ${branch}`,
-      switchFailed: branch => `Could not switch to ${branch}`,
-      worktrees: 'Worktrees'
-    }
+    coding: enCoding
   },
 
   updates: {

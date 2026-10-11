@@ -544,6 +544,20 @@ def _openrouter_catalog_lookup_base(provider: str, model: str) -> Optional[str]:
     return openrouter_variant_base(model)
 
 
+# One version separator between single digits: ``qwen2.5`` / ``qwen2-5``, ``deepseek-v3.1`` / ``-v3-1``.
+# A multi-digit right side (``glm-4-32b``, ``qwen3-235b``, ``-20241022``) is a size or date, never a minor.
+_VERSION_DOT = re.compile(r"(?<=\d)\.(?=\d(?!\d))")
+_VERSION_DASH = re.compile(r"(?<=\d)-(?=\d(?!\d))")
+
+
+def _version_spelling_alias(model: str) -> Optional[str]:
+    """The other spelling of *model*'s version (dotted <-> dashed), or None when it has none.
+    models.dev keys ONE spelling per provider (alibaba: ``qwen2-5-vl-72b-instruct``, zai:
+    ``glm-5.3-flash``) while the vendor API and its docs accept the other."""
+    alias = _VERSION_DOT.sub("-", model) if "." in model else _VERSION_DASH.sub(".", model)
+    return alias if alias != model else None
+
+
 def _iter_model_entries(
     models: dict[str, Any], model: str, *, suffix_fallback: bool = True, provider: str = ""
 ):
@@ -552,19 +566,23 @@ def _iter_model_entries(
     ``kimi-k2.6:cloud`` while the live API returns the bare name; without it context lookup falls to
     stale OpenRouter metadata and trips the 64k minimum-context guard. Every consumer shares this
     order so a suffix-keyed catalog model counts as KNOWN for ``model_overrides`` fill-gap ``_default``.
+    The same passes then run on the other version spelling (``_version_spelling_alias``), so the
+    spelling the catalog actually lists always wins over the alias.
 
     ``provider`` enables the OpenRouter routing-variant fallback as a LAST
     resort — after exact, case-insensitive, and ``:cloud`` matching — so a
     real catalog SKU always wins over its base.
     """
-    for name in ([model] + [model + suffix for suffix in (":cloud", "-cloud")] if suffix_fallback else [model]):
-        entry = models.get(name)
-        if isinstance(entry, dict):
-            yield name, entry
-        name_lower = name.lower()
-        for mid, mdata in models.items():
-            if mid.lower() == name_lower and isinstance(mdata, dict):
-                yield mid, mdata
+    alias = _version_spelling_alias(model)
+    for base in (model, alias) if alias else (model,):
+        for name in ([base] + [base + suffix for suffix in (":cloud", "-cloud")] if suffix_fallback else [base]):
+            entry = models.get(name)
+            if isinstance(entry, dict):
+                yield name, entry
+            name_lower = name.lower()
+            for mid, mdata in models.items():
+                if mid.lower() == name_lower and isinstance(mdata, dict):
+                    yield mid, mdata
     routed_base = _openrouter_catalog_lookup_base(provider, model)
     if routed_base is not None:
         # Recursion is bounded: the base never carries a recognized variant suffix,

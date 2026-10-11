@@ -1052,6 +1052,7 @@ The dashboard plugin API now exposes these read-only endpoints (plus a run-contr
 |----------|---------|
 | `GET /api/plugins/kanban/workers/active` | Currently spawned workers with PID, profile, task id, started-at, last heartbeat |
 | `GET /api/plugins/kanban/runs/{id}` | Single-run detail — task id, status, started/ended, exit code, log path |
+| `GET /api/plugins/kanban/runs/{run_id}/inspect` | Live process stats for a run's worker — `alive`, `pid`, `cpu_percent`, `memory_rss_bytes`; `alive: false` with a `reason` when unavailable |
 | `POST /api/plugins/kanban/runs/{run_id}/terminate` | Terminate a reclaimable run — stops the worker and frees the task for re-dispatch |
 
 All of these are gated by the same dashboard plugin auth as the rest of the kanban plugin API.

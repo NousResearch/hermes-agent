@@ -1258,13 +1258,14 @@ def _read_discord_prompt_timeout() -> int:
 
 
 from plugins.platforms.discord.adapter_media import DiscordMediaMixin
+from plugins.platforms.discord.adapter_prompt_mentions import DiscordPromptMentionsMixin
 from plugins.platforms.discord.adapter_slash_auth import DiscordSlashAuthMixin
 from plugins.platforms.discord.adapter_thread_titles import DiscordThreadTitlesMixin, SemanticThreadRenames
 from plugins.platforms.discord.adapter_voice_info import DiscordVoiceInfoMixin
 
 
 class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceInfoMixin, DiscordSlashAuthMixin,
-                     BasePlatformAdapter):
+                     DiscordPromptMentionsMixin, BasePlatformAdapter):
     """Discord bot adapter: guild/DM messages, threads, slash commands, button approvals, reactions."""
 
     MAX_MESSAGE_LENGTH = 2000
@@ -5683,16 +5684,6 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
             body = body[: max(0, budget - len(truncated_suffix))] + truncated_suffix
         return f"{prefix}{body}{suffix}"
 
-    def _approval_mention_content(self) -> Optional[str]:
-        """User mentions for approval prompts, gated on ``discord.approval_mentions``
-        (``DISCORD_APPROVAL_MENTIONS``). Only numeric allowlist entries; default off."""
-        if not self._extra_or_env_flag("approval_mentions", "DISCORD_APPROVAL_MENTIONS", "false", truthy=True):
-            return None
-        user_ids = sorted(uid for uid in self._allowed_user_ids if str(uid).isdigit())
-        if not user_ids:
-            return None
-        return " ".join(f"<@{uid}>" for uid in user_ids)
-
     async def _send_prompt(
         self, chat_id: str, metadata: Optional[dict], build, *, fail_log: Optional[str] = None,
     ) -> SendResult:
@@ -5765,14 +5756,9 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
                 admin_user_ids=admin_user_ids, allow_permanent="always" in choices,
                 allow_session="session" in choices, smart_denied=prompt.smart_denied,
             )
-            send_kwargs: dict[str, Any] = {"content": content, "embed": embed, "view": view}
-            if mention_content:
-                allowed_mentions_cls = getattr(discord, "AllowedMentions", None)
-                if allowed_mentions_cls is not None:
-                    send_kwargs["allowed_mentions"] = allowed_mentions_cls(
-                        users=True, roles=False, everyone=False, replied_user=False,
-                    )
-            return send_kwargs, view
+            return self._interactive_prompt_send_kwargs(
+                content=content, embed=embed, view=view, mention_content=mention_content,
+            ), view
         return await self._send_prompt(prompt.chat_id, prompt.metadata, _build)
 
     async def send_slash_confirm(
@@ -5785,12 +5771,15 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
             # content only, so embed-rendering clients don't see it twice (#114693).
             header = title or t("platform.discord.approval.confirm_title")
             embed = discord.Embed(title=_truncate_discord_component_text(header, _DISCORD_EMBED_TITLE_LIMIT), color=discord.Color.orange())
-            content = self._self_contained_prompt_content(f"**{header}**", message)
+            prompt_header, mention_content = self._mention_prompt_header(f"**{header}**")
+            content = self._self_contained_prompt_content(prompt_header, message)
             view = SlashConfirmView(
                 session_key=session_key, confirm_id=confirm_id,
                 allowed_user_ids=self._allowed_user_ids, allowed_role_ids=self._allowed_role_ids,
             )
-            return {"content": content, "embed": embed, "view": view}, view
+            return self._interactive_prompt_send_kwargs(
+                content=content, embed=embed, view=view, mention_content=mention_content,
+            ), view
         return await self._send_prompt(chat_id, metadata, _build)
 
     async def send_clarify(
@@ -5834,13 +5823,13 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
             else:
                 hint = t("platform.discord.prompt.clarify_hint_text")
                 view = None
+            prompt_header, mention_content = self._mention_prompt_header(f"❓ **{clarify_title}**")
             content = self._self_contained_prompt_content(
-                f"❓ **{clarify_title}**", str(question or "").strip(), tail=f"\n\n{hint}",
+                prompt_header, str(question or "").strip(), tail=f"\n\n{hint}",
             )
-            send_kwargs = {"content": content, "embed": embed}
-            if view:
-                send_kwargs["view"] = view
-            return send_kwargs, view
+            return self._interactive_prompt_send_kwargs(
+                content=content, embed=embed, view=view, mention_content=mention_content,
+            ), view
         return await self._send_prompt(chat_id, metadata, _build, fail_log="send_clarify")
 
     async def send_update_prompt(
@@ -5859,8 +5848,11 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
                 session_key=session_key, allowed_user_ids=self._allowed_user_ids,
                 allowed_role_ids=self._allowed_role_ids,
             )
-            content = self._self_contained_prompt_content(f"☤ **{update_title}**", f"{prompt}{default_hint}")
-            return {"content": content, "embed": embed, "view": view}, view
+            prompt_header, mention_content = self._mention_prompt_header(f"☤ **{update_title}**")
+            content = self._self_contained_prompt_content(prompt_header, f"{prompt}{default_hint}")
+            return self._interactive_prompt_send_kwargs(
+                content=content, embed=embed, view=view, mention_content=mention_content,
+            ), view
         result = await self._send_prompt(chat_id, metadata, _build)
         if result.success and _metadata_marks_nonconversational(metadata):
             await self._nonconversational_messages.mark_many([result.message_id])

@@ -3,11 +3,7 @@ import { type FC, type ReactNode, useCallback, useEffect, useRef, useState } fro
 
 import { DirectiveContent } from '@/components/assistant-ui/directive-text'
 import { isAttachmentRef } from '@/components/assistant-ui/reference-kinds'
-import {
-  messageAttachmentRefs,
-  messageContentText,
-  PROCESS_NOTIFICATION_RE
-} from '@/components/assistant-ui/thread/content'
+import { messageAttachmentRefs, messageContentText } from '@/components/assistant-ui/thread/content'
 import { MessageHoverTime } from '@/components/assistant-ui/thread/message-hover-time'
 import { ReactionBadge, ReactionPicker } from '@/components/assistant-ui/thread/message-reactions'
 import { SetupLearnedNote, splitSetupLearned } from '@/components/assistant-ui/thread/setup-learned'
@@ -83,16 +79,14 @@ export const USER_ACTION_ICON_BUTTON_CLASS =
 export const USER_ACTION_ICON_SIZE = '0.6875rem'
 export const StopGlyph = <StopFilled aria-hidden className="size-3.5 -translate-y-px" />
 
-// Agent-to-agent deliveries ("Message from 🤖 <sender>: …", the Bot Mode /
-// multi-profile convention; optional "(@<handle>)" carries the sender's
-// profile name for avatar resolution — a relayed sender is re-stamped
-// "(@<handle>@<connection>)" so a reply reaches the right machine (#103731);
-// legacy "[Message from agent '<sender>'] …" too). They arrive on the user
-// role because the recipient's turn runs on it, but they are NOT the human
-// speaking — render them as a compact attributed timeline notice instead of
-// a user bubble.
-export const AGENT_MESSAGE_RE =
-  /^(?:Message from (?:🤖\s*)?([^:\n(]{1,64}?)(?:\s*\(@([a-z0-9][a-z0-9_-]{0,63})(?:@[a-zA-Z0-9][a-zA-Z0-9_-]{0,63})?\))?:\s*|\[Message from agent '([^']{1,64})'\]\s*)([\s\S]*)$/u
+// Synthetic user rows use the shared matchers from lib/chat-messages/message-kind
+// (chat-runtime.ts stamps the authoritative isHuman flag from the same source).
+// The agent-delivery regex moved there — now also accepting the relayed
+// "(@<handle>@<connection>)" spelling (#103731); the content module keeps its
+// own copy of the process-notification matcher for the timeline and
+// response-group consumers.
+export { AGENT_MESSAGE_RE, PROCESS_NOTIFICATION_RE } from '@/lib/chat-messages/message-kind'
+import { AGENT_MESSAGE_RE, PROCESS_NOTIFICATION_RE } from '@/lib/chat-messages/message-kind'
 
 // sender handle -> avatar data URL. Module-level so a chat full of notices
 // from one bot resolves once. Bounded LRU: handles are parsed out of message

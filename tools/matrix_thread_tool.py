@@ -1,0 +1,145 @@
+"""Explicit thread creation on the Matrix transport for the current session."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import threading
+from functools import partial
+from typing import Any
+
+from agent.async_utils import safe_schedule_threadsafe
+from gateway.session_context import get_session_env, get_session_transport
+from tools.interrupt import is_thread_interrupted
+from tools.registry import registry
+
+logger = logging.getLogger(__name__)
+
+_CREATE_DEADLINE_SECONDS = 300.0
+
+
+async def _matrix_thread_create(args: dict[str, Any]) -> str:
+    room_id = get_session_env("HERMES_SESSION_CHAT_ID")
+    requester = get_session_env("HERMES_SESSION_USER_ID")
+    adapter, owner_loop = get_session_transport()
+    error = None
+    root_text = args.get("root_text")
+    root_event_id = args.get("root_event_id")
+    message = args.get("message")
+    if (
+        get_session_env("HERMES_SESSION_PLATFORM") != "matrix"
+        or not room_id
+        or not requester
+        or adapter is None
+    ):
+        error = "Matrix thread creation requires a live Matrix session"
+    elif not isinstance(message, str) or not message.strip():
+        error = "message must contain non-whitespace text"
+    elif (root_text is None) == (root_event_id is None):
+        error = "Supply either root_text or root_event_id"
+    elif root_event_id is not None and (
+        not isinstance(root_event_id, str) or not root_event_id.startswith("$")
+    ):
+        error = "root_event_id must be a Matrix event ID"
+    elif root_text is not None and (
+        not isinstance(root_text, str) or not root_text.strip()
+    ):
+        error = "root_text must contain non-whitespace text"
+    elif owner_loop is None or not owner_loop.is_running():
+        error = "Matrix gateway loop is unavailable"
+    if error:
+        return json.dumps({"success": False, "error": error})
+
+    from plugins.platforms.matrix.thread_create import MatrixThreadCreateProgress
+
+    interrupted = partial(is_thread_interrupted, threading.get_ident())
+    cancel_requested = threading.Event()
+    progress = MatrixThreadCreateProgress(room_id)
+    task: asyncio.Task[dict[str, Any]] | None = None
+
+    async def create():
+        nonlocal task
+        task = asyncio.current_task()
+        return await adapter.create_matrix_thread(
+            room_id,
+            message,
+            requester=requester,
+            root_text=root_text,
+            root_event_id=root_event_id,
+            interrupted=lambda: cancel_requested.is_set() or interrupted(),
+            progress=progress,
+        )
+
+    future = safe_schedule_threadsafe(
+        create(),
+        owner_loop,
+        logger=logger,
+        log_message="matrix_thread_create: failed to schedule on the gateway loop",
+    )
+    if future is None:
+        return json.dumps({
+            "success": False,
+            "error": "Matrix gateway loop is unavailable",
+        })
+    wrapped = asyncio.wrap_future(future)
+    try:
+        result = await asyncio.wait_for(
+            asyncio.shield(wrapped), timeout=_CREATE_DEADLINE_SECONDS
+        )
+    except (TimeoutError, asyncio.CancelledError) as exc:
+        cancel_requested.set()
+        error = (
+            "Matrix thread creation cancelled"
+            if isinstance(exc, asyncio.CancelledError)
+            else "Matrix thread creation timed out"
+        )
+        if task is None:
+            future.cancel()
+        else:
+            try:
+                owner_loop.call_soon_threadsafe(task.cancel)
+            except RuntimeError:
+                delivery = progress.delivery
+                return json.dumps(
+                    delivery.failure(error, delivery_uncertain=delivery.sending)
+                )
+        try:
+            result = await asyncio.wait_for(asyncio.shield(wrapped), timeout=5.0)
+        except (TimeoutError, asyncio.CancelledError):
+            if task is not None and task.done() and not task.cancelled():
+                result = task.result()
+            else:
+                delivery = progress.delivery
+                result = delivery.failure(error, delivery_uncertain=delivery.sending)
+    return json.dumps(result, ensure_ascii=False)
+
+
+registry.register(
+    name="matrix_thread_create",
+    toolset="matrix_threads",
+    schema={
+        "name": "matrix_thread_create",
+        "description": "Create a Matrix thread in the current joined room with an initial message. Supply visible root text for a new main-timeline message, or an existing main-timeline root event ID. The current conversation stays in its original session. A partial result lists confirmed deliveries; do not retry a delivered root.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "root_text": {
+                    "type": "string",
+                    "description": "Visible root text, including any desired label. Matrix threads have no separate name.",
+                },
+                "root_event_id": {
+                    "type": "string",
+                    "description": "Existing eligible main-timeline message in the current room. Thread replies and edits cannot become roots.",
+                },
+                "message": {
+                    "type": "string",
+                    "description": "First message to send inside the thread.",
+                },
+            },
+            "required": ["message"],
+        },
+    },
+    handler=_matrix_thread_create,
+    is_async=True,
+)

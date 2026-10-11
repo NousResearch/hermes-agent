@@ -14,7 +14,7 @@ def dispatch_connector_call(name, arguments, tool_call_id):
     partition = partition_calls([{"name": name, "arguments": arguments}])
     entries = run_remote(partition.remote, tool_call_id, availability=None, client_factory=None)
     entry = entries[0]
-    return json.dumps({key: value for key, value in entry.items() if key in {"response", "error"}},
+    return json.dumps({key: value for key, value in entry.items() if key in {"response", "error", "account"}},
                       ensure_ascii=False)
 
 
@@ -56,5 +56,7 @@ def dispatch_connector_batch(calls, ids, *, user_task, enabled_tools,
             entry["error"] = error if isinstance(error, dict) else {"code": "TOOL_ERROR", "message": str(error)}
         else:
             entry["response"] = value.get("response", value) if isinstance(value, dict) else value
+        if isinstance(value, dict) and value.get("account"):
+            entry["account"] = value["account"]
         entries.append(entry)
     return json.dumps(assemble_results(len(calls), entries), ensure_ascii=False)

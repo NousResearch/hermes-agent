@@ -2279,6 +2279,7 @@ cli:
     failed: "Bağlantı başarısız oldu"
     authorized_no_tools: "Yetkilendirildi. Araçlar kullanılamıyor."
     connected: "Bağlandı"
+    named_account: "Hermes bu {name} hesabına {alias} adını verdi. İstediğin zaman yeniden adlandırabilirsin."
     waiting: "Bekleniyor…"
   editor:
     only_interactive: "Harici düzenleyici yalnızca etkileşimli CLI içinde kullanılabilir."

@@ -10,7 +10,7 @@ from tools.connectors.catalog_tool import MANAGE_CATALOG_SCHEMA, manage_catalog
 from tools.connectors.gateway import config as gateway_config
 from tools.connectors.managed import run_managed_action
 from tools.connectors.mcp import run_mcp_operation
-from tools.connectors.targets import ALL_ACTIONS, MCP_ACTIONS, normalize_targets, validate_action
+from tools.connectors.targets import ALIAS_PATTERN, ALL_ACTIONS, MCP_ACTIONS, normalize_targets, validate_action
 from tools.registry import registry, tool_error
 
 
@@ -60,7 +60,9 @@ MANAGE_CONNECTIONS_SCHEMA = {
         "Hosted actions: 'status' lists connectors and whether each is connected; 'connect' "
         "starts an authorization for the given connectors; 'reconnect' checks each one and "
         "repairs only what is not connected ('force': true restarts even a working one, for an "
-        "account switch). Pass SEVERAL slugs in one call. In the desktop app, the terminal UI and "
+        "account switch). A second account of one app is 'connect' with a new 'alias': pick a short "
+        "lowercase name from the user's words (e.g. 'work'), and ask the user if unsure. 'status' lists "
+        "each connector's accounts; 'rename' names or renames one. Pass SEVERAL slugs in one call. In the desktop app, the terminal UI and "
         "the interactive CLI the call shows the user a card and blocks until every app is "
         "connected, skipped, or the deadline passes; the result lists each target as connected / "
         "skipped / not_connected and never carries a link. Where no card exists (a one-shot run, "
@@ -86,7 +88,7 @@ MANAGE_CONNECTIONS_SCHEMA = {
                 "type": "string",
                 "enum": list(ALL_ACTIONS),
                 "description": (
-                    "Defaults to status. connect and reconnect take hosted connector slugs only. "
+                    "Defaults to status. connect, reconnect and rename take hosted connector slugs only. "
                     "install, enable and authorize take mcp:true targets only."
                 ),
             },
@@ -105,6 +107,19 @@ MANAGE_CONNECTIONS_SCHEMA = {
                                         "true = a local MCP server from the catalog; absent or "
                                         "false = a hosted connector account."
                                     ),
+                                },
+                                "alias": {
+                                    "type": "string",
+                                    "description": (
+                                        "Hosted only: the account's name. connect: a new name adds another "
+                                        "account; reconnect: repairs that account; rename: its current name "
+                                        "(or its label when unnamed). One aliased target per call."
+                                    ),
+                                },
+                                "to": {
+                                    "type": "string",
+                                    "pattern": ALIAS_PATTERN,
+                                    "description": "rename only: the new name.",
                                 },
                             },
                             "required": ["name"],

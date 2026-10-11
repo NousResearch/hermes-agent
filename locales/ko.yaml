@@ -2279,6 +2279,7 @@ cli:
     failed: "연결 실패"
     authorized_no_tools: "인증됐어요. 도구는 사용할 수 없어요."
     connected: "연결됨"
+    named_account: "Hermes가 이 {name} 계정의 이름을 {alias}(으)로 정했어요. 언제든 이름을 바꿀 수 있어요."
     waiting: "대기 중…"
   editor:
     only_interactive: "외부 편집기는 대화형 CLI 안에서만 사용할 수 있어요."

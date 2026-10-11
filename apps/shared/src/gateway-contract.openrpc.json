@@ -601,6 +601,24 @@
       }
     },
     {
+      "name": "connectors.accounts.rename",
+      "summary": "Name or rename one hosted connector account owned by the scoped member.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ConnectorAccountsRenameParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ConnectorAccountRow"
+        }
+      }
+    },
+    {
       "name": "connectors.catalog",
       "summary": "The hosted connector catalog available to the scoped member.",
       "params": [
@@ -9480,6 +9498,18 @@
             "default": null,
             "title": "Connection Id"
           },
+          "alias": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Alias"
+          },
           "attempt": {
             "anyOf": [
               {
@@ -10181,6 +10211,11 @@
             "title": "Active",
             "type": "boolean"
           },
+          "disabled": {
+            "default": false,
+            "title": "Disabled",
+            "type": "boolean"
+          },
           "created_at": {
             "title": "Created At",
             "type": "string"
@@ -10296,6 +10331,39 @@
           "status"
         ],
         "title": "ConnectorAccountsRemoveResult",
+        "type": "object"
+      },
+      "ConnectorAccountsRenameParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "connection_id": {
+            "minLength": 1,
+            "title": "Connection Id",
+            "type": "string"
+          },
+          "alias": {
+            "pattern": "^[a-z0-9][a-z0-9-]{0,31}$",
+            "title": "Alias",
+            "type": "string"
+          }
+        },
+        "required": [
+          "connection_id",
+          "alias"
+        ],
+        "title": "ConnectorAccountsRenameParams",
         "type": "object"
       },
       "ConnectorAccountsResult": {
@@ -11184,6 +11252,32 @@
             "default": false,
             "title": "Reconnect",
             "type": "boolean"
+          },
+          "alias": {
+            "anyOf": [
+              {
+                "pattern": "^[a-z0-9][a-z0-9-]{0,31}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Alias"
+          },
+          "connection_id": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Connection Id"
           }
         },
         "required": [
@@ -40043,7 +40137,8 @@
           "FORBIDDEN_SCOPE",
           "ORG_REQUIRED",
           "ORG_ACCESS_DENIED",
-          "INVALID_POLICY"
+          "INVALID_POLICY",
+          "ALIAS_TAKEN"
         ]
       }
     }

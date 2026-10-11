@@ -2279,6 +2279,7 @@ cli:
     failed: "Verbinding het misluk"
     authorized_no_tools: "Gemagtig. Gereedskap nie beskikbaar nie."
     connected: "Verbind"
+    named_account: "Hermes het hierdie {name}-rekening {alias} genoem. Hernoem dit enige tyd."
     waiting: "Wag…"
   editor:
     only_interactive: "Die eksterne redigeerder is slegs binne die interaktiewe CLI beskikbaar."

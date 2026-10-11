@@ -2279,6 +2279,7 @@ cli:
     failed: "连接失败"
     authorized_no_tools: "已授权，但工具不可用。"
     connected: "已连接"
+    named_account: "Hermes 将这个 {name} 账号命名为 {alias}。随时可以重命名。"
     waiting: "等待中…"
   editor:
     only_interactive: "外部编辑器仅在交互式 CLI 中可用。"

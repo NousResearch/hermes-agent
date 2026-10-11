@@ -909,6 +909,10 @@ class CLIModalMixin:
             lines.extend([t("cli.connect.authorized_no_tools"), t("cli.connect.button_continue")])
         elif phase == "connected":
             lines.append(t("cli.connect.connected"))
+            if target.get("alias"):
+                from tools.tool_labels import app_title
+
+                lines.append(t("cli.connect.named_account", name=app_title(target.get("name", "")), alias=target["alias"]))
         else:
             lines.append(str(target.get("detail") or t("cli.connect.waiting")))
         return [line for line in lines if line]

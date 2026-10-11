@@ -373,6 +373,98 @@ def _reap_socket_dir(socket_dir: str, session_name: str, tracked_names: set) -> 
     return reaped
 
 
+# agent-browser stamps every Chromium it spawns for a session with a per-session temp
+# profile dir; the executable is Hermes' packaged Chromium build. Either marker identifies
+# Hermes-managed Chromium — a user's own browser never matches either.
+_AGENT_BROWSER_PROFILE_MARKER = "agent-browser-chrome-"
+# An untethered managed-Chromium tree root must outlive this before the sweep reaps it.
+# A live daemon's children are spared by the ownership check below, so the grace only keeps
+# a just-spawned tree (daemon still starting) from being raced.
+_UNTETHERED_CHROMIUM_GRACE_SECONDS = 600
+
+
+def _managed_chromium_pids(procs: Dict[int, dict]) -> set:
+    """PIDs in ``procs`` (pid -> psutil info dict) that are Hermes-managed Chromium.
+
+    Matched by executable location (the packaged Chromium install dir — renderer, GPU and
+    utility processes share the same exe) or by agent-browser's per-session temporary
+    ``--user-data-dir`` marker in argv.
+    """
+    try:
+        from hermes_cli.browser_runtime import chromium_executable
+        packaged = chromium_executable()
+        managed_dir = os.path.normcase(os.path.dirname(os.path.normpath(packaged))) if packaged else ""
+    except Exception:
+        managed_dir = ""
+    found = set()
+    for pid, info in procs.items():
+        exe = os.path.normcase(os.path.normpath(info.get("exe") or ""))
+        if managed_dir and exe and os.path.dirname(exe) == managed_dir:
+            found.add(pid)
+            continue
+        if _AGENT_BROWSER_PROFILE_MARKER in " ".join(info.get("cmdline") or []):
+            found.add(pid)
+    return found
+
+
+def _reap_untethered_managed_chromium() -> int:
+    """Sweep Hermes-managed Chromium trees whose owning daemon died with its socket dir
+    already gone. Returns the number of tree roots reaped.
+
+    ``_reap_orphaned_browser_sessions`` only reaches daemons that still have a
+    per-session socket dir to scan. When an agent-browser daemon dies (crash /
+    force-kill on a timeout / wedge) and its socket dir is already gone, the Chromium
+    tree it spawned survives with no live owner and no socket dir — invisible to that
+    scan and accumulating without bound. Identify such trees by *ownership* instead: a
+    managed-Chromium process whose tree root has no live parent, older than the grace,
+    is an orphan. A live daemon's children are spared, so an in-use browser is never
+    touched.
+    """
+    try:
+        import psutil
+    except ImportError:  # psutil is a hard dep; defensive only
+        return 0
+
+    try:
+        procs = {p.pid: p.info for p in psutil.process_iter(
+            ["pid", "name", "ppid", "exe", "cmdline", "create_time"])}
+    except Exception:
+        return 0
+
+    managed = _managed_chromium_pids(procs)
+    if not managed:
+        return 0
+
+    from gateway.status import get_process_start_time
+    from tools.process_registry import ProcessRegistry
+
+    reaped = 0
+    for pid in managed:
+        info = procs.get(pid) or {}
+        # A tree root is a managed Chromium whose parent is not itself managed Chromium;
+        # children die with the root's tree-kill below.
+        if info.get("ppid") in managed:
+            continue
+        ppid = info.get("ppid") or 0
+        # ppid 1 = reparented to init (POSIX daemon death); 0 = dead-parent sentinel on
+        # Windows. Either way no live owner exists; any other live parent owns the tree.
+        if ppid not in (0, 1) and psutil.pid_exists(ppid):
+            continue
+        if time.time() - (info.get("create_time") or time.time()) < _UNTETHERED_CHROMIUM_GRACE_SECONDS:
+            continue  # too young — likely a daemon that is still starting
+        start = get_process_start_time(pid)
+        if start is None:
+            continue  # no start-time fingerprint: refuse (PID-swap safety)
+        try:
+            ProcessRegistry._terminate_host_pid(pid, start)  # tree-kill: renderers/GPU go too
+            reaped += 1
+        except (ProcessLookupError, PermissionError, OSError):
+            continue
+    if reaped:
+        _bt.logger.info("Reaped %d untethered managed Chromium tree(s)", reaped)
+    return reaped
+
+
 def _reap_orphaned_browser_sessions():
     """Kill agent-browser daemons whose owning hermes process is gone (an unclean exit loses
     ``_active_sessions`` but node + Chromium keep running). Scans the tmp dir for
@@ -385,6 +477,10 @@ def _reap_orphaned_browser_sessions():
         from tools.browser_lightpanda import reap_orphaned_lightpanda
         reap_orphaned_lightpanda()
     _best_effort("Lightpanda orphan reap", _reap_lp)
+
+    # Process-level fallback for Hermes-managed Chromium whose daemon died with its socket
+    # dir already gone — invisible to the socket-dir scan below (the leak this guards).
+    _best_effort("Untethered managed Chromium reap", _reap_untethered_managed_chromium)
 
     tmpdir = _bt._socket_safe_tmpdir()
     socket_dirs = []

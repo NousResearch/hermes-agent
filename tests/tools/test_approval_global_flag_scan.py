@@ -64,3 +64,23 @@ cases = {
 for command, dangerous in cases.items():
     assert detect_dangerous_command(command)[0] is dangerous, command
 ''')
+
+
+def test_quoted_global_flag_runs_reach_the_git_and_systemctl_targets():
+    # The git fragment carries a quoted-value branch and both grammars are possessive, so a
+    # long flag run that never reaches the subcommand must finish (and fail closed) rather
+    # than backtrack. The subprocess timeout is what bounds a regression on the GIL.
+    _run('''
+from tools.approval_detection import detect_dangerous_command
+run = "--opt val --flag=x -q - " * 58
+quoted = '-C "/a b" ' * 58
+assert detect_dangerous_command(f"git {run}push --force origin main") == (
+    True, "git force push (rewrites remote history)", "git force push (rewrites remote history)")
+assert detect_dangerous_command("git " + quoted + "push -f origin main") == (
+    True, "git force push short flag (rewrites remote history)",
+    "git force push short flag (rewrites remote history)")
+assert detect_dangerous_command(f"systemctl {run}stop nginx") == (
+    True, "stop/restart system service", "stop/restart system service")
+for prefix in ("git", "systemctl"):
+    assert detect_dangerous_command(f"{prefix} {run}ps 2>/dev/null")[0] is False, prefix
+''')

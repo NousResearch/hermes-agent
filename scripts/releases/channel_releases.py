@@ -14,7 +14,7 @@ from hermes_cli.release_channels import (
     ChannelError, build_prefix, canonical_json, validate_identity,
 )
 from scripts.bundles.channel_artifacts import assemble
-from scripts.releases import handoff, r2, stable
+from scripts.releases import handoff, optional_platforms, r2, stable
 from scripts.releases.channels import ChannelPublisher, R2ChannelStore
 from scripts.releases.versioning import parse_attempt_ref
 
@@ -53,9 +53,35 @@ def product_identity(tag: str, run=subprocess.check_output) -> dict:
     return validate_identity(identity)
 
 
-def read_native_receipts(root: Path, tag: str, commit: str) -> dict:
+# Stable builds these native legs only when the claim opts in; the other legs
+# are in every bundle release.
+OPTIONAL_NATIVE_LEGS = {p.handoff: tuple(p.target.split("/")) for p in optional_platforms.PLATFORMS
+                        if p.handoff in NATIVE_LEGS}
+
+
+def native_legs(accepted: dict | None) -> tuple[str, ...]:
+    """The native legs an accepted stable candidate built (every leg for canary)."""
+    if accepted is None:
+        return NATIVE_LEGS
+    present = {(row.get("platform"), row.get("arch")) for row in accepted.get("packages", [])}
+    return tuple(name for name in NATIVE_LEGS
+                 if name not in OPTIONAL_NATIVE_LEGS or OPTIONAL_NATIVE_LEGS[name] in present)
+
+
+def _leg_targets(legs: tuple[str, ...]) -> list[tuple[str, str]]:
+    targets = []
+    for name in legs:
+        if name == "windows-universal":
+            continue
+        platform, arch = name.split("-")
+        targets.append(("macos" if platform == "darwin" else "windows", arch))
+    return targets
+
+
+def read_native_receipts(root: Path, tag: str, commit: str,
+                         legs: tuple[str, ...] = NATIVE_LEGS) -> dict:
     files = {}
-    for name in NATIVE_LEGS:
+    for name in legs:
         receipt = json.loads((root / handoff.receipt_name(name)).read_text(encoding="utf-8-sig"))
         for row in handoff.validate_receipt(receipt, tag, commit, name):
             if row["path"] in files and files[row["path"]] != row:
@@ -66,22 +92,26 @@ def read_native_receipts(root: Path, tag: str, commit: str) -> dict:
                 raise ChannelError("Native artifact differs from its receipt")
             files[row["path"]] = row
     rows = []
-    for platform in ("macos", "windows"):
-        for arch in ("arm64", "x64"):
-            name = f"metadata-{platform}-{arch}.json"
-            if name not in files or not (root / name).is_file():
-                raise ChannelError(f"Missing receipt-bound native metadata: {name}")
-            row = json.loads((root / name).read_text(encoding="utf-8-sig"))
-            if any(row.get(k) != v for k, v in {"platform": platform, "arch": arch, "tag": tag, "commit": commit}.items()):
-                raise ChannelError("Native metadata release identity mismatch")
-            rows.append(row)
+    for platform, arch in sorted(_leg_targets(legs)):
+        name = f"metadata-{platform}-{arch}.json"
+        if name not in files or not (root / name).is_file():
+            raise ChannelError(f"Missing receipt-bound native metadata: {name}")
+        row = json.loads((root / name).read_text(encoding="utf-8-sig"))
+        if any(row.get(k) != v for k, v in {"platform": platform, "arch": arch, "tag": tag, "commit": commit}.items()):
+            raise ChannelError("Native metadata release identity mismatch")
+        rows.append(row)
     return {"packages": rows, "files": files}
 
 
 def match_accepted_packages(manifest: dict, accepted: dict) -> None:
     by_target = {(row["platform"], row["arch"]): row for row in accepted["packages"]}
-    if {(row["platform"], row["arch"]) for row in manifest["packages"]} != {
-            (platform, arch) for platform in ("darwin", "win32") for arch in ("arm64", "x64")}:
+    # Every desktop package the release accepted, and no other: macOS Intel
+    # is there only when the claim opted into it.
+    accepted_targets = {("darwin" if platform == "macos" else "win32", arch)
+                        for platform, arch in by_target if platform in ("macos", "windows")}
+    required = {("darwin", "arm64"), ("win32", "arm64"), ("win32", "x64")}
+    if (not required <= accepted_targets
+            or {(row["platform"], row["arch"]) for row in manifest["packages"]} != accepted_targets):
         raise ChannelError("Protected manifest must include every native target")
     for package in manifest["packages"]:
         platform = "macos" if package["platform"] == "darwin" else "windows"
@@ -356,9 +386,10 @@ def publish_release(policy: str, env: dict, root: Path) -> dict:
         if final_claim is not None else None
     # Native handoffs were staged under the attempt ref for stable attempts
     # (identical for canary, where tag == payload_tag).
-    handoff.fetch(tag, commit, list(NATIVE_LEGS), root,
+    legs = native_legs(accepted)
+    handoff.fetch(tag, commit, list(legs), root,
                   ["metadata-*.json", "*.zip", "*.dmg", "*.blockmap", "*.msixbundle"], public_base=publisher.public_base)
-    native = read_native_receipts(root, tag, commit)
+    native = read_native_receipts(root, tag, commit, legs)
     windows = next(row for row in native["packages"] if row["platform"] == "windows")
     if policy == "canary-release":
         expected_windows = canary_windows_version(tag)
@@ -385,7 +416,8 @@ def publish_release(policy: str, env: dict, root: Path) -> dict:
                                            version=payload_tag[1:], windows_version=windows["version"],
                                            identity=identity, policy=policy, release_gate=release_gate,
                                            archive_ref=tag if parsed else None)
-    manifest, feeds = assemble(request, native, root, artifact_prefix=f"releases/tag/{tag}/")
+    manifest, feeds = assemble(request, native, root, artifact_prefix=f"releases/tag/{tag}/",
+                               targets=_leg_targets(legs))
     if accepted is not None:
         match_accepted_packages(manifest, accepted)
     prefix = build_prefix(request["buildId"])
@@ -398,8 +430,8 @@ def publish_release(policy: str, env: dict, root: Path) -> dict:
 
     def qualified(pinned: dict, actual: dict) -> bool:
         # Rehash local receipt-bound bytes rather than trusting caller-supplied claims.
-        expected, _ = assemble(pinned, read_native_receipts(root, tag, commit), root,
-                               artifact_prefix=f"releases/tag/{tag}/")
+        expected, _ = assemble(pinned, read_native_receipts(root, tag, commit, legs), root,
+                               artifact_prefix=f"releases/tag/{tag}/", targets=_leg_targets(legs))
         if accepted is not None:
             match_accepted_packages(expected, accepted)
 

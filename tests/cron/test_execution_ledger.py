@@ -168,6 +168,7 @@ def test_terminal_execution_cannot_be_rewritten(monkeypatch, tmp_path):
 def test_retention_bounds_terminal_history_but_preserves_inflight(monkeypatch, tmp_path):
     executions = _point_ledger(monkeypatch, tmp_path)
     monkeypatch.setattr(executions, "MAX_TERMINAL_EXECUTIONS", 3)
+    monkeypatch.setattr(executions, "PER_JOB_RETAINED_EXECUTIONS", 0)  # exercise the global cap alone
     inflight = executions.create_execution("live", source="builtin")
     executions.mark_execution_running(inflight["id"])
     for index in range(8):
@@ -184,6 +185,7 @@ def test_recently_finished_long_running_execution_survives_retention(
 ):
     executions = _point_ledger(monkeypatch, tmp_path)
     monkeypatch.setattr(executions, "MAX_TERMINAL_EXECUTIONS", 1)
+    monkeypatch.setattr(executions, "PER_JOB_RETAINED_EXECUTIONS", 0)  # exercise the global cap alone
     long_running = executions.create_execution("long-running", source="builtin")
     assert executions.mark_execution_running(long_running["id"]) is not None
     newer = executions.create_execution("newer", source="builtin")
@@ -195,6 +197,25 @@ def test_recently_finished_long_running_execution_survives_retention(
     assert finished["status"] == "completed"
     assert executions.get_execution(long_running["id"])["status"] == "completed"
     assert executions.get_execution(newer["id"]) is None
+
+
+def test_chatty_job_cannot_evict_a_quiet_jobs_history(monkeypatch, tmp_path):
+    """Per-job floor: a `*/5` watchdog filling the global window leaves the weekly job's rows alone."""
+    executions = _point_ledger(monkeypatch, tmp_path)
+    monkeypatch.setattr(executions, "MAX_TERMINAL_EXECUTIONS", 6)
+    monkeypatch.setattr(executions, "PER_JOB_RETAINED_EXECUTIONS", 2)
+    weekly = []
+    for _ in range(3):  # oldest rows in the ledger, one of them a failure
+        row = executions.create_execution("weekly", source="builtin")
+        weekly.append(executions.finish_execution(row["id"], success=len(weekly) != 1, error="boom"))
+    for _ in range(20):
+        row = executions.create_execution("watchdog", source="builtin")
+        executions.finish_execution(row["id"], success=True)
+
+    kept = executions.list_executions(job_id="weekly", limit=100)
+    assert [r["id"] for r in kept] == [weekly[2]["id"], weekly[1]["id"]]  # newest 2, failure included
+    assert len(executions.list_executions(job_id="watchdog", limit=100)) == 6  # global cap still binds
+    assert len(executions.list_executions(limit=100)) == 8
 
 
 def test_corrupt_store_fails_closed_without_overwrite(monkeypatch, tmp_path):

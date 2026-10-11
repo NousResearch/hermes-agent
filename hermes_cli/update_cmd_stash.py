@@ -7,9 +7,11 @@ Origin helpers are imported lazily per function (no cycle; test patches on the o
 import logging
 import re
 import subprocess
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from pathlib import Path
 from typing import Optional
+
+from hermes_cli.update_cmd_common import _record_stop
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("hermes_cli.update_cmd")
@@ -109,7 +111,7 @@ def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path, *, checkout_mo
         if add.returncode != 0:
             _print_nonempty(add.stderr)
 
-    stash_name = datetime.now(timezone.utc).strftime(f"{_AUTOSTASH_NAME_PREFIX}%Y%m%d-%H%M%S")
+    stash_name = datetime.now(UTC).strftime(f"{_AUTOSTASH_NAME_PREFIX}%Y%m%d-%H%M%S")
     print("→ Local changes detected — stashing before update...")
     prev_stash = _git_run(git_cmd, ["rev-parse", "--verify", "refs/stash"], cwd).stdout.strip()
     with (checkout_move or _no_move)(revert=True):  # push and reset put every tracked change back to HEAD
@@ -200,7 +202,7 @@ def _warn_orphaned_update_autostashes(git_cmd: list[str], cwd: Path) -> int:
         stash_list = _git_run(git_cmd, ["stash", "list", "--format=%gd %s"], cwd)
         if stash_list.returncode != 0:
             return 0
-        cutoff = datetime.now(timezone.utc) - timedelta(days=_AUTOSTASH_WARN_AGE_DAYS)
+        cutoff = datetime.now(UTC) - timedelta(days=_AUTOSTASH_WARN_AGE_DAYS)
         stale: list[tuple[str, str]] = []
         for line in stash_list.stdout.splitlines():
             selector, _, subject = line.strip().partition(" ")
@@ -209,7 +211,7 @@ def _warn_orphaned_update_autostashes(git_cmd: list[str], cwd: Path) -> int:
                 continue
             stamp = subject[pos + len(_AUTOSTASH_NAME_PREFIX):][:15]  # "YYYYMMDD-HHMMSS"
             try:
-                stash_time = datetime.strptime(stamp, "%Y%m%d-%H%M%S").replace(tzinfo=timezone.utc)
+                stash_time = datetime.strptime(stamp, "%Y%m%d-%H%M%S").replace(tzinfo=UTC)
             except ValueError:
                 continue  # age unknown — leave it alone rather than guess
             if stash_time < cutoff:
@@ -333,6 +335,53 @@ def _restored_python_paths(git_cmd: list[str], cwd: Path) -> tuple[str, ...] | N
     return tuple(sorted(paths))
 
 
+#: Closed allowlist of suffixes that no Python import can load or read during startup.
+#: Everything else (.py, .so/.pyd/.dll/.dylib, .pyc, .pth, .egg-link, data files such as
+#: .json/.yaml/.toml that modules read on import, extensionless files) keeps the import check.
+_NON_RUNTIME_SUFFIXES = frozenset({
+    ".md", ".mdx", ".rst", ".txt", ".adoc",
+    ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".ico",
+})
+
+
+def _restore_is_non_runtime(git_cmd: list[str], cwd: Path, stash_ref: str) -> bool:
+    """True only when every path the stash restores is demonstrably unable to change an import.
+
+    The set is read from the stash commit itself (worktree and index changes against its base,
+    renames split into delete + add, plus its untracked tree), never from the working tree,
+    which also holds what the clean import probe wrote. Each path must have an allowlisted
+    suffix, must not be a symlink, and may only sit in a directory ``HEAD`` already tracks, so
+    the restore cannot create a namespace-package directory. Any Git failure counts as
+    runtime-affecting.
+    """
+    restored: set[str] = set()
+    for side in (stash_ref, f"{stash_ref}^2"):  # worktree, index
+        changed = _git_paths_z(
+            git_cmd, ["diff", "--name-only", "--no-renames", "-z", f"{stash_ref}^1", side, "--"], cwd)
+        if changed is None:
+            return False
+        restored |= changed
+    has_untracked = _git_quiet(git_cmd, ["rev-parse", "-q", "--verify", f"{stash_ref}^3"], cwd)
+    if has_untracked is None:
+        return False
+    if has_untracked.returncode == 0:
+        untracked = _git_paths_z(git_cmd, ["ls-tree", "-r", "--name-only", "-z", f"{stash_ref}^3"], cwd)
+        if untracked is None:
+            return False
+        restored |= untracked
+    if not restored:
+        return True
+    head_dirs = _git_paths_z(git_cmd, ["ls-tree", "-r", "-d", "--name-only", "-z", "HEAD"], cwd)
+    if head_dirs is None:
+        return False
+    for path in restored:
+        parent = Path(path).parent.as_posix()
+        if (Path(path).suffix.lower() not in _NON_RUNTIME_SUFFIXES or (cwd / path).is_symlink()
+                or (parent != "." and parent not in head_dirs)):
+            return False
+    return True
+
+
 def _reject_unsafe_stash_restore(
     git_cmd: list[str], cwd: Path, stash_ref: str, preexisting_untracked: set[str], failing_target: str,
     detail: str | None, *, checkout_move=None,
@@ -368,6 +417,7 @@ def _reject_unsafe_stash_restore(
     print(f"  Inspect them with: git stash show --stat {stash_ref}")
     print(f"  Restore manually after fixing them: git stash apply {stash_ref}")
     _clear_pending_autostash()  # named right above, and the update fails
+    _record_stop("stash_restore_rejected")
     raise SystemExit(1)
 
 
@@ -492,7 +542,13 @@ def _restore_stashed_changes(
     syntax_ok, failing_path, syntax_error = _validate_python_files_syntax(cwd, restored_python)
     if not syntax_ok:
         reject(failing_path or "restored Python source", syntax_error)
-    for module, error in _critical_module_import_failures(cwd, report_runtime_errors=True).items():
+    # Probe outcomes also move with install state between the two runs (launch preparation,
+    # dependency sync), so a restore that cannot affect an import (docs, images) must not be
+    # rejected on that difference (#130101). Anything else, including a native extension or
+    # bytecode that shadows a healthy module, is still compared.
+    non_runtime = _restore_is_non_runtime(git_cmd, cwd, stash_ref)
+    for module, error in (() if non_runtime else
+                          _critical_module_import_failures(cwd, report_runtime_errors=True).items()):
         if clean_import_failures.get(module) != error:
             reject(f"agent import {module or 'unknown'}", error[1])
             break

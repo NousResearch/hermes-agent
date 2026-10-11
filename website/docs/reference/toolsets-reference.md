@@ -45,7 +45,7 @@ Or in-session:
 ```
 /tools list
 /tools disable browser
-/tools enable spotify
+/tools enable discord
 ```
 
 ## Core Toolsets
@@ -77,8 +77,9 @@ Or in-session:
 | `safe` | `image_generate`, `vision_analyze`, `web_extract`, `web_search` (via `includes`) | Read-only research + media generation. No file writes, no terminal, no code execution. |
 | `search` | `web_search` | Web search only (without extract). |
 | `session_search` | `session_search` | Search past conversation sessions. |
+| `setup` | `setup_choose` | Onboarding-only surface of the desktop setup profile: ask the user one question or picker card at a time. The setup profile's own config enables it (`platform_toolsets.cli`), and only desktop sessions get its tools. `all` does not include it. Not listed by `hermes tools`. |
+| `start_chat` | `start_chat` | Start a new desktop chat in an existing profile (this chat's own profile when none is named) and send it its first message, so the task runs there in view of the user. Every call opens another chat. A profile's own config enables it (`platform_toolsets.cli`), and only desktop sessions get its tool. `all` does not include it. Not listed by `hermes tools`. Subagents never get it. |
 | `skills` | `skill_manage`, `skill_view`, `skills_list` | Skill CRUD and browsing. |
-| `spotify` | `spotify_albums`, `spotify_devices`, `spotify_library`, `spotify_playback`, `spotify_playlists`, `spotify_queue`, `spotify_search` | Native Spotify control (playback, queue, search, playlists, albums, library). Registered by the bundled `spotify` plugin. |
 | `terminal` | `process_manage`, `terminal` | Shell command execution and background process management. |
 | `todo` | `todo_list` | Task list management within a session. |
 | `tts` | `text_to_speech` | Text-to-speech audio generation. |

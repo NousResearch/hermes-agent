@@ -8,6 +8,7 @@ import hashlib
 import json
 
 import pytest
+from datetime import UTC
 
 
 def _claims(*rows):
@@ -73,7 +74,7 @@ def test_unstarted_claim_waits_for_its_grace_period_before_burning():
 
     from scripts.releases.sequencer import classify_runs
 
-    claimed = datetime(2026, 9, 22, 1, 0, tzinfo=timezone.utc)
+    claimed = datetime(2026, 9, 22, 1, 0, tzinfo=UTC)
     assert classify_runs([], claimed_at=claimed, now=claimed + timedelta(minutes=59)) == (
         "running", None,
     )
@@ -117,7 +118,7 @@ def test_the_pass_that_observes_a_failure_reruns_it_unless_burned(attempt, rerun
     failed = {
         "id": 42, "status": "completed", "conclusion": "failure", "run_attempt": attempt,
         # Completed this instant: the pass observing the failure event.
-        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": datetime.now(UTC).isoformat(),
         "head_branch": "rc.1-v0.21.5", "head_sha": commit,
     }
     discover_run = _discover_run(tags, workflow_runs=[failed])
@@ -355,7 +356,7 @@ def _sequencer_fixture(*versions, manifest_digest, docker_digest="sha256:" + "b"
                 entry = tags.get(name)
                 sha, target = (entry[0], entry[1]) if entry else ("", "")
                 if sha:
-                    lines.append(f"{sha}\t{ref if ref.endswith('^{}') else ref}")
+                    lines.append(f"{sha}\t{ref}")
                     if ref.endswith("^{}"):
                         lines[-1] = f"{target}\t{ref}"
             return "\n".join(lines)
@@ -447,7 +448,7 @@ def test_the_store_check_joins_the_pass_after_the_aliases_move(monkeypatch):
     from scripts.releases import channel_releases, docker, sequencer, store
 
     manifest_digest = hashlib.sha256(b"m").hexdigest()
-    _tags, releases, run = _sequencer_fixture(
+    _tags, _releases, run = _sequencer_fixture(
         "0.21.5", manifest_digest=manifest_digest, drafts_on_claim_tag=True)
     events = []
     head = ["0.21.4"]

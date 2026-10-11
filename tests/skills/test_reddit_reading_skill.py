@@ -11,7 +11,7 @@ import pytest
 SCRIPTS_DIR = Path(__file__).resolve().parents[2] / "optional-skills" / "social-media" / "reddit-reading" / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
-import reddit  # noqa: E402
+import reddit
 
 THREAD_ATOM = b"""<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom">
 <entry><author><name>/u/op</name></author><title>Post title</title>

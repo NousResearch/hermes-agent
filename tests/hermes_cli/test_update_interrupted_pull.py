@@ -190,7 +190,7 @@ def test_restore_runs_the_installers_store_git_when_path_has_none(checkout, monk
     repo = os.path.realpath(Path(er.__file__).parent.parent)
     for entry in ("hermes_cli.main", "agent.legacy_cli", "run_agent", "acp_adapter.entry"):
         run = subprocess.run([sys.executable, "-c", _ENTRY_SPY, entry], cwd=repo, capture_output=True, text=True,
-                             encoding="utf-8", env={**os.environ, "PYTHONPATH": repo}, timeout=120)
+                             encoding="utf-8", env={**os.environ, "PYTHONPATH": repo}, timeout=120, check=False)
         assert run.stdout.strip().splitlines()[-1:] == ["[]"], (entry, run.stdout[-500:], run.stderr[-2000:])
 
 
@@ -212,7 +212,7 @@ def test_restore_never_touches_user_work_when_git_wrote_nothing(checkout, capsys
     stale = f"pid=0\npre={_git(root, 'rev-parse', 'HEAD')}\ntarget={b}\nstash=\n"
     marker.write_text(stale, encoding="utf-8", newline="")
     merge = subprocess.run(["git", "-C", str(root), "merge", "origin/main"],
-                           capture_output=True, text=True, encoding="utf-8")
+                           capture_output=True, text=True, encoding="utf-8", check=False)
     assert (root / ".git" / "MERGE_HEAD").exists(), merge.stdout + merge.stderr
     (root / "utils.py").write_text("OLD = 1  # resolved by hand\n", encoding="utf-8", newline="")
     before = _git(root, "status", "--porcelain", "--untracked-files=all")
@@ -470,7 +470,7 @@ def test_a_launch_that_cannot_get_the_repair_claim_never_continues_from_the_torn
             [sys.executable, "-c", "import sys; from pathlib import Path; from hermes_cli import _early_recovery as er; "
              "er._RESTORE_CLAIM_WAIT_SECONDS = 0.2; er.restore_interrupted_pull(Path(sys.argv[1]))", str(root)],
             cwd=Path(er.__file__).resolve().parent.parent, capture_output=True, text=True, encoding="utf-8",
-            timeout=60)
+            timeout=60, check=False)
     finally:
         er._lock_fd(fd, False)
         os.close(fd)
@@ -677,7 +677,7 @@ def test_a_pull_whose_target_does_not_resolve_never_moves_the_tree(checkout, com
 
 def test_an_arm_failure_after_the_autostash_still_names_the_stash(checkout, commit_point, monkeypatch, capsys):
     """An unwritable install state refuses the pull; the user is still told where their work is (F29)."""
-    root, _a, _b = checkout
+    _root, _a, _b = checkout
 
     def unwritable(*_args, **_kwargs):
         raise OSError(28, "No space left on device")
@@ -864,7 +864,7 @@ def test_the_tree_move_marker_is_durable_before_it_appears_under_its_name(checko
     torn tree, which no launch can identify (review C3)."""
     from hermes_cli import update_cmd_commit
 
-    root, a, b = checkout
+    root, _a, b = checkout
     marker = er.interrupted_pull_marker(root)
     marker.write_text("pid=1\npre=older\n", encoding="utf-8")
     synced, replaced = [], []
@@ -951,7 +951,7 @@ def test_a_gone_target_retires_its_marker_only_over_a_clean_pre_tree(tmp_path, t
     _git(root, "reset", "-q", "--hard", pre)
     _git(root, "reflog", "expire", "--expire=now", "--all")
     _git(root, "gc", "-q", "--prune=now")
-    assert subprocess.run(["git", "-C", str(root), "cat-file", "-e", target]).returncode != 0  # gone
+    assert subprocess.run(["git", "-C", str(root), "cat-file", "-e", target], check=False).returncode != 0  # gone
     if torn:
         (root / "module.py").write_text("def broken(:\n", encoding="utf-8", newline="")
     marker = er.interrupted_pull_marker(root)

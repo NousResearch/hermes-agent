@@ -49,7 +49,7 @@ def _creation_time(pid: int) -> str:
 
 def _alive(pid: int) -> bool:
     return str(pid) in subprocess.run(['tasklist', '/FI', f'PID eq {pid}', '/NH'],
-                                      capture_output=True, text=True).stdout
+                                      capture_output=True, text=True, check=False).stdout
 
 
 def _dead_pid() -> int:
@@ -73,7 +73,7 @@ def _finish(proc: subprocess.Popen, timeout: int = 120) -> tuple[int, str]:
     try:
         out, _ = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
-        subprocess.run(['taskkill', '/T', '/F', '/PID', str(proc.pid)], capture_output=True)
+        subprocess.run(['taskkill', '/T', '/F', '/PID', str(proc.pid)], capture_output=True, check=False)
         out, _ = proc.communicate()
         pytest.fail(f'hand-off did not finish within {timeout}s: {out}')
     return proc.returncode, out
@@ -83,13 +83,21 @@ def _op(home: Path, *args: str) -> tuple[int, str, str]:
     proc = subprocess.run(
         [POWERSHELL, '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', str(SCRIPT),
          '-InstallRoot', str(home / 'hermes-agent'), *args],
-        cwd=home, env=_env(home), capture_output=True, text=True, timeout=120)
+        cwd=home, env=_env(home), capture_output=True, text=True, timeout=120, check=False)
     return proc.returncode, proc.stdout, proc.stderr
 
 
 def _log(home: Path) -> str:
+    """The hand-off log so far. windows.ps1 appends with Add-Content, which holds the file without
+    read sharing for the length of each write: a read landing in that window is a sharing
+    violation (PermissionError), not a missing line, so it is retried."""
     path = home / 'logs/desktop-update-handoff.log'
-    return path.read_text(encoding='utf-8-sig') if path.exists() else ''
+    for _ in range(50):
+        try:
+            return path.read_text(encoding='utf-8-sig') if path.exists() else ''
+        except PermissionError:
+            time.sleep(0.1)
+    return path.read_text(encoding='utf-8-sig')
 
 
 def _custodian(home: Path, handoff: int) -> str:
@@ -107,7 +115,7 @@ class _HeldLock:
         deadline = time.monotonic() + 30
         while True:
             try:
-                self._f = open(home / (MARKER + '.lock'), 'a+b')   # noqa: SIM115  # windows-footgun: ok — binary mode
+                self._f = open(home / (MARKER + '.lock'), 'a+b')   # windows-footgun: ok — binary mode
                 return
             except PermissionError:   # the script holds it right now
                 assert time.monotonic() < deadline, 'never got the marker lock'

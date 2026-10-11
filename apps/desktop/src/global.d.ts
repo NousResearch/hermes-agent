@@ -11,7 +11,7 @@ import type { PoolLimits } from '../electron/pool-limits'
 import type { KeepAwakeMode } from '../electron/power-save'
 import type { UpdateHoldWire } from '../electron/update-hold-types'
 import type { UpdateRunReport } from '../electron/updater/update-metrics'
-import type { GrowRequest } from '../electron/window-growth'
+import type { WindowSizeMode } from '../electron/window-size-types'
 
 import type { WakeIndicatorState } from './lib/wake-indicator'
 import type {
@@ -132,8 +132,7 @@ declare global {
         onState: (callback: (state: WakeIndicatorState) => void) => () => void
       }
       chatOnboarding?: {
-        grow: (request: GrowRequest) => void
-        soloBoot: () => void
+        size: (mode: WindowSizeMode) => void
       }
       // The pop-out pet overlay: a transparent always-on-top window hosting only
       // the mascot. The main renderer drives it (open/close/drag + state push);
@@ -644,8 +643,8 @@ declare global {
       updates: {
         check: (opts?: { force?: boolean }) => Promise<DesktopUpdateStatus>
         apply: (opts?: DesktopUpdateApplyOptions) => Promise<DesktopUpdateApplyResult>
-        getBranch: () => Promise<{ branch: string }>
-        setBranch: (name: string) => Promise<{ branch: string }>
+        /** Persist this source install's update channel and return the fresh check. */
+        setChannel?: (name: 'main' | 'stable') => Promise<DesktopUpdateStatus>
         onProgress: (callback: (payload: DesktopUpdateProgress) => void) => () => void
         /** Claim the pending packaged self-update run (null when none or already claimed). */
         takePendingRun?: () => Promise<UpdateRunReport | null>
@@ -882,8 +881,14 @@ export interface DesktopUpdateStatus {
   currentVersion?: string
   /** The R2 channel name; independent of source branch and package version. */
   channel?: string
+  /** The install's source_check can persist a channel (older runtimes cannot). */
+  channelSelectable?: boolean
   /** The latest release tag on a release-feed channel, e.g. `v0.18.0`. */
   latestTag?: string | null
+  /** Source stable: the release version the channel resolves to, e.g. `0.21.6`. */
+  sourceVersion?: string
+  /** Source stable: true when forward-only (newer than the release); absent from older checkers. */
+  aheadOfRelease?: boolean
   targetSha?: string
   commits?: DesktopUpdateCommit[]
   dirty?: boolean

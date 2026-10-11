@@ -219,7 +219,7 @@ async def _telegram_send_one_media(bot, chat_id, media_path, is_voice, *, captio
                 if thumb_path:
                     media_kwargs["thumbnail"] = thumb_path
     try:
-        with open(media_path, "rb") as f:
+        with open(media_path, "rb") as f:  # noqa: ASYNC230 -- file handle is streamed to the upload; a local open() is non-blocking in practice
             try:
                 return await _telegram_send_media(bot, chat_id, f, ext, is_voice, force_document, **media_kwargs)
             except Exception as media_err:

@@ -156,7 +156,7 @@ class ReasoningParamsMixin:
 
     def _needs_thinking_reasoning_pad(self) -> bool:
         """True when the provider enforces ``reasoning_content`` echo-back on tool-call replays (DeepSeek, Kimi,
-        MiMo thinking all 400 without it). Cached per (provider, model, base_url), invalidated by
+        MiMo thinking all 400 without it; Ollama Cloud feeds it to the template). Cached per (provider, model, base_url), invalidated by
         ``switch_model()`` / ``_try_activate_fallback()`` — called ~16× per turn.
 
         DeepSeek v4 thinking and Kimi / Moonshot thinking both reject replays of assistant tool-call
@@ -168,7 +168,10 @@ class ReasoningParamsMixin:
         if cached is not None and cached[0] == key:
             return cached[1]
         result = (self._needs_deepseek_tool_reasoning() or self._needs_kimi_tool_reasoning()
-                  or self._needs_mimo_tool_reasoning() or self._reasoning_echo_opt_in())
+                  or self._needs_mimo_tool_reasoning() or self._needs_ollama_tool_reasoning()
+                  or self._reasoning_echo_opt_in()
+                  or ((self.provider or "").lower() == "nous"
+                      and (self.model or "").lower() == "stealth/missingno"))
         self._thinking_pad_cache = (key, result)
         return result
 
@@ -205,12 +208,16 @@ class ReasoningParamsMixin:
         """True when the current provider is Xiaomi MiMo thinking mode."""
         return matches_reasoning_echo_family("mimo", (self.provider or "").lower(), self.model, self.base_url)
 
+    def _needs_ollama_tool_reasoning(self) -> bool:
+        """True for Ollama Cloud (provider, host, or a local ``:cloud``/``-cloud`` tag)."""
+        return matches_reasoning_echo_family("ollama", (self.provider or "").lower(), self.model, self.base_url)
+
     _copy_reasoning_content_for_api = _forward("agent.agent_runtime_helpers", "copy_reasoning_content_for_api")
 
     _reapply_reasoning_echo_for_provider = _forward("agent.agent_runtime_helpers", "reapply_reasoning_echo_for_provider")
 
     @staticmethod
-    def _sanitize_tool_calls_for_strict_api(api_msg: dict, model: "str | None" = None) -> dict:
+    def _sanitize_tool_calls_for_strict_api(api_msg: dict, model: str | None = None) -> dict:
         """Strip Codex Responses fields from tool_calls for strict Chat Completions APIs (Mistral, Fireworks
         400/422 on unknown fields). ``extra_content`` (Gemini thought_signature) is kept only for Gemini-family
         models. Builds new dicts so the internal history keeps the Codex fields for a later fallback."""

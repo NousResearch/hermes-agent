@@ -17,9 +17,10 @@ Lanes:
 * ``nix``         — ``nix flake check``: the flake files and the dependency
   manifests.
 * ``e2e``, ``e2e_upgrade``, ``e2e_desktop_core``, ``e2e_desktop_update`` —
-  the end-to-end suites. Each runs on a pull request only when the PR edits
-  that suite or the code the suite exists to guard (``_E2E_LANES``), or
-  carries the ``run-e2e`` label.
+  the end-to-end suites. The classifier still says which suites a diff
+  touches (``_E2E_LANES``, the ``run-e2e`` label), but ci.yaml's ``detect``
+  gate forces these lanes off on pull requests and pushes to main: the E2E
+  suites run only on a release run or a manual dispatch.
 * ``frontend``    — TS typecheck matrix + desktop build.
 * ``site``        — Docusaurus + generated skill docs.
 * ``scan``        — supply-chain scan (Python files, .pth, setup hooks).
@@ -303,6 +304,7 @@ _UPDATE_DEPENDENCIES = (
     "hermes_cli/desktop_build_lock.py",
     "hermes_cli/memory_provider_migration.py",
     "hermes_cli/left_core_migration.py",  # source_build migrates plugins that left core
+    "hermes_cli/web_build_limits.py",  # source_build caps the dashboard Node build
     "hermes_cli/desktop_console.py",
     "hermes_cli/bundled_app.py",
     "hermes_cli/gui_uninstall.py",
@@ -451,6 +453,22 @@ _E2E_LANES: dict[str, tuple[str, ...]] = {
         "hermes_cli/web_routers/status.py",
     ),
 }
+
+
+def _with_package_inits(paths: tuple[str, ...]) -> tuple[str, ...]:
+    """Importing a/b/c.py runs a/__init__.py and a/b/__init__.py first, so a routed module
+    routes the package inits above it. A shared hub's inits run whenever the hub is imported, so
+    they are routed too; only an init that is itself a hub stays out."""
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    inits = [f"{'/'.join(parts[:i])}/__init__.py"
+             for p in (*paths, *sorted(_SHARED_HUBS)) if p.endswith(".py")
+             for parts in [p.split("/")[:-1]] for i in range(1, len(parts) + 1)]
+    return tuple(dict.fromkeys([*paths, *(i for i in inits if i not in _SHARED_HUBS
+                                          and os.path.isfile(os.path.join(root, i)))]))
+
+
+for _lane in ("e2e_upgrade", "e2e_desktop_update"):
+    _E2E_LANES[_lane] = _with_package_inits(_E2E_LANES[_lane])
 # The upgrade journeys are their own lane; editing one does not start ``e2e``.
 # The update suite shares apps/desktop/e2e/ with the core suite but not its specs.
 _E2E_LANE_EXCLUDES = {

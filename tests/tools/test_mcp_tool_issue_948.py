@@ -143,7 +143,6 @@ def test_run_stdio_malware_check_does_not_block_event_loop():
 
     def slow_check(_command, _args):
         time.sleep(0.3)  # simulate a slow OSV HTTPS call
-        return None
 
     ticks = {"n": 0}
 
@@ -276,7 +275,7 @@ def test_bare_python3_steps_past_the_managed_runtime_to_the_user_hit(tmp_path, m
     managed_bin.mkdir(parents=True)
     user_bin = tmp_path / "user-bin"
     user_bin.mkdir()
-    managed_exe = _bare_exe(managed_bin, "python3")
+    _bare_exe(managed_bin, "python3")
     user_exe = _bare_exe(user_bin, "python3")
     token = set_hermes_home_override(home)
     try:

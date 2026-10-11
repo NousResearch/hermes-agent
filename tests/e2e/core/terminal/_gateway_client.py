@@ -52,7 +52,7 @@ def poll_until(fn: Callable[[], Any], *, timeout: float, interval: float = 0.05,
                 return value
         except AssertionError:
             raise
-        except Exception as exc:  # noqa: BLE001 - surfaced in the timeout message
+        except Exception as exc:
             last_exc = exc
         if time.monotonic() >= deadline:
             raise AssertionError(f"timed out after {timeout:.0f}s waiting for {what}"
@@ -103,7 +103,7 @@ class Backend:
         self.port: int | None = None
         self.clients: list[WSClient] = []
 
-    def start(self, *, timeout: float = 90.0) -> "Backend":
+    def start(self, *, timeout: float = 90.0) -> Backend:
         operator_root = (Path(_operator_home()) / ".hermes").resolve()
         assert operator_root not in (self.hermes_home.resolve(), *self.hermes_home.resolve().parents), (
             f"sandbox {self.hermes_home} sits inside the operator's Hermes home {operator_root}")
@@ -136,7 +136,7 @@ class Backend:
     def ws_url(self) -> str:
         return f"ws://127.0.0.1:{self.port}/api/ws?token={self.token}"
 
-    def connect(self, name: str) -> "WSClient":
+    def connect(self, name: str) -> WSClient:
         client = WSClient(self.ws_url, name)
         self.clients.append(client)
         return client
@@ -210,7 +210,7 @@ class WSClient:
             self._reading.wait()
             try:
                 raw = self._ws.recv()
-            except Exception:  # noqa: BLE001 - closed/dropped socket ends the reader
+            except Exception:
                 break
             for line in str(raw).splitlines():
                 if line.strip():
@@ -299,7 +299,7 @@ class WSClient:
         self._reading.set()
         try:
             self._ws.close()
-        except Exception:  # noqa: BLE001 - already dropped
+        except Exception:
             pass
 
 

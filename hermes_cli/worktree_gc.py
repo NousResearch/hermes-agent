@@ -40,7 +40,7 @@ class TreeRecord:
     size_mb: Optional[int]
     verdict: str          # reap | reap-archive | keep
     reason: str
-    untracked: List[str] = field(default_factory=list)
+    untracked: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -53,7 +53,7 @@ class BranchRecord:
 def _run(cmd: list, timeout: int, cwd: Optional[str] = None,
          env: Optional[dict] = None) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                          timeout=timeout, cwd=cwd, env=env, stdin=subprocess.DEVNULL)
+                          timeout=timeout, cwd=cwd, env=env, stdin=subprocess.DEVNULL, check=False)
 
 
 @dataclass
@@ -94,7 +94,7 @@ def _tree_size_mb(path: Path, timeout: int = 30) -> Optional[int]:
         return None
 
 
-def _dirty_split(path: str) -> tuple[bool, List[str]]:
+def _dirty_split(path: str) -> tuple[bool, list[str]]:
     """(has_tracked_modifications, untracked_paths) — tracked = real work, untracked = archivable."""
     try:
         result = _git(["status", "--porcelain"], cwd=path, timeout=10)
@@ -107,7 +107,7 @@ def _dirty_split(path: str) -> tuple[bool, List[str]]:
         return True, []
 
 
-def _archive_untracked(tree: Path, untracked: List[str]) -> Optional[Path]:
+def _archive_untracked(tree: Path, untracked: list[str]) -> Optional[Path]:
     """Copy untracked files out of a doomed tree; None on any failure (caller must then keep)."""
     stamp = time.strftime("%Y%m%d-%H%M%S")
     from hermes_constants import get_hermes_home
@@ -128,7 +128,7 @@ def _archive_untracked(tree: Path, untracked: List[str]) -> Optional[Path]:
         return None
 
 
-def _classify_tree(_ops, repo_root: str, entry: Path, merge_cache, remote_heads) -> tuple[str, str, List[str]]:
+def _classify_tree(_ops, repo_root: str, entry: Path, merge_cache, remote_heads) -> tuple[str, str, list[str]]:
     """Return (verdict, reason, untracked) for one tree under ``.worktrees/``."""
     path = str(entry)
     if _KANBAN_RE.match(entry.name):
@@ -154,7 +154,7 @@ def _classify_tree(_ops, repo_root: str, entry: Path, merge_cache, remote_heads)
     return "reap", "clean and fully merged/pushed", []
 
 
-def audit_external_trees(repo_root: str) -> List[ExternalTreeRecord]:
+def audit_external_trees(repo_root: str) -> list[ExternalTreeRecord]:
     """List linked worktrees registered OUTSIDE ``.worktrees/``.
 
     ``hermes -w`` scratch trees all live under ``<repo>/.worktrees/``, but
@@ -172,7 +172,7 @@ def audit_external_trees(repo_root: str) -> List[ExternalTreeRecord]:
     managed_root = os.path.realpath(str(Path(repo_root) / ".worktrees"))
     main_root = os.path.realpath(repo_root)
 
-    records: List[ExternalTreeRecord] = []
+    records: list[ExternalTreeRecord] = []
     current: dict = {}
 
     def _flush():
@@ -212,7 +212,7 @@ def audit_external_trees(repo_root: str) -> List[ExternalTreeRecord]:
     return records
 
 
-def prune_missing_registrations(repo_root: str, *, dry_run: bool = False) -> List[str]:
+def prune_missing_registrations(repo_root: str, *, dry_run: bool = False) -> list[str]:
     """Drop registrations whose directory no longer exists (any location).
 
     The equivalent of a targeted ``git worktree prune``: purely
@@ -231,7 +231,7 @@ def prune_missing_registrations(repo_root: str, *, dry_run: bool = False) -> Lis
 
 
 def audit_worktrees(repo_root: str, *, with_sizes: bool = True,
-                    older_than_days: Optional[float] = None) -> List[TreeRecord]:
+                    older_than_days: Optional[float] = None) -> list[TreeRecord]:
     """Classify every tree under ``.worktrees/`` without mutating anything.
 
     ``older_than_days`` only ever RESTRICTS: a reapable tree younger than the threshold is kept
@@ -251,7 +251,7 @@ def audit_worktrees(repo_root: str, *, with_sizes: bool = True,
     remote_heads = _ops._fetch_remote_branch_heads(repo_root)
 
     now = time.time()
-    records: List[TreeRecord] = []
+    records: list[TreeRecord] = []
     for entry in sorted(worktrees_dir.iterdir()):
         if not entry.is_dir():
             continue
@@ -281,13 +281,13 @@ _REAP_VERDICTS = {"reap", "reap-archive", "reap-keep-branch"}
 
 
 def reclaim_worktrees(
-    repo_root: str, *, dry_run: bool = False, records: Optional[List[TreeRecord]] = None
-) -> List[str]:
+    repo_root: str, *, dry_run: bool = False, records: Optional[list[TreeRecord]] = None
+) -> list[str]:
     """Remove every reap-verdict tree from a frozen audit list — never re-globs inside the
     destructive loop, so trees created by concurrent sessions after the audit are out of scope."""
     if records is None:
         records = audit_worktrees(repo_root, with_sizes=False)
-    actions: List[str] = []
+    actions: list[str] = []
     for record in records:
         if record.verdict not in _REAP_VERDICTS:
             continue
@@ -326,14 +326,14 @@ def reclaim_worktrees(
     return actions
 
 
-def audit_branches(repo_root: str) -> List[BranchRecord]:
+def audit_branches(repo_root: str) -> list[BranchRecord]:
     """Classify EVERY local branch: deletable when fully merged OR every commit is patch-equivalent
     upstream (``git cherry``) and not checked out. The gate is content reachability, not name."""
     from hermes_cli import worktree_ops as _ops
     if _ops._repo_is_shallow(repo_root):
         _ops._deepen_shallow_repo(repo_root)
 
-    def _lines(result) -> List[str]:
+    def _lines(result) -> list[str]:
         return [b.strip() for b in result.stdout.splitlines() if b.strip()]
 
     # No remote at all -> the local trunk; no trunk either -> nothing can be judged, report nothing.
@@ -393,12 +393,12 @@ def audit_branches(repo_root: str) -> List[BranchRecord]:
 
 
 def reclaim_branches(
-    repo_root: str, *, dry_run: bool = False, records: Optional[List[BranchRecord]] = None
-) -> List[str]:
+    repo_root: str, *, dry_run: bool = False, records: Optional[list[BranchRecord]] = None
+) -> list[str]:
     """Delete every delete-verdict branch from a frozen audit list."""
     if records is None:
         records = audit_branches(repo_root)
-    actions: List[str] = []
+    actions: list[str] = []
     for record in records:
         if record.verdict != "delete":
             continue

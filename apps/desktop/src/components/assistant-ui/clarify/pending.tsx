@@ -3,18 +3,24 @@
 import { useStore } from '@nanostores/react'
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
-import { Button } from '@/components/ui/button'
 import { Loader } from '@/components/ui/loader'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
-import { Loader2, MessageQuestion } from '@/lib/icons'
-import { bareChoice, type ClarifyQuestion, type ClarifyRequest, clearClarifyRequest } from '@/store/clarify'
+import { MessageQuestion } from '@/lib/icons'
+import {
+  bareChoice,
+  type ClarifyQuestion,
+  type ClarifyRequest,
+  clearClarifyRequest,
+  skipClarify
+} from '@/store/clarify'
 import { $gateway } from '@/store/gateway'
 import { reconnectAction } from '@/store/gateway-reconnect'
 import { notifyError } from '@/store/notifications'
-import { forgetServerRequest, respondToServerRequest } from '@/store/server-requests'
+import { forgetServerRequest } from '@/store/server-requests'
 import { requestForOwnedSession } from '@/store/session-states'
 
+import { ClarifyConfirmBar } from './core/confirm-bar'
 import { emptyStage, QuestionBlock } from './core/question-block'
 import { CLARIFY_ICON_CLASS, ClarifyShell } from './core/shell'
 import { useClarifyKeys } from './core/use-clarify-keys'
@@ -221,10 +227,8 @@ export function ClarifyToolPending({
     }
 
     onAnswered()
-    clearClarifyRequest(request.requestId, request.sessionId)
-
     // A response with no `answers` is the cancel-all (the plain Esc path).
-    respondToServerRequest(request.requestId, {})
+    skipClarify(request)
   }, [onAnswered, request])
 
   const handleSubmit = useCallback(
@@ -285,7 +289,7 @@ export function ClarifyToolPending({
       <ClarifyShell className="grid gap-3">
         <div className="flex items-start gap-2">
           <span className="flex-1 text-[0.6875rem] leading-4 text-(--ui-text-tertiary)">
-            {copy.questionProgress(answeredCount, questions.length)}
+            {questions.length === 1 ? copy.oneQuestion : copy.questionProgress(answeredCount, questions.length)}
           </span>
           <MessageQuestion aria-hidden className={CLARIFY_ICON_CLASS} />
         </div>
@@ -306,23 +310,12 @@ export function ClarifyToolPending({
       </ClarifyShell>
 
       {undelivered ? null : (
-        <div className="flex items-center justify-end gap-1">
-          <Button disabled={disabled} onClick={() => void cancelAll()} size="xs" type="button" variant="text">
-            {copy.skip}
-          </Button>
-          <Button disabled={disabled || !canConfirm} size="xs" type="submit">
-            {submitting ? (
-              <Loader2 className="animate-spin" />
-            ) : (
-              <>
-                {copy.confirmAndContinueLabel}
-                <span aria-hidden className="ml-0.5 text-[0.625rem] opacity-70">
-                  ⏎
-                </span>
-              </>
-            )}
-          </Button>
-        </div>
+        <ClarifyConfirmBar
+          canConfirm={canConfirm}
+          disabled={disabled}
+          onSkip={() => void cancelAll()}
+          submitting={submitting}
+        />
       )}
     </form>
   )

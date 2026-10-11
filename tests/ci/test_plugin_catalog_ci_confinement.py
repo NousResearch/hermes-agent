@@ -54,7 +54,7 @@ def _run(script_text: str, tmp_path: Path, cwd: Path, env: dict) -> subprocess.C
     script.write_text(script_text, encoding="utf-8")
     return subprocess.run(
         ["bash", str(script)], env=env, cwd=cwd,
-        stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=120)
+        stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=120, check=False)
 
 
 # ── pinned-source step ────────────────────────────────────────────────────────
@@ -243,7 +243,7 @@ def test_structural_and_pinned_gates_agree(tmp_path, origin, mut):
     entry.write_text(yaml.safe_dump(data), encoding="utf-8")
     structural = subprocess.run(
         [sys.executable, str(ROOT / "scripts/validate_plugin_catalog.py"), str(entry)],
-        capture_output=True, text=True)
+        capture_output=True, text=True, check=False)
     gate = _gate(tmp_path, origin, [entry])
     assert (structural.returncode == 0) == (gate.returncode == 0), (
         f"{structural.stdout}{structural.stderr}\n{gate.stdout}{gate.stderr}")

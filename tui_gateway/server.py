@@ -44,6 +44,7 @@ from tui_gateway.checkpoints import (_load_checkpoints_enabled, _resolve_checkpo
 from tui_gateway._env import env_float, env_int
 from tui_gateway.turn_marker import clear_turn_marker, marker_writer_state, read_turn_marker, record_turn_start
 from tui_gateway.contracts import registry as _contracts
+from tui_gateway.launch_profile_policy import canonical_profile_request as _canonical_profile_request
 # User-facing copy shared with the split method modules (they close over this namespace).
 from tui_gateway.user_messages import (
     AGENT_BUILD_ABANDONED, AGENT_MISSING_FOR_TURN, AGENT_STILL_STARTING, agent_init_failed_message, busy_message,
@@ -527,22 +528,6 @@ def _profile_db(params: dict | None = None, *, writer: bool = False):
                 db.close()
 
 
-def _canonical_profile_request(name: str) -> str:
-    """Canonicalize profile basenames emitted by older session-info payloads.
-
-    ``Path(default_home).name`` was historically sent as a profile id. Those basenames are
-    installation details — unless a real named profile of that name exists (``hermes`` is a legal
-    id), in which case it wins; other unknown names keep failing closed in ``_profile_home``.
-    """
-    if name.casefold() in {".hermes", "hermes"}:
-        from hermes_cli import profiles as profiles_mod
-        # Check the profiles root directly: get_profile_dir rejects "hermes" as a
-        # reserved name, but a pre-reserved-list install may still carry that dir.
-        if not (profiles_mod._get_profiles_root() / profiles_mod.normalize_profile_name(name)).is_dir():
-            return "default"
-    return name
-
-
 def _response_profile_name(profile: str | None = None) -> str:
     """Profile name for session.* payloads: the requested real non-launch profile, else the launch one."""
     name = _canonical_profile_request((profile or "").strip())
@@ -577,13 +562,25 @@ def _profile_home(profile: str | None) -> Path | None:
     if not (name := _canonical_profile_request((profile or "").strip())):
         return None
     from hermes_cli import profiles as profiles_mod
+    # A client's literal "default" means "the profile THIS backend runs as", never the shared
+    # install home. This backend may be launched as a named profile (the per-profile
+    # dashboard/desktop path: HERMES_HOME=<root>/profiles/<p>), while get_profile_dir("default")
+    # still resolves to the shared root; without this the launch profile's own sessions would be
+    # read from and written to the shared store, which no profile-scoped client can list and every
+    # served port can read. The compare below cannot catch it: it tests the resolved dir against
+    # the IMPORT-TIME home, which is stale for a profile launched via HERMES_HOME after import.
+    if name == "default":
+        with contextlib.suppress(Exception):
+            launch_home = _launch_home().resolve()
+            if launch_home != Path(profiles_mod.get_profile_dir("default")).resolve():
+                return None  # the launch profile owns this client's "default"
     try:
         home = Path(profiles_mod.get_profile_dir(name))
     except ValueError:
         home = None
     if home is None or not home.is_dir():
         raise ProfileUnavailableError(f"Profile '{name}' does not exist.")
-    if home.resolve() == Path(_hermes_home).resolve():
+    if home.resolve() == _launch_home().resolve():
         return None  # already the launch profile (no override needed)
     if home not in _served_profile_homes:
         # This process now hosts a second profile home: freeze the launch env as the launch

@@ -206,3 +206,20 @@ async def async_launch_profile_scope_if_multiplexed():
     launch scope is rebuilt from already-hydrated sources, so there is nothing to move off-loop)."""
     with launch_profile_scope_if_multiplexed():
         yield
+
+
+
+def canonical_profile_request(name: str) -> str:
+    """Canonicalize profile basenames emitted by older session-info payloads.
+
+    ``Path(default_home).name`` was historically sent as a profile id. Those basenames are
+    installation details — unless a real named profile of that name exists (``hermes`` is a legal
+    id), in which case it wins; other unknown names keep failing closed in the caller.
+    """
+    if name.casefold() in {".hermes", "hermes"}:
+        from hermes_cli import profiles as profiles_mod
+        # Check the profiles root directly: get_profile_dir rejects "hermes" as a
+        # reserved name, but a pre-reserved-list install may still carry that dir.
+        if not (profiles_mod._get_profiles_root() / profiles_mod.normalize_profile_name(name)).is_dir():
+            return "default"
+    return name

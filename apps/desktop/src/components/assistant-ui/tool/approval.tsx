@@ -10,6 +10,7 @@ import { SCAFFOLD_LABEL_CLASS, ScaffoldRow } from '@/components/chat/scaffold-ro
 import { Button } from '@/components/ui/button'
 import { CardStack, type CardStackAction } from '@/components/ui/card-stack'
 import { Codicon } from '@/components/ui/codicon'
+import { CopyButton } from '@/components/ui/copy-button'
 import {
   Dialog,
   DialogContent,
@@ -228,11 +229,79 @@ export function ApprovalQueue({
   )
 }
 
+/** Card header: category label, queue position, and a copy affordance for the
+ * command text - the approver needs to weigh (and paste) the exact command,
+ * which the card otherwise only renders as non-selectable-looking text. */
+function ApprovalCardHeader({
+  command,
+  copy,
+  hasCommand,
+  position,
+  showsDescription,
+  tCopy,
+  total,
+}: {
+  command: string
+  copy: { command: string; commandDetails: string }
+  hasCommand: boolean
+  position: number
+  showsDescription: boolean
+  tCopy: string
+  total: number
+}) {
+  return (
+    <div className="flex items-center gap-2 px-2.5 pt-2 text-xs text-(--ui-text-secondary)">
+      <Codicon name="terminal" size="0.875rem" />
+      <span>{showsDescription ? copy.commandDetails : copy.command}</span>
+      <span className="ml-auto flex items-center gap-1">
+        {total > 1 && (
+          <span className="text-[0.6875rem] tabular-nums text-(--ui-text-tertiary)">
+            {position} / {total}
+          </span>
+        )}
+        {hasCommand && (
+          <CopyButton
+            appearance="tool-row"
+            className="opacity-100"
+            stopPropagation
+            text={command}
+            title={tCopy}
+          />
+        )}
+      </span>
+    </div>
+  )
+}
+
+
 interface ApprovalCardProps {
   request: ApprovalRequest
   total: number
   position: number
   stack: CardStackAction
+}
+
+/** The guardian LLM's own words on why a command escalated ('' / absent = nothing to
+ * show). Kept out of ApprovalCard so the card keeps its shape, and deliberately not
+ * localised: the reason is the guardian's English output, not a UI string.
+ * (#133398: the card used to show only the detector category, e.g. "script execution
+ * via -c flag", which tells the user nothing about the actual risk.) */
+function ApprovalReasonRow({ text }: { text?: string }) {
+  const reason = text?.trim()
+
+  if (!reason) {
+    return null
+  }
+
+  return (
+    <div
+      className="flex items-start gap-1.5 px-2.5 pb-1 text-xs leading-relaxed text-(--ui-text-secondary)"
+      data-slot="tool-approval-reason"
+    >
+      <Codicon className="mt-0.5 shrink-0" name="warning" size="0.875rem" />
+      <span>{reason}</span>
+    </div>
+  )
 }
 
 const ApprovalCard: FC<ApprovalCardProps> = ({ request, total, position, stack }) => {
@@ -334,17 +403,18 @@ const ApprovalCard: FC<ApprovalCardProps> = ({ request, total, position, stack }
       onPointerDownCapture={rememberFocusOrigin}
       ref={cardRef}
     >
-      <div className="flex items-center gap-2 px-2.5 pt-2 text-xs text-(--ui-text-secondary)">
-        <Codicon name="terminal" size="0.875rem" />
-        <span>{showsDescription ? copy.commandDetails : copy.command}</span>
-        {total > 1 && (
-          <span className="ml-auto text-[0.6875rem] tabular-nums text-(--ui-text-tertiary)">
-            {position} / {total}
-          </span>
-        )}
-      </div>
+      <ApprovalCardHeader
+        command={request.command}
+        copy={copy}
+        hasCommand={hasCommand}
+        position={position}
+        showsDescription={showsDescription}
+        tCopy={t.common.copy}
+        total={total}
+      />
+      <ApprovalReasonRow text={request.smartReason} />
       {details.length > 0 && (
-        <pre className="m-0 max-h-40 overflow-auto whitespace-pre-wrap break-words px-2.5 py-2 font-mono text-xs leading-relaxed text-(--ui-text-primary)">
+        <pre className="m-0 max-h-64 overflow-auto whitespace-pre-wrap break-words px-2.5 py-2 font-mono text-xs leading-relaxed text-(--ui-text-primary)" data-selectable-text="true">
           {details}
         </pre>
       )}

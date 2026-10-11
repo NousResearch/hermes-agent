@@ -778,8 +778,17 @@ def _served_runtime(agent) -> dict[str, str]:
     return pair
 
 
+def _effective_session_id(agent, admitted: str) -> str:
+    """The session the turn's answer was written to. Context compression can rotate the agent onto
+    a continuation session mid-turn, so ``agent.session_id`` then names a newer session than the
+    one the run was admitted to (the chat endpoints report it the same way, #16938). A missing or
+    non-string attribute (test doubles) reads as the admitted session."""
+    value = getattr(agent, "session_id", None)
+    return value if isinstance(value, str) and value else admitted
+
+
 def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_server):
-    """Executor-thread body of one run; returns ``(result, usage, served_runtime)``."""
+    """Executor-thread body of one run; returns ``(result, usage, served_runtime, session_id)``."""
     from gateway.session_context import clear_session_vars
     from gateway.hosted_room_execution_policy import (
         RoomExecutionPolicy, bind_room_execution_policy, reset_room_execution_policy)
@@ -836,15 +845,14 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
             self._memory_sessions.checkin(agent)
             # Declared-conversation binding, same precedence gate as _run_agent.
             if run.declared_selected:
-                self._bind_declared_conversation(
-                    getattr(agent, "session_id", None) or session_id, run.gateway_session_key)
+                self._bind_declared_conversation(_effective_session_id(agent, session_id), run.gateway_session_key)
             try:
                 unregister_gateway_notify(run.approval_session_key)
             finally:
                 for token, reset in resets:
                     with suppress(Exception):
                         reset(token)
-        return r, _run_usage(agent), _served_runtime(agent)
+        return r, _run_usage(agent), _served_runtime(agent), _effective_session_id(agent, session_id)
 
 
 def _make_approval_notify(self, run: _RunLaunch, *, _api_server) -> Callable[[dict[str, Any]], None]:
@@ -963,13 +971,18 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
                 interim_assistant_callback=_interim_cb, **run.agent_kwargs)
         self._active_run_agents[run_id] = agent
         approval_notify = _make_approval_notify(self, run, _api_server=_api_server)
-        result, usage, served_runtime = await _submit_api_worker(
+        result, usage, served_runtime, session_id = await _submit_api_worker(
             loop, lambda: _run_agent_sync(self, run, agent, approval_notify, _api_server=_api_server))
         # Publish request metrics (daily counters + latency) with each completed run (#52323).
         self._record_api_metrics(usage, time.perf_counter() - _run_started_at)
         if not isinstance(result, dict):
             result = {}
         status, fields = terminal_run_status(result)
+        # The session holding this turn, which a mid-turn compression may have rotated away from
+        # the admitted one: it replaces the status's admission-time ``session_id`` (persisted, so
+        # it survives a restart) and rides on the terminal event. Idempotent replay is unaffected:
+        # it matches the request fingerprint and answers with the original run_id.
+        fields["session_id"] = session_id
         if status == "cancelled":
             _finish("cancelled", fields)
         elif result.get("failed"):

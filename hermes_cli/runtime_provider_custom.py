@@ -235,28 +235,46 @@ def codex_model_provider_id(requested_provider: str) -> Optional[str]:
 # ── identity recovery (bare "custom" -> durable ``custom:<name>``) ─────────────────────────
 
 
-def _find_custom_identity(matches: Callable[[dict[str, Any]], bool]) -> Optional[str]:
-    """First entry in ``providers:`` then legacy ``custom_providers:`` where ``matches(entry)``
-    holds, as its canonical ``custom:<name>`` slug."""
+def _find_custom_entry(matches: Callable[[dict[str, Any]], bool]) -> Optional[tuple[str, dict[str, Any]]]:
+    """``(custom:<name>`` slug, raw config entry)`` for the first ``providers:`` then legacy
+    ``custom_providers:`` entry where ``matches(entry)`` holds."""
     rp = _rp()
     try:
         config = rp.load_config()
-    except Exception:
+    except Exception:  # health: allow BLE001 -- identity recovery degrades to None on unreadable config; a resolution side-lookup must never crash resolution
         return None
     providers = config.get("providers")
     if isinstance(providers, dict):
         for ep_name, entry in providers.items():
             if isinstance(entry, dict) and matches(entry):
-                return custom_provider_slug(str(ep_name), str(ep_name))
+                return custom_provider_slug(str(ep_name), str(ep_name)), entry
     try:
         custom_providers = rp.get_compatible_custom_providers(config)
-    except Exception:
+    except Exception:  # health: allow BLE001 -- same deliberate boundary as the config load above: degrade to no legacy entries
         custom_providers = None
     for entry in custom_providers or []:
         name = entry.get("name") if isinstance(entry, dict) else None
         if isinstance(name, str) and name.strip() and matches(entry):
-            return custom_provider_slug(name, str(entry.get("provider_key", "") or ""))
+            return custom_provider_slug(name, str(entry.get("provider_key", "") or "")), entry
     return None
+
+
+def _find_custom_identity(matches: Callable[[dict[str, Any]], bool]) -> Optional[str]:
+    """First entry in ``providers:`` then legacy ``custom_providers:`` where ``matches(entry)``
+    holds, as its canonical ``custom:<name>`` slug."""
+    found = _find_custom_entry(matches)
+    return found[0] if found else None
+
+
+def find_custom_provider_entry(base_url: str) -> Optional[dict[str, Any]]:
+    """The configured custom entry whose endpoint matches ``base_url`` — the raw-entry form of
+    :func:`find_custom_provider_identity`, for lifting entry extras onto a runtime resolved through
+    a different provider name whose endpoint IS the entry's base_url."""
+    target = _normalize_base_url_for_match(base_url)
+    if not target:
+        return None
+    found = _find_custom_entry(lambda entry: _normalize_base_url_for_match(_entry_url(entry)) == target)
+    return found[1] if found else None
 
 
 def find_custom_provider_identity(base_url: str) -> Optional[str]:

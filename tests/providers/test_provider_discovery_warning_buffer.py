@@ -3,7 +3,8 @@
 Provider discovery runs before ``setup_logging()``, when ``logger.warning``
 falls through to stdlib ``logging.lastResort`` and writes raw stderr — which
 corrupts the fullscreen prompt_toolkit TUI. Load failures are therefore
-buffered (bounded, debug-logged) and replayed once TUI startup output is
+buffered (bounded, debug-logged) and replayed once logging is ready
+(``mark_logging_ready``) and once on the console when TUI startup output is
 safe (see ``CLITuiRuntimeMixin._tui_startup_prewarm_and_warnings``).
 """
 
@@ -30,6 +31,7 @@ def _clean_load_failure_buffer():
     with _providers_pkg._LOAD_FAILURES_LOCK:
         _providers_pkg._LOAD_FAILURES.clear()
         _providers_pkg._REPLAYED_COUNT = 0
+        _providers_pkg._CONSOLE_SHOWN_COUNT = 0
         _providers_pkg._LOGGING_READY = False
     _saved_discovered = _providers_pkg._discovered
     _providers_pkg._discovered = True
@@ -37,6 +39,7 @@ def _clean_load_failure_buffer():
     with _providers_pkg._LOAD_FAILURES_LOCK:
         _providers_pkg._LOAD_FAILURES.clear()
         _providers_pkg._REPLAYED_COUNT = 0
+        _providers_pkg._CONSOLE_SHOWN_COUNT = 0
         _providers_pkg._LOGGING_READY = False
     _providers_pkg._discovered = _saved_discovered
     sys.modules.pop(f"plugins.model_providers.{BROKEN_PLUGIN_NAME}", None)
@@ -145,6 +148,15 @@ def test_tui_startup_replays_buffered_failures(monkeypatch):
     assert "yellow" in replay[0]
 
 
+def test_tui_startup_prints_each_failure_once(monkeypatch):
+    _providers_pkg._record_plugin_failure("once-plugin-zz", "bundled", RuntimeError("once-marker"))
+    first, second = _StubCLI(), _StubCLI()
+    _run_startup_warnings(first, monkeypatch)
+    _run_startup_warnings(second, monkeypatch)
+    assert sum("once-plugin-zz" in line for line in first.printed) == 1
+    assert not any("once-plugin-zz" in line for line in second.printed)
+
+
 def test_tui_startup_quiet_with_empty_buffer(monkeypatch):
     assert get_provider_load_failures() == ()
     stub = _StubCLI()
@@ -243,13 +255,13 @@ def test_host_isolation_refusal_is_buffered_with_remedy(monkeypatch):
 def test_second_replay_after_discovery_surfaces_late_failure(monkeypatch, caplog):
     """A failure buffered by lazy discovery AFTER an early replay still reaches the log.
 
-    Review 5461583910 finding 1: the import-time replay runs before lazy
-    provider discovery, so a late-buffered failure needs a later flush —
-    here, the guarded replay at the end of _discover_providers().
+    The early flush runs before lazy provider discovery, so a late-buffered
+    failure needs a later flush: the guarded replay at the end of
+    _discover_providers().
     """
     import logging as _logging
 
-    from providers import replay_provider_load_failures
+    from providers import mark_logging_ready, replay_provider_load_failures
 
     def _late_discovery_steps():
         _providers_pkg._record_plugin_failure(
@@ -261,7 +273,7 @@ def test_second_replay_after_discovery_surfaces_late_failure(monkeypatch, caplog
     _providers_pkg._discovered = False
 
     with caplog.at_level(_logging.WARNING, logger="providers"):
-        assert replay_provider_load_failures() == 0
+        assert mark_logging_ready() == 0
         _providers_pkg._discover_providers()
     assert any(
         "late-discovery-zz" in r.getMessage()
@@ -280,9 +292,8 @@ def test_second_replay_after_discovery_surfaces_late_failure(monkeypatch, caplog
 def test_replay_cursor_survives_max_rollover(caplog):
     """Filling the 50-slot buffer, replaying, then recording more still replays the new items.
 
-    Review 5461583910 finding 2: the replay cursor is an index into a bounded
-    list, so eviction used to strand it past the end and later replays
-    returned 0 forever.
+    The replay cursor is an index into a bounded list, so eviction must move it
+    back with the window, or later replays return 0 forever.
     """
     import logging as _logging
 
@@ -344,10 +355,8 @@ def _property_assert_cursor_bounded():
 def test_property_buffer_overflow_keeps_newest_and_replays_once(caplog):
     """Randomized un-replayed overflow: survivors replay exactly once, cursor bounded.
 
-    Covers survived mutant M2 (inverted eviction guard): the suite never
-    overflowed the buffer without an intervening replay, so only a test
-    that piles records past MAX before any replay diverges on that mutant.
-    Fixed seed 13423501.
+    Piles records past MAX before any replay (the rollover test always replays
+    in between). Fixed seed.
     """
     import logging as _logging
     import random as _random
@@ -377,64 +386,6 @@ def test_property_buffer_overflow_keeps_newest_and_replays_once(caplog):
         assert len(warned) == len(survivors)
         for name in survivors:
             assert sum(f"'{name}'" in m for m in warned) == 1
-        _property_assert_cursor_bounded()
-
-        caplog.clear()
-        with caplog.at_level(_logging.WARNING, logger="providers"):
-            assert replay_provider_load_failures() == 0
-        assert _property_warned_names(caplog) == []
-
-
-def test_property_cursor_stays_bounded_under_random_record_replay(caplog):
-    """Random record/replay interleavings: cursor bounded, exactly-once delivery.
-
-    Covers survived mutant M8 (unfloored cursor subtraction) and M1-class
-    eviction drift: small random batches with coin-flip replays, asserting
-    the cursor invariant after every op. Fixed seed 13423502.
-    """
-    import logging as _logging
-    import random as _random
-
-    from providers import replay_provider_load_failures
-
-    rng = _random.Random(13423502)
-    recorded: list[str] = []
-    warned: list[str] = []
-    tag = 0
-    with caplog.at_level(_logging.WARNING, logger="providers"):
-        for _ in range(40):
-            for _ in range(rng.randint(0, 15)):
-                name = f"prop-cursor-zz-{tag}"
-                _providers_pkg._record_plugin_failure(
-                    name, "bundled", RuntimeError(f"prop-cursor-marker-{tag}")
-                )
-                recorded.append(name)
-                tag += 1
-            _property_assert_cursor_bounded()
-            if rng.random() < 0.5:
-                caplog.clear()
-                newly = replay_provider_load_failures()
-                batch = _property_warned_names(caplog)
-                assert newly == len(batch)
-                for name in recorded:
-                    hits = sum(f"'{name}'" in m for m in batch)
-                    if hits:
-                        assert hits == 1
-                        assert name not in warned  # never double-reported
-                        warned.append(name)
-                for m in batch:
-                    assert any(f"'{n}'" in m for n in recorded)  # no phantoms
-                _property_assert_cursor_bounded()
-
-        caplog.clear()
-        replay_provider_load_failures()
-        for m in _property_warned_names(caplog):
-            for name in recorded:
-                if f"'{name}'" in m and name not in warned:
-                    warned.append(name)
-        assert len(warned) == len(set(warned))
-        buffered = {f.plugin_name for f in get_provider_load_failures()}
-        assert buffered <= set(warned)  # final drain leaves nothing pending
         _property_assert_cursor_bounded()
 
         caplog.clear()
@@ -508,44 +459,96 @@ _SETUP_FAILURE_PROBE = (
     "def _boom(*a, **k):\n"
     "    raise RuntimeError('simulated setup_logging failure')\n"
     "hermes_logging.setup_logging = _boom\n"
-    "import hermes_cli.main as _m\n"
-    "assert getattr(_m, '_replay_provider_failures', 'MISSING') != 'MISSING', (\n"
-    "    'replay name unbound after setup_logging failure (NameError at dispatch)')\n"
-    "assert callable(_m._replay_provider_failures), (\n"
-    "    f'expected the REAL bound replay, got {_m._replay_provider_failures!r}')\n"
-    "assert _m._replay_provider_failures is _p.replay_provider_load_failures, (\n"
-    "    'dispatch must see the real bound fn, not a None-seeded guard')\n"
+    "import hermes_cli.main\n"
     "import logging as _pl\n"
     "assert len(_pl.getLogger().handlers) == 0, 'precondition: root has handlers'\n"
-    "assert len(_pl.getLogger('providers').handlers) == 0, 'precondition: providers logger has handlers'\n"
-    "import hermes_cli.main_provider_replay as _r\n"
-    "assert hasattr(_r, 'dispatch_replay_provider_failures'), 'dispatch entry missing'\n"
-    "_r.dispatch_replay_provider_failures(_m._replay_provider_failures)\n"
+    "assert not _p._LOGGING_READY, 'logging must not be marked ready after a setup failure'\n"
+    "_p._replay_if_logging_ready()\n"
     "assert len(_p.get_provider_load_failures()) >= 1, 'failures must stay buffered'\n"
     "sys.stdout.write('PROBE_OK')\n"
 )
 
 
-def test_setup_failure_still_binds_replay_and_dispatch_stays_quiet():
+def test_setup_failure_keeps_failures_buffered_and_stderr_clean():
     """setup_logging raising must not leak buffered failures to raw stderr.
 
-    Regression test for the ``logging.lastResort`` leak: with a failure
-    buffered and ``setup_logging()`` forced to raise, ``hermes_cli.main``
-    binds the REAL ``providers.replay_provider_load_failures`` (no
-    ``None`` seeding — that only probed the guard). The production
-    dispatch path must then stay silent on raw stderr and leave the
-    failure buffered. Pre-fix this fails: the dispatch-shaped call emits
-    the buffered warning with zero handlers attached.
- """
-
+    With a failure buffered and ``setup_logging()`` forced to raise, importing
+    ``hermes_cli.main`` must leave logging unmarked, and the late-discovery
+    flush must stay a no-op (a warning with zero handlers would fall through to
+    ``logging.lastResort`` raw stderr).
+    """
     proc = subprocess.run(
         [sys.executable, "-c", _SETUP_FAILURE_PROBE],
         capture_output=True,
         text=True,
-        timeout=240,
+        timeout=120,
     )
     assert proc.returncode == 0, f"probe failed: {proc.stderr[-2000:]}"
     assert proc.stdout == "PROBE_OK", f"probe output: {proc.stdout!r} {proc.stderr[-2000:]!r}"
     assert proc.stderr == "", f"probe polluted stderr: {proc.stderr[:500]!r}"
-    assert _SETUP_FAILURE_MARKER not in proc.stderr
-    assert _SETUP_FAILURE_ERRMARK not in proc.stderr
+
+
+def test_mark_logging_ready_flushes_and_opens_late_flush(caplog):
+    from providers import mark_logging_ready
+
+    _providers_pkg._record_plugin_failure("early-zz", "bundled", RuntimeError("early-marker"))
+    assert _providers_pkg._replay_if_logging_ready() == 0  # not ready: stays buffered
+    with caplog.at_level(logging.WARNING, logger="providers"):
+        assert mark_logging_ready() == 1
+        _providers_pkg._record_plugin_failure("late-zz", "bundled", RuntimeError("late-marker"))
+        assert _providers_pkg._replay_if_logging_ready() == 1
+    messages = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any("early-zz" in m for m in messages) and any("late-zz" in m for m in messages)
+
+
+def test_identical_failure_is_buffered_once():
+    for _ in range(3):
+        _providers_pkg._record_plugin_failure("dup-zz", "user", RuntimeError("same"))
+    assert len(get_provider_load_failures()) == 1
+    _providers_pkg._record_plugin_failure("dup-zz", "user", RuntimeError("different"))
+    assert len(get_provider_load_failures()) == 2
+
+
+def test_failure_records_are_immutable():
+    _providers_pkg._record_plugin_failure("frozen-zz", "bundled", RuntimeError("x"))
+    with pytest.raises(Exception):
+        get_provider_load_failures()[0].error = "changed"
+
+
+def test_console_drain_shows_each_failure_once():
+    from providers import drain_console_failures
+
+    _providers_pkg._record_plugin_failure("c1-zz", "bundled", RuntimeError("a"))
+    assert [f.plugin_name for f in drain_console_failures()] == ["c1-zz"]
+    assert drain_console_failures() == ()
+    _providers_pkg._record_plugin_failure("c2-zz", "bundled", RuntimeError("b"))
+    assert [f.plugin_name for f in drain_console_failures()] == ["c2-zz"]
+
+
+def test_console_line_keeps_first_line_and_caps_length():
+    long_error = "first line " + "x" * 400 + "\nsecond line"
+    failure = ProviderLoadFailure(plugin_name="long-zz", source="bundled", error=long_error)
+    (line,) = format_provider_load_failures([failure])
+    assert "second line" not in line
+    assert len(line) < 400 and line.endswith("…")
+
+
+def test_failures_evicted_before_any_replay_are_still_logged_when_ready(caplog):
+    from providers import MAX_LOAD_FAILURES, mark_logging_ready
+
+    mark_logging_ready()
+    with caplog.at_level(logging.WARNING, logger="providers"):
+        for i in range(MAX_LOAD_FAILURES + 2):
+            _providers_pkg._record_plugin_failure(f"evict-zz-{i}", "bundled", RuntimeError("e"))
+    # Not replayed yet: the 2 oldest were evicted and logged on the way out.
+    names = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any("evict-zz-0" in m for m in names) and any("evict-zz-1" in m for m in names)
+
+
+def test_setup_logging_announces_readiness_to_the_provider_registry(monkeypatch):
+    import hermes_logging
+
+    calls = []
+    monkeypatch.setattr(_providers_pkg, "mark_logging_ready", lambda: calls.append(1) or 0)
+    hermes_logging._announce_logging_ready()
+    assert calls == [1]

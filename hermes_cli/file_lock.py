@@ -92,7 +92,7 @@ def _clear_stamped_lock_holder_pid(lock_file: Any) -> None:
 
 
 @contextmanager
-def _file_lock(
+def file_lock(
     lock_path: Path, holder: threading.local, timeout_seconds: float, timeout_message: str):
     """Cross-process advisory flock helper, reentrant per-thread via ``holder.depth``.
 
@@ -148,5 +148,8 @@ def _file_lock(
                 _clear_stamped_lock_holder_pid(lock_file)
                 try:
                     _kernel_lock(lock_file, False)
-                except (OSError, IOError):
+                except OSError:
                     pass
+
+
+_file_lock = file_lock  # historical name: ``hermes_cli.auth`` re-exports it

@@ -76,6 +76,12 @@ def _setup_logging() -> None:
     root.setLevel(logging.INFO)
     for noisy in ("httpx", "httpcore", "openai"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
+    try:  # handlers exist now: replay provider load failures buffered during discovery
+        from providers import mark_logging_ready
+
+        mark_logging_ready()
+    except Exception:
+        pass
 
 
 def _load_env() -> None:

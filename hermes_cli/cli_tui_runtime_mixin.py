@@ -339,12 +339,12 @@ class CLITuiRuntimeMixin:
         except Exception:
             pass
 
-        # Replay provider-plugin load failures buffered during pre-logging
-        # discovery (raw stderr stays clean for the fullscreen TUI; the
-        # failures surface here instead, once startup output is safe).
+        # Show provider-plugin load failures buffered so far (raw stderr stays clean for the
+        # fullscreen TUI; startup output is safe here). Each failure prints once. Failures
+        # buffered by later lazy discovery reach agent.log only: the screen is live by then.
         with suppress(Exception):
-            from providers import format_provider_load_failures, get_provider_load_failures
-            for _failure_line in format_provider_load_failures(get_provider_load_failures()):
+            from providers import drain_console_failures, format_provider_load_failures
+            for _failure_line in format_provider_load_failures(drain_console_failures()):
                 self._console_print(f"[yellow]{_escape(_failure_line)}[/]")
 
     def _tui_startup_background_maintenance(self):

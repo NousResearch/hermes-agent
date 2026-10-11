@@ -12,7 +12,6 @@
 from __future__ import annotations
 
 from pm import install_hint
-import errno
 import json
 import logging
 import os
@@ -22,7 +21,7 @@ import threading
 import time
 import webbrowser
 
-from contextlib import ExitStack, contextmanager
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from functools import partial
 from datetime import datetime, timezone, UTC

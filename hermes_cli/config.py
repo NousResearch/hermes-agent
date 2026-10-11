@@ -3969,20 +3969,21 @@ def config_command(args):
 
 # ---- OPTIONAL_ENV_VARS injection from provider profiles and platform plugins (once, on first read) ----
 
-def _inject_profile_env_vars() -> None:
+def _inject_profile_env_vars(table: Optional[Dict[str, Dict[str, Any]]] = None) -> None:
     """Expose env_vars of every ``auth_type="api_key"`` provider in providers/ via OPTIONAL_ENV_VARS
-    without editing this file."""
+    (``table``, default the live registry) without editing this file."""
+    table = _optional_env_vars() if table is None else table
     try:
         from providers import list_providers
         for _pp in list_providers():
             if _pp.auth_type != "api_key":
                 continue
             for _var in _pp.env_vars:
-                if _var in OPTIONAL_ENV_VARS:
+                if _var in table:
                     continue
                 _is_key = not _var.endswith(("_BASE_URL", "_URL"))
                 _label = _pp.display_name or _pp.name
-                OPTIONAL_ENV_VARS[_var] = {
+                table[_var] = {
                     "description": f"{_label} {'API key' if _is_key else 'base URL override'}",
                     "prompt": f"{_label} {'API key' if _is_key else 'base URL (leave empty for default)'}",
                     "url": _pp.signup_url or None,
@@ -4113,7 +4114,8 @@ def _manifest_secret_envs(manifests) -> frozenset[str]:
     """Upper-cased secret messaging env names the given manifests declare, minus core-declared
     names: a manifest never reclassifies a core variable such as OPENAI_API_KEY."""
     _complete_env_registry()
-    core = globals().get("CORE_DECLARED_ENV_NAMES") or frozenset(_BASE_OPTIONAL_ENV_VARS)  # partial if re-entrant
+    core = (getattr(_env_registry_building, "core", None) or globals().get("CORE_DECLARED_ENV_NAMES")
+            or frozenset(_BASE_OPTIONAL_ENV_VARS))  # build in progress on this thread: its core set
     names = {name.upper() for _dir, manifest in manifests
              for name, is_secret, meta in _platform_manifest_env_entries(manifest)
              if is_secret and (meta.get("category") or "messaging") == "messaging"}
@@ -4141,13 +4143,15 @@ def platform_manifest_secret_scan(home: Optional[Path] = None) -> tuple[frozense
     return names, not skipped
 
 
-def _inject_platform_plugin_env_vars() -> frozenset[str] | None:
+def _inject_platform_plugin_env_vars(table: Optional[Dict[str, Dict[str, Any]]] = None) -> frozenset[str] | None:
     """Populate OPTIONAL_ENV_VARS from platform plugin manifests (bundled AND user-installed) so
     Teams / IRC / Google Chat and third-party platforms are configurable in the ``hermes config`` /
     Desktop Gateway form without the core knowing they exist. Failures are swallowed so a
     malformed plugin.yaml can't break CLI import. Returns the bundled manifests' secret names, or
     None when a bundled manifest could not be read (the policy then re-reads strictly).
+    ``table`` is the registry to fill (default the live one).
     """
+    table = _optional_env_vars() if table is None else table
     bundled: list | None = []
     try:
         bundled = list(_platform_plugin_manifests(source="bundled", strict=True))
@@ -4162,9 +4166,9 @@ def _inject_platform_plugin_env_vars() -> frozenset[str] | None:
     for dir_name, manifest in manifests:
         label = manifest.get("label") or manifest.get("name") or dir_name
         for name, is_secret, meta in _platform_manifest_env_entries(manifest):
-            if name in OPTIONAL_ENV_VARS:
+            if name in table:
                 continue  # hardcoded entry wins (back-compat)
-            OPTIONAL_ENV_VARS[name] = {
+            table[name] = {
                 "description": meta.get("description") or f"{label} configuration",
                 "prompt": meta.get("prompt") or name,
                 "url": meta.get("url") or None,
@@ -4174,8 +4178,8 @@ def _inject_platform_plugin_env_vars() -> frozenset[str] | None:
 
 
 _LAZY_ENV_REGISTRY_NAMES = frozenset({"OPTIONAL_ENV_VARS", "CORE_DECLARED_ENV_NAMES", "BUNDLED_PLATFORM_SECRET_ENVS"})
-_env_registry_lock = threading.RLock()
-_env_registry_completing = False
+_env_registry_lock = threading.Lock()
+_env_registry_building = threading.local()  # per thread: a plugin touching config mid-build must not recurse
 
 
 def _complete_env_registry() -> None:
@@ -4183,26 +4187,37 @@ def _complete_env_registry() -> None:
 
     Provider profiles come from importing every provider plugin, which interpreters without the
     app's dependencies (PM's runtime reading one config key) must not pay for, so this runs on the
-    first read of a registry name rather than at import. A re-entrant read (a plugin touching config
-    mid-discovery) sees the partial table, as it did when this ran at import.
+    first read of a registry name rather than at import. The table is built privately and published
+    in one step, so no reader ever sees a half-filled dict, and no lock is held while plugins import
+    (a thread holding an import lock can never wait on this module's lock). Two threads racing the
+    first read both build; the first to publish wins. A re-entrant read on the building thread (a
+    plugin touching config mid-discovery) sees the base table, as it did when this ran at import.
     """
-    global _env_registry_completing, OPTIONAL_ENV_VARS, CORE_DECLARED_ENV_NAMES, BUNDLED_PLATFORM_SECRET_ENVS
-    if "BUNDLED_PLATFORM_SECRET_ENVS" in globals():
+    global OPTIONAL_ENV_VARS, CORE_DECLARED_ENV_NAMES, BUNDLED_PLATFORM_SECRET_ENVS
+    if "BUNDLED_PLATFORM_SECRET_ENVS" in globals() or getattr(_env_registry_building, "active", False):
         return
-    with _env_registry_lock:
-        if "BUNDLED_PLATFORM_SECRET_ENVS" in globals() or _env_registry_completing:
-            return
-        _env_registry_completing = True
+    _env_registry_building.active = True
+    try:
+        table = dict(_BASE_OPTIONAL_ENV_VARS)
+        _inject_profile_env_vars(table)
+        # Names declared in core, before any platform manifest is read. A manifest never
+        # reclassifies one: the config form keeps the core entry, and the child-env scrub keeps a
+        # plugin that lists OPENAI_API_KEY from turning a provider key into an adapter secret.
+        core = frozenset(table)
+        _env_registry_building.core = core
         try:
-            OPTIONAL_ENV_VARS = _BASE_OPTIONAL_ENV_VARS
-            _inject_profile_env_vars()
-            # Names declared in core, before any platform manifest is read. A manifest never
-            # reclassifies one: the config form keeps the core entry, and the child-env scrub keeps a
-            # plugin that lists OPENAI_API_KEY from turning a provider key into an adapter secret.
-            CORE_DECLARED_ENV_NAMES = frozenset(OPTIONAL_ENV_VARS)
-            BUNDLED_PLATFORM_SECRET_ENVS = _inject_platform_plugin_env_vars()
-        finally:
-            _env_registry_completing = False
+            bundled = _inject_platform_plugin_env_vars(table)
+        except Exception:
+            logger.debug("platform plugin env injection failed", exc_info=True)
+            bundled = None  # the policy re-reads the bundled manifests strictly
+        with _env_registry_lock:
+            if "BUNDLED_PLATFORM_SECRET_ENVS" not in globals():
+                OPTIONAL_ENV_VARS = table
+                CORE_DECLARED_ENV_NAMES = core
+                BUNDLED_PLATFORM_SECRET_ENVS = bundled  # the completion marker: published last
+    finally:
+        _env_registry_building.active = False
+        _env_registry_building.core = None
 
 
 def _optional_env_vars() -> Dict[str, Dict[str, Any]]:

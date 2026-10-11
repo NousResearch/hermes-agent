@@ -19,7 +19,6 @@ import sys
 from pathlib import Path
 
 from pm import get_package
-from pm.packages import CuaDriver
 
 REPO = Path(__file__).resolve().parents[2]
 TELEMETRY_ENV_VAR = "CUA_DRIVER_RS_TELEMETRY_ENABLED"
@@ -74,6 +73,21 @@ def test_probe_env_survives_a_broken_bot_desktop(monkeypatch):
     assert env[TELEMETRY_ENV_VAR] == "0"
 
 
-def test_probe_env_constant_matches_the_driver_gate():
-    """``CuaDriver`` carries the env var name so the probe needs no app import for it."""
-    assert CuaDriver.CUA_DRIVER_TELEMETRY_ENV_VAR == TELEMETRY_ENV_VAR
+def test_probe_env_constant_matches_the_backend_gate():
+    """PM and ``cua_backend`` share one gate name through the ``cua_env`` leaf."""
+    from tools.computer_use import cua_backend
+    from tools.computer_use.cua_env import CUA_TELEMETRY_ENV_VAR
+
+    assert cua_backend._CUA_TELEMETRY_ENV_VAR == CUA_TELEMETRY_ENV_VAR == TELEMETRY_ENV_VAR
+
+
+def test_child_env_flags(monkeypatch):
+    from tools.computer_use import cua_env
+
+    monkeypatch.setattr("tools.bot_desktop.runtime.desktop_env", lambda env=None: dict(env or {}))
+    base = {"WAYLAND_DISPLAY": "wayland-0"}
+    on = cua_env.build_child_env(base, telemetry_disabled=False, native_wayland=False)
+    assert cua_env.CUA_TELEMETRY_ENV_VAR not in on  # the opt-in is honored by the caller's choice
+    off = cua_env.build_child_env(base, telemetry_disabled=True, native_wayland=False)
+    assert off[cua_env.CUA_TELEMETRY_ENV_VAR] == "0"
+    assert cua_env.CUA_NATIVE_WAYLAND_ENV_VAR not in off

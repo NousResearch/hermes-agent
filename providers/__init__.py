@@ -95,15 +95,16 @@ _BUNDLED_PLUGINS_DIR = (
 )
 
 
-@dataclass
+@dataclass(frozen=True)
 class ProviderLoadFailure:
-    """One swallowed provider-plugin discovery load failure, buffered for TUI replay.
+    """One swallowed provider-plugin discovery load failure, buffered for replay.
 
     Provider discovery runs before ``setup_logging()``, when ``logger.warning``
     falls through to stdlib ``logging.lastResort`` and writes raw stderr —
     which corrupts the fullscreen prompt_toolkit TUI. Load failures are
-    therefore buffered here (bounded) at debug level and replayed once startup
-    output is safe (see ``cli_tui_runtime_mixin``). Routine policy gates
+    therefore buffered here (bounded) at debug level and replayed once logging
+    is ready (see :func:`mark_logging_ready`) and once on the console when
+    startup output is safe (see ``cli_tui_runtime_mixin``). Routine policy gates
     (disabled-plugin skips) are NOT buffered — they are expected config, not
     failures, and stay bare ``logger.debug``. An enabled entry point refused
     under host isolation IS buffered: the user explicitly opted in and the
@@ -119,6 +120,20 @@ MAX_LOAD_FAILURES = 50
 _LOAD_FAILURES: list[ProviderLoadFailure] = []
 _LOAD_FAILURES_LOCK = threading.Lock()
 
+# Cursors into ``_LOAD_FAILURES``: how many entries the log replay and the console
+# replay have already surfaced. Counts (not bools) because discovery can buffer
+# more failures after an early replay, and each later replay must surface those
+# exactly once. Eviction shifts every index, so ``_record_plugin_failure`` moves
+# both cursors back by the evicted amount.
+_REPLAYED_COUNT = 0
+_CONSOLE_SHOWN_COUNT = 0
+
+# True once the process has configured logging (:func:`mark_logging_ready`), so
+# ``logger.warning`` is safe (no ``logging.lastResort`` raw-stderr write) and late
+# discovery passes may flush inline. Entrypoints that install their own handlers
+# (ACP, gateway) call ``mark_logging_ready()`` too.
+_LOGGING_READY = False
+
 
 def get_provider_load_failures() -> tuple[ProviderLoadFailure, ...]:
     """Snapshot (oldest first) of buffered provider-plugin load failures."""
@@ -126,25 +141,54 @@ def get_provider_load_failures() -> tuple[ProviderLoadFailure, ...]:
         return tuple(_LOAD_FAILURES)
 
 
+def _log_failure(failure: ProviderLoadFailure) -> None:
+    logger.warning(
+        "Provider plugin %r (%s) failed to load: %s",
+        failure.plugin_name,
+        failure.source,
+        failure.error,
+    )
+
+
 def _record_plugin_failure(plugin_name: str, source: str, exc: BaseException) -> None:
     """Buffer a swallowed discovery load failure and debug-log it (never warn).
 
     Warning here would hit ``logging.lastResort``'s raw-stderr handler before
-    ``setup_logging()`` runs and corrupt the fullscreen TUI.
+    ``setup_logging()`` runs and corrupt the fullscreen TUI. An identical entry
+    already in the window is not buffered again (a per-home rescan can retry the
+    same broken plugin).
     """
+    global _REPLAYED_COUNT, _CONSOLE_SHOWN_COUNT
     failure = ProviderLoadFailure(plugin_name=str(plugin_name), source=source, error=str(exc))
-    global _REPLAYED_COUNT
+    dropped: list[ProviderLoadFailure] = []
     with _LOAD_FAILURES_LOCK:
+        if failure in _LOAD_FAILURES:
+            return
         _LOAD_FAILURES.append(failure)
         evicted = max(0, len(_LOAD_FAILURES) - MAX_LOAD_FAILURES)
         if evicted:
             # The buffer is a bounded window: evicting the oldest entries
-            # shifts every index, so the replay cursor (an index into this
-            # list) must move back by the same amount or a later replay
-            # slices past the end and silently drops new failures.
+            # shifts every index, so the cursors must move back by the same
+            # amount or a later replay slices past the end and silently drops
+            # new failures.
+            dropped = _LOAD_FAILURES[_REPLAYED_COUNT:evicted]
             del _LOAD_FAILURES[:evicted]
             _REPLAYED_COUNT = max(0, _REPLAYED_COUNT - evicted)
+            _CONSOLE_SHOWN_COUNT = max(0, _CONSOLE_SHOWN_COUNT - evicted)
+        ready = _LOGGING_READY
     logger.debug("Failed to load %s provider plugin %s: %s", source, plugin_name, exc)
+    if ready:
+        for lost in dropped:  # evicted before any replay saw them
+            _log_failure(lost)
+
+
+_CONSOLE_ERROR_MAX = 200
+
+
+def _console_error(error: str) -> str:
+    """First line of *error*, capped: the log keeps the full text, the console gets a line."""
+    first = error.strip().splitlines()[0] if error.strip() else ""
+    return first if len(first) <= _CONSOLE_ERROR_MAX else first[: _CONSOLE_ERROR_MAX - 1] + "…"
 
 
 def format_provider_load_failures(
@@ -157,73 +201,76 @@ def format_provider_load_failures(
     """
     from agent.i18n import t  # lazy: this module loads before the i18n catalogs
 
-    items = list(failures)[: max(0, limit)]
+    failures = list(failures)
+    items = failures[: max(0, limit)]
     lines = [
         t(
             "cli.tui.provider_plugin_load_failed",
             name=failure.plugin_name,
             source=failure.source,
-            error=failure.error,
+            error=_console_error(failure.error),
         )
         for failure in items
     ]
-    overflow = len(list(failures)) - len(items)
+    overflow = len(failures) - len(items)
     if overflow > 0:
         lines.append(t("cli.tui.provider_plugin_load_failed_more", count=overflow))
     return lines
 
 
-# How many buffered failures ``replay_provider_load_failures()`` has already
-# logged. A count (not a bool): discovery can buffer more failures after an
-# early replay, and a later replay must still surface those exactly once.
-_REPLAYED_COUNT = 0
-
-# True once ``replay_provider_load_failures()`` has run at least once. Every
-# production call site runs after ``setup_logging()``, so the flag means
-# ``logger.warning`` is safe (no ``logging.lastResort`` raw-stderr write to
-# corrupt the fullscreen TUI) and late discovery passes may flush inline.
-_LOGGING_READY = False
+def drain_console_failures() -> tuple[ProviderLoadFailure, ...]:
+    """Failures the console has not shown yet; marks them shown (each prints once)."""
+    global _CONSOLE_SHOWN_COUNT
+    with _LOAD_FAILURES_LOCK:
+        pending = tuple(_LOAD_FAILURES[_CONSOLE_SHOWN_COUNT:])
+        _CONSOLE_SHOWN_COUNT = len(_LOAD_FAILURES)
+    return pending
 
 
 def replay_provider_load_failures() -> int:
     """Log buffered discovery failures as warnings, once each.
 
     Discovery runs before ``setup_logging()``, so failures cannot be warned
-    about when recorded. Call this after logging is configured (CLI startup,
-    TUI startup) so every command — not just the TUI replay — surfaces them,
-    including in agent.log. Idempotent: only failures buffered since the last
-    call are logged. Returns the number newly replayed.
+    about when recorded. Idempotent: only failures buffered since the last
+    call are logged. Returns the number newly replayed. Callers outside tests
+    want :func:`mark_logging_ready`, which also opens the late-discovery flush.
     """
-    global _REPLAYED_COUNT, _LOGGING_READY
+    global _REPLAYED_COUNT
     with _LOAD_FAILURES_LOCK:
-        _LOGGING_READY = True
         pending = list(_LOAD_FAILURES[_REPLAYED_COUNT:])
         _REPLAYED_COUNT = len(_LOAD_FAILURES)
     for failure in pending:
-        logger.warning(
-            "Provider plugin %r (%s) failed to load: %s",
-            failure.plugin_name,
-            failure.source,
-            failure.error,
-        )
+        _log_failure(failure)
     return len(pending)
 
 
-def _replay_if_logging_ready() -> int:
-    """Flush buffered discovery failures when logging is already configured.
+def mark_logging_ready() -> int:
+    """Declare that this process has handlers installed, then flush buffered failures.
 
-    No-op before the first ``replay_provider_load_failures()`` call (logging
-    not yet safe: warning now would hit ``lastResort`` raw stderr). Used at
-    the end of lazy discovery passes so failures buffered after an early
-    replay still reach agent.log exactly once. Never raises.
+    Call it right after whatever configures logging (``setup_logging()``, the ACP
+    entrypoint's own handler, ...). From then on late discovery passes flush inline.
+    Never raises; returns the number of failures logged.
     """
-    if not _LOGGING_READY:
-        return 0
+    global _LOGGING_READY
+    with _LOAD_FAILURES_LOCK:
+        _LOGGING_READY = True
     try:
         return replay_provider_load_failures()
     except Exception:
         logger.debug("provider failure replay failed", exc_info=True)
         return 0
+
+
+def _replay_if_logging_ready() -> int:
+    """Flush buffered discovery failures when logging is already configured.
+
+    No-op before :func:`mark_logging_ready` (warning now would hit ``lastResort``
+    raw stderr). Used at the end of lazy discovery passes so failures buffered
+    after the early flush still reach agent.log exactly once. Never raises.
+    """
+    if not _LOGGING_READY:
+        return 0
+    return mark_logging_ready()
 
 
 def _sync_auth_registry() -> None:

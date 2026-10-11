@@ -907,8 +907,6 @@ class CuaDriver(BinaryPackage):
     optional = True
     # Computer use's only OS path, so the default install carries it.
     default = True
-    # cua-driver's anonymous PostHog telemetry gate ("0" disables; absent => ON upstream).
-    CUA_DRIVER_TELEMETRY_ENV_VAR = "CUA_DRIVER_RS_TELEMETRY_ENABLED"
     gaps = {**{target: "cua-driver does not publish a musl build" for target in MUSL_TARGETS},
             "linux-arm64-bionic": "cua-driver does not publish an Android build"}
     binary_rel = {
@@ -949,30 +947,22 @@ class CuaDriver(BinaryPackage):
     def _probe_env(self) -> dict:
         """The probe IS a first run: it must not mint telemetry state.
 
-        Build the child env here instead of importing
-        ``tools.computer_use.cua_backend``. That import pulls the application
-        graph into PM's process, and ``hermes_cli.config`` re-runs provider
-        plugin discovery at import time; a bundled provider plugin missing a
-        *runtime-only* dependency — ``solstice`` needs ``httpx``, which
-        pm/pyproject.toml deliberately does not carry — then raises inside
-        ``verify()`` and prints a ``Failed to load bundled provider plugin``
-        warning PM can do nothing about. ``load_config`` is unusable for the
-        same reason: it imports the provider registry too.
-
-        What is left here is the half that actually matters for a first run:
-        telemetry off, plus the profile's Bot Desktop seat when one is up.
+        Built from the pure ``cua_env`` leaf, never ``cua_backend``: that import reaches
+        ``hermes_cli.config`` and provider discovery, which PM's runtime cannot satisfy. The probe
+        therefore ignores the telemetry opt-in and the native-Wayland config; it only checks that
+        the binary runs, on the profile's Bot Desktop screen when one is up.
         """
-        env = dict(os.environ)
         try:
-            from tools.bot_desktop.runtime import desktop_env
+            from tools.computer_use.cua_env import build_child_env
 
-            env = desktop_env(env)
+            return build_child_env(telemetry_disabled=True, native_wayland=False)
         except Exception:
-            # The screen is an optimization for the probe: a broken or
-            # unavailable Bot Desktop must not stop cua-driver from verifying.
-            LOG.debug("cua-driver probe: Bot Desktop env unavailable", exc_info=True)
-        env[self.CUA_DRIVER_TELEMETRY_ENV_VAR] = "0"
-        return env
+            # The screen is an optimization for the probe: a broken or unavailable Bot Desktop
+            # must not stop cua-driver from verifying.
+            LOG.debug("cua-driver probe: child env unavailable", exc_info=True)
+            from tools.computer_use.cua_env import CUA_TELEMETRY_ENV_VAR
+
+            return dict(os.environ, **{CUA_TELEMETRY_ENV_VAR: "0"})
 
 
 @register

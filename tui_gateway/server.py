@@ -3469,24 +3469,47 @@ _GOAL_COMPRESSION_RECOVERY_LIMIT = 1
 _RealThread = threading.Thread
 
 
+def _emit_usage_tick(sid: str, session: dict) -> None:
+    """Immediate deduped ``session.usage`` at a tool boundary (#77744): a fast tool loop can
+    out-run the 1 Hz ticker — or finish inside its first window — leaving the context gauge at
+    the turn-start value until ``message.complete``. Shares the ticker's dedupe cell
+    (``usage_tick_last``) so a snapshot never emits twice; idle sessions are left to
+    ``message.complete``, which carries the authoritative final usage."""
+    if not session.get("running"):
+        return
+    with contextlib.suppress(Exception):
+        usage = _get_usage(session.get("agent"))
+        if usage != session.get("usage_tick_last"):
+            session["usage_tick_last"] = usage
+            _emit("session.usage", sid, {"usage": usage})
+
+
 def _start_usage_ticker(sid: str, agent, interval: float = 1.0) -> tuple[threading.Event, threading.Thread]:
     """Push live ``session.usage`` snapshots every ``interval`` s while a turn runs. The caller must set the
-    Event AND join the thread before ``message.complete``: a late tick would roll the final usage back."""
+    Event AND join the thread before ``message.complete``: a late tick would roll the final usage back.
+    Dedupes against the session's shared ``usage_tick_last`` cell — the same cell the tool-boundary
+    tick (``_emit_usage_tick``) advances — so a slow loop never emits the same snapshot twice."""
     stop = threading.Event()
     # Dedup baseline sampled BEFORE the thread starts (the client has the turn-start values); a late-scheduled
     # thread would otherwise absorb the first counter growth and never emit it.
     baseline: dict | None = None
     with contextlib.suppress(Exception):
         baseline = _get_usage(agent)
+        session = _sessions.get(sid)
+        if isinstance(session, dict) and baseline is not None:
+            session["usage_tick_last"] = baseline
 
     def _loop() -> None:
         last = baseline
         while not stop.wait(interval):
             with contextlib.suppress(Exception):
                 usage = _get_usage(agent)
-                if usage == last:
+                if usage == last or usage == _sessions.get(sid, {}).get("usage_tick_last"):
                     continue  # counters frozen (one long API call in flight): don't re-render the status bar
                 last = usage
+                session = _sessions.get(sid)
+                if isinstance(session, dict):
+                    session["usage_tick_last"] = usage
                 if stop.is_set():
                     break  # turn ended while snapshotting; message.complete carries the authoritative usage
                 _emit("session.usage", sid, {"usage": usage})

@@ -4255,6 +4255,10 @@ export interface Translations {
       paste: string
       selectAll: string
       addToDictionary: string
+      speakSelection: string
+      searchWeb: (query: string) => string
+      define: string
+      addToChat: string
     }
     page: {
       copyPageUrl: string

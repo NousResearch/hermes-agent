@@ -5019,7 +5019,11 @@ export const en: Translations = {
       cut: 'Cut',
       paste: 'Paste',
       selectAll: 'Select all',
-      addToDictionary: 'Add to dictionary'
+      addToDictionary: 'Add to dictionary',
+      speakSelection: 'Speak',
+      searchWeb: query => `Search the web for "${query}"`,
+      define: 'Define',
+      addToChat: 'Add to chat'
     },
     page: {
       copyPageUrl: 'Copy page URL',

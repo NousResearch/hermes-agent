@@ -38,6 +38,19 @@ class BitwardenLoginBackend(LoginBackend):
     def __init__(self, cfg: Optional[dict] = None):
         self.cfg = cfg or {}
 
+    def _ambient_session(self) -> str:
+        """A ``BW_SESSION`` already in our environment.
+
+        The ``vaultwarden`` secrets source persists a fresh ``bw unlock --raw``
+        token to ``~/.hermes/.env`` (loaded into ``os.environ`` at startup). An
+        in-process ``browser_vault_unlock`` is the usual path, but a headless /
+        Camoufox gateway session can't prompt for the master password, so it
+        would otherwise report "locked" even though the vault is genuinely
+        unlocked. Honouring the ambient token makes ``browser_vault_*`` work in
+        those sessions; ``bw`` reads ``BW_SESSION`` from the child env natively,
+        so nothing about the list/resolve calls changes."""
+        return (os.environ.get("BW_SESSION") or "").strip()
+
     def _bw(self) -> Path:
         explicit = str(self.cfg.get("binary_path") or "")
         found = explicit or shutil.which("bw")
@@ -53,7 +66,9 @@ class BitwardenLoginBackend(LoginBackend):
         return env
 
     def is_unlocked(self) -> bool:
-        return _unlock.is_unlocked(self.name)
+        # An in-process unlock OR a persisted ambient BW_SESSION both count as
+        # unlocked — see _ambient_session for why the latter is required.
+        return _unlock.is_unlocked(self.name) or bool(self._ambient_session())
 
     def unlock(self, master_password: str) -> None:
         # bw refuses a piped password ("Master password is required"); its non-interactive contract is
@@ -72,7 +87,7 @@ class BitwardenLoginBackend(LoginBackend):
             raise RuntimeError("Bitwarden was locked while unlocking; try again")
 
     def _run(self, *args: str) -> str:
-        token = _unlock.get_session_token(self.name)
+        token = _unlock.get_session_token(self.name) or self._ambient_session()
         if not token:
             raise UnlockRequired(self)
         proc = run_cli([str(self._bw()), *args, "--nointeraction"], env=self._env(token), timeout=_TIMEOUT,

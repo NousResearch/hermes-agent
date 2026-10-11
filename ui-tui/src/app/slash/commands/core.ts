@@ -23,10 +23,26 @@ import {
   isRemoteShellSession
 } from '../../../lib/terminalSetup.js'
 import type { Msg, PanelSection } from '../../../types.js'
-import type { StatusBarMode } from '../../interfaces.js'
+import type { StatusBarMode, UiState } from '../../interfaces.js'
 import { patchOverlayState } from '../../overlayStore.js'
 import { patchUiState } from '../../uiStore.js'
-import type { SlashCommand } from '../types.js'
+import type { SlashCommand, SlashRunCtx } from '../types.js'
+
+// Toggle commands share one tail: apply the new state optimistically, persist
+// it via config.set (fire-and-forget — a failed write must not block the flip),
+// then announce it on the next microtask so the transcript shows the result.
+const persistToggle = (
+  ctx: SlashRunCtx,
+  patch: Partial<UiState>,
+  key: string,
+  value: string,
+  message: () => string
+): void => {
+  patchUiState(patch)
+  ctx.gateway.rpc<ConfigSetResponse>('config.set', { key, value }).catch(() => {})
+
+  queueMicrotask(() => ctx.transcript.sys(message()))
+}
 
 const flagFromArg = (arg: string, current: boolean): boolean | null => {
   if (!arg) {
@@ -165,10 +181,7 @@ export const coreCommands: SlashCommand[] = [
         return ctx.transcript.sys(t('slashCmd.core.mouse.usage'))
       }
 
-      patchUiState({ mouseTracking: next })
-      ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'mouse', value: next }).catch(() => {})
-
-      queueMicrotask(() => ctx.transcript.sys(t('slashCmd.core.mouse.tracking', next)))
+      persistToggle(ctx, { mouseTracking: next }, 'mouse', next, () => t('slashCmd.core.mouse.tracking', next))
     }
   },
 
@@ -289,10 +302,9 @@ export const coreCommands: SlashCommand[] = [
         return ctx.transcript.sys(t('slashCmd.core.density.usage'))
       }
 
-      patchUiState({ compact: next })
-      ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'density', value: next ? 'on' : 'off' }).catch(() => {})
-
-      queueMicrotask(() => ctx.transcript.sys(t('slashCmd.core.density.state', next ? 'on' : 'off')))
+      persistToggle(ctx, { compact: next }, 'density', next ? 'on' : 'off', () =>
+        t('slashCmd.core.density.state', next ? 'on' : 'off')
+      )
     }
   },
 
@@ -606,11 +618,8 @@ export const coreCommands: SlashCommand[] = [
       // Display-only: Python owns the tool_progress stash/restore so /focus off
       // returns to whatever /verbose mode the user had. Optimistically patch the
       // badge so the status bar flips on the same frame.
-      patchUiState({ focusView: next })
-      ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'focus', value: next ? 'on' : 'off' }).catch(() => {})
-
-      queueMicrotask(() =>
-        ctx.transcript.sys(next ? t('slashCmd.core.focus.enabled') : t('slashCmd.core.focus.disabled'))
+      persistToggle(ctx, { focusView: next }, 'focus', next ? 'on' : 'off', () =>
+        next ? t('slashCmd.core.focus.enabled') : t('slashCmd.core.focus.disabled')
       )
     }
   },
@@ -636,10 +645,7 @@ export const coreCommands: SlashCommand[] = [
         return ctx.transcript.sys(t('slashCmd.core.statusbar.usage'))
       }
 
-      patchUiState({ statusBar: next })
-      ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'statusbar', value: next }).catch(() => {})
-
-      queueMicrotask(() => ctx.transcript.sys(t('slashCmd.core.statusbar.state', next)))
+      persistToggle(ctx, { statusBar: next }, 'statusbar', next, () => t('slashCmd.core.statusbar.state', next))
     }
   },
 
@@ -677,10 +683,13 @@ export const coreCommands: SlashCommand[] = [
         return ctx.transcript.sys(t('slashCmd.core.battery.usage'))
       }
 
-      patchUiState({ battery: next, ...(next ? {} : { batteryStatus: null }) })
-      ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'battery', value: next ? 'on' : 'off' }).catch(() => {})
-
-      queueMicrotask(() => ctx.transcript.sys(t('slashCmd.core.battery.state', next ? 'on' : 'off')))
+      persistToggle(
+        ctx,
+        { battery: next, ...(next ? {} : { batteryStatus: null }) },
+        'battery',
+        next ? 'on' : 'off',
+        () => t('slashCmd.core.battery.state', next ? 'on' : 'off')
+      )
     }
   },
 

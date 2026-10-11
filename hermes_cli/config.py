@@ -3379,6 +3379,16 @@ _SCALAR_WORDS = {
     'null': None, 'none': None, '~': None}
 
 
+def _is_unseeded_effort_key(key: str) -> bool:
+    """A reasoning-effort slot with no ``DEFAULT_CONFIG`` leaf (``agent.reasoning_effort``,
+    ``agent.reasoning_overrides.<model>``, MoA slots). There ``none`` is the level that turns
+    thinking off, while null means "use the default effort"; a leaf the schema declares nullable
+    keeps the null reading."""
+    parts = _split_key_path(key)
+    is_effort = parts[-1] == "reasoning_effort" or (len(parts) > 1 and parts[-2] == "reasoning_overrides")
+    return is_effort and cfg_get(DEFAULT_CONFIG, *parts, default=_MISSING) is _MISSING
+
+
 def _coerce_config_set_value(key: str, value: str) -> Any:
     """Auto-coerce a ``hermes config set`` string to bool/None/int/float/list/dict.
     String-typed settings (per ``DEFAULT_CONFIG``) are preserved verbatim so enum members such as
@@ -3392,6 +3402,8 @@ def _coerce_config_set_value(key: str, value: str) -> Any:
         return value
     stripped = value.strip()
     lower = stripped.lower()
+    if lower == "none" and _is_unseeded_effort_key(key):
+        return stripped
     if lower in _SCALAR_WORDS:
         return _SCALAR_WORDS[lower]
     for coerce in (_coerce_int, _coerce_float):

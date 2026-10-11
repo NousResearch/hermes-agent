@@ -720,6 +720,12 @@ export const opsCommands: SlashCommand[] = [
   },
 
   {
+    help: 'manage connector accounts: list, rename, add another, reconnect, remove',
+    name: 'connectors',
+    run: () => patchOverlayState({ connectors: true })
+  },
+
+  {
     help: 'view & toggle plugins (no arg opens the hub; enable/disable <name> for direct toggle)',
     name: 'plugins',
     run: (arg, ctx, cmd) => {

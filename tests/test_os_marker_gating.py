@@ -40,7 +40,7 @@ def test_native_collection_witnesses(tmp_path, invalid, message):
             encoding="utf-8")
     result = subprocess.run([sys.executable, "-m", "pytest", "-q", "-o", "addopts=", str(tmp_path)],
                             cwd=tmp_path, env={**os.environ, "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"},
-                            capture_output=True, text=True, timeout=30)
+                            capture_output=True, text=True, timeout=30, check=False)
     output = result.stdout + result.stderr
     witnesses = {p.name for p in tmp_path.iterdir() if p.name in {"plain", "any", "native", "foreign", "arch"}}
     if invalid:

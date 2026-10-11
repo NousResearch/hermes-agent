@@ -163,6 +163,13 @@ class TestReasoningEchoFamily:
         ("xiaomi", None, "https://x", "mimo"),
         ("custom", "MiMo-7B", "https://x", "mimo"),
         ("custom", None, "https://api.xiaomimimo.com/v1", "mimo"),
+        # Ollama has no echo-back requirement: replayed (as reasoning + reasoning_content) but never padded.
+        ("ollama-cloud", "kimi-k3", "https://x", None),
+        ("custom", "kimi-k3", "https://ollama.com/v1", None),
+        ("custom", "kimi-k3:cloud", "http://127.0.0.1:11434/v1", None),
+        ("custom", "gpt-oss:120b-cloud", "http://127.0.0.1:11434/v1", None),
+        ("gmi", "gmi-cloud", "https://x", None),
+        ("custom", "qwen3:8b", "http://127.0.0.1:11434/v1", None),
         ("openai", "gpt-5", "https://api.openai.com/v1", None),
         ("mistral", "mistral-large", "https://api.mistral.ai/v1", None),
         (None, None, None, None),

@@ -265,6 +265,7 @@ def test_worktree_add_from_origin_base_does_not_track(client, repo_with_remote):
     probe = subprocess.run(
         ["git", "rev-parse", "--abbrev-ref", "fresh@{upstream}"],
         cwd=repo_with_remote, capture_output=True, text=True,
+        check=False,
     )
     assert probe.returncode != 0
 
@@ -327,6 +328,7 @@ def test_worktree_add_from_origin_base_on_tag_pinned_clone(tmp_path):
     upstream = subprocess.run(
         ["git", "rev-parse", "--abbrev-ref", f"{added['branch']}@{{upstream}}"],
         cwd=clone, capture_output=True, text=True,
+        check=False,
     )
     assert upstream.returncode != 0
 

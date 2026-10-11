@@ -744,6 +744,7 @@ gateway:
     already_paused: "⏸️ Hermes ist bereits pausiert{suffix}. Verwenden Sie `/pause off` zum Fortsetzen."
     paused: "⏸️ Pausiert{suffix}. Neue Cron-/Kanban-/Gateway-Arbeit wird zurückgehalten; laufende Arbeit wird normal abgeschlossen. Verwenden Sie `/pause off` zum Fortsetzen."
   queue:
+    full: "Die Warteschlange ist voll. Diese Nachricht wurde nicht eingereiht. Warten Sie, bis ein eingereihter Zug abgeschlossen ist, und senden Sie sie dann erneut."
     usage: "Verwendung: /queue <prompt>"
     queued: "Für den nächsten Zug eingereiht."
     queued_depth: " ({depth} eingereiht)"

@@ -32,6 +32,7 @@ from tools.delegate_tool_config import (
     _DEFAULT_MAX_CONCURRENT_CHILDREN, _get_child_timeout, _get_max_async_children, _get_max_concurrent_children,
     _get_max_spawn_depth, _get_oneshot_max_children, _get_orchestrator_enabled, _get_subagent_approval_callback, _get_worktree_isolation,
     _inherit_parent_capabilities, _load_config, _merge_request_overrides, _resolve_child_credential_pool,
+    inherited_parent_request_overrides,
     _resolve_child_runtime, _resolve_delegation_credentials,
     _subagent_auto_approve, _subagent_auto_deny,
 )
@@ -266,7 +267,7 @@ def _build_child_agent(
         # _resolve_delegation_credentials already merged OVER the parent's
         request_overrides = dict(override_request_overrides)
     else:
-        request_overrides = {} if override_provider else dict(getattr(parent_agent, "request_overrides", {}) or {})
+        request_overrides = {} if override_provider else (inherited_parent_request_overrides(parent_agent) or {})
     parent_sid = getattr(parent_agent, "session_id", None)
     child_session_db = _open_child_session_db(parent_agent)
     with delegated_child_context():

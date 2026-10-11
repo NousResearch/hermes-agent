@@ -579,7 +579,8 @@ export const zhHantSettings = {
         maxIterations: '子代理輪次上限',
         maxConcurrentChildren: '平行子代理',
         childTimeoutSeconds: '子代理逾時',
-        reasoningEffort: '子代理推理強度'
+        reasoningEffort: '子代理推理強度',
+        serviceTier: '子代理速度'
       },
       updates: {
         nonInteractiveLocalChanges: '應用程式內更新的本機變更'

@@ -1371,6 +1371,11 @@ DEFAULT_CONFIG = {
         # Subagent effort: "ultra" | "max" | "xhigh" | "high" | "medium" | "low" | "minimal" |
         # "none" (empty = inherit)
         "reasoning_effort": "",
+        # Subagent speed tier: "inherit" = children run at the parent's /fast tier (priority /
+        # ultrafast / Anthropic fast); "normal" = children run at standard speed while the parent
+        # keeps its tier, so the premium buys a fast orchestrator rather than N fast workers. A
+        # tier pinned in request_overrides below is explicit and always wins.
+        "service_tier": "inherit",
         # Max parallel children per batch AND max concurrent background delegation units; async
         # dispatches beyond it run synchronously. Floor 1, no ceiling.
         "max_concurrent_children": 10,

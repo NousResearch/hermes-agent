@@ -1087,7 +1087,8 @@ export const zhOverrides = {
         maxIterations: '子智能体轮次上限',
         maxConcurrentChildren: '并行子智能体',
         childTimeoutSeconds: '子智能体超时',
-        reasoningEffort: '子智能体推理强度'
+        reasoningEffort: '子智能体推理强度',
+        serviceTier: '子智能体速度'
       },
       updates: {
         nonInteractiveLocalChanges: '应用内更新本地更改'

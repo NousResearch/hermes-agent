@@ -3065,6 +3065,7 @@
     "settings.fieldLabels.delegation.model",
     "settings.fieldLabels.delegation.provider",
     "settings.fieldLabels.delegation.reasoningEffort",
+    "settings.fieldLabels.delegation.serviceTier",
     "settings.fieldLabels.desktop.repoScanEnabled",
     "settings.fieldLabels.desktop.repoScanExcludePaths",
     "settings.fieldLabels.desktop.repoScanRoots",

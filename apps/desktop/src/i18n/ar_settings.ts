@@ -466,6 +466,7 @@ export const arSettings = {
       'delegation.maxConcurrentChildren': 'الوكلاء الفرعيون المتوازيون',
       'delegation.childTimeoutSeconds': 'مهلة الوكيل الفرعي',
       'delegation.reasoningEffort': 'جهد تفكير الوكيل الفرعي',
+      'delegation.serviceTier': 'سرعة الوكيل الفرعي',
       'updates.nonInteractiveLocalChanges': 'تغييرات التحديث داخل التطبيق'
     },
     fieldDescriptions: {

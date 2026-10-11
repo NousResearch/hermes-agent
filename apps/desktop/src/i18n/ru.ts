@@ -896,7 +896,8 @@ export const ruOverrides = {
         maxIterations: 'Лимит ходов субагента',
         maxConcurrentChildren: 'Параллельные субагенты',
         childTimeoutSeconds: 'Тайм-аут субагента',
-        reasoningEffort: 'Глубина рассуждений субагента'
+        reasoningEffort: 'Глубина рассуждений субагента',
+        serviceTier: 'Скорость субагента'
       },
       updates: {
         nonInteractiveLocalChanges: 'Локальные изменения при обновлении из приложения'

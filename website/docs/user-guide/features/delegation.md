@@ -640,6 +640,7 @@ delegation:
   # worktree_isolation: false               # Give each child its own git worktree (see Worktree Isolation above)
   # max_spawn_depth: 1                      # Tree depth (floor 1, no ceiling, default 1 = flat). Raise to 2 to allow orchestrator children to spawn leaves; 3+ for deeper trees.
   # orchestrator_enabled: true              # Disable to force all children to leaf role.
+  # service_tier: inherit                   # inherit = children run at the parent's /fast tier; normal = children at standard speed, parent stays fast
   model: "google/gemini-3-flash-preview"             # Optional provider/model override
   provider: "openrouter"                             # Optional built-in provider
   api_mode: anthropic_messages                       # optional; auto-detected from base_url for anthropic_messages endpoints
@@ -666,6 +667,8 @@ delegation:
 When `base_url` points at an Anthropic-compatible endpoint — for example a path ending in `/anthropic`, an Azure Foundry Claude route, or a MiniMax `/anthropic` proxy — `api_mode` is auto-detected as `anthropic_messages` so the subagent uses the right wire format without you setting anything. Set `api_mode` explicitly when the auto-detection guess is wrong (rare).
 
 Subagents compact where their parent does: at `compression.threshold` × window (0.50 by default), or the global `compression.threshold_tokens` cap when one is set and lower. `delegation.compression_threshold_tokens` (default `0`, off) adds an optional absolute cap on a child's compaction *trigger*, applied as the lower of it and the ratio threshold; it never touches the request payload or the parent. A token count of at least 16000 enables it; `true` or `"200k"` are config errors that are warned and ignored. It stays off by default because a replay of a 1,393-agent run put 200K–400K caps within 5% of each other in cost once cache prefixes are intact, and every compaction is a chance to lose detail.
+
+`delegation.service_tier: normal` keeps a fast parent (`/fast`, `/fast ultrafast`, Anthropic fast mode) from passing its paid speed tier on to its children: new subagents run at standard speed while the orchestrator stays fast, so for parallel work the premium is spent on one coordinator rather than on every worker. The default `inherit` keeps today's behaviour. Only the tier Hermes pinned for the parent is dropped; a tier set explicitly in `delegation.request_overrides` always wins, and children on their own `delegation.provider`/`base_url` are unaffected. Also available as **Subagent Speed** under Settings → Advanced → Delegation in the Desktop app.
 
 `delegation.request_overrides` works on **all three** resolution branches — direct `base_url`, named `provider`, and pure inherit — so it always takes effect. Top-level keys are API kwargs (e.g. `service_tier`); an `extra_body` sub-dict is merged into the request's `extra_body`. Explicit values merge **over** runtime- or parent-derived overrides: explicit top-level keys win, and `extra_body` is deep-merged one level, so a provider's own request personality (e.g. `thinking: {type: disabled}`) survives unless your key redefines it. See [Configuration → Delegation](../configuration.md#delegation) for details.
 

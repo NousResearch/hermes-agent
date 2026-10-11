@@ -238,6 +238,8 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
   'context.engine': ['compressor', 'default', 'custom'],
   // '' = inherit the agent's own effort; the rest is the shared scale.
   'delegation.reasoning_effort': ['', ...REASONING_EFFORTS],
+  // inherit = children run at the parent's Fast/Ultrafast tier; normal = standard speed.
+  'delegation.service_tier': ['inherit', 'normal'],
   // NOTE: memory.provider is intentionally NOT listed here. Its options are
   // discovery-driven and served by the backend config schema (merged
   // per-request in web_server._schema_with_dynamic_provider_options), so
@@ -597,7 +599,8 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
     maxIterations: 'Subagent Turn Limit',
     maxConcurrentChildren: 'Parallel Subagents',
     childTimeoutSeconds: 'Subagent Timeout',
-    reasoningEffort: 'Subagent Reasoning Effort'
+    reasoningEffort: 'Subagent Reasoning Effort',
+    serviceTier: 'Subagent Speed'
   },
   updates: {
     nonInteractiveLocalChanges: 'In-App Update Local Changes'
@@ -860,6 +863,7 @@ export const SECTIONS: DesktopConfigSection[] = [
       'delegation.max_concurrent_children',
       'delegation.child_timeout_seconds',
       'delegation.reasoning_effort',
+      'delegation.service_tier',
       'updates.non_interactive_local_changes'
     ]
   }

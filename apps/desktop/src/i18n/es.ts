@@ -1368,7 +1368,8 @@ export const esOverrides = {
         maxIterations: 'Límite de turnos del subagente',
         maxConcurrentChildren: 'Subagentes paralelos',
         childTimeoutSeconds: 'Tiempo límite del subagente',
-        reasoningEffort: 'Esfuerzo de razonamiento del subagente'
+        reasoningEffort: 'Esfuerzo de razonamiento del subagente',
+        serviceTier: 'Velocidad del subagente'
       },
       updates: {
         nonInteractiveLocalChanges: 'Cambios locales en actualización desde la app'

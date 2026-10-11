@@ -152,6 +152,11 @@ _SCHEMA_OVERRIDES: dict[str, dict[str, Any]] = {
         "Reasoning effort for delegated subagents",
         "", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
     ),
+    "delegation.service_tier": _select(
+        "Subagent speed: inherit = children run at the parent's Fast/Ultrafast tier; "
+        "normal = children run at standard speed while the parent stays fast",
+        "inherit", "normal",
+    ),
     "updates.non_interactive_local_changes": _select(
         "When the chat app / gateway updates Hermes (no terminal prompt), "
         "what to do with uncommitted local source edits. 'stash' keeps them "

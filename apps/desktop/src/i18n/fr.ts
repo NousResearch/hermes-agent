@@ -1371,7 +1371,8 @@ export const frOverrides = {
         maxIterations: 'Limite de tours sous-agent',
         maxConcurrentChildren: 'Sous-agents parallèles',
         childTimeoutSeconds: 'Délai sous-agent',
-        reasoningEffort: 'Intensité du raisonnement sous-agent'
+        reasoningEffort: 'Intensité du raisonnement sous-agent',
+        serviceTier: 'Vitesse du sous-agent'
       },
       updates: {
         nonInteractiveLocalChanges: 'Modifications locales à la mise à jour intégrée'

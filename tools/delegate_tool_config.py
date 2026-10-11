@@ -21,6 +21,7 @@ _HIGH_CONCURRENCY_WARNED = False
 MAX_DEPTH = 1  # flat by default: parent (0) -> child (1); deeper needs max_spawn_depth
 _MIN_SPAWN_DEPTH = 1  # floor for the configurable cap; MAX_DEPTH stays the default
 _LEGACY_MAX_ASYNC_WARNED = False
+_SERVICE_TIER_POLICY_WARNED = False
 # No default wall-clock cap on children: legitimate heavy work (deep reviews, research fan-outs, slow reasoning
 # models) was being killed mid-task. Stuck-child detection is the heartbeat staleness monitor;
 # delegation.child_timeout_seconds opts back in.
@@ -289,6 +290,44 @@ def _resolve_child_credential_pool(
             logger.debug("Could not load credential pool for child provider '%s': %s", effective_provider, exc)
     return None
 
+# Every (key, value) a static ``/fast`` tier pins into the parent's request_overrides
+# (hermes_cli.models.resolve_fast_mode_overrides). Only these exact pairs are the parent's
+# speed tier; anything else in request_overrides (a user's ``service_tier: flex``, a proxy's
+# own tier under ``extra_body``) is route personality the child keeps.
+_PARENT_SPEED_TIER_PINS = (("speed", "fast"), ("service_tier", "priority"), ("service_tier", "ultrafast"))
+
+
+def _child_service_tier_policy() -> str:
+    """``delegation.service_tier``: ``inherit`` (default, children run at the parent's speed tier) or
+    ``normal`` (children run at standard speed; the parent keeps its tier). Unknown words warn once and
+    read as ``inherit``. Spend the speed premium on a fast orchestrator, not on every worker (#132269)."""
+    raw = str(_cfg().get("service_tier") or "").strip().lower()
+    if raw in ("", "inherit"):
+        return "inherit"
+    if raw in ("normal", "standard", "default", "off", "none"):
+        return "normal"
+    _warn_once(
+        "_SERVICE_TIER_POLICY_WARNED", "delegation.service_tier=%r is not 'inherit' or 'normal'; children inherit "
+        "the parent's speed tier. Pin a specific tier through delegation.request_overrides instead.", raw,
+    )
+    return "inherit"
+
+
+def inherited_parent_request_overrides(parent_agent) -> Optional[dict]:
+    """The parent's ``request_overrides`` as a child inherits them: a deep copy, minus the parent's pinned
+    speed tier when ``delegation.service_tier: normal``. None when the parent has none."""
+    import copy as _copy
+    raw = getattr(parent_agent, "request_overrides", None)
+    if not isinstance(raw, dict) or not raw:
+        return None
+    inherited = _copy.deepcopy(raw)
+    if _child_service_tier_policy() == "normal":
+        for key, value in _PARENT_SPEED_TIER_PINS:
+            if inherited.get(key) == value:
+                inherited.pop(key)
+    return inherited or None
+
+
 def _merge_request_overrides(runtime_overrides, explicit_overrides):
     """Merge explicit ``delegation.request_overrides`` OVER runtime-derived ones. Explicit top-level keys win;
     ``extra_body`` is deep-merged ONE level so provider personality (e.g. ``thinking: {type: disabled}``) survives
@@ -435,7 +474,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         # Pure inherit; explicit request_overrides still merge OVER the parent's.
         return _credential_bundle(
             values["model"], None, None, None, None,
-            _merge_request_overrides(getattr(parent_agent, "request_overrides", None), explicit_request_overrides),
+            _merge_request_overrides(inherited_parent_request_overrides(parent_agent), explicit_request_overrides),
         )
     return _runtime_provider_credentials(values, explicit_request_overrides)
 

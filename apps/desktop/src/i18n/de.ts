@@ -1367,7 +1367,8 @@ export const deOverrides = {
         maxIterations: 'Subagent-Rundenlimit',
         maxConcurrentChildren: 'Parallele Subagenten',
         childTimeoutSeconds: 'Subagent-Timeout',
-        reasoningEffort: 'Subagent-Denkanstrengung'
+        reasoningEffort: 'Subagent-Denkanstrengung',
+        serviceTier: 'Subagent-Geschwindigkeit'
       },
       updates: {
         nonInteractiveLocalChanges: 'Lokale Änderungen bei In-App-Update'

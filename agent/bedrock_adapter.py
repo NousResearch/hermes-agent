@@ -810,16 +810,25 @@ def _anthropic_ordered_blocks(msg: dict) -> list[dict]:
 
 
 def _reasoning_details_blocks(msg: dict, claude: bool) -> list[dict]:
-    """Redacted thinking from ``reasoning_details`` (Converse's own capture) and, for Claude, signed thinking
-    in Anthropic shape, in stored order. Converse wants reasoning ahead of toolUse."""
+    """Thinking from the persisted ``reasoning_details`` (Anthropic shape, as Converse captures it), in stored
+    order: Claude gets signed thinking + redacted blobs, other models readable text only (falling back to
+    ``reasoning_content``). This is the carrier a turn reloaded from state.db replays from, since the
+    ordered ``bedrock_content_blocks`` sidecar is live-only. Converse wants reasoning ahead of toolUse."""
     blocks = []
     for d in msg.get("reasoning_details") or []:
         if not isinstance(d, dict):
             continue
-        if claude and d.get("type") == "thinking" and d.get("signature"):
-            blocks.append(_reasoning_text_block(d.get("thinking"), d["signature"]))
-        elif d.get("type") == "redacted_thinking" and (block := _redacted_reasoning_block(d.get("data") or d.get("redactedContentBase64"))):
+        if d.get("type") == "thinking" and isinstance(d.get("thinking"), str) and d["thinking"].strip():
+            if claude and d.get("signature"):
+                blocks.append(_reasoning_text_block(d["thinking"], d["signature"]))
+            elif not claude:
+                blocks.append(_reasoning_text_block(d["thinking"], None))
+        elif d.get("type") == "redacted_thinking" and (
+                block := _redacted_reasoning_block(d.get("data") or d.get("redactedContentBase64"))):
             blocks.append(block)
+    text = msg.get("reasoning_content")
+    if not blocks and not claude and isinstance(text, str) and text.strip():
+        blocks.append(_reasoning_text_block(text, None))
     return blocks
 
 
@@ -960,6 +969,20 @@ def _tool_call_ns(tool_use_id: str, name: str, input_dict) -> SimpleNamespace:
     )
 
 
+def _persisted_reasoning_details(ordered_blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    details: list[dict[str, Any]] = []
+    for block in ordered_blocks:
+        reasoning = block.get("reasoningContent") if isinstance(block, dict) else None
+        if not isinstance(reasoning, dict):
+            continue
+        if isinstance(reasoning.get("text"), str) and reasoning["text"]:
+            details.append({"type": "thinking", "thinking": reasoning["text"],
+                            **({"signature": reasoning["signature"]} if reasoning.get("signature") else {})})
+        if reasoning.get("redactedContentBase64"):
+            details.append({"type": "redacted_thinking", "data": reasoning["redactedContentBase64"]})
+    return details
+
+
 class _ResponseParts:
     """Accumulator shared by the sync and streaming normalizers."""
 
@@ -992,10 +1015,12 @@ class _ResponseParts:
 
     def build(self, ordered_blocks: list[dict[str, Any]], usage_data: dict[str, int], stop_reason: str, model: str) -> SimpleNamespace:
         """Assemble the OpenAI-shaped response. Converse's inputTokens EXCLUDES cache read/write tokens
-        (OpenAI's prompt_tokens includes them), so they are added back."""
+        (OpenAI's prompt_tokens includes them), so they are added back. ``reasoning_details`` carries every
+        reasoning block in Anthropic shape (signed thinking included) because it is the persisted column."""
         msg = SimpleNamespace(
             role="assistant", content="\n".join(self.text_parts) if self.text_parts else None,
-            tool_calls=self.tool_calls or None, reasoning_details=self.reasoning_details or None,
+            tool_calls=self.tool_calls or None,
+            reasoning_details=_persisted_reasoning_details(ordered_blocks) or self.reasoning_details or None,
             reasoning_content="\n\n".join(self.reasoning_parts) if self.reasoning_parts else None,
             bedrock_content_blocks=ordered_blocks or None,
         )

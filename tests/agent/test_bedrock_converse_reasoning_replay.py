@@ -106,3 +106,25 @@ def test_claude_on_converse_requests_thinking():
     assert "additionalModelRequestFields" not in transport.build_kwargs(
         model="meta.llama3-70b-instruct-v1:0", messages=msgs, reasoning_config=cfg)
     assert "additionalModelRequestFields" not in transport.build_kwargs(model=CLAUDE, messages=msgs)
+
+
+@pytest.mark.parametrize("model, expect", [
+    (CLAUDE, {"text": "plan", "signature": "SIG"}),
+    ("openai.gpt-oss-120b-1:0", {"text": "plan"}),
+])
+def test_converse_reasoning_survives_a_reload_from_state_db(model, expect):
+    """``bedrock_content_blocks`` is live-only; the persisted ``reasoning_details`` must carry the turn."""
+    from agent.bedrock_adapter import convert_messages_to_converse, normalize_converse_response
+
+    live = normalize_converse_response({"output": {"message": {"content": [
+        {"reasoningContent": {"reasoningText": {"text": "plan", "signature": "SIG"}}},
+        {"toolUse": {"toolUseId": "t1", "name": "read_file", "input": {"path": "a"}}},
+    ]}}, "stopReason": "tool_use", "usage": {}}).choices[0].message
+    reloaded = {"role": "assistant", "content": "", "reasoning_content": live.reasoning_content,
+                "reasoning_details": live.reasoning_details,
+                "tool_calls": [{"id": "t1", "type": "function", "function": {"name": "read_file", "arguments": "{}"}}]}
+    history = [{"role": "user", "content": "Q1"}, reloaded, {"role": "tool", "tool_call_id": "t1", "content": "ok"},
+               {"role": "assistant", "content": "A1"}, {"role": "user", "content": "Q2"}]
+    _, msgs = convert_messages_to_converse(history, model=model)
+    reasoning = [b["reasoningContent"]["reasoningText"] for b in msgs[1]["content"] if "reasoningContent" in b]
+    assert reasoning == [expect]

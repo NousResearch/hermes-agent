@@ -104,18 +104,21 @@ class HostedRoomRuntime:
         pending_action: Callable[[str, str, Mapping[str, Any] | None], None] | None = None,
         clock: Callable[[], float] = time.time,
         lease_ttl_seconds: float = 30.0, poll_interval_seconds: float = 5.0,
-        active_poll_interval_seconds: float = 0.25, turn_timeout_seconds: float = 1830.0,
+        active_poll_interval_seconds: float = 0.25, turn_timeout_seconds: float | None = 1830.0,
         indeterminate_defer_seconds: float = 60.0, max_concurrent_rooms: int = 4,
         unavailable_retry_min_seconds: float = 1.0, unavailable_retry_max_seconds: float = 30.0,
         process_generation: str | None = None) -> None:
         positive = dict(
             lease_ttl_seconds=lease_ttl_seconds, poll_interval_seconds=poll_interval_seconds,
             active_poll_interval_seconds=active_poll_interval_seconds,
-            turn_timeout_seconds=turn_timeout_seconds,
             indeterminate_defer_seconds=indeterminate_defer_seconds)
         for name, value in positive.items():
             if value <= 0:
                 raise ValueError(f"{name} must be positive")
+        # None disables the turn deadline (HERMES_AGENT_TIMEOUT=0); a deadline,
+        # when set, must stay positive so a turn can never expire instantly.
+        if turn_timeout_seconds is not None and turn_timeout_seconds <= 0:
+            raise ValueError("turn_timeout_seconds must be positive, or None to disable")
         if (not isinstance(max_concurrent_rooms, int) or isinstance(max_concurrent_rooms, bool)
                 or max_concurrent_rooms < 1):
             raise ValueError("max_concurrent_rooms must be a positive integer")
@@ -129,6 +132,8 @@ class HostedRoomRuntime:
         self.pending_action, self.clock = pending_action, clock
         for name, value in positive.items():
             setattr(self, name, float(value))
+        self.turn_timeout_seconds = (
+            None if turn_timeout_seconds is None else float(turn_timeout_seconds))
         self.max_concurrent_rooms = max_concurrent_rooms
         self.unavailable_retry_min_seconds, self.unavailable_retry_max_seconds = (
             float(unavailable_retry_min_seconds), float(unavailable_retry_max_seconds))
@@ -589,7 +594,9 @@ class HostedRoomRuntime:
                 # A submit should fail before admission or return after it; an unexpected
                 # exception at that boundary is ambiguous, never a proven failure.
                 submit_attempted, session_id = True, _session_id(session)
-                deadline_monotonic = time.monotonic() + self.turn_timeout_seconds
+                deadline_monotonic = (
+                    None if self.turn_timeout_seconds is None
+                    else time.monotonic() + self.turn_timeout_seconds)
                 transport.submit(
                     **_session_kw(profile, session_id), prompt=task["payload"]["prompt"],
                     task=attempt.identity, execution_generation=attempt.execution_generation,
@@ -672,7 +679,7 @@ class HostedRoomRuntime:
 
     def _wait_for_terminal(
         self, binding: HostedRoomBinding, *, profile: str, session_id: str,
-        attempt: state.TaskAttempt, transport: InternalSessionRPC, deadline_monotonic: float,
+        attempt: state.TaskAttempt, transport: InternalSessionRPC, deadline_monotonic: float | None,
     ) -> _TerminalReceipt | None:
         lease = attempt.lease
         while not self._stop.is_set():
@@ -689,7 +696,7 @@ class HostedRoomRuntime:
                 self._wake.wait(self.active_poll_interval_seconds)
                 self._wake.clear()
                 continue
-            if time.monotonic() >= deadline_monotonic:
+            if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
                 self._expire_attempt_deadline(binding, task, lease)
                 return None
             lease = self._renew_lease_if_needed(lease)
@@ -698,8 +705,11 @@ class HostedRoomRuntime:
                 return receipt
             info = transport.info(**_session_kw(profile, session_id))
             self._report_pending_action(task, session_id=session_id, info=info)
-            remaining = max(0.0, deadline_monotonic - time.monotonic())
-            self._wake.wait(min(self.active_poll_interval_seconds, remaining))
+            if deadline_monotonic is None:
+                self._wake.wait(self.active_poll_interval_seconds)
+            else:
+                remaining = max(0.0, deadline_monotonic - time.monotonic())
+                self._wake.wait(min(self.active_poll_interval_seconds, remaining))
             self._wake.clear()
         return None
 

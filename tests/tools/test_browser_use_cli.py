@@ -1231,177 +1231,74 @@ class TestTimeoutProcessGroupKill:
 
 
 class TestExecHybridPrivateUrlRouting:
-    """``browser_exec`` must reach the SAME verdict as ``browser_navigate`` for a private URL.
-
-    Hybrid routing (``browser.auto_local_for_private_urls``, on by default) serves private/LAN
-    URLs from a LOCAL Chromium sidecar so the cloud provider never sees them. ``browser_navigate``
-    consults that decision via ``_navigation_session_key``; ``browser_exec``'s pre-flight URL scan
-    did not, so every LAN URL was refused with "Blocked: URL targets a private or internal address"
-    even though the navigate path would have routed and fetched it.
-
-    Relaxing the pre-flight alone would be WRONG: the exec call resolves ONE endpoint for the whole
-    code blob (``_resolve_backend_cdp``), so an allowed private URL would then be executed against
-    the configured cloud browser — the exact leak the guard exists to prevent. The verdict and the
-    endpoint must move together.
-    """
+    """With a cloud provider configured and ``browser.auto_local_for_private_urls`` on, a browser_exec
+    call carrying a private URL runs on the hybrid LOCAL sidecar or is refused; it never reaches the
+    cloud browser (one CDP endpoint per call)."""
 
     LAN = "http://192.168.0.1:9120/login"
 
     @pytest.fixture(autouse=True)
-    def _cloud_with_hybrid(self, monkeypatch):
-        """Cloud provider configured + hybrid routing on — the shipped default combination."""
+    def _cloud_with_hybrid(self, monkeypatch, tmp_path, _fake_managed_chromium):
         monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override", lambda: "")
-        # _hybrid_routes_locally reads the RAW override (a CDP override owns the whole session).
         monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override_raw", lambda: "")
         monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: object())
         monkeypatch.setattr(bt_cloud, "_auto_local_for_private_urls", lambda: True)
-
-    # ---- the URL verdict -------------------------------------------------
-
-    def test_lan_url_passes_preflight(self):
-        assert bu_cli._code_url_verdict(f'new_tab("{self.LAN}")').blocked is None
-
-    def test_loopback_url_passes_preflight(self):
-        assert bu_cli._code_url_verdict('new_tab("http://127.0.0.1:3000/")').blocked is None
-
-    def test_public_url_still_passes(self):
-        assert bu_cli._code_url_verdict('new_tab("https://example.com/x")').blocked is None
-
-    def test_imds_still_blocked(self):
-        """The cloud-metadata floor is unconditional — hybrid routing must not open it."""
-        blocked = bu_cli._code_url_verdict('new_tab("http://169.254.169.254/latest/meta-data/")').blocked
-        assert blocked and "cloud metadata" in blocked
-
-    def test_lan_url_blocked_when_hybrid_disabled(self, monkeypatch):
-        monkeypatch.setattr(bt_cloud, "_auto_local_for_private_urls", lambda: False)
-        blocked = bu_cli._code_url_verdict(f'new_tab("{self.LAN}")').blocked
-        assert blocked and "private or internal" in blocked
-
-    def test_lan_url_blocked_without_a_cloud_provider(self, monkeypatch):
-        """No provider ⇒ pure local mode ⇒ the private-address floor never applied anyway."""
-        monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: None)
-        assert bu_cli._code_url_verdict(f'new_tab("{self.LAN}")').blocked is None
-
-    # ---- the endpoint the verdict depends on -----------------------------
-
-    def test_lan_url_routes_the_call_to_the_local_engine(self, tmp_path, monkeypatch, _fake_managed_chromium):
-        """The cloud provider must never be asked for a session for a LAN-only call."""
-        seen = []
-        monkeypatch.setattr(bt_session, "_get_session_info", lambda key: seen.append(key) or {"cdp_url": "wss://cloud.example/x"})
-        cli = _fake_cli(tmp_path, "cat\n")
+        monkeypatch.setattr(bu_cli, "_exec_route_is_sidecar", {}, raising=False)
+        monkeypatch.setattr(bu_cli, "_driven_daemons", set())
+        self.cloud_keys = []
+        monkeypatch.setattr(bt_session, "_get_session_info",
+                            lambda key: self.cloud_keys.append(key) or {"cdp_url": "wss://cloud.example/x"})
+        cli = _fake_cli(tmp_path, 'cat >/dev/null; printf "%s" "${BU_NAME:-default}"\n')
         monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
-
-        result = json.loads(bu_cli.browser_exec(f'new_tab("{self.LAN}")\nprint("ok")'))
-
-        assert result["success"] is True
-        assert seen == [], "the cloud provider was consulted for a LAN-only call"
-        assert _fake_managed_chromium, "the local engine was never asked for a CDP endpoint"
-        assert _fake_managed_chromium[0][1:] == ("get", ("cdp-url",))
-
-    def test_public_only_call_still_uses_the_cloud_provider(self, tmp_path, monkeypatch, _fake_managed_chromium):
-        seen = []
-        monkeypatch.setattr(bt_session, "_get_session_info", lambda key: seen.append(key) or {"cdp_url": "wss://cloud.example/x"})
-        cli = _fake_cli(tmp_path, "cat\n")
-        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
-
-        result = json.loads(bu_cli.browser_exec('new_tab("https://example.com/x")'))
-
-        assert result["success"] is True
-        assert seen, "a public-only call should still go to the cloud provider"
-        assert not _fake_managed_chromium, "a public-only call should not spawn the local engine"
-
-    def test_mixed_call_goes_local_so_the_private_url_cannot_leak(self, tmp_path, monkeypatch, _fake_managed_chromium):
-        """One endpoint per call: if any URL is private, the whole call runs locally."""
-        seen = []
-        monkeypatch.setattr(bt_session, "_get_session_info", lambda key: seen.append(key) or {"cdp_url": "wss://cloud.example/x"})
-        cli = _fake_cli(tmp_path, "cat\n")
-        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
-
-        result = json.loads(bu_cli.browser_exec(f'new_tab("https://example.com/x")\nnew_tab("{self.LAN}")'))
-
-        assert result["success"] is True
-        assert seen == [], "a call touching a private URL must not reach the cloud provider"
-        assert _fake_managed_chromium
-
-    # ---- one evaluation per URL: the verdict and the route must share it ----
+        self.local_keys = _fake_managed_chromium
 
     @staticmethod
-    def _rebinding_resolver(monkeypatch, first_ip, later_ip):
-        """Answer ``first_ip`` to the first lookup of a host and ``later_ip`` to every one after it.
-
-        The predicate under test (``_hybrid_routes_locally`` -> ``_url_is_private`` ->
-        ``socket.getaddrinfo``) resolves DNS and does not memoise it, which is exactly what makes a
-        split evaluation exploitable. Returns the list of lookups so a test can count them.
-        """
+    def _dns(monkeypatch, first_ip, later_ip):
+        """A rebinding host: ``first_ip`` for the first lookup, ``later_ip`` for every later one."""
         lookups = []
 
-        def fake_getaddrinfo(host, *args, **kwargs):
+        def fake_getaddrinfo(host, *a, **kw):
             lookups.append(host)
-            ip = first_ip if len(lookups) == 1 else later_ip
-            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, 0))]
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (first_ip if len(lookups) == 1 else later_ip, 0))]
 
         monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
-        return lookups
 
-    @staticmethod
-    def _counting_routes_locally(monkeypatch):
-        """Wrap the real ``_hybrid_routes_locally`` so a test can count how often the ROUTING verdict
-        is evaluated. That is the predicate whose repeated evaluation is exploitable — it resolves
-        DNS and is not memoised. (The cloud-metadata floor resolves the host separately and
-        unconditionally: a different question, and a block rather than a routing decision.)
-        """
-        from tools import browser_tool as bt
+    @pytest.mark.parametrize("case, code, refusal", [
+        ("lan", f'new_tab("{LAN}")', None),
+        ("mixed", f'new_tab("https://example.com/x")\nnew_tab("{LAN}")', None),
+        ("rebind-private-then-public", 'new_tab("http://rebind.example/login")', None),
+        ("imds", 'new_tab("http://169.254.169.254/latest/meta-data/")', "cloud metadata"),
+        ("hybrid-off", f'new_tab("{LAN}")', "private or internal"),
+        ("rebind-public-then-private", 'new_tab("http://flip.example/x")', "private or internal"),
+    ])
+    def test_private_url_runs_on_local_sidecar_or_is_refused(self, monkeypatch, case, code, refusal):
+        if case.startswith("rebind-private"):
+            self._dns(monkeypatch, "192.168.1.5", "93.184.216.34")
+        elif case.startswith("rebind-public"):
+            self._dns(monkeypatch, "93.184.216.34", "192.168.1.5")
+        elif case == "hybrid-off":
+            monkeypatch.setattr(bt_cloud, "_auto_local_for_private_urls", lambda: False)
 
-        real = bt._hybrid_routes_locally
-        evaluations = []
+        result = json.loads(bu_cli.browser_exec(code, task_id="t"))
 
-        def counting(url):
-            evaluations.append(url)
-            return real(url)
+        assert self.cloud_keys == [], "a call carrying a private URL reached the cloud provider"
+        if refusal:
+            assert refusal in result.get("error", ""), result
+            assert self.local_keys == []
+        else:
+            assert result["success"] is True, result
+            assert [k for k, *_ in self.local_keys] == ["t::local"]
+            assert result["output"] == "_local_default"
 
-        monkeypatch.setattr(bt, "_hybrid_routes_locally", counting)
-        return evaluations
+    def test_sidecar_route_has_its_own_daemon_and_sticks_for_url_less_calls(self):
+        """The harness daemon reads BU_CDP_* once at spawn, so the sidecar must not share the cloud
+        route's daemon; a follow-up with no URL literal keeps driving the page the last call opened."""
+        steps = [('new_tab("https://example.com/")', "default"),
+                 (f'new_tab("{self.LAN}")', "_local_default"),
+                 ('print(js("document.title"))', "_local_default")]
 
-    def test_rebinding_host_cannot_split_verdict_from_route(self, tmp_path, monkeypatch, _fake_managed_chromium):
-        """A host that answers private then public must not clear the pre-flight and then go cloud.
+        daemons = [json.loads(bu_cli.browser_exec(code, task_id="t"))["output"] for code, _ in steps]
 
-        Evaluating the routing predicate once for the pre-flight and again for the backend choice
-        lets a rebinding hostname through: the first lookup looks private so the private-address
-        floor is relaxed, the second looks public so ``force_local_sidecar`` becomes False — and the
-        call is executed against the CLOUD provider. That is the leak this whole change exists to
-        prevent, so the verdict is computed ONCE per URL and reused by both decisions.
-        """
-        target = "http://rebind.example/login"
-        self._rebinding_resolver(monkeypatch, "192.168.1.5", "93.184.216.34")
-        evaluations = self._counting_routes_locally(monkeypatch)
-        seen = []
-        monkeypatch.setattr(bt_session, "_get_session_info",
-                            lambda key: seen.append(key) or {"cdp_url": "wss://cloud.example/x"})
-        cli = _fake_cli(tmp_path, "cat\n")
-        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
-
-        result = json.loads(bu_cli.browser_exec(f'new_tab("{target}")'))
-
-        assert result["success"] is True
-        assert evaluations == [target], (
-            f"the routing verdict was evaluated {len(evaluations)} times for one URL; the pre-flight "
-            "and the backend choice must reuse ONE evaluation or a rebinding host splits them"
-        )
-        assert seen == [], "the pre-flight relaxed this URL, so it must not reach the cloud provider"
-        assert _fake_managed_chromium, "the call should have been routed to the local engine"
-
-    def test_public_then_private_answer_is_refused_not_leaked(self, tmp_path, monkeypatch, _fake_managed_chromium):
-        """The other direction over-blocks, and over-blocking is the safe side: if the safety check
-        ever sees a private answer the URL is refused, never allowed and then handed to the cloud.
-        """
-        self._rebinding_resolver(monkeypatch, "93.184.216.34", "192.168.1.5")
-        seen = []
-        monkeypatch.setattr(bt_session, "_get_session_info",
-                            lambda key: seen.append(key) or {"cdp_url": "wss://cloud.example/x"})
-        cli = _fake_cli(tmp_path, "cat\n")
-        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
-
-        result = json.loads(bu_cli.browser_exec('new_tab("http://flip.example/x")'))
-
-        assert "private or internal" in result.get("error", ""), result
-        assert seen == [] and not _fake_managed_chromium, "a refused URL must not reach any backend"
+        assert daemons == [want for _, want in steps]
+        assert self.cloud_keys == ["t"]
+        assert [k for k, *_ in self.local_keys] == ["t::local", "t::local"]

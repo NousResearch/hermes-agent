@@ -70,7 +70,7 @@ def test_hosted_room_turn_releases_bot_room_slot_when_it_ends(monkeypatch, tmp_p
     lease = _Lease()
     session = _session(ROOM_SESSION_SOURCE, lease)
 
-    assert server._run_prompt_submit("rid", "ui-sid", session, "@sentinel ping") is True
+    assert server._run_prompt_submit("rid", "ui-sid", session, "@sentinel ping", turn_claim=server._claim_session_turn(session)) is True
 
     assert session["running"] is False
     assert lease.released is True
@@ -83,7 +83,7 @@ def test_ordinary_session_keeps_its_slot_after_a_turn(monkeypatch, tmp_path):
     lease = _Lease()
     session = _session("desktop", lease)
 
-    assert server._run_prompt_submit("rid", "ui-sid", session, "hello") is True
+    assert server._run_prompt_submit("rid", "ui-sid", session, "hello", turn_claim=server._claim_session_turn(session)) is True
 
     assert lease.released is False
     assert session["active_session_lease"] is lease

@@ -411,3 +411,7 @@ hermes cron remove <job_id>         # Delete a job
 - [Cron Feature Guide](../user-guide/features/cron.md)
 - [Gateway Internals](./gateway-internals.md)
 - [Agent Loop Internals](./agent-loop.md)
+
+Interruption marking and execution flags are defined in
+`cron/scheduler_interrupt.py`. The scheduler owns the underlying in-flight
+state, which the interruption functions read at call time.

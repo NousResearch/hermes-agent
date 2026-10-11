@@ -11,7 +11,7 @@ import pytest
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, ExecApprovalPrompt, SendResult
-from gateway.run_turn_runner import _renders_exec_approval_buttons
+from gateway.run_turn_runner_approval_notify import _renders_exec_approval_buttons
 
 
 class _Plain(BasePlatformAdapter):

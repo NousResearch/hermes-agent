@@ -1,6 +1,7 @@
 """Tests for Matrix require-mention gating and auto-thread features."""
 
 import time
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -34,8 +35,19 @@ def _make_adapter(tmp_path=None):
 
 
 def _set_dm(adapter, room_id="!room1:example.org", is_dm=True):
-    """Mark a room as DM (or not) in the adapter's cache."""
+    """Give the adapter a complete joined member list for a DM or room."""
     adapter._dm_rooms[room_id] = is_dm
+    members = [adapter._user_id, "@alice:example.org"]
+    if not is_dm:
+        members.append("@bob:example.org")
+    adapter._client = MagicMock()
+    adapter._client.get_state_event = AsyncMock(side_effect=Exception("no room state"))
+    adapter._client.state_store.has_full_member_list = AsyncMock(return_value=True)
+    adapter._client.state_store.get_members = AsyncMock(return_value=members)
+    adapter._client.state_store.get_member_profiles = AsyncMock(return_value={})
+    adapter._client.state_store.get_power_levels = AsyncMock(return_value=None)
+    adapter._client.state_store.get_create = AsyncMock(return_value=None)
+    adapter._client.get_joined_members = AsyncMock(return_value={})
 
 
 def _make_event(
@@ -252,12 +264,7 @@ async def test_bare_mention_passes_empty_string(monkeypatch):
 ])
 async def test_bare_mention_claims_parked_voice_only_in_same_room(
         monkeypatch, mention_room, mention_body, claims, same_sync_batch):
-    """An unmentioned MSC3245 voice (empty m.mentions) is answered by the sender's bare @mention
-    typed right after it in the SAME room; a bare mention in another room never pulls it across,
-    and a mention carrying text is answered as that text. mautrix runs one /sync batch's events as
-    concurrent tasks, so the claim must also win while the voice still awaits a room-identity fetch.
-    ``two_voices``: batch [voice (slow gate), mention, voice2 (fast)] then mention2 -- each mention
-    answers the voice sent before it, even though voice2 parks first, and nothing stays parked."""
+    """A bare mention claims only an earlier voice from the same sender in its room."""
     import asyncio
 
     monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
@@ -268,6 +275,7 @@ async def test_bare_mention_claims_parked_voice_only_in_same_room(
     adapter._download_and_cache_media = AsyncMock(return_value="/tmp/voice.ogg")
     adapter._background_read_receipt = MagicMock()
     voice = _make_event("voice message", event_id="$voice")
+    voice.timestamp -= 1000
     voice.content.update({"msgtype": "m.audio", "url": "mxc://example.org/v", "info": {"mimetype": "audio/ogg"},
                           "org.matrix.msc3245.voice": {}, "m.mentions": {}})
     mention = _make_event(mention_body, event_id="$text", room_id=mention_room,
@@ -275,24 +283,51 @@ async def test_bare_mention_claims_parked_voice_only_in_same_room(
 
     if same_sync_batch:
         resolve_identity = adapter._resolve_room_identity
-        delays = [0.1] if same_sync_batch == "two_voices" else []
+        first_waiting = asyncio.Event()
+        mention_arrived = asyncio.Event()
+        release_first = asyncio.Event()
+        first = True
 
-        async def slow_identity(room_id):  # stale 60s cache -> homeserver round-trip
-            await asyncio.sleep(delays.pop(0) if delays else 0.01)
+        async def gated_identity(room_id):
+            nonlocal first
+            if first:
+                first = False
+                first_waiting.set()
+                await release_first.wait()
             return await resolve_identity(room_id)
-        adapter._resolve_room_identity = slow_identity
-        batch = [voice, mention]
-        if same_sync_batch == "two_voices":
-            voice2 = _make_event("voice message", event_id="$voice2")
-            voice2.content.update({k: voice.content[k] for k in (
-                "msgtype", "url", "info", "org.matrix.msc3245.voice", "m.mentions")})
-            batch.append(voice2)
-        await asyncio.gather(*(adapter._on_room_message(e) for e in batch))
+
+        mark = adapter._parked_voices.mark
+
+        def mark_mention():
+            limit = mark()
+            mention_arrived.set()
+            return limit
+
+        adapter._resolve_room_identity = gated_identity
+        monkeypatch.setattr(adapter._parked_voices, "mark", mark_mention)
+        voice_task = asyncio.create_task(adapter._on_room_message(voice))
+        await first_waiting.wait()
+        mention_task = asyncio.create_task(adapter._on_room_message(mention))
+        try:
+            await mention_arrived.wait()
+            if same_sync_batch == "two_voices":
+                voice2 = _make_event("voice message", event_id="$voice2")
+                voice2.timestamp = voice.timestamp + 500
+                voice2.content.update({k: voice.content[k] for k in (
+                    "msgtype", "url", "info", "org.matrix.msc3245.voice", "m.mentions")})
+                await adapter._on_room_message(voice2)
+        finally:
+            release_first.set()
+            await asyncio.gather(voice_task, mention_task)
         if same_sync_batch == "two_voices":
             await adapter._on_room_message(_make_event(
                 "@hermes:example.org", event_id="$text2", mention_user_ids=["@hermes:example.org"]))
-            dispatched = [m.args[0].message_id for m in adapter.handle_message.await_args_list]
-            assert dispatched == ["$voice", "$voice2"]
+            dispatched = [(m.args[0].message_id, m.args[0].timestamp)
+                          for m in adapter.handle_message.await_args_list]
+            assert dispatched == [
+                ("$voice", datetime.fromtimestamp(voice.timestamp / 1000, tz=timezone.utc)),
+                ("$voice2", datetime.fromtimestamp(voice2.timestamp / 1000, tz=timezone.utc)),
+            ]
             assert not adapter._parked_voices._parked and not adapter._parked_voices._inflight
             return
     else:
@@ -305,6 +340,15 @@ async def test_bare_mention_claims_parked_voice_only_in_same_room(
     assert dispatched == ([("!room1:example.org", "$voice")] if claims else [(mention_room, "$text")])
     if claims:  # the bare mention is the newest event; the read marker must reach it
         adapter._background_read_receipt.assert_any_call("!room1:example.org", "$text")
+        assert adapter.handle_message.await_args.args[0].timestamp == datetime.fromtimestamp(
+            voice.timestamp / 1000, tz=timezone.utc)
+        claimed_event = adapter.handle_message.await_args.args[0]
+        adapter.fetch_room_history = AsyncMock(return_value=SimpleNamespace(
+            render=lambda: "[Recent room messages]\n[alice] Earlier", refresh=AsyncMock(),
+        ))
+        assert (await adapter.fetch_mention_history(claimed_event)).render() == (
+            "[Recent room messages]\n[alice] Earlier"
+        )
 
 
 # ---------------------------------------------------------------------------

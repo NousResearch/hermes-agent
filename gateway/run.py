@@ -4571,7 +4571,9 @@ def _housekeeping_channel_directory(adapters, loop) -> None:
 
 
 def _housekeeping_media_caches() -> None:
-    """Every platform media cache prunes on the same hourly cadence (24h max age)."""
+    """Every platform media cache prunes on the same hourly cadence (24h max age).
+    Spillover is the exception: its files are archives the transcript points at, so
+    cleanup_spillover_cache() keeps them for the session retention window (#126351)."""
     from gateway.platforms.base import (
         cleanup_audio_cache, cleanup_document_cache, cleanup_image_cache, cleanup_screenshot_cache,
         cleanup_video_cache)
@@ -4584,7 +4586,7 @@ def _housekeeping_media_caches() -> None:
     for cache_name, cleanup_fn in (
         ("Image", cleanup_image_cache), ("Document", cleanup_document_cache),
         ("Audio", cleanup_audio_cache), ("Video", cleanup_video_cache),
-        ("Screenshot", cleanup_screenshot_cache), ("Spillover", cleanup_spillover_cache),
+        ("Screenshot", cleanup_screenshot_cache),
         ("Terminal temp", cleanup_terminal_temp_cache), ("Bot DM", cleanup_bot_dm_cache),
         ("Bot relay", cleanup_bot_relay_artifacts)):
         def _one(name=cache_name, fn=cleanup_fn):
@@ -4592,6 +4594,12 @@ def _housekeeping_media_caches() -> None:
             if removed:
                 logger.info("%s cache cleanup: removed %d stale file(s)", name, removed)
         _housekeeping_chore(f"{cache_name} cache cleanup", _one)
+
+    def _spillover():
+        removed = cleanup_spillover_cache()
+        if removed:
+            logger.info("Spillover cache cleanup: removed %d stale file(s)", removed)
+    _housekeeping_chore("Spillover cache cleanup", _spillover)
 
 
 def _housekeeping_paste_sweep() -> None:

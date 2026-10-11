@@ -22,6 +22,8 @@ PERSISTED_OUTPUT_TAG = "<persisted-output>"
 PERSISTED_OUTPUT_CLOSING_TAG = "</persisted-output>"
 STORAGE_DIR = os.path.join(tempfile.gettempdir(), "hermes-results")
 SPILLOVER_SUBDIR = "cache/spillover"
+# Fallback spillover age only (unreadable config); the real default is the session
+# retention window — see _spillover_retention_hours().
 SPILLOVER_MAX_AGE_HOURS = 24
 _BUDGET_TOOL_NAME = "__budget_enforcement__"
 # The exact key set tools/mcp_tool_handlers.py::_render_call_tool_result emits. A JSON object whose
@@ -42,10 +44,29 @@ def get_spillover_dir():
     return get_hermes_home() / SPILLOVER_SUBDIR
 
 
-def cleanup_spillover_cache(max_age_hours: int = SPILLOVER_MAX_AGE_HOURS) -> int:
+def _spillover_retention_hours() -> int:
+    """Default spillover age = the session retention window (``sessions.retention_days``).
+    Spill files are archives the durable transcript points at, not a cache: a session resumed
+    days later must still find what the ``<persisted-output>`` pointer promises (#126351).
+    Falls back to the legacy 24h cache age when the config is unreadable."""
+    try:
+        from hermes_cli.config import load_config_readonly
+        days = float((load_config_readonly().get("sessions") or {}).get("retention_days", 90))
+    except Exception:
+        return SPILLOVER_MAX_AGE_HOURS
+    # ``retention_days: 0`` is legal (ended sessions pruned at once) but session prune never
+    # touches OPEN sessions, while a zero-hour spill cutoff deletes the file the first spill
+    # just wrote (the pointer then names a missing path). Floor at the legacy cache age.
+    return max(SPILLOVER_MAX_AGE_HOURS, int(days * 24))
+
+
+def cleanup_spillover_cache(max_age_hours: int | None = None) -> int:
     """Delete spillover files older than *max_age_hours*; returns count removed (same
-    contract as the ``cleanup_*_cache`` helpers the gateway housekeeping loop runs hourly)."""
-    cutoff = time.time() - (max_age_hours * 3600)
+    contract as the ``cleanup_*_cache`` helpers the gateway housekeeping loop runs hourly).
+    A ``None`` age means the session retention window, not a cache TTL — an explicit
+    ``max_age_hours`` (tests, legacy callers) still wins."""
+    age_hours = _spillover_retention_hours() if max_age_hours is None else max_age_hours
+    cutoff = time.time() - (age_hours * 3600)
     removed = 0
     try:
         entries = list(get_spillover_dir().iterdir())
@@ -273,7 +294,9 @@ def _build_persisted_message(preview: str, has_more: bool, original_size: int,
         "Use the read_file tool with offset and limit to access specific sections of this output.\n"
         "Recovery: page through the saved file with read_file (offset/limit) or "
         "process it with execute_code — do NOT re-request the same data from the "
-        "remote API; the full result is already on disk.\n\n"
+        "remote API while the file exists; it is kept for the session retention "
+        "window, and if it has since been pruned, re-run the original tool to "
+        "regenerate the output.\n\n"
         f"Preview (first {len(preview)} chars):\n"
         + preview + ("\n..." if has_more else "")
         + f"\n{PERSISTED_OUTPUT_CLOSING_TAG}")

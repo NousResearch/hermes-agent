@@ -279,6 +279,14 @@ async def _retire_profile_authority(authority, timeout=None):
     if rest:
         await asyncio.gather(*rest, return_exceptions=True)
     unbind_owner(authority)
+    # No drain is left to answer an observer (a session_busy pause keeps API/webhook/Bot ones
+    # waiting): release them all. Their rows stay queued for the next owner, so nothing is resent.
+    from hermes_state_runtime import RuntimeStoreError
+    authority.native_waiters.clear()
+    for waiter in authority.waiters.values():
+        if not waiter.done():
+            waiter.set_exception(RuntimeStoreError('runtime_draining'))
+    authority.waiters.clear()
     return True
 
 

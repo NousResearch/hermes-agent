@@ -54,6 +54,7 @@ async def test_failed_hot_serve_retires_session_and_bot_recovery_tasks(monkeypat
         profile_id="default",
         sessions={"s": live},
         waiters={},
+        native_waiters=set(),
         hosted_room_service=None,
     )
 

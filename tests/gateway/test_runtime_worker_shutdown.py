@@ -61,7 +61,7 @@ async def test_profile_timeout_keeps_authority_until_physical_worker_exits(tmp_p
     agent = SimpleNamespace(hard_interrupt=lambda message: stopped.set())
     live = SimpleNamespace(task=task, route='beta-route', event_stream=SimpleNamespace(execution={'execution_generation': 2}))
     authority = SimpleNamespace(sessions={'s': live}, profile_id=str(beta), pending_stops={},
-        agent=lambda ref: agent, _turn_workers={1: (SimpleNamespace(worker_done=done), [agent])})
+        waiters={}, native_waiters=set(), agent=lambda ref: agent, _turn_workers={1: (SimpleNamespace(worker_done=done), [agent])})
     registry.add(beta, authority, name='beta')
     runner = SimpleNamespace(session_authorities=registry, session_runtime_descriptor={},
                              session_ticket_store=SimpleNamespace(profile_ids=registry.profile_ids()))

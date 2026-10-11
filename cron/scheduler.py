@@ -1650,7 +1650,20 @@ def _load_cron_job_config(job: dict, job_id: str, job_name: str) -> _CronJobConf
         logger.warning("Job '%s': failed to load config.yaml, using defaults: %s", job_id, e)
 
     # Fail fast: an empty model otherwise reaches the provider as an opaque 400.
-    # See #23979.
+    # See #23979. Before raising, a job whose model chain resolved empty gets
+    # one last source: the loaded model on a local loopback inference server
+    # (#20125) — the same auto-detection the interactive side already applies
+    # (runtime_provider._get_model_config). Only loopback endpoints are asked,
+    # and only an unambiguous single-model answer is accepted; anything else
+    # leaves ``model`` empty and the raise below stays the single error path.
+    if not (isinstance(model, str) and model.strip()):
+        from cron.scheduler_local_discovery import discover_local_model
+        _job_base_url = str(job.get("base_url") or "").strip() if isinstance(job, dict) else ""
+        model = discover_local_model(
+            job_id, _model_cfg,
+            provider_hint=str(job.get("provider") or "").strip() if isinstance(job, dict) else "",
+            explicit_base_url=_job_base_url) or ""
+
     if not (isinstance(model, str) and model.strip()):
         raise RuntimeError(
             f"Cron job '{job_name}' has no model configured "

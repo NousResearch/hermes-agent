@@ -333,7 +333,7 @@ def _capture_hooks(run):
     """Run ``run()`` with the approval hook dispatch captured; drop the per-turn ids
     every surface adds, so only the prompt payload is compared."""
     captured = []
-    with patch("hermes_cli.plugins.invoke_hook",
+    with patch("plugin_runtime.api.invoke_hook",
                side_effect=lambda name, **kw: captured.append((name, kw)) or []):
         result = run()
     # on_human_input_* fire around the same prompts with their own payload contract

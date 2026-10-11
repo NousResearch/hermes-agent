@@ -840,16 +840,36 @@ class PluginDispatchMixin(PluginEventDispatchMixin):
         return bool(self._middleware.get(kind))
 
     def invoke_middleware(self, kind: str, **kwargs: Any) -> List[Any]:
-        """Call middleware callbacks for *kind* (each isolated); return non-``None`` results."""
+        """Invoke middleware; request rewrites compose without leaking in-place mutations."""
         if self._plugin_dispatch_safe_worker_enabled():
             return []
         results: List[Any] = []
+        payload_key = kwargs.pop("_payload_key", None)
         for cb in self._middleware.get(kind, []):
+            call_kwargs = kwargs
+            if payload_key in ("request", "args") and kind in (
+                LLM_REQUEST_MIDDLEWARE, TOOL_REQUEST_MIDDLEWARE,
+            ):
+                # A callback may mutate its arguments even when it returns None.
+                # Later callbacks see only explicit rewrites, never those mutations.
+                try:
+                    call_kwargs = copy.deepcopy(kwargs)
+                except Exception:
+                    call_kwargs = {
+                        key: copy.deepcopy(value) if isinstance(value, (dict, list)) else value
+                        for key, value in kwargs.items()
+                    }
             try:
-                ret = cb(**kwargs)
+                ret = cb(**call_kwargs)
                 if ret is not None:
                     results.append(ret)
+                    if (
+                        payload_key in ("request", "args")
+                        and isinstance(ret, dict)
+                        and isinstance(ret.get(payload_key), dict)
+                    ):
+                        kwargs[payload_key] = copy.deepcopy(ret[payload_key])
             except (Exception, SystemExit) as exc:
-                # Runs once per tool call like a hook, so a mis-declared callback floods identically.
-                self._report_hook_failure(kind, cb, kwargs, exc, surface="Middleware")
+                # One bad callback should not prevent subsequent middleware.
+                self._report_hook_failure(kind, cb, call_kwargs, exc, surface="Middleware")
         return results

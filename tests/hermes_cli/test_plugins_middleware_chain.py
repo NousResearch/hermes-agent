@@ -43,6 +43,7 @@ def seen(tmp_path, monkeypatch):
     manager = PluginManager()
     manager.discover_and_load()
     monkeypatch.setattr(plugins, "get_plugin_manager", lambda: manager)
+    monkeypatch.setattr("plugin_runtime.api.delivery_manager", lambda: manager)
     return manager._plugins["request_chain"].module.SEEN
 
 

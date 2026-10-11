@@ -87,6 +87,10 @@ environments/benchmarks/evals/
 
 # Web UI build output
 hermes_cli/web_dist/
+# Frontend build scratch dirs (scripts/build/frontend-common.mjs withProduct staging)
+hermes_cli/.web_dist-build-*/
+ui-tui/.dist-build-*/
+apps/desktop/.dist-build-*/
 # Cross-process web UI build lock (flock target, always empty)
 .web_ui_build.lock
 apps/desktop/build/

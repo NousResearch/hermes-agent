@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import path from 'node:path'
 import { setTimeout } from 'node:timers/promises'
@@ -126,6 +126,24 @@ export function publishDirectory(staged, out, { source } = {}) {
 export async function withProduct(out, compile, { source } = {}) {
   requireOwnedOutput(out, source)
   mkdirSync(path.dirname(out), { recursive: true })
+  // A build that died mid-flight (kill -9, power loss) leaves its scratch
+  // behind forever — mkdtemp names are unique so nothing reuses them and the
+  // checkout accumulates one per aborted build (measured: 11 stale dirs from
+  // 2026-09-26). A scratch older than a day is unambiguously dead: builds
+  // hold no locks across days. Sweep those before staging a new one.
+  try {
+    const prefix = `.${path.basename(out)}-build-`
+    const parent = path.dirname(out)
+    const cutoff = Date.now() - 24 * 60 * 60 * 1000
+    for (const entry of readdirSync(parent)) {
+      if (!entry.startsWith(prefix)) continue
+      const full = path.join(parent, entry)
+      const stats = statSync(full)
+      if (stats.isDirectory() && stats.mtimeMs < cutoff) await rmTree(full)
+    }
+  } catch {
+    // The sweep is best-effort: a locked or fresh scratch must never block the build.
+  }
   const scratch = mkdtempSync(path.join(path.dirname(out), `.${path.basename(out)}-build-`))
   const product = path.join(scratch, 'product')
   mkdirSync(product)

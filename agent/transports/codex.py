@@ -302,8 +302,9 @@ def _resolve_reasoning(model: str, params: dict[str, Any]) -> tuple[Any, bool]:
     if params.get("is_xai_responses", False):
         from agent.model_metadata import is_grok_46_family
 
-        # Grok 4.6 accepts xhigh; older Grok tops out at high.
-        supported = XAI_GROK46_EFFORTS if is_grok_46_family(model) else XAI_LEGACY_EFFORTS
+        # Grok 4.6 and 4.7 accept xhigh; priority-tier support is a separate gate.
+        bare_model = (model or "").strip().lower().rsplit("/", 1)[-1]
+        supported = XAI_GROK46_EFFORTS if is_grok_46_family(model) or bare_model == "grok-4.7" else XAI_LEGACY_EFFORTS
     else:
         base_url = params.get("base_url")
         is_codex_backend = params.get("is_codex_backend") is True

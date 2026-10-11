@@ -16,9 +16,10 @@ import json
 import os
 import urllib.parse
 import urllib.request
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from hermes_cli.web_routers._common import http_failure
 from hermes_cli.web_deps import late
+from hermes_cli.voice_live_admission import AdmissionLedger, authenticated_owner
 from hermes_cli.web_server_chat import _ws_auth_ok, _ws_request_is_allowed
 from hermes_cli.web_server_gateway import _read_dashboard_json_response, _split_text_for_speak_stream
 from fastapi import HTTPException, WebSocket, WebSocketDisconnect
@@ -28,11 +29,14 @@ from hermes_cli.web_models import (
     TTSSpeakRequest,
     TTSLeaseRequest,
     VoiceLiveSessionRequest,
+    VoiceLiveCancelRequest,
+    VoiceLiveKeepaliveRequest,
 )
 from typing import Any, Dict, Optional
 
 _log = logging.getLogger("hermes_cli.web_server")
 router = APIRouter()
+_live_admissions = AdmissionLedger()
 
 # Late-bound so a test's monkeypatch on the owning module wins at call time.
 _config_profile_scope = late("_config_profile_scope", "hermes_cli.web_server_profiles")
@@ -179,11 +183,12 @@ async def get_voice_live_status(profile: Optional[str] = None):
     from tools.voice_live import resolve_gpt_live_status
     with http_failure("GPT-Live status resolution failed", 500, "GPT-Live status failed"):
         result = await _run_config_scoped(profile, resolve_gpt_live_status)
-    return {"ok": True, **result}
+    return {"ok": True, **result, "supports_cancellation": True,
+            "supports_keepalive": True, "keepalive_interval_seconds": 30}
 
 
 @router.post("/api/audio/voice-live/session")
-async def create_voice_live_session(payload: VoiceLiveSessionRequest, profile: Optional[str] = None):
+async def create_voice_live_session(payload: VoiceLiveSessionRequest, request: Request, profile: Optional[str] = None):
     """Exchange the renderer's WebRTC SDP offer for a GPT-Live session answer.
 
     The project API key stays on this host; the renderer only receives the session id and the
@@ -196,13 +201,52 @@ async def create_voice_live_session(payload: VoiceLiveSessionRequest, profile: O
     sdp = payload.sdp or ""
     if not sdp.strip():
         raise HTTPException(status_code=400, detail="An SDP offer is required")
+    if payload.operation_id is not None:
+        key, context = await _voice_live_owner_binding(request, profile, payload)
+        async def create(capture):
+            # Run under the SAME captured home and secrets as the admission owner, not a re-resolved profile.
+            return await asyncio.get_running_loop().run_in_executor(None, context.run, lambda: create_webrtc_session(
+                sdp, payload.history, capture_cleanup=capture))
+        return await _live_admissions.create(key, sdp, payload.history, create)
+    # Legacy clients remain compatible, but have no cancellable admission/late-result guarantee.
     try:
         result = await _run_config_scoped(profile, lambda: create_webrtc_session(sdp, payload.history))
-    except ValueError as exc:
-        raise HTTPException(status_code=503, detail=str(exc))
-    except RuntimeError as exc:
-        raise HTTPException(status_code=502, detail=str(exc))
+    except ValueError:
+        raise HTTPException(status_code=503, detail="GPT-Live configuration unavailable") from None
+    except RuntimeError:
+        raise HTTPException(status_code=502, detail="GPT-Live session creation failed") from None
     return {"ok": True, **result}
+
+
+async def _voice_live_owner_binding(request: Request, profile: Optional[str], payload):
+    from contextvars import copy_context
+    from hermes_constants import get_hermes_home
+    from hermes_cli.web_server_profiles import _hermes_home_scope
+    owner = authenticated_owner(request)
+    def bind():
+        home = str(get_hermes_home().resolve())
+        # Explicitly pin even the current profile: its ambient HERMES_HOME can change between awaits.
+        with _hermes_home_scope(home):
+            return home, copy_context()
+    home, context = await _run_config_scoped(profile, bind)
+    key = (owner, home, payload.client_instance_id, payload.operation_id, payload.owner_generation)
+    return key, context
+
+
+@router.post("/api/audio/voice-live/session/cancel")
+async def cancel_voice_live_session(payload: VoiceLiveCancelRequest, request: Request,
+                                    profile: Optional[str] = None):
+    """Idempotent scoped cancellation; an unknown operation becomes a bounded tombstone."""
+    key, _context = await _voice_live_owner_binding(request, profile, payload)
+    return _live_admissions.cancel(key)
+
+
+@router.post("/api/audio/voice-live/session/keepalive")
+async def keepalive_voice_live_session(payload: VoiceLiveKeepaliveRequest, request: Request,
+                                       profile: Optional[str] = None):
+    """Renew only this authenticated profile/owner's existing active operation."""
+    key, _context = await _voice_live_owner_binding(request, profile, payload)
+    return _live_admissions.keepalive(key)
 
 
 def _elevenlabs_voice_label(voice: dict[str, Any]) -> str:

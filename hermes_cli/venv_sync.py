@@ -449,6 +449,22 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
     return None
 
 
+def _foreign_checkout_owner(root: Path) -> int | None:
+    """The uid owning the checkout when it is not the launching user, else ``None`` (POSIX only).
+
+    A checkout another uid owns can never be synced from this one: the cross-user
+    refusal (#83529) blocks it, and unlike a failed sync that ownership never heals,
+    so retrying it on every launch can only re-print the refusal.
+    """
+    if not hasattr(os, "geteuid"):
+        return None
+    try:
+        owner = os.lstat(root).st_uid
+    except OSError:
+        return None
+    return owner if owner != os.geteuid() else None
+
+
 def _prepare_borrowed_launch(root: Path, owner: Path, *, current: bool) -> Path | None:
     """Launch a checkout that another data root owns (#123238).
 
@@ -467,6 +483,14 @@ def _prepare_borrowed_launch(root: Path, owner: Path, *, current: bool) -> Path 
     from hermes_cli.update_lock import UpdateLock
 
     if not current:
+        if _foreign_checkout_owner(root) is not None:
+            # sudo strips HERMES_HOME, so root's default data root borrows the invoking
+            # user's checkout and owns no state for it (#135181); the sync below is
+            # refused cross-user on every command. The borrowed command (a stop, a
+            # status) owes no announcement: it simply runs on the existing
+            # environment, so the launch stays silent (#135181: nothing is
+            # prepared, nothing is updated, nothing is printed).
+            return None
         lock = UpdateLock(install_root=root, checkout_first=False)  # R6, as in prepare_launch
         if not lock.acquire():
             raise RuntimeError("an update is still running; wait for it to exit, then relaunch Hermes")

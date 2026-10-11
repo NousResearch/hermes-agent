@@ -40,6 +40,7 @@ def test_commit_build_refuses_without_gui_advice(commit_build, git_present):
     assert refusal.update_command == ""
 
 
+@pytest.mark.platforms("posix")
 def test_root_cannot_update_user_owned_install(tmp_path, monkeypatch):
     from hermes_cli.update_contract import ROOT_UPDATE_MESSAGE
 
@@ -56,6 +57,7 @@ def test_root_cannot_update_user_owned_install(tmp_path, monkeypatch):
     assert refusal.message == ROOT_UPDATE_MESSAGE
 
 
+@pytest.mark.platforms("posix")
 def test_root_can_update_root_owned_install(tmp_path, monkeypatch):
     class RootStat:
         st_uid = 0
@@ -81,6 +83,7 @@ def _neutralize_host_install_markers(monkeypatch, tmp_path) -> None:
     monkeypatch.delenv("HERMES_MANAGED", raising=False)
 
 
+@pytest.mark.platforms("posix")
 def test_root_owned_admission_yields_to_baked_image_marker(tmp_path, monkeypatch):
     """A valid baked image marker outranks root-owned admission.
 

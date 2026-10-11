@@ -28,6 +28,7 @@ from gateway.platforms.base import BasePlatformAdapter
 from gateway.platforms.base_exec_approval import ea_default_reason_text
 from gateway.run_turn_runner_approval_settle import _renders_exec_approval_buttons
 from gateway.turn_context import TurnContext
+from gateway.run_turn_runner_titles import SessionTitleCallbacks
 from hermes_cli.config import cfg_get
 from utils import is_truthy_value
 
@@ -70,7 +71,7 @@ class _ExecApprovalDeclined(RuntimeError):
     """
 
 
-class TurnRunner:
+class TurnRunner(SessionTitleCallbacks):
     """Per-turn collaborator carrying ``GatewayRunner._run_agent_inner``'s tool-progress callbacks."""
 
     def __init__(self, runner: GatewayRunner, ctx: TurnContext) -> None:
@@ -858,36 +859,6 @@ class TurnRunner:
         ctx = self._ctx
         self._schedule(ctx._status_adapter.send(ctx._status_chat_id, text, metadata=metadata), log_message)
 
-    def _attach_session_title_callback(self, agent, ctx) -> None:
-        """Wire the platform thread-rename lane onto the agent as `_on_session_title`.
-
-        The titler runs in the turn prologue, so attach before the run, not after it.
-        """
-        try:
-            # Gateway auto-title failures are not user-actionable, so never surface them as messages;
-            # overriding the failure sink keeps CLI on _emit_auxiliary_failure while gateway logs debug.
-            agent._title_failure_callback = lambda task, exc: logger.debug(
-                "Gateway auto-title failure suppressed (not user-visible): %s: %s", task, exc,
-            )
-            session_id = getattr(agent, "session_id", None)
-            runner = self._runner
-            source = runner._recover_discord_auto_thread_source(ctx.source, ctx.session_key)
-            # Both lanes spend a rate-limited platform call per title, so they use the model's title
-            # only (TitleCallback); renaming twice burns Discord's 2-per-10-min budget on a throwaway.
-            # Relay Discord predicate is shape-only: whether the connector auto-threaded our reply is
-            # only knowable AFTER delivery, so register eagerly and let the rename lane look up the
-            # cache at fire time — gating registration on the cache read meant it never registered.
-            if runner._is_telegram_topic_lane(source):
-                lane = "_schedule_telegram_topic_title_rename"
-            elif runner._is_discord_auto_thread_lane(source) or runner._is_relay_discord_channel_lane(source):
-                lane = "_schedule_discord_semantic_thread_rename"
-            else:
-                return
-            agent._on_session_title = lambda title, title_source: (
-                title_source == "llm" and getattr(runner, lane)(source, session_id, title)
-            )
-        except Exception:
-            logger.debug("Failed to attach session title callback", exc_info=True)
 
     def _status_callback_sync(self, event_type: str, message: str) -> None:
         from gateway.run import _prepare_gateway_status_message, _redact_gateway_user_facing_secrets, _send_or_update_status_coro

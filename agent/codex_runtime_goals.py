@@ -78,3 +78,23 @@ def native_resume_thread(agent):
     if state is not None and state.runtime == "codex" and state.status == "active":
         return (state.native_goal or {}).get("threadId")
     return None
+
+
+def native_session_matches(session, expected_thread):
+    """An active ledger outranks a cached ordinary-chat thread (including unstarted caches)."""
+    if expected_thread is None:
+        return True
+    actual = getattr(session, "_thread_id", None) or getattr(session, "_resume_thread_id", None)
+    return actual == expected_thread
+
+
+def pause_native_setup_failure(agent, reason):
+    """A bound active Goal cannot use ordinary chat's fresh-thread recovery policy."""
+    from hermes_cli.goals import load_goal
+    from hermes_cli.codex_goals import pause_native_goal
+    sid = getattr(agent, "session_id", None)
+    state = load_goal(sid) if sid else None
+    if state is None or state.runtime != "codex" or state.status != "active" or not state.native_goal:
+        return False
+    pause_native_goal(sid, state.goal_id, f"Native Goal thread recovery failed; no replacement or budget reset: {reason}")
+    return True

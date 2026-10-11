@@ -590,6 +590,12 @@ A turn interrupted or rejected before any transcript exists reports its native e
 a transcript write failure. A successful-but-empty turn remains incomplete. Real output still must
 be durably persisted before automatic continuation; that safety gate is not disabled.
 
+Resume validates the native ledger's thread before reusing a cached agent, not just its prompt
+and provider. A paused Goal may have ordinary chat on another thread; resuming it retires that
+foreign cache and explicitly restores the original budget-bearing thread. If that thread cannot
+be restored (including timeout), the Goal pauses without clearing its binding or creating a new
+thread. Ordinary chat's fresh-thread recovery behavior is unchanged.
+
 ### Earlier native context compaction
 
 For long-running work, an optional per-profile watermark can ask Codex to compact earlier:

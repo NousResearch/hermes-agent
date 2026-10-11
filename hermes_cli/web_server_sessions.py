@@ -227,7 +227,7 @@ def _maybe_auto_archive_for_profile(profile: Optional[str]) -> None:
             return
         _last_auto_archive_check[key] = now
 
-        from hermes_cli.config import load_config as _load_full_config
+        from hermes_cli.config import bounded_min_interval_hours, load_config as _load_full_config
         from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
         # The config that governs a store is the one in that store's OWN home. A zero-arg
@@ -258,7 +258,7 @@ def _maybe_auto_archive_for_profile(profile: Optional[str]) -> None:
         try:
             db.maybe_auto_archive(
                 idle_days=float(cfg.get("auto_archive_days", 3)),
-                min_interval_hours=int(cfg.get("min_interval_hours", 24)))
+                min_interval_hours=bounded_min_interval_hours(cfg.get("min_interval_hours")))
         finally:
             db.close()
     except Exception as exc:

@@ -400,7 +400,7 @@ def test_ci_only_guards_run_in_scripts_check(tmp_path, job, files):
 # --- F21: profile regex rules see executable code, not prose -----------------------------------
 
 
-_FUNC = "import os\n\n\ndef build(cmd):\n{}    return cmd\n"
+_FUNC = "import os\nimport subprocess\n\n\ndef build(cmd):\n{}    return cmd\n"
 
 
 @pytest.mark.parametrize("body, flagged", [
@@ -414,6 +414,8 @@ _FUNC = "import os\n\n\ndef build(cmd):\n{}    return cmd\n"
     ("    env = os.environ.copy()\n    cmd = (cmd, env)\n", True),
     ("    token = os.getenv(\"DISCORD_TOKEN\")\n    cmd = (cmd, token)\n", True),
     ("    env = dict(os.environ)  # copy it\n    cmd = (cmd, env)\n", True),
+    # a call wrapped over two lines is the same operation (the advisory scanner matches it too)
+    ("    subprocess.run(cmd,\n                   env=os.environ, timeout=5)\n", True),
 ])
 def test_profile_regex_rules_ignore_comments_and_docstrings(tmp_path, capsys, body, flagged):
     repo, base = _ratchet_repo(tmp_path)

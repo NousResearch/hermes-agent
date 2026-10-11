@@ -359,6 +359,7 @@ def test_a_failing_main_pid_probe_keeps_its_own_restart():
     {"HERMES_GATEWAY_LOCK_DIR": "/srv/override/locks"},
     {"XDG_STATE_HOME": "/srv/xdg-state"},
     {"XDG_STATE_HOME": "relative/state"},
+    {"HERMES_REAL_HOME": "/srv/real", "HOME": "/srv/other"},
     {},
 ])
 def test_recovery_host_state_dir_matches_the_gateway_resolver(monkeypatch, env):
@@ -366,7 +367,7 @@ def test_recovery_host_state_dir_matches_the_gateway_resolver(monkeypatch, env):
     at runtime); the duplicate must not drift from ``gateway.status._get_lock_dir``."""
     from gateway.status import _get_lock_dir
 
-    for name in ("HERMES_GATEWAY_LOCK_DIR", "XDG_STATE_HOME"):
+    for name in ("HERMES_GATEWAY_LOCK_DIR", "XDG_STATE_HOME", "HERMES_REAL_HOME"):
         monkeypatch.delenv(name, raising=False)
     for name, value in env.items():
         monkeypatch.setenv(name, value)

@@ -26,7 +26,7 @@ from gateway.status_inline_source import (
     inline_bootstrap_argv,
     inline_source_flag_index,
 )
-from hermes_constants import _get_platform_default_hermes_home, get_hermes_home, get_process_hermes_home
+from hermes_constants import _get_platform_default_hermes_home, get_hermes_home, get_process_hermes_home, get_real_home
 from hermes_cli._subprocess_compat import pid_exists_stdlib
 from utils import atomic_json_write
 
@@ -319,7 +319,7 @@ def _get_runtime_status_path() -> Path:
 def _get_lock_dir() -> Path:
     """Cross-profile rendezvous dir for machine-local locks; ``HERMES_GATEWAY_LOCK_DIR`` overrides.
 
-    Scope is the **OS user**, not the kernel host: separate users have separate ``$HOME``s,
+    Scope is the **OS user**, not the kernel host: separate users have separate real homes (``get_real_home``, never a container's repointed ``HOME``),
     separate ``~/.hermes`` profile roots and separate credentials, so "one gateway per host"
     means "one per host per OS user". Holds the token-scoped locks (:func:`acquire_scoped_lock`)
     and the host-role lock + rendezvous record (``gateway/host_rendezvous.py``); the per-home
@@ -331,7 +331,7 @@ def _get_lock_dir() -> Path:
     # XDG spec: a relative $XDG_STATE_HOME is INVALID and must be ignored. Honouring one made the
     # lock dir CWD-relative, so two serves started from different directories shared no singleton.
     state_home_env = os.getenv("XDG_STATE_HOME") or ""
-    state_home = Path(state_home_env) if os.path.isabs(state_home_env) else Path.home() / ".local" / "state"
+    state_home = Path(state_home_env) if os.path.isabs(state_home_env) else Path(get_real_home()) / ".local" / "state"
     return state_home / "hermes" / _LOCKS_DIRNAME
 
 

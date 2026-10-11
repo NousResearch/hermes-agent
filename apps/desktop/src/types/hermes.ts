@@ -1020,8 +1020,11 @@ export interface AnalyticsTotals {
 }
 
 export interface CronJob {
+  base_url?: null | string
+  context_from?: null | string[]
   deliver?: null | string
   enabled: boolean
+  enabled_toolsets?: null | string[]
   id: string
   last_error?: null | string
   last_run_at?: null | string
@@ -1034,10 +1037,12 @@ export interface CronJob {
   schedule?: CronJobSchedule
   schedule_display?: null | string
   script?: null | string
+  skills?: null | string[]
   state?: null | string
+  workdir?: null | string
 }
 
-export interface CronJobCreatePayload {
+export interface CronJobCreatePayload extends CronJobCarriedFields {
   deliver?: string
   model?: string
   name?: string
@@ -1045,6 +1050,24 @@ export interface CronJobCreatePayload {
   provider?: string
   repeat?: number
   schedule: string
+}
+
+/** Job settings the cron editor doesn't show but a copied or customized job must keep. */
+export interface CronJobCarriedFields {
+  base_url?: string
+  context_from?: string[]
+  enabled_toolsets?: string[]
+  skills?: string[]
+  workdir?: string
+}
+
+/** The job a filled blueprint would create (POST /api/cron/blueprints/render). */
+export interface AutomationBlueprintJobSpec {
+  deliver?: string
+  name?: string
+  prompt: string
+  schedule: string
+  skills?: string[]
 }
 
 export interface CronJobSchedule {

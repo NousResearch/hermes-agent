@@ -619,13 +619,35 @@ export const arCommandCenter = {
     scriptBadge: 'برنامج نصي',
     promptPlaceholder: 'ماذا تريد من Hermes أن يفعل؟',
     frequencyLabel: 'التكرار',
+    timeLabel: 'الوقت',
+    dayOfWeekLabel: 'اليوم',
+    dayOfMonthLabel: 'يوم الشهر',
+    minuteLabel: 'الدقيقة بعد الساعة',
+    skipsShortMonths: dayOfMonth => `تُتخطّى الأشهر التي لا تحتوي على اليوم ${dayOfMonth}.`,
     deliverLabel: 'التسليم',
+    deliverConnectHint: 'تظهر المنصات المتصلة فقط. يظهر البريد الإلكتروني والرسائل القصيرة وغيرها بعد ربطها.',
+    deliverConnectAction: 'ربط منصة',
+    testInChat: 'اختبار في محادثة جديدة',
+    testInChatHint: 'افتح محادثة جديدة مكتوب فيها هذا الطلب لتشغيله والتحقق من النتيجة أولًا',
+    testDraftKept: 'تم حفظ مسودة cron',
+    testDraftKeptDesc: 'اضغط Enter لتشغيل الطلب. عُد إلى المهام المجدولة لإكمال المهمة.',
+    backToDraft: 'العودة إلى المسودة',
+    runsWithSkills: skills => `يعمل مع المهارات: ${skills}`,
     customScheduleLabel: 'جدول مخصص',
     customPlaceholder: 'تعبير cron',
     customHint: 'استخدم صيغة cron القياسية.',
     optional: 'اختياري',
     promptScheduleRequired: 'الرسالة والجدول مطلوبان',
     saveChanges: 'حفظ التغييرات',
-    createAction: 'إنشاء'
+    createAction: 'إنشاء',
+    blueprints: {
+      custom: 'فارغ',
+      recipesGroup: 'وصفات',
+      copyGroup: 'نسخ مهمة',
+      copyName: name => `${name} (نسخة)`,
+      customize: 'تخصيص الطلب',
+      customizeHint: 'افتح هذه الوصفة في المحرر الكامل لتغيير الطلب والوقت والتسليم',
+      customizedFrom: title => `من ${title}. كل ما يلي قابل للتعديل.`
+    }
   }
 } satisfies Pick<TranslationOverrides, 'commandCenter' | 'messaging' | 'profiles' | 'cron'>

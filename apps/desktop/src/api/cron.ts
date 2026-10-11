@@ -1,6 +1,7 @@
 import { stampRowsWithOwningConnection } from '@/lib/session-owner-stamp'
 import type {
   AutomationBlueprint,
+  AutomationBlueprintJobSpec,
   CronDeliveryTarget,
   CronJob,
   CronJobCreatePayload,
@@ -151,6 +152,21 @@ export function getAutomationBlueprints(profile: string): Promise<{ blueprints: 
     ...connectionScoped(),
     path: `/api/cron/blueprints?profile=${encodeURIComponent(profile)}`,
     timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
+  })
+}
+
+// The job a blueprint's filled slots would create, without creating it — what
+// the editor's "Customize prompt" opens in the manual editor.
+export function renderAutomationBlueprint(
+  body: { blueprint: string; values: Record<string, string> },
+  profile: string
+): Promise<AutomationBlueprintJobSpec> {
+  return hermesApi<AutomationBlueprintJobSpec>({
+    ...profileScoped(),
+    ...connectionScoped(),
+    path: `/api/cron/blueprints/render?profile=${encodeURIComponent(profile)}`,
+    method: 'POST',
+    body
   })
 }
 

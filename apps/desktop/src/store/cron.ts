@@ -1,6 +1,6 @@
 import { atom } from 'nanostores'
 
-import type { CronJob } from '@/types/hermes'
+import type { CronJob, CronJobCarriedFields } from '@/types/hermes'
 
 // Cron *jobs* (not run sessions) power the sidebar "Cron jobs" section. Listing
 // the job — schedule, state, live next-run countdown — makes the job the
@@ -87,6 +87,42 @@ export const updateCronJobs = (fn: (jobs: CronJob[]) => CronJob[]) => {
 // after consumption so re-opening cron normally doesn't re-focus a stale job.
 export const $cronFocusJobId = atom<null | string>(null)
 export const setCronFocusJobId = (id: null | string) => $cronFocusJobId.set(id)
+
+// The cron editor's unsaved form, as the user left it. Every field is the
+// dialog's own state (modelChoice is its opaque provider/model value).
+export interface CronEditorDraftValues {
+  /** Settings a copied job or a customized recipe keeps without showing them. */
+  carried: CronJobCarriedFields
+  deliver: string
+  modelChoice: string
+  name: string
+  prompt: string
+  schedule: string
+  schedulePreset: string
+}
+
+export interface CronEditorDraft {
+  /** The job being edited; null for a new job. */
+  jobId: null | string
+  /** The cron profile scope the draft belongs to; it never reopens in another. */
+  profile: string
+  values: CronEditorDraftValues
+}
+
+// Parked when "Test in new chat" or "Connect a platform" takes the user out of
+// the Cron overlay mid-edit, so the round trip doesn't cost them the form. The
+// overlay takes it once on its next mount; in-memory only, one per window.
+const $cronEditorDraft = atom<CronEditorDraft | null>(null)
+
+export const parkCronEditorDraft = (draft: CronEditorDraft) => $cronEditorDraft.set(draft)
+
+export function takeCronEditorDraft(profile: string): CronEditorDraft | null {
+  const draft = $cronEditorDraft.get()
+
+  $cronEditorDraft.set(null)
+
+  return draft?.profile === profile ? draft : null
+}
 
 // Shell-owned one-shot intent for stores without router context. Do not set a
 // focus id here: the cron overlay's first fetch may not have loaded that row.

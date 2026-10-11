@@ -30,6 +30,7 @@ import {
 } from '@/store/gateway-switch'
 import { $notifications, clearNotifications, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, $profiles, ensureGatewayProfile } from '@/store/profile'
+import { $projectScope, ALL_PROJECTS } from '@/store/project-scope'
 import { $backendRestartRequest } from '@/store/recovery-requests'
 import {
   $activeSessionId,
@@ -214,6 +215,7 @@ beforeEach(() => {
 
   closeSecondaryGateways()
   $activeGatewayProfile.set('default')
+  $projectScope.set(ALL_PROJECTS)
   $connection.set(null)
   $profiles.set([])
   $sessionTiles.set([])
@@ -850,6 +852,90 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     expect(beforeConnectionSwitch).toHaveBeenCalledTimes(1)
     await flushAsync()
     expect($gatewayState.get()).toBe('open')
+  })
+
+  it.each([
+    { scope: '__no_project__', registryRestore: false },
+    { scope: 'p_restored', registryRestore: false },
+    { scope: '__no_project__', registryRestore: true },
+    { scope: 'p_restored', registryRestore: true }
+  ])(
+    'keeps persisted $scope through same-backend boot and reconnect (registry restore: $registryRestore, #131707)',
+    async ({ scope, registryRestore }) => {
+      if (registryRestore) {
+        const local = {
+          ...primaryConn,
+          baseUrl: 'http://127.0.0.1:9119',
+          connectionId: undefined,
+          mode: 'local' as const
+        }
+
+        const registry: DesktopConnectionsRegistry = {
+          connections: [{ id: 'local', kind: 'local', label: 'This device', tokenPreview: null, tokenSet: false }],
+          primary: 'local',
+          secureTokenStorage: true,
+          version: 2
+        }
+
+        const base = fakeDesktop()
+
+        const desktop = {
+          ...base,
+          getConnection: vi.fn(async () => local),
+          getConnectionFor: vi.fn(async () => ({ ...local, connectionId: 'local', registryScoped: true })),
+          profile: { ...base.profile, getDefault: vi.fn(async () => ({ connectionId: 'local', profile: 'default' })) },
+          connections: {
+            list: vi.fn(async () => registry),
+            setLastUsed: vi.fn(async () => ({ ok: true, registry }))
+          }
+        }
+
+        ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+      }
+
+      $projectScope.set(scope)
+      render(<Harness />)
+      await flushAsync()
+
+      expect($projectScope.get()).toBe(scope)
+      expect(window.localStorage.getItem('hermes.desktop.projectScope')).toBe(scope)
+      act(() => connectionApplied?.())
+      expect($projectScope.get()).toBe(scope)
+      await flushAsync()
+      expect($gatewayState.get()).toBe('open')
+      expect($projectScope.get()).toBe(scope)
+      expect(window.localStorage.getItem('hermes.desktop.projectScope')).toBe(scope)
+    }
+  )
+
+  it.each([
+    { change: 'source', route: { baseUrl: 'https://other.example.com', connectionId: 'other-vps' } },
+    { change: 'profile', route: { profile: 'research' } },
+    { change: 'endpoint', route: { baseUrl: 'https://other.example.com' } }
+  ])('clears foreign project scopes before publication through an A to B to A $change change', async ({ route }) => {
+    const desktop = fakeDesktop()
+
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+    render(<Harness />)
+    await flushAsync()
+    $projectScope.set('p_backend_a')
+
+    const publishedScopes: string[] = []
+    const off = $connection.listen(() => publishedScopes.push($projectScope.get()))
+    const backendB = { ...primaryConn, ...route }
+    desktop.getConnection.mockResolvedValue(backendB)
+    act(() => connectionApplied?.())
+    await flushAsync()
+    expect($projectScope.get()).toBe(ALL_PROJECTS)
+    $projectScope.set('p_backend_b')
+
+    desktop.getConnection.mockResolvedValue(primaryConn)
+    act(() => connectionApplied?.())
+    await flushAsync()
+    expect($connection.get()?.connectionId).toBe('primary-vps')
+    expect($projectScope.get()).toBe(ALL_PROJECTS)
+    expect(publishedScopes).toEqual([ALL_PROJECTS, ALL_PROJECTS])
+    off()
   })
 
   it('a stale failed Settings switch cannot publish failure or disarm the newer switch owner', async () => {

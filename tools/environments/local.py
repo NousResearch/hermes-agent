@@ -748,15 +748,19 @@ def _make_run_env(env: dict) -> dict:
     # ``DISPLAY=:0 cmd`` prefix, which bash applies after this env. Empty (or module missing) →
     # the seat env passes through untouched.
     try:
-        from tools.bot_desktop.runtime import _screen_env_fixups, published_env
+        from tools.bot_desktop.runtime import published_env, screen_env_fixups
         published = published_env()
     except Exception:
         published = {}
     if published:
         run_env.update(published)
-        # X11 desktop: drop the leaked Wayland socket, cap TMPDIR for Chromium's singleton
-        # socket, and park XDG_RUNTIME_DIR on a screen-owned dir (#125830, #136677).
-        _screen_env_fixups(run_env)
+        # X11 desktop, display-selection layer only (#125830, #136677): GUI toolkits launched from
+        # the terminal pick the screen's X11 instead of probing the host Wayland compositor, while
+        # plain commands keep the session's real XDG_RUNTIME_DIR/TMPDIR (``systemctl --user``,
+        # rootless podman, agent sockets). A terminal GUI launch that also needs the socket-safe
+        # TMPDIR/screen-owned runtime dir uses the inline ``XDG_RUNTIME_DIR=... cmd`` prefix, which
+        # bash applies after this env — or the dedicated screen spawn path ``desktop_env()``.
+        screen_env_fixups(run_env)
     return run_env
 
 

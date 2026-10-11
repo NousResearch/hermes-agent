@@ -341,16 +341,25 @@ def _allocate_display() -> int:
         return _pick_display()
 
 
-def _screen_env_fixups(env: dict[str, str]) -> None:
-    """Scrub the login session's Wayland-era residue off an env headed for the running X11 screen (#136677).
+def screen_env_fixups(env: dict[str, str], *, isolate_runtime: bool = False) -> None:
+    """Point an env headed for the running X11 screen away from the host's Wayland session (#136677).
 
-    ``WAYLAND_DISPLAY`` is only the visible leak: a deep scratch ``TMPDIR`` overflows Chromium's
-    108-byte singleton-socket ``sun_path`` (startup FATAL), and the host's ``XDG_RUNTIME_DIR`` lets
-    ``wl_display_connect(NULL)``'s implicit ``wayland-0`` fallback find the real desktop's socket,
-    opening GTK/Qt windows on the host instead of the bot's screen. A screen-owned 0700 runtime dir
-    makes that fallback fail closed to X11; if it cannot be created, the host's is dropped rather
-    than kept."""
+    The base layer is safe for any command, terminal ones included: non-GUI tools never read
+    ``WAYLAND_DISPLAY``/``XDG_SESSION_TYPE``/``GDK_BACKEND``/``QT_QPA_PLATFORM``, while GUI toolkits
+    stop probing the host compositor and pick the screen's X11 — the same exports ``launcher.sh``
+    applies to dock launches. ``isolate_runtime`` (spawns dedicated to the screen, i.e.
+    ``desktop_env()``) additionally swaps a too-long ``TMPDIR`` for a socket-safe one (Chromium binds
+    its singleton socket at ``$TMPDIR/...`` and ``sun_path`` holds 107 bytes) and parks
+    ``XDG_RUNTIME_DIR`` on a screen-owned 0700 dir so ``wl_display_connect(NULL)``'s implicit
+    ``wayland-0`` fallback fails closed to X11; if it cannot be created, the host's is dropped
+    rather than kept. Terminal commands keep the session's real runtime dir and scratch TMPDIR:
+    ``systemctl --user``, rootless podman, agent sockets and ``pactl`` all live under them."""
     env.pop("WAYLAND_DISPLAY", None)  # X11 desktop; a leaked Wayland socket flips GTK/Chromium backends
+    env["XDG_SESSION_TYPE"] = "x11"  # a leaked host session type flips the Chromium ozone backend
+    env["GDK_BACKEND"] = "x11"  # skip GTK's $XDG_RUNTIME_DIR/wayland-0 probe, not just WAYLAND_DISPLAY
+    env["QT_QPA_PLATFORM"] = "xcb"
+    if not isolate_runtime:
+        return
     from hermes_constants import SOCKET_TMPDIR_MAX_LEN, socket_safe_tmpdir
     if len(os.fsencode(env.get("TMPDIR", ""))) > SOCKET_TMPDIR_MAX_LEN:
         env["TMPDIR"] = socket_safe_tmpdir()
@@ -373,7 +382,7 @@ def desktop_env(base_env: Optional[dict[str, str]] = None) -> dict[str, str]:
     if published:
         touch_activity()  # a browser / cua-driver spawn is the agent using its screen
         env.update(published)
-        _screen_env_fixups(env)
+        screen_env_fixups(env, isolate_runtime=True)
         from tools.bot_desktop.browser import env_for_agent
         env_for_agent(env)  # same binary + user-data-dir as the dock's Browser icon
     return env

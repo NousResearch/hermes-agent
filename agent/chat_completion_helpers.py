@@ -40,6 +40,7 @@ from agent.gemini_native_adapter import is_native_gemini_base_url
 # boxes. Non-Ollama remotes (sglang, vLLM, OpenAI-compat) expose Ollama-compat endpoints that can
 # misidentify and, without an api_key, return 401 on every leg (issue #89863).
 from agent.model_metadata import is_local_endpoint
+from agent.reasoning_params import ollama_num_ctx_for_route
 from agent.message_content import flatten_message_text
 from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS, append_message, stamp_message_timestamp
 from agent.message_sanitization import (
@@ -1503,11 +1504,10 @@ def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning
         max_tokens=agent.max_tokens, ephemeral_max_output_tokens=_ephemeral_out,
         max_tokens_param_fn=agent._max_tokens_param, reasoning_config=reasoning_config,
         request_overrides=request_overrides, session_id=getattr(agent, "session_id", None),
-        cache_scope_id=cache_scope_id, ollama_num_ctx=agent._ollama_num_ctx,
+        cache_scope_id=cache_scope_id, ollama_num_ctx=ollama_num_ctx_for_route(agent),
         provider_preferences=_prefs or None, openrouter_min_coding_score=agent.openrouter_min_coding_score,
-        supports_reasoning=agent._supports_reasoning_extra_body(),
-        lmstudio_reasoning_options=agent._lmstudio_reasoning_options_cached() if _is_lmstudio else None,
-        qwen_session_metadata=_qwen_meta)
+        supports_reasoning=agent._supports_reasoning_extra_body(), qwen_session_metadata=_qwen_meta,
+        lmstudio_reasoning_options=agent._lmstudio_reasoning_options_cached() if _is_lmstudio else None)
     if _profile:
         # Profiles handle per-provider quirks via hooks fed the context above.
         return transport.build_kwargs(provider_profile=_profile, **_common)

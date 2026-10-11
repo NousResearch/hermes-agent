@@ -1040,7 +1040,7 @@ def cronjob(
 
 def _script_description(home: str) -> str:
     return (f"Optional script run each tick; stdout is injected into the agent's prompt as context (with no_agent=True "
-            f"the script IS the job). Relative paths resolve under {home}/scripts/; .sh/.bash via bash, else Python. "
+            f"the script IS the job). Relative paths resolve under {home}/scripts/; .sh/.bash via bash, Windows .bat/.cmd via cmd and .ps1 via powershell, else Python. "
             "On update, '' clears.")
 
 

@@ -4093,8 +4093,9 @@ def _wait_for_api_server_port_free(*, timeout: float = 10.0) -> bool:
     host, port = listen_address(pconfig.extra or {})
     freed = _wait_for_tcp_port_free(host, port, timeout=timeout)
     if not freed:
+        from hermes_cli.port_owners import describe_port_owners
         print(
-            f"⚠ {host}:{port} still accepting connections — "
+            f"⚠ {host}:{port} still accepting connections{describe_port_owners(port)} — "
             "new api_server may fail to bind"
         )
     return freed

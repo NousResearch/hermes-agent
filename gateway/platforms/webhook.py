@@ -12,6 +12,7 @@ replay protection; body-only V1 is deprecated but accepted with a warning."""
 import asyncio
 import base64
 import binascii
+import errno
 import hashlib
 import hmac
 import json
@@ -279,8 +280,10 @@ class WebhookAdapter(BasePlatformAdapter):
         except OSError as exc:
             await self._runner.cleanup()
             self._runner = None
-            logger.error("[webhook] Could not bind %s:%d: %s. Set a different host or port in config.yaml under "
-                         "platforms.webhook.extra.", self._host or "all IPv4+IPv6 interfaces", self._port, exc)
+            from hermes_cli.port_owners import describe_port_owners
+            holder = describe_port_owners(self._port) if exc.errno == errno.EADDRINUSE else ""
+            logger.error("[webhook] Could not bind %s:%d: %s%s. Set a different host or port in config.yaml under "
+                         "platforms.webhook.extra.", self._host or "all IPv4+IPv6 interfaces", self._port, exc, holder)
             return False
         from gateway.platforms.shared_ingress import listener_base_url
         self._mark_connected(listener_base=listener_base_url(self._host, self._port))

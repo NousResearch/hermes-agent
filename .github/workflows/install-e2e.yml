@@ -126,6 +126,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       tags: ${{ steps.pick.outputs.tags }}
+      has-baseline: ${{ steps.pick.outputs.has-baseline }}
     steps:
       # This job only reads tag names and trees, so take the cheap
       # checkout: no blobs (filter), no other files (sparse), but DO fetch
@@ -159,14 +160,25 @@ jobs:
           set -euo pipefail
           [[ "$TAG_COUNT" =~ ^(10|[1-9])$ ]] || { echo "tag-count must be 1-10, got: $TAG_COUNT" >&2; exit 1; }
           if [ -n "$INSTALL_REF" ]; then
-            [[ "$INSTALL_REF" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$ ]] || { echo 'install-ref must be an exact release tag' >&2; exit 1; }
+            [[ "$INSTALL_REF" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?(\+canary\.20[0-9]{6}T[0-9]{6}Z)?$ ]] || { echo 'install-ref must be an exact stable or canonical canary release tag' >&2; exit 1; }
             [ "$INSTALL_REF" != "$EXCLUDE_REF" ] || { echo "Candidate cannot be its own baseline" >&2; exit 1; }
             git rev-parse --verify "refs/tags/$INSTALL_REF^{commit}" >/dev/null
+            [ "$(git rev-parse "refs/tags/$INSTALL_REF^{commit}")" != "$(git rev-parse HEAD)" ] || { echo "Install baseline cannot point at the tested HEAD" >&2; exit 1; }
             tags="$(jq -cn --arg ref "$INSTALL_REF" '[$ref]')"
           elif [ "$RELEASE_MODE" = true ]; then
             tags="$(python3 -m scripts.releases.pick_tags --count "$TAG_COUNT" --exclude-ref "$EXCLUDE_REF")"
           else
             tags="$(scripts/sandbox/pick-release-tags.sh --count "$TAG_COUNT")"
+          fi
+          if [ "$tags" = '[]' ]; then
+            if [ "$RELEASE_MODE" = true ]; then
+              echo "::error::No historical release baseline is available for the release gate"
+              exit 1
+            fi
+            echo "::warning::No historical release baseline is available; running only the HEAD -> NEXT self-update leg."
+            echo "has-baseline=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "has-baseline=true" >> "$GITHUB_OUTPUT"
           fi
           echo "Testing updates from: $tags"
           # Annotate each tag with what its own tree supports, so run
@@ -361,7 +373,7 @@ jobs:
   source-gate:
     name: Source matrix gate
     if: always() && inputs.release == true
-    needs: [generate-matrix, linux, windows, macos]
+    needs: [pick-releases, generate-matrix, linux, windows, macos]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -370,12 +382,17 @@ jobs:
           LINUX: ${{ needs.linux.result }}
           WINDOWS: ${{ needs.windows.result }}
           MACOS: ${{ needs.macos.result }}
+          HAS_BASELINE: ${{ needs.pick-releases.outputs.has-baseline }}
           LINUX_MATRIX: ${{ needs.generate-matrix.outputs.linux }}
           WINDOWS_MATRIX: ${{ needs.generate-matrix.outputs.windows }}
           MACOS_MATRIX: ${{ needs.generate-matrix.outputs.macos }}
         run: |
           set -euo pipefail
           fail=0
+          if [ "$HAS_BASELINE" != true ]; then
+            echo "::error::release source gate requires at least one historical release baseline; only HEAD -> NEXT coverage is available"
+            fail=1
+          fi
           for os_name in LINUX WINDOWS MACOS; do
             result="${!os_name}"
             matrix_var="${os_name}_MATRIX"
@@ -415,8 +432,11 @@ jobs:
           sparse-checkout-cone-mode: false
       - env:
           GH_TOKEN: ${{ github.token }}
+          TAGS_JSON: ${{ needs.pick-releases.outputs.tags }}
         run: |
           set -euo pipefail
+          tags_json="${TAGS_JSON:-[]}"
+          if [ -z "$tags_json" ]; then tags_json='[]'; fi
           # The repo's GITHUB_TOKEN shares one hourly API budget with every
           # other workflow; a busy hour answered "API rate limit exceeded for
           # installation" and turned a green matrix red here. Retry, then
@@ -445,6 +465,6 @@ jobs:
             echo 'Legend: ✅ upgrade passed · known [n] = exact historical failure, see footnote · ❌ unexpected failure · pre-desktop / TODO = why a leg skipped · 📼 opens the leg player (recording + synced logs)'
             echo
             node scripts/sandbox/generate-e2e-matrix.mjs --format results \
-              --tags '${{ needs.pick-releases.outputs.tags }}' \
+              --tags "$tags_json" \
               --artifacts /tmp/e2e-artifacts.ndjson < /tmp/e2e-jobs.ndjson
           } >> "$GITHUB_STEP_SUMMARY"

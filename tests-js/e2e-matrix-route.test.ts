@@ -53,3 +53,15 @@ test('the pr route runs one script install updated by hermes update per OS start
     'windows: installer-script -> hermes-update (HEAD -> NEXT)',
   ])
 })
+
+test('the pr route keeps every OS covered when no release baseline exists', () => {
+  const noBaseline: Matrices = JSON.parse(
+    execFileSync(process.execPath, [script, '--tags', '[]', '--route', 'pr'], { encoding: 'utf8' })
+  )
+
+  expect(legNames(noBaseline).sort()).toEqual([
+    'linux: installer-script -> hermes-update (HEAD -> NEXT)',
+    'macos: installer-script -> hermes-update (HEAD -> NEXT)',
+    'windows: installer-script -> hermes-update (HEAD -> NEXT)',
+  ])
+})

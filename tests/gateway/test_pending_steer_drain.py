@@ -1,11 +1,13 @@
 """Regression for #131644: late steering retains FIFO messages and channel inputs."""
 
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter
+from gateway.platforms.base import BasePlatformAdapter, SendResult
+from gateway.platforms.base_pending import release_pending_dispatch
 from gateway.platforms.event import MessageEvent
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource, build_session_key
@@ -25,8 +27,14 @@ class Adapter(BasePlatformAdapter):
     async def disconnect(self):
         pass
 
-    async def send(self, chat_id, text, **kwargs):
-        pass
+    async def send(
+        self,
+        chat_id: str,
+        content: str,
+        reply_to: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> SendResult:
+        return SendResult(success=True)
 
     async def get_chat_info(self, chat_id):
         return {}
@@ -72,6 +80,7 @@ async def test_accepted_steer_and_events_drain_once_in_order(kind):
         delivered.append(text)
         if event is not None:
             delivered_events.append(event)
+            release_pending_dispatch(adapter, key, event, claimed=True)
         result = {"final_response": "done"}
     assert delivered == expected
     if events:
@@ -138,3 +147,105 @@ async def test_interrupt_then_steer_preserves_channel_inputs(monkeypatch):
         source.parent_chat_id,
     )
     assert runner._queue_depth(KEY, adapter=adapter) == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("interrupt_message", "expected"),
+    [
+        ("replacement", "replacement\n\ncorrection"),
+        ("/help", "correction"),
+    ],
+)
+async def test_leftover_steer_is_delivered_when_provisional_input_fills_the_queue(
+    interrupt_message,
+    expected,
+):
+    from gateway.platforms.base_pending import (
+        pending_dispatch_records,
+        reserve_pending_dispatch,
+    )
+
+    runner = object.__new__(GatewayRunner)
+    runner._draining = False
+    adapter = Adapter(PlatformConfig(enabled=True), Platform.TELEGRAM)
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="test",
+        user_id="human",
+        chat_type="dm",
+    )
+    key = build_session_key(source)
+    events = [
+        MessageEvent(text=f"reserved {i}", source=source)
+        for i in range(runner._BUSY_QUEUE_MAX_PENDING)
+    ]
+    for event in events:
+        reserve_pending_dispatch(adapter, key, event)
+
+    result = await runner._run_agent_drain_pending(
+        {
+            "interrupted": True,
+            "interrupt_message": interrupt_message,
+            "pending_steer": "correction",
+        },
+        adapter,
+        source,
+        key,
+    )
+
+    assert (
+        result,
+        adapter._pending_messages,
+        [record.event for record in pending_dispatch_records(adapter, key)],
+    ) == ((None, expected), {}, events)
+
+
+@pytest.mark.asyncio
+async def test_deferred_fifo_event_releases_its_dispatch_reservation():
+    from gateway.platforms.base_pending import pending_dispatch_records
+
+    runner = object.__new__(GatewayRunner)
+    runner._draining = False
+    adapter = Adapter(PlatformConfig(enabled=True), Platform.TELEGRAM)
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="test",
+        user_id="human",
+        chat_type="dm",
+    )
+    key = build_session_key(source)
+    events = [MessageEvent(text=f"event {i}", source=source) for i in range(3)]
+    for event in events:
+        runner._enqueue_fifo(key, event, adapter)
+
+    steer = await runner._run_agent_drain_pending(
+        {"final_response": "done", "pending_steer": "correction"},
+        adapter,
+        source,
+        key,
+    )
+    after_steer = (
+        steer,
+        adapter._pending_messages.get(key),
+        list(runner._overflow_queue(key) or []),
+        [record.event for record in pending_dispatch_records(adapter, key)],
+    )
+    drained = []
+    for _ in events:
+        event, text = await runner._run_agent_drain_pending(
+            {"final_response": "done"},
+            adapter,
+            source,
+            key,
+        )
+        drained.append((event, text))
+        release_pending_dispatch(adapter, key, event, claimed=True)
+
+    assert (after_steer, drained, runner._queue_depth(key, adapter=adapter)) == (
+        ((None, "correction"), events[0], events[1:], []),
+        [(event, event.text) for event in events],
+        0,
+    )

@@ -1725,10 +1725,11 @@ _SEND_RETRY_INLINE_WAIT_CAP_SECS = 60.0
 
 # Platform-neutral send-failure kinds for ``SendResult.error_kind``: too_long (size cap),
 # bad_format (markup rejected; plain-text retry fixes), forbidden (the bot CANNOT reach the user),
-# not_found (chat/thread/message gone), rate_limited, transient (connection-level, retry-safe),
-# unknown.
+# not_found (chat/thread/message gone), session_not_ready, rate_limited, transient
+# (connection-level, retry-safe), unknown.
 SEND_ERROR_KINDS = frozenset(
-    {"too_long", "bad_format", "forbidden", "not_found", "rate_limited", "transient", "unknown"})
+    {"too_long", "bad_format", "forbidden", "not_found", "session_not_ready", "rate_limited",
+     "transient", "unknown"})
 
 # ``not_found`` substrings by blast radius: chat-level = target dead; thread/topic/message-level
 # leaves the parent chat reachable.
@@ -1762,6 +1763,7 @@ _SEND_ERROR_CLASSIFIERS: tuple[tuple[str, Callable[[str], bool]], ...] = (
         b, "forbidden", "bot was blocked", "blocked by the user", "user is deactivated",
         "not enough rights", "have no rights", "not a member")),
     ("not_found", lambda b: _any_in(b, *_CHAT_LEVEL_NOT_FOUND_SUBSTRINGS, *_SUBCHAT_NOT_FOUND_SUBSTRINGS)),
+    ("session_not_ready", lambda b: "session not ready" in b),
     ("rate_limited", lambda b: _any_in(b, "flood", "too many requests", "retry after", "rate limit")),
     ("transient", lambda b: _any_in(b, *_RETRYABLE_ERROR_PATTERNS, "connecttimeout")))
 

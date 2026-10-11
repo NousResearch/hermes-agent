@@ -1136,3 +1136,14 @@ class TestWindowsLockedProfileCopy:
         dst, err = bc.snapshot_real_profile("chrome", src=str(root))
         assert dst is None
         assert err
+
+
+@pytest.mark.parametrize("value,expected", [("1", False), ("true", False), ("", True), ("0", True)])
+def test_env_lock_vetoes_real_profile_consent(monkeypatch, value, expected):
+    """HERMES_BROWSER_NO_REAL_PROFILE forces real-profile browsing off even when config.yaml says
+    true: config.yaml has several writers (allowlist saves, Desktop settings), so a host that must
+    never put agents in the user's own browser needs a veto outside that file."""
+    import tools.browser_tool as bt
+    monkeypatch.setattr(bt, "_browser_cfg", lambda key, default, parse, label: True)
+    monkeypatch.setenv("HERMES_BROWSER_NO_REAL_PROFILE", value)
+    assert bt_cloud._use_real_profile() is expected

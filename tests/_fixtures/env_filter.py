@@ -181,6 +181,10 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "HERMES_EXEC_ASK",
     "HERMES_HOME_MODE",
     "HERMES_AGENT_USE_LEGACY_SESSION_KEYS",
+    # The real-profile veto (tools.browser_tool_cloud._use_real_profile) is set in the
+    # host .env of a machine that must keep agents out of the owner's browser; a test run
+    # from a Hermes session inherits it and the consent-read tests then see False.
+    "HERMES_BROWSER_NO_REAL_PROFILE",
     "HERMES_NEMO_RELAY_PLUGINS_TOML",
     # Kanban path/board pins must never leak from a developer shell or
     # dispatched worker into tests; otherwise tests can write fake tasks to

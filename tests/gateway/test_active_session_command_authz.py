@@ -182,7 +182,7 @@ async def _runner_busy_stop(user_id: str):
     src = _make_source(user_id=user_id, chat_type="group")
     key = build_session_key(src)
     runner._running_agents[key] = object()
-    runner._running_agents_ts[key] = 0
+    runner._session_state(key).turn.started_ts = 0
     runner._interrupt_and_clear_session = AsyncMock()
     event = _make_event("/stop", src)
     return runner, event, await runner._handle_message(event)

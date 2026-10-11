@@ -3890,9 +3890,8 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
             self._start_session_processing(pending_event, session_key)
 
     async def _dispatch_active_session_command(self, event: MessageEvent, session_key: str, cmd: str) -> None:
-        """/stop, /new, /reset under a command guard, debounced text held. Cancel (after the reply) and drain only if
-        the runner's stop/reset handler ran — past admission AND slash access — setting ``event._interrupt_accepted``;
-        else restore guard and text. No authorization check registered (no runner verdict): cancel as before."""
+        """/stop, /new, /reset: reply, then cancel + drain only if the runner's stop/reset handler (past admission
+        and slash access) set ``event._interrupt_accepted``, else restore guard and held text; no auth check: cancel."""
         logger.debug("[%s] Command '/%s' bypassing active-session guard for %s", self.name, cmd, session_key)
         current_guard = self._active_sessions.get(session_key)
         command_guard = asyncio.Event()
@@ -3989,10 +3988,8 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
             from gateway.session_ingress_burst import dispatch_busy_burst
             await dispatch_busy_burst(self, event, session_key)  # main's photo/text burst merge
             return
-        # Bypass commands run inline: queued they'd leak as user text (/new) or deadlock
-        # (/approve, /deny — the agent is blocked on Event.wait).  Dispatch inline by calling the
-        # message handler directly and sending the response.  Do NOT use _process_message_background
-        # — it manages session lifecycle and its cleanup races with the running task (split-brain, #4926).
+        # Bypass commands run inline (queued, /new would leak as user text and /approve, /deny deadlock on
+        # Event.wait); never via _process_message_background, whose cleanup races the running task (#4926).
         src = event.source
         self._canonicalize(src)  # identity FIRST (direct callers may skip handle_message)
         cmd = event.get_command()

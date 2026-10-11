@@ -4292,7 +4292,25 @@ export interface Translations extends NoticeTranslations {
     vaultUnlockConfirm: string
   }
 
+  memoryReview: {
+    title: string
+    description: string
+    gateOn: string
+    gateOff: string
+    loading: string
+    refresh: string
+    empty: string
+    approve: string
+    reject: string
+    noChange: string
+    raw: string
+    formatted: string
+    operations: (count: number) => string
+    foreground: string
+    background: string
+  }
   desktop: {
+    memoryReviewLoadFailed: string
     audioReadFailed: string
     sessionUnavailable: string
     createSessionFailed: string

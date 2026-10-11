@@ -78,9 +78,12 @@ def _approve(subsystem: str, rest: list[str], memory_store) -> str:
 
     applied, failed, overwritten, removed = 0, [], [], []
     for rec in targets:
-        ok, msg, result = _apply_one(subsystem, rec, memory_store)
+        def apply(current):
+            ok, msg, result = _apply_one(subsystem, current, memory_store)
+            return {**result, "success": ok, "error": msg}
+        result = wa.decide_pending(subsystem, rec["id"], apply)
+        ok, msg = result.get("success"), result.get("error", "")
         if ok:
-            wa.discard_pending(subsystem, rec["id"])
             applied += 1
             overwritten.extend(f"  {rec['id']}: {text}" for text in _changed_entries(result, "replaced"))
             removed.extend(f"  {rec['id']}: {text}" for text in _changed_entries(result, "removed"))

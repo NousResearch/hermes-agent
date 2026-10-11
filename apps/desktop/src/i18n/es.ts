@@ -5601,7 +5601,25 @@ export const esOverrides = {
     vaultCodeSkip: 'Omitir',
     vaultCodeConfirm: 'Introducir código'
   },
+  memoryReview: {
+    title: 'Revisión de memoria',
+    description: 'Revisa y decide sobre cada lote atómico pendiente. Los cambios se aplican a sesiones futuras.',
+    gateOn: 'Aprobación activada. Las escrituras pendientes aún requieren una decisión.',
+    gateOff: 'Aprobación desactivada. Las escrituras pendientes aún requieren una decisión.',
+    loading: 'Cargando escrituras de memoria…',
+    refresh: 'Actualizar',
+    empty: 'No hay escrituras de memoria pendientes.',
+    approve: 'Aprobar',
+    reject: 'Rechazar',
+    noChange: '(sin cambios de texto)',
+    raw: 'Diff unificado sin procesar',
+    formatted: 'Diff con formato',
+    operations: (count: number) => `${count} operaciones`,
+    foreground: 'Primer plano',
+    background: 'Revisión en segundo plano'
+  },
   desktop: {
+    memoryReviewLoadFailed: 'No se pudo cargar la revisión de memoria',
     audioReadFailed: 'No se pudo leer el audio grabado',
     sessionUnavailable: 'Sesión no disponible',
     createSessionFailed: 'No se pudo crear una sesión nueva',

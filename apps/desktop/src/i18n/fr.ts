@@ -5616,7 +5616,26 @@ export const frOverrides = {
     vaultCodeSkip: 'Ignorer',
     vaultCodeConfirm: 'Saisir le code'
   },
+  memoryReview: {
+    title: 'Vérification de la mémoire',
+    description:
+      'Examinez chaque lot atomique en attente et décidez. Les changements s’appliquent aux sessions futures.',
+    gateOn: 'Approbation activée. Les écritures en attente nécessitent toujours une décision.',
+    gateOff: 'Approbation désactivée. Les écritures en attente nécessitent toujours une décision.',
+    loading: 'Chargement des écritures en mémoire…',
+    refresh: 'Actualiser',
+    empty: 'Aucune écriture en mémoire en attente.',
+    approve: 'Approuver',
+    reject: 'Rejeter',
+    noChange: '(aucun changement de texte)',
+    raw: 'Diff unifié brut',
+    formatted: 'Diff formaté',
+    operations: (count: number) => `${count} opérations`,
+    foreground: 'Premier plan',
+    background: 'Vérification en arrière-plan'
+  },
   desktop: {
+    memoryReviewLoadFailed: 'Impossible de charger la vérification de la mémoire',
     audioReadFailed: "Impossible de lire l'audio enregistré",
     sessionUnavailable: 'Session indisponible',
     createSessionFailed: 'Impossible de créer une nouvelle session',

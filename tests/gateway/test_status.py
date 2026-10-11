@@ -663,6 +663,26 @@ class TestGetProcessStartTime:
             p.kill()
             p.wait()
 
+    def test_psutil_quantization_is_rounded_not_truncated(self, monkeypatch):
+        """The psutil fallback rounds to centiseconds; it never truncates (#135536).
+
+        An out-of-tree verifier recomputing the fingerprint as ``int(ct * 100)``
+        mismatches whenever the sub-centisecond remainder is >= 0.5 cs (~50% of
+        processes), so the rounding rule is a public contract locked here.
+        """
+
+        class _FakeProc:
+            def create_time(self):
+                # 1791536706.899549 * 100 = ...689.9549 → round 690, truncate 689
+                return 1791536706.899549
+
+        fake_psutil = SimpleNamespace(Process=lambda _pid: _FakeProc())
+        monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
+        # A pid whose /proc entry cannot exist, so the psutil branch runs even on Linux.
+        value = status._get_process_start_time(999_999_999)
+        # round(ct * 100) == 690; a truncating verifier gets ...689 and mismatches.
+        assert value == 179153670690
+
 
 class TestTerminatePid:
     @pytest.mark.platforms("windows")

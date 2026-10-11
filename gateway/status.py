@@ -26,6 +26,12 @@ from gateway.status_inline_source import (
     inline_bootstrap_argv,
     inline_source_flag_index,
 )
+from gateway.status_start_time import (
+    START_TIME_DRIFT_TOLERANCE as START_TIME_DRIFT_TOLERANCE,
+    _get_process_start_time,
+    _start_times_agree,
+    start_time_fingerprints_match as start_time_fingerprints_match,
+)
 from hermes_constants import _get_platform_default_hermes_home, get_hermes_home, get_process_hermes_home
 from hermes_cli._subprocess_compat import pid_exists_stdlib
 from utils import atomic_json_write
@@ -439,26 +445,6 @@ def terminate_pid(
         raise OSError(details or f"taskkill failed for PID {pid}")
 
 
-def _start_times_agree(current: Any, *recorded: Any) -> bool:
-    """Same process object: all fingerprints > 0 and within 1ms of ``current``; raises on junk."""
-    cur = float(current)
-    return cur > 0 and all(r > 0 and abs(r - cur) <= 0.001 for r in map(float, recorded))
-
-
-# Same-host start-time readings can drift by ~1 s between the claim-time and a later liveness read
-# (macOS ``kern.boottime`` adjustment, #117505). Both fingerprint scales are ×100 (Linux /proc ticks,
-# psutil centiseconds), so 200 means 2 s on either platform — a recycled PID is essentially never
-# that close to the original's start time.
-START_TIME_DRIFT_TOLERANCE = 200
-
-
-def start_time_fingerprints_match(recorded: Any, current: Any, tolerance: int = START_TIME_DRIFT_TOLERANCE) -> bool:
-    """Liveness-reconciliation comparator for :func:`get_process_start_time` fingerprints: the
-    recorded owner and the current reading are the same incarnation when they agree within
-    ``tolerance``. Raises on junk; callers decide what an unreadable (``None``) side means."""
-    return abs(int(current) - int(recorded)) <= tolerance
-
-
 def _scope_hash(identity: str) -> str:
     return hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
 
@@ -467,43 +453,21 @@ def _get_scope_lock_path(scope: str, identity: str) -> Path:
     return _get_lock_dir() / f"{scope}-{_scope_hash(identity)}.lock"
 
 
-def _get_process_start_time(pid: int) -> Optional[int]:
-    """Return a stable per-process start-time fingerprint, or None.
-
-    Used as a PID-reuse guard: a ``(pid, start_time)`` pair uniquely identifies
-    a process, so a recycled PID (same number, different process) yields a
-    different value and is never mistaken for the original.
-
-    On Linux this is field 22 of ``/proc/<pid>/stat`` (start time in clock
-    ticks since boot, an int).  On platforms without ``/proc`` (macOS, Windows)
-    we fall back to ``psutil.Process(pid).create_time()`` — a float epoch
-    timestamp — quantized to an int (centiseconds) for stable equality.
-
-    The two sources are never mixed on a single platform: ``/proc`` always
-    succeeds first on Linux, and always fails on macOS/Windows so psutil is
-    always used there.  Because the guard only compares the value recorded at
-    spawn against the live value *on the same host*, the differing units across
-    platforms are irrelevant — only same-source equality matters.
-    """
-    stat_path = Path(f"/proc/{pid}/stat")
-    try:
-        # Field 22 in /proc/<pid>/stat is process start time (clock ticks).
-        return int(stat_path.read_text(encoding="utf-8").split()[21])  # windows-footgun: ok (/proc is BOM-free)
-    except (FileNotFoundError, IndexError, PermissionError, ValueError, OSError):
-        pass
-
-    # No /proc (macOS / Windows): psutil is a hard dependency and exposes a
-    # cross-platform creation time.  Quantize to centiseconds so repeated reads
-    # of the same process compare equal without float-precision fragility.
-    try:
-        import psutil  # type: ignore
-        return round(psutil.Process(pid).create_time() * 100)
-    except Exception:
-        return None
-
-
 def get_process_start_time(pid: int) -> Optional[int]:
-    """Public wrapper for retrieving a process start time when available."""
+    """Return this process's start-time fingerprint, or ``None`` if unreadable.
+
+    Contract (out-of-tree verifiers must reproduce it exactly, #135536):
+
+    - **Linux**: field 22 of ``/proc/<pid>/stat`` — clock ticks since boot.
+    - **macOS/Windows**: ``round(psutil.Process(pid).create_time() * 100)`` —
+      epoch centiseconds, **rounded** (round-half-even), not truncated.  An
+      external verifier recomputing with ``int(ct * 100)`` mismatches whenever
+      the sub-centisecond remainder is >= 0.5 cs (~50% of processes).
+
+    Re-verify a pinned ``(pid, start_time)`` pair by comparing against a fresh
+    ``get_process_start_time(pid)`` call (or :func:`start_time_fingerprints_match`
+    for a drift-tolerant comparison) rather than re-deriving the value.
+    """
     return _get_process_start_time(pid)
 
 

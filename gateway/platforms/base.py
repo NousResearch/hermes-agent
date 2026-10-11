@@ -2372,10 +2372,11 @@ class BasePlatformAdapter(ABC):
         closed."""
         self._platform_event_handler = handler
 
-    def set_topic_recovery_fn(self, fn: Optional[Callable[[Any], Optional[str]]]) -> None:
+    def set_topic_recovery_fn(self, fn: Optional[Callable[..., Optional[str]]]) -> None:
         """Install a thread_id-recovery hook (Telegram DM topic mode): called with ``event.source``
         before session keying; a non-None return replaces ``source.thread_id``. ``None`` clears
-        it."""
+        it. The runner's hook takes ``is_reply=`` as a keyword, mirroring the in-turn recovery
+        call in ``run_turn._hmwa_resolve_session``."""
         self._topic_recovery_fn = fn
 
     def set_fresh_lobby_router(self, fn: Optional[Callable[[Any], Awaitable[bool]]]) -> None:
@@ -2403,13 +2404,21 @@ class BasePlatformAdapter(ABC):
             return False
 
     def _apply_topic_recovery(self, event: MessageEvent) -> None:
-        """Rewrite ``event.source.thread_id`` in place if the hook returns one."""
+        """Rewrite ``event.source.thread_id`` in place if the hook returns one.
+
+        Passes the reply signal through: the runner's recovery only pins REPLIES (a fresh
+        General/"All" lobby message must stay unrouted so the fresh-lobby router can give it
+        its own topic), and calling it without ``is_reply`` left it on its ``False`` default —
+        the hook then returned ``None`` for every event, so a stripped lobby REPLY keyed the
+        busy guard on the lobby lane while ``run_turn`` recovered the bound topic for the turn,
+        splitting the guard key from the turn's session key.
+        """
         recover = getattr(self, "_topic_recovery_fn", None)
         source = getattr(event, "source", None)
         if recover is None or source is None:
             return
         try:
-            recovered = recover(source)
+            recovered = recover(source, is_reply=bool(getattr(event, "reply_to_message_id", None)))
             if recovered is None or str(recovered) == str(source.thread_id or ""):
                 return
         except Exception:

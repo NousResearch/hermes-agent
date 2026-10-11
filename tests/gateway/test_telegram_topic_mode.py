@@ -1127,13 +1127,38 @@ def test_capture_records_telegram_created_dm_topic_for_the_runner():
     update = SimpleNamespace(message=SimpleNamespace(
         chat=SimpleNamespace(id=int(_LOBBY_CHAT), type="private"),
         message_thread_id=8790,
-        forum_topic_created=SimpleNamespace(name="Trip"),
+        forum_topic_created=SimpleNamespace(name="Trip", is_name_implicit=True),
     ))
 
     adapter._capture_telegram_created_dm_topic(update)
 
     assert recorded == [(_LOBBY_CHAT, "8790")]
     assert adapter._dm_topics.get(f"{_LOBBY_CHAT}:Trip") == 8790
+
+
+def test_capture_ignores_manually_named_dm_topics():
+    """A user-created, hand-named DM topic (is_name_implicit=False) is NOT captured.
+
+    Recording it in the chat-wide 60s reuse slot would route the user's next fresh General
+    message into that unrelated manual topic.
+    """
+    from plugins.platforms.telegram.adapter import TelegramAdapter
+
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+    recorded = []
+    adapter.gateway_runner = SimpleNamespace(
+        _note_pending_lobby_topic=lambda chat_id, thread_id: recorded.append((chat_id, thread_id)),
+    )
+    update = SimpleNamespace(message=SimpleNamespace(
+        chat=SimpleNamespace(id=int(_LOBBY_CHAT), type="private"),
+        message_thread_id=8790,
+        forum_topic_created=SimpleNamespace(name="Trip", is_name_implicit=False),
+    ))
+
+    adapter._capture_telegram_created_dm_topic(update)
+
+    assert recorded == []
+    assert adapter._dm_topics == {}
 
 
 def test_capture_ignores_group_topics_and_survives_a_bare_adapter():
@@ -1145,7 +1170,7 @@ def test_capture_ignores_group_topics_and_survives_a_bare_adapter():
     update = SimpleNamespace(message=SimpleNamespace(
         chat=SimpleNamespace(id=-100123, type="supergroup"),
         message_thread_id=42,
-        forum_topic_created=SimpleNamespace(name="General"),
+        forum_topic_created=SimpleNamespace(name="General", is_name_implicit=True),
     ))
 
     adapter._capture_telegram_created_dm_topic(update)

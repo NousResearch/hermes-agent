@@ -280,6 +280,41 @@ async def test_private_dm_topic_reply_fallback_without_anchor_fails_loud():
     assert call_log == []
 
 
+@pytest.mark.asyncio
+async def test_text_dm_topic_reply_not_found_retries_without_anchor():
+    """Cross-topic anchor on a routed lobby reply: Telegram rejects the final text send
+    ("message to be replied not found"); the TEXT path must take the same one-shot
+    anchor-stripped recovery the MEDIA paths have via _send_with_dm_topic_reply_anchor_retry."""
+    adapter = _make_adapter()
+    call_log = []
+
+    async def mock_send_message(**kwargs):
+        call_log.append(dict(kwargs))
+        if len(call_log) == 1:
+            raise FakeBadRequest("Message to be replied not found")
+        return SimpleNamespace(message_id=270455)
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+
+    result = await adapter.send(
+        chat_id="775566675",
+        content="routed lobby reply",
+        metadata={
+            "thread_id": "8842",
+            "telegram_dm_topic_reply_fallback": True,
+            "telegram_reply_to_message_id": "128",
+        },
+    )
+
+    assert result.success is True
+    assert call_log[0]["reply_to_message_id"] == 128
+    assert call_log[0]["message_thread_id"] == 8842
+    # Retry: anchor AND topic routing stripped together (mirrors the media-path recovery).
+    assert call_log[1]["reply_to_message_id"] is None
+    assert "message_thread_id" not in call_log[1]
+    assert "direct_messages_topic_id" not in call_log[1]
+
+
 def test_base_gateway_metadata_marks_telegram_dm_topics_as_reply_fallback():
     source = SimpleNamespace(
         platform=Platform.TELEGRAM,

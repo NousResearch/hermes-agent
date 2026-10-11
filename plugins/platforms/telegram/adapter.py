@@ -2773,6 +2773,13 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             chat_type = str(getattr(getattr(chat, "type", None), "value", getattr(chat, "type", "")) or "")
             if chat_type.lower() != "private":
                 return
+            # Only the IMPLICIT topic creation belongs to the mobile General/"All" flow this
+            # capture serves: Telegram also emits forum_topic_created when the user creates and
+            # names a topic by hand (is_name_implicit=False), and storing those in the chat-wide
+            # 60s reuse slot would route the user's next fresh General message into that
+            # unrelated manual topic (python-telegram-bot exposes the field since 21.x).
+            if getattr(created, "is_name_implicit", False) is not True:
+                return
             if name:
                 self._cache_dm_topic_from_message(str(chat.id), str(thread_id), str(name))
             runner = getattr(self, "gateway_runner", None)
@@ -3550,7 +3557,23 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
                 send_kwargs = {
                     "chat_id": normalize_telegram_chat_id(chat_id), "reply_to_message_id": reply_to_id, **thread_kwargs,
                     **self._link_preview_kwargs(), **self._notification_kwargs(metadata)}
-                return await self._send_chunk_markdown_or_plain(chunk, send_kwargs), used_thread_fallback
+                try:
+                    return await self._send_chunk_markdown_or_plain(chunk, send_kwargs), used_thread_fallback
+                except _NetErr as first_err:
+                    # DM-topic cross-anchor flake: a reply sent into a DM topic whose anchor
+                    # message lives in General is rejected with "message to be replied not
+                    # found". The MEDIA paths recover via _send_with_dm_topic_reply_anchor_retry;
+                    # give the TEXT path the same one-shot retry with the anchor stripped.
+                    if self._should_retry_without_dm_topic_reply_anchor(first_err, metadata, reply_to_id):
+                        logger.warning(
+                            "[%s] Telegram rejected DM-topic text reply anchor, retrying without "
+                            "reply/topic anchor: %s", self.name, _redact_telegram_error_text(first_err))
+                        stripped = dict(send_kwargs)
+                        stripped["reply_to_message_id"] = None
+                        stripped.pop("message_thread_id", None)
+                        stripped.pop("direct_messages_topic_id", None)
+                        return await self._send_chunk_markdown_or_plain(chunk, stripped), used_thread_fallback
+                    raise
             except _NetErr as send_err:
                 # BadRequest subclasses NetworkError in PTB but is permanent; handle specific cases.
                 if _BadReq and isinstance(send_err, _BadReq):

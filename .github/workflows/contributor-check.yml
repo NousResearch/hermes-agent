@@ -52,11 +52,12 @@ jobs:
               continue  # GitHub id+login noreply emails auto-resolve
             fi
 
-            if [ -f "contributors/emails/${email}" ]; then
+            # Case-insensitive: the directory cannot hold two case variants of one email.
+            if ls contributors/emails | grep -qixF -- "$email"; then
               continue  # mapped via the contributors directory
             fi
 
-            if ! grep -qF "\"${email}\"" scripts/releases/authors_legacy.py 2>/dev/null; then
+            if ! grep -qiF "\"${email}\"" scripts/releases/authors_legacy.py 2>/dev/null; then
               AUTHOR=$(git log --author="$email" --format='%an' -1)
               MISSING="${MISSING}\n  ${email} (${AUTHOR})"
             fi

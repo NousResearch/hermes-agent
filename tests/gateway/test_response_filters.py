@@ -41,3 +41,28 @@ def test_autonomous_lane_agrees_with_interactive_lane_on_cjk_punctuation_variant
     for variant in ("【静默】", "静默。", "【沉默】", "沉默。", "**[静默]**", "NO_REPLY."):
         assert is_intentional_silence_response(variant)
         assert is_autonomous_silence_response(variant) == is_intentional_silence_response(variant), variant
+
+
+def test_whitespace_hugging_the_inside_of_the_bracket_is_still_a_marker():
+    """#132388: models emit ``[ SILENT ]`` with spaces inside the brackets. Plain whitespace
+    collapsing re-joins the tokens unchanged, so the marker escaped suppression and was
+    delivered to the chat verbatim."""
+    assert is_intentional_silence_response("[ SILENT ]")
+    assert is_intentional_silence_response("[  SILENT\t]")
+    assert is_autonomous_silence_response("[ SILENT ]")
+    assert is_autonomous_silence_response("[ SILENT ] No changes detected")
+    assert is_autonomous_silence_response("2 deals filtered\n\n[ 沉默 ]")
+
+
+def test_bracket_structure_still_required_after_inside_whitespace_collapse():
+    """Only whitespace hugging the inside of a bracket is eaten: malformed half-brackets keep
+    failing to match (``[SILENT`` must not become ``SILENT``), and prose stays delivered."""
+    assert not is_intentional_silence_response("[ SILENT")
+    assert not is_intentional_silence_response("SILENT ]")
+    assert not is_intentional_silence_response(
+        "a status update [ SILENT ] for this tick"
+    )
+    assert not is_autonomous_silence_response(
+        "a status update [ SILENT ] for this tick"
+    )
+    assert not is_autonomous_silence_response("[ a status update ]")

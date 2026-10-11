@@ -877,7 +877,7 @@ context_file_read_timeout: 5.0
 
 ## File Read Safety
 
-Controls how much content a single `read_file` call can return. Reads that exceed the limit are rejected with an error telling the agent to use `offset` and `limit` for a smaller range. This prevents a single read of a minified JS bundle or large data file from flooding the context window.
+Controls how much content a single `read_file` call can return. Reads that exceed the limit are not rejected: the content is trimmed to the last complete line that fits within the budget and returned with `truncated: true`, a `next_offset` and a hint, so the agent can continue reading with `offset` instead of guessing a smaller range and burning a round-trip. If a single line alone exceeds the budget, it is clamped mid-line so the read is never empty. This prevents a single read of a minified JS bundle or large data file from flooding the context window.
 
 ```yaml
 file_read_max_chars: 100000  # default — ~25-35K tokens

@@ -424,6 +424,28 @@ class VaultStore:
         )
 
 
+
+IDENTIFIER_WARNING = ("This doesn't look like a username or email: it looks like a password or pasted text. "
+                      "The username field is visible to the agent and any tool that lists the vault; "
+                      "only the password field is secret.")
+
+
+def identifier_warning(identifier: str) -> Optional[str]:
+    """Return IDENTIFIER_WARNING when a login identifier looks like a secret or pasted text, else None.
+
+    A warning, not a refusal: long opaque usernames (SSO handles) are real. Layered, never entropy alone:
+    whitespace or >64 chars catches pasted prose; ``redact._looks_like_opaque_credential`` catches password
+    shapes; well-formed emails are exempt."""
+    from agent.redact import _looks_like_opaque_credential
+    ident = (identifier or "").strip()
+    if not ident:
+        return None
+    if re.search(r"\s", ident) or len(ident) > 64:
+        return IDENTIFIER_WARNING
+    if re.fullmatch(r"[^@\s]+@[^@\s]+\.[A-Za-z]{2,}", ident):
+        return None
+    return IDENTIFIER_WARNING if _looks_like_opaque_credential(ident) else None
+
 def get_vault_store() -> VaultStore:
     """Default profile-scoped vault store."""
     return VaultStore()

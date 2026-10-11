@@ -1139,3 +1139,54 @@ def test_install_if_missing_only_installs_when_no_service_exists(monkeypatch, in
     gateway._cmd_install(SimpleNamespace(if_missing=True, force=False, system=False, run_as_user=None))
 
     assert installs == ([] if installed else [False])
+
+
+def test_exit_diag_rotates_once_past_the_size_cap(tmp_path, monkeypatch):
+    """Past the size cap the record still lands and the oversized file moves to .1 intact (#132222)."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_GATEWAY_EXIT_DIAG", "1")
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    diag = logs / "gateway-exit-diag.log"
+    stale = b"x" * (gateway._EXIT_DIAG_MAX_BYTES + 1)
+    diag.write_bytes(stale)
+
+    gateway._make_exit_diag()("gateway.start")
+
+    rows = [json.loads(line) for line in diag.read_text(encoding="utf-8").splitlines()]
+    assert [row["tag"] for row in rows] == ["gateway.start"]
+    assert (logs / "gateway-exit-diag.log.1").read_bytes() == stale
+    assert not (logs / "gateway-exit-diag.log.2").exists()
+
+
+def test_exit_diag_rotation_keeps_only_the_backup_generations(tmp_path, monkeypatch):
+    """A second rollover demotes .1 to .2; the oldest generation is dropped, not accumulated."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_GATEWAY_EXIT_DIAG", "1")
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    diag = logs / "gateway-exit-diag.log"
+    first = b"first" * 16
+    (logs / "gateway-exit-diag.log.1").write_bytes(first)
+    diag.write_bytes(b"x" * (gateway._EXIT_DIAG_MAX_BYTES + 1))
+
+    gateway._make_exit_diag()("gateway.start")
+
+    assert (logs / "gateway-exit-diag.log.2").read_bytes() == first
+    assert (logs / "gateway-exit-diag.log.1").stat().st_size == gateway._EXIT_DIAG_MAX_BYTES + 1
+
+
+def test_exit_diag_below_the_cap_appends_without_rotating(tmp_path, monkeypatch):
+    """A file under the cap keeps appending; no backup files appear."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_GATEWAY_EXIT_DIAG", "1")
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    diag = logs / "gateway-exit-diag.log"
+    diag.write_text('{"ts": "2000-01-01T00:00:00+00:00", "tag": "gateway.start"}\n', encoding="utf-8")
+
+    gateway._make_exit_diag()("gateway.exit_clean")
+
+    rows = [json.loads(line) for line in diag.read_text(encoding="utf-8").splitlines()]
+    assert [row["tag"] for row in rows] == ["gateway.start", "gateway.exit_clean"]
+    assert not (logs / "gateway-exit-diag.log.1").exists()

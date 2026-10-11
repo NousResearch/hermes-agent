@@ -68,7 +68,9 @@ def test_loads_manifest_skill_and_stdio_server(tmp_path: Path) -> None:
     server = package.mcp_servers["worker"]
     assert server["command"] == "python"
     assert server["args"] == [str(root.resolve()) + "/server.py", "${UNKNOWN}"]
-    assert server["cwd"] == str(root.resolve())
+    # An unconfigured cwd defaults to the data root, not the package directory: a stdio
+    # child sitting on the package dir would pin it against the update rename (#136223).
+    assert server["cwd"] == str((tmp_path / "data").resolve())
     assert server["env"]["PLUGIN_ROOT"] == str(root.resolve())
     assert server["env"]["PLUGIN_DATA"] == str((tmp_path / "data").resolve())
     assert server["env"]["CACHE"] == str((tmp_path / "data").resolve()) + "/cache"
@@ -309,6 +311,26 @@ def test_stdio_cwd_directory_failure_isolated_to_server(
     assert set(package.mcp_servers) == {"valid"}
     assert (data_root / "valid").is_dir()
     assert any(d.scope == "mcp:broken" for d in package.diagnostics)
+
+
+def test_stdio_default_cwd_stays_off_the_package_directory(tmp_path: Path) -> None:
+    """A stdio server without a configured cwd must not run on the package directory (#136223):
+    Windows pins a live process's cwd against the rename-aside plugin updates publish through,
+    so the default is the per-plugin data root, which loading also creates."""
+    _write_json(tmp_path / "plugin.json", _manifest())
+    _write_json(
+        tmp_path / "mcp.json",
+        {
+            "$schema": MCP_SCHEMA_V1,
+            "mcpServers": {"worker": {"type": "stdio", "command": "python"}},
+        },
+    )
+
+    package = load_agent_plugin(tmp_path, tmp_path / "data")
+
+    server = package.mcp_servers["worker"]
+    assert server["cwd"] == str((tmp_path / "data").resolve())
+    assert (tmp_path / "data").is_dir()
 
 
 def test_malformed_skill_yaml_is_skipped(tmp_path: Path) -> None:

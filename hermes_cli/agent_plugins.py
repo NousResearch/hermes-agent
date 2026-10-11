@@ -381,7 +381,11 @@ def _translate_stdio(config: Mapping[str, Any], plugin_root: Path, data_root: Pa
     cwd = config.get("cwd")
     if cwd is not None and not isinstance(cwd, str):
         raise ValueError("cwd must be a string")
-    cwd_path = plugin_root if cwd is None else _resolve_scoped_path(cwd, plugin_root, data_root)
+    # The default cwd is the writable data root, never the package directory: a live stdio
+    # server's cwd pins that directory on Windows, which blocks the rename-aside every plugin
+    # update publishes through (WinError 32, #136223). Packages reach their own tree via the
+    # PLUGIN_ROOT placeholder instead of a relative cwd.
+    cwd_path = data_root if cwd is None else _resolve_scoped_path(cwd, plugin_root, data_root)
     if create_data:
         data_root.mkdir(parents=True, exist_ok=True)
         # The MCP client starts stdio servers with this cwd. Create only data-root descendants;

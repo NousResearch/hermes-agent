@@ -416,6 +416,12 @@ def configured_secret_store_paths() -> list[Path]:
     Matrix recovery-key output file (``MATRIX_RECOVERY_KEY_OUTPUT_FILE``). Read at check time
     from the active profile, the same sources the adapters read."""
     raw: list[str] = []
+    # A check must not create the home: load_config() (also reached through get_secret())
+    # materialises it, and a dashboard listing of $HOME would then show a .hermes/ nobody made.
+    # Without a home there is no config or .env, so the process env is the only source.
+    if not _hermes_home_path().is_dir():
+        raw.append(os.environ.get("MATRIX_RECOVERY_KEY_OUTPUT_FILE", ""))
+        return _resolve_each(Path(os.path.expanduser(p.strip())) for p in raw if p.strip())
     with suppress(Exception):
         from hermes_cli.config import load_config_readonly
 

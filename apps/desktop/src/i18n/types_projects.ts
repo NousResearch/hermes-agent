@@ -74,5 +74,6 @@ export interface SidebarProjectsTranslations {
   reorder: (label: string) => string
   toggle: (label: string, open: boolean) => string
   showAllCount: (count: number) => string
+  showFewer: string
   back: string
 }

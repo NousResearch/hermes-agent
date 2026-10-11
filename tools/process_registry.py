@@ -32,7 +32,7 @@ from typing import Any, Dict, List, Literal, NamedTuple, Optional
 
 from hermes_cli.config import get_hermes_home
 
-from tools.process_registry_notifications import format_process_notification
+from tools.process_registry_notifications import format_process_notification, is_child_process_notification, should_surface_notification
 from tools.process_registry_checkpoint import ProcessCheckpointMixin
 from tools.process_registry_termination import ProcessTerminationMixin
 from tools.process_registry_results import load_completed_results, save_completed_result
@@ -1896,10 +1896,10 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
             # drain, so a requeue would pin the event forever. 'async_delegation'
             # is the result itself and is NEVER suppressed.
             _evt_task_id = str(evt.get("owner_task_id") or evt.get("task_id") or "")
-            if not is_async_delegation and _evt_task_id.startswith("sa-"):
+            if is_child_process_notification(evt):
                 if surface_child is None:
                     surface_child = self._surface_child_process_notifications()
-                if not surface_child:
+                if not should_surface_notification(evt, surface_child=surface_child):
                     logger.debug(
                         "Suppressed subagent-owned process notification "
                         "(delegation.surface_child_process_notifications=false): "

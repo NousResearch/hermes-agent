@@ -128,21 +128,32 @@ class InterruptControlMixin:
     def interrupt(
         self, message: Optional[str] = None, *, hard_cancel: bool = False,
         tool_reason: Optional[str] = None, require_generation: Optional[int] = None,
+        require_progress_generation: Optional[int] = None,
     ) -> bool:
         """Request the agent to interrupt its current tool-calling loop (call from another thread).
 
         ``hard_cancel``: explicit stop; compression may honor it even while ordinary interrupts are masked.
-        ``tool_reason``: trusted fixed category safe for tool output. ``require_generation``: activity-
-        generation claim — published only if the turn's generation still matches at the final mutation edge;
-        returns False if the turn resumed meanwhile.
+        ``tool_reason``: trusted fixed category safe for tool output. ``require_generation`` and
+        ``require_progress_generation``: activity/progress generation claims — published only if that
+        clock still matches at the final mutation edge; returns False if the turn resumed meanwhile.
         """
-        if require_generation is not None:
-            # RESERVE the claim under the SAME lock `_touch_activity` stamps with; real progress invalidates
-            # it and it is CONSUMED at the final mutation edge, so a resumed turn abandons the abort.
+        if require_generation is not None and require_progress_generation is not None:
+            raise ValueError("Only one liveness generation claim may be required")
+        _claim_kind = "progress" if require_progress_generation is not None else "activity"
+        _claim_generation = (
+            require_progress_generation if require_progress_generation is not None else require_generation
+        )
+        if _claim_generation is not None:
+            # RESERVE the claim under the SAME lock the selected clock is stamped with; real progress or
+            # activity (depending on claim kind) invalidates it at the final mutation edge.
             with self._liveness_activity_lock():
-                if getattr(self, "_turn_liveness_activity_generation", 0) != require_generation:
+                _generation_attr = (
+                    "_turn_liveness_progress_generation" if _claim_kind == "progress"
+                    else "_turn_liveness_activity_generation"
+                )
+                if getattr(self, _generation_attr, 0) != _claim_generation:
                     return False
-                self._turn_liveness_abort_claim = require_generation
+                self._turn_liveness_abort_claim = (_claim_kind, _claim_generation)
 
         # Tool cancellation attribution stays separate from _interrupt_message, which may carry the user's
         # full next message. An explicit ``tool_reason`` wins on BOTH paths: a system producer that has to
@@ -176,16 +187,16 @@ class InterruptControlMixin:
             _fence_cancel_before_commit(
                 _fence(), when_in_flight=True, failure_log="Compression hard-cancel fence wait failed"
             )
-            if require_generation is None:
+            if _claim_generation is None:
                 # No claim to race: publish WITHOUT the liveness lock (bare AIAgent stand-ins in other
                 # suites lack the liveness seam and would AttributeError).
                 _publish_interrupt_state()
             else:
                 # Final mutation edge: claim consumption and the FIRST observable publication are ONE
-                # activity-lock critical section, so either the claim survives and commits before any later
-                # activity stamp, or the stamp landed first and the abort declines without publishing.
+                # activity-lock critical section, so either the selected claim survives and commits before
+                # any later stamp to that clock, or the stamp landed first and the abort declines.
                 with self._liveness_activity_lock():
-                    if getattr(self, "_turn_liveness_abort_claim", None) != require_generation:
+                    if getattr(self, "_turn_liveness_abort_claim", None) != (_claim_kind, _claim_generation):
                         return False
                     self._turn_liveness_abort_claim = None
                     _publish_interrupt_state()

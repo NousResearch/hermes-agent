@@ -46,7 +46,7 @@ def _composite_percent(stages: list[str], current: str, value: float) -> int:
     return _pct(value)
 
 
-def _endpoint() -> "tuple[str, str] | None":
+def _endpoint() -> tuple[str, str] | None:
     """(base_root, api_key) of the managed router via the ownership-guarded reader, or None."""
     from hermes_cli.local_runtime.endpoint import managed_root
 
@@ -104,7 +104,7 @@ def _watch() -> None:
                             msg = json.loads(text[5:].strip())
                             _apply_event(str(msg.get("model", "")), str(msg.get("event", "")),
                                          msg.get("data") or {})
-        except Exception as exc:  # noqa: BLE001 — watcher must never die loud
+        except Exception as exc:
             logger.debug("load-progress SSE reconnecting: %s", exc)
         # Stream ended (router bounce, timeout, error): loading entries from the dead connection
         # are unverifiable — drop rather than freeze.
@@ -130,7 +130,7 @@ def get_loading_progress() -> dict[str, dict]:
                 for m, e in _snapshot.items() if now - e["ts"] < _STALE_ENTRY_TTL_S}
 
 
-def get_prefill_progress(model: str) -> "dict | None":
+def get_prefill_progress(model: str) -> dict | None:
     """{"processed": tokens} while the managed server is prompt-processing for ``model``, or None
     (idle, decoding, unreachable, or foreign server).
 
@@ -148,7 +148,7 @@ def get_prefill_progress(model: str) -> "dict | None":
         from hermes_cli.local_runtime.endpoint import managed_get_json
 
         slots = managed_get_json(*ep, f"/slots?model={quote(model)}", timeout_s=2)
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
     best = 0
     for slot in slots if isinstance(slots, list) else []:

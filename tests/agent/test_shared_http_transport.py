@@ -34,7 +34,7 @@ def no_proxy_env(monkeypatch):
 class _Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"  # keep-alive so pooled connections persist
 
-    def do_GET(self):  # noqa: N802
+    def do_GET(self):
         body = b"ok"
         self.send_response(200)
         self.send_header("Content-Length", str(len(body)))

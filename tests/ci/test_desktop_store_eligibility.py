@@ -39,7 +39,7 @@ def test_bundle_only_requests_store_for_stable(tmp_path, tag, commit, store):
     script = next(step['run'] for step in job['steps']
                   if step.get('name') == 'Assemble the signed MSIX bundle without publishing')
     result = subprocess.run([_BASH, '-e', '-o', 'pipefail', '-c', script], env=env, cwd=tmp_path,
-                            capture_output=True, text=True, timeout=15)
+                            capture_output=True, text=True, timeout=15, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
     calls = [json.loads(line) for line in log.read_text(encoding='utf-8-sig').splitlines()]
     assert calls[0][:1] == ['scripts/stage-msixbundle.mjs']
@@ -89,6 +89,7 @@ def test_native_windows_build_selects_store_only_for_stable(tmp_path):
     result = subprocess.run(
         [powershell, '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', str(wrapper)],
         env=_child_env(RUNNER_TEMP=str(tmp_path)), capture_output=True, text=True,
+        check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     for index, (_, _, store, _) in enumerate(cases):

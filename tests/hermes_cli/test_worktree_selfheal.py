@@ -101,7 +101,7 @@ class TestMaintainPackHealth:
             (repo / f"p{i}.txt").write_text(f"{i}\n")
             _git(repo, "add", "-A")
             _git(repo, "commit", "-qm", f"c{i}")
-            sha = _git(repo, "rev-parse", f"HEAD^{{commit}}").stdout.strip()
+            sha = _git(repo, "rev-parse", "HEAD^{commit}").stdout.strip()
             # One pack per commit object: pipe the sha into pack-objects.
             subprocess.run(
                 ["git", "pack-objects", "-q", str(pack_dir / f"tpack{i}")],

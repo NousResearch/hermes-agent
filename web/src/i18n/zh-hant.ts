@@ -95,6 +95,7 @@ export const zhHant: Translations = {
   status: {
     actionFailed: "動作失敗",
     actionFinished: "已完成",
+    actionFinishedOwed: "已更新，但仍有待完成的步驟（重新執行 `hermes update` 以完成）",
     actions: "動作",
     agent: "代理",
     activeSessions: "使用中工作階段",

@@ -129,7 +129,7 @@ class TestQuarantinedHandleStopsTouchingTheFile:
     def test_reopen_after_close_refused_when_quarantined(self, tmp_path, monkeypatch):
         from unittest.mock import MagicMock
 
-        db, real_conn = _quarantined_db(tmp_path)
+        db, _real_conn = _quarantined_db(tmp_path)
         db.close()
         reopen = MagicMock()
         monkeypatch.setattr("hermes_state._connect_tracked_db", reopen)

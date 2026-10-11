@@ -2,6 +2,26 @@ name: Tests
 
 on:
   workflow_call:
+    inputs:
+      # The E2E jobs below are slow lanes (scripts/ci/classify_changes.py).
+      # ci.yaml passes the classifier's answer; a caller that passes nothing
+      # gets every job.
+      e2e:
+        description: Run the e2e job (tests/e2e except the upgrade suite).
+        type: boolean
+        required: false
+        default: true
+      e2e_upgrade:
+        description: Run the e2e-upgrade shards (tests/e2e/core/upgrade).
+        type: boolean
+        required: false
+        default: true
+      strict_acceptance:
+        description: >-
+          Acceptance runs only: known_failure owners whose gaps FAIL this run instead of xfailing ('upd-txn', a comma list, or '1' for every gap). Sets HERMES_E2E_STRICT_ACCEPTANCE for the E2E suites (tests/e2e/core/_pending_fixes.py).
+        type: string
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -13,19 +33,21 @@ concurrency:
 
 jobs:
   test:
-    name: Run tests
-    # One 96-core runner for the whole suite. There is no slicing. Slicing
-    # existed to spread the suite over 4-core runners. It cost a matrix job, a
-    # duration cache, a per-slice artifact and a merge job to do it.
-    #
-    # 96 cores clear the floor that the slowest single test file sets (about
-    # 82s). A second slice divides work that is already at that floor, and
-    # adds a second setup.
-    runs-on: ubuntu-latest-96-core
+    # Two 32-core slices instead of one box: on one runner the suite is ~10 min of
+    # nearly fully packed work, and a single bigger runner (96-core) scaled ~1.8x for
+    # 3x the price because files contend for the shared machine. Separate machines
+    # scale linearly. run_tests_parallel.py partitions from the checkout alone, so
+    # both slices agree on the split without a planning job.
+    name: Run tests (${{ matrix.slice }}/2)
+    runs-on: ubuntu-latest-32-core
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        slice: [1, 2]
     steps:
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
 
       - name: Install ripgrep (prebuilt binary)
         run: |
@@ -66,7 +88,7 @@ jobs:
         # file is absent on a fresh runner and the scaler is inert.
         # Exact key never matches (run_id differs); restore-keys picks the
         # most recent cache saved by a main push. PRs read, only main writes.
-        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: test_durations.json
           key: test-durations-never-exact
@@ -84,30 +106,8 @@ jobs:
         run: |
           scripts/run_tests.sh
         env:
-          # This is the maximum number of test FILES that run together.
-          # run_tests_parallel.py starts one pytest subprocess for each file
-          # from a single ThreadPoolExecutor, so this value IS the limit. The
-          # default is cpu_count*2, which is 192 here.
-          #
-          # Measured on this runner (96-core EPYC 7763, 377GB). Whole suite,
-          # two repetitions for each value. See run 32549672063:
-          #
-          #     workers   x cores   mean
-          #        48       0.5x    138s
-          #        96       1.0x    126s   <- fastest
-          #       144       1.5x    132s
-          #       192       2.0x    132s
-          #       240       2.5x    140s
-          #       288       3.0x    142s
-          #
-          # One worker for each core wins. The curve is shallow: 126s to 142s
-          # across a 6x range. The suite has sufficient concurrency at this
-          # size. The remaining time is the slowest files plus the setup.
-          # Workers above the core count only add contention.
-          HERMES_TEST_WORKERS: 96
-          # A healthy 44-test compression file takes ~197s alone and can exceed
-          # the 300s default under 96-worker load before its duration is cached.
-          # Match the runner's 3x known-slow headroom on the first PR run too.
+          HERMES_TEST_SLICE: ${{ matrix.slice }}/2
+          HERMES_TEST_WORKERS: 32
           HERMES_TEST_FILE_TIMEOUT: 600
           # Ensure tests don't accidentally call real APIs
           OPENROUTER_API_KEY: ""
@@ -118,19 +118,22 @@ jobs:
         # Only green first-attempt durations are written by the runner, so
         # a hang on main cannot ratchet its own bound upward.
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' && hashFiles('test_durations.json') != ''
-        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: test_durations.json
-          key: test-durations-${{ github.run_id }}
+          # Per-slice key: each slice's file keeps the restored entries for the other
+          # slice's files and refreshes its own, so the cache stays complete.
+          key: test-durations-${{ github.run_id }}-${{ matrix.slice }}
 
   e2e:
     # The core suites spawn real serve / gateway / tui_gateway / MCP / SQLite
     # writer processes per test; a 4-vCPU runner serialises them into timeouts.
+    if: inputs.e2e
     runs-on: ubuntu-latest-32-core
     timeout-minutes: 30
     steps:
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
 
       - name: Set up locked Python, Node and test dependencies
         # toolchain: all puts PM's locked Node in the runner's PM store, not
@@ -185,6 +188,7 @@ jobs:
           mapfile -t files < <(find tests/e2e -name 'test_*.py' -not -path 'tests/e2e/core/upgrade/*' | sort)
           scripts/run_tests.sh --include-integration "${files[@]}"
         env:
+          HERMES_E2E_STRICT_ACCEPTANCE: ${{ inputs.strict_acceptance }}
           # An e2e file is a process tree, not one CPU-bound pytest worker. With
           # 32 files at once the hosted run starved live children before their
           # ready frames (empty stderr, still alive) and hit 60–120s deadlines
@@ -211,13 +215,15 @@ jobs:
     # test_*.py (pm, git, handoff, network, hosts, ...). A new suite
     # directory gets its own shard without editing this file, and no shard
     # carries the whole tree's wall time against the 60-minute timeout.
+    # Skipping this job skips every e2e-upgrade shard with it.
+    if: inputs.e2e_upgrade
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
       shards: ${{ steps.plan.outputs.shards }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           sparse-checkout: tests/e2e/core/upgrade
       - name: List suite directories
@@ -252,7 +258,7 @@ jobs:
         shard: ${{ fromJSON(needs.e2e-upgrade-plan.outputs.shards) }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           # N-1 = `git describe --tags --abbrev=0 HEAD~1`.
           fetch-depth: 0
@@ -260,7 +266,7 @@ jobs:
 
       - name: Set up Node
         # `hermes update` builds the web UI / TUI workspaces.
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # 7.0.0
         with:
           node-version: 26
 
@@ -351,6 +357,7 @@ jobs:
           scripts/run_tests.sh --include-integration "${files[@]}"
         env:
           SHARD: ${{ matrix.shard }}
+          HERMES_E2E_STRICT_ACCEPTANCE: ${{ inputs.strict_acceptance }}
           # Each file drives real installs/updaters (process trees plus uv and
           # git I/O); cpu_count of them at once starves their deadlines. A
           # shard holds at most ~7 files, so this runs each shard in one wave.

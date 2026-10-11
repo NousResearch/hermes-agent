@@ -1,6 +1,7 @@
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import path from 'node:path'
+import { setTimeout } from 'node:timers/promises'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { parseArgs } from 'node:util'
 
@@ -73,22 +74,53 @@ export function productOutput(source, out, inputs) {
   return { source: src, out: dest }
 }
 
+// Windows refuses to move a tree while anything holds a handle inside it, and
+// an antivirus scanner opens every freshly written exe. Node reports that as
+// EPERM/EACCES/EBUSY; it clears in moments, so ride it out (~3s) rather than
+// throw away a build that took minutes. Other codes never clear by waiting.
+const heldCodes = new Set(['EPERM', 'EACCES', 'EBUSY'])
+const heldRetryDelays = [100, 200, 400, 800, 1600]
+
+export function retryHeld(operation) {
+  for (const delay of [...heldRetryDelays, undefined]) {
+    try {
+      return operation()
+    } catch (error) {
+      if (delay === undefined || !heldCodes.has(error?.code)) throw error
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, delay)
+    }
+  }
+}
+
 // Never delete the last successful product before a compiler succeeds. The
-// staging and backup directories are siblings so publication stays on one FS.
+// backup lives beside out, outside withProduct's scratch tree, so a failed
+// rollback leaves the previous product somewhere a person can recover it.
 export function publishDirectory(staged, out, { source } = {}) {
   // The destination may have been occupied while the compiler was running.
   requireOwnedOutput(out, source)
   writeFileSync(path.join(staged, productMarker), productOwner)
-  const backup = `${staged}.previous`
-  const previous = existsSync(out)
-  if (previous) renameSync(out, backup)
+  if (!existsSync(out)) return retryHeld(() => renameSync(staged, out))
+  const backupRoot = mkdtempSync(path.join(path.dirname(out), `.${path.basename(out)}-previous-`))
+  const backup = path.join(backupRoot, 'product')
   try {
-    renameSync(staged, out)
+    retryHeld(() => renameSync(out, backup))
   } catch (error) {
-    if (previous) renameSync(backup, out)
+    rmSync(backupRoot, { recursive: true, force: true })
     throw error
   }
-  if (previous) rmSync(backup, { recursive: true, force: true })
+  try {
+    retryHeld(() => renameSync(staged, out))
+  } catch (error) {
+    try {
+      retryHeld(() => renameSync(backup, out))
+    } catch (rollbackError) {
+      error.message += `; rollback failed (${rollbackError.message}); previous product kept at ${backup}`
+      throw error
+    }
+    rmSync(backupRoot, { recursive: true, force: true })
+    throw error
+  }
+  rmSync(backupRoot, { recursive: true, force: true })
 }
 
 export async function withProduct(out, compile, { source } = {}) {
@@ -101,7 +133,25 @@ export async function withProduct(out, compile, { source } = {}) {
     await compile(product, scratch)
     publishDirectory(product, out, { source })
   } finally {
-    rmSync(scratch, { recursive: true, force: true })
+    await rmTree(scratch)
+  }
+}
+
+// macOS's Finder/Spotlight can drop a fresh .DS_Store (or xattr) into a
+// directory while we're removing it, making rmSync throw ENOTEMPTY on the
+// first pass. That file is cosmetic garbage — retry the removal so the race
+// can't abort an otherwise-clean product build.
+export async function rmTree(dir) {
+  const maxAttempts = 5
+  for (let attempt = 1; ; attempt++) {
+    try {
+      rmSync(dir, { recursive: true, force: true })
+      return
+    } catch (error) {
+      if (error?.code !== 'ENOTEMPTY' || attempt >= maxAttempts) throw error
+      // Give Finder a beat to finish writing/clear the directory.
+      await setTimeout(50)
+    }
   }
 }
 

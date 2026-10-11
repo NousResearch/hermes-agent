@@ -546,7 +546,7 @@ def tool_labels_for_call(tool_name: str, args: dict | None) -> list:
     try:
         from tools.tool_labels import labels_for_call
         labels = labels_for_call(tool_name, args or {})
-    except Exception as exc:  # noqa: BLE001 — display must never abort a turn
+    except Exception as exc:
         logger.debug("bridge labels failed for %s: %s", tool_name, exc)
         return []
     skin = _get_skin()
@@ -951,7 +951,7 @@ class KawaiiSpinner:
         redirect_stdout(devnull) because _write targets the stdout captured at creation."""
         self._write(f"\r{self._clear_line_blanks()}\r  {text}" if self.running else f"  {text}", flush=True)
 
-    def stop(self, final_message: str = None):
+    def stop(self, final_message: str | None = None):
         self.running = False
         if self.thread:
             self.thread.join(timeout=0.5)
@@ -1247,7 +1247,7 @@ def get_cute_tool_message(tool_name: str, args: dict, duration: float, result: s
     """Render a completion label without letting cosmetic failures escape."""
     try:
         return _get_cute_tool_message(tool_name, args, duration, result=result)
-    except Exception as exc:  # noqa: BLE001 — display must never abort a turn
+    except Exception as exc:
         logger.debug("Tool completion label failed for %s: %s", tool_name, exc)
         safe_name = tool_name[:9] if isinstance(tool_name, str) and tool_name else t("display.cute.fallback_tool_name")
         safe_duration = f"{duration:.1f}s" if isinstance(duration, (int, float)) else t("display.cute.fallback_done")

@@ -41,14 +41,14 @@ class SetupRecord:
     # The mint memo's verdict, verbatim (``anon_auth.MintFailure.as_payload``):
     # ``{error, error_code, retryable, retry_after}`` when the mint did not happen, else ``{}``.
     # One wire shape: every status RPC spreads it as is.
-    failure: Dict[str, Any] = field(default_factory=dict)
+    failure: dict[str, Any] = field(default_factory=dict)
     finished_at: float = field(default_factory=time.time)
 
     @property
     def free_tier_route(self) -> bool:
         return self.free_tier_account and self.inference_provider == "nous"
 
-    def as_payload(self) -> Dict[str, Any]:
+    def as_payload(self) -> dict[str, Any]:
         # The broadcast carries the failure block flat, the same shape ``setup.status`` spreads,
         # so a client keys on ``error_code`` identically whichever surface it read.
         payload = asdict(self)
@@ -56,7 +56,7 @@ class SetupRecord:
         payload["free_tier_route"] = self.free_tier_route
         return payload
 
-    def failure_fields(self) -> Dict[str, Any]:
+    def failure_fields(self) -> dict[str, Any]:
         return dict(self.failure)
 
 
@@ -174,8 +174,8 @@ def _build_record(*, other: bool, force: bool) -> SetupRecord:
     from hermes_cli import anon_auth
 
     error = ""
-    failure: Dict[str, Any] = {}
-    state: Optional[Dict[str, Any]] = anon_auth.current_nous_state()
+    failure: dict[str, Any] = {}
+    state: Optional[dict[str, Any]] = anon_auth.current_nous_state()
     if anon_auth.guest_enabled():
         try:
             state = anon_auth.ensure_portal_identity(explicit=True, force=force)

@@ -15,8 +15,8 @@ import hermes_yaml
 import pytest
 
 from scripts.bundles.release_artifacts import materialize, record, stamp_matches
-from tests.scripts.test_release_r2 import r2_server  # noqa: F401
-from tests.scripts.test_stable_release import https_origin  # noqa: F401
+from tests.scripts.test_release_r2 import r2_server
+from tests.scripts.test_stable_release import https_origin
 from tests.scripts.test_release_darwin import _inputs
 from scripts.bundles import release_artifacts as artifacts
 
@@ -77,8 +77,9 @@ def staged_candidate(tmp_path, r2_server, https_origin):
     for platform, arches in [('windows', ('x64', 'arm64')), ('macos', ('x64', 'arm64')), ('termux', ('aarch64',))]:
         for arch in arches:
             row = {
+                # Exactly the keys record() writes: a row is metadata, not a stamp (no baseVersion).
                 'platform': platform, 'arch': arch, 'tag': tag, 'commit': commit,
-                'baseVersion': tag[1:], 'identity': 'Product',
+                'identity': 'Product',
             }
             if platform == 'windows':
                 row.update(version=WINDOWS_VERSION, executableVersion=WINDOWS_VERSION,
@@ -351,7 +352,7 @@ def candidate_workflow_step(tmp_path, r2_server, staged_candidate):
             env[key] = expressions.get(value, value)
             assert '${{' not in env[key], (key, value)
         return subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', step['run']], cwd=tmp_path,
-                              env=env, capture_output=True, text=True, encoding='utf-8', timeout=60)
+                              env=env, capture_output=True, text=True, encoding='utf-8', timeout=60, check=False)
 
     return jobs, run, body_file
 

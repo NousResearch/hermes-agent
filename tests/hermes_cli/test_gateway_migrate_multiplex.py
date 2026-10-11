@@ -80,7 +80,7 @@ def fleet(tmp_path, monkeypatch):
                 runtime["served_profiles"] = ["default", "coder", "ops"]
             runtime_path.write_text(json.dumps(runtime))
 
-    import gateway.status as status
+    from gateway import status
     # The default gateway the fixture "starts" is this process; the served probe verifies identity.
     monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: "hermes gateway run")
     monkeypatch.setattr(gm, "_installed_services", lambda home: _units(state.services.get(_name(home))))

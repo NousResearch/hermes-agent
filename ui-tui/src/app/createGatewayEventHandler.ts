@@ -1609,7 +1609,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       }
 
       case 'error':
-        turnController.recordError()
+        turnController.recordError(appendMessage)
         flashPet('failed')
 
         {

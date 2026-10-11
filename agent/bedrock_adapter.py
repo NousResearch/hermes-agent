@@ -22,6 +22,7 @@ from urllib.parse import urlparse
 import httpx
 
 from agent.errors import EmptyStreamError
+from agent.native_usage import NativeUsageCounts
 
 logger = logging.getLogger(__name__)
 
@@ -144,7 +145,14 @@ def _cached_client(cache: dict[str, Any], service: str, region: str):
 
 
 def _get_bedrock_runtime_client(region: str):
-    return _cached_client(_bedrock_runtime_client_cache, "bedrock-runtime", region)
+    from agent.native_usage_bedrock import validate_bedrock_usage_response
+
+    client = _cached_client(_bedrock_runtime_client_cache, "bedrock-runtime", region)
+    client.meta.events.register(
+        "before-parse.bedrock-runtime.Converse", validate_bedrock_usage_response,
+        unique_id="hermes-native-usage",
+    )
+    return client
 
 
 def _get_bedrock_control_client(region: str):
@@ -1025,14 +1033,13 @@ class _ResponseParts:
             bedrock_content_blocks=ordered_blocks or None,
         )
         usage = None
-        if usage_data:
-            cache_read_tokens, cache_write_tokens, output_tokens = (
-                usage_data.get(k, 0) for k in ("cacheReadInputTokens", "cacheWriteInputTokens", "outputTokens")
-            )
-            prompt_tokens = usage_data.get("inputTokens", 0) + cache_read_tokens + cache_write_tokens
+        counts = NativeUsageCounts.read(usage_data, kind="bedrock") if usage_data is not None else None
+        if counts is not None and counts.input is not None and counts.output is not None:
+            prompt_tokens = counts.input + counts.cached + counts.cache_write
+            total_tokens = counts.total if counts.total is not None else prompt_tokens + counts.output
             usage = SimpleNamespace(
-                prompt_tokens=prompt_tokens, completion_tokens=output_tokens, total_tokens=prompt_tokens + output_tokens,
-                cache_read_input_tokens=cache_read_tokens, cache_creation_input_tokens=cache_write_tokens,
+                prompt_tokens=prompt_tokens, completion_tokens=counts.output, total_tokens=total_tokens,
+                cache_read_input_tokens=counts.cached, cache_creation_input_tokens=counts.cache_write,
             )
         finish_reason = _STOP_REASON_TO_FINISH_REASON.get(stop_reason, "stop")
         if self.tool_calls and finish_reason == "stop":

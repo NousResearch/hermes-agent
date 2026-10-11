@@ -49,7 +49,10 @@ class NativeUsageCounts:
 
     @classmethod
     def read(
-        cls, usage: Any, *, kind: Literal["gemini", "chat", "codex", "anthropic"]
+        cls,
+        usage: Any,
+        *,
+        kind: Literal["gemini", "chat", "codex", "anthropic", "bedrock"],
     ) -> "NativeUsageCounts":
         if not isinstance(usage, Mapping) and not hasattr(usage, "__dict__"):
             raise NativeUsageError("usage")
@@ -58,6 +61,7 @@ class NativeUsageCounts:
             "chat": ("prompt_tokens", "completion_tokens", "total_tokens"),
             "codex": ("input_tokens", "output_tokens", "total_tokens"),
             "anthropic": ("input_tokens", "output_tokens", None),
+            "bedrock": ("inputTokens", "outputTokens", "totalTokens"),
         }[kind]
         input_tokens, output_tokens, total_tokens = (
             _count(_field(usage, key), f"usage.{key}") if key is not None else None
@@ -71,6 +75,13 @@ class NativeUsageCounts:
             )
             reasoning = _count(
                 _field(usage, "thoughtsTokenCount"), "usage.thoughtsTokenCount"
+            )
+        elif kind == "bedrock":
+            cached = _count(
+                _field(usage, "cacheReadInputTokens"), "usage.cacheReadInputTokens"
+            )
+            cache_write = _count(
+                _field(usage, "cacheWriteInputTokens"), "usage.cacheWriteInputTokens"
             )
         elif kind == "anthropic":
             cached = _count(

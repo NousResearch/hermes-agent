@@ -94,27 +94,20 @@ test('darwin without keychain trust additions leaves the defaults untouched', ()
   })
 })
 
-test('does not inspect or replace CAs on linux', () => {
-  let reads = 0
-
-  const tlsApi: NodeTlsCaApi = {
-    getCACertificates() {
-      reads += 1
-
-      return []
-    },
-    setDefaultCACertificates() {
-      throw new Error('should not install')
-    }
-  }
+test('installs Linux OpenSSL-store CAs (Electron bundles its own Mozilla set)', () => {
+  // Electron's default trust is its bundled Mozilla CA set; it never reads /etc/ssl/certs.
+  // A corporate root installed via update-ca-certificates must be folded in, or every
+  // main-process Node https call to a privately-signed endpoint fails with
+  // `unable to get local issuer certificate` (same shape as the darwin case above).
+  const tlsApi = fakeTlsApi(['mozilla-root'], ['corp-root'])
 
   const result = installSystemCaTrust(tlsApi, 'linux')
 
-  assert.equal(reads, 0)
+  assert.deepEqual(tlsApi.installed, [['mozilla-root', 'corp-root']])
   assert.deepEqual(result, {
-    applied: false,
-    systemCertificateCount: 0,
-    totalCertificateCount: 0
+    applied: true,
+    systemCertificateCount: 1,
+    totalCertificateCount: 2
   })
 })
 

@@ -1,6 +1,6 @@
 name: profile-picker
 repo: https://github.com/weltmaister/hermes-profile-picker
-sha: 025b55389c3fcf1fb8c0d0f1369f7fb58eb98c26
+sha: 9a38fa52616c8b1be5397c4d922e80a2c754613d
 description: "Pick the profile for a new chat right in the composer, next to the model pill, and see which profile a running chat belongs to."
 maintainer: weltmaister
 tier: community
@@ -14,3 +14,7 @@ capabilities:
   provides_hooks: []
   provides_middleware: []
   requires_env: []
+screenshots:
+  - https://raw.githubusercontent.com/weltmaister/hermes-profile-picker/9a38fa52616c8b1be5397c4d922e80a2c754613d/docs/picker-open.png
+  - https://raw.githubusercontent.com/weltmaister/hermes-profile-picker/9a38fa52616c8b1be5397c4d922e80a2c754613d/docs/picker-closed.png
+  - https://raw.githubusercontent.com/weltmaister/hermes-profile-picker/9a38fa52616c8b1be5397c4d922e80a2c754613d/docs/chip-running-chat.png

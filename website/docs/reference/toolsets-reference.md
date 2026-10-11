@@ -34,6 +34,8 @@ toolsets:
   # - hermes-telegram   # override for Telegram gateway
 ```
 
+A saved per-platform selection (`hermes tools`, stored as `platform_toolsets.<platform>`) is an explicit pin: an empty list `[]` disables every toolset for that platform, platform-native ones included. A non-empty list keeps one convenience — platform-native toolsets that never appear in a checklist (e.g. `feishu_doc`/`feishu_drive` on `feishu`) are still re-added automatically, since there is no checklist entry that could preserve them.
+
 ### Interactive management
 
 ```bash

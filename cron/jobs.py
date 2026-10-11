@@ -2116,6 +2116,8 @@ def update_job(job_id: str, updates: dict[str, Any]) -> Optional[dict[str, Any]]
         raise ValueError(f"Cron job field(s) cannot be updated: {', '.join(sorted(bad_fields))}")
 
     def apply(jobs, i, job):
+        # Snapshot before _apply_pin_update consumes "pinned" by rewriting provider/model.
+        repointed = bool({"model", "provider", "pinned"} & (updates or {}).keys())
         _rederive_repeat_for_schedule_change(job, updates)
         _normalize_job_updates(job, updates)
         _apply_pin_update(job, updates)
@@ -2132,11 +2134,26 @@ def update_job(job_id: str, updates: dict[str, Any]) -> Optional[dict[str, Any]]
             raise ValueError(EMPTY_PAYLOAD_ERROR)
         if "schedule" in updates:
             _apply_schedule_update(updated, updates, job_id)
-            # next_run_at now follows the new schedule; a stale quota_hold_until would only shield
+        if "schedule" in updates or repointed:
+            # next_run_at now follows the new schedule — or, for a provider/model/pin repoint,
+            # the schedule alone: the hold was measured against the OLD provider and says
+            # nothing about the new one (#133454). A stale quota_hold_until would only shield
             # the record from the stale-error re-arm while no longer describing where it is
             # parked. The next fire re-parks (with a fresh notice) if the window is still closed.
             from cron.quota_hold import clear_state as _clear_quota_hold
+
             _clear_quota_hold(updated)
+            if (
+                repointed
+                and "schedule" not in updates
+                and updated.get("state") != "paused"
+            ):
+                updated["next_run_at"] = _next_run_or_reject_past_oneshot(
+                    updated["schedule"],
+                    updated.get("name", job_id),
+                    updated["schedule"],
+                    "update ",
+                )
         if {"schedule", "next_run_at", "enabled", "state"}.intersection(updates):
             # An explicit schedule/lifecycle rewrite supersedes any occurrence the dispatcher
             # left unclaimed — pause/resume/edit must not resurrect a slot from before the edit.

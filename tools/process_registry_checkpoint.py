@@ -83,7 +83,7 @@ class ProcessCheckpointMixin:
             # process's jobs erased the gateway's crash-recovery entries whenever a CLI spawned.
             with skill_file_lock(path.with_name(path.name + ".lock")):
                 try:
-                    on_disk = json.loads(path.read_text(encoding="utf-8"))
+                    on_disk = json.loads(path.read_text(encoding="utf-8-sig"))
                 except (OSError, ValueError):
                     on_disk = []
                 kept = [e for e in on_disk

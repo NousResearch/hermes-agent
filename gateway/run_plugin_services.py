@@ -157,7 +157,7 @@ class GatewayPluginServicesMixin:
                 asyncio.gather(*tasks, return_exceptions=True),
                 timeout=PROFILE_SERVICE_STOP_TIMEOUT,
             )
-        except (asyncio.TimeoutError, TimeoutError):
+        except TimeoutError:
             logger.warning(
                 "plugin profile services did not stop within %.0fs: %s",
                 PROFILE_SERVICE_STOP_TIMEOUT,

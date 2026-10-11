@@ -48,7 +48,7 @@ def signing_material() -> dict[str, Any]:
 class _JWKSHandler(BaseHTTPRequestHandler):
     response: object = {"keys": []}
 
-    def do_GET(self) -> None:  # noqa: N802
+    def do_GET(self) -> None:
         self.send_response(200)
         self.send_header("content-type", "application/json")
         self.end_headers()

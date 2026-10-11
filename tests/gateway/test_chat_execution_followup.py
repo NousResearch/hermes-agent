@@ -29,7 +29,7 @@ async def finished_parent(home, monkeypatch):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("refusal", ["stop", "fence", "successor", "database", "unfinished", "wrong_session"])
 async def test_actual_followup_reservation_refusal_executes_zero_body(tmp_path, monkeypatch, refusal):
-    runner, state, ctx, store = await finished_parent(tmp_path, monkeypatch)
+    runner, _state, ctx, store = await finished_parent(tmp_path, monkeypatch)
     key = ctx.session_key
     def fail_database(self, *args, **kwargs):
         raise OSError("journal unavailable")
@@ -61,7 +61,7 @@ async def test_actual_followup_reservation_refusal_executes_zero_body(tmp_path, 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("refusal", ["stop", "fence", "duplicate", "session", "routing", "physical", "database"])
 async def test_queued_physical_start_refusal_executes_zero_body(tmp_path, monkeypatch, refusal):
-    runner, state, ctx, store = await finished_parent(tmp_path, monkeypatch)
+    runner, _state, ctx, store = await finished_parent(tmp_path, monkeypatch)
     handle = reserve_followup_execution(runner, ctx, ctx.source, ctx.session_key)
     next_ctx = SimpleNamespace(**vars(ctx))
     next_ctx.chat_execution_reservation = handle

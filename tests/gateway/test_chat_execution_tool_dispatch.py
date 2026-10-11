@@ -100,7 +100,7 @@ def test_legacy_dispatch_without_binding_preserves_normal_execution(monkeypatch,
 async def test_physical_worker_binds_real_sequential_dispatch(tmp_path, monkeypatch, branch):
     import asyncio
     from tests.gateway.test_chat_execution_worker import reserved_worker
-    runner, state, ctx, store = reserved_worker(tmp_path, monkeypatch)
+    runner, _state, ctx, store = reserved_worker(tmp_path, monkeypatch)
     calls = []
     def leaf():
         assert observation(tmp_path, ctx.session_key) == (1, "unknown")

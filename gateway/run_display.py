@@ -2,7 +2,7 @@
 
 
 def _format_duration(seconds: float) -> str:
-    total = max(0, int(round(seconds)))
+    total = max(0, round(seconds))
     hours, rem = divmod(total, 3600)
     minutes, secs = divmod(rem, 60)
     if hours:

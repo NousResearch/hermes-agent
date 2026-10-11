@@ -27,9 +27,9 @@ _S6_SVC_BINS = ("s6-svc", "/command/s6-svc", "/package/admin/s6/command/s6-svc")
 _DASHBOARD_PURPOSES = frozenset({"serve", "dashboard"})
 
 
-def dashboard_service_dirs() -> List[Path]:
+def dashboard_service_dirs() -> list[Path]:
     """Return live s6 dashboard supervise dirs (supervise/ present)."""
-    found: List[Path] = []
+    found: list[Path] = []
     for path in _DASHBOARD_SERVICE_CANDIDATES:
         if path.is_dir() and (path / "supervise").is_dir():
             found.append(path)
@@ -62,9 +62,9 @@ def _s6_svc(flag: str, service: Path) -> bool:
     return False
 
 
-def hold_supervised_dashboard_down() -> List[Path]:
+def hold_supervised_dashboard_down() -> list[Path]:
     """s6-svc -d so supervise will not restart dashboard during gateway replace."""
-    held: List[Path] = []
+    held: list[Path] = []
     for service in dashboard_service_dirs():
         if _s6_svc("-d", service):
             held.append(service)
@@ -93,7 +93,7 @@ def _same_home(pid: int, home: str) -> bool:
     return env_home is not None and os.path.realpath(env_home) == home
 
 
-def iter_same_home_dashboard_pids(hermes_home: Path, *, except_pids: Iterable[int] = ()) -> List[int]:
+def iter_same_home_dashboard_pids(hermes_home: Path, *, except_pids: Iterable[int] = ()) -> list[int]:
     """Same-home dashboard/serve PIDs via spawn ledger, then canonical subcommand."""
     from hermes_cli.process_identity import ledger_entries
     from hermes_cli.update_cmd import _hermes_holder_subcommand
@@ -101,7 +101,7 @@ def iter_same_home_dashboard_pids(hermes_home: Path, *, except_pids: Iterable[in
     home = os.path.realpath(str(hermes_home))
     skip = {int(p) for p in except_pids}
     skip.add(os.getpid())
-    found: List[int] = []
+    found: list[int] = []
     seen: set[int] = set()
 
     try:
@@ -187,7 +187,7 @@ def fail_closed_if_deleted_holders(hermes_home: Path) -> bool:
 
 def quiesce_session_db_writers_for_replace(
     hermes_home: Path, *, except_pids: Iterable[int] = (),
-) -> List[Path]:
+) -> list[Path]:
     """Hold dashboard down, SIGTERM leftover dashboard PIDs, return s6 dirs to release later."""
     held = hold_supervised_dashboard_down()
     pids = iter_same_home_dashboard_pids(hermes_home, except_pids=except_pids)

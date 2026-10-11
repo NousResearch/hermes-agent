@@ -31,7 +31,7 @@ def test_public_delegate_route_rejects_before_child_construction(monkeypatch):
     }
 
     monkeypatch.setattr(delegate_tool, "_get_max_spawn_depth", lambda: 1)
-    monkeypatch.setattr(delegate_tool, "_load_config", lambda: {})
+    monkeypatch.setattr(delegate_tool, "_load_config", dict)
     monkeypatch.setattr(delegate_tool, "_get_max_concurrent_children", lambda: 1)
     monkeypatch.setattr(delegate_tool, "_resolve_delegation_credentials", lambda *_args: credentials)
     monkeypatch.setattr(
@@ -187,9 +187,9 @@ def test_writer_admission_boundary_preserves_direct_read_only_seams():
     from run_agent import AIAgent
 
     direct_writer = object.__new__(AIAgent)
-    setattr(direct_writer, "valid_tool_names", {"write_file"})
+    direct_writer.valid_tool_names = {"write_file"}
     direct_reader = object.__new__(AIAgent)
-    setattr(direct_reader, "valid_tool_names", {"read_file"})
+    direct_reader.valid_tool_names = {"read_file"}
 
     assert delegate_tool._requires_writer_admission(
         SimpleNamespace(_delegate_admission_required=True)
@@ -197,7 +197,7 @@ def test_writer_admission_boundary_preserves_direct_read_only_seams():
     # Write tools without a resolved checkout are not a lease. Slack children
     # have terminal and must still start.
     assert not delegate_tool._requires_writer_admission(direct_writer)
-    setattr(direct_writer, "_delegate_repo_root", "/repo")
+    direct_writer._delegate_repo_root = "/repo"
     assert delegate_tool._requires_writer_admission(direct_writer)
     assert not delegate_tool._requires_writer_admission(direct_reader)
     assert not delegate_tool._requires_writer_admission(

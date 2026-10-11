@@ -32,7 +32,7 @@ def _isolate_dashboard_public_url(monkeypatch):
     from hermes_cli.dashboard_auth import prefix
 
     monkeypatch.delenv("HERMES_DASHBOARD_PUBLIC_URL", raising=False)
-    monkeypatch.setattr(prefix, "_load_dashboard_section", lambda: {})
+    monkeypatch.setattr(prefix, "_load_dashboard_section", dict)
 
 
 @pytest.fixture

@@ -248,7 +248,7 @@ async def test_raising_dispatch_leaves_the_session_usable(tmp_path, monkeypatch)
 
     runner._primary_message_handler = lambda: handler
     event = _event()
-    session_key = runner._session_key_for_source(event.source)
+    _session_key = runner._session_key_for_source(event.source)
 
     with pytest.raises(RuntimeError, match="handler exploded"):
         await runner.dispatch_internal_plugin_event(event, execution_id="plugin-exec-001")

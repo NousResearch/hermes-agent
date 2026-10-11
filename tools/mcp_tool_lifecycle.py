@@ -34,10 +34,10 @@ _stdio_pgids: dict[int, int] = {}
 # readings drift ~1 s on macOS (#117505) — before signalling so a recycled PGID is
 # never killed.  None entries are dropped: a capture that raced the child's exit keeps
 # the legacy best-effort behaviour.
-_stdio_starttimes: Dict[int, int] = {}  # pid -> leader start ticks
+_stdio_starttimes: dict[int, int] = {}  # pid -> leader start ticks
 # Per-spawn marker inherited by stdio descendants. On Linux, an exited leader's
 # numeric PGID alone cannot prove ownership after the original group disappears.
-_stdio_spawn_markers: Dict[int, str] = {}
+_stdio_spawn_markers: dict[int, str] = {}
 _SPAWN_MARKER_ENV = "HERMES_INTERNAL_MCP_SPAWN_ID"
 
 
@@ -301,9 +301,9 @@ def shutdown_mcp_servers(*, scope: Optional[str] = None, names: Optional[set] = 
         _close_mcp_stderr_logs(scope=scope)
 
 
-def _take_reapable_pids(include_active: bool, server_name: Optional[str]) -> tuple[Dict[int, str], Dict[int, int], Dict[int, int], Dict[int, str]]:
+def _take_reapable_pids(include_active: bool, server_name: Optional[str]) -> tuple[dict[int, str], dict[int, int], dict[int, int], dict[int, str]]:
     """Pop PIDs and their group, start-time, and marker ledgers under one lock."""
-    def _owned(entries: Dict[int, str]) -> Dict[int, str]:
+    def _owned(entries: dict[int, str]) -> dict[int, str]:
         return {pid: owner for pid, owner in entries.items() if server_name is None or owner == server_name}
 
     with _core._lock:

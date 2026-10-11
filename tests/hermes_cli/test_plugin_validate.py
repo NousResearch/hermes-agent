@@ -186,7 +186,7 @@ class TestCapabilityProbe:
 
     def test_capability_probe_uses_supplied_environment_python(self, tmp_path, monkeypatch):
         from types import SimpleNamespace
-        import hermes_cli.plugin_validate as plugin_validate
+        from hermes_cli import plugin_validate
 
         d = _make_plugin(tmp_path, manifest=dict(BASE_MANIFEST))
         selected_python = tmp_path / "selected" / "bin" / "python"

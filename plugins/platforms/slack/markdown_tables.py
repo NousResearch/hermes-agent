@@ -24,15 +24,15 @@ def _pad(cell: str, width: int) -> str:
     return cell + " " * max(width - _disp_width(cell), 0)
 
 
-def _split_table_row(line: str) -> List[str]:
+def _split_table_row(line: str) -> list[str]:
     """Split a ``| a | b | c |`` row into trimmed cells (outer pipes optional)."""
     s = line.strip()
-    s = s[1:] if s.startswith("|") else s
-    s = s[:-1] if s.endswith("|") else s
+    s = s.removeprefix("|")
+    s = s.removesuffix("|")
     return [c.strip() for c in s.split("|")]
 
 
-def _align_table(rows: List[str]) -> List[str]:
+def _align_table(rows: list[str]) -> list[str]:
     """Re-emit a markdown table padded to per-column display width. rows[1] is the GFM separator
     (regenerated); short rows are padded to a uniform column count first."""
     if len(rows) < 2:
@@ -42,7 +42,7 @@ def _align_table(rows: List[str]) -> List[str]:
     parsed = [r + [""] * (n_cols - len(r)) for r in parsed]
     parsed[1] = ["---"] * n_cols
     widths = [max(_disp_width(r[c]) for r in parsed) for c in range(n_cols)]
-    out: List[str] = []
+    out: list[str] = []
     for idx, row in enumerate(parsed):
         cells = ["-" * widths[c] if idx == 1 else _pad(row[c], widths[c]) for c in range(n_cols)]
         out.append("| " + " | ".join(cells) + " |")
@@ -54,7 +54,7 @@ def _wrap_markdown_tables(text: str) -> str:
     if not text or "|" not in text or "-" not in text:
         return text
     lines = text.split("\n")
-    out: List[str] = []
+    out: list[str] = []
     in_fence = False
     i = 0
     while i < len(lines):

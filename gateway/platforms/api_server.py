@@ -3612,8 +3612,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
              "runtime": self._effective_turn_runtime(ctx["runtime_request"], result, usage),
              # Keep the completion and HTTP status compatible while exposing the final
              # attempt's verdict. Delivery succeeded; the peer's agent turn may not have.
-             **({"failed": True, "error": result.get("error"),
-                 "failure_reason": result.get("failure_reason")}
+             **({"failed": True,
+                 **{field: _redact_api_error_text(result[field]) if result.get(field) is not None else None
+                    for field in ("error", "failure_reason")}}
                 if is_dict and result.get("failed") else {})},
             headers=headers)
 

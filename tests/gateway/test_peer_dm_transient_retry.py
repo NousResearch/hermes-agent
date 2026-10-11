@@ -167,3 +167,23 @@ async def test_peer_dm_exit_reflects_final_agent_outcome(tmp_path, monkeypatch, 
             assert captured.out.strip() == (final["final_response"] or "(no reply)")
     finally:
         adapter._session_db.close()
+
+
+@pytest.mark.asyncio
+async def test_failed_completion_redacts_new_error_fields(tmp_path, monkeypatch):
+    adapter, sid = _adapter(tmp_path)
+    secret = "fixture-secret-not-a-real-credential"
+    outcome = {**AUTH_WALL, "error": f"OPENAI_API_KEY={secret}",
+               "failure_reason": f"AUTH_TOKEN={secret}"}
+    monkeypatch.setattr(adapter, "_create_agent", lambda **_: _fake_agent([], outcome))
+    try:
+        async with TestClient(TestServer(_app(adapter))) as client:
+            response = await client.post(f"/api/sessions/{sid}/chat", json={"message": DM})
+            body = await response.json()
+        assert response.status == 200
+        assert body["failed"] is True
+        assert secret not in body["error"]
+        assert secret not in body["failure_reason"]
+        assert "OPENAI_API_KEY=" in body["error"]
+    finally:
+        adapter._session_db.close()

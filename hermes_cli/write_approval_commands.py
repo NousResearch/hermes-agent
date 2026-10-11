@@ -25,6 +25,8 @@ def _fmt_pending_list(subsystem: str) -> str:
         lines.append(f"  {r['id']}{tag}  {r.get('summary', '')}")
         if subsystem == wa.MEMORY:
             lines.extend(f"      {line}" for line in _matched_entries(r["payload"]))
+            from tools.memory_pending_refresh import refreshed_memory_preview
+            lines.extend(refreshed_memory_preview(r["payload"]))
     lines.append("")
     lines.append(f"Apply: /{subsystem} approve <id>   Reject: /{subsystem} reject <id>")
     if subsystem == wa.SKILLS:
@@ -50,6 +52,8 @@ def handle_pending_subcommand(
         return _approve(subsystem, rest, memory_store)
     if sub in {"reject", "deny", "drop"}:
         return _reject(subsystem, rest)
+    if sub == "refresh" and subsystem == wa.MEMORY:
+        return _refresh_memory(rest, memory_store)
     if sub == "diff" and subsystem == wa.SKILLS:
         return _diff(rest)
     if sub in {"approval", "mode"}:  # 'mode' kept as a back-compat alias
@@ -134,6 +138,25 @@ def _apply_one(subsystem: str, rec, memory_store):
         return bool(result.get("success")), result.get("error", ""), result
     except Exception as e:
         return False, str(e), {}
+
+
+def _refresh_memory(rest: List[str], memory_store) -> str:
+    """An explicit refresh creates a new pending ID that needs a fresh approval."""
+    if len(rest) != 1 or rest[0].lower() == "all":
+        return "Usage: /memory refresh <id> (review one conflicting proposal at a time)"
+    record = wa.get_pending(wa.MEMORY, rest[0])
+    if record is None:
+        return f"No pending memory write with id '{rest[0]}'."
+    if memory_store is None:
+        return "Memory store unavailable; the proposal remains pending."
+    from tools.memory_pending_refresh import refresh_memory_pending, refreshed_memory_preview
+    result = refresh_memory_pending(record, memory_store)
+    if not result.get("success"):
+        return f"Refresh failed: {result.get('error', 'unknown error')}"
+    fresh = result["record"]
+    return (f"Refreshed {rest[0]} as {fresh['id']}; no memory was changed.\n"
+            + "\n".join(refreshed_memory_preview(fresh["payload"]))
+            + f"\nReview this proposal, then /memory approve {fresh['id']} or /memory reject {fresh['id']}.")
 
 
 def _reject(subsystem: str, rest: list[str]) -> str:

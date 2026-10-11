@@ -328,6 +328,7 @@ Review staged writes from the CLI or any messaging platform:
 /memory pending             # list staged memory writes (auto ones tagged [auto])
 /memory approve <id>        # apply one (or 'all')
 /memory reject <id>         # drop one (or 'all')
+/memory refresh <id>        # re-stage a conflicting proposal for a new review
 /memory approval on         # turn the gate on (or 'off') and persist it
 ```
 
@@ -338,10 +339,19 @@ ones — waits for your yes/no before it ever enters your profile.
 A staged `replace` or `remove` (the background review stages these even with the
 gate off) records the full entry it targets, and `/memory pending` shows it.
 Approval applies to exactly that entry: if it changed after the write was staged,
-the write is refused and stays pending for you to reject. A `replace`/`remove`
+the write is refused and stays pending. Use `/memory refresh <id>` to resolve
+its original unique anchor against the current entry and create a **new pending
+ID**. Refresh shows the previously reviewed entry, the current entry and the
+proposed replacement; it does not change memory. Review these before approving
+the new ID. If the anchor was deleted or is ambiguous, refresh refuses and leaves
+the original proposal for you to reject and recreate. A `replace`/`remove`
 staged before this pinning existed has no verifiable target and is refused too:
 reject it and recreate the change. `/memory approve` lists the full text of
 every entry it overwrote or removed.
+
+After three failed consolidation attempts in one turn, further memory tool calls
+return a terminal result without applying or staging writes. The next turn resets
+this limit; a successful correction before the limit also resets it.
 
 ## Background review notifications (`display.memory_notifications`)
 

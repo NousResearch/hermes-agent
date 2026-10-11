@@ -1540,6 +1540,23 @@ def test_doctor_reports_auxiliary_blocks_that_do_not_resolve(tmp_path, monkeypat
     assert len(issues) == 1 and "auxiliary.background_review" in issues[0] and "no-such-provider" in issues[0]
 
 
+def test_doctor_ignores_unconsumed_auxiliary_blocks(tmp_path):
+    """An obsolete auxiliary block has no runtime reader, so its provider is not actionable."""
+    import hermes_yaml as yaml
+    from hermes_cli import doctor_config
+
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text(yaml.safe_dump({"auxiliary": {
+        name: {"provider": "no-such-provider", "model": "m"}
+        for name in ("retired_task", "web_extract", "session_search", "flush_memories", "skills_hub", "free_only")
+    }}), encoding="utf-8")
+    issues = []
+
+    doctor_config._validate_auxiliary_config(cfg_file, issues)
+
+    assert issues == []
+
+
 @pytest.mark.platforms("macos")
 class TestMacOSTCCGrants:
     """macOS TCC grant persistence check (#86385): a cdhash-pinned DR (pre-#73681
@@ -1632,3 +1649,87 @@ def test_cron_store_check_reports_writability_and_low_space(
     finding = doctor_state._check_cron_store(False)
     assert expected in capsys.readouterr().out
     assert len(finding.issues) == len(issues) and all(any(s in i for i in finding.issues) for s in issues)
+
+
+def test_doctor_discovers_registered_auxiliary_plugin(tmp_path, monkeypatch):
+    """A dynamically registered task retains the same failure diagnostics as built-ins."""
+    import hermes_yaml as yaml
+    from hermes_cli import plugins
+
+    manager = plugins.PluginManager()
+    context = plugins.PluginContext(plugins.PluginManifest(name="doctor-test"), manager)
+    context.register_auxiliary_task("plugin_task", display_name="Plugin task", description="Test consumer")
+    monkeypatch.setattr(plugins, "_ensure_plugins_discovered", lambda: manager)
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text(yaml.safe_dump({"auxiliary": {
+        "plugin_task": {"provider": "no-such-provider"},
+    }}), encoding="utf-8")
+    issues = []
+    doctor_config._validate_auxiliary_config(cfg_file, issues)
+    assert len(issues) == 1 and "auxiliary.plugin_task" in issues[0]
+
+
+def test_doctor_plugin_discovery_failure_keeps_builtin_checks(tmp_path, monkeypatch, capsys):
+    import hermes_yaml as yaml
+    from hermes_cli import plugins
+
+    def fail_discovery():
+        raise RuntimeError("plugin discovery unavailable")
+
+    monkeypatch.setattr(plugins, "get_plugin_auxiliary_tasks", fail_discovery)
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text(yaml.safe_dump({"auxiliary": {
+        "compression": {"provider": "no-such-provider"},
+        "web_extract": {"provider": "no-such-provider"},
+    }}), encoding="utf-8")
+    issues = []
+    doctor_config._validate_auxiliary_config(cfg_file, issues)
+    assert len(issues) == 1 and "auxiliary.compression" in issues[0]
+    assert "plugin discovery unavailable" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("provider", ["auto", " AUTO ", "", None])
+def test_doctor_checks_active_auto_route(tmp_path, monkeypatch, capsys, provider):
+    """Auto/empty uses the real main resolver, including intentional local keyless routes."""
+    import hermes_yaml as yaml
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text(yaml.safe_dump({
+        "model": {"provider": "custom", "base_url": "http://localhost:1234/v1", "default": "local-model"},
+        "auxiliary": {"compression": {"provider": provider}, "web_extract": {"provider": "bad"}},
+    }), encoding="utf-8")
+    issues = []
+    doctor_config._validate_auxiliary_config(cfg_file, issues)
+    assert issues == []
+    output = capsys.readouterr().out
+    assert "auxiliary.compression" in output and "no-key-required" in output
+    assert "web_extract" not in output
+
+
+@pytest.mark.parametrize("provider", ["main", " MAIN "])
+def test_doctor_main_sentinel_keeps_explicit_provider_checks(tmp_path, provider):
+    import hermes_yaml as yaml
+
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text(yaml.safe_dump({"auxiliary": {
+        "compression": {"provider": provider},
+        "background_review": {"provider": "no-such-provider"},
+    }}), encoding="utf-8")
+    issues = []
+    doctor_config._validate_auxiliary_config(cfg_file, issues)
+    assert len(issues) == 1 and "auxiliary.background_review" in issues[0]
+
+
+def test_doctor_active_auto_route_reports_broken_main(tmp_path, monkeypatch):
+    import hermes_yaml as yaml
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text(yaml.safe_dump({
+        "model": {"provider": "no-such-provider", "default": "m"},
+        "auxiliary": {"compression": {"provider": "auto"}, "web_extract": {"provider": "auto"}},
+    }), encoding="utf-8")
+    issues = []
+    doctor_config._validate_auxiliary_config(cfg_file, issues)
+    assert len(issues) == 1 and "auxiliary.compression" in issues[0] and "no-such-provider" in issues[0]

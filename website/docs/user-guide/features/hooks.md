@@ -1250,6 +1250,8 @@ def my_callback(event, gateway, session_store, **kwargs):
 
 **Fires:** In `gateway/run.py`, inside `GatewayRunner._handle_message()`, immediately after `is_internal` is computed. **Internal events skip the hook entirely** (they are system-generated — background-process completions, etc. — and must not be gate-kept by user-facing policy).
 
+A message that arrives while its session is busy runs the hook on the same terms, once, before the busy path routes it: before bypass commands (`/stop`, `/approve`, `/deny`, ...), clarify replies, steering, interrupts and queueing, and it is not run again when a queued message drains. This matches the idle path, where the hook also runs before slash-command handling, so a callback that returns `None`/`allow` for control traffic leaves `/stop` and `/approve` working mid-turn, while `skip` or `rewrite` applies to them as it would to any other message.
+
 **Return value:** `None` or a dict. The first recognized action dict wins; remaining plugin results are ignored. Exceptions in plugin callbacks are caught and logged; the gateway always falls through to normal dispatch on error.
 
 Callbacks may be `async def`: they are awaited on the gateway's own event loop, so awaiting loop-bound work (an `asyncio.Event`, an aiohttp session, `asyncio.to_thread`) makes progress and other inbound messages keep flowing while the callback runs. The hook is intentionally not bounded by `plugins.hook_callback_timeout` — dropping or passing a message on timeout are both wrong for a policy gate — so a callback that never returns holds up dispatch of that message.

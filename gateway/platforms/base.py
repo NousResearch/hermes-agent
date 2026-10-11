@@ -425,6 +425,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import fence_state_after
+from gateway.platforms.base_busy import admit_busy_arrival, has_pending_text_clarify
 from gateway.platforms.base_exec_approval import (
     approval_timeout_seconds, ea_action_labels, ea_default_reason_text, ea_header_text,
     ea_reason_label_text, ea_smart_deny_line_text, format_approval_deadline_line)
@@ -2012,6 +2013,7 @@ class BasePlatformAdapter(ABC):
         self._post_delivery_callbacks: dict[str, Any] = {}
         self._expected_cancelled_tasks: set[asyncio.Task] = set()
         self._busy_session_handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]] = None
+        self._pre_gateway_dispatch_handler: Optional[Callable[..., Awaitable[Any]]] = None
         # Owning multiplex profile (None on primary); see _session_key_profile.
         self._owner_profile: Optional[str] = None
         # Set by the runner on a secondary's port-binding adapter: serve via the default profile's
@@ -2395,6 +2397,10 @@ class BasePlatformAdapter(ABC):
     def set_busy_session_handler(self, handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]]) -> None:
         """Set an optional handler for messages arriving during active sessions."""
         self._busy_session_handler = handler
+
+    def set_pre_gateway_dispatch_handler(self, handler: Optional[Callable[..., Awaitable[Any]]]) -> None:
+        """Set the runner-owned pre-dispatch handler for active-session arrivals."""
+        self._pre_gateway_dispatch_handler = handler
 
     def set_reaction_handler(self, handler: Optional[Callable[[dict[str, Any]], Awaitable[None]]]) -> None:
         """Set the handler for platform-native emoji-reaction events: a normalised dict
@@ -4080,6 +4086,9 @@ class BasePlatformAdapter(ABC):
     async def _handle_message_while_active(self, event: MessageEvent, session_key: str) -> None:
         """Route a message that arrived while ``session_key`` is busy: bypass
         commands / clarify replies dispatch inline, everything else is queued."""
+        # pre_gateway_dispatch FIRST, in the idle path's order (before commands/approvals/steering).
+        if (event := await admit_busy_arrival(self, event)) is None:
+            return
         # Bypass commands run inline: queued they'd leak as user text (/new) or deadlock
         # (/approve, /deny — the agent is blocked on Event.wait).  Dispatch inline by
         # calling the message handler directly and sending the response.  Do NOT use
@@ -4103,20 +4112,9 @@ class BasePlatformAdapter(ABC):
             except Exception as e:
                 logger.error("[%s] Command '/%s' dispatch failed: %s", self.name, cmd, e, exc_info=True)
             return
-        # Clarify bypass: while blocked on clarify_tool the next message must reach the
-        # text-intercept so numeric/exact/"Other" answers resolve it and unblock the agent.
-        # Otherwise it lands in _pending_messages as a follow-up turn and the answer is
-        # discarded.  Same shape as the /approve deadlock fix (PR #4926): agent thread
-        # blocked on Event.wait, message must reach the resolver before being a new turn.
-        # See #4926.
+        # Clarify bypass (see has_pending_text_clarify): the reply must reach the text-intercept.
         if not cmd and event.allow_gateway_control:
-            try:
-                from tools import clarify_gateway as _clarify_mod
-                _has_text_clarify = _clarify_mod.get_pending_for_session(
-                    session_key, include_choice_prompts=True) is not None
-            except Exception:
-                _has_text_clarify = False
-            if _has_text_clarify:
+            if has_pending_text_clarify(session_key):
                 logger.debug("[%s] Routing message to clarify text-intercept for %s", self.name, session_key)
                 try:
                     await self._dispatch_inline_reply(event)

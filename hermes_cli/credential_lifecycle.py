@@ -179,6 +179,10 @@ def save_provider_env_credential(env_var: str, value: str) -> dict[str, Any]:
     """
     from hermes_cli.config import load_env, require_env_writable, save_env_value
 
+    # A blank save would clobber a working key and the mirror scrub below would copy the blank into
+    # config.yaml; removal has its own path (remove_provider_env_credential / DELETE /api/env).
+    if not value.strip():
+        raise ValueError(f"Refusing to save an empty value for {env_var}; remove the key instead.")
     # A locked key must fail here: save_env_value's refusal returns like a success, and the mirror
     # scrub below would still move the new value into config.yaml.
     require_env_writable(env_var, "set")

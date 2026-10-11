@@ -543,7 +543,7 @@ class TestReconnectKeepsInboundDedup:
         with patch("hermes_cli.profiles.get_profile_dir"), \
              patch("hermes_cli.env_loader.hydrate_profile_secret_sources"), \
              patch("gateway.run._profile_runtime_scope", MagicMock()), \
-             patch("gateway.run._platform_has_bot_credential", return_value=True), \
+             patch("gateway.run_credentials._platform_has_bot_credential", return_value=True), \
              patch("gateway.config.load_gateway_config") as load, \
              pytest.raises(asyncio.CancelledError) if installed else contextlib.nullcontext():
             load.return_value.platforms = {Platform.TELEGRAM: PlatformConfig(enabled=True, token="t")}

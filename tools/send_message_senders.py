@@ -582,15 +582,16 @@ def _gateway_platform_module(name, *, unavailable, unmet):
     return (module, None) if getattr(module, f"check_{name}_requirements")() else (None, {"error": unmet})
 
 
-async def _send_weixin(pconfig, chat_id, message, media_files=None):
+async def _send_weixin(pconfig, chat_id, message, media_files=None, account_id=None):
     """Send via Weixin iLink using the native adapter helper."""
     wx, err = _gateway_platform_module("weixin", unavailable="Weixin adapter not available.",
                                        unmet="Weixin requirements not met. Need aiohttp + cryptography.")
     if err:
         return err
     try:
+        account = {"account_id": account_id} if account_id else {}
         return await wx.send_weixin_direct(extra=pconfig.extra, token=pconfig.token, chat_id=chat_id,
-                                           message=message, media_files=media_files)
+                                           message=message, media_files=media_files, **account)
     except Exception as e:
         return _error(f"Weixin send failed: {e}")
 

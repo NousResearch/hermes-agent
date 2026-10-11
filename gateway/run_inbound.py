@@ -26,6 +26,7 @@ from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run_busy import approval_input_words
 from gateway.run_common import _UNSET
 from gateway.run_inbound_media import rehome_inbound_media
+from gateway.run_inbound_commands import GatewayPlatformCommandsMixin
 from gateway.run_plugin_injection import GatewayPluginInjectionMixin
 from gateway.run_inbound_unauthorized import (
     UnauthorizedOwnerNotifier, pairing_code_reply, pairing_profile_arg, pairing_rate_limited_reply,
@@ -67,7 +68,7 @@ def strip_discord_triggering_note(event: Any, message_text: Any) -> Any:
     return message_text.removeprefix(prefix)
 
 
-class GatewayInboundMixin(GatewayPluginInjectionMixin):
+class GatewayInboundMixin(GatewayPlatformCommandsMixin, GatewayPluginInjectionMixin):
     """Inbound message pipeline (_handle_message, text/media preparation, durable-turn markers, plugin injection) for GatewayRunner."""
 
     async def _hm_pre_gateway_dispatch_hook(
@@ -1229,25 +1230,6 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
         if _reply is None:
             _reply = await self._hm_slash_confirm_reply(event, _quick_key)
         return _reply
-
-    async def _hm_dispatch_idle_commands(
-        self, event: MessageEvent, source: SessionSource, _quick_key: str
-    ) -> tuple[bool, Optional[str]]:
-        """Idle path: resolve + dispatch slash commands; rewriting commands fall through to the agent."""
-        _handled, _result, command, canonical = await self._hm_resolve_command(event, source, _quick_key)
-        if not _handled:
-            _handled, _result = await self._hm_dispatch_canonical_command(event, source, _quick_key, canonical)
-        if not _handled:
-            _handled, _result, command = await self._hm_dispatch_quick_and_plugin_commands(event, source, command)
-        if not _handled:
-            # Skill-slash resolution is disk-bound (cold skill scan, skill file loads, the
-            # unavailable-skill rglob over every skills dir) and uncached on a first hit; on a
-            # large install it held the loop past the liveness watchdog (#111091). The executor
-            # hop carries the profile contextvars the scan is scoped to.
-            _result = await self._run_in_executor_with_context(
-                self._hm_skill_slash_rewrite, event, source, _quick_key, command)
-            _handled = _result is not None
-        return _handled, _result
 
     def _hm_rescue_orphaned_fifo(
         self, event: MessageEvent, source: SessionSource, is_internal: bool, _quick_key: str

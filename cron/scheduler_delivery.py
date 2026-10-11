@@ -277,51 +277,9 @@ def _open_continuable_cron_thread(job: dict, adapter, chat_id: str, loop) -> Opt
         return None
 
 
-def _seed_cron_session(
-    job: dict, adapter, platform_name: str, chat_id: str, text: str, *, thread_id: Optional[str],
-    chat_type: str, user_id: Optional[str], user_name: Optional[str] = None,
-    chat_name: Optional[str], scope_id: Optional[str], discord_keys_on_thread: bool = False,
-) -> bool:
-    """Create the session row (so the mirror has a target) and mirror the brief as a USER turn.
-    The seeded key must equal the reply's ``build_session_key``: chat_type, user_id, thread_id and
-    scope_id (Slack team id) are all part of it, so callers pass exactly what the reply carries."""
-    from gateway.config import Platform
-    from gateway.session import SessionSource
-    from gateway.mirror import mirror_to_session
-    seeded_session_id: Optional[str] = None
-    session_store = getattr(adapter, "_session_store", None)
-    if session_store is not None:
-        try:
-            platform_enum = Platform(platform_name.lower())
-        except (ValueError, KeyError):
-            platform_enum = None
-        if platform_enum is not None:
-            # Discord keys in-thread messages with chat_id == thread_id; Slack/Telegram use the
-            # parent channel.
-            seed_chat_id = (
-                str(thread_id)
-                if discord_keys_on_thread and platform_enum == Platform.DISCORD
-                else str(chat_id)
-            )
-            dest_source = SessionSource(
-                platform=platform_enum, chat_id=seed_chat_id, chat_name=chat_name,
-                chat_type=chat_type,
-                user_id=user_id, user_name=user_name, thread_id=thread_id,
-                scope_id=str(scope_id) if scope_id else None)
-            # Create the row and pass its exact id to the mirror — origin-heuristic rediscovery
-            # bails on populated chats.
-            _entry = session_store.get_or_create_session(dest_source)
-            seeded_session_id = getattr(_entry, "session_id", None)
-    return mirror_to_session(
-        platform_name, str(chat_id), _cron_mirror_message(job, text),
-        source_label="cron", thread_id=thread_id, user_id=user_id, role="user",
-        session_id=seeded_session_id,
-    )
-
-
 def _seed_cron_thread_session(
     job: dict, adapter, platform_name: str, chat_id: str, thread_id: str, mirror_text: str,
-    chat_name: Optional[str] = None, is_dm: bool = False, scope_id: Optional[str] = None,
+    chat_name: Optional[str] = None, is_dm: bool = False, scope_id: Optional[str] = None, account_id: Optional[str] = None,
 ) -> None:
     """Seed the freshly-opened cron thread's session with the brief (never raises), else the
     user's in-thread reply resolves to a transcript without it. Threads are participant-shared
@@ -329,6 +287,7 @@ def _seed_cron_thread_session(
     the DM arm (``…:dm:<chat>:<thread>``), so a "thread"-typed seed is a row no DM reply hits.
     Non-DM threads seed the slot the platform's adapter puts on an in-thread reply
     (``_THREAD_REPLY_CHAT_TYPE``)."""
+    from cron.scheduler_delivery_sessions import _seed_cron_session
     text = (mirror_text or "").strip()
     if not text:
         return
@@ -338,7 +297,7 @@ def _seed_cron_thread_session(
             thread_id=str(thread_id),
             chat_type="dm" if is_dm else _THREAD_REPLY_CHAT_TYPE.get(platform_name.lower(), "thread"),
             user_id="system:cron", user_name="Cron", chat_name=chat_name, scope_id=scope_id,
-            discord_keys_on_thread=True)
+            discord_keys_on_thread=True, account_id=account_id)
         if ok:
             logger.info(
                 "Job '%s': opened continuable thread %s on %s:%s and seeded the brief",
@@ -357,13 +316,14 @@ def _seed_cron_thread_session(
 
 def _seed_cron_channel_session(
     job: dict, adapter, platform_name: str, chat_id: str, mirror_text: str, *, is_dm: bool,
-    user_id: Optional[str], chat_name: Optional[str] = None, scope_id: Optional[str] = None,
+    user_id: Optional[str], chat_name: Optional[str] = None, scope_id: Optional[str] = None, account_id: Optional[str] = None,
 ) -> bool:
     """Seed the FLAT (thread_id=None) session for an ``in_channel`` delivery; True on success.
     ``mirror_to_session`` only APPENDS to an existing session and the flat row is only created by
     an inbound human message, so create the row first or the brief is silently dropped. Group keys
     are user-isolated (``…:group:<chat_id>:<user_id>``): the seed MUST carry the origin's real
     user_id, not ``system:cron``; DM keys omit user_id. chat_type mirrors the inbound handler."""
+    from cron.scheduler_delivery_sessions import _seed_cron_session
     text = (mirror_text or "").strip()
     if not text:
         return False
@@ -373,7 +333,7 @@ def _seed_cron_channel_session(
             job, adapter, platform_name, chat_id, text,
             thread_id=None,  # flat — the whole-channel/DM session
             chat_type=chat_type, user_id=str(user_id) if user_id else None,
-            chat_name=chat_name, scope_id=scope_id,
+            chat_name=chat_name, scope_id=scope_id, account_id=account_id,
         )
         if ok:
             logger.info(
@@ -1600,7 +1560,8 @@ def _seed_live_delivery_sessions(t: _TargetDelivery, delivered_message_id) -> No
     job = t.job
     origin = t.origin
     seed_kwargs = dict(
-        chat_name=origin.get("chat_name"), is_dm=t.is_dm_target, scope_id=origin.get("scope_id"))
+        chat_name=origin.get("chat_name"), is_dm=t.is_dm_target, scope_id=origin.get("scope_id"),
+        account_id=origin.get("account_id") if t.origin_target else None)
     thread_seeded = False
     inchannel_seeded = False
     if t.opened_thread_id:
@@ -1723,7 +1684,8 @@ def _standalone_send(
         # unstarted, and a wait_for wrapper created out here would be left never awaited.
         return await asyncio.wait_for(_send_to_platform(
             t.platform, t.pconfig, t.chat_id, content, thread_id=t.thread_id,
-            media_files=media_files), timeout=send_timeout)
+            media_files=media_files,
+            args={"account_id": t.origin.get("account_id")} if t.origin_target and t.origin.get("account_id") else None), timeout=send_timeout)
 
     def _warned(msg: str) -> tuple[None, str]:
         logger.warning("Job '%s': %s", job["id"], msg)

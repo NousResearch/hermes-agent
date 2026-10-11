@@ -784,7 +784,8 @@ class GatewayAdapterLifecycleMixin:
         change: retrying it re-warns forever at the backoff cap (#5196 fleet nodes). Shared by startup and
         the reconnect watcher so both classify the same platform the same way."""
         from gateway.platform_registry import platform_registry
-        from gateway.run import _BUILTIN_ADAPTERS, _platform_has_bot_credential
+        from gateway.run import _BUILTIN_ADAPTERS
+        from gateway.run_credentials import _platform_has_bot_credential
         return (
             platform not in _BUILTIN_ADAPTERS
             and not platform_registry.is_registered(platform.value)
@@ -793,7 +794,8 @@ class GatewayAdapterLifecycleMixin:
 
     async def _reconnect_failed_platform(self, platform, now: float) -> None:
         """One watcher pass for a queued platform: gate, attempt, and record the outcome."""
-        from gateway.run import _dispose_unused_adapter, _platform_has_bot_credential
+        from gateway.run import _dispose_unused_adapter
+        from gateway.run_credentials import _platform_has_bot_credential
         info = self._failed_platforms.get(platform)
         # None: removed concurrently since the caller's snapshot. Paused needs /platform resume.
         if info is None or info.get("paused"):
@@ -1250,7 +1252,8 @@ class GatewayAdapterLifecycleMixin:
         self, profile_name: str, profile_home: Path, claimed: dict[tuple, str]
     ) -> int:
         """Create+connect one profile's adapters under its runtime scope."""
-        from gateway.run import _platform_has_bot_credential, _profile_runtime_scope
+        from gateway.run import _profile_runtime_scope
+        from gateway.run_credentials import _platform_has_bot_credential
         profile_cfg = await self._load_secondary_profile_config(profile_name, profile_home)
         # Keep the served profile's config: host-wide passes (planned-restart notices) must reach
         # every served profile's home channels, and this is the only place it is loaded.
@@ -1417,7 +1420,8 @@ class GatewayAdapterLifecycleMixin:
         """One scoped attempt to rebuild+connect a secondary adapter → ``(adapter, success)``;
         ``(None, None)`` = give up for good (disabled, credential removed, adapter unavailable). Caller
         tears down a RETURNED adapter; one whose configure/connect raised is torn down here."""
-        from gateway.run import _platform_has_bot_credential, _profile_runtime_scope
+        from gateway.run import _profile_runtime_scope
+        from gateway.run_credentials import _platform_has_bot_credential
         # Lazy + per-attempt: keeps test monkeypatches on these modules live.
         from hermes_cli.profiles import get_profile_dir
         from hermes_cli.env_loader import hydrate_profile_secret_sources
@@ -1904,7 +1908,7 @@ class GatewayAdapterLifecycleMixin:
         return _instantiate_builtin_adapter(platform, config)
 
     def _make_adapter_auth_check(
-        self, platform: Platform, profile_name: Optional[str] = None
+        self, platform: Platform, profile_name: Optional[str] = None, transport_adapter=None
     ) -> Callable[[str, Optional[str], Optional[str]], bool]:
         """Platform-bound auth callback for adapters (prompt-injection mitigation for fetched
         context); delegates to :meth:`_is_user_authorized`. ``profile_name`` binds a secondary to
@@ -1939,9 +1943,10 @@ class GatewayAdapterLifecycleMixin:
                 (getattr(self, "_profile_adapters", None) or {}).get(profile_name)
                 if profile_name else getattr(self, "adapters", None)
             ) or {}
-            adapter = registry.get(platform)
+            adapter = transport_adapter or registry.get(platform)
             if adapter is not None:
                 source._transport_adapter_ref = _weakref.ref(adapter)
+                source.account_id = getattr(adapter, "_account_id", None)
             if transport_home is None:
                 # Sync, on the adapter's event loop (per tap, per inline-query keystroke): never
                 # hydrate external secret sources here — that takes the process-global source lock

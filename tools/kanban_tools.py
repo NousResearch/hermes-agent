@@ -126,6 +126,16 @@ def _check(cond: Any, message: str) -> None:
         raise _Reject(message)
 
 
+def _live_claim_tool_error(tool_name: str, task_id: str, *, reviewer: bool = False) -> str:
+    claim_kind = "live reviewer claim" if reviewer else "live worker claim"
+    return tool_error(
+        f"{tool_name} refused for {task_id}: the task is protected by a {claim_kind}. "
+        "Nothing changed. Wait for the owning worker to finish, or use the "
+        "orchestrator/CLI reclaim flow if the worker is stale. Do not call another "
+        "lifecycle transition as a fallback."
+    )
+
+
 # Keys a handler reads that its LLM-facing schema deliberately does not declare:
 # ``session_id`` is provenance stamped by internal callers (31fe2290393), ``project_id``
 # the pre-``project`` alias still honoured by ``_handle_create`` (e7811345c17).
@@ -911,6 +921,8 @@ def _handle_request_review(args: dict, **kw) -> str:
                 f"Your task is still in-flight (no state change) and its scratch workspace was "
                 f"kept. Fix the artifact path or storage error, then retry "
                 f"kanban_request_review with the same handoff.")
+        if not ok and isinstance(fail_reason, kb.LiveClaimRefusal):
+            return _live_claim_tool_error("kanban_request_review", tid)
         _check(ok, f"could not request review for {tid}: "
                    f"{fail_reason or 'unknown id or not in running/ready'}")
         return _ok_landed(kb, conn, tid, "review")
@@ -925,6 +937,8 @@ def _handle_request_changes(args: dict, **kw) -> str:
     with _board(args.get("board")) as (kb, conn):
         ok, detail = kb.request_changes(
             conn, tid, reason=reason, expected_run_id=_worker_run_id(tid))
+        if not ok and isinstance(detail, kb.LiveClaimRefusal):
+            return _live_claim_tool_error("kanban_request_changes", tid, reviewer=True)
         _check(ok, f"could not request changes for {tid}: {detail or 'invalid review state'}")
         return _ok_landed(kb, conn, tid, "ready", implementer=detail)
 

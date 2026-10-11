@@ -2641,6 +2641,10 @@ class LiveClaimError(ValueError):
         )
 
 
+class LiveClaimRefusal(str):
+    """Typed refusal detail for tuple-returning live-claim transitions."""
+
+
 def _claim_is_live(trow) -> bool:
     """True when a ``running`` task's claim still protects a run: the worker process
     it spawned exists (PID + start-time fingerprint). A claim whose worker is gone,
@@ -3329,9 +3333,12 @@ def request_review(
             # the same fence as complete_task (_claim_is_live).
             if expected_run_id is None and not force and _claim_is_live(trow):
                 return _ret(
-                    False, "task is running under a live claim; pass expected_run_id "
-                    "(worker ownership) or force=True (explicit operator "
-                    "override) instead of clearing the live run's claim",
+                    False,
+                    LiveClaimRefusal(
+                        "task is running under a live claim; pass expected_run_id "
+                        "(worker ownership) or force=True (explicit operator "
+                        "override) instead of clearing the live run's claim"
+                    ),
                 )
             if reviewer is None:
                 reviewer = _prior_reviewer(conn, task_id)
@@ -3428,7 +3435,8 @@ def _nonblank_str(value: Any) -> Optional[str]:
 
 
 def request_changes(
-    conn: sqlite3.Connection, task_id: str, *, reason: str, expected_run_id: Optional[int] = None,
+    conn: sqlite3.Connection, task_id: str, *, reason: str,
+    expected_run_id: Optional[int] = None, force: bool = False,
 ) -> tuple[bool, Optional[str]]:
     """Close an active reviewer run (claimed from ``review``) and hand the task
     back to the implementer from the latest ``review_requested`` event, parent
@@ -3439,7 +3447,8 @@ def request_changes(
 
     with write_txn(conn):
         task_row = conn.execute(
-            "SELECT status, assignee, current_run_id FROM tasks WHERE id = ?", (task_id,),
+            "SELECT status, assignee, current_run_id, claim_lock, worker_pid, "
+            "worker_started_at FROM tasks WHERE id = ?", (task_id,),
         ).fetchone()
         if task_row is None:
             return False, "task not found"
@@ -3453,6 +3462,15 @@ def request_changes(
         claimed_payload = _json_dict(_row_get(claimed_event, "payload"))
         if claimed_payload.get("source_status") != "review":
             return False, "active run was not claimed from review"
+        if expected_run_id is None and not force and _claim_is_live(task_row):
+            return (
+                False,
+                LiveClaimRefusal(
+                    "task is running under a live review claim; pass expected_run_id "
+                    "(reviewer ownership) or force=True (explicit operator override) "
+                    "instead of ending the live review run"
+                ),
+            )
 
         requested_event = _latest_event(conn, task_id, "review_requested")
         if requested_event is None:

@@ -72,6 +72,7 @@ def _parse_codex_final_response(
     choice = SimpleNamespace(index=0, message=message, finish_reason=finish_reason)
     return SimpleNamespace(
         id=getattr(final, "id", None), model=getattr(final, "model", None),
-        choices=[choice], usage=usage,
+        choices=[choice], usage=usage, status=normalized_final.status,
+        incomplete_details=normalized_final.incomplete_details,
     )
 

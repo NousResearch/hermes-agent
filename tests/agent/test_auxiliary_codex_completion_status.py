@@ -37,10 +37,11 @@ def _adapter_response(final, *, streamed, base_url=""):
     ).create(messages=[{"role": "user", "content": "Summarize the task."}])
 
 
-def test_compressor_rejects_actual_adapter_partial_summary(monkeypatch):
+@pytest.mark.parametrize("reason", ["max_output_tokens", "content_filter", "insufficient_system_resource"])
+def test_compressor_rejects_actual_adapter_partial_summary(monkeypatch, reason):
     partial = SimpleNamespace(
         status="incomplete", output=[_message("PARTIAL_CHECKPOINT")],
-        incomplete_details={"reason": "max_output_tokens"}, error=None,
+        incomplete_details={"reason": reason}, error=None,
         usage=SimpleNamespace(input_tokens=11, output_tokens=3, total_tokens=14),
     )
     calls = []
@@ -128,3 +129,43 @@ def test_actual_adapter_preserves_completion_contract(
     if expected_finish == "tool_calls":
         call, = choice.message.tool_calls
         assert (call.id, call.function.name, call.function.arguments) == ("call_1", "inspect", '{"path":"x"}')
+
+
+@pytest.mark.parametrize("streamed", [False, True], ids=["response-object", "sse"])
+@pytest.mark.parametrize("details_object", [False, True], ids=["dict-details", "object-details"])
+@pytest.mark.parametrize("status, reason, tool_call, finish", [
+    ("incomplete", "content_filter", False, "length"),
+    ("incomplete", "max_output_tokens", False, "length"),
+    ("incomplete", "insufficient_system_resource", False, "length"),
+    ("incomplete", None, False, "length"),
+    ("incomplete", "max_output_tokens", True, "tool_calls"),
+    ("completed", None, False, "stop"),
+])
+def test_actual_adapter_retains_native_completion_cause(
+    streamed, details_object, status, reason, tool_call, finish,
+):
+    details = None
+    if reason is not None:
+        details = SimpleNamespace(reason=reason) if details_object else {"reason": reason}
+    final = SimpleNamespace(
+        id="resp_native", model="served-model", status=status, incomplete_details=details, error=None,
+        output=[_TOOL_CALL] if tool_call else [_message("PARTIAL")],
+        usage=SimpleNamespace(input_tokens=11, output_tokens=3, total_tokens=14),
+    )
+
+    response = _adapter_response(final, streamed=streamed)
+    choice, = response.choices
+
+    assert {
+        "id": response.id, "model": response.model,
+        "status": getattr(response, "status", None),
+        "incomplete_details": getattr(response, "incomplete_details", None),
+        "content": choice.message.content, "finish_reason": choice.finish_reason,
+        "tools": [(call.id, call.function.name, call.function.arguments) for call in choice.message.tool_calls or []],
+        "usage": response.usage,
+    } == {
+        "id": final.id, "model": final.model, "status": status, "incomplete_details": details,
+        "content": None if tool_call else "PARTIAL", "finish_reason": finish,
+        "tools": [("call_1", "inspect", '{"path":"x"}')] if tool_call else [],
+        "usage": SimpleNamespace(prompt_tokens=11, completion_tokens=3, total_tokens=14),
+    }

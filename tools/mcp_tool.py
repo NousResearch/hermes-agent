@@ -287,7 +287,15 @@ async def _paginate_full_list(list_method, items_attr: str, server_name: str,
             else:
                 result = await list_method(cursor=cursor)
         if cache_meta_out is not None and not items:
+            # Only record a hint the server actually sent. The SDK models carry
+            # ``ttl_ms=0`` / ``cache_scope='private'`` as field DEFAULTS, so plain
+            # attribute access reports a value for servers that sent nothing — and a
+            # recorded ``ttl_ms=0`` makes the cache entry expire the instant it is
+            # written (see get_cached_entry), silently defeating every lazy server.
+            sent = getattr(result, "model_fields_set", None)
             for key, snake, camel in (("ttl_ms", "ttl_ms", "ttlMs"), ("cache_scope", "cache_scope", "cacheScope")):
+                if isinstance(sent, (set, frozenset)) and snake not in sent and camel not in sent:
+                    continue
                 hint = mcp_field(result, snake, camel)
                 if hint is not None:
                     cache_meta_out[key] = hint

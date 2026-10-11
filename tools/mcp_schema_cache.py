@@ -67,7 +67,12 @@ def get_cached_entry(server_name: str, fingerprint: str) -> Optional[dict]:
         return None
     ttl_ms = entry.get("ttl_ms")
     written_at = entry.get("written_at")
-    expired = (isinstance(ttl_ms, (int, float)) and isinstance(written_at, (int, float))
+    # A non-positive ttl_ms means "no TTL". The MCP SDK's ListToolsResult carries ``ttl_ms=0``
+    # as a field DEFAULT, so a server that never sent ``ttlMs`` still reads back as 0 here.
+    # Treating 0 as a real TTL makes the entry expire the instant it is written
+    # (elapsed_ms >= 0 is always true), which silently defeats every ``lazy`` server.
+    expired = (isinstance(ttl_ms, (int, float)) and ttl_ms > 0
+               and isinstance(written_at, (int, float))
                and (time.time() - written_at) * 1000.0 >= float(ttl_ms))
     return None if expired else entry
 
@@ -76,9 +81,11 @@ def write_cache_entry(server_name: str, fingerprint: str, *, tools: list[dict],
                       utility_tools: Optional[list[dict]] = None, ttl_ms: Optional[float] = None,
                       cache_scope: Optional[str] = None) -> None:
     """Persist tool schemas after a successful live connect. ``ttl_ms`` / ``cache_scope`` are
-    the server's ``tools/list`` SEP-2549 hints; ``written_at`` anchors TTL expiry."""
+    the server's ``tools/list`` SEP-2549 hints; ``written_at`` anchors TTL expiry. A
+    non-positive ``ttl_ms`` (the SDK default for servers that send no hint) is not stored, so
+    the entry never expires instead of expiring immediately."""
     entry = {"fingerprint": fingerprint, "tools": tools, "utility_tools": utility_tools or []}
-    if isinstance(ttl_ms, (int, float)):
+    if isinstance(ttl_ms, (int, float)) and ttl_ms > 0:
         entry["ttl_ms"] = ttl_ms
         entry["written_at"] = time.time()
     if cache_scope:

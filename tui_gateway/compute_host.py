@@ -62,7 +62,7 @@ class ComputeHost:
     _FRAME_HANDLERS: dict[str, str] = {
         "turn.start": "_handle_turn_start", "interrupt": "_handle_interrupt",
         "respond": "_handle_respond", "reload_mcp": "_handle_reload_mcp",
-        "control": "_handle_control", "shutdown": "_handle_shutdown"}
+        "control": "_handle_control", "conditional": "_handle_conditional", "shutdown": "_handle_shutdown"}
 
     def __init__(
         self, *, stdout: Any = None, max_workers: int | None = None,
@@ -80,6 +80,10 @@ class ComputeHost:
         self._turn_futures: dict[concurrent.futures.Future, str] = {}
         self._turn_futures_lock = threading.Lock()
         self._transport = _HostTransport(self.emit)
+        # Hello/idle hosts need no reservations or membership reaper. First use includes
+        # legacy turns whose failed origin must be latched, not just conditional requests.
+        self._conditional = None
+        self._conditional_lock = threading.Lock()
         self._heartbeat_secs = (
             float(heartbeat_secs) if heartbeat_secs is not None
             else float(os.environ.get("HERMES_COMPUTE_HOST_HEARTBEAT_SECS") or "15"))
@@ -91,6 +95,8 @@ class ComputeHost:
 
     def emit(self, frame: dict[str, Any]) -> None:
         frame.setdefault("host_ns", now_ns())
+        if frame.get("type") == "rpc":
+            frame.setdefault("boot_id", self._boot_id)
         data = json.dumps(frame, separators=(",", ":"), ensure_ascii=False)
         with self._write_lock:
             print(data, file=self._stdout, flush=True)
@@ -101,6 +107,12 @@ class ComputeHost:
 
     def close(self) -> None:
         self._closed.set()
+        # Wait for any initializer to publish, then release the lifecycle lock before
+        # closing the protocol (which takes its own locks and shuts down workers).
+        with self._conditional_lock:
+            conditional = self._conditional
+        if conditional is not None:
+            conditional.close()
         self._executor.shutdown(wait=False, cancel_futures=True)
         # Every caller hard-exits next (os._exit skips atexit): a foreground command still
         # running in its own process group would outlive the host.
@@ -154,6 +166,23 @@ class ComputeHost:
                 "message": f"unknown frame type: {kind}"})
         else:
             getattr(self, handler)(frame)
+
+    def _conditional_protocol(self):
+        with self._conditional_lock:
+            if self._closed.is_set():
+                return None
+            if self._conditional is None:
+                from .host_conditional import HostConditionalProtocol
+                self._conditional = HostConditionalProtocol(self)
+            return None if self._closed.is_set() else self._conditional
+
+    def _handle_conditional(self, frame):
+        conditional = self._conditional_protocol() if frame.get("boot_id") == self._boot_id else None
+        if conditional is None:
+            self.emit({"type": "conditional.ack", "request_id": frame.get("request_id"),
+                       "boot_id": self._boot_id, "error": 4007})
+        else:
+            conditional.handle(frame)
 
     def _handle_shutdown(self, frame: dict[str, Any]) -> None:
         self.emit({"type": "shutdown.ack", "request_id": frame.get("request_id")})
@@ -230,6 +259,10 @@ class ComputeHost:
         try:
             from tui_gateway import server
             session = self._ensure_server_session(server, frame)
+            conditional = self._conditional_protocol()
+            if conditional is None:
+                raise RuntimeError("compute host closed")
+            conditional.capture(server, session, frame)
             # #101416: the parent already holds this session's active-session lease (claimed in
             # prompt.submit before routing here). Install the inert borrow BEFORE the turn runs, or
             # _admit_prompt_turn re-claims from this child pid and is fenced out by the parent's own
@@ -291,6 +324,7 @@ class ComputeHost:
                 if session is not None:
                     with session.get("history_lock", threading.Lock()):
                         session["running"] = False
+                        session["_conditional_host_failed"] = True
                         server._clear_inflight_turn(session)
             self._reply("turn.error", sid, request_id, reason="exception", message=str(exc))
 
@@ -315,12 +349,16 @@ class ComputeHost:
         sid = str(frame.get("sid") or "")
         session = server._sessions.get(sid)
         if session is not None:
-            session["transport"] = self._transport
-            if frame.get("cols") is not None:
-                session["cols"] = int(frame.get("cols") or 80)
-            for key in ("cwd", "profile_home"):
-                if frame.get(key):
-                    session[key] = str(frame[key])
+            # Profile/store writers participate in the conditional reservation cut.
+            with session["history_lock"], server._sessions_lock:
+                if server._sessions.get(sid) is not session:
+                    raise ValueError("host runtime replaced")
+                server._attach_session_transport(session, self._transport)
+                if frame.get("cols") is not None:
+                    session["cols"] = int(frame.get("cols") or 80)
+                for key in ("cwd", "profile_home"):
+                    if frame.get(key):
+                        session[key] = str(frame[key])
         else:
             session = self._build_server_session(server, frame, sid)
         if isinstance(frame.get("attached_images"), list):
@@ -395,7 +433,7 @@ class ComputeHost:
             # minimal host-owned session rather than failing after the expensive agent build.
             server._sessions[sid] = {
                 "agent": agent, "session_key": key, "history": list(history),
-                "history_lock": threading.Lock(),
+                "history_lock": threading.RLock(),
                 "history_version": int(frame.get("history_version") or 0), "inflight_turn": None,
                 "created_at": time.time(), "last_active": time.time(), "running": False,
                 "attached_images": [], "image_counter": 0,

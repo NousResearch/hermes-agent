@@ -1468,7 +1468,7 @@ class SessionMessagesMixin:
         # before_rows includes the anchor itself.
         return {"window": window_msgs, "messages_before": max(0, len(before_rows) - 1), "messages_after": len(after_rows)}
 
-    def resolve_resume_session_id(self, session_id: str) -> str:
+    def resolve_resume_session_id(self, session_id: str, *, strict: bool = False) -> str:
         """Redirect a resume target to the descendant holding the messages: follow the compression chain to
         the live tip (lineage-aware, so delegate/branch children never hijack it), then walk
         ``parent_session_id`` forward to the DEEPEST node with messages (a continuation may hold newer
@@ -1478,13 +1478,16 @@ class SessionMessagesMixin:
         ``parent_session_id``). The flush cursor is reset, so the child is where new messages actually land
         — the parent ends up with ``message_count = 0`` rows unless messages had already been flushed to it
         before compression. See #15000.
+        ``strict=True`` is for conditional authority checks: unreadable lineage raises
+        rather than returning an apparently unchanged target. Legacy display reads retain fallback.
         """
         if not session_id:
             return session_id
         try:
             session_id = self.get_compression_tip(session_id) or session_id
         except Exception:
-            pass
+            if strict:
+                raise
         with self._read_ctx() as conn:
             current = session_id
             seen = {current}
@@ -1502,6 +1505,8 @@ class SessionMessagesMixin:
                         "  AND COALESCE(child.source, '') != 'tool' "
                         "ORDER BY child.started_at DESC, child.id DESC LIMIT 1", (current,)).fetchone()
                 except Exception:
+                    if strict:
+                        raise
                     return session_id
                 if child_row is None or not child_row["id"] or child_row["id"] in seen:
                     break

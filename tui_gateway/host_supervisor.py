@@ -19,6 +19,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from .host_conditional_supervisor import HostConditionalSupervisorMixin
 from hermes_constants import get_hermes_home
 from tools.environments.local import hermes_subprocess_env
 
@@ -44,7 +45,7 @@ _LATE_CONTROL_MAX = 64
 # Host frames whose ``request_id`` resolves a pending/late control waiter.
 _CONTROL_REPLY_TYPES = frozenset({
     "control.ack", "control.error", "respond.ack", "respond.error", "interrupt.ack",
-    "reload_mcp.ack", "shutdown.ack"})
+    "reload_mcp.ack", "conditional.ack", "shutdown.ack"})
 
 
 def append_log_record(path: str | Path, record: str) -> None:
@@ -136,13 +137,15 @@ def is_compute_host_identity(pid: int) -> bool:
     return "tui_gateway.compute_host" in _pid_command(pid)
 
 
-class HostSupervisor:
+class HostSupervisor(HostConditionalSupervisorMixin):
     """Own one persistent compute-host child and relay its frames."""
 
     def __init__(
         self, *, registry_path: str | Path | None = None, argv: list[str] | None = None,
         cwd: str | Path | None = None, env: dict[str, str] | None = None,
         rpc_sink: Callable[[dict], None] | None = None, respawn_max: int = 3,
+        conditional_admission_sink: Callable[[dict], bool] | None = None,
+        conditional_membership_sink: Callable[[dict], list[str]] | None = None,
         heartbeat_secs: int = 15, expected_build_sha: str | None = None,
         expected_hermes_home: str | None = None, autostart: bool = True) -> None:
         self.registry_path = (
@@ -152,12 +155,15 @@ class HostSupervisor:
         self.cwd = Path(cwd) if cwd is not None else _repo_root()
         self.env = env
         self.rpc_sink = rpc_sink or (lambda _obj: None)
+        self.conditional_admission_sink = conditional_admission_sink
+        self.conditional_membership_sink = conditional_membership_sink
         self.respawn_max = max(0, int(respawn_max))
         self.heartbeat_secs = max(1, int(heartbeat_secs))
         self.expected_build_sha = _build_sha() if expected_build_sha is None else expected_build_sha
         self.expected_hermes_home = (
             str(get_hermes_home()) if expected_hermes_home is None else expected_hermes_home)
         self._lock = threading.RLock()
+        self._stdin_lock = threading.Lock()
         self._proc: subprocess.Popen[str] | None = None
         self._hello_event = threading.Event()
         self._hello: dict[str, Any] = {}
@@ -207,6 +213,7 @@ class HostSupervisor:
             self._terminate_process(proc)
         finally:
             self._remove_registry()
+            self._close_conditional_writer()
 
     def reconcile_startup_orphan(self) -> str:
         """Terminate a stale registered host, guarding against PID reuse."""
@@ -382,6 +389,10 @@ class HostSupervisor:
     def _send_frame(self, frame: dict[str, Any]) -> None:
         with self._lock:
             proc = self._proc
+        self._write_frame_to(proc, frame)
+
+    def _write_frame_to(self, proc, frame):
+        with self._stdin_lock:
             if proc is None or proc.poll() is not None or proc.stdin is None:
                 raise RuntimeError("compute host is not running")
             proc.stdin.write(json.dumps(frame, separators=(",", ":"), ensure_ascii=False) + "\n")
@@ -395,7 +406,7 @@ class HostSupervisor:
             except json.JSONDecodeError:
                 logger.warning("compute host emitted invalid json: %r", raw[:200])
                 continue
-            if isinstance(frame, dict):
+            if isinstance(frame, dict) and self._proc is proc:
                 self._handle_host_frame(frame)
 
     def _drain_stderr(self, proc: subprocess.Popen[str]) -> None:
@@ -410,6 +421,10 @@ class HostSupervisor:
         request_id = str(frame.get("request_id") or "")
         if ftype in _CONTROL_REPLY_TYPES or (ftype == "error" and request_id):
             self._deliver_control_frame(request_id, frame)
+        elif ftype == "conditional.membership":
+            self.conditional_membership(frame)
+        elif ftype == "conditional.admit":
+            self.conditional_admit(frame)
         elif ftype == "hello":
             self._hello = dict(frame)
             self._hello_event.set()
@@ -418,7 +433,10 @@ class HostSupervisor:
             logger.debug("compute host heartbeat: %s", frame)
         elif ftype == "rpc":
             if isinstance(frame.get("message"), dict):
-                self.rpc_sink(frame["message"])
+                message = frame["message"]
+                if frame.get("boot_id"):
+                    message = {**message, "_conditional_host_boot": frame["boot_id"]}
+                self.rpc_sink(message)
         elif ftype in ("turn.end", "turn.error"):
             with self._lock:
                 pending = self._pending_turns.pop(request_id, None)

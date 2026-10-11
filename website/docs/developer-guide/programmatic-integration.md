@@ -100,6 +100,230 @@ Methods: `approval` → `{choice}`; `clarify` → `{answers}` keyed by question 
 
 When the gateway withdraws a question (timeout, interrupt, answered from another surface) it emits `request.cancel` `{ id, method, reason }`; clear only the matching prompt. `session.resume` / `session.activate` results and `session.events.since` carry `open_requests` — the still-open frames — so a reconnecting client re-renders (and can still answer) them.
 
+### Authenticated creation provenance
+
+`session.create` and `session.branch_stored` may return `creation_binding`:
+`session_id`, `stored_session_id`, `authenticated_owner`, `runtime_incarnation`
+and `profile_store_scope`. The owner is the gateway-authenticated
+`<provider>:<user id>`, not the model provider. Anonymous/legacy transports and
+unbounded identity values receive no binding. The incarnation is minted for the
+new live record independently of its short runtime ID and process replay epoch;
+a new record created through these methods mints another incarnation even under
+the same runtime ID. Other creation/resume paths do not acquire this provenance.
+
+The scope token names that runtime's captured resolved profile and `state.db`
+location without exposing a host path. It is an opaque per-origin identifier,
+not a lookup key for comparing independently created sessions or proving the
+physical database file has not been replaced. It does not grant authentication
+or access. No extra durable store is introduced.
+
+An idempotent creation retry returns the original binding only to the same
+authenticated creator requesting the same resolved profile/store scope. The
+binding never restamps origin from a later compression segment, profile or login
+on the mutable runtime. Consequently its original `stored_session_id` may differ
+from a retry's current top-level `stored_session_id`; a client must not interpret
+that as permission to follow a descendant. Each response carries a fresh copy.
+
+Creation metadata alone does not prove current membership or authorize recovery.
+Legacy `session.activate` is unchanged and does not compare these fields. Clients
+must not send invented preconditions to it or adopt a runtime from discovery.
+
+### Conditional subscription prerequisite
+
+`session.activate_bound` accepts `{session_id, expected_binding, profile?}`.
+`expected_binding` must contain **all five** creation-binding fields as bounded
+strings; unknown, missing, wrong-type or oversized values fail with `4000`.
+The gateway derives the caller principal from its authenticated transport. A
+well-formed mismatch, anonymous/foreign/dead peer, unavailable record, or unproven
+runtime fails with `4007`, without a session snapshot or fallback. An unavailable
+named profile retains the normal `4064` profile error.
+
+This bounded contract supports **unbuilt idle creation records and their original
+healthy ready local engines**, including an ongoing turn with an active local engine
+lease holder. The first engine attachment captures an immutable engine object,
+store object and identity revision for that creation record. Attachment retries
+cannot refresh this witness. A removed/replaced engine, changed revision (even
+if the segment ID changes back), changed engine/store scope, failed/interrupted
+turn or unready/unproven engine refuses. Original ready compute-host engines can
+also qualify through the child-authoritative protocol below. An unbuilt record
+routed to a child still refuses: activation never starts, resumes or rebuilds an
+engine to manufacture proof. Any attempted child lifetime permanently invalidates
+local eligibility, even after a failed send or parent-mirror ABA. A ready local
+engine stays local under the existing routing policy.
+An accepted prompt still waiting for its engine turn lease is not certified as a
+healthy running engine.
+
+`AIAgent` inherits the local boundary in `agent/session_identity.py` through its
+persistence mixin. Segment assignments take `session_identity_guard()` and
+advance `session_identity_revision` only when the ID changes. Compression child
+publication/adoption and persistence-tip adoption hold the same reentrant guard
+over DB work and engine state updates. Post-lease-admission reload now also
+holds this guard over presence checks, tip resolution, adoption and transcript
+loading; the potentially long lease acquisition wait stays outside it. Ordinary
+reads retain their historical behavior. Duck-typed non-engine callers retain
+legacy behavior and provide no proof of this boundary.
+
+Conditional activation tries that guard without waiting while holding the gateway
+guards, then compares the original engine/store/revision and both engine and
+gateway segment IDs before subscription. It retains the engine guard through
+receipt capture. A busy engine transition refuses instead of waiting on callbacks
+that might need gateway locks. A healthy turn continues on its existing worker
+and lease, with existing subscribers retained; activation starts no execution.
+
+The parent mirror alone supplies no certificate of compute-host identity.
+Complete recovery, durable request outcomes and downstream
+supported-release/pin qualification remain separate gates. Method presence or a
+subscription receipt alone must not be interpreted as writable recovery support.
+
+For a supported record, registry object membership, creator, requested and current
+resolved store, original exact stored segment, incarnation and scope are compared
+under resume/history/registry/transport guards before subscription. Copying origin
+metadata onto a replacement record cannot pass. Gateway compression key writes
+now use history_lock; compute-host key adoption already uses it. Existing
+subscribers remain attached, and only a successful transport attach adds a viewer
+and cancels orphan reap. Repeating the same successful request preserves one
+subscriber membership and starts no execution.
+
+Success returns `{attached: true, accepted_binding: {...}}`, captured within that
+comparison/subscription boundary. It contains no mutable history, inflight state
+or pending requests. The receipt certifies that historical cut, not future
+connection liveness, complete recovery or input authority. Conditional operations
+below revalidate identity independently at use. Never automatically replay prompts or responses or fall
+back to legacy activation/cold resume after refusal or a lost receipt.
+
+### Compute-host authority
+
+The public envelope and accepted binding are the same for local and host engines.
+Private pipe tokens are never client credentials. The first deliberate ordinary
+host turn carries the immutable creation origin and pins the actual child boot.
+Only that first child record can capture the original engine, database object,
+identity revision and exact segment. Failed capture is retained as a tombstone;
+ordinary dispatch, replacement, restart and away/back identity changes cannot
+recertify it. A new authenticated creation can qualify in a new child lifetime.
+
+Activation queries only the existing pinned child. Two private reservation
+workers compare the complete binding, owner, resolved profile/store, original
+record/engine/revision and strict readable durable tip under the child's
+resume/history/registry/transport guards and nonblocking engine guard. A prepared
+reservation holds that cut for at most five seconds pending commit. Settling,
+failed, interrupted, missing or changed authority refuses; a healthy running
+engine keeps its worker and lease.
+
+The parent separately compares its original record, owner, scope, segment and
+child boot. It installs a tentative delivery sink, queues commit inside that cut,
+and waits outside gateway locks. The child commits one logical subscription at
+its held identity cut; the parent publishes membership only after receiving the
+matching receipt and revalidating its own cut and the actual peer attachment.
+Tentative sinks do not count as client liveness and cannot suppress orphan
+reaping. Their events are dropped, so recovery must retain explicit loss/gap evidence.
+Refusal exposes no snapshot or tentative events and leaves parent viewers and
+orphan-reap state unchanged. Only the tentative sink is removed; existing peers
+are retained. Abandoned reservations expire; unused logical child subscriptions
+are released asynchronously. Child membership is also leased: a child-clock lease
+lasts at most 15 seconds without fresh parent confirmation. Every two seconds the
+child challenges the parent with a boot-pinned snapshot of subscription tokens.
+Only exact peers still registered on their original parent records can be confirmed.
+A single bounded private response renews that snapshot; its deadline is measured
+from challenge issuance, so delayed/replayed replies cannot extend expired authority.
+A confirmed peer omitted from a fresh response is revoked; the first commit has only
+its bounded initial lease while the parent publishes membership. Direct detach release
+is a prompt cleanup hint, not the lifetime authority. A dropped/full/unavailable writer
+cannot strand live authority indefinitely: expiry makes the logical peer dead before
+any transport-lock cleanup, removes its retained token and frees the 64-member cap.
+Physical transport removal follows asynchronously without restoring concurrent peers.
+Expiry never cancels or retries an accepted operation; reactivation independently
+compares identity and obtains a new subscription if its old lease has expired. Repeating an accepted activation on the same peer
+reuses its child membership token. A peer-only activation gate serializes
+concurrent retries without holding gateway guards. Repeating after a lost receipt can reconcile
+membership, but cannot prove history or operation outcomes.
+
+Conditional pipe sends use a bounded eight-packet queue and capture the exact
+process object: blocked I/O holds no parent gateway lock, and queued controls can
+never migrate to a replacement process. Reservations and subscriptions are private and boot-pinned; commits are never
+automatically retried. The child limits retained subscriptions to 64.
+RPC relay frames carry the actual boot internally. New-lifetime frames revoke
+old conditional delivery membership before forwarding; internal tags are stripped
+before client delivery. Queries never start or respawn a host.
+
+All four conditional operations use the same child-held reservation and compare
+accepted membership and identity again through the immediate handler. Prompt
+admission additionally carries its witness through both production worker hops
+and the durable lease wait. After acquiring the lease, while retaining the engine
+identity guard, it obtains a generation-pinned parent admission decision for that
+specific pending turn, then verifies the exact engine/store/revision and strict
+tip before execution. Changed/retired/cancelled parent authority refuses; the
+newly acquired lease is released. Successful admission consumes the witness
+before model or delegated work. An accepted user row can remain after refusal;
+it proves neither execution nor completion and must not be replayed.
+
+A missing commit acknowledgment or partial pipe failure returns `5019` for an
+operation whose outcome is unconfirmed. The caller must not infer refusal or retry
+that operation. `4007` remains enforceable identity/unavailability refusal before
+operation commit; `4009` covers busy plain-text submission and reservation capacity.
+An activation with an unconfirmed child receipt grants no parent authority; an
+exact activation retry is reconciliation, never operation replay. These controls
+do not add cold attachment, request revision CAS, durable outcomes or complete
+recovery. Supported upstream publication/capability and downstream qualification
+remain independent gates.
+
+### Conditional operations
+
+After accepting `session.activate_bound`, the connection enters conditional mode.
+`session.invoke_bound` requires `{session_id, expected_binding, profile?, operation}`
+and a live subscription installed for that exact binding on the calling peer.
+Its closed, discriminated operation catalog is:
+
+```json
+{"method":"prompt.submit","text":"a deliberate new prompt"}
+{"method":"session.interrupt"}
+{"method":"request.answer","id":"srq-...","result":{"answer":"reviewed answer"}}
+{"method":"clarify.lock","request_id":"srq-...","question_id":"q1","answer":"chosen"}
+```
+
+The envelope returns `{operation_result: ...}` with the underlying operation's
+result. Missing, malformed, oversized or unsupported operation fields return
+`4000`. Identity, owner, scope, incarnation, engine revision/store, subscription
+or pending-request ownership mismatch returns `4007` before mutation; there is
+no discovery, durable-ID fallback, engine bootstrap or replay. Unreadable durable
+lineage is refused, using the strict form of the existing resume-tip lookup.
+Expired/missing request IDs also refuse; absence is not evidence an earlier answer
+was accepted. Request identity lookup and settlement share the request registry
+lock. This does not add revision-CAS for editable request params or outcome lookup.
+
+An original ready local engine or a child-authoritatively qualified original
+ready compute-host engine can execute an operation. Prompts are plain
+text deliberate new **idle** turns without staged attachments; busy input returns
+`4009` and cannot steer, interrupt, queue or persist a follow-up. Rewinds, media
+staging, slash commands, subagent controls and other mutators are outside this
+catalog. Conditional mode is sticky for the connection, including after removal
+or replacement of its runtime. Legacy mutators and raw JSON-RPC response frames
+cannot bypass the envelope. The gateway permits the documented informational
+history/replay/list reads, creation and capability/heartbeat calls; their data does
+not grant authority. Other clients retaining their legacy mode keep their behavior.
+
+The operation holds the gateway comparison guards and a nonblocking engine guard
+through the existing immediate handler's mutation. Creation-record history and
+resume locks are reentrant so those handlers participate in this cut. The envelope
+runs in the RPC pool; it never waits for an engine build, a model turn or a host RPC
+under the cut. A prompt's worker carries an immutable engine/store/revision witness
+across both worker hops and the durable lease wait. After durable admission, the
+engine checks that witness and exact readable stored tip before adoption/execution;
+it releases a newly acquired lease on refusal and cannot carry that unadmitted input
+into a later turn. Successful admission consumes the witness before model work or
+background threads, so legitimate delegated engines do not inherit the parent pin. The model loop may compress normally within a turn already
+admitted against the original identity. Later operations must still refuse the
+old binding after rotation. Admission is not a delivery/completion guarantee: a
+prompt accepted before worker refusal can retain its original submit row/error;
+never retry it automatically or infer a provider executed it.
+
+Compute-host support uses the child-authoritative identity/subscription and
+operation-admission protocol described above. The four operation envelopes work
+against both qualified topologies; parent mirrors or process liveness alone do
+not certify a host engine. Unbuilt/unproven host records, replacement/restarted
+lifetimes and changed engine revisions still refuse. Clients must independently
+qualify the supported contract and quarantine superseded connection generations
+before consuming it. Full recovery and request/outcome settlement remain separate.
+
 ### Rebuilding the in-flight turn on reconnect
 
 `session.resume` / `session.activate` results carry `inflight` — the turn still running (or the retained failed one) that history does not hold yet: `user`, `assistant` streamed so far, `streaming`, mid-turn `corrections`, and error fields. When the turn was started by the gateway rather than typed by a person (a background-process completion, an async delegation result, a hidden scaffolding prompt) `inflight` also carries the same `display_kind` / `display_metadata` the persisted `messages` row will get, so a client renders the live prompt exactly as it will render history after the turn lands — a `process_complete` timeline marker with `display_metadata.display_text`, nothing at all for `hidden`. Both fields are absent for genuine user input; never infer origin from the prompt text (a user quoting a marker string is still a user).

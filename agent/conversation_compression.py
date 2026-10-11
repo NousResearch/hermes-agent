@@ -40,6 +40,7 @@ from agent.memory_provider import PRE_COMPRESS_CHECKPOINT_API_VERSION
 from agent.model_metadata import estimate_messages_tokens_rough, estimate_request_tokens_rough
 from agent.session_activity import ActivityProvenance, normalize_activity_provenance
 from agent.usage_anchor import set_usage_anchor
+from agent.session_identity import _rebind_session_context, identity_transaction
 from hermes_state_ids import new_session_id as mint_session_id
 from hermes_state_pidns import holder_namespace_token
 
@@ -1611,18 +1612,7 @@ def _mark_compression_blocked_transient(agent: Any, compressor: Any, reason: str
             agent._compression_blocked_transient = reason
 
 
-def _rebind_session_context(session_id: str) -> None:
-    """Point the worker thread's session ContextVar and log context at ``session_id``."""
-    try:
-        from gateway.session_context import set_current_session_id
-        set_current_session_id(session_id)
-    except Exception:
-        os.environ["HERMES_SESSION_ID"] = session_id
-    with contextlib.suppress(Exception):
-        from hermes_logging import set_session_context
-        set_session_context(session_id)
-
-
+@identity_transaction
 def _adopt_live_compression_child(
     agent: Any, session_db: Any, parent_session_id: str
 ) -> Optional[list[dict[str, Any]]]:
@@ -3314,6 +3304,7 @@ def _compression_child_source(agent: Any, parent_session_id: str) -> str:
     return session_source_for(getattr(agent, "platform", None))
 
 
+@identity_transaction
 def _publish_rotated_compaction(
     agent: Any, messages: list, compressed: list, *, new_system_prompt: str, lease: _CompressionLease,
     old_session_id: str, compressed_user_turn_outcome: str,

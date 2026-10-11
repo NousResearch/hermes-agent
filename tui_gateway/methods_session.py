@@ -363,22 +363,7 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
                 if session is not None:
                     # Refresh the TTL so back-to-back retries don't age out mid-flight.
                     _idempotency_keys[idem_key] = (existing_sid, now_for_gc)
-                    history = session["history"]
-                    override = session.get("model_override") or {}
-                    # Same result shape as the fresh-create path below: branch_stored
-                    # (copy_parent_history) answers messages_omitted and NEVER puts the
-                    # copied transcript on the wire — its result contract forbids
-                    # ``messages``, and serializing the parent's history through the
-                    # renderer is exactly what the method exists to avoid.
-                    return _ok(rid, {
-                        "session_id": existing_sid, "stored_session_id": session["session_key"],
-                        "message_count": len(history),
-                        **({"messages_omitted": True} if copy_parent_history
-                           else {"messages": _history_to_messages(history, profile_home=session.get("profile_home"))}),
-                        "info": {**_lazy_info_route(session, override), "tools": {}, "skills": {}, "cwd": session["cwd"], "branch": git_probe.branch(session["cwd"]),
-                                 "project": _project_info_for_cwd(session["cwd"]), "lazy": True,
-                                 "desktop_contract": DESKTOP_BACKEND_CONTRACT,
-                                 "profile_name": _response_profile_name(profile)}})
+                    return _creation_retry_result(rid, existing_sid, session, profile, profile_home, copy_parent_history)
                 # The session was closed between the original create and the retry —
                 # fall through and create a fresh one under the same key.
                 _idempotency_keys.pop(idem_key, None)
@@ -426,7 +411,7 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
             "active_session_lease": None,  # claimed lazily on the first turn (_ensure_active_session_slot)
             "cols": int(params.get("cols", 80)), "created_at": now, "edit_snapshots": {},
             "explicit_cwd": explicit_cwd,
-            "history": history, "history_lock": threading.Lock(), "history_version": 0, "image_counter": 0,
+            "history": history, "history_lock": threading.RLock(), "history_version": 0, "image_counter": 0,
             "seeded": bool(history),  # gates _persist_branch_seed: only create-time history is unpersisted
             "cwd": session_cwd, "inflight_turn": None, "last_active": now,
             "model_override": session_model_override,
@@ -441,7 +426,12 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
             "slash_worker": None, "tool_progress_mode": _load_tool_progress_mode(), "tool_started_at": {},
             "transport": current_transport() or _stdio_transport,
             "auth_user_id": _transport_auth_user_id(current_transport())}
-        _register_session_cwd(_sessions[sid])
+        from .session_creation_binding import CreationBinding
+        _sessions[sid]["creation_binding"] = CreationBinding.mint(
+            sid, key, _sessions[sid]["auth_user_id"],
+            str((Path(profile_home or _hermes_home) / "state.db").resolve()), _sessions[sid])
+        created_session = _sessions[sid]
+        _register_session_cwd(created_session)
         if idem_key is not None:
             _idempotency_keys[idem_key] = (sid, now)
     if session_model_override:
@@ -483,6 +473,7 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
     messages = _history_to_messages(history, profile_home=profile_home)  # hidden seed rows are not on the wire; count what is (as resume does)
     return _ok(rid, {
         "session_id": sid, "stored_session_id": key, "message_count": len(messages),
+        **_creation_binding_fields(created_session, profile_home),
         **({"messages_omitted": True} if copy_parent_history else {"messages": messages}),
         "info": {**_lazy_info_route(_sessions[sid], override), "tools": {}, "skills": {}, "cwd": cwd, "branch": git_probe.branch(cwd),
                  "project": _project_info_for_cwd(cwd), "lazy": True, "desktop_contract": DESKTOP_BACKEND_CONTRACT,

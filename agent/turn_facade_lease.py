@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from hermes_state_pidns import holder_namespace_token
+from agent.session_identity import check_expected_turn_identity, conditional_turn_pending, consume_expected_turn_identity, identity_transaction
 
 # Same logger name as the origin module so log records / caplog filters are unchanged.
 logger = logging.getLogger("run_agent")
@@ -294,6 +295,52 @@ def _durable_session_exists(db, session_id: str) -> Optional[bool]:
         return None
 
 
+@identity_transaction
+def _reload_admitted_turn(agent, db, session_id, task_context, admission, conversation_history, reload_needed, announced):
+    # Read the row only now: the previous holder may have created or deleted it while this
+    # turn waited, so an answer from before admission can be stale either way.
+    check_expected_turn_identity(agent, db)
+    if conditional_turn_pending():
+        # Even an uncontended acquisition cannot adopt a pre-existing descendant.
+        # Compare under the same engine transaction, after durable admission.
+        check_expected_turn_identity(agent, db, db.resolve_resume_session_id(session_id, strict=True))
+    durable = _durable_session_exists(db, session_id)
+    if durable:
+        # Row proven to exist — suppress the redundant create attempt. A missing row leaves
+        # the flag alone: the flush heals a row deleted under a live agent (#123583). So does
+        # an unknown one: the create is an upsert that never overwrites an existing row.
+        agent._session_db_created = True
+    # Reload only a transcript that may exist: callers may seed a fresh id in memory before its
+    # row is written, and reloading an absent row would erase that seed. An unknown row still
+    # reads the transcript after a wait and adopts it only if it returns rows; that read
+    # raising ends the turn.
+    if reload_needed and durable is not False:
+        if announced:
+            agent._emit_status("Session is free; loading the latest transcript...")
+        # The holder may have compressed/rotated the session while we waited: reload only
+        # AFTER admission; an immediate acquisition skips this (needless prompt-cache miss).
+        latest_session_id = db.resolve_resume_session_id(session_id)
+        check_expected_turn_identity(agent, db, latest_session_id)
+        if latest_session_id:
+            agent.session_id = latest_session_id
+            task_context["session_id"] = latest_session_id
+        reloaded = db.get_messages_as_conversation(
+            agent.session_id, repair_alternation=True, include_row_ids=True
+        )
+        # Decide on the stored rows alone: an unknown row that reloads nothing keeps the
+        # caller's history, which already holds any carried input below.
+        if durable or reloaded:
+            # A follow-up that aborted an earlier wait carries that turn's never-persisted
+            # input only in memory (see carry_unadmitted_user_message); the reload drops it.
+            from agent.session_persistence import _PERSIST_AFTER_ADMISSION_INTERRUPT
+            reloaded.extend(
+                m for m in (conversation_history or [])
+                if isinstance(m, dict) and m.get(_PERSIST_AFTER_ADMISSION_INTERRUPT)
+                and "_row_id" not in m
+            )
+            admission.conversation_history = reloaded
+
+
 def admit_durable_turn_lease(
     agent, *, session_id: str, relay_turn_id: str, task_context: dict[str, Any],
     conversation_history: Optional[list[dict[str, Any]]],
@@ -358,42 +405,8 @@ def admit_durable_turn_lease(
     agent._active_session_turn_lease_holder = holder
     agent._active_session_turn_lease_ttl_seconds = LEASE_TTL_SECONDS
     try:
-        # Read the row only now: the previous holder may have created or deleted it while this
-        # turn waited, so an answer from before admission can be stale either way.
-        durable = _durable_session_exists(db, session_id)
-        if durable:
-            # Row proven to exist — suppress the redundant create attempt. A missing row leaves
-            # the flag alone: the flush heals a row deleted under a live agent (#123583). So does
-            # an unknown one: the create is an upsert that never overwrites an existing row.
-            agent._session_db_created = True
-        # Reload only a transcript that may exist: callers may seed a fresh id in memory before its
-        # row is written, and reloading an absent row would erase that seed. An unknown row still
-        # reads the transcript after a wait and adopts it only if it returns rows; that read
-        # raising ends the turn.
-        if reload_needed and durable is not False:
-            if announced:
-                agent._emit_status("Session is free; loading the latest transcript...")
-            # The holder may have compressed/rotated the session while we waited: reload only
-            # AFTER admission; an immediate acquisition skips this (needless prompt-cache miss).
-            latest_session_id = db.resolve_resume_session_id(session_id)
-            if latest_session_id:
-                agent.session_id = latest_session_id
-                task_context["session_id"] = latest_session_id
-            reloaded = db.get_messages_as_conversation(
-                agent.session_id, repair_alternation=True, include_row_ids=True
-            )
-            # Decide on the stored rows alone: an unknown row that reloads nothing keeps the
-            # caller's history, which already holds any carried input below.
-            if durable or reloaded:
-                # A follow-up that aborted an earlier wait carries that turn's never-persisted
-                # input only in memory (see carry_unadmitted_user_message); the reload drops it.
-                from agent.session_persistence import _PERSIST_AFTER_ADMISSION_INTERRUPT
-                reloaded.extend(
-                    m for m in (conversation_history or [])
-                    if isinstance(m, dict) and m.get(_PERSIST_AFTER_ADMISSION_INTERRUPT)
-                    and "_row_id" not in m
-                )
-                admission.conversation_history = reloaded
+        _reload_admitted_turn(agent, db, session_id, task_context, admission, conversation_history, reload_needed, announced)
+        consume_expected_turn_identity()
         lease.build_threads()
     except BaseException:
         # The façade never saw this lease; release here so an admitted row is not leaked.
@@ -412,6 +425,9 @@ def carry_unadmitted_user_message(
     the early result's history so the follow-up turn sees it and persists it (the flush honours
     ``_PERSIST_AFTER_ADMISSION_INTERRUPT`` because this turn never owned the lease). A hard stop
     (``/stop``) cancels the input instead."""
+    if conditional_turn_pending():
+        early_result.pop("_hard_interrupted", None)
+        return
     hard_interrupted = early_result.pop("_hard_interrupted", False)
     if hard_interrupted or not early_result.get("interrupted") or user_message in (None, ""):
         return

@@ -41,7 +41,7 @@ def _get_compute_host_supervisor(cfg: dict | None = None):
         if _compute_host_supervisor is None:
             from tui_gateway.host_supervisor import HostSupervisor
             _compute_host_supervisor = HostSupervisor(
-                rpc_sink=_relay_compute_host_rpc,
+                rpc_sink=_relay_compute_host_rpc, conditional_admission_sink=_host_admission_allowed, conditional_membership_sink=_host_membership_allowed,
                 heartbeat_secs=int(isolation_cfg.get("compute_host_heartbeat_secs") or 15),
                 respawn_max=int(isolation_cfg.get("compute_host_respawn_max") or 3))
         return _compute_host_supervisor
@@ -126,6 +126,11 @@ def _compute_host_adopt_frame_meta(session: dict, frame: dict) -> None:
 def _relay_compute_host_rpc(message: dict) -> bool:
     """Relay host frames to the client while mirroring the server→client request the host has open, so a
     reconnecting client gets it back through ``open_requests``."""
+    if isinstance(message, dict):
+        message = dict(message)
+        boot = message.pop("_conditional_host_boot", None)
+        if isinstance(message.get("params"), dict):
+            _host_invalidate_delivery_boot(str(message["params"].get("session_id") or ""), boot)
     params = message.get("params") if isinstance(message, dict) else None
     if isinstance(message, dict) and message.get("method") == "compute_host.activity":
         if isinstance(params, dict):
@@ -270,6 +275,10 @@ def _submit_prompt_to_compute_host(
     queued_prompt_generation: int | None = None, display_kind: str | None = None,
     display_metadata: dict | None = None) -> dict:
     cfg = _load_dashboard_process_isolation_config()
+    with session["history_lock"]:
+        # Never recertify a local witness after a child lifetime, even if dispatch
+        # failed, the parent mirror returns to the old key, or the child restarts.
+        session["_compute_host_ever_owned"] = True
     frame = _compute_host_turn_frame(rid, sid, session, text, image_paths=image_paths,
                                      queued_prompt_generation=queued_prompt_generation,
                                      display_kind=display_kind, display_metadata=display_metadata)
@@ -291,7 +300,15 @@ def _submit_prompt_to_compute_host(
                 session.pop("_compute_host_activity_ns", None)
             _on_compute_host_turn_done(rid, sid, session, done)
     try:
-        _get_compute_host_supervisor(cfg).submit_turn(frame, on_complete=_complete)
+        supervisor = _get_compute_host_supervisor(cfg)
+        if session.get("creation_binding") is not None and hasattr(supervisor, "conditional_boot"):
+            dispatch_boot = supervisor.conditional_dispatch_boot()
+            with session["history_lock"]:
+                boot = session.setdefault("_conditional_host_boot", dispatch_boot)
+                frame["conditional_boot"] = boot
+                frame["conditional_origin"] = session["creation_binding"].fields_for(
+                    session.get("auth_user_id"), session["creation_binding"].store_path).get("creation_binding")
+        supervisor.submit_turn(frame, on_complete=_complete)
     except Exception as exc:
         with session["history_lock"]:
             if session.get("_compute_host_turn_id") == turn_id:

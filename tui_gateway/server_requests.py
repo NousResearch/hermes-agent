@@ -92,7 +92,7 @@ class ServerRequest:
         return {"id": self.id, "method": self.method, "params": params}
 
 
-_lock = threading.Lock()
+_lock = threading.RLock()
 _open: dict[str, ServerRequest] = {}
 
 # Frame sinks, bound by ``bind_sinks`` from server.py at import time (like the method_ctx split

@@ -876,8 +876,9 @@ def _(rid, params: dict) -> dict:
     # A completed FAILED build must not wedge the session: rebuild, don't replay it.
     if not _restart_completed_failed_agent_build(sid, session, session.get("agent_ready")):
         _start_agent_build(sid, session)
+    worker_context = contextvars.copy_context()
     run_thread = threading.Thread(
-        target=lambda: _run_after_agent_ready(
+        target=lambda: worker_context.run(_run_after_agent_ready,
             rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback, turn_author),
         daemon=True)
     # Handle lets session.interrupt tell a live turn from a stuck `running` flag.

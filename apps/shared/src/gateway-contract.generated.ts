@@ -3030,11 +3030,20 @@ export interface SeedMessage {
   [key: string]: unknown
 }
 export interface SessionCreateResult {
+  creation_binding?: SessionCreationBinding | null
   session_id: string
   stored_session_id: string
   message_count: number
   messages: TranscriptMessage[]
   info: SessionLiveInfo
+}
+/** Authenticated origin of one create. Not current membership or control authority. */
+export interface SessionCreationBinding {
+  session_id: string
+  stored_session_id: string
+  authenticated_owner: string
+  runtime_incarnation: string
+  profile_store_scope: string
 }
 /** One transcript row as the gateway PROJECTS it for renderers (``session_history._project_history``): ``text``, display-only ``timestamp`` / ``display_kind`` / ``display_metadata``, the durable ``row_id`` rewind targets, and for tool rows raw ``content``, ``tool_call_id``, ``name``, ``context`` and ``args``. Assistant detail sidecars (``reasoning``, …) ride as extra keys. */
 export interface TranscriptMessage {
@@ -3074,6 +3083,7 @@ export interface SessionBranchStoredParams {
   idempotency_key?: string | null
 }
 export interface SessionBranchStoredResult {
+  creation_binding?: SessionCreationBinding | null
   session_id: string
   stored_session_id: string
   message_count: number
@@ -3184,6 +3194,42 @@ export interface SessionActivateResult {
   pending_connection?: ConnectionRequestPayload | null
   todo_state?: TodoState | null
   auto_continue?: AutoContinue | null
+}
+export interface SessionActivateBoundParams {
+  session_id: string
+  profile?: string | null
+  expected_binding: SessionCreationBinding
+}
+export interface SessionActivateBoundResult {
+  attached: boolean
+  accepted_binding: SessionCreationBinding
+}
+export interface SessionInvokeBoundParams {
+  session_id: string
+  profile?: string | null
+  expected_binding: SessionCreationBinding
+  operation: BoundPrompt | BoundInterrupt | BoundAnswer | BoundClarifyLock
+}
+export interface BoundPrompt {
+  method: 'prompt.submit'
+  text: string
+}
+export interface BoundInterrupt {
+  method: 'session.interrupt'
+}
+export interface BoundAnswer {
+  method: 'request.answer'
+  id: string
+  result: Record<string, unknown>
+}
+export interface BoundClarifyLock {
+  method: 'clarify.lock'
+  request_id: string
+  question_id: string
+  answer?: string | null
+}
+export interface SessionInvokeBoundResult {
+  operation_result: Record<string, unknown>
 }
 export interface SessionListParams {
   profile?: string | null
@@ -5341,6 +5387,8 @@ export interface RpcMethods {
   'rollback.restore': { params: RollbackRestoreParams; result: RollbackRestoreResult }
   /** Attach the frontend to a live session without closing the previously focused one. */
   'session.activate': { params: SessionActivateParams; result: SessionActivateResult }
+  /** Conditionally subscribe to an exact authenticated creation binding; receipt is not recovery. */
+  'session.activate_bound': { params: SessionActivateBoundParams; result: SessionActivateBoundResult }
   /** Live sessions in this process, insertion order (not a DB browser). */
   'session.active_list': { params: SessionActiveListParams; result: SessionActiveListResult }
   /** Set/clear archived (soft-hide, messages kept) on a session + lineage; Desktop PATCH parity. */
@@ -5381,6 +5429,8 @@ export interface RpcMethods {
   'session.history': { params: SessionHistoryParams; result: SessionHistoryResult }
   /** Stop the running turn (and streaming TTS); retires the crash-recovery marker. */
   'session.interrupt': { params: SessionInterruptParams; result: SessionInterruptResult }
+  /** Revalidate subscribed local identity before prompt/interrupt/answer/clarify; never replay or fall back. */
+  'session.invoke_bound': { params: SessionInvokeBoundParams; result: SessionInvokeBoundResult }
   /** Human-facing stored sessions, most recent first (sub-agent / kanban sources denied). */
   'session.list': { params: SessionListParams; result: SessionListResult }
   /** Most recent human-facing session; errors fold into a null session_id. */
@@ -5686,6 +5736,7 @@ export const RPC_METHODS = [
   'rollback.list',
   'rollback.restore',
   'session.activate',
+  'session.activate_bound',
   'session.active_list',
   'session.archive',
   'session.branch',
@@ -5706,6 +5757,7 @@ export const RPC_METHODS = [
   'session.foreign.preview',
   'session.history',
   'session.interrupt',
+  'session.invoke_bound',
   'session.list',
   'session.most_recent',
   'session.redirect',

@@ -643,6 +643,36 @@ def test_run_codex_stream_returns_collected_items_when_stream_ends_without_termi
     assert response.output == [output_item]
 
 
+def test_consecutive_responses_messages_keep_paragraph_boundary_in_stream_and_final():
+    from agent.codex_runtime import _consume_codex_event_stream
+    from agent.codex_responses_adapter import _normalize_codex_response
+
+    streamed = []
+    events = [SimpleNamespace(type="response.created")]
+    for index, text in enumerate(("Checking quantities.", "Recipe for six.")):
+        item = SimpleNamespace(
+            type="message", id=f"msg_{index}", status="completed",
+            content=[SimpleNamespace(type="output_text", text=text)],
+        )
+        events.extend((
+            SimpleNamespace(type="response.output_item.added", item=item, output_index=index),
+            SimpleNamespace(type="response.output_text.delta", delta=text[:5]),
+            SimpleNamespace(type="response.output_text.delta", delta=text[5:]),
+            SimpleNamespace(type="response.output_item.done", item=item, output_index=index),
+        ))
+    events.append(SimpleNamespace(type="response.completed", response=SimpleNamespace(status="completed")))
+    response = _consume_codex_event_stream(
+        _FakeCreateStream(events), model="grok-4.7", on_text_delta=streamed.append,
+    )
+    expected = "Checking quantities.\n\nRecipe for six."
+    assert "".join(streamed) == expected
+    assert response.output_text == expected
+    assistant, finish_reason = _normalize_codex_response(response, issuer_kind="xai_responses")
+    assert assistant.content == expected
+    assert finish_reason == "stop"
+    assert len(assistant.codex_message_items) == 2
+
+
 def test_consume_codex_stream_routes_commentary_phase_deltas_to_reasoning(monkeypatch):
     from agent.codex_runtime import _consume_codex_event_stream
 

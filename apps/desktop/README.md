@@ -243,6 +243,27 @@ rm -rf "$HOME/.hermes/hermes-agent/venv"
 tccutil reset Microphone com.nousresearch.hermes
 ```
 
+**Windows shortcut opens nothing:**
+
+If Hermes is already running or launches from the Start menu, inspect the
+shortcut before resetting the runtime. A custom shortcut can still point to a
+launcher script or executable that was moved or removed.
+
+1. Back up the shortcut, then open its **Properties** and check **Target**,
+   **Arguments**, and **Start in**. If the target is PowerShell or another
+   launcher, also check that the script named in its arguments still exists.
+2. For a packaged install, recreate the shortcut from the installed Hermes
+   entry in the Start menu. For a source/bootstrap install, try
+   `hermes desktop` from a terminal to resolve and launch the existing install.
+3. If using a custom shortcut to a source-built executable, verify the actual
+   executable location, set **Start in** to its containing directory, and remove
+   arguments belonging to the old launcher. That build path can change after a
+   rebuild or relocation.
+4. Open the repaired shortcut and confirm that the Hermes window appears.
+
+A stale shortcut alone does not establish a damaged backend; the runtime-reset
+commands below address a separate problem.
+
 **Windows (PowerShell):**
 
 ```powershell

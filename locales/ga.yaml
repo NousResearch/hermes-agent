@@ -581,6 +581,8 @@ gateway:
     channel_join_failed: "Theip ar dhul isteach sa chainéal gutha: {error}"
     channel_deps_missing: "Tá spleáchais ghutha ar iarraidh (PyNaCl / davey). Rith: `{hint}`"
     channel_join_permissions: "Theip ar dhul isteach sa chainéal gutha. Seiceáil ceadanna an bhota (Connect + Speak)."
+    channel_joined_voice_only: "Chuaigh mé isteach sa chainéal gutha **{name}**. Ní thabharfaidh mé freagraí gutha ach ar theachtaireachtaí gutha. Úsáid /voice leave chun imeacht."
+    channel_joined_off: "Chuaigh mé isteach sa chainéal gutha **{name}**. Fanfaidh na freagraí mar théacs. Úsáid /voice on le haghaidh freagraí gutha nó /voice leave chun imeacht."
     channel_joined: "Chuaigh mé isteach sa chainéal gutha **{name}**.\nLabhróidh mé mo fhreagraí agus éistfidh mé leat. Úsáid /voice leave chun dícheangal."
     channel_not_joined: "Níl mé i gcainéal gutha."
     channel_left: "D'fhág mé an cainéal gutha."

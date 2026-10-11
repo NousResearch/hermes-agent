@@ -187,5 +187,6 @@ def _make_runner() -> GatewayRunner:
     with patch("gateway.run.GatewayRunner._load_voice_modes", return_value={}):
         runner = GatewayRunner.__new__(GatewayRunner)
         runner._voice_mode = {}
+        runner._voice_call_keys = set()
         runner.adapters = {}
     return runner

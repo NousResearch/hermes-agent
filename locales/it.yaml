@@ -581,6 +581,8 @@ gateway:
     channel_join_failed: "Impossibile entrare nel canale vocale: {error}"
     channel_deps_missing: "Mancano le dipendenze vocali (PyNaCl / davey). Esegui: `{hint}`"
     channel_join_permissions: "Impossibile entrare nel canale vocale. Controlla i permessi del bot (Connetti + Parla)."
+    channel_joined_voice_only: "Sono entrato nel canale vocale **{name}**. Risponderò a voce solo ai messaggi vocali. Usa /voice leave per uscire."
+    channel_joined_off: "Sono entrato nel canale vocale **{name}**. Le risposte resteranno testuali. Usa /voice on per le risposte vocali o /voice leave per uscire."
     channel_joined: "Sono entrato nel canale vocale **{name}**.\nPronuncerò le mie risposte e ti ascolterò. Usa /voice leave per disconnetterti."
     channel_not_joined: "Non sono in un canale vocale."
     channel_left: "Ho lasciato il canale vocale."

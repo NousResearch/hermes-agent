@@ -228,7 +228,9 @@ def stop_authority_turns(authority, *, in_process=False):
         generation = live.event_stream.execution.get('execution_generation')
         if generation is None or sid in workers:
             continue
-        agent = running.get(live.route)
+        adopted_generation, agent = authority.adopted.get(sid, (None, None))
+        if adopted_generation != generation:
+            agent = running.get(live.route)
         if agent is None or agent is _AGENT_PENDING_SENTINEL:
             authority.pending_stops[sid] = generation
         else:

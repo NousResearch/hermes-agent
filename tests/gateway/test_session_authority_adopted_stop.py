@@ -39,3 +39,34 @@ async def test_stop_between_adoption_and_promotion_reaches_the_adopted_agent_aft
         await asyncio.wait_for(authority.sessions['s'].task, 5)
         assert ran['adopted'] is True, 'the Stop reached nobody: the adopted agent ran on'
         assert not authority.adopted, 'settlement must drop the adopted agent reference'
+
+
+@pytest.mark.asyncio
+async def test_retire_stop_between_adoption_and_promotion_reaches_the_adopted_agent(tmp_path, monkeypatch):
+    """The same window on the retire/shutdown path: stop_authority_turns(in_process=True) used to
+    re-resolve the running slot (still the pending sentinel) and latch a generation adopt_agent had
+    already consumed, so the adopted agent ran on through the profile stop."""
+    from gateway import session_finite
+    from gateway.run_runtime import stop_authority_turns
+
+    db, authority = _authority(tmp_path, monkeypatch)
+    fresh = Agent()
+    authority.runner._cached_agent_for = {}.get
+    adopted, stopped = asyncio.Event(), asyncio.Event()
+    ran = {}
+
+    async def execute(authority, ref, row):
+        _wire_turn_agent(authority, row['generation'], fresh)
+        adopted.set()
+        await asyncio.wait_for(stopped.wait(), 5)
+        ran[row['request_id']] = fresh.interrupted
+        return 'done'
+    monkeypatch.setattr(session_finite, 'execute_finite_admission', execute)
+
+    with db:
+        await _submit(authority, 'adopted')
+        await asyncio.wait_for(adopted.wait(), 5)
+        stop_authority_turns(authority, in_process=True)
+        stopped.set()
+        await asyncio.wait_for(authority.sessions['s'].task, 5)
+        assert ran['adopted'] is True, 'the profile Stop reached nobody: the adopted agent ran on'

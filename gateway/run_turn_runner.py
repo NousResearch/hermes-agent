@@ -202,6 +202,12 @@ class TurnRunner:
         _keep_typing refresh renders it. Plain dict write, safe from the sync worker thread."""
         ctx = self._ctx
         adapter = ctx._live_status_adapter
+        if event_type == "tool.started" and tool_name != "_thinking":
+            logger.info(
+                "live-status diagnostic: tool=%s adapter=%s mode=%s current=%s",
+                tool_name, type(adapter).__name__ if adapter is not None else "none",
+                ctx._live_status_mode, getattr(ctx, "_run_still_current", lambda: False)(),
+            )
         if adapter is None or ctx._live_status_mode == "off" or tool_name == "_thinking":
             return
         try:

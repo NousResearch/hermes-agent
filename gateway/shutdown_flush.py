@@ -90,33 +90,33 @@ def _flush_value(flush_dir: Path, kind: str, session_key: str, value: Any, **ext
 
 def _recoverable_key(value: Any, slot_key: str,
                      session_key_for: Optional[Callable[[Any], Any]] = None,
-                     slot_key_routes: Optional[Callable[[str], bool]] = None) -> str:
-    """The key to record for *value*: the slot key when the store routes it, else its store key.
+                     key_lands: Optional[Callable[[str], Optional[bool]]] = None) -> str:
+    """The key to record for *value*: the store's own key for it, while the store can land that.
 
     Slots are keyed by the adapter's own isolation flags (``PlatformConfig.extra``), which may
     differ from the gateway-wide ones ``SessionStore`` routes by: an operator can override
-    ``group_sessions_per_user`` / ``thread_sessions_per_user`` on one platform. Recovery resolves
-    a key through the store only (routing map, then the durable row under the exact key), so a
-    slot key that matches neither strands the message in the spool forever. That is the only case
-    in which ``session_key_for`` replaces it: the store's key derivation
-    (``SessionStore._generate_session_key``, or ``GatewayRunner._session_key_for_source``).
+    ``group_sessions_per_user`` / ``thread_sessions_per_user`` on one platform, in either
+    direction. Recovery resolves a key through the store only (routing map, then the durable row
+    under the exact key), so a key that matches neither strands the message in the spool forever.
 
-    A slot key the store *can* route is recorded unchanged. It is the key the producing adapter
-    queued the value under and the key its live drain re-dispatches it with, so it is the
-    payload's established owner; re-deriving can lose that owner, because a synthetic producer
-    (a recall notice written straight into the slot) may carry a partial ``source`` whose own
-    derivation drops the participant the slot key holds — the notice then strands on a key no
-    session was ever created under. ``slot_key_routes`` is the store's exact-key resolver; a
-    value without a ``source`` (a raw str slot, an agent-history payload) and any derivation
-    failure keep the slot key unchanged.
+    ``session_key_for`` is the question worth asking of that store: it maps the value's ``source``
+    to the key the store routes *this payload* by (``SessionStore._generate_session_key``, or
+    ``GatewayRunner._session_key_for_source``) — the key a turn for this payload is admitted
+    under. ``key_lands`` asks the same store whether a key has a session behind it: ``True`` (a
+    session the store can reach), ``False`` (the store answered: no session under this key), or
+    ``None`` (the store could not answer for this key — no reachable home for it).
+
+    The slot key is the producer's own key, the one the queue re-dispatches the payload by. It is
+    kept when the derivation is unconfirmed (``None``: an unavailable lookup decides nothing) and
+    when the store knows a session under the slot key and none under the derivation — a synthetic
+    producer such as a recall notice may carry a partial ``source`` whose own derivation drops the
+    participant the slot key holds, and moving a payload that already has a home onto a key no
+    session was ever created under is the strand this re-keying exists to prevent. The derivation
+    is recorded otherwise, including when the store knows no session under either key: there the
+    payload's own key is the one recovery names in its warning, and nothing is lost — the spool
+    file is kept. A value without a ``source`` (a raw str slot, an agent-history payload) and any
+    derivation failure keep the slot key unchanged.
     """
-    if callable(slot_key_routes):
-        try:
-            if slot_key_routes(slot_key):
-                return slot_key
-        except Exception:  # a routability check must never cost the payload its key
-            logger.debug("Could not check whether %s is routable; deriving its store key",
-                         slot_key, exc_info=True)
     source = getattr(value, "source", None)
     if source is None or not callable(session_key_for):
         return slot_key
@@ -126,7 +126,27 @@ def _recoverable_key(value: Any, slot_key: str,
         logger.debug("Could not resolve the store key for %s; recording the slot key",
                      slot_key, exc_info=True)
         return slot_key
-    return key if isinstance(key, str) and key else slot_key
+    if not (isinstance(key, str) and key) or key == slot_key:
+        return slot_key
+    if not callable(key_lands):
+        return key  # nothing to ask: the derivation stands, as it always has with no store
+    lands = _key_lands(key_lands, key)
+    if lands is None:
+        return slot_key
+    if lands:
+        return key
+    return slot_key if _key_lands(key_lands, slot_key) is True else key
+
+
+def _key_lands(key_lands: Callable[[str], Optional[bool]],
+               session_key: str) -> Optional[bool]:
+    """``key_lands(session_key)``, guarded: a failing check answers "unknown" (``None``)."""
+    try:
+        answer = key_lands(session_key)
+    except Exception:  # a profile lookup can fail; an unconfirmed key is not worth recording
+        logger.debug("Could not ask the store whether %s lands", session_key, exc_info=True)
+        return None
+    return None if answer is None else bool(answer)
 
 
 def adapter_store_key_for(adapter: Any) -> Optional[Callable[[Any], Any]]:
@@ -139,27 +159,32 @@ def adapter_store_key_for(adapter: Any) -> Optional[Callable[[Any], Any]]:
     return derive if callable(derive) else None
 
 
-def store_slot_key_routes(store: Any) -> Optional[Callable[[str], bool]]:
-    """``slot_key_routes`` for *store*: does its own exact-key resolver land this key?
+def store_key_lands(store: Any) -> Optional[Callable[[str], Optional[bool]]]:
+    """``key_lands`` for *store*: does it have a session behind this key?
 
-    The resolver is the one ``recover_pending_to_db`` hands payloads to (routing map first, then
-    the durable row under the exact key), so a slot key it cannot land is a slot key recovery
-    would strand — the only case the flush re-keys. ``None`` (no store, or one without the
-    resolver) leaves every key as its derivation gives it, the head's behaviour.
+    Uses the resolver ``recover_pending_to_db`` hands payloads to (routing map first, then the
+    durable row under the exact key), so a key it cannot land is a key recovery would strand.
+    ``True`` and ``False`` are the store's own answers; ``None`` reports that it could not answer
+    for that key at all — ``SessionStore._db_for_key`` failing closed (the seam
+    ``resolve_session_id_for_key`` returns ``None`` on), i.e. no reachable home for the key — which
+    is not a verdict on the key. ``None`` (no store, or one without the resolver) leaves every key
+    as its derivation gives it.
     """
     resolve = getattr(store, "resolve_session_id_for_key", None)
+    db_for_key = getattr(store, "_db_for_key", None)
     if not callable(resolve):
         return None
 
-    def routes(session_key: str) -> bool:
-        try:
-            return bool(resolve(session_key))
-        except Exception:  # a profile lookup can fail; an unconfirmed key is not worth recording
-            logger.debug("Could not ask the store whether %s routes; deriving its store key",
-                         session_key, exc_info=True)
-            return False
+    def lands(session_key: str) -> Optional[bool]:
+        if resolve(session_key):
+            return True
+        # Nothing resolved: only now is it worth asking whether the store could look at all, so
+        # "no session under this key" is never read out of an unreachable one.
+        if callable(db_for_key) and db_for_key(session_key) is None:
+            return None
+        return False
 
-    return routes
+    return lands
 
 
 def adapter_flush_keying(adapter: Any) -> dict[str, Any]:
@@ -171,7 +196,7 @@ def adapter_flush_keying(adapter: Any) -> dict[str, Any]:
     """
     store = getattr(adapter, "_session_store", None)
     return {"session_key_for": adapter_store_key_for(adapter),
-            "slot_key_routes": store_slot_key_routes(store)}
+            "key_lands": store_key_lands(store)}
 
 
 def runner_flush_keying(runner: Any) -> dict[str, Any]:
@@ -182,25 +207,26 @@ def runner_flush_keying(runner: Any) -> dict[str, Any]:
     wired.
     """
     return {"session_key_for": getattr(runner, "_session_key_for_source", None),
-            "slot_key_routes": store_slot_key_routes(getattr(runner, "session_store", None))}
+            "key_lands": store_key_lands(getattr(runner, "session_store", None))}
 
 
 def flush_pending_to_file(pending: dict[str, Any], *, reason: str = "shutdown",
                           session_key_for: Optional[Callable[[Any], Any]] = None,
-                          slot_key_routes: Optional[Callable[[str], bool]] = None) -> int:
+                          key_lands: Optional[Callable[[str], Optional[bool]]] = None) -> int:
     """Serialise non-empty ``_pending_messages`` slots (``MessageEvent`` or str); return count.
 
     ``session_key_for`` maps a slot's ``source`` to the key the session store routes it by, so
     the payload replays after a restart even when the adapter that queued it derived a different
-    key; ``slot_key_routes`` says whether the slot key itself is one recovery can resolve, in
-    which case it is recorded as it stands (see :func:`_recoverable_key`).
+    key; ``key_lands`` is that store's own verdict on a key (``True``/``False``, ``None`` when it
+    could not answer for that key), which decides whether the derivation is recorded (see
+    :func:`_recoverable_key`).
     """
     if not pending:
         return 0
     flush_dir, ts, flushed = _get_flush_dir(), int(time.time()), 0
     for session_key, value in list(pending.items()):
         if value is not None:
-            key = _recoverable_key(value, session_key, session_key_for, slot_key_routes)
+            key = _recoverable_key(value, session_key, session_key_for, key_lands)
             flushed += _flush_value(flush_dir, "pending", key, value, reason=reason, ts=ts)
     if flushed:
         logger.info("Flushed %d pending message(s) to %s (reason=%s)", flushed, flush_dir, reason)
@@ -209,13 +235,13 @@ def flush_pending_to_file(pending: dict[str, Any], *, reason: str = "shutdown",
 
 def flush_overflow_to_file(overflow_by_session: dict[str, Any], *, reason: str = "shutdown",
                            session_key_for: Optional[Callable[[Any], Any]] = None,
-                           slot_key_routes: Optional[Callable[[str], bool]] = None) -> int:
+                           key_lands: Optional[Callable[[str], Optional[bool]]] = None) -> int:
     """Serialise the FIFO overflow tails (``queued_events``) to disk; return events flushed.
 
     The adapter slot holds the queue head and ``SessionState.conversation.queued_events`` the
     tail; both must survive restart. Each event is its own payload in the slot-flush shape so
     ``recover_pending_to_db`` replays them unchanged; ``seq`` preserves arrival order per session.
-    ``session_key_for`` and ``slot_key_routes`` key each event exactly as in
+    ``session_key_for`` and ``key_lands`` key each event exactly as in
     :func:`flush_pending_to_file`.
     """
     if not overflow_by_session:
@@ -226,7 +252,7 @@ def flush_overflow_to_file(overflow_by_session: dict[str, Any], *, reason: str =
             continue
         for seq, value in enumerate(list(events)):
             if value is not None:
-                key = _recoverable_key(value, session_key, session_key_for, slot_key_routes)
+                key = _recoverable_key(value, session_key, session_key_for, key_lands)
                 flushed += _flush_value(flush_dir, "overflow", key, value, reason=reason,
                                         ts=ts, seq=seq)
     if flushed:

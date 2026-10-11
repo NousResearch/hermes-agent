@@ -255,3 +255,30 @@ def offline_file_access(path: Path | str, *, what: str = "read"):
                 "connection's POSIX advisory locks. Close all database "
                 "handles (stop the gateway/dashboard) and retry.")
         yield
+
+
+@contextlib.contextmanager
+def offline_tree_access(paths, *, what: str = "delete"):
+    """Hold the connection-lifecycle lock ONCE for a whole destructive footprint.
+
+    The registry is keyed per database file, not per directory, so a recursive
+    delete cannot take :func:`offline_file_access` for "the tree": this checks
+    every path in ``paths`` (each file the mutation could replace or unlink, plus
+    the root) under the single lock ``connect_tracked`` opens under, and keeps
+    holding it while the caller mutates — no opener can interleave between the
+    admission check and the mutation (files-tab review F1/F2, #134670)."""
+    if isinstance(paths, (str, Path)):
+        paths = [paths]
+    paths = list(paths)
+    with _live_lock:
+        for path in paths:
+            key = _key(path)
+            main = _live_main_key(key)
+            if main is not None:
+                subject = "it" if main == key else f"its main database {main}"
+                raise LiveConnectionError(
+                    f"Refusing to {what} {path}: a connection to {subject} is still open "
+                    "in this process, and raw file access would cancel that "
+                    "connection's POSIX advisory locks. Close all database "
+                    "handles (stop the gateway/dashboard) and retry.")
+        yield

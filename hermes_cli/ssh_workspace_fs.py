@@ -49,6 +49,13 @@ class SshWorkspaceFs:
     def cwd(self) -> str:
         return self._normalize(self._env.cwd)
 
+    def resolve(self, path: str) -> str:
+        """The effective remote target for ``path`` — cwd/``~``-expanded and normalized —
+        which is the identity ``write_text``/``read_bytes`` act on. Write-policy callers
+        must validate THIS, not the raw request: a harmless relative basename can name a
+        credential file inside the selected workspace (files-tab review F3, #134670)."""
+        return self._normalize(path)
+
     def _normalize(self, path: str) -> str:
         raw = str(path or "").strip()
         if not raw:

@@ -1428,6 +1428,33 @@ If you do not want Hermes to auto-generate titles after the first exchange, set
 `auxiliary.title_generation.enabled: false`. Manual titles still work through
 `/title` and `hermes sessions rename`.
 
+To customize how titles are written (e.g. for a legal, medical, or team-specific
+vocabulary), set `auxiliary.title_generation.system_prompt`. When present it
+replaces the built-in titling instructions wholesale:
+
+```yaml
+auxiliary:
+  title_generation:
+    system_prompt: |
+      You name chat sessions for a legal practice. Given the user's opening
+      message, write a title that helps them find this conversation again.
+      Rules:
+      - 4 to 8 words, sentence case
+      - Include matter names or case references when provided
+      - Keep dates, statute numbers, and legal terms exact
+      - No trailing punctuation, no quotes
+      Reply with JSON only: {"title": "..."}
+```
+
+Hermes still sends the same strict JSON response schema (`{"title": "..."}`)
+through `response_format`, even if your custom prompt omits the JSON instruction.
+Providers that honor structured output enforce that shape; providers that ignore
+it use the existing JSON/prose extraction fallback. Keeping the JSON instruction
+in your prompt helps those providers. Output still passes the existing title
+validation guards, but those guards cannot reject every possible bad title.
+`auxiliary.title_generation.language` is ignored while a custom prompt is set —
+bake the language rule into your prompt text.
+
 To keep the instant derived title (the first line of your opening message) but never
 spend a model call upgrading it, set `auxiliary.title_generation.model_upgrade_enabled: false`.
 No background `auto-title` thread starts and no automatic title-model request is sent; the
@@ -1452,6 +1479,7 @@ session titling, before channel-bound skills and platform context are added.
 The main model and conversation history still retain the full skill content.
 Attachment-only turns retain the existing enriched-message title fallback.
 This affects new title generation; it does not repair previously named sessions.
+
 
 ### Stream-only endpoints
 

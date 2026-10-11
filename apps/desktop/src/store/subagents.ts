@@ -330,6 +330,16 @@ export function clearSessionSubagents(sid: string) {
 }
 
 /**
+ * Drop every session's rows — a backend switch (Settings → Gateway apply,
+ * Sessions-switcher source change) invalidates all of them: the next backend
+ * re-mints runtime session ids, so a carried row paints a child it never
+ * started as live. Companion to clearSessionSubagents (one session, e.g. Stop).
+ */
+export function clearAllSessionSubagents() {
+  $subagentsBySession.set({})
+}
+
+/**
  * Prune terminal-status subagent rows for a session, leaving running/queued
  * entries untouched. Used at the `message.start` boundary in the desktop
  * message-stream hook so that the *previous* turn's finished rows get flushed

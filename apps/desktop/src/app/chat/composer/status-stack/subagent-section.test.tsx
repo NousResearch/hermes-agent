@@ -96,3 +96,37 @@ it('retires the live frame only after every child settles, without depending on 
   act(() => upsertSubagent('owner', { subagent_id: 'child', status: 'completed' }, false, 'subagent.complete'))
   expect(screen.queryByText('Live task')).toBeNull()
 })
+
+it('keeps a stale live row in the roster but stops its spinner once evidence is frozen', () => {
+  $subagentsBySession.set({
+    owner: [
+      {
+        id: 'stale-worker',
+        parentId: null,
+        goal: 'Frozen task',
+        status: 'running',
+        taskCount: 1,
+        taskIndex: 0,
+        startedAt: Date.now() - 3_600_000,
+        updatedAt: Date.now() - 2_000_000,
+        filesRead: [],
+        filesWritten: [],
+        stream: []
+      }
+    ]
+  })
+
+  const view = render(
+    <MemoryRouter>
+      <ComposerStatusStack queue={null} sessionId="owner" />
+    </MemoryRouter>
+  )
+
+  fireEvent.click(screen.getByRole('button', { name: /1 Subagent/ }))
+  expect(screen.getByText('Frozen task')).toBeTruthy()
+
+  const row = view.container.querySelector('[data-slot="status-row"]')
+
+  expect(row?.querySelector('[data-stale-evidence="true"]')).toBeTruthy()
+  expect(row?.querySelector('[role="status"]')).toBeNull()
+})

@@ -24,10 +24,40 @@ import {
 
 import { Panel, PanelEmpty, PanelHeader } from '../overlays/panel'
 
+/** A live row whose evidence (updatedAt) has not moved for this long stops
+ *  animating as actively moving — display only, the server may still report it
+ *  running. 1_500_000 ms (1500s) sits comfortably past the server's 1200s
+ *  in-tool heartbeat bound, so a progressing child always refreshes updatedAt
+ *  well inside it. */
+export const STALE_EVIDENCE_MS = 1_500_000
+
+/** True when a live row's last evidence is old enough to stop presenting the
+ *  row as actively moving. */
+export const staleLiveEvidence = (updatedAt: number, nowMs: number) => nowMs - updatedAt > STALE_EVIDENCE_MS
+
+/** Static stand-in for the running spinner once evidence is frozen: same
+ *  status marker, no animation. */
+export function FrozenEvidenceDot({ label }: { label: string }) {
+  return (
+    <span
+      aria-label={label}
+      className="size-1.5 shrink-0 rounded-full bg-muted-foreground/60"
+      data-stale-evidence="true"
+      role="img"
+    />
+  )
+}
+
 // Mirrors statusGlyph() in tool-fallback.tsx so subagent rows speak the
 // same visual vocabulary as the chat tool blocks.
-function statusGlyph(status: SubagentStatus, a: Translations['agents']): ReactNode {
+function statusGlyph(status: SubagentStatus, a: Translations['agents'], stale = false): ReactNode {
   if (status === 'running' || status === 'queued') {
+    // Frozen evidence: keep the row's status marker without the live
+    // animation (the row still says running — that part is server truth).
+    if (stale) {
+      return <FrozenEvidenceDot label={status === 'queued' ? a.queued : a.running} />
+    }
+
     return (
       <GlyphSpinner
         ariaLabel={a.running}
@@ -342,6 +372,7 @@ function StreamLine({
 export function SubagentRow({ node, depth = 0, nowMs }: { node: SubagentNode; depth?: number; nowMs: number }) {
   const { t } = useI18n()
   const running = node.status === 'running' || node.status === 'queued'
+  const stale = running && staleLiveEvidence(node.updatedAt, nowMs)
   const elapsed = useElapsedSeconds(running, `subagent:${node.id}`, node.startedAt)
 
   const durationSeconds =
@@ -375,12 +406,12 @@ export function SubagentRow({ node, depth = 0, nowMs }: { node: SubagentNode; de
         onClick={() => setOpen(v => !v)}
         type="button"
       >
-        <span className="mt-0.5 flex h-[1.1rem] shrink-0 items-center">{statusGlyph(node.status, t.agents)}</span>
+        <span className="mt-0.5 flex h-[1.1rem] shrink-0 items-center">{statusGlyph(node.status, t.agents, stale)}</span>
         <span className="flex min-w-0 flex-1 flex-col gap-0.5">
           <span
             className={cn(
               'wrap-anywhere text-[0.82rem] font-medium leading-[1.1rem] text-foreground/90 transition-colors group-hover:text-foreground',
-              running && 'shimmer text-foreground/65'
+              running && !stale && 'shimmer text-foreground/65'
             )}
           >
             {node.goal}
@@ -398,7 +429,7 @@ export function SubagentRow({ node, depth = 0, nowMs }: { node: SubagentNode; de
         <div className="grid min-w-0 gap-1 pl-6" data-selectable-text="true">
           {visibleRows.map((entry, i) => (
             <StreamLine
-              active={running && i === visibleRows.length - 1}
+              active={running && !stale && i === visibleRows.length - 1}
               entry={entry}
               key={`${entry.kind}:${entry.at}:${i}`}
               parentRunning={running}

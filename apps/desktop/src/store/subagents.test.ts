@@ -4,6 +4,7 @@ import {
   $subagentsBySession,
   activeSubagentCount,
   buildSubagentTree,
+  clearAllSessionSubagents,
   clearSessionSubagents,
   failedSubagentCount,
   isTerminalSubagentCompletion,
@@ -239,6 +240,15 @@ describe('subagent store', () => {
 
     expect($subagentsBySession.get().s1).toBeUndefined()
     expect($subagentsBySession.get().s2).toHaveLength(1)
+  })
+
+  it('clears every session at once for a backend switch', () => {
+    upsertSubagent('s1', { goal: 'one', status: 'running', subagent_id: 'a1', task_index: 0 })
+    upsertSubagent('s2', { goal: 'two', status: 'queued', subagent_id: 'a2', task_index: 0 })
+
+    clearAllSessionSubagents()
+
+    expect($subagentsBySession.get()).toEqual({})
   })
 
   it('creates and clears a session id that collides with an object prototype key', () => {

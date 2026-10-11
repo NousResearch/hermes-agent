@@ -33,6 +33,7 @@ import {
 import { clearAllSessionControl } from '@/store/session-control'
 import { resetSessionPinMirror } from '@/store/session-pin-sync'
 import { clearAllSessionStates } from '@/store/session-states'
+import { clearAllSessionSubagents } from '@/store/subagents'
 import { clearAllSessionTodos } from '@/store/todos'
 import { clearTranscriptTailPaging } from '@/store/transcript-tail'
 import { clearTranscriptTails } from '@/store/transcript-tail-cache'
@@ -232,6 +233,9 @@ export function wipeSessionListsForGatewaySwitch(): void {
   // Structured goal/loop/heartbeat entries are keyed by runtime id, which the
   // next backend re-mints, so a full wipe is exact (and stale-response-safe).
   clearAllSessionControl()
+  // Subagent rows are keyed the same way: a survivor would paint a finished
+  // child of the outgoing backend as live until a reveal or reconnect heals it.
+  clearAllSessionSubagents()
   resetLiveRuntimeTracking()
   resetLiveSync()
   $unreadFinishedSessionIds.set([])

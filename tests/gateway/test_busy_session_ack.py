@@ -232,7 +232,7 @@ class TestBusySessionAck:
         """A ref-only event must retain its own foreground-turn boundary."""
         import gateway.run as _gr
 
-        monkeypatch.setattr(_gr, "_load_gateway_config", lambda: {})
+        monkeypatch.setattr(_gr, "_load_gateway_config", dict)
         runner, _sentinel = _make_runner()
         runner._busy_input_mode = "steer"
         adapter = _make_adapter()

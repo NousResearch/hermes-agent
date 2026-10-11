@@ -109,7 +109,7 @@ def bind_volatile_user_context(
 
 def _volatile_user_context_history(
     agent: Any,
-) -> "OrderedDict[str, tuple[str, str]]":
+) -> OrderedDict[str, tuple[str, str]]:
     history = getattr(agent, _VOLATILE_USER_CONTEXT_HISTORY_ATTR, None)
     if not isinstance(history, OrderedDict):
         history = OrderedDict(history.items()) if isinstance(history, dict) else OrderedDict()
@@ -150,7 +150,7 @@ def _message_volatile_replay_id(msg: Mapping[str, Any]) -> Optional[str]:
 
 
 def replay_volatile_user_context(
-    agent: Any, source_msg: Mapping[str, Any], api_msg: Dict[str, Any],
+    agent: Any, source_msg: Mapping[str, Any], api_msg: dict[str, Any],
 ) -> bool:
     """Replay one previously-sent private suffix from the agent's RAM sidecar.
 
@@ -200,7 +200,7 @@ def copy_volatile_user_context_history(source_agent: Any, target_agent: Any) -> 
             "continuing without private historical replay"
         )
         return
-    copied: "OrderedDict[str, tuple[str, str]]" = OrderedDict()
+    copied: OrderedDict[str, tuple[str, str]] = OrderedDict()
     for replay_id, saved in snapshot.items():
         if (
             isinstance(replay_id, str)

@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import replace
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -64,7 +64,7 @@ def _message(
         ),
         sender_chat=sender_chat,
         reply_to_message=None,
-        date=date or datetime.now(timezone.utc),
+        date=date or datetime.now(UTC),
         edit_date=None,
         business_connection_id="business" if business else None,
         location=location,
@@ -181,7 +181,7 @@ async def test_snapshot_is_immutable_and_stop_affects_only_future_resolution(
     first_snapshot = adapter._resolve_ephemeral_user_context_for_dispatch_sync(event)
 
     moved = _message(latitude=40.0, longitude=-73.0, live_period=3600)
-    moved.edit_date = datetime.now(timezone.utc) + timedelta(seconds=1)
+    moved.edit_date = datetime.now(UTC) + timedelta(seconds=1)
     await adapter._record_background_location(
         _update(moved, update_id=2, edited=True), moved
     )
@@ -191,7 +191,7 @@ async def test_snapshot_is_immutable_and_stop_affects_only_future_resolution(
     assert "Latitude: 40.0" not in first_snapshot
 
     stop = _message(live_period=None)
-    stop.edit_date = datetime.now(timezone.utc) + timedelta(seconds=2)
+    stop.edit_date = datetime.now(UTC) + timedelta(seconds=2)
     await adapter._handle_background_location_lifecycle(
         _update(stop, update_id=3, edited=True), SimpleNamespace()
     )
@@ -204,7 +204,7 @@ async def test_stale_and_duplicate_edits_cannot_overwrite_or_resurrect(
     monkeypatch, tmp_path,
 ):
     adapter = _adapter(monkeypatch, tmp_path)
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     live = _message(live_period=3600, date=now)
     await _record_live(adapter, live, update_id=10)
     subject = adapter._background_location_subject_key(live)
@@ -242,7 +242,7 @@ async def test_stop_purges_even_when_profile_resolution_fails(monkeypatch, tmp_p
         _profile_name_for_source=Mock(side_effect=RuntimeError("resolver unavailable"))
     )
     stop = _message(live_period=None, message_id=51)
-    stop.edit_date = datetime.now(timezone.utc) + timedelta(seconds=1)
+    stop.edit_date = datetime.now(UTC) + timedelta(seconds=1)
 
     assert await adapter._record_background_location(
         _update(stop, update_id=2, edited=True), stop
@@ -254,7 +254,7 @@ async def test_stop_purges_even_when_profile_resolution_fails(monkeypatch, tmp_p
 async def test_expiry_polling_fence_and_disconnect_purge_records(monkeypatch, tmp_path):
     adapter = _adapter(monkeypatch, tmp_path)
     expired = _message(
-        live_period=30, date=datetime.now(timezone.utc) - timedelta(minutes=2)
+        live_period=30, date=datetime.now(UTC) - timedelta(minutes=2)
     )
     await _record_live(adapter, expired)
     event = await _reference(adapter, expired)
@@ -330,7 +330,7 @@ async def test_polling_generation_rejects_backlog_and_invalidates_old_refs(
         longitude=-73.0,
         live_period=3600,
         message_id=52,
-        date=datetime.now(timezone.utc),
+        date=datetime.now(UTC),
     )
     adapter._observe_background_location_poll_result(
         generation, {"result": [{"update_id": 11}]}

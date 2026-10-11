@@ -14,7 +14,7 @@ import math
 import secrets
 from collections import OrderedDict
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from typing import Any, Optional
 
 from gateway.authz_mixin import _coerce_allow_set
@@ -73,14 +73,14 @@ class TelegramBackgroundLocationsMixin:
         self._background_location_generation = 0
         self._background_location_polling_generation: Optional[int] = None
         self._background_location_polling_ready_generation: Optional[int] = None
-        self._background_location_update_receipts: "OrderedDict[int, tuple[int, bool]]" = (
+        self._background_location_update_receipts: OrderedDict[int, tuple[int, bool]] = (
             OrderedDict()
         )
         self._background_location_expiry_handle: Optional[asyncio.TimerHandle] = None
-        self._background_location_records: "OrderedDict[str, dict]" = OrderedDict()
+        self._background_location_records: OrderedDict[str, dict] = OrderedDict()
         # Coordinate-free terminal markers prevent a delayed edit from resurrecting a
         # share after Telegram reported it stopped or expired.
-        self._background_location_terminal_updates: "OrderedDict[tuple[str, str, str], datetime]" = (
+        self._background_location_terminal_updates: OrderedDict[tuple[str, str, str], datetime] = (
             OrderedDict()
         )
 
@@ -205,8 +205,8 @@ class TelegramBackgroundLocationsMixin:
         if not isinstance(value, datetime):
             return None
         if value.tzinfo is None:
-            return value.replace(tzinfo=timezone.utc)
-        return value.astimezone(timezone.utc)
+            return value.replace(tzinfo=UTC)
+        return value.astimezone(UTC)
 
     @staticmethod
     def _background_location_lifecycle_identity(
@@ -303,7 +303,7 @@ class TelegramBackgroundLocationsMixin:
             terminals.popitem(last=False)
 
     def _prune_expired_background_locations(self) -> None:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         for key, record in tuple(self._background_location_records.items()):
             expires_at = record.get("expires_at")
             if expires_at is not None and now >= expires_at:
@@ -334,7 +334,7 @@ class TelegramBackgroundLocationsMixin:
             # double can still rely on opportunistic pruning without leaking to disk.
             return
 
-        delay = max(0.0, (deadline - datetime.now(timezone.utc)).total_seconds())
+        delay = max(0.0, (deadline - datetime.now(UTC)).total_seconds())
 
         def _expire() -> None:
             if self._background_location_expiry_handle is not handle:
@@ -435,7 +435,7 @@ class TelegramBackgroundLocationsMixin:
             # A stop's Telegram lifecycle identity is sufficient to revoke the old
             # share. Purge before profile routing: a transient resolver failure must
             # never leave an indefinite location active after Telegram stopped it.
-            self._remember_terminal_location(identity, datetime.now(timezone.utc))
+            self._remember_terminal_location(identity, datetime.now(UTC))
             for key, record in tuple(self._background_location_records.items()):
                 if record.get("lifecycle") == identity:
                     self._background_location_records.pop(key, None)
@@ -465,7 +465,7 @@ class TelegramBackgroundLocationsMixin:
         if previous and not self._update_is_newer(previous, timestamp, update_id):
             return True
 
-        started_at = self._timestamp(getattr(message, "date", None)) or datetime.now(timezone.utc)
+        started_at = self._timestamp(getattr(message, "date", None)) or datetime.now(UTC)
         expires_at = (
             None
             if period == self._BACKGROUND_LOCATION_INDEFINITE_LIVE_PERIOD
@@ -476,7 +476,7 @@ class TelegramBackgroundLocationsMixin:
             "lifecycle": identity,
             "latitude": latitude,
             "longitude": longitude,
-            "recorded_at": datetime.now(timezone.utc),
+            "recorded_at": datetime.now(UTC),
             "telegram_timestamp": timestamp,
             "update_id": update_id,
             "expires_at": expires_at,

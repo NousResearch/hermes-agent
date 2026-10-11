@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -78,7 +78,7 @@ async def test_registered_handlers_keep_live_updates_silent_and_ram_only(
     user = User(id=111, first_name="Alice", is_bot=False)
     fixed = Message(
         message_id=49,
-        date=datetime(2026, 7, 17, 11, 59, tzinfo=timezone.utc),
+        date=datetime(2026, 7, 17, 11, 59, tzinfo=UTC),
         chat=chat,
         from_user=user,
         location=Location(latitude=48.8584, longitude=2.2945),
@@ -92,7 +92,7 @@ async def test_registered_handlers_keep_live_updates_silent_and_ram_only(
     assert fixed_event._ephemeral_context_blocked is True
     assert "one-time location pin" in fixed_event.text
 
-    started_at = datetime.now(timezone.utc)
+    started_at = datetime.now(UTC)
     live = Message(
         message_id=50,
         date=started_at,
@@ -115,7 +115,7 @@ async def test_registered_handlers_keep_live_updates_silent_and_ram_only(
     adapter._enqueue_text_event.reset_mock()
     question = Message(
         message_id=51,
-        date=datetime.now(timezone.utc),
+        date=datetime.now(UTC),
         chat=chat,
         from_user=user,
         text="what is nearby?",
@@ -136,7 +136,7 @@ async def test_registered_handlers_keep_live_updates_silent_and_ram_only(
     stop = Message(
         message_id=50,
         date=started_at,
-        edit_date=datetime.now(timezone.utc),
+        edit_date=datetime.now(UTC),
         chat=chat,
         from_user=user,
         location=Location(latitude=51.5015, longitude=-0.1419),

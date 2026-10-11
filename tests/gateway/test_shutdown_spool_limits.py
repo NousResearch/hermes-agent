@@ -1,5 +1,6 @@
 """Recovery must not retain every decoded spool payload while sorting."""
 
+import importlib
 import tracemalloc
 from pathlib import Path
 
@@ -22,6 +23,8 @@ def test_recovery_payload_memory_does_not_scale_with_backlog(
         def append_message(self, **kwargs: object) -> None:
             assert kwargs["content"] == content
 
+    importlib.import_module("gateway.session_transcript")
+    importlib.import_module("gateway.shutdown_pending")
     tracemalloc.start()
     try:
         assert shutdown_flush.recover_pending_to_db(Sink()) == 24

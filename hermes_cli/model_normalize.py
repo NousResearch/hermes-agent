@@ -107,6 +107,8 @@ def _strip_vendor_prefix(model_name: str) -> str:
 
 
 def _dots_to_hyphens(model_name: str) -> str:
+    if model_name.startswith("glm-"):
+        return model_name  # z.ai / Zhipu GLM ids keep dotted form (glm-5.3-flash)
     return model_name.replace(".", "-")
 
 

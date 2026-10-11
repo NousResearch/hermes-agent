@@ -1291,6 +1291,17 @@ def _clone_all_into(source_dir: Path, profile_dir: Path, canon: str) -> None:
         (profile_dir / subdir).mkdir(parents=True, exist_ok=True)
     for stale in _CLONE_ALL_STRIP:
         (profile_dir / stale).unlink(missing_ok=True)
+    # The whole-tree copy carries the memory provider's directory verbatim; its live data (the
+    # source's episodic memory DB) is dropped the same way sessions/state.db are (#133308).
+    from hermes_cli.profile_memory_config import strip_cloned_provider_live_data
+
+    dropped_live_data = strip_cloned_provider_live_data(profile_dir)
+    if dropped_live_data:
+        logger.info(
+            "profile %s: dropped memory-provider live data copied by --clone-all: %s",
+            canon,
+            ", ".join(dropped_live_data),
+        )
     # auth.json / .anthropic_oauth.json copied verbatim fork single-use OAuth grants
     # (Anthropic / Codex / xAI): one credential with two owners, and the first profile to
     # refresh revokes the pair for every sibling. Drop the copies; the clone reads the root

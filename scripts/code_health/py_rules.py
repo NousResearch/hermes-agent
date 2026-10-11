@@ -912,6 +912,50 @@ def raw_thread(tree: ast.Module, ctx: Ctx) -> Iterable[int]:
                 yield node.lineno
 
 
+# Sleeps that block on the wall clock -> keyword names of their delay (positional slot 0).
+_SLEEPS = {
+    "time.sleep": ("secs", "seconds"),
+    "asyncio.sleep": ("delay",),
+    "anyio.sleep": ("delay",),
+    "trio.sleep": ("seconds",),
+    # a fresh Event nobody can set is a sleep spelled differently
+    "threading.Event().wait": ("timeout",),
+}
+
+
+def _delay(call: ast.Call, names: tuple[str, ...]) -> ast.expr | None:
+    if call.args:
+        return call.args[0]
+    return next((kw.value for kw in call.keywords if kw.arg in names), None)
+
+
+def _zero(node: ast.expr | None) -> bool:
+    """A literal ``0`` / ``0.0``: a scheduler yield, not a delay (``False`` is not a delay)."""
+    return (isinstance(node, ast.Constant) and type(node.value) in (int, float)
+            and node.value == 0)
+
+
+def wall_clock_sleep(tree: ast.Module, ctx: Ctx) -> Iterable[int]:
+    """``time.sleep(x)`` / ``asyncio.sleep(x)`` (any alias) with ``x`` not a literal zero.
+
+    Every non-zero delay counts, however small: the sub-10 ms ones on main are poll intervals
+    and timestamp-separation hacks, which a Windows runner's ~15.6 ms clock already breaks.
+    A non-literal delay counts too (it is a sleep whether or not the value is known).
+    """
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        names = _SLEEPS.get(_call_name(node))
+        if names is None:
+            continue
+        delay = _delay(node, names)
+        if names == ("timeout",) and (delay is None or (
+                isinstance(delay, ast.Constant) and delay.value is None)):
+            continue  # an Event wait without a deadline hangs; it does not sleep
+        if not _zero(delay):
+            yield node.lineno
+
+
 CHECKERS: dict[str, Callable[[ast.Module, Ctx], Iterable[int]]] = {
     "HX001": hardcoded_home,
     "HX002": new_env_var,
@@ -925,4 +969,5 @@ CHECKERS: dict[str, Callable[[ast.Module, Ctx], Iterable[int]]] = {
     "HX010": bool_of_env,
     "HX011": elif_ladder,
     "HX012": raw_thread,
+    "HX013": wall_clock_sleep,
 }

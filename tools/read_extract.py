@@ -1,13 +1,18 @@
 """Document-to-text extraction for ``read_file``: stdlib Jupyter/DOCX/XLSX (always
 authoritative for those three), plus legacy Office/OpenDocument/RTF/EPUB/PDF when the
-optional ``firecrawl-anydoc`` package (imports as ``anydoc``) is installed. Malformed
-documents raise :class:`ExtractionError`; callers fall back to text/binary handling."""
+optional ``firecrawl-anydoc`` package (imports as ``anydoc``) is installed. An
+image-only (scanned) PDF whose pages carry no text layer is OCR'd locally: pypdfium2
+rasterizes the named pages and the configured auxiliary vision model transcribes them.
+Malformed documents raise :class:`ExtractionError`; callers fall back to text/binary
+handling."""
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import functools
 import importlib
+import io
 import itertools
 import json
 import os
@@ -173,17 +178,20 @@ def hosted_ocr_available() -> bool:
 
 
 def _needs_ocr_warning(path: str, pages, hosted_error: str = "") -> str:
-    """NeedsOcrError result when hosted OCR is off/failed; hints at CHECKING for an OCR skill
-    (never names one) and never advertises the hosted_ocr knob."""
+    """NeedsOcrError result when no local vision model could transcribe the pages and hosted
+    OCR is off/failed; points at the local path that DOES work in the official image
+    (read_file OCRs scans automatically once a vision model + the renderer are present) and
+    falls back to CHECKING for an OCR skill (never names one); never advertises the
+    hosted_ocr knob."""
     page_list = ", ".join(str(p) for p in pages) if pages else "unknown"
     hosted = f"Hosted OCR was attempted and failed ({hosted_error}). " if hosted_error else ""
     return (
         f"[NEEDS OCR: pages {page_list} of this PDF are scanned images "
         f"with no text layer — their content is MISSING below. {hosted}"
-        "If the missing pages matter: render just those pages with "
-        f"`pdftoppm -jpeg -r 150 -f <first> -l <last> {shlex.quote(path)} $TMPDIR/page` "
-        "and inspect via vision_analyze, or check whether an OCR skill is "
-        "available (skills_list).]\n")
+        "Automatic OCR could not run: it needs a configured auxiliary vision "
+        "model and the PDF renderer (`hermes pm install --extra pdf-render`). "
+        "If the missing pages matter, set those up and re-read, or check whether "
+        "an OCR skill is available (skills_list).]\n")
 
 
 def _finalize_anydoc_text(text: Any, path: str, pdf_note: Callable[[], str]) -> str:
@@ -194,9 +202,116 @@ def _finalize_anydoc_text(text: Any, path: str, pdf_note: Callable[[], str]) -> 
     return (pdf_note() if Path(path).suffix.lower() == ".pdf" else "") + text.rstrip("\n") + "\n"
 
 
+# ── Scanned-PDF OCR: anydoc raises NeedsOcrError on an image-only page; recover its text
+# locally by rendering the page and asking the configured vision model, so read_file does not
+# need poppler/OCR binaries (absent from the official image) or a hosted service.
+VISION_OCR_RENDER_SCALE = 2.0  # ≈144 dpi; below ~0.5 the vision model misreads digits
+VISION_OCR_TIMEOUT = 120.0
+VISION_OCR_PROMPT = (
+    "Transcribe every line of text in this document image exactly, preserving all digits "
+    "and punctuation, one line per line. Output only the transcribed lines, no commentary.")
+
+_PDFIUM_UNSET = object()
+_pdfium_module: Any = _PDFIUM_UNSET
+_pdfium_lock = threading.Lock()
+
+
+def _pdfium() -> Optional[Any]:
+    """Lazily import the ``pypdfium2`` PDF renderer (None when unavailable). Declared as the
+    ``pdf-render`` lazy extra, so a lean image self-installs it on first scanned PDF; a failed
+    import/install degrades to the NEEDS-OCR warning rather than raising."""
+    global _pdfium_module
+    if _pdfium_module is not _PDFIUM_UNSET:
+        return _pdfium_module
+    with _pdfium_lock:
+        if _pdfium_module is not _PDFIUM_UNSET:
+            return _pdfium_module
+        try:
+            _pdfium_module = importlib.import_module("pypdfium2")
+        except ImportError:
+            try:
+                from pm import ensure_import
+
+                ensure_import("pdf-render")
+                _pdfium_module = importlib.import_module("pypdfium2")
+            except Exception:  # install unavailable/declined or a broken native binding
+                _pdfium_module = None
+        except Exception:  # present but failed to load (missing libpdfium, wrong arch)
+            _pdfium_module = None
+    return _pdfium_module
+
+
+def _render_page_data_url(pdfium: Any, doc: Any, page_number: int) -> str:
+    """PNG data URL of one 1-based page rendered at VISION_OCR_RENDER_SCALE."""
+    image = doc[page_number - 1].render(scale=VISION_OCR_RENDER_SCALE).to_pil()
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    return "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
+
+
+def _vision_ocr_scanned_pdf(data: bytes, pages, display_path: str) -> Optional[str]:
+    """Transcribe the scanned ``pages`` by rendering them with pypdfium2 and reading each
+    render with the configured auxiliary vision model (``task="vision"``). Returns the text
+    with per-page markers and a recovery note, or None when no renderer/vision backend is
+    available (or every page failed) so callers fall back to hosted OCR / the warning.
+    ``display_path`` is only for logs."""
+    pdfium = _pdfium()
+    if pdfium is None:
+        return None
+    try:
+        doc = pdfium.PdfDocument(data)
+    except Exception:  # unreadable/malformed: not this helper's recovery to make
+        return None
+    try:
+        page_count = len(doc)
+    except Exception:
+        return None
+    try:
+        picked = sorted({int(p) for p in (pages or [])})
+    except (TypeError, ValueError):
+        picked = []
+    wanted = [p for p in picked if 1 <= p <= page_count] or list(range(1, page_count + 1))
+    try:
+        from agent.auxiliary_client import call_llm
+    except Exception:
+        return None
+    sections: list[str] = []
+    recovered: list[int] = []
+    for page_number in wanted:
+        try:
+            data_url = _render_page_data_url(pdfium, doc, page_number)
+            response = call_llm(
+                task="vision", temperature=0.0, timeout=VISION_OCR_TIMEOUT,
+                messages=[{"role": "user", "content": [
+                    {"type": "text", "text": VISION_OCR_PROMPT},
+                    {"type": "image_url", "image_url": {"url": data_url}}]}])
+            text = (response.choices[0].message.content or "").strip()
+        except Exception:  # noqa: BLE001 — one failed page must not sink the rest
+            continue
+        if text:
+            sections.append(f"── page {page_number} (OCR) ──\n{text}")
+            recovered.append(page_number)
+    if not recovered:
+        return None
+    note = (
+        "[OCR RECOVERY: page(s) " + ", ".join(str(p) for p in recovered)
+        + " of this PDF had no text layer; the text below was transcribed from page images "
+        "by the local vision model. Verify any critical figure or digit.]\n")
+    return note + "\n".join(sections) + "\n"
+
+
 def _ocr_scanned_pdf(mod: Any, path: str, exc: BaseException) -> str:
-    """anydoc >= 0.2 scanned-pages signal: hosted OCR when a route exists, else teach recovery."""
+    """anydoc scanned-pages signal: local vision OCR first, then hosted OCR when a route
+    exists, else teach recovery."""
     pages = list(getattr(exc, "pages", []) or [])
+    vision_text = None
+    try:
+        with open(path, "rb") as fh:
+            vision_text = _vision_ocr_scanned_pdf(fh.read(), pages, path)
+    except OSError:
+        pass
+    if vision_text is not None:
+        return vision_text
     enabled, api_key, api_url = _hosted_ocr_config()
     hosted_error = ""
     if enabled:
@@ -206,6 +321,24 @@ def _ocr_scanned_pdf(mod: Any, path: str, exc: BaseException) -> str:
         except Exception as hosted_exc:
             hosted_error = f"{type(hosted_exc).__name__}: {hosted_exc}"
     return _needs_ocr_warning(path, pages, hosted_error)  # whole doc is scans: the warning IS it
+
+
+def _ocr_scanned_pdf_bytes(mod: Any, data: bytes, path: str, exc: BaseException) -> str:
+    """Bytes-path sibling of :func:`_ocr_scanned_pdf` — read_file reads documents across a
+    backend boundary, so the hosted call must use ``to_markdown_bytes``."""
+    pages = list(getattr(exc, "pages", []) or [])
+    vision_text = _vision_ocr_scanned_pdf(data, pages, path)
+    if vision_text is not None:
+        return vision_text
+    enabled, api_key, api_url = _hosted_ocr_config()
+    hosted_error = ""
+    if enabled:
+        try:
+            extra = {k: v for k, v in (("api_key", api_key), ("api_url", api_url)) if v}
+            return mod.to_markdown_bytes(data, ocr="hosted", **extra).rstrip("\n") + "\n"
+        except Exception as hosted_exc:  # noqa: BLE001
+            hosted_error = f"{type(hosted_exc).__name__}: {hosted_exc}"
+    return _needs_ocr_warning(path, pages, hosted_error)
 
 
 def _extract_anydoc(path: str) -> str:
@@ -236,6 +369,9 @@ def _extract_anydoc_bytes(data: bytes, path: str) -> str:
     try:
         text = mod.to_markdown_bytes(data)
     except Exception as exc:
+        needs_ocr = getattr(mod, "NeedsOcrError", None)
+        if needs_ocr is not None and isinstance(exc, needs_ocr):
+            return _ocr_scanned_pdf_bytes(mod, data, path, exc)
         raise ExtractionError(f"{type(exc).__name__}: {exc}") from exc
     return _finalize_anydoc_text(text, path, lambda: _pdf_coverage_note_from_bytes(data, path))
 
@@ -311,9 +447,11 @@ def _pdf_coverage_note(path: str, display_path: Optional[str] = None) -> str:
         "with the last text extracted before it:\n"
         f"{_gap_map(counts, texts, empty)}\n"
         "Decide which gaps you actually need — do NOT OCR or render "
-        "everything. For the gaps that matter, render just that range with "
-        f"`pdftoppm -jpeg -r 150 -f <first> -l <last> {shlex.quote(shown)} $TMPDIR/page` "
-        "and inspect each image with the vision_analyze tool, or use the "
+        "everything. For the gaps that matter, install the PDF renderer "
+        "(`hermes pm install --extra pdf-render`) and render just that range, "
+        "e.g. `python3 -m pypdfium2_cli render --scale 2 -f png "
+        f"--pages <first>-<last> --output $TMPDIR/ocr {shlex.quote(shown)}`, "
+        "then inspect each PNG with the vision_analyze tool, or use the "
         "ocr-and-documents skill (marker-pdf) for bulk OCR of large "
         "ranges.]\n")
 

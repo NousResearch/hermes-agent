@@ -1038,6 +1038,9 @@ class SlackAdapter(BasePlatformAdapter):
     _socket_watchdog_interval_s = 15.0
     _socket_ping_stale_factor = 4
     _socket_first_ping_grace_s = 60.0
+    # Even a socket with healthy pings can stop delivering Slack events. Bound that
+    # silent-zombie window by renewing the Socket Mode connection periodically.
+    _socket_max_age_s = 600.0
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.SLACK)
@@ -1340,9 +1343,22 @@ class SlackAdapter(BasePlatformAdapter):
                 connected = await self._socket_transport_connected()
                 if connected is False:
                     await self._restart_socket_mode("transport disconnected")
+                    continue
                 elif self._socket_ping_pong_stale():
-                    # is_connected() can lie on a closed session; staleness catches the zombie.
                     await self._restart_socket_mode("ping/pong stale")
+                    continue
+                # The outer handler task and websocket pings can stay healthy after
+                # the SDK's event receiver/processor has died. Check both explicitly.
+                client = getattr(self._handler, "client", None)
+                for name in ("message_receiver", "message_processor", "current_session_monitor"):
+                    worker = getattr(client, name, None)
+                    if callable(getattr(worker, "done", None)) and worker.done() is True:
+                        await self._restart_socket_mode(f"{name} stopped")
+                        break
+                else:
+                    started = self._socket_handler_started_monotonic
+                    if started is not None and time.monotonic() - started >= self._socket_max_age_s:
+                        await self._restart_socket_mode("scheduled socket renewal")
             except asyncio.CancelledError:
                 raise
             except Exception:  # pragma: no cover - defensive logging

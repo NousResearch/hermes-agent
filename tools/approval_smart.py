@@ -131,8 +131,30 @@ def _smart_approve(command: str, description: str) -> str:
         return "escalate"
 
 
+def _prefilter_verdict(command: str, description: str, pattern_key: str, surface: str) -> tuple[str, str] | None:
+    """LOCAL PATCH: ask ``approval_prefilter`` plugin hooks for a cheap verdict before the guardian LLM.
+
+    A hook returns ``{"verdict": "approve" | "escalate", "decided_by": str}`` or ``None``. ``deny`` is not
+    accepted: a prefilter may only skip the LLM (approve) or send the command to a human (escalate), never
+    block on its own. First valid verdict wins; hook errors fall through to the LLM (status quo)."""
+    try:
+        from hermes_cli.lifecycle import has_hook, invoke_hook
+        if not has_hook("approval_prefilter"):
+            return None
+        results = invoke_hook("approval_prefilter", command=command, description=description,
+                              pattern_key=pattern_key, surface=surface)
+    except Exception as exc:
+        logger.warning("Smart approvals: approval_prefilter hook failed (%s: %s), using guardian LLM",
+                       type(exc).__name__, exc)
+        return None
+    for result in results or []:
+        if isinstance(result, dict) and result.get("verdict") in {"approve", "escalate"}:
+            return result["verdict"], str(result.get("decided_by") or "prefilter")
+    return None
+
+
 def _smart_verdict(command: str, description: str, pattern_key: str,
-                   pattern_keys: list[str], session_key: str) -> str:
+                   pattern_keys: list[str], session_key: str, surface: str = "command") -> str:
     """Run the guardian LLM with observer hooks; 'approve' | 'deny' | 'escalate'.
     Redaction is observer-payload preparation, not approval policy: if it fails,
     skip observability rather than leak raw data or block the LLM decision."""
@@ -149,7 +171,12 @@ def _smart_verdict(command: str, description: str, pattern_key: str,
         payload = None
     else:
         _ctx._fire_approval_hook("pre_approval_request", **payload)
-    verdict = _smart_approve(command, description)
+    decided_by = "aux_llm"
+    pre = _prefilter_verdict(command, description, pattern_key, surface)
+    if pre is not None:
+        verdict, decided_by = pre
+    else:
+        verdict = _smart_approve(command, description)
     if payload is not None and verdict in {"approve", "deny"}:
-        _ctx._fire_approval_hook("post_approval_response", **payload, choice=f"smart_{verdict}", decided_by="aux_llm")
+        _ctx._fire_approval_hook("post_approval_response", **payload, choice=f"smart_{verdict}", decided_by=decided_by)
     return verdict

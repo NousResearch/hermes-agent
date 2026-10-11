@@ -17,6 +17,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Result};
+use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 use tokio::process::Command;
 
@@ -867,8 +868,9 @@ async fn install_macos_app_update(
     }
     let tmp = PathBuf::from(format!("{}.hermes-update-new", target_app.display()));
     let old = PathBuf::from(format!("{}.hermes-update-old", target_app.display()));
+    let journal = swap_journal_path(target_app);
+    recover_interrupted_swap(&tmp, target_app, &old, &journal).await?;
     remove_dir_if_exists(&tmp).await;
-    remove_dir_if_exists(&old).await;
 
     let ditto = Command::new("/usr/bin/ditto")
         .arg(&rebuilt_app)
@@ -918,6 +920,8 @@ async fn install_macos_app_update(
 /// never delete the running app with no replacement in place. The staged `tmp`
 /// copy is cleaned up on failure.
 async fn swap_in_new_bundle(tmp: &Path, target: &Path, old: &Path) -> Result<()> {
+    let journal = swap_journal_path(target);
+    write_swap_journal(&journal, SwapPhase::Prepared)?;
     let moved_old = if target.exists() {
         if let Err(err) = tokio::fs::rename(target, old).await {
             // Could not move the existing app aside. Leave it untouched and
@@ -928,6 +932,7 @@ async fn swap_in_new_bundle(tmp: &Path, target: &Path, old: &Path) -> Result<()>
                 target.display()
             ));
         }
+        write_swap_journal(&journal, SwapPhase::OldMoved)?;
         true
     } else {
         false
@@ -941,7 +946,91 @@ async fn swap_in_new_bundle(tmp: &Path, target: &Path, old: &Path) -> Result<()>
         remove_dir_if_exists(tmp).await;
         return Err(anyhow!("installing updated app at {}: {err}", target.display()));
     }
+    if let Err(err) = verify_bundle(target) {
+        remove_dir_if_exists(target).await;
+        if moved_old {
+            tokio::fs::rename(old, target).await.map_err(|rollback| anyhow!(
+                "updated app verification failed ({err}); rollback also failed: {rollback}"
+            ))?;
+        }
+        let _ = tokio::fs::remove_file(&journal).await;
+        return Err(err);
+    }
+    write_swap_journal(&journal, SwapPhase::NewMoved)?;
     remove_dir_if_exists(old).await;
+    tokio::fs::remove_file(&journal).await?;
+    Ok(())
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum SwapPhase {
+    Prepared,
+    OldMoved,
+    NewMoved,
+}
+
+fn swap_journal_path(target: &Path) -> PathBuf {
+    PathBuf::from(format!("{}.hermes-update-swap.json", target.display()))
+}
+
+/// Durably records intent before either destructive rename. The temporary file
+/// and parent-directory fsync make each phase replace atomic on POSIX filesystems.
+fn write_swap_journal(path: &Path, phase: SwapPhase) -> Result<()> {
+    use std::io::Write;
+    let pending = path.with_extension("json.pending");
+    let bytes = serde_json::to_vec(&phase)?;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true).truncate(true).write(true).open(&pending)?;
+    file.write_all(&bytes)?;
+    file.sync_all()?;
+    std::fs::rename(&pending, path)?;
+    if let Some(parent) = path.parent() {
+        std::fs::File::open(parent)?.sync_all()?;
+    }
+    Ok(())
+}
+
+fn verify_bundle(path: &Path) -> Result<()> {
+    let contents = path.join("Contents");
+    let plist = contents.join("Info.plist");
+    let executables = contents.join("MacOS");
+    let has_executable = std::fs::read_dir(&executables)
+        .ok()
+        .and_then(|mut entries| entries.find_map(|entry| entry.ok()))
+        .is_some();
+    if !plist.is_file() || !has_executable {
+        return Err(anyhow!("updated app is incomplete at {}", path.display()));
+    }
+    Ok(())
+}
+
+/// Resolve every on-disk crash shape from the journal and actual rename state.
+/// Prefer a verifiable live bundle; otherwise restore the parked original.
+async fn recover_interrupted_swap(tmp: &Path, target: &Path, old: &Path, journal: &Path) -> Result<()> {
+    if !journal.exists() {
+        return Ok(());
+    }
+
+    if target.exists() && verify_bundle(target).is_ok() {
+        remove_dir_if_exists(old).await;
+        remove_dir_if_exists(tmp).await;
+    } else if old.exists() {
+        remove_dir_if_exists(target).await;
+        tokio::fs::rename(old, target).await.map_err(|err| anyhow!(
+            "recovering interrupted app swap from {}: {err}", old.display()
+        ))?;
+        remove_dir_if_exists(tmp).await;
+    } else if tmp.exists() && verify_bundle(tmp).is_ok() {
+        tokio::fs::rename(tmp, target).await.map_err(|err| anyhow!(
+            "recovering staged app into {}: {err}", target.display()
+        ))?;
+    } else {
+        return Err(anyhow!(
+            "interrupted app swap has no recoverable bundle at {}", target.display()
+        ));
+    }
+    tokio::fs::remove_file(journal).await?;
     Ok(())
 }
 
@@ -1243,6 +1332,36 @@ mod tests {
     fn write_marker(dir: &Path, contents: &str) {
         std::fs::create_dir_all(dir).unwrap();
         std::fs::write(dir.join("marker.txt"), contents).unwrap();
+        std::fs::create_dir_all(dir.join("Contents/MacOS")).unwrap();
+        std::fs::write(dir.join("Contents/Info.plist"), "plist").unwrap();
+        std::fs::write(dir.join("Contents/MacOS/Hermes"), "binary").unwrap();
+    }
+
+    #[tokio::test]
+    async fn interrupted_swap_state_matrix_recovers_one_live_bundle() {
+        for (tag, phase, target_contents, old_contents, expected) in [
+            ("prepared", SwapPhase::Prepared, None, Some("OLD"), "OLD"),
+            ("old-moved", SwapPhase::OldMoved, None, Some("OLD"), "OLD"),
+            ("new-moved", SwapPhase::NewMoved, Some("NEW"), Some("OLD"), "NEW"),
+        ] {
+            let base = unique_tmp_dir(tag);
+            let target = base.join("Hermes.app");
+            let tmp = base.join("Hermes.app.hermes-update-new");
+            let old = base.join("Hermes.app.hermes-update-old");
+            let journal = base.join("Hermes.app.hermes-update-swap.json");
+            if let Some(contents) = target_contents { write_marker(&target, contents); }
+            if let Some(contents) = old_contents { write_marker(&old, contents); }
+            write_swap_journal(&journal, phase).unwrap();
+
+            recover_interrupted_swap(&tmp, &target, &old, &journal).await.unwrap();
+
+            assert_eq!(std::fs::read_to_string(target.join("marker.txt")).unwrap(), expected);
+            assert!(!journal.exists(), "{tag}: recovery must settle the journal");
+            if expected == "NEW" {
+                assert!(!old.exists(), "{tag}: verified new bundle retires backup");
+            }
+            let _ = std::fs::remove_dir_all(&base);
+        }
     }
 
     #[tokio::test]

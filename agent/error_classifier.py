@@ -47,6 +47,7 @@ class FailoverReason(enum.Enum):
     payload_too_large = "payload_too_large"  # 413 — compress payload
     image_too_large = "image_too_large"   # Native image part exceeds provider's per-image limit — shrink and retry
     image_corrupt = "image_corrupt"       # Provider can't decode image bytes — strip and retry (shrinking won't help)
+    too_many_images = "too_many_images"   # Provider rejects more than N images in one prompt — strip oldest and retry
     model_not_found = "model_not_found"  # 404 or invalid model — fallback to different model
     provider_policy_blocked = "provider_policy_blocked"  # Aggregator account data/privacy policy excluded the only endpoint
     content_policy_blocked = "content_policy_blocked"  # Provider safety filter rejected this prompt — deterministic per-request, don't retry unchanged
@@ -478,6 +479,9 @@ _V_CONTEXT_OVERFLOW = _v(_R.context_overflow, should_compress=True)
 _V_PAYLOAD_TOO_LARGE = _v(_R.payload_too_large, should_compress=True)
 _V_OVERLOADED, _V_SERVER_ERROR, _V_TIMEOUT, _V_UNKNOWN = map(_v, (_R.overloaded, _R.server_error, _R.timeout, _R.unknown))
 _V_IMAGE_TOO_LARGE, _V_IMAGE_CORRUPT = _v(_R.image_too_large), _v(_R.image_corrupt)
+# Terminal once the one-shot strip recovery has run or declined: resending the same images fails the
+# same way, so a configured fallback is the only thing left that can answer.
+_V_TOO_MANY_IMAGES = _v(_R.too_many_images, **_ABORT_FALLBACK)
 _V_MULTIMODAL, _V_INVALID_ENCRYPTED = _v(_R.multimodal_tool_content_unsupported), _v(_R.invalid_encrypted_content)
 _V_REASONING_MANDATORY = _v(_R.reasoning_mandatory, should_compress=False, should_fallback=False)
 # Same recovery hints as format_error: consumers without a merge-and-retry step (the main loop
@@ -915,6 +919,8 @@ def _by_message(c: _Ctx) -> Optional[Verdict]:
     head = _first_match(c.msg, _MESSAGE_HEAD_RULES)
     if head is not None:
         return head
+    if _is_image_count_limit(c.msg):
+        return _V_TOO_MANY_IMAGES
     usage_limit = any(p in c.msg for p in _USAGE_LIMIT_PATTERNS)
     return _classify_402(c.msg, dict) if usage_limit else _first_match(c.msg, _MESSAGE_TAIL_RULES)
 
@@ -1200,6 +1206,9 @@ def _classify_400(c: _Ctx) -> Verdict:
     # 400 whose wording a proxy stripped would fall through to format_error.
     if code in _MEMORY_CEILING_ERROR_CODES:
         return _V_OVERLOADED
+    # Image-count ceiling before the overflow tail: compression cannot lower an image count.
+    if _is_image_count_limit(msg):
+        return _V_TOO_MANY_IMAGES
     verdict = _first_match(msg, _400_TAIL_RULES)
     if verdict is not None:
         return verdict
@@ -1300,6 +1309,43 @@ def _is_server_injected_param_rejection(error_msg: str, provider: str) -> bool:
 
 _CODEX_MASKED_REPLAY_MESSAGE = "request blocked."
 _CODEX_UNSUPPORTED_CONTENT_DETAIL = "unsupported content type"
+
+
+def _is_image_count_limit(error_msg: str) -> bool:
+    """True when a 400 body indicates a per-prompt image *count* limit.
+
+    Distinct from ``_IMAGE_TOO_LARGE_PATTERNS`` (per-image byte/dimension
+    ceiling) and ``_IMAGE_CORRUPT_PATTERNS`` (undecodable bytes): the
+    provider decoded every image fine but rejects the request because it
+    carries more images than its per-prompt limit allows.
+
+    Confirmed local-engine wordings:
+      vLLM:   ``"At most 2 image(s) may be provided in one prompt."``
+      Ollama: contains ``"too many"`` + ``"image"``
+      SGLang: ``"Image count 5 exceeds limit 2 per request."``
+    Confirmed hosted wordings: DeepInfra / OpenAI-compatible gateways ``"Too many images in
+    request: 11 > 8"``, Fireworks ``"Too many images were provided ... to 60"``, DashScope
+    ``"Exceeded limit on max data-uri per request: 250"``.
+
+    ``error_msg`` is lowercased upstream — match accordingly.  The
+    ``"image"`` gate keeps this from firing on non-image count limits
+    (e.g. a max-tool-calls ceiling that happens to use the same phrasing).
+    """
+    if "data-uri per request" in error_msg:  # DashScope counts data-URIs and never says "image"
+        return True
+    if "image" not in error_msg:
+        return False
+    return any(
+        p in error_msg
+        for p in (
+            "at most",
+            "too many",
+            "no more than",
+            "maximum number",
+            "may be provided in one prompt",
+            "exceeds limit",
+        )
+    )
 
 
 def _is_codex_masked_replay_rejection(c: _Ctx) -> bool:

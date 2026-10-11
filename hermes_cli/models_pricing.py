@@ -2,7 +2,7 @@
 
 OpenRouter-compatible ``/v1/models`` pricing fetch with a per-endpoint/per-credential cache,
 Nous Portal sale chrome and org-policy filtering, and the Vercel AI Gateway / Novita / Fireworks /
-DeepInfra pricing adapters. Split out of ``hermes_cli.models``; helpers still defined there are
+Baseten / DeepInfra pricing adapters. Split out of ``hermes_cli.models``; helpers still defined there are
 looked up on ``hermes_cli.models`` at call time so ``patch("hermes_cli.models.<name>")`` mocks keep
 intercepting.
 """
@@ -10,11 +10,14 @@ intercepting.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 import urllib.request
 from typing import Any, Optional
 from hermes_cli.models_reasoning_caps import _seed_reasoning_caps
+
+logger = logging.getLogger(__name__)
 
 
 # Cache: maps model_id → {"prompt": str, "completion": str} per endpoint
@@ -477,7 +480,12 @@ def _fetch_kilocode_pricing(timeout: float = 8.0, *, force_refresh: bool = False
 
 def _fetch_fireworks_pricing_for_provider(*, force_refresh: bool = False) -> dict[str, dict[str, Any]]:
     _remember_provider_cache_key("fireworks", _FIREWORKS_PRICING_KEY)
-    return _fireworks_pricing_from_models_dev(force_refresh=force_refresh)
+    return _pricing_from_models_dev("fireworks", force_refresh=force_refresh)
+
+
+def _fetch_baseten_pricing_for_provider(*, force_refresh: bool = False) -> dict[str, dict[str, Any]]:
+    _remember_provider_cache_key("baseten", _BASETEN_PRICING_KEY)
+    return _pricing_from_models_dev("baseten", force_refresh=force_refresh)
 
 
 def _fetch_kilocode_pricing_for_provider(*, force_refresh: bool = False) -> dict[str, dict[str, Any]]:
@@ -502,6 +510,7 @@ def _fetch_nous_pricing_for_provider(*, force_refresh: bool = False) -> dict[str
 
 _OPENROUTER_PRICING_BASE = "https://openrouter.ai/api"
 _FIREWORKS_PRICING_KEY = "models.dev/fireworks"
+_BASETEN_PRICING_KEY = "models.dev/baseten"
 
 
 def _ai_gateway_pricing_scope() -> str:
@@ -534,6 +543,7 @@ _STATIC_PRICING_SCOPES = {
     "novita": _novita_pricing_scope,
     "kilocode": _kilo_pricing_scope,
     "fireworks": lambda: _FIREWORKS_PRICING_KEY,
+    "baseten": lambda: _BASETEN_PRICING_KEY,
 }
 
 
@@ -607,7 +617,7 @@ def _cached_only_pricing(normalized: str) -> dict[str, dict[str, str]]:
         cache_key, _url = _deepinfra_catalog_url()
         return _fetch_deepinfra_pricing() if cache_key in _deepinfra_catalog_cache else {}
     cache_key = _pricing_provider_cache_keys.get((_pricing_profile_key(), normalized))
-    if cache_key is None and normalized in ("openrouter", "ai-gateway", "fireworks"):
+    if cache_key is None and normalized in ("openrouter", "ai-gateway", "fireworks", "baseten"):
         cache_key = _STATIC_PRICING_SCOPES[normalized]()
     return (_cached_catalog(cache_key) or {}) if cache_key else {}
 
@@ -616,9 +626,9 @@ def get_pricing_for_provider(
     provider: str, *, base_url: str = "", force_refresh: bool = False, cached_only: bool = False
 ) -> dict[str, dict[str, str]]:
     """Return live pricing for providers that support it (openrouter, nous, ai-gateway, novita,
-    deepinfra, fireworks, kilocode); ``{}`` for everything else. ``cached_only`` never starts
-    provider I/O: normal picker opens use it so cold endpoints cannot hold the response path,
-    while a background prewarm fills the same caches for later opens."""
+    deepinfra, fireworks, kilocode, baseten); ``{}`` for everything else. ``cached_only`` never
+    starts provider I/O: normal picker opens use it so cold endpoints cannot hold the response
+    path, while a background prewarm fills the same caches for later opens."""
     normalized = resolve_pricing_provider(provider, base_url=base_url)
     if cached_only:
         return _cached_only_pricing(normalized)
@@ -626,10 +636,12 @@ def get_pricing_for_provider(
     return fetcher(force_refresh=force_refresh) if fetcher else {}
 
 
-def _fireworks_pricing_from_models_dev(*, force_refresh: bool = False) -> dict[str, dict[str, str]]:
-    """Fireworks picker pricing from the models.dev registry cache (``fetch_models_dev()`` keeps a
-    shared in-memory + disk cache, 1h TTL) — a pure dict transform, no per-render network call."""
-    cache_key = "models.dev/fireworks"
+def _pricing_from_models_dev(registry_id: str, *, force_refresh: bool = False) -> dict[str, dict[str, str]]:
+    """Picker pricing for a provider the models.dev registry already covers (``fetch_models_dev()``
+    keeps a shared in-memory + disk cache, 1h TTL) — a pure dict transform, no per-render network
+    call. Used by every provider whose catalog is models.dev-authoritative rather than fetched from
+    the provider's own endpoint (Fireworks, Baseten)."""
+    cache_key = f"models.dev/{registry_id}"
     if not force_refresh:
         cached = _cached_catalog(cache_key)
         if cached is not None:
@@ -639,7 +651,7 @@ def _fireworks_pricing_from_models_dev(*, force_refresh: bool = False) -> dict[s
     try:
         from agent.models_dev import _get_provider_models
 
-        for mid, entry in (_get_provider_models("fireworks") or {}).items():
+        for mid, entry in (_get_provider_models(registry_id) or {}).items():
             cost = entry.get("cost") if isinstance(entry, dict) else None
             if not isinstance(cost, dict):
                 continue
@@ -651,6 +663,9 @@ def _fireworks_pricing_from_models_dev(*, force_refresh: bool = False) -> dict[s
                 row["input_cache_read"] = _per_token(cost["cache_read"])
             result[str(mid)] = row
     except Exception:
+        # Fail open: pricing is picker chrome, and a malformed registry entry must never break a
+        # model list. Logged with the traceback so a persistent shape change is still diagnosable.
+        logger.debug("models.dev pricing for %s failed", registry_id, exc_info=True)
         result = {}
 
     return _cache_catalog(cache_key, result)
@@ -717,6 +732,7 @@ _PRICING_FETCHERS = {
     "novita": _fetch_novita_pricing_for_provider,
     "deepinfra": _fetch_deepinfra_pricing,
     "fireworks": _fetch_fireworks_pricing_for_provider,
+    "baseten": _fetch_baseten_pricing_for_provider,
     "kilocode": _fetch_kilocode_pricing_for_provider,
     "nous": _fetch_nous_pricing_for_provider,
 }

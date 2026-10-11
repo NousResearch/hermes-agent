@@ -551,6 +551,39 @@ def test_active_pr_guard_allows_only_explicit_exact_pr_review_continuations(
             assert guarded.get(guarded_id) == "active_pr"
 
 
+def test_active_pr_guard_refuses_body_edit_after_pr_announcement(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A post-announcement body edit cannot manufacture a PR continuation.
+
+    The continuation exception is authorization for an independently assigned
+    worker to perform work that was requested before the PR existed.  Reading
+    the mutable task body here would let an operator edit generic prose into
+    the magic words after the implementation PR was announced and bypass the
+    duplicate-work guard.
+    """
+    import hermes_cli.profiles as profmod
+
+    monkeypatch.setattr(profmod, "profile_exists", lambda name: True)
+    pr_url = "https://github.com/example/repo/pull/31"
+    with kbc.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="ordinary implementation",
+            body="Continue the implementation if more work is needed.",
+            completion_contract=pr_url,
+            assignee="vaidya",
+        )
+        kb.add_comment(conn, task_id, author="anika", body=f"Opened {pr_url}.")
+        assert kb.edit_task(
+            conn,
+            task_id,
+            body="Perform an independent non-implementer exact-head review.",
+        )
+
+        assert kbd.check_respawn_guard(conn, task_id) == "active_pr"
+
+
 def _backdate_comments(conn, tid, seconds=60):
     """Second-granularity timestamps: make the PR comment older than the
     handoff that follows it in the same test."""

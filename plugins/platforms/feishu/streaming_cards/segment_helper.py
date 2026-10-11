@@ -1,4 +1,4 @@
-"""Segment 对应的 CardKit action 构造与容量估算."""
+"""CardKit action construction and capacity estimation for segments."""
 
 from __future__ import annotations
 
@@ -16,12 +16,12 @@ from .i18n import _T, _i18n
 from .segments import Segment, SegmentType
 from .tooluse import ToolDisplayStep
 
-ELEMENT_THRESHOLD = 180  # 飞书硬上限 200，预留 20 给 footer + 波动
-FOOTER_RESERVE = 2  # footer 元素预留（hr + markdown）
+ELEMENT_THRESHOLD = 180  # Feishu hard limit 200; 20 reserved for footer + slack
+FOOTER_RESERVE = 2  # footer elements (hr + markdown)
 
 
 def estimate_segment_elements(seg: Segment, all_steps: list[ToolDisplayStep]) -> int:
-    """估算单个 segment 新增的卡片元素数."""
+    """Estimate the card elements a single segment adds."""
     if seg.type == SegmentType.REASONING:
         return 4  # collapsible_panel + plain_text + standard_icon + markdown
     if seg.type == SegmentType.ANSWER:
@@ -42,9 +42,9 @@ def tool_segment_end(seg: Segment, all_steps: list[ToolDisplayStep]) -> int:
 
 
 def estimate_tool_elements(start: int, end: int, all_steps: list[ToolDisplayStep]) -> int:
-    """估算 tool panel 在 [start, end) step 区间内的元素数."""
+    """Estimate a tool panel's elements over the [start, end) step range."""
     steps = all_steps[start:end]
-    count = 3  # panel/header 基础元素
+    count = 3  # panel/header base elements
     for step in steps:
         count += 3  # title: div + standard_icon + lark_md
         if step.get("detail"):
@@ -60,7 +60,7 @@ def find_tool_split_offset(
     seg: Segment,
     all_steps: list[ToolDisplayStep],
 ) -> int | None:
-    """寻找 tool step 拆分点，让当前卡保留尽可能多的 steps."""
+    """Find a tool-step split point that keeps as many steps on the current card as possible."""
     start = seg.tool_offset
     end = tool_segment_end(seg, all_steps)
     if end - start <= 1:
@@ -75,7 +75,7 @@ def find_tool_split_offset(
 def build_add_segment_action(
     seg: Segment, all_steps: list[ToolDisplayStep], *, text_size: str = "normal_v2",
 ) -> dict[str, Any]:
-    """构造新增 segment 元素的 batch action."""
+    """Build the batch action that adds a segment's elements."""
     if seg.type == SegmentType.REASONING:
         element = _build_reasoning_panel(
             " ",
@@ -112,7 +112,7 @@ def build_add_segment_action(
 
 
 def build_reasoning_finalized_action(seg: Segment) -> dict[str, Any]:
-    """构造 reasoning header 耗时终结 action."""
+    """Build the reasoning-header elapsed-time finalize action."""
     elapsed = _format_elapsed(seg.elapsed_ms)
     en_label = _T["thought_for"][0].format(elapsed)
     zh_label = _T["thought_for"][1].format(elapsed)
@@ -141,7 +141,7 @@ def build_tool_update_action(
     steps: list[ToolDisplayStep],
     step_offset: int = 0,
 ) -> dict[str, Any]:
-    """构造 tool panel 局部更新 action（steps 为该段自己的步骤切片）."""
+    """Build a tool-panel partial-update action (steps = this segment's own slice)."""
     panel = _build_tool_panel(steps, step_offset=step_offset)
     return {
         "action": "partial_update_element",

@@ -1,4 +1,4 @@
-"""工具调用追踪与可视化."""
+"""Tool-call tracking and visualization."""
 
 from __future__ import annotations
 
@@ -28,8 +28,8 @@ class ToolDisplayStep(TypedDict):
     title: str
     status: str
     detail: str
-    label: str  # 单行动作标签（"📖 Reading 幼儿园与学习.md"），空则退 title
-    emoji: str  # 工具动作 emoji（折叠态快速识别）
+    label: str  # one-line action label (e.g. "📖 Reading foo.md"); falls back to title when empty
+    emoji: str  # action emoji for quick recognition while collapsed
     output: str
     error: str
     icon: str
@@ -73,7 +73,7 @@ _SECRET_FLAG_RE = re.compile(
 
 
 def redact_inline_secrets(value: str) -> str:
-    """脱敏 key=secret、Authorization header、--flag secret 模式."""
+    """Redact key=secret, Authorization headers, and --flag secret patterns."""
 
     def _redact_assign(m: re.Match) -> str:
         key = str(m.group(2))
@@ -94,7 +94,7 @@ def redact_inline_secrets(value: str) -> str:
 
 
 def _sanitize_detail(text: str, sanitizer: str | None) -> str:
-    """根据 sanitizer 类型清洗 detail 文本."""
+    """Sanitize detail text according to sanitizer type."""
     if not text or not sanitizer:
         return text
     cleaned = re.sub(r"<[^>]+>", "", text).strip()
@@ -115,7 +115,7 @@ def _sanitize_detail(text: str, sanitizer: str | None) -> str:
 
 
 def _redact_paths(text: str) -> str:
-    """命令中路径只保留 basename."""
+    """Reduce paths in commands to their basename."""
     return re.sub(
         r'(^|[\s=\'"()])([~./][^\s\'"()]+)',
         lambda m: f"{m.group(1)}{os.path.basename(m.group(2))}",
@@ -286,7 +286,7 @@ def _build_display_block(
     *,
     sanitizer: str | None = None,
 ) -> ToolBlock | None:
-    """构建结果/错误的显示块 — 返回 {language, content, fenced} 含 markdown 代码围栏."""
+    """Build a result/error display block — returns {language, content, fenced} with a markdown fence."""
     if value is None:
         return None
     if isinstance(value, str):
@@ -312,23 +312,24 @@ def _build_display_block(
     return _fenced_block("text", normalized) if normalized else None
 
 
-_BLOCK_MAX_CHARS = 1200  # 单工具结果块上限：飞书卡片有 JSON 体积上限（200860），
-# execute_code 等工具的完整输出会把卡撑爆——工具面板只是进度展示，全文在终端里
+_BLOCK_MAX_CHARS = 1200  # per-tool result block cap: Feishu cards have a JSON
+# size limit (200860) and full outputs from tools like execute_code would blow
+# it — the panel is a progress view; the terminal holds the full text
 
 
 def _fenced_block(language: str, content: str) -> ToolBlock:
     if len(content) > _BLOCK_MAX_CHARS:
         head, tail = content[:900], content[-240:]
         omitted = len(content) - 1140
-        content = f"{head}\n…（已截断 {omitted} 字符，完整输出见终端）…\n{tail}"
+        content = f"{head}\n…({omitted} chars truncated; full output in the terminal)…\n{tail}"
     fence = "`" * max(3, max((len(m) for m in re.findall(r"`+", content)), default=0) + 1)
     return {"language": language, "content": content, "fenced": f"{fence}{language}\n{content}\n{fence}"}
 
 
 class ToolUseTracker:
-    """追踪当前消息中的工具调用步骤.
+    """Track tool-call steps for the current message.
 
-    按 session 隔离，每个会话独立生命周期.
+    Isolated per session; each session owns its lifecycle.
     """
 
     def __init__(self, max_steps: int = 128) -> None:
@@ -350,7 +351,7 @@ class ToolUseTracker:
         )
 
     def record_end(self, name: str, *, error: str = "", output: str = "") -> None:
-        """通过名字匹配最近的一个 running 步骤来结束."""
+        """Close the most recent running step matching by name."""
         if self._session is None:
             return
         desc = _resolve_tool_descriptor(name)
@@ -380,7 +381,7 @@ class ToolUseTracker:
         )
 
     def build_display_steps(self) -> list[ToolDisplayStep]:
-        """构建用于卡片渲染的步骤列表."""
+        """Build the step list used for card rendering."""
         if self._session is None:
             return []
         steps: list[ToolDisplayStep] = []
@@ -393,8 +394,9 @@ class ToolUseTracker:
             detail = _sanitize_detail(s.detail, sanitizer)
             emoji = (desc.get("emoji") if desc else None) or "⚙️"
             verb_ing = (desc.get("verb_ing") if desc else None) or base_title
-            # 动作标签：emoji + 进行时动词 + 目标（detail 已脱敏/取 basename）。
-            # 目标过长（如长 command/search）截断到 60 字符防标题爆炸。
+            # Action label: emoji + progressive verb + target (detail already
+            # redacted / basename-reduced). Overlong targets (long commands or
+            # searches) truncate to 60 chars so titles cannot explode.
             label = f"{emoji} {verb_ing}"
             if detail:
                 label += f" {detail[:60]}"

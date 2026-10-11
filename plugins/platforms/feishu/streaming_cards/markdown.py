@@ -1,4 +1,4 @@
-"""Markdown 文本处理 — 标题降级、表格降级、图片 key 剥离、长文本分块."""
+"""Markdown processing — heading demotion, table demotion, image-key stripping, long-text chunking."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ __all__ = [
 
 
 def _find_tables_outside_code_blocks(text: str) -> list[tuple[int, int, str]]:
-    """查找代码块外的 markdown 表格，返回 [(start, end, raw), ...]."""
+    """Find markdown tables outside code blocks; returns [(start, end, raw), ...]."""
     code_ranges: list[tuple[int, int]] = []
     for m in re.finditer(r"```[\s\S]*?```", text):
         code_ranges.append((m.start(), m.end()))
@@ -36,7 +36,7 @@ def _find_tables_outside_code_blocks(text: str) -> list[tuple[int, int, str]]:
 
 
 def _downgrade_tables(text: str, limit: int = _MAX_CARD_TABLES) -> str:
-    """超限表格降级为代码块（保留内容可见但飞书不渲染为表格元素）."""
+    """Demote an oversized table to a code block (content stays visible; Feishu just renders no table element)."""
     matches = _find_tables_outside_code_blocks(text)
     if len(matches) <= limit:
         return text
@@ -48,7 +48,7 @@ def _downgrade_tables(text: str, limit: int = _MAX_CARD_TABLES) -> str:
 
 
 def _strip_invalid_image_keys(text: str) -> str:
-    """移除非 img_ 前缀的图片引用."""
+    """Remove image references that lack the img_ prefix."""
     if "![" not in text:
         return text
 
@@ -59,16 +59,16 @@ def _strip_invalid_image_keys(text: str) -> str:
 
 
 def optimize_markdown_style(text: str) -> str:
-    """优化流式 Markdown 以适配飞书 CardKit 渲染.
+    """Optimize streaming markdown for Feishu CardKit rendering.
 
-    1. 提取代码块用占位符保护
-    2. 标题降级: H1 -> H4, H2-H6 -> H5
-    3. 还原代码块
-    4. 压缩多余空行
-    5. 剥离无效图片 key（非 img_xxx 格式）
+    1. lift code blocks out behind placeholders
+    2. demote headings: H1 -> H4, H2-H6 -> H5
+    3. restore code blocks
+    4. collapse excess blank lines
+    5. strip invalid image keys (non img_xxx forms)
     """
     try:
-        # 1. 提取代码块
+        # 1. lift code blocks
         mark = "___CB_"
         code_blocks: list[str] = []
 
@@ -81,19 +81,19 @@ def optimize_markdown_style(text: str) -> str:
 
         r = re.sub(r"(^|\n)(`{3,})([^\n]*)\n[\s\S]*?\n\2(?=\n|$)", _extract, text)
 
-        # 2. 标题降级（仅当存在 H1-H3 时）
+        # 2. demote headings (only when H1-H3 present)
         if re.search(r"^#{1,3} ", text, re.MULTILINE):
             r = re.sub(r"^#{2,6} (.+)$", r"##### \1", r, flags=re.MULTILINE)
             r = re.sub(r"^# (.+)$", r"#### \1", r, flags=re.MULTILINE)
 
-        # 3. 还原代码块
+        # 3. restore code blocks
         for i, block in enumerate(code_blocks):
             r = r.replace(f"{mark}{i}___", block)
 
-        # 4. 压缩多余空行
+        # 4. collapse excess blank lines
         r = re.sub(r"\n{3,}", "\n\n", r)
 
-        # 5. 剥离无效图片 key
+        # 5. strip invalid image keys
         r = _strip_invalid_image_keys(r)
 
         return r
@@ -103,7 +103,7 @@ def optimize_markdown_style(text: str) -> str:
 
 
 def _split_long_text(text: str, limit: int = _MAX_CHUNK_CHARS) -> list[str]:
-    """将超长文本按段落/换行拆分为多个不超过 limit 字符的块."""
+    """Chunk overlong text on paragraph/line boundaries into blocks of at most limit characters."""
     if len(text) <= limit:
         return [text]
     chunks: list[str] = []

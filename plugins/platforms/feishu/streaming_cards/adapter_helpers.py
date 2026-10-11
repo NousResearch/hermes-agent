@@ -20,15 +20,16 @@ _CRON_FAILURE_RE = re.compile(r"Cron '[^']{0,120}' failed: |\*\*Status:\*\* [^\n
 
 
 def _looks_like_cron_failure(body: str) -> bool:
-    """cron 正文是否失败通知（红 header 用；误判只影响配色，不影响投递）."""
+    """Whether a cron body is a failure notice (red header; a misjudgment only affects color, not delivery)."""
     return _CRON_FAILURE_RE.search(body) is not None
 
 
 def _parse_cron_payload(content: str) -> tuple[str, str, str, bool]:
-    """拆 cron wrap 信封 → ``(task_name, 卡片正文, job_id, is_failure)``.
+    """Unwrap the cron envelope → ``(task_name, card_body, job_id, is_failure)``.
 
-    正文 = 原始产出 + 管理提示尾（含 job_id，保留原生文本的可追溯性）；形状不
-    匹配（wrap_response=false / 上游改版）时原 content 整体作为正文返回。
+    Body = the raw output plus the management-hint footer (with job_id, keeping
+    the traceability of the native text); on a shape mismatch (wrap_response
+    disabled / upstream rewording) the original content is returned whole.
     """
     if not content.startswith(CRON_WRAP_HEADER):
         return "", content, "", _looks_like_cron_failure(content)

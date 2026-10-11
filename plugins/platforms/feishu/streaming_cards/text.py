@@ -1,4 +1,4 @@
-"""流式文本解析 — reasoning 标签提取与最终回答清理."""
+"""Streaming text parsing — reasoning-tag extraction and final-answer cleanup."""
 
 from __future__ import annotations
 

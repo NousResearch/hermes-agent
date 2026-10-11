@@ -1,4 +1,4 @@
-"""飞书卡片 i18n — 中英双语文本映射."""
+"""Feishu card i18n — bilingual (en/zh) text mapping."""
 
 from __future__ import annotations
 
@@ -24,7 +24,8 @@ _T: dict[str, tuple[str, str]] = {
     "tool_pending": ("🛠️ Tool use pending", "🛠️ 等待工具执行"),
     "tool_pending_hint": ("Tool activity will appear here", "工具执行动态将显示在这里"),
     "steps": ("{} step{}", "{} 步"),
-    # 多段工具面板（工具→正文→再工具）标题带全局步区间，面板之间可区分
+    # Multi-panel titles (tool→text→tool) carry their global step range so panels
+    # are distinguishable
     "steps_range": ("steps {}–{}", "第 {}–{} 步"),
     # 折叠态失败信号：不展开也能发现回合中出过错（标题同时转红）
     "steps_failed": ("⚠️ {} failed", "⚠️ {} 步失败"),

@@ -252,6 +252,12 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
         if peer_name not in peers:
             return _roster_err(f"No registered peer named '{peer_name}'.")
         dm_target = f"{peer_name}/{peer_profile}" if peer_profile else peer_name
+        # The remote gateway cannot authenticate a source profile from a peer API
+        # key shared by the install. Do not hand a protected target to that route.
+        if peer_profile:
+            from hermes_cli.profile_invocation_acl import permits
+            if not permits(me, peer_profile, root=root):
+                return _err(f"agent invocation of profile {peer_profile!r} is denied by bot_mode.invocation_acl")
         # A peer dm crosses installs: qualify the id with this host so the peer's own '<me>' stays distinct.
         from agent.turn_author import bot_author_id, local_origin
         peer_author = {**author, "id": bot_author_id(me, local_origin())}
@@ -291,6 +297,9 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
         return _roster_err(f"No teammate named '{raw_target}' on this install, on a connected "
                            "machine, or on a registered peer. Pick a name from the roster "
                            "(roles are listed in your system prompt).")
+    from hermes_cli.profile_invocation_acl import permits
+    if not permits(me, resolved, root=root):
+        return _err(f"agent invocation of profile {resolved!r} is denied by bot_mode.invocation_acl")
     return _start_delivery([_hermes_cli(), "-p", resolved, *BOT_CHAT_TURN_ARGS], content, f"@{_handle(resolved)}",
                            stdin_file=False, profile_home=roster_homes[resolved], author=author, **delivery)
 
@@ -317,6 +326,9 @@ def _try_relay_delivery(root: Path, raw_target: str, content: str, me: str, *,
             forms = ", ".join(form for r, form in zip(roster, remote_target_forms(roster, local_taken_forms(root)))
                               if want in _target_aliases(r))
             return _err(f"'{raw_target}' exists on several connected machines — disambiguate with one of: {forms}.")
+        from hermes_cli.profile_invocation_acl import permits
+        if not permits(me, match["profile"], root=root):
+            return _err(f"agent invocation of profile {match['profile']!r} is denied by bot_mode.invocation_acl")
         try:
             envelope = enqueue_envelope(root, target=match, message=content, sender_profile=me, sender_handle=_handle(me))
         except EnvelopeRefusedError as exc:

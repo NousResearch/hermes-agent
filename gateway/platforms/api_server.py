@@ -1698,6 +1698,27 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             profile = self._resolve_request_profile(request)
             if profile is _PROFILE_REJECTED:
                 return web.json_response({"error": "Unknown or unconfigured profile"}, status=404)
+            # The API/peer bearer key identifies a transport, not a calling profile.
+            # It cannot authorize a protected Forge target on behalf of another
+            # agent (or prove that an apparent Forge caller really is Forge).
+            # Fail closed for all native agent API routes. Health stays available
+            # to monitors; shared webhooks are handled by their own ingress auth.
+            route = getattr(request.match_info, "route", None)
+            canonical = getattr(getattr(route, "resource", None), "canonical", "")
+            is_shared_ingress = canonical == "/p/{profile}/{tail}"
+            is_health = (request.path in ("/health", "/v1/health") or
+                         (profile is None and request.path in
+                          ("/p/{}/health".format(request.match_info.get("profile")),
+                           "/p/{}/v1/health".format(request.match_info.get("profile")))) or
+                         (profile is not None and request.path in
+                          ("/p/{}/health".format(profile),
+                           "/p/{}/v1/health".format(profile))))
+            if not is_shared_ingress and not is_health:
+                from hermes_cli.profile_invocation_acl import install_root, permits
+                from hermes_cli.profiles import current_profile_name
+                target = profile or current_profile_name(default="default")
+                if not permits(None, target, root=install_root()):
+                    return web.json_response({"error": "Profile API invocation denied"}, status=403)
             token = _api_request_profile.set(profile)
             try:
                 with self._profile_scope(profile):

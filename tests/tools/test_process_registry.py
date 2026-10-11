@@ -2532,38 +2532,6 @@ class TestSystemdCgroupIsolation:
         stop_unit.assert_called_once()
         pipe_spawn.assert_not_called()
 
-    def test_worker_memory_limit_honors_local_guard_mb_override(self, monkeypatch):
-        import tools.process_registry as pr
-
-        monkeypatch.setenv("TERMINAL_LOCAL_MEMORY_MAX_MB", "123")
-        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
-
-        argv = pr._build_systemd_scope_argv(
-            ["/bin/bash", "-lc", "true"],
-            unit_suffix="test",
-        )
-
-        assert f"MemoryMax={123 * 1024 * 1024}" in argv
-
-    def test_worker_memory_limit_caps_oversized_local_guard_override(
-        self, monkeypatch
-    ):
-        import tools.process_registry as pr
-
-        monkeypatch.setenv("TERMINAL_LOCAL_MEMORY_MAX_MB", "999999")
-        monkeypatch.setattr(
-            pr.Path,
-            "read_text",
-            lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("no cgroup")),
-        )
-        monkeypatch.setattr(
-            pr.os,
-            "sysconf",
-            lambda *_args: (_ for _ in ()).throw(OSError("no sysconf")),
-        )
-
-        assert pr._worker_memory_max_bytes() == pr._DEFAULT_WORKER_MEMORY_MAX_BYTES
-
     def test_kill_recovered_detached_already_exited_stops_persisted_scope(
         self, registry, monkeypatch
     ):

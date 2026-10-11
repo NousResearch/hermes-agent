@@ -1564,6 +1564,66 @@ class TestDockerProfileSandboxMediaTranslation:
             for r in caplog.records
         )
 
+    def test_windows_rooted_container_path_translates(self, monkeypatch):
+        """On a native Windows host ``WindowsPath('/workspace/report.pdf')`` is drive-less-rooted
+        and therefore NOT ``is_absolute()`` — the container form Docker agents emit must still
+        reach the translator instead of being dropped as a relative path (#134264)."""
+        from pathlib import PureWindowsPath
+
+        from gateway.platforms import base as platform_base
+
+        self._enable_docker(monkeypatch)
+        workspace = self._sandbox_dir() / "workspace"
+        workspace.mkdir(parents=True, exist_ok=True)
+        produced = workspace / "report.pdf"
+        produced.write_bytes(b"%PDF-1.4")
+
+        assert (
+            platform_base._translate_docker_container_media_path(
+                PureWindowsPath("/workspace/report.pdf"), session_key=self.SESSION_KEY
+            )
+            == produced.resolve()
+        )
+
+    def test_windows_drive_path_declined_without_warning(self, monkeypatch, caplog):
+        """A drive-letter host path is not a container path: decline quietly so the host fallback
+        proceeds without the misleading 'no mounted prefix matches' WARNING (#134264)."""
+        import logging
+        from pathlib import PureWindowsPath
+
+        from gateway.platforms import base as platform_base
+
+        self._enable_docker(monkeypatch)
+        (self._sandbox_dir() / "workspace").mkdir(parents=True, exist_ok=True)
+
+        with caplog.at_level(logging.WARNING, logger="gateway.platforms.base"):
+            resolved = platform_base._translate_docker_container_media_path(
+                PureWindowsPath(r"C:\Users\me\report.pdf"), session_key=self.SESSION_KEY
+            )
+
+        assert resolved is None
+        assert not any("did not resolve" in r.message for r in caplog.records)
+
+    def test_absolute_or_windows_rooted_predicate(self):
+        """The gate accepts POSIX-absolute and Windows drive-absolute paths, plus the drive-less
+        rooted container form; drive-relative and plain relative paths stay rejected."""
+        from pathlib import PurePosixPath, PureWindowsPath
+
+        from gateway.platforms import base as platform_base
+
+        for accepted in (
+            PureWindowsPath("/workspace/x"),  # not is_absolute() on Windows
+            PureWindowsPath(r"C:\Users\x"),
+            PurePosixPath("/workspace/x"),
+        ):
+            assert platform_base._is_absolute_or_windows_rooted(accepted)
+        for rejected in (
+            PureWindowsPath("rel/x"),
+            PureWindowsPath("C:rel"),
+            PurePosixPath("rel"),
+        ):
+            assert not platform_base._is_absolute_or_windows_rooted(rejected)
+
 
 class _LockGovernanceProbeAdapter(BasePlatformAdapter):
     """Minimal concrete adapter for platform-lock takeover governance tests."""

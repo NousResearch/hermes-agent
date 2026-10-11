@@ -418,7 +418,7 @@ def is_host_excluded_by_no_proxy(hostname: str, no_proxy_value: str | None = Non
 
 import dataclasses
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Dict, List, Optional, Any, Callable, Awaitable, Tuple, Union
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -1124,10 +1124,24 @@ def _warn_unresolved_docker_media(candidate: Path, session_key: str, reason: str
                    f", session_key={session_key}" if session_key else "")
 
 
+def _is_absolute_or_windows_rooted(path: "Path") -> bool:
+    """``path.is_absolute()``, plus the one form that flips meaning on a Windows host: a drive-less
+    rooted path (``WindowsPath('/workspace/x')``) is NOT ``is_absolute()`` there — it is
+    current-drive-relative — yet it is exactly the container-absolute form Docker agents emit in
+    MEDIA tags (#134264). Drive-relative (``C:rel``) and plain relative paths stay rejected; on
+    POSIX the second arm can never fire (a rooted PosixPath is already absolute)."""
+    return path.is_absolute() or (path.drive == "" and path.root != "")
+
+
 def _translate_docker_container_media_path(candidate: Path, session_key: str = "") -> Optional[Path]:
     """Container-absolute path -> host path via longest-prefix match over ``docker_volumes``, the
     auto-mounted cache dirs (``/root/.hermes/...``), persistent ``/workspace`` and ``/root``."""
-    if not candidate.is_absolute():
+    if candidate.drive:
+        # A drive-letter (incl. UNC) path is a Windows HOST path, not a container path — decline
+        # quietly so the caller's host fallback proceeds without the misleading "no mounted
+        # prefix matches" warning (#134264).
+        return None
+    if not _is_absolute_or_windows_rooted(candidate):
         return None
     # In-process gateways (Desktop, `hermes serve`) may not have bridged terminal.* config into
     # TERMINAL_* env yet; the bridge is idempotent.
@@ -1157,7 +1171,12 @@ def _translate_docker_container_media_path(candidate: Path, session_key: str = "
         _warn_unresolved_docker_media(candidate, session_key, "no mounted prefix matches")
         return None
     for host_root, container_root, _score in sorted(matched, key=lambda m: -m[2]):
-        translated = _resolve_path(host_root / candidate.relative_to(container_root), strict=True)
+        # Match and descend in one coordinate system: candidate/container flaviours can differ on
+        # Windows hosts (WindowsPath candidate vs config-defined container roots).
+        rel = PurePosixPath(candidate_posix).relative_to(
+            PurePosixPath(container_root.as_posix())
+        )
+        translated = _resolve_path(host_root / Path(*rel.parts), strict=True)
         if translated is not None and (
                 translated == host_root or _path_is_within(translated, host_root)):
             return translated
@@ -1179,7 +1198,7 @@ def validate_media_delivery_path(path: str, session_key: str = "") -> Optional[s
     except (OSError, RuntimeError, ValueError):
         # expanduser raises ValueError("embedded null byte") for a ~\x00 path.
         return None
-    if not expanded.is_absolute():
+    if not _is_absolute_or_windows_rooted(expanded):
         return None
     # Docker agents emit MEDIA:/workspace/... — map container paths to host paths first.
     resolved = _translate_docker_container_media_path(expanded, session_key=session_key)

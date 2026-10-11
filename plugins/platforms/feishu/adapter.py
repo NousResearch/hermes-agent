@@ -1649,10 +1649,124 @@ class FeishuAdapter(BasePlatformAdapter):
             self._webhook_site = None
 
     # --- Outbound — send / edit / send_image / send_voice / … ---
+    # ------------------------------------------------------------------
+    # CardKit v2 streaming cards: draft-streaming contract + send routing.
+    # Runtime-gated per the platform convention (DingTalk-style capability
+    # property): inactive unless the SDK client is connected, so none of this
+    # changes behavior for deployments that do not opt into card streaming.
+    # ------------------------------------------------------------------
+
+    @property
+    def draft_stream_is_message(self) -> bool:
+        """One card per turn: segment boundaries finalize inside the card."""
+        return self._streaming_cards_ready()
+
+    def _streaming_cards_ready(self) -> bool:
+        return bool(getattr(self, "_client", None))
+
+    def _card_engine(self):
+        # Lazy absolute import: this module is also loaded standalone by the
+        # plugin loader (no parent package), matching the sibling-module style.
+        from plugins.platforms.feishu.streaming_cards.client import CardKitClient
+        from plugins.platforms.feishu.streaming_cards.engine import ChatCardEngine
+
+        engine = getattr(self, "_card_engine_instance", None)
+        if engine is None:
+            engine = ChatCardEngine(CardKitClient(self._run_blocking, self._client))
+            self._card_engine_instance = engine
+        return engine
+
+    def supports_draft_streaming(
+        self, chat_type: Optional[str] = None, metadata: Optional[dict[str, Any]] = None,
+        chat_id: Optional[str] = None,
+    ) -> bool:
+        """Probe (turn start): open the per-(chat, thread) card session eagerly."""
+        if not self._streaming_cards_ready() or not chat_id:
+            return False
+        self._card_engine().on_turn_started(chat_id, thread_id=(metadata or {}).get("thread_id"))
+        return True
+
+    async def send_draft(
+        self, chat_id: str, draft_id: int, content: str, metadata: Optional[dict[str, Any]] = None,
+    ) -> SendResult:
+        md = metadata or {}
+        self._card_engine().on_draft(
+            chat_id, content, reply_to=md.get("reply_to_message_id"), thread_id=md.get("thread_id"))
+        return SendResult(success=True)
+
+    async def _streaming_cards_route(
+        self, chat_id: str, content: str, reply_to: Optional[str], metadata: Optional[dict[str, Any]],
+    ) -> Optional[SendResult]:
+        """Classify one outbound send; ``None`` = not ours, use the native path."""
+        if not self._streaming_cards_ready() or not content:
+            return None
+        md = metadata or {}
+        engine = self._card_engine()
+        thread_id = md.get("thread_id")
+        session = engine.active_session(chat_id, thread_id)
+        interim = bool(md.get("_interim_send"))
+
+        if interim and session is not None:
+            engine.on_heartbeat(chat_id, content, thread_id=thread_id)
+            return SendResult(success=True, message_id=f"lark-card:{session.card_msg_id}")
+
+        busy_ack = content.lstrip().startswith(("\u21aa", "\u23f3", "\u26a1", "\u26a0\ufe0f", "\u267b\ufe0f"))
+        if session is not None and session.state in ("creating", "streaming") and not interim \
+                and len(content) <= 200 and busy_ack:
+            if content.lstrip().startswith("\u21aa"):
+                engine.mark_redirect(chat_id, anchor=reply_to, thread_id=thread_id)
+                session = engine.active_session(chat_id, thread_id)
+            engine.on_heartbeat(chat_id, content, thread_id=thread_id)
+            return SendResult(
+                success=True,
+                message_id=(f"lark-card:{session.card_msg_id}" if session and session.card_msg_id else None))
+
+        if session is not None and session.state == "streaming" and not interim and content.strip() \
+                and not busy_ack:
+            if session.reply_to is None and reply_to:
+                session.reply_to = reply_to
+            msg_id = await engine.complete(chat_id, content, thread_id=thread_id)
+            return SendResult(success=True, message_id=msg_id) if msg_id else None
+
+        if (not interim and content.strip() and reply_to is None and md.get("job_id")
+                and not md.get("thread_id")):
+            from plugins.platforms.feishu.streaming_cards.adapter_helpers import _parse_cron_payload as parse_cron_payload
+
+            task_name, body, _job_id, is_failure = parse_cron_payload(content)
+            msg_id = await engine.send_cron_card(
+                chat_id, body, task_name=task_name,
+                run_time=datetime.now().astimezone().isoformat(timespec="minutes"),
+                template="red" if is_failure else "blue")
+            return SendResult(success=True, message_id=msg_id) if msg_id else None
+
+        if (not interim and content.strip() and not busy_ack and not md.get("notify")
+                and md.get("thread_id")):
+            card_msg_id = await engine.append_notice(chat_id, content, thread_id=thread_id)
+            if card_msg_id is not None:
+                return SendResult(success=True, message_id=card_msg_id)
+
+        if (not interim and content.strip() and reply_to is not None and not busy_ack
+                and session is None):
+            engine.on_draft(chat_id, content, reply_to=reply_to, thread_id=thread_id)
+            msg_id = await engine.complete(chat_id, content, thread_id=thread_id)
+            return SendResult(success=True, message_id=msg_id) if msg_id else None
+
+        return None
+
     async def send(
         self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
-        """Send a Feishu message."""
+        """Send a Feishu message.
+
+        Streaming-cards routing first: when CardKit streaming is active for this
+        chat, the send is classified (interim heartbeat / busy ack / background
+        notice / cron result / streamed final) and rendered into the turn's
+        card; anything the card layer does not own falls through to the native
+        text path below unchanged.
+        """
+        routed = await self._streaming_cards_route(chat_id, content, reply_to, metadata)
+        if routed is not None:
+            return routed
         if not self._client:
             return SendResult(success=False, error="Not connected")
 

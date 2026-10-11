@@ -7,6 +7,7 @@ import io
 import itertools
 import logging
 import os
+import re
 import sys
 import threading
 from pathlib import Path
@@ -321,6 +322,32 @@ def _sanitize_loaded_credentials() -> None:
         )
 
 
+_WIN_CMD_STYLE_VAR = re.compile(r"%([^\s%]+)%")
+
+
+def _expand_cmd_style_vars(value: str, lookup: dict[str, str | None]) -> str:
+    """Expand ``%NAME%`` cmd.exe-style references on Windows only (#134540).
+
+    Values written from cmd/Notepad naturally carry ``%USERPROFILE%\\certs\\bundle.crt``;
+    python-dotenv's ``${VAR}`` parser leaves that literal, so every consumer downstream of
+    ``os.environ`` — git's CA path during ``hermes update``, ``ssl_verify``, httpx — sees a
+    nonexistent path. This mirrors the platform split ``os.path.expandvars`` already makes:
+    POSIX values are never touched, so a literal ``%`` in a POSIX secret stays literal.
+
+    ``lookup`` (not the live environ) resolves the name, so the reload-growth peel
+    ``_DOTENV_PUBLISHED`` provides for ``${VAR}`` covers this syntax too: a self-referencing
+    ``%VAR%`` re-resolves against the pre-publish baseline instead of appending to itself on
+    every gateway/cron reload. An undefined name stays literal, matching both cmd.exe and
+    python-dotenv's treatment of unknown ``${VAR}``.
+    """
+
+    def _sub(match: re.Match[str]) -> str:
+        resolved = lookup.get(match.group(1))
+        return match.group(0) if not isinstance(resolved, str) else resolved
+
+    return _WIN_CMD_STYLE_VAR.sub(_sub, value)
+
+
 def _load_dotenv_with_fallback(
     path: Path, *, override: bool, load_pass: int | None = None, managed: bool = False,
 ) -> None:
@@ -361,6 +388,8 @@ def _load_dotenv_with_fallback(
             if value is not None:  # mirrors dotenv.main.resolve_variables, minus the live os.environ
                 lookup = {**lookup_env, **resolved} if override else {**resolved, **lookup_env}
                 value = "".join(atom.resolve(lookup) for atom in parse_variables(value))
+                if sys.platform == "win32":
+                    value = _expand_cmd_style_vars(value, lookup)
             resolved[name] = value
         for name, value in resolved.items():
             if value is None or (not override and name in os.environ):

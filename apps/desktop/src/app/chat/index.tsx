@@ -16,6 +16,7 @@ import { $introHoldsThread } from '@/components/onboarding-chat/intro'
 import { IntroCopy } from '@/components/onboarding-chat/intro-copy'
 import { usePaneGroup, usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { $hoveredTreeGroup, $sessionTileDragging, $sessionTileEdgeHover } from '@/components/pane-shell/tree/store'
+import { $workspaceMode, $workspaceNewSessionTarget } from '@/components/pane-shell/workspace-scope'
 import { PromptOverlays } from '@/components/prompt-overlays'
 import { TitleMenuTrigger } from '@/components/ui/title-menu-trigger'
 import { type HermesGateway, type ResolvedOwner } from '@/hermes'
@@ -261,14 +262,29 @@ export function ChatRuntimeBoundary({
   const storedId = useStore(view.$storedId)
   const connection = useStore($connection)
   const activeProfile = useStore($activeGatewayProfile)
+  const workspaceMode = useStore($workspaceMode)
+  const workspaceTarget = useStore($workspaceNewSessionTarget)
+  const parentScope = useComposerScope()
   const connectionId = connection?.connectionId || (connection?.mode === 'local' ? 'local' : '')
 
-  const ownerRoute = storedId
-    ? getSessionOwnerHint(storedId, connectionId ? { connectionId, profile: activeProfile } : undefined)
+  const ambientOwner = connectionId ? { connectionId, profile: activeProfile } : undefined
+
+  const surfaceOwner: ResolvedOwner | undefined =
+    view.kind === 'tile' && parentScope.connectionId && parentScope.profile
+      ? { connectionId: parentScope.connectionId, profile: parentScope.profile }
+      : view.kind === 'primary' && workspaceMode === 'bots' && workspaceTarget?.kind === 'route'
+        ? {
+            connectionId: workspaceTarget.route.connectionId,
+            profile: workspaceTarget.route.targetProfile || workspaceTarget.route.profile
+          }
+        : undefined
+
+  const hintedOwner = storedId
+    ? (getSessionOwnerHint(storedId, ambientOwner) ?? getSessionOwnerHint(storedId))
     : undefined
 
-  const ownerConnection = ownerRoute?.connectionId
-  const ownerProfile = ownerRoute?.targetProfile || ownerRoute?.profile
+  const ownerConnection = surfaceOwner?.connectionId ?? hintedOwner?.connectionId
+  const ownerProfile = surfaceOwner?.profile ?? hintedOwner?.targetProfile ?? hintedOwner?.profile
 
   const tailProfile = useMemo(
     () => (ownerProfile ? { connectionId: ownerConnection, profile: ownerProfile } : undefined),
@@ -279,8 +295,6 @@ export function ChatRuntimeBoundary({
   // active profile, so the ambient scope carries no owner. Publish the session
   // owner hint's (connection, profile) here so voice playback speaks with the
   // Bot's own voice; a tile's scope already names its owner and is kept as is.
-  const parentScope = useComposerScope()
-
   const composerScope = useMemo(
     () =>
       parentScope.profile || !ownerProfile
@@ -295,6 +309,9 @@ export function ChatRuntimeBoundary({
     scope: tailProfile ?? { connectionId: connectionId || undefined, profile: activeProfile },
     isCurrent: () => !suppressMessages && view.$storedId.get() === storedId && view.$runtimeId.get() === runtimeId
   })
+
+  const historyPage = history.page
+  const revealOlderHistory = history.revealOlder
 
   // History is a static display page. The live store continues streaming but
   // no delta subscribes/reconverts this historical runtime until return.
@@ -361,8 +378,8 @@ export function ChatRuntimeBoundary({
     async (beforePrepend?: () => void) => {
       // A historical page is not the live tail: its older neighbours come from
       // the prompt range the rail already draws, never from store backfill.
-      if (history.page) {
-        return history.revealOlder(beforePrepend)
+      if (historyPage) {
+        return revealOlderHistory(beforePrepend)
       }
 
       // Network latency is not scroll intent. Capture at arrival, immediately
@@ -409,7 +426,7 @@ export function ChatRuntimeBoundary({
 
       return true
     },
-    [runtimeId, storedId, tailProfile, view, history.page, history.revealOlder]
+    [historyPage, revealOlderHistory, runtimeId, storedId, tailProfile, view]
   )
 
   // An open history page carries its own reach: its first prompt is the anchor,

@@ -20,6 +20,8 @@ export interface QuickModelOption {
 export interface ChatBarState {
   model: {
     model: string
+    ownerConnectionId?: string
+    ownerProfile?: string
     provider: string
     canSwitch: boolean
     loading?: boolean

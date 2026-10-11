@@ -390,6 +390,8 @@ The lasting fix is a user session for the gateway user: `sudo loginctl enable-li
 
 The worker is the gateway's own interpreter running `python -m cron.scheduler`, with the gateway's checkout pinned on its `PYTHONPATH` (plus any entries the gateway itself was started with), so it imports the same Hermes tree the gateway runs — regardless of the venv's editable-install mapping, the unit's `WorkingDirectory`, or `PYTHONSAFEPATH` on the host. A worker that dies before acknowledging the handoff records its own stderr tail in the job's last error and in the execution ledger, so the failing import (or whatever killed it) is named instead of a bare exit code.
 
+A worker (or a gateway) that spans an in-place `hermes update` keeps the code it booted on: the whole bookkeeping path that runs after a job finishes (status, next run, execution ledger, incidents, failure notice) is loaded when the cron package is imported, never on first use minutes later against a tree that has since moved on. The finished run is therefore always recorded and delivered on the generation that started it.
+
 ### Execution history
 
 Hermes records each claimed cron attempt in the profile-local

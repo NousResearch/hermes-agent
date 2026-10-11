@@ -270,7 +270,7 @@ model:
 |---------------------|-------------|
 | `COPILOT_GITHUB_TOKEN` | GitHub token for Copilot API (first priority) |
 | `HERMES_COPILOT_ACP_COMMAND` | Override the Copilot CLI binary path (default: `copilot`) |
-| `HERMES_COPILOT_ACP_ARGS` | Override ACP args (default: `--acp --stdio`) |
+| `HERMES_COPILOT_ACP_ARGS` | Override ACP args (default: `--acp --stdio --available-tools=hermes_text_tool_bridge_only --disable-builtin-mcps --no-custom-instructions`, which turns off Copilot's own tools, MCP servers, skills and custom instructions so it calls Hermes tools through the text tool bridge) |
 
 ### First-Class API-Key Providers
 

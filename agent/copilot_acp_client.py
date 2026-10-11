@@ -45,11 +45,18 @@ _ROLE_LABELS = {"system": "System", "user": "User", "assistant": "Assistant", "t
 # True/False is cached, so a CLI installed mid-session is picked up.
 _ACP_PROBE_CACHE: dict[str, bool] = {}
 _PROMPT_PREAMBLE = (
-    "You are being used as the active ACP agent backend for Hermes.",
-    "Use ACP capabilities to complete tasks.",
-    "IMPORTANT: If you take an action with a tool, you MUST output tool calls using <tool_call>{...}</tool_call> blocks with JSON exactly in OpenAI function-call shape.",
+    "You are the model backend for Hermes, an agent harness. Hermes owns every tool; your own native tools, "
+    "MCP servers and skills are intentionally disabled in this session, so never call them or report that a tool "
+    "is unavailable.",
+    "To use a Hermes tool, output one <tool_call>{...}</tool_call> block per call, with JSON exactly in OpenAI "
+    "function-call shape, and then stop. Hermes executes the blocks and returns the results in the next turn.",
     "If no tool is needed, answer normally.",
 )
+# Copilot CLI announces disabled/unknown tool names as message chunks such as "Info: Unknown tool name in the
+# tool allowlist" before the real reply; they are CLI status, not model output.
+_CLI_TOOL_NOTICE_RE = re.compile(r"\s*Info: [^\n]*\btools?\b[^\n]*\s*\Z")
+# A child gets this long to exit after stdin closes, so Copilot can write its session.shutdown usage record.
+_GRACEFUL_EXIT_SECONDS = 5.0
 _INITIALIZE_PARAMS = {
     "protocolVersion": 1,
     "clientCapabilities": {"fs": {"readTextFile": True, "writeTextFile": True}},
@@ -77,7 +84,12 @@ def _resolve_command() -> str:
 
 
 def _resolve_args() -> list[str]:
-    return shlex.split(os.getenv("HERMES_COPILOT_ACP_ARGS", "").strip()) or ["--acp", "--stdio"]
+    if raw := os.getenv("HERMES_COPILOT_ACP_ARGS", "").strip():
+        return shlex.split(raw)
+    from providers import get_provider_profile
+
+    profile = get_provider_profile("copilot-acp")
+    return list(getattr(profile, "process_args", ()) or ("--acp", "--stdio"))
 
 
 def _acp_supported(command: str, args: list[str]) -> bool | None:
@@ -133,6 +145,11 @@ def _build_subprocess_env() -> dict[str, str]:
     env["HOME"] = _resolve_home_dir()
     apply_subprocess_home_env(env)
     return env
+
+
+def _is_cli_notice(text_parts: list[str], chunk_text: str) -> bool:
+    """A one-line Copilot CLI tool notice arriving before any reply text (see ``_CLI_TOOL_NOTICE_RE``)."""
+    return not "".join(text_parts).strip() and bool(_CLI_TOOL_NOTICE_RE.match(chunk_text))
 
 
 def _jsonrpc_result(message_id: Any, result: Any) -> dict[str, Any]:
@@ -191,6 +208,23 @@ def _model_selection_request(session: dict[str, Any], requested_model: str) -> t
         return "session/set_config_option", {"sessionId": session_id, "configId": str(option.get("id") or "model"), "value": requested_model}
     available = _legacy_session_model_ids(session)
     return None if available and requested_model not in available else ("session/set_model", {"sessionId": session_id, "modelId": requested_model})
+
+
+def _completion_usage(acp_usage: Any) -> SimpleNamespace:
+    """OpenAI chat usage from the ACP ``session/prompt`` result usage (Copilot's inputTokens include cache reads
+    and writes, matching OpenAI's prompt_tokens)."""
+    u = acp_usage if isinstance(acp_usage, dict) else {}
+
+    def n(key: str) -> int:
+        value = u.get(key)
+        return int(value) if isinstance(value, (int, float)) else 0
+
+    prompt, completion = n("inputTokens"), n("outputTokens")
+    return SimpleNamespace(
+        prompt_tokens=prompt, completion_tokens=completion, total_tokens=n("totalTokens") or prompt + completion,
+        prompt_tokens_details=SimpleNamespace(cached_tokens=n("cachedReadTokens"), cache_write_tokens=n("cachedWriteTokens")),
+        completion_tokens_details=SimpleNamespace(reasoning_tokens=n("thoughtTokens")),
+    )
 
 
 def _format_messages_as_prompt(
@@ -304,7 +338,14 @@ class CopilotACPClient:
         self._active_process_lock = threading.Lock()
 
     @staticmethod
-    def _terminate_process(proc: subprocess.Popen[str]) -> None:
+    def _terminate_process(proc: subprocess.Popen[str], *, graceful_seconds: float = 0.0) -> None:
+        if graceful_seconds > 0:
+            # EOF on stdin ends Copilot's ACP loop; it then flushes session.shutdown and exits by itself.
+            with contextlib.suppress(Exception):
+                proc.stdin.close()
+            with contextlib.suppress(Exception):
+                proc.wait(timeout=graceful_seconds)
+                return
         try:
             proc.terminate()
             proc.wait(timeout=2)
@@ -320,7 +361,7 @@ class CopilotACPClient:
             self._active_processes.discard(proc)
             if not self._active_processes:
                 self.is_closed = True
-        self._terminate_process(proc)
+        self._terminate_process(proc, graceful_seconds=_GRACEFUL_EXIT_SECONDS)
 
     def close(self) -> None:
         with self._active_process_lock:
@@ -334,7 +375,7 @@ class CopilotACPClient:
         tools: list[dict[str, Any]] | None = None, tool_choice: Any = None, stream: bool = False, **_: Any,
     ) -> Any:
         prompt_text = _format_messages_as_prompt(messages or [], model=model, tools=tools, tool_choice=tool_choice)
-        response_text, reasoning = self._run_prompt(prompt_text, timeout_seconds=_effective_timeout(timeout), model=model)
+        response_text, reasoning, *rest = self._run_prompt(prompt_text, timeout_seconds=_effective_timeout(timeout), model=model)
         tool_calls, cleaned_text = _extract_tool_calls_from_text(response_text)
         message = SimpleNamespace(
             content=cleaned_text, tool_calls=tool_calls, reasoning=reasoning or None, reasoning_content=reasoning or None,
@@ -342,7 +383,7 @@ class CopilotACPClient:
         )
         completion = SimpleNamespace(
             choices=[SimpleNamespace(message=message, finish_reason="tool_calls" if tool_calls else "stop")],
-            usage=SimpleNamespace(prompt_tokens=0, completion_tokens=0, total_tokens=0, prompt_tokens_details=SimpleNamespace(cached_tokens=0)),
+            usage=_completion_usage(rest[0] if rest else None),
             model=model or "copilot-acp",
         )
         return _completion_to_stream_chunks(completion) if stream else completion
@@ -451,7 +492,9 @@ class CopilotACPClient:
         with self._session(timeout_seconds, allow_file_requests=False) as (session, _):
             return _session_model_ids(session)
 
-    def _run_prompt(self, prompt_text: str, *, timeout_seconds: float, model: str | None = None) -> tuple[str, str]:
+    def _run_prompt(
+        self, prompt_text: str, *, timeout_seconds: float, model: str | None = None
+    ) -> tuple[str, str, dict[str, Any] | None]:
         # The CLI's `--model` spawn flag is deliberately NOT used: `copilot --acp` validates it (unknown id
         # aborts the spawn) but ignores it for the session; the model is applied after session/new instead.
         requested_model = str(model or "").strip()
@@ -468,8 +511,9 @@ class CopilotACPClient:
             text_parts: list[str] = []
             reasoning_parts: list[str] = []
             prompt = {"sessionId": session_id, "prompt": [{"type": "text", "text": prompt_text}]}
-            _request("session/prompt", prompt, text_parts=text_parts, reasoning_parts=reasoning_parts)
-            return "".join(text_parts), "".join(reasoning_parts)
+            result = _request("session/prompt", prompt, text_parts=text_parts, reasoning_parts=reasoning_parts) or {}
+            usage = result.get("usage") if isinstance(result, dict) else None
+            return "".join(text_parts), "".join(reasoning_parts), usage
 
     def _handle_server_message(
         self, msg: dict[str, Any], *, process: subprocess.Popen[str], cwd: str, text_parts: list[str] | None, reasoning_parts: list[str] | None,
@@ -484,7 +528,8 @@ class CopilotACPClient:
             content = update.get("content") or {}
             chunk_text = str(content.get("text") or "") if isinstance(content, dict) else ""
             sinks = {"agent_message_chunk": text_parts, "agent_thought_chunk": reasoning_parts}
-            if chunk_text and (sink := sinks.get(str(update.get("sessionUpdate") or "").strip())) is not None:
+            sink = sinks.get(str(update.get("sessionUpdate") or "").strip())
+            if chunk_text and sink is not None and not (sink is text_parts and _is_cli_notice(text_parts, chunk_text)):
                 sink.append(chunk_text)
             return True
         if process.stdin is None:

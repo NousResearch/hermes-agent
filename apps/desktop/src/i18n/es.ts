@@ -1033,6 +1033,12 @@ export const esOverrides = {
       chatTextScaleTitle: 'Tamaño del texto del chat',
       chatTextScaleDesc:
         'Ajusta el texto de la conversación y del editor respecto a la escala de la interfaz. Las barras laterales y los controles mantienen su tamaño.',
+      chatLineSpacingTitle: 'Espaciado de líneas del chat',
+      chatLineSpacingDesc:
+        'Define la separación entre las líneas de la conversación como porcentaje del interlineado del tema. El 100 % mantiene el espaciado del tema.',
+      chatParagraphSpacingTitle: 'Espaciado de párrafos del chat',
+      chatParagraphSpacingDesc:
+        'Define la separación entre los párrafos —y antes de los encabezados— de la conversación como porcentaje del espaciado de la aplicación. El 100 % mantiene el espaciado de la aplicación.',
       title: 'Apariencia',
       intro: 'Solo escritorio. El modo es el brillo; el tema es la paleta y el marco del chat.',
       colorMode: 'Modo de color',

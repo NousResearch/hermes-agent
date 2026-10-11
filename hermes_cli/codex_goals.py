@@ -71,10 +71,19 @@ class CodexGoalManager(GoalManager):
         if len(goal) > 4000:
             raise ValueError("Codex Goal objective must be at most 4000 characters")
         with goal_lock(self.session_id):
+            previous = load_goal(self.session_id)
             state = super().set(goal, contract=contract)
             state.runtime = "codex"
             state.goal_id = str(uuid.uuid4())
-            state.token_budget = self.token_budget
+            # Editing an unfinished Goal is not a fresh spending authorization.
+            # Preserve its thread and cumulative ledger despite a new profile default.
+            if (previous is not None and previous.runtime == "codex" and previous.native_goal
+                    and previous.status not in {"done", "cleared"}):
+                state.token_budget = previous.token_budget
+                state.native_goal = dict(previous.native_goal)
+                state.turns_used = previous.turns_used
+            else:
+                state.token_budget = self.token_budget
             return self._save()
 
     def resume(self, *, reset_budget=True):

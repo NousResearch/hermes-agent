@@ -575,3 +575,17 @@ another kickoff or resetting the budget. Adoption is generation-fenced: a newer
 user pause, clear, replacement, or Hermes-owned Goal is not silently overridden.
 Cache TTL, LRU and memory-pressure cleanup respect the live native event-consumer
 lease; a persisted `active` flag alone does not keep an abandoned cache entry alive.
+
+### Native Goal budget boundaries
+
+Setting `/goal <text>` while a native Goal is unfinished revises its objective on the original
+thread, preserving its token ceiling and cumulative usage, even if the profile default changed.
+`/goal resume` also preserves that ledger. Neither command grants additional tokens. A resource-
+limited Goal reports its native status and usage without starting another model turn. Changing
+that ceiling requires explicit user authorization; do not clear the Goal merely to bypass a limit.
+A completed or explicitly cleared Goal can be replaced by a fresh Goal using the configured budget;
+the old native ledger is cleared before attaching that fresh Goal, regardless of its objective text.
+
+A turn interrupted or rejected before any transcript exists reports its native error rather than
+a transcript write failure. A successful-but-empty turn remains incomplete. Real output still must
+be durably persisted before automatic continuation; that safety gate is not disabled.

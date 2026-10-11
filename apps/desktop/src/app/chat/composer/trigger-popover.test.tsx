@@ -52,19 +52,55 @@ describe('ComposerTriggerPopover keyboard scrolling', () => {
           activeIndex={activeIndex}
           items={nextItems}
           kind="/"
+          listboxId="composer-test-listbox"
           loading={false}
           onHover={onHover}
           onPick={vi.fn()}
+          optionIdPrefix="composer-test-option"
         />
       </I18nProvider>
     )
   }
 
+  it('exposes the highlighted completion as the selected listbox option', () => {
+    render(
+      <I18nProvider configClient={null} initialLocale="en">
+        <ComposerTriggerPopover
+          activeIndex={1}
+          items={items}
+          kind="/"
+          listboxId="composer-test-listbox"
+          loading={false}
+          onHover={vi.fn()}
+          onPick={vi.fn()}
+          optionIdPrefix="composer-test-option"
+        />
+      </I18nProvider>
+    )
+
+    expect(screen.getByRole('listbox').id).toBe('composer-test-listbox')
+
+    const options = screen.getAllByRole('option')
+
+    expect(options[0]?.getAttribute('aria-selected')).toBe('false')
+    expect(options[1]?.id).toBe('composer-test-option-%2Fsecond')
+    expect(options[1]?.getAttribute('aria-selected')).toBe('true')
+  })
+
+  it('changes the option id when results replace an item at the same index', () => {
+    const { rerender } = render(popover(0, vi.fn(), [slashItem('/first')]))
+    const firstId = screen.getByRole('option').id
+
+    rerender(popover(0, vi.fn(), [slashItem('/replacement')]))
+
+    expect(screen.getByRole('option').id).not.toBe(firstId)
+  })
+
   it('keeps keyboard navigation visible and restores the group header on wrap', () => {
     const { container, rerender } = render(popover(0))
     const drawer = container.querySelector('[data-slot="composer-completion-drawer"]') as HTMLElement
     const ancestor = drawer.parentElement as HTMLElement
-    const secondRow = screen.getAllByRole('button')[1]
+    const secondRow = screen.getAllByRole('option')[1]
 
     mockDrawerViewport(drawer)
     mockRowPosition(secondRow, 290, 330)
@@ -87,7 +123,7 @@ describe('ComposerTriggerPopover keyboard scrolling', () => {
   it('uses the nearest drawer edge for upward, visible, and oversized rows', () => {
     const { container, rerender } = render(popover(0))
     const drawer = container.querySelector('[data-slot="composer-completion-drawer"]') as HTMLElement
-    const rows = screen.getAllByRole('button')
+    const rows = screen.getAllByRole('option')
 
     mockDrawerViewport(drawer)
     mockRowPosition(rows[1], 80, 120)
@@ -118,7 +154,7 @@ describe('ComposerTriggerPopover keyboard scrolling', () => {
   it('does not scroll for a hover echo and consumes the hover marker', () => {
     const onHover = vi.fn()
     const { container, rerender } = render(popover(0, onHover))
-    const rows = screen.getAllByRole('button')
+    const rows = screen.getAllByRole('option')
     const drawer = container.querySelector('[data-slot="composer-completion-drawer"]') as HTMLElement
 
     mockDrawerViewport(drawer)
@@ -141,7 +177,7 @@ describe('ComposerTriggerPopover keyboard scrolling', () => {
     const onHover = vi.fn()
     const { container, rerender } = render(popover(1, onHover))
     const drawer = container.querySelector('[data-slot="composer-completion-drawer"]') as HTMLElement
-    const activeRow = screen.getAllByRole('button')[1]
+    const activeRow = screen.getAllByRole('option')[1]
 
     mockDrawerViewport(drawer)
     mockRowPosition(activeRow, 311, 331)

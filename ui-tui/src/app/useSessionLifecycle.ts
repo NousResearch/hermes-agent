@@ -387,6 +387,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
         writeActiveSessionFile(storedSid)
         patchUiState({
+          gatewayConnected: true,
           info,
           sid: r.session_id,
           status: gw.isCanonical || info?.version ? 'ready' : t('session.status.startingAgent'),
@@ -520,6 +521,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
           writeActiveSessionFile(storedSid)
           patchUiState({
             busy: running,
+            gatewayConnected: true,
             info,
             sid: r.session_id,
             status: statusFromLiveSession(r.status, running),

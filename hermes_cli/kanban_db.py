@@ -51,6 +51,19 @@ def _lossy_text(value: Any) -> Any:
     return value
 
 
+# Ids per ``IN (?,...)`` list: SQLite caps bound parameters at SQLITE_MAX_VARIABLE_NUMBER (999 on builds
+# < 3.32, 32766 after); a board with tens of thousands of non-archived tasks bound every id into one list
+# and died with "too many SQL variables". Every IN-list over board-sized id lists goes through ``_id_chunks``.
+_SQL_IN_CHUNK = 900
+
+
+def _id_chunks(ids: Iterable[str], size: int = _SQL_IN_CHUNK):
+    """Yield *ids* (any iterable) as lists of at most *size* elements."""
+    ids = list(ids)
+    for start in range(0, len(ids), size):
+        yield ids[start:start + size]
+
+
 def _row_get(row: Any, col: str, default: Any = None) -> Any:
     """``row[col]`` tolerant of the column being absent from the SELECT / schema."""
     if row is None or col not in row.keys():
@@ -1673,16 +1686,17 @@ def task_graph_contexts(conn: sqlite3.Connection, task_ids: Iterable[str]) -> di
     if not ordered_ids:
         return contexts
 
-    placeholders = ",".join("?" for _ in ordered_ids)
     for bucket, own, other in (("parents", "child_id", "parent_id"), ("children", "parent_id", "child_id")):
-        for row in conn.execute(
-            f"SELECT l.{own} AS owner_id, t.id, t.title, t.status "
-            f"FROM task_links l JOIN tasks t ON t.id = l.{other} "
-            f"WHERE l.{own} IN ({placeholders}) ORDER BY l.{own}, t.id", tuple(ordered_ids),
-        ).fetchall():
-            contexts[row["owner_id"]][bucket].append(
-                {"id": row["id"], "title": row["title"], "status": row["status"]}
-            )
+        for chunk in _id_chunks(ordered_ids):
+            placeholders = ",".join("?" for _ in chunk)
+            for row in conn.execute(
+                f"SELECT l.{own} AS owner_id, t.id, t.title, t.status "
+                f"FROM task_links l JOIN tasks t ON t.id = l.{other} "
+                f"WHERE l.{own} IN ({placeholders}) ORDER BY l.{own}, t.id", tuple(chunk),
+            ).fetchall():
+                contexts[row["owner_id"]][bucket].append(
+                    {"id": row["id"], "title": row["title"], "status": row["status"]}
+                )
     return contexts
 
 
@@ -4378,23 +4392,26 @@ def latest_summaries(conn: sqlite3.Connection, task_ids: Iterable[str]) -> dict[
     ids = list(task_ids)
     if not ids:
         return {}
-    placeholders = ",".join("?" for _ in ids)
-    rows = conn.execute(
-        f"""
-        SELECT task_id, summary FROM (
-            SELECT task_id, summary,
-                   ROW_NUMBER() OVER (
-                       PARTITION BY task_id
-                       ORDER BY COALESCE(ended_at, started_at) DESC, id DESC
-                   ) AS rn
-              FROM task_runs
-             WHERE task_id IN ({placeholders})
-               AND summary IS NOT NULL AND summary != ''
-        ) WHERE rn = 1
-        """,
-        ids,
-    ).fetchall()
-    return {r["task_id"]: r["summary"] for r in rows}
+    out: dict[str, str] = {}
+    for chunk in _id_chunks(ids):
+        placeholders = ",".join("?" for _ in chunk)
+        rows = conn.execute(
+            f"""
+            SELECT task_id, summary FROM (
+                SELECT task_id, summary,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY task_id
+                           ORDER BY COALESCE(ended_at, started_at) DESC, id DESC
+                       ) AS rn
+                  FROM task_runs
+                 WHERE task_id IN ({placeholders})
+                   AND summary IS NOT NULL AND summary != ''
+            ) WHERE rn = 1
+            """,
+            chunk,
+        ).fetchall()
+        out.update({r["task_id"]: r["summary"] for r in rows})
+    return out
 
 
 def current_run_started_ats(conn: sqlite3.Connection, task_ids: Iterable[str]) -> dict[str, int]:
@@ -4403,14 +4420,17 @@ def current_run_started_ats(conn: sqlite3.Connection, task_ids: Iterable[str]) -
     ids = list(task_ids)
     if not ids:
         return {}
-    placeholders = ",".join("?" for _ in ids)
-    rows = conn.execute(
-        "SELECT t.id AS task_id, r.started_at AS started_at FROM tasks t "
-        "JOIN task_runs r ON r.id = t.current_run_id "
-        f"WHERE t.id IN ({placeholders})",
-        ids,
-    ).fetchall()
-    return {r["task_id"]: r["started_at"] for r in rows}
+    out: dict[str, int] = {}
+    for chunk in _id_chunks(ids):
+        placeholders = ",".join("?" for _ in chunk)
+        rows = conn.execute(
+            "SELECT t.id AS task_id, r.started_at AS started_at FROM tasks t "
+            "JOIN task_runs r ON r.id = t.current_run_id "
+            f"WHERE t.id IN ({placeholders})",
+            chunk,
+        ).fetchall()
+        out.update({r["task_id"]: r["started_at"] for r in rows})
+    return out
 
 
 # --- Split modules (imported at the tail: they import this module as ``_kb``) ---

@@ -54,8 +54,8 @@ function isAwaitingInput(): boolean {
 }
 
 // A kitty Unicode-placeholder frame set: a static placeholder grid (painted by
-// Ink in the image-id color) plus per-frame transmit escapes written straight
-// to the terminal out-of-band.
+// Ink in the image-id color) rendered over a terminal-side animation; frames
+// are switched out-of-band via tiny a=a,c=N escapes.
 interface KittyView {
   color: string
   placeholder: string[]
@@ -65,7 +65,7 @@ interface PetCellsResult {
   color?: string
   enabled?: boolean
   frameMs?: number
-  // unicode mode: cell grids; kitty mode: transmit-escape strings.
+  // unicode mode: cell grids; kitty mode: frame-switch escape strings.
   frames?: PetGrid[] | string[]
   graphics?: string
   imageId?: number
@@ -73,11 +73,20 @@ interface PetCellsResult {
   scale?: number
   slug?: string
   state?: string
+  // kitty mode: one-time animation upload (base frame + a=f frames).
+  upload?: string
 }
 
 type CacheEntry =
   | { kind: 'cells'; frameMs: number; frames: PetGrid[] }
-  | { kind: 'kitty'; frameMs: number; frames: string[]; placeholder: string[]; color: string }
+  | {
+      kind: 'kitty'
+      frameMs: number
+      frames: string[]
+      placeholder: string[]
+      color: string
+      upload: string
+    }
 
 const FRAME_MS = 160
 const POLL_MS = 2500
@@ -97,10 +106,11 @@ export interface PetRender {
  * Drives the TUI pet. Fetches each (slug, state)'s frames via the `pet.cells`
  * RPC (cached) and animates the frame index. Two render paths:
  *
- * - **kitty** (Ghostty/kitty): the engine returns a static placeholder grid +
- *   per-frame transmit escapes. We paint the placeholder with Ink and write the
- *   current frame's escape to the terminal out-of-band, so the image animates
- *   underneath without Ink ever repainting.
+ * - **kitty** (Ghostty/kitty): the engine returns a static placeholder grid, a
+ *   one-time animation upload and per-frame `a=a,c=N` switch escapes. We paint
+ *   the placeholder with Ink, upload each state's frames once and switch frames
+ *   out-of-band, so the image animates underneath without Ink ever repainting
+ *   (and without re-transmitting pixel data, which flickers in multiplexers).
  * - **cells** (everywhere else): truecolor half-block grids painted by Ink.
  *
  * A steady poll keeps it reactive to config changes made elsewhere (`/pet`, the
@@ -119,7 +129,8 @@ export function usePet(): PetRender {
   const slugRef = useRef('')
   const scaleRef = useRef(0)
   const revisionRef = useRef('')
-  const imageIdRef = useRef(0)
+  const imageIdsRef = useRef<Set<number>>(new Set())
+  const uploadedRef = useRef<Set<string>>(new Set())
   const stateRef = useRef<PetState>('idle')
   const frameRef = useRef(0)
   const runSingleFlight = useRef(createPetSingleFlight()).current
@@ -180,18 +191,35 @@ export function usePet(): PetRender {
     }
   }, [])
 
-  // Free the terminal-side image when the pet goes away or the hook unmounts.
+  // Free the terminal-side images (one per uploaded state) when the pet goes
+  // away or the hook unmounts.
   const releaseKitty = useCallback(() => {
-    if (imageIdRef.current) {
+    const ids = [...imageIdsRef.current]
+
+    imageIdsRef.current.clear()
+    uploadedRef.current.clear()
+
+    if (ids.length) {
       try {
-        write(`\x1b_Ga=d,d=i,i=${imageIdRef.current},q=2\x1b\\`)
+        write(ids.map(id => `\x1b_Ga=d,d=i,i=${id},q=2\x1b\\`).join(''))
       } catch {
         // best-effort cleanup
       }
-
-      imageIdRef.current = 0
     }
   }, [write])
+
+  // Terminal-side kitty images die on resets/reattaches we can't observe; clearing the
+  // uploaded marks makes the next tick re-ship the current state's animation.
+  useEffect(() => {
+    const stdout = process.stdout
+    const onResize = () => uploadedRef.current.clear()
+
+    stdout.on('resize', onResize)
+
+    return () => {
+      stdout.off('resize', onResize)
+    }
+  }, [])
 
   const disablePet = useCallback(() => {
     releaseKitty()
@@ -268,13 +296,19 @@ export function usePet(): PetRender {
         }
 
         if (res.graphics === 'kitty' && res.frames?.length && res.placeholder?.length) {
-          imageIdRef.current = res.imageId ?? 0
+          const imageId = res.imageId ?? 0
+
+          if (imageId) {
+            imageIdsRef.current.add(imageId)
+          }
+
           cache.current.set(`${slug}:${state}`, {
             color: res.color ?? '#000001',
             frameMs: res.frameMs ?? FRAME_MS,
             frames: res.frames as string[],
             kind: 'kitty',
-            placeholder: res.placeholder
+            placeholder: res.placeholder,
+            upload: res.upload ?? ''
           })
         } else if (res.frames?.length) {
           cache.current.set(`${slug}:${state}`, {
@@ -320,10 +354,18 @@ export function usePet(): PetRender {
       frameRef.current = idx + 1
 
       if (entry.kind === 'kitty') {
-        // Transmit this frame's image under the shared id; the static
-        // placeholder cells (set below) render it. No Ink repaint needed.
+        // The state's animation data ships once (base frame + a=f frames); every
+        // tick after that is a tiny a=a,c=N frame switch, so no pixel data moves
+        // under the static placeholder cells (set below). No Ink repaint needed.
+        const key = `${slugRef.current}:${stateRef.current}`
+        const first = !uploadedRef.current.has(key)
+
+        if (first) {
+          uploadedRef.current.add(key)
+        }
+
         try {
-          write(entry.frames[idx] ?? '')
+          write((first ? entry.upload : '') + (entry.frames[idx] ?? ''))
         } catch {
           // ignore transmit failures
         }

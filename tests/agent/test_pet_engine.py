@@ -212,21 +212,95 @@ def test_kitty_payload_structure(boba_like):
     image_id = render.kitty_image_id("boba")
     scale = 0.4
     r = render.PetRenderer(str(sprite), mode="kitty", scale=scale, unicode_cols=18)
-    payload = r.kitty_payload("run", image_id=image_id)
+    payload = r.kitty_payload("run", image_id=image_id, animate=True)
     assert payload is not None
     # Geometry is driven by the scaled/cropped sprite, not unicode_cols.
     assert payload["cols"] >= 1 and payload["rows"] >= 1
     assert payload["cols"] < 18  # 0.4 scale is much smaller than a pinned 18-col box
     # placeholder grid matches the requested geometry
     assert len(payload["placeholder"]) == payload["rows"]
-    # one transmit escape per animation frame, each a kitty virtual placement
-    assert len(payload["frames"]) == r.frame_count("run")
-    for esc in payload["frames"]:
+    # one tiny frame switch per animation frame (a=a,c=N — control only, no pixel data moves)
+    count = r.frame_count("run")
+    assert len(payload["frames"]) == count
+    for n, esc in enumerate(payload["frames"], start=1):
         assert esc.startswith("\x1b_G")
         assert esc.endswith("\x1b\\")
         assert f"i={image_id}" in esc
+        assert "a=a" in esc and f"c={n},q=2" in esc
+    # ... and one upload stream: base frame as the virtual placement, the rest as a=f frames
+    upload = payload["upload"]
+    assert "a=T" in upload and "U=1" in upload
+    assert upload.count("\x1b_Ga=f,") == max(0, count - 1)
+    assert f"c={payload['cols']}" in upload and f"r={payload['rows']}" in upload
+
+
+def test_kitty_payload_retransmit_fallback(boba_like):
+    # Terminals without the animation sub-protocol (Ghostty, WezTerm) must get the
+    # pre-animation contract: no one-time upload, every tick re-transmits its frame.
+    sprite = store.load_pet("boba").spritesheet
+    image_id = render.kitty_image_id("boba:run")
+    r = render.PetRenderer(str(sprite), mode="kitty", scale=0.4, unicode_cols=18)
+    payload = r.kitty_payload("run", image_id=image_id, animate=False)
+    assert payload is not None
+    assert payload["upload"] == ""
+    assert len(payload["frames"]) == r.frame_count("run")
+    for esc in payload["frames"]:
         assert "a=T" in esc and "U=1" in esc
-        assert f"c={payload['cols']}" in esc and f"r={payload['rows']}" in esc
+        assert f"i={image_id}" in esc
+        assert "\x1b_Ga=f," not in esc and "a=a" not in esc
+
+
+def test_kitty_animation_capability_matrix(monkeypatch):
+    monkeypatch.delenv("KITTY_WINDOW_ID", raising=False)
+    monkeypatch.delenv("WEZTERM_PANE", raising=False)
+    monkeypatch.delenv("GHOSTTY_RESOURCES_DIR", raising=False)
+    monkeypatch.delenv("TERM_PROGRAM", raising=False)
+
+    # herdr panes parse the stream themselves and play animations — even though they
+    # inherit GHOSTTY_RESOURCES_DIR from the outer terminal.
+    monkeypatch.setenv("TERM_PROGRAM", "herdr")
+    monkeypatch.setenv("TERM", "xterm-256color")
+    monkeypatch.setenv("GHOSTTY_RESOURCES_DIR", "/usr/share/ghostty")
+    assert render.supports_kitty_animation() is True
+
+    # ... but herdr hosting in a graphics-less terminal (e.g. VTE) shows nothing
+    monkeypatch.delenv("GHOSTTY_RESOURCES_DIR")
+    assert render.supports_kitty_animation() is False
+
+    # bare Ghostty: graphics yes, animation frames no (ignored -> frozen base frame)
+    monkeypatch.delenv("TERM_PROGRAM", raising=False)
+    monkeypatch.setenv("TERM", "xterm-ghostty")
+    assert render.supports_kitty_animation() is False
+
+    monkeypatch.setenv("TERM", "xterm-kitty")
+    assert render.supports_kitty_animation() is True
+
+    monkeypatch.setenv("TERM_PROGRAM", "WezTerm")
+    assert render.supports_kitty_animation() is False
+
+
+def test_detect_herdr_tracks_the_host_terminal(monkeypatch):
+    monkeypatch.delenv("KITTY_WINDOW_ID", raising=False)
+    monkeypatch.delenv("WEZTERM_PANE", raising=False)
+    monkeypatch.delenv("GHOSTTY_RESOURCES_DIR", raising=False)
+    monkeypatch.setenv("TERM_PROGRAM", "herdr")
+    monkeypatch.setenv("TERM", "xterm-256color")
+
+    # herdr over a graphics terminal: full kitty stream (APC + Unicode placeholders)
+    monkeypatch.setenv("GHOSTTY_RESOURCES_DIR", "/usr/share/ghostty")
+    assert render.detect_terminal_graphics() == "kitty"
+
+    # herdr over a graphics-less host (VTE): fall back to half-blocks like any
+    # unrecognized terminal, never emit graphics that cannot display
+    monkeypatch.delenv("GHOSTTY_RESOURCES_DIR")
+    assert render.detect_terminal_graphics() == "unicode"
+
+
+def test_resolve_kitty_animation_override(monkeypatch):
+    assert render.resolve_kitty_animation("on") is True
+    assert render.resolve_kitty_animation("off") is False
+    assert render.resolve_kitty_animation(None) == render.supports_kitty_animation()
+    assert render.resolve_kitty_animation("auto") == render.supports_kitty_animation()
 
 
 

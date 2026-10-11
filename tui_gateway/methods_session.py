@@ -1554,14 +1554,16 @@ def _pet_kitty_cells(pet, pet_cfg: dict, state: str, scale: float) -> dict | Non
     configured = str(pet_cfg.get("render_mode", "auto") or "auto").lower()
     if (render.detect_terminal_graphics() if configured in ("", "auto") else configured) != "kitty":
         return None
-    image_id = render.kitty_image_id(pet.slug)
+    image_id = render.kitty_image_id(f"{pet.slug}:{state}")
     # kitty sizes from scaled pixels, so unicode_cols is moot here.
-    payload = PetRenderer(str(pet.spritesheet), mode="kitty", scale=scale).kitty_payload(state, image_id=image_id)
+    payload = PetRenderer(str(pet.spritesheet), mode="kitty", scale=scale).kitty_payload(
+        state, image_id=image_id, animate=render.resolve_kitty_animation(pet_cfg.get("kitty_animation")))
     if not payload:
         return None
     return {"graphics": "kitty", "imageId": image_id, "color": render.kitty_color_hex(image_id),
             "cols": payload["cols"], "rows": payload["rows"], "placeholder": payload["placeholder"],
-            "frames": payload["frames"], "frameMs": constants.LOOP_MS / max(1, len(payload["frames"]) or 1),
+            "upload": payload.get("upload", ""), "frames": payload["frames"],
+            "frameMs": constants.LOOP_MS / max(1, len(payload["frames"]) or 1),
             "scale": scale}
 
 

@@ -47,6 +47,21 @@ def gated_app():
     web_server.app.state.auth_required = prev_required
 
 
+@pytest.fixture
+def loopback_app():
+    """Configure web_server.app for loopback mode (``auth_required=False``), where
+    ``auth_middleware``'s session-token gate — not the OAuth cookie gate — is the
+    authority a token-less request has to pass."""
+    clear_providers()
+    register_provider(StubAuthProvider())
+    prev_required = getattr(web_server.app.state, "auth_required", None)
+    web_server.app.state.auth_required = False
+    client = TestClient(web_server.app)
+    yield client
+    clear_providers()
+    web_server.app.state.auth_required = prev_required
+
+
 # ---------------------------------------------------------------------------
 # Allowlist (public) routes
 # ---------------------------------------------------------------------------
@@ -112,6 +127,7 @@ def test_gated_status_is_public(gated_app):
     "/api/model/info",
     "/api/dashboard/themes",
     "/api/dashboard/plugins",
+    "/api/auth/providers",
 ])
 def test_other_public_api_paths_are_public_under_gate(gated_app, path):
     """The remaining ``PUBLIC_API_PATHS`` entries must also bypass the
@@ -134,6 +150,53 @@ def test_other_public_api_paths_are_public_under_gate(gated_app, path):
             f"{path} redirected to {location} — should be public, "
             "not bounced to /login"
         )
+
+
+def test_loopback_auth_providers_bypasses_token_gate(loopback_app):
+    """Regression for #134345: ``/api/auth/providers`` is pre-login discovery
+    for native clients (they call it before any credentials exist), so it must
+    be in the shared ``PUBLIC_API_PATHS`` allowlist the loopback token gate
+    checks — the OAuth gate's own public list had it while this gate 401'd it.
+
+    Payload safety: provider ``name`` / ``display_name`` / ``supports_password``
+    flags only — the same data the OAuth gate already serves pre-login.
+    """
+    r = loopback_app.get("/api/auth/providers")
+    assert r.status_code == 200, (
+        f"Expected 200, got {r.status_code}: {r.text}"
+    )
+    assert set(r.json()) == {"providers"}, (
+        "the pre-login body must carry a providers list and nothing else"
+    )
+    providers = r.json()["providers"]
+    assert providers, "stub provider should be listed"
+    assert set(providers[0]) == {"name", "display_name", "supports_password"}
+
+
+def test_loopback_auth_providers_fail_closed_without_providers(loopback_app):
+    """Fail-closed: with no providers registered the route answers 503, never
+    an empty 200 that a client would read as "password auth available"."""
+    clear_providers()
+    r = loopback_app.get("/api/auth/providers")
+    assert r.status_code == 503
+
+
+def test_loopback_auth_providers_match_is_exact_not_prefix(loopback_app):
+    """``PUBLIC_API_PATHS`` matches exactly: a lookalike path must stay behind
+    the token gate so the allowlist can never be widened by suffixing."""
+    r = loopback_app.get("/api/auth/providers/evil")
+    assert r.status_code == 401
+
+
+def test_loopback_token_gate_still_guards_unrelated_api_routes(loopback_app):
+    """Control group for the ``/api/auth/providers`` allowlisting: an unrelated
+    API route on the same token-less loopback client must keep its 401, so a
+    future widening of ``PUBLIC_API_PATHS`` can never silently open more than
+    the paths its own tests name."""
+    r = loopback_app.get("/api/sessions")
+    assert r.status_code == 401, (
+        f"Expected 401, got {r.status_code}: {r.text}"
+    )
 
 
 def test_plugin_assets_pass_gate_while_api_stays_gated(gated_app):

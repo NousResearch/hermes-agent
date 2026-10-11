@@ -171,7 +171,7 @@ Cron jobs default to running detached from any repo — no `AGENTS.md`, `CLAUDE.
 
 ```bash
 # Standalone CLI (schedule and prompt are positional)
-hermes cron create "every 1d at 09:00" \
+hermes cron create "every day at 9am" \
   "Audit open PRs, summarize CI health, and post to #eng" \
   --workdir /home/me/projects/acme
 ```
@@ -180,7 +180,7 @@ hermes cron create "every 1d at 09:00" \
 # From a chat, via the cronjob tool
 cronjob(
     action="create",
-    schedule="every 1d at 09:00",
+    schedule="every day at 9am",
     workdir="/home/me/projects/acme",
     prompt="Audit open PRs, summarize CI health, and post to #eng",
 )

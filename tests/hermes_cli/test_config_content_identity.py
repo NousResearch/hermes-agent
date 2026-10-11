@@ -1,7 +1,6 @@
 """Content-identity and canonical-path regressions for config caching."""
 
 import os
-import time
 from unittest.mock import patch
 
 import pytest
@@ -28,7 +27,6 @@ def test_saved_config_is_last_known_good_through_symlinked_home(
                 "approvals": {"deny": ["curl*evil.com*"]},
             }
         )
-        time.sleep(0.05)
         (real_home / "config.yaml").write_text(
             "approvals:\n  deny: [unclosed\n", encoding="utf-8"
         )

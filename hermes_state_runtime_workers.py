@@ -37,8 +37,11 @@ def discard_orphan_workers_on_reset(conn, session_ids):
     remains a hard reset refusal, and transaction rollback preserves all fences on refusal.
     """
     for sid in session_ids:
-        conn.execute("UPDATE worker_executions SET status='terminal' WHERE session_id=? AND status='unknown' "
-                     "AND execution_id NOT LIKE 'admission-worker:%'", (sid,))
+        orphans = conn.execute("SELECT execution_id FROM worker_executions WHERE session_id=? AND status='unknown' "
+                               "AND execution_id NOT LIKE 'admission-worker:%'", (sid,)).fetchall()
+        for (execution_id,) in orphans:
+            conn.execute("UPDATE worker_executions SET status='terminal' WHERE execution_id=?", (execution_id,))
+            compact_terminal_receipts(conn, execution_id)
 
 
 RETIRED_RECEIPT = {'retired': True}

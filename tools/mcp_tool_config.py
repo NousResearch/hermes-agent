@@ -403,7 +403,7 @@ def _npx_cached_bin(args: list) -> Optional[tuple]:
 
     spec = str(rest[0])
     # Scoped names keep their leading '@', so only an '@' AFTER the scope is a version separator.
-    if "@" in (spec[1:] if spec.startswith("@") else spec):
+    if "@" in (spec.removeprefix("@")):
         return None
     if not spec or spec.startswith("-"):
         return None

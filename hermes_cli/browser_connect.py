@@ -285,7 +285,7 @@ def _detect_default_windows() -> str | None:
 def _run_stdout(argv: list[str]) -> str | None:
     try:
         return subprocess.run(argv, capture_output=True, text=True, encoding="utf-8",
-                              errors="replace", timeout=5).stdout
+                              errors="replace", timeout=5, check=False).stdout
     except Exception:
         return None
 

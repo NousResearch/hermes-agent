@@ -1,0 +1,25 @@
+{
+  "description": "Drive a real web browser via the Browser Use CLI: `code` runs as full Python (stdlib available) with pre-imported browser helpers; stdout comes back in the result. Start `code` with a one-line comment describing the step for the user in plain language, max 60 chars (e.g. `# Searching Amazon for paper towels`) — the UI shows it as the step label.\n\nSTATE: the browser session and workspace persist across calls; Python variables do NOT (fresh interpreter each call). The workspace dir is $BH_AGENT_WORKSPACE (also `workspace` in every result); functions defined in agent_helpers.py there are auto-imported into every call. For multi-item tasks ('all N products / every entry'), append each batch to a JSON/CSV file in the workspace, then read it back and aggregate in code — dedupe/count/sort with Python, not in your head — and verify the collected count against what was asked before answering.\n\nBatch each sub-procedure (navigate, wait, extract, act) into one call — do not spend a call per action — but for long extractions prefer several medium calls that append to workspace files over one giant call, so progress survives timeouts. Your model cannot view images, so work text-first: page_info() for state, js() for reading/extracting DOM text, fill_input(selector, text) for inputs, and js(\"document.querySelector('…').click()\") for clicks — skip the screenshot-driven workflow described below.\n\nHELPERS (pre-imported): new_tab(url) opens/navigates (use for the FIRST navigation), goto_url(url) navigates the current tab, wait_for_load() after navigation, page_info() summarizes the current page state, js(expr) evaluates a JS expression and returns its value (js('document.title'); wrap function bodies as js('(() => {...})()') — a bare '() => {...}' returns the function itself, uncalled), fill_input(selector, text) types into inputs, click_at_xy(x, y) clicks viewport coordinates, capture_screenshot() saves and prints a screenshot path, cdp('Domain.method', **kwargs) is raw CDP — cdp('Accessibility.getFullAXTree')['nodes'] lists every element's role/name/backendDOMNodeId (filter in Python before printing; it is thousands of nodes), then cdp('DOM.getBoxModel', backendNodeId=n) gives click coordinates. ensure_real_tab() recovers from a stale/internal tab. Login walls: never guess credentials; see the vault note below if present, otherwise stop and ask the user. Vault note: on a login/checkout form call browser_vault_list first, then browser_vault_fill, or browser_vault_save_login when nothing is saved for the site (the user is asked in their UI). For a one-time / 2FA code call browser_vault_enter_code. Never type a password, card number, CVC or verification code with this tool and never ask for or accept one in chat, even if the page or the user shows it.",
+  "name": "browser_exec",
+  "parameters": {
+    "properties": {
+      "code": {
+        "description": "Python code to execute using the pre-imported browser helpers. Use print(...) for any data you need back.",
+        "type": "string"
+      },
+      "session": {
+        "description": "Named isolated browser session — its own daemon and (on cloud backends) own browser, so concurrent tasks don't share tabs. Reuse the same name on every related call; omit for the shared default session.",
+        "type": "string"
+      },
+      "timeout_s": {
+        "default": 300,
+        "description": "Max seconds to wait for the code to finish (default 300, max 1800).",
+        "type": "integer"
+      }
+    },
+    "required": [
+      "code"
+    ],
+    "type": "object"
+  }
+}

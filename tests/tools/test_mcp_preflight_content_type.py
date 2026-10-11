@@ -57,11 +57,11 @@ def _serve(handler_cls):
 
 
 def _handler(status: int = 200,
-             content_type: "str | None" = "text/html; charset=utf-8",
+             content_type: str | None = "text/html; charset=utf-8",
              body: bytes = b"<html>x</html>", head_status=None, record=None,
-             post_content_type: "str | None" = None,
+             post_content_type: str | None = None,
              post_body: bytes = b"",
-             post_status: "int | None" = None):
+             post_status: int | None = None):
     """Build a BaseHTTPRequestHandler that replies with the given shape.
 
     ``head_status`` lets HEAD return a different status than GET (to exercise

@@ -303,7 +303,10 @@ def _micro_compact_after_turn(agent, messages, final_response, logger, task_id) 
             and not getattr(agent, "_persist_disabled", False)
         ):
             _before = len(messages)
-            _compacted = _compressor._micro_compact(messages)
+            # A rotating compaction earlier in this turn may have moved the agent to a child session.
+            _compacted = _compressor._micro_compact(
+                messages, turn_session_id=getattr(agent, "_inflight_turn_session_id", None),
+            )
             # Defrag rewrites the newest MICRO marker in place and pops _db_persisted;
             # the compressor flags us to invalidate the flush-scan cursor, else the
             # rewritten row is identity-skipped (stale).

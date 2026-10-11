@@ -109,13 +109,11 @@ DEFAULT_CONFIG = {
         # TimeoutStopSec or risk SIGKILL mid-cleanup; for /restart prefer restart_after_turn_timeout
         # so turns finish BEFORE stop().
         "restart_drain_timeout": 0,
-        # Cron-only floor under the stop()/drain wait (seconds). Interrupted chat turns resume on
-        # the next message, but an interrupted cron run is recorded as a permanent failure, so it
-        # must not inherit restart_drain_timeout's 0. Clamped to the shutdown-watchdog leash minus
-        # teardown headroom (~50s unless TimeoutStopSec is raised). 0 = opt out.
-        # A chat turn interrupted by a restart is announced to the user and resumed on their next message;
-        # an interrupted cron run is written to jobs.json as a permanent failure that nobody is waiting on,
-        # so it must not inherit restart_drain_timeout's 0 (#82161).
+        # Floor under the stop()/drain wait (seconds) for cron jobs and api_server runs. Interrupted
+        # chat turns resume on the next message, but an interrupted cron run is recorded as a
+        # permanent failure and an interrupted /v1 run fails its waiting caller, so neither may
+        # inherit restart_drain_timeout's 0 (#82161, #132989). Clamped to the shutdown-watchdog
+        # leash minus teardown headroom (~50s unless TimeoutStopSec is raised). 0 = opt out.
         "cron_drain_timeout": 30,
         # In-band restart (/restart, SIGUSR1): refuse new work, then wait up to this many seconds
         # for in-flight agents/cron/api runs to finish before stop(). 0 = enter stop() at once. 30
@@ -223,10 +221,10 @@ DEFAULT_CONFIG = {
         "verify_on_stop": False,
         # Inactivity warning (seconds), once per run before gateway_timeout; no interrupt. 0 = off.
         "gateway_timeout_warning": 900,
-        # Max seconds a messaging platform blocks an agent awaiting a clarify-tool reply; then it
-        # unblocks with "[user did not respond within Xm]". 0 or less = unlimited. CLI, TUI and
-        # Desktop wait until answered. Resolved by tools/clarify_gateway.py::resolve_clarify_timeout
-        # (a legacy top-level ``clarify.timeout`` still wins when explicitly set).
+        # Max seconds any surface (CLI, TUI/Desktop, messaging gateway) blocks an agent awaiting a
+        # clarify-tool reply; then it unblocks with "[user did not respond within Xm]". 0 or less =
+        # unlimited. Resolved by tools/clarify_gateway.py::resolve_clarify_timeout (a legacy
+        # top-level ``clarify.timeout`` still wins when explicitly set).
         # 1h because users step away and a shorter value evicted the entry mid-think so a later
         # button tap hit a dead entry. Tradeoff: a higher value holds the gateway's running-agent
         # guard longer for a genuinely abandoned prompt — lower it to free the guard sooner. See #32762.
@@ -282,11 +280,11 @@ DEFAULT_CONFIG = {
         # Model name (any reasonable spelling) -> effort level; overrides agent.reasoning_effort
         # when the current model matches. Edit in config.yaml (no CLI support: dots in keys).
         "reasoning_overrides": {},
-        # Preserve assistant `reasoning_content` on history replay. Echo families (DeepSeek,
-        # Kimi/Moonshot, Xiaomi MiMo) are auto-detected by provider name/base-URL host; custom
-        # providers and OpenAI-compatible gateways proxying them are not. Set `reasoning_echo: true`
-        # on a `model:` entry or a `fallback_providers:` entry to opt in per provider. Default
-        # false: strict providers (Mistral, Groq, Cerebras) reject the field.
+        # Stored reasoning is replayed to every provider that can read it by default. This flag
+        # only adds the must-echo " " pad on reasoning-less tool-call turns, which DeepSeek,
+        # Kimi/Moonshot and Xiaomi MiMo require (auto-detected by provider name/host). Set
+        # `reasoning_echo: true` on a `model:` or `fallback_providers:` entry for a custom gateway
+        # proxying one of them. Strict providers (Mistral, Groq, Cerebras) never get the field.
         "reasoning_echo": False,
         # Turn liveness watchdog: a turn with no observable progress for `timeout_s` seconds is
         # logged, force-interrupted so the UI can retry, and its lease stops renewing so stale-turn
@@ -760,9 +758,9 @@ DEFAULT_CONFIG = {
         # OpenAI-compatible request fields. Vision: download_timeout = image HTTP download (s).
         "vision": _aux(120, download_timeout=30),
         # web_extract and session_search no longer use an aux LLM; leftover blocks in user config
-        # are ignored. Compression: raise timeout for local models. no_progress_timeout
-        # (Codex/Responses streams only): seconds without a substantive event before the stream
-        # fails fast; None = built-in 60s default. Independent of "timeout" (the overall request
+        # are ignored. Compression: raise timeout for local models. no_progress_timeout:
+        # seconds a streamed call goes without a substantive chunk before it fails fast into
+        # retry/fallback; None = built-in 60s default. Independent of "timeout" (the overall request
         # budget) — raising "timeout" alone does not widen this window. See #108104.
         "compression": _aux(120, no_progress_timeout=None),
         "skills_hub": _aux(30),
@@ -776,9 +774,7 @@ DEFAULT_CONFIG = {
         "title_generation": {
             "enabled": True,
             "model_upgrade_enabled": True,  # False = keep the instant derived title, never call a model
-            # Note: session_search no longer uses an auxiliary LLM (PR #27590 — single-shape tool returns DB
-            # content directly). The old ``auxiliary.session_search.*`` block was removed here. Existing
-            # values in user config.yaml files are harmless leftovers and ignored.
+            # session_search no longer uses an aux LLM (#27590); leftover auxiliary.session_search is ignored.
             "provider": "auto",
             "model": "",
             "prefer_fast_model": False,
@@ -791,6 +787,7 @@ DEFAULT_CONFIG = {
         },
         "memory_query_rewrite": _aux(8, reasoning_effort=False),
         "tts_audio_tags": _aux(30),
+        "voice_chat": {**_aux(120), "reasoning_effort": "none"},  # agent/voice_turn_route.py; off = lowest valid
         # Kanban: triage_specifier expands a Triage one-liner into a spec (cheap model OK);
         # kanban_decomposer emits a JSON graph of child tasks (more tokens).
         "triage_specifier": _aux(120),
@@ -1160,18 +1157,17 @@ DEFAULT_CONFIG = {
         "enabled": True,
         # Echo the raw transcript of gateway voice messages back as a 🎙️ message.
         "echo_transcripts": True,
-        # No seeded "provider": a stored value counts as an explicit user pick; unset = autodetect
-        # ladder. Valid: "local" (faster-whisper) | "groq" | "openai" | "mistral" | "elevenlabs" |
-        # "deepinfra". Global language hint unless a per-provider language overrides it. "en"
-        # because Whisper auto-detect misreads short/accented clips; "" = auto; or "es", "zh", ...
+        # No seeded "provider" (a stored value is an explicit pick; unset = autodetect): local | groq |
+        # openai | mistral | elevenlabs | deepinfra | xai. Global language hint unless a per-provider one
+        # overrides it; "en" because Whisper auto-detect misreads short clips; "" = auto; "es", ...
         "language": "en",
-        # Client-side ffmpeg silence trim before cloud upload (local whisper uses VAD): silence
-        # inflates upload time, billing and hallucinations. Failure = raw upload.
+        "streaming": False,  # live partial text while speaking (openai/xai/elevenlabs); failure = file path
+        # Pre-upload ffmpeg silence trim (local whisper uses VAD); failure = raw upload.
         "cloud_trim_silence": True,
         "cloud_trim_threshold_db": -40,  # quieter than this counts as silence
         "cloud_trim_keep_ms": 300,  # how much of each pause survives (natural pacing)
         "local": {
-            "model": "base",  # tiny, base, small, medium, large-v3
+            "model": "base",  # tiny, base, small, medium, large-v3, turbo
             "language": "",  # auto-detect; set "en", "es", ... to force
             "initial_prompt": "",
             # Anti-hallucination (faster-whisper decodes junk from silence). vad: Silero filter
@@ -1184,13 +1180,13 @@ DEFAULT_CONFIG = {
             "unload_after_idle_seconds": 0,  # 0 = never; e.g. 300 frees the model after 5min
         },
         "groq": {
-            # whisper-large-v3, whisper-large-v3-turbo, distil-whisper-large-v3-en
-            "model": "whisper-large-v3-turbo",
+            "model": "whisper-large-v3-turbo",  # whisper-large-v3-turbo, whisper-large-v3
             "language": "",  # auto-detect; set "en", "es", ... to force
         },
         "openai": {
             # whisper-1, gpt-4o-mini-transcribe, gpt-4o-transcribe, gpt-transcribe
             "model": "whisper-1",
+            "streaming_model": "gpt-live-transcribe",  # stt.streaming; the one model with mid-utterance deltas
             "language": "",  # auto-detect; set "en", "es", ... to force
             "timeout": 60,  # seconds; allow self-hosted backends time to cold-start
             "max_retries": 1,  # OpenAI SDK transport retries
@@ -1200,6 +1196,7 @@ DEFAULT_CONFIG = {
             "language": "",  # auto-detect; set "en", "es", ... to force
         },
         "xai": {
+            "model": "",  # "" = STT_XAI_MODEL or grok-voice-transcribe-2.0; or grok-voice-transcribe-1.0
             "language": "",  # auto-detect; set "en", "es", ... to force
         },
         "elevenlabs": {
@@ -1314,6 +1311,7 @@ DEFAULT_CONFIG = {
     "memory": {  # Persistent memory — bounded curated memory injected into the system prompt
         "memory_enabled": True,
         "user_profile_enabled": True,
+        "prefetch_spill_enabled": False,  # External recall opt-in to hooks.output_spill.
         # Approval gate for memory writes on BOTH foreground turns and the background review fork.
         # true = foreground writes prompt inline; background writes are staged (/memory
         # pending|approve <id>|reject <id>). To disable memory: memory_enabled.
@@ -1322,8 +1320,8 @@ DEFAULT_CONFIG = {
         "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token
         # Periodic built-in memory review; 0 when an external provider auto-extracts.
         "nudge_interval": 10,
-        # External memory provider plugin (empty = built-in only); only ONE at a time: "openviking",
-        # "mem0", "holographic", "retaindb", "byterover", or a catalog-installed one ("hindsight").
+        # One external provider: bundled (retaindb, byterover) or catalog-installed (honcho,
+        # hindsight, supermemory, mem0, openviking, holographic). Empty = built-in only.
         "provider": "",
     },
     # Subagent delegation — override the provider:model used by delegate_task so children run on a
@@ -1466,7 +1464,7 @@ DEFAULT_CONFIG = {
         # Substitute ${HERMES_SKILL_DIR} / ${HERMES_SESSION_ID} in SKILL.md content.
         "template_vars": True,
         # Pre-execute !`cmd` snippets in SKILL.md, inlining stdout (dates, git state...). Off:
-        # skill-author content would run on the host unapproved — trusted sources only.
+        # host-unapproved skill-author code; community hub installs never auto-execute (#63307).
         "inline_shell": False,
         "inline_shell_timeout": 10,  # seconds per !`cmd` snippet
         # Security-scan skills the agent writes via skill_manage. Off: the agent can run the same
@@ -1522,8 +1520,8 @@ DEFAULT_CONFIG = {
             "keep": 2,  # retain last N regular snapshots
         },
     },
-    # Honcho AI-native memory — ~/.honcho/config.json is the source of truth (apiKey, workspace,
-    # peerName, sessions, enabled); hermes-specific overrides only here.
+    # Honcho memory plugin (plugin catalog) — ~/.honcho/config.json is the source of truth (apiKey,
+    # workspace, peerName, sessions, enabled); the plugin reads hermes-specific overrides from here.
     "honcho": {},
     # IANA timezone (e.g. "Asia/Kolkata", "America/New_York"). Empty = server-local time.
     "timezone": "",
@@ -1662,9 +1660,8 @@ DEFAULT_CONFIG = {
     #   platform (webhook, msgraph_webhook, api_server; no /approve channel) hits one.
     #   deny blocks instantly so the agent finds another way instead of waiting out the
     #   timeout and failing closed.
-    # timeout: seconds before an unanswered prompt fails closed on messaging platforms, ACP and
-    #   approval transport plugins; CLI, TUI and Desktop wait until answered. 60s proved too
-    #   tight for Telegram/Discord push notifications, hence 300.
+    # timeout: seconds before an unanswered prompt fails closed (CLI and gateway). 60s
+    #   proved too tight for Telegram/Discord push notifications, hence 300.
     "approvals": {
         # single_query_mode — what to do when a single-query (-q) session hits a dangerous command. -q runs
         # export HERMES_INTERACTIVE=1 (for interactive sudo prompts) but have NO user waiting to answer
@@ -1731,6 +1728,16 @@ DEFAULT_CONFIG = {
         # Opt-in unattended apply for the cadence check. Git-row plugins ONLY; every apply runs the
         # same security scan / consent pipeline as the manual update command.
         "auto_apply": False,
+        # Where third-party Python plugins run. in_process: imported into Hermes (default).
+        # host: one plugin-host process per profile runs them and they reach Hermes only through
+        # ctx (a crashing or hanging plugin takes down its host, which restarts; Hermes keeps
+        # running). Bundled plugins stay in-process; `hermes plugins validate` says whether a
+        # plugin can run in the host.
+        "isolation": "in_process",
+        "host": {
+            # argv prefix the plugin host runs under, e.g. a sandbox runner. [] = plain subprocess.
+            "launcher": [],
+        },
     },
     # Shell-script hooks: event name (pre_tool_call, post_tool_call, pre_llm_call, subagent_stop,
     # ...) -> list of {matcher, command, timeout}. First run of a new command prompts for consent;
@@ -1759,7 +1766,7 @@ DEFAULT_CONFIG = {
         # for one login without changing this key.
         "codex_login_flow": "device_code",
     },
-    "security": {  # Security: pre-exec scanning via tirith plus related guards.
+    "security": {  # Security: URL/private-network guards, redaction and approval presentation.
         "allow_private_urls": False,  # allow requests to private/internal IPs (OpenWrt, VPNs)
         # CIDR blocks a local TUN proxy answers DNS with (Mihomo/Clash fake-ip, Surge enhanced).
         # Answers inside these blocks are the proxy's sentinels, not internal hosts, so the guard
@@ -1779,10 +1786,6 @@ DEFAULT_CONFIG = {
         # globs on the basename (e.g. "*.mdc").
         "protected_instruction_files": True,
         "protected_instruction_extra_patterns": [],
-        "tirith_enabled": True,
-        "tirith_path": "tirith",
-        "tirith_timeout": 5,
-        "tirith_fail_open": True,
         "website_blocklist": {"enabled": False, "domains": [], "shared_files": []},
         # IDs of supply-chain advisories the user has read and acted on; acked ones stop the startup
         # banner. Add via `hermes doctor --ack <id>`; remove by editing the list. Catalog:
@@ -2015,8 +2018,8 @@ DEFAULT_CONFIG = {
             "defer": [
                 "computer_use", "session_search", "image_generate",
                 "todo_list", "process_manage", "cronjob_manage",
-                # Desktop GUI surface (desktop_ui + project toolsets)
-                "drive_preview", "gui_tour", "desktop_preview", "annotate_preview",
+                # Desktop GUI surface (desktop_ui, project and catalog toolsets)
+                "drive_preview", "gui_tour", "desktop_preview", "annotate_preview", "manage_catalog",
                 "show_tip", "desktop_project", "close_terminal",
                 "apply_layout", "read_terminal", "read_window_below", "focus_pane",
             ],
@@ -2320,8 +2323,7 @@ DEFAULT_CONFIG = {
     # `seen`; wipe the section to re-see all hints.
     "onboarding": {
         "seen": {},
-        # First-ever gateway message: ask = offer to build a user profile (consent- gated; never
-        # reads connected accounts silently); off = plain intro only.
+        # First-ever message: ask = offer; off = plain intro only.
         "profile_build": "ask",
     },
     # Privacy-safe aggregate metrics in this profile's local telemetry dir. Collection (`enabled`)
@@ -2716,7 +2718,7 @@ DEFAULT_CONFIG = {
         # Extra ports detection probes for an external llama-server (besides 8080).
         "detect_ports": [],
     },
-    "_config_version": 49,  # Config schema version - bump this when adding new required fields
+    "_config_version": 50,  # Config schema version - bump this when adding new required fields
 }
 
 

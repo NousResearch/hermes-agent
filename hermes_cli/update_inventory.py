@@ -48,7 +48,7 @@ class UpdatePlan:
         return asdict(self)  # recursive: RuntimeRecord entries become dicts
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "UpdatePlan":
+    def from_dict(cls, data: dict[str, Any]) -> UpdatePlan:
         """Inverse of :meth:`to_dict` (the plan crosses the post-swap hand-off as JSON)."""
         fields_ = {f.name for f in dataclass_fields(cls)}
         plan = cls(**{k: v for k, v in data.items() if k in fields_ and k != "runtimes"})
@@ -237,7 +237,7 @@ def _loaded_backend_launchd_jobs() -> list:
     return []
 
 
-def _launchd_owner_for_ledger_entry(entry: dict, pid: int, jobs: list) -> "tuple[str, str, int | None] | None":
+def _launchd_owner_for_ledger_entry(entry: dict, pid: int, jobs: list) -> tuple[str, str, int | None] | None:
     """``(domain, label, live_pid)`` of the loaded launchd job owning this ledger row, if any.
 
     A KeepAlive LaunchAgent backend's recorded spawner (the bootstrap shell) is long dead, so the
@@ -385,11 +385,11 @@ def _gateway_named_in(r: RuntimeRecord, names: set) -> bool:
 
 
 def match_runtime_outcomes(
-    plan: "UpdatePlan", *, restarted_services: list, relaunched_profiles: list,
+    plan: UpdatePlan, *, restarted_services: list, relaunched_profiles: list,
     externally_supervised_profiles: list, killed_pids: set, failed_units: list,
-    stale_serve_pids: "set | None" = None, failed_respawn_pids: "set | None" = None,
-    external_gateway_pids: "set | None" = None,
-    live_gateway_pids: "dict[str, set[int]] | None" = None,
+    stale_serve_pids: set | None = None, failed_respawn_pids: set | None = None,
+    external_gateway_pids: set | None = None,
+    live_gateway_pids: dict[str, set[int]] | None = None,
 ) -> list[dict[str, Any]]:
     """Reconcile the plan's runtimes against what the restart phase DID.
 
@@ -542,7 +542,7 @@ def report_unaccounted_runtimes(outcomes: list[dict[str, Any]]) -> bool:
     """Print a loud warning for runtimes the restart phase never touched.
 
     Returns True when at least one planned runtime is unaccounted; the caller escalates like a
-    STALE/DOWN fleet row (exit 1) — a promised restart silently missed is the class this phase
+    STALE/DOWN fleet row (an owed ``gateway_restart`` follow-up) — a promised restart silently missed is the class this phase
     exists to kill.
     """
     manual = [o for o in outcomes if o.get("outcome") == "deferred" and o.get("mechanism") == "respawn-argv"]

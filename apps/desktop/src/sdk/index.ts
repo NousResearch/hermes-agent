@@ -47,6 +47,7 @@ import { onGatewayEvent } from '@/contrib/events'
 import { registry } from '@/contrib/registry'
 import type { WorkspaceMode } from '@/contrib/types'
 import { deleteProfile, getLogs, getStatus, hermesApi, type HermesGateway } from '@/hermes'
+import { traceIdentityChange } from '@/lib/identity-trace'
 import { completeMcpDesktopOAuth } from '@/lib/mcp-dashboard-oauth'
 import {
   $gateway,
@@ -93,10 +94,10 @@ import {
   setResumeExhaustedSessionId,
   setSessionOwnerHint
 } from '@/store/session'
+import { $focusedStoredSessionId } from '@/store/session-focus'
 import {
   $focusedRuntimeId,
   $focusedSessionState,
-  $focusedStoredSessionId,
   $sessionStates,
   $sessionTiles,
   dropTilesForProfile,
@@ -113,7 +114,8 @@ import { planPluginOpenSession } from './plugin-open-session-plan'
 import { sessionsHost } from './sessions'
 import { desktopSettings } from './settings'
 
-export type { DesktopSettingKey, DesktopSettingValues } from './settings'
+/** Pane, status bar and titlebar slots; see `./areas` for the mount rules. */
+export { PANES_AREA, STATUSBAR_AREAS, TITLEBAR_AREAS } from './areas'
 
 // -- state: readonly views over the app's live atoms -------------------------
 
@@ -1635,6 +1637,10 @@ export const host = {
    *  active instance changes on a profile swap. */
   getGateway: (): HermesGateway | null => $gateway.get(),
 
+  /** Change-only desktop.log line for multi-connection identity diagnostics
+   *  (`[category win=…] tag detail`). Call as `host.traceIdentityChange?.(…)`. */
+  traceIdentityChange,
+
   composer: composerHost,
 
   /** Language packs: `host.i18n.registerAppLocale(id, { endonym, rtl?,
@@ -1645,6 +1651,12 @@ export const host = {
 
 // -- react bridge -------------------------------------------------------------
 
+/** The plugin authoring contract (`HermesPlugin`, `PluginContext`, `ctx.*` door types). */
+export type * from './plugin-contract'
+
+// -- ui: the design language --------------------------------------------------
+
+export type { DesktopSettingKey, DesktopSettingValues } from './settings'
 /** THE whole Capabilities surface (Skills / Tools / MCP tabs, installed
  *  lists, full-skill detail pane, embedded hub picker with one-click
  *  installs). For plugin dialogs pass `embedded` (tab state stays local —
@@ -1655,9 +1667,6 @@ export const host = {
  *  builds without it would route the pin to the ACTIVE gateway. Bot Mode's
  *  Advanced section is the reference consumer. */
 export { CapabilitiesView } from '@/app/capabilities'
-
-// -- ui: the design language --------------------------------------------------
-
 /** THE Connectors tab core Capabilities renders — managed apps, the user's
  *  own MCP servers, plugin servers and the catalog, with per-server enable,
  *  sign-in and live probes. Renders anywhere under the app router (a plugin
@@ -1732,6 +1741,7 @@ export {
   PanelRowMenu,
   PanelSectionLabel
 } from '@/app/overlays/panel'
+
 export {
   type ProfileGroupHeaderContribution,
   type ProfileGroupRoute,
@@ -1748,7 +1758,6 @@ export {
  *  look) — use it for colour picking instead of driving app widgets through
  *  React internals; pair it with `host.sessions.setColor` for session colours. */
 export { APPEARANCE_AREAS } from '@/app/settings/appearance-contrib'
-
 /** THE settings rows: `ListRow` is label + description with the control beside
  *  it (wide) or under it (narrow); `ToggleRow` is the one on/off row — a Switch,
  *  never an Off/On pill pair. Use them for preference rows in plugin panes and
@@ -1771,6 +1780,17 @@ export {
   ModelMenuCloseContext,
   type ModelMenuController
 } from '@/app/shell/model-catalog-menu'
+/** Per-model marks inside that same menu: register a `MODEL_MENU_ROW_AREA`
+ *  data contribution whose `decorate({ provider, model, label })` returns
+ *  `{ icon?, badge? }` (or `null`). Core paints the leading icon slot and a
+ *  trailing badge chip; per slot the first usable answer wins, and a throwing
+ *  decorator is skipped. Never patch the menu's rows yourself. */
+export {
+  MODEL_MENU_ROW_AREA,
+  type ModelMenuRowContext,
+  type ModelMenuRowContribution,
+  type ModelMenuRowDecoration
+} from '@/app/shell/model-menu-row-decorations'
 export type { StatusbarItem } from '@/app/shell/statusbar-controls'
 export type { TitlebarTool } from '@/app/shell/titlebar-controls'
 /** Canonical raw message renderer: applies Desktop message transforms (including
@@ -1862,16 +1882,6 @@ export { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 export { Textarea } from '@/components/ui/textarea'
 export { Tip, Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 export type { GatewayEventListener } from '@/contrib/events'
-export type {
-  HermesPlugin,
-  PluginContext,
-  PluginContribution,
-  PluginNativeNotificationInput,
-  PluginNotificationAction,
-  PluginOs,
-  PluginRestOptions,
-  PluginStorage
-} from '@/contrib/plugin'
 /** Mount-scoped contribution: while the rendering component is mounted, its
  *  children render in the target area's slot; unmount disposes it. Use for
  *  page-owned chrome (a page's titlebar control leaves with the page) —
@@ -1881,6 +1891,8 @@ export { Contribute, type ContributeProps } from '@/contrib/react/contribute'
 
 // -- contracts ----------------------------------------------------------------
 
+/** Settings ▸ Plugins entries (`ctx.registerSettingsPage`); `pluginSettingsHref` deep-links one. */
+export { pluginSettingsHref, SETTINGS_PLUGINS_AREA } from '@/contrib/settings-pages'
 export type { Contribution } from '@/contrib/types'
 /** The live gateway instance type — for typing the `gateway` prop `ConnectorsTab`
  *  takes; obtain the instance from `host.getGateway()`. */
@@ -1939,7 +1951,7 @@ export * as icons from '@/lib/icons'
  *  commit (`isComposing` or the legacy keyCode 229). Use it on every plugin
  *  text field whose bare Enter performs an action. */
 export { isSubmitEnter } from '@/lib/ime'
-export { type KeybindContribution, KEYBINDS_AREA } from '@/lib/keybinds/actions'
+export { type KeybindContribution, KEYBINDS_AREA, PLUGIN_APP_ACTIONS } from '@/lib/keybinds/actions'
 export { formatModifierToken } from '@/lib/keybinds/combo'
 /** A `Map` with a ceiling, for the module-level caches a plugin keeps across
  *  a renderer that stays open for days. Only for values that can be
@@ -1961,17 +1973,10 @@ export { PROFILE_SWATCHES, profileColor, profileColorSoft } from '@/lib/profile-
  *  `ctx.socket` frame invalidating a query). Inside components keep using
  *  `useQueryClient`. */
 export { queryClient } from '@/lib/query-client'
+
 /** Compact labels for the reasoning levels exported from @hermes/shared, so a
  *  plugin surfacing a thinking depth uses the same spelling as the app. */
 export { reasoningEffortLabel } from '@/lib/reasoning-effort'
-
-export const PANES_AREA = 'panes'
-export const STATUSBAR_AREAS = { left: 'statusBar.left', right: 'statusBar.right' } as const
-/** Titlebar slots are PERMANENT mount points: a component registered here
- *  stays mounted across chat ↔ page navigation, so `useEffect` setup/cleanup
- *  runs once per registration, not once per route. Page-owned controls that
- *  should exist only while a page is up go to `WORKSPACE_PAGE_HEADER_AREA`. */
-export const TITLEBAR_AREAS = { center: 'titleBar.center', left: 'titleBar.left', right: 'titleBar.right' } as const
 
 /** The app's own gateway-readiness evaluation (setup.status +
  *  setup.runtime_check, reconciled) — pass `host.request`. Don't hand-roll
@@ -2059,9 +2064,9 @@ export type { ProfileSessionPreview, SessionListRow } from '@hermes/shared'
 /** THE compact-number formatter — every user-facing count/token figure goes
  *  through here (1230 → "1.2k", 1_500_000 → "1.5M"). Don't hand-roll `/1000`. */
 export { compactNumber } from '@hermes/shared'
-/** Client deadline for `approval.respond`, counted from the answer: generous so
- *  a plugin answering an approval never rejects its own RPC while the backend
- *  still applies the decision (#60654). */
+/** Client deadline for `approval.respond`: matches the backend's
+ *  `approvals.timeout` (300s) so a plugin answering an approval never rejects
+ *  its own RPC while the backend still applies the decision (#60654). */
 export { APPROVAL_RESPOND_TIMEOUT_MS } from '@hermes/shared'
 /** Hermes' reasoning levels, so a plugin surfacing a thinking depth uses the
  *  same scale as the rest of the app (labels: `reasoningEffortLabel`). */

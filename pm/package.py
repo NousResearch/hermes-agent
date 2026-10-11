@@ -8,6 +8,8 @@ import subprocess
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Optional
 
+from pm.filesystem import native
+
 if TYPE_CHECKING:
     from pm.store import Store
 
@@ -24,18 +26,21 @@ def compose_env(diffs: list[dict], base: Optional[dict] = None) -> dict[str, str
     """Dependents win over their dependencies for every key: diffs arrive
     deps-first, later ones take precedence — npm's pinned shim must shadow
     the npm bundled inside node, and a package's exports beat inherited env.
-    'PATH' values are lists of dirs, prepended."""
+    'PATH' values are lists of dirs, prepended.
+
+    Diff values are paths under a store root, which PM spells extended-length
+    on Windows; a child environment gets their ordinary spelling."""
     env = dict(os.environ if base is None else base)
     path_dirs: list[str] = []
     for diff in reversed(diffs):
         for key, value in diff.items():
             if key == "PATH":
                 dirs = value if isinstance(value, list) else [value]
-                path_dirs.extend(str(d) for d in dirs if str(d) not in path_dirs)
+                path_dirs.extend(native(d) for d in dirs if native(d) not in path_dirs)
     for diff in diffs:
         for key, value in diff.items():
             if key != "PATH":
-                env[key] = str(value)
+                env[key] = native(str(value))
     if path_dirs:
         key = next((k for k in env if k.upper() == "PATH"), "PATH")
         existing = env.get(key, "")
@@ -135,7 +140,7 @@ class Package:
 
         extract(archive, staged)
 
-    def stage(self, store: "Store", staged: Path, version: str, target: str) -> None:
+    def stage(self, store: Store, staged: Path, version: str, target: str) -> None:
         """Post-unpack fixups inside the scratch dir. Default: nothing."""
 
     def binary(self, entry: Path, target: str) -> Optional[Path]:
@@ -149,6 +154,17 @@ class Package:
         if binary is None:
             return ""
         return self._binary_reason(binary, entry, target)
+
+    def repair_staged_verification(self, entry: Path, target: str, reason: str) -> tuple[str, str]:
+        """Install-time remediation for a failed staged verification.
+
+        verify() is also used by read-only inspection paths such as
+        hermes pm doctor and must stay side-effect free. The installer
+        calls this hook only after a freshly staged entry fails verification.
+        Return (remaining reason, remedy): an empty reason when remediation
+        made the staged entry usable; an empty remedy keeps InstallError's.
+        """
+        return reason, ""
 
     def _binary_reason(self, binary: Path, entry: Path, target: str) -> str:
         """'' when the binary is present and arch-plausible on target."""
@@ -190,74 +206,7 @@ class DebPackage(Package):
     prefix_rel: str = "data/data/com.termux/files/usr"
 
     def unpack(self, archive: Path, staged: Path, target: str) -> None:
-        raw = archive.read_bytes()
-        if raw[:8] != b"!<arch>\n":
-            raise InstallError(self.name, f"not an ar archive: {archive.name}")
-        payload = None
-        offset = 8
-        while offset + 60 <= len(raw):
-            hdr = raw[offset:offset + 60]
-            member = hdr[0:16].decode("ascii", "replace").rstrip()
-            try:
-                size = int(hdr[48:58].decode("ascii", "replace").strip())
-            except ValueError:
-                raise InstallError(self.name, f"bad ar member size in {archive.name}")
-            start = offset + 60
-            data = raw[start:start + size]
-            if member.startswith("data.tar"):
-                if member.endswith((".zst", ".lzma")):
-                    raise InstallError(
-                        self.name,
-                        f"unsupported data compression {member} in {archive.name}",
-                    )
-                payload = data
-                break
-            offset = start + size + (size % 2)
-        if payload is None:
-            raise InstallError(self.name, f"no data.tar member in {archive.name}")
-        self._untar_payload(payload, staged)
-
-    def _untar_payload(self, payload: bytes, staged: Path) -> None:
-        import io
-        import stat as stat_mod
-        import tarfile
-
-        from pm.store import extract_tar
-
-        try:
-            extract_tar(io.BytesIO(payload), staged)
-        except tarfile.FilterError as exc:
-            member = exc.tarinfo.name if exc.tarinfo is not None else "?"
-            raise InstallError(self.name, f"unsafe member {member!r}: {exc}") from exc
-        real_staged = os.path.realpath(staged)
-        # Termux debs carry owner-only modes across the whole tree (700 on
-        # binaries n libs, 600 on stdlib .py files) -- postinst would
-        # normalize on a real phone, but pm extracts without postinst, and
-        # any uid-hostile mode breaks non-owner consumers: the dynamic
-        # linker cannot read a 700 lib, the interpreter cannot read a 600
-        # encoding module. Normalize EVERYTHING: a+r on all regular files,
-        # a+X on anything that was executable. The deb's bytes are pinned
-        # by digest; modes are not part of the pin. Symlinks are skipped:
-        # chmod through one would follow it outside the staged tree.
-        for root, dirs, files in os.walk(staged):
-            dirs[:] = [d for d in dirs if not (Path(root) / d).is_symlink()]
-            for name in files:
-                f = Path(root) / name
-                try:
-                    mode = f.lstat().st_mode
-                except OSError:
-                    continue
-                if stat_mod.S_ISLNK(mode):
-                    continue
-                if not os.path.realpath(f).startswith(real_staged + os.sep):
-                    continue
-                wanted = 0o644 | (0o111 if mode & 0o111 else 0)
-                try:
-                    f.chmod(wanted)
-                except OSError:
-                    # Best effort by design: a file we cannot chmod keeps its
-                    # extracted mode, and verify() still judges the tree.
-                    continue
+        unpack_deb(self.name, archive, staged)
 
     def verify(self, entry: Path, target: str) -> str:
         """'' when the staged tree is plausible on target: the expected
@@ -265,11 +214,92 @@ class DebPackage(Package):
         the digest already proved the bytes."""
         expected = entry / self.prefix_rel / self.main_rel(target)
         if not expected.is_file() and not expected.is_symlink():
-            return f"{expected.relative_to(entry)} missing under {entry}"
+            return f"{expected.relative_to(entry)} missing under {native(entry)}"
         return ""
 
     def main_rel(self, target: str) -> str:
         raise NotImplementedError
+
+
+def deb_data_tar(name: str, archive: Path) -> bytes:
+    """A .deb's data.tar, ready for tarfile. Ubuntu compresses it with zstd
+    (default since 21.10), decompressed here with the stdlib module PM's
+    3.14 runtime carries; lzma (the pre-xz format) is refused."""
+    raw = archive.read_bytes()
+    if raw[:8] != b"!<arch>\n":
+        raise InstallError(name, f"not an ar archive: {archive.name}")
+    offset = 8
+    while offset + 60 <= len(raw):
+        hdr = raw[offset:offset + 60]
+        member = hdr[0:16].decode("ascii", "replace").rstrip()
+        try:
+            size = int(hdr[48:58].decode("ascii", "replace").strip())
+        except ValueError:
+            raise InstallError(name, f"bad ar member size in {archive.name}")
+        start = offset + 60
+        data = raw[start:start + size]
+        if member.startswith("data.tar"):
+            if member.endswith(".lzma"):
+                raise InstallError(name, f"unsupported data compression {member} in {archive.name}")
+            if member.endswith(".zst"):
+                try:
+                    from compression import zstd
+                except ImportError:
+                    raise InstallError(name, f"{member} in {archive.name} needs Python 3.14+ (zstd)")
+                return zstd.decompress(data)
+            return data
+        offset = start + size + (size % 2)
+    raise InstallError(name, f"no data.tar member in {archive.name}")
+
+
+def unpack_deb(name: str, archive: Path, staged: Path) -> None:
+    """Stage a .deb by ar+tar extraction: never dpkg, never package scripts.
+    The tar goes through pm.store.extract_tar, the one containment policy for
+    every PM tarball (symlinks allowed with in-root targets; devices/fifos refused)."""
+    _untar_deb_payload(name, deb_data_tar(name, archive), staged)
+
+
+def _untar_deb_payload(name: str, payload: bytes, staged: Path) -> None:
+    import io
+    import stat as stat_mod
+    import tarfile
+
+    from pm.store import extract_tar
+
+    try:
+        extract_tar(io.BytesIO(payload), staged)
+    except tarfile.FilterError as exc:
+        member = exc.tarinfo.name if exc.tarinfo is not None else "?"
+        raise InstallError(name, f"unsafe member {member!r}: {exc}") from exc
+    real_staged = os.path.realpath(staged)
+    # Termux debs carry owner-only modes across the whole tree (700 on
+    # binaries n libs, 600 on stdlib .py files) -- postinst would
+    # normalize on a real phone, but pm extracts without postinst, and
+    # any uid-hostile mode breaks non-owner consumers: the dynamic
+    # linker cannot read a 700 lib, the interpreter cannot read a 600
+    # encoding module. Normalize EVERYTHING: a+r on all regular files,
+    # a+X on anything that was executable. The deb's bytes are pinned
+    # by digest; modes are not part of the pin. Symlinks are skipped:
+    # chmod through one would follow it outside the staged tree.
+    for root, dirs, files in os.walk(staged):
+        dirs[:] = [d for d in dirs if not (Path(root) / d).is_symlink()]
+        for file_name in files:
+            f = Path(root) / file_name
+            try:
+                mode = f.lstat().st_mode
+            except OSError:
+                continue
+            if stat_mod.S_ISLNK(mode):
+                continue
+            if not os.path.realpath(f).startswith(real_staged + os.sep):
+                continue
+            wanted = 0o644 | (0o111 if mode & 0o111 else 0)
+            try:
+                f.chmod(wanted)
+            except OSError:
+                # Best effort by design: a file we cannot chmod keeps its
+                # extracted mode, and verify() still judges the tree.
+                continue
 
 
 class StatePackage(Package):
@@ -330,14 +360,14 @@ def _missing_reason(binary: Path, entry: Path) -> str:
     """Why a package's expected binary is not where it should be — the
     diagnosis that tells you whether the pin's layout is wrong."""
     rel = binary.relative_to(entry).as_posix()
-    return f"{rel} missing under {entry}; {_entry_listing(entry)}"
+    return f"{rel} missing under {native(entry)}; {_entry_listing(entry)}"
 
 
-def _probe_reason(binary: Path, proc: "subprocess.CompletedProcess") -> str:
+def _probe_reason(binary: Path, proc: subprocess.CompletedProcess) -> str:
     """Why a --version probe failed: the exit code plus output tail."""
     out = (proc.stdout or b"") + (proc.stderr or b"")
     tail = out.decode(errors="replace").strip()[-300:]
-    return f"{binary} --version exited {proc.returncode}" + (f": {tail}" if tail else "")
+    return f"{native(binary)} --version exited {proc.returncode}" + (f": {tail}" if tail else "")
 
 
 class Runner:
@@ -349,4 +379,4 @@ class Runner:
 
     def run(self, cmd, **kwargs) -> subprocess.CompletedProcess:
         kwargs.setdefault("env", self.env)
-        return subprocess.run(cmd, **kwargs)
+        return subprocess.run(cmd, **kwargs)  # noqa: PLW1510 -- forwarding wrapper: callers pass subprocess kwargs via **kwargs (check may arrive through it); an explicit check=False would raise TypeError

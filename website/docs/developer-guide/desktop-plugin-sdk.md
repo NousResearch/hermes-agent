@@ -182,6 +182,8 @@ interface PluginContext {
   register: (c: PluginContribution) => () => void
   /** Register several at once; the returned disposer removes all of them. */
   registerMany: (cs: PluginContribution[]) => () => void
+  /** Own entry (+ sub-pages) under Settings → Plugins. Removed on disable/unload. */
+  registerSettingsPage: (page: PluginSettingsPage) => () => void
   /** REST to this plugin's own backend namespace (`/api/plugins/<id>`). */
   rest: <T>(path: string, opts?: PluginRestOptions) => Promise<T>
   /** Live WebSocket to this plugin's own namespace. Returns a disposer. */
@@ -196,6 +198,8 @@ interface PluginContext {
   addEventListener: (target: EventTarget, type: string, listener: EventListener, options?: AddEventListenerOptions | boolean) => () => void
   /** The curated OS door: native notification, open-external, reveal-in-file-manager, clipboard. */
   os: PluginOs
+  /** Lines in the core pet's speech bubble, attributed to this plugin (see "Pet bubble"). */
+  pet: PluginPet
   /** Plugin-scoped JSON persistence (keys live under `hermes.plugin.<id>.`). */
   storage: PluginStorage
 }
@@ -234,7 +238,9 @@ Import the area constants from the SDK; each area has its own `data` payload.
 | Keybind | `KEYBINDS_AREA` | `data: KeybindContribution` |
 | Theme | `THEMES_AREA` | `data` as a `DesktopTheme` |
 | Composer | `COMPOSER_AREAS.*` | render slots, or middleware / attachment providers |
+| Model menu rows | `MODEL_MENU_ROW_AREA` | `data: ModelMenuRowContribution` — a leading icon / trailing badge per model |
 | Appearance settings | `APPEARANCE_AREAS.extra` | `render` — controls appended to Settings → Appearance |
+| Plugin settings page | `SETTINGS_PLUGINS_AREA` (`'settings.plugins'`) | Use `ctx.registerSettingsPage({ id, title, render, icon?, order?, children? })` — your own entry (with sub-pages) under Settings → Plugins |
 
 ### Panes
 
@@ -370,6 +376,11 @@ ctx.registerMany([
 
 Keybinds are user-rebindable in settings; `defaults` is just the initial binding.
 
+To trigger one of the app's **own** actions (toggle the browser panel, open
+Settings, focus the composer), never dispatch a synthetic `KeyboardEvent` for its
+shortcut — the user may have rebound it. Call
+[`ctx.runAction(id)`](#run-app-actions) instead.
+
 ### Themes
 
 A theme contribution ships a full `DesktopTheme` as its `data` (name, label,
@@ -417,9 +428,48 @@ host.onEvent('gateway.ready', () => {
 
 Both doors persist per profile, so a plugin-driven switch sticks exactly like a
 manual pick. To tint the *active* theme rather than replace it, use
-`setAccentOverride(hex)` and clear it in `ctx.onDispose` — the standalone
-[Accent Picker](https://github.com/NousResearch/hermes-desktop-accent-picker)
+`setAccentOverride(hex)` and clear it in `ctx.onDispose` — the official
+[Accent Picker](https://github.com/NousResearch/hermes-official-plugins/tree/main/accent-picker)
 plugin is the worked example (it is also a complete, installable disk plugin).
+
+#### Styling the chat switch — `data-session-switching`
+
+Opening a chat places its transcript in steps: the session loads, the rows
+land, then the restored scroll position settles a few frames later. A theme
+that wants that hidden (or faded) targets one documented attribute instead of
+watching the route or the DOM: core sets `data-session-switching="true"` on the
+chat surface root (`[data-chat-surface]`) from the frame the switch starts until
+the new transcript's rows are on screen and its scroll position has settled,
+then removes it.
+
+```css
+/* Hide the transcript while it is being placed, fade it in when it lands. */
+:root[data-hermes-theme="noir"] [data-chat-surface] [data-slot="aui_thread-viewport"] {
+  transition: opacity 0.12s ease-out;
+}
+:root[data-hermes-theme="noir"] [data-chat-surface][data-session-switching] [data-slot="aui_thread-viewport"] {
+  opacity: 0;
+  transition: none;
+}
+```
+
+- **Per surface.** The primary chat and every tile has its own
+  `[data-chat-surface]`; the attribute marks only the one switching. Narrow to
+  the primary pane with `[data-composer-target="main"]`.
+- **Always ends.** It is held by core's own load and scroll-restore phases:
+  the load phase ends when the transcript arrives or the resume gives up, the
+  restore phase on settle (a bounded number of frames) or the first user
+  scroll/key/pointer input, and both on unmount — a theme that hides content
+  under it cannot strand the chat hidden. A brand-new empty draft never sets it.
+- **The contract is the attribute.** Target `[data-session-switching]` and the
+  `data-chat-surface` / `data-slot` hooks; internal class names are not a
+  contract and change without notice. Do not toggle the attribute yourself or
+  reproduce it with a route listener or `MutationObserver` (catalog rule 8).
+
+This replaces the t3-code-theme `installSwitchFade` pattern (a focus-store
+listener plus a `requestAnimationFrame` loop that polled the transcript's rows
+and scroll position, then toggled its own root attribute): the CSS above is the
+whole migration.
 
 ### Composer extensions
 
@@ -500,7 +550,8 @@ A multi-session plugin keeps its per-session state on its side (which session
 its panel is editing) and passes that id here; the bus guarantees one
 plugin write can never land in another session's composer.
 
-**Migrating off DOM reach-in** (the held catalog plugins that motivated this API):
+**Migrating off DOM reach-in** (the held catalog plugins that motivated this API
+and its siblings; the pet-wallet row uses the [pet bubble](#pet-bubble) door):
 
 | Plugin | Was | Now |
 |---|---|---|
@@ -509,6 +560,8 @@ plugin write can never land in another session's composer.
 | prompt-enhancer (#116031) | walks the editor's child nodes to serialize, rebuilds chip DOM, `replaceChildren` + synthetic `InputEvent` | `const draft = await host.composer.getDraft(sid)` → transform → `await host.composer.setDraft(sid, enhanced)` (chips hydrate app-side); revert is another `setDraft` |
 | memory-review (#115966) | `host.request('slash.exec', { session_id, command })` for `/memory …` — already SDK-only | optional: `host.composer.insertText(sid, '/memory pending', { mode: 'prefix' })` to seat the command for the user instead of executing it |
 | intelligent-tool-break (#115964) | "Message" button only toasts "type /break" (no composer write) | `host.composer.setDraft(host.state.focusedSessionId.get(), '/break ')` then `host.composer.focus(null)` restores the intended behaviour |
+| pet-wallet (#135178) | `document.querySelector('canvas[aria-label$=" pet"]')` to find the core pet, a `position:fixed; z-index:9999` overlay on `document.body` that follows it every frame, document-wide capture-phase pointer listeners | `ctx.pet.say(text, { id: 'balance', tone?, ttlMs? })` — the core bubble shows it over the pet, in-window and popped out, labelled with the plugin name; `ctx.pet.visible` tells you when there is no pet so you can fall back to your status-bar chip |
+| browser-toggle | `document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'L', ctrlKey: true, shiftKey: true, … }))` to fake the built-in browser-panel shortcut; silently stops working when the user rebinds or unbinds it | `ctx.runAction('view.showBrowser')` — runs the same handler as the shortcut and the palette entry, whatever the binding ([run app actions](#run-app-actions)) |
 
 `sessionId` in the table is the id the plugin's UI is bound to; for a composer
 slot render it is `host.state.focusedSessionId.get()`.
@@ -652,6 +705,60 @@ register(ctx) {
 The reasoning-pill visibility CSS the plugin also injected has no hook; it is
 only needed if the app ever hides that label at narrow widths.
 
+#### Model menu row decorations
+
+`MODEL_MENU_ROW_AREA` puts a per-model mark inside the native model menu — the
+one the composer's pill opens, and every other surface that renders
+`ModelCatalogMenu`. A contribution supplies `decorate(row)`; core paints what it
+returns in two fixed slots of the row: a **leading icon** before the model name
+and a **trailing badge** after core's own chips. The row's markup, name,
+star, submenu and click stay core's.
+
+```ts
+import { MODEL_MENU_ROW_AREA, type ModelMenuRowContribution } from '@hermes/plugin-sdk'
+
+interface ModelMenuRowContext {
+  provider: string  // provider slug: 'anthropic', 'openrouter', …
+  model: string     // the model id the row commits
+  label: string     // the display name core paints on the row
+}
+interface ModelMenuRowDecoration {
+  icon?: ReactNode  // element (<img>, <svg>, a component) or short text, drawn in a 1rem box
+  badge?: string    // plain text chip
+}
+
+ctx.register({
+  area: MODEL_MENU_ROW_AREA,
+  id: 'provider-marks',
+  data: {
+    decorate: ({ provider }) => {
+      const src = PROVIDER_ICONS[provider]   // data: URL of an SVG mark
+      return src ? { icon: <img alt="" src={src} /> } : null
+    }
+  } satisfies ModelMenuRowContribution
+})
+```
+
+**Arbitration.** Decorators run in registry order, **per slot**: the first one
+that returns a usable `icon` fills the icon slot, the first usable `badge` the
+badge slot, so an icon plugin and a pricing-badge plugin compose on the same
+row. `null` (or nothing usable) declines. Only a React element or a non-empty
+string is an icon and only a non-empty string is a badge; anything else is
+ignored rather than rendered. A decorator that **throws** declines too, and an
+icon component that throws while rendering blanks only its own slot (it sits
+in its own error boundary) — a broken plugin can never take the menu down.
+`decorate()` re-runs only when the registry or the row's provider/model/label
+changes, so keep it a pure lookup.
+
+**Teardown.** An ordinary data contribution: the `ctx.register` disposer (and
+plugin disable/reload) removes it and the rows repaint bare.
+
+**Migrating t3-code-theme.** Its provider marks were painted into the open menu
+by a `MutationObserver` that located the rows in the menu's DOM and wrote mask
+images onto them. The same marks come from `decorate({ provider })` returning
+`{ icon: <img alt="" src={providerSvgDataUrl(provider)} /> }` — no DOM reads,
+and the row keeps working when the menu's markup changes.
+
 ### Appearance settings
 
 `APPEARANCE_AREAS.extra` renders contributions at the end of **Settings →
@@ -698,6 +805,50 @@ Migrations for the plugins that motivated this slot:
   controls as an `APPEARANCE_AREAS.extra` card instead of a status-bar menu
   that reaches into Settings; the settings *values* still go through
   `host.settings` (allowlisted keys) and `THEMES_AREA`.
+
+### Plugin settings pages (Settings → Plugins) {#plugin-settings-pages}
+
+**Settings → Plugins** is the one home for plugin preferences, laid out like
+WoW's AddOns options: every plugin with settings gets its own entry in the
+Settings rail, and selecting it folds out that plugin's sub-pages. Don't build a
+preferences dialog, pane, or sidebar row for settings. Register a page:
+
+```javascript
+ctx.registerSettingsPage?.({
+  id: 'settings',            // unique within your plugin
+  title: 'Weather',          // rail label + breadcrumb
+  icon: 'cloud',             // codicon name; a plug when omitted
+  order: 0,                  // ascending; ties sort by title
+  render: () => jsx(General, {}),        // the entry's landing page
+  children: [                // optional sub-pages, listed in this order
+    { id: 'units', title: 'Units', render: () => jsx(Units, {}) },
+    { id: 'alerts', title: 'Alerts', render: () => jsx(Alerts, {}) }
+  ]
+})
+```
+
+- The page lives as long as the plugin. Disable or unload removes it, the same
+  as every other `ctx` registration, and the returned disposer removes it early.
+- Build the page from the settings primitives (`ToggleRow`, `ListRow`,
+  `SegmentedControl`, `Select*`) and persist with `ctx.storage` so it looks like
+  core Settings. Each page renders inside its own error boundary.
+- `registerSettingsPage` is new; the `?.` keeps the plugin loading on older
+  hosts. On those hosts, `ctx.register({ area: SETTINGS_PLUGINS_AREA, id, title,
+  render, data: { icon, children } })` is the same thing spelled out.
+- Deep link: `host.navigate(pluginSettingsHref('<your-plugin-id>', 'units'))`
+  (`/settings?tab=plugins&plugin=<id>&ppage=<sub-page>`). Sub-page ids are
+  yours: none is reserved.
+- **Agent plugins get a page automatically.** A `config_schema` in
+  `plugin.yaml` renders as a form under Settings → Plugins, saved through
+  `plugins.manage settings` for the profile the Settings scope selector targets
+  (`/settings?tab=plugins&agent=<key>`). The gear on the plugin's
+  Capabilities → Plugins row opens that page for the profile Capabilities has
+  selected. In a unified package (agent half plus `desktop/plugin.js`), when
+  the desktop half also registers a page, the schema form shows up as that
+  entry's **Agent settings** sub-page, so the package has one entry.
+
+`src/plugins/hello-runtime/plugin.runtime.js` is a complete runtime example: one
+page and two sub-pages, backed by `ctx.storage`.
 
 ### Embedding external content
 
@@ -944,6 +1095,11 @@ ctx.os.notify({ title, body?, silent?, icon?, activate?, onActivate?, actions? }
 ctx.os.openExternal(url)                   // OS default handler (browser, mail, spotify:) → Promise<boolean>
 ctx.os.revealPath(path)                    // reveal in Finder / Explorer → Promise<boolean>
 ctx.os.writeClipboard(text)                // system clipboard → Promise<boolean>
+ctx.pet.say(text, { id?, tone?, ttlMs? })   // line in the core pet's speech bubble → disposer
+ctx.pet.clear(id?)                         // drop one line (or all of yours)
+ctx.pet.visible                            // ReadableAtom<boolean> — is a pet on screen?
+ctx.runAction('view.showBrowser')          // run a built-in app action → { ok: true } | { ok: false, reason, error }
+ctx.listActions()                          // [{ id, label, category }] — the ids runAction accepts
 host.navigate('/route')                    // hash-route navigation
 host.openSession(id, { profile?, intent? }) // open a stored session core-style;
                                            //   profile: soft-swap to that profile's backend first
@@ -1097,6 +1253,140 @@ The other doors (`openExternal`, `revealPath`, `writeClipboard`) resolve
 `false` instead of throwing when the capability isn't available (older desktop
 shell, plain browser) — branch on the result rather than sniffing the bridge.
 
+### Pet bubble — `ctx.pet` {#pet-bubble}
+
+The core pet (the petdex mascot, in-window or popped out into its own OS
+window) has a speech bubble. `ctx.pet` lets a plugin put a short line in it,
+so you never have to find the pet in the app DOM or float your own overlay
+over it:
+
+```ts
+register(ctx) {
+  // Shows "DeepSeek ¥12.40 left" over the pet for 8 s, labelled "Pet Wallet".
+  const dispose = ctx.pet.say('DeepSeek ¥12.40 left', { id: 'balance', ttlMs: 8000 })
+
+  // Same id → replaces the line in place (a refreshed balance, a countdown).
+  ctx.pet.say('DeepSeek ¥11.90 left', { id: 'balance' })
+
+  // Tones: 'info' (default), 'wait' (clock glyph), 'error' (alert glyph).
+  ctx.pet.say('Codex 5h quota at 90%', { id: 'quota', tone: 'wait' })
+
+  dispose()              // remove early, or
+  ctx.pet.clear('quota') // by id, or ctx.pet.clear() for all of yours
+
+  // No pet on screen? Fall back to your own status-bar chip or pane.
+  const visible = ctx.pet.visible.get()
+}
+```
+
+```ts
+interface PluginPet {
+  say(text: string, options?: { id?: string; tone?: 'info' | 'wait' | 'error'; ttlMs?: number }): () => void
+  clear(id?: string): void
+  visible: ReadableAtom<boolean>
+}
+```
+
+What the host guarantees, so you don't have to:
+
+- **Plain text.** Control characters and bidi overrides are stripped,
+  whitespace collapses to one line, and the text is capped at 120 characters.
+  It renders as a text node; markup shows literally.
+- **Attributed.** Your plugin's name (from the Plugins inventory) is printed
+  above the line, so the user can tell your words from the pet's.
+- **Short-lived.** Each line expires after `ttlMs` (default 6 s, clamped to
+  1–30 s). Re-`say` with the same `id` to keep a value up. At most 3 lines per
+  plugin are live (the oldest is evicted) and the bubble shows the newest
+  line from any plugin.
+- **Rate-limited.** 10 `say` calls per plugin per 10 s; extra calls are dropped
+  with a console warning and return a no-op disposer.
+- **Core first.** When the agent hits an error or is waiting on the user, the
+  core status bubble wins; your line shows again once that clears (if it
+  hasn't expired).
+- **The user's pet setting wins.** If no pet is adopted, or it is turned off,
+  nothing shows. `ctx.pet.visible` lets you branch on that.
+- **Cleaned up with you.** Disabling, unloading, or hot-reloading your plugin
+  removes every line it still has up.
+
+In-window, the bubble appears only for plugin lines (the app itself shows the
+agent's status). In the popped-out overlay, plugin lines share the bubble with
+the core status lines. The overlay is a separate window that loads no plugin
+code; the main window sends it the live lines with the rest of the pet state.
+
+Pointer input on the pet (drag, shift-click pop-out, overlay click) belongs to
+the host and has no plugin hook. Use a palette command, a status-bar item, or
+your own pane for actions.
+
+### Run app actions — `ctx.runAction` {#run-app-actions}
+
+The app's own commands — the ones behind keyboard shortcuts and the command
+palette — can be run by id. The plugin gets exactly the handler the shortcut
+runs, so the user rebinding (or unbinding) that shortcut in Settings ▸ Keyboard
+Shortcuts changes nothing for you:
+
+```ts
+import { TITLEBAR_AREAS } from '@hermes/plugin-sdk'
+import { jsx } from 'react/jsx-runtime'
+
+register(ctx) {
+  ctx.register({
+    id: 'browser',
+    area: TITLEBAR_AREAS.right,
+    render: () => jsx('button', { onClick: () => ctx.runAction('view.showBrowser'), children: 'Browser' })
+  })
+
+  // Results are values, never exceptions.
+  const result = ctx.runAction('nav.settings')
+  if (!result.ok) console.log(result.reason, result.error)
+
+  // Discover what is allowed (labels are localized, same as the shortcuts panel).
+  for (const { id, label } of ctx.listActions()) console.log(id, label)
+}
+```
+
+```ts
+interface PluginContext {
+  runAction(id: PluginAppActionId): PluginRunActionResult
+  listActions(): Array<{ id: PluginAppActionId; label: string; category: string }>
+}
+
+type PluginRunActionResult =
+  | { ok: true }
+  | { ok: false; reason: 'unknown' | 'denied' | 'unavailable'; error: string }
+```
+
+Only view and navigation actions are allowed. `PluginAppActionId` is the typed
+union; `PLUGIN_APP_ACTIONS` is the same list at runtime:
+
+| Id | What it does |
+|---|---|
+| `view.showBrowser` | Toggle the browser panel |
+| `view.showFiles` | Show the file browser |
+| `view.toggleSidebar` | Toggle the left sidebar |
+| `view.toggleRightSidebar` | Toggle the right side |
+| `view.toggleReview` | Toggle the review (git) pane |
+| `view.toggleStatusbar` | Toggle the status bar |
+| `view.findInPage` | Open find-in-page |
+| `composer.focus` | Focus the composer |
+| `session.new` | Start a new chat |
+| `session.focusSearch` | Focus session search |
+| `conversation.scrollPageUp` / `conversation.scrollPageDown` | Scroll the transcript a page |
+| `nav.commandPalette` | Toggle the command palette |
+| `nav.settings`, `nav.profiles`, `nav.capabilities`, `nav.messaging`, `nav.artifacts`, `nav.cron`, `nav.agents` | Open that page |
+| `keybinds.openPanel` | Open Settings ▸ Keyboard Shortcuts |
+
+Anything else is refused: `{ ok: false, reason: 'denied' }` for a real app
+action that is not on the list (archive, pin, profile / model / reasoning
+switches, terminals, new window, open folder, HUD, close tab, …),
+`reason: 'unknown'` for an id that does not exist. Either way nothing runs and a
+`[plugin:<id>] runAction: …` warning is logged. `reason: 'unavailable'` means the
+app shell that owns the handlers is not mounted yet (very early startup); retry
+from a user action. Destructive and privileged operations (deleting sessions,
+signing out, approvals, model/provider changes, updates, quitting) are not app
+actions a plugin can run.
+
+Feature-detect on older hosts: `ctx.runAction?.('view.showBrowser')`.
+
 ### Desktop appearance settings — `host.settings`
 
 `host.settings` is the supported door for the small set of Desktop-local
@@ -1109,6 +1399,7 @@ wins (no plugin "owns" the value afterwards, nothing to tear down for `set`).
 ```ts
 type DesktopSettingValues = {
   'backdrop.v1': boolean
+  chatTextScale: 90 | 100 | 110 | 125 | 150 | 175 // percent; Appearance → Chat Text Size
   'composerPopout.gesturesEnabled': boolean
   'intro-splash.v1': boolean
   'reasoning.collapsedByDefault': boolean
@@ -1132,6 +1423,22 @@ register(ctx) {
 }
 ```
 
+`chatTextScale` is the user's chat text size (default `110`). It scales the
+transcript and composer text (and its line height) through the host's
+`--chat-text-scale` CSS variable, so a plugin or theme that wants larger/smaller
+reading text sets the same preset the user would pick; pane geometry, row
+spacing and chrome stay core-owned. Only the
+six presets are accepted: an off-preset number (`112`, `'125'`) throws instead of
+being snapped, so a typo can't silently reset the user's size. Like every key
+here it is the user's preference, not a plugin override: write it from an
+explicit user action in your UI (never at `register`), and read/subscribe to
+adapt your own rendering.
+
+```ts
+const dispose = host.settings.subscribe('chatTextScale', pct => setMyFontScale(pct / 100))
+ctx.onDispose(dispose)
+```
+
 Arbitration: the allowlist above is closed. An unknown key or a value outside
 the key's type throws **synchronously** (`Unsupported desktop setting: …` /
 `Invalid value for desktop setting: …`) and nothing is written — `host.settings`
@@ -1145,6 +1452,7 @@ Deliberately **not** keys, and why:
 | keybind map (`hermes.desktop.keybinds`) | `KEYBINDS_AREA` contribution | a raw map write rebinds every other plugin's shortcuts; the area merges per plugin and is torn down with it |
 | active theme / mode record | `THEMES_AREA` (register a theme; the user selects it) | theme selection is per window/profile and arbitrated by the app, not a flat preference |
 | `pluginDecisions` (desktop plugin on/off) | the app's Plugins tab (a read-only view is a separate SDK hook) | a plugin toggling another plugin's enable state is plugins interfering with each other |
+| chat / composer width, turn spacing, session-row geometry | nothing yet — these become keys only once they exist as core Appearance preferences (chat width: #55287) | layout is host-owned; a plugin-owned geometry contract would make every theme a layout contract |
 | `toolView.technical`, `embed-mode`, `titlebarAppActions`, `translucency.v2`, `user-bubble-transparency.v1`, `hermesDesktop.zoom.*` | follow-up keys after each store is audited | some drive the main process or window chrome; each needs its own guard and ownership review before it becomes plugin-writable |
 
 Migration — `hermes-appearance-hub`, which today does
@@ -1384,6 +1692,32 @@ such damage and replaced on the next **Rescan**, while a marker-less folder
 that *does* hold a `plugin.js` is a standalone plugin you installed by hand and
 is never overwritten.
 
+#### Developing a unified package
+
+The app loads the **copy** in `desktop-plugins/<id>/`, not your package. An
+installed package (catalog, Git URL, `file://` path) is refreshed only when its
+source `plugin.js` is newer than the copy and something asks — **Rescan** in
+**Capabilities → Plugins**, an install/update through the app, or a restart —
+so editing `~/.hermes/plugins/<id>/desktop/plugin.js` in place does nothing
+on screen until then. Develop from a checkout linked into `plugins/` instead:
+
+```bash
+ln -s ~/src/my-plugin ~/.hermes/plugins/my-plugin
+```
+
+A linked package's copy is marked `"linked": true`. The app watches the
+checkout's `desktop/plugin.js`; every save re-syncs the copy (by content, not
+mtime, so `git stash pop` counts) and hot-reloads the plugin. Catalog and Git
+installs keep the mtime rule.
+
+`hermes plugins doctor <path-or-id>` warns when the copy differs from your
+source and names the copy it found:
+
+```text
+WARN: Desktop runs a stale copy of desktop/plugin.js (~/.hermes/desktop-plugins/my-plugin);
+your edits are not loaded. Refresh it with Capabilities → Plugins → Rescan …
+```
+
 Two enable switches still apply, on purpose, and both default to **off**: the
 desktop half ships opt-in — it inventories in **Capabilities → Plugins** but stays
 disabled until the user toggles it — matching the Python half's
@@ -1537,7 +1871,9 @@ For gateway-wide data (not your own namespace), use `host.request` (JSON-RPC) an
 ## Settings, enable state, and storage
 
 Every plugin — enabled or not — inventories in **Capabilities → Plugins**, where the
-user toggles it live (no app restart), reveals its folder, or rescans. The user's
+user toggles it live (no app restart), reveals its folder, or rescans. A plugin's
+own preferences belong in **Settings → Plugins**
+([plugin settings pages](#plugin-settings-pages)). The user's
 choice is remembered:
 
 - No choice yet → the plugin's own `defaultEnabled` (default `true`). Set
@@ -1633,9 +1969,9 @@ pipeline as a trust boundary.
 | Category | Exports |
 |----------|---------|
 | Host | `host` (`.state.*`, `.settings`, `.notify`, `.notifyError`, `.navigate`, `.onEvent`, `.logs`, `.status`, `.restartGateway`, `.request`, `.composer`, `.sessions`, `.skills`, `.toolsets`, `.profiles`, `.pluginDecisions`) |
-| Plugin contract | `HermesPlugin`, `PluginContext`, `PluginContribution`, `PluginStorage`, `PluginOs`, `PluginRestOptions`, `PluginNativeNotificationInput`, `PluginNotificationAction`, `HermesOpenTarget`, `Contribution` |
-| Area constants | `PANES_AREA`, `ROUTES_AREA`, `SIDEBAR_NAV_AREA`, `STATUSBAR_AREAS`, `TITLEBAR_AREAS`, `WORKSPACE_PAGE_HEADER_AREA`, `PALETTE_AREA`, `KEYBINDS_AREA`, `THEMES_AREA`, `COMPOSER_AREAS`, `SESSION_ROW_AREAS`, `SIDEBAR_NAV_PREFS_AREA`, `APPEARANCE_AREAS` |
-| Area payloads | `RouteContribution`, `SidebarNavContribution`, `StatusbarItem`, `TitlebarTool`, `PaletteContribution`, `KeybindContribution`, `ComposerMiddleware`, `ComposerAttachmentProvider`, `SessionRowSlotContribution`, `SidebarNavPrefsContribution` |
+| Plugin contract | `HermesPlugin`, `PluginContext`, `PluginContribution`, `PluginStorage`, `PluginOs`, `PluginPet`, `PetSayOptions`, `PetMessageTone`, `PluginAppActionId`, `PluginAppActionInfo`, `PluginRunActionResult`, `PLUGIN_APP_ACTIONS`, `PluginRestOptions`, `PluginNativeNotificationInput`, `PluginNotificationAction`, `HermesOpenTarget`, `Contribution` |
+| Area constants | `PANES_AREA`, `ROUTES_AREA`, `SIDEBAR_NAV_AREA`, `STATUSBAR_AREAS`, `TITLEBAR_AREAS`, `WORKSPACE_PAGE_HEADER_AREA`, `PALETTE_AREA`, `KEYBINDS_AREA`, `THEMES_AREA`, `COMPOSER_AREAS`, `MODEL_MENU_ROW_AREA`, `SESSION_ROW_AREAS`, `SIDEBAR_NAV_PREFS_AREA`, `APPEARANCE_AREAS`, `SETTINGS_PLUGINS_AREA` |
+| Area payloads | `PluginSettingsPage`, `PluginSettingsSubpage` (+ `pluginSettingsHref`), `RouteContribution`, `SidebarNavContribution`, `StatusbarItem`, `TitlebarTool`, `PaletteContribution`, `KeybindContribution`, `ComposerMiddleware`, `ComposerAttachmentProvider`, `SessionRowSlotContribution`, `SidebarNavPrefsContribution` |
 | React / state | `useValue`, `atom`, `computed`, `useQuery`, `useMutation`, `useQueryClient`, `queryClient`, `Contribute`, `WorkspacePageHeaderControl` |
 | Theming | `useTheme`, `requestTheme`, `setAccentOverride`, `$accentOverride`, `retintTheme`, `themeHue`, `DesktopTheme`, `DesktopThemeColors`, plus OKLCH math (`hexToOklch`, `oklchToHex`, `oklchToSrgb255`, `mixOklab`, `maxChroma`, `hueDelta`, `normalizeHex`) and sRGB measures (`contrastRatio` — `number | null`, null for unparseable input — `readableOn`) |
 | UI kit | `Button`, `Input`, `Textarea`, `Select*`, `Switch`, `Checkbox`, `SegmentedControl`, `Tabs*`, `Dialog*`, `ConfirmDialog`, `DropdownMenu*`, `ContextMenu*`, `Popover*`, `Tip`/`Tooltip*`, `Badge`, `Kbd`/`KbdGroup`, `SearchField`, `ScrollArea`, `Separator`, `Skeleton`, `GlyphSpinner`, `Loader`, `EmptyState`, `ErrorState`, `CopyButton`, `StatusDot`, `LogView`, `Codicon`, `DecodeText`, `SandboxedFrame` |

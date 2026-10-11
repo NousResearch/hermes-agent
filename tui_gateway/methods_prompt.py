@@ -436,15 +436,50 @@ def _row_ids_of(messages) -> set:
     return {row_id for message in messages if isinstance((row_id := _message_row_id(message)), int)}
 
 
+# Rollout (#133716, maintainer decision G15-B): one release warn-only, so an older Desktop or a
+# third-party client that predates confirm_deep_truncate keeps working while upgraded clients ask
+# before a deep cut on their own. The next release flips this to refuse with 4033.
+DEEP_TRUNCATE_ENFORCED = False
+
+
+def _archived_user_turns(session, sid, history, cut_index, survivor_ids) -> int:
+    """User turns a cut at *cut_index* drops. A repaired live carrier stands for its whole merged
+    run (own id + ``_absorbed_row_ids``), which can mix real user rows with display markers
+    (#94486): its turns are counted from the physical durable rows, and every id that cannot be
+    classified there counts as a turn (fail closed). On a durable-carrier cut the run's rows
+    before the target survive (*survivor_ids*)."""
+    from agent.context_compressor import user_originated_turn_view
+    physical = None
+    archived = 0
+    for h_idx in _history_user_indices(history):
+        if h_idx < cut_index:
+            continue
+        message = history[h_idx]
+        absorbed = [rid for rid in (message.get("_absorbed_row_ids") or ()) if isinstance(rid, int)]
+        if not absorbed:
+            archived += 1
+            continue
+        if physical is None:
+            rows = _load_durable_truncation_history(session, sid, repair_alternation=False) or []
+            physical = {_message_row_id(row): row for row in rows if isinstance(row, dict)}
+        own = _message_row_id(message)
+        # A carrier with no id of its own still holds its own (unaddressable) user turn.
+        archived += own is None
+        for rid in {own, *absorbed} - survivor_ids - {None}:
+            row = physical.get(rid)
+            archived += row is None or user_originated_turn_view(row) is not None
+    return archived
+
+
 def _truncate_history_for_submit(rid, sid, session, params, requested_rebind_ids):
     """Rewind/regenerate cut under ``history_lock``: ``(err, survivor_fields)``; the fields
     are the client rowId-rebind payload."""
     history = _history_without_ephemeral_scaffolding(session.get("history", []))
     resolved = _resolve_truncation_ordinal(rid, sid, session, params, history)
     ordinal, cut_index, err = resolved[0], resolved[1], resolved[2]
-    durable_prefix = resolved[3] if len(resolved) > 3 else None
     if err is not None:
         return err, {}
+    durable_prefix = resolved[3] if len(resolved) > 3 else None
     from agent.context_compressor import history_before_user_originated_turn
     if durable_prefix is not None:
         # Durable-boundary cut: the target row is physically present but merged into
@@ -464,6 +499,25 @@ def _truncate_history_for_submit(rid, sid, session, params, requested_rebind_ids
             rid, 4028,
             "truncation would erase the entire session transcript; "
             "resubmit with confirm_empty_truncate=true if this is intended"), {}
+    # Depth gate: a valid anchor can still name a stale row; tail regenerate / edit-last
+    # drop exactly one user turn, deeper cuts need confirm_deep_truncate.
+    archived_user_turns = _archived_user_turns(session, sid, history, cut_index, _row_ids_of(truncated))
+    if archived_user_turns > 1 and not is_truthy_value(params.get("confirm_deep_truncate")):
+        # A durable-carrier cut's ``truncated`` is physical rows: count the live cut instead.
+        archived_messages = len(history) - (
+            cut_index if durable_prefix is not None else len(truncated))
+        logger.warning(
+            "prompt.submit: %s unconfirmed deep truncation of session %s (%d messages / %d user "
+            "turns; ordinal=%d).",
+            "REFUSED" if DEEP_TRUNCATE_ENFORCED else "ALLOWED (warn-only release)",
+            sid, archived_messages, archived_user_turns, ordinal)
+        if DEEP_TRUNCATE_ENFORCED:
+            return _err(
+                rid, 4033,
+                "truncation would archive later user turns; resubmit with "
+                "confirm_deep_truncate=true if this is intended",
+                data={"archived_messages": archived_messages,
+                      "archived_user_turns": archived_user_turns}), {}
     log_fn = logger.warning if not truncated else logger.info
     log_fn(
         "prompt.submit: truncating session %s history %d -> %d messages (ordinal=%d)",
@@ -536,6 +590,25 @@ def _storage_error_data(failure, raw) -> dict:
     return {"code": failure.code, "cause": failure.cause, "details": storage_failure_details(raw)}
 
 
+def _reopen_if_finalized(db, session_id: str) -> None:
+    """The first real turn is what reopens a finalized session (#85303).
+
+    Mounting a chat (``session.resume``/hydration) is a READ and no longer clears
+    ``ended_at``/``end_reason`` — opening a finished session must not re-light DB-derived
+    liveness with no new activity. This runs on the submit path (the user actually sent
+    something) before the turn's first transcript write, so the row the turn writes is
+    live again. Best-effort: a failed read must not block the send."""
+    if not session_id:
+        return
+    try:
+        row = db.get_session(session_id)
+    except Exception:
+        logger.debug("finalized-session reopen check failed for %s", session_id, exc_info=True)
+        return
+    if row is not None and row.get("ended_at") is not None:
+        db.reopen_session(session_id)
+
+
 def _persist_session_row_for_submit(rid, session, text=None, display_kind=None):
     """Lazily persist the DB row now that the user sent a message (a branch becomes real
     here), then the message itself (#111868: a freeze during the first build must leave a
@@ -551,6 +624,11 @@ def _persist_session_row_for_submit(rid, session, text=None, display_kind=None):
                 data=_storage_error_data(failure, _db_error))
         else:
             _persist_branch_seed(session)
+            # The first real turn reopens a finalized row (#85303): resume is read-only, so
+            # an ended_at set at mount time is cleared HERE, before the turn's first write.
+            with _session_db(session) as db:
+                if db is not None:
+                    _reopen_if_finalized(db, str(session.get("session_key") or ""))
             _persist_submit_user_row(session, text, display_kind)
             return None
     except Exception as exc:
@@ -705,6 +783,7 @@ def _(rid, params: dict) -> dict:
     voice_context = params.get("voice_context")
     session["voice_live_context"] = (
         voice_context[:6000] if session["client_surface"] == "voice-live" and isinstance(voice_context, str) else "")
+    session["voice_turn"] = params.get("voice_turn") is True
     has_truncation = any(params.get(k) is not None for k in _TRUNCATION_PARAMS)
     if has_truncation and isinstance(text, str):
         # A rewind replays what the transcript shows: re-expand a skill invocation or
@@ -758,6 +837,19 @@ def _(rid, params: dict) -> dict:
         if turn_author:
             logger.debug("isolated compute turns carry no author yet; the turn from %s runs unattributed",
                          turn_author.get("id"))
+        # The isolated dispatch returns BELOW before the inline persist, so the reopen
+        # cannot live only in _persist_session_row_for_submit: the turn is already
+        # admitted here (running, in flight, active-slot lease claimed, truncation
+        # applied inline), and the child's transcript writes must land in a live row
+        # (#85303 review: the early return made _reopen_if_finalized unreachable on
+        # this path). Best-effort like the helper: a failed read never blocks the send.
+        try:
+            with _session_db(session) as db:
+                if db is not None:
+                    _reopen_if_finalized(db, str(session.get("session_key") or ""))
+        except Exception:
+            logger.debug("finalized-session reopen before isolated dispatch failed for %s",
+                         sid, exc_info=True)
         isolated_response = _submit_prompt_to_compute_host(
             rid, sid, session, text, display_kind=display_kind, display_metadata=display_metadata)
         if not isolated_response.get("error"):
@@ -910,7 +1002,7 @@ def _(rid, params: dict) -> dict:
             # thread on locale-mismatched Windows.
             res = subprocess.run(
                 argv, capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL,
-                encoding="utf-8", errors="replace", creationflags=windows_hide_flags())
+                encoding="utf-8", errors="replace", creationflags=windows_hide_flags(), check=False)
         except subprocess.TimeoutExpired:
             return _err(rid, 5028, "pdftoppm timed out (>120s)")
         if res.returncode != 0:
@@ -1322,7 +1414,7 @@ _PREVIEW_RESTART_HISTORY_NOTE = (
 def _approval_reply(rid, result_key, call):
     """``_ok({result_key: call(tools.approval)})``, 5004 on any failure."""
     try:
-        import tools.approval as approval
+        from tools import approval
         return _ok(rid, {result_key: call(approval)})
     except Exception as e:
         return _err(rid, 5004, str(e))

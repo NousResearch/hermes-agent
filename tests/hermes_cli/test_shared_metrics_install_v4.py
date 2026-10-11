@@ -12,7 +12,7 @@ import pytest
 import hermes_cli.observability.relay_shared_metrics as relay
 import hermes_cli.observability.shared_metrics_install as install
 import hermes_cli.observability.shared_metrics_startup as startup
-import tui_gateway.server as server
+from tui_gateway import server
 from hermes_cli.observability import shared_metrics_contract as contract
 from hermes_platform.host import facts
 
@@ -220,7 +220,7 @@ def test_meminfo_total_is_parsed_in_bytes():
 
 @pytest.mark.parametrize(("vendors", "gpu"), [
     (["0x8086", "0x10de"], "nvidia"), (["0x8086", "0x1002"], "amd"), (["0x8086"], "intel"),
-    (["0x1af4"], "none"), ([], "none"), (["10DE"], "nvidia"),
+    (["0x1af4"], "none"), ([], "none"), (["10DE"], "nvidia"), ([""], "unknown"), (["", "0x10de"], "nvidia"),
 ])
 def test_gpu_vendor_priority_prefers_the_discrete_card(vendors, gpu):
     assert facts.classify_gpu_vendors(vendors) == gpu

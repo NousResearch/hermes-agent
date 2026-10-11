@@ -124,11 +124,41 @@ def _search_stdout_and_limit(result: ExecuteResult) -> tuple[str, Optional[str]]
 _SEARCH_OUTPUT_RE = re.compile(r'^([A-Za-z]:)?[^\s:][^\n]*?[:\-]\d|^[^\s:][^\s]*$')
 
 
-def _split_tool_diagnostics(output: str) -> tuple[str, str]:
+# Matches an rg/grep per-file I/O diagnostic that some rg versions emit
+# WITHOUT a "rg: " prefix, e.g. "<path>: Permission denied (os error 13)".
+# The ": " separator is part of the shape on purpose: real search output
+# separates a path from a line number with ":<n>:" (match) or "-<n>-"
+# (context) and emits a files-only path bare, so a colon-SPACE is the
+# structural tell of the unprefixed diagnostic form. Without it a successful
+# files-only result whose path ends in "(os error N)" would be discarded.
+_OS_ERROR_DIAGNOSTIC_RE = re.compile(r"^.*?: .*\(os error \d+\)\s*$")
+
+# Matches a REAL, line-numbered search hit: "<path>:<line>:<content>" (rg is
+# always invoked with --line-number/--with-filename for content mode). Used to
+# exempt genuine matches from the unprefixed-diagnostic heuristic, so a match
+# whose content happens to end in "(os error N)" is never discarded.
+_SEARCH_LINE_NUMBERED_RE = re.compile(r'^([A-Za-z]:)?[^\s:][^\n]*?:\d+:')
+
+# Matches a REAL, numbered CONTEXT line: "<path>-<line>-<content>". Same
+# exemption as above for -A/-B/-C output, whose content may also legitimately
+# end in "(os error N)". A path that itself contains "-<digits>-" makes a
+# single line inherently ambiguous (the same ambiguity
+# ``_parse_search_context_line`` documents); this resolves it toward keeping
+# user-visible results, since a leaked diagnostic is noise while a dropped
+# context line is silent data loss.
+_SEARCH_CONTEXT_NUMBERED_RE = re.compile(r'^([A-Za-z]:)?[^\s:][^\n]*?-\d+-')
+
+
+def _split_tool_diagnostics(output: str, exit_code: int) -> tuple[str, str]:
     """Separate rg/grep diagnostic lines from real match output → ``(diagnostics, payload)``.
     ``_exec`` merges stderr into stdout; classifying by SHAPE lets the exit-2 guard
     tell a pure failure (no payload) from a partial one (one unreadable file, others
-    matched) and guarantees error text is never parsed as a match."""
+    matched) and guarantees error text is never parsed as a match.
+
+    ``exit_code`` is the search process' status. It scopes the unprefixed
+    old-ripgrep heuristic below to runs that can actually carry a per-file
+    I/O diagnostic: a clean exit (0) means every file was read successfully,
+    so any ``(os error N)`` text in that output is content, not a diagnostic."""
     diagnostics: list[str] = []
     payload: list[str] = []
     for line in output.split('\n'):
@@ -136,6 +166,26 @@ def _split_tool_diagnostics(output: str) -> tuple[str, str]:
             continue
         # Prefix check first: a match path can contain "-<digit>" (".../pytest-686/...").
         if line.lstrip().startswith(("rg: ", "grep: ")):
+            diagnostics.append(line)
+        # Older ripgrep (e.g. 0.10) emits per-file I/O errors WITHOUT the
+        # "rg: " prefix, e.g. "<path>: Permission denied (os error 13)". The
+        # shape regex below already rejects most of those, but it mis-reads the
+        # ones whose path contains "-<digit>" (e.g. "/tmp/pytest-686/x: ...
+        # (os error 13)"), classifying the diagnostic as a match. Catch that
+        # narrow gap here, guarded so it can only ever fire on a genuine
+        # diagnostic:
+        #   * only on an error exit -- a successful search never emitted one;
+        #   * only on the "<path>: <message>" shape, since real output always
+        #     separates the path from a line number with ":<n>:" or "-<n>-",
+        #     never with a colon-SPACE;
+        #   * and never on a line-numbered match or a numbered context line,
+        #     whose *content* may legitimately end in "(os error N)".
+        elif (
+            exit_code != 0
+            and _OS_ERROR_DIAGNOSTIC_RE.search(line)
+            and not _SEARCH_LINE_NUMBERED_RE.match(line)
+            and not _SEARCH_CONTEXT_NUMBERED_RE.match(line)
+        ):
             diagnostics.append(line)
         elif line == "--" or _SEARCH_OUTPUT_RE.match(line):
             payload.append(line)
@@ -203,7 +253,7 @@ def _parse_search_output(result, output_mode: str, limit: int, offset: int,
     errors (one unreadable file), so an error is surfaced only when exit==2 AND no
     usable payload remains. ``warning`` is attached to files_only/content results."""
     stdout, limit_reason = _search_stdout_and_limit(result)
-    diagnostics, payload = _split_tool_diagnostics(stdout)
+    diagnostics, payload = _split_tool_diagnostics(stdout, result.exit_code)
     if result.exit_code == 2 and not payload.strip():
         error_msg = diagnostics.strip() or result.stdout.strip() or "Search error"
         return SearchResult(error=f"Search failed: {error_msg}", total_count=0)

@@ -1559,11 +1559,25 @@ class GatewayStartupMixin:
     # name minus the leading underscore.
     _PRE_RECONNECT_WATCHERS = (
         "_session_housekeeping_watcher", "_model_catalog_refresh_watcher", "_session_stall_watcher",
-        "_kanban_notifier_watcher", "_kanban_dispatcher_watcher",
+        "_kanban_notifier_watcher", "_kanban_dispatcher_watcher", "_pdf_recovery_watcher",
     )
     _POST_RECONNECT_WATCHERS = (
         "_handoff_watcher", "_async_delegation_watcher", "_loop_wakeup_watcher", "_profile_reconcile_watcher",
     )
+
+    async def _pdf_recovery_watcher(self, interval: float = 300.0) -> None:
+        """Retry fail-closed PDF conversions immediately after boot and while the gateway runs."""
+        from gateway.pdf_preprocessing import recover_pending_pdfs
+
+        while self._running:
+            totals = await asyncio.to_thread(recover_pending_pdfs)
+            if totals["found"]:
+                log = logger.info if totals["failed"] == 0 else logger.warning
+                log(
+                    "PDF recovery scan: found=%d recovered=%d pending=%d",
+                    totals["found"], totals["recovered"], totals["failed"],
+                )
+            await asyncio.sleep(interval)
 
     def _start_spawn_background_watchers(self) -> None:
         """Spawn the long-lived supervised background watchers."""

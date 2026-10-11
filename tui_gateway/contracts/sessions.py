@@ -193,6 +193,9 @@ class SessionResumeParams(SessionParams):
     # False: render image parts as "[image]" instead of their data URIs — a remote client reads a
     # transcript in kilobytes instead of re-transmitting every stored attachment (#116511).
     inline_images: bool = True
+    # False: never start a crash-recovery continuation on this resume (the turn marker is left
+    # for a later resume). A client that opens sessions only to read or answer them sends it.
+    auto_continue: bool = True
 
 
 class SessionResumeResult(LiveSessionSnapshot):

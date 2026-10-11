@@ -31772,6 +31772,11 @@
             "default": true,
             "title": "Inline Images",
             "type": "boolean"
+          },
+          "auto_continue": {
+            "default": true,
+            "title": "Auto Continue",
+            "type": "boolean"
           }
         },
         "required": [

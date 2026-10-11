@@ -621,7 +621,7 @@ class _Resume:
     """Per-call ``session.resume`` state. ``owns_db``: the DEDICATED profile handle is ours
     to close (handler ``finally``) until handed to the hydration worker or the agent."""
 
-    inline_images = True  # class default so a ``__new__``-built ctx (tests) projects the full form
+    inline_images = auto_continue = True  # class defaults so a ``__new__``-built ctx (tests) keeps both on
 
     def __init__(self, rid, params: dict, target: str) -> None:
         self.rid, self.params, self.target = rid, params, target
@@ -633,8 +633,8 @@ class _Resume:
         self.lazy, self.defer_history = _flag(params, "lazy"), _flag(params, "defer_history")
         # Desktop hydrates over REST; suppress the duplicate WS copy only when asked.
         self.omit_messages, self.eager_build = _flag(params, "omit_messages"), _flag(params, "eager_build")
-        # inline_images=False renders image parts as "[image]" (#116511); default keeps data URIs.
-        self.inline_images = "inline_images" not in params or _flag(params, "inline_images")
+        # inline_images=False renders images as "[image]" (#116511); auto_continue=False never starts crash recovery.
+        self.inline_images, self.auto_continue = (k not in params or _flag(params, k) for k in ("inline_images", "auto_continue"))
 
     def mint(self, prompts: bool = True) -> tuple:
         """``(runtime sid, source, cwd)`` for the live record this resume registers (+ gateway prompts on)."""
@@ -965,7 +965,7 @@ def _resume_deferred(ctx: _Resume) -> dict:
     # Desktop owns the visible transcript through bounded REST pages, not this model-history restore.
     _schedule_resume_hydration(
         sid, ctx.target, ctx.db, close_db=ctx.owns_db,
-        model_history_only=source == "desktop" and ctx.omit_messages)
+        model_history_only=source == "desktop" and ctx.omit_messages, auto_continue=ctx.auto_continue)
     ctx.owns_db = False  # the hydration worker now owns (and closes) the profile-scoped handle
     _schedule_session_cap_enforcement()
     return _resume_response(ctx, sid, record, info=ctx.info(cwd, overrides), messages=[],
@@ -991,7 +991,7 @@ def _resume_cold(ctx: _Resume) -> dict:
     _schedule_session_cap_enforcement()  # trim detached idle sessions over the cap
     return _resume_response(ctx, sid, record, info=ctx.info(cwd, overrides), display=display_history,
                             count_source=raw_history,
-                            auto_continue=_maybe_schedule_auto_continue(sid, record, ctx.target))
+                            auto_continue=_maybe_schedule_auto_continue(sid, record, ctx.target) if ctx.auto_continue else None)
 
 
 def _resume_eager(ctx: _Resume) -> dict:
@@ -1052,7 +1052,7 @@ def _resume_eager(ctx: _Resume) -> dict:
     return _resume_response(
         ctx, sid, session, info=_session_info(agent, session), display=display_history, count_source=raw_history,
         started_at=float(session.get("created_at") or time.time()),
-        auto_continue=_maybe_schedule_auto_continue(sid, session, ctx.target) if session else None)
+        auto_continue=_maybe_schedule_auto_continue(sid, session, ctx.target) if session and ctx.auto_continue else None)
 
 
 @method("session.resume")

@@ -2916,6 +2916,17 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
                 )
             self._with_discord_recovery_db(_complete)
             return
+        if outcome == ProcessingOutcome.SKIPPED:
+            # A pre_gateway_dispatch hook dropped the message on purpose (#133475): record it as
+            # handled so missed-message backfill does not re-dispatch it just to be dropped again
+            # (and again, until max_attempts) on every reconnect.
+            def _skipped(conn):
+                conn.execute(
+                    "UPDATE discord_messages SET status='responded', replied=1, updated_at=? WHERE message_id=?",
+                    (now, message_id),
+                )
+            self._with_discord_recovery_db(_skipped)
+            return
         status = "cancelled" if outcome == ProcessingOutcome.CANCELLED else "failed"
 
         def _op(conn):

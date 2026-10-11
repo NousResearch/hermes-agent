@@ -2482,6 +2482,10 @@ class MatrixAdapter(BasePlatformAdapter):
         eyes_event_id = self._pending_reactions.pop((room_id, msg_id), None)
         if eyes_event_id:
             self._schedule_reaction_redaction(room_id, eyes_event_id, "processing complete")
+        if outcome == ProcessingOutcome.SKIPPED:
+            # A hook dropped this message (#133475): retract the 👀 and leave the message
+            # unreacted — neither ✅ (never answered) nor ❌ (a drop is not a failure).
+            return
         await self._send_reaction(room_id, msg_id, "\u2705" if outcome == ProcessingOutcome.SUCCESS else "\u274c")
 
     async def _on_reaction(self, event: Any) -> None:

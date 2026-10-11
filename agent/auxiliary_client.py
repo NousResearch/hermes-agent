@@ -3245,6 +3245,17 @@ _PAYMENT_KEYWORDS = _BILLING_PATTERNS + (
     "too many tokens per day", "daily limit", "tokens per day", "daily quota", "resource exhausted",
     "resource_exhausted", "resource-exhausted", "resourceexhausted",
     "weekly usage limit", "weekly limit",
+    # Subscription/entitlement 403s: the account or org cannot use this provider at all until the
+    # subscription is restored — semantically identical to credit exhaustion (the provider cannot
+    # serve the request), so the configured aux fallback chain must engage instead of the call
+    # dying on a bare 403. Anthropic's OAuth-org block ("OAuth authentication is currently not
+    # allowed for this organization") is the case seen live when a Claude Max subscription
+    # lapses/pauses; the main chat path already classifies the same body as an entitlement
+    # failure (agent_runtime_helpers._is_entitlement_failure / _is_entitlement_403), and this
+    # keeps the aux path's fallback behavior consistent with it.
+    "not allowed for this organization", "oauth authentication is currently not allowed",
+    "subscription is inactive", "subscription lapsed",
+    "subscription has been paused", "subscription paused",
 )
 
 

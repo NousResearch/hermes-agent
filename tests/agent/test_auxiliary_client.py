@@ -1385,6 +1385,45 @@ class TestIsPaymentError:
         exc.status_code = 403
         assert _is_payment_error(exc) is True
 
+    def test_403_anthropic_oauth_org_block_is_payment(self):
+        """The live incident (2026-09-23): a paused Claude Max subscription
+        makes every Anthropic call fail with HTTP 403
+        ``oauth_not_allowed_for_organization``. The provider cannot serve
+        the request until the subscription is restored, so this must
+        classify as a payment/entitlement failure or the configured aux
+        fallback chain never engages (the aux call died on the bare 403
+        instead of trying the configured fallback chain)."""
+        exc = Exception(
+            "Error code: 403 - {'type': 'error', 'error': {'type': "
+            "'permission_error', 'message': 'OAuth authentication is "
+            "currently not allowed for this organization.', 'details': "
+            "{'error_code': 'oauth_not_allowed_for_organization'}}}"
+        )
+        setattr(exc, "status_code", 403)
+        assert _is_payment_error(exc) is True
+
+    def test_403_subscription_lapsed_keywords_are_payment(self):
+        for msg in (
+            "Your subscription has been paused at this time.",
+            "This subscription is inactive.",
+            "subscription lapsed — please renew",
+        ):
+            exc = Exception(msg)
+            setattr(exc, "status_code", 403)
+            assert _is_payment_error(exc) is True, msg
+
+    def test_403_generic_permission_denied_is_not_payment(self):
+        """A genuine permission 403 (no entitlement/subscription signal) must
+        NOT be reclassified — it is not a capacity error and should not
+        silently burn a fallback hop."""
+        exc = Exception(
+            "Error code: 403 - {'type': 'error', 'error': {'type': "
+            "'permission_error', 'message': 'You do not have permission to "
+            "access this resource.'}}"
+        )
+        setattr(exc, "status_code", 403)
+        assert _is_payment_error(exc) is False
+
 
     def test_404_generic_not_found_is_not_payment(self):
         exc = Exception("Not Found")

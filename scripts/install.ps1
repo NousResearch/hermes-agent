@@ -1217,9 +1217,28 @@ function Stage-Desktop {
     # (see Invoke-StageByName). The work is the same completion call with the
     # desktop product selected. Voice and wake extras are not synced here: pm
     # lazy-installs them at first use (policy: Teknium, July 2026, #70509).
-    Invoke-SourceCompletion $true
-    Publish-UserCommand
-    Confirm-DesktopArtifact
+    #
+    # The desktop app is an optional product on top of a working CLI: an
+    # npm/Electron build failure (the Node-24 npm "Cannot read properties of
+    # null" class, a failed pack, an unreachable download) must not abort the
+    # install before the stages that make the CLI usable have run. Catch the
+    # failure here, report the stage as skipped (the same soft-skip the
+    # needs-user-input stages use), and name the manual rebuild command.
+    # Fail inside stays Fail for the OTHER stages: the try/catch is scoped to
+    # this optional stage, not to the dispatcher.
+    $script:StageSkippedReason = $null
+    try {
+        Invoke-SourceCompletion $true
+        Publish-UserCommand
+        Confirm-DesktopArtifact
+    } catch {
+        $reason = "$_"
+        Write-Warn "Desktop app build failed: $reason"
+        Write-Warn "The Hermes CLI install continues; the desktop app was skipped."
+        Log "  Rebuild it later with: hermes desktop --build-only --force-build"
+        $script:StageSkippedReason = "Desktop app build failed: $reason. " +
+            "The CLI install continued; rebuild the desktop app with 'hermes desktop --build-only --force-build'."
+    }
 }
 
 function Confirm-DesktopArtifact {
@@ -1408,13 +1427,25 @@ if ($Stage) {
     }
     $stageDef = $Stages | Where-Object { $_.name -eq $Stage } | Select-Object -First 1
     $needsInput = $stageDef -and $stageDef.needs_user_input
+    # A stage may report itself skipped (Stage-Desktop's soft-fail): reset
+    # before dispatch so a previous run's reason in this process can never
+    # leak into a fresh stage's frame.
+    $script:StageSkippedReason = $null
     if ($NonInteractive -and $needsInput) {
         if ($Json) { Emit-Frame $true $Stage $true "needs user input" }
         exit 0
     }
     try {
         Invoke-StageByName $Stage
-        if ($Json) { Emit-Frame $true $Stage $false }
+        if ($script:StageSkippedReason) {
+            # The stage ran to completion but its product is not usable (the
+            # optional desktop build failed and was skipped): report success
+            # with skipped=true and the reason, the same frame shape the
+            # needs-user-input short-circuit above emits.
+            if ($Json) { Emit-Frame $true $Stage $true $script:StageSkippedReason }
+        } else {
+            if ($Json) { Emit-Frame $true $Stage $false }
+        }
         exit 0
     } catch {
         Write-Err "$_"

@@ -591,6 +591,16 @@ def _models_dev_pricing_entry(route: BillingRoute) -> Optional[PricingEntry]:
         cache_write_cost_per_million=_to_decimal(model_info.cost_cache_write),
         source="provider_models_api", source_url="https://models.dev", pricing_version="models.dev",
         fetched_at=_UTC_NOW(),
+        # models.dev ``size`` is exclusive ("above N"); PricingTier thresholds are inclusive.
+        pricing_tiers=tuple(sorted((
+            PricingTier(
+                min_prompt_tokens=tier["above"] + 1,
+                input_cost_per_million=_to_decimal(tier.get("input")),
+                output_cost_per_million=_to_decimal(tier.get("output")),
+                cache_read_cost_per_million=_to_decimal(tier.get("cache_read")),
+                cache_write_cost_per_million=_to_decimal(tier.get("cache_write")),
+            ) for tier in model_info.cost_context_tiers
+        ), key=lambda tier: tier.min_prompt_tokens)),
     )
 
 

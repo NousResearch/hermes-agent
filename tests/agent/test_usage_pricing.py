@@ -40,7 +40,12 @@ def test_astra_whole_request_price_tier_includes_cache_writes():
 
 _MODELS_DEV_REGISTRY = {
     "openai": {"models": {"gpt-5-nano": {"cost": {"input": 0.05, "output": 0.4, "cache_read": 0.005}}}},
-    "xai": {"models": {"grok-4.3": {"cost": {"input": 1.25, "output": 2.5, "cache_read": 0.2}}}},
+    "xai": {"models": {
+        "grok-4.3": {"cost": {"input": 1.25, "output": 2.5, "cache_read": 0.2}},
+        # models.dev shape for xAI's long-context card: the row replaces base rates above 200K prompt tokens.
+        "grok-4.7": {"cost": {"input": 2, "output": 6, "cache_read": 0.5,
+                              "tiers": [{"input": 4, "output": 12, "cache_read": 1, "tier": {"type": "context", "size": 200_000}}]}},
+    }},
 }
 _USAGE = CanonicalUsage(input_tokens=1_000_000, output_tokens=1_000_000, cache_read_tokens=1_000_000)
 
@@ -70,6 +75,19 @@ def test_direct_first_party_route_prices_models_missing_from_snapshot(models_dev
     cost = estimate_usage_cost(model, _USAGE, provider=provider, base_url=base_url)
 
     assert (cost.status, cost.amount_usd) == expected
+
+
+@pytest.mark.parametrize(("prompt_tokens", "expected"), [
+    # Exactly at models.dev's ``size`` stays on the base card; one token over re-prices the whole request.
+    (200_000, Decimal("0.385")),   # 150K*2 + 50K*0.5 + 10K*6 per 1M
+    (200_001, Decimal("0.770004")),  # 150_001*4 + 50K*1 + 10K*12 per 1M
+])
+def test_models_dev_context_tier_reprices_whole_request(models_dev_registry, prompt_tokens, expected):
+    usage = CanonicalUsage(input_tokens=prompt_tokens - 50_000, cache_read_tokens=50_000, output_tokens=10_000)
+
+    cost = estimate_usage_cost("grok-4.7", usage, provider="xai", base_url="https://api.x.ai/v1")
+
+    assert cost.amount_usd == expected
 
 
 def test_normalize_usage_reads_deepseek_native_cache_hit_tokens():

@@ -11,7 +11,7 @@ import { EventEmitter } from 'node:events'
 
 import { test } from 'vitest'
 
-import { type ExternalOpenDeps, openExternalUrl, reportPreOpenStatFailure } from './external-open'
+import { escapeUrlForCmdStart, type ExternalOpenDeps, openExternalUrl, reportPreOpenStatFailure } from './external-open'
 
 function makeDeps(overrides: Partial<ExternalOpenDeps> = {}) {
   const calls = {
@@ -242,4 +242,74 @@ test('guard: a non-missing stat failure is logged and classified as proceed-to-O
   assert.equal(reported.length, 0)
   assert.equal(logged.length, 4)
   assert.ok(logged.every(line => line.includes('[file] pre-open stat failed')))
+})
+
+test('wsl: caret-escapes cmd.exe metacharacters before spawning start (131561)', async () => {
+  const spawned: Array<readonly string[]> = []
+  const proc = new EventEmitter() as unknown as ChildProcess
+
+  const { deps } = makeDeps({
+    isWsl: true,
+    spawn: (cmd, args) => {
+      spawned.push([cmd, ...args])
+
+      return proc
+    }
+  })
+
+  const result = await openExternalUrl('https://example.com/?q=1&calc.exe', deps)
+
+  assert.deepEqual(result, { ok: true })
+  assert.equal(spawned.length, 1)
+  // What reaches cmd.exe argv is the caret-escaped form: the `&` can no longer
+  // concatenate a second command when cmd re-parses the command line.
+  assert.equal(spawned[0][4], 'https://example.com/?q=1^&calc.exe')
+})
+
+test('wsl: refuses, without spawning, a URL cmd.exe cannot quote safely (131561)', async () => {
+  const spawned: Array<readonly string[]> = []
+
+  const { deps, calls } = makeDeps({
+    isWsl: true,
+    spawn: (cmd, args) => {
+      spawned.push([cmd, ...args])
+      throw new Error('must not be reached')
+    }
+  })
+
+  // A legitimate percent-encoded URL still carries `%`, which cannot be
+  // neutralized on a cmd.exe command line -- fail closed instead of executing.
+  const result = await openExternalUrl('https://example.com/a%20b', deps)
+
+  assert.deepEqual(result, { ok: false, reason: 'invalid' })
+  assert.equal(spawned.length, 0)
+  assert.ok(calls.logged.some(line => line.includes('cannot quote safely')))
+  assert.equal(calls.notified.length, 0)
+})
+
+test('escapeUrlForCmdStart: caret-escapes every escapable metacharacter', () => {
+  assert.equal(escapeUrlForCmdStart('https://x.example/a&b'), 'https://x.example/a^&b')
+  assert.equal(escapeUrlForCmdStart('https://x.example/a|b'), 'https://x.example/a^|b')
+  assert.equal(escapeUrlForCmdStart('https://x.example/a<b'), 'https://x.example/a^<b')
+  assert.equal(escapeUrlForCmdStart('https://x.example/a>b'), 'https://x.example/a^>b')
+  assert.equal(escapeUrlForCmdStart('https://x.example/a^b'), 'https://x.example/a^^b')
+  assert.equal(escapeUrlForCmdStart('https://x.example/a(b)'), 'https://x.example/a^(b^)')
+  assert.equal(escapeUrlForCmdStart('https://x.example/a,b'), 'https://x.example/a^,b')
+  assert.equal(escapeUrlForCmdStart('https://x.example/a;b'), 'https://x.example/a^;b')
+  assert.equal(escapeUrlForCmdStart('https://x.example/a=b'), 'https://x.example/a^=b')
+  // clean URLs pass through byte-identical
+  assert.equal(escapeUrlForCmdStart('https://example.com/path?q=1'), 'https://example.com/path?q=1')
+})
+
+test('escapeUrlForCmdStart: rejects what caret-escaping cannot neutralize', () => {
+  for (const url of [
+    'https://x.example/a"b',
+    'https://x.example/a%20b',
+    'https://x.example/a!b',
+    'https://x.example/a b',
+    'https://x.example/a\tb',
+    'https://x.example/\u0001'
+  ]) {
+    assert.equal(escapeUrlForCmdStart(url), null, url)
+  }
 })

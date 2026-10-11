@@ -70,6 +70,34 @@ export interface ExternalOpenDeps {
 
 const SUPPORTED_WEB = ['http:', 'https:', 'mailto:']
 
+/**
+ * cmd.exe re-parses the command line Node builds from spawn argv, so a URL
+ * handed to `cmd.exe /c start "" <url>` must not carry shell metacharacters
+ * (131561). Two tiers, both fail-closed:
+ *
+ *  - reject outright the characters caret-escaping cannot neutralize: `"`
+ *    (would need quoting `start`'s argv cannot express), `%` (variable
+ *    expansion runs before cmd applies `^` escapes, so `%name%` cannot be
+ *    defused on a command line at all), `!` (delayed expansion), and any
+ *    whitespace/control character (the URL would split across argv slots);
+ *  - caret-escape the escapable metacharacters `& | < > ^ ( ) , ; =`.
+ *
+ * A URL that survived `new URL().toString()` never carries a raw quote,
+ * space or control character (the WHATWG parser percent-encodes them), so the
+ * reject tier is defense in depth; `%` (legit percent-encoded URLs) is the
+ * one real-world casualty -- refusing to open beats executing a command.
+ */
+const CMD_START_UNQUOTABLE = /["%!\s\u0000-\u001f\u007f]/
+const CMD_START_METACHAR = /[&|<>^();,=]/g
+
+export function escapeUrlForCmdStart(url: string): string | null {
+  if (CMD_START_UNQUOTABLE.test(url)) {
+    return null
+  }
+
+  return url.replace(CMD_START_METACHAR, char => `^${char}`)
+}
+
 export function externalOpenErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
@@ -148,9 +176,17 @@ export async function openExternalUrl(rawUrl: string, deps: ExternalOpenDeps): P
 }
 
 async function openViaWsl(url: string, deps: ExternalOpenDeps): Promise<ExternalOpenResult> {
+  const escaped = escapeUrlForCmdStart(url)
+
+  if (escaped === null) {
+    deps.log(`[link] refusing WSL open of a URL cmd.exe cannot quote safely: ${url}`)
+
+    return { ok: false, reason: 'invalid' }
+  }
+
   deps.log(`[link] opening via WSL→Windows: ${url}`)
 
-  const proc = deps.spawn('cmd.exe', ['/c', 'start', '""', url], {
+  const proc = deps.spawn('cmd.exe', ['/c', 'start', '""', escaped], {
     detached: true,
     stdio: 'ignore',
     windowsHide: true

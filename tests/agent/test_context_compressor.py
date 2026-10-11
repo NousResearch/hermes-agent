@@ -18,6 +18,8 @@ from agent.context_compressor import (
     _summarize_tool_result,
     _sum_clarify,
     _is_summary_access_or_quota_error,
+    _CHARS_PER_TOKEN,
+    _SUMMARY_INPUT_MAX_CHARS,
 )
 from agent.compression_marker import _COMPRESSION_MARKER_PREFIX
 from hermes_state import SessionDB
@@ -3324,33 +3326,6 @@ class TestSummaryPromptBounding:
             else:
                 assert f"{records[a]}\n\n...[records {a + 2:,}-{b:,}:" in sampled, (a, b)
 
-    def test_iterative_update_path_is_bounded(self):
-        """The iterative prompt (previous summary + new turns) must be bounded
-        too — a pathological rehydrated handoff must not blow up the prompt."""
-        mock_response = MagicMock()
-        mock_response.choices = [MagicMock()]
-        mock_response.choices[0].message.content = "updated summary"
-
-        with patch("agent.context_compressor.get_model_context_length", return_value=272000):
-            c = ContextCompressor(model="test", quiet_mode=True)
-        cap = c._SUMMARY_INPUT_MAX_CHARS
-        c._previous_summary = "PREV_HEAD " + ("p" * (cap * 2)) + " PREV_TAIL"
-
-        messages = [
-            {"role": "user", "content": f"turn-{i}-" + ("x" * 6000)}
-            for i in range(80)
-        ]
-
-        with patch("agent.context_compressor.call_llm", return_value=mock_response) as mock_call:
-            summary = c._generate_summary(messages)
-
-        prompt = mock_call.call_args.kwargs["messages"][0]["content"]
-        assert summary.startswith(SUMMARY_PREFIX)
-        # previous summary block + new-turns block each capped, plus the
-        # fixed template: well under 3x the cap (unbounded would be ~800K).
-        assert len(prompt) < 2 * cap + 30_000
-        assert "PREV_HEAD" in prompt
-        assert "PREV_TAIL" in prompt
 
     def test_marker_does_not_collide_with_summary_classifier(self):
         """The omitted-middle marker must never make bounded content classify

@@ -33,6 +33,7 @@ from agent.auxiliary_client import (
 from agent.context_engine import ContextEngine, sanitize_memory_context
 from agent.context_compressor_prellm import PreLlmSkipMixin
 from agent.context_compressor_summary import SummaryDispatchMixin
+from agent.context_compressor_summary_input import SummaryInputBudgetMixin
 from agent.context_compressor_telemetry import CompressionTelemetryMixin
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.micro_compaction import MicroCompactionMixin
@@ -822,8 +823,10 @@ _SUMMARY_TOKENS_CEILING = 10_000
 # After this many failures at one cursor, skip the exchange to avoid busy-looping.
 _MICRO_COMPACT_MAX_CONSECUTIVE_FAILURES = 3
 
-# Prompt-side char cap on the serialized turn block (~40K tokens; head+tail kept,
-# see _bound_summary_input). NEVER add a max_tokens wire cap on the summary call.
+# Prompt-side char cap on the serialized turn block (~40K tokens; head+tail kept, see
+# _bound_summary_input). NEVER add a max_tokens wire cap on the summary call. This is a
+# CEILING, not the budget: the window-derived budget that bounds the transcript and the
+# previous-summary block together lives in agent/context_compressor_summary_input.py.
 _SUMMARY_INPUT_MAX_CHARS = 160_000
 
 _PRUNED_TOOL_PLACEHOLDER = "[Old tool output cleared to save context space]"
@@ -2147,7 +2150,8 @@ Describe agent/tool work only as completed actions, state, or historical work.]"
 
 
 class ContextCompressor(
-    SummaryDispatchMixin, PreLlmSkipMixin, CompressionTelemetryMixin, MicroCompactionMixin, ContextEngine,
+    SummaryDispatchMixin, SummaryInputBudgetMixin, PreLlmSkipMixin,
+    CompressionTelemetryMixin, MicroCompactionMixin, ContextEngine,
 ):
     """Default context engine: prune tool results, protect head/tail, summarize the middle
     with an LLM, and iteratively update the previous summary on later compactions."""
@@ -3470,14 +3474,14 @@ class ContextCompressor(
         content_tokens = estimate_messages_tokens_rough(turns_to_summarize)
         budget = int(content_tokens * _SUMMARY_RATIO)
         return max(_MIN_SUMMARY_TOKENS, min(budget, self.max_summary_tokens))
-
     # Summarizer-input limits: the budget is the summary model's window, not the main model's.
     _CONTENT_MAX = 6000       # total chars per message body
     _CONTENT_HEAD = 4000      # chars kept from the start
     _CONTENT_TAIL = 1500      # chars kept from the end
     _TOOL_ARGS_MAX = 1500     # tool call argument chars
     _TOOL_ARGS_HEAD = 1200    # kept from the start of tool args
-    # Aggregate cap applied after per-message limits; class alias so subclasses/tests can override.
+    # Aggregate ceiling applied after per-message limits; class alias so subclasses/tests can
+    # override. The *effective* budget is _summary_input_budget_chars().
     _SUMMARY_INPUT_MAX_CHARS = _SUMMARY_INPUT_MAX_CHARS
 
     def _render_tool_call_for_summary(self, tc: Any) -> str:
@@ -3691,27 +3695,6 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
                 summary += build()
         return summary
 
-    @classmethod
-    def _bound_summary_input(cls, content: str) -> str:
-        """Cap total summarizer input, keeping head and tail and marking the omitted middle."""
-        if len(content) <= cls._SUMMARY_INPUT_MAX_CHARS:
-            return content
-
-        marker_template = (
-            "\n\n...[summary input truncated: omitted "
-            "{omitted:,} chars from the middle to keep compression prompt bounded]...\n\n"
-        )
-        # Marker width can change with the omitted count; estimate, then rebuild once.
-        omitted = len(content)
-        for _ in range(2):
-            marker = marker_template.format(omitted=omitted)
-            remaining = max(cls._SUMMARY_INPUT_MAX_CHARS - len(marker), 0)
-            head_chars = int(remaining * 0.45)
-            tail_chars = remaining - head_chars
-            omitted = max(len(content) - head_chars - tail_chars, 0)
-        tail = content[-tail_chars:].lstrip() if tail_chars else ""
-        return content[:head_chars].rstrip() + marker + tail
-
     # Lean-mode sampling slice count: 8 keeps slices ~20K chars at the 160K cap.
     _SAMPLED_INPUT_SLICES = 8
 
@@ -3726,23 +3709,14 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         head_len = (limit - marker_reserve) // 2
         return elide_middle(record, head_len, limit - marker_reserve - head_len)
 
-    def _record_summary_input_coverage(self, coverage: dict[str, int]) -> None:
-        """Expose lean sampling coverage without including transcript content in telemetry."""
-        telemetry = getattr(self, "_active_compression_telemetry", None)
-        if not isinstance(telemetry, dict):
-            return
-        telemetry.update({
-            "summary_input_chars": coverage["input_chars"],
-            "summary_input_sampled_chars": coverage["sampled_chars"],
-            "summary_input_omitted_chars": coverage["omitted_chars"],
-            "summary_input_record_count": coverage["record_count"],
-            "summary_input_sampled_record_count": coverage["sampled_record_count"],
-            "summary_input_elided_record_count": coverage["elided_record_count"],
-        })
-
     @classmethod
-    def _sample_summary_records(cls, records: Sequence[str]) -> tuple[str, dict[str, int]]:
+    def _sample_summary_records(
+        cls, records: Sequence[str], max_chars: Optional[int] = None
+    ) -> tuple[str, dict[str, int]]:
         """Sample complete serialized records while retaining the character bound.
+
+        ``max_chars`` is the total budget for the assembled prompt's variable blocks (see
+        ``_summary_input_budget_chars``); it defaults to the static ceiling.
 
         Returns the bounded transcript and record-level coverage counters for compression
         telemetry. `input_chars` counts raw serialized record content; `sampled_chars` counts the
@@ -3751,6 +3725,8 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         `omitted_chars = input_chars - sampled_chars` also covers truncated-away bytes.
         """
         input_chars = sum(len(r) for r in records)
+        # Total budget for the assembled prompt's variable blocks; the sampler is one consumer of it.
+        cap = cls._SUMMARY_INPUT_MAX_CHARS if max_chars is None else max(0, int(max_chars))
 
         def _coverage(sampled_chars: int, sampled_record_count: int) -> dict[str, int]:
             return {
@@ -3765,7 +3741,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
 
         separator = "\n\n"
         total_len = input_chars + len(separator) * (len(records) - 1)
-        if total_len <= cls._SUMMARY_INPUT_MAX_CHARS:
+        if total_len <= cap:
             return separator.join(records), _coverage(input_chars, len(records))
 
         n = max(1, min(cls._SAMPLED_INPUT_SLICES, len(records)))
@@ -3773,7 +3749,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             "\n\n...[records {first:,}-{last:,}: {elided:,} chars elided — recover via session_search]...\n\n"
         )
         marker_len = len(marker_template.format(first=len(records), last=len(records), elided=total_len))
-        budget = max(cls._SUMMARY_INPUT_MAX_CHARS - marker_len * (n - 1), 1)
+        budget = max(cap - marker_len * (n - 1), 1)
         target = max(1, budget // n)
 
         # Oversized records are bounded to slice target with explicit intra-record truncation markers
@@ -3826,7 +3802,6 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         # (5-43% of the cap unused for 8-20K records). Spend the headroom on whole neighbouring
         # records, round-robin one record per slice per round so every region keeps an even share
         # (the newest slice grows backward, older slices grow forward) — never past cap.
-        cap = cls._SUMMARY_INPUT_MAX_CHARS
         rendered_len = len(_render(selected))
         grew = True
         while grew:
@@ -4001,17 +3976,30 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         _pruned_skill_names = list(dict.fromkeys(
             _collect_ghosted_skill_names(turns_to_summarize) + _extract_pruned_skill_names(self._previous_summary or "")
         ))[:_MAX_PRUNED_SKILL_MARKERS]
+        # Total prompt budget, derived from the summariser's window (not the main model's): both the
+        # transcript and the previous-summary block draw from this ONE budget. See
+        # agent/context_compressor_summary_input.py for the window-derived rule.
+        summary_input_budget = self._summary_input_budget_chars()
+        previous_summary_budget = self._previous_summary_input_budget(summary_input_budget)
         # Lean mode even-samples oversized input (one bounded request, never a second).
         if getattr(self, "tail_mode", "lean") == "lean":
             records = self._serialize_records_for_summary(turns_to_summarize)
-            content_to_summarize, coverage = self._sample_summary_records(records)
+            content_to_summarize, coverage = self._sample_summary_records(
+                records, max_chars=summary_input_budget - (previous_summary_budget or 0),
+            )
             self._record_summary_input_coverage(coverage)
         else:
-            content_to_summarize = self._bound_summary_input(self._serialize_for_summary(turns_to_summarize))
+            content_to_summarize = self._bound_summary_input(
+                self._serialize_for_summary(turns_to_summarize),
+                max_chars=summary_input_budget - (previous_summary_budget or 0),
+            )
         has_user_turn = getattr(self, "_summary_has_user_turn", None)
         if has_user_turn is None:
             has_user_turn = self._transcript_has_real_user_turn(turns_to_summarize)
-        prompt = self._build_summary_prompt(content_to_summarize, summary_budget, focus_topic, memory_context, has_user_turn)
+        prompt = self._build_summary_prompt(
+            content_to_summarize, summary_budget, focus_topic, memory_context, has_user_turn,
+            previous_summary_budget=previous_summary_budget,
+        )
         try:
             content = self._call_summary_llm(prompt, prompt_started_at)
             # Strip <think> blocks: they would be stored, injected, and compounded on every iterative update.
@@ -4046,7 +4034,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
 
     def _build_summary_prompt(
         self, content_to_summarize: str, summary_budget: int, focus_topic: Optional[str],
-        memory_context: str, has_user_turn: bool,
+        memory_context: str, has_user_turn: bool, previous_summary_budget: Optional[int] = None,
     ) -> str:
         """Assemble the summarizer prompt (fresh or iterative-update form); focus guidance goes last so it takes precedence."""
         _memory_section = _memory_provider_section(memory_context)
@@ -4066,8 +4054,12 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         _session_log_section = _LEAN_SESSION_LOG_SECTION if getattr(self, "tail_mode", "lean") == "lean" else ""
         _template_sections = self._summary_template_sections(_section, summary_budget, _session_log_section)
         if self._previous_summary:
-            # Iterative update. Bound the previous summary too: a rehydrated handoff can be huge.
-            _bounded_previous_summary = self._bound_summary_input(self._previous_summary)
+            # Iterative update. Bound the previous summary to its reserved share of the SAME budget the
+            # transcript is drawn from — a rehydrated handoff can be huge, and bounding each block
+            # against the full cap independently is what overflowed the summariser's window.
+            _bounded_previous_summary = self._bound_summary_input(
+                self._previous_summary, max_chars=previous_summary_budget,
+            )
             prompt = f"""{_summarizer_preamble}
 
 You are updating a context compaction summary. A previous compaction produced the summary below. New conversation turns have occurred since then and need to be incorporated.

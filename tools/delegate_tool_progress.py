@@ -8,7 +8,7 @@ import os
 import threading
 from contextlib import contextmanager
 from typing import Any, Dict, List, Optional
-from tools.delegate_tool_registry import _active_subagents, _active_subagents_lock
+from tools import delegate_tool_registry as _delegate_registry
 
 logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
 
@@ -393,8 +393,8 @@ class _ChildProgressRelay:
     def _on_tool_started(self, tool_name, preview, args, kwargs):
         self.tool_count += 1
         if self.subagent_id is not None:
-            with _active_subagents_lock:
-                rec = _active_subagents.get(self.subagent_id)
+            with _delegate_registry._active_subagents_lock:
+                rec = _delegate_registry._active_subagents.get(self.subagent_id)
                 if rec is not None:
                     rec["tool_count"] = self.tool_count
                     rec["last_tool"] = tool_name or ""

@@ -131,6 +131,7 @@ class SessionTitlesMixin:
         ).fetchone()
         if not conflict:
             return
+        current = conn.execute("SELECT hidden FROM sessions WHERE id = ?", (session_id,)).fetchone()
         conflict_id = conflict["id"]
         # A hidden compressed ancestor holding the title cannot be freed by the
         # user, so transfer it onto the tip (uniqueness + lineage kept).
@@ -139,13 +140,14 @@ class SessionTitlesMixin:
         # A deliberately archived hidden Bot Chat is a retired registry
         # entry, not a live identity. Retire its name in the same title
         # transaction so a replacement can become the sole canonical row;
-        # the old session remains archived and otherwise untouched.
+        # the old session remains archived and otherwise untouched. A hidden
+        # claimant also retires an archived visible legacy Bot Chat (#119730).
         # An ended, empty, visible ghost (abandoned new chat that listings filter
         # out, so the user cannot find it to free the name) yields too (#81888).
         # The full index stays: a ``message_count > 0`` partial index would make
         # the ghost's first append_message fail with IntegrityError.
         elif (title == self.CANONICAL_BOT_CHAT_TITLE and bool(conflict["archived"])
-              and bool(conflict["hidden"])) or (conflict["ghost"] and not conflict["hidden"]):
+              and (bool(conflict["hidden"]) or bool(current and current["hidden"]))) or (conflict["ghost"] and not conflict["hidden"]):
             conn.execute(
                 "UPDATE sessions SET title = NULL, title_source = NULL WHERE id = ?",
                 (conflict_id,),

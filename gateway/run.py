@@ -2156,6 +2156,7 @@ from gateway.config import (
     ChannelOverride, Platform, GatewayConfig, PlatformConfig, _getenv, load_gateway_config)
 from gateway.session import (
     AsyncSessionStore, SessionStore, SessionSource, SessionContext, build_session_key,
+    split_key_namespace,
     profile_from_session_key_namespace)
 # Telegram topic routing (#22773, regression fixed #52060): a
 # ``telegram:<positive_chat_id>:<numeric_thread_id>`` cron target is ambiguous — a forum-style topic in a
@@ -2964,14 +2965,20 @@ def _parse_session_key(session_key: str) -> dict | None:
     shape exactly (no ``profile`` key) so equality assertions on parsed dicts stay stable.
     """
     parts = session_key.split(":")
+    # Split the namespace slot before matching: it may carry a multi-account
+    # suffix (``agent:main@support``, #8287) on top of the profile namespace.
+    # The positional layout after that slot is identical either way.
+    _ns, _account = split_key_namespace(parts[1]) if len(parts) > 1 else ("", None)
     if (
         len(parts) >= 5
         and parts[0] == "agent"
-        and (parts[1] in ("main", "main~") or _PROFILE_ID_KEY_RE.match(parts[1]))
+        and (_ns in ("main", "main~") or _PROFILE_ID_KEY_RE.match(_ns))
     ):
         result = {"platform": parts[2], "chat_type": parts[3], "chat_id": parts[4]}
-        if parts[1] != "main":
-            result["profile"] = profile_from_session_key_namespace(parts[1])
+        if _ns != "main":
+            result["profile"] = profile_from_session_key_namespace(_ns)
+        if _account:
+            result["account"] = _account
         if len(parts) > 5 and parts[3] in {"dm", "thread"}:
             result["thread_id"] = parts[5]
         return result

@@ -88,6 +88,13 @@ class SessionSource:
     profile: Optional[str] = None
     # Transport-local fail-closed signal: explicit profile route whose target is not served.
     profile_route_rejected: bool = field(default=False, repr=False, compare=False)
+    # Bot account this inbound message arrived on (#8287). A gateway can run
+    # multiple bot accounts on one platform (TELEGRAM_BOT_TOKEN_<ACCOUNT>); the
+    # receiving adapter stamps its account name here so session keys, busy
+    # guards and outbound delivery all route per account. None => the
+    # platform's default account, byte-identical to a single-bot gateway.
+    account: Optional[str] = None
+
     # Discord auto-thread metadata: explicit so pre-existing/renamed threads are never renamed.
     auto_thread_created: bool = False
     auto_thread_initial_name: Optional[str] = None
@@ -125,7 +132,7 @@ class SessionSource:
     # optionals around the dual-written scope pair.
     _ALWAYS_FIELDS = ("chat_id", "chat_name", "chat_type", "user_id", "user_name", "thread_id", "chat_topic")
     _OPTIONAL_PRE_SCOPE = ("user_id_alt", "chat_id_alt")
-    _OPTIONAL_POST_SCOPE = ("parent_chat_id", "message_id", "profile")
+    _OPTIONAL_POST_SCOPE = ("parent_chat_id", "message_id", "profile", "account")
     _OPTIONAL_TAIL = ("auto_thread_initial_name", "prospective_thread_id")
 
     def to_dict(self) -> dict[str, Any]:
@@ -653,21 +660,49 @@ def is_shared_multi_user_session(
     return not (thread_sessions_per_user if source.thread_id else group_sessions_per_user)
 
 
-def _session_key_namespace(profile: Optional[str]) -> str:
-    """``agent:<ns>`` prefix for a session key: default/None profile → ``agent:main``
-    (BYTE-IDENTICAL to every historical key); named profile → ``agent:<name>`` so two
+def _session_key_namespace(profile: Optional[str], account: Optional[str] = None) -> str:
+    """``agent:<ns>`` prefix for a session key: default/None profile -> ``agent:main``
+    (BYTE-IDENTICAL to every historical key); named profile -> ``agent:<name>`` so two
     profiles serving the same chat never collide. A profile literally named ``main`` would
     otherwise produce the default's namespace and share every session (routing index, agent
     cache, store) with it, so it is marked ``main~``: ``~`` is outside the profile-id alphabet,
-    so the marked form can never be another profile's id."""
+    so the marked form can never be another profile's id.
+
+    A non-default bot account (#8287) is appended as ``@<account>``
+    (``agent:main@support``), so the same chat reached through two bots of one
+    profile yields two sessions. ``@`` is outside the profile-id alphabet too, so
+    it cannot collide with a profile name. A default/None account appends
+    nothing, keeping single-bot keys byte-identical."""
     if not profile or profile == "default":
-        return "agent:main"
-    return "agent:main~" if profile == "main" else f"agent:{profile}"
+        ns = "agent:main"
+    elif profile == "main":
+        ns = "agent:main~"
+    else:
+        ns = f"agent:{profile}"
+    acct = (account or "").strip().lower()
+    return f"{ns}@{acct}" if acct and acct != "default" else ns
+
+
+def split_key_namespace(namespace: str) -> tuple:
+    """Split a key's ``<ns>`` slot into ``(profile_ns, account)``.
+
+    ``agent:main@support`` carries both axes in one slot; ``@`` cannot appear in a
+    profile id, so the split is unambiguous. Returns ``account=None`` for a
+    single-bot namespace.
+    """
+    base, sep, account = str(namespace or "").partition("@")
+    return base, (account or None) if sep else None
 
 
 def profile_from_session_key_namespace(namespace: str) -> str:
     """Inverse of :func:`_session_key_namespace` for the ``<ns>`` slot of a key: ``"default"`` for
-    ``main``, ``"main"`` for the marked ``main~``, else the slot is the profile id."""
+    ``main``, ``"main"`` for the marked ``main~``, else the slot is the profile id.
+
+    A multi-account suffix (``agent:main@support``) is stripped first: the account
+    is not a profile and must never be resolved as one (#8287).
+    """
+    namespace, _account = split_key_namespace(namespace)
+    namespace = namespace or "main"
     if namespace == "main":
         return "default"
     return "main" if namespace == "main~" else namespace
@@ -698,6 +733,12 @@ def build_session_key(
     chat_id = source.chat_id
     if is_dm and source.platform == Platform.WHATSAPP:
         chat_id = canonical_whatsapp_identifier(chat_id)
+    # Account comes from the SOURCE, not a caller parameter: which bot received the
+    # message is intrinsic to the event, so reading it here guarantees the
+    # adapter-level guard and the session store derive the same key for the same
+    # event (per-key guards diverging is the #64934 bug class). ``getattr`` guards
+    # bare test fixtures (AGENTS.md pitfall).
+    account = getattr(source, "account", None)
     # Discord auto-thread continuity: key a channel-initiating message on the thread it WILL be
     # delivered into (prospective_thread_id), and normalize the chat_type slot to "thread" so
     # in-thread follow-ups byte-match. A real thread_id always wins. DMs use thread_id only.
@@ -713,8 +754,7 @@ def build_session_key(
         isolate_user = group_sessions_per_user and not (thread_id and not thread_sessions_per_user)
     # Duck-typed sources may lack user_id_alt: read the participant only when it matters.
     participant_id = _canonical_participant(source) if (isolate_user or not is_dm) else None
-
-    parts = [_session_key_namespace(profile), source.platform.value, chat_type_slot]
+    parts = [_session_key_namespace(profile, account), source.platform.value, chat_type_slot]
     if source.platform == Platform.SLACK and source.scope_id:
         parts.append(str(source.scope_id))
     if chat_id:

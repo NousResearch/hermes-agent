@@ -897,10 +897,22 @@ def _resolve_media_to_data_urls(text: str) -> str:
         return text
 
 
+# Control characters are illegal in HTTP header values (aiohttp raises
+# "Forbidden control character detected in headers") and would also split SSE
+# data frames — fold every run to a single space. #133848
+_HEADER_UNSAFE_CTRL_RE = re.compile(r"[\x00-\x1f\x7f]+")
+
+
 def _redact_api_error_text(value: Any, *, limit: int | None = None) -> str:
-    """Redact API-bound error text before it crosses the HTTP boundary."""
+    """Redact API-bound error text before it crosses the HTTP boundary.
+
+    Besides masking secrets, control characters are folded to spaces so the
+    result is always safe to embed in response headers (e.g. X-Hermes-Error)
+    and SSE event payloads. The ``limit`` applies to the folded text.
+    """
     redacted = redact_sensitive_text(str(value), force=True)
-    return redacted[:limit] if limit is not None else redacted
+    safe = _HEADER_UNSAFE_CTRL_RE.sub(" ", redacted)
+    return safe[:limit] if limit is not None else safe
 
 
 def _openai_error(message: str, err_type: str = "invalid_request_error", param: str | None = None, code: str | None = None) -> dict[str, Any]:

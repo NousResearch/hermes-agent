@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import urllib.parse
 from typing import Optional
 
@@ -79,6 +80,44 @@ def normalise_prefix(raw: Optional[str]) -> str:
 def prefix_from_request(request) -> str:
     """Normalised ``X-Forwarded-Prefix`` from a Starlette request, or ``""``."""
     return normalise_prefix(request.headers.get("x-forwarded-prefix"))
+
+
+def host_header_hostname(host_header: str) -> str:
+    """Normalized hostname from a valid HTTP Host authority, or ``""``.
+
+    Single owner of Host-authority normalization so the web server's Host
+    validation and the cookie https-policy matching cannot disagree — a
+    bracketed IPv6 literal keeps its identity instead of being cut at the
+    first ``:`` (``[2001:db8::1]:8443`` → ``2001:db8::1``). Host headers are
+    authorities, not full URLs: ambiguous ports, malformed IPv6 brackets and
+    URL syntax are rejected so every caller fails closed.
+    """
+    value = (host_header or "").strip()
+    if not value or "://" in value or any(c in value for c in '"\'<> \n\r\t/?#@'):
+        return ""
+
+    if value.startswith("["):
+        close = value.find("]")
+        if close == -1:
+            return ""
+        hostname = value[1:close]
+        # Bracket notation is reserved for IPv6 literals.
+        if ":" not in hostname:
+            return ""
+        suffix = value[close + 1:]
+        if suffix and not re.fullmatch(r":\d+", suffix):
+            return ""
+        return hostname.lower()
+
+    # Unbracketed IPv6 authorities are ambiguous with a port separator.
+    if value.count(":") > 1:
+        return ""
+    if ":" in value:
+        hostname, port = value.rsplit(":", 1)
+        if not hostname or not port.isdigit():
+            return ""
+        return hostname.lower()
+    return value.lower()
 
 
 # --- HERMES_DASHBOARD_PUBLIC_URL / dashboard.public_url --------------------

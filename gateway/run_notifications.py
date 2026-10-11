@@ -1872,6 +1872,10 @@ class GatewayNotificationsMixin:
             if count:
                 logger.info("%s %d undelivered async completion(s) for profile %r", verb, count, profile_name)
 
+    async def _background_typing_watcher(self) -> None:
+        from gateway.background_typing import background_typing_loop
+        await background_typing_loop(self)
+
     async def _async_delegation_watcher(self, interval: float = 2.0) -> None:
         """Drain async completions and pattern notifications even while sessions are idle.
 

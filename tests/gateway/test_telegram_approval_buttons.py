@@ -204,7 +204,8 @@ class TestTelegramApprovalCallback:
 
 
     @pytest.mark.asyncio
-    async def test_resume_typing_after_inline_approval(self):
+    @pytest.mark.parametrize("thread_id", [None, 99])
+    async def test_resume_typing_after_inline_approval(self, thread_id):
         """Clicking an inline approval button must un-pause the chat's typing.
 
         Regression for #27853: the text /approve path resumed typing, but the
@@ -213,12 +214,15 @@ class TestTelegramApprovalCallback:
         """
         adapter = _make_adapter()
         adapter._approval_state[5] = "agent:main:telegram:group:12345:99"
-        adapter.pause_typing_for_chat("12345")
-        assert "12345" in adapter._typing_paused
+        metadata = {"thread_id": thread_id}
+        scope = ("12345", str(thread_id)) if thread_id is not None else "12345"
+        adapter.pause_typing_for_chat("12345", metadata=metadata)
+        assert scope in adapter._typing_paused
 
         query = AsyncMock()
         query.data = "ea:once:5"
         query.message = MagicMock()
+        query.message.message_thread_id = thread_id
         query.message.chat_id = 12345
         query.from_user = MagicMock()
         query.from_user.first_name = "Norbert"
@@ -234,7 +238,7 @@ class TestTelegramApprovalCallback:
             with patch("tools.approval.resolve_gateway_approval", return_value=1):
                 await adapter._handle_callback_query(update, context)
 
-        assert "12345" not in adapter._typing_paused
+        assert scope not in adapter._typing_paused
 
 
     @pytest.mark.asyncio

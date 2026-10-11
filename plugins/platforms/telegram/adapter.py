@@ -4757,7 +4757,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         await self._edit_md_quiet(query, edit_text)
         # Typing was paused when the approval was sent; the text /approve and /deny paths resume it too.
         if count and cb["chat_id"] is not None:
-            self.resume_typing_for_chat(str(cb["chat_id"]))
+            self.resume_typing_for_chat(str(cb["chat_id"]), metadata={"thread_id": cb.get("thread_id")})
 
     async def _handle_slash_confirm_callback(self, query, data: str, cb: dict[str, Any]) -> None:
         """``sc:<choice>:<confirm_id>`` — resolve a slash-command confirmation."""

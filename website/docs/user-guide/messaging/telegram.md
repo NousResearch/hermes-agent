@@ -1436,6 +1436,25 @@ HERMES_TELEGRAM_NOTIFICATIONS=all
 
 Unknown values log a warning and fall back to `important`.
 
+## Typing while work is active
+
+Hermes refreshes Telegram's `typing…` indicator during a foreground turn, including
+model calls and tools. Queued follow-up turns resume the refresh after the previous
+stream finishes. Pausing for an approval or question affects only that Telegram
+topic, not other topics in the same chat.
+
+After a foreground turn returns, running background delegations and terminal jobs
+with `notify_on_complete: true` continue to refresh typing in their owning topic.
+Long-lived servers without completion notification do not keep the bot typing.
+Background refreshes stop when work exits or its owning conversation is closed;
+multiple jobs in the same topic share one refresh per watcher tick. The existing
+`platforms.telegram.typing_indicator: false` setting disables these refreshes too.
+
+Telegram keeps each chat action for at most five seconds and clears it when a bot
+message arrives. Network failures, rate limits, or client behavior can cause gaps;
+absence of typing is not proof that work has stopped. Typing means execution is
+active, not that useful progress is guaranteed.
+
 ## Status messages edited in place
 
 The Telegram adapter routes recurring agent status callbacks (e.g. "Compressing context…", "Calling tool…") through `send_or_update_status()`, which keeps a `{(chat_id, status_key) → message_id}` cache and **edits the existing bubble** on subsequent emits instead of appending a new one each time. Distinct `status_key` values get their own messages; distinct chats never collide. If the edit fails (e.g. the user deleted the message, or it's older than Telegram allows for edits), the cache entry is dropped and the next emit posts a fresh message and re-caches its ID. No config required — this is the default Telegram behavior. Other adapters that don't implement `send_or_update_status` fall through to plain `send()` unchanged.

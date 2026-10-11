@@ -6,6 +6,8 @@ are imported lazily inside method bodies (import cycle) so ``patch("gateway.run.
 from __future__ import annotations
 
 from pm import install_hint
+from gateway.platforms.typing_scope import set_typing_paused
+
 import logging
 from typing import TYPE_CHECKING
 import asyncio
@@ -2677,7 +2679,7 @@ class GatewayTurnMixin:
         _pause_typing_before_finalize = None
         if source.platform == Platform.TELEGRAM and hasattr(adapter, "pause_typing_for_chat"):
             def _pause_typing_before_finalize(_adapter=adapter, _chat_id=source.chat_id) -> None:
-                _adapter.pause_typing_for_chat(_chat_id)
+                set_typing_paused(_adapter, _chat_id, paused=True, metadata={"thread_id": source.thread_id})
         # Non-editing platforms (QQ, WeChat) skip streaming — the partial first message could never
         # be updated — unless they have a native-streaming transport (WeCom msgtype "stream").
         _adapter_supports_edit = getattr(adapter, "SUPPORTS_MESSAGE_EDITING", True)
@@ -3910,6 +3912,7 @@ class GatewayTurnMixin:
         # Restart the typing indicator; the outer typing task may be stale.
         if _clear_adapter:
             with suppress(Exception):
+                set_typing_paused(_clear_adapter, source.chat_id, paused=False, metadata=_status_thread_metadata)
                 await _clear_adapter.send_typing(source.chat_id, metadata=_status_thread_metadata)
 
         # Re-baseline the cached agent's message_count before recursing, else the coherence guard

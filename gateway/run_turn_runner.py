@@ -7,6 +7,8 @@ keeps intercepting them at call time.
 
 from __future__ import annotations
 
+from gateway.platforms.typing_scope import set_typing_paused
+
 import asyncio
 import dataclasses
 import json
@@ -1405,7 +1407,7 @@ class TurnRunner:
         # Pause typing: a "thinking..." status must not obscure the prompt or block an "Other" reply
         # on platforms that disable input while typing (Slack Assistant).
         with suppress(Exception):
-            ctx._status_adapter.pause_typing_for_chat(ctx._status_chat_id)
+            set_typing_paused(ctx._status_adapter, ctx._status_chat_id, paused=True, metadata=ctx._status_thread_metadata)
         # Ordering barrier: flush buffered assistant prose BEFORE the poll, which goes out on a
         # separate agent-thread-blocking path and would otherwise render ABOVE its own explanation.
         # Best-effort + short timeout so the agent thread never hangs if the consumer isn't running.
@@ -1447,7 +1449,7 @@ class TurnRunner:
                 except Exception:
                     logger.debug("request_reopen_seed after clarify answer failed", exc_info=True)
             try:
-                ctx._status_adapter.resume_typing_for_chat(ctx._status_chat_id)
+                set_typing_paused(ctx._status_adapter, ctx._status_chat_id, paused=False, metadata=ctx._status_thread_metadata)
             except Exception:
                 logger.debug("resume_typing_for_chat after clarify answer failed", exc_info=True)
         return response, answered
@@ -1462,7 +1464,7 @@ class TurnRunner:
         # Slack's assistant_threads_setStatus disables the compose box, so the user can't type
         # /approve while "is thinking..." shows. Pausing stops _keep_typing re-setting it; resumed
         # in approve/deny.
-        adapter.pause_typing_for_chat(ctx._status_chat_id)
+        set_typing_paused(adapter, ctx._status_chat_id, paused=True, metadata=ctx._status_thread_metadata)
         self._close_native_stream_boundary("Approval")
         # Redact credentials before display: the raw command string can carry secrets. Both the button and plain-text paths use this value.
         cmd = _redact_approval_command(approval_data.get("command", ""))

@@ -267,13 +267,32 @@ class Metrics:
     and outbound tools; not persisted)."""
 
     _COUNTERS = ("inbound_total", "outbound_total", "streams_started", "push_sent", "push_failed",
-                 "tasks_completed", "tasks_failed", "anti_loop_triggers", "rate_limit_triggers")
+                 "tasks_completed", "tasks_failed", "tasks_suspended", "tasks_canceled",
+                 "anti_loop_triggers", "rate_limit_triggers")
 
     def __init__(self) -> None:
         for name in self._COUNTERS:
             setattr(self, name, 0)
         self._start_time = time.time()
-        self._latencies: deque[float] = deque(maxlen=100)  # last 100 completed inbound tasks
+        self._latencies: deque[float] = deque(maxlen=100)  # last 100 terminal inbound tasks
+
+    # completed is success, failed is an error, canceled/rejected are clean outcomes the caller
+    # or peer chose (not failures), and input-required is an interrupted pause awaiting the
+    # caller — not terminal, so never a completion. Non-outcome states (submitted/working) map
+    # to nothing.
+    _OUTCOME_BUCKETS = {STATE_COMPLETED: "tasks_completed", STATE_FAILED: "tasks_failed",
+                        STATE_CANCELED: "tasks_canceled", STATE_REJECTED: "tasks_canceled",
+                        STATE_INPUT_REQUIRED: "tasks_suspended"}
+
+    def record_task_outcome(self, state: str, latency: Optional[float] = None) -> None:
+        """Bucket one finished task by the A2A spec's state semantics. Every outcome path
+        (deferred reply, immediate end, watchdog) routes through here: hand-rolled copies of
+        this mapping drifted apart and reported paused tasks as successes."""
+        bucket = self._OUTCOME_BUCKETS.get(state)
+        if bucket:
+            setattr(self, bucket, getattr(self, bucket) + 1)
+        if latency is not None and state in TERMINAL_STATES:
+            self.record_latency(latency)
 
     def record_latency(self, seconds: float) -> None:
         self._latencies.append(seconds)

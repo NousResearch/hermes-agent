@@ -43,6 +43,57 @@ def test_stopped_bot_desktop_leaves_the_seat_env_alone(monkeypatch):
     assert "XAUTHORITY" not in env or env.get("XAUTHORITY") == ""
 
 
+def test_published_xdg_dirs_do_not_leak_into_the_terminal(monkeypatch):
+    # The launcher publishes its private XDG_* trio alongside the display keys; a GUI app
+    # launched from the terminal must keep the user's own ~/.config state, not the Bot
+    # Screen profile's directories (AI review: unintended scope in the full merge).
+    _publish(
+        monkeypatch,
+        {
+            "DISPLAY": ":20",
+            "XDG_CONFIG_HOME": "/run/hermes/bot-desktop/xdg/config",
+            "XDG_CACHE_HOME": "/run/hermes/bot-desktop/xdg/cache",
+            "XDG_DATA_HOME": "/run/hermes/bot-desktop/xdg/data",
+        },
+    )
+    monkeypatch.setenv("XDG_CONFIG_HOME", "/home/user/.config")
+    monkeypatch.setenv("XDG_CACHE_HOME", "/home/user/.cache")
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+    env = _make_run_env({})
+    assert env["DISPLAY"] == ":20"
+    assert env["XDG_CONFIG_HOME"] == "/home/user/.config"
+    assert env["XDG_CACHE_HOME"] == "/home/user/.cache"
+    assert "XDG_DATA_HOME" not in env  # not injected when the seat never set one
+
+
+def test_running_desktop_pins_the_agent_browser_identity(monkeypatch):
+    # Same pin as runtime.desktop_env(): the image's boot hook exports a headless-shell
+    # AGENT_BROWSER_EXECUTABLE_PATH; with the terminal now routing to the Bot Screen's
+    # DISPLAY, keeping it would launch the browser with no window (singleton over one
+    # user-data-dir). A user's own pin must survive.
+    _publish(monkeypatch, {"DISPLAY": ":20"})
+    monkeypatch.setattr(
+        "tools.bot_desktop.browser.profile_dir",
+        lambda: __import__("pathlib").Path("/run/hermes/bot-desktop/profile"),
+    )
+    monkeypatch.setattr(
+        "tools.bot_desktop.browser.executable", lambda: "/opt/hermes/chromium"
+    )
+    monkeypatch.setenv(
+        "AGENT_BROWSER_EXECUTABLE_PATH", "/usr/bin/chrome-headless-shell"
+    )
+    monkeypatch.delenv("AGENT_BROWSER_PROFILE", raising=False)
+    env = _make_run_env({})
+    assert env["AGENT_BROWSER_EXECUTABLE_PATH"] == "/opt/hermes/chromium"
+    assert env["AGENT_BROWSER_PROFILE"] == "/run/hermes/bot-desktop/profile"
+
+    monkeypatch.setenv("AGENT_BROWSER_EXECUTABLE_PATH", "/opt/custom/firefox")
+    env = _make_run_env({})
+    assert (
+        env["AGENT_BROWSER_EXECUTABLE_PATH"] == "/opt/custom/firefox"
+    )  # user pin wins
+
+
 def test_routing_does_not_stamp_bot_desktop_activity(monkeypatch):
     stamps = []
     _publish(monkeypatch, {"DISPLAY": ":20"})

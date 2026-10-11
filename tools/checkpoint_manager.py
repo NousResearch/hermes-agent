@@ -1609,13 +1609,16 @@ class CheckpointManager:
             "Checkpoint: dropping %d oversize file(s) (>%d MB) from index",
             len(oversize), self.max_file_size_mb,
         )
-        # Use --pathspec-from-file for safety with many paths.
-        # Chunk into manageable batches.
+        # Drop in manageable batches. Each name carries the ``:(literal)``
+        # pathspec magic: ``git rm`` otherwise globs the pathspec, so an
+        # oversize ``big [1].dat`` also removed the small ``big 1.dat`` from
+        # the snapshot — and a later restore then deleted it (issue #135605).
+        # Index names come from ``ls-files -z``, so a literal match is exact.
         BATCH = 200
         for i in range(0, len(oversize), BATCH):
             chunk = oversize[i:i + BATCH]
             _run_git(
-                ["rm", "--cached", "--quiet", "--"] + chunk,
+                ["rm", "--cached", "--quiet", "--"] + [f":(literal){rel}" for rel in chunk],
                 store, working_dir, index_file=index_file,
                 allowed_returncodes={128},
             )

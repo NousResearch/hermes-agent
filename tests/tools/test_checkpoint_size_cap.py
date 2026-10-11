@@ -164,3 +164,43 @@ def test_restore_keeps_its_target_alive_while_taking_the_safety_snapshot(history
     result = manager.restore(str(project), target)
     assert result["success"], result
     assert (project / "old.bin").stat().st_size == 1_300_000
+
+
+def test_oversize_drop_matches_glob_characters_literally(tmp_path, monkeypatch):
+    """Issue #135605: the oversize drop used to pass index paths to ``git rm --cached``
+    as glob pathspecs, so ``big [1].dat`` removed the small ``big 1.dat`` from the
+    snapshot instead — and a later safe restore deleted it. The snapshot must treat
+    index names literally: the glob twin stays, the oversize file still drops.
+    """
+    base = tmp_path / "checkpoints"
+    monkeypatch.setattr(checkpoints, "CHECKPOINT_BASE", base)
+    project = tmp_path / "project"
+    project.mkdir()
+    manager = checkpoints.CheckpointManager(
+        enabled=True, max_total_size_mb=0, max_file_size_mb=1,
+    )
+    big = project / "big [1].dat"
+    big.write_bytes(os.urandom(2 * 1024 * 1024))
+    twin = project / "big 1.dat"
+    twin.write_text("keep me", encoding="utf-8")
+    # A third file keeps the index non-empty: with only the glob pair the buggy
+    # drop empties the index and the snapshot aborts as an empty tree instead.
+    (project / "normal.txt").write_text("stable", encoding="utf-8")
+    assert manager.ensure_checkpoint(str(project), "glob-names"), "checkpoint failed"
+
+    store = checkpoints._store_path(base)
+    ref = checkpoints._ref_name(checkpoints._project_hash(str(project)))
+    ok, tree, _ = checkpoints._run_git(["ls-tree", "-r", "--name-only", "-z", ref],
+                                       store, str(project))
+    assert ok, tree
+    names = set(tree.split("\x00"))
+    # The glob twin must survive the oversize drop…
+    assert "big 1.dat" in names, "small file glob-matched out of the snapshot"
+    # …while the actual oversize file is still capped out.
+    assert "big [1].dat" not in names, "oversize file leaked into the snapshot"
+
+    # End-to-end: restoring the snapshot must not delete the twin.
+    target = manager.list_checkpoints(str(project))[-1]["hash"]
+    result = manager.restore(str(project), target)
+    assert result["success"], result
+    assert twin.read_text(encoding="utf-8") == "keep me"

@@ -103,17 +103,42 @@ export function setBotsWorkspaceOwner(
 ) {
   // Render-reachable (sidebar listener fires on visibility flips). An
   // orphaned row degrades to the blocked target instead of throwing.
-  const route = bot ? resolveBotConnectionRoute(bot).route : null
+  // Local (non-source-scoped) bots have no captured route — resolve returns
+  // `not_scoped` — but they DO own a profile (their name) on the active
+  // connection. Publish that as a route so Bot Mode surfaces (sessions
+  // sidebar fetch, "+" target) resolve against the bot's own profile instead
+  // of the ambient gateway profile (#126732: a bot's Telegram DM-topic
+  // sessions live in its profile's state.db, invisible under the ambient
+  // scope). An owner_removed row (connection gone) stays blocked: there is
+  // no backend to fetch from.
+  let target: { kind: 'blocked'; message: string } | { kind: 'route'; route: ProfileRoute }
 
-  const target: { kind: 'blocked'; message: string } | { kind: 'route'; route: ProfileRoute } = route
-    ? {
-        kind: 'route',
-        route
+  if (!bot) {
+    target = { kind: 'blocked', message: blockedMessage }
+  } else {
+    const resolved = resolveBotConnectionRoute(bot)
+
+    if (resolved.route) {
+      target = { kind: 'route', route: resolved.route }
+    } else if (resolved.status === 'not_scoped') {
+      const name = String(bot?.name || '').trim() || 'default'
+
+      const connectionId = String(
+        bot?.connectionId || bot?.route?.connectionId || 'local'
+      ).trim() || 'local'
+
+      const route: ProfileRoute = {
+        connectionId,
+        mode: connectionId === 'local' ? 'local' : 'remote',
+        profile: name,
+        targetProfile: String(bot?.targetProfile || bot?.route?.targetProfile || name).trim() || name,
       }
-    : {
-        kind: 'blocked',
-        message: blockedMessage
-      }
+
+      target = { kind: 'route', route }
+    } else {
+      target = { kind: 'blocked', message: blockedMessage }
+    }
+  }
 
   host.setWorkspaceScope?.('bots', ownerKey, target)
 }

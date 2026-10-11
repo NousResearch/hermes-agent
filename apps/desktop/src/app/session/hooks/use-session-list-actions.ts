@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useLayoutEffect, useRef } from 'react'
 
+import {
+  $workspaceMode,
+  $workspaceNewSessionTarget,
+} from '@/components/pane-shell/workspace-scope'
 import { getApiRequestConnection, listAllProfileSessions, listSidebarSessions, type SessionInfo } from '@/hermes'
 import { sameCronSignature } from '@/lib/session-signatures'
 import {
@@ -18,7 +22,7 @@ import {
   SIDEBAR_FILTERED_PAGE_SIZE,
   SIDEBAR_SESSIONS_PAGE_SIZE
 } from '@/store/layout'
-import { messagingTotalsKey, normalizeProfileKey, sidebarProfileForScope } from '@/store/profile'
+import { ALL_PROFILES, messagingTotalsKey, normalizeProfileKey, sidebarProfileForScope } from '@/store/profile'
 import {
   $messagingSessions,
   $selectedStoredSessionId,
@@ -165,6 +169,43 @@ interface UseSessionListActionsArgs {
   profileScope: string
 }
 
+/**
+ * Bot Mode fetch scope (#126732): when the workspace owns a bot (Bots pane
+ * selection), the Sessions sidebar must surface THAT bot's profile sessions —
+ * including its Telegram DM-topic threads, which live in the bot profile's
+ * state.db and are invisible under the ambient gateway scope. The workspace
+ * target carries the route (logical profile for override-aware fetch,
+ * backend target for row matching); a blocked/empty target (group chat, no
+ * selection) falls back to the ambient sidebar scope. Reads global
+ * workspace state only — never parses the opaque owner key and never
+ * imports the Bots plugin. Returns null for the explicit All-profiles view:
+ * that fetch already fans out across every profile, bot included.
+ *
+ * Exported for unit tests (workspace-scope atoms are mockable via nanostores).
+ */
+export function botModeFetchScope(profileScope: string): { displayProfile: string; fetchProfile: string } | null {
+  if (profileScope === ALL_PROFILES) {
+    return null
+  }
+
+  if ($workspaceMode.get() !== 'bots') {
+    return null
+  }
+
+  const target = $workspaceNewSessionTarget.get()
+
+  if (!target || target.kind !== 'route' || !target.route) {
+    return null
+  }
+
+  const fetchProfile = String(target.route.profile || '').trim() || 'default'
+
+  const displayProfile =
+    String(target.route.targetProfile || target.route.profile || '').trim() || fetchProfile
+
+  return { displayProfile, fetchProfile }
+}
+
 /** Owns the sidebar's session-list fetching + paging: recents, cron runs/jobs,
  *  and the per-platform messaging slices. Returns the callbacks the controller
  *  wires into the sidebar and refresh effects. */
@@ -178,13 +219,22 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
     profileScopeRef.current = profileScope
   }, [profileScope])
 
-  /** Refresh the active profile's messaging-platform sidebar slice. */
+  /** Refresh the active profile's messaging-platform sidebar slice. In Bot
+   *  Mode with a selected bot, refresh THAT bot's profile instead — its
+   *  Telegram DM-topic threads live there, invisible under the ambient scope
+   *  (#126732). */
   const refreshMessagingSessions = useCallback(async () => {
-    const sessionProfile = sidebarProfileForScope(profileScope)
+    const botFetch = botModeFetchScope(profileScope)
+    const sessionProfile = botFetch?.fetchProfile ?? sidebarProfileForScope(profileScope)
 
     // A callback captured before a profile switch may still be queued by an
     // event subscription. Do not let it start a request against the old scope.
-    if (sidebarProfileForScope(profileScopeRef.current) !== sessionProfile) {
+    // In Bot Mode the scope is the selected bot: a bot switch voids the page
+    // the same way a profile switch does.
+    const currentBotFetch = botModeFetchScope(profileScopeRef.current)
+    const currentProfile = currentBotFetch?.fetchProfile ?? sidebarProfileForScope(profileScopeRef.current)
+
+    if (currentProfile !== sessionProfile) {
       return
     }
 
@@ -194,9 +244,17 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
     // Same removal-race guard as the recents refresh (#123685).
     const removalSnapshot = captureSessionTombstoneGenerations()
 
-    const owns = () =>
-      refreshMessagingSessionsRequestRef.current === requestId &&
-      sidebarProfileForScope(profileScopeRef.current) === sessionProfile
+    const owns = () => {
+      if (refreshMessagingSessionsRequestRef.current !== requestId) {
+        return false
+      }
+
+      const current =
+        botModeFetchScope(profileScopeRef.current)?.fetchProfile ??
+        sidebarProfileForScope(profileScopeRef.current)
+
+      return current === sessionProfile
+    }
 
     const fetchPage = () =>
       listAllProfileSessions(MESSAGING_SECTION_LIMIT, 1, 'exclude', 'recent', sessionProfile, {
@@ -234,21 +292,33 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
     }
   }, [profileScope])
 
-  /** Page one messaging platform without replacing another platform's rows. */
+  /** Page one messaging platform without replacing another platform's rows.
+   *  In Bot Mode with a selected bot, pages THAT bot's profile (fetch via its
+   *  logical route, match rows by its backend target) so its Telegram threads
+   *  page without switching the ambient scope (#126732). */
   const loadMoreMessagingForPlatform = useCallback(
     async (platform: string) => {
-      const sessionProfile = sidebarProfileForScope(profileScope)
+      const botFetch = botModeFetchScope(profileScope)
+      const sessionProfile = botFetch?.fetchProfile ?? sidebarProfileForScope(profileScope)
+      const displayProfile = botFetch?.displayProfile ?? sessionProfile
 
-      if (sidebarProfileForScope(profileScopeRef.current) !== sessionProfile) {
+      const currentBotFetch = botModeFetchScope(profileScopeRef.current)
+
+      const currentProfile =
+        currentBotFetch?.fetchProfile ?? sidebarProfileForScope(profileScopeRef.current)
+
+      if (currentProfile !== sessionProfile) {
         return
       }
 
-      const requestKey = messagingTotalsKey(sessionProfile, platform)
+      // Totals are keyed by the backend profile rows carry, so the render
+      // lookup (display scope) hits what this fetch stores.
+      const requestKey = messagingTotalsKey(displayProfile, platform)
       const requestId = (loadMoreMessagingRequestRef.current[requestKey] ?? 0) + 1
       loadMoreMessagingRequestRef.current[requestKey] = requestId
 
       const inProfile = (s: SessionInfo) =>
-        sessionProfile === 'all' || normalizeProfileKey(s.profile) === sessionProfile
+        displayProfile === 'all' || normalizeProfileKey(s.profile) === displayProfile
 
       const inPlatform = (s: SessionInfo) => normalizeSessionSource(s.source) === platform && inProfile(s)
       const loaded = $messagingSessions.get().filter(inPlatform).length
@@ -257,9 +327,17 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
       // before an archive could commit and can outlive the tombstone prune.
       const removalSnapshot = captureSessionTombstoneGenerations()
 
-      const owns = () =>
-        loadMoreMessagingRequestRef.current[requestKey] === requestId &&
-        sidebarProfileForScope(profileScopeRef.current) === sessionProfile
+      const owns = () => {
+        if (loadMoreMessagingRequestRef.current[requestKey] !== requestId) {
+          return false
+        }
+
+        const current =
+          botModeFetchScope(profileScopeRef.current)?.fetchProfile ??
+          sidebarProfileForScope(profileScopeRef.current)
+
+        return current === sessionProfile
+      }
 
       const fetchPage = () =>
         listAllProfileSessions(loaded + SIDEBAR_SESSIONS_PAGE_SIZE, 1, 'exclude', 'recent', sessionProfile, {
@@ -306,11 +384,19 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
     [profileScope]
   )
 
-  /** Refresh cron jobs only while the profile that requested them remains active. */
+  /** Refresh cron jobs only while the profile that requested them remains active.
+   *  In Bot Mode with a selected bot, refresh THAT bot's jobs (fetch via its
+   *  logical route) so its schedules land instead of the ambient profile's. */
   const refreshCronJobs = useCallback(async () => {
-    const sessionProfile = sidebarProfileForScope(profileScope)
+    const botFetch = botModeFetchScope(profileScope)
+    const sessionProfile = botFetch?.fetchProfile ?? sidebarProfileForScope(profileScope)
 
-    if (sidebarProfileForScope(profileScopeRef.current) !== sessionProfile) {
+    // A bot switch voids the page the same way a profile switch does.
+    const liveProfile =
+      botModeFetchScope(profileScopeRef.current)?.fetchProfile ??
+      sidebarProfileForScope(profileScopeRef.current)
+
+    if (liveProfile !== sessionProfile) {
       return
     }
 
@@ -321,12 +407,24 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
     }
   }, [profileScope])
 
-  /** Refresh every sidebar session slice without committing an obsolete profile response. */
+  /** Refresh every sidebar session slice without committing an obsolete profile response.
+   *  In Bot Mode with a selected bot, scope the whole payload to THAT bot's
+   *  profile (fetch via its logical route) so its Telegram threads land in
+   *  the messaging slice instead of the ambient profile's (#126732). */
   const refreshSessions = useCallback(
     async (shouldPublish: () => boolean = () => true) => {
-      const sessionProfile = sidebarProfileForScope(profileScope)
+      const botFetch = botModeFetchScope(profileScope)
+      const sessionProfile = botFetch?.fetchProfile ?? sidebarProfileForScope(profileScope)
+      // Backend rows carry the backend target (targetProfile for aliases);
+      // failure maps are keyed by it, not the logical fetch name.
+      const displayProfile = botFetch?.displayProfile ?? sessionProfile
 
-      if (!shouldPublish() || sidebarProfileForScope(profileScopeRef.current) !== sessionProfile) {
+      const currentBotFetch = botModeFetchScope(profileScopeRef.current)
+
+      const currentProfile =
+        currentBotFetch?.fetchProfile ?? sidebarProfileForScope(profileScopeRef.current)
+
+      if (!shouldPublish() || currentProfile !== sessionProfile) {
         return
       }
 
@@ -343,10 +441,17 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
         setSessionsLoading(true)
       }
 
-      const owns = () =>
-        shouldPublish() &&
-        refreshSessionsRequestRef.current === requestId &&
-        sidebarProfileForScope(profileScopeRef.current) === sessionProfile
+      const owns = () => {
+        if (!shouldPublish() || refreshSessionsRequestRef.current !== requestId) {
+          return false
+        }
+
+        const current =
+          botModeFetchScope(profileScopeRef.current)?.fetchProfile ??
+          sidebarProfileForScope(profileScopeRef.current)
+
+        return current === sessionProfile
+      }
 
       // Snapshot the removal lifecycle BEFORE the first read: a page read
       // pre-archive-commit can land post-prune, and only the generation
@@ -399,10 +504,16 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
           const recents = result.recents
           const recentsErrors = recents.errors ?? result.errors
 
+          // Check both the logical fetch name and the backend display name:
+          // remote aliases fetch as the alias but fail as the backend target.
           const scopedRetry =
             recents.retry === true ||
             (sessionProfile !== 'all' && recents.profiles_failed?.[sessionProfile]?.retry === true) ||
-            result.profiles_failed?.[sessionProfile]?.retry === true
+            (displayProfile !== 'all' &&
+              displayProfile !== sessionProfile &&
+              recents.profiles_failed?.[displayProfile]?.retry === true) ||
+            result.profiles_failed?.[sessionProfile]?.retry === true ||
+            (displayProfile !== sessionProfile && result.profiles_failed?.[displayProfile]?.retry === true)
 
           setCorruptSessionStores(result.storage)
           // A damaged store already has its own notice; Retry can't repair it.
@@ -513,7 +624,13 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
       }
 
       // Cron *jobs* are a distinct API (getCronJobs), not a session slice.
-      if (shouldPublish() && sidebarProfileForScope(profileScopeRef.current) === sessionProfile) {
+      // In Bot Mode the scope is the selected bot: compare against its fetch
+      // profile, not the ambient sidebar scope.
+      const liveScope =
+        botModeFetchScope(profileScopeRef.current)?.fetchProfile ??
+        sidebarProfileForScope(profileScopeRef.current)
+
+      if (shouldPublish() && liveScope === sessionProfile) {
         void refreshCronJobs()
       }
     },
@@ -554,6 +671,48 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
       }),
     [refreshSessions]
   )
+
+  // Bot Mode selection changes the fetch scope without touching $profileScope
+  // (the ambient gateway stays put by design). Refresh the slices for the new
+  // bot so its Telegram threads land instead of the previous bot's (#126732).
+  // All-profiles keeps its unified fetch; blocked/empty targets fall back to
+  // the ambient scope and need no extra refresh.
+  useEffect(() => {
+    let lastFetchProfile: string | null = null
+
+    const currentFetchProfile = () =>
+      botModeFetchScope(profileScopeRef.current)?.fetchProfile ??
+      sidebarProfileForScope(profileScopeRef.current)
+
+    lastFetchProfile = currentFetchProfile()
+
+    const unsubMode = $workspaceMode.listen(() => {
+      const next = currentFetchProfile()
+
+      if (next !== lastFetchProfile) {
+        lastFetchProfile = next
+        void refreshSessions()
+        void refreshMessagingSessions()
+      }
+    })
+
+    const unsubTarget = $workspaceNewSessionTarget.listen(() => {
+      // $workspaceMode change already covered the mode flip; this covers a
+      // bot→bot switch inside Bot Mode (same mode, new route).
+      const next = currentFetchProfile()
+
+      if (next !== lastFetchProfile) {
+        lastFetchProfile = next
+        void refreshSessions()
+        void refreshMessagingSessions()
+      }
+    })
+
+    return () => {
+      unsubMode()
+      unsubTarget()
+    }
+  }, [refreshMessagingSessions, refreshSessions])
 
   return {
     loadMoreMessagingForPlatform,

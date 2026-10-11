@@ -23,7 +23,7 @@ import { atom } from 'nanostores'
 
 import { setSessionUnreadRemote } from '@/hermes'
 
-import { $sessions, setSessions } from './session'
+import { $cronSessions, $messagingSessions, $sessions, ownerLookupSessionRows, setCronSessions, setMessagingSessions, setSessions } from './session'
 
 export const UNREAD_WRITE_GUARD_MS = 10_000
 
@@ -31,7 +31,17 @@ export const UNREAD_WRITE_GUARD_MS = 10_000
 export const $unreadWriteGuard = atom<Map<string, { at: number; value: boolean }>>(new Map())
 
 function rowFor(storedId: string) {
-  return $sessions.get().find(row => row.id === storedId)
+  // Messaging rows (telegram, …) live outside recents — resolve across every
+  // slice or their unread toggle silently no-ops (#126732).
+  return ownerLookupSessionRows().find(row => row.id === storedId)
+}
+
+function patchUnread(storedId: string, unread: boolean): void {
+  // Optimistic paint must land in the slice that owns the row: patching
+  // recents alone leaves a messaging row's dot stale until the next refresh.
+  setSessions(rows => rows.map(r => (r.id === storedId ? { ...r, unread } : r)))
+  setMessagingSessions(rows => rows.map(r => (r.id === storedId ? { ...r, unread } : r)))
+  setCronSessions(rows => rows.map(r => (r.id === storedId ? { ...r, unread } : r)))
 }
 
 /** Toggle the persisted unread flag: optimistic row update, then PATCH, then
@@ -48,7 +58,7 @@ export async function markSessionUnread(storedId: string, unread: boolean): Prom
   guard.set(storedId, { at: Date.now(), value: unread })
   $unreadWriteGuard.set(guard)
 
-  setSessions(rows => rows.map(r => (r.id === storedId ? { ...r, unread } : r)))
+  patchUnread(storedId, unread)
 
   try {
     await setSessionUnreadRemote(storedId, unread, row.profile)
@@ -57,7 +67,7 @@ export async function markSessionUnread(storedId: string, unread: boolean): Prom
     const guard2 = new Map($unreadWriteGuard.get())
     guard2.delete(storedId)
     $unreadWriteGuard.set(guard2)
-    setSessions(rows => rows.map(r => (r.id === storedId ? { ...r, unread: !unread } : r)))
+    patchUnread(storedId, !unread)
     throw err
   }
 }
@@ -79,14 +89,15 @@ export async function clearUnreadOnOpen(storedId: string): Promise<void> {
 }
 
 /** Release guard entries once a list page confirms the value we wrote. Call
- *  once at boot, next to watchSessionPins(). */
+ *  once at boot, next to watchSessionPins(). Listens to every slice — a
+ *  messaging row's confirm arrives on $messagingSessions, never recents. */
 export function watchUnreadWriteGuard(): void {
-  $sessions.listen(rows => {
+  const check = () => {
     const guard = $unreadWriteGuard.get()
     let changed = false
 
     for (const [id, entry] of guard) {
-      const row = rows.find(r => r.id === id)
+      const row = ownerLookupSessionRows().find(r => r.id === id)
 
       if (row && row.unread === entry.value) {
         guard.delete(id)
@@ -97,5 +108,9 @@ export function watchUnreadWriteGuard(): void {
     if (changed) {
       $unreadWriteGuard.set(new Map(guard))
     }
-  })
+  }
+
+  $sessions.listen(check)
+  $messagingSessions.listen(check)
+  $cronSessions.listen(check)
 }

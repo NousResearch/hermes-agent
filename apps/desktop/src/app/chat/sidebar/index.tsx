@@ -6,6 +6,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation } from 'react-router'
 
 import { PlatformAvatar } from '@/app/messaging/platform-icon'
+import {
+  $workspaceMode,
+  $workspaceNewSessionTarget,
+} from '@/components/pane-shell/workspace-scope'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { ContextMenu, ContextMenuContent, ContextMenuTrigger } from '@/components/ui/context-menu'
@@ -125,6 +129,7 @@ import {
   $sessionsLoading,
   $unreadFinishedSessionIds,
   markAllSessionsRead,
+  ownerLookupSessionRows,
   sessionPinId
 } from '@/store/session'
 import { $sessionDotStateById, sessionStatusBucket } from '@/store/session-dot-state'
@@ -500,8 +505,10 @@ export function ChatSidebar({
   // Toggle the persisted read-state watermark from a row menu. The row's own
   // `unread` prop mirrors what the dot paints; flip it and let the backend
   // become the truth (optimistic update + rollback in markSessionUnread).
+  // Messaging rows (telegram, …) live outside recents — resolve across every
+  // slice or their toggle silently no-ops (#126732).
   const toggleUnread = (storedId: string) => {
-    const row = $sessions.get().find(r => r.id === storedId)
+    const row = ownerLookupSessionRows().find(r => r.id === storedId)
 
     if (!row) {
       return
@@ -517,7 +524,29 @@ export function ChatSidebar({
   // profile while scope is still ALL (persisted), the rail is hidden and they'd
   // otherwise be stuck in the grouped view with no way out.
   const showAllProfiles = multiProfile && profileScope === ALL_PROFILES
-  const messagingProfile = sidebarProfileForScope(profileScope)
+  // Bot Mode display scope (#126732): when the workspace owns a bot, the
+  // Sessions tab surfaces THAT bot's profile sessions — including its
+  // Telegram DM-topic threads, which live in the bot profile's state.db and
+  // are invisible under the ambient gateway scope. Reads the workspace
+  // target's backend profile (targetProfile for aliases); the explicit
+  // All-profiles view keeps fanning out across every profile. Never parses
+  // the opaque owner key and never imports the Bots plugin.
+  const workspaceMode = useStore($workspaceMode)
+  const workspaceTarget = useStore($workspaceNewSessionTarget)
+
+  const botDisplayProfile =
+    profileScope === ALL_PROFILES || workspaceMode !== 'bots'
+      ? null
+      : workspaceTarget?.kind === 'route' && workspaceTarget.route
+        ? String(
+            workspaceTarget.route.targetProfile || workspaceTarget.route.profile || ''
+          ).trim() || null
+        : null
+
+  // Fetch uses the logical route (alias-aware override); display matches the
+  // backend stamps (target). For local bots both are the bot name.
+  const displayScope = botDisplayProfile ?? profileScope
+  const messagingProfile = sidebarProfileForScope(displayScope)
   const agentOrderIds = useStore($sidebarSessionOrderIds)
   const agentOrderManual = useStore($sidebarSessionOrderManual)
   const workspaceOrderIds = useStore($sidebarWorkspaceOrderIds)
@@ -601,11 +630,15 @@ export function ChatSidebar({
   // Archived rows are excluded from the sessions query, so Archived is a view of
   // its own set rather than a filter over this one — a flat list of archived
   // rows, no project tree, no date or status dividers.
+  // Bot Mode display scope (#126732): when the workspace owns a bot, filter to
+  // THAT bot's backend profile so its Telegram threads render instead of the
+  // ambient scope's (fetch already scoped there above). All-profiles keeps
+  // fanning out; group/blocked targets fall back to the ambient scope.
   const scopedSessions = useMemo(() => {
     const pool = showArchived ? archivedSessions : sessions
 
-    return filterSessionsByProfileScope(pool, profileScope)
-  }, [sessions, archivedSessions, showArchived, profileScope])
+    return filterSessionsByProfileScope(pool, displayScope)
+  }, [sessions, archivedSessions, showArchived, displayScope])
 
   // One predicate for the status/project filters, so the flat list and the
   // project lanes narrow by the same rule. A project lane holds rows the loaded
@@ -671,13 +704,13 @@ export function ChatSidebar({
   )
 
   const visibleCronSessions = useMemo(
-    () => filterSessionsByProfileScope(cronSessions, profileScope),
-    [cronSessions, profileScope]
+    () => filterSessionsByProfileScope(cronSessions, displayScope),
+    [cronSessions, displayScope]
   )
 
   const visibleMessagingSessions = useMemo(
-    () => filterSessionsByProfileScope(messagingSessions, profileScope),
-    [messagingSessions, profileScope]
+    () => filterSessionsByProfileScope(messagingSessions, displayScope),
+    [messagingSessions, displayScope]
   )
 
   // Index sessions by every id a pin might be stored under — recents, cron,
@@ -1382,7 +1415,8 @@ export function ChatSidebar({
   // unified set; scoped to one profile it tracks that profile's own truncation
   // flag — otherwise a huge default profile keeps "Load more" stuck on while
   // you browse a small one. The backend reports whether its page was capped
-  // rather than an exact count, so no COUNT(*) runs per refresh.
+  // rather than an exact count, so no COUNT(*) runs per refresh. In Bot Mode
+  // with a selected bot, track THAT bot's flag (#126732).
   const loadedSessionCount = showAllProfiles ? sessions.length : scopedSessions.length
 
   // The archived view is its own (single, capped) query — paging the live
@@ -1391,7 +1425,7 @@ export function ChatSidebar({
     !showArchived &&
     (showAllProfiles
       ? Object.values(sessionProfilesTruncated).some(Boolean)
-      : Boolean(sessionProfilesTruncated[profileScope]))
+      : Boolean(sessionProfilesTruncated[displayScope]))
 
   const displayRecentsCountRef = useRef(0)
   const loadedRecentsCountRef = useRef(0)

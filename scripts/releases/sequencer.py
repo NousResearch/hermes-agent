@@ -238,7 +238,8 @@ def discover(repository: str, run=output) -> list[dict]:
         commit = claim_ref["commit"]
         claim = _tag_message(claim_tag, claim_ref["object"], run)
         try:
-            validate_claim(claim, version=version, attempt=attempt, commit=commit)
+            # Normalized: a claim cut before the opt-in platform flags reads them as false.
+            claim = validate_claim(claim, version=version, attempt=attempt, commit=commit)
         except ValueError as error:
             raise ValueError(f"{claim_tag} metadata is invalid") from error
         claim_epoch = claim["claimEpoch"]

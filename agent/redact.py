@@ -368,9 +368,19 @@ def _has_word_bounded_keyword(key: str, keyword_re: re.Pattern[str]) -> bool:
     return any(_is_word_start(key, m.start()) and _is_word_end(key, m.end()) for m in keyword_re.finditer(key))
 
 
+_PASSWORD_WORD_RE = re.compile(r"passwd|password", re.IGNORECASE)
+
+
+def _has_password_keyword(key: str) -> bool:
+    """``password``/``passwd`` ending a word, wherever it starts: no prose word ends in them, so
+    concatenated keys (``dbpassword``, ``rootpasswd``) are credentials, while ``passwordless``
+    is not. Requiring a word START too passed ``dbpassword: <v>`` through in clear."""
+    return any(_is_word_end(key, m.end()) for m in _PASSWORD_WORD_RE.finditer(key))
+
+
 def _key_has_secret_keyword(key: str) -> bool:
     """Post-match key validator: ``API_KEY``/``DB_PW`` count, ``KEYBOARD``/``secretary`` do not."""
-    return _has_word_bounded_keyword(key, _KEY_KEYWORD_RE)
+    return _has_word_bounded_keyword(key, _KEY_KEYWORD_RE) or _has_password_keyword(key)
 
 
 def _looks_like_opaque_credential(value: str) -> bool:
@@ -408,14 +418,15 @@ def _should_redact_assignment(key: str, value: str, *, check_keyword: bool) -> b
         return False
     # A shell rc's ``SSH_AUTH_SOCK=$HOME/.ssh/agent.sock`` is configuration the agent must keep
     # readable; only password-class keys mask a path/variable reference.
-    if _PATH_OR_VAR_VALUE_RE.match(value) and not _has_word_bounded_keyword(key, _PASSWORD_KEY_RE):
+    password_key = _has_word_bounded_keyword(key, _PASSWORD_KEY_RE) or _has_password_keyword(key)
+    if _PATH_OR_VAR_VALUE_RE.match(value) and not password_key:
         # ``$VAR`` is an unambiguous reference. A bare ``/...`` or ``~...`` is not:
         # ``/home/u/.docker`` and ``/8f3kd9sKd0als...`` have the same shape, so every
         # segment has to look like a path (see _OPAQUE_PATH_SEGMENT_RE) before the
         # value is treated as configuration.
         if value[0] == "$" or not any(_OPAQUE_PATH_SEGMENT_RE.fullmatch(seg) for seg in value.split("/")):
             return False
-    return (_has_word_bounded_keyword(key, _STRONG_KEY_KEYWORD_RE)
+    return (password_key or _has_word_bounded_keyword(key, _STRONG_KEY_KEYWORD_RE)
             or _looks_like_opaque_credential(value))
 
 

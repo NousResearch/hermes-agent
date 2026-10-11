@@ -1526,6 +1526,22 @@ class TestKeywordWordBoundary:
         result = redact_sensitive_text(text)
         assert "hunter2hunter2hunter2hh" not in result
 
+    @pytest.mark.parametrize("text, value", [
+        ("dbpassword: hunter2xyz", "hunter2xyz"),
+        ("dbpassword=hunter2xyz", "hunter2xyz"),
+        ("  rootpasswd: s3cr3t", "s3cr3t"),
+        ("mysqlPassword: hunter2", "hunter2"),
+        ("app.dbpassword=hunter2xyz", "hunter2xyz"),
+    ])
+    def test_password_concatenations_still_redacted(self, text, value):
+        """No prose word ends in ``password``/``passwd``, so a concatenated key (``dbpassword``)
+        only needs the keyword's END on a word boundary; requiring the start too passed it in clear."""
+        assert value not in redact_sensitive_text(text, force=True)
+
+    @pytest.mark.parametrize("text", ["passwordless: enabled", "passwordless=true"])
+    def test_password_prose_and_metadata_preserved(self, text):
+        assert redact_sensitive_text(text, force=True) == text
+
 
 class TestMaskSecretControlStripping:
     """Issue #55319/#55321: mask_secret() must not emit control bytes

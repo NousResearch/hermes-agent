@@ -249,6 +249,21 @@ class TestClassifier:
         assert "origin_changed" in js
         assert js.index("origin_changed") < js.index("querySelectorAll")
 
+    def test_build_fill_js_origin_assert_is_ipv6_bracket_insensitive(self):
+        # Regression: normalize_origin() yields the bare form for an IPv6 host
+        # ("https://2001:db8::1"), while window.location.origin serializes the same
+        # origin with brackets ("https://[2001:db8::1]"). A byte-equal compare in the
+        # in-script assert refuses every fill on such an origin as `origin_changed`
+        # even though the pre-check just matched. Both operands must be canonicalized.
+        js = build_fill_js(
+            [{"index": 0, "token": "current-password", "value": "x"}],
+            expected_origin="https://2001:db8::1",
+        )
+        assert '"https://2001:db8::1"' in js
+        assert "canonOrigin(window.location.origin)" in js
+        assert "canonOrigin(expectedOrigin)" in js
+        assert "window.location.origin !== expectedOrigin" not in js
+
 
 # ---------------------------------------------------------------------------
 # Browser tool: origin binding + gating
@@ -426,6 +441,41 @@ class TestBrowserVaultTools:
         assert "s3cret-pw" in secret_exprs[0]
         assert '"index": 0' not in secret_exprs[0]
         assert "user@example.com" not in secret_exprs[0]
+
+    def test_fill_on_ipv6_origin_item_succeeds(self, store):
+        """An item saved for an IPv6-literal origin (stored in the bare normalized
+        form) fills on that origin; the in-page assert carries the canonical
+        comparison, so the bracketed window.location.origin is accepted."""
+        from tools import browser_vault_tool
+
+        meta = _add_login(store, origin="https://[2001:db8::1]")
+        assert meta.origin == "https://2001:db8::1"
+        controls = [
+            {"autocomplete": "current-password", "formIndex": 0, "index": 0, "label": "", "name": "pw", "type": "password"},
+        ]
+
+        def fake_eval(task_id, expression):
+            if "location.href" in expression:
+                return {"success": True, "result": "https://[2001:db8::1]/login"}
+            return {"success": True, "result": json.dumps(controls)}
+
+        secret_exprs = []
+
+        def fake_eval_secret(task_id, expression):
+            secret_exprs.append(expression)
+            return {"success": True, "result": json.dumps({"filled": 1})}
+
+        with patch("agent.vault_store.get_vault_store", return_value=store), \
+             patch.object(browser_vault_tool, "_current_page_origin", return_value="https://2001:db8::1"), \
+             patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
+             patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_eval_secret):
+            raw = browser_vault_tool.browser_vault_fill(meta.id)
+        out = json.loads(raw)
+        assert out["success"] is True
+        assert out["origin"] == "https://2001:db8::1"
+        assert out["filled_fields"] == 1
+        assert "s3cret-pw" not in raw
+        assert "canonOrigin(window.location.origin)" in secret_exprs[0]
 
     def test_fill_toctou_navigation_writes_nothing(self, store):
         """P1-2 schedule regression: inspection passes on the allowed origin,

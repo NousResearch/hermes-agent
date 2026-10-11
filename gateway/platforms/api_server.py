@@ -2476,8 +2476,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         """GET /v1/models — hermes-agent plus configured model_routes aliases (alias + resolved
         model only, never credentials). Under /p/<profile>/ the primary id follows that profile."""
         now = int(time.time())
-        # The middleware already entered the profile scope, so get_active_profile_name() resolves.
-        model_name = self._resolve_model_name("") if _api_request_profile.get() else self._model_name
+        # The middleware entered the profile scope, so resolve its override there.
+        model_name = (
+            self._resolve_model_name(str(_get_scoped_secret("API_SERVER_MODEL_NAME", "") or ""))
+            if _api_request_profile.get() else self._model_name
+        )
 
         def _model(mid: str, root: str, parent) -> dict[str, Any]:
             return {"id": mid, "object": "model", "created": now, "owned_by": "hermes", "permission": [],

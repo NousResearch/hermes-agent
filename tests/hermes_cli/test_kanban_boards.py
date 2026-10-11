@@ -351,6 +351,8 @@ class TestCLI:
 
     def test_per_board_task_isolation_via_cli(self, tmp_path):
         env = {"HERMES_HOME": str(tmp_path)}
+        (tmp_path / "profiles" / "dev").mkdir(parents=True)
+        (tmp_path / "profiles" / "dev" / "config.yaml").write_text("{}\n", encoding="utf-8")
         assert _cli(["boards", "create", "projA"], env_extra=env).returncode == 0
         assert _cli(["boards", "create", "projB"], env_extra=env).returncode == 0
 

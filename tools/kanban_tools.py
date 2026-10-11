@@ -1099,6 +1099,14 @@ def _handle_create(args: dict, **kw) -> str:
     assignee = args.get("assignee")
     _check(assignee, "assignee is required — name the profile that should execute this "
                      "task (the dispatcher will only spawn tasks with an assignee)")
+    from hermes_cli.profiles import list_profile_names, profile_exists
+
+    # A non-profile assignee births a card the dispatcher can never spawn (#99284):
+    # the same trap #106163 closes for reviewer at request_review time, caught here
+    # at write time where the dead name is first recorded.
+    _check(profile_exists(str(assignee)),
+           f"assignee profile {assignee!r} is not installed. "
+           f"Installed profiles: {', '.join(list_profile_names())}")
     # Workspace sharing is always explicit: omitted fields mean a fresh scratch workspace
     # even for a dispatcher-spawned creator (reusing the parent's path would let a child
     # mutate review evidence or race its checkout). Project identity is the one safe thing

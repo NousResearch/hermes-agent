@@ -50,6 +50,8 @@ def _latest_body():
 
 
 def test_body_file_stores_body_verbatim_with_trailing_flags_intact(kanban_home, tmp_path, capsys):
+    (kanban_home / "profiles" / "baxter").mkdir(parents=True)
+    (kanban_home / "profiles" / "baxter" / "config.yaml").write_text("{}\n", encoding="utf-8")
     f = tmp_path / "body.md"
     f.write_text(BODY, encoding="utf-8")
     assert _create(["PROBE", "--body-file", str(f), "--assignee", "baxter", "--priority", "7"]) == 0

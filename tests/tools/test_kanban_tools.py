@@ -9,8 +9,21 @@ Verifies:
 from __future__ import annotations
 
 import json
+import os
+from pathlib import Path
 
 import pytest
+
+
+def _seed_profile(name: str) -> None:
+    """Seed an on-disk profile under the isolated HERMES_HOME.
+
+    kanban_create refuses assignees without a live profile directory (#99284),
+    so tests that create cards must seed the profile they name.
+    """
+    profile_dir = Path(os.environ["HERMES_HOME"]) / "profiles" / name
+    profile_dir.mkdir(parents=True)
+    (profile_dir / "config.yaml").write_text("{}\n", encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -720,6 +733,7 @@ def test_comment_rejects_caller_supplied_author(worker_env):
 
 
 def test_create_happy_path(worker_env):
+    _seed_profile("peer")
     from tools import kanban_tools as kt
     out = kt._handle_create({
         "title": "child task",
@@ -742,6 +756,44 @@ def test_create_happy_path(worker_env):
         conn.close()
 
 
+def test_create_rejects_unknown_assignee_without_board_write(worker_env):
+    """#99284: a card created for a profile that does not exist can never be
+    dispatched, so kanban_create refuses it at write time — same trap #106163
+    closes for reviewer — and leaves the board untouched."""
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    _seed_profile("verifier")
+    out = json.loads(kt._handle_create({"title": "starving card", "assignee": "arbiter"}))
+    assert "error" in out
+    assert "'arbiter'" in out["error"] and "verifier" in out["error"]
+
+    conn = kbc.connect()
+    try:
+        rows = [t for t in kb.list_tasks(conn, limit=100) if t.title == "starving card"]
+        assert rows == []
+    finally:
+        conn.close()
+
+
+def test_create_rejects_uninstalled_assignee_names_the_installed_ones(worker_env):
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    out = json.loads(kt._handle_create({"title": "typo card", "assignee": "peer-typo"}))
+    assert "error" in out
+    assert "peer-typo" in out["error"]
+    assert "Installed profiles:" in out["error"]
+    conn = kbc.connect()
+    try:
+        rows = [t for t in kb.list_tasks(conn, limit=100) if t.title == "typo card"]
+        assert rows == []
+    finally:
+        conn.close()
+
+
 @pytest.mark.parametrize("explicit", [{"workspace_kind": "scratch"}, {"project": ""}])
 @pytest.mark.parametrize("target_scoped", [False, True])
 def test_create_explicit_scratch_ignores_ambient_board_project(
@@ -756,6 +808,7 @@ def test_create_explicit_scratch_ignores_ambient_board_project(
 
     repo = tmp_path / "repo"
     repo.mkdir()
+    _seed_profile("peer")
     with pdb.connect_closing() as pconn:
         project_id = pdb.create_project(pconn, name="Ambient", primary_path=str(repo))
     kb.write_board_metadata("default", project_id=project_id)
@@ -859,6 +912,7 @@ def test_worker_lifecycle_through_tools(worker_env):
     """Drive the full claim -> heartbeat -> comment -> complete lifecycle
     exclusively through the tools, then verify the DB state matches what
     the dispatcher/notifier expect."""
+    _seed_profile("qa")
     from tools import kanban_tools as kt
 
     # 1. show — worker orientation
@@ -1108,6 +1162,7 @@ def test_create_subscribes_gateway_session(monkeypatch, worker_env):
     """A gateway session (platform + chat_id set) gets auto-subscribed
     to its own kanban_create result, and the response surfaces the
     ``subscribed`` flag so the orchestrator can react."""
+    _seed_profile("peer")
     from tools import kanban_tools as kt
     monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
     monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "chat-42")
@@ -1142,6 +1197,7 @@ def test_create_subscribes_tui_session_via_session_key(monkeypatch, worker_env):
     local channel), but the parent process exports HERMES_SESSION_KEY.
     We should still auto-subscribe, with platform='tui' and
     chat_id=<key>."""
+    _seed_profile("peer")
     from tools import kanban_tools as kt
     monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
     monkeypatch.delenv("HERMES_SESSION_CHAT_ID", raising=False)
@@ -1170,6 +1226,7 @@ def test_create_subscribes_tui_session_via_session_key(monkeypatch, worker_env):
 def test_create_does_not_subscribe_in_cli_session(monkeypatch, worker_env):
     """CLI / cron / test sessions have no persistent delivery channel.
     _maybe_auto_subscribe returns False and no row is written."""
+    _seed_profile("peer")
     from tools import kanban_tools as kt
     monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
     monkeypatch.delenv("HERMES_SESSION_CHAT_ID", raising=False)
@@ -1191,6 +1248,7 @@ def test_create_tui_subscription_binds_to_live_session_after_compaction_fork(mon
     """#110068: the inherited HERMES_SESSION_KEY can name a session already superseded
     by a compaction fork. Auto-subscribe must bind to the live continuation tip resolved
     from the session store, not the stale key the process was launched with."""
+    _seed_profile("peer")
     import hermes_state
     from hermes_state import SessionDB
     from tools import kanban_tools as kt
@@ -1278,6 +1336,7 @@ def test_create_respects_auto_subscribe_on_create_false(monkeypatch, worker_env,
         "kanban:\n  auto_subscribe_on_create: false\n"
     )
     monkeypatch.setenv("HERMES_HOME", str(home))
+    _seed_profile("peer")
     monkeypatch.setenv("HERMES_SESSION_PLATFORM", "discord")
     monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "channel-1")
 
@@ -1298,6 +1357,7 @@ def test_maybe_auto_subscribe_swallows_add_notify_sub_failure(monkeypatch, worke
     _maybe_auto_subscribe must NOT bubble that up and fail the parent
     kanban_create. The function returns False and the parent create
     still succeeds with subscribed=False."""
+    _seed_profile("peer")
     from tools import kanban_tools as kt
     monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
     monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "chat-42")

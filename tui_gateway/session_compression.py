@@ -121,10 +121,10 @@ def _apply_live_compression_config(agent: Any, cfg: dict | None) -> None:
     for key, fallback, min_value in _COMPRESSION_INT_KEYS:
         default = int(_compressor_ctor_default(key, fallback))
         raw = compression.get(key, default)
-        if isinstance(raw, bool):
-            # Same as agent_init: a bool is never a token count (`true` must not become a 1-token
-            # trigger); `proactive_prune_tokens: false` is the explicit off switch.
-            raw = 0 if raw is False and key == "proactive_prune_tokens" else default
+        if key.startswith("proactive_prune_") and raw is not None:
+            # agent_init's parser for these keys: a bool is never a count; `proactive_prune_tokens: false` = off.
+            from agent.agent_init import _parse_config_int
+            raw = 0 if raw is False and key == "proactive_prune_tokens" else _parse_config_int(raw, default)
         with contextlib.suppress(TypeError, ValueError):
             setattr(cc, key, max(min_value, default if raw is None else int(raw)))
     with contextlib.suppress(TypeError, ValueError):

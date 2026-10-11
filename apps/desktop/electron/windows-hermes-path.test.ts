@@ -120,6 +120,11 @@ test('resolveVenvHermesCommand: returns the resolved python backend descriptor w
   assert.equal(result.kind, 'python')
   assert.equal(result.shell, false)
   assert.deepEqual(result.env, { FAKE_ENV: '1' })
+  // The venv trampoline's grandchild stdio never reaches Electron's pipe
+  // (#96280): the descriptor must opt into the ready-file port channel so
+  // the spawn passes HERMES_DESKTOP_READY_FILE and boot never depends on
+  // the stdout sentinel alone.
+  assert.equal(result.readyFile, true)
 })
 
 test('resolveVenvHermesCommand: is case-insensitive on hermes.exe and the Scripts dir name', async () => {

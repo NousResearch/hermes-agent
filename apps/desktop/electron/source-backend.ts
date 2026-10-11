@@ -15,6 +15,13 @@ export interface SourceBackend {
   bootstrap: false
   shell: boolean
   local: 'installed'
+  /**
+   * Enable the HERMES_DESKTOP_READY_FILE port channel for this spawn. The
+   * stdout sentinel stays the fallback, but launchers whose grandchild stdio
+   * never reaches Electron's pipe (the Windows uv venv trampoline) would
+   * otherwise time out a healthy backend (#96280).
+   */
+  readyFile: true
 }
 
 interface SourceOptions {
@@ -65,7 +72,8 @@ export async function resolveSourceInstallationBackend(
     root,
     bootstrap: false,
     shell,
-    local: 'installed'
+    local: 'installed',
+    readyFile: true
   }
 }
 
@@ -103,6 +111,7 @@ export function createSourcePythonBackend(
     root,
     bootstrap: false,
     shell: false,
-    local: 'installed'
+    local: 'installed',
+    readyFile: true
   }
 }

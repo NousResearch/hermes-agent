@@ -657,6 +657,10 @@ def auth_refresh_command(args) -> None:
             f"Could not renew the {label} sign-in for credential #{index} ({matched.label}); {state}. "
             f"Sign in again with `hermes auth add {provider} --type oauth`.")
     status = refreshed.last_status or "ok"
+    # The command's help text promises the cooldown is cleared, and a rotation
+    # proves the grant alive — the per-model rate-limit windows it leaves
+    # behind would keep the credential benched for the refreshed models (#135873).
+    refreshed = pool.clear_model_cooldowns(refreshed.id) or refreshed
     if status == "ok":
         print(f"Refreshed {provider} credential #{index} ({refreshed.label}); status: ok")
     else:

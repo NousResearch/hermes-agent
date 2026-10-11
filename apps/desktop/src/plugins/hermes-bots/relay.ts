@@ -653,13 +653,17 @@ async function deliverRelayEnvelope(
   // Needs-attention hook (#93091 item 3): a delivered background DM is
   // this bot's "good turn"; a classified delivery failure badges it.
   const attentionKey = `${target.id}::${String(envelope?.target_profile || '')}`
+  const targetProfile = String(envelope?.target_profile || '')
+
+  // Scoped routes rewrite params.profile to their own profile, so use the target's route.
+  const deliverRoute = targetProfile ? { ...target.route, profile: targetProfile, targetProfile } : target.route
 
   try {
     const res = await host.requestProfile<{ reply?: string }>(
-      target.route,
+      deliverRoute,
       'bot_relay.deliver',
       {
-        profile: String(envelope?.target_profile || ''),
+        profile: targetProfile,
         message: String(envelope?.message || ''),
         from_profile: String(envelope?.from_profile || ''),
         from_handle: String(envelope?.from_handle || ''),

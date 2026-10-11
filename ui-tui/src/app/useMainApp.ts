@@ -60,6 +60,7 @@ import { planGatewayRecovery } from './gatewayRecovery.js'
 import { applyGoalSnapshot } from './goalStatus.js'
 import { getInputSelection } from './inputSelectionStore.js'
 import { type GatewayRpc, type SlashHandler, type StateSetter, type TranscriptRow, type UiState } from './interfaces.js'
+import { requestLiveSessions } from './liveSessions.js'
 import { $overlayState, capturePromptResponseGuard, hasSensitivePrompt, patchOverlayState } from './overlayStore.js'
 import { $goodVibesTick } from './petFlashStore.js'
 import { applyProcessSnapshot, type ProcessEntry } from './processRoster.js'
@@ -703,7 +704,7 @@ export function useMainApp(gw: GatewayClient) {
           }
         })
         .catch(() => {})
-      gw.request<SessionActiveListResponse>('session.active_list', { current_session_id: getUiState().sid })
+      requestLiveSessions(gw, getUiState().sid)
         .then(raw => {
           const result = asRpcResult<SessionActiveListResponse>(raw)
 

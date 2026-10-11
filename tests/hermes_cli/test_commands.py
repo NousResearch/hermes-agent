@@ -1,5 +1,6 @@
 """Tests for the central command registry and autocomplete."""
 
+import pytest
 from prompt_toolkit.completion import CompleteEvent
 from prompt_toolkit.document import Document
 
@@ -379,6 +380,34 @@ class TestSubcommandCompletion:
         completions = _completions(SlashCommandCompleter(), "/tools enable discord ")
         texts = {c.text for c in completions}
         assert "discord" not in texts
+
+    @pytest.mark.parametrize(("subcommand", "verb"), [("enable", "Enabled"), ("disable", "Disabled")])
+    def test_tools_offers_only_toolsets_the_command_accepts(self, subcommand, verb, capsys):
+        """Every toolset that `/tools <subcommand> <TAB>` offers is accepted by the CLI's `/tools`."""
+        from argparse import Namespace
+        from hermes_cli.tools_config import tools_disable_enable_command
+
+        completions = _completions(SlashCommandCompleter(), f"/tools {subcommand} ")
+        offered = [c.text for c in completions if not c.text.endswith(":")]
+        tools_disable_enable_command(Namespace(tools_action=subcommand, names=offered, platform="cli"))
+
+        assert capsys.readouterr().out.splitlines() == [f"✓ {verb}: {', '.join(offered)}"]
+
+    def test_tools_enable_offers_a_builtin_plugin_toolset_once(self, monkeypatch):
+        """A plugin toolset whose key is also built in is one row, with the built-in label."""
+        from hermes_cli.tools_config import CONFIGURABLE_TOOLSETS
+
+        builtin, label, _description = CONFIGURABLE_TOOLSETS[0]
+        monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda *_a, **_k: set())
+        monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: {})
+        monkeypatch.setattr(
+            "hermes_cli.tools_config._get_plugin_toolset_keys", lambda: {builtin, "plugin-only-probe"})
+
+        rows = [
+            (c.text, c.display_meta_text) for c in _completions(SlashCommandCompleter(), "/tools enable ")
+            if c.text in {builtin, "plugin-only-probe"}]
+        assert rows == [(builtin, label), ("plugin-only-probe", "plugin toolset")]
+
 
 
     def _fake_gateway(self, monkeypatch, platforms):

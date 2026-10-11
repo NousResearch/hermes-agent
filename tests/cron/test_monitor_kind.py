@@ -475,3 +475,48 @@ def test_cronjob_tool_update_clears_monitor_script(hermes_env):
     )
     assert result.get("success") is True
     assert get_job(created["job_id"]).get("monitor_script") is None
+
+
+def test_monitor_output_with_fence_stays_in_data_block(hermes_env, monkeypatch):
+    """Monitor output carrying its own fenced block can't close the data block (#135721)."""
+    from cron.scheduler import run_job
+
+    job = _make_monitor_job(
+        hermes_env,
+        "printf 'Report\\n```bash\\necho hi\\n```\\n## Follow-up notes\\n'\n",
+    )
+    observed: dict = {}
+    _install_agent_stubs(monkeypatch, observed)
+
+    success, _doc, _final, error = run_job(job)
+    assert success is True
+    assert error is None
+    prompt = observed["prompts"][0]
+    opening = prompt.index("````")  # outer fence outgrows the output's ``` run
+    closing = prompt.index("````", opening + 4)
+    block = prompt[opening:closing + 4]
+    assert "## Follow-up notes" in block  # still inside the data block
+
+
+def test_monitor_diff_with_fence_stays_in_data_block(hermes_env, monkeypatch):
+    """A diff whose changed lines add a fenced block gets an outgrown diff fence (#135721)."""
+    from cron.jobs import get_job
+    from cron.scheduler import run_job
+
+    job = _make_monitor_job(hermes_env, "echo 'plain state'\n")
+    observed: dict = {}
+    _install_agent_stubs(monkeypatch, observed)
+    run_job(job)
+
+    _write_script(
+        hermes_env, "mon.sh",
+        "printf 'Report\\n```bash\\necho hi\\n```\\n## Follow-up notes\\n'\n",
+    )
+    job = get_job(job["id"])
+    success, _doc, _final, _error = run_job(job)
+    assert success is True
+    prompt = observed["prompts"][1]
+    # The diff (its + lines carry the ``` run) is fenced with a longer run, keeping
+    # the diff info string on the opening fence.
+    assert "\n````diff\n" in prompt
+    assert "## Follow-up notes" in prompt

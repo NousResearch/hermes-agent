@@ -71,7 +71,7 @@ _INLINE_BACKGROUND_AMP_RE = re.compile(r"\s&\s")
 _TRAILING_BACKGROUND_AMP_RE = re.compile(r"\s&\s*(?:#.*)?$")
 
 
-def _strip_quotes(command: str) -> str:
+def strip_quotes(command: str) -> str:
     """Blank quoted / backtick content and provably-inert heredoc bodies so
     regex checks can't match keywords (nohup, setsid, '&') inside strings.
 
@@ -84,6 +84,9 @@ def _strip_quotes(command: str) -> str:
     result = re.sub(r"'[^']*'", "''", result)
     result = re.sub(r'"(?:[^"\\]|\\.)*"', '""', result)
     return re.sub(r"`[^`]*`", "``", result)
+
+
+_strip_quotes = strip_quotes  # original private spelling, kept as an alias
 
 
 _LONG_LIVED_FOREGROUND_PATTERNS = tuple(re.compile(p, re.IGNORECASE) for p in (
@@ -121,7 +124,7 @@ _FOREGROUND_GUIDANCE = (
 )
 
 
-def _looks_like_help_or_version_command(command: str) -> bool:
+def looks_like_help_or_version_command(command: str) -> bool:
     """Return True for informational invocations that should never be blocked."""
     normalized = " ".join(command.lower().split())
     return (
@@ -132,12 +135,15 @@ def _looks_like_help_or_version_command(command: str) -> bool:
     )
 
 
+_looks_like_help_or_version_command = looks_like_help_or_version_command  # original private spelling, kept as an alias
+
+
 def _foreground_background_guidance(command: str) -> str | None:
     """Guidance text when a foreground command looks long-lived or uses shell
     backgrounding (it should be a managed background session), else None."""
-    if _looks_like_help_or_version_command(command):
+    if looks_like_help_or_version_command(command):
         return None
-    unquoted = _strip_quotes(command)
+    unquoted = strip_quotes(command)
     return next((msg for hit, msg in _FOREGROUND_GUIDANCE if hit(unquoted)), None)
 
 

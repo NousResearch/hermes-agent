@@ -644,7 +644,7 @@ def is_provider_id_enabled(provider_id: Any, providers: Any = None) -> bool:
         from providers import get_provider_profile
 
         profile = get_provider_profile(raw)
-    except Exception:
+    except (ImportError, KeyError, OSError, TypeError, ValueError):
         profile = None
     canonical = coerce_provider_id(getattr(profile, "name", "")).lower()
     if profile is not None and canonical and canonical != "custom":

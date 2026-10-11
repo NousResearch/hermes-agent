@@ -729,7 +729,8 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *,
     ``suppressed`` — a durable disposition, never a send — and flagged on the job); anything
     else is an explicit unverified status string so Optional[str] callers cannot misreport
     admission as delivery. ``profile`` is ``""`` for the job's own profile. There is no
-    second-writer fallback: without a running authority the payload stays unverified for retry.
+    second-writer fallback: a target whose authority is not ready gets the payload parked under
+    the same delivery id (``cron.bot_chat_legacy.defer``) and admitted by a later tick.
     """
     import hashlib
     import json
@@ -772,7 +773,13 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *,
             job["_notification_all_targets_suppressed"] = True
             return None
         if receipt is None:
-            owner = find_canonical_live_owner(home)
+            try:
+                owner = find_canonical_live_owner(home)
+            except ValueError:  # the target's gateway is down or starting: not a disposition
+                from cron.bot_chat_legacy import defer
+                defer(key, job, content, home, for_failure=for_failure)
+                job.setdefault("_bot_chat_delivery_receipts", {})[target] = {"status": "queued", "delivery_id": key}
+                return f"{target} queued (receipt {key}): target profile not running; admitted once it is"
             if owner is None:
                 return f"bot-chat delivery to profile '{profile_label}' unverified: no canonical Bot Chat"
             # A failure notice rides as ``diagnostic`` so the target's reply stays muted.

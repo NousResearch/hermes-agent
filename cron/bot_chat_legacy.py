@@ -1,7 +1,7 @@
-"""Upgrade path for ``cron/bot_chat_pending`` records the retired CLI lane left behind.
+"""``cron/bot_chat_pending``: Bot Chat outputs whose target owner was not running yet.
 
-The old lane parked never-started Bot Chat outputs there for a later tick to replay
-through ``hermes chat``. That consumer is gone; each still-``queued`` record is handed,
+``defer`` parks one (a cross-profile target whose gateway is down or still starting), and
+the retired CLI lane left records of the same shape behind. Each still-``queued`` record is handed,
 under its own id, to the target profile's live owner through the canonical
 ``tools.bot_live_delivery.deliver_to_live_owner`` door (idempotent per id). Records are
 never deleted: they keep their final status as evidence, exactly as the old drain did.
@@ -18,6 +18,18 @@ from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
 _warned: set[Path] = set()
+
+
+def defer(key: str, job: dict, content: str, home: Path, *, for_failure: bool) -> None:
+    """Park one never-admitted output under its delivery id; a later tick hands it to the owner."""
+    import time
+    root = get_hermes_home().resolve() / "cron" / "bot_chat_pending"
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    path = root / f"{key}.json"
+    if not path.exists():  # an existing record (queued or already transferred) keeps its status
+        atomic_json_write(path, dict(
+            id=key, status="queued", job={k: job[k] for k in ("id", "name") if k in job}, content=content,
+            home=str(home), for_failure=for_failure, sequence=time.time_ns()), fsync_dir=True, mode=0o600)
 
 
 def _queued(root: Path) -> list[tuple[Path, dict]]:

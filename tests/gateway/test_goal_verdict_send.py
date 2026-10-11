@@ -117,6 +117,48 @@ async def _drain_until(condition, timeout=5.0):
         await asyncio.sleep(0.01)
 
 
+def _sent_goal_event(adapter: _RecordingAdapter) -> dict:
+    metadata = adapter.sends[0]["metadata"]
+    assert metadata is not None
+    event = metadata.get("goal_event")
+    assert event is not None
+    return event
+
+
+@pytest.mark.asyncio
+async def test_goal_verdict_done_sent_via_adapter_send(hermes_home):
+    """When the judge says done, the '✓ Goal achieved' message must reach
+    the user through the adapter's ``send()`` method."""
+    runner, adapter, session_entry, src = _make_runner_with_adapter()
+
+    from hermes_cli.goals import GoalManager
+
+    mgr = GoalManager(session_entry.session_id)
+    mgr.set("ship the feature")
+
+    with patch("hermes_cli.goals.judge_goal", return_value=("done", "the feature shipped", False, None, False)):
+        await runner._post_turn_goal_continuation(
+            session_entry=session_entry,
+            source=src,
+            final_response="I shipped the feature.",
+        )
+        await _drain_until(lambda: adapter.sends)
+
+    assert len(adapter.sends) == 1, f"expected 1 send, got {len(adapter.sends)}: {adapter.sends}"
+    msg = adapter.sends[0]
+    assert msg["chat_id"] == "c1"
+    assert "Goal achieved" in msg["content"]
+    assert "the feature shipped" in msg["content"]
+    goal_event = _sent_goal_event(adapter)
+    assert goal_event["contract"] == "hermes.goal_event.v1"
+    assert goal_event["event_type"] == "done"
+    assert goal_event["status"] == "done"
+    assert goal_event["turn"] == {"used": 1, "max": 20}
+    assert goal_event["reason"] == "the feature shipped"
+    assert goal_event["raw_text"] == msg["content"]
+    assert goal_event["goal"] == "ship the feature"
+
+
 @pytest.mark.asyncio
 async def test_goal_verdict_continue_enqueues_continuation(hermes_home):
     """When the judge says continue, both the 'continuing' status and the
@@ -140,7 +182,15 @@ async def test_goal_verdict_continue_enqueues_continuation(hermes_home):
 
     # Status line sent back
     assert len(adapter.sends) == 1
-    assert "Continuing toward goal" in adapter.sends[0]["content"]
+    content = adapter.sends[0]["content"]
+    assert "Continuing toward goal" in content
+    goal_event = _sent_goal_event(adapter)
+    assert goal_event["event_type"] == "continue"
+    assert goal_event["status"] == "active"
+    assert goal_event["turn"] == {"used": 1, "max": 20}
+    assert goal_event["reason"] == "still needs work"
+    assert goal_event["raw_text"] == content
+    assert goal_event["goal"] == "polish the docs"
     # Continuation prompt enqueued for next turn
     assert adapter._pending_messages, "continuation prompt must be enqueued in pending_messages"
 
@@ -170,7 +220,14 @@ async def test_goal_verdict_budget_exhausted_sends_pause(hermes_home):
     content = adapter.sends[0]["content"]
     assert "paused" in content.lower()
     assert "turns used" in content.lower()
+    goal_event = _sent_goal_event(adapter)
+    assert goal_event["event_type"] == "paused"
+    assert goal_event["status"] == "paused"
+    assert goal_event["turn"]["used"] >= goal_event["turn"]["max"]
+    assert goal_event["turn"]["max"] == 2
+    assert goal_event["reason"] == "keep going"
+    assert goal_event["raw_text"] == content
+    assert goal_event["goal"] == "tiny goal"
+    assert "turn budget exhausted" in goal_event["pause_reason"]
     # No continuation enqueued when budget is exhausted
     assert not adapter._pending_messages
-
-

@@ -85,11 +85,18 @@ deliverable files to their `kanban_complete` call:
 kanban_complete(
     summary="rendered Q3 revenue chart and report",
     artifacts=[
-        "~/.hermes/cache/scratch/q3-revenue.png",
-        "~/.hermes/cache/scratch/q3-report.pdf",
+        "$HERMES_KANBAN_WORKSPACE/q3-revenue.png",
+        "$HERMES_KANBAN_WORKSPACE/q3-report.pdf",
     ],
 )
 ```
+
+Workers should write deliverables inside their own task workspace
+(`$HERMES_KANBAN_WORKSPACE`). That is the only location the kernel copies into
+the task's durable attachments. A path outside the workspace is recorded as
+given and never copied — so a deliverable parked in the shared
+`~/.hermes/cache/scratch` directory is not preserved, and that directory is
+deleted 24 h after its last write anyway.
 
 When the gateway notifier delivers the "task completed" message to whoever
 subscribed to the task in Slack/Telegram/etc., it also uploads each artifact

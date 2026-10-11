@@ -9,6 +9,7 @@ Verifies:
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -1483,3 +1484,49 @@ class TestDefaultTaskId:
         assert kt._default_task_id("") == worker_env
         assert kt._default_task_id("   ") == worker_env
         assert kt._default_task_id(None) == worker_env
+
+
+class TestArtifactExamplesPreserved:
+    """The `artifacts` examples must name the task workspace, not shared
+    scratch. The kernel copies only paths inside the task workspace into
+    durable attachments, and the shared cache/scratch directory is deleted
+    24 h after its last write, so an example pointing there teaches every
+    kanban worker to lose its deliverable."""
+
+    _REPO = Path(__file__).resolve().parents[2]
+
+    def _artifact_descriptions(self):
+        from tools import kanban_tools_schemas as ks
+        yield from (
+            (tool, schema["parameters"]["properties"]["artifacts"]["description"])
+            for tool, schema in (
+                ("kanban_complete", ks.KANBAN_COMPLETE_SCHEMA),
+                ("kanban_request_review", ks.KANBAN_REQUEST_REVIEW_SCHEMA),
+            )
+        )
+
+    def test_schema_names_the_task_workspace(self):
+        for tool, desc in self._artifact_descriptions():
+            assert "$HERMES_KANBAN_WORKSPACE" in desc, tool
+            assert "cache/scratch/q3-revenue.png" not in desc, tool
+
+    def test_schema_scopes_the_durable_copy_claim(self):
+        """Unqualified "the kernel copies these" is the lie this bug is."""
+        for tool, desc in self._artifact_descriptions():
+            assert "recorded as given and not" in desc, tool
+            assert "24 h after its last write" in desc, tool
+
+    @pytest.mark.parametrize(
+        "rel",
+        [
+            "website/docs/user-guide/features/deliverable-mode.md",
+            "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current"
+            "/user-guide/features/deliverable-mode.md",
+        ],
+    )
+    def test_docs_keep_the_two_locales_in_step(self, rel):
+        text = (self._REPO / rel).read_text(encoding="utf-8")
+        assert "$HERMES_KANBAN_WORKSPACE" in text, rel
+        snippet = text[text.index("kanban_complete("):][:400]
+        assert "/tmp/q3-" not in snippet, rel
+        assert "cache/scratch/q3-" not in snippet, rel

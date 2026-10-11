@@ -73,7 +73,7 @@ class TestCliPathFiresHooks:
 
         with patch("hermes_cli.plugins.invoke_hook", side_effect=fake_invoke_hook):
             result = check_all_command_guards(
-                "rm -rf /tmp/test-hook", "local", approval_callback=cb,
+                "rm -rf ~/scratch-area/test-hook", "local", approval_callback=cb,
             )
 
         assert result["approved"] is True
@@ -83,7 +83,7 @@ class TestCliPathFiresHooks:
         assert "post_approval_response" in hook_names
 
         pre_kwargs = next(kw for name, kw in captured if name == "pre_approval_request")
-        assert pre_kwargs["command"] == "rm -rf /tmp/test-hook"
+        assert pre_kwargs["command"] == "rm -rf ~/scratch-area/test-hook"
         assert pre_kwargs["surface"] == "cli"
         assert pre_kwargs["session_key"] == isolated_session
         assert isinstance(pre_kwargs["pattern_keys"], list)
@@ -93,7 +93,7 @@ class TestCliPathFiresHooks:
         post_kwargs = next(kw for name, kw in captured if name == "post_approval_response")
         assert post_kwargs["choice"] == "once"
         assert post_kwargs["surface"] == "cli"
-        assert post_kwargs["command"] == "rm -rf /tmp/test-hook"
+        assert post_kwargs["command"] == "rm -rf ~/scratch-area/test-hook"
 
     def test_deny_reported_to_post_hook(self, isolated_session, monkeypatch):
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
@@ -112,7 +112,7 @@ class TestCliPathFiresHooks:
 
         with patch("hermes_cli.plugins.invoke_hook", side_effect=fake_invoke_hook):
             result = check_all_command_guards(
-                "rm -rf /tmp/test-deny", "local", approval_callback=cb,
+                "rm -rf ~/scratch-area/test-deny", "local", approval_callback=cb,
             )
 
         assert result["approved"] is False
@@ -138,7 +138,7 @@ class TestCliPathFiresHooks:
 
         with patch("hermes_cli.plugins.invoke_hook", side_effect=boom):
             result = check_all_command_guards(
-                "rm -rf /tmp/test-crash", "local", approval_callback=cb,
+                "rm -rf ~/scratch-area/test-crash", "local", approval_callback=cb,
             )
 
         # User's approval was still honored despite the plugin crashing
@@ -158,8 +158,8 @@ class TestSmartModeFiresHooks:
     @pytest.mark.parametrize(
         ("guard", "value", "verdict", "approved", "choice", "pattern_key"),
         [
-            (check_all_command_guards, "rm -rf /tmp/smart-hook", "approve", True, "smart_approve", None),
-            (check_all_command_guards, "rm -rf /tmp/smart-hook", "deny", False, "smart_deny", None),
+            (check_all_command_guards, "rm -rf ~/scratch-area/smart-hook", "approve", True, "smart_approve", None),
+            (check_all_command_guards, "rm -rf ~/scratch-area/smart-hook", "deny", False, "smart_deny", None),
             (check_execute_code_guard, "print('smart hook')", "approve", True, "smart_approve", "execute_code"),
             (check_execute_code_guard, "print('smart hook')", "deny", False, "smart_deny", "execute_code"),
         ],
@@ -198,7 +198,7 @@ class TestSmartModeFiresHooks:
             assert pre["pattern_keys"] == [pattern_key]
 
     @pytest.mark.parametrize("guard,value", [
-        (check_all_command_guards, "rm -rf /tmp/smart-order"),
+        (check_all_command_guards, "rm -rf ~/scratch-area/smart-order"),
         (check_execute_code_guard, "print('smart order')"),
     ])
     def test_pre_hook_fires_before_aux_llm_decision(
@@ -226,7 +226,7 @@ class TestSmartModeFiresHooks:
         ]
 
     @pytest.mark.parametrize("guard,value", [
-        (check_all_command_guards, "rm -rf /tmp/smart-force-redaction"),
+        (check_all_command_guards, "rm -rf ~/scratch-area/smart-force-redaction"),
         (check_execute_code_guard, "print('smart force redaction')"),
     ])
     def test_smart_observer_redaction_is_forced_when_config_disables_redaction(
@@ -249,7 +249,7 @@ class TestSmartModeFiresHooks:
         assert force_values == [True, True]
 
     @pytest.mark.parametrize("guard,value", [
-        (check_all_command_guards, "rm -rf /tmp/smart-hook-crash"),
+        (check_all_command_guards, "rm -rf ~/scratch-area/smart-hook-crash"),
         (check_execute_code_guard, "print('smart hook crash')"),
     ])
     @pytest.mark.parametrize("verdict,approved", [("approve", True), ("deny", False)])
@@ -265,7 +265,7 @@ class TestSmartModeFiresHooks:
         assert result["approved"] is approved
 
     @pytest.mark.parametrize("guard,value", [
-        (check_all_command_guards, "rm -rf /tmp/smart-redactor-crash"),
+        (check_all_command_guards, "rm -rf ~/scratch-area/smart-redactor-crash"),
         (check_execute_code_guard, "print('smart redactor crash')"),
     ])
     @pytest.mark.parametrize("verdict,approved", [("approve", True), ("deny", False)])
@@ -294,8 +294,8 @@ class TestSmartModeFiresHooks:
     @pytest.mark.parametrize("guard,first_value,second_value", [
         (
             check_all_command_guards,
-            "rm -rf /tmp/first-smart-command",
-            "rm -rf /tmp/second-smart-command",
+            "rm -rf ~/scratch-area/first-smart-command",
+            "rm -rf ~/scratch-area/second-smart-command",
         ),
         (
             check_execute_code_guard,

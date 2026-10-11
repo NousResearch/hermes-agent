@@ -848,11 +848,42 @@ def strip_think_blocks(agent, content: str) -> str:
     """Remove reasoning/thinking blocks from content, returning only visible text: closed tag
     pairs, unterminated open tags at a block boundary (mirrors ``gateway/stream_consumer.py``),
     stray orphan tags (all case-insensitive variants), and standalone tool-call XML blocks some
-    open models emit; ``<function>`` is boundary- and ``name=``-gated so prose mentions survive."""
+    open models emit; ``<function>`` is boundary- and ``name=``-gated so prose mentions survive.
+    Markdown code regions (fenced backtick/tilde code, variable-length fences, inline code) are
+    masked first: models replay tag syntax inside code all the time (#133845), and a literal tag
+    there is content, not a leaked call."""
     content = _flatten_content_text(content) if content else ""
-    for pattern in _THINK_STRIP_PATTERNS if content else ():
-        content = pattern.sub('', content)
-    return content
+    if not content:
+        return content
+    masked, restore = _mask_md_code_regions(content)
+    for pattern in _THINK_STRIP_PATTERNS:
+        masked = pattern.sub('', masked)
+    return restore(masked)
+
+
+_MD_CODE_REGION_PATTERN = re.compile(
+    r"(`{3,}(?:(?!`{3})[\s\S])*`{3,}|~{3,}(?:(?!~{3})[\s\S])*~{3,}|`[^`\n]+`)"
+)
+
+
+def _mask_md_code_regions(content: str):
+    """Replace Markdown code regions with opaque placeholders so tag matchers never see them.
+    Returns (masked, restore); only a completed region is masked — an unterminated fence tail is
+    still a live tag risk and stays scannable."""
+    if "`" not in content and "~" not in content:
+        return content, (lambda text: text)
+    kept: list[str] = []
+
+    def _stash(match: "re.Match[str]") -> str:
+        kept.append(match.group(0))
+        return f"\x00{len(kept) - 1}\x00"
+
+    masked = _MD_CODE_REGION_PATTERN.sub(_stash, content)
+
+    def restore(text: str) -> str:
+        return re.sub("\x00([0-9]+)\x00", lambda m: kept[int(m.group(1))], text)
+
+    return masked, restore
 
 
 def sync_credential_pool_entry_id(agent) -> None:

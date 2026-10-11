@@ -2988,6 +2988,9 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             # mid-walk as a bare non-retryable TimeoutError (#136412). Cap the path walk's total CONNECT
             # budget at half the deadline so failover always completes — and the last path's underlying
             # ConnectTimeout (safely retryable) surfaces instead.
+            # getUpdates is not itself bounded by _TEXT_SEND_DEADLINE, but its transport walks the same
+            # fallback paths: the same cap keeps a several-hung-path walk from stalling the poll loop
+            # for minutes on the OS TCP timeout, so the shared budget is intentional.
             _connect_budget = _TEXT_SEND_DEADLINE / 2
             request, get_updates_request = _pair(
                 {"transport": TelegramFallbackTransport(fallback_ips, connect_budget=_connect_budget, **_transport_kwargs)},

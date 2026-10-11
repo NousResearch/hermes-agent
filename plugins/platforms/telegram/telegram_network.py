@@ -159,7 +159,17 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
         for index, ip in enumerate(order):
             share: Optional[float] = None
             if self._connect_budget is not None:
-                share = (self._connect_budget - (time.monotonic() - walk_started)) / (len(order) - index)
+                remaining = self._connect_budget - (time.monotonic() - walk_started)
+                paths_left = len(order) - index
+                if index == 0 and paths_left > 1:
+                    # Front-load the sticky path: it is the last-known-good route and the most likely
+                    # to be live, so it gets everything but one average share held back for the
+                    # failover paths. At stock defaults (10s client connect, 15s budget, 3 paths)
+                    # that keeps its full 10s — a budget/N slice would narrow a slow-but-live sticky
+                    # path (high-RTT link, connect-with-TLS through a proxy) into a spurious failover.
+                    share = remaining - remaining / paths_left
+                else:
+                    share = remaining / paths_left
                 if share <= 0 and last_error is not None:
                     # Budget spent: surface the underlying connect error now (it classifies as
                     # safely retryable) instead of arming another attempt the caller's wall-clock

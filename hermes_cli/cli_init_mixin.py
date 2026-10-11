@@ -105,40 +105,31 @@ class CLIInitMixin:
 
     def _init_model_and_provider(self, model, provider, api_key, base_url):
         """Priority: CLI args > env vars > config file."""
-        from cli import CLI_CONFIG, _normalize_moa_model, _split_model_config_default
+        from cli import CLI_CONFIG
         # LLM_MODEL/OPENAI_MODEL env vars are deliberately NOT checked (multi-agent setups
         # would stomp each other through the environment).
         _model_config = CLI_CONFIG["model"]
-        # A dict-valued default carries its own provider, which must feed requested_provider
-        # instead of being replaced by the merged model.provider (typically "auto").
-        _config_model, _nested_provider = _split_model_config_default(
-            _model_config.get("default") or _model_config.get("model") or ""
+        # Stage 1 (the pure ladder: split default -> startup route -> MoA prefix ->
+        # provider precedence) lives in ``hermes_cli.model_route.resolve_requested_route``
+        # so the Kanban dispatcher (#123654) derives the same requested route with no CLI
+        # object and no side effects. This method keeps the impure tails: the localhost
+        # model auto-detect, the named-custom default-model lookup, and the seed
+        # base_url/api_key below.
+        from hermes_cli.model_route import resolve_requested_route
+
+        _route = resolve_requested_route(
+            model=model,
+            provider=provider,
+            model_config=_model_config,
+            user_providers=CLI_CONFIG.get("providers"),
+            custom_providers=CLI_CONFIG.get("custom_providers"),
+            env_provider=os.getenv("HERMES_INFERENCE_PROVIDER"),
         )
         # resume must not clobber an explicit -m with the session's stored model.
         self._explicit_model_override = bool(model)
-        self.model = model or _config_model or ""
-        _cfg_provider = _model_config.get("provider") or os.getenv("HERMES_INFERENCE_PROVIDER")
-        _startup_provider_override = _startup_base_url_override = _startup_api_key_override = ""
-        if self.model:
-            from hermes_cli.model_switch import resolve_startup_model_route
-
-            _startup_route = resolve_startup_model_route(
-                self.model,
-                explicit_provider=provider or "",
-                current_provider=(provider or _nested_provider or _cfg_provider or ""),
-                user_providers=CLI_CONFIG.get("providers"),
-                custom_providers=CLI_CONFIG.get("custom_providers"),
-            )
-            if _startup_route is not None:
-                self.model = _startup_route.model
-                _startup_provider_override = _startup_route.provider
-                _startup_base_url_override = _startup_route.base_url
-                _startup_api_key_override = _startup_route.api_key
-        # ``moa:<preset>`` selects the MoA virtual provider before provider resolution so the
-        # real provider never sees the unknown model; the prefix wins over --provider.
-        # A ``moa:<preset>`` model string selects the MoA virtual provider in one shot (parity with
-        # interactive ``/moa`` and the model picker). See #56828.
-        _moa_provider_override, self.model = _normalize_moa_model(self.model)
+        self.model = _route.model
+        _startup_base_url_override = _route.explicit_base_url or ""
+        _startup_api_key_override = _route.explicit_api_key or ""
 
         if self.model == "":  # auto-detect from a local server
             _base_url = _model_config.get("base_url") or ""
@@ -147,18 +138,19 @@ class CLIInitMixin:
                 self.model = _auto_detect_local_model(_base_url) or self.model
         # Provider normalisation may silently override the default but must warn for an
         # explicit choice (a config model equal to the global fallback is NOT explicit).
-        self._model_is_default = not model and not _config_model
+        self._model_is_default = not model and not _route.config_model
 
         # --api-key wins; otherwise a URL-bearing startup alias carries its own credential.
         # See #28660.
         self._explicit_api_key = api_key or _startup_api_key_override or None
         self._explicit_base_url = base_url or _startup_base_url_override or None
 
-        # Resolved lazily at use-time via _ensure_runtime_credentials().
-        self.requested_provider = (
-            _moa_provider_override or provider or _startup_provider_override or _nested_provider
-            or _cfg_provider or "auto"
-        )
+        # Resolved lazily at use-time via _ensure_runtime_credentials(). Same ladder the
+        # route computed (moa > flag > startup alias > nested default > config > env > auto);
+        # ``_route.requested_provider`` IS that ladder's result, so use it directly
+        # (re-deriving rung-by-rung here once dropped the startup rung on collisions,
+        # #123654 R1 F1/A1).
+        self.requested_provider = _route.requested_provider or "auto"
         # `--provider <custom>` without `-m` uses that entry's default_model, else the global
         # default goes to the custom endpoint and the compressor gets the wrong context length.
         # Explicit `-m` still wins. See #86978.

@@ -78,9 +78,13 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         max_spawn = (
             cli_max if cli_max is not None else kbd._positive_int(_kanban_cfg.get("max_spawn"), None)
         )
+        # Per-provider concurrency budget (#123654): raw mapping, parsed in the
+        # tick (same live-read semantics as the gateway).
+        provider_concurrency = kbd.configured_provider_concurrency()
     except Exception:
         default_assignee = max_in_progress_per_profile = max_in_progress = None
         max_spawn = getattr(args, "max", None)
+        provider_concurrency = None
     with kbc.connect_closing() as conn:
         res = kbd.dispatch_once(
             conn,
@@ -90,6 +94,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             failure_limit=getattr(args, "failure_limit", kbd.DEFAULT_FAILURE_LIMIT),
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            provider_concurrency=provider_concurrency,
         )
     if getattr(args, "json", False):
         _print_json({
@@ -111,6 +116,10 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
                 for (tid, reason) in res.respawn_guarded
             ],
             "rate_limited": res.rate_limited,
+            "skipped_provider_budget": [
+                {"task_id": tid, "provider": key, "current": current, "cap": cap}
+                for (tid, key, current, cap) in res.skipped_provider_budget
+            ],
             "skipped_locked": res.skipped_locked,
             "memory_pressure": res.memory_pressure,
         }, ascii=True)
@@ -141,6 +150,8 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         print(f"Skipped (unassigned): {', '.join(res.skipped_unassigned)}")
     for tid, who, current in res.skipped_per_profile_capped:
         print(f"Deferred ({who} at per-profile cap, {current} running): {tid}")
+    for tid, key, current, cap in res.skipped_provider_budget:
+        print(f"Deferred (provider budget {key} {current}/{cap}): {tid}")
     if res.skipped_nonspawnable:
         print(
             f"Skipped (non-spawnable assignee — terminal lane, OK): "

@@ -235,7 +235,7 @@ _TICK_ACTIVITY_FIELDS = (
     "spawned", "reclaimed", "promoted", "reconciled_orphans", "reaped_terminal_workers", "crashed", "stale",
     "timed_out", "auto_blocked", "rate_limited", "auto_assigned_default",
     "respawn_guarded", "skipped_per_profile_capped", "skipped_unassigned",
-    "skipped_nonspawnable",
+    "skipped_nonspawnable", "skipped_provider_budget",
 )
 
 
@@ -955,7 +955,11 @@ CREATE TABLE IF NOT EXISTS task_runs (
     --          gave_up | reclaimed | (null while still running)
     summary             TEXT,
     metadata            TEXT,
-    error               TEXT
+    error               TEXT,
+    -- Per-provider concurrency budget key (#123654): the resolved-provider bucket
+    -- this run was admitted under. NULL = pre-upgrade row, a non-dispatcher claim
+    -- (hermes kanban claim / control-plane lanes), or a resolution error.
+    provider_key        TEXT
 );
 
 -- Files attached to a task (PDFs, images, source documents). The blob
@@ -2148,10 +2152,15 @@ def unsatisfied_parents(conn: sqlite3.Connection, task_id: str) -> list[tuple[st
 
 def _claim_and_open_run(
     conn: sqlite3.Connection, task_id: str, source_status: str, lock: str, expires: int, now: int,
-    *, event_extra: Optional[dict] = None,
+    *, event_extra: Optional[dict] = None, provider_key: Optional[str] = None,
 ) -> Optional[int]:
     """CAS ``source_status -> running``, open a run row, emit ``claimed``; None
-    when the CAS lost. Caller holds the txn."""
+    when the CAS lost. Caller holds the txn.
+
+    ``provider_key`` (#123654) is persisted atomically with the claim — exactly
+    the key that passed the per-provider budget gate, never re-resolved — so
+    running-worker counts survive gateway restarts and later profile edits.
+    """
     cur = conn.execute(
         f"""
         UPDATE tasks
@@ -2176,12 +2185,13 @@ def _claim_and_open_run(
         INSERT INTO task_runs (
             task_id, profile, step_key, status,
             claim_lock, claim_expires, max_runtime_seconds,
-            started_at
-        ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?)
+            started_at, provider_key
+        ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?)
         """,
         (
             task_id, trow["assignee"] if trow else None, trow["current_step_key"] if trow else None,
             lock, expires, trow["max_runtime_seconds"] if trow else None, now,
+            provider_key,
         ),
     )
     run_id = run_cur.lastrowid
@@ -2195,7 +2205,7 @@ def _claim_and_open_run(
 
 def claim_task(
     conn: sqlite3.Connection, task_id: str, *, ttl_seconds: Optional[int] = None,
-    claimer: Optional[str] = None,
+    claimer: Optional[str] = None, provider_key: Optional[str] = None,
 ) -> Optional[Task]:
     """Atomically transition ``ready -> running``.
 
@@ -2220,7 +2230,7 @@ def claim_task(
         _reclaim_dangling_run(
             conn, task_id, statuses=("ready",), now=now, note="invariant recovery on re-claim",
         )
-        run_id = _claim_and_open_run(conn, task_id, "ready", lock, expires, now)
+        run_id = _claim_and_open_run(conn, task_id, "ready", lock, expires, now, provider_key=provider_key)
         if run_id is None:
             return None
         claimed = get_task(conn, task_id)
@@ -2230,7 +2240,7 @@ def claim_task(
 
 def claim_review_task(
     conn: sqlite3.Connection, task_id: str, *, ttl_seconds: Optional[int] = None,
-    claimer: Optional[str] = None,
+    claimer: Optional[str] = None, provider_key: Optional[str] = None,
 ) -> Optional[Task]:
     """Atomic ``review -> running`` (None when lost). Parents are re-checked
     (one may have reopened meanwhile) and a NEW run tracks the reviewer
@@ -2251,7 +2261,8 @@ def claim_review_task(
                 )
             return None
         run_id = _claim_and_open_run(
-            conn, task_id, "review", lock, expires, now, event_extra={"source_status": "review"},
+            conn, task_id, "review", lock, expires, now,
+            event_extra={"source_status": "review"}, provider_key=provider_key,
         )
         if run_id is None:
             return None

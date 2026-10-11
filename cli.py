@@ -815,13 +815,12 @@ def _normalize_moa_model(model: Optional[str]) -> tuple[Optional[str], Optional[
     interactive ``/moa`` command and the model picker already use: ``resolve_runtime_provider`` handles
     ``requested_provider == "moa"`` and ``agent_init`` builds the MoAClient off ``provider == "moa"``.
     Without this the raw ``moa:<preset>`` string is sent to the real provider and rejected with a 401/400
-    "model not supported" (#56828).
+    "model not supported" (#56828). The parser itself lives in
+    ``hermes_cli.model_route.normalize_moa_model`` (shared with stage-1 route resolution, #123654).
     """
-    if isinstance(model, str) and model.strip().lower().startswith("moa:"):
-        preset = model.strip().split(":", 1)[1].strip()
-        if preset:
-            return "moa", preset
-    return None, model
+    from hermes_cli.model_route import normalize_moa_model
+
+    return normalize_moa_model(model)
 
 _split_model_config_default = _lazy_shim("hermes_cli.config", "split_model_config_default", "_split_model_config_default")
 

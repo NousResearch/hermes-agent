@@ -1925,11 +1925,28 @@ DEFAULT_CONFIG = {
         "max_in_progress": None,
         # Per-profile cap: positive int = no single profile runs more than N workers even if the
         # global caps allow; blocked tasks defer to the next tick. None = no per-profile cap. Useful
-        # when fan-out would saturate one profile's model/API quota/browser pool.
-        # Unset (None) means "no per-profile cap" — backward-compatible with existing installs. Useful for
-        # fan-out workflows that would otherwise saturate one profile's local model / API quota / browser
-        # pool while leaving other profiles idle. See #21582.
+        # when fan-out would saturate one profile's model/API quota/browser pool. Unset (None) means
+        # "no per-profile cap" — backward-compatible with existing installs. See #21582.
+        # NOTE: this caps per PROFILE (worker identity), not per inference provider — a provider's
+        # account-wide quota shared by several profiles is budgeted by kanban.provider_concurrency
+        # below (#123654).
         "max_in_progress_per_profile": None,
+        # Per-RESOLVED-provider concurrency budget (#123654): keys are the provider each run will
+        # actually use (task override first, then the assignee profile's configured route), never
+        # profile names. Counts running workers HOST-WIDE across boards; an over-budget spawn is
+        # deferred (never killed). Values: positive int cap, or null = explicitly no budget.
+        # Key forms: a canonical provider id ("anthropic"); "custom:<base_url>" for custom endpoints
+        # (normalized URL — no userinfo/query); "auto" for unpinned profiles (pin model.provider in
+        # the profile to budget it by name); "moa"; "unknown"; and "default" = the per-key cap
+        # applied separately to every key not listed (NOT a shared pool). Empty/absent = off.
+        # Gateway: read at boot until #117755 lands (restart to apply); `hermes kanban dispatch`
+        # and the standalone daemon read it per invocation/tick.
+        # Example:
+        #   provider_concurrency:
+        #     anthropic: 12
+        #     "custom:https://llm.example.internal/v1": 20
+        #     default: null
+        "provider_concurrency": {},
         # Per-home claim allowlist for boards shared across Hermes homes (#110995): profile names
         # this home's dispatcher may claim (list or comma-separated string). None = any existing
         # profile is claimable. Set = fail-closed (an empty list claims nothing). Every home has a

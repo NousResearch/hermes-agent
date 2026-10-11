@@ -905,6 +905,11 @@ _TASK_RUN_COLUMNS = (
     # Spawn-time start fingerprint of the run's worker_pid (PID-reuse guard for the
     # terminal-worker reaper; NULL = legacy row, never signalled).
     ("worker_started_at", "worker_started_at INTEGER"),
+    # Per-provider concurrency budget key (#123654): the resolved-provider bucket this
+    # run was admitted under ("anthropic", "custom:<url>", "auto", "moa", "unknown").
+    # Written on every DISPATCHER claim (budget disabled too — counts must survive
+    # restarts and later profile edits); NULL = pre-upgrade row or resolution error.
+    ("provider_key", "provider_key TEXT"),
 )
 
 

@@ -1693,6 +1693,12 @@ export const frOverrides = {
       currentPill: 'Actuelle',
       primaryPill: 'Principale',
       managedPill: 'Cet appareil',
+      railVisibilityNote:
+        'Passerelles affichées dans le rail de profils de Sessions. Masquer une passerelle la retire uniquement du rail : elle reste enregistrée et accessible depuis ici et depuis le sélecteur de passerelle.',
+      railVisibilityLabel: (label: string) => `Afficher « ${label} » dans Sessions`,
+      railShownDesc: 'Affichée dans le rail de profils de Sessions.',
+      railHiddenDesc: 'Masquée du rail de profils de Sessions. Toujours accessible depuis ici.',
+      railHiddenPill: 'Masquée dans Sessions',
       addConnection: 'Ajouter une connexion',
       editConnection: 'Modifier',
       removeConnection: 'Supprimer',

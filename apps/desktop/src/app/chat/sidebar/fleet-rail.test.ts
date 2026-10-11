@@ -133,6 +133,32 @@ describe('buildRestGroups', () => {
     expect(groups.map(group => group.connectionId)).toEqual(['pandora', 'vps'])
   })
 
+  it('drops a gateway the user hid from the rail and keeps the ones they did not', () => {
+    // Regression for #96532: an app-managed "This device" the user never uses
+    // must be able to leave the fleet rail without any gateway becoming
+    // unreachable, so hiding is scoped to the rail and never to reachability.
+    const hidden = new Set(['local'])
+    const groups = buildRestGroups({ activeConnectionId: 'pandora', connections, roster, hidden })
+
+    expect(groups.map(group => group.connectionId)).toEqual(['vps'])
+    // The hidden gateway is still a registered source: reachability is not
+    // what changed, only which groups the rail paints.
+    expect(connections.map(connection => connection.id)).toContain('local')
+  })
+
+  it('never hides the gateway this window is actually running on', () => {
+    // The active source is the one door back to a working backend. Hiding is a
+    // rail preference, so it must not be able to hide the way out.
+    const groups = buildRestGroups({
+      activeConnectionId: 'local',
+      connections,
+      roster,
+      hidden: new Set(['local'])
+    })
+
+    expect(groups.map(group => group.connectionId)).toEqual(['pandora', 'vps'])
+  })
+
   it('counts every at-rest square for the condensed threshold', () => {
     const groups = buildRestGroups({ activeConnectionId: 'pandora', connections, roster })
 

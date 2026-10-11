@@ -25,6 +25,8 @@ import { $activeConnectionId, setConnectionsRegistry } from '@/store/connections
 import { refreshFleetRoster } from '@/store/fleet-roster'
 import { notify, notifyError } from '@/store/notifications'
 
+import { $gatewayGroupHidden, setGatewayGroupHidden } from '../chat/sidebar/gateway-group-preferences'
+
 import { EmptyState, ListRow, Pill, SectionHeading, SettingsBreadcrumbContext, ToggleRow } from './primitives'
 
 const KIND_ICONS: Record<DesktopConnectionKind, typeof Globe> = {
@@ -221,6 +223,9 @@ export function ConnectionsRegistrySection() {
   const { t } = useI18n()
   const s = t.settings.connections
   const activeConnectionId = useStore($activeConnectionId)
+  // Rail-visibility preference, read from the rail's own store so this page
+  // edits the same value the rail reads (no second copy to drift).
+  const hiddenGatewayIds = useStore($gatewayGroupHidden)
   const [registry, setRegistry] = useState<DesktopConnectionsRegistry | null>(null)
   const [loading, setLoading] = useState(true)
   const [editor, setEditor] = useState<EditorState | null>(null)
@@ -685,11 +690,37 @@ export function ConnectionsRegistrySection() {
                   {isCurrent && <Pill tone="primary">{s.currentPill}</Pill>}
                   {isPrimary && <Pill>{s.primaryPill}</Pill>}
                   {conn.kind === 'local' && <Pill>{s.managedPill}</Pill>}
+                  {hiddenGatewayIds.includes(conn.id) && <Pill>{s.railHiddenPill}</Pill>}
                 </span>
               }
             />
           )
         })
+      )}
+
+      {/* Rail visibility, only where a fleet rail exists at all: the strip
+          carries at-rest gateways only above one registration, so a single
+          gateway has nothing to hide and a toggle there would be a lie. The
+          Current row is disabled rather than hidden — the active gateway is
+          the one door back to a working backend, and the rail's own filter
+          already refuses to hide it, so the switch must not promise
+          otherwise. */}
+      {!loading && registry && registry.connections.length > 1 && (
+        <div className="mt-4 space-y-1 border-t border-border/60 pt-4">
+          <p className="mb-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+            {s.railVisibilityNote}
+          </p>
+          {sortedConnections.map(conn => (
+            <ToggleRow
+              checked={!hiddenGatewayIds.includes(conn.id)}
+              description={hiddenGatewayIds.includes(conn.id) ? s.railHiddenDesc : s.railShownDesc}
+              disabled={activeConnectionId === conn.id}
+              key={`rail-${conn.id}`}
+              label={s.railVisibilityLabel(conn.label)}
+              onChange={shown => setGatewayGroupHidden(conn.id, !shown)}
+            />
+          ))}
+        </div>
       )}
 
       {editor ? (

@@ -1344,6 +1344,12 @@ export const en: Translations = {
       currentPill: 'Current',
       primaryPill: 'Primary',
       managedPill: 'App-managed',
+      railVisibilityNote:
+        'Which gateways the Sessions profile rail shows. Hiding one only removes it from the rail — the gateway stays registered and stays reachable from here and from the gateway switcher.',
+      railVisibilityLabel: (label: string) => `Show “${label}” in Sessions`,
+      railShownDesc: 'Shown in the Sessions profile rail.',
+      railHiddenDesc: 'Hidden from the Sessions profile rail. Still reachable from here.',
+      railHiddenPill: 'Hidden in Sessions',
       addConnection: 'Add connection',
       editConnection: 'Edit',
       removeConnection: 'Remove',

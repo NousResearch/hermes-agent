@@ -1690,6 +1690,12 @@ export const deOverrides = {
       currentPill: 'Aktuell',
       primaryPill: 'Primär',
       managedPill: 'Von der App verwaltet',
+      railVisibilityNote:
+        'Welche Gateways die Profil-Leiste in Sessions anzeigt. Ein ausgeblendetes Gateway wird nur aus der Leiste entfernt – es bleibt registriert und ist weiterhin von hier und über die Gateway-Auswahl erreichbar.',
+      railVisibilityLabel: (label: string) => `„${label}“ in Sessions anzeigen`,
+      railShownDesc: 'Wird in der Profil-Leiste in Sessions angezeigt.',
+      railHiddenDesc: 'Aus der Profil-Leiste in Sessions ausgeblendet. Weiterhin von hier erreichbar.',
+      railHiddenPill: 'In Sessions ausgeblendet',
       addConnection: 'Verbindung hinzufügen',
       editConnection: 'Bearbeiten',
       removeConnection: 'Entfernen',

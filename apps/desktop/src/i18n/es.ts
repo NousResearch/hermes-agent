@@ -1689,6 +1689,12 @@ export const esOverrides = {
       currentPill: 'Actual',
       primaryPill: 'Principal',
       managedPill: 'Administrado por la app',
+      railVisibilityNote:
+        'Qué pasarelas muestra el carril de perfiles de Sessions. Ocultar una solo la quita del carril: la pasarela sigue registrada y accesible desde aquí y desde el selector de pasarelas.',
+      railVisibilityLabel: (label: string) => `Mostrar «${label}» en Sessions`,
+      railShownDesc: 'Visible en el carril de perfiles de Sessions.',
+      railHiddenDesc: 'Oculta del carril de perfiles de Sessions. Sigue accesible desde aquí.',
+      railHiddenPill: 'Oculta en Sessions',
       addConnection: 'Añadir conexión',
       editConnection: 'Editar',
       removeConnection: 'Quitar',

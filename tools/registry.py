@@ -22,6 +22,13 @@ from hermes_constants import hermes_home_key, normalize_scope
 
 logger = logging.getLogger(__name__)
 
+# Tool-module discovery imports each file once; a failed import means the tool is absent
+# from the registry for the rest of the process. Startup races (notably CPython's
+# _DeadlockError when the scan interleaves with another import thread) are transient, so
+# retry before giving up. Delays are short: startup latency matters more than patience.
+_IMPORT_MAX_ATTEMPTS = 3
+_IMPORT_RETRY_DELAY_SECONDS = 0.05
+
 # Cap on a tool error body; only trims runaway interpolated exceptions (static msgs are ~115 chars).
 _MAX_TOOL_ERROR_CHARS = 2048
 _TOOL_ERROR_TRUNCATION_MARKER = "… [truncated]"
@@ -133,11 +140,26 @@ def discover_builtin_tools(tools_dir: Optional[Path] = None) -> list[str]:
         _save_discovery_cache(fresh_cache)
     imported: list[str] = []
     for mod_name in module_names:
-        try:
-            importlib.import_module(mod_name)
-            imported.append(mod_name)
-        except Exception as e:
-            logger.warning("Could not import tool module %s: %s", mod_name, e)
+        # A tool module that fails to import is silently absent from the registry for the
+        # whole process — there is no second discovery pass. Most failures here are
+        # transient: at gateway startup the tools scan races the cron scheduler's own
+        # import thread, and CPython 3.14's import lock raises _DeadlockError
+        # ("deadlock detected by _ModuleLock") for a module another thread is
+        # mid-import. Treating that as permanent drops `cronjob_manage` until the next
+        # restart. Retry a few times, and only a still-failing module is dropped.
+        last_exc: Optional[BaseException] = None
+        for attempt in range(_IMPORT_MAX_ATTEMPTS):
+            try:
+                importlib.import_module(mod_name)
+                imported.append(mod_name)
+                last_exc = None
+                break
+            except Exception as e:
+                last_exc = e
+                if attempt + 1 < _IMPORT_MAX_ATTEMPTS:
+                    time.sleep(_IMPORT_RETRY_DELAY_SECONDS * (attempt + 1))
+        if last_exc is not None:
+            logger.warning("Could not import tool module %s: %s", mod_name, last_exc)
     return imported
 
 

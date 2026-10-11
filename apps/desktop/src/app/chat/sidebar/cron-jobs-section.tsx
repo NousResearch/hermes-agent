@@ -386,7 +386,7 @@ function CronJobSidebarRow({
               <DisclosureCaret
                 className={cn(
                   'shrink-0 text-(--ui-text-tertiary) transition',
-                  expanded ? 'opacity-100' : 'opacity-0 group-hover/cron:opacity-100'
+                  expanded ? 'opacity-100' : 'opacity-30 group-hover/cron:opacity-100'
                 )}
                 open={expanded}
               />

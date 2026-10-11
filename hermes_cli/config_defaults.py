@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- one new DEFAULT_CONFIG key (+ its user-facing docs) for gateway.windows_task_reconcile (#127977); this pure-data table is the canonical single home for config keys, and splitting the 3.2k-line defaults table is out of scope for this fix
 """Default configuration data for Hermes Agent: DEFAULT_CONFIG and OPTIONAL_ENV_VARS.
 
 Pure-data leaf module — must not import from hermes_cli.config. Comments are the user-facing
@@ -2098,6 +2099,13 @@ DEFAULT_CONFIG = {
         "export": {"otlp": {"enabled": False, "endpoint": "", "headers_env": {}}},
     },
     "gateway": {  # Gateway settings (messaging platforms: Telegram, Discord, Slack, ...).
+
+        # Set false when the Windows gateway Scheduled Task is deliberately registered in a custom
+        # shape (boot trigger, service-account principal, non-template launcher): start/update
+        # reconciliation then leaves the registration alone and status prints a neutral note
+        # instead of the repair hint. An explicit `hermes gateway install` still rewrites the
+        # task on demand. Unreadable config fails closed (no rewrite either).
+        "windows_task_reconcile": True,
 
         # Seconds to let a SIGTERM-interrupted gateway agent unwind before adapter/database
         # teardown. Keep short so service-manager shutdowns don't exhaust their stop budget.

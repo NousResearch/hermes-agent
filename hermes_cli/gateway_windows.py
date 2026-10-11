@@ -1443,9 +1443,37 @@ def scheduled_task_drift(task_name: str) -> list[str]:
     return compare_scheduled_task_drift(registered, template)
 
 
+def _skip_scheduled_task_reconcile() -> bool:
+    """True when the registration is operator-owned and must survive automatic replacement from
+    the stock template: ``gateway.windows_task_reconcile`` is false, or the policy cannot be read
+    (fail closed — an unreadable policy is not permission to rewrite the operator's task,
+    #127977). An explicit ``hermes gateway install`` remains the manual override either way."""
+    from hermes_cli.config import load_config
+
+    try:
+        policy = load_config().get("gateway", {}).get("windows_task_reconcile", True)
+    except Exception:
+        logger.warning(
+            "Scheduled Task reconcile policy unreadable; leaving the registration unchanged",
+            exc_info=True,
+        )
+        print(
+            "⚠ Scheduled Task reconcile policy unreadable; leaving the registration unchanged"
+        )
+        return True
+    if policy is False:
+        print(
+            "ℹ Scheduled Task registration left unchanged (gateway.windows_task_reconcile: false)"
+        )
+        return True
+    return False
+
+
 def _print_scheduled_task_drift(task_name: str) -> None:
     """Warn when the registered task predates the current template (status is read-only; the
     repair runs from ``start()`` / ``hermes update`` via ``reconcile_scheduled_task``)."""
+    if _skip_scheduled_task_reconcile():
+        return
     drift = scheduled_task_drift(task_name)
     if drift:
         print(f"⚠ Scheduled Task registration predates the current template ({'; '.join(drift)})")
@@ -1457,6 +1485,8 @@ def reconcile_scheduled_task(task_name: str) -> bool:
     of ``gateway.py::refresh_systemd_unit_if_needed``. Template hardening (``RestartOnFailure``, logon
     ``Delay``) otherwise only ever reaches fresh installs. False when aligned/unqueryable or when
     ``schtasks`` refused (typically Access Denied — the elevating ``hermes gateway install`` is the fallback)."""
+    if _skip_scheduled_task_reconcile():
+        return False
     drift = scheduled_task_drift(task_name)
     if not drift:
         return False

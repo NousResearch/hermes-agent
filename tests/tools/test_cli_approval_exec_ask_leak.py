@@ -229,11 +229,13 @@ class TestGatewayRunImportDoesNotSetExecAsk:
         script = rf"""
 import os, sys
 os.environ.pop("HERMES_EXEC_ASK", None)
+os.environ.pop("_HERMES_GATEWAY", None)
 sys.path.insert(0, {str(REPO_ROOT)!r})
 # Avoid starting the gateway; only import the module for _gateway_runner_ref
 # style side imports.
 import gateway.run  # noqa: F401
 print("EXEC_ASK=" + repr(os.environ.get("HERMES_EXEC_ASK")))
+print("GATEWAY_CONTEXT=" + repr(os.environ.get("_HERMES_GATEWAY")))
 """
         hermes_home = tmp_path / "import-test-home"
         proc = subprocess.run(
@@ -250,3 +252,4 @@ print("EXEC_ASK=" + repr(os.environ.get("HERMES_EXEC_ASK")))
         )
         assert proc.returncode == 0, proc.stderr
         assert "EXEC_ASK=None" in proc.stdout, proc.stdout + proc.stderr
+        assert "GATEWAY_CONTEXT=None" in proc.stdout, proc.stdout + proc.stderr

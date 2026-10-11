@@ -181,6 +181,7 @@ export const zh: Translations = {
 
   analytics: {
     period: "时间范围：",
+    all: "全部",
     totalTokens: "总 Token 数",
     totalSessions: "总会话数",
     apiCalls: "API 调用",

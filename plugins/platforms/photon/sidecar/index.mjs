@@ -67,6 +67,7 @@ import crypto from "node:crypto";
 import { once } from "node:events";
 import { patchSpectrumTs } from "./patch-spectrum-mixed-attachments.mjs";
 import { chooseSendFormat } from "./send-format.mjs";
+import { nonMessageItemType } from "./chat-items.mjs";
 import {
   classifyProbeRejection,
   createProbeMessageId,
@@ -641,6 +642,16 @@ async function acknowledgeInboundRead(message) {
 
 async function normalizeEvent(space, message) {
   try {
+    // Chat actions, renames and member changes are conversation events, not
+    // messages (see chat-items.mjs); drop them before they become a turn.
+    const skippedItemType = nonMessageItemType(message);
+    if (skippedItemType) {
+      console.error(
+        `photon-sidecar: ${skippedItemType} item is a conversation event, ` +
+          `not a message; not forwarded (id ${message.id ?? "unknown"})`
+      );
+      return null;
+    }
     const msgSpace = message.space || {};
     const ts = message.timestamp;
     return {

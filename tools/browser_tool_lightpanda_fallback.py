@@ -26,7 +26,7 @@ def _using_lightpanda_engine() -> bool:
     return _cloud._get_browser_engine() == "lightpanda"
 
 
-def lightpanda_engine_status() -> Tuple[bool, str]:
+def lightpanda_engine_status() -> tuple[bool, str]:
     """Whether ``browser.engine: lightpanda`` is actually in effect, and why.
 
     ``(False, "")`` when the engine isn't lightpanda; else the reason names the setting shadowing
@@ -65,7 +65,7 @@ def lightpanda_engine_status() -> Tuple[bool, str]:
     return True, "Browser Use mode: Hermes spawns `lightpanda serve` per session"
 
 
-def _lightpanda_fallback_reason(engine: str, command: str, result: Dict[str, Any]) -> Optional[str]:
+def _lightpanda_fallback_reason(engine: str, command: str, result: dict[str, Any]) -> Optional[str]:
     """User-visible reason a Lightpanda result needs the Chrome fallback (copied into the result), or None."""
     if engine != "lightpanda" or command not in _FALLBACK_ELIGIBLE:
         return None
@@ -87,12 +87,12 @@ def _lightpanda_fallback_reason(engine: str, command: str, result: Dict[str, Any
     return None
 
 
-def _needs_lightpanda_fallback(engine: str, command: str, result: Dict[str, Any]) -> bool:
+def _needs_lightpanda_fallback(engine: str, command: str, result: dict[str, Any]) -> bool:
     """Check if a Lightpanda result should trigger an automatic Chrome fallback."""
     return _lightpanda_fallback_reason(engine, command, result) is not None
 
 
-def _annotate_lightpanda_fallback(result: Dict[str, Any], reason: str) -> Dict[str, Any]:
+def _annotate_lightpanda_fallback(result: dict[str, Any], reason: str) -> dict[str, Any]:
     """Add a user-visible Chrome fallback warning to a browser command result."""
     warning = "⚠ Lightpanda fallback: Chrome was used for this browser action. " f"{reason}"
     fields = {"fallback_warning": warning, "browser_engine": "chrome",
@@ -106,7 +106,7 @@ def _annotate_lightpanda_fallback(result: Dict[str, Any], reason: str) -> Dict[s
     return annotated
 
 
-def _copy_fallback_warning(target: Dict[str, Any], result: Dict[str, Any]) -> Dict[str, Any]:
+def _copy_fallback_warning(target: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
     """Copy browser fallback metadata from an internal result into a tool response."""
     if result.get("fallback_warning"):
         target["fallback_warning"] = result["fallback_warning"]
@@ -115,7 +115,7 @@ def _copy_fallback_warning(target: Dict[str, Any], result: Dict[str, Any]) -> Di
     return target
 
 
-def _run_chrome_fallback_command(task_id: str, command: str, args: List[str], timeout: int) -> Dict[str, Any]:
+def _run_chrome_fallback_command(task_id: str, command: str, args: list[str], timeout: int) -> dict[str, Any]:
     """Run a browser command in a temporary Chrome session at the current URL.
 
     agent-browser locks the engine when a named daemon starts, so ``--engine chrome`` on the
@@ -144,16 +144,21 @@ def _run_chrome_fallback_command(task_id: str, command: str, args: List[str], ti
                     "pull the latest image: docker pull ghcr.io/nousresearch/hermes-agent:latest")
         else:
             hint = ("Chrome fallback requires Chromium, but it is missing. Install it with: "
-                    "npx agent-browser install --with-deps (or: npx playwright install --with-deps chromium)")
+                    "hermes pm install chromium")
         return {"success": False, "error": hint}
 
     base_args = _session._agent_browser_argv(browser_cmd) + ["--engine", "chrome", "--session", tmp_session, "--json"]
     task_socket_dir = _session._prepare_session_socket_dir(tmp_session)
-    # Bypasses _run_browser_command, so apply the same Chromium sandbox policy explicitly.
+    # Bypasses _run_browser_command, so apply the same Chromium sandbox/screen policy explicitly.
+    _session._ensure_screen_for_headed_chromium()
     browser_env = _session._agent_browser_command_env(task_socket_dir)
     _session._apply_chromium_sandbox_args(browser_env)
+    # #64867: the temp Chrome session is a background retry, so it launches
+    # headless on Windows even in headed mode (no --headed argv exists here to
+    # contradict; an explicit AGENT_BROWSER_HEADED is never overridden).
+    browser_env = _session.windows_headless_browser_options(browser_env)
 
-    def _run_tmp(cmd: str, cmd_args: List[str]) -> Dict[str, Any]:
+    def _run_tmp(cmd: str, cmd_args: list[str]) -> dict[str, Any]:
         proc = _session._popen_agent_browser(base_args + [cmd] + cmd_args, browser_env, task_socket_dir, cmd)
         stdout_path = os.path.join(task_socket_dir, f"_stdout_{cmd}")
         stderr_path = os.path.join(task_socket_dir, f"_stderr_{cmd}")
@@ -164,7 +169,7 @@ def _run_chrome_fallback_command(task_id: str, command: str, args: List[str], ti
             proc.wait()
             return {"success": False, "error": f"Chrome fallback '{cmd}' timed out"}
         try:
-            with open(stdout_path, encoding="utf-8") as f:
+            with open(stdout_path, encoding="utf-8-sig") as f:
                 stdout = f.read().strip()
             if stdout:
                 return json.loads(stdout.split("\n")[-1])
@@ -190,6 +195,6 @@ def _run_chrome_fallback_command(task_id: str, command: str, args: List[str], ti
         shutil.rmtree(task_socket_dir, ignore_errors=True)
 
 
-def _chrome_fallback_screenshot(task_id: str, args: List[str], timeout: int) -> Dict[str, Any]:
+def _chrome_fallback_screenshot(task_id: str, args: list[str], timeout: int) -> dict[str, Any]:
     """Take a screenshot using a temporary Chrome session."""
     return _run_chrome_fallback_command(task_id, "screenshot", args, timeout)

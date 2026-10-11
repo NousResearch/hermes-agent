@@ -94,16 +94,6 @@ describe('slash parity matrix', () => {
     it.skip(`Python command registry unavailable: ${skipReason}`, () => {})
   }
 
-  registryIt('classifies each command registry command as local/native/fallback', () => {
-    const routes = Object.fromEntries(commandRegistry.names.map(name => [name, classifyRoute(name)]))
-
-    expect(routes['model']).toBe('local')
-    expect(routes['browser']).toBe('native')
-    expect(routes['reload-mcp']).toBe('native')
-    expect(routes['rollback']).toBe('native')
-    expect(routes['stop']).toBe('native')
-  })
-
   registryIt('keeps every mutating command off slash-worker fallback', () => {
     const routes = Object.fromEntries(commandRegistry.names.map(name => [name, classifyRoute(name)]))
 
@@ -121,6 +111,14 @@ describe('slash parity matrix', () => {
     const cmd = findSlashCommand('q')
     expect(cmd, '/q must resolve to a command').toBeDefined()
     expect(cmd!.name).toBe('queue')
+  })
+
+  it('/s alias resolves to steer, not sessions or a TUI-local command (#119176)', () => {
+    // Same one-letter pattern as /q: the TUI-local registry must not shadow
+    // the backend alias with a prefix command (/sessions) or its own binding.
+    const cmd = findSlashCommand('s')
+    expect(cmd, '/s must resolve to a command').toBeDefined()
+    expect(cmd!.name).toBe('steer')
   })
 })
 

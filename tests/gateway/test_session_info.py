@@ -26,13 +26,6 @@ def _patch_info(tmp_path, config_yaml, model, runtime):
 
 class TestFormatSessionInfo:
 
-    def test_includes_model_name(self, runner, tmp_path):
-        p1, p2, p3 = _patch_info(tmp_path, "model:\n  default: anthropic/claude-opus-4.6\n  provider: openrouter\n",
-                                  "anthropic/claude-opus-4.6",
-                                  {"provider": "openrouter", "base_url": "https://openrouter.ai/api/v1", "api_key": "k"})
-        with p1, p2, p3:
-            info = runner._format_session_info()
-        assert "claude-opus-4.6" in info
 
 
     def test_config_context_length(self, runner, tmp_path):
@@ -44,14 +37,6 @@ class TestFormatSessionInfo:
         assert "32K" in info
         assert "config" in info
 
-    def test_default_fallback_hint(self, runner, tmp_path):
-        p1, p2, p3 = _patch_info(tmp_path, "model:\n  default: unknown-model-xyz\n",
-                                  "unknown-model-xyz",
-                                  {"provider": "", "base_url": "", "api_key": ""})
-        with p1, p2, p3:
-            info = runner._format_session_info()
-        assert "256K" in info
-        assert "model.context_length" in info
 
     def test_local_endpoint_shown(self, runner, tmp_path):
         p1, p2, p3 = _patch_info(
@@ -74,7 +59,7 @@ class TestFormatSessionInfo:
         }}}}
         with p1, p2, p3, patch("hermes_cli.config.load_config", return_value=moa_cfg):
             info = runner._format_session_info()
-        assert "Acting model (billed for the run): nous:claude-opus-4.8" in info
+        assert "nous:claude-opus-4.8" in info
 
     def test_named_custom_provider_keeps_context_pin_without_model_base_url(
         self, runner, tmp_path

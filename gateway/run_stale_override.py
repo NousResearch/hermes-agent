@@ -156,6 +156,7 @@ class GatewayStaleOverrideMixin:
         self, session_key: str, *, model: bool, reasoning: bool
     ) -> None:
         """Clear selected session overrides through their canonical stores."""
+        reset_generation = self._current_session_run_generation(session_key)
         if model:
             conversation = self._session_state(session_key).conversation
             conversation.model_override = None
@@ -171,6 +172,8 @@ class GatewayStaleOverrideMixin:
                     session_key,
                     exc_info=True,
                 )
+        if not self._is_session_run_current(session_key, reset_generation):
+            return
         if reasoning:
             self._set_session_reasoning_override(session_key, None)
         if model or reasoning:
@@ -202,6 +205,7 @@ class GatewayStaleOverrideMixin:
         self,
         event: MessageEvent,
         session_key: str,
+        *, run_generation: Optional[int] = None,
     ) -> tuple[bool, Optional[str]]:
         """Notify or hold the first ordinary message after an idle override."""
         metadata = getattr(event, "metadata", None)
@@ -216,6 +220,10 @@ class GatewayStaleOverrideMixin:
         if config is None or config.mode == "off":
             return False, None
 
+        if run_generation is None:
+            run_generation = self._current_session_run_generation(session_key)
+        if not self._is_session_run_current(session_key, run_generation):
+            return True, None
         from gateway.stale_override_notice import source_matches_channels
 
         home = None
@@ -238,6 +246,8 @@ class GatewayStaleOverrideMixin:
         except Exception:
             logger.debug("Failed to read stale-override completion clock", exc_info=True)
             return False, None
+        if not self._is_session_run_current(session_key, run_generation):
+            return True, None
         if idle_seconds < config.idle_minutes * 60:
             return False, None
 
@@ -249,6 +259,8 @@ class GatewayStaleOverrideMixin:
         except Exception:
             logger.debug("Failed stale-override reset-policy preflight", exc_info=True)
             return False, None
+        if not self._is_session_run_current(session_key, run_generation):
+            return True, None
         if getattr(session_entry, "was_auto_reset", False):
             logger.info(
                 "Skipping stale-override prompt because session auto-reset is pending "
@@ -342,6 +354,10 @@ class GatewayStaleOverrideMixin:
             )
 
         async def _on_choice_selected(_chat_id: str, value: str) -> str:
+            async with self._async_profile_scope_for_source(policy_source):
+                return await _apply_choice(value)
+
+        async def _apply_choice(value: str) -> str:
             pending = getattr(self, "_stale_override_pending", {}).get(session_key)
             if pending is None or pending.get("token") is not token:
                 return "Selection expired — the original message was not sent."
@@ -368,12 +384,15 @@ class GatewayStaleOverrideMixin:
                 reset_model,
                 reset_reasoning,
             )
+            choice_generation = self._current_session_run_generation(session_key)
             self._stale_override_pending.pop(session_key, None)
             await self._clear_stale_override_selection(
                 session_key,
                 model=reset_model,
                 reasoning=reset_reasoning,
             )
+            if not self._is_session_run_current(session_key, choice_generation):
+                return "Selection expired — the original message was not sent."
             held_event = pending["event"]
             if not isinstance(getattr(held_event, "metadata", None), dict):
                 held_event.metadata = {}
@@ -398,11 +417,20 @@ class GatewayStaleOverrideMixin:
                 on_choice_selected=_on_choice_selected,
                 metadata=send_metadata,
             )
+        except asyncio.CancelledError:
+            if pending_map.get(session_key, {}).get("token") is token:
+                pending_map.pop(session_key, None)
+            raise
         except Exception:
             logger.warning("Failed to send stale-override confirmation", exc_info=True)
             result = None
+        if not self._is_session_run_current(session_key, run_generation):
+            if pending_map.get(session_key, {}).get("token") is token:
+                pending_map.pop(session_key, None)
+            return True, None
         if not bool(getattr(result, "success", False)):
-            pending_map.pop(session_key, None)
+            if pending_map.get(session_key, {}).get("token") is token:
+                pending_map.pop(session_key, None)
             return False, None
 
         logger.info(

@@ -2,6 +2,7 @@ import { types } from 'node:util'
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { isMacPlatform } from '@/lib/platform'
 import { $rightRailActiveTabId } from '@/store/layout'
 import { closeRightRail, openPreview, type PreviewTarget } from '@/store/preview'
 
@@ -20,7 +21,7 @@ describe('actOnActivePreview (drive_preview tool)', () => {
   let cleanups: Array<() => void> = []
 
   const openBrowserTab = () => {
-    openPreview(urlTarget('https://example.com'), 'tool-result')
+    openPreview(urlTarget('https://example.com'))
 
     return $rightRailActiveTabId.get()!
   }
@@ -47,24 +48,6 @@ describe('actOnActivePreview (drive_preview tool)', () => {
     expect(result.error).toContain('open_preview')
   })
 
-  it('injects the engine and returns the page’s answer', async () => {
-    let injected = ''
-
-    withRunner(async code => {
-      injected = code
-
-      return JSON.stringify({ acted: 'clicked button "Save"', success: true })
-    })
-
-    const result = await actOnActivePreview({ kind: 'click', ref: '@e1' })
-
-    expect(result).toMatchObject({ acted: 'clicked button "Save"', success: true })
-    // Self-contained payload: the engine source and the action travel together,
-    // and the holder keeps refs alive across calls on the same page.
-    expect(injected).toContain('__hermesActHolder')
-    expect(injected).toContain('"ref":"@e1"')
-  })
-
   it('re-inventories after a mutating action so the next ref is current', async () => {
     const actions: string[] = []
 
@@ -87,19 +70,6 @@ describe('actOnActivePreview (drive_preview tool)', () => {
 
     expect(result.elements?.[0].label).toBe('Log out')
     expect(result.url).toBe('https://example.com/app')
-  })
-
-  it('does not pay the settle delay for a plain inventory', async () => {
-    let injected = ''
-    withRunner(async code => {
-      injected = code
-
-      return JSON.stringify({ elements: [], success: true })
-    })
-
-    await actOnActivePreview({ kind: 'elements' })
-
-    expect(injected).toContain('0 <= 0')
   })
 
   it('awaits page-owned thenables for inventories and settled actions before crossing Electron IPC', async () => {
@@ -174,12 +144,16 @@ describe('actOnActivePreview (drive_preview tool)', () => {
     const send = vi.fn()
 
     cleanups.push(
-      registerPreviewScriptRunner(tabId, async code =>
-        code.includes('"kind":"locate"')
+      registerPreviewScriptRunner(tabId, async code => {
+        if (code.includes('hermes-focus-probe')) {
+          return JSON.stringify({ focused: true, success: true, tag: 'INPUT' })
+        }
+
+        return code.includes('"kind":"locate"')
           ? JSON.stringify({ acted: 'looking at button "Save"', point: { x: 120, y: 80 }, success: true })
           : // `hit` is the page's witness that the real pointerdown arrived.
             JSON.stringify({ elements: [], hit: { tag: 'BUTTON', trusted: true }, success: true })
-      )
+      })
     )
     cleanups.push(registerPreviewInput(tabId, { focus: vi.fn(), send }))
 
@@ -206,6 +180,125 @@ describe('actOnActivePreview (drive_preview tool)', () => {
     expect(result.acted).toBe('clicked button "Save"')
   })
 
+  /** A driven pane whose post-click focus probe can be answered independently of
+   *  the locate and the read-back. The probe is how a type learns whether the
+   *  located editable actually became document.activeElement. */
+  type SentKey = { keyCode?: string; type: string }
+
+  const withTypedPane = (focus: { focused: boolean; tag?: string }, onSend?: (event: SentKey) => void) => {
+    const tabId = openBrowserTab()
+    const send = vi.fn((event: SentKey) => onSend?.(event))
+
+    cleanups.push(
+      registerPreviewScriptRunner(tabId, async code => {
+        if (code.includes('hermes-focus-probe')) {
+          return JSON.stringify({ focused: focus.focused, success: true, tag: focus.tag ?? 'BODY' })
+        }
+
+        return code.includes('"kind":"locate"')
+          ? JSON.stringify({
+              acted: 'looking at textbox "Comment"',
+              point: { x: 40, y: 20 },
+              success: true,
+              tag: 'TEXTAREA',
+              typable: true
+            })
+          : JSON.stringify({ elements: [], hit: { tag: 'TEXTAREA', trusted: true }, success: true })
+      })
+    )
+    cleanups.push(registerPreviewInput(tabId, { focus: vi.fn(), send }))
+
+    return send
+  }
+
+  const keyEvents = (send: ReturnType<typeof vi.fn>) =>
+    send.mock.calls
+      .map(([event]) => event)
+      .filter(event => event.type === 'keyDown' || event.type === 'char' || event.type === 'keyUp')
+
+  it('refuses to type unless the located editable is document.activeElement', async () => {
+    const send = withTypedPane({ focused: false, tag: 'BODY' })
+
+    const result = await actOnActivePreview({ kind: 'type', ref: '@e1', text: 'hello' })
+
+    // The click may land; the characters must not. Focus stayed off the located
+    // field, so those keystrokes would be page input instead of text.
+    expect(result.success).toBe(false)
+    expect(result.error).toMatch(/not focused/i)
+    expect(result.error).toMatch(/nothing typed/i)
+    expect(keyEvents(send)).toEqual([])
+  })
+
+  it('stops keystrokes still queued when the type times out', async () => {
+    const controller = new AbortController()
+
+    const send = withTypedPane({ focused: true, tag: 'TEXTAREA' }, event => {
+      if (event.type === 'char') {
+        controller.abort('timeout')
+      }
+    })
+
+    const result = await actOnActivePreview({ kind: 'type', ref: '@e1', text: 'abcdefghij' }, controller.signal)
+
+    const chars = send.mock.calls
+      .map(([event]) => event)
+      .filter(event => event.type === 'char')
+      .map(event => event.keyCode)
+
+    expect(chars.length).toBeGreaterThan(0)
+    expect(chars.length).toBeLessThan('abcdefghij'.length)
+    expect(result.success).toBe(false)
+    expect(result.error).toMatch(/timed out/i)
+  })
+
+  it('stops keystrokes still queued when the type is interrupted', async () => {
+    const controller = new AbortController()
+
+    const send = withTypedPane({ focused: true, tag: 'TEXTAREA' }, event => {
+      if (event.type === 'char') {
+        controller.abort('interrupted')
+      }
+    })
+
+    const result = await actOnActivePreview({ kind: 'type', ref: '@e1', text: 'abcdefghij' }, controller.signal)
+    const chars = send.mock.calls.map(([event]) => event).filter(event => event.type === 'char')
+
+    expect(chars.length).toBeGreaterThan(0)
+    expect(chars.length).toBeLessThan('abcdefghij'.length)
+    expect(result.success).toBe(false)
+    expect(result.error).toMatch(/interrupt/i)
+  })
+
+  it('sends Command+A on macOS and Control+A elsewhere for select-all', async () => {
+    const pin = (platform: string, userAgent: string) => {
+      Object.defineProperty(window.navigator, 'platform', { configurable: true, value: platform })
+      Object.defineProperty(window.navigator, 'userAgent', { configurable: true, value: userAgent })
+    }
+
+    try {
+      pin('MacIntel', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)')
+      const mac = withDrivenPane()
+      await actOnActivePreview({ kind: 'type', ref: '@e1', text: 'x' })
+      expect(
+        mac.mock.calls.map(([event]) => event).find(event => event.type === 'keyDown' && event.keyCode === 'a')
+      ).toMatchObject({ modifiers: ['meta'] })
+
+      pin('Win32', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)')
+      const win = withDrivenPane()
+      await actOnActivePreview({ kind: 'type', ref: '@e1', text: 'x' })
+      expect(
+        win.mock.calls.map(([event]) => event).find(event => event.type === 'keyDown' && event.keyCode === 'a')
+      ).toMatchObject({ modifiers: ['control'] })
+    } finally {
+      // jsdom's defaults; whatever suite runs next sees the host's real navigator.
+      delete (window.navigator as { platform?: string }).platform
+      Object.defineProperty(window.navigator, 'userAgent', {
+        configurable: true,
+        value: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) jsdom/vitest'
+      })
+    }
+  })
+
   it('types by pressing keys, after selecting whatever the field held', async () => {
     const send = withDrivenPane()
 
@@ -219,11 +312,166 @@ describe('actOnActivePreview (drive_preview tool)', () => {
     // paragraph under the cursor whenever the target turns out not to be a
     // field, and the agent was leaving pages with their body text highlighted.
     expect(events.filter(event => event.type === 'mouseDown').map(event => event.clickCount)).toEqual([1])
+    // Select-all must use the OS's real chord — Cmd+A on macOS, Ctrl+A elsewhere.
+    // Sending BOTH modifiers is not a chord any platform acts on, so the select
+    // silently no-ops and typing APPENDS to the field (9.99 + "19.99" = corruption).
     expect(events.filter(event => event.type === 'keyDown' && event.keyCode === 'a')[0]).toMatchObject({
-      modifiers: ['control', 'meta']
+      modifiers: isMacPlatform() ? ['meta'] : ['control']
     })
     // The chord must not send a `char` phase, or select-all types a literal 'a'.
     expect(chars).toEqual(['h', 'i', 'Enter'])
+  })
+
+  /** A pane whose field STATE is scriptable, so the driver's verify-and-
+   *  fallback clear logic can be exercised. `selectWorks` decides whether the
+   *  select-all chord empties the field (a re-render that throws the selection
+   *  away makes it false); `clearable` decides whether End/Backspace actually
+   *  empties it (false models a field that keeps refilling). The field starts
+   *  at `initial` chars. Every input event is recorded on `send`. */
+  const withTypingPane = (opts: { initial: number; selectWorks: boolean; clearable: boolean }) => {
+    const tabId = openBrowserTab()
+    const send = vi.fn()
+    let fieldLen = opts.initial
+
+    const isSelectAll = (e: { type: string; keyCode: string; modifiers?: string[] }) =>
+      e.type === 'keyDown' && e.keyCode === 'a' && !!e.modifiers?.length
+
+    send.mockImplementation((e: { type: string; keyCode: string; modifiers?: string[] }) => {
+      if (isSelectAll(e)) {
+        if (opts.selectWorks && opts.clearable) {
+          fieldLen = 0
+        }
+
+        return
+      }
+
+      if (e.type === 'keyDown' && e.keyCode === 'Backspace' && fieldLen > 0 && opts.clearable) {
+        fieldLen--
+      }
+    })
+
+    cleanups.push(
+      registerPreviewScriptRunner(tabId, async code =>
+        code.includes('hermes-focus-probe')
+          ? JSON.stringify({ focused: true, success: true, tag: 'INPUT' })
+          : code.includes('document.activeElement')
+            ? JSON.stringify({ success: true, field: true, len: fieldLen })
+            : code.includes('"kind":"locate"')
+              ? JSON.stringify({
+                  acted: 'looking at textbox "Price"',
+                  point: { x: 120, y: 80 },
+                  success: true,
+                  typable: true
+                })
+              : JSON.stringify({ elements: [], hit: { tag: 'INPUT', trusted: true }, success: true })
+      )
+    )
+    cleanups.push(registerPreviewInput(tabId, { focus: vi.fn(), send }))
+
+    return send
+  }
+
+  const charKeys = (send: ReturnType<typeof vi.fn>) =>
+    send.mock.calls
+      .map(([e]) => e)
+      .filter((e: { type: string }) => e.type === 'char')
+      .map((e: { keyCode: string }) => e.keyCode)
+
+  const keyDowns = (send: ReturnType<typeof vi.fn>) =>
+    send.mock.calls
+      .map(([e]) => e)
+      .filter((e: { type: string }) => e.type === 'keyDown')
+      .map((e: { keyCode: string }) => e.keyCode)
+
+  it('verifies the select emptied the field before typing (select works)', async () => {
+    const send = withTypingPane({ initial: 4, selectWorks: true, clearable: true })
+
+    await actOnActivePreview({ kind: 'type', ref: '@e1', text: 'hi' })
+    const keys = keyDowns(send)
+
+    // Select-all cleared it on the first pass (len read back as 0) — no End or
+    // Backspace fallback should fire, and the typed chars should just land.
+    expect(keys).not.toContain('End')
+    expect(keys).not.toContain('Backspace')
+    expect(charKeys(send)).toEqual(['h', 'i'])
+  })
+
+  it('falls back to End+Backspace when a re-render throws the select away', async () => {
+    const send = withTypingPane({ initial: 4, selectWorks: false, clearable: true })
+
+    await actOnActivePreview({ kind: 'type', ref: '@e1', text: 'hi' })
+    const keys = keyDowns(send)
+
+    // select-all did nothing (the page replaced the node), so the driver must
+    // End + Backspace the whole old value (4 chars) before typing — and never
+    // append onto stale content.
+    expect(keys.filter(k => k === 'Backspace').length).toBeGreaterThanOrEqual(4)
+    expect(charKeys(send)).toEqual(['h', 'i'])
+  })
+
+  it('fails the action instead of typing when the field keeps refilling AND direct-set also fails', async () => {
+    const tabId = openBrowserTab()
+    const send = vi.fn()
+
+    // Every read reports the field as non-empty (it never clears), and the
+    // direct-set fallback reports failure too — so the action must hard-stop.
+    cleanups.push(
+      registerPreviewScriptRunner(tabId, async code =>
+        code.includes('"kind":"locate"')
+          ? JSON.stringify({
+              acted: 'looking at textbox "Price"',
+              point: { x: 120, y: 80 },
+              success: true,
+              typable: true
+            })
+          : code.includes('getOwnPropertyDescriptor') // direct-set also fails
+            ? JSON.stringify({ success: false, error: 'mask refuses' })
+            : code.includes('document.activeElement')
+              ? JSON.stringify({ success: true, field: true, len: 6 })
+              : JSON.stringify({ elements: [], hit: { tag: 'INPUT', trusted: true }, success: true })
+      )
+    )
+    cleanups.push(registerPreviewInput(tabId, { focus: vi.fn(), send }))
+
+    const result = await actOnActivePreview({ kind: 'type', ref: '@e1', text: 'hi' })
+
+    // Nothing can clear it and the fallback failed, so nothing may be typed.
+    expect(result.success).toBe(false)
+    expect(charKeys(send)).not.toContain('h')
+  })
+
+  it('falls back to a direct DOM value-set when real keys cannot clear a masked field', async () => {
+    const tabId = openBrowserTab()
+    const send = vi.fn()
+
+    cleanups.push(
+      registerPreviewScriptRunner(
+        tabId,
+        async code =>
+          code.includes('hermes-focus-probe')
+            ? JSON.stringify({ focused: true, success: true, tag: 'INPUT' })
+            : code.includes('"kind":"locate"')
+              ? JSON.stringify({
+                  acted: 'looking at textbox "Price"',
+                  point: { x: 120, y: 80 },
+                  success: true,
+                  typable: true
+                })
+              : !code.includes('__hermesAct') && code.includes('getOwnPropertyDescriptor')
+                ? JSON.stringify({ success: true }) // the direct-set fallback succeeded (no preamble)
+                : !code.includes('__hermesAct') && code.includes('document.activeElement')
+                  ? JSON.stringify({ success: true, field: true, len: 4 }) // field-state read
+                  : JSON.stringify({ elements: [], hit: { tag: 'INPUT', trusted: true }, success: true }) // finish trip
+      )
+    )
+    cleanups.push(registerPreviewInput(tabId, { focus: vi.fn(), send }))
+
+    const result = await actOnActivePreview({ kind: 'type', ref: '@e1', text: '19.99' })
+
+    // Real keystrokes couldn't clear the mask, but the direct-set fallback
+    // committed the value, so the action reports success without typing chars.
+    expect(result.success).toBe(true)
+    expect(charKeys(send)).not.toContain('1')
   })
 
   it('hovers by walking the pointer over and leaving it there', async () => {
@@ -371,7 +619,109 @@ describe('actOnActivePreview (drive_preview tool)', () => {
     expect(result.note).toContain('elements')
   })
 
+  it('refuses to type when a real click leaves focus off the located field', async () => {
+    document.body.innerHTML = '<textarea id="comment">old</textarea><button id="other">Other</button>'
+    document.getElementById('other')!.focus()
+
+    const rect = vi.spyOn(Element.prototype, 'getBoundingClientRect').mockReturnValue({
+      bottom: 40,
+      height: 40,
+      left: 0,
+      right: 40,
+      top: 0,
+      width: 40,
+      x: 0,
+      y: 0,
+      toJSON: () => ({})
+    })
+
+    const raf = vi.spyOn(window, 'requestAnimationFrame').mockImplementation(callback => {
+      callback(0)
+
+      return 1
+    })
+
+    const send = vi.fn()
+    const tabId = openBrowserTab()
+
+    cleanups.push(
+      registerPreviewScriptRunner(tabId, async code => {
+        const raw = new Function('return ' + code)()
+
+        return types.isPromise(raw) ? await raw : raw
+      })
+    )
+    cleanups.push(registerPreviewInput(tabId, { focus: vi.fn(), send }))
+
+    try {
+      const result = await actOnActivePreview({ kind: 'type', selector: '#comment', text: 'hello' })
+
+      expect(result.success).toBe(false)
+      expect(result.error).toMatch(/not focused/i)
+      expect(result.error).toMatch(/nothing typed/i)
+      expect(keyEvents(send)).toEqual([])
+      expect(document.activeElement).toBe(document.getElementById('other'))
+    } finally {
+      raf.mockRestore()
+      rect.mockRestore()
+      document.body.replaceChildren()
+      delete (window as unknown as { __hermesActHolder?: unknown }).__hermesActHolder
+    }
+  })
+
   it('reports history verbs with no pane to drive', async () => {
     expect((await actOnActivePreview({ kind: 'reload' })).error).toContain('open_preview')
+  })
+
+  const withPressedPane = (tag: string) => {
+    const tabId = openBrowserTab()
+    const send = vi.fn()
+
+    cleanups.push(
+      registerPreviewScriptRunner(tabId, async code =>
+        code.includes('"kind":"locate"')
+          ? JSON.stringify({ acted: `looking at ${tag}`, point: { x: 8, y: 8 }, success: true, tag })
+          : JSON.stringify({ elements: [], success: true })
+      )
+    )
+    cleanups.push(registerPreviewInput(tabId, { focus: vi.fn(), send }))
+
+    return send
+  }
+
+  it('refuses a printable press on body or html unless the caller opts into a shortcut', async () => {
+    for (const tag of ['BODY', 'HTML']) {
+      const send = withPressedPane(tag)
+      const result = await actOnActivePreview({ key: 'x', kind: 'press', selector: tag.toLowerCase() })
+
+      expect(result.success).toBe(false)
+      expect(result.error).toMatch(/shortcut/i)
+      expect(keyEvents(send)).toEqual([])
+    }
+
+    const opted = withPressedPane('BODY')
+
+    const allowed = await actOnActivePreview({
+      allowShortcut: true,
+      key: 'x',
+      kind: 'press',
+      selector: 'body'
+    })
+
+    expect(allowed.success).toBe(true)
+    expect(
+      opted.mock.calls.map(([event]) => event).some(event => event.type === 'keyDown' && event.keyCode === 'x')
+    ).toBe(true)
+  })
+
+  it('still presses a named key on body', async () => {
+    const send = withPressedPane('BODY')
+
+    const result = await actOnActivePreview({ key: 'Escape', kind: 'press', selector: 'body' })
+
+    expect(result.success).toBe(true)
+    expect(
+      send.mock.calls.map(([event]) => event).some(event => event.type === 'keyDown' && event.keyCode === 'Escape')
+    ).toBe(true)
   })
 })

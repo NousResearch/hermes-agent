@@ -29,9 +29,10 @@ import {
   Wrench
 } from '@/lib/icons'
 
-import { APPEARANCE_SUBPAGES, appearanceSubpageForSetting } from './appearance-subpages'
+import { APPEARANCE_SUBPAGES } from './appearance-subpages'
 import { CONFIG_SUBPAGES, configSubpageForField } from './config-subpages'
 import { OTHER_SUBPAGES } from './other-subpages'
+import { settingDefinition } from './settings-manifest'
 import type { SettingsView } from './types'
 
 export interface SettingsSubpage {
@@ -40,23 +41,51 @@ export interface SettingsSubpage {
 }
 
 const SUBPAGE_ICONS: Record<string, IconComponent> = {
-  appearanceTheme: Palette, appearanceTypography: CircleLetterA,
-  appearanceWindowLayout: Monitor, appearanceChatDisplay: MessageCircle,
-  appearancePet: PawPrint, appearanceGeneral: Settings2,
-  modelMain: Box, modelAuxiliary: Cpu, modelMoa: Users, modelFallbacks: Box,
-  chatBehavior: MessageCircle, chatAttachments: FileImage,
-  workspaceProjects: FolderOpen, workspaceShell: Terminal, workspaceFiles: FileText,
-  safetyApprovals: ShieldLock, safetyPrivacy: Lock, safetyCheckpoints: Archive,
-  browserProfile: Globe, browserNetwork: Network,
-  memoryPersistent: Brain, memoryContext: FileText,
-  voiceConversation: Mic, voiceTranscription: FileText, voiceSpeech: Volume2,
-  advancedRuntime: Cpu, advancedTools: Wrench, advancedTerminal: Terminal,
-  advancedOutput: FileText, advancedDelegation: Users, advancedDesktop: Monitor,
-  gatewayConnection: Monitor, gatewayDevices: Network, gatewayManagedUpdates: Download,
-  keyboardShortcuts: Keyboard, screenCapture: FileImage,
-  notificationAlerts: Bell, notificationSounds: Volume2,
-  archivedSessions: Archive, defaultDirectory: FolderOpen,
-  vaultCredentials: KeyRound, vaultSources: Lock, appUpdates: Download, uninstall: Trash2
+  appearanceTheme: Palette,
+  appearanceTypography: CircleLetterA,
+  appearanceWindowLayout: Monitor,
+  appearanceChatDisplay: MessageCircle,
+  appearancePet: PawPrint,
+  appearanceGeneral: Settings2,
+  modelMain: Box,
+  modelAuxiliary: Cpu,
+  modelMoa: Users,
+  modelFallbacks: Box,
+  chatBehavior: MessageCircle,
+  chatAttachments: FileImage,
+  workspaceProjects: FolderOpen,
+  workspaceShell: Terminal,
+  workspaceFiles: FileText,
+  safetyApprovals: ShieldLock,
+  safetyPrivacy: Lock,
+  safetyCheckpoints: Archive,
+  browserProfile: Globe,
+  browserNetwork: Network,
+  memoryPersistent: Brain,
+  memoryContext: FileText,
+  voiceConversation: Mic,
+  voiceTranscription: FileText,
+  voiceSpeech: Volume2,
+  advancedRuntime: Cpu,
+  advancedTools: Wrench,
+  advancedTerminal: Terminal,
+  advancedOutput: FileText,
+  advancedDelegation: Users,
+  advancedDesktop: Monitor,
+  gatewayConnection: Monitor,
+  gatewayDevices: Network,
+  gatewayManagedUpdates: Download,
+  keyboardShortcuts: Keyboard,
+  hudGesture: Keyboard,
+  screenCapture: FileImage,
+  notificationAlerts: Bell,
+  notificationSounds: Volume2,
+  archivedSessions: Archive,
+  defaultDirectory: FolderOpen,
+  vaultCredentials: KeyRound,
+  vaultSources: Lock,
+  appUpdates: Download,
+  uninstall: Trash2
 }
 
 export function settingsSubpageIcon(page: SettingsSubpage, fallback: IconComponent): IconComponent {
@@ -77,8 +106,8 @@ export function settingsSubpages(view: SettingsView): readonly SettingsSubpage[]
 
 /** Shared by search serialization and saved links that predate subpages. */
 export function settingsSubpageForTarget(view: SettingsView, field?: string, setting?: string): string | undefined {
-  if (view === 'config:appearance' && setting) {
-    return appearanceSubpageForSetting(setting)
+  if (setting) {
+    return settingDefinition(view, setting)?.subpage
   }
 
   if (view.startsWith('config:') && field) {

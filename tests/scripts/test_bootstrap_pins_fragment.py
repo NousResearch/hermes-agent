@@ -9,5 +9,6 @@ def test_fragments_match_the_pin_table():
     result = subprocess.run(
         [sys.executable, str(root / "scripts/gen-bootstrap-pins.py"), "--check"],
         cwd=root, capture_output=True, text=True, timeout=60,
+        check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr

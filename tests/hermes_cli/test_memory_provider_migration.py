@@ -70,10 +70,11 @@ def test_startup_recovery_attempts_each_profile_home(tmp_path, monkeypatch):
         (profile_home / "config.yaml").write_text("memory:\n  provider: twin\n", encoding="utf-8")
     monkeypatch.setattr(mig, "_attempted", set())
     monkeypatch.setattr(mig, "catalog_source", lambda name: name)
+    monkeypatch.setattr(mig, "_LEFT_CORE", frozenset({"twin"}))
     monkeypatch.setattr(pm_install, "lazy_installs_allowed", lambda: True)
     installed = []
 
-    def fake_installer(profile_home):
+    def fake_installer(profile_home, **_kw):
         def install(name):
             plugin_dir = profile_home / "plugins" / name
             plugin_dir.mkdir(parents=True)
@@ -122,6 +123,36 @@ def test_unattended_migration_install_carries_lazy_install_consent(tmp_path, mon
     assert mig._install_into(tmp_path)(name) == {"ok": True}
     assert seen["catalog_name"] == name
     assert seen.get("assume_deps_consent", False) is consent
+
+
+@pytest.mark.parametrize(("name", "installs"), [("hindsight", True), ("someplugin", False)])
+def test_startup_recovery_never_asks_a_dependency_question(tmp_path, monkeypatch, name, installs):
+    """Agent init cannot answer a prompt: in the CLI the question hangs the turn behind the chat input,
+    with no terminal it is refused on every process start. A provider that shipped in core installs
+    with its built-in's consent even on a terminal; any other one is not attempted and names the command."""
+    import io
+
+    from hermes_cli import plugins_cmd
+    from pm import install as pm_install
+
+    class _Tty(io.StringIO):
+        def isatty(self):
+            return True
+
+    (tmp_path / "config.yaml").write_text(f"memory:\n  provider: {name}\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("sys.stdin", _Tty())
+    monkeypatch.setattr("sys.stdout", _Tty())
+    monkeypatch.setattr(mig, "_attempted", set())
+    monkeypatch.setattr(mig, "catalog_source", lambda n: n)
+    monkeypatch.setattr(pm_install, "lazy_installs_allowed", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda *_a: pytest.fail("agent init asked a question"))
+    seen: list[dict] = []
+    monkeypatch.setattr(plugins_cmd, "dashboard_install_plugin", lambda *a, **kw: seen.append(kw) or {"ok": False})
+    said: list[str] = []
+    mig.recover_at_startup(name, say=said.append)
+    assert [kw["assume_deps_consent"] for kw in seen] == ([True] if installs else [])
+    assert installs or f"`hermes plugins install {name}`" in said[-1]
 
 
 def test_update_asks_once_and_names_each_profile(tmp_path, monkeypatch):
@@ -261,3 +292,26 @@ def test_recovery_copy_without_a_catalog_memory_entry_keeps_the_generic_hint(tmp
     assert mig.catalog_install_hint("no-such-provider") is None
     doctor_state._memory_provider_generic("no-such-provider")
     assert "run: hermes memory setup" in capsys.readouterr().out
+
+
+def test_startup_recovery_backs_off_after_a_failed_install(tmp_path, monkeypatch):
+    """A failed agent-start install is not retried by every following process start (each `hermes chat`,
+    cron run, Desktop restart): one failure, then a quiet hour; `hermes update` still retries."""
+    from pm import install as pm_install
+
+    (tmp_path / "config.yaml").write_text("memory:\n  provider: hindsight\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(mig, "catalog_source", lambda n: n)
+    monkeypatch.setattr(pm_install, "lazy_installs_allowed", lambda: True)
+    attempts: list[str] = []
+    monkeypatch.setattr(mig, "_install_into", lambda home, **_kw: (lambda n: attempts.append(n) or {"ok": False, "error": "uv lock exited 1"}))
+    said: list[str] = []
+    for _process in range(3):
+        monkeypatch.setattr(mig, "_attempted", set())  # a fresh process each time
+        assert mig.recover_at_startup("hindsight", say=said.append) is False
+    assert attempts == ["hindsight"]
+    assert "`hermes plugins install hindsight`" in said[-1]  # still told memory is off, and the fix
+    monkeypatch.setattr(mig, "STARTUP_RETRY_SECONDS", 0.0)
+    monkeypatch.setattr(mig, "_attempted", set())
+    mig.recover_at_startup("hindsight")
+    assert attempts == ["hindsight", "hindsight"]

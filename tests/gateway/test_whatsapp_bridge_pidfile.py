@@ -103,7 +103,7 @@ class TestKillPortProcess:
         # A separate process holding a *client* connection to that port.
         client = subprocess.Popen([
             sys.executable, "-c",
-            "import socket,time; c=socket.create_connection(('127.0.0.1',%d)); time.sleep(0.2)" % port,
+            f"import socket,time; c=socket.create_connection(('127.0.0.1',{port:d})); time.sleep(0.2)",
         ])
         try:
             conn, _ = srv.accept()  # establish the client connection

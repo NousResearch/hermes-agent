@@ -221,6 +221,18 @@ def test_activation_is_not_gated_on_plugins_enabled(tmp_path, monkeypatch):
     assert memory_plugins.load_memory_provider("gatedmem") is not None
 
 
+def test_provider_registered_past_the_first_8kb_is_discovered(tmp_path, monkeypatch):
+    """A long module docstring must not push the registration out of discovery's view."""
+    provider = tmp_path / "plugins" / "longdoc"
+    provider.mkdir(parents=True)
+    docstring = '"""' + "Plain prose about storage.\n" * 400 + '"""\n'  # ~10.8 KB, no contract tokens
+    (provider / "__init__.py").write_text(docstring + PROVIDER_SOURCE.format(name="longdoc"), encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    assert "longdoc" in memory_plugins.list_memory_provider_names()
+    assert memory_plugins.find_provider_dir("longdoc") == provider
+
+
 def test_unreadable_user_plugin_does_not_abort_memory_discovery(tmp_path, monkeypatch):
     """One mode-000 / ACL-denied ``$HERMES_HOME/plugins/<x>`` must not hide the bundled
     providers or its readable siblings from the dashboard / ``hermes memory`` pickers (#111804)."""

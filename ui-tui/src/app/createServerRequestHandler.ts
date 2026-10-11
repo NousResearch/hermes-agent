@@ -76,7 +76,7 @@ export function createServerRequestHandler(ctx: ServerRequestHandlerContext): (r
       case 'approval': {
         patchOverlayState({
           approval: {
-            // Only an explicit false (tirith warning) drops the permanent-allow option.
+            // Only an explicit false drops the permanent-allow option.
             allowPermanent: p.allow_permanent !== false,
             choices: strList(p.choices) ?? undefined,
             command: str(p.command),

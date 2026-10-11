@@ -41,6 +41,7 @@ fi
         env=dict(os.environ, HELPER=str(HELPER), CLI=str(cli), HELP_TEXT=help_text,
                  EXPECT_BRANCH="1" if "--branch NAME" in help_text else "0"),
         capture_output=True, text=True, timeout=30,
+        check=False,
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip().endswith(expected)
@@ -56,6 +57,7 @@ def test_installed_cli_help_drives_explicit_staged_branch(tmp_path):
     help_result = subprocess.run(
         [sys.executable, "-m", "hermes_cli.main", "update", "--help"],
         cwd=REPO_ROOT, env=env, capture_output=True, text=True, timeout=60,
+        check=False,
     )
     assert help_result.returncode == 0, help_result.stderr
     cli = tmp_path / "installed hermes"
@@ -75,6 +77,7 @@ printf 'selected staged main: %s\\n' "$*"
         env=dict(env, HELPER=str(HELPER), SOURCE_BUILD_ENV=str(SOURCE_BUILD_ENV),
                  CLI=str(cli), HELP_TEXT=help_result.stdout),
         cwd=REPO_ROOT, capture_output=True, text=True, timeout=30,
+        check=False,
     )
     assert result.returncode == 0, result.stderr
     assert "selected staged main: --yes --branch main" in result.stdout

@@ -26,7 +26,7 @@ from typing import Any, Callable, Dict, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 
-def _bound_identity() -> Tuple[Optional[str], Optional[str], Optional[str]]:
+def _bound_identity() -> tuple[Optional[str], Optional[str], Optional[str]]:
     """(session_id, principal_id, transport_family) from the session context."""
     from gateway.session_context import get_session_env
 
@@ -64,7 +64,7 @@ def extension_controller_available(action: str) -> bool:
 
 
 def route_browser_tool(
-    action: str, args: Dict[str, Any], *, fallback: Callable[[], Any], broker: Any, enabled: bool,
+    action: str, args: dict[str, Any], *, fallback: Callable[[], Any], broker: Any, enabled: bool,
     session_id: Optional[str] = None, task_id: Optional[str] = None, principal_id: Optional[str] = None,
     transport_family: Optional[str] = None, tool_call_id: Optional[str] = "",
 ) -> Any:
@@ -110,7 +110,7 @@ def current_tool_call_id() -> str:
 
 
 def routed_browser_handler(
-    action: str, args: Dict[str, Any], *, fallback: Callable[[], Any], task_id: Optional[str] = None,
+    action: str, args: dict[str, Any], *, fallback: Callable[[], Any], task_id: Optional[str] = None,
     session_id: Optional[str] = None, principal_id: Optional[str] = None,
     transport_family: Optional[str] = None, tool_call_id: Optional[str] = None,
 ) -> Any:

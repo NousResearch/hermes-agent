@@ -82,7 +82,7 @@ def _load_plugin_config() -> dict:
     try:
         from hermes_cli.config import load_config_readonly  # canonical: managed-scope overlay + ${VAR} expansion
         return cfg_get(load_config_readonly(), "plugins", "hermes-memory-store", default={}) or {}
-    except Exception:
+    except Exception:  # health: allow BLE001 -- restored verbatim by the revert of #136424; this provider leaves core on Oct 15
         return {}
 
 
@@ -153,7 +153,7 @@ class HolographicMemoryProvider(MemoryProvider):
             return ""
         try:
             total = self._store._conn.execute("SELECT COUNT(*) FROM facts").fetchone()[0]
-        except Exception:
+        except Exception:  # health: allow BLE001 -- restored verbatim by the revert of #136424; this provider leaves core on Oct 15
             total = 0
         body = ("Active. Empty fact store — proactively add facts the user would expect you to remember.\n"
                 "Use fact_store(action='add') to store durable structured facts about people, projects, preferences, decisions.\n"
@@ -169,24 +169,24 @@ class HolographicMemoryProvider(MemoryProvider):
             results = self._retriever.search(query, min_trust=self._min_trust, limit=5)
             lines = [f"- [{r.get('trust_score', r.get('trust', 0)):.1f}] {r.get('content', '')}" for r in results]
             return "## Holographic Memory\n" + "\n".join(lines) if results else ""
-        except Exception as e:
+        except Exception as e:  # health: allow BLE001 -- restored verbatim by the revert of #136424; this provider leaves core on Oct 15
             logger.debug("Holographic prefetch failed: %s", e)
             return ""
 
-    def get_tool_schemas(self) -> List[Dict[str, Any]]:
+    def get_tool_schemas(self) -> list[dict[str, Any]]:
         return [FACT_STORE_SCHEMA, FACT_FEEDBACK_SCHEMA]
 
-    def handle_tool_call(self, tool_name: str, args: Dict[str, Any], **kwargs) -> str:
+    def handle_tool_call(self, tool_name: str, args: dict[str, Any], **kwargs) -> str:
         if tool_name not in self._TOOL_HANDLERS:
             return tool_error(f"Unknown tool: {tool_name}")
         try:
             return self._TOOL_HANDLERS[tool_name](self, args)
         except KeyError as exc:
             return tool_error(f"Missing required argument: {exc}")
-        except Exception as exc:
+        except Exception as exc:  # health: allow BLE001 -- restored verbatim by the revert of #136424; this provider leaves core on Oct 15
             return tool_error(str(exc))
 
-    def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
+    def on_session_end(self, messages: list[dict[str, Any]]) -> None:
         # is_truthy_value: auto_extract is a string enum ("false"/"true"); plain truthiness would treat "false" as on.
         if is_truthy_value(self._config.get("auto_extract", False)) and self._store and messages:
             self._auto_extract_facts(messages)
@@ -196,7 +196,7 @@ class HolographicMemoryProvider(MemoryProvider):
         if action == "add" and self._store and content:
             try:
                 self._store.add_fact(content, category="user_pref" if target == "user" else "general")
-            except Exception as e:
+            except Exception as e:  # health: allow BLE001 -- restored verbatim by the revert of #136424; this provider leaves core on Oct 15
                 logger.debug("Holographic memory_write mirror failed: %s", e)
 
     def shutdown(self) -> None:
@@ -204,7 +204,7 @@ class HolographicMemoryProvider(MemoryProvider):
         if self._store is not None:
             try:
                 self._store.close()
-            except Exception as e:
+            except Exception as e:  # health: allow BLE001 -- restored verbatim by the revert of #136424; this provider leaves core on Oct 15
                 logger.debug("Holographic shutdown close() failed: %s", e)
         self._store = self._retriever = None
 
@@ -257,7 +257,7 @@ class HolographicMemoryProvider(MemoryProvider):
                     try:
                         self._store.add_fact(content[:400], category=category)
                         extracted += 1
-                    except Exception:
+                    except Exception:  # health: allow BLE001 S110 -- restored verbatim by the revert of #136424; this provider leaves core on Oct 15
                         pass
         if extracted:
             logger.info("Auto-extracted %d facts from conversation", extracted)

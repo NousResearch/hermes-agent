@@ -38,9 +38,9 @@ def should_retire_for_skew(*, skew: Skew, update_in_progress: bool) -> bool:
 
 def _update_in_progress() -> bool:
     try:
-        from hermes_cli.update_lock import read_live_update
+        from hermes_cli.update_lock import update_in_progress
 
-        return read_live_update() is not None
+        return update_in_progress()
     except Exception:
         return True  # cannot prove the swap is over: wait
 
@@ -90,8 +90,8 @@ def start_code_skew_watchdog(server, *, skew_fn: Optional[Callable[[], Skew]] = 
         skew = read_skew()
         if not (skew and should_retire_for_skew(skew=skew, update_in_progress=update_probe())):
             return None
-        return ("SSH-isolated backend loaded %s but the install is now at %s; "
-                "retiring so its client respawns it on the new code." % skew)
+        return ("SSH-isolated backend loaded {} but the install is now at {}; "
+                "retiring so its client respawns it on the new code.".format(*skew))
 
     return _run_retirement_watchdog(server, observe=_observe, fence=fence, poll_s=poll_s,
                                     max_polls=max_polls, thread_name="ssh-isolated-skew-watchdog")

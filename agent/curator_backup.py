@@ -15,7 +15,7 @@ import os
 import re
 import shutil
 import tarfile
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from itertools import chain, count
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -74,11 +74,11 @@ def _jobs_list(parsed: Any) -> Optional[list]:
     return parsed if isinstance(parsed, list) else None
 
 
-def _backup_cron_jobs_into(dest: Path) -> Dict[str, Any]:
+def _backup_cron_jobs_into(dest: Path) -> dict[str, Any]:
     """Copy the live ``~/.hermes/cron/jobs.json`` into ``dest`` as ``cron-jobs.json``. Never raises: a missing/unreadable
     file yields ``backed_up=False`` plus a reason, and the snapshot proceeds."""
     src = get_hermes_home() / "cron" / "jobs.json"
-    info: Dict[str, Any] = {"backed_up": False, "jobs_count": 0}
+    info: dict[str, Any] = {"backed_up": False, "jobs_count": 0}
     if not src.exists():
         return {**info, "reason": "no cron/jobs.json present"}
     try:
@@ -102,11 +102,11 @@ def _backup_cron_jobs_into(dest: Path) -> Dict[str, Any]:
 
 def _utc_id(now: Optional[datetime] = None) -> str:
     """UTC ISO-ish filesystem-safe timestamp: ``2026-05-01T13-05-42Z``."""
-    s = (datetime.now(timezone.utc) if now is None else now).replace(microsecond=0).isoformat()
+    s = (datetime.now(UTC) if now is None else now).replace(microsecond=0).isoformat()
     return s.removesuffix("+00:00").replace(":", "-") + "Z"
 
 
-def _load_config() -> Dict[str, Any]:
+def _load_config() -> dict[str, Any]:
     return _read_config_section("curator", "backup", label="curator backup", log=logger)
 
 
@@ -130,13 +130,13 @@ def _count_skill_files(base: Path) -> int:
         return 0
 
 
-def _write_manifest(dest: Path, reason: str, archive_path: Path, skills_counted: int, cron_info: Dict[str, Any]) -> None:
-    cron_jobs: Dict[str, Any] = {"backed_up": bool(cron_info.get("backed_up", False)), "jobs_count": int(cron_info.get("jobs_count", 0))}
+def _write_manifest(dest: Path, reason: str, archive_path: Path, skills_counted: int, cron_info: dict[str, Any]) -> None:
+    cron_jobs: dict[str, Any] = {"backed_up": bool(cron_info.get("backed_up", False)), "jobs_count": int(cron_info.get("jobs_count", 0))}
     if not cron_info.get("backed_up"):
         cron_jobs["reason"] = cron_info.get("reason", "not captured")
     if cron_info.get("parse_warning"):
         cron_jobs["parse_warning"] = cron_info["parse_warning"]
-    manifest = {"id": dest.name, "reason": reason, "created_at": datetime.now(timezone.utc).isoformat(), "archive": archive_path.name,
+    manifest = {"id": dest.name, "reason": reason, "created_at": datetime.now(UTC).isoformat(), "archive": archive_path.name,
                 "archive_bytes": archive_path.stat().st_size, "skill_files": skills_counted, "cron_jobs": cron_jobs}
     (dest / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
 
@@ -150,7 +150,7 @@ def _mkdir(path: Path, what: str, *, exist_ok: bool) -> bool:
         return False
 
 
-def snapshot_skills(reason: str = "manual", *, protect_ids: Optional[Set[str]] = None) -> Optional[Path]:
+def snapshot_skills(reason: str = "manual", *, protect_ids: Optional[set[str]] = None) -> Optional[Path]:
     """Create a tar.gz snapshot of ``~/.hermes/skills/`` and prune old ones. Returns the snapshot dir, or None when
     skipped (disabled, skills dir missing, IO error) — logged at debug so the curator never aborts a pass over a
     backup failure. ``protect_ids`` survive the prune step (rollback protects its target)."""
@@ -192,12 +192,12 @@ def snapshot_skills(reason: str = "manual", *, protect_ids: Optional[Set[str]] =
     return dest
 
 
-def prune_old_snapshots() -> List[str]:
+def prune_old_snapshots() -> list[str]:
     """Apply ``curator.backup.keep`` without taking a new snapshot (the prune-only curator pass)."""
     return _prune_old(keep=get_keep())
 
 
-def _prune_old(keep: int, protect: Optional[Set[str]] = None) -> List[str]:
+def _prune_old(keep: int, protect: Optional[set[str]] = None) -> list[str]:
     """Delete regular snapshots beyond the newest *keep*; returns deleted ids. Ids in *protect* are never deleted —
     rollback() uses this so the mandatory pre-rollback safety snapshot cannot evict the snapshot being restored.
     Stale ``.rollback-staging-*`` dirs (crashed rollback) are cleaned up on every call; ``.rollback-unrestored-*`` is kept on purpose."""
@@ -210,7 +210,7 @@ def _prune_old(keep: int, protect: Optional[Set[str]] = None) -> List[str]:
     entries = sorted((c for c in dirs if _ID_RE.match(c.name)), key=lambda c: c.name, reverse=True)
     doomed = [(p, "prune") for p in entries[keep:] if p.name not in protect]
     doomed += [(p, "clean stale staging dir") for p in dirs if p.name.startswith(_STAGING_PREFIX)]
-    deleted: List[str] = []
+    deleted: list[str] = []
     for path, what in doomed:
         try:
             shutil.rmtree(path)
@@ -222,7 +222,7 @@ def _prune_old(keep: int, protect: Optional[Set[str]] = None) -> List[str]:
 
 
 # --- List + rollback ---
-def _read_manifest(snap_dir: Path) -> Dict[str, Any]:
+def _read_manifest(snap_dir: Path) -> dict[str, Any]:
     try:
         return json.loads((snap_dir / "manifest.json").read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError):
@@ -234,15 +234,15 @@ def _is_restorable(child: Path) -> bool:
     return bool(child.is_dir() and _ID_RE.match(child.name) and (child / _ARCHIVE_NAME).exists())
 
 
-def _restorable_snapshots() -> List[Path]:
+def _restorable_snapshots() -> list[Path]:
     """Restorable snapshot dirs, newest first."""
     backups = _backups_dir()
     return [c for c in sorted(backups.iterdir(), reverse=True) if _is_restorable(c)] if backups.exists() else []
 
 
-def list_backups() -> List[Dict[str, Any]]:
+def list_backups() -> list[dict[str, Any]]:
     """All restorable snapshots (manifest dicts), newest first."""
-    out: List[Dict[str, Any]] = []
+    out: list[dict[str, Any]] = []
     for child in _restorable_snapshots():
         mf = {"id": child.name, "path": str(child), **_read_manifest(child)}
         try:
@@ -261,12 +261,12 @@ def _resolve_backup(backup_id: Optional[str]) -> Optional[Path]:
     return next(iter(_restorable_snapshots()), None)
 
 
-def _restore_cron_skill_links(snapshot_dir: Path) -> Dict[str, Any]:
+def _restore_cron_skill_links(snapshot_dir: Path) -> dict[str, Any]:
     """Reconcile backed-up cron skill links into the live ``cron/jobs.json``. Only ``skills``/``skill`` are restored,
     and only on jobs that still exist live (by ``id``) — everything else is live state. Backup-only jobs are skipped
     and reported; live-only jobs untouched. Never raises; writes through ``cron.jobs`` under the scheduler's lock so
     we don't race tick()."""
-    report: Dict[str, Any] = {"attempted": False, "restored": [], "skipped_missing": [], "unchanged": 0, "error": None}
+    report: dict[str, Any] = {"attempted": False, "restored": [], "skipped_missing": [], "unchanged": 0, "error": None}
     backup_file = snapshot_dir / CRON_JOBS_FILENAME
     if not backup_file.exists():
         return {**report, "error": f"snapshot has no {CRON_JOBS_FILENAME}"}
@@ -278,7 +278,7 @@ def _restore_cron_skill_links(snapshot_dir: Path) -> Dict[str, Any]:
         return {**report, "error": "backed-up cron-jobs.json has no jobs list"}
 
     # Backed-up skill state keyed by job id (legacy single + modern list field).
-    backup_by_id: Dict[str, Dict[str, Any]] = {
+    backup_by_id: dict[str, dict[str, Any]] = {
         job["id"]: {"skills": job.get("skills"), "skill": job.get("skill"), "name": job.get("name") or job["id"]}
         for job in backup_jobs if isinstance(job, dict) and isinstance(job.get("id"), str) and job.get("id")
     }
@@ -320,7 +320,7 @@ def _restore_cron_skill_links(snapshot_dir: Path) -> Dict[str, Any]:
                                          for jid, b in backup_by_id.items() if jid not in live_ids]
             if changed:
                 save_jobs(live_jobs)
-    except Exception as e:  # noqa: BLE001 — rollback must not die mid-restore
+    except Exception as e:
         logger.debug("Cron skill-link restore failed: %s", e, exc_info=True)
         report["error"] = f"restore failed mid-flight: {e}"
     return report
@@ -333,7 +333,7 @@ def _remove_entry(entry: Path) -> None:
         entry.unlink()
 
 
-def _restore_excluded_subtrees(staged: Path, skills: Path) -> List[str]:
+def _restore_excluded_subtrees(staged: Path, skills: Path) -> list[str]:
     """Move excluded entries (nested ``.git``/``.hub``/...) from *staged* back under *skills* after a successful extract.
     Snapshots never contain these, so the staged copy of the live tree is the only source. ``.git`` may be a dir or a file
     (submodule / worktree ``gitdir:`` pointer) — both are moved. Best-effort and conditional: an entry is carried only when
@@ -342,7 +342,7 @@ def _restore_excluded_subtrees(staged: Path, skills: Path) -> List[str]:
     Returns entries whose move failed, so their only surviving copies stay staged for recovery."""
     from tools.skill_ledger import TRANSIENT_DIRS
 
-    failed: List[str] = []
+    failed: list[str] = []
     for dirpath, dirnames, filenames in os.walk(staged):
         carried = [Path(dirpath) / n for n in filenames if n in _EXCLUDE_TOP_LEVEL]
         carried += [Path(dirpath) / n for n in dirnames if n in _EXCLUDE_TOP_LEVEL or n in TRANSIENT_DIRS]
@@ -358,7 +358,7 @@ def _restore_excluded_subtrees(staged: Path, skills: Path) -> List[str]:
     return failed
 
 
-def _retain_staging(staged: Path, unrestored: List[str], reason: str) -> Tuple[bool, str, None]:
+def _retain_staging(staged: Path, unrestored: list[str], reason: str) -> tuple[bool, str, None]:
     """Keep a staging dir that still holds the only copy of *unrestored* entries and build rollback()'s failure result.
     The dir is renamed out of the prunable prefix (unique suffix on a same-second collision). If the rename fails, the
     original path is reported so recovery never raises out of rollback()."""
@@ -375,11 +375,11 @@ def _retain_staging(staged: Path, unrestored: List[str], reason: str) -> Tuple[b
     return (False, f"{reason} - could not restore {', '.join(sorted(unrestored))}; staged copies kept at {kept}{note}", None)
 
 
-def _unstage(moved: List[Tuple[Path, Path]]) -> List[str]:
+def _unstage(moved: list[tuple[Path, Path]]) -> list[str]:
     """Move staged entries back to their original paths; returns names that could not be restored. ``shutil.move``
     moves *into* an existing destination dir, so partial-extract debris would bury the real skill
     (``skills/foo/foo/``) — clear each original path first. The staged copy is authoritative."""
-    failed: List[str] = []
+    failed: list[str] = []
     for orig, dest in moved:
         try:
             _remove_entry(orig)
@@ -389,7 +389,7 @@ def _unstage(moved: List[Tuple[Path, Path]]) -> List[str]:
     return failed
 
 
-def _cron_summary(cron_report: Dict[str, Any]) -> Optional[str]:
+def _cron_summary(cron_report: dict[str, Any]) -> Optional[str]:
     if not cron_report.get("attempted"):
         return None
     if cron_report.get("error"):
@@ -403,7 +403,7 @@ def _cron_summary(cron_report: Dict[str, Any]) -> Optional[str]:
     return "cron links: " + ", ".join(parts) if parts else None
 
 
-def rollback(backup_id: Optional[str] = None) -> Tuple[bool, str, Optional[Path]]:
+def rollback(backup_id: Optional[str] = None) -> tuple[bool, str, Optional[Path]]:
     """Restore ``~/.hermes/skills/`` from a snapshot (explicit id or newest): safety-snapshot the CURRENT tree; stage
     current top-level entries; extract; on failure move staged entries back. Returns ``(ok, message, snapshot_path)``."""
     target = _resolve_backup(backup_id)
@@ -433,7 +433,7 @@ def rollback(backup_id: Optional[str] = None) -> Tuple[bool, str, Optional[Path]
     except OSError as e:
         return (False, f"failed to create staging dir: {e}", None)
 
-    moved: List[Tuple[Path, Path]] = []
+    moved: list[tuple[Path, Path]] = []
     try:
         for entry in list(skills.iterdir()):
             if entry.name not in _EXCLUDE_TOP_LEVEL:

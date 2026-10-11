@@ -74,7 +74,7 @@ def test_prepare_cli_accepts_request_path_but_refuses_mismatched_checkout_before
     repo = Path(__file__).resolve().parents[2]
     result = subprocess.run([sys.executable, str(repo / "scripts/bundles/desktop.py"),
                              "--prepare-only", "--repo", str(source), "--channel-request", str(path)],
-                            capture_output=True, text=True, timeout=30)
+                            capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode != 0
     assert "unrecognized arguments" not in result.stderr
     assert "checkout" in result.stderr

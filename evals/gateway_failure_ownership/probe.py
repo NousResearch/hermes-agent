@@ -14,10 +14,8 @@ os.environ.update(
     HOME=str(HOME),
     HERMES_HOME=str(HOME),
     HERMES_DISABLE_PLUGINS="1",
-    # The scrub above drops the test harness's hermetic switch. Without it, GatewayRunner()
-    # in this fresh home starts tirith's startup install on a background thread (PM runtime,
-    # Python and uv downloaded and unpacked while the cases run) and its buffers land in the
-    # process-wide tracemalloc window the archive case measures.
+    # The scrub above drops the test harness's hermetic switch; keep lazy PM installs off so no
+    # background download's buffers land in the tracemalloc window the archive case measures.
     HERMES_DISABLE_LAZY_INSTALLS="1",
     NO_PROXY="127.0.0.1,localhost",
 )
@@ -63,9 +61,6 @@ class Peer(BaseHTTPRequestHandler):
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         requests.append({"path": self.path, "body": body})
-        users = [
-            m.get("content") for m in body.get("messages", []) if m["role"] == "user"
-        ]
         fail = fault == "http400"
         if fail:
             data = {
@@ -166,6 +161,7 @@ class ControlledAgent(AIAgent):
                 [sys.executable, str(Path(__file__).with_name("foreign_writer.py")),
                  str(ROOT), str(HOME / "state.db"), sid],
                 capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=20,
+                check=False,
             )
             assert result.returncode == 0, result.stderr
             faults.append("foreign-writer-committed")

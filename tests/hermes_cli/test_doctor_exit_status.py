@@ -12,7 +12,7 @@ import pytest
     ([], ["remaining repair"], 1, True, 1),
 ])
 def test_doctor_command_reports_remaining_findings(monkeypatch, capsys, issues, manual, fixed, fix, expected):
-    import hermes_cli.doctor as doctor
+    from hermes_cli import doctor
     from hermes_cli.main import cmd_doctor
     from hermes_cli.doctor_report import Finding
 
@@ -48,6 +48,7 @@ main()
         [sys.executable, "-c", program],
         cwd=Path(__file__).resolve().parents[2],
         capture_output=True, text=True, encoding="utf-8", timeout=30,
+        check=False,
     )
     assert result.returncode == int(unresolved), result.stdout + result.stderr
     assert ("fixture unresolved problem" if unresolved else "All checks passed") in result.stdout

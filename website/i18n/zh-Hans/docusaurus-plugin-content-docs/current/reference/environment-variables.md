@@ -322,6 +322,7 @@ description: "Hermes Agent 使用的所有环境变量完整参考"
 | `EMAIL_SMTP_HOST` | 邮件适配器的 SMTP 主机名 |
 | `EMAIL_SMTP_PORT` | SMTP 端口 |
 | `EMAIL_ALLOWED_USERS` | 允许向 bot 发送消息的逗号分隔邮箱地址 |
+| `EMAIL_AUTHSERV_ID` | 接收服务器在最上层 `Authentication-Results` 中写入的精确 authserv-id；除非已禁用发件人认证（`EMAIL_TRUST_FROM_HEADER=true`），否则必须设置 |
 | `EMAIL_HOME_ADDRESS` | 主动邮件投递的默认收件人 |
 | `EMAIL_HOME_ADDRESS_NAME` | 邮件主目标的显示名称 |
 | `EMAIL_POLL_INTERVAL` | 邮件轮询间隔（秒） |
@@ -403,8 +404,9 @@ description: "Hermes Agent 使用的所有环境变量完整参考"
 | `MATRIX_AUTO_THREAD` | 为房间消息自动创建线程（默认：`true`） |
 | `MATRIX_DM_MENTION_THREADS` | 在私聊中被 `@mention` 时创建线程（默认：`false`） |
 | `MATRIX_RECOVERY_KEY` | 设备密钥轮换后交叉签名验证的恢复密钥。推荐用于启用了交叉签名的 E2EE 设置。 |
-| `HASS_TOKEN` | Home Assistant 长期访问 token（启用 HA 平台 + 工具） |
-| `HASS_URL` | Home Assistant URL（默认：`http://homeassistant.local:8123`） |
+| `HASS_TOKEN` | Home Assistant 插件：长期访问 token（启用 HA 平台 + 工具；需要插件目录中的 `homeassistant` 插件，见 [Home Assistant](../user-guide/messaging/homeassistant.md)） |
+| `HASS_URL` | Home Assistant 插件：Home Assistant URL（默认：`http://homeassistant.local:8123`） |
+| `HASS_HOME_CHANNEL` | Home Assistant 插件：裸名 `deliver: homeassistant`（cron、webhook）的默认通知目标 |
 | `WEBHOOK_ENABLED` | 启用 webhook 平台适配器（`true`/`false`） |
 | `WEBHOOK_PORT` | 接收 webhook 的 HTTP 服务器端口（默认：`8644`） |
 | `WEBHOOK_SECRET` | webhook 签名验证的全局 HMAC 密钥（当路由未指定自己的密钥时作为回退） |

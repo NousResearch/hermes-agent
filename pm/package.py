@@ -8,6 +8,8 @@ import subprocess
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Optional
 
+from pm.filesystem import native
+
 if TYPE_CHECKING:
     from pm.store import Store
 
@@ -24,18 +26,21 @@ def compose_env(diffs: list[dict], base: Optional[dict] = None) -> dict[str, str
     """Dependents win over their dependencies for every key: diffs arrive
     deps-first, later ones take precedence — npm's pinned shim must shadow
     the npm bundled inside node, and a package's exports beat inherited env.
-    'PATH' values are lists of dirs, prepended."""
+    'PATH' values are lists of dirs, prepended.
+
+    Diff values are paths under a store root, which PM spells extended-length
+    on Windows; a child environment gets their ordinary spelling."""
     env = dict(os.environ if base is None else base)
     path_dirs: list[str] = []
     for diff in reversed(diffs):
         for key, value in diff.items():
             if key == "PATH":
                 dirs = value if isinstance(value, list) else [value]
-                path_dirs.extend(str(d) for d in dirs if str(d) not in path_dirs)
+                path_dirs.extend(native(d) for d in dirs if native(d) not in path_dirs)
     for diff in diffs:
         for key, value in diff.items():
             if key != "PATH":
-                env[key] = str(value)
+                env[key] = native(str(value))
     if path_dirs:
         key = next((k for k in env if k.upper() == "PATH"), "PATH")
         existing = env.get(key, "")
@@ -135,7 +140,7 @@ class Package:
 
         extract(archive, staged)
 
-    def stage(self, store: "Store", staged: Path, version: str, target: str) -> None:
+    def stage(self, store: Store, staged: Path, version: str, target: str) -> None:
         """Post-unpack fixups inside the scratch dir. Default: nothing."""
 
     def binary(self, entry: Path, target: str) -> Optional[Path]:
@@ -149,6 +154,17 @@ class Package:
         if binary is None:
             return ""
         return self._binary_reason(binary, entry, target)
+
+    def repair_staged_verification(self, entry: Path, target: str, reason: str) -> tuple[str, str]:
+        """Install-time remediation for a failed staged verification.
+
+        verify() is also used by read-only inspection paths such as
+        hermes pm doctor and must stay side-effect free. The installer
+        calls this hook only after a freshly staged entry fails verification.
+        Return (remaining reason, remedy): an empty reason when remediation
+        made the staged entry usable; an empty remedy keeps InstallError's.
+        """
+        return reason, ""
 
     def _binary_reason(self, binary: Path, entry: Path, target: str) -> str:
         """'' when the binary is present and arch-plausible on target."""
@@ -198,7 +214,7 @@ class DebPackage(Package):
         the digest already proved the bytes."""
         expected = entry / self.prefix_rel / self.main_rel(target)
         if not expected.is_file() and not expected.is_symlink():
-            return f"{expected.relative_to(entry)} missing under {entry}"
+            return f"{expected.relative_to(entry)} missing under {native(entry)}"
         return ""
 
     def main_rel(self, target: str) -> str:
@@ -344,14 +360,14 @@ def _missing_reason(binary: Path, entry: Path) -> str:
     """Why a package's expected binary is not where it should be — the
     diagnosis that tells you whether the pin's layout is wrong."""
     rel = binary.relative_to(entry).as_posix()
-    return f"{rel} missing under {entry}; {_entry_listing(entry)}"
+    return f"{rel} missing under {native(entry)}; {_entry_listing(entry)}"
 
 
-def _probe_reason(binary: Path, proc: "subprocess.CompletedProcess") -> str:
+def _probe_reason(binary: Path, proc: subprocess.CompletedProcess) -> str:
     """Why a --version probe failed: the exit code plus output tail."""
     out = (proc.stdout or b"") + (proc.stderr or b"")
     tail = out.decode(errors="replace").strip()[-300:]
-    return f"{binary} --version exited {proc.returncode}" + (f": {tail}" if tail else "")
+    return f"{native(binary)} --version exited {proc.returncode}" + (f": {tail}" if tail else "")
 
 
 class Runner:
@@ -363,4 +379,4 @@ class Runner:
 
     def run(self, cmd, **kwargs) -> subprocess.CompletedProcess:
         kwargs.setdefault("env", self.env)
-        return subprocess.run(cmd, **kwargs)
+        return subprocess.run(cmd, **kwargs)  # noqa: PLW1510 -- forwarding wrapper: callers pass subprocess kwargs via **kwargs (check may arrive through it); an explicit check=False would raise TypeError

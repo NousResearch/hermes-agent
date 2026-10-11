@@ -39,7 +39,7 @@ class ConsoleCommand:
     path: tuple[str, ...]
     usage: str
     summary: str
-    handler: Callable[["HermesConsoleEngine", list[str]], str]
+    handler: Callable[[HermesConsoleEngine, list[str]], str]
     mutating: bool = False
     confirmation: str = ""
 
@@ -225,7 +225,7 @@ class _CliSurface:
 
 # Memoized: the surface is process-static, but the dashboard opens a fresh engine per
 # /api/console connection and would otherwise re-import + re-parse it on every reconnect.
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def _surface_summaries(surface: _CliSurface, root: str) -> dict[tuple[str, ...], str]:
     try:
         return _summaries_from_parser(surface.build(root, live=False))
@@ -292,8 +292,7 @@ _CLI_FAMILIES: dict[str, tuple[_CliSurface, str]] = {
     "memory": (_sub("memory", "build_memory_parser", "cmd_memory"), "status, *off, *reset"),
     "auth": (
         _sub("auth", "build_auth_parser", "cmd_auth"),
-        "list, status, *reset, *priority, *refresh, *add, *remove, *logout, spotify status, *spotify login, "
-        "*spotify logout"),
+        "list, status, *reset, *priority, *refresh, *add, *remove, *logout"),
     "pairing": (
         _sub("pairing", "build_pairing_parser", "cmd_pairing"),
         "list, *approve, *revoke, *clear-pending"),
@@ -335,7 +334,7 @@ _SEND_SURFACE = _CliSurface("adder", "hermes_cli.send_cmd", "register_send_subpa
 
 
 def _register_command_family(
-    engine: "HermesConsoleEngine", root: str, surface: _CliSurface, paths: str) -> None:
+    engine: HermesConsoleEngine, root: str, surface: _CliSurface, paths: str) -> None:
     summaries = _surface_summaries(surface, root)
     namespace_update = _apply_confirmed_defaults if surface.kind in _CONFIRMED_KINDS else None
     for child_path, mutating in _paths(paths):
@@ -441,7 +440,7 @@ class HermesConsoleEngine:
 
     def register(
         self, path: Iterable[str], usage: str, summary: str,
-        handler: Callable[["HermesConsoleEngine", list[str]], str], *,
+        handler: Callable[[HermesConsoleEngine, list[str]], str], *,
         mutating: bool = False, confirmation: str = "") -> None:
         key = tuple(path)
         self.commands[key] = ConsoleCommand(key, usage, summary, handler, mutating, confirmation)

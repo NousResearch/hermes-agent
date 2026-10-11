@@ -3618,26 +3618,28 @@ class TestCodexAdapterGithubResponsesMessageIdDrop:
 
 class TestVisionAutoSkipsKimiCoding:
     """_resolve_auto_route vision branch skips providers that have no vision on
-    their main endpoint (e.g. Kimi Coding Plan /coding) and falls through
+    their main endpoint (e.g. kimi-coding-cn / api.moonshot.cn) and falls through
     to the aggregator chain instead of handing back a client that will 404
-    on every request (#17076).
+    on every request (#17076). kimi-coding itself was removed from the skip
+    list: api.kimi.com/coding accepts image blocks on both wires (verified live
+    with k3 and kimi-for-coding).
     """
 
-    def test_kimi_coding_skipped_falls_through_to_openrouter(self, monkeypatch):
-        """kimi-coding as main + vision auto → OpenRouter (not kimi)."""
+    def test_kimi_coding_cn_skipped_falls_through_to_openrouter(self, monkeypatch):
+        """kimi-coding-cn as main + vision auto → OpenRouter (not kimi)."""
         fake_or_client = MagicMock(name="openrouter_client")
 
         monkeypatch.setattr(
-            "agent.auxiliary_client._read_main_provider", lambda: "kimi-coding",
+            "agent.auxiliary_client._read_main_provider", lambda: "kimi-coding-cn",
         )
         monkeypatch.setattr(
             "agent.auxiliary_client._read_main_model", lambda: "kimi-code",
         )
         # Guard: if the skip doesn't fire, _resolve_strict_vision_backend
-        # and resolve_provider_client both would try kimi-coding — detect
+        # and resolve_provider_client both would try kimi-coding-cn — detect
         # either via the main-provider call and fail loud.
         rpc_mock = MagicMock(side_effect=AssertionError(
-            "resolve_provider_client should NOT be called for kimi-coding "
+            "resolve_provider_client should NOT be called for kimi-coding-cn "
             "on the vision auto path"))
         monkeypatch.setattr(
             "agent.auxiliary_client.resolve_provider_client", rpc_mock,
@@ -3650,7 +3652,7 @@ class TestVisionAutoSkipsKimiCoding:
                 return None, None
             raise AssertionError(
                 f"strict vision backend should not be called for {provider!r} "
-                "when main provider is kimi-coding"
+                "when main provider is kimi-coding-cn"
             )
         monkeypatch.setattr(
             "agent.auxiliary_client._resolve_strict_vision_backend",

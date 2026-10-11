@@ -1,9 +1,11 @@
 """Tests for the dashboard-managed file browser API."""
 
 import base64
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 from starlette.testclient import TestClient
 
 from hermes_cli import web_server, web_server_files
@@ -651,3 +653,83 @@ def test_dangling_symlink_does_not_break_directory_listing(forced_files_client):
     # Reading or downloading the broken symlink directly is still an error.
     assert client.get("/api/files/read", params={"path": str(root / "dangling")}).status_code == 404
     assert client.get("/api/files/download", params={"path": str(root / "dangling")}).status_code == 404
+
+
+class TestFsPathTranslatesWslUnc:
+    """#129308: a Windows desktop client addressing a gateway that runs inside its own WSL
+    distro sends ``\\\\wsl.localhost\\<distro>\\...`` UNCs; ``Path()`` alone keeps the
+    backslashes as literal filename characters, so every read 404s while listing
+    (server-generated POSIX paths) still works."""
+
+    def test_translates_unc_to_posix_when_gateway_runs_in_wsl(self, monkeypatch):
+        import hermes_constants
+
+        monkeypatch.setattr(hermes_constants, "is_wsl", lambda: True)
+        monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu")
+        expected = Path("/home/alex/notes.txt").resolve(strict=False)
+        assert (
+            web_server_files._fs_path(r"\\wsl.localhost\Ubuntu\home\alex\notes.txt")
+            == expected
+        )
+        # The legacy \\wsl$ spelling and forward-slash UNCs translate the same way.
+        assert (
+            web_server_files._fs_path("//wsl$/Ubuntu/home/alex/notes.txt")
+            == expected
+        )
+
+    def test_translates_unc_with_distro_name_case_mismatch(self, monkeypatch):
+        """WSL distro names are case-insensitive, so the check compares casefolded."""
+        import hermes_constants
+
+        monkeypatch.setattr(hermes_constants, "is_wsl", lambda: True)
+        monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu-22.04")
+        expected = Path("/home/alex/notes.txt").resolve(strict=False)
+        assert (
+            web_server_files._fs_path(r"\\wsl.localhost\ubuntu-22.04\home\alex\notes.txt")
+            == expected
+        )
+
+    def test_rejects_unc_naming_a_different_distro(self, monkeypatch):
+        """Fail-closed (greptile P1 on #129326): translating a foreign-distro UNC drops
+        the distro segment, which would silently retarget it onto this distro's
+        filesystem — reads would return the wrong file, /api/fs/write-text would
+        clobber it."""
+        import hermes_constants
+
+        monkeypatch.setattr(hermes_constants, "is_wsl", lambda: True)
+        monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu")
+        with pytest.raises(HTTPException) as excinfo:
+            web_server_files._fs_path(r"\\wsl.localhost\Debian\home\alex\notes.txt")
+        assert excinfo.value.status_code == 400
+
+    def test_rejects_unc_when_local_distro_cannot_be_determined(self, monkeypatch):
+        """Without WSL_DISTRO_NAME the gateway cannot prove the UNC names its own
+        distro, so the translation is refused rather than trusted."""
+        import hermes_constants
+
+        monkeypatch.setattr(hermes_constants, "is_wsl", lambda: True)
+        monkeypatch.delenv("WSL_DISTRO_NAME", raising=False)
+        with pytest.raises(HTTPException) as excinfo:
+            web_server_files._fs_path(r"\\wsl.localhost\Ubuntu\home\alex\notes.txt")
+        assert excinfo.value.status_code == 400
+
+    def test_leaves_unc_alone_when_not_in_wsl(self, monkeypatch):
+        import hermes_constants
+
+        monkeypatch.setattr(hermes_constants, "is_wsl", lambda: False)
+        calls: list[str] = []
+        monkeypatch.setattr(
+            hermes_constants,
+            "wsl_unc_path_to_posix",
+            lambda raw: calls.append(raw) or "/translated",
+        )
+        try:
+            web_server_files._fs_path(r"\\wsl.localhost\Ubuntu\home\alex\notes.txt")
+        except HTTPException:
+            # Base behaviour on a native Windows host: ntpath.resolve() cannot touch a
+            # wsl.localhost UNC, so _fs_path turns it into a 400. Either way the
+            # translator must not have been consulted off WSL.
+            pass
+        # Asserting on the translator (not on _fs_path's resolve()) keeps the test
+        # independent of host filesystem semantics.
+        assert calls == []

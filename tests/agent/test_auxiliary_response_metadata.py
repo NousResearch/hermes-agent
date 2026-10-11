@@ -598,6 +598,144 @@ def _codex_usage_http_response(usage, streamed):
     )
 
 
+async def _compatible_responses_completion(native, async_mode):
+    from agent.auxiliary_client import _create_openai_client
+    from agent.native_usage_openai import UsageValidatedAsyncOpenAI
+
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, json=native))
+    kwargs = {"api_key": "fixture", "base_url": "https://native.example/v1"}
+    if async_mode:
+        async with UsageValidatedAsyncOpenAI(
+            **kwargs,
+            http_client=httpx.AsyncClient(transport=transport),
+        ) as client:
+            raw = await client.chat.completions.with_raw_response.create(
+                model="requested-model",
+                messages=[],
+            )
+            return raw.parse()
+    with _create_openai_client(
+        **kwargs,
+        http_client=httpx.Client(transport=transport),
+    ) as client:
+        raw = client.chat.completions.with_raw_response.create(
+            model="requested-model",
+            messages=[],
+        )
+        return raw.parse()
+
+
+@pytest.mark.parametrize("as_dict", [False, True])
+@pytest.mark.parametrize("async_mode", [False, True])
+@pytest.mark.parametrize("with_text", [False, True])
+def test_compatible_responses_recovery_preserves_function_calls(
+    async_mode, with_text, as_dict
+):
+    from agent.auxiliary_client import _validate_llm_response
+
+    output = [
+        {
+            "type": "function_call",
+            "call_id": "call",
+            "name": "record",
+            "arguments": "{}",
+        }
+    ]
+    if with_text:
+        output.insert(
+            0,
+            {"type": "message", "content": [{"type": "output_text", "text": "answer"}]},
+        )
+    native = {
+        "id": "response-id",
+        "object": "response",
+        "status": "completed",
+        "model": "native-model",
+        "output": output,
+    }
+    sdk_response = asyncio.run(_compatible_responses_completion(native, async_mode))
+    response = _validate_llm_response(
+        sdk_response.model_dump() if as_dict else sdk_response, "web_extract"
+    )
+    (choice,) = response.choices
+    assert (
+        response.id,
+        response.model,
+        response.status,
+        response.usage,
+        choice.finish_reason,
+        choice.message.content,
+        [
+            (call.id, call.type, call.function.name, call.function.arguments)
+            for call in choice.message.tool_calls
+        ],
+    ) == (
+        native["id"],
+        native["model"],
+        native["status"],
+        None,
+        "tool_calls",
+        "answer" if with_text else None,
+        [("call", "function", "record", "{}")],
+    )
+
+
+@pytest.mark.parametrize("as_dict", [False, True])
+@pytest.mark.parametrize("async_mode", [False, True])
+@pytest.mark.parametrize("text_only", [False, True])
+@pytest.mark.parametrize("status", ["completed", "incomplete", "in_progress"])
+@pytest.mark.parametrize("with_refusal", [False, True])
+def test_compatible_responses_recovery_preserves_completion_facts(
+    async_mode, status, with_refusal, text_only, as_dict
+):
+    from agent.auxiliary_client import _validate_llm_response
+
+    part = (
+        {"type": "refusal", "refusal": "Cannot comply."}
+        if with_refusal
+        else {"type": "output_text", "text": "answer"}
+    )
+    native = {
+        "object": "response",
+        "status": status,
+        "incomplete_details": {"reason": "max_output_tokens"}
+        if status == "incomplete"
+        else None,
+        "output": [{"type": "message", "content": [part]}],
+        "usage": {"input_tokens": 12, "output_tokens": 3, "total_tokens": 19},
+    }
+    if text_only:
+        native["output"] = None
+        native["output_text"] = "answer"
+        with_refusal = False
+    sdk_response = asyncio.run(_compatible_responses_completion(native, async_mode))
+    response = _validate_llm_response(
+        sdk_response.model_dump() if as_dict else sdk_response, "web_extract"
+    )
+    (choice,) = response.choices
+    assert (
+        response.id,
+        response.model,
+        response.status,
+        response.incomplete_details,
+        vars(response.usage),
+        choice.finish_reason,
+        choice.message.content,
+        choice.message.refusal,
+        choice.message.tool_calls,
+    ) == (
+        None,
+        None,
+        status,
+        native["incomplete_details"],
+        {"prompt_tokens": 12, "completion_tokens": 3, "total_tokens": 19},
+        "stop" if status == "completed" else "length",
+        "Cannot comply." if with_refusal else "answer",
+        "Cannot comply." if with_refusal else None,
+        None,
+    )
+
+
 @pytest.mark.parametrize("streamed", [False, True])
 @pytest.mark.parametrize("value", [True, "2", 1.5, -1, 0, None])
 def test_auxiliary_codex_checks_raw_usage_without_object_discriminator(streamed, value):

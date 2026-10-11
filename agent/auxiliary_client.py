@@ -50,6 +50,7 @@ if TYPE_CHECKING:
 
 from agent.auxiliary_openai_client import _AuxiliaryOpenAIProxy
 from agent.auxiliary_response_envelope import _unwrap_data_envelope
+from agent.auxiliary_response_recovery import _recover_aux_response_message
 
 OpenAI = _AuxiliaryOpenAIProxy()
 
@@ -6866,45 +6867,6 @@ def _fail_relay_auxiliary_call(exc: BaseException) -> None:
         _complete_relay_auxiliary_call(outcome="failed")
     except Exception:
         logger.warning("Relay auxiliary failure finalization failed", exc_info=True)
-
-
-def _recover_aux_response_message(response: Any) -> Optional[Any]:
-    """Synthesize chat-completions shape from Responses-style text (``output_text``,
-    ``output`` items) that some compatible endpoints return outside ``choices``."""
-    text = _extract_aux_response_text(response)
-    if not text:
-        return None
-    choice = SimpleNamespace(message=SimpleNamespace(content=text), finish_reason=getattr(response, "finish_reason", None) or "stop")
-    try:
-        response.choices = [choice]
-        return response
-    except Exception:
-        return SimpleNamespace(
-            id=getattr(response, "id", ""), model=getattr(response, "model", ""),
-            object=getattr(response, "object", "chat.completion"), choices=[choice],
-            usage=getattr(response, "usage", None),
-        )
-
-
-def _extract_aux_response_text(response: Any) -> str:
-    """Text from Responses-style ``output_text`` or ``output[].content[].text``."""
-    output_text = _field(response, "output_text")
-    if isinstance(output_text, str) and output_text.strip():
-        return output_text.strip()
-    output = _field(response, "output")
-    if not isinstance(output, list):
-        return ""
-    parts: list[str] = []
-    for item in output:
-        item_type = _field(item, "type")
-        if item_type and item_type != "message":
-            continue
-        for part in (_field(item, "content") or []):
-            if _field(part, "type") in {"output_text", "text", None}:
-                text = _field(part, "text")
-                if isinstance(text, str) and text.strip():
-                    parts.append(text.strip())
-    return "\n".join(parts).strip()
 
 
 # Streamed aggregation for progress-hooked aux calls: ``timeout`` becomes an inter-chunk idle

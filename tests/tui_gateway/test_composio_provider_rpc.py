@@ -207,6 +207,36 @@ def test_status_unwraps_nested_sdk_result_and_data_envelopes(monkeypatch):
     assert fake.session.calls[1][1]["session_id"] == "session-safe-test"
 
 
+def test_all_provider_status_searches_in_three_query_batches(monkeypatch):
+    from tui_gateway.methods_composio import PROVIDERS
+
+    rows = list(PROVIDERS.items())
+    replies = []
+    for batch_index, start in enumerate(range(0, len(rows), 3)):
+        batch = rows[start:start + 3]
+        toolkits = [spec.toolkit for _provider, spec in batch]
+        replies.append(("COMPOSIO_SEARCH_TOOLS", {
+            "data": {
+                "toolkit_connection_statuses": [{"toolkit": toolkit} for toolkit in toolkits],
+                "session": {"id": f"status-batch-{batch_index}"},
+            },
+        }))
+        replies.append(("COMPOSIO_MANAGE_CONNECTIONS", {
+            "successful": True,
+            "data": {"results": {toolkit: {"toolkit": toolkit, "accounts": []}
+                                  for toolkit in toolkits}},
+        }))
+    fake = _FakeServer(replies)
+    _connect_fixture(monkeypatch, fake)
+
+    result = _rpc("composio.status")["result"]["providers"]
+    assert [row["provider"] for row in result] == [provider for provider, _spec in rows]
+    assert len(result) == 19
+    searches = [args for name, args in fake.session.calls if name == "COMPOSIO_SEARCH_TOOLS"]
+    assert len(searches) == 7
+    assert all(len(args["queries"]) <= 3 for args in searches)
+
+
 def test_search_error_envelope_fails_closed_without_leaking_details(monkeypatch):
     fake = _FakeServer([
         ("COMPOSIO_SEARCH_TOOLS", {

@@ -95,6 +95,11 @@ def _provider_rows(provider: str | None) -> list[tuple[str, ProviderSpec]]:
     return [(key, spec)]
 
 
+def _chunks(rows: list[tuple[str, ProviderSpec]], size: int = 3):
+    for start in range(0, len(rows), size):
+        yield rows[start:start + size]
+
+
 def _safe_error(rid, message: str = "Composio account controls are unavailable. Try again."):
     return _err(rid, 5034, message)
 
@@ -420,21 +425,22 @@ def composio_status(rid, params):
     except _ComposioUnavailable as exc:
         return _safe_error(rid, str(exc))
     try:
-        session_id, found = _search(server, rows)
-        searchable = [(provider, spec) for provider, spec in rows if found.get(provider)]
-        listings = _manage(server, session_id, [
-            {"name": spec.toolkit, "action": "list"} for _provider, spec in searchable
-        ]) if searchable else {}
         states = []
-        for provider, spec in rows:
-            if not found.get(provider):
+        for batch in _chunks(rows):
+            session_id, found = _search(server, batch)
+            searchable = [(provider, spec) for provider, spec in batch if found.get(provider)]
+            listings = _manage(server, session_id, [
+                {"name": spec.toolkit, "action": "list"} for _provider, spec in searchable
+            ]) if searchable else {}
+            for provider, spec in batch:
+                if not found.get(provider):
+                    states.append(ComposioProviderState(
+                        provider=provider, toolkit=spec.toolkit, status=ComposioProviderStatus.unavailable))
+                    continue
+                accounts = _accounts_from(listings, spec.toolkit, required=True)
                 states.append(ComposioProviderState(
-                    provider=provider, toolkit=spec.toolkit, status=ComposioProviderStatus.unavailable))
-                continue
-            accounts = _accounts_from(listings, spec.toolkit, required=True)
-            states.append(ComposioProviderState(
-                provider=provider, toolkit=spec.toolkit,
-                status=_provider_state(provider, spec, accounts), accounts=accounts))
+                    provider=provider, toolkit=spec.toolkit,
+                    status=_provider_state(provider, spec, accounts), accounts=accounts))
         return _ok(rid, ComposioStatusResult(providers=states).model_dump(mode="json"))
     except _ComposioUnavailable as exc:
         return _safe_error(rid, str(exc))

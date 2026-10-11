@@ -141,6 +141,10 @@ function readableExternalUrl(value: string): string {
   return url.toString()
 }
 
+function providerIsWaiting(state: ProviderStatus | undefined, watching: boolean, stopped: boolean): boolean {
+  return watching || (!stopped && (state?.status === 'pending' || state?.accounts?.some(account => account.status === 'pending') === true))
+}
+
 export function composioProvidersMatch(providers: readonly ProviderDefinition[], query: string): boolean {
   return providers.some(provider => queryMatches(provider, query))
 }
@@ -545,9 +549,7 @@ export function ComposioProviderRows({
                     {isBusy ? copy.card.state.connecting : accounts.length > 0 ? accountCopy.addAnother : accountCopy.add}
                   </button>
 
-                  {providerWatching ||
-                  ((state?.status === 'pending' || accounts.some(account => account.status === 'pending')) &&
-                    !stopped.has(provider.provider)) ? (
+                  {providerIsWaiting(state, providerWatching, stopped.has(provider.provider)) ? (
                     <button
                       className="text-xs text-(--ui-text-secondary) underline"
                       onClick={() => stopWaiting(provider.provider)}

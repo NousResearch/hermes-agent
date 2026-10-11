@@ -588,7 +588,7 @@ Graph 事件（Teams 会议、日历、聊天等）的入站变更通知监听�
 
 设置此变量后，`write_file` 和 `patch` 只能写入列出的目录前缀内的路径。超出这些根目录的路径会被**立即拒绝**——不会进入危险命令审批流程，也没有聊天界面可以覆盖。
 
-官方 Docker 镜像会设置 `HERMES_WRITE_SAFE_ROOT=/opt/data` 与 `HERMES_HOME=/opt/data`，防止 agent 逃出挂载的数据卷。
+官方 Docker 镜像会设置 `HERMES_WRITE_SAFE_ROOT=/opt/data:/tmp/hermes-files` 与 `HERMES_HOME=/opt/data`：持久化 Hermes 状态保留在挂载的数据卷中，同时 `write_file` 和 `patch` 可使用专用暂存目录 `/tmp/hermes-files`。
 
 **除非有意沙箱化写入，否则不要将此变量加入 `~/.hermes/.env`。** 常见错误是将其指向项目目录，却期望 agent 编辑 `~/.hermes/cron/jobs.json`、`~/.hermes/skills/` 或 profile 下的脚本——这些路径在沙箱外，每次 `write_file`/`patch` 都会失败并返回 `outside HERMES_WRITE_SAFE_ROOT` 错误。
 

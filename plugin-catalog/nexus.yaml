@@ -1,15 +1,15 @@
 name: nexus
 repo: https://github.com/Neboy72/nexus-memory
-sha: ec3a21c51331fb0482192c12f17e6e25ebd70e60
+sha: f5d738676f5f69c9d6a36d01ef3ea124404c3a1a
 subdir: plugins/memory/nexus
-version: "0.22.12"
-description: "Self-hosted long-term memory on Qdrant with automatic per-turn prefetch and write-back, plus recall/remember/forget/guardrail tools and a knowledge graph. Runs fully local with Ollama or sentence-transformers embeddings; cloud embedders (Voyage, OpenAI, Google, Jina) are opt-in via their own API keys, and query rewriting plus paid consolidation stations stay off until enabled. Note that an embedding key already present in the environment is auto-detected, so the README's egress section is the authoritative list of what can leave the machine. Hermes and any MCP-connected agent share one collection, so they read and write the same memories. Disclosure — an embedding key already in Hermes' environment (VOYAGE/OPENAI/GOOGLE/JINA_API_KEY) is auto-detected and sends turn text to that provider for embedding; session-end fact extraction sends conversation text to the model endpoint in Hermes config.yaml; reads ~/.hermes/.env and config.yaml; state and daily backups under ~/.nexus-memory; an opt-in NEXUS_UPDATE_CHECK=1 adds a GitHub release check and an upgrade nudge to the system prompt."
+version: "0.22.22"
+description: "Self-hosted long-term memory on Qdrant with automatic per-turn prefetch and write-back, plus recall/remember/forget/guardrail tools and a knowledge graph. Embeddings run locally by default: sentence-transformers with Qwen/Qwen3-Embedding-0.6B (1024d, about 1.2 GB downloaded from Hugging Face on first use), no key and no extra software needed. Ollama is used only when it is chosen explicitly, and a cloud embedder (Voyage, OpenAI, Google, Jina) only when NEXUS_EMBEDDING_PROVIDER names it together with its key. A key that merely sits in the environment does NOT select a provider on its own, and there is no silent cloud fallback. Query rewriting plus paid consolidation stations stay off until enabled. Hermes and any MCP-connected agent share one collection, so they read and write the same memories. Access levels fail closed: a memory, a protection rule or a graph label without a known level is treated as the most restrictive one, so a missing value never looks like permission. Disclosure: session-end fact extraction sends conversation text to the model endpoint in the Hermes config.yaml; the plugin reads ~/.hermes/.env and config.yaml; state and daily backups live under ~/.nexus-memory; an opt-in NEXUS_UPDATE_CHECK=1 adds a GitHub release check and an upgrade nudge to the system prompt."
 maintainer: Neboy72
 tier: community
 category: memory
 requires_hermes: ">=0.19"
-docs_url: https://github.com/Neboy72/nexus-memory/blob/ec3a21c51331fb0482192c12f17e6e25ebd70e60/plugins/memory/nexus/README.md
-image: https://raw.githubusercontent.com/Neboy72/nexus-memory/ec3a21c51331fb0482192c12f17e6e25ebd70e60/docs/images/nexus-logo-square.png
+docs_url: https://github.com/Neboy72/nexus-memory/blob/f5d738676f5f69c9d6a36d01ef3ea124404c3a1a/plugins/memory/nexus/README.md
+image: https://raw.githubusercontent.com/Neboy72/nexus-memory/f5d738676f5f69c9d6a36d01ef3ea124404c3a1a/docs/images/nexus-logo-square.png
 capabilities:
   provides_tools:
     - nexus_recall

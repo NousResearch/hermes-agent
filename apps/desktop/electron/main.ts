@@ -412,7 +412,7 @@ import { execGit, killTimedGitChildren, setNoConsoleGitRoots } from './no-consol
 import { registerNativeNotifications } from './notification-ipc'
 import { isExpectedOauthNavigationAbort } from './oauth-navigation'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
-import { LEGACY_OAUTH_PARTITION, resolveOauthPartition } from './oauth-partition'
+import { cookieJarToClearOnRemoval, LEGACY_OAUTH_PARTITION, resolveOauthPartition } from './oauth-partition'
 import {
   canShowInteractiveOauthLogin,
   mintGatewayWsTicket as mintOauthGatewayWsTicket,
@@ -7909,6 +7909,32 @@ function _storeNativeTokens(baseUrl: string, tokens: NativeTokenSet) {
 function _clearNativeTokens(baseUrl: string) {
   _nativeTokens.delete(baseUrl)
   _persistNativeTokens(baseUrl, null)
+}
+
+// The normalized base URL whose native (RFC 8252) bearer tokens must be
+// cleared when connection `id` is removed, or null when the connection had
+// no native-token leg. Native tokens are keyed by base URL — not connection
+// id — and were previously left behind on removal, so re-adding the same
+// URL could skip login via the stale token leg (#98242). Like
+// cookieJarToClearOnRemoval, it must be resolved from the pre-removal
+// registry snapshot. Applies to any remote entry (oauth mode) with a URL:
+// cloud entries share the portal cascade's jar/tokens and are excluded.
+function nativeTokensToClearOnRemoval(
+  id: string,
+  registry: { connections?: unknown } | null | undefined
+): string | null {
+  const connections = registry && Array.isArray(registry.connections) ? (registry.connections as any[]) : []
+  const entry = connections.find(c => c && typeof c === 'object' && c.id === id)
+
+  if (!entry || entry.kind !== 'remote' || entry.authMode !== 'oauth') {
+    return null
+  }
+
+  try {
+    return normalizeRemoteBaseUrl(entry.url)
+  } catch {
+    return null
+  }
 }
 
 // True when we hold native bearer tokens for this gateway (the native-flow
@@ -16132,7 +16158,26 @@ ipcMain.handle('hermes:connections:save', async (_event, payload) => {
 ipcMain.handle('hermes:connections:remove', async (_event, id) => {
   const key = String(id || '')
   managedConnectionUpdateGate.assertCanMutate(key)
-  const registry = removeConnection(readDesktopConnectionsRegistry(), key)
+  const before = readDesktopConnectionsRegistry()
+  const cookieUrlToClear = cookieJarToClearOnRemoval(key, before)
+  const nativeTokenUrlToClear = nativeTokensToClearOnRemoval(key, before)
+
+  // Clear the removed connection's auth state before its registry entry is
+  // gone. clearOauthSession() re-resolves the partition from the on-disk
+  // registry, so it must run before writeDesktopConnectionsRegistry() below
+  // removes the entry that resolution depends on. Otherwise a later re-add
+  // of the same URL inherits whatever cookies/tokens were left behind —
+  // often a long-since-invalidated session — and the UI reports "Signed in"
+  // without the login window ever running (#98242).
+  if (cookieUrlToClear) {
+    await clearOauthSession(cookieUrlToClear)
+  }
+
+  if (nativeTokenUrlToClear) {
+    nativeAccessTokenCoordinator.clearTokens(nativeTokenUrlToClear)
+  }
+
+  const registry = removeConnection(before, key)
   writeDesktopConnectionsRegistry(registry)
   // Tear down anything the removed connection still had running: pooled
   // backends under its composite keys and any ssh tunnel scopes it owned.

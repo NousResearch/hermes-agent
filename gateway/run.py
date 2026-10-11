@@ -4204,7 +4204,10 @@ class GatewayRunner(
     def _set_session_env(self, context: SessionContext) -> list:
         """Set session context variables (contextvars, not os.environ, so concurrent messages can't
         overwrite each other). Returns reset tokens for ``_clear_session_env`` in a ``finally``."""
-        from gateway.session_context import set_session_vars
+        from gateway.session_context import get_session_env, set_session_vars
+        # ``HERMES_UI_SESSION_ID`` is the in-process TUI tab key.  It is deliberately
+        # separate from ``context.session_id``, the durable session id that may rotate.
+        ui_session_id = get_session_env("HERMES_UI_SESSION_ID", "")
         # Async-delivery capability tells async tools whether this channel can wake a later turn. Default
         # True keeps CLI/unknown paths working; stateless adapters (api_server) declare False.
         _adapter = (getattr(self, "adapters", None) or {}).get(context.source.platform)
@@ -4223,6 +4226,7 @@ class GatewayRunner(
             session_key=context.session_key,
             message_id=str(context.source.message_id) if context.source.message_id else "",
             profile=getattr(context.source, "profile", "") or "",
+            ui_session_id=ui_session_id,
             async_delivery=_async_delivery,
             cron_session="")
 

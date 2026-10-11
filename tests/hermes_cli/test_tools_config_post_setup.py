@@ -165,3 +165,27 @@ def test_langfuse_setup_uses_plugin_admission_and_preserves_config_on_refusal(
         plugin_config = read_raw_config()["plugins"]
         assert set(plugin_config["enabled"]) == {"other", "observability/langfuse"}
         assert plugin_config["disabled"] == []
+
+
+def test_post_setup_plugin_selection_survives_the_callers_save(monkeypatch):
+    """A hook that enables its plugin writes config.yaml itself; the caller's later save must keep it."""
+    import hermes_cli.tools_config_post_setup as post_setup
+    from hermes_cli.config import get_hermes_home, load_config, read_raw_config, save_config
+
+    (get_hermes_home() / "config.yaml").write_text(
+        "plugins:\n  enabled: [other]\n  disabled: [observability/langfuse]\n", encoding="utf-8",
+    )
+    config = load_config()  # the `hermes tools` object, loaded before the hook runs
+
+    def enable_through_admission():
+        on_disk = load_config()
+        on_disk["plugins"] = {"enabled": ["observability/langfuse", "other"], "disabled": []}
+        save_config(on_disk)
+
+    monkeypatch.setitem(post_setup._POST_SETUP_HOOKS, "langfuse", enable_through_admission)
+    _run_post_setup("langfuse", config)
+    save_config(config)
+
+    plugins = read_raw_config()["plugins"]
+    assert set(plugins["enabled"]) == {"other", "observability/langfuse"}
+    assert not plugins.get("disabled")

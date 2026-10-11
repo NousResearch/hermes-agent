@@ -617,6 +617,30 @@ def test_vision_picker_custom_endpoint(tmp_path, monkeypatch):
     save_env.assert_called_once_with("OPENAI_API_KEY", "sk-secret")
 
 
+def test_vision_reconfigure_survives_the_callers_save(tmp_path, monkeypatch):
+    """`hermes tools` saves its own config object after the vision step; the vision choice must be in it."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    import hermes_cli.tools_config as tc
+    import hermes_cli.tools_config_providers as tcp
+    from hermes_cli.config import load_config, read_raw_config, save_config
+
+    config = load_config()
+    config["_unsaved_probe"] = True  # an edit the flow has not saved yet
+    seq = iter([2])  # Custom OpenAI-compatible endpoint
+    prompts = iter(["https://my.endpoint/v1", "sk-secret", "my-vision-model"])
+    with patch.object(tc, "_prompt_choice", side_effect=lambda *a, **k: next(seq)), \
+         patch.object(tcp, "_prompt", side_effect=lambda *a, **k: next(prompts)), \
+         patch.object(tcp, "save_env_value"):
+        tc._configure_toolset("vision", config, reconfigure=True)
+    assert "_unsaved_probe" not in read_raw_config()  # the step does not save the caller's other edits
+    save_config(config)  # what _reconfigure_tool does after the step
+
+    v = load_config().get("auxiliary", {}).get("vision", {})
+    assert v.get("provider") == "custom"
+    assert v.get("base_url") == "https://my.endpoint/v1"
+    assert v.get("model") == "my-vision-model"
+
+
 
 
 def test_visible_providers_reuses_logged_out_feature_snapshot(monkeypatch):

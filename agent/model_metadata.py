@@ -1870,10 +1870,8 @@ def _remember_no_codex_catalog(cache_key: str) -> None:
 
 
 def _fetch_codex_oauth_context_lengths_with_source(access_token: str, base_url: str = "") -> tuple[dict[str, int], bool]:
-    """Codex catalogue ``{slug: context_window}`` plus whether it came from HTTP. Cached per token
-    fingerprint (windows vary by entitlement); ``max_context_window`` lands in
-    ``_codex_oauth_max_context_cache`` under the same key. An in-process hit reports False: not a
-    fresh provider confirmation, must not drive persistent writes."""
+    """Account-scoped catalogue context lengths and HTTP freshness; also retain max-context and
+    speed metadata. In-process hits report False and must not drive persistent writes."""
     if not _codex_catalog_probe_allowed(access_token, base_url):
         return {}, False
     now = time.time()
@@ -1898,6 +1896,8 @@ def _fetch_codex_oauth_context_lengths_with_source(access_token: str, base_url: 
         logger.debug("Codex /models probe failed: %s", exc)
         _remember_no_codex_catalog(cache_key)
         return {}, False
+    from agent.codex_service_tiers import remember_catalog
+    remember_catalog(cache_key, entries)
     result: dict[str, int] = {}
     max_result: dict[str, int] = {}
     for item in entries:

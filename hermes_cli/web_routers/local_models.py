@@ -610,6 +610,9 @@ def _catalog_row(entry, budget, recommended, recommended_reason, staged_ids) -> 
     else:
         shape = f"starts at {row['start_window_label']} and grows toward {row['native_context_label']} as you use it"
     row["fit_summary"] = shape + (" (larger than your GPU memory — runs slower)" if decision.spilled else "")
+    warning = context_policy.host_memory_warning(decision, budget)
+    if warning:
+        row["fit_detail"] = warning
     return row
 
 

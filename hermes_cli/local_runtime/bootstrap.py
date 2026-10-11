@@ -252,6 +252,8 @@ def _generate_presets(mdir: Path, preset_path: Path) -> Path | None:
         for entry in generate_presets(mdir, capacity, preset_path, live=_launch_budget(capacity)):
             if entry.refusal:
                 logger.warning("model refused by physics check: %s", entry.refusal)
+            elif entry.warning:
+                logger.warning("%s: %s", entry.model_id, entry.warning)
         return preset_path
     except Exception as exc:
         if preset_path.exists():

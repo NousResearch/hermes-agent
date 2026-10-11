@@ -3,7 +3,40 @@ import json
 import sqlite3
 import subprocess
 import sys
+import threading
 from pathlib import Path
+
+
+def test_preflight_finishes_while_another_connection_keeps_writing(tmp_path):
+    # A stepped sqlite3 backup restarts on every foreign write and never finishes under load.
+    home = tmp_path / "home"
+    home.mkdir()
+    db = home / "state.db"
+    script = Path(__file__).resolve().parents[2] / "hermes_cli" / "backup_sqlite.py"
+    with sqlite3.connect(db) as setup:
+        setup.execute("PRAGMA journal_mode=WAL")
+        setup.execute("CREATE TABLE messages (body TEXT)")
+        setup.executemany("INSERT INTO messages VALUES (?)", [("x" * 4000,)] * 4000)
+    stop = threading.Event()
+
+    def write_continuously():
+        with sqlite3.connect(db, timeout=5) as writer:
+            while not stop.is_set():
+                writer.execute("INSERT INTO messages VALUES ('live turn')")
+                writer.commit()
+                stop.wait(0.005)
+
+    thread = threading.Thread(target=write_continuously)
+    thread.start()
+    try:
+        result = subprocess.run([sys.executable, "-I", "-S", str(script), str(home)],
+                                capture_output=True, text=True, timeout=20)
+    finally:
+        stop.set()
+        thread.join()
+    assert result.returncode == 0, result.stderr
+    with sqlite3.connect(json.loads(result.stdout)["path"]) as snapshot:
+        assert snapshot.execute("PRAGMA integrity_check").fetchone() == ("ok",)
 
 
 def test_preflight_captures_committed_wal_without_application_imports(tmp_path):

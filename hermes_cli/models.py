@@ -2548,12 +2548,14 @@ def normalize_opencode_model_id(provider_id: Optional[str], model_id: Optional[s
 
 # Per-family (model-id prefix → api_mode) routing from OpenCode's published Zen/Go endpoint
 # tables, checked in order. GPT/Codex/Grok and Muse Spark use /v1/responses (Muse Spark 503s on
-# chat/completions); Claude (Zen), MiniMax (Go), Union Alpha, and Qwen use /v1/messages;
-# everything else falls through to /v1/chat/completions.
+# chat/completions); Claude (both relays), MiniMax (Go), Union Alpha, and Qwen use /v1/messages;
+# everything else falls through to /v1/chat/completions. Claude is listed under Go as well because
+# the Go catalog carries ``claude-haiku-5-5``: it 400s ``ModelProtocolUnsupported`` on
+# /v1/chat/completions and on /v1/responses, and answers on /v1/messages.
 _OPENCODE_API_MODE_PREFIXES: dict[str, tuple[tuple[tuple[str, ...], str], ...]] = {
     "opencode-go": (
         (("gpt-", "grok-", "muse-spark"), "codex_responses"),
-        (("minimax-", "qwen", "union-alpha"), "anthropic_messages")),
+        (("claude-", "minimax-", "qwen", "union-alpha"), "anthropic_messages")),
     "opencode-zen": (
         (("claude-", "union-alpha"), "anthropic_messages"), (("gpt-", "grok-", "muse-spark"), "codex_responses"),
         (("qwen",), "anthropic_messages"))}

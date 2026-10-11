@@ -54,9 +54,12 @@ _GATEWAY_LIFECYCLE_PATTERN = re.compile(
     # makes an unload durable across boots. Omitting them left the bypassable approval layer
     # (tools/approval.py, skipped on force=True) as the only cover, while this hard block — documented as
     # "force=True cannot help here" — let them through (#80260).
-    r"|(?:launchctl\s+(?:kickstart|unload|load|stop|restart|submit|bootstrap|bootout|remove|disable)\b[^\n]*\bhermes[.\-]?gateway)"
-    # Branch C: systemctl ops on a hermes-gateway unit.
-    r"|(?:systemctl\s+(?:-\S+\s+)*(?:restart|stop|start)\b[^\n]*\bhermes[.\-]?gateway)"
+    r"|(?:launchctl\s+(?:kickstart|unload|load|stop|restart|submit|bootstrap|bootout|remove|disable)\b[^\n]*\bhermes(?:[.\-]\w+){0,3}?[.\-]?gateway)"
+    # Branch C: systemctl ops on a hermes-gateway unit. Branches B and C also accept up to three
+    # infix name segments (`hermes-fleet-gateway.service`, `ai.hermes.codex.gateway`): a site that
+    # names its supervised unit `hermes-<role>-gateway` is still restarting a gateway, and the bare
+    # `hermes[.\-]?gateway` anchor let that unit stop itself from inside.
+    r"|(?:systemctl\s+(?:-\S+\s+)*(?:restart|stop|start)\b[^\n]*\bhermes(?:[.\-]\w+){0,3}?[.\-]?gateway)"
     # Branch D: pkill/kill of the gateway process, both token orders. Leading \b keeps "skill" from
     # matching as "kill".
     # `taskkill` / `Stop-Process` are the Windows spellings of the same operation; `\bp?kill\b`
@@ -267,7 +270,7 @@ _PROFILE_FLAG_LIFECYCLE_PATTERN = re.compile(
 _LAUNCHCTL_LIFECYCLE_VERBS_RE = re.compile(
     r"(?i)\blaunchctl\s+(?:kickstart|unload|load|stop|restart|bootout|kill|disable|remove)\b"
 )
-_HERMES_GATEWAY_LABEL_RE = re.compile(r"(?i)\bhermes[.\-]?gateway\b")
+_HERMES_GATEWAY_LABEL_RE = re.compile(r"(?i)\bhermes(?:[.\-]\w+){0,3}?[.\-]?gateway\b")
 
 _SHELL_EXECUTABLES = frozenset({"sh", "bash", "dash", "ksh", "zsh"})
 _SHELL_OPTIONS_WITH_VALUES = frozenset({"-O", "+O", "-o", "+o"})

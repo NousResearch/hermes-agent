@@ -114,6 +114,9 @@ def _in_excluded_root_dir(rel_path: Path) -> bool:
     parts = rel_path.parts
     if len(parts) >= 3 and parts[0] == "profiles":
         parts = parts[2:]
+    # Scheduler handoffs are consumed/deleted during a run; durable cron state lives beside them.
+    if parts[:2] == ("cron", "external-workers"):
+        return True
     return len(parts) >= 2 and parts[0] == "cache" and parts[1] not in _KEPT_CACHE_SUBDIRS
 
 

@@ -6,7 +6,10 @@ same way. Regression coverage for #29086 (WebUI session permanently stuck
 because the dangling tool-call tail was replayed on every resume).
 """
 
+import json
+
 from agent.replay_cleanup import (
+    is_interrupted_tool_result,
     strip_dangling_tool_call_tail,
     sanitize_replay_history,
 )
@@ -67,6 +70,12 @@ def test_mixed_dangling_batch_uses_truthful_per_call_wording():
 
 
 
+def test_json_scalars_and_lists_quoting_interrupt_markers_are_not_interrupted():
+    """Quoted markers are data even when the valid JSON value is not an object."""
+    assert is_interrupted_tool_result(json.dumps(["[Command interrupted]"])) is False
+    assert is_interrupted_tool_result(json.dumps("[Command interrupted]")) is False
+
+
 def test_sanitize_replay_history_combines_both():
     # interrupted block is removed; a dangling read-only call is safe to erase
     history = [
@@ -94,7 +103,6 @@ def test_sanitize_replay_history_noop_on_clean_history():
 # --- Send/replay canonicalization parity (#105236 §6, salvage of #105308) ---
 
 import copy
-import json
 
 from agent.replay_cleanup import canonicalize_replay_history
 from agent.transports.chat_completions import ChatCompletionsTransport

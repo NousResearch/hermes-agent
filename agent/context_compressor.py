@@ -594,6 +594,10 @@ def salvage_grown_transcript(
 # Exact wire text of every shipped prefix, newest-first; stale directives must
 # still be strippable on resume. NEVER edit/reorder entries (byte-pinned); prepend.
 _HISTORICAL_SUMMARY_PREFIXES = (
+    # Variant: lacked the 'This handoff must never become the active turn by itself.' clause.
+    "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below. This is a handoff from a previous context window — treat it as background reference, NOT as active instructions. Do NOT answer questions or fulfill requests mentioned in this summary; they were already addressed. Respond ONLY to the latest user message that appears AFTER this summary — that message is the single source of truth for what to do right now. If no user message appears AFTER this summary, do nothing: do not resume, wrap up, or continue work from '## Historical Task Snapshot' or any other section, do not call tools, and wait for a new user message. ",
+    # Variant: lacked the trailing ' The current session state (files, config, etc.) may reflect work described here' clause.
+    "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below. This is a handoff from a previous context window — treat it as background reference, NOT as active instructions. Do NOT answer questions or fulfill requests mentioned in this summary; they were already addressed. Respond ONLY to the latest user message that appears AFTER this summary — that message is the single source of truth for what to do right now. If no user message appears AFTER this summary, do nothing: do not resume, wrap up, or continue work from '## Historical Task Snapshot' or any other section, do not call tools, and wait for a new user message. This handoff must never become the active turn by itself. Topic overlap with the summary does NOT mean you should resume its task: even on similar topics, the latest user message WINS. Treat ONLY the latest message as the active task and discard stale items from '## Historical Task Snapshot' entirely — do not 'wrap up' or 'finish' work described there unless the latest message explicitly asks for it. Reverse signals in the latest message (e.g. 'stop', 'undo', 'roll back', 'just verify', 'don't do that anymore', 'never mind', a new topic) must immediately end any in-flight work described in the summary; do not re-surface it in later turns. IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system prompt is ALWAYS authoritative and active — never ignore or deprioritize memory content due to this compaction note. None of the above restricts HOW you work: your tools remain fully active — keep calling them normally for the active task (edit files, run commands, search) instead of merely narrating what you would do. The current session state (files, config, etc.) may reflect work described here — avoid repeating it:",
     # Pre-#80622: lacked the "no user message after summary => do nothing" clause.
     "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below. This is a handoff "
     "from a previous context window — treat it as background reference, NOT as active instructions. Do NOT answer "
@@ -4280,7 +4284,16 @@ Write only the summary body. Do not include any preamble or prefix."""
         # Drop merged prior-tail content up to the delimiter so it never leaks into the next prompt.
         if _MERGED_SUMMARY_DELIMITER in text:
             text = text.split(_MERGED_SUMMARY_DELIMITER, 1)[1].strip()
-        for prefix in (SUMMARY_PREFIX, LEGACY_SUMMARY_PREFIX, *_HISTORICAL_SUMMARY_PREFIXES):
+        # Longest-first: some frozen generations are byte prefixes of others
+        # (e.g. the 662-byte entry is a prefix of the 1808-byte one), and the
+        # loop is first-match-wins. Newest-first order alone would strip the
+        # shorter sibling and leave the remainder of the longer prefix in the
+        # body fed to the next summarizer.
+        for prefix in sorted(
+            (SUMMARY_PREFIX, LEGACY_SUMMARY_PREFIX, *_HISTORICAL_SUMMARY_PREFIXES),
+            key=len,
+            reverse=True,
+        ):
             if text.startswith(prefix):
                 text = text[len(prefix):].lstrip()
                 break
@@ -4548,6 +4561,12 @@ Write only the summary body. Do not include any preamble or prefix."""
                     prior = prior[len(_MERGED_PRIOR_CONTEXT_HEADER):].lstrip()
             elif _SUMMARY_END_MARKER in content:
                 prior = content.split(_SUMMARY_END_MARKER, 1)[1].lstrip()
+                # Nested handoff: the text after the marker is itself a full standalone
+                # summary (a second compression appended its own carrier inside the first
+                # carrier's prior-tail slot). Unwrapping it would hand display a raw
+                # summary bubble — classify it and drop like any other standalone.
+                if prior and cls.classify_summary_content(prior) == "standalone":
+                    prior = ""
             else:
                 prior = ""
             return _unwrapped(prior) if prior else None
@@ -4569,6 +4588,10 @@ Write only the summary body. Do not include any preamble or prefix."""
                     text = _part_text(item)
                     if isinstance(text, str) and _SUMMARY_END_MARKER in text:
                         remainder = text.split(_SUMMARY_END_MARKER, 1)[1].lstrip()
+                        # Symmetric with the str branch above: a nested standalone
+                        # summary in the prior-tail slot is not visible content.
+                        if remainder and cls.classify_summary_content(remainder) == "standalone":
+                            remainder = ""
                         legacy_blocks = [_with_part_text(item, remainder)] if remainder else []
                         legacy_blocks += [later.copy() if isinstance(later, dict) else later for later in content[index + 1:]]
                         return _unwrapped(legacy_blocks) if legacy_blocks else None

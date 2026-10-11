@@ -10,6 +10,8 @@ recovery.
 import sys
 from types import SimpleNamespace
 
+import pytest
+
 from gateway.config import PlatformConfig
 
 # Shared telegram mock (same discipline as tests/gateway/test_dm_topics.py): install before the
@@ -20,6 +22,7 @@ _ensure_telegram_mock()
 sys.modules.pop("plugins.platforms.telegram.adapter", None)
 
 from plugins.platforms.telegram.adapter import TelegramAdapter
+from telegram.error import BadRequest
 
 
 def _make_adapter() -> TelegramAdapter:
@@ -141,3 +144,40 @@ def test_plain_threaded_message_is_not_recorded():
     adapter = _make_adapter()
     _record(adapter, _make_message(message_id=1001, thread_id=40798))
     assert adapter._pending_topic_openers == {}
+
+
+@pytest.mark.asyncio
+async def test_dm_topic_lane_thread_not_found_fails_closed_without_prune():
+    """Send-side negative for the field shape from #136567: a Hermes DM-topic reply-fallback
+    lane the adapter holds a binding for (used successfully minutes earlier), where Bot API
+    answers "Message thread not found" for the reply. The send must fail closed — exactly one
+    Bot API attempt (no plain fallback that would render outside the topic lane) and no
+    binding prune, so one rejected send cannot collapse the chat's remaining lanes."""
+    adapter = _make_adapter()
+    calls: list[dict] = []
+    pruned: list[tuple] = []
+
+    async def mock_send_message(**kwargs):
+        calls.append(dict(kwargs))
+        raise BadRequest("Message thread not found")
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+    adapter._prune_stale_dm_topic_binding = lambda *args, **kwargs: pruned.append((args, kwargs))
+
+    result = await adapter.send(
+        chat_id="775566675",
+        content="reply into the topic lane",
+        metadata={
+            "thread_id": "47321",
+            "telegram_dm_topic_reply_fallback": True,
+            "direct_messages_topic_id": "47321",
+            "telegram_reply_to_message_id": "31890",
+        },
+    )
+
+    assert result.success is False
+    assert result.retryable is False
+    assert "thread not found" in str(result.error).lower()
+    assert len(calls) == 1
+    assert calls[0]["message_thread_id"] == 47321
+    assert pruned == []

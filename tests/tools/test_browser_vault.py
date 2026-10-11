@@ -774,6 +774,53 @@ class TestTwoFactor:
         code = re.search(r'"value": "(\d{6})"', seen["expr"]).group(1)
         assert code not in raw  # the code went to the page, not to the model
 
+    def test_enabled_fresh_relay_code_is_filled_at_function_seam(self):
+        from tools import browser_vault_tool
+
+        controls = [{"index": 0, "type": "text", "name": "otp", "label": "Authentication code",
+                     "autocomplete": "one-time-code"}]
+        seen = {}
+
+        def fake_eval(task_id, expr):
+            return {"success": True, "result": json.dumps(controls) if "querySelectorAll" in expr else "https://acme.test/2fa"}
+
+        def fake_secret(task_id, expr):
+            seen["expr"] = expr
+            return {"success": True, "result": json.dumps({"filled": 1})}
+
+        with patch("hermes_cli.config.load_config_readonly", return_value={"vault": {"relay_one_time_codes": {
+                     "enabled": True, "max_age_seconds": 300}}}), \
+             patch.object(browser_vault_tool, "_focus_bound_origin", lambda *a, **k: None), \
+             patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
+             patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_secret), \
+             patch.object(browser_vault_tool.time, "time", return_value=1_100):
+            out = json.loads(browser_vault_tool.browser_vault_enter_code(
+                task_id="t", code="123 456", relayed_at=1_000))
+
+        assert out["success"] and out["source"] == "chat_relay"
+        assert out["filled_fields"] == 1
+        assert '"value": "123456"' in seen["expr"]
+
+    def test_enabled_stale_relay_code_is_rejected_at_function_seam(self):
+        from tools import browser_vault_tool
+
+        controls = [{"index": 0, "type": "text", "name": "otp", "label": "Authentication code",
+                     "autocomplete": "one-time-code"}]
+        fake_eval = lambda task_id, expr: {"success": True,
+                                           "result": json.dumps(controls) if "querySelectorAll" in expr else "https://acme.test/2fa"}
+
+        with patch("hermes_cli.config.load_config_readonly", return_value={"vault": {"relay_one_time_codes": {
+                     "enabled": True, "max_age_seconds": 300}}}), \
+             patch.object(browser_vault_tool, "_focus_bound_origin", lambda *a, **k: None), \
+             patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
+             patch.object(browser_vault_tool, "_eval_js_secret") as fake_secret, \
+             patch.object(browser_vault_tool.time, "time", return_value=1_100):
+            out = json.loads(browser_vault_tool.browser_vault_enter_code(
+                task_id="t", code="123456", relayed_at=700))
+
+        assert out["error_type"] == "stale_relay"
+        fake_secret.assert_not_called()
+
     def test_without_a_key_the_user_is_asked_and_split_boxes_get_one_digit_each(self, store):
         from agent.vault_backends import unlock as unlock_mod
         from tools import browser_vault_tool

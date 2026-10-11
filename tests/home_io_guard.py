@@ -11,13 +11,22 @@ import sqlite3
 import sys
 import threading
 
+# Both the interpreter's own spelling and its resolved form. A PM-managed runtime
+# exposes the interpreter through a version symlink (cpython-<minor> ->
+# cpython-<full-version>), so imports and traceback formatting read stdlib sources
+# under the UNRESOLVED sys.base_prefix while resolve() names the symlink target.
+# Exempting only the resolved form makes a linked-worktree run — whose repo root is
+# not the home checkout the comment below exempts — refuse the interpreter's own
+# files, fail the test, then abort while formatting that failure's traceback.
 _INTERPRETER_PREFIXES = tuple({
-    Path(p).resolve() for p in (sys.prefix, sys.base_prefix, sys.exec_prefix, sys.base_exec_prefix)
+    literal for p in (sys.prefix, sys.base_prefix, sys.exec_prefix, sys.base_exec_prefix)
+    for literal in (Path(p), Path(p).resolve())
 } | {
     # A PM-activated developer shell runs sys.prefix's python against a dependency generation
     # whose site-packages sits under the (real) Hermes home; third-party imports from it are the
     # interpreter's installation, not Hermes state.
-    Path(p).resolve() for p in sys.path if p and Path(p).name in ("site-packages", "dist-packages")
+    literal for p in sys.path if p and Path(p).name in ("site-packages", "dist-packages")
+    for literal in (Path(p), Path(p).resolve())
 } | {
     # The default install checks the repo out INSIDE the home (install.sh:
     # INSTALL_DIR=$HERMES_HOME/hermes-agent). Reading test data, sources for tracebacks, or the

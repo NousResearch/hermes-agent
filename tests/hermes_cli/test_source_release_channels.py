@@ -13,6 +13,9 @@ from hermes_cli import main, update_cmd
 from hermes_cli.source_releases import resolve_source_release
 from hermes_cli.update_channel import set_install_channel
 
+# The fixture serves release metadata over loopback; stable's real GitHub path is the subject.
+pytestmark = pytest.mark.real_release_channels
+
 
 def git(root, *args):
     return subprocess.run(
@@ -62,6 +65,9 @@ def releases(tmp_path, monkeypatch, request):
         responses[f"/repos/NousResearch/hermes-agent/commits/{tag}"] = {
             "sha": commits[1 if channel == "stable" else 2],
         }
+    responses["/repos/NousResearch/hermes-agent/releases/latest"] = {
+        "tag_name": tags["stable"], "draft": False, "prerelease": False,
+    }
     responses["/releases/stable/release-candidates.json"] = {
         "tag": tags["stable"], "commit": commits[1],
     }
@@ -245,3 +251,54 @@ def test_missing_pointers_fall_back_only_to_published_releases(releases, channel
     )
     assert not any("/tags?" in path for path in releases.requests)
     assert f"/repos/NousResearch/hermes-agent/releases/tags/{releases.tags[channel]}" not in releases.requests
+
+
+def _track_official_origin(releases):
+    official = "https://github.com/NousResearch/hermes-agent.git"
+    git(releases.root, "remote", "set-url", "origin", official)
+    git(releases.root, "config", f"url.{releases.origin.as_uri()}.insteadOf", official)
+
+
+def test_stable_is_the_latest_published_github_release_without_r2(releases):
+    """Publishing a GitHub release is the only promotion stable needs: no R2 record or pointer."""
+    from hermes_cli import source_releases
+
+    def no_r2(name, repository):
+        raise AssertionError("stable must not read an R2 channel record")
+
+    source_releases._resolve_channel = no_r2
+    # A pointer naming a different build must not outrank the published release.
+    releases.responses["/releases/stable/release-candidates.json"] = {
+        "tag": "v99.0.0", "commit": releases.commits[3]}
+    target = source_releases.resolve_source_target("stable", ["git"], releases.root)
+    assert (target.commit, target.version) == (releases.commits[1], "1.2.3")
+    assert not any(path.startswith("/releases/") for path in releases.requests)
+
+
+@pytest.mark.parametrize("start,expected", [(0, 1), (3, 3)], ids=["behind-release", "newer-than-release"])
+def test_default_stable_only_moves_forward_until_the_channel_is_chosen(releases, monkeypatch, capsys,
+                                                                       start, expected):
+    from hermes_cli.update_channel import default_channel
+
+    _track_official_origin(releases)
+    git(releases.root, "checkout", "--detach", releases.commits[start])
+    assert default_channel(releases.root) == "stable"
+    opts = update_cmd._UpdateOptions(
+        pre_update_version=None, gw_input_fn=None,
+        assume_yes=True, keep_stash=False, switch_branch=False, discard_local_changes=False,
+    )
+    monkeypatch.setattr(update_cmd, "_resolve_update_options", lambda *_: opts)
+    monkeypatch.setattr(update_cmd, "_begin_update_receipt_and_plan", lambda *_: None)
+    monkeypatch.setattr(main, "_run_pre_update_backup", lambda *_: None)
+    monkeypatch.setattr(main, "_pause_windows_gateways_for_update", lambda: None)
+    monkeypatch.setattr(update_cmd, "_prepare_git_command", lambda **_: (False, ["git"], False))
+    monkeypatch.setattr(update_cmd, "_complete_source_update", lambda request: None)
+    # The Desktop passes the channel its check reported; naming the default is not a choice.
+    update_cmd._cmd_update_impl(SimpleNamespace(branch=None, channel="stable", force_venv=True), False)
+    assert git(releases.root, "rev-parse", "HEAD") == releases.commits[expected]
+    update_cmd._cmd_update_check()
+    assert ("No newer release" if start > 1 else "Up to date with") in capsys.readouterr().out
+    # Persisting the channel is consent to land exactly on the release.
+    set_install_channel("stable", releases.root)
+    update_cmd._cmd_update_impl(SimpleNamespace(branch=None, channel=None, force_venv=True), False)
+    assert git(releases.root, "rev-parse", "HEAD") == releases.commits[1]

@@ -573,6 +573,7 @@ def test_cli_reuses_an_immutable_multipart_object(r2_server, tmp_path):
     result = subprocess.run(
         [sys.executable, "-c", script, "put", "--tag", "v1.0.0", "--key", path.name, "--file", str(path), "--immutable"],
         cwd=Path(__file__).resolve().parents[2], env=os.environ, capture_output=True, text=True, timeout=60,
+        check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert [method for method, _, _ in r2_server.requests] == ["POST", "GET", "HEAD"]

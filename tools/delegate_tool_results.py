@@ -346,7 +346,7 @@ def _fire_subagent_stop_hooks(results, child_by_index, parent_agent) -> float:
     """Pop the model-hidden ``_child_role`` / ``_child_cost_usd`` fields from every
     entry, fire ``subagent_stop`` per child, and return the summed child cost."""
     try:
-        from hermes_cli.plugins import invoke_hook as invoke_hook
+        from hermes_cli.plugins import invoke_hook
     except Exception:
         invoke_hook = None
     children_cost_total = 0.0

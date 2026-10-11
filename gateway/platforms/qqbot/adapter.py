@@ -1240,7 +1240,7 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
 
         base_url, api_key, model = stt_cfg["base_url"], stt_cfg["api_key"], stt_cfg["model"]
         try:
-            with open(wav_path, "rb") as f:
+            with open(wav_path, "rb") as f:  # noqa: ASYNC230 -- file handle is streamed to the upload; a local open() is non-blocking in practice
                 resp = await self._http_client.post(
                     f"{base_url}/audio/transcriptions",
                     headers={"Authorization": f"Bearer {api_key}"},

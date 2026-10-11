@@ -104,6 +104,7 @@ def _run_in(root: Path, *command: str, sentinel: str | None = "{root}/state/fact
     return subprocess.run(
         [bash(), posix(root / "scripts" / RUNNER.name), *command],
         capture_output=True, text=True, cwd=posix(root), env=env, timeout=60,
+        check=False,
     )
 
 

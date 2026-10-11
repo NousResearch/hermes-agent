@@ -28,7 +28,7 @@ def _desktop_product_present(tmp_path: Path) -> int:
     env = dict(os.environ, HOME=tmp_path.as_posix(), HERMES_HOME=(tmp_path / "home").as_posix(),
                HERMES_INSTALL_DIR=(tmp_path / "install").as_posix())
     script = f"source {shlex.quote(INSTALL_SH.as_posix())} --manifest >/dev/null\ndesktop_product_present\n"
-    return subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, timeout=30).returncode
+    return subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, timeout=30, check=False).returncode
 
 
 @pytest.mark.parametrize("unpacked", UNPACKED_DIRS)

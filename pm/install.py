@@ -872,7 +872,6 @@ def drift(*, include_venv: bool = True) -> dict[str, str]:
     problems: dict[str, str] = {}
     lockfile = _lockfile()
     facts = _facts()
-    store = _store()
     target = current_target()
     for name in lockfile.names():
         try:

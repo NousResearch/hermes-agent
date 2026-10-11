@@ -24,7 +24,7 @@ def test_real_read_tool_binaries_confirm_option_ownership(
     if shutil.which(argv[0]) is None:
         pytest.skip(f"{argv[0]} is not installed")
 
-    completed = subprocess.run(argv, input=stdin, text=True, capture_output=True)
+    completed = subprocess.run(argv, input=stdin, text=True, capture_output=True, check=False)
 
     assert completed.returncode == expected_returncode
     assert completed.stdout == expected_output

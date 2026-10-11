@@ -87,6 +87,7 @@ def _run(step: dict, ctx: dict, cwd: Path | None = None, *, receipt: bool = Fals
                     [bash, "--noprofile", "--norc", "-eo", "pipefail", str(script)],
                     cwd=cwd or root, env=env, stdin=subprocess.DEVNULL,
                     stdout=out_f, stderr=err_f, timeout=30,
+                    check=False,
                 ).returncode
             except subprocess.TimeoutExpired:
                 returncode = None

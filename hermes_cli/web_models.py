@@ -482,6 +482,11 @@ class SkillToggle(BaseModel):
     enabled: bool
     profile: Optional[str] = None
 
+class SkillPin(BaseModel):
+    name: str
+    pinned: bool
+    profile: Optional[str] = None
+
 class SkillCreate(BaseModel):
     name: str
     content: str

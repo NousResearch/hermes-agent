@@ -1977,6 +1977,11 @@ export interface Translations extends NoticeTranslations {
     skillUpdated: string
     edit: string
     archive: string
+    pin: string
+    unpin: string
+    pinned: string
+    pinSuccessTitle: string
+    unpinSuccessTitle: string
     skillArchivedTitle: string
     skillArchivedMessage: string
     tabPlugins: string

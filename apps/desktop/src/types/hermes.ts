@@ -1199,6 +1199,10 @@ export interface SkillInfo {
   name: string
   /** Total observed activity (use + view + patch). Absent on older backends. */
   usage?: number
+  /** Curator pin — the inactivity rule never auto-archives a pinned skill
+   *  (`hermes curator pin`). Absent on older backends, where the pane offers no
+   *  pin control at all (there is no endpoint to write it to). */
+  pinned?: boolean
   /** 'agent' = learned/local (editable), 'bundled' = ships with Hermes, 'hub' = installed,
    * 'external' = mounted from skills.external_dirs (externally authored, still editable). */
   provenance?: 'agent' | 'bundled' | 'external' | 'hub'

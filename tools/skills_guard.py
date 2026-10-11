@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import List, Tuple
 
 
-SCANNER_VERSION = "skills-guard-v9"
+SCANNER_VERSION = "skills-guard-v10"
 
 # NVIDIA-verified skills each ship a signed `skill.oms.sig` + governance `skill-card.md`.
 TRUSTED_REPOS = {"openai/skills", "anthropics/skills", "huggingface/skills", "NVIDIA/skills"}
@@ -378,7 +378,14 @@ THREAT_PATTERNS = [
     (rf'curl\s+[^|\s][^\n]*\|\s*{_SUDO_PREFIX}{_SHELL_NAMES_RE}', "curl_pipe_shell", "critical", "supply_chain", "curl piped to shell (download-and-execute)"),
     (rf'wget\s+[^\n]*-O\s*-\s*\|\s*{_SUDO_PREFIX}{_SHELL_NAMES_RE}',
      "wget_pipe_shell", "critical", "supply_chain", "wget piped to shell (download-and-execute)"),
-    (rf'curl\s+[^|\s][^\n]*\|\s*{_SUDO_PREFIX}python', "curl_pipe_python", "critical", "supply_chain", "curl piped to Python interpreter"),
+    # Only a fixed stdlib JSON formatter (optionally piped to head with a numeric count) is data-only.
+    # Require the complete remaining pipeline: unknown consumers, arguments, substitutions
+    # and shell operators stay conservative. Module/flag case is significant despite the
+    # surrounding case-insensitive threat-pattern registry.
+    (rf'curl\s+[^|\s][^\n]*\|\s*{_SUDO_PREFIX}python'
+     r'(?![0-9.]*(?-i:[ \t]+-m[ \t]+json\.tool'
+     r'(?:[ \t]*\|[ \t]*head(?:[ \t]+-(?:n[ \t]+)?[0-9]+)?)?)[ \t]*$)',
+     "curl_pipe_python", "critical", "supply_chain", "curl piped to Python interpreter"),
     # ── Supply chain: unpinned/deferred dependencies ──
     (r'#\s*///\s*script.*dependencies',
      "pep723_inline_deps", "medium", "supply_chain", "PEP 723 inline script metadata with dependencies (verify pinning)"),

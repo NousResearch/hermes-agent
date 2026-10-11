@@ -141,7 +141,8 @@ async def _mutate_session(authority, actor, ref, params, *, commit_lock=None):
 
     prepared = None
     if operation in {'model', 'compress'}:
-        prepared = mutate_runtime_session(authority.db, epoch=authority.epoch,
+        # Its own BEGIN IMMEDIATE, so off the loop like the commit below.
+        prepared = await asyncio.to_thread(mutate_runtime_session, authority.db, epoch=authority.epoch,
             principal_id=actor.subject, session_id=ref.session_id, request_id=params['request_id'],
             expected_revision=params['expected_revision'], expected_generation=params.get('expected_generation'),
             operation=operation, payload=params['payload'], _live_guard=live_guard, _prepare_only=True)

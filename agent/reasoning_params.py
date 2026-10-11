@@ -4,6 +4,7 @@ When ``reasoning`` extra_body is safe to send, LM Studio / Ollama / GitHub Model
 ``reasoning_content`` echo families, and strict-API tool-call sanitising.
 Extracted from ``run_agent.py``; every method resolves through ``AIAgent``'s MRO unchanged.
 """
+import logging
 import time
 
 from agent.lazy_forward import forward as _forward, forward_static as _forward_static
@@ -186,7 +187,15 @@ class ReasoningParamsMixin:
         try:
             from hermes_cli.config import load_config_readonly
             return bool((load_config_readonly().get("model") or {}).get("reasoning_echo"))
-        except Exception:
+        except Exception as exc:
+            # Log the class, never the config value or exception traceback.
+            logging.getLogger("run_agent").warning(
+                "Agent configuration for model.reasoning_echo could not be loaded (%s); "
+                "using the default reasoning echo setting. Check the active Hermes Python "
+                "environment and dependencies; run 'hermes config check' after "
+                "configuration imports work again.",
+                type(exc).__name__,
+            )
             return False
 
     # Echo families are host/provider-driven, not model-name-driven: aggregators re-exporting Kimi reject the

@@ -218,7 +218,11 @@ export function useModelControls({
         }
 
         if (typeof result.model === 'string' || typeof result.provider === 'string') {
-          setCurrentModelSource('default')
+          // The model/provider pair is now default-sourced, but a hand-tuned
+          // effort/speed (manual-effort, #134677) keeps its shield — flipping
+          // the source to 'default' here would let the next config refresh
+          // overwrite what the user dialed in.
+          setCurrentModelSource(getCurrentModelSource() === 'manual-effort' ? 'manual-effort' : 'default')
         }
       } catch {
         // The delayed session.info event still updates this once the agent is ready.

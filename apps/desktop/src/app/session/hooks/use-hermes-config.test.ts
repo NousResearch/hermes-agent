@@ -12,6 +12,7 @@ import {
   $currentReasoningEffort,
   $currentServiceTier,
   $defaultReasoningEffort,
+  markComposerEffortManual,
   markComposerSelectionManual,
   setCurrentCwd,
   setCurrentFastMode,
@@ -102,6 +103,25 @@ describe('useHermesConfig refreshHermesConfig', () => {
 
     expect($defaultReasoningEffort.get()).toBe('high')
     // The manual pick itself is still respected.
+    expect($currentReasoningEffort.get()).toBe('low')
+  })
+
+  // Regression (#134677): the reasoning keybind / a preset patch marks the
+  // composer 'manual-effort' — the tuned effort must keep the same shield a
+  // manual model pick has, or the next config refresh would snap it back to
+  // the profile default.
+  it('does not reseed a hand-tuned reasoning level marked manual-effort', async () => {
+    markComposerEffortManual()
+    setCurrentReasoningEffort('low')
+
+    mockConfig({ agent: { reasoning_effort: 'high' } })
+    const { result } = renderHook(() => useHermesConfig({ activeSessionIdRef: { current: null } }))
+
+    await act(async () => {
+      await result.current.refreshHermesConfig()
+    })
+
+    expect($defaultReasoningEffort.get()).toBe('high')
     expect($currentReasoningEffort.get()).toBe('low')
   })
 

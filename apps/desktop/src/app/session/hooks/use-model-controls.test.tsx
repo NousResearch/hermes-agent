@@ -11,6 +11,7 @@ import {
   $currentProvider,
   $currentReasoningEffortWire,
   getCurrentModelSource,
+  markComposerEffortManual,
   setCurrentModel,
   setCurrentModelSource,
   setCurrentProvider,
@@ -206,6 +207,37 @@ describe('useModelControls', () => {
 
     expect($currentModel.get()).toBe('poolside/laguna-xs-2.1:free')
     expect($currentProvider.get()).toBe('nous')
+  })
+
+  // Regression (#134677): a manual-effort composer (reasoning keybind / preset
+  // patch) is NOT a manual model pick — the default reseed must still heal the
+  // model/provider pair (a stale runtime provider beside the profile's model
+  // caused portal auth failures on every New session), while keeping the
+  // effort shield so a later config refresh cannot snap the tuned effort back.
+  it('reseeds the model/provider under manual-effort but keeps the effort shield', async () => {
+    const queryClient = new QueryClient()
+    // What the composer holds after the effort keybind stepped effort while
+    // the atoms still carried a stale runtime provider.
+    setCurrentModel('gpt-6.1-sol')
+    setCurrentProvider('nous')
+    markComposerEffortManual()
+    vi.mocked(getGlobalModelInfo).mockResolvedValue({
+      model: 'gpt-6.1-sol',
+      provider: 'openai-codex'
+    })
+
+    const { result } = renderHook(() =>
+      useModelControls({
+        queryClient,
+        requestGateway: vi.fn()
+      })
+    )
+
+    await result.current.refreshCurrentModel()
+
+    expect($currentModel.get()).toBe('gpt-6.1-sol')
+    expect($currentProvider.get()).toBe('openai-codex')
+    expect(getCurrentModelSource()).toBe('manual-effort')
   })
 
   it('paints a saved profile default immediately when no session is active', () => {

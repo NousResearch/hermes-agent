@@ -21,7 +21,23 @@ import type { SessionOwnerRoute, SessionOwnerScope } from './session-request-rou
 import { clearUnreadOnOpen } from './session-unread-remote'
 
 type Updater<T> = T | ((current: T) => T)
-export type ComposerModelSource = '' | 'default' | 'manual'
+/**
+ * Where the composer's model/provider pair came from.
+ *
+ * - `''`: first-run/cleared — nothing the user picked.
+ * - `'default'`: a mirror of Settings → Model; must not pin a new chat.
+ * - `'manual'`: the user picked the model/provider pair in the picker; it rides
+ *   as a per-session override on the next `session.create`.
+ * - `'manual-effort'`: only reasoning effort / speed was hand-tuned (keybind or
+ *   preset patch) while the model/provider pair is NOT a user pick. It shields
+ *   the tuned effort from config reseeds like `manual` does, but must NOT
+ *   promote the model/provider values — whatever they hold at that moment (a
+ *   default mirror, or the live runtime's resolved identity painted by
+ *   `publishRuntimeToComposer`) — into a per-session override. Promoting them
+ *   shipped a stale `provider` beside the profile-default model and minted
+ *   sessions on a route nobody chose (#134677).
+ */
+export type ComposerModelSource = '' | 'default' | 'manual' | 'manual-effort'
 
 const WORKSPACE_CWD_KEY = 'hermes.desktop.workspace-cwd'
 
@@ -1688,8 +1704,13 @@ export const setCurrentProviderTransient = (next: Updater<string>) => updateAtom
 export const getCurrentModelSource = (): ComposerModelSource => {
   const source = storedComposerString(COMPOSER_MODEL_SOURCE_KEY)
 
-  return source === 'default' || source === 'manual' ? source : ''
+  return source === 'default' || source === 'manual' || source === 'manual-effort' ? source : ''
 }
+
+/** True for either manual flavor — config reseeds treat both as composer
+ *  intent and stand down (see useHermesConfig / refreshCurrentModel). */
+export const isComposerSourceManual = (source: ComposerModelSource): boolean =>
+  source === 'manual' || source === 'manual-effort'
 
 // Reactive mirror of the persisted source so UI (the composer pill's
 // override badge) can subscribe. The getter above stays storage-backed —
@@ -1717,6 +1738,16 @@ export const getComposerSelectionGeneration = (): number => composerSelectionGen
 export const markComposerSelectionManual = (): void => {
   composerSelectionGeneration += 1
   setCurrentModelSource('manual')
+}
+
+/** Mark only the effort/speed axes as hand-tuned — the model/provider pair is
+ *  NOT claimed as a user pick, so `session.create` keeps omitting it and the
+ *  default reseed stays allowed (#134677). Monotonic: a source already at
+ *  'manual' (an explicit picker pick) stays there, or an effort keybind right
+ *  after picking a model would drop the pick from session.create. */
+export const markComposerEffortManual = (): void => {
+  composerSelectionGeneration += 1
+  if (getCurrentModelSource() !== 'manual') setCurrentModelSource('manual-effort')
 }
 
 export const setCurrentReasoningEffort = (next: Updater<string>) => {

@@ -948,13 +948,9 @@ def _reads_clock(node: ast.AST) -> bool:
     return False
 
 
-def _condition_exit(loop: ast.While) -> bool:
-    """The loop can end on something other than the clock: a non-clock condition in its test,
-    or a ``break``/``return`` under an ``if`` whose test is not a clock comparison."""
-    test = loop.test
-    if not isinstance(test, ast.Constant) and not (isinstance(test, ast.Compare) and _reads_clock(test)):
-        return True
-    for stmt in loop.body:
+def _exits_on_condition(body: list[ast.stmt]) -> bool:
+    """A ``break``/``return`` under an ``if`` whose test is not a clock comparison."""
+    for stmt in body:
         for node in _eager(stmt):
             if isinstance(node, ast.If) and not _reads_clock(node.test):
                 if any(isinstance(n, (ast.Break, ast.Return)) for s in node.body for n in _eager(s)):
@@ -962,9 +958,24 @@ def _condition_exit(loop: ast.While) -> bool:
     return False
 
 
-def _deadline_poll(loop: ast.While) -> bool:
-    """A loop polling a condition under a deadline: it reads a clock (test or body) and can
-    end on the condition. ``while time.monotonic() < end: sleep(.1)`` alone is a fixed delay."""
+def _condition_exit(loop: ast.While) -> bool:
+    """The loop can end on something other than the clock: a non-clock condition in its test,
+    or a conditional ``break``/``return`` in its body."""
+    test = loop.test
+    if not isinstance(test, ast.Constant) and not (isinstance(test, ast.Compare) and _reads_clock(test)):
+        return True
+    return _exits_on_condition(loop.body)
+
+
+def _deadline_poll(loop: ast.AST) -> bool:
+    """A loop polling a condition under a bound: a ``while`` that reads a clock and can end on
+    the condition, or ``for _ in range(n)`` that can (n rounds bound it; load only stretches
+    them). ``while time.monotonic() < end: sleep(.1)`` alone is a fixed delay."""
+    if isinstance(loop, ast.For):
+        bounded = isinstance(loop.iter, ast.Call) and _call_name(loop.iter) == "range"
+        return bounded and _exits_on_condition(loop.body)
+    if not isinstance(loop, ast.While):
+        return False
     clock = _reads_clock(loop.test) or any(_reads_clock(stmt) for stmt in loop.body)
     return clock and _condition_exit(loop)
 
@@ -987,7 +998,7 @@ def _sleep_loops(tree: ast.Module) -> Iterator[tuple[ast.Call, ast.AST | None]]:
 
 def wall_clock_sleep(tree: ast.Module, ctx: Ctx) -> Iterable[int]:
     """``time.sleep(x)`` / ``asyncio.sleep(x)`` (any alias) with ``x`` not a literal zero,
-    unless it is the interval of a loop polling a condition under a deadline.
+    unless it is the interval of a loop polling a condition under a deadline or round bound.
 
     Every other non-zero delay counts, however small: the sub-10 ms ones on main are poll
     intervals without a deadline and timestamp-separation hacks, which a Windows runner's
@@ -1001,7 +1012,7 @@ def wall_clock_sleep(tree: ast.Module, ctx: Ctx) -> Iterable[int]:
         if names == ("timeout",) and (delay is None or (
                 isinstance(delay, ast.Constant) and delay.value is None)):
             continue  # an Event wait without a deadline hangs; it does not sleep
-        if _zero(delay) or (isinstance(loop, ast.While) and _deadline_poll(loop)):
+        if _zero(delay) or (loop is not None and _deadline_poll(loop)):
             continue
         yield node.lineno
 

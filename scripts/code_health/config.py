@@ -144,7 +144,7 @@ RULES: tuple[Rule, ...] = (
     Rule("HX013", "wall-clock sleep in a test", "wait for the condition, not the clock: an"
          " Event the code under test sets (`threading.Event` / `asyncio.Event`, `.wait(timeout=)`),"
          " or poll with `tests.waiting.wait_until(predicate, timeout=...)` (`async_wait_until` in a"
-         " coroutine; a poll loop's interval under a deadline passes); a stand-in that must hang"
+         " coroutine; a poll loop's interval under a deadline or a `range(n)` bound passes); a stand-in that must hang"
          " blocks on an Event the test sets at teardown."
          " `sleep(0)` to yield is fine. A delay that IS the behaviour under test takes"
          " `# health: allow HX013 -- <why>`", "ast", include=TESTS, exclude=()),

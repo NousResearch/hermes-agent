@@ -41,6 +41,10 @@ def _hits(src: str) -> list[int]:
      "        if p():\n            return True\n        time.sleep(0.5)\n", False),
     ("import asyncio\nasync def w(p):\n    loop = asyncio.get_running_loop()\n    end = loop.time() + 5\n"
      "    while not p():\n        assert loop.time() < end\n        await asyncio.sleep(0.01)\n", False),
+    ("import asyncio\nasync def settle(r):\n    for _ in range(200):\n        await asyncio.sleep(0.01)\n"
+     "        if not r.busy:\n            return\n", False),  # a round-bounded poll
+    ("import time\nfor _ in range(5):\n    time.sleep(0.1)\n    tick()\n", True),  # five fixed delays
+    ("import time\nfor x in items:\n    time.sleep(0.1)\n    if x.done:\n        break\n", True),
     # a def inside the poll loop is not its interval
     ("import time\nend = time.monotonic() + 5\nwhile not done() and time.monotonic() < end:\n"
      "    def cb():\n        time.sleep(1)\n", True),

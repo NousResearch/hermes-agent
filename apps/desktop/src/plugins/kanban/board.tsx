@@ -14,11 +14,6 @@ import {
   cn,
   Codicon,
   compactNumber,
-  ContextMenu,
-  ContextMenuContent,
-  ContextMenuItem,
-  ContextMenuSeparator,
-  ContextMenuTrigger,
   Dialog,
   DialogContent,
   DialogFooter,
@@ -30,7 +25,6 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
   ErrorState,
-  formatModifierToken,
   host,
   Input,
   isSubmitEnter,
@@ -44,28 +38,20 @@ import {
   Switch,
   Textarea,
   Tip,
-  useGrabScroll,
   useMutation,
   useQuery,
   useQueryClient,
   useValue,
   WorkspacePageHeaderControl
 } from '@hermes/plugin-sdk'
-import {
-  type CSSProperties,
-  type DragEvent as ReactDragEvent,
-  type ReactNode,
-  useEffect,
-  useMemo,
-  useRef,
-  useState
-} from 'react'
+import { type ReactNode, useEffect, useMemo, useState } from 'react'
 
 import {
   $boardSlug,
   $collapsedLanes,
   $introDismissed,
   $lanesByProfile,
+  $swimlaneBy,
   boardKey,
   boardKeyPrefix,
   boardsKey,
@@ -81,458 +67,43 @@ import {
   taskKey,
   useKanbanScope
 } from './api'
+import { BoardColumns, EmptyBoard } from './board-body'
 import { BoardSwitcher } from './board-switcher'
 import { TaskDrawer } from './drawer'
 import { EMPTY_OVERRIDE, ModelOverrideField, overrideCreateFields, type TaskModelOverride } from './model-override'
+import {
+  assigneeOptions,
+  assigneeSelectValue,
+  initialAssignee,
+  laneCreateFields,
+  newTaskTitle,
+  PARKED,
+  submittedAssignee
+} from './new-task-fields'
 import { OrchestrationPanel } from './orchestration'
+import { applyPatch, laneKey, normalizeSwimlaneBy, sendDropPatch, SWIMLANE_OPTIONS, type TaskPatch } from './swimlanes'
 import { columnMeta, type KanbanBoard, type KanbanTask, type TaskEstimate } from './types'
 import {
   $newTaskLane,
-  ago,
-  type ArcState,
-  arcState,
   Avatar,
-  columnHelp,
   columnLabel,
   errText,
   FIELD_LABEL,
   isLockedTarget,
-  lockedReason,
-  PriorityGlyph,
-  RunClock,
-  shortId,
-  useDefaultAssignee,
   useKanban,
   useOrchestration
 } from './ui'
+import { type NewTaskRequest, useSwimlanes } from './use-swimlanes'
 
 // ── optimistic board edits (reconciled by the follow-up refresh) ─────────────
-
-function moveCard(board: KanbanBoard, id: string, toStatus: string): KanbanBoard {
-  let moved: KanbanTask | undefined
-
-  const columns = board.columns.map(col => ({
-    ...col,
-    tasks: col.tasks.filter(task => {
-      if (task.id !== id) {
-        return true
-      }
-
-      moved = { ...task, status: toStatus }
-
-      return false
-    })
-  }))
-
-  if (!moved) {
-    return board
-  }
-
-  return {
-    ...board,
-    columns: columns.map(col => (col.name === toStatus ? { ...col, tasks: [moved!, ...col.tasks] } : col))
-  }
-}
 
 function removeCard(board: KanbanBoard, id: string): KanbanBoard {
   return { ...board, columns: board.columns.map(col => ({ ...col, tasks: col.tasks.filter(t => t.id !== id) })) }
 }
 
-// ── card ─────────────────────────────────────────────────────────────────────
-
-function Meta({ children, icon }: { children: ReactNode; icon: string }) {
-  return (
-    <span className="inline-flex items-center gap-1">
-      <Codicon name={icon} size="0.7rem" />
-      {children}
-    </span>
-  )
-}
-
-function CardFooter({ arc, task }: { arc: ArcState | null; task: KanbanTask }) {
-  const k = useKanban()
-  const created = ago(task.created_at)
-  const links = task.link_counts ? task.link_counts.parents + task.link_counts.children : 0
-  const fallback = useDefaultAssignee()
-  const orchestrator = useOrchestration()?.resolved_orchestrator_profile ?? ''
-  // Ready + no assignee: with a configured default assignee the dispatcher
-  // auto-assigns on its next tick (#27145) — say THAT, not "won't run". Only
-  // a board with no fallback has the genuine silent failure.
-  const unassignedReady = task.status === 'ready' && !task.assignee
-
-  // The agent on the hook for a queued card: the explicit assignee, else the
-  // auto-default (ready), else the specifier that rewrites triage cards.
-  const attached = task.assignee || (task.status === 'ready' ? fallback : task.status === 'triage' ? orchestrator : '')
-
-  const meta = columnMeta(task.status)
-
-  return (
-    <div className="flex items-center gap-2 whitespace-nowrap text-[0.625rem] text-(--ui-text-tertiary)">
-      {arc === 'queued' && attached ? (
-        // WHO is coming for the card. The arc only animates once the agent is
-        // actually working; while queued, the named chip carries "attached".
-        <Tip
-          label={
-            task.status === 'review'
-              ? k.reviewChecking
-              : task.assignee
-                ? k.attachedTip(attached)
-                : task.status === 'triage'
-                  ? k.orchestratorTip(attached)
-                  : k.autoAssignTip(attached)
-          }
-        >
-          <span className="inline-flex min-w-0 cursor-help items-center gap-1 font-medium" style={{ color: meta.tone }}>
-            <Avatar name={attached} size="1.125rem" />
-            <span className="truncate">
-              {!task.assignee && '→ '}
-              {attached}
-            </span>
-          </span>
-        </Tip>
-      ) : task.assignee ? (
-        <Avatar name={task.assignee} size="1.125rem" />
-      ) : null}
-      {arc === 'running' && (
-        <Tip label={k.arcRunning}>
-          <span className="shrink-0 cursor-help">
-            <RunClock task={task} />
-          </span>
-        </Tip>
-      )}
-      {arc === 'stale' && (
-        <Tip label={k.arcStale}>
-          <span className="shrink-0 cursor-help font-medium text-amber-500">{k.noHeartbeat}</span>
-        </Tip>
-      )}
-      {task.status === 'blocked' && task.block_kind && (
-        // #124391: say WHY the card is blocked — the kind arrives on every
-        // card payload; without it every blocked card reads identically.
-        <Tip label={k.blockKindTip(task.block_kind)}>
-          <span className="inline-flex shrink-0 cursor-help items-center gap-1 text-destructive">
-            <Codicon name="debug-breakpoint-data-unverified" size="0.7rem" />
-            {task.block_kind}
-          </span>
-        </Tip>
-      )}
-      {unassignedReady && !fallback && (
-        <Tip label={k.wontRunTip}>
-          <span className="inline-flex shrink-0 cursor-help items-center gap-1 text-amber-500">
-            <Codicon name="debug-disconnect" size="0.7rem" />
-            {k.wontRun}
-          </span>
-        </Tip>
-      )}
-      <div className="ml-auto flex min-w-0 shrink items-center gap-2">
-        {typeof task.priority === 'number' && task.priority > 0 && <PriorityGlyph priority={task.priority} />}
-        {task.progress && task.progress.total > 0 && (
-          <Meta icon="checklist">
-            {task.progress.done}/{task.progress.total}
-          </Meta>
-        )}
-        {Boolean(task.comment_count) && <Meta icon="comment">{task.comment_count}</Meta>}
-        {links > 0 && <Meta icon="references">{links}</Meta>}
-        {task.warnings && task.warnings.count > 0 && (
-          <span className="inline-flex items-center gap-0.5 text-destructive">
-            <Codicon name="warning" size="0.7rem" />
-            {task.warnings.count}
-          </span>
-        )}
-        {created && !task.assignee && !unassignedReady ? (
-          <span className="text-(--ui-text-quaternary)">{created}</span>
-        ) : null}
-        <span className="min-w-0 truncate font-mono text-(--ui-text-quaternary)">{shortId(task.id)}</span>
-      </div>
-    </div>
-  )
-}
-
-function Card({
-  columns,
-  onDelete,
-  onMove,
-  onOpen,
-  onToggleSelect,
-  selected,
-  task
-}: {
-  columns: string[]
-  onDelete: (id: string) => void
-  onMove: (id: string, status: string) => void
-  onOpen: (id: string) => void
-  onToggleSelect: (id: string) => void
-  selected: boolean
-  task: KanbanTask
-}) {
-  const k = useKanban()
-  const [dragging, setDragging] = useState(false)
-  const meta = columnMeta(task.status)
-  const summary = task.latest_summary || task.body
-  const fallback = useDefaultAssignee()
-  const arc = arcState(task, fallback)
-
-  return (
-    <ContextMenu>
-      <ContextMenuTrigger asChild>
-        <div
-          className={cn(
-            'group relative flex cursor-grab flex-col gap-2 rounded-md border border-(--ui-stroke-tertiary) border-l-2 bg-(--ui-bg-elevated) p-2.5',
-            // Hover matches the provider-picker rows: a quiet primary fill;
-            // selected = the theme's focus color (same as a focused input).
-            'transition-colors hover:bg-primary/[0.06] active:cursor-grabbing',
-            selected && 'border-(--dt-composer-ring) bg-[color-mix(in_srgb,var(--dt-composer-ring)_7%,transparent)]',
-            dragging && 'opacity-40'
-          )}
-          draggable
-          onClick={event => (event.metaKey || event.ctrlKey ? onToggleSelect(task.id) : onOpen(task.id))}
-          onDragEnd={() => setDragging(false)}
-          onDragStart={event => {
-            event.dataTransfer.setData('text/plain', task.id)
-            event.dataTransfer.effectAllowed = 'move'
-            // Snapshot the drag image before dimming the source, so the ghost
-            // stays a solid card (dimming first would bake 40% into it).
-            event.dataTransfer.setDragImage(event.currentTarget, event.nativeEvent.offsetX, event.nativeEvent.offsetY)
-            setDragging(true)
-          }}
-          style={{ '--kanban-tone': meta.tone, borderLeftColor: meta.tone } as CSSProperties}
-        >
-          {/* Machine-activity arc: animates ONLY while an agent is actually on
-              the card (claimed + working; amber when the heartbeat is gone).
-              Queued attachment is the footer's named-agent chip — a moving
-              border on an idle card would lie. Hidden during drag/selection
-              so those states stay legible. */}
-          {(arc === 'running' || arc === 'stale') && !dragging && !selected && (
-            <span aria-hidden className={cn('kanban-arc', arc === 'stale' && 'kanban-arc--stale')} />
-          )}
-          <span className="line-clamp-2 text-[0.8125rem] font-medium leading-snug text-foreground">
-            {task.title || task.id}
-          </span>
-          {summary && (
-            <span className="line-clamp-2 text-[0.6875rem] leading-snug text-(--ui-text-tertiary)">{summary}</span>
-          )}
-          <CardFooter arc={arc} task={task} />
-        </div>
-      </ContextMenuTrigger>
-      <ContextMenuContent>
-        <ContextMenuItem onSelect={() => onOpen(task.id)}>
-          <Codicon name="link-external" size="0.85rem" />
-          {k.open}
-        </ContextMenuItem>
-        <ContextMenuItem onSelect={() => onToggleSelect(task.id)}>
-          <Codicon name={selected ? 'close' : 'check-all'} size="0.85rem" />
-          {selected ? k.deselect : k.select(formatModifierToken('mod'))}
-        </ContextMenuItem>
-        <ContextMenuSeparator />
-        {columns
-          .filter(name => name !== task.status && !isLockedTarget(name))
-          .map(name => (
-            <ContextMenuItem key={name} onSelect={() => onMove(task.id, name)}>
-              <span className="size-2 rounded-full" style={{ backgroundColor: columnMeta(name).tone }} />
-              {k.moveTo(columnLabel(k, name))}
-            </ContextMenuItem>
-          ))}
-        <ContextMenuSeparator />
-        <ContextMenuItem onSelect={() => onDelete(task.id)} variant="destructive">
-          <Codicon name="trash" size="0.85rem" />
-          {k.delete}
-        </ContextMenuItem>
-      </ContextMenuContent>
-    </ContextMenu>
-  )
-}
-
-// ── column ───────────────────────────────────────────────────────────────────
-
-function Column({
-  collapsed,
-  column,
-  columns,
-  onAdd,
-  onDelete,
-  onDropTask,
-  onMove,
-  onOpen,
-  onToggle,
-  onToggleSelect,
-  selected
-}: {
-  collapsed: boolean
-  column: { name: string; tasks: KanbanTask[] }
-  columns: string[]
-  onAdd: (status: string) => void
-  onDelete: (id: string) => void
-  onDropTask: (id: string, status: string) => void
-  onMove: (id: string, status: string) => void
-  onOpen: (id: string) => void
-  onToggle: () => void
-  onToggleSelect: (id: string) => void
-  selected: ReadonlySet<string>
-}) {
-  const k = useKanban()
-  const [over, setOver] = useState(false)
-  const meta = columnMeta(column.name)
-  const label = columnLabel(k, column.name)
-  const locked = isLockedTarget(column.name)
-  const byProfile = useValue($lanesByProfile)
-
-  // The dashboard's "lanes by profile": sub-group Running by assignee so a
-  // fleet's in-flight work reads per-worker. Null = flat (off, or trivial).
-  const lanes = useMemo(() => {
-    if (!byProfile || column.name !== 'running' || column.tasks.length === 0) {
-      return null
-    }
-
-    const groups = new Map<string, KanbanTask[]>()
-
-    for (const task of column.tasks) {
-      const key = task.assignee || UNASSIGNED_LANE
-      groups.set(key, [...(groups.get(key) ?? []), task])
-    }
-
-    return [...groups.entries()].sort(([a], [b]) => a.localeCompare(b))
-  }, [byProfile, column])
-
-  const dragHandlers = {
-    onDragLeave: () => setOver(false),
-    onDragOver: (event: ReactDragEvent<HTMLElement>) => {
-      // Locked lanes don't preventDefault → the OS shows the no-drop cursor
-      // and the drop event never fires. The lane is honest about itself.
-      if (locked) {
-        event.dataTransfer.dropEffect = 'none'
-
-        return
-      }
-
-      event.preventDefault()
-      event.dataTransfer.dropEffect = 'move'
-      setOver(true)
-    },
-    onDrop: (event: ReactDragEvent<HTMLElement>) => {
-      event.preventDefault()
-      setOver(false)
-      const id = event.dataTransfer.getData('text/plain')
-
-      if (id) {
-        onDropTask(id, column.name)
-      }
-    }
-  }
-
-  const wash = over && !locked ? 'bg-(--ui-bg-quinary)' : 'bg-[color-mix(in_srgb,var(--ui-bg-quinary)_50%,transparent)]'
-
-  // Collapsed = a thin vertical rail: dot, sideways label, count. Still a live
-  // drop target (drop straight onto the rail); click expands. The dot sits in
-  // the same h-5 header row as an expanded lane's, so dots align across the
-  // board regardless of collapse state.
-  if (collapsed) {
-    return (
-      <button
-        {...dragHandlers}
-        aria-label={k.expand(label)}
-        className={cn(
-          'flex h-full w-8 shrink-0 flex-col items-center gap-1.5 rounded-lg p-2 transition-colors hover:bg-(--ui-bg-quinary)',
-          wash
-        )}
-        onClick={onToggle}
-        type="button"
-      >
-        <span className="grid h-5 shrink-0 place-items-center">
-          <span className="size-1.5 rounded-full" style={{ backgroundColor: meta.tone }} />
-        </span>
-        <span className="text-[0.6875rem] font-medium uppercase tracking-wide text-(--ui-text-tertiary) [writing-mode:vertical-rl]">
-          {label}
-        </span>
-        {column.tasks.length > 0 && (
-          <span className="text-[0.625rem] tabular-nums text-(--ui-text-quaternary)">{column.tasks.length}</span>
-        )}
-      </button>
-    )
-  }
-
-  return (
-    <div
-      {...dragHandlers}
-      className={cn('group/col flex h-full w-64 shrink-0 flex-col rounded-lg p-2 transition-colors', wash)}
-    >
-      <header className="mb-1.5 flex h-5 items-center gap-1.5 px-1">
-        <span className="size-1.5 rounded-full" style={{ backgroundColor: meta.tone }} />
-        <Tip label={columnHelp(k, column.name)}>
-          <span className="cursor-help text-[0.6875rem] font-medium uppercase tracking-wide text-(--ui-text-tertiary)">
-            {label}
-          </span>
-        </Tip>
-        <span className="text-[0.625rem] tabular-nums text-(--ui-text-quaternary)">{column.tasks.length}</span>
-        <button
-          aria-label={k.collapse(label)}
-          className="ml-auto grid size-5 place-items-center rounded text-(--ui-text-tertiary) opacity-0 transition-opacity hover:bg-(--chrome-action-hover) hover:text-foreground focus-visible:opacity-100 group-hover/col:opacity-100"
-          onClick={onToggle}
-          type="button"
-        >
-          <Codicon name="chevron-left" size="0.75rem" />
-        </button>
-      </header>
-      <div className="relative flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto">
-        {lanes
-          ? lanes.map(([assignee, tasks]) => (
-              <div className="flex flex-col gap-2" key={assignee}>
-                <div className="flex items-center gap-1.5 px-1 pt-1 text-[0.625rem] text-(--ui-text-quaternary)">
-                  {assignee !== UNASSIGNED_LANE && <Avatar name={assignee} size="0.875rem" />}
-                  {assignee}
-                  <span className="tabular-nums">{tasks.length}</span>
-                </div>
-                {tasks.map(task => (
-                  <Card
-                    columns={columns}
-                    key={task.id}
-                    onDelete={onDelete}
-                    onMove={onMove}
-                    onOpen={onOpen}
-                    onToggleSelect={onToggleSelect}
-                    selected={selected.has(task.id)}
-                    task={task}
-                  />
-                ))}
-              </div>
-            ))
-          : column.tasks.map(task => (
-              <Card
-                columns={columns}
-                key={task.id}
-                onDelete={onDelete}
-                onMove={onMove}
-                onOpen={onOpen}
-                onToggleSelect={onToggleSelect}
-                selected={selected.has(task.id)}
-                task={task}
-              />
-            ))}
-        {/* Jira-style lane add — dashed, faded in on lane hover. Opacity (not
-            display) so it always holds its slot and never thrashes layout.
-            Locked lanes get none: you can't create into a system state. */}
-        {!locked && (
-          <button
-            aria-label={k.newTaskIn(label)}
-            className="flex shrink-0 items-center justify-center rounded-md border border-dashed border-(--ui-stroke-secondary) py-1.5 text-(--ui-text-tertiary) opacity-0 transition-[opacity,color,border-color] group-hover/col:opacity-100 hover:border-(--ui-text-quaternary) hover:bg-(--chrome-action-hover) hover:text-foreground focus-visible:opacity-100"
-            onClick={() => onAdd(column.name)}
-            type="button"
-          >
-            <Codicon name="add" size="0.8rem" />
-          </button>
-        )}
-        {column.tasks.length === 0 && (
-          <div className="pointer-events-none absolute inset-0 grid place-items-center text-[0.6875rem] text-(--ui-text-quaternary)">
-            {k.empty}
-          </div>
-        )}
-      </div>
-    </div>
-  )
-}
-
 // ── dialogs ──────────────────────────────────────────────────────────────────
 
 const NO_PARENT = '__none__'
-const PARKED = '__parked__'
 const WORKSPACE_KINDS = ['scratch', 'worktree', 'dir'] as const
 
 function Field({ children, label }: { children: ReactNode; label: string }) {
@@ -547,12 +118,14 @@ function Field({ children, label }: { children: ReactNode; label: string }) {
 function NewTaskDialog({
   onClose,
   parents,
-  target
+  request
 }: {
   onClose: () => void
   parents: Array<{ id: string; title: string }>
-  target: null | string
+  request: NewTaskRequest | null
 }) {
+  const target = request?.status ?? null
+  const preset = request?.preset
   const k = useKanban()
   const qc = useQueryClient()
   const scope = useKanbanScope()
@@ -578,7 +151,10 @@ function NewTaskDialog({
   const [assignee, setAssignee] = useState('')
   const [priority, setPriority] = useState('0')
   const [skills, setSkills] = useState('')
-  const [workspaceKind, setWorkspaceKind] = useState<string>(boardDefaultKind)
+  // '' = the board's default kind, resolved at render: the board list can
+  // arrive after the dialog opens without resetting what the user typed.
+  const [kindChoice, setKindChoice] = useState('')
+  const workspaceKind = kindChoice || boardDefaultKind
   // Empty = inherit the board's default project dir (backend resolves it);
   // a path here overrides just this task. Only meaningful for dir/worktree.
   const [workspacePath, setWorkspacePath] = useState('')
@@ -603,17 +179,18 @@ function NewTaskDialog({
     }
   })
 
-  // Reset per open — the dialog is externally controlled (open = target set),
-  // so onOpenChange(true) never fires; key the reset off `target` (and the
-  // resolved board default, which may arrive after the first open).
+  // Reset per open — the dialog is externally controlled (open = request
+  // set), so onOpenChange(true) never fires. Keyed on the request ONLY: data
+  // that arrives later (orchestration defaults, the board list) must never
+  // wipe a draft in progress, so those are read at render/submit instead.
   useEffect(() => {
-    if (target) {
+    if (request) {
       setTitle('')
       setBodyText('')
-      setAssignee('')
-      setPriority('0')
+      setAssignee(initialAssignee(request.preset))
+      setPriority(String(request.preset?.priority ?? 0))
       setSkills('')
-      setWorkspaceKind(boardDefaultKind)
+      setKindChoice('')
       setWorkspacePath('')
       setParent('')
       setModelOverride(EMPTY_OVERRIDE)
@@ -622,7 +199,7 @@ function NewTaskDialog({
       setBusy(false)
       setEstimate(null)
     }
-  }, [target, boardDefaultKind])
+  }, [request])
 
   const submit = async () => {
     const trimmed = title.trim()
@@ -643,7 +220,7 @@ function NewTaskDialog({
       // create() derives status (triage flag → 'triage', else 'ready'); move to
       // the requested column when they differ, so a per-column add lands right.
       const { task, warning } = await createTask({
-        assignee: assignee === PARKED ? undefined : assignee || resolvedDefault,
+        assignee: submittedAssignee(assignee, resolvedDefault),
         body: bodyText.trim() || undefined,
         goal_mode: goalMode,
         parents: parent ? [parent] : undefined,
@@ -651,6 +228,7 @@ function NewTaskDialog({
         skills: skillList.length ? skillList : undefined,
         title: trimmed,
         triage: isTriage,
+        ...laneCreateFields(preset),
         workspace_kind: workspaceKind,
         ...overrideCreateFields(modelOverride),
         // Empty → backend inherits the board's default project dir.
@@ -659,6 +237,15 @@ function NewTaskDialog({
 
       if (task && task.status !== target) {
         await patchTask(task.id, { status: target })
+      }
+
+      // The form (or a parent's inherited tenant) can put the task somewhere
+      // other than the lane it was started from — say where it went.
+      const lane = request?.lane
+      const landed = task && lane ? laneKey(lane.by, task) : null
+
+      if (lane && landed !== null && landed !== lane.key) {
+        host.notify({ kind: 'info', message: k.createdInOtherLane(lane.title(landed)) })
       }
 
       // Dispatcher-presence warning ("this ready task will sit idle") — not an
@@ -687,7 +274,7 @@ function NewTaskDialog({
           becomes a no-op and can go. */}
       <DialogContent className="w-[min(42rem,94vw)] max-w-none overflow-visible">
         <DialogHeader>
-          <DialogTitle>{target ? k.newTaskIn(columnLabel(k, target)) : k.newTask}</DialogTitle>
+          <DialogTitle>{newTaskTitle(k, target, request?.laneTitle)}</DialogTitle>
         </DialogHeader>
         <div className="flex max-h-[min(72vh,44rem)] flex-col gap-3 overflow-y-auto pr-0.5">
           <Input
@@ -714,7 +301,7 @@ function NewTaskDialog({
               <Input onChange={event => setPriority(event.target.value)} type="number" value={priority} />
             </Field>
             <Field label={k.workspace}>
-              <Select onValueChange={setWorkspaceKind} value={workspaceKind}>
+              <Select onValueChange={setKindChoice} value={workspaceKind}>
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
@@ -744,19 +331,24 @@ function NewTaskDialog({
           )}
 
           <Field label={k.assignee}>
-            <Select onValueChange={v => setAssignee(v === NO_PARENT ? '' : v)} value={assignee || NO_PARENT}>
+            <Select
+              onValueChange={v => setAssignee(v === NO_PARENT ? '' : v)}
+              value={assigneeSelectValue(assignee, resolvedDefault, NO_PARENT)}
+            >
               <SelectTrigger>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value={NO_PARENT}>{k.defaultOption(resolvedDefault)}</SelectItem>
-                {(roster?.profiles ?? [])
-                  .filter(profile => profile.name !== resolvedDefault)
-                  .map(profile => (
-                    <SelectItem key={profile.name} value={profile.name}>
-                      {profile.name}
-                    </SelectItem>
-                  ))}
+                {assigneeOptions(
+                  (roster?.profiles ?? []).map(profile => profile.name),
+                  assignee,
+                  resolvedDefault
+                ).map(name => (
+                  <SelectItem key={name} value={name}>
+                    {name}
+                  </SelectItem>
+                ))}
                 <SelectItem value={PARKED}>{k.parkedOption}</SelectItem>
               </SelectContent>
             </Select>
@@ -873,8 +465,6 @@ function Intro() {
   )
 }
 
-const UNASSIGNED_LANE = 'unassigned'
-
 // ── filter kebab ─────────────────────────────────────────────────────────────
 
 function FilterMenu({
@@ -897,6 +487,8 @@ function FilterMenu({
   const k = useKanban()
   const active = Boolean(assignee || tenant || archived)
   const lanesByProfile = useValue($lanesByProfile)
+  // Swimlane cells don't sub-group, so the toggle would do nothing there.
+  const swimlanes = normalizeSwimlaneBy(useValue($swimlaneBy)) !== 'none'
 
   const check = (on: boolean) => (on ? <Codicon className="ml-auto" name="check" size="0.8rem" /> : null)
 
@@ -944,10 +536,42 @@ function FilterMenu({
           {k.showArchived}
           {check(archived)}
         </DropdownMenuItem>
-        <DropdownMenuItem onSelect={() => $lanesByProfile.set(!lanesByProfile)}>
-          {k.groupRunning}
-          {check(lanesByProfile)}
-        </DropdownMenuItem>
+        {!swimlanes && (
+          <DropdownMenuItem onSelect={() => $lanesByProfile.set(!lanesByProfile)}>
+            {k.groupRunning}
+            {check(lanesByProfile)}
+          </DropdownMenuItem>
+        )}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+}
+
+// ── swimlane picker ──────────────────────────────────────────────────────────
+
+function SwimlaneMenu() {
+  const k = useKanban()
+  const by = normalizeSwimlaneBy(useValue($swimlaneBy))
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          aria-label={k.swimlanes}
+          className={cn(by !== 'none' && 'bg-(--ui-control-active-background) text-foreground')}
+          size="icon-xs"
+          variant="ghost"
+        >
+          <Codicon name="layers" size="0.85rem" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start">
+        {SWIMLANE_OPTIONS.map(option => (
+          <DropdownMenuItem key={option} onSelect={() => $swimlaneBy.set(option)}>
+            {k.swimlaneBy[option]}
+            {by === option && <Codicon className="ml-auto" name="check" size="0.8rem" />}
+          </DropdownMenuItem>
+        ))}
       </DropdownMenuContent>
     </DropdownMenu>
   )
@@ -1107,7 +731,9 @@ export function KanbanBoardPage() {
   })
 
   const [openId, setOpenId] = useState<null | string>(null)
-  const [addStatus, setAddStatus] = useState<null | string>(null)
+  const [adding, setAdding] = useState<NewTaskRequest | null>(null)
+  const setAddStatus = (status: string) => setAdding({ status })
+
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [search, setSearch] = useState('')
   const [tenant, setTenant] = useState('')
@@ -1125,7 +751,7 @@ export function KanbanBoardPage() {
       return
     }
 
-    setAddStatus(requestedLane)
+    setAdding({ status: requestedLane })
     $newTaskLane.set(null)
   }, [requestedLane])
 
@@ -1199,13 +825,14 @@ export function KanbanBoardPage() {
   const total = filtered?.columns.reduce((sum, col) => sum + col.tasks.length, 0) ?? 0
 
   const moveMut = useMutation({
-    mutationFn: ({ id, status }: { id: string; status: string }) => patchTask(id, { status }),
-    onMutate: async ({ id, status }) => {
+    mutationFn: ({ id, patch }: { id: string; patch: TaskPatch }) =>
+      sendDropPatch(patch, part => patchTask(id, { ...part })),
+    onMutate: async ({ id, patch }) => {
       await qc.cancelQueries({ queryKey: boardKey(scope, slug, archived) })
       const previous = qc.getQueryData<KanbanBoard>(boardKey(scope, slug, archived))
 
       if (previous) {
-        qc.setQueryData(boardKey(scope, slug, archived), moveCard(previous, id, status))
+        qc.setQueryData(boardKey(scope, slug, archived), applyPatch(previous, id, patch))
       }
 
       return { previous }
@@ -1245,27 +872,15 @@ export function KanbanBoardPage() {
     onSettled: () => void qc.invalidateQueries({ queryKey: boardKeyPrefix(scope) })
   })
 
-  const onMove = (id: string, status: string) => {
-    const task = board?.columns.flatMap(col => col.tasks).find(candidate => candidate.id === id)
+  const swim = useSwimlanes({
+    columns: filtered?.columns ?? null,
+    findTask: id => board?.columns.flatMap(col => col.tasks).find(candidate => candidate.id === id),
+    move: (id, patch) => moveMut.mutate({ id, patch })
+  })
 
-    if (!task || task.status === status) {
-      return
-    }
-
-    if (isLockedTarget(status)) {
-      host.notify({ kind: 'info', message: lockedReason(k, status) })
-
-      return
-    }
-
-    moveMut.mutate({ id, status })
-  }
+  const onMove = (id: string, status: string) => swim.drop(id, null, status)
 
   const errorMessage = error ? errText(error) : null
-
-  // Grab-to-scrub the lane strip (shared primitive, same as the dashboard's pan).
-  const lanesRef = useRef<HTMLDivElement>(null)
-  const { grabbing, onMouseDown } = useGrabScroll(lanesRef)
 
   // Lane collapse: auto (empty → rail) unless the user overrode it. The map
   // stores only deviations from auto, so it stays tiny and self-heals. On a
@@ -1320,6 +935,8 @@ export function KanbanBoardPage() {
     }
   }, [lanePhase, prevLanePhase])
 
+  const autoCollapsed = (col: { tasks: KanbanTask[] }) => boardHasWork && col.tasks.length === 0
+
   const toggleLane = (name: string, auto: boolean) => {
     const overrides = { ...laneOverrides }
     const next = !(overrides[name] ?? auto)
@@ -1356,6 +973,7 @@ export function KanbanBoardPage() {
             tenant={tenant}
           />
         )}
+        <SwimlaneMenu />
         <SearchField aria-label={k.filterCards} onChange={setSearch} placeholder={k.filterCards} value={search} />
         <div className="ml-auto flex items-center gap-1">
           <Tip label={k.orchestrationSettings}>
@@ -1388,44 +1006,25 @@ export function KanbanBoardPage() {
         <div className="grid flex-1 place-items-center">
           <Loader type="lemniscate-bloom" />
         </div>
-      ) : total === 0 ? (
-        <div className="grid flex-1 place-items-center px-4 text-center">
-          <div className="flex flex-col items-center gap-2">
-            <Codicon className="text-(--ui-text-quaternary)" name="project" size="1.25rem" />
-            <p className="text-xs text-(--ui-text-tertiary)">{search || tenant || assignee ? k.noMatch : k.noTasks}</p>
-            <Button className="mt-0.5" onClick={() => setAddStatus('triage')} size="sm" variant="outline">
-              <Codicon name="add" size="0.75rem" />
-              {k.newTask}
-            </Button>
-          </div>
-        </div>
+      ) : total === 0 && !swim.lanes?.length ? (
+        <EmptyBoard filtered={Boolean(search || tenant || assignee)} onNewTask={() => setAddStatus('triage')} />
       ) : (
-        <div
-          className={cn('flex flex-1 gap-2 overflow-x-auto px-4 pt-1 pb-3', grabbing && 'cursor-grabbing')}
-          onMouseDown={onMouseDown}
-          ref={lanesRef}
-        >
-          {filtered.columns.map(col => {
-            const auto = boardHasWork && col.tasks.length === 0
-
-            return (
-              <Column
-                collapsed={laneOverrides[col.name] ?? auto}
-                column={col}
-                columns={columnNames}
-                key={col.name}
-                onAdd={setAddStatus}
-                onDelete={id => deleteMut.mutate(id)}
-                onDropTask={onMove}
-                onMove={onMove}
-                onOpen={setOpenId}
-                onToggle={() => toggleLane(col.name, auto)}
-                onToggleSelect={toggleSelect}
-                selected={selected}
-              />
-            )
-          })}
-        </div>
+        <BoardColumns
+          cards={{
+            onDelete: id => deleteMut.mutate(id),
+            onMove,
+            onOpen: setOpenId,
+            onToggleSelect: toggleSelect,
+            selected
+          }}
+          collapse={{
+            isCollapsed: col => laneOverrides[col.name] ?? autoCollapsed(col),
+            toggle: col => toggleLane(col.name, autoCollapsed(col))
+          }}
+          columns={filtered.columns}
+          onAdd={setAdding}
+          swim={swim}
+        />
       )}
 
       {selected.size > 0 && (
@@ -1437,7 +1036,7 @@ export function KanbanBoardPage() {
         />
       )}
 
-      <NewTaskDialog onClose={() => setAddStatus(null)} parents={parentOptions} target={addStatus} />
+      <NewTaskDialog onClose={() => setAdding(null)} parents={parentOptions} request={adding} />
       <TaskDrawer columns={columnNames} id={openId} onClose={() => setOpenId(null)} onOpen={setOpenId} />
     </div>
   )

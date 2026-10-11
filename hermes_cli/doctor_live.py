@@ -62,12 +62,15 @@ def _browser_available() -> bool:
 
 
 def _launch_browser_probe(timeout: float) -> tuple:
-    """Launch a browser, open about:blank, close. Returns (ok, detail). Uses Playwright directly (what
-    agent-browser drives underneath) so the probe owns the full lifecycle and always cleans up."""
+    """Launch a browser, open about:blank, close. Returns (ok, detail).
+
+    The direct Playwright probe is optional: the configured agent-browser backend
+    can be healthy without Python Playwright being installed.
+    """
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
-        return (False, "playwright not installed")
+        return (None, "playwright not installed; direct probe skipped")
     with sync_playwright() as p:
         browser = p.chromium.launch(
             channel="chromium", executable_path=chromium_executable(),
@@ -108,6 +111,8 @@ def _probe_browser(timeout: float) -> ProbeResult:
     if not _browser_available():
         return ProbeResult("Browser", "skip", "(not configured)")
     ok, detail = _launch_browser_probe(timeout)
+    if ok is None:
+        return ProbeResult("Browser", "skip", f"({detail})")
     return ProbeResult("Browser", "pass" if ok else "fail", f"({detail})")
 
 

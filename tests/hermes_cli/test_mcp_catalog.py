@@ -896,7 +896,7 @@ class TestShippedCatalog:
 
         assert not problems, "unpinned catalog entries:\n" + "\n".join(problems)
 
-    def test_x402engine_wallet_secrets_are_forwarded_by_reference(self, monkeypatch):
+    def test_x402engine_opt_in_wallet_secrets_are_forwarded_by_reference(self, monkeypatch):
         """Wallet values reach the child env without entering saved config."""
         monkeypatch.delenv("HERMES_OPTIONAL_MCPS", raising=False)
         evm_secret = "0xnot-a-real-private-key"
@@ -915,8 +915,12 @@ class TestShippedCatalog:
         saved_config = _build_server_config(entry, None)
         saved_env = saved_config["env"]
 
-        assert saved_env["X402_EVM_PRIVATE_KEY"] == "${X402_EVM_PRIVATE_KEY}"
-        assert saved_env["X402_SOLANA_PRIVATE_KEY"] == "${X402_SOLANA_PRIVATE_KEY}"
+        # A fresh catalog install must not pass unresolved wallet placeholders.
+        assert "X402_EVM_PRIVATE_KEY" not in saved_env
+        assert "X402_SOLANA_PRIVATE_KEY" not in saved_env
+        # Users explicitly add references after configuring a payer wallet.
+        saved_env["X402_EVM_PRIVATE_KEY"] = "${X402_EVM_PRIVATE_KEY}"
+        saved_env["X402_SOLANA_PRIVATE_KEY"] = "${X402_SOLANA_PRIVATE_KEY}"
         assert evm_secret not in repr(saved_config)
         assert solana_secret not in repr(saved_config)
 

@@ -272,6 +272,10 @@ async def _lifespan(app: FastAPI):
             name="desktop-cron-ticker",
         )
         cron_thread.start()
+        from agent.memory_provider import spawn_context_thread
+        from hermes_cli.desktop_idle_screens import run_idle_screen_ticker
+
+        spawn_context_thread(run_idle_screen_ticker, args=(cron_stop,), name="desktop-idle-screen-ticker").start()
 
     # Reap idle/dead keep-alive PTY sessions (30-min TTL).
     pty_reaper_task = asyncio.create_task(run_reaper(PTY_REGISTRY))

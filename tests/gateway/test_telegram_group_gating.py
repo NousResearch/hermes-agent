@@ -208,6 +208,27 @@ def test_unmentioned_group_messages_can_be_observed_without_dispatching():
     asyncio.run(_run())
 
 
+def test_observed_forward_keeps_the_forwarded_text_in_history():
+    async def _run():
+        adapter = _make_adapter(
+            require_mention=True,
+            allowed_chats=["-100"],
+            group_allowed_chats=["-100"],
+            observe_unmentioned_group_messages=True,
+        )
+        store = _FakeSessionStore()
+        adapter._session_store = store
+        message = _group_message("side chatter")
+        message.forward_origin = SimpleNamespace(type="user", sender_user=SimpleNamespace(full_name="Bob"))
+
+        await adapter._handle_text_message(
+            SimpleNamespace(update_id=1001, message=message, effective_message=None), SimpleNamespace())
+
+        assert store.messages[0][1]["content"] == "[Alice Example|111]\n[Forwarded message from Bob]\nside chatter"
+
+    asyncio.run(_run())
+
+
 def test_observed_group_context_uses_shared_source_and_prompt_for_later_mentions():
     async def _run():
         adapter = _make_adapter(

@@ -61,14 +61,13 @@ jobs:
           OPENROUTER_API_KEY: ""
           OPENAI_API_KEY: ""
           NOUS_API_KEY: ""
+        # The real tests skip when their host is missing; here that would be a green
+        # lane over zero coverage. --fail-on-skip fails the run on any skip, decided
+        # from pytest's parsed counts rather than the progress line's display format.
         run: |
-          set -o pipefail
-          scripts/run_tests.sh tests/tools/test_ssh_environment.py tests/tools/test_docker_backend_real.py \
-            | tee "$RUNNER_TEMP/remote-backends.log"
-          # The real tests skip when their host is missing; here that would be a green
-          # lane over zero coverage. The runner prints a file's skip count as "<n>s,".
-          if grep -E '\((.* )?[0-9]+s,' "$RUNNER_TEMP/remote-backends.log"; then
-            echo "::error::real-backend tests skipped: the sshd or docker image was not wired through"
+          if ! scripts/run_tests.sh --fail-on-skip \
+              tests/tools/test_ssh_environment.py tests/tools/test_docker_backend_real.py; then
+            echo "::error::real-backend tests failed or skipped (a skip means the sshd or docker image was not wired through)"
             exit 1
           fi
 

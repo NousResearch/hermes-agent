@@ -609,6 +609,9 @@ def test_remote_backends_lane_runs_test_files_that_exist_and_start_it():
     assert paths
     assert [p for p in paths if not (_REPO / p).is_file()] == []
     assert [p for p in paths if not classify([p])["remote_backends"]] == []
+    # A skip there is a missing host, not a pass; the runner, not a grep over its
+    # progress line, decides that.
+    assert "scripts/run_tests.sh --fail-on-skip" in text
 
 
 def test_windows_venv_e2e_runs_only_test_files_that_exist():

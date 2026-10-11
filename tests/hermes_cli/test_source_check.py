@@ -246,7 +246,7 @@ def test_dynamic_source_channel_preserves_branch_precedence(installation, select
 # branch, so the check keeps following a branch via git, with the usual branch
 # precedence (test_unpublished_main_record_follows_the_branch below).
 @pytest.mark.parametrize("name,failure", [
-    ("stable", "missing"), ("canary", "missing"),
+    ("canary", "missing"),
     (None, "missing"), (None, "malformed"), (None, "foreign"), (None, "unpublished"),
 ])
 def test_channel_failure_never_probes_or_heals_a_branch(installation, name, failure):
@@ -490,9 +490,12 @@ def test_malformed_optional_changelog_and_cache_do_not_hide_the_update(installat
 @pytest.mark.parametrize("repository,heals", [("NousResearch/hermes-agent", True), ("fixture/fork", False)])
 def test_official_ssh_healing_uses_public_https_without_retargeting_forks(installation, monkeypatch, repository, heals):
     from hermes_cli.source_check import check_for_updates
+    from hermes_cli.update_channel import set_install_channel
     root, linked, home, _base, head, responses, _requests, git = installation
     git("remote", "set-url", "origin", f"git@github.com:{repository}.git")
     git("config", f"url.{root.as_uri()}.insteadOf", "https://github.com/NousResearch/hermes-agent.git")
+    # The branch heal is a main-channel concern; an official checkout's default is stable.
+    set_install_channel("main", linked)
     monkeypatch.setenv("GIT_SSH_COMMAND", "false")
     branch_file = home / "desktop-update.json"
     branch_file.write_text(json.dumps({"branch": "deleted"}))

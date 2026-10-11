@@ -74,7 +74,7 @@ def transcode_to_ogg_opus(path: str, *, bitrate: str = "32k", timeout: int = 60,
             [ffmpeg, "-v", "error", "-y", "-i", str(path),
              "-acodec", "libopus", "-ac", "1", "-b:a", bitrate, "-vbr", "on",
              "-application", "voip", "-compression_level", "10", "-f", "ogg", work_path],
-            capture_output=True, timeout=timeout, stdin=subprocess.DEVNULL)
+            capture_output=True, timeout=timeout, stdin=subprocess.DEVNULL, check=False)
         if result.returncode == 0 and os.path.getsize(work_path) > 0:
             if in_place:
                 os.replace(work_path, ogg_path)

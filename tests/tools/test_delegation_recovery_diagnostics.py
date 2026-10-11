@@ -66,7 +66,7 @@ Path(os.environ["REPRO_HANDLE"]).write_text(json.dumps(handle), encoding="utf-8"
 os._exit(0)
 '''
     first = subprocess.run([sys.executable, "-c", producer], cwd=owner, env=env,
-                           text=True, capture_output=True, timeout=30)
+                           text=True, capture_output=True, timeout=30, check=False)
     assert first.returncode == 0, first.stdout + first.stderr
     handle = json.loads(handle_path.read_text(encoding="utf-8"))
     transcripts = handle["live_transcripts"]
@@ -81,7 +81,7 @@ events = [q.get_nowait() for _ in range(count)]
 print(json.dumps([{"event": event, "message": format_process_notification(event)} for event in events]))
 '''
     second = subprocess.run([sys.executable, "-c", consumer], cwd=repo, env=env,
-                            text=True, capture_output=True, timeout=20)
+                            text=True, capture_output=True, timeout=20, check=False)
     assert second.returncode == 0, second.stdout + second.stderr
     restored = json.loads(second.stdout.strip().splitlines()[-1])
     assert len(restored) == (2 if split else 1)

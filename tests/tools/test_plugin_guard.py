@@ -13,8 +13,8 @@ from pathlib import Path
 import pytest
 
 from tests.hermes_cli.plugin_worker_support import (
-    isolated_python as isolated_python,
-    plugin_world as plugin_world,
+    isolated_python as isolated_python,  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
+    plugin_world as plugin_world,  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
 )
 from tools.skills_guard import format_scan_report
 from tools.plugin_guard import (
@@ -382,7 +382,7 @@ class TestInstallIntegration:
         self._make_git_repo(repo, BASE_FILES)
         # PM publishes plugins only under the active home's ``plugins/``; the sandboxed
         # HERMES_HOME (autouse fixture) is that home.
-        plugins_dir = pc._plugins_dir()
+        pc._plugins_dir()
 
         target, _manifest, name = pc._install_plugin_core(
             f"file://{repo}", force=False,
@@ -443,7 +443,7 @@ class TestInstallIntegration:
         self._make_git_repo(repo, files)
         # PM publishes plugins only under the active home's ``plugins/``; the sandboxed
         # HERMES_HOME (autouse fixture) is that home.
-        plugins_dir = pc._plugins_dir()
+        pc._plugins_dir()
         monkeypatch.setattr(pc, "_scan_on_install_enabled", lambda: False)
 
         target, _, _ = pc._install_plugin_core(f"file://{repo}", force=False)
@@ -458,7 +458,7 @@ class TestInstallIntegration:
         self._make_git_repo(repo, files)
         # PM publishes plugins only under the active home's ``plugins/``; the sandboxed
         # HERMES_HOME (autouse fixture) is that home.
-        plugins_dir = pc._plugins_dir()
+        pc._plugins_dir()
 
         result = pc.dashboard_install_plugin(
             f"file://{repo}", force=False, enable=False,

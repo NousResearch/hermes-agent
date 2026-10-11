@@ -52,7 +52,7 @@ def _env(tmp_path: Path, home: Path, **extra: str) -> dict:
 
 def _helper(tmp_path: Path, home: Path, install: Path, op: str, *args: str) -> str:
     out = subprocess.run(["bash", str(POSIX), "--marker-op", op, "--install-root", str(install), *args],
-                         env=_env(tmp_path, home), capture_output=True, text=True, timeout=60)
+                         env=_env(tmp_path, home), capture_output=True, text=True, timeout=60, check=False)
     assert out.returncode == 0, out.stderr
     return out.stdout.strip()
 
@@ -176,7 +176,7 @@ def test_reparented_live_launcher_is_adopted_only_with_the_handoff_started_at(tm
     launcher = (f'printf "%s\\n{started}\\n" $$ > {shlex.quote(str(marker))}; '
                 f'HERMES_UPDATE_STARTED_AT={started if env_matches else started - 7} bash {shlex.quote(str(POSIX))} --daemonized --no-ui '
                 f'--self-test-marker --install-root {shlex.quote(str(install))} --desktop-pid {desktop.pid}; echo "rc=$?" > {shlex.quote(str(report))}')
-    x = subprocess.run(["bash", "-c", launcher], env=_env(tmp_path, home), timeout=60)
+    x = subprocess.run(["bash", "-c", launcher], env=_env(tmp_path, home), timeout=60, check=False)
     assert x.returncode == 0
     rc = report.read_text(encoding="utf-8-sig").strip()
     body = marker.read_text(encoding="utf-8-sig").splitlines()
@@ -204,7 +204,7 @@ def test_handoff_run_adopts_only_the_matching_live_bridge(tmp_path, procs, bridg
 
     result = subprocess.run(["bash", str(POSIX), "--daemonized", "--no-ui", "--self-test-marker", "--install-root", str(install),
                              "--desktop-pid", str(desktop.pid), "--handoff-run", arg_run],
-                            env=_env(tmp_path, home), capture_output=True, text=True, timeout=60)
+                            env=_env(tmp_path, home), capture_output=True, text=True, timeout=60, check=False)
 
     if adopted:
         assert result.returncode == 0, result.stdout + result.stderr
@@ -261,7 +261,7 @@ def test_adopt_withdraw_and_taken_need_an_exact_identity(tmp_path, procs, blind_
 
     def run(body: str, script: str) -> str:
         code = _sourced(marker, desktop.pid, "desk-7", body, blind_ct=blind_ct) + script
-        return subprocess.run(["bash", "-c", code], capture_output=True, text=True, encoding="utf-8", timeout=30).stdout.strip()
+        return subprocess.run(["bash", "-c", code], capture_output=True, text=True, encoding="utf-8", timeout=30, check=False).stdout.strip()
 
     adopt = run(bridge, 'marker_locked marker_claim_locked; echo "rc=$?"')
     assert adopt.splitlines()[-1] == ("rc=1" if blind_ct else "rc=0"), adopt
@@ -351,7 +351,7 @@ def test_an_unreadable_checkout_lock_counts_as_held(tmp_path, tool):
     probe = (f"log() {{ :; }}; MARKER=/dev/null INSTALL_ROOT={shlex.quote(str(install))} MARKER_LOCK_TOOL={tool}; "
              f". {shlex.quote(str(MARKER_SH))}; checkout_lock_held && echo held || echo free")
     def held() -> str:
-        return subprocess.run(["bash", "-c", probe], capture_output=True, text=True, timeout=30).stdout.strip()
+        return subprocess.run(["bash", "-c", probe], capture_output=True, text=True, timeout=30, check=False).stdout.strip()
     assert held() == "free"  # absent
     lock.touch(); lock.chmod(0)
     try:
@@ -528,7 +528,7 @@ def test_timed_out_probe_is_killed_with_its_whole_process_tree(tmp_path, perl):
         env["PATH"] = str(bin_dir)
     code = (f"log() {{ :; }}\n{run_bounded}\n"
             f"run_bounded 1 bash -c 'sleep 60 & echo $! > {shlex.quote(str(pidfile))}; wait'; echo \"rc=$?\"")
-    out = subprocess.run([shutil.which("bash"), "-c", code], env=env, capture_output=True, text=True, encoding="utf-8", timeout=30)
+    out = subprocess.run([shutil.which("bash"), "-c", code], env=env, capture_output=True, text=True, encoding="utf-8", timeout=30, check=False)
     assert "rc=124" in out.stdout, out
     grandchild = int(pidfile.read_text(encoding="utf-8-sig"))
     time.sleep(0.2)
@@ -546,7 +546,7 @@ def test_json_escape_round_trips_every_control_character(locale):
     text = "".join(chr(c) for c in range(1, 128)) + " \u00e9 \u2713 & \\& \x1b[31mred\x1b[0m"
     env = {**os.environ, "LC_ALL": locale}
     out = subprocess.run([shutil.which("bash"), "-c", found.group(0) + 'json_escape "$1"', "json_escape", text],
-                         env=env, capture_output=True, text=True, encoding="utf-8", timeout=30)
+                         env=env, capture_output=True, text=True, encoding="utf-8", timeout=30, check=False)
     assert json.loads(f'"{out.stdout}"') == text, out.stdout
 
 
@@ -557,7 +557,7 @@ def test_line_two_is_refreshed_only_while_the_claim_is_still_ours(tmp_path, proc
            f". {shlex.quote(str(MARKER_SH))}; marker_now() {{ echo 1999999999; }}; ")
     ours = (run + 'MY_CT="$(proc_ct $$)"; printf "%s\\n100\\nct:%s\\ndelegate:4242 ct:5.000\\nrun:desk-1-a-0001\\n" $$ "$MY_CT" > "$MARKER"; '
             'marker_locked marker_refresh_locked; cat "$MARKER"')
-    out = subprocess.run(["bash", "-c", ours], capture_output=True, text=True, encoding="utf-8", timeout=30).stdout.splitlines()
+    out = subprocess.run(["bash", "-c", ours], capture_output=True, text=True, encoding="utf-8", timeout=30, check=False).stdout.splitlines()
     assert out[1] == "1999999999" and out[3] == "run:desk-1-a-0001" and len(out) == 4  # dead delegate dropped
     other = subprocess.Popen(["sleep", "60"]); procs.append(other)
     foreign = f"{other.pid}\n100\nct:{_ct(other.pid)}\n"
@@ -611,7 +611,7 @@ def test_old_desktop_stays_parked_after_the_orchestrator_is_killed_while_the_upd
                     assert time.monotonic() < deadline
                     time.sleep(0.05)
         probe = subprocess.run([bash, "-c", f"log() {{ :; }}; MARKER=/dev/null INSTALL_ROOT={shlex.quote(str(install))}; "
-                                f". {shlex.quote(str(MARKER_SH))}; checkout_lock_held"], timeout=30)
+                                f". {shlex.quote(str(MARKER_SH))}; checkout_lock_held"], timeout=30, check=False)
         assert probe.returncode == 0, "the survivor should still hold the checkout lock"
     finally:
         hold.touch(); completion.touch()

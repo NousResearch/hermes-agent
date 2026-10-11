@@ -289,7 +289,7 @@ class TestRunJobScript:
         )
         # Run the bootstrap with the current interpreter (stands in for the
         # base python.exe on Windows; the semantics are interpreter-agnostic).
-        result = subprocess.run(argv, capture_output=True, text=True)
+        result = subprocess.run(argv, capture_output=True, text=True, check=False)
         assert result.returncode == 0, result.stderr
         assert result.stdout.strip() == "42"
 
@@ -316,7 +316,7 @@ class TestRunJobScript:
         argv = _windows_cron_bootstrap_argv(
             sys.executable, {"VIRTUAL_ENV": str(venv)}, str(script)
         )
-        result = subprocess.run(argv, capture_output=True, text=True)
+        result = subprocess.run(argv, capture_output=True, text=True, check=False)
         assert result.returncode == 0, result.stderr
         assert result.stdout.strip() == "sibling ok"
 

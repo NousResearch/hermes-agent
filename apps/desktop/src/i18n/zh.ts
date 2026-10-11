@@ -9,6 +9,7 @@ import { zhNotices } from './zh_notices'
 import { zhOnboarding } from './zh_onboarding'
 import { zhProjects } from './zh_projects'
 import { zhSharedMetrics } from './zh_shared_metrics'
+import { zhUpdateChannel } from './zh_update_channel'
 
 export const zhOverrides = {
   externalOpenFailed: {
@@ -1269,9 +1270,7 @@ export const zhOverrides = {
       screenRecording: '屏幕录制',
       driverHealth: '驱动健康状态'
     },
-    about: {
-      updates: '更新'
-    },
+    about: { updates: '更新', channel: zhUpdateChannel },
     config: {
       minimizeToTrayTitle: '最小化到托盘',
       minimizeToTrayDesc:

@@ -107,6 +107,7 @@ class BinaryPackage(Package):
                 timeout=60,
                 cwd=native(binary.parent) if self.probe_cwd else None,
                 env=self._probe_env(),
+                check=False,
             )
         except OSError as e:
             return f"could not exec {native(binary)} {' '.join(self.probe_args)}: {e}"
@@ -660,6 +661,7 @@ class Npm(BinaryPackage):
                 text=True,
                 timeout=900,
                 env=npm_env(Path(cache)),
+                check=False,
             )
         if proc.returncode != 0:
             raise InstallError(
@@ -742,6 +744,7 @@ class Git(BinaryPackage):
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     timeout=600,
+                    check=False,
                 )
             except subprocess.TimeoutExpired:
                 raise InstallError(

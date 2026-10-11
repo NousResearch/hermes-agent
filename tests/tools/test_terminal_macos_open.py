@@ -157,6 +157,7 @@ def test_ladder_is_valid_shell_syntax_for_quoting_edge_cases():
         transformed = macos_open._transform_macos_open_command(command, system="Darwin")
         assert transformed is not None and transformed != command, command
         result = subprocess.run(
-            ["bash", "-n", "-c", transformed], capture_output=True, text=True
+            ["bash", "-n", "-c", transformed], capture_output=True, text=True,
+            check=False,
         )
         assert result.returncode == 0, (command, result.stderr)

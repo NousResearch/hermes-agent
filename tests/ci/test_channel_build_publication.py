@@ -199,7 +199,7 @@ def run_shell(tmp_path, r2_server, script, env, *, cwd=None):
     gh.chmod(0o755)
     return subprocess.run(["bash", "-e", "-o", "pipefail", "-c", script], cwd=cwd or tmp_path,
                           env={**os.environ, **env, "PATH": str(tools) + os.pathsep + os.environ["PATH"]},
-                          capture_output=True, text=True, encoding="utf-8", timeout=60)
+                          capture_output=True, text=True, encoding="utf-8", timeout=60, check=False)
 
 
 @pytest.mark.platforms("posix")

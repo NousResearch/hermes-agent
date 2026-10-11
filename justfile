@@ -1,6 +1,6 @@
 set default-list := true
 
-lint-all: lint-python lint-all-js    
+lint-all: lint-python lint-all-js
 
 [group('lint python')]
 lint-python:

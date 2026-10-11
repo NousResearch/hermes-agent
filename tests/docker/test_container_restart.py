@@ -28,7 +28,7 @@ def _docker(*args: str, **kw) -> subprocess.CompletedProcess[str]:
         ["docker", *args],
         capture_output=True, text=True, timeout=kw.pop("timeout", 60),
         **kw,
-    
+
     )
 
 

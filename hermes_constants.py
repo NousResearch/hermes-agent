@@ -450,7 +450,7 @@ def _run_version_probe(argv: list[str], **kwargs):
         from hermes_cli._subprocess_compat import windows_hide_flags
         return subprocess.run(  # noqa: PLW1510 -- forwarding wrapper: callers pass subprocess kwargs via **kwargs (check may arrive through it); an explicit check=False would raise TypeError
             argv, capture_output=True, timeout=10, creationflags=windows_hide_flags(), **kwargs,
-        
+
         )
     except (OSError, subprocess.TimeoutExpired, ValueError):
         return None

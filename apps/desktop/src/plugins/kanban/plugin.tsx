@@ -18,6 +18,7 @@ import {
   host,
   type KeybindContribution,
   KEYBINDS_AREA,
+  NOTIFICATIONS_AREAS,
   PALETTE_AREA,
   type PaletteContribution,
   type RouteContribution,
@@ -30,8 +31,10 @@ import {
   useValue
 } from '@hermes/plugin-sdk'
 
+import { AlertsModeRow } from './alerts-mode-row'
 import { $boardSlug, bindApi, boardKey, fetchBoard, useKanbanScope } from './api'
 import { KanbanBoardPage } from './board'
+import { $kanbanUnseen } from './completion-notify'
 import { KANBAN_LOCALES } from './i18n'
 import { $newTaskLane, useKanban } from './ui'
 
@@ -116,6 +119,11 @@ const plugin: HermesPlugin = {
         area: STATUSBAR_AREAS.right,
         order: 80,
         render: () => <KanbanCount />
+      },
+      {
+        id: 'alerts-mode',
+        area: NOTIFICATIONS_AREAS.extra,
+        render: () => <AlertsModeRow />
       }
     ])
 
@@ -125,7 +133,13 @@ const plugin: HermesPlugin = {
           id: 'nav',
           area: SIDEBAR_NAV_AREA,
           order: 50,
-          data: { codicon: 'project', label: ctx.i18n.t('nav'), path: '/kanban' } satisfies SidebarNavContribution
+          data: {
+            codicon: 'project',
+            count: $kanbanUnseen,
+            countLabel: n => ctx.i18n.t('alerts.unseen', n),
+            label: ctx.i18n.t('nav'),
+            path: '/kanban'
+          } satisfies SidebarNavContribution
         },
         {
           id: 'open',

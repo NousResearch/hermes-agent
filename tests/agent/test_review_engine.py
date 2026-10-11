@@ -335,6 +335,10 @@ def test_start_review_threads_loaded_skills_into_context(monkeypatch):
     monkeypatch.setattr(dt, "_build_child_agent", fake_build)
     monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *a, **k: creds)
     monkeypatch.setattr(
+        dt, "_resolve_required_delivery_skills",
+        lambda names, _role=None: [{"name": name, "content": "rules", "content_sha256": "a" * 64} for name in names],
+    )
+    monkeypatch.setattr(
         dt, "_run_single_child",
         lambda *a, **k: {
             "task_index": 0, "status": "completed", "summary": "ok",

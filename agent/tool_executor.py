@@ -707,11 +707,25 @@ def _dispatch_authorized_once(
             callback()
 
     block_message, block_error_type = scope_block, "tool_scope_block"
-    if block_message is None:
+    delivery_policy = getattr(agent, "_delivery_policy", None)
+    delivery_active = getattr(delivery_policy, "role", None) is not None
+
+    # Delivery policy is the outermost authorization boundary.  Check it before
+    # plugin hooks, approval guardrails, or middleware: those are extensibility
+    # surfaces and may themselves have effects.  An allowed structured call is
+    # dispatched directly to its registered handler without invoking them.
+    if block_message is None and delivery_active:
+        from tools.delivery_policy import delivery_tool_block_reason
+
+        block_message = delivery_tool_block_reason(ref.name, ref.args, delivery_policy)
+        if block_message is not None:
+            block_error_type = "delivery_policy_block"
+    elif block_message is None:
         block_error_type = "plugin_block"
         resolve = lambda: _pre_tool_block(agent, ref)
         block_message, ref.args = resolve() if authorization_gate is None else authorization_gate.run(resolve)
         state.args = ref.args
+
     block_body = None if block_message is None else {"error": block_message}
 
     # Checked once, after plugin modify hooks (which may replace arguments) and
@@ -728,7 +742,7 @@ def _dispatch_authorized_once(
             block_error_type = _PRUNED_TOOL_ARGUMENTS_ERROR
 
     guardrail_decision = None
-    if block_body is None:
+    if block_body is None and not delivery_active:
         guardrail_decision = agent._tool_guardrails.before_call(ref.name, ref.args)
         if guardrail_decision.allows_execution:
             guardrail_decision = None
@@ -766,13 +780,7 @@ def _run_agent_tool_execution_middleware(
     begin_execution=None,
     authorization_gate: _ConcurrentToolAuthorizationGate | None = None,
 ) -> _ManagedToolResult:
-    """Run Relay rewrites before Hermes policy and dispatch exactly once."""
-    from agent import relay_tools
-    from hermes_cli.middleware import (
-        apply_tool_request_middleware,
-        run_tool_execution_middleware,
-    )
-
+    """Run extension middleware for ordinary tools; delivery roles bypass it."""
     trace = middleware_trace if middleware_trace is not None else []
     state = _ManagedToolResult(result=None, args=function_args, middleware_trace=trace, blocked=False, dispatched=False)
     dispatch_lock = threading.Lock()
@@ -795,6 +803,18 @@ def _run_agent_tool_execution_middleware(
             authorization_gate=authorization_gate,
         )
 
+    if getattr(getattr(agent, "_delivery_policy", None), "role", None) is not None:
+        # Do not even import/activate relay, plugin middleware, or terminal
+        # approval adapters in a delivery worker.  The outer dispatch policy
+        # sees the original payload and denied handlers never run.
+        state.result = _authorized_dispatch(function_args)
+        return state
+
+    from agent import relay_tools
+    from hermes_cli.middleware import (
+        apply_tool_request_middleware,
+        run_tool_execution_middleware,
+    )
     from agent.terminal_approval_batch import bind_prepared_dispatch
     _authorized_dispatch = bind_prepared_dispatch(_authorized_dispatch)
 

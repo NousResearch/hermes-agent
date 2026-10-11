@@ -56,6 +56,10 @@ from tools.delegate_tool_toolsets import (
 from tools.delegate_tool_results import (
     _apply_summary_budget, _build_child_preserving_parent_tools, _run_child_lifecycle, _summarize_tool_arguments,
 )
+from tools.delivery_policy import (
+    DELIVERY_ROLES, apply_delivery_capabilities, build_delivery_policy,
+    delivery_tool_block_reason, normalize_delivery_role,
+)
 
 _ROLES = frozenset({"leaf", "orchestrator"})
 
@@ -102,7 +106,75 @@ def _normalize_role(r: Optional[str]) -> str:
         return "leaf"
     return r_norm
 
+
+def _normalize_delivery_role(value) -> str | None:
+    """Public seam for schema/runtime tests; explicit invalid values fail closed."""
+    return normalize_delivery_role(value)
+
+
+def _normalize_required_skills(value) -> list[str]:
+    """Normalize profile-scoped skill identifiers without accepting filesystem traversal."""
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ValueError("required_skills must be an array of non-empty skill names")
+    normalized: list[str] = []
+    for raw_name in value:
+        if not isinstance(raw_name, str) or not (name := raw_name.strip()):
+            raise ValueError("required_skills must be an array of non-empty skill names")
+        if name.startswith(("/", "\\")) or "\\" in name or any(part in {"", ".", ".."} for part in name.split("/")):
+            raise ValueError(f"required_skills contains an unsafe skill name: {raw_name!r}")
+        if name not in normalized:
+            normalized.append(name)
+    return normalized
+
+
+def _resolve_required_delivery_skills(
+    names: list[str], delivery_role: Optional[str]
+) -> list[dict[str, Any]]:
+    """Resolve required skills before child construction, without side effects."""
+    if not names:
+        return []
+    if delivery_role is None:
+        raise ValueError("required_skills requires a delivery_role")
+    from tools.skills_tool import read_delivery_skill
+
+    resolved: list[dict[str, Any]] = []
+    total_bytes = 0
+    for name in names:
+        try:
+            skill = read_delivery_skill(name, max_bytes=_REQUIRED_SKILL_MAX_BYTES)
+        except Exception as exc:
+            if isinstance(exc, ValueError):
+                raise
+            raise ValueError(f"Required delivery skill {name!r} failed to load") from exc
+        content = skill.get("content")
+        if not skill.get("success") or not isinstance(content, str):
+            raise ValueError(f"Required delivery skill {name!r} failed to load")
+        size = len(content.encode("utf-8"))
+        if size > _REQUIRED_SKILL_MAX_BYTES:
+            raise ValueError(
+                f"Required delivery skill {name!r} exceeds the per-skill byte limit "
+                f"({_REQUIRED_SKILL_MAX_BYTES} bytes)"
+            )
+        total_bytes += size
+        if total_bytes > _REQUIRED_SKILLS_TOTAL_MAX_BYTES:
+            raise ValueError(
+                "Required delivery skills exceed the aggregate byte limit "
+                f"({_REQUIRED_SKILLS_TOTAL_MAX_BYTES} bytes)"
+            )
+        resolved.append(dict(skill))
+    return resolved
+
+
+def _apply_delivery_capabilities(child, role_or_policy) -> None:
+    policy = role_or_policy if hasattr(role_or_policy, "role") else build_delivery_policy(role_or_policy)
+    apply_delivery_capabilities(child, policy)
+
+
 DEFAULT_MAX_ITERATIONS = 250
+_REQUIRED_SKILL_MAX_BYTES = 256 * 1024
+_REQUIRED_SKILLS_TOTAL_MAX_BYTES = 512 * 1024
 _HEARTBEAT_INTERVAL = 30  # seconds between parent activity heartbeats during delegation
 # Stale-heartbeat thresholds (cycles of _HEARTBEAT_INTERVAL with no progress). Progress = iteration, current_tool OR
 # last_activity_ts advancing; an in-flight model wait refreshes last_activity_ts, so slow models are not "idle". Idle
@@ -216,6 +288,9 @@ def _build_child_agent(
     routing_cfg: Optional[dict[str, Any]] = None,
     # Legacy; accepted for wire compat but ignored (capability is depth-derived).
     role: str = "leaf",
+    delivery_policy=None,
+    acceptance_ledger: str = "",
+    required_skills: Optional[list[dict[str, Any]]] = None,
 ):
     """Build (don't run) a child AIAgent on the main thread. override_* (from delegation config) replace parent
     inheritance so children can run on a different provider:model pair."""
@@ -240,7 +315,8 @@ def _build_child_agent(
     child_toolsets, child_disabled_toolsets = _resolve_child_toolsets(parent_agent, toolsets, effective_role)
     child_prompt = _build_child_system_prompt(
         goal, context, workspace_path=_resolve_workspace_hint(parent_agent), role=effective_role,
-        max_spawn_depth=max_spawn, child_depth=child_depth,
+        max_spawn_depth=max_spawn, child_depth=child_depth, delivery_policy=delivery_policy,
+        acceptance_ledger=acceptance_ledger, required_skills=required_skills,
     )
     parent_api_key = getattr(parent_agent, "api_key", None)
     if (not parent_api_key) and hasattr(parent_agent, "_client_kwargs"):
@@ -272,7 +348,9 @@ def _build_child_agent(
     with delegated_child_context():
         try:
             child = AIAgent(
-                **rt, max_iterations=max_iterations, prefill_messages=getattr(parent_agent, "prefill_messages", None),
+                **rt, max_iterations=max_iterations,
+                # Delivery policy is authoritative system content, never fabricated few-shot dialogue.
+                prefill_messages=(None if delivery_policy else getattr(parent_agent, "prefill_messages", None)),
                 enabled_toolsets=child_toolsets, disabled_toolsets=child_disabled_toolsets, quiet_mode=True,
                 ephemeral_system_prompt=child_prompt, log_prefix=f"[subagent-{task_index}]", platform="subagent",
                 side_agent=True,
@@ -301,6 +379,7 @@ def _build_child_agent(
     child_session_ref["session_id"] = getattr(child, "session_id", "") or ""
     child._progress_identity_ref = child_session_ref
     child._delegate_depth, child._delegate_role = child_depth, effective_role  # post-degrade role
+    _apply_delivery_capabilities(child, delivery_policy)
     child._subagent_id, child._parent_subagent_id = subagent_id, parent_subagent_id
     _apply_child_compression_cap(child, delegation_cfg)
     # Ownership chain for action=list/steer/stop; weakref so a finished parent
@@ -424,11 +503,30 @@ def _build_children(
         if _task_schema is not None:
             _child_context = append_output_contract(_child_context, _task_schema)
         try:
+            delivery_policy = t.get("bound_delivery_policy")
+            if delivery_policy is None:
+                delivery_policy = build_delivery_policy(
+                    t.get("delivery_role"), t.get("delivery_evidence"),
+                    trusted_runtime=(routing_cfg or {}).get("delivery"),
+                )
+            if delivery_policy.role is not None:
+                delivery_policy = delivery_policy.bound_to_workspace(_resolve_workspace_hint(parent_agent))
+                needs_workspace = (
+                    delivery_policy.role in {"implementer", "closure_controller"}
+                    or (delivery_policy.role == "reviewer" and bool(delivery_policy.exact_sha))
+                )
+                if needs_workspace and not delivery_policy.workspace:
+                    raise ValueError(
+                        f"delivery role {delivery_policy.role!r} requires a concrete local workspace"
+                    )
             child = _build_child_preserving_parent_tools(
                 task_index=i, goal=t["goal"], context=_child_context,
                 toolsets=None,  # always inherit the parent's toolsets
                 model=creds["model"], max_iterations=max_iterations, task_count=len(task_list),
-                parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role), **overrides,
+                parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role),
+                delivery_policy=delivery_policy,
+                acceptance_ledger=str(t.get("acceptance_ledger") or ""),
+                required_skills=list(t.get("resolved_required_skills") or []), **overrides,
             )
         except ValueError as exc:
             return [], str(exc)
@@ -481,6 +579,8 @@ def delegate_task(
     output_schema: Optional[dict[str, Any]] = None, images: Optional[list[str]] = None, action: Optional[str] = None,
     subagent_id: Optional[str] = None, message: Optional[str] = None, parent_agent=None,
     credentials_cfg: Optional[dict[str, Any]] = None,
+    delivery_role: Optional[str] = None, acceptance_ledger: str = "",
+    required_skills: Optional[list[str]] = None, delivery_evidence: Optional[dict[str, Any]] = None,
 ) -> str:
     """Spawn child agents (single ``goal`` or ``tasks=[...]`` batch) or control running ones. ``action``
     list/steer/stop run synchronously and bypass the pause gate, depth limit and async dispatch. ``role`` is legacy
@@ -488,6 +588,10 @@ def delegate_task(
     dispatch handle when running in the background."""
     if parent_agent is None:
         return tool_error("delegate_task requires a parent agent context.")
+
+    blocked = delivery_tool_block_reason("delegate_task", {"action": action or "spawn"})
+    if blocked:
+        return tool_error(blocked)
 
     normalized_action = (action or "").strip().lower()
     if normalized_action in _CONTROL_ACTIONS:
@@ -537,6 +641,34 @@ def delegate_task(
         return tool_error(str(exc))
     max_children = _get_max_concurrent_children()
     task_list, err = _normalize_task_list(goal, context, tasks, output_schema, top_role, max_children)
+    if not err and task_list is not None and not tasks:
+        task_list[0].update({
+            "delivery_role": delivery_role,
+            "acceptance_ledger": acceptance_ledger,
+            "required_skills": required_skills or [],
+            "delivery_evidence": delivery_evidence or {},
+        })
+    if not err and task_list is not None:
+        require_role_setting = cfg.get("require_delivery_role", False)
+        if not isinstance(require_role_setting, bool):
+            return tool_error("delegation.require_delivery_role must be true or false; refusing delegation")
+        require_role = require_role_setting
+        for index, task in enumerate(task_list):
+            try:
+                task["delivery_role"] = _normalize_delivery_role(task.get("delivery_role"))
+                task["required_skills"] = _normalize_required_skills(task.get("required_skills"))
+                task["resolved_required_skills"] = _resolve_required_delivery_skills(
+                    task["required_skills"], task["delivery_role"]
+                )
+                task["bound_delivery_policy"] = build_delivery_policy(
+                    task["delivery_role"], task.get("delivery_evidence"),
+                    trusted_runtime=cfg.get("delivery"),
+                )
+                if require_role and task["delivery_role"] is None:
+                    raise ValueError("delivery_role is required by delegation.require_delivery_role")
+            except ValueError as exc:
+                err = f"Task {index}: {exc}"
+                break
     if not err:
         task_schemas, err = _coerce_task_schemas(task_list, output_schema)
     if not err:
@@ -737,6 +869,32 @@ DELEGATE_TASK_SCHEMA = {
                             "together in ONE message; ungrouped tasks return individually as each finishes. This does not "
                             "order execution; if B needs A's output, dispatch B after A returns.",
                         ),
+                        "delivery_role": _p(
+                            "string",
+                            "Immutable software-delivery role. Omit for ordinary non-delivery delegation.",
+                            enum=list(DELIVERY_ROLES),
+                        ),
+                        "acceptance_ledger": _p(
+                            "string", "Authoritative acceptance criteria this delivery worker must apply in full."
+                        ),
+                        "required_skills": _p(
+                            "array", "Profile-scoped workflow skills the worker must load before acting.",
+                            items={"type": "string"},
+                        ),
+                        "delivery_evidence": _p(
+                            "object",
+                            "Machine-bound role target. Reviewer and merger require repository, pull_request, "
+                            "exact_sha. Closure controller requires repository, issue, merged_sha. Free-form "
+                            "review/CI/merge assertions are not accepted.",
+                            properties={
+                                "repository": {"type": "string"},
+                                "pull_request": {"type": "integer", "minimum": 1},
+                                "issue": {"type": "integer", "minimum": 1},
+                                "exact_sha": {"type": "string", "pattern": "^[0-9a-fA-F]{40}$"},
+                                "merged_sha": {"type": "string", "pattern": "^[0-9a-fA-F]{40}$"},
+                            },
+                            additionalProperties=False,
+                        ),
                     },
                     "required": ["goal"],
                 },
@@ -793,6 +951,8 @@ registry.register(
     handler=lambda args, **kw: delegate_task(
         goal=args.get("goal"), context=args.get("context"), tasks=_strip_model_hidden_task_fields(args.get("tasks")),
         max_iterations=args.get("max_iterations"), role=args.get("role"),
+        delivery_role=args.get("delivery_role"), acceptance_ledger=args.get("acceptance_ledger", ""),
+        required_skills=args.get("required_skills"), delivery_evidence=args.get("delivery_evidence"),
         background=_model_background_value(args, kw.get("parent_agent")), output_schema=args.get("output_schema"),
         images=args.get("images"), action=args.get("action"), subagent_id=args.get("subagent_id"), message=args.get("message"),
         parent_agent=kw.get("parent_agent"),

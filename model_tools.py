@@ -893,6 +893,35 @@ def handle_function_call(
     ids = _CallIds(task_id, session_id, tool_call_id, turn_id, api_request_id)
     start = time.monotonic()
 
+    from tools.delivery_policy import current_delivery_policy, delivery_tool_block_reason
+    active_delivery_policy = current_delivery_policy()
+    if delivery_block := delivery_tool_block_reason(function_name, function_args, active_delivery_policy):
+        return tool_error(delivery_block)
+    if active_delivery_policy is not None and active_delivery_policy.role is not None:
+        # Delivery calls never enter registry overlays, plugin hooks, connector
+        # bridges, or request/execution middleware.  Bind directly to the
+        # audited built-in implementation selected above.
+        try:
+            if function_name == "delivery_action":
+                from tools.delivery_action import delivery_action_handler
+                return delivery_action_handler(function_args)
+            if function_name == "skill_view":
+                from tools.skills_tool import _skill_view_with_bump
+                return _skill_view_with_bump(function_args, task_id=task_id)
+            from tools.file_tools import (
+                _handle_patch, _handle_read_file, _handle_search_files, _handle_write_file,
+            )
+            file_handlers = {
+                "patch": _handle_patch,
+                "read_file": _handle_read_file,
+                "search_files": _handle_search_files,
+                "write_file": _handle_write_file,
+            }
+            return file_handlers[function_name](function_args, task_id=task_id)
+        except Exception as exc:
+            logger.exception("Delivery tool %s failed", function_name)
+            return tool_error(_sanitize_tool_error(f"Error executing {function_name}: {exc!s}"))
+
     def _emit(result: Any, **extra: Any) -> Any:
         """Emit post_tool_call with this call's identity fields; returns *result*."""
         _emit_post_tool_call_hook(function_name=function_name, function_args=function_args, result=result,

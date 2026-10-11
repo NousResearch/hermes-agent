@@ -4,9 +4,11 @@ holding SKILL.md (YAML frontmatter + instructions) plus optional references/, te
 scripts/. `skills_list` returns name/description only; `skill_view` returns full content and
 linked files. Sibling modules (skills_tool_setup / _plugin / _dedup) re-export here."""
 
+import hashlib
 import json
 import logging
 import os
+import stat
 import time
 from contextlib import suppress
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -530,6 +532,136 @@ def _owned_relative(skill_dir: Optional[Path], skill_md: Path, all_dirs) -> str:
     return target.relative_to(root).as_posix() if root is not None else str(target)
 
 
+def _delivery_skill_candidate(name: str):
+    """Select one inert local/external candidate without project or plugin discovery."""
+    from agent.skill_utils import TIER_LOCAL, get_skill_search_roots, pick_skill_candidate, skill_candidate_rank
+
+    roots = [
+        (tier, root) for tier, root in get_skill_search_roots(_skills_dir(), include_project=False)
+        if tier != TIER_LOCAL or root.exists()
+    ]
+    all_dirs = [root for _tier, root in roots]
+    candidates = _collect_skill_candidates(name, None, all_dirs)
+    if not candidates:
+        raise ValueError(f"Required delivery skill {name!r} is unavailable")
+    tier_of = {root: tier for tier, root in roots}
+    owned = [(candidate, _owning_search_dir(candidate[1], all_dirs)) for candidate in candidates]
+    if any(root is None for _candidate, root in owned):
+        raise ValueError(f"Required delivery skill {name!r} could not be safely resolved")
+    ranked = [
+        (tier_of[root], str(root), skill_candidate_rank(candidate[1], root), candidate[1])
+        for candidate, root in owned if root is not None
+    ]
+    won, contenders = pick_skill_candidate(ranked)
+    if won is None:
+        matches = [str(candidates[index][1]) for index in contenders]
+        raise ValueError(f"Required delivery skill {name!r} is ambiguous: {', '.join(matches)}")
+    return candidates[won], all_dirs, owned[won][1]
+
+
+def _delivery_regular_file(path: Path, root: Path, error: str) -> Path:
+    """Resolve a regular file beneath root while rejecting every symlink component."""
+    if root.is_symlink():
+        raise ValueError(error)
+    try:
+        relative = path.relative_to(root)
+        current = root
+        for part in relative.parts:
+            current /= part
+            if current.is_symlink():
+                raise ValueError("symbolic links are forbidden")
+        resolved = path.resolve(strict=True)
+        resolved.relative_to(root.resolve(strict=True))
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise ValueError(error) from exc
+    if not resolved.is_file():
+        raise ValueError(error)
+    return resolved
+
+
+def _read_delivery_text(path: Path, *, max_bytes: int | None) -> str:
+    """Read a no-follow regular file, enforcing the byte cap during the read."""
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(path, flags)
+        with os.fdopen(fd, "rb") as stream:
+            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                raise ValueError("delivery skill content is not a regular file")
+            if max_bytes is None:
+                payload = stream.read()
+            else:
+                payload = stream.read(max_bytes + 1)
+                if len(payload) > max_bytes:
+                    raise ValueError("delivery skill content exceeds the configured byte limit")
+    except ValueError:
+        raise
+    except OSError as exc:
+        raise ValueError("delivery skill content is unreadable") from exc
+    return payload.decode("utf-8-sig", "replace")
+
+
+def read_delivery_skill(
+    name: str, file_path: str | None = None, *, max_bytes: int | None = None,
+) -> dict[str, Any]:
+    """Read a local delivery-role skill without activation or mutable side effects."""
+    if lookup_error := _skill_lookup_path_error(name):
+        raise ValueError(lookup_error)
+    if ":" in name:
+        raise ValueError(f"Delivery-role skill {name!r} is plugin-provided; plugin activation is forbidden")
+    from agent.skill_utils import get_disabled_skill_names
+
+    # The ordinary catalog includes project roots whose trust scanner may write
+    # state. This candidate path includes only inert profile/create/external roots.
+    (skill_dir, skill_md), all_dirs, owner = _delivery_skill_candidate(name)
+    if owner is None:  # Defensive: candidate selection rejects this already.
+        raise ValueError(f"Required delivery skill {name!r} could not be safely resolved")
+    relative_name = _owned_relative(skill_dir, skill_md, all_dirs)
+    skill_md = _delivery_regular_file(
+        skill_md, owner,
+        f"Required delivery skill {name!r} does not resolve to a regular file inside its skill root",
+    )
+    if max_bytes is not None:
+        if isinstance(max_bytes, bool) or not isinstance(max_bytes, int) or max_bytes < 0:
+            raise ValueError("Delivery skill byte limit is invalid")
+        try:
+            if skill_md.stat().st_size > max_bytes:
+                raise ValueError(f"Required delivery skill {name!r} exceeds the configured byte limit")
+        except OSError as exc:
+            raise ValueError(f"Required delivery skill {name!r} is unreadable") from exc
+    try:
+        content = _read_delivery_text(skill_md, max_bytes=max_bytes)
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise ValueError(f"Required delivery skill {name!r} is unreadable: {exc}") from exc
+    try:
+        frontmatter = _parse_frontmatter(content)[0]
+    except Exception as exc:
+        raise ValueError(f"Required delivery skill {name!r} has invalid frontmatter: {exc}") from exc
+    resolved_name = str(frontmatter.get("name") or (skill_dir.name if skill_dir else skill_md.stem))
+    if not get_disabled_skill_names().isdisjoint({name, resolved_name, relative_name}):
+        raise ValueError(f"Required delivery skill {name!r} is disabled")
+    if not skill_matches_platform(frontmatter):
+        raise ValueError(f"Required delivery skill {name!r} is unavailable on this platform")
+    if file_path:
+        if skill_dir is None or _skill_lookup_path_error(file_path):
+            raise ValueError("Delivery skill file_path must be a relative path inside the skill")
+        target = _delivery_regular_file(
+            skill_dir / file_path, skill_dir,
+            "Delivery skill file_path must identify a regular file inside the skill directory",
+        )
+        try:
+            content = _read_delivery_text(target, max_bytes=max_bytes)
+        except (OSError, UnicodeError, ValueError) as exc:
+            raise ValueError(f"Delivery skill file is unreadable: {exc}") from exc
+    return {
+        "success": True,
+        "name": resolved_name,
+        "content": content,
+        "path": relative_name,
+        "content_sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+        "immutable_delivery_read": True,
+    }
+
+
 def _log_security_warnings(name: str, skill_md: Path, content: str, all_dirs, active_skills_dir):
     """Warn (never block) when loaded from outside the trusted dirs (project + local + external)
     and/or when common prompt-injection patterns appear. The check is on the RESOLVED path:
@@ -700,6 +832,12 @@ def _skill_view_with_bump(args, **kw):
     session returns a short stub (cache cleared on context compression)."""
     name = args.get("name", "")
     task_id = kw.get("task_id")
+    from tools.delivery_policy import current_delivery_role
+    if current_delivery_role() is not None:
+        try:
+            return _json(read_delivery_skill(name, args.get("file_path")))
+        except ValueError as exc:
+            return _fail(str(exc))
     # The background-review fork shares the parent's task_id (prefix-cache parity). A stub there
     # (a) skips the read-mark its read-before-write guard requires and (b) lets it patch from a
     # possibly-pruned transcript copy (#95976). No dedup in the fork; None also keeps its views

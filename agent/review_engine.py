@@ -1,6 +1,6 @@
 """Shared engine for the /review command — every surface calls this.
 
-/review spawns an independent, full-privilege background subagent (the same async rail as
+/review spawns an independent, read-only reviewer subagent (the same async rail as
 ``delegate_task(background=true)``) to review whatever the recent conversation presented;
 its result re-enters the spawning session as a normal async-delegation completion.
 Model routing: ``auxiliary.review`` when configured, else the parent agent's credentials,
@@ -26,12 +26,12 @@ DEFAULT_CONTEXT_MESSAGES = 10
 _MESSAGE_CHAR_CAP = 12_000
 
 _REVIEW_GOAL = (
-    "Act as an independent senior reviewer. Thoroughly review the work presented in the conversation excerpt "
-    "provided in your context: investigate any code, pull request, branch, commit, documentation, design, or other "
-    "artifact it references (open the PR, read the diff, run the code or tests where feasible) rather than judging "
-    "from the excerpt alone. Produce a full, structured review: what the work does, whether it is correct and "
-    "complete, concrete defects or risks found (with file/line references where possible), what was verified vs. "
-    "only read, and a clear final verdict with recommended next steps."
+    "Act as an independent senior reviewer. Thoroughly review only the evidence presented in the conversation "
+    "excerpt provided in your context. Do not claim to have opened a pull request, inspected the live checkout, "
+    "or run code unless machine-produced evidence for that action is actually present. Produce a full, structured "
+    "review: what the work says it does, whether the supplied evidence supports correctness and completeness, "
+    "concrete defects or risks, missing production-path evidence, what was verified versus merely asserted, and "
+    "a clear final verdict with recommended next steps. Missing exact-SHA or test evidence is a blocker, not a pass."
 )
 
 
@@ -168,7 +168,12 @@ def start_review(parent_agent, messages: list[dict[str, Any]], user_prompt: str 
     credentials_cfg = _load_review_credentials_cfg()
 
     from tools.delegate_tool import delegate_task
-    raw = delegate_task(goal=goal, context=context, background=True, parent_agent=parent_agent, credentials_cfg=credentials_cfg)
+    raw = delegate_task(
+        goal=goal, context=context, background=True, parent_agent=parent_agent,
+        credentials_cfg=credentials_cfg, delivery_role="reviewer",
+        acceptance_ledger=user_prompt.strip(),
+        required_skills=collect_parent_loaded_skills(parent_agent, messages),
+    )
     try:
         result = json.loads(raw)
     except Exception:

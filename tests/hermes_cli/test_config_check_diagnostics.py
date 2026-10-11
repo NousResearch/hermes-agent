@@ -4,7 +4,9 @@ from pathlib import Path
 
 import hermes_cli.config as config_mod
 import hermes_cli.plugins as plugins_mod
+import pytest
 from hermes_cli.config import DEFAULT_CONFIG, _cmd_config_check, _warn_invalid_platform_toolsets
+from hermes_cli.config_check_diagnostics import _delivery_policy_diagnostics
 
 
 def _write_home(home: Path, body: str, env: str = "") -> Path:
@@ -76,3 +78,129 @@ def test_config_check_reports_disabled_platform_only_when_runtime_disables_it(tm
         if reported:
             assert "hermes plugins enable platforms/fakechat" in output
         assert "synthetic-test-token" not in output
+
+
+def test_delivery_policy_diagnostics_distinguish_warnings_from_blocking_errors() -> None:
+    warnings = _delivery_policy_diagnostics({
+        "delegation": {"require_delivery_role": False, "subagent_auto_approve": True},
+        "command_allowlist": ["gh *"],
+    })
+    assert warnings and all(item.startswith("WARNING:") for item in warnings)
+
+    diagnostics = _delivery_policy_diagnostics({
+        "delegation": {
+            "require_delivery_role": True,
+            "subagent_auto_approve": True,
+            "role_defaults": {"reviewer": {"toolsets": ["all"]}},
+        },
+        "approvals": {"unattended_mode": "approve"},
+        "command_allowlist": ["git *"],
+    })
+    assert len(diagnostics) == 4
+    assert len([item for item in diagnostics if item.startswith("ERROR:")]) == 1
+    assert len([item for item in diagnostics if item.startswith("WARNING:")]) == 3
+    assert any("immutable" in item for item in diagnostics)
+
+    assert _delivery_policy_diagnostics({"command_allowlist": ["gh pr view *"]}) == []
+    unsafe = _delivery_policy_diagnostics({"command_allowlist": ["gh pr merge * --squash"]})
+    assert len(unsafe) == 1 and unsafe[0].startswith("WARNING:")
+
+
+@pytest.mark.parametrize("pattern", ["gh pr *", "gh issue *", "/usr/bin/gh *", "git push *"])
+def test_delivery_diagnostic_catches_common_unsafe_globs(pattern: str) -> None:
+    diagnostics = _delivery_policy_diagnostics({"command_allowlist": [pattern]})
+    assert len(diagnostics) == 1
+    assert diagnostics[0].startswith("WARNING:")
+
+
+@pytest.mark.parametrize(
+    "pattern",
+    [
+        "gh pr merge 999 --repo owner/repo",
+        "gh pr merge * --admin",
+        "/opt/bin/gh issue close * --repo owner/repo",
+        "\"/opt/bin/gh\" pr merge 777 --repo owner/repo --squash",
+        "/opt/bin/gh* issue close 42 --repo owner/repo",
+        "gh pr review 999 --repo owner/repo --approve",
+    ],
+)
+def test_delivery_diagnostic_structurally_detects_specific_quoted_and_suffixed_effects(pattern: str) -> None:
+    diagnostics = _delivery_policy_diagnostics({"command_allowlist": [pattern]})
+    assert len(diagnostics) == 1
+    assert "unsafe permanent approval pattern" in diagnostics[0]
+
+
+@pytest.mark.parametrize(
+    "pattern",
+    [
+        "gh pr view 999 --repo owner/repo",
+        "/opt/bin/gh issue list --repo owner/repo",
+        "python -m pytest tests/test_merge_word.py",
+        "printf 'gh pr merge 999'",
+    ],
+)
+def test_delivery_diagnostic_avoids_unrelated_command_false_positives(pattern: str) -> None:
+    assert _delivery_policy_diagnostics({"command_allowlist": [pattern]}) == []
+
+
+def test_invalid_delivery_policy_config_is_blocking() -> None:
+    diagnostics = _delivery_policy_diagnostics({"delegation": {"require_delivery_role": "true"}})
+    assert diagnostics == [
+        "ERROR: delegation.require_delivery_role must be true or false; invalid values fail closed at runtime."
+    ]
+    assert _delivery_policy_diagnostics({"delegation": "unsafe"})[0].startswith("ERROR:")
+
+
+def test_prefill_diagnostic_targets_delivery_policy_not_legitimate_few_shot_use(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    policy_prefill = tmp_path / "policy.json"
+    policy_prefill.write_text(
+        '[{"role":"user","content":"You are the independent reviewer and must not merge"}]',
+        encoding="utf-8",
+    )
+    generic_prefill = tmp_path / "generic.json"
+    generic_prefill.write_text(
+        '[{"role":"user","content":"Translate this sentence"},{"role":"assistant","content":"Bonjour"}]',
+        encoding="utf-8",
+    )
+    merger_prefill = tmp_path / "merger.json"
+    merger_prefill.write_text(
+        '[{"role":"user","content":"You are the merger. Merge only the exact reviewed SHA after required CI checks."}]',
+        encoding="utf-8",
+    )
+
+    diagnostics = _delivery_policy_diagnostics({"prefill_messages_file": "policy.json"})
+    assert len(diagnostics) == 1
+    assert "fabricated dialogue" in diagnostics[0]
+    assert len(_delivery_policy_diagnostics({"prefill_messages_file": "merger.json"})) == 1
+    assert _delivery_policy_diagnostics({"prefill_messages_file": "generic.json"}) == []
+
+
+def test_oversized_prefill_emits_non_content_diagnostic(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    oversized = tmp_path / "oversized.json"
+    oversized.write_bytes(b"secret-not-for-diagnostics" + b"x" * 1_000_000)
+    diagnostics = _delivery_policy_diagnostics({"prefill_messages_file": "oversized.json"})
+    assert diagnostics == [
+        "WARNING: prefill_messages_file exceeds the 1,000,000-byte diagnostic scan limit; "
+        "software-delivery policy in it could not be inspected."
+    ]
+    assert "secret-not-for-diagnostics" not in diagnostics[0]
+
+
+def test_config_check_exits_nonzero_for_blocking_delivery_hazard(tmp_path, monkeypatch, capsys) -> None:
+    home = _write_home(
+        tmp_path / "blocking",
+        "delegation:\n"
+        "  require_delivery_role: true\n"
+        "  role_defaults:\n"
+        "    reviewer:\n"
+        "      toolsets: [all]\n",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    with pytest.raises(SystemExit) as excinfo:
+        _cmd_config_check(None)
+    assert excinfo.value.code == 1
+    output = capsys.readouterr().out
+    assert "ERROR:" in output
+    assert "role_defaults" in output

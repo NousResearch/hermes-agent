@@ -87,3 +87,50 @@ def test_buildable_pyproject_member_keeps_its_declared_name(tmp_path):
     member = _workspace_member(plugin, root, identity=plugin)
     assert (member / "pyproject.toml").read_text(encoding="utf-8") == (
         plugin / "pyproject.toml").read_text(encoding="utf-8")
+
+
+def test_identical_buildable_member_across_profiles_joins_the_workspace_once(tmp_path):
+    """A buildable member keeps its declared [project].name, so the same plugin
+    enabled in two profiles sharing a gateway used to declare one name twice
+    and fail ``uv lock`` with "Two workspace members are both named …" (#125252).
+    Identical sources must fold into the first (config-order) copy; a diverged
+    copy stays a second member instead of silently shadowing the first."""
+    import tomllib
+
+    from pm.workspace import _generate_pyproject
+
+    core = tmp_path / "core"
+    core.mkdir()
+    (core / "pyproject.toml").write_text(
+        '[project]\nname = "hermes-agent"\nversion = "1"\n', encoding="utf-8")
+
+    def plugin_at(home: str):
+        plugin = tmp_path / home / "plugins" / "tinyfish"
+        plugin.mkdir(parents=True)
+        (plugin / "pyproject.toml").write_text(
+            '[project]\nname = "tinyfish-hermes"\nversion = "0.1.0"\ndependencies = ["httpx"]\n'
+            '[build-system]\nrequires = ["hatchling"]\nbuild-backend = "hatchling.build"\n',
+            encoding="utf-8")
+        return plugin
+
+    default = plugin_at("default-home")
+    profile = plugin_at("profile-home")
+
+    root = tmp_path / "gen"
+    identities = {
+        tmp_path / "default-profile" / "tinyfish": default,
+        tmp_path / "secondary-profile" / "tinyfish": profile,
+    }
+    _generate_pyproject(identities, root, source=core)
+    workspace = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    members = workspace["tool"]["uv"]["workspace"]["members"]
+    assert len(members) == 1, members
+    assert members[0].startswith("plugin-sources/tinyfish-"), members
+    kept = tomllib.loads((root / members[0] / "pyproject.toml").read_text(encoding="utf-8"))
+    assert kept["project"]["name"] == "tinyfish-hermes"  # still buildable, not renamed
+
+    (profile / "extra.py").write_text("X = 1\n", encoding="utf-8")  # the copies diverge
+    root2 = tmp_path / "gen2"
+    _generate_pyproject(identities, root2, source=core)
+    workspace2 = tomllib.loads((root2 / "pyproject.toml").read_text(encoding="utf-8"))
+    assert len(workspace2["tool"]["uv"]["workspace"]["members"]) == 2

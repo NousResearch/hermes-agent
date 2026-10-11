@@ -645,6 +645,7 @@ class TestStopProfileGateway:
         assert gateway.stop_profile_gateway() is True
         assert calls == [(pid, True, 100)]
 
+    @pytest.mark.platforms("posix")
     def test_stop_profile_gateway_keeps_pid_file_when_process_still_running(self, monkeypatch):
         calls = {"kill": 0, "alive_probes": 0, "remove": 0, "reap_calls": 0}
 
@@ -679,6 +680,51 @@ class TestStopProfileGateway:
         assert calls["kill"] == 1          # one SIGTERM
         assert calls["remove"] == 0
         assert calls["reap_calls"] == 1    # orphan sweep ran after kill
+
+    @pytest.mark.platforms("windows")
+    def test_windows_stop_profile_gateway_keeps_pid_file_when_process_still_running(self, monkeypatch):
+        """Windows twin of the test above (#127343): the Windows stop path never calls ``os.kill`` —
+        it drains the marker watcher, then escalates through the start-time-guarded force
+        termination. Same contract through the real seams: stop reports True, the pid file is
+        kept while the process is alive, and the orphan sweep runs with the stopped PID excluded."""
+        import hermes_cli.gateway_windows as gateway_windows
+
+        calls = {"drain": 0, "force": 0, "remove": 0, "reap_calls": 0, "reap_exclude": None}
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: 12345)
+        monkeypatch.setattr("gateway.status.get_process_start_time", lambda pid: 1700000000)
+        monkeypatch.setattr(gateway_windows, "_windows_stop_drain_timeout", lambda: 7.0)
+        monkeypatch.setattr(
+            gateway_windows,
+            "_drain_gateway_pid",
+            lambda target, timeout: calls.__setitem__("drain", calls["drain"] + 1) or False,
+        )
+
+        def fake_force_terminate(pids):
+            calls["force"] += 1
+            assert pids == {12345: 1700000000}  # the pre-drain identity guards the taskkill
+
+        monkeypatch.setattr(gateway_windows, "_force_terminate_known_gateway_pids", fake_force_terminate)
+        monkeypatch.setattr("gateway.status._pid_exists", lambda pid: True)
+        monkeypatch.setattr("time.sleep", lambda _: None)
+        monkeypatch.setattr(
+            "gateway.status.remove_pid_file",
+            lambda: calls.__setitem__("remove", calls["remove"] + 1),
+        )
+        monkeypatch.setattr(
+            gateway,
+            "_reap_unsupervised_gateway_orphans",
+            lambda extra_exclude=None: (
+                calls.__setitem__("reap_calls", calls["reap_calls"] + 1),
+                calls.__setitem__("reap_exclude", extra_exclude),
+            ) and None or False,
+        )
+
+        assert gateway.stop_profile_gateway() is True
+        assert calls["drain"] == 1         # marker drain ran before escalation
+        assert calls["force"] == 1         # wedged process -> bounded force-stop fallback
+        assert calls["remove"] == 0        # process still alive -> pid file kept
+        assert calls["reap_calls"] == 1    # orphan sweep ran after the kill attempt
+        assert calls["reap_exclude"] == {12345}
 
     def test_stop_profile_gateway_excludes_killed_pid_from_orphan_reap(self, monkeypatch):
         """The PID we killed must be excluded from the orphan sweep (#75936)."""

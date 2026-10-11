@@ -83,7 +83,8 @@ import { useStatusDrawer } from './hooks/use-status-drawer'
 import { useSessionStatusPresence } from './hooks/use-status-presence'
 import { shouldConvertPasteToAttachment } from './large-paste'
 import { ActionBadges } from './micro-actions'
-import { chipTypedPathOnSpace, pathifyRefs } from './path-refs'
+import { preparePastedText } from './paste-to-focus'
+import { chipTypedPathOnSpace } from './path-refs'
 import { QueuePanel } from './queue-panel'
 import { RestoredDraftNotice } from './restored-draft-notice'
 import {
@@ -107,7 +108,6 @@ import { isRedoShortcut, isUndoShortcut } from './undo-history'
 import { UrlDialog } from './url-dialog'
 import {
   chipTypedUrlOnSpace,
-  linkifyUrls,
   markdownLinkFor,
   resolveExactLinkPaste,
   selectionLinkLabel
@@ -624,7 +624,7 @@ export function ChatBar({
         }
 
         recordUndoPoint()
-        insertComposerContentsAtCaret(editor, pathifyRefs(linkifyUrls(pastedText)), openDirectiveScope(editor))
+        insertComposerContentsAtCaret(editor, preparePastedText(pastedText), openDirectiveScope(editor))
         scheduleFlushEditorToDraft(editor)
       })
 
@@ -640,7 +640,7 @@ export function ChatBar({
     const scope = openDirectiveScope(event.currentTarget)
 
     recordUndoPoint()
-    insertComposerContentsAtCaret(event.currentTarget, pathifyRefs(linkifyUrls(pastedText)), scope)
+    insertComposerContentsAtCaret(event.currentTarget, preparePastedText(pastedText), scope)
     scheduleFlushEditorToDraft(event.currentTarget)
   }
 

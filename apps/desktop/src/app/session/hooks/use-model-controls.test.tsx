@@ -560,7 +560,7 @@ describe('useModelControls', () => {
     expect($currentProvider.get()).toBe('custom:local')
   })
 
-  it('drops a sticky manual pick back to the Settings default on request (#107410)', async () => {
+  it('unpins a draft and immediately reseeds it from the Settings default (#107410)', async () => {
     vi.mocked(getGlobalModelInfo).mockResolvedValue({ model: 'deepseek-v4-flash', provider: 'custom:relay' })
     setCurrentModel('claude-sonnet-4-6')
     setCurrentProvider('anthropic')
@@ -568,7 +568,7 @@ describe('useModelControls', () => {
 
     const { result } = renderHook(() => useModelControls({ queryClient: new QueryClient(), requestGateway: vi.fn() }))
 
-    result.current.followDefaultModel()
+    await act(() => result.current.unpinToProfileDefault())
 
     await waitFor(() => expect($currentModel.get()).toBe('deepseek-v4-flash'))
     expect($currentProvider.get()).toBe('custom:relay')
@@ -622,6 +622,58 @@ describe('useModelControls', () => {
 
     profileDefault.resolve({ model: 'gpt-5.5', provider: 'openai-codex' })
     await pendingRefresh
+
+    expect($currentModel.get()).toBe('claude-sonnet-4.6')
+    expect($currentProvider.get()).toBe('anthropic')
+    expect(getCurrentModelSource()).toBe('manual')
+  })
+
+  it('unpins a live session without repainting its selected model', async () => {
+    $activeSessionId.set('runtime-1')
+    setCurrentModel('anthropic/claude-opus-4.6')
+    setCurrentProvider('anthropic')
+    setCurrentModelSource('manual')
+
+    const { result } = renderHook(() =>
+      useModelControls({
+        queryClient: new QueryClient(),
+        requestGateway: vi.fn()
+      })
+    )
+
+    vi.mocked(getGlobalModelInfo).mockClear()
+    await act(() => result.current.unpinToProfileDefault())
+
+    expect($currentModel.get()).toBe('anthropic/claude-opus-4.6')
+    expect($currentProvider.get()).toBe('anthropic')
+    expect(getCurrentModelSource()).toBe('')
+    expect(getGlobalModelInfo).not.toHaveBeenCalled()
+  })
+
+  it('does not let an unpin refresh overwrite a newer picker choice', async () => {
+    const profileDefault = deferred<Awaited<ReturnType<typeof getGlobalModelInfo>>>()
+    vi.mocked(getGlobalModelInfo).mockReturnValueOnce(profileDefault.promise)
+    setCurrentModel('anthropic/claude-opus-4.6')
+    setCurrentProvider('anthropic')
+    setCurrentModelSource('manual')
+
+    const { result } = renderHook(() =>
+      useModelControls({
+        queryClient: new QueryClient(),
+        requestGateway: vi.fn()
+      })
+    )
+
+    const pendingUnpin = result.current.unpinToProfileDefault()
+    await expect(
+      result.current.selectModel({
+        model: 'claude-sonnet-4.6',
+        provider: 'anthropic'
+      })
+    ).resolves.toBe(true)
+
+    profileDefault.resolve({ model: 'gpt-5.5', provider: 'openai-codex' })
+    await pendingUnpin
 
     expect($currentModel.get()).toBe('claude-sonnet-4.6')
     expect($currentProvider.get()).toBe('anthropic')

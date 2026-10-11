@@ -26,7 +26,8 @@ import {
   setCurrentModel,
   setCurrentModelSource,
   setCurrentProvider,
-  setCurrentReasoningEffortWire
+  setCurrentReasoningEffortWire,
+  unpinComposerSelection
 } from '@/store/session'
 import { $sessionStates, sessionTileDelegate } from '@/store/session-states'
 
@@ -227,11 +228,14 @@ export function useModelControls({
     [cacheOwnerConnectionId, cacheProfile, queryClient, requestGateway]
   )
 
-  // Drop a sticky composer pick so new chats follow Settings → Model again,
-  // without making the user re-apply the default they already have (#107410).
-  const followDefaultModel = useCallback(() => {
-    setCurrentModelSource('default')
-    void refreshCurrentModel()
+  // Clear the local sticky selection. An active session keeps its painted model;
+  // only a fresh primary draft immediately reseeds from Settings → Model.
+  const unpinToProfileDefault = useCallback(async () => {
+    unpinComposerSelection()
+
+    if (!$activeSessionId.get()) {
+      await refreshCurrentModel(true)
+    }
   }, [refreshCurrentModel])
 
   // Returns whether the switch was applied so callers can await it before
@@ -416,5 +420,5 @@ export function useModelControls({
     [cacheOwnerConnectionId, cacheProfile, copy.modelSwitchFailed, queryClient, requestGateway, updateModelOptionsCache]
   )
 
-  return { applySavedMainModel, followDefaultModel, refreshCurrentModel, selectModel }
+  return { applySavedMainModel, refreshCurrentModel, selectModel, unpinToProfileDefault }
 }

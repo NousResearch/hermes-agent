@@ -461,6 +461,9 @@ def _verify_and_restore_one_state_db(home: Path, *, label: str) -> None:
         if not state_path.exists():
             return
         ok = verify_sqlite_integrity(state_path, check_header=True, run_pragma=True)
+        if ok.get("valid") is None:
+            print(f"  ⚠ state.db verification deferred ({label}): {ok.get('message', 'unknown error')}")
+            return
         if ok.get("valid"):
             logger.debug("Post-update state.db integrity OK (%s): %s", label, ok.get("message"))
             return
@@ -671,6 +674,9 @@ def _verify_state_db_after_snapshot(snapshot_id: str) -> None:
     _integrity = verify_sqlite_integrity(
         _src_path, check_header=True, run_pragma=True, max_bytes=_PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE,
     )
+    if _integrity.get("valid") is None:
+        print(f"  ⚠ state.db verification deferred after snapshot: {_integrity.get('message', 'unknown error')}")
+        return
     if _integrity.get("valid"):
         return
     print(f"  ⚠ state.db integrity check FAILED after snapshot: {_integrity.get('message', 'unknown error')}")

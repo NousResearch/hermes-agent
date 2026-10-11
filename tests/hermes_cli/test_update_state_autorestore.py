@@ -330,3 +330,60 @@ def test_post_update_guard_survives_missing_sibling_snapshot(tmp_path, monkeypat
     assert "corrupted" in out
     # Still corrupt (no snapshot) — but the guard completed cleanly.
     assert (sibling_home / "state.db").read_bytes() == b"\x00" * 4096
+
+
+@pytest.mark.parametrize("max_bytes", [1, 2 << 30])
+def test_integrity_probe_treats_an_exclusive_lock_as_indeterminate(tmp_path, max_bytes):
+    """A busy schema probe or full PRAGMA cannot establish corruption (#127010)."""
+    from hermes_cli.backup import verify_sqlite_integrity
+
+    db = tmp_path / "state.db"
+    _make_valid_db(db, 3)
+    holder = sqlite3.connect(db)
+    try:
+        holder.execute("BEGIN EXCLUSIVE")
+        result = verify_sqlite_integrity(db, run_pragma=True, max_bytes=max_bytes)
+    finally:
+        holder.rollback()
+        holder.close()
+
+    assert "locked" in result["message"]
+    assert result["valid"] is None
+    assert verify_sqlite_integrity(db)["valid"] is True
+
+
+def test_update_and_boot_guards_defer_a_locked_healthy_db(tmp_path, monkeypatch, capsys):
+    """Update must explain a deferred check without entering the restore path."""
+    from hermes_cli import update_cmd
+    from hermes_cli.post_update import step_state_db_guard
+    from hermes_cli.update_cmd_maint import _verify_state_db_after_snapshot
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    db = home / "state.db"
+    _make_valid_db(db, 3)
+    snapshot = home / "state-snapshots" / "pre-update"
+    snapshot.mkdir(parents=True)
+    shutil.copy2(db, snapshot / "state.db")
+    before = db.read_bytes()
+    monkeypatch.setattr(
+        "hermes_cli.update_cmd_maint._restore_state_db_from_snapshot",
+        lambda *args: pytest.fail("a locked database must not be restored"),
+    )
+
+    holder = sqlite3.connect(db)
+    try:
+        holder.execute("BEGIN EXCLUSIVE")
+        _verify_state_db_after_snapshot("pre-update")
+        update_cmd._verify_and_restore_one_state_db(home, label="default home")
+        assert step_state_db_guard() == {"ok": True, "skipped": "integrity-indeterminate"}
+    finally:
+        holder.rollback()
+        holder.close()
+
+    out = capsys.readouterr().out
+    assert "verification deferred" in out
+    assert "corrupted" not in out
+    assert "integrity check FAILED" not in out
+    assert db.read_bytes() == before

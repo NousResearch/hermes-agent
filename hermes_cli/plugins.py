@@ -60,6 +60,7 @@ from hermes_cli.plugins_dispatch import (  # noqa: F401 — re-exported
     is_valid_system_prompt_section_id,
 )
 from hermes_cli.plugins_ledger import PluginLedgerMixin, PluginRegistration
+from hermes_cli.plugins_toolsets import build_plugin_toolsets as _build_plugin_toolsets
 from hermes_cli.plugins_state import (
     PluginState, _locked_plugin_state, _nested_plugin_mapping, _nested_plugin_value,
     _plugin_relative_segments, _plugin_settings_entry, save_plugin_setting,
@@ -2240,29 +2241,4 @@ def get_plugin_auxiliary_tasks() -> List[Dict[str, Any]]:
 
 def get_plugin_toolsets() -> List[tuple]:
     """Plugin toolsets as ``(key, label, description)`` tuples for the ``hermes tools`` TUI."""
-    manager = get_plugin_manager()
-    if not manager._plugin_tool_names:
-        return []
-    try:
-        from tools.registry import registry
-    except Exception:
-        return []
-    # Group plugin tool names by their toolset, then map each toolset back to the plugin that
-    # registered it (first owner wins) for the description.
-    toolset_tools: Dict[str, List[str]] = {}
-    for tool_name in manager._plugin_tool_names:
-        entry = registry.get_entry(tool_name)
-        if entry:
-            toolset_tools.setdefault(entry.toolset, []).append(entry.name)
-    toolset_plugin: Dict[str, LoadedPlugin] = {}
-    for loaded in manager._plugins.values():
-        for tool_name in loaded.tools_registered:
-            entry = registry.get_entry(tool_name)
-            if entry and entry.toolset in toolset_tools:
-                toolset_plugin.setdefault(entry.toolset, loaded)
-    result = []
-    for ts_key in sorted(toolset_tools):
-        plugin = toolset_plugin.get(ts_key)
-        desc = (plugin.manifest.description if plugin else "") or ", ".join(sorted(toolset_tools[ts_key]))
-        result.append((ts_key, f"🔌 {ts_key.replace('_', ' ').title()}", desc))
-    return result
+    return _build_plugin_toolsets(get_plugin_manager())

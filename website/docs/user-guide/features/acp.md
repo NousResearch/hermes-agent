@@ -39,6 +39,13 @@ Hermes runs with a curated `hermes-acp` toolset designed for editor workflows. I
 
 It intentionally excludes things that do not fit typical editor UX, such as messaging delivery and cronjob management.
 
+ACP does not currently consume detached completion notifications. `delegate_task`
+therefore joins its children within the current prompt and returns their results
+before `end_turn`, even when background execution is requested. Multiple children
+still run in parallel, and cancelling the prompt interrupts attached children.
+Background terminal processes are not joined automatically; use `process` to poll
+or wait for them rather than relying on completion notifications to resume ACP.
+
 The toolset resolves the same way as on the messaging gateway for the same
 platform config. That includes the extras the gateway adds on top of the
 list, such as enabled plugin toolsets, so ACP sessions get those too.

@@ -365,10 +365,16 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
     [gw, resetSession, scrollRef, setHistoryItems, setSessionStartedAt, sys]
   )
 
+  // Semantic ownership for startup selection. This must never be inferred from the
+  // translated status text: an explicit /resume can begin while gateway.ready's
+  // config read is pending, before it has a session id to publish.
+  const resumeInFlightRef = useRef(0)
+
   const resumeById = useCallback(
     (id: string) => {
       patchOverlayState({ sessions: false })
       patchUiState({ status: t('session.status.resuming') })
+      resumeInFlightRef.current += 1
 
       return rpc<SetupStatusResponse>('setup.status', {}).then(setup => {
         if (setup?.provider_configured === false) {
@@ -430,6 +436,8 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
             sys(`error: ${e.message}`)
             patchUiState({ status: 'ready' })
           })
+      }).finally(() => {
+        resumeInFlightRef.current = Math.max(0, resumeInFlightRef.current - 1)
       })
     },
     [closeSession, colsRef, gw, panel, resetSession, rpc, scrollRef, setHistoryItems, setSessionStartedAt, sys]
@@ -458,6 +466,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
       resetSession,
       resetVisibleHistory,
       resumeById,
+      resumeInFlightRef,
       trimLastExchange: trimTail
     }),
     [

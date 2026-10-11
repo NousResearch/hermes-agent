@@ -151,7 +151,13 @@ _COMPLETION_INSTRUCTIONS = (
     "issuing git/workdir-specific commands.\n\n"
     "Keep your final summary tight: lead with outcomes, prefer bullet points over paragraphs, and don't replay your "
     "whole process. Your response is returned to the parent agent as a summary, and overlong summaries crowd out the "
-    "parent's context window."
+    "parent's context window.\n\n"
+    # arXiv:2609.36139 ("Insecure Reporters"): models bury the one result that changes the story. The parent
+    # never sees this transcript, so the summary IS the evidence; a direct honesty instruction measurably
+    # raises flaw disclosure (A/B in the PR that added this line).
+    "Be honest in your summary. State every failure, skipped step, unverified claim, or result that undercuts the "
+    "outcome, even when it makes the work look worse: the parent cannot see your transcript and will act on your "
+    "report as if it were true."
 )
 _ORCHESTRATOR_BLOCK = (
     "\n## Subagent Spawning (Orchestrator Role)\n"

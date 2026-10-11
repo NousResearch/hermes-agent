@@ -398,11 +398,12 @@ def _unified_pool_bytes(smi_total: int, ram_total: int) -> int | None:
 
 
 def _uma_budget(base: int, total: int, *, gpu_name: str = "",
-                gpu_pci_id: int | None = None, lazy_reads: bool = True) -> HardwareBudget:
+                gpu_pci_id: int | None = None, lazy_reads: bool = True,
+                cuda: bool = False) -> HardwareBudget:
     usable = max(0, int(base * (1 - _UMA_HEADROOM_FRACTION)))
     return HardwareBudget(usable_vram_bytes=usable, total_device_bytes=total,
                           ram_available_bytes=0, uma=True, gpu_name=gpu_name, platform=sys.platform,
-                          gpu_pci_id=gpu_pci_id, lazy_reads=lazy_reads)
+                          gpu_pci_id=gpu_pci_id, cuda=cuda, lazy_reads=lazy_reads)
 
 
 def _gpu_engine_runs_the_model() -> bool:
@@ -470,7 +471,7 @@ def probe_budget(*, planning: bool = False) -> HardwareBudget:
             live = (vram[1] + ram_avail) if vram else ram_avail
             base = min(unified, live)
         return _uma_budget(base, unified, gpu_name=vram[2] if vram else "",
-                           gpu_pci_id=vram[3] if vram else None)
+                           gpu_pci_id=vram[3] if vram else None, cuda=True)
 
     if vram is None:
         device = _accelerator_device()
@@ -495,7 +496,8 @@ def probe_budget(*, planning: bool = False) -> HardwareBudget:
     return HardwareBudget(usable_vram_bytes=max(0, (total if planning else free) - margin),
                           total_device_bytes=total,
                           ram_available_bytes=ram_total if planning else ram_avail,
-                          uma=False, gpu_name=gpu_name, platform=sys.platform, gpu_pci_id=gpu_pci_id)
+                          uma=False, gpu_name=gpu_name, platform=sys.platform, gpu_pci_id=gpu_pci_id,
+                          cuda=True)
 
 
 def launch_budget(capacity: HardwareBudget, *, own_bytes: int = 0) -> HardwareBudget | None:

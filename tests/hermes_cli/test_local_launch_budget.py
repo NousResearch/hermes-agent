@@ -20,7 +20,8 @@ GIB = 1 << 30
 CARD_TOTAL = int(31.84 * GIB)
 CARD_CAPACITY = HardwareBudget(
     usable_vram_bytes=CARD_TOTAL - max(hardware._MARGIN_FLOOR, int(CARD_TOTAL * hardware._MARGIN_FRACTION)),
-    total_device_bytes=CARD_TOTAL, ram_available_bytes=256 * GIB, uma=False)
+    total_device_bytes=CARD_TOTAL, ram_available_bytes=256 * GIB, uma=False,
+    cuda=True)  # RTX 5090: a CUDA backend, whose runtime overhead the measured windows calibrate
 MODEL_ID = "Qwen3.8-27B-UD-Q4_K_M"
 
 

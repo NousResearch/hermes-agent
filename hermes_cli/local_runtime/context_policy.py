@@ -25,12 +25,23 @@ _EARLY_COST_CTX_FRACTION = 0.15       # bounded early cost when weights spill
 # stepping down another quant. The FLOOR remains the guarantee.
 TARGET_WINDOW = 144 * 1024
 
-# What a load really costs beyond weights + KV: CUDA contexts and compute buffers at the DEFAULT
-# microbatch (-ub 512, no MTP). Measured on a 32 GiB card: a model estimated at 29.3 GiB loaded at
-# ~31.2 GiB resident and fit still shaved a layer to CPU. Microbatch/MTP logits buffers are priced
-# separately per model (ub_logits_bytes — they scale with vocab and once packed a card 3.9 GiB
-# past this constant). Callers add mmproj bytes on top.
+# What a load really costs beyond weights + KV on the CUDA backend: the per-process CUDA context
+# plus compute buffers at the DEFAULT microbatch (-ub 512, no MTP). Measured on a 32 GiB card: a
+# model estimated at 29.3 GiB loaded at ~31.2 GiB resident and fit still shaved a layer to CPU.
+# Microbatch/MTP logits buffers are priced separately per model (ub_logits_bytes — they scale with
+# vocab and once packed a card 3.9 GiB past this constant). Callers add mmproj bytes on top.
 RUNTIME_OVERHEAD_BYTES = int(1.5 * (1 << 30))
+
+# The same term on backends with no CUDA context (Metal, Vulkan, HIP, CPU): there the engine's own
+# cost beyond weights + KV + the separately priced logits buffers measured within noise of zero —
+# a Metal llama-server on a 16 GiB M2 Pro held ~8.9 GiB RSS against ~8.95 GiB of priced components
+# (#136164). Rounded up to half a GiB: unknown shapes must never underestimate memory.
+NON_CUDA_RUNTIME_OVERHEAD_BYTES = int(0.5 * (1 << 30))
+
+
+def runtime_overhead_bytes(budget: HardwareBudget) -> int:
+    """Runtime overhead at this budget's backend; plan_launch prices it in when told nothing else."""
+    return RUNTIME_OVERHEAD_BYTES if budget.cuda else NON_CUDA_RUNTIME_OVERHEAD_BYTES
 
 # llama.cpp's default microbatch, and the larger one launch_args passes for faster prefill.
 DEFAULT_UBATCH = 512
@@ -130,13 +141,16 @@ def posture_profile(profile: ModelProfile, *, mtp_capable: bool, mtp_prefill: bo
 
 
 def plan_launch(profile: ModelProfile, budget: HardwareBudget, *, mtp_capable: bool = False,
-                fixed_overhead: int = RUNTIME_OVERHEAD_BYTES,
+                fixed_overhead: int | None = None,
                 requested_window: int | None = None) -> LaunchPlan:
     """Window first, then prefill; price both postures at the effective window.
 
     A restored window may fit only under lean MTP. Evaluate it before discarding it because
     stacked exceeds memory, and keep deliberate spill when neither posture is resident.
+    ``fixed_overhead`` defaults to this budget's backend overhead (runtime_overhead_bytes).
     """
+    if fixed_overhead is None:
+        fixed_overhead = runtime_overhead_bytes(budget)
     if mtp_capable and profile.kv_scale == 1.0:
         profile = replace(profile, kv_scale=1.2)
 
@@ -183,14 +197,17 @@ def plan_launch(profile: ModelProfile, budget: HardwareBudget, *, mtp_capable: b
 
 def fit_to_free_memory(plan: LaunchPlan, profile: ModelProfile, live: HardwareBudget, *,
                        mtp_capable: bool = False,
-                       fixed_overhead: int = RUNTIME_OVERHEAD_BYTES) -> LaunchPlan:
+                       fixed_overhead: int | None = None) -> LaunchPlan:
     """Narrow a resident capacity plan to the window the card's free memory holds now.
 
     Only the window moves, and only down to the floor. A plan that already spills keeps its
     placement, and so does a card too busy to hold even the floor: moving weights to the CPU on a
     live reading is how a launch once pinned a fitting model to the CPU, because the reading still
-    counted memory the outgoing server was about to free.
+    counted memory the outgoing server was about to free. ``fixed_overhead`` defaults to the live
+    budget's backend overhead.
     """
+    if fixed_overhead is None:
+        fixed_overhead = runtime_overhead_bytes(live)
     decision = plan.decision
     if not isinstance(decision, WindowDecision) or decision.spilled:
         return plan

@@ -44,7 +44,9 @@ def test_optional_draft_is_enabled_only_with_room_at_the_selected_window(tmp_pat
     draft_profile = ModelProfile("draft", 1 << 30, 0, 65536, [])
     monkeypatch.setattr(presets, "read_gguf_header", lambda p: SimpleNamespace(path=p, sampling_defaults={}))
     monkeypatch.setattr(presets, "profile_from_gguf", lambda h: draft_profile if h.path == draft else main_profile)
-    tight = HardwareBudget(8 << 30, 8 << 30, 6 << 30)
+    # CUDA budgets keep the 1.5 GiB runtime overhead, so this admission boundary stays anchored
+    # where it was designed, independent of the non-CUDA constant (#136164).
+    tight = HardwareBudget(8 << 30, 8 << 30, 6 << 30, cuda=True)
     result = presets.preset_for_model(main, tight, set())
     assert result.window == 65536 and result.spilled
     assert "model-draft" not in result.keys

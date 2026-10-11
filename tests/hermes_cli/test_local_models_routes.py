@@ -102,7 +102,8 @@ def test_status_tracks_preset_spill_and_restored_window(client, tmp_path, monkey
 
     from hermes_cli.local_runtime import bootstrap, presets
     from hermes_cli.local_runtime.binaries import runtimes_root
-    from hermes_cli.local_runtime.context_policy import FLOOR, RUNTIME_OVERHEAD_BYTES, ub_logits_bytes
+    from hermes_cli.local_runtime.context_policy import (
+        FLOOR, NON_CUDA_RUNTIME_OVERHEAD_BYTES, ub_logits_bytes)
     from hermes_cli.local_runtime.estimator import HardwareBudget, LayerKind, ModelProfile, ctx_bytes
     from hermes_cli.local_runtime.growth import save_window_override
     from hermes_cli.web_routers import local_models
@@ -126,8 +127,10 @@ def test_status_tracks_preset_spill_and_restored_window(client, tmp_path, monkey
 
     monkeypatch.setattr(local_models, "_router_request", router_response)
     floor_need = profile.weights_bytes + ctx_bytes(replace(profile, kv_scale=1.2), FLOOR)
-    lean = RUNTIME_OVERHEAD_BYTES + ub_logits_bytes(profile.n_vocab, mtp_capable=True)
-    stacked = RUNTIME_OVERHEAD_BYTES + ub_logits_bytes(profile.n_vocab, mtp_capable=True, mtp_prefill=True)
+    # The budgets below carry no CUDA backend, so both sides price the non-CUDA constant.
+    lean = NON_CUDA_RUNTIME_OVERHEAD_BYTES + ub_logits_bytes(profile.n_vocab, mtp_capable=True)
+    stacked = (NON_CUDA_RUNTIME_OVERHEAD_BYTES
+               + ub_logits_bytes(profile.n_vocab, mtp_capable=True, mtp_prefill=True))
     ini = runtimes_root() / "presets.ini"
     grown = 73728
     for device, override, spilled in ((floor_need + lean - 1, FLOOR, True),

@@ -57,6 +57,13 @@ _TASK_DESCRIPTION = "Hermes Agent Gateway - Messaging Platform Integration"
 _TASK_LOGON_DELAY = "PT30S"
 _TASK_RESTART_INTERVAL = "PT1M"
 _TASK_RESTART_COUNT = 999
+# Liveness handshake between the .vbs launcher and ``gateway run`` (#136390): the heartbeat file is
+# rewritten at the very top of run_gateway, the failure marker is appended by the launcher when the
+# interpreter never reached it. Heartbeat filename is mirrored as a literal in
+# gateway/status.py::write_task_launch_heartbeat — a test pins the two together.
+_TASK_HEARTBEAT_FILENAME = "gateway-task-start.txt"
+_TASK_FAILURE_MARKER_FILENAME = "gateway-task-failure.txt"
+_TASK_LAUNCH_LIVENESS_TIMEOUT_S = 30
 
 _GATEWAY_ENV = (("PYTHONIOENCODING", "utf-8"), ("HERMES_GATEWAY_DETACHED", "1"), ("HERMES_SUPERVISED_CHILD", "1"))
 
@@ -414,16 +421,27 @@ def _build_gateway_vbs_script(python_path: str, working_dir: str, hermes_home: s
     (#54220/#56747; the previous console-less pythonw.exe gateway forced exactly that per-descendant flash).
     No cmd.exe anywhere in the chain. Mirrors ``_build_gateway_cmd_script`` (same env + argv via
     ``_resolve_detached_python``).
+
+    Liveness gate (#136390): the detached ``Run`` returns immediately, so the task would report
+    success even when the interpreter dies before running any code (a console-less python 3.14 can
+    exit rc=0 with no log written). ``run_gateway`` rewrites the heartbeat file
+    (``logs/gateway-task-start.txt``) at its very first line; this script polls its mtime for
+    ``_TASK_LAUNCH_LIVENESS_TIMEOUT_S`` seconds — unchanged means nothing reached the entrypoint, so
+    append ``logs/gateway-task-failure.txt`` (what ``hermes gateway status`` surfaces) and quit 3:
+    the task's Last Result goes non-zero and ``RestartOnFailure`` retries instead of the failure
+    staying silent. A heartbeat bump also clears a stale failure marker from an earlier attempt.
     """
     python_exe_path, venv_dir, extra_pythonpath = _resolve_detached_python(python_path)
     # list2cmdline gives CreateProcess-correct quoting for WScript.Shell.Run.
     command_line = subprocess.list2cmdline(_gateway_run_argv(python_exe_path, profile_arg))
     static_pythonpath = os.pathsep.join(_launcher_pythonpath_entries(extra_pythonpath))
     q = _quote_vbs_string
+    log_dir = f"{hermes_home}\\logs"
     lines = [
         f"' {_TASK_DESCRIPTION}",
         "Option Explicit",
         "Dim sh, env, existing_pp",
+        "Dim fso, logDir, heartbeatPath, failurePath, beforeHb, i, reached, logFile",
         'Set sh = CreateObject("WScript.Shell")',
         'Set env = sh.Environment("PROCESS")',
         f"env.Item({q('HERMES_HOME')}) = {q(hermes_home)}",
@@ -437,8 +455,44 @@ def _build_gateway_vbs_script(python_path: str, working_dir: str, hermes_home: s
         f"  env.Item({q('PYTHONPATH')}) = {q(static_pythonpath)}",
         "End If",
         f"sh.CurrentDirectory = {q(working_dir)}",
+        # Liveness handshake (#136390) — see docstring. mtime comparison, not existence: a stale
+        # heartbeat from a previous boot must not read as success, and a gateway that is already
+        # running rewrites the heartbeat before exiting, so that path still reads as reached.
+        'Set fso = CreateObject("Scripting.FileSystemObject")',
+        f"logDir = {q(log_dir)}",
+        "heartbeatPath = logDir & " + q("\\" + _TASK_HEARTBEAT_FILENAME),
+        "failurePath = logDir & " + q("\\" + _TASK_FAILURE_MARKER_FILENAME),
+        "If Not fso.FolderExists(logDir) Then",
+        "  On Error Resume Next",
+        "  fso.CreateFolder logDir",
+        "  On Error GoTo 0",
+        "End If",
+        'beforeHb = ""',
+        "If fso.FileExists(heartbeatPath) Then beforeHb = CStr(fso.GetFile(heartbeatPath).DateLastModified)",
         # Window style 0 = hidden; bWaitOnReturn False = detached/async.
         f"sh.Run {q(command_line)}, 0, False",
+        "reached = False",
+        f"For i = 1 To {_TASK_LAUNCH_LIVENESS_TIMEOUT_S}",
+        "  WScript.Sleep 1000",
+        "  If fso.FileExists(heartbeatPath) Then",
+        "    If CStr(fso.GetFile(heartbeatPath).DateLastModified) <> beforeHb Then",
+        "      reached = True",
+        "      Exit For",
+        "    End If",
+        "  End If",
+        "Next",
+        "If reached Then",
+        "  If fso.FileExists(failurePath) Then fso.DeleteFile failurePath",
+        "  WScript.Quit 0",
+        "End If",
+        "On Error Resume Next",
+        "Set logFile = fso.OpenTextFile(failurePath, 8, True)",
+        "If Err.Number = 0 Then",
+        f"  logFile.WriteLine Now & {q(f' task-launch: gateway run was not reached within {_TASK_LAUNCH_LIVENESS_TIMEOUT_S}s (interpreter exited early; see gateway.log)')}",
+        "  logFile.Close",
+        "End If",
+        "On Error GoTo 0",
+        "WScript.Quit 3",
     ]
     return "\r\n".join(lines) + "\r\n"
 
@@ -1295,6 +1349,23 @@ def _print_start_attestation_warning() -> None:
         print(warning)
 
 
+def print_task_launch_failure_warning() -> None:
+    """Surface the ``gateway-task-failure.txt`` marker the .vbs launcher appends when its python
+    never reached ``gateway run`` (#136390). Without this, a login auto-start that dies before
+    writing any log leaves only a task that reports success. Never raises."""
+    try:
+        marker = _hermes_home() / "logs" / _TASK_FAILURE_MARKER_FILENAME
+        if not marker.exists():
+            return
+        lines = marker.read_text(encoding="utf-8-sig", errors="replace").strip().splitlines()
+        print(f"⚠ Scheduled-Task launch failure marker present: {marker}")
+        if lines:
+            print(f"  Last entry: {lines[-1]}")
+        print("  The login auto-start leg failed to bring the gateway up; check logs/gateway.log and the task's Last Run Result.")
+    except OSError:
+        pass
+
+
 def _report_gateway_start(via: str) -> None:
     pids = _wait_for_gateway_ready()
     if pids:
@@ -1621,6 +1692,7 @@ def status(deep: bool = False) -> None:
     """Print a status report for the Windows gateway service."""
     _assert_windows()
     _print_start_attestation_warning()   # once: a gateway that died after a previous ✓
+    print_task_launch_failure_warning()  # once: a login auto-start that never reached gateway run (#136390)
     task_name = get_task_name()
     task_installed = is_task_registered()
     startup_installed = is_startup_entry_installed()

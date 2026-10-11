@@ -1084,6 +1084,25 @@ def write_pid_file() -> None:
     _clear_running_pid_cache()
 
 
+def write_task_launch_heartbeat() -> None:
+    """Earliest-possible proof the interpreter reached ``gateway run`` (#136390).
+
+    The Windows Scheduled-Task VBS launcher polls this file's mtime to tell "gateway starting"
+    from "interpreter died before running anything" — a console-less python that exits before
+    reaching here leaves the mtime untouched, so the launcher fails the task instead of letting
+    it report success. Best-effort: never blocks or fails a real gateway start.
+    Filename kept in sync with ``hermes_cli.gateway_windows._TASK_HEARTBEAT_FILENAME``.
+    """
+    try:
+        path = _get_process_hermes_home() / "logs" / "gateway-task-start.txt"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({"pid": os.getpid(), "ts": time.time()}) + "\n", encoding="utf-8"
+        )
+    except Exception as exc:  # health: allow BLE001 -- heartbeat only: an unwritable home must not take gateway startup down with it
+        logger.debug("task-launch heartbeat write failed (non-fatal): %s", exc)
+
+
 def _write_json_excl(path: Path, record: dict[str, Any]) -> None:
     """Create ``path`` with O_CREAT|O_EXCL and dump ``record``; unlinks on a failed write."""
     fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)

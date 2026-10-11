@@ -24,15 +24,16 @@ def budget(vram_gib: float, ram_gib: float = 64) -> HardwareBudget:
 
 def test_every_entry_ships_exactly_one_q4_build():
     """No quant ladder: one Q4-class build per entry (K_M where the repo
-    ships it, XL elsewhere) — the quant class current engines optimize
-    for. Nothing below Q4 ever ships. Validation status is explicit per
-    variant in catalog.json; unvalidated builds are permitted (day-0
-    entries) and surface as unbadged rows in the pane."""
+    ships it, XL elsewhere, and the 4-bit IQ4_XS where a vendor recipe
+    sized the build to a memory class) — the quant class current engines
+    optimize for. Nothing below 4-bit ever ships. Validation status is
+    explicit per variant in catalog.json; unvalidated builds are permitted
+    (day-0 entries) and surface as unbadged rows in the pane."""
     for entry in CATALOG:
         assert len(entry.variants) == 1, (
             f"{entry.id}: {len(entry.variants)} variants — expected exactly one")
         build = entry.variants[0]
-        assert build.quant.startswith(("UD-Q4", "Q4")), (
+        assert build.quant.startswith(("UD-Q4", "Q4", "UD-IQ4", "IQ4")), (
             f"{entry.id}: ships {build.quant}, not a Q4-class build")
         for asset in entry.download_files(build):
             assert asset.size_bytes > 0, f"{entry.id}: no size on {asset.path}"
@@ -142,7 +143,8 @@ def test_catalog_and_preset_agree_on_identical_model_facts(tmp_path, monkeypatch
     from types import SimpleNamespace
 
     from hermes_cli.local_runtime import bootstrap, catalog, presets
-    from hermes_cli.local_runtime.context_policy import RUNTIME_OVERHEAD_BYTES, ub_logits_bytes
+    from hermes_cli.local_runtime.context_policy import (
+        RUNTIME_OVERHEAD_BYTES, posture_profile, ub_logits_bytes)
     from hermes_cli.local_runtime.estimator import ctx_bytes
     from hermes_cli.web_routers.local_models import _catalog_row
 
@@ -154,10 +156,13 @@ def test_catalog_and_preset_agree_on_identical_model_facts(tmp_path, monkeypatch
         path = tmp_path / f"{variant.model_id}.gguf"
         monkeypatch.setattr(presets, "read_gguf_header", lambda p: SimpleNamespace(sampling_defaults={}))
         monkeypatch.setattr(presets, "profile_from_gguf", lambda h: profile)
-        if entry.mmproj:
-            asset = bootstrap.assets_dir() / entry.mmproj.local_name
-            asset.parent.mkdir(parents=True, exist_ok=True)
-            asset.touch()
+        # The catalog prices the whole download; the preset prices what is on disk. Agreement is
+        # the contract once every companion the download fetches has arrived.
+        for companion in (entry.mmproj, entry.mtp_head):
+            if companion is not None:
+                asset = bootstrap.assets_dir() / companion.local_name
+                asset.parent.mkdir(parents=True, exist_ok=True)
+                asset.touch()
         for vram in (16, 24, 32, 48):
             for uma in (False, True):
                 machine = HardwareBudget(int(vram * GIB * 0.8), vram * GIB,
@@ -169,10 +174,13 @@ def test_catalog_and_preset_agree_on_identical_model_facts(tmp_path, monkeypatch
                     continue
                 assert row["start_window"] == preset.window
                 assert row["spilled"] == preset.spilled
-                overhead = (RUNTIME_OVERHEAD_BYTES + (entry.mmproj.size_bytes if entry.mmproj else 0)
-                            + ub_logits_bytes(profile.n_vocab, mtp_capable=entry.mtp,
-                                              mtp_prefill=preset.keys.get("ubatch-size") == "2048" and entry.mtp))
-                need = profile.weights_bytes + ctx_bytes(profile, preset.window) + overhead
+                mtp = entry.mtp_capable
+                overhead = (RUNTIME_OVERHEAD_BYTES + entry.companion_bytes
+                            + ub_logits_bytes(profile.n_vocab, mtp_capable=mtp,
+                                              mtp_prefill=preset.keys.get("ubatch-size") == "2048" and mtp))
+                posture = posture_profile(profile, mtp_capable=mtp,
+                                          mtp_prefill=preset.keys.get("ubatch-size") == "2048" and mtp)
+                need = profile.weights_bytes + ctx_bytes(posture, preset.window) + overhead
                 assert preset.spilled == (need > machine.usable_vram_bytes)
                 assert need <= machine.usable_vram_bytes + machine.ram_available_bytes
 

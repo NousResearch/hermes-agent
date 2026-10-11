@@ -1,83 +1,60 @@
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
-import { afterEach, expect, it, vi } from 'vitest'
+import type { OnboardingStateResult } from '@hermes/shared'
+import { cleanup, render, waitFor } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { I18nProvider } from '@/i18n'
+// The gate's stores are module singletons; each test loads a fresh window's worth.
+async function loadWindow() {
+  vi.resetModules()
+
+  const [{ OnboardingChatGate }, gate, onboarding] = await Promise.all([
+    import('./gate'),
+    import('@/store/onboarding-gate'),
+    import('@/store/onboarding')
+  ])
+
+  return { OnboardingChatGate, gate, onboarding }
+}
+
+const UNSEEN_STATE: OnboardingStateResult = { eligible: true, intro: 'unseen', failed_starts: 0, profile: 'setup' }
+
+const unseenFirstRun = async <T,>(method: string): Promise<T> => {
+  const reply = method === 'onboarding.state' ? UNSEEN_STATE : {}
+
+  // SAFETY: the gate reads `onboarding.state` as OnboardingStateResult; any other call only awaits the reply.
+  return reply as T
+}
+
+const neverKicksOff = () => new Promise<never>(() => {})
+
+beforeEach(() => {
+  Object.assign(window, { hermesDesktop: { guestOnboardingEnabled: true } })
+})
 
 afterEach(() => {
   cleanup()
-  vi.unstubAllGlobals()
+  Reflect.deleteProperty(window, 'hermesDesktop')
 })
 
-it('starts the skipped-film splash before the backend connects and removes it only after adoption', async () => {
-  vi.resetModules()
-  vi.stubGlobal('hermesDesktop', { guestOnboardingEnabled: true, skipIntro: true })
-  const { IntroRevealGate } = await import('@/components/intro-reveal')
-  const { OnboardingChatGate } = await import('./gate')
-  const { $onboardingGate } = await import('@/store/onboarding-gate')
-  const { $desktopOnboarding } = await import('@/store/onboarding')
-  $onboardingGate.set({ phase: 'idle', guideQueued: false, guideKickoff: 'idle' })
-  $desktopOnboarding.set({ ...$desktopOnboarding.get(), firstRunSkipped: false })
+describe('OnboardingChatGate', () => {
+  it('lets a window that does not run the intro open the provider picker once the state is read', async () => {
+    const { OnboardingChatGate, gate, onboarding } = await loadWindow()
 
-  let complete = (_ready: boolean) => {}
+    onboarding.requestDesktopOnboarding('No provider configured')
+    render(<OnboardingChatGate enabled onKickoff={neverKicksOff} requestGateway={unseenFirstRun} runsIntro={false} />)
 
-  const pending = new Promise<boolean>(resolve => {
-    complete = resolve
+    await waitFor(() => expect(onboarding.$desktopOnboarding.get().requested).toBe(true))
+    expect(gate.$onboardingGate.get().phase).toBe('idle')
+    expect(gate.$setupProfileName.get()).toBe('setup')
   })
 
-  const kickoff = vi.fn(() => pending)
+  it('queues the guided first run in the window that runs the intro', async () => {
+    const { OnboardingChatGate, gate, onboarding } = await loadWindow()
 
-  const request = async () => {
-    throw new Error('No provider notice available')
-  }
+    onboarding.requestDesktopOnboarding('No provider configured')
+    render(<OnboardingChatGate enabled onKickoff={neverKicksOff} requestGateway={unseenFirstRun} runsIntro />)
 
-  const view = (enabled: boolean) => (
-    <I18nProvider>
-      <IntroRevealGate enabled={enabled} />
-      <OnboardingChatGate enabled={enabled} onKickoff={kickoff} requestGateway={request} />
-    </I18nProvider>
-  )
-
-  const { rerender } = render(view(false))
-  expect(screen.getByRole('status').textContent).toMatch(/Starting Hermes/)
-  expect(kickoff).not.toHaveBeenCalled()
-  rerender(view(true))
-  await waitFor(() => expect(kickoff).toHaveBeenCalledOnce())
-  expect(screen.getByRole('status')).toBeTruthy()
-  await act(async () => {
-    complete(true)
-    await pending
+    await waitFor(() => expect(gate.$onboardingStateRead.get()).toBe(true))
+    expect(gate.$onboardingGate.get().phase).toBe('pending')
+    expect(onboarding.$desktopOnboarding.get().requested).toBe(false)
   })
-  expect(screen.queryByRole('status')).toBeNull()
-  expect($onboardingGate.get().guideKickoff).toBe('started')
-})
-
-it.each(['refused', 'rejected'])('restores the ordinary app after %s startup', async outcome => {
-  vi.resetModules()
-  vi.stubGlobal('hermesDesktop', { guestOnboardingEnabled: true, skipIntro: true })
-  const { OnboardingChatGate } = await import('./gate')
-  const { $onboardingGate } = await import('@/store/onboarding-gate')
-  const { $chatOnboardingSolo } = await import('./assembly')
-  $onboardingGate.set({ phase: 'cinematic', guideQueued: true, guideKickoff: 'idle' })
-
-  const kickoff = vi.fn(async () => {
-    if (outcome === 'rejected') {
-      throw new Error('Backend unavailable')
-    }
-
-    return false
-  })
-
-  const request = async () => {
-    throw new Error('No provider notice available')
-  }
-
-  render(
-    <I18nProvider>
-      <OnboardingChatGate enabled onKickoff={kickoff} requestGateway={request} />
-    </I18nProvider>
-  )
-  await waitFor(() => expect($onboardingGate.get().phase).toBe('skipped'))
-  expect(screen.queryByRole('status')).toBeNull()
-  expect($chatOnboardingSolo.get()).toBe(false)
-  expect(kickoff).toHaveBeenCalledOnce()
 })

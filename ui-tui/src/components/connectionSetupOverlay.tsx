@@ -19,6 +19,8 @@ import {
 } from '../app/connectionOperationStore.js'
 import { useGateway } from '../app/gatewayContext.js'
 import { $uiSessionId } from '../app/uiStore.js'
+import type { Translations } from '../i18n/types.js'
+import { useT } from '../i18n/useT.js'
 import { openExternalUrl } from '../lib/openExternalUrl.js'
 import type { Theme } from '../theme.js'
 
@@ -68,13 +70,8 @@ const RESOLVED_STATES = ['connected', 'skipped', 'not_connected']
 const isUnresolved = (target: ConnectionOperationTarget): boolean =>
   !RESOLVED_STATES.includes(target.state) || (target.state === 'connected' && Boolean(target.discovery_error))
 
-const VERB = {
-  authorize: 'Authorize',
-  connect: 'Connect',
-  enable: 'Enable',
-  install: 'Install',
-  reconnect: 'Reconnect'
-} satisfies Record<ConnectionTargetAction, string>
+// The card's title verb, resolved from the active catalog at render (never at import).
+const verbOf = (T: Translations, action: ConnectionTargetAction): string => T.connection.verb[action]
 
 const phaseOf = (target: ConnectionOperationTarget): Phase => {
   if (target.state === 'connected') {
@@ -92,8 +89,8 @@ const phaseOf = (target: ConnectionOperationTarget): Phase => {
   return 'form'
 }
 
-const failureLine = (target: ConnectionOperationTarget): string =>
-  target.state === 'expired' ? 'The link expired.' : 'That did not work.'
+const failureLine = (T: Translations, target: ConnectionOperationTarget): string =>
+  target.state === 'expired' ? T.connection.failure.expired : T.connection.failure.failed
 
 const hasFailed = (target: ConnectionOperationTarget): boolean =>
   target.state === 'failed' || target.state === 'expired'
@@ -110,12 +107,14 @@ interface HeaderProps {
 }
 
 function Header({ more, t, target }: HeaderProps) {
+  const T = useT()
+
   return (
     <Box flexDirection="column">
       <Text bold color={t.color.text}>
-        {VERB[target.action]} {target.name}
+        {verbOf(T, target.action)} {target.name}
       </Text>
-      {more > 0 ? <Text color={t.color.muted}>{more} more to answer after this one.</Text> : null}
+      {more > 0 ? <Text color={t.color.muted}>{T.connection.header.moreToAnswer(more)}</Text> : null}
       {target.instructions ? (
         <Text color={t.color.muted} wrap="wrap">
           {target.instructions}
@@ -138,6 +137,8 @@ interface FieldRowProps {
 }
 
 function FieldRow({ cols, draftValue, field, focused, onChange, onSubmit, sending, showSet, t }: FieldRowProps) {
+  const T = useT()
+
   return (
     <Box flexDirection="column">
       <Text color={focused ? t.color.accent : t.color.label}>
@@ -147,7 +148,7 @@ function FieldRow({ cols, draftValue, field, focused, onChange, onSubmit, sendin
       </Text>
       <Box paddingLeft={2}>
         {showSet ? (
-          <Text color={t.color.ok}>Set</Text>
+          <Text color={t.color.ok}>{T.connection.field.set}</Text>
         ) : (
           <TextInput
             color={t.color.text}
@@ -201,12 +202,15 @@ interface SelectorProps {
 }
 
 function Selector({ action, focused, primary, t }: SelectorProps) {
+  const T = useT()
+
   return (
     <Text color={focused ? t.color.accent : t.color.muted}>
       {action === 0 ? '▸ ' : '  '}
       {primary}
       {'   '}
-      {action === 1 ? '▸ ' : '  '}Skip
+      {action === 1 ? '▸ ' : '  '}
+      {T.connection.selector.skip}
     </Text>
   )
 }
@@ -227,47 +231,55 @@ function DetailLine({ t, text }: { t: Theme; text: null | string | undefined }) 
 }
 
 function FinishingPhase({ t }: { t: Theme }) {
+  const T = useT()
+
   return (
     <Box flexDirection="column">
-      <Text color={t.color.muted}>Finishing…</Text>
-      <Text color={t.color.muted}>Esc close · Ctrl+C stop the turn</Text>
+      <Text color={t.color.muted}>{T.connection.status.finishing}</Text>
+      <Text color={t.color.muted}>{T.connection.hint.finishing}</Text>
     </Box>
   )
 }
 
 function AuthorizedPhase({ t, target }: { t: Theme; target: ConnectionOperationTarget }) {
+  const T = useT()
+
   return (
     <Box flexDirection="column">
       <Text bold color={t.color.ok}>
-        Authorized. Tools unavailable.
+        {T.connection.authorized.title}
       </Text>
       <Text color={t.color.muted}>{target.discovery_error ?? ''}</Text>
-      <Text color={t.color.accent}>▸ Continue</Text>
-      <Text color={t.color.muted}>Enter or Esc continue</Text>
+      <Text color={t.color.accent}>▸ {T.connection.authorized.continue}</Text>
+      <Text color={t.color.muted}>{T.connection.authorized.hint}</Text>
     </Box>
   )
 }
 
 function BrowserPhase({ more, notice, t, target }: PhaseProps) {
+  const T = useT()
+
   return (
     <Box flexDirection="column">
       <Header more={more} t={t} target={target} />
       <Text color={t.color.accent}>{target.connect_url}</Text>
       <DetailLine t={t} text={target.detail} />
       <DetailLine t={t} text={notice} />
-      <Text color={t.color.muted}>Enter open in browser · Esc skip · Ctrl+C stop the turn</Text>
+      <Text color={t.color.muted}>{T.connection.hint.browser}</Text>
     </Box>
   )
 }
 
 function WorkingPhase({ more, notice, t, target }: PhaseProps) {
+  const T = useT()
+
   return (
     <Box flexDirection="column">
       <Header more={more} t={t} target={target} />
-      <Text color={t.color.muted}>Working…</Text>
+      <Text color={t.color.muted}>{T.connection.status.working}</Text>
       <DetailLine t={t} text={target.detail} />
       <DetailLine t={t} text={notice} />
-      <Text color={t.color.muted}>Esc skip · Ctrl+C stop the turn</Text>
+      <Text color={t.color.muted}>{T.connection.hint.working}</Text>
     </Box>
   )
 }
@@ -278,15 +290,17 @@ interface RetryPhaseProps extends PhaseProps {
 }
 
 function RetryPhase({ action, more, notice, sending, t, target }: RetryPhaseProps) {
+  const T = useT()
+
   return (
     <Box flexDirection="column">
       <Header more={more} t={t} target={target} />
-      <Text color={t.color.muted}>{failureLine(target)}</Text>
+      <Text color={t.color.muted}>{failureLine(T, target)}</Text>
       <DetailLine t={t} text={target.detail} />
-      <Selector action={action} focused primary="Try again" t={t} />
+      <Selector action={action} focused primary={T.connection.selector.tryAgain} t={t} />
       <DetailLine t={t} text={notice} />
-      {sending ? <Text color={t.color.muted}>Pending…</Text> : null}
-      <Text color={t.color.muted}>←/→ select · Enter confirm · Esc skip · Ctrl+C stop the turn</Text>
+      {sending ? <Text color={t.color.muted}>{T.connection.status.pending}</Text> : null}
+      <Text color={t.color.muted}>{T.connection.hint.retry}</Text>
     </Box>
   )
 }
@@ -306,13 +320,14 @@ interface FormPhaseProps extends PhaseProps {
 }
 
 function FormPhase(p: FormPhaseProps) {
+  const T = useT()
   const { t, target } = p
   const reopened = hasFailed(target)
 
   return (
     <Box flexDirection="column">
       <Header more={p.more} t={t} target={target} />
-      {reopened ? <Text color={t.color.muted}>{failureLine(target)}</Text> : null}
+      {reopened ? <Text color={t.color.muted}>{failureLine(T, target)}</Text> : null}
       {reopened ? <DetailLine t={t} text={target.detail} /> : null}
       {p.fields.map((field, index) => (
         <FieldRow
@@ -329,16 +344,19 @@ function FormPhase(p: FormPhaseProps) {
         />
       ))}
       {reopened ? null : <DetailLine t={t} text={target.detail} />}
-      <Selector action={p.action} focused={p.selectorFocused} primary={VERB[target.action]} t={t} />
-      {p.missingRequired ? <Text color={t.color.muted}>{fieldLabel(p.missingRequired)} is required.</Text> : null}
+      <Selector action={p.action} focused={p.selectorFocused} primary={verbOf(T, target.action)} t={t} />
+      {p.missingRequired ? (
+        <Text color={t.color.muted}>{T.connection.field.required(fieldLabel(p.missingRequired))}</Text>
+      ) : null}
       <DetailLine t={t} text={p.notice} />
-      {p.sending ? <Text color={t.color.muted}>Pending…</Text> : null}
-      <Text color={t.color.muted}>↑/↓ or Tab move · ←/→ select · Enter confirm · Esc skip · Ctrl+C stop the turn</Text>
+      {p.sending ? <Text color={t.color.muted}>{T.connection.status.pending}</Text> : null}
+      <Text color={t.color.muted}>{T.connection.hint.form}</Text>
     </Box>
   )
 }
 
 export function ConnectionSetupOverlay({ cols, t }: ConnectionSetupOverlayProps) {
+  const T = useT()
   const operation = useStore($connectionOperation)
   const sid = useStore($uiSessionId)
   const { gw } = useGateway()
@@ -427,7 +445,7 @@ export function ConnectionSetupOverlay({ cols, t }: ConnectionSetupOverlayProps)
           owner: { session_id: sid, type: 'session' },
           result
         }),
-      'That answer did not reach Hermes. Try again.'
+      T.connection.notice.answerNotDelivered
     )
   }
 
@@ -474,7 +492,7 @@ export function ConnectionSetupOverlay({ cols, t }: ConnectionSetupOverlayProps)
           owner: { session_id: sid, type: 'session' },
           reconnect: true
         }),
-      'Hermes could not start that again. Try again.'
+      T.connection.notice.restartFailed
     )
   }
 
@@ -483,7 +501,7 @@ export function ConnectionSetupOverlay({ cols, t }: ConnectionSetupOverlayProps)
       return
     }
 
-    setNotice(openExternalUrl(target.connect_url) ? '' : 'The browser did not open. Copy the link above.')
+    setNotice(openExternalUrl(target.connect_url) ? '' : T.connection.notice.browserDidNotOpen)
   }
 
   // A single input owner guarantees every key causes exactly one action. Esc skips the row in every

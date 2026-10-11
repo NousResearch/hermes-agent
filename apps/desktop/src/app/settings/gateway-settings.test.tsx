@@ -1,7 +1,8 @@
 import { GatewayReauthRequiredError } from '@hermes/shared'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { $notifications } from '@/store/notifications'
 import { deferred } from '@/test/deferred'
 
 // Collect the component graph before the behavioral test deadline starts.
@@ -25,6 +26,16 @@ vi.mock('./connections-registry', async importOriginal => ({
   ...(await importOriginal<any>()),
   ConnectionsRegistrySection: () => null
 }))
+
+// Radix Select calls scrollIntoView / pointer-capture APIs jsdom lacks.
+beforeAll(() => {
+  Element.prototype.scrollIntoView = vi.fn()
+  Element.prototype.hasPointerCapture = vi.fn(() => false)
+  Element.prototype.releasePointerCapture = vi.fn()
+})
+
+const cloudDiscover = vi.fn()
+const cloudStatus = vi.fn()
 const getConnectionConfig = vi.fn()
 const saveConnectionConfig = vi.fn()
 
@@ -48,9 +59,18 @@ const localConnection = {
 beforeEach(() => {
   getConnectionConfig.mockResolvedValue(localConnection)
   saveConnectionConfig.mockResolvedValue(localConnection)
+  cloudStatus.mockResolvedValue({ portalBaseUrl: 'https://portal.nousresearch.com', signedIn: true })
+  cloudDiscover.mockResolvedValue({ agents: [], org: null })
   Object.defineProperty(window, 'hermesDesktop', {
     configurable: true,
-    value: { getConnectionConfig, saveConnectionConfig }
+    value: {
+      cloud: {
+        discover: cloudDiscover,
+        status: cloudStatus
+      },
+      getConnectionConfig,
+      saveConnectionConfig
+    }
   })
 })
 
@@ -527,5 +547,149 @@ describe('GatewaySettings', () => {
       expect(window.hermesDesktop!.cloud!.agentSignIn).toHaveBeenCalledWith(saved.url)
       registry.value = null
     })
+  })
+
+  it('surfaces the Tailscale browser-check guidance for an interactive-auth SSH test failure', async () => {
+    getConnectionConfig.mockResolvedValue({
+      ...localConnection,
+      mode: 'ssh',
+      sshHost: 'build-box',
+      sshUser: '',
+      sshPort: 22,
+      sshKeyPath: '',
+      sshRemoteHermesPath: '',
+      sshRemoteProfile: ''
+    })
+    const testConnectionConfig = vi.fn().mockResolvedValue({ reachable: false, sshError: 'interactive-auth' })
+    Object.assign(window.hermesDesktop, { testConnectionConfig })
+
+    render(<GatewaySettings />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Test SSH' }))
+
+    // interactive-auth is the Tailscale browser-check class: the notification
+    // must carry the "run ssh <host> true" guidance, not the generic
+    // "SSH connection failed." fallback the table previously collapsed to.
+    try {
+      await waitFor(() =>
+        expect($notifications.get()).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ kind: 'error', message: expect.stringContaining('ssh <host> true') })
+          ])
+        )
+      )
+      expect($notifications.get().some((n: { message?: string }) => n.message === 'SSH connection failed.')).toBe(false)
+    } finally {
+      $notifications.set([])
+    }
+  })
+
+  it('opens a focused, typeable custom SSH host input on the first "Custom" selection', async () => {
+    getConnectionConfig.mockResolvedValue({
+      ...localConnection,
+      mode: 'ssh',
+      sshHost: '',
+      sshUser: '',
+      sshPort: 22,
+      sshKeyPath: '',
+      sshRemoteHermesPath: '',
+      sshRemoteProfile: ''
+    })
+    const sshConfigHosts = vi.fn().mockResolvedValue({ hosts: ['github.com'] })
+    Object.assign(window.hermesDesktop, { sshConfigHosts })
+
+    render(<GatewaySettings />)
+
+    // With ~/.ssh/config aliases available the host field is a dropdown.
+    fireEvent.click(await screen.findByRole('combobox'))
+    fireEvent.click(screen.getByRole('option', { name: 'Custom (enter manually)…' }))
+
+    // The FIRST pick swaps the dropdown for a free-text input, no round-trip
+    // through another option needed.
+    const hostRow = screen.getByText('Host').closest('.grid') as HTMLElement
+    const input = within(hostRow).getByRole('textbox') as HTMLInputElement
+
+    await waitFor(() => expect(document.activeElement).toBe(input))
+    fireEvent.change(input, { target: { value: 'build-box' } })
+    expect(input.value).toBe('build-box')
+
+    // Clearing it and leaving the field backs out of Custom to the dropdown.
+    fireEvent.change(input, { target: { value: '' } })
+    fireEvent.blur(input)
+    expect(await within(hostRow).findByRole('combobox')).toBeTruthy()
+    expect(within(hostRow).queryByRole('textbox')).toBeNull()
+  })
+
+  it('hides an unknown cloud agent gateway status', async () => {
+    cloudDiscover.mockResolvedValue({
+      agents: [
+        {
+          dashboardGatewayState: 'unknown',
+          dashboardUrl: 'https://agent.example.com',
+          id: 'agent-1',
+          name: 'Cloud Agent',
+          status: 'active'
+        }
+      ],
+      org: null
+    })
+    getConnectionConfig.mockResolvedValue({
+      ...localConnection,
+      mode: 'cloud',
+      remoteUrl: 'https://portal.nousresearch.com'
+    })
+
+    render(<GatewaySettings />)
+
+    expect(await screen.findByText('Cloud Agent')).toBeTruthy()
+    expect(screen.queryByText('Status: unknown')).toBeNull()
+  })
+
+  it('hides an empty cloud agent gateway status', async () => {
+    cloudDiscover.mockResolvedValue({
+      agents: [
+        {
+          dashboardGatewayState: '',
+          dashboardUrl: 'https://agent.example.com',
+          id: 'agent-1',
+          name: 'Cloud Agent',
+          status: 'active'
+        }
+      ],
+      org: null
+    })
+    getConnectionConfig.mockResolvedValue({
+      ...localConnection,
+      mode: 'cloud',
+      remoteUrl: 'https://portal.nousresearch.com'
+    })
+
+    render(<GatewaySettings />)
+
+    expect(await screen.findByText('Cloud Agent')).toBeTruthy()
+    expect(screen.queryByText(/^Status:/)).toBeNull()
+  })
+
+  it('shows a known cloud agent gateway status', async () => {
+    cloudDiscover.mockResolvedValue({
+      agents: [
+        {
+          dashboardGatewayState: 'active',
+          dashboardUrl: 'https://agent.example.com',
+          id: 'agent-1',
+          name: 'Cloud Agent',
+          status: 'active'
+        }
+      ],
+      org: null
+    })
+    getConnectionConfig.mockResolvedValue({
+      ...localConnection,
+      mode: 'cloud',
+      remoteUrl: 'https://portal.nousresearch.com'
+    })
+
+    render(<GatewaySettings />)
+
+    expect(await screen.findByText('Status: active')).toBeTruthy()
   })
 })

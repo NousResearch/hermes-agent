@@ -69,7 +69,7 @@ async def _startup_message(runner, adapter) -> str:
 async def test_guest_inference_adds_exactly_one_free_tier_line(nous_runner):
     runner, adapter = nous_runner
     _seed_nous(_guest_state())
-    assert anon_auth.guest_carries_inference()
+    assert anon_auth.has_free_tier_account()
 
     message = await _startup_message(runner, adapter)
 
@@ -82,7 +82,7 @@ async def test_guest_inference_adds_exactly_one_free_tier_line(nous_runner):
 async def test_signed_in_account_keeps_the_plain_online_notice(nous_runner):
     runner, adapter = nous_runner
     _seed_nous(_account_state())
-    assert not anon_auth.guest_carries_inference()
+    assert not anon_auth.has_free_tier_account()
 
     message = await _startup_message(runner, adapter)
 

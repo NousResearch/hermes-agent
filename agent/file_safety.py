@@ -206,12 +206,15 @@ def build_write_denied_paths(home: str) -> set[str]:
     return {os.path.realpath(p) for p in paths}
 
 
+# Home-relative credential directories (POSIX paths). Also dropped from profile exports (hermes_cli.profiles).
+HOME_CREDENTIAL_DIRS = (".ssh", ".aws", ".gnupg", ".kube", ".docker", ".azure", ".config/gh", ".config/gcloud")
+
+
 def build_write_denied_prefixes(home: str) -> list[str]:
     """Return sensitive directory prefixes that must never be written."""
     paths = [
-        *(os.path.join(home, d) for d in (".ssh", ".aws", ".gnupg", ".kube")),
+        *(os.path.join(home, *d.split("/")) for d in HOME_CREDENTIAL_DIRS),
         "/etc/sudoers.d", "/etc/systemd",
-        *(os.path.join(home, *d) for d in ((".docker",), (".azure",), (".config", "gh"), (".config", "gcloud"))),
     ]
     return [os.path.realpath(p) + os.sep for p in paths]
 
@@ -420,7 +423,7 @@ def raise_if_read_blocked(path: str) -> None:
     """
     try:
         blocked = get_read_block_error(path)
-    except Exception:  # noqa: BLE001 - guard must never break local-file loading
+    except Exception:
         return
     if blocked:
         raise ValueError(blocked)
@@ -514,86 +517,3 @@ def get_container_mirror_warning(path: str, mirror_prefix: str | None = None) ->
         "the real HERMES_HOME.",
         "after explicit user direction, retry",
     )
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-PROFILE_SCOPED_AREAS = ("skills", "plugins", "cron", "memories")
-
-def classify_cross_profile_target(path: str) -> Optional[dict]:
-    """Classify a write target as cross-profile if it lands in another
-    profile's scoped area (skills/plugins/cron/memories).
-
-    Returns ``None`` when the target is outside Hermes scope, or is inside
-    the ACTIVE profile, or doesn't hit a profile-scoped area. Otherwise
-    returns a dict with:
-
-      * ``active_profile``: name of the profile the agent is running as
-      * ``target_profile``: name of the profile the path belongs to
-      * ``area``: which scoped area (``"skills"``, ``"plugins"``, etc.)
-      * ``target_path``: the resolved path string
-
-    The caller decides what to do with the result — surface a warning to
-    the model, prompt the user, or (with explicit consent /
-    ``cross_profile=True``) proceed anyway.
-    """
-    try:
-        target = Path(os.path.expanduser(str(path))).resolve()
-        root_real = _hermes_root_path().resolve()
-    except (OSError, RuntimeError):
-        return None
-
-    target_profile: Optional[str] = None
-    area: Optional[str] = None
-
-    try:
-        rel = target.relative_to(root_real)
-    except ValueError:
-        return None
-
-    parts = rel.parts
-    if not parts:
-        return None
-
-    if parts[0] in PROFILE_SCOPED_AREAS:
-        # ``<root>/<area>/...`` → default profile.
-        target_profile = "default"
-        area = parts[0]
-    elif (
-        parts[0] == "profiles"
-        and len(parts) >= 3
-        and parts[2] in PROFILE_SCOPED_AREAS
-    ):
-        # ``<root>/profiles/<name>/<area>/...`` → named profile.
-        target_profile = parts[1]
-        area = parts[2]
-    else:
-        return None
-
-    active_profile = _resolve_active_profile_name()
-    if target_profile == active_profile:
-        # In-profile write — not a cross-profile event.
-        return None
-
-    return {
-        "active_profile": active_profile,
-        "target_profile": target_profile,
-        "area": area,
-        "target_path": str(target),
-    }
-
-def get_cross_profile_warning(path: str) -> Optional[str]:
-    """RETIRED (maintainer decision): always returns ``None``.
-
-    The cross-profile write guard was removed — profiles were never
-    isolated (same OS user; the terminal tool writes anywhere), so the
-    block was ceremony that cost every schema real tokens and taught a
-    bypass arg. The system prompt's active-profile hint remains the only
-    steering; the classifier below survives for that hint and for
-    diagnostics. Kept as a stub so external callers/plugins fail soft.
-    """
-    return None
-# ---- END PLUGIN-COMPAT ----

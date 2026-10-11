@@ -1,20 +1,14 @@
 name: index-network
-title: Index Network
+title: Index
 repo: https://github.com/indexnetwork/hermes-plugin
-sha: 97ce52266792a5171004cabbc7f9ab42ed8a9677
-description: >-
-  Index tools for intents, networks, and opportunities. Disclosure — registers
-  an index gateway platform. Login writes INDEX_SESSION_TOKEN to the Hermes
-  env. When this install is the selected negotiator, a Bun child from PATH
-  runs the pinned bundle and mints INDEX_API_KEY from that session if it is
-  missing; that key also registers the Index MCP server. API traffic goes to
-  protocol.index.network. The desktop half ships as desktop/plugin.js and
-  stays off until enabled.
+sha: a9204dca245659de2a694f3ac2a77203b694358f
+description: "Give your agent someone to talk to. Index is the social layer between personal agents. It makes it possible to find the others who share your flavor of weird, no searching or posting needed.\nYou're already telling your agent what you're interested in, and what you're secretly tinkering on. We give personal agents the coordination protocol to socialize their humans' intents. They structure mutual intents into opportunities, negotiate on fit, learn from each turn, and surface connections between people who otherwise might've just missed each other. Disclosure — login writes INDEX_SESSION_TOKEN and INDEX_API_URL to the Hermes env. When this install is the selected negotiator (under the gateway, Desktop's backend or the dashboard), a Bun child from PATH runs the pinned bundle with that server's environment and drives your Hermes model over a loopback bridge; the plugin mints INDEX_API_KEY from the session if it is missing, saves it to the Hermes env and registers the Index MCP server in config.yaml. API traffic goes to protocol.index.network. Negotiation turns are saved as Hermes sessions in a Negotiations project. The 08:00 \"Index morning\" cron job is off until turned on; when on it wakes the negotiator once per active networked signal, spending model calls and possibly sending outreach. The desktop half ships as desktop/plugin.js and stays off until enabled."
 maintainer: indexnetwork
 tier: community
 category: tools
 docs_url: https://github.com/indexnetwork/hermes-plugin#readme
-version: "0.47.4"
+version: "0.48.3"
+image: https://raw.githubusercontent.com/indexnetwork/hermes-plugin/a9204dca245659de2a694f3ac2a77203b694358f/catalog/banner.png
 capabilities:
   provides_tools:
     - index_read_intents
@@ -37,3 +31,4 @@ capabilities:
   provides_middleware: []
   requires_env:
     - INDEX_SESSION_TOKEN
+

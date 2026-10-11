@@ -64,6 +64,7 @@ function mountActions() {
       navigate,
       requestGateway,
       resetViewSync: vi.fn(),
+      routedSessionId: null,
       runtimeIdByStoredSessionIdRef: ref(new Map()),
       selectedStoredSessionId: null,
       selectedStoredSessionIdRef: ref<string | null>(null),
@@ -86,6 +87,7 @@ function mountSlashCommand(startFreshSessionDraft: () => void) {
       requestGateway: vi.fn(async () => ({})),
       copy: {},
       getRoutedStoredSessionId: () => null,
+      getRouteToken: () => 'route',
       getRuntimeIdForStoredSession: () => null
     } as never)
   )

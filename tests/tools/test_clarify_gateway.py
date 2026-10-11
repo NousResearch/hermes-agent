@@ -77,7 +77,7 @@ class TestClarifyPrimitive:
 
 
     def test_clear_session_cancels_pending_entries(self):
-        """clear_session unblocks blocked threads with empty response."""
+        """clear_session unblocks blocked threads."""
         from tools import clarify_gateway as cm
 
         cm.register("id7", "sk7", "Q?", ["A"])
@@ -91,8 +91,7 @@ class TestClarifyPrimitive:
             cancelled = cm.clear_session("sk7")
             assert cancelled == 1
             result = fut.result(timeout=10.0)
-            # clear_session sets response="" then the wait returns it
-            assert result == ""
+            assert result == cm.CANCELLED
 
 
     def test_clear_session_preserves_resolved_response(self):

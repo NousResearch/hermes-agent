@@ -368,7 +368,7 @@ def schedule_env(monkeypatch, marker_home):
     monkeypatch.setattr(server.threading, "Thread", _InlineThread)
     monkeypatch.setattr(server, "_start_agent_build", lambda sid, session: None)
     monkeypatch.setattr(server, "_wait_agent", lambda session, rid, timeout=30.0: None)
-    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+    monkeypatch.setattr(server, "_load_cfg", dict)
     submitted: list = []
     monkeypatch.setattr(
         server,
@@ -407,6 +407,34 @@ def test_hosted_room_marker_is_left_to_the_driver(schedule_env, marker_home):
     assert result is None
     assert not schedule_env
     assert read_turn_marker(marker_home, "session-key") is not None
+
+
+@pytest.fixture()
+def unseen_intro(monkeypatch):
+    """An onboarding-enabled install whose desktop intro has not been seen yet."""
+    from hermes_cli import setup_profile
+    monkeypatch.setattr(setup_profile, "onboarding_eligible", lambda: True)
+    monkeypatch.setattr(setup_profile, "read_state", lambda: {"intro": "unseen"})
+
+
+def test_desktop_setup_turn_is_left_to_the_intro(schedule_env, marker_home, unseen_intro):
+    record_turn_start(marker_home, "session-key", "[/initiate-setup]\nset me up")
+
+    result = server._maybe_schedule_auto_continue("sid", _session(source="desktop"), "session-key")
+
+    assert result is None
+    assert not schedule_env
+    assert read_turn_marker(marker_home, "session-key") is None
+
+
+def test_tui_setup_turn_still_auto_continues(emits, schedule_env, marker_home, unseen_intro):
+    record_turn_start(marker_home, "session-key", "[/initiate-setup]\nset me up")
+
+    result = server._maybe_schedule_auto_continue("sid", _session(source="tui"), "session-key")
+
+    assert result is not None
+    (text, _kwargs), = schedule_env
+    assert "[/initiate-setup]" in text
 
 
 def test_stale_marker_is_cleared_not_continued(schedule_env, marker_home, monkeypatch):

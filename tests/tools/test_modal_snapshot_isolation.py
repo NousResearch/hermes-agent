@@ -64,9 +64,6 @@ def _install_modal_test_modules(
     sys.modules["hermes_cli"] = hermes_cli
     hermes_home = tmp_path / "hermes-home"
     os.environ["HERMES_HOME"] = str(hermes_home)
-    sys.modules["hermes_cli.config"] = types.SimpleNamespace(
-        get_hermes_home=lambda: hermes_home,
-    )
 
     tools_package = types.ModuleType("tools")
     tools_package.__path__ = [str(TOOLS_DIR)]  # type: ignore[attr-defined]
@@ -130,7 +127,7 @@ def _install_modal_test_modules(
     )
     sys.modules["tools.interrupt"] = types.SimpleNamespace(is_interrupted=lambda: False)
     sys.modules["tools.credential_files"] = types.SimpleNamespace(
-        get_credential_file_mounts=lambda: [],
+        get_credential_file_mounts=list,
         iter_skills_files=lambda **kw: [],
         iter_cache_files=lambda **kw: [],
     )
@@ -138,6 +135,7 @@ def _install_modal_test_modules(
     from_id_calls: list[str] = []
     registry_calls: list[tuple[str, list[str] | None]] = []
     create_calls: list[dict] = []
+    snapshot_calls: list[dict] = []
 
     class _FakeImage:
         @staticmethod
@@ -157,7 +155,8 @@ def _install_modal_test_modules(
         def __init__(self, image):
             self.image = image
 
-            async def _snapshot_aio():
+            async def _snapshot_aio(**kwargs):
+                snapshot_calls.append(kwargs)
                 return types.SimpleNamespace(object_id=snapshot_id)
 
             async def _terminate_aio():
@@ -178,11 +177,6 @@ def _install_modal_test_modules(
             raise RuntimeError(f"cannot restore {image_id}")
         return _FakeSandboxInstance(image)
 
-    class _FakeMount:
-        @staticmethod
-        def from_local_file(host_path: str, remote_path: str):
-            return {"host_path": host_path, "remote_path": remote_path}
-
     class _FakeApp:
         lookup = types.SimpleNamespace(aio=_lookup_aio)
 
@@ -193,12 +187,12 @@ def _install_modal_test_modules(
         Image=_FakeImage,
         App=_FakeApp,
         Sandbox=_FakeSandbox,
-        Mount=_FakeMount,
     )
 
     return {
         "snapshot_store": hermes_home / "modal_snapshots.json",
         "create_calls": create_calls,
+        "snapshot_calls": snapshot_calls,
         "from_id_calls": from_id_calls,
         "registry_calls": registry_calls,
     }
@@ -234,3 +228,17 @@ def test_resolve_modal_image_uses_snapshot_ids_and_registry_images(tmp_path):
     assert state["from_id_calls"] == ["im-snapshot123"]
     assert state["registry_calls"][0][0] == "python:3.11"
     assert "ensurepip" in state["registry_calls"][0][1][0]
+
+
+def test_persistent_cleanup_snapshots_without_expiry(tmp_path, monkeypatch):
+    """The SDK default retains a filesystem snapshot for 30 days; an idle persistent
+    sandbox would then silently restart from the base image, so Hermes must opt out."""
+    state = _install_modal_test_modules(tmp_path, snapshot_id="im-fresh")
+    modal_module = _load_module("tools.environments.modal", TOOLS_DIR / "environments" / "modal.py")
+    monkeypatch.setattr(modal_module, "ensure_lazy_dep", lambda extra: None)
+
+    env = modal_module.ModalEnvironment(image="python:3.11", task_id="task-ttl")
+    env.cleanup()
+
+    assert state["snapshot_calls"] == [{"ttl": None}]
+    assert json.loads(state["snapshot_store"].read_text()) == {"direct:task-ttl": "im-fresh"}

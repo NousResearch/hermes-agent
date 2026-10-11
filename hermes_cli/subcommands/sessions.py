@@ -89,7 +89,8 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
     sessions_export.add_argument("--session-id", help="Session ID or unique prefix to export")
     _add_session_filter_args(
         sessions_export, "Only export sessions older than AGE (duration like '5h'/'2d', "
-        "bare number of days, or an ISO timestamp)")
+        "bare number of days, or an ISO timestamp). Filtered exports include pinned and archived "
+        "sessions, so they back up everything a matching prune could delete")
     _flag(sessions_export, "--redact",
         help="Redact secrets (API keys, tokens, credentials) from exported content")
     sessions_export.add_argument("--lineage", choices=["single", "logical"], default="single",

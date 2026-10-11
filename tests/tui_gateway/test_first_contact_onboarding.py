@@ -1,6 +1,6 @@
-"""Desktop/TUI first-contact profile-build onboarding via tui_gateway (#82750).
+"""Desktop/TUI first-contact onboarding via tui_gateway (#82750).
 
-The messaging gateway stages the consent-gated profile-build offer on the
+The messaging gateway stages the offer on the
 install's very first message (gateway/run_turn.py ``_hmwa_first_contact_notes``);
 the TUI/Desktop surface must do the same through
 ``_stage_first_contact_onboarding_note`` in the prompt turn.
@@ -13,7 +13,7 @@ import types
 
 import pytest
 
-from agent.onboarding import PROFILE_BUILD_FLAG, profile_build_directive
+from agent.onboarding import PROFILE_BUILD_FLAG, SETUP_OFFER_NOTE, profile_build_directive
 from hermes_yaml import safe_dump, safe_load
 from tui_gateway import server
 
@@ -38,20 +38,32 @@ def onboarding_home(monkeypatch, tmp_path):
 
 
 def _stage(session, agent, history_empty):
-    server._stage_first_contact_onboarding_note(session, agent, history_empty)
+    server._stage_first_contact_onboarding_note(session, agent, history_empty, "hello")
 
 
-def test_stages_profile_build_directive_on_first_contact(monkeypatch, onboarding_home):
-    """Fresh install + empty history: the opt-in directive is staged on the agent
-    and the offered flag is persisted before the turn runs."""
+def test_stages_setup_offer_on_first_contact(monkeypatch, onboarding_home):
+    """Fresh install + empty history under guest onboarding: the /initiate-setup offer is staged
+    on the agent and the offered flag is persisted before the turn runs."""
+    monkeypatch.setenv("HERMES_GUEST_ONBOARDING", "1")
+    monkeypatch.setattr(server, "_install_has_prior_sessions", lambda _s: False)
+
+    agent = types.SimpleNamespace()
+    _stage(_session(agent), agent, history_empty=True)
+
+    assert agent._gateway_turn_context_notes == SETUP_OFFER_NOTE.format(command="/initiate-setup")
+    loaded = safe_load((onboarding_home / "config.yaml").read_text())
+    assert loaded["onboarding"]["seen"][PROFILE_BUILD_FLAG] is True
+
+
+def test_stages_profile_build_offer_without_guest_onboarding(monkeypatch, onboarding_home):
+    """Without guest onboarding the first message keeps main's memory profile offer."""
+    monkeypatch.delenv("HERMES_GUEST_ONBOARDING", raising=False)
     monkeypatch.setattr(server, "_install_has_prior_sessions", lambda _s: False)
 
     agent = types.SimpleNamespace()
     _stage(_session(agent), agent, history_empty=True)
 
     assert agent._gateway_turn_context_notes == profile_build_directive().strip()
-    loaded = safe_load((onboarding_home / "config.yaml").read_text())
-    assert loaded["onboarding"]["seen"][PROFILE_BUILD_FLAG] is True
 
 
 def test_skips_first_contact_when_prior_sessions_exist(monkeypatch, onboarding_home):
@@ -129,3 +141,16 @@ def test_installs_prior_sessions_probe_counts_the_install(monkeypatch):
 
     monkeypatch.setattr(server, "_session_db", lambda _s: _Ctx(_DB(2)))
     assert server._install_has_prior_sessions(fresh) is True
+
+
+def test_the_task_chat_setup_hands_off_to_gets_no_note(monkeypatch, onboarding_home):
+    """start_chat marks the session it opens from setup; the prompt turn passes that on."""
+    monkeypatch.setenv("HERMES_GUEST_ONBOARDING", "1")
+    monkeypatch.setattr(server, "_install_has_prior_sessions", lambda _s: False)
+
+    agent = types.SimpleNamespace()
+    session = {**_session(agent), "setup_handoff": True}
+    _stage(session, agent, history_empty=True)
+
+    assert getattr(agent, "_gateway_turn_context_notes", None) is None
+    assert PROFILE_BUILD_FLAG not in (onboarding_home / "config.yaml").read_text()

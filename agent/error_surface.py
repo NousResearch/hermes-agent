@@ -98,7 +98,20 @@ def _surface(layer: str, code: str, retryable: bool, provider: str = "", model: 
         # OAuth providers are fixed by signing in again; API-key providers by
         # replacing the key. The client's one-click recovery needs to know which.
         surface["auth_kind"] = auth_kind(provider)
+        if surface["auth_kind"] == "api_key" and (env_var := _api_key_env(provider)):
+            surface["api_key_env"] = env_var
     return surface
+
+
+def _api_key_env(provider: str) -> str:
+    """The env var holding ``provider``'s API key, so the client can open that row."""
+    try:
+        from hermes_cli.provider_catalog import provider_catalog_by_slug
+
+        descriptor = provider_catalog_by_slug().get(provider.strip().lower())
+        return descriptor.api_key_env_vars[0] if descriptor and descriptor.api_key_env_vars else ""
+    except Exception:  # pragma: no cover — advisory only
+        return ""
 
 
 def _provider_label(provider: str) -> str:
@@ -219,12 +232,3 @@ def build_error_surface_from_exception(
     except Exception:  # pragma: no cover — never break the error path
         logger.debug("error_surface: exception classification failed", exc_info=True)
         return None
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-LAYER_RUNTIME = "runtime"
-# ---- END PLUGIN-COMPAT ----

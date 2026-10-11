@@ -27,6 +27,30 @@ type FetchJsonForProfile = (profile: string | null, path: string) => Promise<unk
 
 const REMOTE_SESSION_PAGE_LIMIT = 100
 
+/** Whether a read asks for the cross-profile Sessions list used by grouping. */
+export function isAllProfilesSessionListRequest(method: string | undefined, path: string | undefined): boolean {
+  if ((method || 'GET').toUpperCase() !== 'GET' || !path) {
+    return false
+  }
+
+  let url: URL
+
+  try {
+    url = new URL(path, 'http://desktop.local')
+  } catch {
+    return false
+  }
+
+  if (url.pathname === '/api/profiles/sessions') {
+    return (url.searchParams.get('profile') || 'all').trim() === 'all'
+  }
+
+  return (
+    url.pathname === '/api/profiles/sessions/sidebar' &&
+    (url.searchParams.get('recents_profile') || 'all').trim() === 'all'
+  )
+}
+
 function rowsOf(data: unknown): unknown[] {
   if (!data || typeof data !== 'object' || !('sessions' in data)) {
     return []
@@ -246,13 +270,163 @@ export function assembleSidebarSessionSlices(recents: unknown, cron: unknown, me
  *  tags, and dedupes, so it stays unit-testable. */
 export interface RegistrySessionSource {
   connectionId: string
-  /** 'ssh' backends each run AS one remote profile; anything else is a shared
-   *  host serving every profile via ?profile=. */
+  /** 'ssh' and forced-local backends each run as one profile; anything else is
+   *  a shared host serving every profile via ?profile=. */
   kind: string
   backends: Array<{ descriptor: unknown; profileLabel: null | string }>
 }
 
+type PinnedRegistrySessionSource = Pick<RegistrySessionSource, 'connectionId'> &
+  Partial<Pick<RegistrySessionSource, 'backends' | 'kind'>>
+
+/**
+ * A pinned registry request may use the aggregate route only when that
+ * gateway is part of the already-pooled sources. Otherwise the aggregate
+ * would look healthy while silently omitting the gateway the renderer asked
+ * for, so the caller must keep the normal direct route instead.
+ *
+ * The legacy local/primary route is represented by the base aggregate rather
+ * than a registry source and is therefore handled by the caller separately.
+ */
+export function hasPinnedRegistrySessionSource(
+  connectionId: string | null | undefined,
+  profile: string | null | undefined,
+  sources: readonly PinnedRegistrySessionSource[],
+  baseCoversLocal = true
+): boolean {
+  const required = String(connectionId ?? '').trim()
+  const selectedProfile = String(profile ?? '').trim()
+
+  if (!required || (required === 'local' && baseCoversLocal)) {
+    return true
+  }
+
+  const source = sources.find(candidate => candidate.connectionId === required)
+
+  if (!source) {
+    return false
+  }
+
+  // Shared remote and cloud hosts serve every profile from one backend. An
+  // absent profile is also allowed because the route can still be an explicit
+  // all-profiles request without an ambient renderer profile.
+  if (!selectedProfile || selectedProfile === 'all' || !source.kind || !source.backends) {
+    return true
+  }
+
+  if (source.kind !== 'ssh' && source.kind !== 'local') {
+    return true
+  }
+
+  return source.backends.some(({ profileLabel }) => (profileLabel || 'default') === selectedProfile)
+}
+
+/** include the local registry source when the primary aggregate is remote */
+export function shouldIncludeLocalRegistrySessionSource(
+  connectionId: string | null | undefined,
+  baseCoversLocal = true
+): boolean {
+  return Boolean(String(connectionId ?? '').trim()) || !baseCoversLocal
+}
+
 type GetJsonForDescriptor = (descriptor: unknown, path: string) => Promise<unknown>
+
+/** Read one registry source without sending a page larger than the backend cap. */
+async function fetchSessionRowsInPages(
+  basePath: string,
+  searchParams: URLSearchParams,
+  getPage: (path: string) => Promise<unknown>
+): Promise<unknown[] | null> {
+  const requestedLimit = Number(searchParams.get('limit'))
+  const requestedOffset = Number(searchParams.get('offset') || '0')
+
+  const needsPaging =
+    Number.isInteger(requestedLimit) &&
+    requestedLimit > REMOTE_SESSION_PAGE_LIMIT &&
+    Number.isInteger(requestedOffset) &&
+    requestedOffset >= 0
+
+  try {
+    if (!needsPaging) {
+      return rowsOf(await getPage(`${basePath}?${searchParams}`))
+    }
+
+    const sessions: unknown[] = []
+    const backfilled: unknown[] = []
+    const seenIds = new Set<string>()
+    const backfilledIds = new Set<string>()
+    let pageOffset = requestedOffset
+    let targetOffset = requestedOffset + requestedLimit
+
+    while (pageOffset < targetOffset) {
+      const pageParams = new URLSearchParams(searchParams)
+      const pageLimit = Math.min(REMOTE_SESSION_PAGE_LIMIT, targetOffset - pageOffset)
+      pageParams.set('limit', String(pageLimit))
+      pageParams.set('offset', String(pageOffset))
+
+      const page = await getPage(`${basePath}?${pageParams}`)
+      const pageRows = rowsOf(page)
+
+      const total = nonNegativeNumber(page && typeof page === 'object' ? (page as { total?: unknown }).total : null)
+
+      const windowedCount =
+        total !== null ? Math.min(pageLimit, Math.max(0, total - pageOffset)) : Math.min(pageLimit, pageRows.length)
+
+      for (const row of pageRows.slice(0, windowedCount)) {
+        const id = sessionId(row)
+
+        if (id && seenIds.has(id)) {
+          continue
+        }
+
+        if (id) {
+          seenIds.add(id)
+          backfilledIds.delete(id)
+        }
+
+        sessions.push(row)
+      }
+
+      for (const row of pageRows.slice(windowedCount)) {
+        const id = sessionId(row)
+
+        if ((id && seenIds.has(id)) || (id && backfilledIds.has(id))) {
+          continue
+        }
+
+        if (id) {
+          backfilledIds.add(id)
+        }
+
+        backfilled.push(row)
+      }
+
+      if (total !== null) {
+        targetOffset = Math.min(targetOffset, total)
+      }
+
+      pageOffset += pageLimit
+    }
+
+    for (const row of backfilled) {
+      const id = sessionId(row)
+
+      if (id && seenIds.has(id)) {
+        continue
+      }
+
+      if (id) {
+        seenIds.add(id)
+      }
+
+      sessions.push(row)
+    }
+
+    return sessions
+  } catch {
+    return null
+  }
+}
 
 /**
  * Every connected registry gateway's session rows for the unified Sessions
@@ -275,8 +449,8 @@ export async function fetchRegistrySessionRows(
 ): Promise<unknown[]> {
   const rows: unknown[] = []
 
-  const tag = (data: unknown, connectionId: string, profileLabel: null | string) => {
-    for (const row of rowsOf(data)) {
+  const tag = (sourceRows: unknown[], connectionId: string, profileLabel: null | string) => {
+    for (const row of sourceRows) {
       if (!row || typeof row !== 'object') {
         continue
       }
@@ -297,17 +471,18 @@ export async function fetchRegistrySessionRows(
 
   await Promise.all(
     sources.map(async source => {
-      if (source.kind === 'ssh') {
-        // Each ssh-scoped backend serves its own state.db natively.
+      if (source.kind === 'ssh' || source.kind === 'local') {
+        // Each ssh-scoped or forced-local backend serves its own state.db
+        // natively.
         await Promise.all(
           source.backends.map(async ({ descriptor, profileLabel }) => {
             const params = new URLSearchParams(searchParams)
             params.delete('profile')
 
-            const data = await getJson(descriptor, `/api/sessions?${params}`).catch(() => null)
+            const sourceRows = await fetchSessionRowsInPages('/api/sessions', params, path => getJson(descriptor, path))
 
-            if (data) {
-              tag(data, source.connectionId, profileLabel || 'default')
+            if (sourceRows) {
+              tag(sourceRows, source.connectionId, profileLabel || 'default')
             }
           })
         )
@@ -326,17 +501,19 @@ export async function fetchRegistrySessionRows(
       const params = new URLSearchParams(searchParams)
       params.set('profile', 'all')
 
-      let data = await getJson(shared.descriptor, `/api/profiles/sessions?${params}`).catch(() => null)
+      let sourceRows = await fetchSessionRowsInPages('/api/profiles/sessions', params, path =>
+        getJson(shared.descriptor, path)
+      )
 
-      if (!data) {
+      if (!sourceRows) {
         // Older remote without the aggregator: its own default-profile list.
         const flat = new URLSearchParams(searchParams)
         flat.delete('profile')
-        data = await getJson(shared.descriptor, `/api/sessions?${flat}`).catch(() => null)
+        sourceRows = await fetchSessionRowsInPages('/api/sessions', flat, path => getJson(shared.descriptor, path))
       }
 
-      if (data) {
-        tag(data, source.connectionId, null)
+      if (sourceRows) {
+        tag(sourceRows, source.connectionId, null)
       }
     })
   )
@@ -588,6 +765,126 @@ export async function fetchRemoteProfileSessions(
     total: total ?? sessions.length,
     limit: requestedLimit,
     offset: requestedOffset
+  }
+}
+
+/** Per-profile budget for one remote's session read inside a sidebar aggregate.
+ * A healthy remote answers in well under a second; a dead URL hangs until the
+ * 180s backend readiness deadline. The aggregate must not inherit that deadline
+ * (#75712) — each remote gets this budget, then contributes an error entry
+ * instead of rows. */
+export const REMOTE_PROFILE_SESSION_BUDGET_MS = 10_000
+
+/** One remote profile's settled contribution to a sidebar aggregate: rows when
+ *  it answered inside its budget, otherwise a named error. Never a rejection —
+ *  one dead remote must not take the other profiles' rows down with it. */
+export interface RemoteProfileSessionsOutcome {
+  profile: string
+  list: SessionListResponse | null
+  error: string | null
+}
+
+/**
+ * #75712: fetch every remote profile's session list, each under its own
+ * bounded budget, and settle each outcome instead of letting one unavailable
+ * remote block (or silently vanish from) the whole sidebar aggregate. The
+ * underlying fetch keeps running past its budget — a remote that is merely
+ * still booting can answer on a later refresh.
+ */
+export async function settleRemoteProfileSessions(
+  remoteProfiles: readonly string[],
+  fetchRemote: (profile: string) => Promise<unknown>,
+  options: { budgetMs?: number } = {}
+): Promise<RemoteProfileSessionsOutcome[]> {
+  const budgetMs = options.budgetMs ?? REMOTE_PROFILE_SESSION_BUDGET_MS
+
+  return Promise.all(
+    remoteProfiles.map(async profile => {
+      let timer: ReturnType<typeof setTimeout> | undefined
+
+      try {
+        const list = (await Promise.race([
+          fetchRemote(profile),
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(
+              () => reject(new Error(`remote profile "${profile}" did not respond within ${budgetMs}ms`)),
+              budgetMs
+            )
+          })
+        ])) as SessionListResponse
+
+        return { profile, list, error: null }
+      } catch (error) {
+        return {
+          profile,
+          list: null,
+          error: error instanceof Error ? error.message : String(error)
+        }
+      } finally {
+        if (timer) {
+          clearTimeout(timer)
+        }
+      }
+    })
+  )
+}
+
+/** Fold each settled remote outcome (#75712) into the unified aggregate:
+ *  answering remotes contribute rows and their real per-profile total; a
+ *  dead or still-pending remote drops its stale local total and is NAMED in
+ *  the returned error entries instead of silently vanishing. Returns the
+ *  updated grand total plus the collected errors so they can ride the
+ *  response payload. */
+export function applyRemoteProfileSessionOutcomes(
+  outcomes: readonly RemoteProfileSessionsOutcome[],
+  merged: unknown[],
+  profileTotals: Record<string, number>,
+  total: number
+): { total: number; errors: Array<{ profile: string; error: string }> } {
+  const errors: Array<{ profile: string; error: string }> = []
+
+  for (const { profile, list, error } of outcomes) {
+    if (!list) {
+      delete profileTotals[profile] // dead remote → drop its stale local total too
+      errors.push({ profile, error: error || 'unavailable' })
+
+      continue
+    }
+
+    const rows = rowsOf(list)
+    merged.push(...rows)
+    profileTotals[profile] = Number(list.total) || rows.length
+    total += profileTotals[profile]
+  }
+
+  return { total, errors }
+}
+
+/** Compose the unified aggregate's response (#75712): failures ride the
+ *  payload, not the void — base scan errors and each dead remote's named
+ *  error entry are merged into `errors` so a failed remote profile is
+ *  identifiable. */
+export function composeUnifiedSessionResponse(
+  base: unknown,
+  merged: unknown[],
+  offset: number,
+  limit: number,
+  total: number,
+  profileTotals: Record<string, number>,
+  extraErrors: Array<{ profile: string; error: string }>
+) {
+  const baseErrors = Array.isArray((base as { errors?: unknown })?.errors)
+    ? (base as { errors: Array<{ profile: string; error: string }> }).errors
+    : []
+
+  const scanErrors = [...baseErrors, ...extraErrors]
+
+  return {
+    ...(base as Record<string, unknown>),
+    sessions: mergeProfileSessionWindow(merged, offset, limit),
+    total,
+    profile_totals: profileTotals,
+    ...(scanErrors.length ? { errors: scanErrors } : {})
   }
 }
 

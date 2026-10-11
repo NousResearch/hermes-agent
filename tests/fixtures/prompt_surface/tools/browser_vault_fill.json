@@ -1,0 +1,16 @@
+{
+  "description": "Fill the CURRENT browser page from a vault handle (see browser_vault_list): a login item fills ONLY the password field (type the identifier/username yourself first with `fill_input` inside browser_exec); a payment item fills card number/name/expiry/CVC after the user confirms in their UI; an address item fills the address fields. Values are resolved server-side and never appear in the conversation. Refused unless the page origin exactly matches the item's bound origin (re-checked atomically at fill time). If a password manager is locked the user is prompted to unlock first. Never retry a payment_declined result.",
+  "name": "browser_vault_fill",
+  "parameters": {
+    "properties": {
+      "handle": {
+        "description": "Handle from browser_vault_list (vault_… local, op:… 1Password, bw:… Bitwarden)",
+        "type": "string"
+      }
+    },
+    "required": [
+      "handle"
+    ],
+    "type": "object"
+  }
+}

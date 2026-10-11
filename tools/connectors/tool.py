@@ -15,13 +15,13 @@ from tools.registry import registry, tool_error
 
 
 def manage_connections(
-    args: Dict[str, Any],
+    args: dict[str, Any],
     *,
     client_factory: Optional[Callable[[], Any]] = None,
     mcp_backend: Optional[Any] = None,
     session_id: Optional[str] = None,
     tool_call_id: Optional[str] = None,
-    connection_callback: Optional[Callable[[Dict[str, Any]], Optional[str]]] = None,
+    connection_callback: Optional[Callable[[dict[str, Any]], Optional[str]]] = None,
     connectors_available: Optional[Callable[[], bool]] = None,
 ) -> str:
     action = str(args.get("action") or "status").strip().lower()
@@ -145,11 +145,10 @@ registry.register(
     emoji="🔗",
 )
 
-# The setup profile's catalog install. Reachable only through the ``setup`` toolset, which the
-# profile's role grants; registry dispatch has no card callback, so it answers with the CLI pointer.
+# Registry dispatch has no card callback, so it answers with the CLI pointer.
 registry.register(
     name="manage_catalog",
-    toolset="setup",
+    toolset="catalog",
     schema=MANAGE_CATALOG_SCHEMA,
     handler=lambda args, **kw: manage_catalog(args, session_id=kw.get("session_id")),
     emoji="🧩",

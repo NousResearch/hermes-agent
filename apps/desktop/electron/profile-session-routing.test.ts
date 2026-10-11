@@ -9,13 +9,72 @@ import {
   fetchRegistrySessionRows,
   fetchRemoteProfileSessions,
   findRemoteOwnerProfileForSession,
+  hasPinnedRegistrySessionSource,
+  isAllProfilesSessionListRequest,
   mergeProfileSessionWindow,
   pathWithRemoteOwnerScope,
   remoteProfileQueryScope,
+  settleRemoteProfileSessions,
+  shouldIncludeLocalRegistrySessionSource,
   spliceRegistrySessionRows,
   tagRegistrySessionResponse,
   tagRemoteSessionRows
 } from './profile-session-routing'
+
+test('all-profiles session routing is limited to read-only list endpoints', () => {
+  assert.equal(isAllProfilesSessionListRequest('GET', '/api/profiles/sessions?profile=all'), true)
+  assert.equal(isAllProfilesSessionListRequest('GET', '/api/profiles/sessions/sidebar?recents_profile=all'), true)
+  assert.equal(isAllProfilesSessionListRequest('GET', '/api/profiles/sessions?profile=default'), false)
+  assert.equal(isAllProfilesSessionListRequest('POST', '/api/profiles/sessions?profile=all'), false)
+  assert.equal(isAllProfilesSessionListRequest('GET', '/api/sessions?profile=all'), false)
+})
+
+test('pinned registry aggregation requires the selected gateway to be pooled', () => {
+  const sources = [{ connectionId: 'gateway-remote' }, { connectionId: 'gateway-ssh' }]
+
+  assert.equal(hasPinnedRegistrySessionSource('gateway-remote', 'default', sources), true)
+  assert.equal(hasPinnedRegistrySessionSource('gateway-missing', 'default', sources), false)
+  assert.equal(hasPinnedRegistrySessionSource('local', 'default', sources), true)
+  assert.equal(hasPinnedRegistrySessionSource('local', 'default', sources, false), false)
+  assert.equal(hasPinnedRegistrySessionSource('local', 'default', [{ connectionId: 'local' }], false), true)
+  assert.equal(hasPinnedRegistrySessionSource(null, 'default', sources), true)
+})
+
+test('pinned registry aggregation requires the selected profile backend for per-profile sources', () => {
+  const sources = [
+    {
+      connectionId: 'gateway-ssh',
+      kind: 'ssh',
+      backends: [{ descriptor: 'research-desc', profileLabel: 'research' }]
+    },
+    {
+      connectionId: 'local',
+      kind: 'local',
+      backends: [
+        { descriptor: 'default-desc', profileLabel: 'default' },
+        { descriptor: 'work-desc', profileLabel: 'work' }
+      ]
+    },
+    {
+      connectionId: 'gateway-remote',
+      kind: 'remote',
+      backends: [{ descriptor: 'remote-desc', profileLabel: null }]
+    }
+  ]
+
+  assert.equal(hasPinnedRegistrySessionSource('gateway-ssh', 'research', sources), true)
+  assert.equal(hasPinnedRegistrySessionSource('gateway-ssh', 'default', sources), false)
+  assert.equal(hasPinnedRegistrySessionSource('local', 'work', sources, false), true)
+  assert.equal(hasPinnedRegistrySessionSource('local', 'missing', sources, false), false)
+  assert.equal(hasPinnedRegistrySessionSource('gateway-remote', 'any-profile', sources), true)
+})
+
+test('unscoped aggregates include local rows when the primary is remote', () => {
+  assert.equal(shouldIncludeLocalRegistrySessionSource(null, false), true)
+  assert.equal(shouldIncludeLocalRegistrySessionSource('server', false), true)
+  assert.equal(shouldIncludeLocalRegistrySessionSource('local', true), true)
+  assert.equal(shouldIncludeLocalRegistrySessionSource(null, true), false)
+})
 
 test('remote sidebar slices all follow the selected profile', () => {
   const slices = buildSidebarSessionSliceParams(
@@ -112,6 +171,41 @@ test('reassembled sidebar slices keep each slice errors', () => {
   assert.equal(result.cron.errors, undefined)
   assert.deepEqual(result.messaging.errors, failed)
   assert.deepEqual(result.cron.sessions, [{ id: 'cron-1' }])
+})
+
+// #75712: one unavailable remote profile must not hold the whole sidebar
+// aggregate hostage — a dead URL hangs until the backend readiness deadline
+// (180s), so the per-profile fetch needs its own bounded budget and a settled
+// outcome naming the failure, never a rejection.
+test('settleRemoteProfileSessions returns healthy rows while a dead remote hits its budget', async () => {
+  const healthy = { sessions: [{ id: 'remote-1', profile: 'taro' }], total: 1, profile_totals: {} }
+
+  const result = await settleRemoteProfileSessions(
+    ['taro', 'dead'],
+    profile => (profile === 'taro' ? Promise.resolve(healthy) : new Promise(() => {})), // never settles — readiness wait
+    { budgetMs: 10 }
+  )
+
+  assert.equal(result.length, 2)
+  assert.deepEqual(result[0], { profile: 'taro', list: healthy, error: null })
+  assert.equal(result[1].list, null)
+  assert.match(result[1].error, /did not respond within 10ms/)
+})
+
+test('settleRemoteProfileSessions settles a rejecting remote as an error entry', async () => {
+  const result = await settleRemoteProfileSessions(
+    ['ok', 'refused'],
+    profile =>
+      profile === 'ok'
+        ? Promise.resolve({ sessions: [], total: 0, profile_totals: {} })
+        : Promise.reject(new Error('connect ECONNREFUSED 127.0.0.1:19119')),
+    { budgetMs: 5_000 }
+  )
+
+  assert.equal(result[0].error, null)
+  assert.deepEqual(result[0].list, { sessions: [], total: 0, profile_totals: {} })
+  assert.equal(result[1].list, null)
+  assert.equal(result[1].error, 'connect ECONNREFUSED 127.0.0.1:19119')
 })
 
 test('remote session reads split oversized sidebar windows into API-safe pages', async () => {
@@ -298,6 +392,38 @@ test('registry sources: ssh backends are read natively and rows tagged with conn
   assert.ok(rows.every(row => (row as any).is_default_profile === false))
 })
 
+test('registry sources: forced-local backends are read per profile', async () => {
+  const calls: string[] = []
+
+  const rows = await fetchRegistrySessionRows(
+    [
+      {
+        connectionId: 'local',
+        kind: 'local',
+        backends: [
+          { descriptor: 'default-desc', profileLabel: 'default' },
+          { descriptor: 'work-desc', profileLabel: 'work' }
+        ]
+      }
+    ],
+    new URLSearchParams({ profile: 'all', limit: '10' }),
+    async (descriptor, path) => {
+      calls.push(`${String(descriptor)} ${path}`)
+
+      return { sessions: [{ id: String(descriptor) }], total: 1 }
+    }
+  )
+
+  assert.deepEqual(calls, ['default-desc /api/sessions?limit=10', 'work-desc /api/sessions?limit=10'])
+  assert.deepEqual(
+    rows.map(row => [(row as any).id, (row as any).profile, (row as any).connection_id]),
+    [
+      ['default-desc', 'default', 'local'],
+      ['work-desc', 'work', 'local']
+    ]
+  )
+})
+
 test('registry sources: shared remote hosts read the cross-profile aggregate once', async () => {
   const calls: string[] = []
 
@@ -336,6 +462,39 @@ test('registry sources: shared remote hosts read the cross-profile aggregate onc
       ['r-2', 'default', 'gw-cloud']
     ]
   )
+})
+
+test('registry sources: large aggregate reads stay within the backend page cap', async () => {
+  const calls: string[] = []
+  const rows = Array.from({ length: 250 }, (_, index) => ({ id: `r-${index}` }))
+
+  const result = await fetchRegistrySessionRows(
+    [{ connectionId: 'gw-cloud', kind: 'remote', backends: [{ descriptor: 'cloud-desc', profileLabel: null }] }],
+    new URLSearchParams({ limit: '250', offset: '0' }),
+    async (_descriptor, path) => {
+      calls.push(path)
+      const url = new URL(path, 'http://desktop.test')
+      const limit = Number(url.searchParams.get('limit'))
+      const offset = Number(url.searchParams.get('offset'))
+
+      assert.ok(limit <= 100)
+
+      return { sessions: rows.slice(offset, offset + limit), total: rows.length }
+    }
+  )
+
+  assert.deepEqual(
+    calls.map(path => [
+      Number(new URL(path, 'http://desktop.test').searchParams.get('limit')),
+      Number(new URL(path, 'http://desktop.test').searchParams.get('offset'))
+    ]),
+    [
+      [100, 0],
+      [100, 100],
+      [50, 200]
+    ]
+  )
+  assert.equal(result.length, rows.length)
 })
 
 test('registry-pinned session responses retain their owning connection', () => {

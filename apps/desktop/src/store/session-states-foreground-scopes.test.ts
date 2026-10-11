@@ -2,11 +2,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
   $selectedStoredSessionId,
+  $sessions,
   _resetSessionOwnerHintsForTests,
   setActiveSessionId,
   setSessionOwnerHint
 } from '@/store/session'
 
+import { stampSecondaryProfileOwner } from './session-event-provenance'
 import {
   $sessionOwnerHoldRevision,
   $sessionTiles,
@@ -26,6 +28,7 @@ import {
 
 afterEach(() => {
   $sessionTiles.set([])
+  $sessions.set([])
   setActiveSessionId(null)
   $selectedStoredSessionId.set(null)
   _resetSessionOwnerHoldsForTests()
@@ -130,5 +133,40 @@ describe('foregroundSessionScopes: owner hold across the create → foreground g
     holdSessionOwnerUntilForeground('stored-legacy', 'research')
 
     expect(foregroundSessionScopes()).toEqual(new Set(['research']))
+  })
+
+  it('names the local secondary profile when a foreground session is active on it (#121865)', () => {
+    const event = stampSecondaryProfileOwner({ session_id: 'rt-jody' } as never, 'jody')
+    recordSessionEventScope(event)
+    setActiveSessionId('rt-jody')
+
+    expect(foregroundSessionScopes()).toEqual(new Set(['jody']))
+  })
+
+  it('names the local secondary profile for an active session whose owner is known before events arrive (#121865)', () => {
+    $sessions.set([{ id: 'stored-jody', profile: 'jody' }] as never)
+    $selectedStoredSessionId.set('stored-jody')
+    setActiveSessionId('rt-jody-idle')
+
+    expect(foregroundSessionScopes()).toEqual(new Set(['jody']))
+  })
+
+  it('names the local secondary profile for an active session whose hint was stamped at open (#121865)', () => {
+    setSessionOwnerHint('stored-hinted', { connectionId: 'local', mode: 'local' as const, profile: 'jody' })
+    $selectedStoredSessionId.set('stored-hinted')
+    setActiveSessionId('rt-hinted-idle')
+
+    expect(foregroundSessionScopes()).toEqual(new Set(['conn:local::jody']))
+  })
+
+  it('does not name unrelated secondary profiles when another session is active (#121865)', () => {
+    $sessions.set([
+      { id: 'stored-jody', profile: 'jody' },
+      { id: 'stored-other', profile: 'unrelated' }
+    ] as never)
+    $selectedStoredSessionId.set('stored-jody')
+    setActiveSessionId('rt-jody')
+
+    expect(foregroundSessionScopes()).toEqual(new Set(['jody']))
   })
 })

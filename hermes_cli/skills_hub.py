@@ -1337,7 +1337,7 @@ def _read_frontmatter(skill_md: str) -> dict:
 
 
 def do_publish(skill_path: str, target: str = "github", repo: str = "",
-               console: Optional[Console] = None) -> None:
+               accept_license_terms: bool = False, console: Optional[Console] = None) -> None:
     """Publish a local skill to a registry (GitHub PR or ClawHub submission)."""
     from tools.skills_hub import SKILLS_DIR
     from tools.skills_hub_github import GitHubAuth
@@ -1377,10 +1377,75 @@ def do_publish(skill_path: str, target: str = "github", repo: str = "",
         c.print(f"[bold]Publishing '{name}' to {repo}...[/]")
         _report_pair(c, *_github_publish(path, name, repo, auth))
     elif target == "clawhub":
-        c.print("[yellow]ClawHub publishing is not yet supported. "
-                "Submit manually at https://clawhub.ai/submit[/]\n")
+        c.print(f"[bold]Publishing '{name}' to ClawHub...[/]")
+        _report_pair(c, *_clawhub_publish(
+            path, name, fm, accept_license_terms=accept_license_terms
+        ))
     else:
         c.print(f"[bold red]Unknown target:[/] {target}. Use 'github' or 'clawhub'.\n")
+
+
+def _sanitize_clawhub_error_detail(detail: str, token: str, limit: int = 240) -> str:
+    """Return bounded plain text from an untrusted ClawHub response or exception."""
+    detail = re.sub(r"[\x00-\x1f\x7f]+", " ", detail)
+    detail = detail.replace(token, "[redacted]")
+    detail = re.sub(r"(?i)(bearer\s+)[^\s,;]+", r"\1[redacted]", detail)
+    detail = " ".join(detail.split())[:limit]
+    return detail.replace("[", r"\[").replace("]", r"\]")
+
+
+def _clawhub_publish(skill_path: Path, skill_name: str, frontmatter: dict,
+                      *, accept_license_terms: bool = False) -> tuple:
+    """Upload a scanned skill bundle to the ClawHub publish endpoint."""
+    import os
+
+    import httpx
+
+    from tools.skills_guard import _load_skill_ignore
+
+    if not accept_license_terms:
+        return False, ("ClawHub license terms were not accepted; rerun with "
+                       "--accept-license-terms to confirm.")
+
+    token = os.environ.get("CLAWHUB_TOKEN")
+    if not token:
+        return False, "ClawHub authentication required; set CLAWHUB_TOKEN in the environment."
+
+    ignore = _load_skill_ignore(skill_path)
+    files = [
+        ("payload", (None, json.dumps({
+            "slug": skill_name,
+            "displayName": frontmatter.get("displayName", skill_name),
+            "version": frontmatter.get("version", "1.0.0"),
+            "changelog": frontmatter.get("changelog", ""),
+            "tags": frontmatter.get("tags", ["latest"]),
+            "acceptLicenseTerms": True,
+        }), "application/json")),
+    ]
+    for file_path in skill_path.rglob("*"):
+        if file_path.is_file() and not ignore(file_path.relative_to(skill_path).as_posix()):
+            files.append(("files", (file_path.relative_to(skill_path).as_posix(), file_path.read_bytes(),
+                                     "application/octet-stream")))
+
+    try:
+        response = httpx.post(
+            "https://clawhub.ai/api/v1/skills",
+            headers={"Authorization": f"Bearer {token}"},
+            files=files,
+            timeout=30,
+        )
+    except httpx.HTTPError as exc:
+        detail = _sanitize_clawhub_error_detail(str(exc), token)
+        return False, f"Network error publishing to ClawHub: {detail or 'request failed'}"
+
+    if response.status_code in {200, 201}:
+        return True, f"Published '{skill_name}' to ClawHub."
+    if response.status_code in {401, 403}:
+        return False, "ClawHub authentication failed; check CLAWHUB_TOKEN."
+    detail = _sanitize_clawhub_error_detail(response.text, token)
+    if detail:
+        return False, f"ClawHub API error ({response.status_code}): {detail}"
+    return False, f"ClawHub API error ({response.status_code})."
 
 
 def _github_publish(skill_path: Path, skill_name: str, target_repo: str, auth) -> tuple:
@@ -1562,8 +1627,9 @@ _CLI_ACTIONS = {
     "opt-in": lambda a: do_opt_in(sync=getattr(a, "sync", False)),
     "repair-official": lambda a: do_repair_official(a.name, restore=getattr(a, "restore", False),
                                                     skip_confirm=getattr(a, "yes", False)),
-    "publish": lambda a: do_publish(a.skill_path, target=getattr(a, "to", "github"),
-                                    repo=getattr(a, "repo", "")),
+    "publish": lambda a: do_publish(
+        a.skill_path, target=getattr(a, "to", "github"), repo=getattr(a, "repo", ""),
+        accept_license_terms=getattr(a, "accept_license_terms", False)),
     "snapshot": _snapshot_cli, "tap": _tap_cli}
 
 
@@ -1665,7 +1731,8 @@ _SLASH_ACTIONS = {
     "diff": lambda args, c: do_diff(args[0], console=c),
     "publish": lambda args, c: do_publish(
         args[0], target=_opt_value(args, "--to", "github", last=True),
-        repo=_opt_value(args, "--repo", "", last=True), console=c),
+        repo=_opt_value(args, "--repo", "", last=True),
+        accept_license_terms="--accept-license-terms" in args, console=c),
     "snapshot": _slash_snapshot,
     "tap": lambda args, c: (do_tap(args[0], repo=args[1] if len(args) > 1 else "", console=c)
                             if args else do_tap("list", console=c)),
@@ -1682,7 +1749,7 @@ _SLASH_USAGE = {
         "[dim]Clears the bundled-skills manifest entry so future updates stop marking it as user-modified.[/]",
         "[dim]Pass --restore to also replace the current copy with the bundled version.[/]\n"),
     "diff": ("[bold red]Usage:[/] /skills diff <name>\n",),
-    "publish": ("[bold red]Usage:[/] /skills publish <skill-path> [--to github] [--repo owner/repo]\n",),
+    "publish": ("[bold red]Usage:[/] /skills publish <skill-path> [--to github] [--repo owner/repo] [--accept-license-terms]\n",),
 }
 
 

@@ -1360,6 +1360,8 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """Send text/markdown: format, split via truncate_message(), retry transient failures."""
+        if not reply_to and metadata:
+            reply_to = metadata.get("reply_to_message_id") or metadata.get("message_id")
         del metadata
         if not await self._ensure_connected():
             return self._NOT_CONNECTED
@@ -1377,6 +1379,14 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
 
     _PERMANENT_SEND_ERRORS = ("invalid", "forbidden", "not found")
 
+    @staticmethod
+    def _is_expired_reply_error(exc: Exception) -> bool:
+        """True if the exception indicates the target message_id / reply_to anchor has expired.
+        QQ Group messages restrict passive replies to a 5-minute window; older messages return code 304046 / msg_id已过期.
+        """
+        err_str = str(exc).lower()
+        return any(k in err_str for k in ("msg_id已过期", "msg_id expired", "msg_id expire", "reply_to expired", "304046", "304084"))
+
     async def _send_chunk(self, chat_id: str, content: str, reply_to: Optional[str] = None) -> SendResult:
         last_exc: Optional[Exception] = None
         sender = self._text_sender(self._guess_chat_type(chat_id))
@@ -1387,6 +1397,13 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                 return await sender(chat_id, content, reply_to)
             except Exception as exc:
                 last_exc = exc
+                if reply_to and self._is_expired_reply_error(exc):
+                    logger.warning(
+                        "[%s] reply_to anchor %s expired; retrying as standalone message: %s",
+                        self._log_tag, reply_to, exc,
+                    )
+                    reply_to = None
+                    continue
                 if any(k in str(exc).lower() for k in self._PERMANENT_SEND_ERRORS + ("bad request",)):
                     break  # permanent — don't retry
                 if attempt < 2:
@@ -1465,6 +1482,15 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         try:
             return await sender(chat_id, truncated, reply_to, keyboard=keyboard)
         except Exception as exc:
+            if reply_to and self._is_expired_reply_error(exc):
+                logger.warning(
+                    "[%s] reply_to anchor %s expired in send_with_keyboard; retrying standalone: %s",
+                    self._log_tag, reply_to, exc,
+                )
+                try:
+                    return await sender(chat_id, truncated, None, keyboard=keyboard)
+                except Exception as inner_exc:
+                    exc = inner_exc
             logger.error("[%s] send_with_keyboard failed: %s", self._log_tag, exc)
             return SendResult(success=False, error=str(exc) or type(exc).__name__)
 

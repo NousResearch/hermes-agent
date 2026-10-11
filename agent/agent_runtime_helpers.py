@@ -2538,9 +2538,13 @@ def _pre_tool_block_message(agent, function_name, function_args, effective_task_
             turn_id=getattr(agent, "_current_turn_id", "") or "",
             api_request_id=getattr(agent, "_current_api_request_id", "") or "",
             middleware_trace=list(middleware_trace),
+            turn_author=getattr(agent, "_turn_author", None),
         )
         return block_message, (modified_args if modified_args is not None else function_args)
-    except Exception:
+    except Exception as exc:
+        from agent.shell_hooks import pre_tool_call_fail_closed
+        if pre_tool_call_fail_closed():
+            return f"pre_tool_call hook failed closed: {exc}", function_args
         return None, function_args
 
 

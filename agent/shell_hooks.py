@@ -168,7 +168,9 @@ def register_from_config(cfg: Optional[dict[str, Any]], *, accept_hooks: bool = 
         with _registered_lock:
             if key in _registered:
                 continue
-            manager._hooks.setdefault(spec.event, []).append(_make_callback(spec))
+            callback = _make_callback(spec)
+            callback._hermes_fail_closed = spec.fail_closed  # read by pre_tool_call_fail_closed()
+            manager._hooks.setdefault(spec.event, []).append(callback)
             _registered.add(key)
             registered.append(spec)
             logger.info("shell hook registered: %s -> %s (matcher=%s, timeout=%ds, fail_closed=%s)",
@@ -375,6 +377,16 @@ def _make_callback(spec: ShellHookSpec) -> Callable[..., Optional[dict[str, Any]
 
     _callback.__name__ = _callback.__qualname__ = f"shell_hook[{spec.event}:{spec.command}]"
     return _callback
+
+
+def pre_tool_call_fail_closed() -> bool:
+    """True when a wired pre_tool_call shell hook is fail_closed: a dispatch error then blocks the call instead of
+    letting it through. False on any error reading the registry, so the default behaviour is unchanged."""
+    try:
+        from hermes_cli.plugins import get_plugin_manager  # lazy: avoids import cycle
+        return any(getattr(cb, "_hermes_fail_closed", False) for cb in get_plugin_manager()._hooks.get("pre_tool_call", []))
+    except Exception:
+        return False
 
 
 def _fail_closed_block(spec: ShellHookSpec, reason: str) -> dict[str, Any]:

@@ -645,7 +645,7 @@ curl http://localhost:8642/v1/toolsets \
 #     "configured": true, "tools": ["read_file", "write_file", ...]}, ...]
 ```
 
-`/v1/skills` returns the same metadata the skills hub uses internally. `/v1/toolsets` returns toolsets resolved for the `api_server` platform with the concrete `tools` list each one expands to. Both are advertised under `endpoints.*` in `/v1/capabilities`.
+`/v1/skills` returns the same metadata the skills hub uses internally. `/v1/toolsets` returns toolsets resolved for the `api_server` platform with the concrete `tools` list each one expands to, including MCP tools registered by live server discovery. Both are advertised under `endpoints.*` in `/v1/capabilities`.
 
 ## Long-term memory scoping (`X-Hermes-Session-Key`)
 

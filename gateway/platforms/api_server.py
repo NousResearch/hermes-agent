@@ -2949,8 +2949,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 _get_effective_configurable_toolsets, _get_platform_tools, _toolset_has_keys,
                 get_nous_subscription_features)
             from toolsets import resolve_toolset
+            from tools.registry import registry
             config = load_config()
-            enabled_toolsets = _get_platform_tools(config, "api_server", include_default_mcp_servers=False)
+            enabled_toolsets = _get_platform_tools(config, "api_server")
             features = get_nous_subscription_features(config)
             data: list[dict[str, Any]] = []
             for name, label, desc in _get_effective_configurable_toolsets():
@@ -2963,6 +2964,20 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     "enabled": name in enabled_toolsets,
                     "configured": _toolset_has_keys(name, config, features=features),
                     "tools": tools})
+
+            # MCP tools are registered after discovery and are absent from the
+            # static configurable-toolset list. Read their live registry names.
+            for alias, toolset in sorted(registry.get_registered_toolset_aliases().items()):
+                if not toolset.startswith("mcp-"):
+                    continue
+                data.append({
+                    "name": toolset,
+                    "label": alias,
+                    "description": "MCP server tools",
+                    "enabled": alias in enabled_toolsets,
+                    "configured": alias in (config.get("mcp_servers") or {}),
+                    "tools": registry.get_tool_names_for_toolset(toolset),
+                })
         except Exception:
             logger.exception("GET /v1/toolsets failed")
             return _error_response("Failed to enumerate toolsets", 500, err_type="server_error")

@@ -1383,3 +1383,52 @@ class TestRecentSentTimestampRing:
         adapter._track_sent_timestamp({"timestamp": 3})
         # Both 1 and 2 should be evicted on TTL, only 3 remains
         assert list(adapter._recent_sent_timestamps.keys()) == [3]
+
+
+class TestSyncEchoTimestampTolerance:
+    """Regression coverage for the Note-to-Self echo loop (#135530): the send RPC result
+    timestamp and the SSE sentMessage.timestamp drift a few hundred ms apart, so echo
+    matching must tolerate the gap while still admitting real inbound messages."""
+
+    def _note_to_self_envelope(self, timestamp):
+        return {
+            "source": "+15551234567",
+            "timestamp": timestamp,
+            "syncMessage": {"sentMessage": {
+                "destinationNumber": "+15551234567",
+                "timestamp": timestamp,
+                "message": "Rate limited. Resets in ~4.8d.",
+            }},
+        }
+
+    def test_echo_with_drifted_timestamp_is_dropped(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._track_sent_timestamp({"timestamp": 1791531884763})  # RPC "target" timestamp
+        # SSE echo carries the "message" timestamp, 329ms later (issue journal values)
+        assert adapter._unwrap_sync_message(self._note_to_self_envelope(1791531885092)) is None
+
+    def test_far_timestamp_note_to_self_is_admitted(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._track_sent_timestamp({"timestamp": 1791531884763})
+        unwrapped = adapter._unwrap_sync_message(self._note_to_self_envelope(1791531884763 + 60_000))
+        assert unwrapped is not None and "dataMessage" in unwrapped
+
+    def test_exact_timestamp_echo_is_still_dropped(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._track_sent_timestamp({"timestamp": 1791531884763})
+        assert adapter._unwrap_sync_message(self._note_to_self_envelope(1791531884763)) is None
+
+    def test_consume_rejects_non_numeric_timestamps(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._track_sent_timestamp({"timestamp": 1791531884763})
+        assert adapter._consume_sent_timestamp(None) is False
+        assert adapter._consume_sent_timestamp("not-a-number") is False
+        assert adapter._consume_sent_timestamp(1791531884763 + 329) is True
+
+    def test_consume_pops_only_the_closest_record(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._track_sent_timestamp({"timestamp": 1791531880000})
+        adapter._track_sent_timestamp({"timestamp": 1791531890000})
+        assert adapter._consume_sent_timestamp(1791531890100) is True  # nearest match pops
+        assert 1791531880000 in adapter._recent_sent_timestamps  # far record survives
+        assert 1791531890000 not in adapter._recent_sent_timestamps

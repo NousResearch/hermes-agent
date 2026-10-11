@@ -212,6 +212,10 @@ class SignalAdapter(BasePlatformAdapter):
         self._recent_sent_timestamps: OrderedDict[int, float] = OrderedDict()
         self._max_recent_timestamps = 512
         self._recent_sent_ttl_seconds = 300.0
+        # The send RPC's result timestamp and the SSE sentMessage.timestamp are distinct clocks
+        # (journal-observed gap ~330ms between message and target timestamp), so echo matching
+        # must be tolerant rather than exact.
+        self._sent_timestamp_tolerance_ms = 2000
         # Separate FIFO of outbound timestamps: Signal quote.id is the quoted message's timestamp, so
         # replies to this bot are recognised after the echo was consumed.
         self._sent_message_timestamps: OrderedDict[str, None] = OrderedDict()
@@ -741,8 +745,24 @@ class SignalAdapter(BasePlatformAdapter):
             recent.popitem(last=False)
 
     def _consume_sent_timestamp(self, ts) -> bool:
-        """Pop a timestamp if it matches one we sent. Returns True on echo."""
-        return bool(ts) and self._recent_sent_timestamps.pop(ts, None) is not None
+        """Pop the closest recorded outbound timestamp within tolerance. Returns True on echo.
+
+        The send RPC's result timestamp and the SSE ``sentMessage.timestamp`` are not guaranteed
+        equal — linked-device sync carries separate message/target timestamps a few hundred
+        milliseconds apart — so an exact-key lookup lets our own Note-to-Self echo through and
+        starts a reply loop."""
+        try:
+            echo_ts = int(ts)
+        except (TypeError, ValueError):
+            return False
+        recent = self._recent_sent_timestamps
+        if not echo_ts or not recent:
+            return False
+        closest = min(recent, key=lambda recorded: abs(recorded - echo_ts))
+        if abs(closest - echo_ts) > self._sent_timestamp_tolerance_ms:
+            return False
+        recent.pop(closest)
+        return True
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """Typing indicator (called every ~2s by base.py's ``_keep_typing``). Only the first consecutive

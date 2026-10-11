@@ -502,13 +502,25 @@ def _resolve_backend_cdp(env: dict, task_id: Optional[str], session_name: str = 
         return None
 
     provider_name = type(provider).__name__
+    session: dict = {}
+
+    def _session_info(key: str) -> dict:
+        session.update(_get_session_info(key) or {})
+        return session
+
     err = _export_session_cdp(
-        env, _get_session_info, _backend_cache_key(task_id, session_name),
+        env, _session_info, _backend_cache_key(task_id, session_name),
         lambda e: (f"Cloud browser provider {provider_name} failed to provide a session: {e}. "
                    "Fix the provider configuration or switch backends via `hermes tools` → Browser Automation."),
         f"Cloud browser provider {provider_name} returned no CDP endpoint, so Browser Use mode "
         "cannot drive it. Switch to the built-in browser tools for this provider.",
     )
+    if err and session.get("fallback_from_cloud"):
+        # The provider failed (rate limit, quota, outage) and the session layer fell back to local
+        # Chromium, as it does for the built-in tools; that session has no CDP URL until it launches.
+        logger.warning("browser_exec: %s failed (%s); using local Chromium for this session",
+                       provider_name, session.get("fallback_reason"))
+        return _resolve_managed_chromium_cdp(env, task_id, session_name)
     # A provider browser keyed bu-named-<name> is exclusive to this session — the
     # own-tab preamble would just leak a blank tab into it.
     if err is None and session_name:

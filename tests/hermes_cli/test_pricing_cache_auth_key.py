@@ -7,6 +7,7 @@ so an anonymous read, and two different tokens, must not share a cache entry.
 from __future__ import annotations
 
 import json
+import time
 from unittest.mock import MagicMock
 
 import pytest
@@ -26,9 +27,11 @@ _FILTERED = ["vendor/allowed"]
 def _clear_pricing_cache():
     models_pricing._pricing_cache.clear()
     models_pricing._pricing_cache_retry_after.clear()
+    models_pricing._disk_cache_checked.clear()
     yield
     models_pricing._pricing_cache.clear()
     models_pricing._pricing_cache_retry_after.clear()
+    models_pricing._disk_cache_checked.clear()
 
 
 @pytest.fixture
@@ -209,3 +212,31 @@ class TestNousCatalogExpiry:
             lambda: now + _NOUS_CATALOG_TTL_SECONDS + 1,
         )
         assert peek_cached_pricing(BASE) == {}
+
+    def test_restart_does_not_resurrect_expired_ttl_catalog(self, monkeypatch, tmp_path):
+        """A persisted Nous policy allowlist must expire across a backend restart."""
+        monkeypatch.setattr(models_pricing, "_disk_cache_path", lambda: tmp_path / "pricing-cache.json")
+        key = BASE + models_pricing._pricing_auth_fingerprint("sk-test")
+        now = time.time()
+        monkeypatch.setattr(time, "time", lambda: now)
+        models_pricing._cache_catalog(key, {"allowed-model": {"prompt": "1"}}, ttl_seconds=300)
+
+        # A restart clears process memory; advancing wall time makes the persisted deadline stale.
+        models_pricing._pricing_cache.clear()
+        models_pricing._pricing_cache_retry_after.clear()
+        models_pricing._disk_cache_checked.clear()
+        monkeypatch.setattr(time, "time", lambda: now + 301)
+
+        assert models_pricing._cached_catalog(key) is None
+
+    def test_restart_keeps_valid_no_expiry_catalog(self, monkeypatch, tmp_path):
+        """Providers without policy TTLs remain restart-warm."""
+        monkeypatch.setattr(models_pricing, "_disk_cache_path", lambda: tmp_path / "pricing-cache.json")
+        key = BASE
+        catalog = {"provider/model": {"prompt": "1", "completion": "2"}}
+        models_pricing._cache_catalog(key, catalog)
+        models_pricing._pricing_cache.clear()
+        models_pricing._pricing_cache_retry_after.clear()
+        models_pricing._disk_cache_checked.clear()
+
+        assert models_pricing._cached_catalog(key) == catalog

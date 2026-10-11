@@ -10,8 +10,11 @@ intercepting.
 from __future__ import annotations
 
 import json
+import logging
 import os
+import threading
 import time
+from pathlib import Path
 import urllib.request
 from typing import Any, Optional
 from hermes_cli.models_reasoning_caps import _seed_reasoning_caps
@@ -29,11 +32,99 @@ _pricing_provider_cache_keys: dict[tuple[str, str], str] = {}
 _FAILED_CATALOG_TTL_SECONDS = 120.0
 
 _pricing_cache_retry_after: dict[str, float] = {}
+_disk_cache_checked: set[str] = set()
+_PRICING_DISK_CACHE_NAME = "pricing-cache.json"
+# The prewarm daemon thread and a foreground fetch can both persist a catalog; the
+# save is a read-modify-write of one JSON file, so without a lock the loser's
+# read drops the winner's entry from disk (last-writer-wins).
+_disk_cache_lock = threading.Lock()
+
+
+def _disk_cache_path() -> Path:
+    from hermes_constants import get_hermes_home
+
+    return get_hermes_home() / _PRICING_DISK_CACHE_NAME
+
+
+def _load_disk_catalog(cache_key: str) -> tuple[dict[str, dict[str, Any]], float | None] | None:
+    try:
+        with _disk_cache_path().open(encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, ValueError, TypeError):
+        return None
+    cached = payload.get(cache_key) if isinstance(payload, dict) else None
+    if not isinstance(cached, dict):
+        return None
+    # Older files, and no-expiry providers, contain the catalog directly.
+    if "expires_at" not in cached:
+        return cached, None
+    catalog = cached.get("catalog")
+    expires_at = cached.get("expires_at")
+    if not isinstance(catalog, dict):
+        return None
+    if expires_at is not None and not isinstance(expires_at, (int, float)):
+        return None
+    return catalog, float(expires_at) if expires_at is not None else None
+
+
+def _disk_cache_keys() -> list[str]:
+    """Every key persisted in the disk cache, in insertion order. The in-memory
+    dict is empty after a restart, so a cold process must learn which keys the
+    previous process wrote from the file itself (#131240)."""
+    try:
+        with _disk_cache_path().open(encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, ValueError, TypeError):
+        return []
+    return list(payload) if isinstance(payload, dict) else []
+
+
+def _save_disk_catalog(
+    cache_key: str,
+    result: dict[str, dict[str, Any]],
+    *,
+    expires_at: float | None = None,
+) -> None:
+    if not result:
+        return
+    path = _disk_cache_path()
+    try:
+        with _disk_cache_lock:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                with path.open(encoding="utf-8") as handle:
+                    payload = json.load(handle)
+            except (OSError, ValueError, TypeError):
+                payload = {}
+            if not isinstance(payload, dict):
+                payload = {}
+            payload[cache_key] = result
+            if expires_at is not None:
+                payload[cache_key] = {"catalog": result, "expires_at": expires_at}
+            tmp = path.with_suffix(".tmp")
+            with tmp.open("w", encoding="utf-8") as handle:
+                json.dump(payload, handle)
+            os.replace(tmp, path)
+    except OSError:
+        # A stale file is then indistinguishable from a warm one without this line.
+        logging.getLogger(__name__).debug("pricing disk cache write failed for %s", cache_key, exc_info=True)
+        return
 
 
 def _cached_catalog(cache_key: str) -> Optional[dict[str, dict[str, Any]]]:
     """The cached catalog for *cache_key*, or None to go fetch it."""
     cached = _pricing_cache.get(cache_key)
+    if cached is None and cache_key not in _disk_cache_checked:
+        _disk_cache_checked.add(cache_key)
+        loaded = _load_disk_catalog(cache_key)
+        if loaded is not None:
+            cached, expires_at = loaded
+            if expires_at is not None:
+                remaining = expires_at - time.time()
+                if remaining <= 0:
+                    return None
+                _pricing_cache_retry_after[cache_key] = time.monotonic() + remaining
+            _pricing_cache[cache_key] = cached
     if cached is None:
         return None
     retry_after = _pricing_cache_retry_after.get(cache_key)
@@ -52,7 +143,9 @@ def _cache_catalog(
     """Cache a catalog result, giving an empty one an expiry. *ttl_seconds* expires a non-empty
     result too — only for a catalog whose contents depend on server-side state the client cannot
     observe (an org's model policy can change while a long-lived process holds the entry)."""
+    expires_at = time.time() + ttl_seconds if result and ttl_seconds else None
     _pricing_cache[cache_key] = result
+    _save_disk_catalog(cache_key, result, expires_at=expires_at)
     if not result:
         _pricing_cache_retry_after[cache_key] = time.monotonic() + _FAILED_CATALOG_TTL_SECONDS
     elif ttl_seconds:
@@ -600,16 +693,49 @@ def pricing_cache_scope(
     return ""
 
 
+def _cached_only_nous_pricing() -> dict[str, dict[str, str]]:
+    """The persisted Nous catalog for this profile's endpoint, without any I/O.
+
+    The nous cache key is dynamic (base + credential fingerprint), and the map that
+    remembers it is process-local — after a backend restart a normal picker open
+    (``cached_only``) could not name the entry the previous process persisted (#131240).
+    Resolve the endpoint through ``pricing_cache_scope`` (config/persisted auth only,
+    never a fetch) and serve what the disk holds for that base — authenticated entries
+    newest-first, exactly ``peek_cached_pricing`` semantics — with the TTL enforced by
+    ``_cached_catalog`` so an expired org-policy allowlist never answers. The fetcher
+    may have keyed with the ``/v1`` suffix its caller passed, so both spellings match.
+    """
+    scope = pricing_cache_scope("nous")
+    if not scope:
+        return {}
+    roots = {scope.rstrip("/"), _strip_v1(scope.rstrip("/"))}
+    for key in reversed(_disk_cache_keys()):
+        if any(key == root or key.startswith(root + _PRICING_AUTH_KEY_PREFIX) for root in roots):
+            cached = _cached_catalog(key)
+            if cached:
+                return cached
+    return {}
+
+
 def _cached_only_pricing(normalized: str) -> dict[str, dict[str, str]]:
     """Process-resident pricing for *normalized* without any provider I/O."""
     from hermes_cli.models import _deepinfra_catalog_cache, _deepinfra_catalog_url, _pricing_profile_key
     if normalized == "deepinfra":
         cache_key, _url = _deepinfra_catalog_url()
-        return _fetch_deepinfra_pricing() if cache_key in _deepinfra_catalog_cache else {}
+        if cache_key in _deepinfra_catalog_cache:
+            return _fetch_deepinfra_pricing()
+        # A restart cleared the raw catalog cache; the derived pricing the previous
+        # process cached under the same key survives on disk (#131240).
+        return _cached_catalog(cache_key) or {}
     cache_key = _pricing_provider_cache_keys.get((_pricing_profile_key(), normalized))
-    if cache_key is None and normalized in ("openrouter", "ai-gateway", "fireworks"):
+    if cache_key is None and normalized in ("openrouter", "ai-gateway", "novita", "fireworks"):
         cache_key = _STATIC_PRICING_SCOPES[normalized]()
-    return (_cached_catalog(cache_key) or {}) if cache_key else {}
+    cached = (_cached_catalog(cache_key) or {}) if cache_key else {}
+    if cached or normalized != "nous":
+        return cached
+    # The key map is process-local and cold after a restart; the disk cache still
+    # names the entry the previous process wrote for this profile's endpoint.
+    return _cached_only_nous_pricing()
 
 
 def get_pricing_for_provider(
@@ -692,8 +818,14 @@ def _fetch_novita_pricing(timeout: float = 8.0, *, force_refresh: bool = False) 
 def _fetch_deepinfra_pricing(timeout: float = 5.0, *, force_refresh: bool = False) -> dict[str, dict[str, str]]:
     """DeepInfra chat-model pricing: ``input_tokens`` / ``output_tokens`` / ``cache_read_tokens`` in
     $/MTok → per-token ``prompt`` / ``completion`` / ``input_cache_read`` (cached by the by-tag
-    helper)."""
-    from hermes_cli.models import _fetch_deepinfra_models_by_tag
+    helper). The derived per-model pricing is also cached under the catalog's cache key, so a
+    restart-warmed picker read can price the row without the raw catalog (#131240)."""
+    from hermes_cli.models import _deepinfra_catalog_url, _fetch_deepinfra_models_by_tag
+    cache_key, _url = _deepinfra_catalog_url()
+    if not force_refresh:
+        cached = _cached_catalog(cache_key)
+        if cached:
+            return cached
     items = _fetch_deepinfra_models_by_tag("chat", timeout=timeout, force_refresh=force_refresh)
     result: dict[str, dict[str, str]] = {}
     for item in items or []:
@@ -708,7 +840,7 @@ def _fetch_deepinfra_pricing(timeout: float = 5.0, *, force_refresh: bool = Fals
         }
         if entry:
             result[item["id"]] = entry
-    return result
+    return _cache_catalog(cache_key, result) if result else result
 
 
 _PRICING_FETCHERS = {

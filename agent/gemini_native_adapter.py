@@ -171,7 +171,11 @@ def gemini_accepts_parameters_json_schema(base_url: str) -> bool:
 def probe_gemini_tier(
     api_key: str, base_url: str = DEFAULT_GEMINI_BASE_URL, *, model: str = "gemini-3.7-flash", timeout: float = 10.0
 ) -> str:
-    """Probe a Google AI Studio key → ``"free"`` | ``"paid"`` | ``"unknown"`` (probe failed; callers proceed without blocking)."""
+    """Probe a Google AI Studio key → ``"free"`` | ``"paid"`` | ``"unknown"``.
+
+    Unknown means the probe failed or returned no reliable tier signal;
+    callers proceed without blocking.
+    """
     key = (api_key or "").strip()
     if not key:
         return "unknown"
@@ -192,7 +196,9 @@ def probe_gemini_tier(
         pass
     if resp.status_code == 429:
         return "free" if "free_tier" in _response_text(resp).lower() else "paid"
-    return "paid" if 200 <= resp.status_code < 300 else "unknown"
+    # A successful generation validates the key, not the project's billing tier.
+    # Google can omit quota headers for both free and paid projects.
+    return "unknown"
 
 
 def _response_text(response: Any) -> str:

@@ -358,6 +358,10 @@ TOOL_USE_ENFORCEMENT_GUIDANCE = (
 
 # "muse" = Meta Muse Spark: on defaults it answers in prose with 0 tool calls and the turn closes on
 # finish_reason=stop (#96550).
+# "nemotron" is deliberately absent from this list and EXECUTION_GUIDANCE_MODELS. Forcing all three guidance
+# blocks on for Nemotron (5 runs per arm) changed pass rate by under 1 point on SWE-bench Verified, SWE-bench Pro
+# and GDPval, and by +3.7 points on Terminal-Bench 2.1, which was not significant per task (p = 0.14). A
+# Nemotron-specific block did no better. Traces show the model followed the guidance, so this is not a delivery bug.
 TOOL_USE_ENFORCEMENT_MODELS = ("gpt", "codex", "gemini", "gemma", "grok", "glm", "qwen", "deepseek", "muse")
 
 # Models that receive OPENAI_MODEL_EXECUTION_GUIDANCE when agent.execution_guidance is "auto" (agentic-eval

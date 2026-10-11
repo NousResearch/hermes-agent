@@ -233,7 +233,12 @@ def shutdown_mcp_servers(*, scope: Optional[str] = None, names: Optional[set] = 
         if not servers_snapshot:
             clear_selected_status()
         _clear_connect_cooldowns(None if wildcard else selected_status)
-    _loop._stop_mcp_loop(only_if_idle=not wildcard)
+    if _loop._stop_mcp_loop(only_if_idle=not wildcard):
+        # No MCP loop is left; the next discovery starts a new one. Cached OAuth providers are
+        # bound to the loop that just closed: drop them so the next connect rebuilds them on the
+        # new loop (tokens on disk are kept).
+        from tools.mcp_oauth_manager import get_manager
+        get_manager().clear_cached_providers()
     # A removed subset still shares its profile's log with the remaining servers.
     # Full/profile shutdown must also release handles left by completed CLI/UI probes.
     if names is None:

@@ -379,6 +379,19 @@ class MCPOAuthManager:
         with self._entries_lock:
             return self._entries.pop(self._key(server_name, hermes_home), None)
 
+    def clear_cached_providers(self) -> int:
+        """Drop every in-process provider, preserving persisted OAuth state; returns how many.
+        For when the MCP loop is replaced: each entry's ``lock`` and ``pending_401`` futures,
+        and the SDK provider's auth-flow state, are bound to the loop that created them, so a
+        provider carried into a new loop fails (``Lock ... is bound to a different event loop``)
+        or waits on state nothing can advance. The next connect cold-loads tokens from disk."""
+        with self._entries_lock:
+            count = len(self._entries)
+            self._entries.clear()
+        if count:
+            logger.info("MCP OAuth: cleared %d cached provider(s) after the MCP loop stopped", count)
+        return count
+
     async def invalidate_if_disk_changed(self, server_name: str, *, hermes_home: str | Path | None = None) -> bool:
         """Force the SDK provider to reload when the tokens file mtime changed (e.g. a cron refresh); True if so."""
         from tools.mcp_oauth import _get_token_dir, _safe_filename

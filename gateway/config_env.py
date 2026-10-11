@@ -553,6 +553,7 @@ _ENV_STEPS: tuple = (
         optional=(("user_id", "MATRIX_USER_ID"), ("password", "MATRIX_PASSWORD")),
         then=_matrix_e2ee,
     ),
+    _ReplyMode(Platform.MATRIX, "MATRIX_REPLY_TO_MODE"),
     _Home(Platform.MATRIX, "MATRIX_HOME_ROOM"),
     _Cred(
         Platform.EMAIL, ("EMAIL_ADDRESS", "EMAIL_PASSWORD", "EMAIL_IMAP_HOST", "EMAIL_SMTP_HOST"),

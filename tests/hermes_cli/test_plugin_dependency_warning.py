@@ -1,10 +1,11 @@
 """Discovery's missing-dependency warning covers the install surface, not one field.
 
-``python_dependencies`` is surfaced-only (never auto-installed), while the aliases
-:func:`pm.plugin_declarations.read_python_declaration` unions — ``pip_dependencies``
-on the manifest, pyproject dependencies — are what an install/update actually stages.
-A requirement that went missing from either family is the same operator problem, so
-both must warn at discovery (#136519).
+``install_requirements`` — the union of the manifest's ``pip_dependencies``/
+``python_dependencies`` aliases and a real pyproject's dependencies — is exactly
+what ``hermes pm`` stages into the venv, so a requirement missing from it is the
+same broken import the loader trips over (#136519). Markers survive that surface
+on purpose (uv evaluates them per target), so the probe must skip requirements
+whose marker does not hold on the running interpreter.
 """
 
 from __future__ import annotations
@@ -65,13 +66,36 @@ def test_both_fields_warn_once_without_duplicates(tmp_path, caplog, monkeypatch)
 
 def test_external_runtime_plugin_is_not_warned(tmp_path, caplog, monkeypatch):
     """An external-runtime plugin owns its interpreter; PM stages nothing, so missing
-    requirements there are not Hermes' to report."""
+    requirements there are not Hermes' to report — whichever field declares them."""
     monkeypatch.setattr("hermes_cli.plugins_loader._dist_installed", lambda req: False)
     manifest = _manifest_with(
         tmp_path,
-        "name: probe-plugin\npython_runtime: external\npip_dependencies: [slixmpp]\n",
+        "name: probe-plugin\npython_runtime: external\n"
+        "python_dependencies: [slixmpp]\npip_dependencies: [slixmpp]\n",
     )
     assert _probe(manifest, caplog) == []
+
+
+def test_marker_not_applicable_here_does_not_warn(tmp_path, caplog, monkeypatch):
+    """Markers survive ``install_requirements`` on purpose (uv evaluates them per target
+    Python/platform); a requirement whose marker never holds on the running interpreter
+    is not missing here, and ``pm repair`` could not clear a false warning for it."""
+    monkeypatch.setattr("hermes_cli.plugins_loader._dist_installed", lambda req: False)
+    manifest = _manifest_with(
+        tmp_path,
+        'name: probe-plugin\npython_dependencies: [\'pywin32; python_version < "3"\']\n',
+    )
+    assert _probe(manifest, caplog) == []
+
+
+def test_marker_applicable_here_still_warns(tmp_path, caplog, monkeypatch):
+    monkeypatch.setattr("hermes_cli.plugins_loader._dist_installed", lambda req: False)
+    manifest = _manifest_with(
+        tmp_path,
+        'name: probe-plugin\npip_dependencies: [\'slixmpp; python_version >= "3"\']\n',
+    )
+    warnings = _probe(manifest, caplog)
+    assert any("slixmpp" in w and "pm repair" in w for w in warnings), warnings
 
 
 def test_satisfied_dependencies_stay_quiet(tmp_path, caplog, monkeypatch):

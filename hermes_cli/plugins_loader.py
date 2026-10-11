@@ -199,25 +199,45 @@ def _dist_installed(req: str) -> Optional[bool]:
         return None
 
 
-def _declared_python_dependencies(manifest: PluginManifest) -> tuple[str, ...]:
-    """Every requirement the plugin declares, on PM's one effective surface.
+def _marker_applies(req: str) -> bool:
+    """Whether a requirement's environment marker holds on this interpreter.
 
-    ``python_dependencies`` is surfaced only (never auto-installed), while the aliases
-    :func:`pm.plugin_declarations.read_python_declaration` unions — ``pip_dependencies``
-    on the manifest, pyproject dependencies — are what an install/update actually stages
-    into the venv. A requirement missing from either family leaves the same broken import
-    for the loader to trip over, so both warn at discovery (#136519). An external-runtime
-    plugin owns its interpreter, and ``install_requirements`` already reports nothing for it.
+    ``install_requirements`` keeps markers on purpose (uv must evaluate them for the
+    target Python/platform), but the probe below runs on *this* interpreter, so a
+    requirement like ``pywin32; sys_platform == "win32"`` would otherwise warn as
+    missing on every Linux/macOS discovery — and ``pm repair`` could never clear it.
+    Unparseable requirements still apply: admission reports those, not this probe.
     """
-    deps = [req for req in manifest.python_dependencies if req and req.strip()]
+    try:
+        from packaging.requirements import Requirement
+    except ImportError:
+        return True
+    try:
+        marker = Requirement(req).marker
+    except Exception:
+        return True
+    return marker is None or marker.evaluate()
+
+
+def _declared_python_dependencies(manifest: PluginManifest) -> tuple[str, ...]:
+    """The requirements an install/update actually stages, on PM's one effective surface.
+
+    :func:`pm.plugin_declarations.read_python_declaration` unions the manifest's
+    ``pip_dependencies``/``python_dependencies`` aliases with a real pyproject's
+    dependencies, and ``install_requirements`` is exactly what ``hermes pm`` stages
+    into the venv — so a requirement missing from it is the same broken import the
+    loader trips over, and the warning's ``pm repair`` hint can always clear it (#136519).
+    An external-runtime plugin owns its interpreter and stages nothing, so it never
+    warns here.
+    """
     path = manifest.path
-    if path:
-        try:
-            from pm.plugin_declarations import read_python_declaration
-            deps.extend(read_python_declaration(Path(path)).install_requirements)
-        except (OSError, ValueError, TypeError):
-            pass  # a broken declaration is admission's to report, not discovery's
-    return tuple(dict.fromkeys(req.strip() for req in deps))
+    if not path:
+        return ()
+    try:
+        from pm.plugin_declarations import read_python_declaration
+        return read_python_declaration(Path(path)).install_requirements
+    except (OSError, ValueError, TypeError):
+        return ()  # a broken declaration is admission's to report, not discovery's
 
 
 class PluginLoaderMixin:
@@ -439,7 +459,7 @@ class PluginLoaderMixin:
         if not deps:
             return
         key = manifest_key(manifest)
-        missing = [req for req in deps if _dist_installed(req) is False]
+        missing = [req for req in deps if _marker_applies(req) and _dist_installed(req) is False]
         if missing:
             logger.warning(
                 "Plugin %s declares Python dependencies that are not "

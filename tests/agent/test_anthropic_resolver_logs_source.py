@@ -69,3 +69,56 @@ def test_api_key_without_subscription_login_stays_quiet_at_warning_level(
     assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
     # The stage is still recoverable from a debug run.
     assert any("ANTHROPIC_API_KEY" in r.getMessage() for r in caplog.records)
+
+
+def test_env_token_replaced_by_refreshable_login_attributes_source_to_the_file(
+        monkeypatch, caplog, resolver_env):
+    """Source attribution follows the credential actually returned. A static env OAuth token
+    that ``_prefer_refreshable_claude_code_token`` swaps for the refreshable file must be
+    logged as the file, not the env."""
+    monkeypatch.setenv("ANTHROPIC_TOKEN", "sk-ant-oat01-static-env-not-a-secret")
+    monkeypatch.setattr(ac, "read_claude_code_credentials",
+                        lambda: {"accessToken": SUBSCRIPTION_ACCESS, "refreshToken": "rt-1"})
+    monkeypatch.setattr(ac, "_resolve_claude_code_token_from_credentials",
+                        lambda creds: SUBSCRIPTION_ACCESS)
+
+    with caplog.at_level(logging.DEBUG, logger=ac.__name__):
+        assert ac.resolve_anthropic_token() == SUBSCRIPTION_ACCESS
+    sources = [r.getMessage() for r in caplog.records if "Anthropic token source" in r.getMessage()]
+    assert len(sources) == 1, sources
+    assert "credential file" in sources[0]
+    assert not sources[0].startswith("Anthropic token source: ANTHROPIC_TOKEN")
+
+
+def test_shadow_warning_honours_adopt_external_logins_opt_out(monkeypatch, caplog, resolver_env):
+    """``auth.adopt_external_logins: false`` means the Claude Code login is unavailable on
+    purpose; telling the user to unset the key would remove the only credential allowed."""
+    _write_subscription_login(resolver_env)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", API_KEY)
+    from agent import credential_sources
+    monkeypatch.setattr(credential_sources, "adopt_external_logins_enabled", lambda: False)
+
+    with caplog.at_level(logging.DEBUG, logger=ac.__name__):
+        assert ac.resolve_anthropic_token() == API_KEY
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+
+def test_shadow_warning_fires_once_under_concurrent_resolves(monkeypatch, caplog, resolver_env):
+    import threading
+    _write_subscription_login(resolver_env)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", API_KEY)
+    n = 8
+    barrier = threading.Barrier(n)
+
+    def _resolve():
+        barrier.wait()
+        ac.resolve_anthropic_token()
+
+    with caplog.at_level(logging.DEBUG, logger=ac.__name__):
+        threads = [threading.Thread(target=_resolve) for _ in range(n)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1, [r.getMessage() for r in warnings]

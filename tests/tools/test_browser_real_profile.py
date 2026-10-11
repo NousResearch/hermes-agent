@@ -32,6 +32,11 @@ def _auth_db(path, value=None):
         return conn.execute("select value from marker").fetchone()[0]
 
 
+def _asks_for_cdp_url(argvs):
+    """True when any agent-browser argv is ``get cdp-url`` WITHOUT ``--cdp`` (spawns a stub Chrome)."""
+    return any("get" in a and "cdp-url" in a and "--cdp" not in a for a in argvs)
+
+
 class TestRealProfileResolvers:
 
 
@@ -245,7 +250,10 @@ class TestRealProfileCdpLaunch:
         self._reset()
         captured = {}
 
+        captured["argvs"] = []
+
         def fake_agent_browser_spawn(argv, env, socket_dir, tag):
+            captured["argvs"].append(argv)
             captured["argv"] = argv
             captured["env"] = env
             return Mock(wait=Mock(return_value=0), returncode=0)
@@ -264,13 +272,15 @@ class TestRealProfileCdpLaunch:
              patch("hermes_cli.browser_connect.snapshot_real_profile", return_value=(str(tmp_path), None)), \
              patch("hermes_cli.browser_connect.chromium_executable", return_value="/usr/bin/chrome"), \
              patch.object(bt.subprocess, "Popen", side_effect=fake_popen), \
-             patch.object(bt_real_profile, "_agent_browser_get_cdp",
-                          side_effect=[None, "http://127.0.0.1:41000"]), \
              patch.object(bt_install, "_find_agent_browser", return_value="/usr/bin/agent-browser"), \
              patch.object(bt_session, "_popen_agent_browser", side_effect=fake_agent_browser_spawn), \
              patch.object(bt, "_socket_safe_tmpdir", return_value=str(tmp_path)), \
              patch.object(bt_cloud, "_is_headed_mode", return_value=False):
-            bt_real_profile._real_profile_cdp()
+            cdp, _err = bt_real_profile._real_profile_cdp()
+        assert cdp == "http://127.0.0.1:41000"
+        # The attach must never ask the daemon for its cdp-url: without ``--cdp`` the daemon
+        # launches its own throwaway headless Chrome (~1 GB) that lives as long as this process.
+        assert not _asks_for_cdp_url(captured["argvs"])
         # The chrome launch itself is headless (no window, no focus steal).
         assert "--headless=new" in captured["chrome_argv"]
         # agent-browser attaches, it does not launch.
@@ -285,39 +295,50 @@ class TestRealProfileCdpLaunch:
         assert "AGENT_BROWSER_IDLE_TIMEOUT_MS" not in captured["env"]
         self._reset()
 
-    def test_reuses_only_session_on_our_copy_dir(self, tmp_path):
-        """A live session on a DIFFERENT dir (stale/throwaway) is closed, not reused."""
+    def test_attach_closes_stale_session_first_and_never_queries_cdp_url(self, tmp_path):
+        """A session left from an earlier attach ignores a new ``--cdp`` (live) or fails the
+        open (dead Chrome), so it is closed first; the endpoint comes from DevToolsActivePort,
+        never from ``get cdp-url`` (which spawns a throwaway Chrome when issued without --cdp)."""
         import tools.browser_tool as bt
         self._reset()
-        proc = Mock(return_value=None, returncode=0, stdout="", stderr="")
-        closed = {"n": 0}
+        (tmp_path / "DevToolsActivePort").write_text("41000\n/devtools/browser/x\n")
+        argvs = []
 
-        class FakeChrome:
-            def poll(self):
-                return None
+        def fake_spawn(argv, env, socket_dir, tag):
+            argvs.append(argv)
+            return Mock(wait=Mock(return_value=0), returncode=0)
 
-        def fake_popen(argv, **kw):
-            (tmp_path / "DevToolsActivePort").write_text("41000\n/devtools/browser/x\n")
-            return FakeChrome()
-
-        with patch.object(bt_cloud, "_use_real_profile", return_value=True), \
-             patch("hermes_cli.browser_connect.detect_default_chromium", return_value="chrome"), \
-             patch("hermes_cli.browser_connect.snapshot_real_profile", return_value=(str(tmp_path), None)), \
-             patch("hermes_cli.browser_connect.chromium_executable", return_value="/usr/bin/chrome"), \
-             patch.object(bt.subprocess, "Popen", side_effect=fake_popen), \
-             patch.object(bt_real_profile, "_agent_browser_get_cdp",
-                          side_effect=["http://127.0.0.1:5000", "http://127.0.0.1:41000"]), \
-             patch.object(bt_real_profile, "_cdp_http_ready", return_value=True), \
-             patch.object(bt_real_profile, "_cdp_on_data_dir", return_value=False), \
-             patch.object(bt_real_profile, "_agent_browser_close_session",
-                          side_effect=lambda s: closed.__setitem__("n", closed["n"] + 1)), \
-             patch.object(bt_install, "_find_agent_browser", return_value="/usr/bin/agent-browser"), \
-             patch.object(bt_real_profile, "_capture_agent_browser_cli", return_value=proc), \
-             patch.object(bt_cloud, "_is_headed_mode", return_value=False):
-            cdp, _err = bt_real_profile._real_profile_cdp()
-        assert closed["n"] == 1  # stale wrong-dir session was closed
-        assert cdp == "http://127.0.0.1:41000"
+        with patch.object(bt_install, "_find_agent_browser", return_value="/usr/bin/agent-browser"), \
+             patch.object(bt_session, "_popen_agent_browser", side_effect=fake_spawn), \
+             patch.object(bt, "_socket_safe_tmpdir", return_value=str(tmp_path)):
+            cdp, err = bt_real_profile._attach_agent_browser_to_real_profile(41000, str(tmp_path))
+        assert (cdp, err) == ("http://127.0.0.1:41000", None)
+        assert [a[3:] for a in argvs] == [
+            ["close"], ["--cdp", "41000", "open", "about:blank"],
+        ]
+        assert not _asks_for_cdp_url(argvs)
         self._reset()
+
+    def test_attach_endpoint_prefers_devtoolsactiveport(self, tmp_path):
+        """DevToolsActivePort is authoritative for OUR Chrome; ``port`` is the fallback."""
+        with patch.object(bt_real_profile, "_agent_browser_close_session"), \
+             patch.object(bt_install, "_find_agent_browser", return_value="/usr/bin/agent-browser"), \
+             patch.object(bt_real_profile, "_capture_agent_browser_cli",
+                          return_value=Mock(returncode=0, stdout="", stderr="")):
+            (tmp_path / "DevToolsActivePort").write_text("41001\n/devtools/browser/x\n")
+            assert bt_real_profile._attach_agent_browser_to_real_profile(41000, str(tmp_path)) == \
+                ("http://127.0.0.1:41001", None)
+            (tmp_path / "DevToolsActivePort").unlink()
+            assert bt_real_profile._attach_agent_browser_to_real_profile(41000, str(tmp_path)) == \
+                ("http://127.0.0.1:41000", None)
+
+    def test_attach_failure_is_reported(self, tmp_path):
+        with patch.object(bt_real_profile, "_agent_browser_close_session"), \
+             patch.object(bt_install, "_find_agent_browser", return_value="/usr/bin/agent-browser"), \
+             patch.object(bt_real_profile, "_capture_agent_browser_cli",
+                          return_value=Mock(returncode=1, stdout="", stderr="Auto-launch failed: boom\n")):
+            cdp, err = bt_real_profile._attach_agent_browser_to_real_profile(41000, str(tmp_path))
+        assert cdp is None and "boom" in err
 
     @pytest.mark.parametrize("live_browser_id", ["/devtools/browser/x", "/devtools/browser/other"])
     def test_reattaches_to_surviving_chrome_instead_of_overlaying_its_profile(self, tmp_path, live_browser_id):
@@ -334,7 +355,6 @@ class TestRealProfileCdpLaunch:
              patch("hermes_cli.browser_connect.real_profile_copy_dir", return_value=str(tmp_path)), \
              patch("hermes_cli.browser_connect.snapshot_real_profile", return_value=(None, "boom")) as snapshot, \
              patch("requests.get", return_value=version), \
-             patch.object(bt_real_profile, "_agent_browser_get_cdp", return_value=None), \
              patch.object(bt_real_profile, "_attach_agent_browser_to_real_profile",
                           return_value=("http://127.0.0.1:41000", None)) as attach:
             cdp, err = bt_real_profile._real_profile_cdp()
@@ -347,10 +367,42 @@ class TestRealProfileCdpLaunch:
             snapshot.assert_called_once()
         self._reset()
 
-    def test_cdp_on_data_dir_matches_devtoolsactiveport(self, tmp_path):
-        (tmp_path / "DevToolsActivePort").write_text("41000\n/devtools/browser/x\n")
-        assert bt_real_profile._cdp_on_data_dir("http://127.0.0.1:41000", str(tmp_path))
-        assert not bt_real_profile._cdp_on_data_dir("http://127.0.0.1:9999", str(tmp_path))
+    def test_reuse_probe_runs_no_agent_browser_command(self, tmp_path):
+        """The reuse probe must not touch the agent-browser daemon: ``get cdp-url`` without
+        ``--cdp`` makes a daemon with nothing attached launch a throwaway headless Chrome. With
+        nothing running on the copy dir, no daemon command is issued before our Chrome is
+        launched; with a survivor, the only commands are the close + ``--cdp`` attach."""
+        import tools.browser_tool as bt
+        self._reset()
+        events = []
+
+        class FakeChrome:
+            def poll(self):
+                return None
+
+        def fake_popen(argv, **kw):
+            events.append("chrome-launch")
+            (tmp_path / "DevToolsActivePort").write_text("41000\n/devtools/browser/x\n")
+            return FakeChrome()
+
+        def fake_spawn(argv, env, socket_dir, tag):
+            events.append(argv[3:])
+            return Mock(wait=Mock(return_value=0), returncode=0)
+
+        with patch.object(bt_cloud, "_use_real_profile", return_value=True), \
+             patch("hermes_cli.browser_connect.detect_default_chromium", return_value="chrome"), \
+             patch("hermes_cli.browser_connect.real_profile_copy_dir", return_value=str(tmp_path)), \
+             patch("hermes_cli.browser_connect.snapshot_real_profile", return_value=(str(tmp_path), None)), \
+             patch("hermes_cli.browser_connect.chromium_executable", return_value="/usr/bin/chrome"), \
+             patch.object(bt.subprocess, "Popen", side_effect=fake_popen), \
+             patch.object(bt_install, "_find_agent_browser", return_value="/usr/bin/agent-browser"), \
+             patch.object(bt_session, "_popen_agent_browser", side_effect=fake_spawn), \
+             patch.object(bt, "_socket_safe_tmpdir", return_value=str(tmp_path)), \
+             patch.object(bt_cloud, "_is_headed_mode", return_value=False):
+            cdp, err = bt_real_profile._real_profile_cdp()
+        assert (cdp, err) == ("http://127.0.0.1:41000", None)
+        assert events == ["chrome-launch", ["close"], ["--cdp", "41000", "open", "about:blank"]]
+        self._reset()
 
 
 class TestAgentBrowserCliCapture:
@@ -367,8 +419,8 @@ class TestAgentBrowserCliCapture:
         "sys.stderr.write('daemon warm\\n')\n"
     )
 
-    def test_get_cdp_returns_despite_grandchild_holding_stdio(self, tmp_path):
-        """The blocking frame from the #96731 py-spy capture: get cdp-url."""
+    def test_session_cmd_returns_despite_grandchild_holding_stdio(self, tmp_path):
+        """The blocking frame from the #96731 py-spy capture: a daemon-backed session command."""
         import sys
         import time
 
@@ -378,16 +430,17 @@ class TestAgentBrowserCliCapture:
              patch.object(bt_session, "_agent_browser_argv", return_value=[sys.executable, str(stub)]), \
              patch.object(bt_real_profile, "_real_profile_daemon_env", return_value=({}, str(tmp_path))):
             start = time.monotonic()
-            cdp = bt_real_profile._agent_browser_get_cdp("hermes-real-profile")
+            proc = bt_real_profile._agent_browser_session_cmd(
+                "hermes-real-profile", "close", log_label="session close")
             elapsed = time.monotonic() - start
 
-        assert cdp == "http://127.0.0.1:41022"
+        assert proc is not None and proc.stdout == "ws://127.0.0.1:41022/devtools/browser/stub"
         # Pipe capture would stall here for the full 15s timeout on POSIX and
         # hang past the outer tool deadline on Windows.
-        assert elapsed < 10, f"get cdp-url stalled {elapsed:.1f}s behind a grandchild"
+        assert elapsed < 10, f"session command stalled {elapsed:.1f}s behind a grandchild"
 
     @pytest.mark.platforms("linux")
-    def test_get_cdp_cleans_capture_files_despite_grandchild(self, tmp_path):
+    def test_session_cmd_cleans_capture_files_despite_grandchild(self, tmp_path):
         """POSIX: the capture files are unlinked even while the daemon
         grandchild still holds them open. On Windows the inherited handles
         keep the files until the daemon exits and the unlink is best-effort
@@ -401,9 +454,10 @@ class TestAgentBrowserCliCapture:
         with patch.object(bt_install, "_find_agent_browser", return_value=str(stub)), \
              patch.object(bt_session, "_agent_browser_argv", return_value=[sys.executable, str(stub)]), \
              patch.object(bt_real_profile, "_real_profile_daemon_env", return_value=({}, str(tmp_path))):
-            cdp = bt_real_profile._agent_browser_get_cdp("hermes-real-profile")
+            proc = bt_real_profile._agent_browser_session_cmd(
+                "hermes-real-profile", "close", log_label="session close")
 
-        assert cdp == "http://127.0.0.1:41022"
+        assert proc is not None and proc.stdout == "ws://127.0.0.1:41022/devtools/browser/stub"
         assert not list(tmp_path.glob("_std*_rp-*"))
 
     def test_capture_cli_surfaces_stdout_stderr_and_exit_code(self, tmp_path):
@@ -964,22 +1018,29 @@ class TestReviewRound3:
 
     # ── ① overlay must not run before the reuse check (live-browser safety) ──
     def test_reuse_skips_snapshot_overlay(self, tmp_path):
-        """When a live session on our copy dir is reused, snapshot_real_profile
+        """When a live Chrome on our copy dir is reused, snapshot_real_profile
         must NOT be called — otherwise it rewrites cookie DBs under a live
-        browser."""
+        browser. The live Chrome is found via DevToolsActivePort, never by asking
+        the agent-browser daemon (which would spawn a throwaway Chrome)."""
         import tools.browser_tool as bt
         bt._real_profile_cdp_cache.clear()
+        (tmp_path / "DevToolsActivePort").write_text("9251\n/devtools/browser/x\n")
+        version = Mock()
+        version.json.return_value = {"webSocketDebuggerUrl": "ws://127.0.0.1:9251/devtools/browser/x"}
+        argvs = []
         with patch.object(bt_cloud, "_use_real_profile", return_value=True), \
              patch.object(bt_lightpanda_fallback, "_using_lightpanda_engine", return_value=False), \
              patch("hermes_cli.browser_connect.detect_default_chromium", return_value="chrome"), \
              patch("hermes_cli.browser_connect.real_profile_copy_dir", return_value=str(tmp_path)), \
-             patch.object(bt_real_profile, "_agent_browser_get_cdp", return_value="http://127.0.0.1:9251"), \
-             patch.object(bt_real_profile, "_cdp_http_ready", return_value=True), \
-             patch.object(bt_real_profile, "_cdp_on_data_dir", return_value=True), \
+             patch("requests.get", return_value=version), \
+             patch.object(bt_real_profile, "_capture_agent_browser_cli",
+                          side_effect=lambda argv, **kw: argvs.append(argv) or Mock(returncode=0, stdout="", stderr="")), \
+             patch.object(bt_install, "_find_agent_browser", return_value="/usr/bin/agent-browser"), \
              patch("hermes_cli.browser_connect.snapshot_real_profile") as snap:
             cdp, err = bt_real_profile._real_profile_cdp()
         assert cdp == "http://127.0.0.1:9251" and err is None
         snap.assert_not_called()  # ← the fix: no overlay while a live browser owns the dir
+        assert not _asks_for_cdp_url(argvs)
         bt._real_profile_cdp_cache.clear()
 
 

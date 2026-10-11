@@ -15,7 +15,7 @@ import site
 import sys
 from pathlib import Path
 
-from pm.environments import install_state_dir, selected_venv, site_packages, venv_bin_dir
+from pm.environments import install_state_dir, selected_venv, site_packages, venv_bin_dir, venv_python_version
 
 
 def running_environment(project_root: Path) -> Path | None:
@@ -69,6 +69,9 @@ def adopt(previous: Path, selected: Path, running: Path) -> bool:
         return False  # An update landed under this process; its code no longer matches the selection.
     if selected.resolve() == previous.resolve():
         return True
+    built = venv_python_version(selected)
+    if built is not None and built != (sys.version_info.major, sys.version_info.minor):
+        return False  # built for another interpreter; only a restart (through activate_dependencies) can load it
     if _loaded_from_changed(previous, selected):
         return False
     lease_generation(selected)  # The old lease stays: loaded modules keep reading from it.

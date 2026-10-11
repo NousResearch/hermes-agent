@@ -417,6 +417,34 @@ def test_monitor_script_failure_is_error_not_change(hermes_env, monkeypatch):
     assert get_job(job["id"])["monitor_state"]["last_output_hash"] == stored_hash
 
 
+def test_monitor_script_is_cancellable_like_sibling_launches(hermes_env, monkeypatch):
+    """A set cancel_event must tree-kill the monitor source (#126786).
+
+    ``_prepare_job_prompt`` owns the run's ``cancel_event``; dropping it on the monitor branch left
+    the source as the only cron script launch that a lost fire claim / draining gateway could not
+    stop, parking the worker until the script's own timeout and reporting the job wedged."""
+    import threading
+
+    from cron.scheduler import run_job
+
+    job = _make_monitor_job(hermes_env, "sleep 30\n")
+    observed: dict = {}
+    _install_agent_stubs(monkeypatch, observed)
+
+    cancel = threading.Event()
+    cancel.set()
+    success, doc, final, error = run_job(job, cancel_event=cancel)
+
+    # Cancelled, not parked for the full sleep: a source failure, never an agent run.
+    assert success is False
+    assert error is not None
+    assert "cancelled" in error
+    assert observed["agent_runs"] == 0
+    # Nothing persisted — a later healthy tick still treats the source as a first run.
+    from cron.monitor import _snapshot_path
+    assert not _snapshot_path(job["id"]).exists()
+
+
 # ---------------------------------------------------------------------------
 # cronjob tool: API-layer wiring
 # ---------------------------------------------------------------------------

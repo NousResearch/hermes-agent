@@ -22,6 +22,7 @@ from tools.website_policy import check_website_access
 logger = logging.getLogger(__name__)
 
 _FIRECRAWL_CLOUD_API_URL = "https://api.firecrawl.dev"
+_FIRECRAWL_REQUEST_TIMEOUT_S = 60.0
 
 # The SDK costs ~200ms of imports on a cold CLI; defer to first use (tests patch ``Firecrawl`` here).
 _FIRECRAWL_CLS_CACHE: Optional[type] = None
@@ -216,7 +217,11 @@ def _get_firecrawl_client(capability: Optional[str] = None) -> Any:
     cached = getattr(wt, "_firecrawl_client", None)
     if cached is not None and getattr(wt, "_firecrawl_client_config", None) == client_config:
         return cached
-    wt._firecrawl_client = _KeylessFirecrawlClient(api_url=kwargs["api_url"]) if client_mode == "keyless" else Firecrawl(**kwargs)
+    wt._firecrawl_client = (
+        _KeylessFirecrawlClient(api_url=kwargs["api_url"])
+        if client_mode == "keyless"
+        else Firecrawl(**kwargs, timeout=_FIRECRAWL_REQUEST_TIMEOUT_S)
+    )
     wt._firecrawl_client_config = client_config
     return wt._firecrawl_client
 

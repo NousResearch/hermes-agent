@@ -82,8 +82,27 @@ class TestFirecrawlClientConfig:
                     mock_fc.assert_called_once_with(
                         api_key="nous-token",
                         api_url="https://firecrawl-gateway.nousresearch.com",
+                        timeout=60.0,
                     )
                     assert result is mock_fc.return_value
+
+    @pytest.mark.parametrize(
+        ("credentials", "expected"),
+        [
+            ({"FIRECRAWL_API_KEY": "fc-test"}, {"api_key": "fc-test"}),
+            ({"FIRECRAWL_API_URL": "https://firecrawl.local/"}, {"api_url": "https://firecrawl.local"}),
+        ],
+    )
+    def test_direct_sdk_client_uses_bounded_request_timeout(self, credentials, expected):
+        """Keyed and self-hosted SDK clients must not wait for the outer tool deadline."""
+        with patch.dict(os.environ, credentials):
+            with patch("plugins.web.firecrawl.provider.Firecrawl") as mock_fc:
+                from plugins.web.firecrawl.provider import _get_firecrawl_client
+
+                result = _get_firecrawl_client()
+
+        mock_fc.assert_called_once_with(**expected, timeout=60.0)
+        assert result is mock_fc.return_value
 
 
     # ── Singleton caching ────────────────────────────────────────────

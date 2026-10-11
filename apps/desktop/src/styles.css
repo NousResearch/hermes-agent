@@ -1867,6 +1867,26 @@ body.guest-pointer-lock :is(webview, iframe) {
 
 /* The sticky prompt owns no field paint. Clip only the scrolling siblings
    behind it, including the top gap, so bubble transparency still works. */
+/* REGISTERED AND NON-INHERITED ON PURPOSE — do not remove this block.
+   use-sticky-prompt-clip.ts writes this value on every scroll frame, onto the
+   very element that consumes it below, and those elements are whole turns
+   (markdown, code, tool output). An UNREGISTERED custom property cannot be
+   known to be uninherited, so Blink restyles the element AND every descendant
+   whenever it changes: on a scroll that is a full-subtree style recalculation
+   per frame. Measured on a real long-thread scroll (Chrome trace, 9.2s):
+   195 UpdateLayoutTree events totalling 4,646ms, worst single 189ms, with the
+   reads that force the flush attributed 3,706ms of getBoundingClientRect.
+
+   Declaring the syntax makes the value a typed <length>; `inherits: false`
+   lets Blink restyle just this element, which is all the clip needs — nothing
+   but this rule reads the value. The initial value keeps an unset property
+   equivalent to no clip, as before. */
+@property --sticky-prompt-clip {
+  syntax: '<length>';
+  inherits: false;
+  initial-value: 0px;
+}
+
 [data-sticky-prompt-clip] {
   clip-path: inset(var(--sticky-prompt-clip) 0 0);
 }

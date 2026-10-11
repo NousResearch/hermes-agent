@@ -42,6 +42,9 @@ WS_RETRY_DELAY_MAX = 60.0
 HEALTH_CHECK_INTERVAL = 30.0
 HEALTH_CHECK_STALE_THRESHOLD = 300.0
 _CORR_PREFIX = "hermes-"  # marks requests we sent so our own echoes can be ignored
+# Grace period before a deferred XFTP transfer falls back to the inline thumbnail:
+# long enough for a large photo over Tor, short enough that the user notices silence.
+_TRANSFER_FALLBACK_SECONDS = 90.0
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
 _AUDIO_EXTS = {".mp3", ".wav", ".ogg", ".m4a", ".aac", ".opus"}
 _VOICE_TAG_EXTS = {".ogg", ".mp3", ".wav", ".m4a", ".opus"}  # MEDIA: tags sent as voice notes
@@ -165,6 +168,8 @@ class SimplexAdapter(BasePlatformAdapter):
         self._pending_corr_ids: set = set()  # cosmetic echo filter: corrIds we minted, bounded
         self._max_pending_corr = 200
         self._pending_file_transfers: dict[int, dict] = {}  # awaiting rcvFileComplete, by fileId
+        self._pending_transfer_tasks: dict[int, asyncio.Task] = {}  # inline-fallback watchdog per fileId
+        self._fallback_delivery_tasks: set[asyncio.Task] = set()  # refs to inline-fallback deliveries
         self._pending_responses: dict[str, asyncio.Future] = {}  # awaited command replies
         self._corr_counter = 0
         # SimpleX has no client-side split, so the split delay equals the plain one.
@@ -214,6 +219,11 @@ class SimplexAdapter(BasePlatformAdapter):
         self._pending_text_batch_tasks.clear()
         self._pending_text_batches.clear()
         self._pending_responses.clear()
+        for task in self._pending_transfer_tasks.values():
+            if not task.done():
+                task.cancel()
+        self._pending_transfer_tasks.clear()
+        self._pending_file_transfers.clear()
         self._mark_disconnected()
         logger.info("SimpleX: disconnected")
 
@@ -298,7 +308,7 @@ class SimplexAdapter(BasePlatformAdapter):
         rcv_file = resp.get("rcvFileTransfer", {}) or {}
         if (file_id := rcv_file.get("fileId") if isinstance(rcv_file, dict) else None) is not None:
             logger.debug("SimpleX: rcvFileDescrReady for fileId=%s — sending /freceive", file_id)
-            await self._send_fire_and_forget(f"/freceive {file_id}")
+            await self._request_file(file_id)
 
     async def _on_new_chat_items(self, resp: dict) -> None:
         chat_items = resp.get("chatItems", []) or []
@@ -315,6 +325,7 @@ class SimplexAdapter(BasePlatformAdapter):
         file_id = file_info.get("fileId") if isinstance(file_info, dict) else None
         if file_id is None or file_id not in self._pending_file_transfers:
             return
+        self._cancel_transfer_watchdog(file_id)
         pending = self._pending_file_transfers.pop(file_id)
         file_source = file_info.get("fileSource", {}) or {}
         file_path = file_source.get("filePath") if isinstance(file_source, dict) else None
@@ -404,7 +415,21 @@ class SimplexAdapter(BasePlatformAdapter):
             ):
                 logger.info("SimpleX: file %d not yet received, accepting transfer", file_id)
                 self._pending_file_transfers[file_id] = chat_item
-                await self._send_fire_and_forget(f"/freceive {file_id}")
+                accepted = await self._request_file(file_id)
+                if accepted is False:
+                    # /freceive was rejected (e.g. fileNotApproved: the sender's XFTP
+                    # server is unknown to this daemon). The transfer will never
+                    # complete — fall back to the inline thumbnail now. The exact
+                    # daemon error is logged by _request_file.
+                    logger.warning(
+                        "SimpleX: file %d rejected by daemon, falling back to inline image",
+                        file_id)
+                    self._deliver_pending_inline(file_id)
+                else:
+                    # Watchdog: if the transfer stalls (no rcvFileComplete), deliver
+                    # the inline-thumbnail version after a grace period so the
+                    # message still arrives.
+                    self._start_transfer_watchdog(file_id)
                 return
             if file_path:
                 media_urls.append(file_path)
@@ -462,6 +487,85 @@ class SimplexAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.warning("SimpleX: WS send error: %s", e)
 
+    async def _request_file(self, file_id: int) -> Optional[bool]:
+        """Send ``/freceive <id>`` with a corrId and await the daemon's reply.
+
+        The daemon replies with ``cmdOk``/``chatCmdError`` (e.g. ``fileNotApproved``
+        when the sender's XFTP server is unknown). Returns True on acceptance,
+        False on an explicit error, None when no reply arrived (fire-and-forget
+        semantics for older daemons).
+        """
+        try:
+            resp = await self._send_command(f"/freceive {file_id}", timeout=10.0)
+        except Exception:
+            logger.exception("SimpleX: /freceive %d send failed", file_id)
+            return None
+        if resp is None:
+            return None
+        err = resp.get("chatError") or {}
+        if resp.get("type") == "chatCmdError" or err:
+            logger.warning("SimpleX: /freceive %d rejected: %s", file_id,
+                           json.dumps(err)[:200])
+            return False
+        return True
+
+    def _start_transfer_watchdog(self, file_id: int) -> None:
+        """If the XFTP transfer hasn't completed after a grace period, deliver the
+        pending message using its inline thumbnail so it isn't lost silently."""
+        self._cancel_transfer_watchdog(file_id)
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:  # not inside a coroutine — nothing to schedule against
+            logger.error("SimpleX: no running loop, watchdog for file %d not started", file_id)
+            return
+        self._pending_transfer_tasks[file_id] = loop.create_task(
+            self._transfer_watchdog(file_id))
+
+    def _cancel_transfer_watchdog(self, file_id: int) -> None:
+        task = self._pending_transfer_tasks.pop(file_id, None)
+        if task and not task.done():
+            task.cancel()
+
+    async def _transfer_watchdog(self, file_id: int) -> None:
+        try:
+            await asyncio.sleep(_TRANSFER_FALLBACK_SECONDS)
+        except asyncio.CancelledError:
+            return
+        self._pending_transfer_tasks.pop(file_id, None)
+        if file_id in self._pending_file_transfers:
+            logger.warning(
+                "SimpleX: file %d transfer stalled after %ds, delivering inline thumbnail",
+                file_id, _TRANSFER_FALLBACK_SECONDS)
+            self._deliver_pending_inline(file_id)
+
+    def _deliver_pending_inline(self, file_id: int) -> None:
+        """Deliver a deferred chat item right now, using the inline thumbnail.
+
+        Strips the ``file`` sibling so ``_handle_chat_item`` takes the
+        ``msgContent.image`` data-URI fallback path instead of deferring again.
+        Scheduling errors are logged, never raised (best-effort delivery)."""
+        pending = self._pending_file_transfers.pop(file_id, None)
+        self._cancel_transfer_watchdog(file_id)
+        if pending is None:
+            return
+        item_data = pending.get("chatItem", {}) or pending
+        item_data.pop("file", None)
+
+        async def _run():
+            try:
+                await self._safe_handle_chat_item(pending,
+                                                  "SimpleX: error delivering inline image fallback")
+            except Exception:
+                logger.exception("SimpleX: inline-image fallback failed for file %d", file_id)
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:  # not inside a coroutine — cannot schedule delivery
+            logger.error("SimpleX: no running loop, inline fallback for file %d not scheduled", file_id)
+            return
+        task = loop.create_task(_run())
+        self._fallback_delivery_tasks.add(task)
+        task.add_done_callback(self._fallback_delivery_tasks.discard)
+
     async def _send_command(self, command: str, timeout: float = 30.0) -> Optional[dict]:
         ws = self._ws
         if not ws:
@@ -481,9 +585,8 @@ class SimplexAdapter(BasePlatformAdapter):
         self._pending_responses.pop(corr_id, None)
         return None
 
-    async def _send_fire_and_forget(self, command: str) -> None:
-        """Send a command the daemon never replies to with a corrId (e.g. ``/freceive``)."""
-        await self._send_ws({"corrId": self._make_corr_id(), "cmd": command})
+    # (_send_fire_and_forget removed: /freceive is sent with a corrId via _request_file
+    # so a fileNotApproved-style rejection can trigger the inline fallback immediately)
 
     async def _send_items(self, chat_id: str, items: list, error: str) -> SendResult:
         """Send a structured ``/_send`` payload and await the reply."""

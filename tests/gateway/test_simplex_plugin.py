@@ -11,6 +11,8 @@ import asyncio
 import base64
 import io
 import json
+import sys
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -457,8 +459,7 @@ async def test_inline_image_without_file_becomes_photo_media(tmp_path):
     assert event.message_type == MessageType.PHOTO
     assert event.text == "look at this"
     assert len(event.media_urls) == 1
-    with open(event.media_urls[0], "rb") as fh:
-        assert fh.read() == b"fake-jpeg-bytes"
+    assert Path(event.media_urls[0]).read_bytes() == b"fake-jpeg-bytes"
     assert event.media_types == ["image/jpeg"]
 
 
@@ -486,13 +487,12 @@ async def test_image_with_pending_xftp_file_defers_until_complete(tmp_path):
     # Deferred: nothing delivered yet, /freceive sent for the file.
     assert delivered == []
     sends = [json.loads(c.args[0]) for c in adapter._ws.send.call_args_list]
-    assert any(f"/freceive 9" in s.get("cmd", "") for s in sends)
+    assert any("/freceive 9" in s.get("cmd", "") for s in sends)
     assert 9 in adapter._pending_file_transfers
 
     # File completes: the pending item is delivered with the downloaded path.
     full_path = str(tmp_path / "IMG_0001.jpg")
-    with open(full_path, "wb") as fh:
-        fh.write(b"full-res-original")
+    Path(full_path).write_bytes(b"full-res-original")
     completion = {
         "chatItem": _make_image_chat_item(
             {"type": "image", "text": "sharp version"},
@@ -506,6 +506,77 @@ async def test_image_with_pending_xftp_file_defers_until_complete(tmp_path):
     assert event.message_type == MessageType.PHOTO
     assert event.media_urls == [full_path]
     assert event.media_types == ["image/jpg"]  # derived from the .jpg extension
+
+
+@pytest.mark.asyncio
+async def test_image_transfer_rejected_falls_back_to_inline_thumbnail(tmp_path):
+    """When the daemon rejects /freceive (e.g. fileNotApproved — the sender's XFTP
+    server is unknown), the transfer can never complete, so the pending image is
+    delivered immediately from its inline base64 thumbnail instead of being lost."""
+    from gateway.config import PlatformConfig
+    from gateway.platforms.event import MessageType
+
+    adapter = SimplexAdapter(PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"}))
+    adapter._ws = AsyncMock()
+    thumb = base64.b64encode(b"low-res-thumb").decode()
+    chat_item = _make_image_chat_item(
+        {"type": "image", "text": "caption survives", "image": f"data:image/jpg;base64,{thumb}"},
+        file_info={"fileId": 13, "fileName": "IMG_0002.jpg", "fileSource": {}},
+    )
+    delivered: list = []
+    adapter.handle_message = AsyncMock(side_effect=lambda ev: delivered.append(ev) or asyncio.sleep(0))
+
+    async def reject_command(command: str, timeout: float = 30.0):
+        return {"type": "chatCmdError", "chatError": {"type": "error", "errorType": {"type": "fileNotApproved", "fileId": 13}}}
+    adapter._send_command = reject_command
+
+    await adapter._safe_handle_chat_item(chat_item, "test")
+    await asyncio.sleep(0)  # let the scheduled fallback task run
+
+    assert len(delivered) == 1
+    event = delivered[0]
+    assert event.message_type == MessageType.PHOTO
+    assert event.text == "caption survives"
+    assert Path(event.media_urls[0]).read_bytes() == b"low-res-thumb"
+    assert 13 not in adapter._pending_file_transfers  # not left dangling
+
+
+@pytest.mark.asyncio
+async def test_image_transfer_stall_delivers_inline_thumbnail_after_watchdog(monkeypatch):
+    """If no rcvFileComplete ever fires (transfer stalls), the watchdog delivers the
+    pending image from its inline thumbnail after the grace period."""
+    from gateway.config import PlatformConfig
+    from gateway.platforms.event import MessageType
+
+    adapter = SimplexAdapter(PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"}))
+    adapter._ws = AsyncMock()
+    thumb = base64.b64encode(b"stalled-thumb").decode()
+    chat_item = _make_image_chat_item(
+        {"type": "image", "text": "stalled transfer", "image": f"data:image/jpg;base64,{thumb}"},
+        file_info={"fileId": 21, "fileName": "IMG_0003.jpg", "fileSource": {}},
+    )
+    delivered: list = []
+    adapter.handle_message = AsyncMock(side_effect=lambda ev: delivered.append(ev) or asyncio.sleep(0))
+
+    async def accept_command(command: str, timeout: float = 30.0):
+        return {"type": "cmdOk"}
+    adapter._send_command = accept_command
+    # The adapter is loaded under a unique module name by the test loader — patch
+    # the grace period on the loaded module, not via a re-import of the path.
+    adapter_module = sys.modules[type(adapter).__module__]
+    monkeypatch.setattr(adapter_module, "_TRANSFER_FALLBACK_SECONDS", 0.05)
+
+    await adapter._safe_handle_chat_item(chat_item, "test")
+    assert delivered == []  # deferred while the watchdog waits
+
+    await asyncio.sleep(0.3)  # let the watchdog fire
+
+    assert len(delivered) == 1
+    event = delivered[0]
+    assert event.message_type == MessageType.PHOTO
+    assert event.text == "stalled transfer"
+    assert Path(event.media_urls[0]).read_bytes() == b"stalled-thumb"
+    assert 21 not in adapter._pending_file_transfers
 
 
 

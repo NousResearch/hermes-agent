@@ -653,6 +653,28 @@ def remember_temperature_rejection(
     _TEMPERATURE_REJECTED_ROUTES.add((_route_key(provider, base_url), _bare_model(rejected_kwargs.get("model"))))
 
 
+# Routes (host + model) whose /responses endpoint 400s on ``include:
+# ["reasoning.encrypted_content"]`` — self-hosted OpenAI-compatible servers that never
+# adopted encrypted-reasoning replay (#134796). The next aux call omits the include up
+# front instead of paying the 400 round-trip on every housekeeping turn.
+_ENCRYPTED_INCLUDE_REJECTED_ROUTES: set = set()
+
+
+def remember_encrypted_include_rejection(
+    provider: Optional[str], base_url: Optional[str], model: Optional[str],
+) -> None:
+    from agent.auxiliary_structured_output import _route_key
+    _ENCRYPTED_INCLUDE_REJECTED_ROUTES.add((_route_key(provider, base_url), _bare_model(model)))
+
+
+def _encrypted_reasoning_include(model: Optional[str], base_url: Optional[str]) -> Dict[str, list]:
+    """The aux Responses ``include`` field: omitted on routes that already rejected it (#134796)."""
+    from agent.auxiliary_structured_output import _route_key
+    if (_route_key(None, base_url), _bare_model(model)) in _ENCRYPTED_INCLUDE_REJECTED_ROUTES:
+        return {}
+    return {"include": ["reasoning.encrypted_content"]}
+
+
 def _fixed_temperature_for_model(
     model: Optional[str], base_url: Optional[str] = None, provider: Optional[str] = None,
 ) -> Optional[float] | object:
@@ -1509,7 +1531,9 @@ class _CodexCompletionsAdapter:
                     # Truthy-only: Codex 400s on e.g. {"effort": null}, so falsy → default.
                     effort = clamp_effort(reasoning_cfg.get("effort") or "medium", supported)
                     resp_kwargs["reasoning"] = {"effort": effort, "summary": "auto"}
-                    resp_kwargs["include"] = ["reasoning.encrypted_content"]
+                    # Encrypted replay is an optimization, not a requirement: a route that 400s on the
+                    # include must still get its housekeeping calls through (#134796).
+                    resp_kwargs.update(_encrypted_reasoning_include(model, host))
                 elif "none" in supported and not is_xai:
                     resp_kwargs["reasoning"] = {"effort": "none"}
         if wire_tools:
@@ -1571,7 +1595,27 @@ class _CodexCompletionsAdapter:
             from agent.sdk_transform_bypass import bypass_sdk_request_transform
             # Keep bulk wire payload out of the SDK's GIL-holding request transform.
             stream_kwargs = bypass_sdk_request_transform({**resp_kwargs, "stream": True})
-            event_stream = self._client.responses.create(**stream_kwargs)
+            try:
+                event_stream = self._client.responses.create(**stream_kwargs)
+            except Exception as exc:
+                # Self-hosted /responses servers that never adopted encrypted-reasoning replay 400
+                # the whole housekeeping call on ``include`` (#134796); one retry without it — and
+                # the route remembered so later calls omit the field up front — keeps compression
+                # and background review alive instead of stalling the session behind the 400.
+                if "include" not in resp_kwargs or not _is_encrypted_include_rejection(exc):
+                    raise
+                remember_encrypted_include_rejection(
+                    getattr(self._client, "_hermes_aux_effective_provider", "") or None,
+                    str(getattr(self._client, "base_url", "") or ""),
+                    model,
+                )
+                logger.info(
+                    "Auxiliary Responses route rejected include=reasoning.encrypted_content; "
+                    "retrying without it",
+                )
+                resp_kwargs.pop("include", None)
+                stream_kwargs = bypass_sdk_request_transform({**resp_kwargs, "stream": True})
+                event_stream = self._client.responses.create(**stream_kwargs)
             guard.adopt_stream(event_stream)
             # The timer may fire while responses.create() is blocked; if the cancelled attempt
             # had no stream to close then, close it now that it is attempt-owned — never the shared client.
@@ -3448,6 +3492,24 @@ def _is_reasoning_required_rejection(exc: Exception) -> bool:
     if status is not None and status not in {400, 422}:
         return False
     return is_reasoning_required_rejection(str(exc))
+
+
+def _is_encrypted_include_rejection(exc: Exception) -> bool:
+    """Provider 400 rejecting the Responses ``include`` wire field: self-hosted
+    OpenAI-compatible /responses servers that never adopted encrypted-reasoning replay answer
+    ``include is not supported (reasoning.encrypted_content)`` (#134796) and take the whole
+    housekeeping call down with it. The include is an optimization for replaying encrypted
+    reasoning, so one retry without it is always safe; the main transport guards the same
+    field behind its own replay toggle (agent/transports/codex.py)."""
+    status = getattr(exc, "status_code", None)
+    if status is not None and status not in {400, 422}:
+        return False
+    if _is_unsupported_parameter_error(exc, "include"):
+        return True
+    err_lower = str(exc).lower()
+    return "reasoning.encrypted_content" in err_lower and _contains_any(
+        err_lower, UNSUPPORTED_PARAM_MARKERS,
+    )
 
 
 def _without_reasoning_fields(kwargs: dict) -> Optional[dict]:

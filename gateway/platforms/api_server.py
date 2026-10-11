@@ -335,7 +335,7 @@ def _request_agent_overrides(
 ) -> dict[str, Any]:
     """Extract per-request model/provider/options for _run_agent.
 
-    The virtual model (``hermes-agent``) means "gateway default". A bare ``model`` without
+    The virtual model (``hermes-agent``) and ``default`` mean "gateway default". A bare ``model`` without
     ``provider`` is honored only when ``allow_bare_model`` (generic clients hardcode "gpt-4o";
     OpenAI-compatible handlers pass the ``direct_model_requests`` opt-in, Hermes-native
     endpoints always allow it). An explicit ``provider`` is always honored.
@@ -343,11 +343,13 @@ def _request_agent_overrides(
     if not isinstance(body, dict):
         return {}
     overrides: dict[str, Any] = {}
-    provider = _clean_request_string(body.get("provider"))
+    model = _clean_request_string(body.get("model"))
+    prefixed_provider, split_model = APIServerAdapter._split_provider_prefixed_model(model or "")
+    provider = _clean_request_string(body.get("provider")) or prefixed_provider
+    model = split_model or model
     if provider:
         overrides["requested_provider"] = provider
-    model = _clean_request_string(body.get("model"))
-    if model and model != virtual_model and (provider or allow_bare_model):
+    if model and model not in (virtual_model, "default") and (provider or allow_bare_model):
         overrides["requested_model"] = model
     model_options = body.get("model_options")
     if isinstance(model_options, dict):
@@ -1970,13 +1972,21 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
 
     def _resolve_route(self, model_alias: Any) -> Optional[dict[str, Any]]:
         """Return the model_routes entry for *model_alias*, or None."""
-        return self._model_routes.get(model_alias) if isinstance(model_alias, str) else None
+        if not isinstance(model_alias, str):
+            return None
+        route = self._model_routes.get(model_alias)
+        if route is not None:
+            return route
+        _, model = self._split_provider_prefixed_model(model_alias)
+        return self._model_routes.get(model)
 
     def _stored_session_model(self, session: Any) -> Optional[str]:
-        """The model persisted on a session row, minus the virtual alias (replaying
-        "hermes-agent" upstream as a provider model id 400s)."""
+        """The persisted model minus virtual aliases (provider model ids would 400).
+        A configured ``default`` route remains an alias, not a literal model."""
         stored = session.get("model") if isinstance(session, dict) else None
         if not stored or stored == self._model_name:
+            return None
+        if stored == "default" and self._resolve_route(stored) is None:
             return None
         return stored
 
@@ -1988,6 +1998,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     @classmethod
     def _split_provider_prefixed_model(cls, model: str) -> tuple[str, str]:
         text = cls._clean_runtime_id(model)
+        if text.startswith("@") and ":" in text:
+            provider, raw = text[1:].split(":", 1)
+            if re.match(r"^[a-zA-Z0-9_.-]{2,64}$", provider) and raw.strip():
+                return provider, raw.strip()
         if "::" in text:
             provider, raw = text.split("::", 1)
             if re.match(r"^[a-zA-Z0-9_.-]{2,64}$", provider) and raw.strip():
@@ -2026,7 +2040,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         route = dict(alias_route) if isinstance(alias_route, dict) else None
         # The virtual alias is not a provider model id: null it upstream of route-building and
         # every "requested" dict so it is never persisted or misread as a raw override.
-        if model == self._model_name:
+        if model == self._model_name or (model == "default" and not route):
             model = None
         route_source = "model_routes" if route else "global"
         if not route and model:

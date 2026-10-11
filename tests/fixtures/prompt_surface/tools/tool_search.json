@@ -1,0 +1,23 @@
+{
+  "description": "Search 6 additional tools that are loaded on demand. Takes a list of queries searched in parallel against the same catalog; send one query per distinct capability you need. Queries are keyword searches, not questions: the app or service name plus an action and object, no filler words (`gmail send email`, `nvidia driver status`, not `what's my GPU driver version?`); a word no tool contains makes the query return nothing. Returns matching tool names grouped per query plus a shared map with each tool's description. Follow with `tool_describe` to load full parameter schemas, then `tool_call` to invoke. Tools listed at the top of this system prompt are already available and do not need to be searched. Names starting with `connectors__` are tools of remote connector accounts (Gmail, Linear, Notion, ...); `manage_connections` checks whether an account is connected and gets the authorization link when it is not.\n\nEvery deferred capability is listed below. If a tool name appears here, do NOT claim it is unavailable — load it with `tool_describe` (skip `tool_search` when you already see the exact name).\n\nDeferred tool catalog (call schemas via `tool_describe`, invoke via `tool_call`):\ncomputer_use tools (1):\n- computer_use: Drive the desktop via cua-driver — screenshots, mouse…\ncronjob tools (1):\n- cronjob_manage: Manage scheduled cron jobs: action='create' schedules a job…\nimage_gen tools (1):\n- image_generate: Generate high-quality images from text prompts, or edit /…\nsession_search tools (1):\n- session_search: Recall past conversations: search or read old Hermes…\nterminal tools (1):\n- process_manage: Poll, wait on, or kill background terminal processes (from…\ntodo tools (1):\n- todo_list: Track a task list for multi-step work (3+ steps).",
+  "name": "tool_search",
+  "parameters": {
+    "properties": {
+      "limit": {
+        "description": "Maximum number of matches per query. Defaults to 5 and is clamped to the configured maximum (25 by default).",
+        "type": "integer"
+      },
+      "queries": {
+        "description": "Keyword queries, one per capability: app or service name + action + object (e.g. ['github create issue', 'slack send message', 'gmail fetch emails']). Not questions or sentences: every word must appear in tool text, or the query returns nothing. Searched in parallel; results come back grouped per query. A single string is accepted and treated as one query.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "queries"
+    ],
+    "type": "object"
+  }
+}

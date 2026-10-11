@@ -155,11 +155,6 @@ export const zhHantChat = {
     editingQueuedInComposer: '在輸入框中編輯排隊回合',
     restoredDraftNotice: '已還原你未送出的訊息',
     restoredDraftUndo: '復原',
-    localSetup: {
-      title: '這可以在你的電腦上執行',
-      text: (model: string) => `${model} 適合這台電腦。免費，對話留在你的電腦上。`,
-      action: '帶我看看'
-    },
     queueEdit: '編輯',
     queueExpand: '展開',
     queueCollapse: '收起',

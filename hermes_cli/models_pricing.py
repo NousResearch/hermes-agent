@@ -324,8 +324,7 @@ def _resolve_nous_pricing_credentials() -> tuple[str, str]:
     except Exception:
         pass
     base_url = (env_base or creds_base or _DEFAULT_NOUS_INFERENCE_BASE).rstrip("/")
-    if base_url.endswith("/v1"):
-        base_url = base_url[:-3]
+    base_url = base_url.removesuffix("/v1")
     return (api_key, base_url)
 
 

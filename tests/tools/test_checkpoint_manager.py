@@ -842,6 +842,7 @@ class TestGpgIsolation:
             result = subprocess.run(
                 ["git", "config", "--file", str(store / "config"), "--get", key],
                 capture_output=True, text=True,
+                check=False,
             )
             assert result.stdout.strip() == "false", key
 

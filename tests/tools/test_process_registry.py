@@ -666,6 +666,18 @@ class TestStdinHelpers:
 # =========================================================================
 
 class TestListSessions:
+    def test_running_processes_listed_before_finished_ones(self, registry):
+        """Retained/finished receipts are loaded first, so without the sort a still-running shell
+        sits at the very end of a long list (Copilot CLI 1.0.89 fixed the same shape)."""
+        for idx in range(6):
+            done = _make_session(sid=f"proc_done{idx}", task_id="t1", exited=True, exit_code=0)
+            registry._finished[done.id] = done
+        live = _make_session(sid="proc_live", task_id="t1")
+        registry._running[live.id] = live
+        result = registry.list_sessions(task_id="t1")
+        assert [r["session_id"] for r in result][:1] == ["proc_live"]
+        assert [r["session_id"] for r in result][1:] == [f"proc_done{idx}" for idx in range(6)]  # stable
+
     def test_filter_by_task_id(self, registry):
         s1 = _make_session(sid="proc_1", task_id="t1")
         s2 = _make_session(sid="proc_2", task_id="t2")

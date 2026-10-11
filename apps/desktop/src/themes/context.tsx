@@ -16,16 +16,24 @@ import { createContext, type ReactNode, useCallback, useContext, useEffect, useM
 import { $registryVersion } from '@/contrib/registry'
 import { matchesQuery, useMediaQuery } from '@/hooks/use-media-query'
 import { persistString, persistStringRecord, storedString, storedStringRecord } from '@/lib/storage'
+import { recordFeatureUse } from '@/store/desktop-metrics'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
+import { $connection } from '@/store/session'
 import { setAppearance } from '@/store/translucency'
 
 import { $accentOverride } from './accent-override'
-import { $backendThemes, $pendingSkinApply } from './backend-sync'
+import {
+  $backendCustomCSS,
+  $backendThemes,
+  $pendingSkinApply,
+  localDisplaySkinName,
+  localDisplaySkinProfile
+} from './backend-sync'
 import { $chatFontFamily, resolveChatFontFamily } from './chat-font'
 import { harmonize, readableInk } from './color'
-import { BUILTIN_THEME_LIST, DEFAULT_SKIN_NAME, DEFAULT_TYPOGRAPHY, nousTheme } from './presets'
+import { BUILTIN_THEME_LIST, DEFAULT_SKIN_NAME, DEFAULT_TYPOGRAPHY, nousTheme, RETIRED_SKINS } from './presets'
 import { retintTheme } from './retint'
-import type { DesktopTheme, DesktopThemeColors } from './types'
+import type { DesktopTheme, DesktopThemeColors, DesktopThemeTypography } from './types'
 import { $userThemes, listAllThemes, resolveTheme } from './user-themes'
 
 // Legacy global skin (pre per-profile themes). Still the inheritance fallback
@@ -40,9 +48,6 @@ const PROFILE_MODES_KEY = 'hermes-desktop-profile-modes-v1'
 // Last active profile, recorded so the boot-time paint can pick that profile's
 // theme before the gateway reports which profile actually launched.
 const LAST_PROFILE_KEY = 'hermes-desktop-active-profile-v1'
-// Skins that no longer exist. A profile still pointing at one falls back to
-// DEFAULT_SKIN_NAME rather than painting a name nothing resolves.
-const RETIRED_SKINS = new Set(['nous-light', 'default', 'gold'])
 
 export type ThemeMode = 'light' | 'dark' | 'system'
 
@@ -70,8 +75,33 @@ const normalizeMode = (value: string | null): ThemeMode =>
 // it *is* the legacy global slot, so it reads/writes the global directly. Named
 // profiles get their own entry and fall back to that global until assigned, so
 // unassigned profiles and pre-per-profile installs stay on the global value.
+// Named assigns also mirror into the global slot so a Bot Mode gateway hop onto
+// a never-themed bot inherits the look the user just picked (#101216).
+// Persists from stored (write-on-read). Idempotent. No-op when records disagree.
+const promoteUnanimousLegacy = (record: string, legacy: string): void => {
+  if (storedString(legacy) != null) {
+    return
+  }
+
+  const values = Object.values(storedStringRecord(record)).filter(Boolean)
+
+  if (values.length === 0) {
+    return
+  }
+
+  const unique = [...new Set(values)]
+
+  if (unique.length === 1) {
+    persistString(legacy, unique[0])
+  }
+}
+
 const profilePref = <T extends string>(record: string, legacy: string, normalize: (v: string | null) => T) => {
-  const stored = (profile: string): string | null => storedStringRecord(record)[profile] ?? storedString(legacy)
+  const stored = (profile: string): string | null => {
+    promoteUnanimousLegacy(record, legacy)
+
+    return storedStringRecord(record)[profile] ?? storedString(legacy)
+  }
 
   return {
     /** The pick as written, un-normalized. */
@@ -82,6 +112,7 @@ const profilePref = <T extends string>(record: string, legacy: string, normalize
         persistString(legacy, value)
       } else {
         persistStringRecord(record, { ...storedStringRecord(record), [profile]: value })
+        persistString(legacy, value)
       }
     }
   }
@@ -90,17 +121,22 @@ const profilePref = <T extends string>(record: string, legacy: string, normalize
 export const skinPref = profilePref(PROFILE_SKINS_KEY, SKIN_KEY, normalizeSkin)
 export const modePref = profilePref(PROFILE_MODES_KEY, MODE_KEY, normalizeMode)
 
+// The bridge's local skin is only a fallback for the profile this window booted
+// into. A desktop-side pick remains the source of truth, and switching to a
+// different profile cannot borrow a skin from this machine's initial profile.
+const readBootProfileKey = () => normalizeProfileKey(storedString(LAST_PROFILE_KEY))
+const BOOT_PROFILE_KEY = typeof window === 'undefined' ? 'default' : (localDisplaySkinProfile ?? readBootProfileKey())
+
 // Provider state keeps the raw pick so a name nothing resolves YET (a backend
 // skin the gateway hasn't seeded on this launch) isn't flattened to the default
 // for the rest of the session — it paints as soon as the registry can resolve it.
-const storedSkin = (profile: string): string => skinPref.stored(profile) ?? DEFAULT_SKIN_NAME
+const storedSkin = (profile: string): string =>
+  skinPref.stored(profile) ??
+  (profile === BOOT_PROFILE_KEY ? (localDisplaySkinName ?? DEFAULT_SKIN_NAME) : DEFAULT_SKIN_NAME)
 
 /** Everything a peer window could change that this one has to repaint for. */
 const APPEARANCE_KEYS = new Set([SKIN_KEY, PROFILE_SKINS_KEY, MODE_KEY, PROFILE_MODES_KEY])
 
-// Last active profile — lets the boot paint pick its appearance before the
-// gateway reports which profile actually launched.
-const readBootProfileKey = () => normalizeProfileKey(storedString(LAST_PROFILE_KEY))
 const rememberActiveProfileKey = (profile: string) => persistString(LAST_PROFILE_KEY, profile)
 
 // ─── Color math (for synthesised light variants of dark-only skins) ────────
@@ -162,7 +198,12 @@ function deriveTheme(skinName: string, mode: 'light' | 'dark'): DesktopTheme {
     name: `${skinName}-${mode}`,
     label: `${seed.label} ${mode === 'light' ? 'Light' : 'Dark'}`,
     description: `${seed.label} ${mode} palette`,
-    colors: getBaseColors(skinName, mode)
+    colors: getBaseColors(skinName, mode),
+    // A backend skin named `default`/`mono`/… keeps the desktop's own palette
+    // (never shadowed — see ingestBackendSkin), but its customCSS is carried
+    // separately in $backendCustomCSS. The seed's own customCSS (non-built-in
+    // backend skins) wins when both exist.
+    customCSS: seed.customCSS ?? $backendCustomCSS.get()[skinName]
   }
 }
 
@@ -206,6 +247,28 @@ const mixesFor = (isDark: boolean): Record<string, string> => ({
   '--theme-mix-elevated': isDark ? '46%' : '28%',
   '--theme-mix-bubble': isDark ? '46%' : '0%'
 })
+
+const TYPOGRAPHY_KNOB_VARS = {
+  baseSize: '--dt-base-size',
+  lineHeight: '--dt-line-height',
+  letterSpacing: '--dt-letter-spacing'
+} as const
+
+// Optional typography knobs. They are the ONLY vars applyTheme may paint
+// inline conditionally: styles.css declares the same fallbacks on :root, so
+// a theme that stops providing one must drop the inline value — otherwise
+// the previous skin's size/leading/tracking sticks across a switch (#41766).
+function applyTypographyKnobs(root: HTMLElement, typo: Partial<DesktopThemeTypography>) {
+  for (const [key, cssVar] of Object.entries(TYPOGRAPHY_KNOB_VARS) as [keyof typeof TYPOGRAPHY_KNOB_VARS, string][]) {
+    const value = typo[key]
+
+    if (value) {
+      root.style.setProperty(cssVar, value)
+    } else {
+      root.style.removeProperty(cssVar)
+    }
+  }
+}
 
 function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark', chatFontFamily = $chatFontFamily.get()) {
   if (typeof document === 'undefined') {
@@ -285,6 +348,8 @@ function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark', chatFontFamily 
     root.style.setProperty(k, v)
   }
 
+  applyTypographyKnobs(root, typo)
+
   const chromeBg = chromeBackground(c.background, isDark)
 
   window.hermesDesktop?.setTitleBarTheme?.({
@@ -311,6 +376,28 @@ function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark', chatFontFamily 
     document.head.appendChild(link)
     INJECTED_FONT_URLS.add(typo.fontUrl)
   }
+
+  // Inject / clear customCSS from the skin (mirrors web/src/themes/context.tsx).
+  // A theme carries the optional customCSS field; we inject/remove a single
+  // <style> tag to keep the DOM clean and avoid stale rules on switch.
+  const cssId = 'hermes-desktop-custom-css'
+  let cssEl = document.getElementById(cssId) as HTMLStyleElement | null
+  const customCSS = theme.customCSS?.trim()
+
+  if (!customCSS) {
+    if (cssEl) {
+      cssEl.remove()
+    }
+  } else {
+    if (!cssEl) {
+      cssEl = document.createElement('style')
+      cssEl.id = cssId
+      cssEl.dataset.hermesSkinCSS = 'true'
+      document.head.appendChild(cssEl)
+    }
+
+    cssEl.textContent = customCSS
+  }
 }
 
 // Pin Electron's nativeTheme to the app's mode so the NATIVE window chrome
@@ -324,10 +411,10 @@ const syncNativeTheme = (pref: ThemeMode, rendered: 'light' | 'dark') =>
 // active profile's appearance so a non-default profile relaunch paints its own
 // skin + light/dark mode.
 if (typeof window !== 'undefined') {
-  const profile = readBootProfileKey()
+  const profile = BOOT_PROFILE_KEY
   const pref = modePref.resolve(profile)
   const resolved = resolveMode(pref)
-  const theme = deriveTheme(skinPref.resolve(profile), resolved)
+  const theme = deriveTheme(normalizeSkin(storedSkin(profile)), resolved)
   applyTheme(theme, resolved)
   syncNativeTheme(pref, renderedModeFor(theme.colors, resolved))
 }
@@ -378,13 +465,18 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   // Skin + mode are assigned per profile; the active profile drives which
   // appearance shows. Single-profile users only ever see "default", so their
   // behavior is unchanged.
-  const profileKey = normalizeProfileKey(useStore($activeGatewayProfile))
+  const activeGatewayProfile = useStore($activeGatewayProfile)
+  const connection = useStore($connection)
+  // Before a gateway descriptor exists, the bridge is the only authoritative
+  // profile for this window. Once one arrives, follow the live route as usual.
+  const profileKey = normalizeProfileKey(connection?.profile ?? (connection ? activeGatewayProfile : BOOT_PROFILE_KEY))
 
   // Built-ins + user-installed + registry-contributed themes. Reactive so an
   // import or a plugin registration shows up live in the palette, settings
   // grid, and `/skin` without a reload.
   const userThemes = useStore($userThemes)
   const backendThemes = useStore($backendThemes)
+  const backendCustomCSS = useStore($backendCustomCSS)
   const registryVersion = useStore($registryVersion)
 
   const availableThemes = useMemo(
@@ -400,11 +492,11 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   )
 
   const [themeName, setThemeNameState] = useState(() =>
-    typeof window === 'undefined' ? DEFAULT_SKIN_NAME : storedSkin(readBootProfileKey())
+    typeof window === 'undefined' ? DEFAULT_SKIN_NAME : storedSkin(BOOT_PROFILE_KEY)
   )
 
   const [mode, setModeState] = useState<ThemeMode>(() =>
-    typeof window === 'undefined' ? 'system' : modePref.resolve(readBootProfileKey())
+    typeof window === 'undefined' ? 'system' : modePref.resolve(BOOT_PROFILE_KEY)
   )
 
   // Follow profile switches: paint the profile's assigned skin + mode and
@@ -460,9 +552,10 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     () => deriveTheme(paintedName, paintedMode),
     // deriveTheme resolves its seed through the merged registry, so the theme
     // stores are its reactivity too — an in-place palette edit of the ACTIVE
-    // skin (live theme authoring) must repaint, not just a name switch.
+    // skin (live theme authoring) must repaint, not just a name switch. The
+    // backend CSS store matters the same way for built-in-named user skins.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [paintedName, paintedMode, userThemes, backendThemes, registryVersion]
+    [paintedName, paintedMode, userThemes, backendThemes, backendCustomCSS, registryVersion]
   )
 
   // Dev-only accent retint. `null` (always, in production) returns the theme
@@ -494,12 +587,14 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 
   const setTheme = useCallback((name: string) => {
     const next = normalizeSkin(name)
+    recordFeatureUse('skins')
     setPreview(null)
     setThemeNameState(next)
     skinPref.assign(liveProfile(), next)
   }, [])
 
   const setMode = useCallback((next: ThemeMode) => {
+    recordFeatureUse('skins')
     setPreview(null)
     setModeState(next)
     modePref.assign(liveProfile(), next)

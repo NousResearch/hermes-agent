@@ -149,10 +149,13 @@ class TestEmailAdapterSecretScope(unittest.TestCase):
         ss.set_multiplex_active(True)
         token = ss.set_secret_scope(scoped)
         try:
-            # _allowlist_in_effect reads EMAIL_ALLOWED_USERS — verify it
-            # sees the scoped value, not the environ value
+            # The dispatch gate must match the scoped list, not the environ one.
+            from gateway.config import PlatformConfig
             from plugins.platforms.email.adapter import EmailAdapter
-            self.assertTrue(EmailAdapter._allowlist_in_effect())
+            adapter = EmailAdapter(PlatformConfig(enabled=True))
+            authenticated = {"sender_authenticated": True}
+            self.assertTrue(adapter._sender_accepted("epsilon@test.invalid", authenticated))
+            self.assertFalse(adapter._sender_accepted("gamma@test.invalid", authenticated))
         finally:
             ss.reset_secret_scope(token)
 

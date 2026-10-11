@@ -1,4 +1,4 @@
-import { capabilityScoped, hermesApi, type ProfileScope } from '@/api/client'
+import { capabilityScoped, hermesApi, type ProfileScope, sessionReadOwnerPin } from '@/api/client'
 
 import type { TimelineEntry } from './timeline-data'
 
@@ -37,7 +37,11 @@ export function fetchTimelineIndex(id: string, scope: ProfileScope, beyondRowId?
   const cached = cache.get(key)
   const previous = cached?.complete && cached.expires <= Date.now() ? undefined : cached
 
-  if (cached?.complete && cached.expires > Date.now() && (beyondRowId === undefined || marksReach(cached.entries, beyondRowId))) {
+  if (
+    cached?.complete &&
+    cached.expires > Date.now() &&
+    (beyondRowId === undefined || marksReach(cached.entries, beyondRowId))
+  ) {
     return Promise.resolve(cached)
   }
 
@@ -49,7 +53,10 @@ export function fetchTimelineIndex(id: string, scope: ProfileScope, beyondRowId?
 
   const route = {
     ...capabilityScoped(scope),
-    ...(typeof scope === 'object' && scope?.connectionId === 'local' ? { connectionId: 'local' } : {})
+    ...(typeof scope === 'object' && scope?.connectionId === 'local' ? { connectionId: 'local' } : {}),
+    // Owner connection pin (#125372) — a timeline jump for a session owned by
+    // another registry connection must read THAT host, not the ambient one.
+    ...sessionReadOwnerPin(id, scope)
   }
 
   const query = new URLSearchParams({ limit: '500' })

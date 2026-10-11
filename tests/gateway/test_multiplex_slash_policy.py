@@ -99,7 +99,7 @@ def _make_multiplex_runner(
     runner.config = _cfg(PRIMARY_EXTRA, primary_quick_commands)
     secondary_config = _cfg(SECONDARY_EXTRA, secondary_quick_commands)
     runner.adapters = {Platform.TELEGRAM: MagicMock(send=AsyncMock())}
-    runner._profile_gateway_configs = {}
+    runner._profile_configs = {}
     runner._profile_adapters = {}
     runner._busy_text_modes_by_profile = {}
     runner._busy_input_modes_by_profile = {}
@@ -179,7 +179,7 @@ def _dm_event(text: str, user_id: str) -> MessageEvent:
 
 def test_configure_registers_effective_named_profile_config(work_profile_home):
     runner = _make_multiplex_runner()
-    assert runner._profile_gateway_configs[PROFILE_NAME] is (
+    assert runner._profile_configs[PROFILE_NAME] is (
         runner._secondary_config
     )
     resolved, ok = runner._effective_gateway_config_for_source(
@@ -308,7 +308,7 @@ async def test_shared_catalog_matches_actor_and_serving_policy(
         "enabled": True, "extra": runner._secondary_config.platforms[Platform.TELEGRAM].extra,
     }}}, ensure_ascii=False), encoding="utf-8")
     if policy_storage == "disk":
-        runner._profile_gateway_configs.clear()
+        runner._profile_configs.clear()
 
     for profile, profile_home in [(None, home), (PROFILE_NAME, work), (None, home)]:
         source = SessionSource(platform=Platform.TELEGRAM, chat_id="-100",
@@ -594,7 +594,7 @@ async def test_observed_dispatch_preserves_transport_and_shared_profile_sessions
 
 
 def test_secondary_picker_policy_follows_canonical_runtime_route(work_profile_home, monkeypatch):
-    """A secondary bot routed to default must apply the destination's slash policy."""
+    """A routed picker must satisfy both receiving and serving profiles."""
     from pathlib import Path
     from gateway.profile_routing import ProfileRoute
     from gateway.session_identity import identity_of
@@ -610,9 +610,15 @@ def test_secondary_picker_policy_follows_canonical_runtime_route(work_profile_ho
         ("default", default_home), (PROFILE_NAME, work_profile_home)])
     checker = runner._make_profile_slash_access_check(
         PROFILE_NAME, gateway_config=runner._secondary_config)
+    # One actor is explicitly admitted by both profiles; the other two admins
+    # must never borrow authority from only one side of the route.
+    shared_admin = "333"
+    for cfg in (runner.config, runner._secondary_config):
+        cfg.platforms[Platform.TELEGRAM].extra["group_allow_admin_from"].append(shared_admin)
     for chat_id, runtime, allowed, denied in [
         ("own", PROFILE_NAME, SECONDARY_ADMIN, PRIMARY_ADMIN),
-        ("routed", "default", PRIMARY_ADMIN, SECONDARY_ADMIN),
+        ("routed", "default", shared_admin, SECONDARY_ADMIN),
+        ("routed", "default", shared_admin, PRIMARY_ADMIN),
         ("own", PROFILE_NAME, SECONDARY_ADMIN, PRIMARY_ADMIN),
     ]:
         for actor, expected_allowed in [(allowed, True), (denied, False)]:
@@ -622,3 +628,36 @@ def test_secondary_picker_policy_follows_canonical_runtime_route(work_profile_ho
             if chat_id == "routed":
                 assert identity_of(source).runtime_profile == runtime
         assert Path(get_hermes_home()) == default_home
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("actor,allowed", [(PRIMARY_ADMIN, False),
+                                          (SECONDARY_ADMIN, False), ("333", True)])
+async def test_routed_shared_command_checks_both_policies_before_hooks(
+    work_profile_home, actor, allowed
+):
+    from pathlib import Path
+    from gateway.session_identity import RoutingIdentity
+    from hermes_constants import get_hermes_home
+
+    runner = _make_multiplex_runner()
+    runner._primary_profile_name = "default"
+    for cfg in (runner.config, runner._secondary_config):
+        cfg.platforms[Platform.TELEGRAM].extra["group_allow_admin_from"] = [
+            PRIMARY_ADMIN if cfg is runner.config else SECONDARY_ADMIN, "333"]
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="-100", chat_type="group",
+                           profile=PROFILE_NAME, user_id=None)
+    source._identity = RoutingIdentity(
+        transport_profile="default", runtime_profile=PROFILE_NAME,
+        authorization_home=Path(get_hermes_home()), runtime_home=work_profile_home)
+    event = MessageEvent(text="/model", source=source, user_id=actor)
+    handled, response, _, canonical = await runner._hm_resolve_command(event, source, "shared")
+    assert canonical == "model"
+    assert handled is not allowed
+    if allowed:
+        assert response is None
+        assert runner.hooks.emit_collect.await_args.args[1]["user_id"] == actor
+    else:
+        assert "⛔" in response
+        runner.hooks.emit_collect.assert_not_awaited()
+    assert event.source is source and source.user_id is None

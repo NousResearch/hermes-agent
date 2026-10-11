@@ -4,7 +4,6 @@ from pathlib import Path
 from typing import Optional
 from gateway.config import GatewayConfig
 from gateway.session import SessionSource
-from gateway.message_actor import copy_session_source_with
 from hermes_constants import get_hermes_home
 
 logger = logging.getLogger("gateway.run")
@@ -14,11 +13,11 @@ class GatewaySlashPolicyMixin:
         self, profile_name: str, gateway_config: GatewayConfig
     ) -> None:
         """Remember one served profile's effective slash-policy config."""
-        registry = getattr(self, "_profile_gateway_configs", None)
+        registry = getattr(self, "_profile_configs", None)
         if isinstance(registry, dict):
             registry[profile_name] = gateway_config
         else:
-            self._profile_gateway_configs = {profile_name: gateway_config}
+            self._profile_configs = {profile_name: gateway_config}
 
 
     def _make_profile_slash_access_check(
@@ -53,40 +52,11 @@ class GatewaySlashPolicyMixin:
         default_home = Path(get_hermes_home())
 
         def _check(source: SessionSource, canonical_cmd: str) -> Optional[str]:
-            from gateway.profile_routing import ProfileRouteRejected
-
-            scoped_source = source
-            try:
-                profile_name = str(getattr(source, "profile", "") or "").strip()
-                if not profile_name:
-                    profile_name = self._profile_name_for_source(source) or ""
-                    if profile_name:
-                        scoped_source = copy_session_source_with(
-                            source, profile=profile_name
-                        )
-                profile_home = (
-                    self._resolve_profile_home_for_source(scoped_source)
-                    if profile_name
-                    else default_home
-                )
-            except ProfileRouteRejected:
-                return (
-                    f"⛔ /{canonical_cmd} is unavailable without profile "
-                    "policy context."
-                )
-            except Exception:
-                logger.warning(
-                    "Could not resolve serving profile for /%s callback; "
-                    "failing closed",
-                    canonical_cmd,
-                    exc_info=True,
-                )
-                return (
-                    f"⛔ /{canonical_cmd} is unavailable without profile "
-                    "policy context."
-                )
-            with _profile_runtime_scope(profile_home):
-                return self._check_slash_access(scoped_source, canonical_cmd)
+            identity = self._canonicalize(source, primary_home=default_home)
+            if identity is None:
+                return f"⛔ /{canonical_cmd} is unavailable without profile policy context."
+            with _profile_runtime_scope(identity.runtime_home):
+                return self._check_slash_access(source, canonical_cmd)
 
         return _check
 
@@ -124,10 +94,13 @@ class GatewaySlashPolicyMixin:
         base_cfg = getattr(self, "config", None)
         if not getattr(base_cfg, "multiplex_profiles", False):
             return base_cfg, True
-        profile_name = ""
-        if source is not None:
-            profile_name = str(getattr(source, "profile", "") or "").strip()
-        if not profile_name:
+        from gateway.session_identity import identity_of
+
+        identity = identity_of(source)
+        profile_name = (identity.runtime_profile if identity is not None
+                        else str(getattr(source, "profile", "") or "").strip())
+        primary = getattr(self, "_primary_profile_name", None) or "default"
+        if not profile_name or profile_name == primary:
             # Unstamped ingress is the multiplexer's own lane: self.config IS
             # this profile's config. (Do NOT branch on
             # ``_active_profile_name()`` here — it is derived from
@@ -135,7 +108,7 @@ class GatewaySlashPolicyMixin:
             # redirects to the SECONDARY profile's home while this resolver
             # runs inside it.)
             return base_cfg, True
-        registry = getattr(self, "_profile_gateway_configs", None)
+        registry = getattr(self, "_profile_configs", None)
         cfg = registry.get(profile_name) if isinstance(registry, dict) else None
         if cfg is None and isinstance(registry, dict):
             try:
@@ -164,7 +137,7 @@ class GatewaySlashPolicyMixin:
                 if isinstance(registry, dict):
                     registry[norm_name] = loaded
                 else:
-                    self._profile_gateway_configs = {norm_name: loaded}
+                    self._profile_configs = {norm_name: loaded}
                 return loaded, True
         except Exception as exc:
             logger.warning(
@@ -193,6 +166,17 @@ class GatewaySlashPolicyMixin:
         return quick_commands if isinstance(quick_commands, dict) else {}
 
 
+    def _slash_policies_for_source(self, source, *, gateway_config=None):
+        """Require both receiving-bot and serving-profile command policies."""
+        from gateway.slash_access import policy_for_runner_source, policy_for_source
+
+        if gateway_config is None:
+            gateway_config, resolved = self._effective_gateway_config_for_source(source)
+            if not resolved:
+                return None
+        return (policy_for_runner_source(self, source), policy_for_source(gateway_config, source))
+
+
     def _check_slash_access(
         self,
         source: SessionSource,
@@ -211,10 +195,8 @@ class GatewaySlashPolicyMixin:
         the identity or serving-profile checks below. Commands outside
         ``IDENTITY_FREE_FLOOR_COMMANDS`` still require an identifiable sender.
         """
-        from gateway.slash_access import (
-            IDENTITY_FREE_FLOOR_COMMANDS,
-            policy_for_source as _policy_for_source,
-        )
+        from gateway.slash_access import IDENTITY_FREE_FLOOR_COMMANDS
+        from agent.i18n import t
 
         if not canonical_cmd:
             return None
@@ -232,32 +214,11 @@ class GatewaySlashPolicyMixin:
                 source.platform.value if source and source.platform else "?",
             )
             return f"⛔ /{canonical_cmd} requires an identifiable user."
-        if gateway_config is not None:
-            policy_cfg = gateway_config
-        else:
-            # Typed dispatch paths (busy / cold / quick-command gates) don't
-            # know which multiplexed profile serves this source. Resolve it —
-            # and fail closed rather than silently gating by the multiplexer's
-            # own policy (same contract as the native picker callbacks). A
-            # resolved-but-absent config (config=None bare runners) keeps the
-            # legacy disabled-policy path below.
-            policy_cfg, _policy_resolved = (
-                self._effective_gateway_config_for_source(source)
-            )
-            if not _policy_resolved:
-                logger.info(
-                    "Slash command /%s denied for %s (no policy context for "
-                    "profile %r)",
-                    canonical_cmd,
-                    source.platform.value if source.platform else "?",
-                    getattr(source, "profile", "") or "?",
-                )
-                return (
-                    f"⛔ /{canonical_cmd} is unavailable without profile "
-                    "policy context."
-                )
-        policy = _policy_for_source(policy_cfg, source)
-        if not policy.enabled or policy.can_run(source.user_id, canonical_cmd):
+        policies = self._slash_policies_for_source(source, gateway_config=gateway_config)
+        if policies is None:
+            return f"⛔ /{canonical_cmd} is unavailable without profile policy context."
+        policy = next((p for p in policies if not p.can_run(source.user_id, canonical_cmd)), None)
+        if policy is None:
             return None
         logger.info(
             "Slash command /%s denied for %s:%s (not admin, not in user_allowed_commands)",
@@ -268,15 +229,9 @@ class GatewaySlashPolicyMixin:
         allowed_preview = sorted(policy.user_allowed_commands)
         if allowed_preview:
             suffix = (
-                "You can run: "
-                + ", ".join(f"/{c}" for c in allowed_preview[:12])
-                + ("…" if len(allowed_preview) > 12 else "")
-                + ". Use /whoami for the full list."
+                t("gateway.unauthorized.admin_only_can_run") + ", ".join(f"/{c}" for c in allowed_preview[:12])
+                + ("…" if len(allowed_preview) > 12 else "") + t("gateway.unauthorized.admin_only_whoami_hint")
             )
         else:
-            suffix = (
-                "No slash commands are enabled for non-admins on this "
-                "platform. Ask an admin to add you to allow_admin_from "
-                "or to set user_allowed_commands."
-            )
-        return f"⛔ /{canonical_cmd} is admin-only here. {suffix}"
+            suffix = t("gateway.unauthorized.admin_only_none")
+        return t("gateway.unauthorized.admin_only", command=canonical_cmd, suffix=suffix)

@@ -57,6 +57,7 @@ def _replace_file_preserving_schema(src: Path, dst: Path) -> None:
     os.rename(tmp, dst)
 
 
+@pytest.mark.platforms("posix")
 class TestInodeReplacement:
     def test_live_holders_keep_working_handle_across_replacement(self, tmp_path):
         """Two active refs → inode replacement → third caller gets NEW

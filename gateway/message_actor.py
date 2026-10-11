@@ -36,8 +36,8 @@ def event_actor_identity(event: Any) -> tuple[Optional[str], Optional[str]]:
 def copy_session_source_with(source: Any, **changes: Any) -> Any:
     """Shallow-copy a SessionSource-like object and apply access-only fields.
 
-    A shallow copy supports real SessionSource instances and lightweight plugin
-    or test objects while preserving dynamic transport/profile provenance.
+    Real sources use the canonical provenance-preserving replacement seam;
+    lightweight plugin or test objects retain their attributes via a shallow copy.
     Failure returns the original source, keeping authorization fail-closed.
     """
     if source is None:
@@ -48,6 +48,10 @@ def copy_session_source_with(source: Any, **changes: Any) -> Any:
     except Exception:
         pass
     try:
+        if dataclasses.is_dataclass(source) and not isinstance(source, type):
+            from gateway.session_identity import replace_source
+
+            return replace_source(source, **changes)
         copied = copy.copy(source)
         if copied is source:
             raise TypeError("source copy returned the original object")

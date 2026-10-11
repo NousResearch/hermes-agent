@@ -178,7 +178,7 @@ export function transcriptGutterWidth(role: Role, userPrompt: string) {
   return role === 'user' ? composerPromptWidth(userPrompt) : 3
 }
 
-export function transcriptBodyWidth(totalCols: number, role: Role, userPrompt: string, termuxMode = false) {
+export function transcriptBodyWidth(totalCols: number, role: Role, userPrompt: string, termuxMode = false): number {
   const horizontalReserve = termuxMode ? 2 : 4
   const available = Math.max(1, totalCols - transcriptGutterWidth(role, userPrompt) - horizontalReserve)
 
@@ -191,7 +191,7 @@ export function transcriptBodyWidth(totalCols: number, role: Role, userPrompt: s
   return Math.max(20, available)
 }
 
-export function stableComposerColumns(totalCols: number, promptWidth: number, termuxMode = false) {
+export function stableComposerColumns(totalCols: number, promptWidth: number, termuxMode = false): number {
   // Physical render/wrap width. Always reserve outer composer padding and
   // prompt prefix. Only reserve the transcript scrollbar gutter when the
   // terminal is wide enough; on narrow panes, preserving input columns beats

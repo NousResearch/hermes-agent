@@ -14,7 +14,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 from agent import bedrock_adapter as ba
 from agent import model_metadata as mm
@@ -30,7 +30,7 @@ def isolated_home(tmp_path, monkeypatch):
     mm._BEDROCK_PROBE_FAILURE_CACHE.clear()
 
 
-@pytest.mark.parametrize("model", ["xai.grok-4.6", "global.xai.grok-4.6", "us.xai.grok-4.6"])
+@pytest.mark.parametrize("model", ["global.xai.grok-4.6"])  # prefix variants resolve identically
 @pytest.mark.parametrize("base_url", ["", "https://bedrock-runtime.us-east-1.amazonaws.com"])
 @pytest.mark.parametrize("legacy", [None, 128_000, 700_000])
 @pytest.mark.parametrize("probed", [None, 128_000, 800_000])

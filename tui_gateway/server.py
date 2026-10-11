@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- security fix for #82010: distinguish an explicitly-empty toolset allowlist (fail closed, nothing allowed) from an absent one (no restriction); the added lines are minimal fail-closed branches at this existing chokepoint
 import atexit
 import concurrent.futures
 import contextlib
@@ -5,23 +6,24 @@ import contextvars
 import copy
 import hashlib
 import importlib
-import inspect  # noqa: F401  (split modules)
+import inspect
 import json
 import logging
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, NamedTuple, Optional  # noqa: F401  (Callable: split modules)
+from typing import Any, Callable, NamedTuple, Optional
 
 # Several of these look unused here but are resolved BARE by split-module bodies rebound onto this
 # namespace (method_ctx.bind_module) — deleting one breaks a handler at call time, not import time.
-from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope  # noqa: F401
+from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
 from hermes_constants import (
     get_hermes_home, get_hermes_home_override, get_process_hermes_home, profile_name_for_home,
     reset_hermes_home_override, set_hermes_home_override)
@@ -29,17 +31,21 @@ from hermes_cli.env_loader import load_hermes_dotenv
 from utils import file_signature, is_truthy_value
 from hermes_state_ids import new_session_id
 from tools.environments.local import hermes_subprocess_env
+from agent.fast_mode import STATIC_TIERS
 from agent.replay_cleanup import canonicalize_replay_history
 from agent.reasoning_effort import clamp_effort, route_supported_efforts
-from agent.compaction_display import project_compaction_message_for_display  # noqa: F401
-from agent.skill_commands import describe_skill_invocation  # noqa: F401
-from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX  # noqa: F401
+from agent.voice_turn_route import session_runtime_view
+from agent.compaction_display import project_compaction_message_for_display
+from agent.skill_commands import describe_skill_invocation
+from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 from tui_gateway import git_probe
+from tui_gateway.checkpoints import (_load_checkpoints_enabled, _resolve_checkpoint_hash,
+                                     resolve_checkpoints_enabled as _resolve_checkpoints_enabled)
 from tui_gateway._env import env_float, env_int
-from tui_gateway.turn_marker import clear_turn_marker, read_turn_marker, record_turn_start  # noqa: F401
+from tui_gateway.turn_marker import clear_turn_marker, marker_writer_state, read_turn_marker, record_turn_start
 from tui_gateway.contracts import registry as _contracts
 # User-facing copy shared with the split method modules (they close over this namespace).
-from tui_gateway.user_messages import (  # noqa: F401
+from tui_gateway.user_messages import (
     AGENT_BUILD_ABANDONED, AGENT_MISSING_FOR_TURN, AGENT_STILL_STARTING, agent_init_failed_message, busy_message,
     resume_failed_message, turn_error_text)
 from tui_gateway.transport import (FanoutTransport, StdioTransport, Transport, bind_transport,
@@ -85,7 +91,7 @@ with contextlib.suppress(Exception):
 
     prefetch_update_check()
 
-from tui_gateway.render import make_stream_renderer, render_diff, render_message  # noqa: F401
+from tui_gateway.render import make_stream_renderer, render_diff, render_message
 
 _sessions: dict[str, dict] = {}
 _methods: dict[str, callable] = {}
@@ -100,6 +106,12 @@ _sessions_lock = threading.RLock()  # reentrant: _close_session_by_id may run un
 _cfg_cache: dict | None = None
 _cfg_sig: tuple | None = None
 _cfg_path = None
+
+# Idempotency registry for session.create: maps client-supplied key → sid so a
+# retried create (e.g. response lost in transit) returns the same session
+# instead of spawning a duplicate child. Entries expire with the session.
+_idempotency_keys: dict[str, tuple[str, float]] = {}
+_IDEMPOTENCY_KEY_TTL = 300.0  # 5 min: longer than any realistic retry window
 _session_resume_lock = threading.Lock()
 _SLASH_WORKER_TIMEOUT_S = max(5.0, env_float("HERMES_TUI_SLASH_TIMEOUT_S", 45.0))
 
@@ -132,6 +144,11 @@ def _resolve_ws_orphan_reap_grace() -> float:
 
 
 _WS_ORPHAN_REAP_GRACE_S = _resolve_ws_orphan_reap_grace()
+# A reap Timer whose wall-clock wait outlasted its awake-time (monotonic) wait by more than
+# this fired early because the host slept through it (#44183); re-arm for the remaining
+# awake grace instead of reaping. Large enough to ignore timer jitter and NTP slew, small
+# relative to any real sleep.
+_WS_ORPHAN_REAP_SLEEP_SLACK_S = 0.5
 # A detached RUNNING turn is interrupted only once its activity clock (API waits, stream tokens, tool
 # heartbeats) idled this long; 600s = the turn-liveness watchdog so "wedged" means the same. 0 disables.
 _WS_ORPHAN_ACTIVITY_STALE_S = _ws_orphan_setting("HERMES_TUI_WS_ORPHAN_ACTIVITY_STALE_S", "ws_orphan_activity_stale_s", 600.0)
@@ -157,7 +174,10 @@ _DETAIL_MODES = frozenset({"hidden", "collapsed", "expanded"})
 # open; bot_relay.* = a FULL one-turn agent conversation (600s); setup.* / session.active_list =
 # Desktop-polled and under GIL pressure block the WS read loop (false "needs setup", stalled
 # interrupts); voice.*/wake.* = SYNCHRONOUS faster-whisper install (300s); session.workspace.move =
-# git subprocess probes on an arbitrary (maybe slow) mount.
+# git subprocess probes on an arbitrary (maybe slow) mount; session.save = a full stored-session read + JSON
+# render (up to sessions.max_export_messages rows, ~0.8s at the default cap); onboarding.* setup profile =
+# create_profile skill copy + state.db writes + the first import of the setup scanner; session.start_chat =
+# session creation + a prompt.submit.
 _LONG_HANDLERS = frozenset({
     "session.foreign.list", "session.foreign.preview", "session.foreign.import",
     "billing.state", "subscription.state", "subscription.preview", "subscription.change",
@@ -171,8 +191,11 @@ _LONG_HANDLERS = frozenset({
     "projects.record_repos", "projects.for_cwd", "projects.tree", "projects.project_sessions",
     "setup.runtime_check", "setup.status", "free_tier.provision", "voice.toggle", "voice.record", "voice.tts", "wake.start",
     "wake.status", "session.active_list", "session.branch", "session.compress", "session.list",
-    "session.resume", "session.workspace.move", "shell.exec", "skills.manage", "slash.exec",
+    "session.resume", "session.save", "session.workspace.move", "shell.exec", "skills.manage", "slash.exec",
+    "onboarding.ensure_setup_profile", "onboarding.ensure_setup_session", "onboarding.reset_setup_profile",
+    "session.start_chat",
     "command.dispatch",  # /goal draft invokes the auxiliary model; never block the RPC reader
+    "shared_metrics.set",  # consent reconcile waits on the metrics store's write lock
 })
 
 _rpc_pool_workers = max(2, env_int("HERMES_TUI_RPC_POOL_WORKERS", 8))
@@ -213,26 +236,38 @@ _detached_ws_transport = _DropTransport()
 
 
 def _prepend_tool_paths(env: dict[str, str]) -> dict[str, str]:
-    """Prepend managed bin (first: managed-first policy for the Browser Use CLI), venv bin and
-    ~/.local/bin to PATH so slash_worker children resolve Hermes-managed CLIs under the Desktop's minimal PATH."""
+    """Prepend managed bin (managed-first policy for the Browser Use CLI), venv bin and
+    ~/.local/bin to PATH so slash_worker children resolve Hermes-managed CLIs under the Desktop's minimal PATH.
+    The PM store dirs go in front of all of them: a user's node/uv in ~/.local/bin never wins."""
     managed_bin = ""
     with contextlib.suppress(Exception):
         managed_bin = str(Path(get_hermes_home()) / "bin")
     venv_bin = str(Path(sys.executable).parent)  # <venv>/bin (POSIX) or <venv>/Scripts (Windows)
     parts = [p for p in (managed_bin, venv_bin, str(Path.home() / ".local" / "bin"), env.get("PATH") or "") if p]
     env["PATH"] = os.pathsep.join(parts)
+    with contextlib.suppress(Exception):
+        import pm
+
+        env["PATH"] = pm.store_first_path(env["PATH"])
     return env
 
 
 class _SlashWorker:
     """Persistent HermesCLI subprocess for slash commands."""
 
-    def __init__(self, session_key: str, model: str, profile_home: str | None = None):
+    def __init__(self, session_key: str, model: str, profile_home: str | None = None,
+                 provider: str | None = None):
         self._lock = threading.Lock()
         self._seq = 0
         self.stderr_tail: list[str] = []
         self.stdout_queue: queue.Queue[dict | None] = queue.Queue()
-        argv = [sys.executable, "-m", "tui_gateway.slash_worker", "--session-key", session_key] + (["--model", model] if model else [])
+        # ``--provider`` pins the child to the parent agent's virtual provider: without it the
+        # worker re-resolves provider from config, so a MoA session (provider=moa, model=<preset>)
+        # dispatched its preset NAME to the configured real provider and 402/503'd (#57283).
+        argv = [sys.executable, "-m", "tui_gateway.slash_worker", "--session-key", session_key,
+                "--parent-pid", str(os.getpid())] \
+            + (["--model", model] if model else []) \
+            + (["--provider", provider] if provider else [])
         self._closed = False
         from hermes_cli._subprocess_compat import windows_hide_flags
         # slash_worker runs the Hermes agent → needs provider credentials. Tier-1 secrets
@@ -281,6 +316,12 @@ class _SlashWorker:
                 self.stderr_tail = (self.stderr_tail + [text])[-80:]
 
     def run(self, command: str) -> str:
+        """Run one command; return its output text.
+
+        A command like /prompt may also have parked a next-turn prompt (a "seed")
+        on the worker CLI; it rides back on the reply's ``seed`` field and is
+        retrieved separately via ``pop_seed()``.
+        """
         if self.proc.poll() is not None:
             raise RuntimeError("slash worker exited")
         with self._lock:
@@ -299,9 +340,15 @@ class _SlashWorker:
                     continue
                 if not msg.get("ok"):
                     raise RuntimeError(msg.get("error", "slash worker failed"))
+                self._last_seed = str(msg.get("seed", "") or "")
                 return str(msg.get("output", "")).rstrip()
             raise RuntimeError(
                 f"slash worker closed pipe{': ' + chr(10).join(self.stderr_tail[-8:]) if self.stderr_tail else ''}")
+
+    def pop_seed(self) -> str:
+        """Return and clear the seed from the last ``run()`` (empty when none)."""
+        seed, self._last_seed = getattr(self, "_last_seed", ""), ""
+        return seed
 
     def close(self):
         if getattr(self, "_closed", False):
@@ -346,7 +393,7 @@ def _load_interim_assistant_messages() -> bool:
 
 def _shutdown_sessions() -> None:
     # Durable-first: flush transcripts (bounded budget) BEFORE the slow teardown so a supervisor SIGKILL can't lose them.
-    for step in (_flush_sessions_before_exit, _release_gateway_wake_owner):
+    for step in (_flush_sessions_before_exit, _release_gateway_wake_owner, _stop_turns_before_exit):
         with contextlib.suppress(Exception):
             step()
     with _sessions_lock:
@@ -382,15 +429,21 @@ _start_idle_reaper()
 # ── Plumbing ──────────────────────────────────────────────────────────
 
 
-def _launch_state_db_path() -> Path:
-    """Launch profile's ``state.db`` at call time: the patched ``_hermes_home`` when a test changed
+def _launch_home() -> Path:
+    """The launch profile's home at call time: the patched ``_hermes_home`` when a test changed
     it, else the live process home — resolved through :func:`get_process_hermes_home`, which honours
     ``HERMES_HOME`` but ignores the context-local override. The desktop multiplex cron ticker sets
-    that override per profile at startup, and a first touch inside a foreign window would bind this
-    process-wide handle to another profile's ``state.db`` (#102526). Resolving here rather than at
-    import time lets a harness that redirects ``HERMES_HOME`` after import be honoured (#112692)."""
+    that override per profile at startup, and a first touch inside a foreign window would bind
+    process-wide launch state (the shared ``state.db`` handle, the launch ``.env`` secrets) to
+    another profile (#102526). Resolving here rather than at import time lets a harness that
+    redirects ``HERMES_HOME`` after import be honoured (#112692)."""
     home = _hermes_home if _hermes_home != _HERMES_HOME_AT_IMPORT else get_process_hermes_home()
-    return Path(home) / "state.db"
+    return Path(home)
+
+
+def _launch_state_db_path() -> Path:
+    """Launch profile's ``state.db`` (see :func:`_launch_home`)."""
+    return _launch_home() / "state.db"
 
 
 def _get_db():
@@ -658,16 +711,22 @@ def _emit(event: str, sid: str, payload: dict | None = None) -> bool:
     return write_json(_event_frame(event, sid, payload))
 
 
-from tui_gateway import server_requests as _server_requests  # noqa: E402
+from tui_gateway import server_requests as _server_requests
 
 _server_requests.bind_sinks(lambda frame: write_json(frame), lambda event, sid, payload: _emit(event, sid, payload),
-                            lambda sid: _session_client_answers_requests(sid))
+                            lambda sid: _session_client_answers_requests(sid),
+                            lambda sid: _session_answering_clients(sid))
 
 
 # Live WS peer transports (maintained by tui_gateway.ws): the only route for session-less background
 # events, which write_json would otherwise drop on stdio (see _broadcast_global_event).
 _live_transports: set[Transport] = set()
 _live_transports_lock = threading.Lock()
+# True only when real stdout IS the JSON-RPC client channel (``tui_gateway.entry.main``, the stdio TUI).
+# `hermes serve` / dashboard processes speak JSON-RPC over WS only: their stdout is captured into
+# desktop.log, so a peer-less global broadcast (the change watcher keeps ticking after the last WS client
+# leaves) must be dropped there, not printed.
+_stdio_is_rpc_channel = False
 
 
 def register_live_transport(transport: Transport | None) -> None:
@@ -686,11 +745,15 @@ def unregister_live_transport(transport: Transport | None) -> None:
 
 def _broadcast_global_event(event: str, payload: dict | None = None) -> None:
     """Fan a session-less, surface-global event (``skin.changed``) to every connected client — background
-    emitters bottom out at stdio in ``write_json``'s ladder. No registered transports (stdio TUI, tests) → ``_emit``."""
+    emitters bottom out at stdio in ``write_json``'s ladder. No registered transports → ``_emit`` when stdout is the
+    stdio TUI's JSON-RPC channel, else dropped (nobody is listening; stdout is a log sink)."""
     with _live_transports_lock:
         targets = list(_live_transports)
     if not targets:
-        return _emit(event, "", payload)
+        if _stdio_is_rpc_channel:
+            return _emit(event, "", payload)
+        logger.debug("global-event broadcast dropped (no connected client) type=%s", event)
+        return None
     frame = _event_frame(event, "", payload)
     for transport in targets:
         try:
@@ -754,7 +817,7 @@ def _pending_approval_request_payload(session_key: str) -> dict | None:
 
 
 def _emit_approval_request(sid: str, data: dict | None) -> None:
-    """Send an ``approval`` server request with the command redacted: a credential-shaped value Tirith flagged
+    """Send an ``approval`` server request with the command redacted: a credential-shaped value
     would otherwise echo verbatim to the TUI (third egress alongside chat platforms and the SSE/API stream).
     See #48456, #50767.
 
@@ -783,8 +846,10 @@ def _emit_approval_request(sid: str, data: dict | None) -> None:
                                            request_id=request_id or None)
 
     settle = server_requests.send_async("approval", sid, payload, on_result)
-    if request_id:
-        _approval.register_gateway_settle(session_key, request_id, settle)
+    # The wait can end between the frame going out and the hook attaching (the client answered by RPC, another
+    # surface resolved it): withdraw now, or the request stays in ``open_requests`` for every later resume.
+    if request_id and not _approval.register_gateway_settle(session_key, request_id, settle):
+        settle("resolved")
 
 
 def _status_update(sid: str, kind: str, text: str | None = None):
@@ -937,7 +1002,7 @@ def _wait_agent_for_prompt(session: dict, rid: str, sid: str) -> dict | None:
     return _err(rid, 5032, err) if (err := session.get("agent_error")) else None
 
 
-def _bind_build_profile_scopes(profile_home: "str | None") -> "_TurnScopes | None":
+def _bind_build_profile_scopes(profile_home: str | None) -> "_TurnScopes | None":
     """Bind a session profile's HERMES_HOME / secret / terminal scopes for an agent build. ``None`` is the
     launch profile: its own launch-env secret scope (live env while single-profile, frozen once
     multiplexing is active — a hosted-room turn for a default member otherwise died at build with
@@ -1019,17 +1084,24 @@ def _await_resume_history(sid: str, current: dict) -> bool:
         return _sessions.get(sid) is current
 
 
-def _attach_built_agent(current: dict, agent) -> None:
-    """Attach a freshly built agent to its live record (session DB row deferred to first run_conversation())."""
+def _attach_built_agent(sid: str, current: dict, agent) -> bool:
+    """Attach a freshly built agent to its live record (session DB row deferred to first run_conversation()).
+    False when ``session.close`` popped this record mid-build: teardown saw ``agent=None`` and closed
+    nothing, so the caller owns closing the orphan (#49852)."""
     # Bot Mode gate hint: the DB title lands post-first-turn but the system prompt builds at turn START.
     if _title_hint := str(current.get("pending_title") or "").strip():
         agent._session_title_hint = _title_hint
-    current["agent"] = agent
+    # Under the same lock session.close takes to pop the record: no window between "still live" and "attached".
+    with _sessions_lock:
+        if _sessions.get(sid) is not current:
+            return False
+        current["agent"] = agent
     # A workspace move can land while construction is still in flight.
     _register_session_cwd(current)
     _session_todo_state(current)
     # Baseline for the per-turn config sync (profile home override still active).
     current["config_model_seen"] = _config_model_target()
+    return True
 
 
 def _announce_built_agent(sid: str, key: str, current: dict, agent) -> None:
@@ -1051,8 +1123,8 @@ def _finish_agent_build(sid: str, key: str, current: dict, *, notify_registered:
     """Release build scopes and settle ownership of the late notify registration + dedicated db handle."""
     if scopes is not None:
         _release_build_profile_scopes(scopes)
-    # Reaped mid-build: _attach_worker closed the worker; only a late notify registration can still
-    # leak (session.close unregistered before _build registered).
+    # Reaped after the agent was attached: _attach_worker closed the worker; only a late notify
+    # registration can still leak (session.close unregistered before _build registered).
     with _sessions_lock:
         replaced = _sessions.get(sid) is not current
     if replaced and notify_registered:
@@ -1075,7 +1147,8 @@ def _start_agent_build(sid: str, session: dict) -> None:
         return
     # A lazy watch session spectating an in-flight child must stay lazy so the subagent live-mirror keeps
     # flowing (it bails once agent is set); incidental RPCs via _sess() would upgrade it mid-stream.
-    if session.get("lazy") and _child_run_active(str(session.get("session_key") or "")):
+    if session.get("lazy") and _child_run_active(
+            str(session.get("session_key") or ""), session.get("profile_home") or None):
         return
     with session.setdefault("agent_build_lock", threading.Lock()):
         if ready.is_set() or session.get("agent_build_started"):
@@ -1117,14 +1190,31 @@ def _start_agent_build(sid: str, session: dict) -> None:
                 agent = _make_agent(sid, key, **_deferred_build_agent_kwargs(current, session_db))
             finally:
                 _clear_session_context(tokens)
-            _attach_built_agent(current, agent)
+            # Attach atomically against session teardown: ``session.close`` may have popped this
+            # session while the expensive build was in flight, in which case teardown could not close
+            # an agent that did not exist yet. Release the orphan immediately and do not keep wiring
+            # workers/callbacks for a dead session (#49852).
+            if not _attach_built_agent(sid, current, agent):
+                # Same contract as the replaced-before-attach exit above: a turn admitted against
+                # this record must refuse with the real reason rather than a generic missing agent.
+                current["agent_error"] = AGENT_BUILD_ABANDONED
+                with contextlib.suppress(Exception):
+                    if hasattr(agent, "close"):
+                        agent.close()
+                return
             # No eager slash-worker pre-warm (slash.exec spawns on demand): each worker forks the full stdio
             # MCP fleet, and live-transport sessions are never reaped, so fleets would accumulate.
             notify_registered = _wire_session_agent(sid, key, agent)
             _announce_built_agent(sid, key, current, agent)
         except Exception as e:
+            from agent.auxiliary_unavailable import ProviderNotConfiguredError
             current["agent_error"] = str(e)
-            _emit("error", sid, {"message": agent_init_failed_message(e)})
+            # A client can route "no provider is set up" to its setup flow instead of a dead-end
+            # error toast — but only if it can tell. The sentence is for the reader, the code is
+            # for the client; older clients keep matching the text.
+            _emit("error", sid, {
+                "message": agent_init_failed_message(e),
+                **({"code": "provider_not_configured"} if isinstance(e, ProviderNotConfiguredError) else {})})
         finally:
             _finish_agent_build(
                 sid, key, current, notify_registered=notify_registered, scopes=scopes, session_db=session_db)
@@ -1213,18 +1303,20 @@ def _load_cfg_raw() -> dict:
     expansion applied here would be persisted on the next save). Behavioral reads use :func:`_load_cfg`.
     Cache keyed on the resolved path so profiles don't clobber."""
     global _cfg_cache, _cfg_sig, _cfg_path
-    with contextlib.suppress(Exception):
+    from hermes_cli.config import read_user_config_raw
+    from hermes_cli.config_read_errors import FailedConfigRead
+    try:
         p = _active_config_path()
         sig = file_signature(p.stat()) if p.exists() else None
         with _cfg_lock:
             if _cfg_cache is not None and _cfg_sig == sig and _cfg_path == p:
                 return copy.deepcopy(_cfg_cache)
-        from hermes_cli.config import read_user_config_raw
         data = read_user_config_raw(p) if p.exists() else {}
-        with _cfg_lock:  # cache the RAW config: _save_cfg writes _cfg_cache back to disk
-            _cfg_cache, _cfg_sig, _cfg_path = copy.deepcopy(data), sig, p
-        return data
-    return {}
+    except Exception as exc:
+        return FailedConfigRead(error=exc)  # readable as {}, refused by _save_cfg
+    with _cfg_lock:  # cache the RAW config: _save_cfg writes _cfg_cache back to disk
+        _cfg_cache, _cfg_sig, _cfg_path = copy.deepcopy(data), sig, p
+    return data
 
 
 def _load_cfg() -> dict:
@@ -1240,11 +1332,9 @@ def _load_cfg() -> dict:
 
 def _save_cfg(cfg: dict):
     global _cfg_cache, _cfg_sig, _cfg_path
-    from utils import atomic_roundtrip_yaml_save
+    from hermes_cli.config import atomic_config_replace
     path = _active_config_path()
-    # Comment-, ordering- and Unicode-preserving write (a plain safe_dump clobbered hand-written configs);
-    # fails closed on an unreadable existing config.yaml like atomic_config_write.
-    atomic_roundtrip_yaml_save(path, cfg)
+    atomic_config_replace(path, cfg)
     with _cfg_lock:
         _cfg_cache, _cfg_path = copy.deepcopy(cfg), path
         try:
@@ -1325,24 +1415,16 @@ def _clarify_timeout_seconds() -> float | None:
     return 300
 
 
-def _clarify_block(sid: str, q, c, multi_select=False, questions=None) -> str:
-    """Bridge the clarify tool callback onto a ``clarify`` server request. Single question: the response is
-    ``{"answer"}`` ("" = skip). Batch: one request with only the wire fields (tool-side entries carry
-    result-assembly keys too); answers lock one at a time through ``clarify.lock`` and the tool gets
-    ``{"answers", "timed_out"?}`` as JSON — a response with no ``answers`` is a cancel-all."""
+def _clarify_block(sid: str, questions: list[dict]) -> dict:
+    """Bridge the clarify tool callback onto one ``clarify`` server request carrying only the wire fields
+    (tool-side entries carry result-assembly keys too). Answers lock one at a time through ``clarify.lock``
+    (``null`` = skipped); the tool gets ``{"answers", "outcome"}`` — ``undelivered`` when no client took it."""
     from tui_gateway import server_requests
-    if questions:
-        wire = [{"qid": e["qid"], "question": e["question"], "choices": e["choices"], "multi_select": bool(e["multi_select"])}
-                for e in questions]
-        result = server_requests.send("clarify", sid, {"questions": wire}, timeout=_clarify_timeout_seconds(),
-                                      qids=[e["qid"] for e in questions])
-        if not result or "answers" not in result:
-            return ""
-        return json.dumps(result, ensure_ascii=False)
-    params = {"question": q, "choices": c, "multi_select": True} if multi_select else {"question": q, "choices": c}
-    result = server_requests.send("clarify", sid, params, timeout=_clarify_timeout_seconds())
-    answer = (result or {}).get("answer", "")
-    return answer if isinstance(answer, str) else ""
+    wire = [{"qid": e["qid"], "question": e["question"], "choices": e["choices"], "multi_select": bool(e["multi_select"])}
+            for e in questions]
+    result = server_requests.send("clarify", sid, {"questions": wire}, timeout=_clarify_timeout_seconds(),
+                                  qids=[e["qid"] for e in questions])
+    return result or {"answers": {}, "outcome": "undelivered"}
 
 
 # A tour action is a DOM op the renderer answers in ms; the generous deadline exists only because a
@@ -1383,6 +1465,70 @@ def _tour_request(sid: str, payload: dict) -> str:
     elif state != "answered":
         session["tour_bridge"] = "unanswered"
     return answer or _TOUR_BRIDGE_UNAVAILABLE
+
+
+_PREVIEW_ACTION_TIMEOUT_S = 45
+# Until a session's client has proven it answers preview.act at all, hold it to a
+# deadline a working renderer cannot miss (same ladder as the tour probe).
+_PREVIEW_ACTION_PROBE_TIMEOUT_S = 10
+# An unanswered probe condemns the bridge only until the cooldown expires: the
+# renderer may attach late (app launched after the turn started). One caller at
+# a time re-probes; concurrent siblings fail fast instead of stacking waits.
+_PREVIEW_ACTION_REPROBE_COOLDOWN_S = 30
+
+_PREVIEW_ACTION_BRIDGE_UNAVAILABLE = json.dumps({
+    "success": False,
+    "error": ("No Hermes Desktop window answered the preview action request. The drive_preview / "
+              "annotate_preview bridge is served by the desktop app's renderer, which updates "
+              "separately from this backend, so an app build older than the tool has nothing "
+              "listening. Update the Hermes Desktop app, open a page with open_preview, and try "
+              "again in this session after a short cooldown.")})
+
+# One in-flight cooldown-expiry reprobe per session: concurrent callers fail fast.
+_preview_action_reprobe: dict[str, object] = {}
+_preview_action_reprobe_lock = threading.Lock()
+
+
+def _preview_action_request(sid: str, payload: dict) -> str:
+    """Bridge the drive_preview / annotate_preview callback onto a ``preview.act`` server request
+    without paying for a client that cannot answer: against an older app (or a session no window
+    hosts, #94272 / #119333) nobody answers ``preview.act`` and each action would block the full
+    deadline, stacking per turn exactly like the tour timeouts (#89620). First action per session
+    gets the short probe deadline; unanswered → bridge marked unavailable for that session with a
+    cooldown-gated reprobe; once answered, the full deadline. The verdict lives on the session
+    record, so a new session re-probes. Interrupt ≠ timeout: a cancelled wait (Stop, session close)
+    returns without poisoning the state, because ``send()``'s None conflates the two and only the
+    cooldown-reprobe token distinguishes an in-flight probe — so state flips only through it.
+    """
+    with _sessions_lock:
+        session = _sessions.get(sid)
+        if session is None:
+            # detached caller: throwaway record, plain bridge, unprobed ({} is falsy but a REAL record)
+            session = {}
+        state = session.get("preview_action_bridge")
+        now = time.monotonic()
+        if state == "unanswered" and now < session.get("preview_action_bridge_retry_at", 0):
+            return _PREVIEW_ACTION_BRIDGE_UNAVAILABLE
+        if state == "unanswered":
+            with _preview_action_reprobe_lock:
+                if _preview_action_reprobe.get(sid) is not None:
+                    return _PREVIEW_ACTION_BRIDGE_UNAVAILABLE
+                _preview_action_reprobe[sid] = object()
+                session["preview_action_bridge_retry_at"] = now + _PREVIEW_ACTION_REPROBE_COOLDOWN_S
+    try:
+        answer = _ask("preview.act", sid, dict(payload),
+                      timeout=_PREVIEW_ACTION_TIMEOUT_S if state == "answered" else _PREVIEW_ACTION_PROBE_TIMEOUT_S)
+    finally:
+        if state == "unanswered":
+            with _preview_action_reprobe_lock:
+                _preview_action_reprobe.pop(sid, None)
+    with _sessions_lock:
+        if answer:
+            session["preview_action_bridge"] = "answered"
+        elif session.get("preview_action_bridge") != "answered":
+            session["preview_action_bridge"] = "unanswered"
+            session["preview_action_bridge_retry_at"] = time.monotonic() + _PREVIEW_ACTION_REPROBE_COOLDOWN_S
+    return answer or _PREVIEW_ACTION_BRIDGE_UNAVAILABLE
 
 
 def _clear_pending(sid: str | None = None) -> None:
@@ -1467,16 +1613,6 @@ def _resolve_startup_runtime() -> tuple[str, str | None]:
     return model, None
 
 
-# Bare billing buckets are not routable provider identities; restoring one as a session provider override
-# breaks resume. ``openrouter`` is deliberately NOT in this set (fully routable; agent_init's gate is a different set).
-# (agent_init's fail-fast gate is a DIFFERENT set that also skips "openrouter" — there it means "default
-# route, don't fail fast", not "unroutable".) ``openrouter`` is deliberately excluded here — it is a fully
-# routable provider with its own API key and base_url. Sessions that used OpenRouter store
-# ``billing_provider="openrouter"``; dropping it forces resume to the current global model (e.g. a custom
-# endpoint), which is the wrong provider for the stored model. See #57588.
-from hermes_state import _BARE_BILLING_PROVIDERS
-
-
 def _is_routable_provider(provider: str) -> bool:
     with contextlib.suppress(Exception):
         from hermes_cli.runtime_provider import is_routable_provider
@@ -1537,16 +1673,18 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
     if room_plumbing or (_row_follows_profile(row) and not composer_profile_matches):
         return {}
     overrides: dict = {}
-    field = lambda k: str(model_config.get(k) or "").strip()
     model = str(row.get("model") or model_config.get("model") or "").strip()
-    # ``billing_provider`` is only the billing bucket — for a custom endpoint the bare class "custom", which
-    # agent_init treats as non-routable. Only restore an explicit provider; else resume uses the configured default.
-    provider = field("provider")
-    billing_provider = str(model_config.get("billing_provider") or row.get("billing_provider") or "").strip()
-    if not provider and billing_provider.lower() not in _BARE_BILLING_PROVIDERS:
-        provider = billing_provider
-    base_url, api_mode, service_tier = field("base_url"), field("api_mode"), field("service_tier")
+    # Canonical route reader shared with CLI --resume: nested ``gateway_runtime`` (the route the messaging
+    # gateway last ran) before the TUI's top-level keys, then a routable ``billing_provider`` (#125942).
+    from hermes_state import SessionDB
+    route = SessionDB.session_gateway_runtime(row)
+    provider, base_url, api_mode = (str(route.get(k) or "").strip() for k in ("provider", "base_url", "api_mode"))
+    service_tier = str(model_config.get("service_tier") or "").strip()
     reasoning_config = model_config.get("reasoning_config")
+    from hermes_cli.runtime_provider import is_foreign_provider_endpoint
+    if is_foreign_provider_endpoint(provider, base_url):
+        # The endpoint and its wire belong to the provider this chat left; resolve the stored one's own.
+        base_url = api_mode = ""
     # Heal a stale provider persisted by an older build (renamed/removed custom provider → "Unknown provider"):
     # recover ``custom:<name>`` from the stored base_url, then from the entry serving the model; else drop it.
     if provider and not _is_routable_provider(provider):
@@ -1581,6 +1719,7 @@ def _runtime_model_config(agent, existing: dict | None = None) -> dict:
     attributes DELETE the key rather than skip the write: resume reads provider/endpoint from this JSON
     (model column written separately), so a stale provider would route the resumed chat to the wrong endpoint."""
     config = dict(existing or {})
+    agent = session_runtime_view(agent)
     attr = lambda k: str(getattr(agent, k, "") or "").strip()
     model, provider, base_url = attr("model"), attr("provider"), attr("base_url")
     if provider.lower() == "custom":
@@ -1622,7 +1761,7 @@ def _persist_live_session_runtime(session: dict | None) -> None:
         if (tier_override := session.get("create_service_tier_override")) is not None:
             # agent.service_tier is None for explicit normal; without this the distinction is erased on every persist.
             model_config["service_tier"] = tier_override or "normal"
-        model = str(getattr(agent, "model", "") or "").strip()
+        model = str(model_config.get("model") or "").strip()
         if hasattr(db, "update_session_meta"):
             db.update_session_meta(session_key, json.dumps(model_config), model or None)
         elif model and hasattr(db, "update_session_model"):
@@ -1698,7 +1837,7 @@ def _append_model_switch_marker(session: dict | None, *, model: str, provider: s
         "metadata when answering questions about what model/provider is active.]")
     # A user message, not system: strict OpenAI-compatible providers (vLLM, Qwen) reject non-leading system messages.
     # See #48338.
-    entry = {"role": "user", "content": marker, "display_kind": "model_switch"}
+    entry: dict[str, Any] = {"role": "user", "content": marker, "display_kind": "model_switch"}
     with session.get("history_lock") or contextlib.nullcontext():
         history = session.setdefault("history", [])
         history[:] = [h for h in history if not _is_model_switch_marker(h)]
@@ -1711,9 +1850,25 @@ def _append_model_switch_marker(session: dict | None, *, model: str, provider: s
             _ensure_session_db_row(session)
         with (contextlib.nullcontext(db) if db is not None else _session_db(session)) as db:
             if db is not None:
-                db.append_message(session_id=session_key, role="user", content=marker, display_kind="model_switch")
+                from agent.context_compressor import _DB_PERSISTED_MARKER
+                # Same stale-key hazard as the submit row: this durable pivot must land in the session the
+                # live agent writes to, or a model switch between turns on a rotated session files the notice
+                # under a parent the conversation no longer reads from (#123545).
+                target = _submit_row_target_key(session)
+                # The in-memory strip above keeps one marker; the durable rows need the same invariant or N
+                # switches leave N active rows that all replay on resume (#65891 kept it in memory only).
+                db.deactivate_messages_by_display_kind(target, "model_switch")
+                from agent.message_metadata import stamp_message_uid
+                entry["_row_id"] = db.append_message(
+                    session_id=target, role="user", content=marker, display_kind="model_switch",
+                    message_uid=stamp_message_uid(entry))
+                entry[_DB_PERSISTED_MARKER] = True
     except Exception:
-        logger.debug("failed to persist model switch marker", exc_info=True)
+        # warning, not debug: filing the pivot in the LIVE session (#123545) means this write can now hit
+        # CompressionSessionClosedError on a closed parent, which the old session_key target could not.
+        # Swallowed at debug, a model switch silently loses its durable notice — the next resume replays
+        # without it and nothing lands in errors.log. Matches _persist_live_session_system_prompt above.
+        logger.warning("failed to persist model switch marker", exc_info=True)
 
 
 def _write_config_key(key_path: str, value):
@@ -1781,12 +1936,10 @@ def _load_reasoning_config(model: str = "") -> dict | None:
     return resolve_reasoning_config(_load_cfg(), model)
 
 
-_SERVICE_TIER_ALIASES = {"fast": "priority", "priority": "priority", "on": "priority", "auto": "auto", "cold": "cold"}
-
-
 def _load_service_tier() -> str | None:
-    raw = str((_load_cfg().get("agent") or {}).get("service_tier", "") or "").strip().lower()
-    return _SERVICE_TIER_ALIASES.get(raw)
+    from agent.fast_mode import parse_service_tier
+
+    return parse_service_tier((_load_cfg().get("agent") or {}).get("service_tier", ""))
 
 
 def _load_provider_routing() -> dict:
@@ -1825,10 +1978,26 @@ def _load_tool_progress_mode() -> str:
 
 
 def _gui_surface_toolsets(platform: str) -> set[str]:
-    """Toolsets that exist because of the CLIENT (both off ``_HERMES_CORE_TOOLS``; this is the one gate).
+    """Toolsets that exist because of the CLIENT (off ``_HERMES_CORE_TOOLS``; this is the one gate).
     ``platform`` is the SESSION's source, never a process env var: the desktop may drive a URL/cloud
     backend where ``HERMES_DESKTOP`` is unset (AGENTS.md surface rule)."""
-    return {"project", "desktop_ui"} if platform == "desktop" else {"project"}
+    from toolsets import CLIENT_SURFACE_TOOLSETS
+    return set(CLIENT_SURFACE_TOOLSETS) if platform == "desktop" else {"project"}
+
+
+def _with_session_toolsets(selection, platform: str) -> list[str]:
+    """*selection* plus the client surface's toolsets the session carries whatever its config says.
+
+    The fold-in happens after ``_get_platform_tools`` already subtracted ``agent.disabled_toolsets``,
+    so the same subtraction is applied to the fold-in itself — otherwise ``disabled_toolsets:
+    [project]`` is a no-op on desktop/TUI, the only surfaces where the client toolsets exist
+    (#54433). ``desktop_ui`` is kept regardless: it is the client's own control surface, not a
+    model toolset."""
+    fold_in = _gui_surface_toolsets(platform) - set(selection)
+    disabled = set(_load_disabled_toolsets() or [])
+    if disabled:
+        fold_in -= disabled - {"desktop_ui"}
+    return [*selection, *sorted(fold_in)]
 
 
 def _tui_notice(text: str) -> None:
@@ -1856,13 +2025,13 @@ def _resolve_explicit_toolsets(explicit: list[str], validate_toolset) -> list[st
         return built_in
     try:  # (enabled, disabled) MCP server names from raw config; both empty on any failure
         from hermes_cli.config import read_raw_config
-        from hermes_cli.tools_config import _parse_enabled_flag
+        from tools.mcp_tool_common import mcp_server_enabled
         raw_cfg = read_raw_config()
         mcp_servers = raw_cfg.get("mcp_servers") if isinstance(raw_cfg.get("mcp_servers"), dict) else {}
         mcp_names, mcp_disabled = set(), set()
         for name, server_cfg in mcp_servers.items():
             if isinstance(server_cfg, dict):
-                on = _parse_enabled_flag(server_cfg.get("enabled", True), default=True)
+                on = mcp_server_enabled(server_cfg)
                 (mcp_names if on else mcp_disabled).add(str(name))
     except Exception:
         mcp_names, mcp_disabled = set(), set()
@@ -1880,7 +2049,9 @@ def _resolve_explicit_toolsets(explicit: list[str], validate_toolset) -> list[st
 def _load_enabled_toolsets(platform: str | None = None) -> list[str] | None:
     """The agent's toolsets for this session (None = all): an explicit HERMES_TUI_TOOLSETS pin; else the
     coding posture (coding_context collapses to coding toolset + enabled MCP servers in a code workspace);
-    else the configured CLI toolsets. Client-surface toolsets fold in here — only this surface can answer them."""
+    else the configured CLI toolsets. Client-surface toolsets fold in here — only this surface can answer them.
+    An explicitly saved EMPTY list (``platform_toolsets.cli: []`` that resolves to nothing) is a
+    zero-tool state and returns [] — never None, which would mean unrestricted (#82010)."""
     session_platform = platform or _resolve_session_platform()
     explicit = [item.strip() for item in os.environ.get("HERMES_TUI_TOOLSETS", "").split(",") if item.strip()]
     fallback_notice = None
@@ -1889,7 +2060,11 @@ def _load_enabled_toolsets(platform: str | None = None) -> list[str] | None:
             from agent.coding_context import coding_selection
             selection = coding_selection(platform=session_platform)
             if selection is not None:
-                return sorted({*selection, *_gui_surface_toolsets(session_platform)})
+                from hermes_cli.config import load_config
+                from hermes_cli.tools_config import _get_platform_tools
+                from toolsets import TOOLSET_SESSION_PLATFORMS
+                selection += sorted(_get_platform_tools(load_config(), "cli") & TOOLSET_SESSION_PLATFORMS.keys())
+                return sorted(_with_session_toolsets(selection, session_platform))
     try:
         from toolsets import validate_toolset
     except Exception:
@@ -1897,11 +2072,12 @@ def _load_enabled_toolsets(platform: str | None = None) -> list[str] | None:
     if explicit and validate_toolset is not None:
         resolved = _resolve_explicit_toolsets(explicit, validate_toolset)
         if resolved is not False:
+            # An operator pin replaces the surface fold-in.
             return resolved
         fallback_notice = "[tui] no valid HERMES_TUI_TOOLSETS entries; using configured CLI toolsets"
     try:
         from hermes_cli.config import load_config
-        from hermes_cli.tools_config import _get_platform_tools
+        from hermes_cli.tools_config import _get_platform_tools, _platform_toolsets_explicitly_saved
         cfg = load_config()
         # include_default_mcp_servers=True is the runtime variant (the agent must be able to call
         # default MCP servers); the config-editing variant would silently drop MCP tools from the TUI.
@@ -1911,10 +2087,41 @@ def _load_enabled_toolsets(platform: str | None = None) -> list[str] | None:
         enabled = _get_platform_tools(cfg, "cli", include_default_mcp_servers=True)
         if fallback_notice is not None:
             _tui_notice(fallback_notice)
-        return sorted(enabled | _gui_surface_toolsets(session_platform)) if enabled else None
+        if enabled:
+            return sorted(_with_session_toolsets(enabled, session_platform))
+        # An explicitly saved list that resolves to nothing (``platform_toolsets.cli: []`` with no
+        # enabled MCP servers) is an explicit zero-tool state, not "no filter": fail closed with []
+        # instead of None (#82010). The client-surface fold-in must not resurrect tools the user
+        # explicitly switched off, so [] is returned bare. Only an ABSENT/unset key keeps the
+        # None = "no restriction" default below.
+        if _platform_toolsets_explicitly_saved(cfg, "cli"):
+            return []
+        return None
     except Exception:
         if fallback_notice is not None:
             _tui_notice("[tui] no valid HERMES_TUI_TOOLSETS entries and configured CLI toolsets could not be loaded; enabling all toolsets")
+        return None
+
+
+def _load_disabled_toolsets() -> list[str] | None:
+    """``agent.disabled_toolsets`` from config.yaml, or ``None``.
+
+    The classic CLI (``cli_init_mixin``) and the messaging gateway both forward this list to
+    AIAgent, where ``get_tool_definitions`` strips the named toolsets even out of composite
+    defaults like ``hermes-cli`` (#17309). The desktop/TUI gateway historically dropped it, so
+    e.g. ``disabled_toolsets: [browser]`` silently had no effect on Desktop — the only consumer
+    was ``_get_platform_tools``'s name-level subtraction, which can't reach inside a composite
+    default toolset (#44499).
+    """
+    try:
+        from agent.skill_utils import parse_config_string_list
+
+        from hermes_cli.config import load_config
+
+        agent_cfg = load_config().get("agent") or {}
+        disabled = parse_config_string_list(agent_cfg.get("disabled_toolsets"))
+        return [str(ts) for ts in disabled] or None
+    except Exception:
         return None
 
 
@@ -1926,13 +2133,42 @@ def _session_verbose(sid: str) -> bool:
     return _session_tool_progress_mode(sid) == "verbose"
 
 
+def _session_show_reasoning(sid: str) -> bool:
+    """Session display flag. Missing means the config default, not hidden."""
+    session = _sessions.get(sid) or {}
+    if "show_reasoning" in session:
+        return bool(session["show_reasoning"])
+    return _load_show_reasoning()
+
+
 def _tool_progress_enabled(sid: str) -> bool:
     return _session_tool_progress_mode(sid) != "off"
 
 
+# Names whose lifecycle a UI renders as a card even with display.tool_progress off. `isCardTool` /
+# `isFileEditTool` in apps/desktop/src/lib/tool-render-class.ts must stay in sync with this
+# set (test_gateway_lifecycle_set_covers_desktop_card_tools pins the direction that matters).
+_TOOL_LIFECYCLE_UI_TOOLS = frozenset({
+    "clarify", "manage_connections", "setup_mcp",
+    "image_generate", "manage_catalog", "delegate_task", "setup_choose", "start_chat",
+    # File edits are the turn's deliverable — the diff card the user reviews.
+    "edit_file", "patch", "write_file",
+})
+
+
 def _tool_lifecycle_required_for_ui(name: str) -> bool:
-    """Interactive UI, not optional chrome: Desktop renders clarify / connection cards from the tool-call part."""
-    return name in ("clarify", "manage_connections", "setup_mcp")
+    """Interactive UI / card surfaces, not optional chrome.
+
+    Desktop renders these from the tool-call part itself, so suppressing the
+    lifecycle hides the turn's deliverable entirely (`isCardTool` /
+    `isFileEditTool` in apps/desktop/src/lib/tool-render-class.ts must stay in
+    sync with `_TOOL_LIFECYCLE_UI_TOOLS`): clarify / connection cards are
+    consent surfaces, image_generate / manage_catalog / delegate_task draw the
+    thing the user asked for, and file edits are the diff the user reviews.
+    The start and complete guards both consult this set, so a card's
+    `tool.complete` can never arrive without its `tool.start`.
+    """
+    return name in _TOOL_LIFECYCLE_UI_TOOLS
 
 
 def _restart_slash_worker(sid: str, session: dict):
@@ -1949,7 +2185,8 @@ def _restart_slash_worker(sid: str, session: dict):
         worker.close()
     try:
         new_worker = _SlashWorker(session["session_key"], getattr(session.get("agent"), "model", _resolve_model()),
-                                  profile_home=session.get("profile_home"))
+                                  profile_home=session.get("profile_home"),
+                                  provider=getattr(session.get("agent"), "provider", None) or None)
     except Exception:
         session["slash_worker"] = None
         return
@@ -2043,12 +2280,14 @@ def _current_profile_name() -> str:
 
 
 # Monotonic GUI<->backend contract version: the desktop refuses a backend reporting less (or none) with a
-# one-click "update to align" prompt; bump whenever the desktop's backend contract changes. v2 file.attach;
-# v3 approvals.mode RPCs + session.info reconciliation; v4 session.create fast=false = explicit normal tier;
+# one-click "update to align" prompt. The desktop also warns in the reverse direction: a backend reporting
+# MORE than the GUI's required value means the GUI build predates this backend (e.g. a long-running app
+# across a backend update) and should be updated. Bump whenever the desktop's backend contract changes.
+# v2 file.attach; v3 approvals.mode RPCs + session.info reconciliation; v4 session.create fast=false = explicit normal tier;
 # v5 ws_max_size >16 MiB file.attach frames; v6 plugins.manage rows carry the canonical registry key;
 # v7 blocking prompts are JSON-RPC server->client requests (`srq-<n>` frames, `open_requests` replay) — a v6
 # backend still emits `<kind>.request` notifications the renderer no longer listens for.
-DESKTOP_BACKEND_CONTRACT = 7
+DESKTOP_BACKEND_CONTRACT = 8
 
 
 def _session_usage_snapshot(session: dict | None) -> dict:
@@ -2081,9 +2320,43 @@ def _turn_started_at(session: dict | None) -> float | None:
     return float(inflight["started_at"]) if isinstance(inflight, dict) and inflight.get("started_at") else None
 
 
+def _live_session_identity(session: dict) -> tuple[str, str]:
+    """``(model, provider)`` the live session actually runs — the same precedence ``_session_info`` reports:
+    a switch queued mid-turn, the metadata mirror, the built agent, the composer override a deferred record
+    carries. The profile default is the LAST resort, never the answer for a chat that made its own pick."""
+    pending = session.get("pending_model_switch") or {}
+    mirror = _metadata_mirror(session)
+    agent = session_runtime_view(session.get("agent"))
+    override = session.get("model_override") or {}
+    model = (str(pending.get("display_model") or "").strip() or mirror.get("model")
+             or getattr(agent, "model", "") or override.get("model"))
+    provider = (str(pending.get("display_provider") or "").strip() or mirror.get("provider")
+                or getattr(agent, "provider", "") or override.get("provider"))
+    default = ("", "") if model else _session_default_route(session)
+    return str(model or default[0]), str(provider or default[1])
+
+
+def _fast_tier_applies(agent, model: str, provider: str, *, route_known: bool, tier: str | None = None) -> bool:
+    """Whether a priority tier reaches this session's route. Every request builder asks the same gate, so a
+    profile-wide ``service_tier: fast`` sends nothing to a local server or a proxy, and the session must not
+    report Fast there either. ``route_known`` is False while a switch is pending: the agent's base URL still
+    belongs to the old route."""
+    from hermes_cli.models import resolve_fast_mode_overrides
+    base_url = None
+    if route_known and agent is not None:
+        if getattr(agent, "api_mode", None) == "anthropic_messages":
+            base_url = getattr(agent, "_anthropic_base_url", None)
+        base_url = base_url or getattr(agent, "base_url", None)
+    try:
+        return resolve_fast_mode_overrides(model, provider=provider or None, base_url=base_url, tier=tier) is not None
+    except Exception:
+        return False
+
+
 def _session_info(agent, session: dict | None = None) -> dict:
     if session is None:
         session = next((c for c in _sessions.values() if c.get("agent") is agent), None)
+    agent = session_runtime_view(agent)
     sess = session or {}
     mirror = _metadata_mirror(session)
     cwd = _display_session_cwd(session)
@@ -2121,12 +2394,15 @@ def _session_info(agent, session: dict | None = None) -> dict:
     # Hermes-internal step (#61634) as a wire level the route does not have.
     reasoning_effort_wire = ""
     if reasoning_effort and reasoning_effort != "none":
-        reasoning_effort_wire = str(clamp_effort(reasoning_effort, route_supported_efforts(pending_provider or provider, model)) or "")
+        reasoning_effort_wire = str(clamp_effort(reasoning_effort, route_supported_efforts(
+            pending_provider or provider, model, getattr(agent, "api_mode", None))) or "")
     info: dict = {
         "model": model,
         "provider": pending_provider or provider,
         "reasoning_effort": reasoning_effort, "reasoning_effort_wire": reasoning_effort_wire,
-        "service_tier": service_tier, "fast": service_tier == "priority",
+        "service_tier": service_tier,
+        "fast": service_tier in STATIC_TIERS and _fast_tier_applies(agent, model, pending_provider or provider,
+                                                                    route_known=not pending_provider, tier=service_tier),
         "yolo": yolo, "approval_mode": approval_mode,
         "tools": dict(mirror.get("tools") or {}) if isinstance(mirror.get("tools"), dict) else {},
         "skills": dict(mirror.get("skills") or {}) if isinstance(mirror.get("skills"), dict) else {},
@@ -2140,8 +2416,10 @@ def _session_info(agent, session: dict | None = None) -> dict:
         "profile_name": profile_name_for_home(sess.get("profile_home")) or _current_profile_name(),
     }
     with contextlib.suppress(Exception):
-        from hermes_cli import __version__, __release_date__
-        info.update(version=__version__, release_date=__release_date__)
+        from hermes_cli import __release_date__
+        from hermes_cli.version_info import get_version_info
+
+        info.update(version=get_version_info().base_version, release_date=__release_date__)
     live_agent = agent is not None and not sess.get("_compute_host_active")
     if live_agent:
         with contextlib.suppress(Exception):
@@ -2304,8 +2582,10 @@ def _resolve_agent_model_runtime(model_override, provider_override) -> tuple[str
         # Same pre-agent switch the messaging gateway surfaces (#74349); _make_agent pops it onto the
         # agent's one-shot notice so the TUI/Desktop user sees which provider actually answered.
         from hermes_cli.fallback_config import pre_agent_fallback_notice
-        # requested_provider=None means resolve_runtime_provider read the persisted config provider.
-        primary_provider = requested_provider or (_load_cfg().get("model") or {}).get("provider")
+        # requested_provider=None means resolve_runtime_provider read the persisted config provider;
+        # ``model: <id>`` (string shorthand) names no provider.
+        cfg_model = _load_cfg().get("model")
+        primary_provider = requested_provider or (cfg_model.get("provider") if isinstance(cfg_model, dict) else None)
         resolution.runtime["_fallback_notice"] = pre_agent_fallback_notice(
             primary_provider, model, resolution.runtime.get("provider"), resolution.selected_model)
         return resolution.selected_model, resolution.runtime
@@ -2341,14 +2621,13 @@ def _startup_system_prompt(cfg: dict, task_id: str) -> str:
     startup_skills = _parse_tui_skills_env()
     if not startup_skills:
         return system_prompt
-    from agent.skill_commands import build_preloaded_skills_prompt
+    from agent.skill_commands import build_preloaded_skills_prompt, format_missing_skills
     skills_prompt, loaded_skills, missing_skills = build_preloaded_skills_prompt(startup_skills, task_id=task_id)
     if missing_skills:
-        missing_display = ", ".join(missing_skills)
         if not loaded_skills:
-            raise ValueError(f"Unknown skill(s): {missing_display}")
-        logger.warning("Unknown skill(s) requested, skipping: %s. Continuing with: %s. "
-                       "List available skills with `hermes skills list`.", missing_display, ", ".join(loaded_skills))
+            raise ValueError(format_missing_skills(missing_skills))
+        logger.warning("Skipping %s. Continuing with: %s. List available skills with `hermes skills list`.",
+                       format_missing_skills(missing_skills), ", ".join(loaded_skills))
     if skills_prompt:
         system_prompt = "\n\n".join(part for part in (system_prompt, skills_prompt) if part).strip()
     return system_prompt
@@ -2414,6 +2693,7 @@ def _make_agent(
             reasoning_config_override if reasoning_config_override is not None else _load_reasoning_config(str(model or ""))),
         service_tier=service_tier_override if service_tier_override is not None else _load_service_tier(),
         enabled_toolsets=_load_enabled_toolsets(platform),
+        disabled_toolsets=_load_disabled_toolsets(),
         # OpenRouter provider_routing prefs (gateway + CLI parity).
         providers_allowed=_pr.get("only"), providers_ignored=_pr.get("ignore"), providers_order=_pr.get("order"),
         provider_sort=_pr.get("sort"), provider_require_parameters=_pr.get("require_parameters", False),
@@ -2423,10 +2703,12 @@ def _make_agent(
         # Builds that run before the record exists (branch, eager resume, compute host) pass it explicitly.
         user_id=auth_user_id if auth_user_id is not None else _session_auth_user_id(session),
         session_db=session_db if session_db is not None else _get_db(), ephemeral_system_prompt=system_prompt or None,
-        checkpoints_enabled=is_truthy_value(os.environ.get("HERMES_TUI_CHECKPOINTS")),
+        checkpoints_enabled=_resolve_checkpoints_enabled(cfg),
         pass_session_id=is_truthy_value(os.environ.get("HERMES_TUI_PASS_SESSION_ID")),
         skip_context_files=ignore_rules, skip_memory=ignore_rules, fallback_model=_load_fallback_model(),
-        **_agent_cbs(sid))
+        # The resolved provider's request body (a custom entry's extra_body), as the CLI/cron/gateway pass it.
+        request_overrides=runtime.get("request_overrides"),
+        prefill_messages=_load_prefill_messages() or None, **_agent_cbs(sid))
     if context_cwd_is_launch_artifact is None:
         context_cwd_is_launch_artifact = _context_cwd_is_launch_artifact(session)
     agent._context_cwd_is_launch_artifact = bool(context_cwd_is_launch_artifact)
@@ -2437,7 +2719,7 @@ def _make_agent(
 
 
 def _hydrate_session_cwd(sid: str, key: str, session_db, profile_home: str | None) -> None:
-    """Adopt the stored row's cwd, or persist the fresh session's cwd (+ schedule git meta) when the row has none."""
+    """Adopt the stored row's cwd and fill missing Git metadata, or persist a fresh cwd."""
     owns_db, db = False, session_db
     if db is None and not profile_home:
         db = _get_db()
@@ -2453,11 +2735,29 @@ def _hydrate_session_cwd(sid: str, key: str, session_db, profile_home: str | Non
     try:
         if db is not None:
             row = db.get_session(key) if hasattr(db, "get_session") else None
-            if row and row.get("cwd"):
+            if row and _resumable_stored_cwd(row.get("cwd"), profile_home):
+                # An ssh session's stored cwd is its workspace: explicit, so the remote terminal uses it instead of
+                # the profile's ~. Other backends keep main's semantics (resolved outside the sessions lock: I/O).
+                remote = _cwd_is_remote(profile_home)
                 with _sessions_lock:
                     if sid in _sessions:
                         _sessions[sid]["cwd"] = row["cwd"]
-            elif hasattr(db, "update_session_cwd"):
+                        if remote:
+                            _sessions[sid]["explicit_cwd"] = True
+                # Lazy desktop rows already carry their explicitly chosen cwd, so they never reach the fresh-cwd
+                # branch below. Claim a generation before probing to keep an older probe from overwriting a later
+                # workspace move; complete rows do not need another probe on every resume.
+                if (not row.get("git_branch") or not row.get("git_repo_root")) and hasattr(
+                    db, "update_session_cwd"
+                ):
+                    try:
+                        _persist_session_cwd_and_schedule_git_meta(_sessions[sid], row["cwd"], db=db)
+                    except Exception:
+                        logger.debug("failed to enrich resumed session git metadata", exc_info=True)
+            elif not (row and row.get("cwd")) and hasattr(db, "update_session_cwd") and not _is_remote_launch_cwd(
+                _sessions.get(sid)
+            ):
+                # A stored cwd that was set aside (Hermes's own host tree) stays as stored: only an empty row is filled.
                 try:
                     _persist_session_cwd_and_schedule_git_meta(_sessions[sid], _sessions[sid]["cwd"], db=db)
                 except Exception:
@@ -2502,19 +2802,36 @@ def _new_session_key() -> str:
     return new_session_id()
 
 
+# Server-minted session keys are ``%Y%m%d_%H%M%S_`` + 6 hex chars (see
+# ``_new_session_key``). session.resume uses this shape as the fail-closed gate
+# for materializing a row for a minted-but-never-persisted key: only keys the
+# server itself could have produced qualify — arbitrary strings and 8-hex
+# runtime session ids (``uuid4().hex[:8]``) are rejected.
+_MINTED_SESSION_KEY_RE = re.compile(r"^\d{8}_\d{6}_[0-9a-f]{6}$")
+
+
+def _is_server_minted_key(value: str | None) -> bool:
+    return bool(value and _MINTED_SESSION_KEY_RE.fullmatch(value))
+
+
+def _any_live_session_claims_key(target: str) -> bool:
+    """True if any live registry record claims this stored key (any profile).
+
+    Fail-closed gate for minted-key materialization: a key claimed by a live
+    session — even one scoped to a different profile — is owned, so an
+    unscoped resume must not mint a phantom row in the launch store (#93296
+    cross-profile rule: routing guesses are forbidden).
+    """
+    for record in list(_sessions.values()):
+        if not isinstance(record, dict):
+            continue
+        if str(record.get("session_key") or "") == target:
+            return True
+    return False
+
+
 def _with_checkpoints(session, fn):
     return fn(session["agent"]._checkpoint_mgr, _session_cwd(session))
-
-
-def _resolve_checkpoint_hash(mgr, cwd: str, ref: str) -> str:
-    try:
-        checkpoints = mgr.list_checkpoints(cwd)
-        idx = int(ref) - 1
-    except ValueError:
-        return ref
-    if 0 <= idx < len(checkpoints):
-        return checkpoints[idx].get("hash", ref)
-    raise ValueError(f"Invalid checkpoint number. Use 1-{len(checkpoints)}.")
 
 
 # ── Methods: session ─────────────────────────────────────────────────
@@ -2522,11 +2839,14 @@ def _resolve_checkpoint_hash(mgr, cwd: str, ref: str) -> str:
 
 def _lazy_resume_info(cwd: str, *, model: str = "", provider: str = "", profile: str | None = None) -> dict:
     """session.info for a not-yet-built session (session.create's shape); tools/skills land with the deferred build."""
+    if not model:
+        model, default_provider = _session_default_route({"profile_home": _profile_home(profile)})
+        provider = provider or default_provider
     return {
         "cwd": cwd, "branch": git_probe.branch(cwd), "project": _project_info_for_cwd(cwd),
-        "model": model or _resolve_model(), "tools": {}, "skills": {}, "lazy": True,
+        **_lazy_info_route({"profile_home": _profile_home(profile)}, {"model": model, "provider": provider} if model else {}),
+        "tools": {}, "skills": {}, "lazy": True,
         "desktop_contract": DESKTOP_BACKEND_CONTRACT, "profile_name": _response_profile_name(profile),
-        **({"provider": provider} if provider else {}),
     }
 
 
@@ -2666,7 +2986,14 @@ def _schedule_resume_hydration(sid: str, stored_id: str, db, *, close_db: bool =
             if session is None:
                 return
             _emit("session.resume_progress", sid, {"phase": "history", "status": "loading"})
-            db.reopen_session(stored_id)
+            # Read-only mount (#85303): hydration is a read; an ended row stays ended —
+            # the first real turn (prompt.submit) reopens it. But a restart discarded the
+            # busy-queue, so retire never-drained accept rows (#125577) before the read —
+            # with #128508 the reopen (and its retire) no longer runs on this path.
+            # Best-effort like the resume guard: a handle without the method skips it.
+            retire = getattr(db, "retire_undrained_queue_rows", None)
+            if callable(retire):
+                retire(stored_id)
             raw_history, display_history, prefix = _load_resume_transcript(
                 db, stored_id, model_history_only=model_history_only)
             # Display keeps the full transcript; the model-fed history uses the
@@ -2786,7 +3113,7 @@ def _fallback_session_info(session: dict) -> dict:
     cwd = _session_cwd(session)
     return {
         "cwd": cwd, "branch": git_probe.branch(cwd), "project": _project_info_for_cwd(cwd), "lazy": True,
-        "model": _resolve_model(), "skills": {}, "tools": {}, "desktop_contract": DESKTOP_BACKEND_CONTRACT,
+        **_lazy_info_route(session, {}), "skills": {}, "tools": {}, "desktop_contract": DESKTOP_BACKEND_CONTRACT,
     }
 
 
@@ -2829,7 +3156,7 @@ def _live_visible_history(session: dict, db, in_memory_fallback: list[dict]) -> 
 
 def _live_session_payload(
     sid: str, session: dict, *, cols: int | None = None, touch: bool = False,
-    transport: Transport | None = None, omit_messages: bool = False) -> dict:
+    transport: Transport | None = None, omit_messages: bool = False, inline_images: bool = True) -> dict:
     with session["history_lock"]:
         if cols is not None:
             session["cols"] = cols
@@ -2851,7 +3178,8 @@ def _live_session_payload(
             history = _live_visible_history(session, db, in_memory_history)
     # message_count follows _resume_response: the stored size when messages are omitted, else the wire count
     # (a hidden seed row is in ``history`` but never on the wire).
-    messages = [] if omit_messages else _history_to_messages(history)
+    messages = ([] if omit_messages else
+                _history_to_messages(history, profile_home=session.get("profile_home"), image_urls=inline_images))
     payload = {
         "info": _fallback_session_info(session), "message_count": len(history) if omit_messages else len(messages),
         "messages": messages,
@@ -2954,7 +3282,7 @@ def _pet_sprite_payload(pet, *, scale: float) -> dict:
     try:
         stat = pet.spritesheet.stat()
         cache_key = (str(pet.spritesheet), stat.st_mtime_ns, stat.st_size, pet.slug, pet.display_name, round(scale, 4))
-    except Exception:  # noqa: BLE001
+    except Exception:
         cache_key = None
     if cache_key is not None:
         with _pet_payload_cache_lock:
@@ -2964,7 +3292,7 @@ def _pet_sprite_payload(pet, *, scale: float) -> dict:
     try:  # real (padding-trimmed) frame count per state; {} → the canvas uses the static framesPerState
         from agent.pet import render
         frames_by_state = render.state_frame_counts(str(pet.spritesheet))
-    except Exception:  # noqa: BLE001
+    except Exception:
         frames_by_state = {}
     raw = pet.spritesheet.read_bytes()
     mime = "image/png" if pet.spritesheet.suffix.lower() == ".png" else "image/webp"
@@ -3019,7 +3347,7 @@ def _pet_gen_sweep(root, *, max_age_s: float = 3600.0) -> None:
         now = time.time()
         for child in (c for c in root.iterdir() if c.is_dir() and now - c.stat().st_mtime > max_age_s):
             shutil.rmtree(child, ignore_errors=True)
-    except Exception as exc:  # noqa: BLE001 - cleanup is best-effort
+    except Exception as exc:
         logger.debug("pet-gen sweep failed: %s", exc)
 
 
@@ -3120,7 +3448,7 @@ def _append_spawn_tree_index(session_dir, entry: dict) -> None:
 def _read_spawn_tree_index(session_dir) -> list[dict]:
     out: list[dict] = []
     try:
-        with (session_dir / _SPAWN_TREE_INDEX).open("r", encoding="utf-8") as f:
+        with (session_dir / _SPAWN_TREE_INDEX).open("r", encoding="utf-8-sig") as f:
             for line in f:
                 if line := line.strip():
                     with contextlib.suppress(json.JSONDecodeError):
@@ -3234,7 +3562,7 @@ _TUI_EXTRA: list[tuple[str, str, str]] = [
 # slash.exec routes them to command.dispatch instead.
 _PENDING_INPUT_COMMANDS: frozenset[str] = frozenset({
     "retry", "queue", "q", "steer", "plan", "goal", "loop", "proactive", "moa", "undo", "learn",
-    "init", "compress", "compact",
+    "init", "compress", "compact", "initiate-setup", "initiate_setup",
 })
 
 _WORKER_BLOCKED_COMMANDS: frozenset[str] = frozenset({"snapshot", "snap"})
@@ -3245,8 +3573,8 @@ def _skill_usage_lookup():
     "hub" / "bundled" / "local" (``/api/skills`` ``provenance``, "local" spelled "agent"). Failure → 0 / "local"."""
     try:
         from tools.skill_usage import (
-            _read_bundled_manifest_names, _read_hub_installed_names, activity_count, load_usage)
-        records, bundled, hub = load_usage(), _read_bundled_manifest_names(), _read_hub_installed_names()
+            _read_bundled_names, _read_hub_installed_names, activity_count, load_usage)
+        records, bundled, hub = load_usage(), _read_bundled_names(), _read_hub_installed_names()
     except Exception as e:
         logger.debug("skill usage lookup unavailable: %s", e)
         return (lambda _name: 0), (lambda _name: "local")
@@ -3264,10 +3592,13 @@ def _skill_usage_lookup():
 _SLASH_COMPLETION_LIMIT = 30
 
 
-def _rank_slash_completions(items: list[dict], usage, origin_of, *, browsing: bool, score_of=None) -> list[dict]:
+def _rank_slash_completions(items: list[dict], usage, origin_of, *, browsing: bool, score_of=None,
+                            registry_command_names: frozenset[str] | None = None) -> list[dict]:
     """Registry commands keep their order; only skills reorder: fuzzy ``score_of`` first, then most-used, then
     A-Z. The limit is spent PER KIND (a flat cut on a large install offered no skill at all). ``browsing``
-    (bare ``/``) drops never-used bundled skills as noise; a typed query is SEARCHING — nothing pruned, only reordered."""
+    (bare ``/``) drops never-used bundled skills as noise; a typed query is SEARCHING — nothing pruned, only reordered.
+    While browsing, only names in ``registry_command_names`` (default ``GATEWAY_KNOWN_COMMANDS``) skip the cap:
+    plugin-registered commands are also ``kind != "skill"`` but unbounded, so they stay capped like skills."""
     def name_of(item: dict) -> str:
         return str(item.get("text", "")).strip().lstrip("/").lower()
     commands = [item for item in items if item.get("kind") != "skill"]
@@ -3276,7 +3607,16 @@ def _rank_slash_completions(items: list[dict], usage, origin_of, *, browsing: bo
         skills = [item for item in skills if origin_of(name_of(item)) != "bundled" or usage(name_of(item)) > 0]
     skills.sort(key=lambda item: (
         *(() if score_of is None else (score_of(item),)), -usage(name_of(item)), name_of(item)))
-    return commands[:_SLASH_COMPLETION_LIMIT] + skills[:_SLASH_COMPLETION_LIMIT]
+    if browsing:
+        if registry_command_names is None:
+            from hermes_cli.commands import GATEWAY_KNOWN_COMMANDS
+            registry_command_names = GATEWAY_KNOWN_COMMANDS
+        fixed = [c for c in commands if name_of(c) in registry_command_names]
+        other = [c for c in commands if name_of(c) not in registry_command_names]
+        ranked_commands = fixed + other[:_SLASH_COMPLETION_LIMIT]
+    else:
+        ranked_commands = commands[:_SLASH_COMPLETION_LIMIT]
+    return ranked_commands + skills[:_SLASH_COMPLETION_LIMIT]
 
 
 # argv shapes that must not run headless in the gateway process → user hint.
@@ -3307,14 +3647,15 @@ _paste_counter = 0
 
 
 # mcp.servers.* handlers (methods_tools) resolve this BARE through this namespace.
-from .mcp_rpc_helpers import summarize_server as _mcp_summarize_server  # noqa: E402, F401
+from .mcp_rpc_helpers import summarize_server as _mcp_summarize_server
 
 
 # ── Split @method handler modules (see method_ctx.py): imported last so every global the handlers close
 # over exists; register() rebinds them onto this namespace.
-from . import (  # noqa: E402
+from . import (
     methods_voice as _methods_voice, methods_browser as _methods_browser, methods_slash as _methods_slash,
     methods_complete_helpers as _methods_complete_helpers, session_auto_continue as _session_auto_continue,
+    plugin_inject as _plugin_inject,
     rpc_dispatch as _rpc_dispatch,
     agent_callbacks as _agent_callbacks, session_history as _session_history,
     prompt_attachments as _prompt_attachments, session_notifications as _session_notifications,
@@ -3331,16 +3672,21 @@ from . import (  # noqa: E402
     methods_projects as _methods_projects, methods_session_foreign as _methods_session_foreign,
     methods_session_control as _methods_session_control, methods_subagents as _methods_subagents,
     methods_vault as _methods_vault, methods_free_tier as _methods_free_tier,
-    methods_connectors as _methods_connectors)
+    methods_connectors as _methods_connectors, methods_connectors_account as _methods_connectors_account,
+    methods_display as _methods_display, methods_display_watch as _methods_display_watch,
+    methods_onboarding as _methods_onboarding, methods_i18n as _methods_i18n,
+    methods_shared_metrics as _methods_shared_metrics, methods_start_chat as _methods_start_chat)
 
 for _m in (
     _session_transports, _session_reaper, _session_lifecycle, _session_workdir, _compute_host_bridge, _model_switch,
     _session_compression, _change_watcher, _tool_progress, _session_notifications,
-    _prompt_attachments, _session_history, _agent_callbacks, _session_auto_continue, _rpc_dispatch,
+    _prompt_attachments, _session_history, _agent_callbacks, _session_auto_continue, _plugin_inject, _rpc_dispatch,
     _methods_complete_helpers, _methods_slash, _methods_voice, _methods_browser,
     _methods_browser_control, _methods_session, _methods_prompt, _methods_config,
     _methods_config_set, _methods_complete, _methods_tools, _methods_profiles, _methods_images,
     _methods_bot_relay, _prompt_turn, _billing_view, _methods_projects, _methods_session_foreign,
-    _methods_session_control, _methods_subagents, _methods_vault, _methods_free_tier, _methods_connectors):
+    _methods_session_control, _methods_subagents, _methods_vault, _methods_free_tier, _methods_connectors,
+    _methods_connectors_account, _methods_display, _methods_display_watch, _methods_onboarding,
+    _methods_i18n, _methods_shared_metrics, _methods_start_chat):
     _m.register(sys.modules[__name__])
 del _m

@@ -85,8 +85,8 @@ def test_foreign_pages_confine_handles_and_failed_import_rolls_back(tmp_path, mo
         browser.resolve_foreign_session("0" * 64)
     db = SessionDB(tmp_path / ".hermes" / "state.db")
     insert = db._insert_message_rows
-    def failing_insert(*args):
-        insert(*args)
+    def failing_insert(*args, **kwargs):
+        insert(*args, **kwargs)
         raise RuntimeError("interrupted write")
     monkeypatch.setattr(db, "_insert_message_rows", failing_insert)
     try:

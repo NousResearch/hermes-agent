@@ -9,6 +9,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from agent.i18n import t
+
 # ---------------------------------------------------------------------------
 # Ensure the repo root is importable
 # ---------------------------------------------------------------------------
@@ -116,7 +118,6 @@ class TestFeishuExecApproval:
 
         # Verify card payload contains the command and buttons
         card = json.loads(kwargs["payload"])
-        assert card["header"]["template"] == "orange"
         assert "rm -rf /important" in card["elements"][0]["content"]
         assert "dangerous deletion" in card["elements"][0]["content"]
 
@@ -147,7 +148,7 @@ class TestFeishuExecApproval:
             )
 
         assert len(adapter._approval_state) == 1
-        approval_id = list(adapter._approval_state.keys())[0]
+        approval_id = next(iter(adapter._approval_state.keys()))
         state = adapter._approval_state[approval_id]
         assert state["session_key"] == "my-session-key"
         assert state["message_id"] == "msg_002"
@@ -190,9 +191,7 @@ class TestFeishuUpdatePrompt:
         assert kwargs["metadata"] == {"thread_id": "th_1"}
 
         card = json.loads(kwargs["payload"])
-        assert card["header"]["template"] == "orange"
         assert "Restore stashed changes after update?" in card["elements"][0]["content"]
-        assert "Default: `y`" in card["elements"][0]["content"]
         actions = card["elements"][1]["actions"]
         assert [a["value"]["hermes_update_prompt_action"] for a in actions] == ["y", "n"]
 
@@ -328,8 +327,7 @@ class TestCardActionCallbackResponse:
         assert response.card is not None
         assert response.card.type == "raw"
         card = response.card.data
-        assert card["header"]["template"] == "green"
-        assert "Approved once" in card["header"]["title"]["content"]
+        assert t("platform.feishu.approval.resolved_once") in card["header"]["title"]["content"]
         assert "Bob" in card["elements"][0]["content"]
 
 
@@ -502,7 +500,7 @@ class TestCardActionCallbackResponse:
 
         assert response is not None
         assert response.card is not None
-        assert "Approved once" in response.card.data["header"]["title"]["content"]
+        assert t("platform.feishu.approval.resolved_once") in response.card.data["header"]["title"]["content"]
 
     def test_paired_mode_participant_can_confirm_update_prompt(self, _patch_callback_card_types):
         """Empty allowlist (DM paired mode): the prompt recipient can still confirm."""

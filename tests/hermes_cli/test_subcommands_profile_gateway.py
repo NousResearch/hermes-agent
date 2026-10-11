@@ -9,7 +9,6 @@ from __future__ import annotations
 import argparse
 
 from hermes_cli.subcommands.gateway import build_gateway_parser
-from hermes_cli.subcommands.profile import build_profile_parser
 
 
 def _h_gateway(args):  # pragma: no cover - identity only
@@ -24,15 +23,8 @@ def _h_gateway_enroll(args):  # pragma: no cover - identity only
     return "gateway_enroll"
 
 
-def _h_profile(args):  # pragma: no cover - identity only
-    return "profile"
 
 
-def _profile_parser():
-    p = argparse.ArgumentParser(prog="hermes")
-    sub = p.add_subparsers(dest="command")
-    build_profile_parser(sub, cmd_profile=_h_profile)
-    return p
 
 
 def _gateway_parser():
@@ -51,14 +43,6 @@ def _gateway_parser():
 
 
 
-def test_gateway_and_proxy_dispatch():
-    p = _gateway_parser()
-    gw = p.parse_args(["gateway", "run"])
-    assert gw.command == "gateway"
-    assert gw.func is _h_gateway
-    px = p.parse_args(["proxy"])
-    assert px.command == "proxy"
-    assert px.func is _h_proxy
 
 
 

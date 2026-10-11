@@ -145,6 +145,18 @@ def _running_loop() -> Optional[asyncio.AbstractEventLoop]:
     return loop if loop is not None and loop.is_running() else None
 
 
+def _interrupt_stop_notice() -> str:
+    """Word the stop from the recorded interrupt reason so a system abort (watchdog,
+    lease loss, terminal batch timeout) is not rendered as the user's message (#133539).
+    Human-stop reasons and an unrecorded cause (e.g. a redirect) keep the legacy wording."""
+    from tools.interrupt import interrupt_reason
+    from agent.interrupt_control import USER_INTERRUPT_REASONS
+    reason = interrupt_reason()
+    if reason and reason not in USER_INTERRUPT_REASONS:
+        return f"Turn aborted — {reason}"
+    return "User sent a new message"
+
+
 def _run_on_mcp_loop(coro_or_factory, timeout: float = 30):
     """Schedule a coroutine (or zero-arg factory — avoids leaking a never-awaited coroutine when the
     loop is down) on the MCP loop and block until done, polling so user interrupts are honored."""
@@ -168,7 +180,7 @@ def _run_on_mcp_loop(coro_or_factory, timeout: float = 30):
     while True:
         if is_interrupted():
             future.cancel()
-            raise InterruptedError("User sent a new message")
+            raise InterruptedError(_interrupt_stop_notice())
         remaining = 0.1 if deadline is None else deadline - time.monotonic()
         if remaining <= 0:
             future.cancel()

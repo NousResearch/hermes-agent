@@ -71,6 +71,26 @@ def is_thread_interrupted(thread_id: int | None) -> bool:
         return thread_id in _interrupted_threads
 
 
+def thread_interrupt_reason(thread_id: int | None) -> str | None:
+    """The recorded user-safe cause for *thread_id*'s pending interrupt, or ``None``
+    when the thread is not interrupted or no cause was recorded (``set_interrupt``
+    only stores a reason when one was supplied)."""
+    if thread_id is None:
+        return None
+    with _lock:
+        return _interrupt_reasons.get(thread_id)
+
+
+def interrupt_reason() -> str | None:
+    """The recorded cause behind ``is_interrupted()`` for this thread (or the thread it
+    acts for), mirroring that check's thread resolution; ``None`` when no interrupt is
+    pending or none was recorded. Lets raise sites render a system abort (watchdog,
+    lease loss, terminal batch timeout) instead of a hardcoded user message (#133539)."""
+    return thread_interrupt_reason(
+        threading.current_thread().ident
+    ) or thread_interrupt_reason(acting_for_tid.get())
+
+
 def request_yield(thread_id: int) -> None:
     """Ask the tool running on *thread_id* to yield: a foreground terminal command hands
     its live process to the background registry and returns at once, so a user's mid-turn

@@ -67,6 +67,22 @@ class _UnresolvedProfileHome:
 UNRESOLVED_PROFILE_HOME = _UnresolvedProfileHome()
 
 
+class _SecondaryAdapterLoadContext:
+    """Abandon marker for one secondary profile's adapter startup under the load deadline.
+
+    Carries no registrations itself — its only job is recording that the deadline
+    fired, so a late-settling startup is visibly abandoned instead of silently
+    half-live. The loud signal is the PluginLoadTimeout itself, which the caller
+    treats as a transient failure retried on the next reconcile tick.
+    """
+
+    def __init__(self) -> None:
+        self.abandoned = False
+
+    def _abandon_load(self) -> None:
+        self.abandoned = True
+
+
 class GatewayAdapterLifecycleMixin:
     """Adapter lifecycle: connect/teardown, fatal recovery, reconnect watcher, multiplex profiles."""
 
@@ -1000,7 +1016,18 @@ class GatewayAdapterLifecycleMixin:
             # Preserve changes made while the initial connection is awaiting I/O.
             scan_signature = profile_serve_signature(profile_home)
             try:
-                connected += await self._start_one_profile_adapters(profile_name, profile_home, claimed)
+                # The per-plugin load deadline protects real profiles: a hung secondary
+                # startup fails loudly as PluginLoadTimeout (caught below as a transient
+                # failure, retried by the reconcile watcher) instead of wedging the whole
+                # multiplex loop. Loop-bound work cannot move to a worker thread
+                # (asyncio.create_task binds to the running loop), so the coroutine twin
+                # runs it HERE under wait_for rather than arun_with_load_deadline.
+                from hermes_cli.plugins_loader import arun_coro_with_load_deadline
+                connected += await arun_coro_with_load_deadline(
+                    f"profile-adapters:{profile_name}",
+                    _SecondaryAdapterLoadContext(),
+                    lambda: self._start_one_profile_adapters(profile_name, profile_home, claimed),
+                )
             except MultiplexConfigError:
                 raise
             except Exception as e:
@@ -1079,8 +1106,16 @@ class GatewayAdapterLifecycleMixin:
         await asyncio.to_thread(recover_left_core_in, profile_home, hydrate_secrets=False)
         with _profile_runtime_scope(profile_home, hydrate_secrets=False):
             profile_runtime_cfg = _load_gateway_config()
+            # Plugin import + register() runs under run_with_load_deadline
+            # (threading.join). Running it on the event-loop thread blocks
+            # heartbeats for up to 10s per plugin; run discovery off-loop so
+            # the loop stays responsive while secondaries load. Context is
+            # copied into the worker so the profile scope propagates.
+            import contextvars
             from hermes_cli.plugins import discover_plugins, get_plugin_manager
-            discover_plugins()
+
+            ctx = contextvars.copy_context()
+            await asyncio.to_thread(ctx.run, discover_plugins)
             self._subscribe_plugin_rewire(get_plugin_manager(), profile_name, profile_home)
             # This profile's `hooks:` block: start() registered before any profile scope existed.
             self._register_config_hooks(
@@ -1606,6 +1641,56 @@ class GatewayAdapterLifecycleMixin:
         """Route a secondary-profile fatal error to that profile's reconnect slot."""
         return functools.partial(self._handle_profile_adapter_fatal_error, profile_name, platform)
 
+    def _escalate_secondary_disconnect_to_watcher(
+        self, profile_name: str, platform: Platform
+    ) -> bool:
+        """Queue a Disconnected secondary adapter for background reconnection.
+
+        A secondary transport close whose in-place (discord.py-level) reconnect
+        ends in ``Disconnected`` otherwise leaves the profile offline
+        indefinitely: the adapter is dead but nothing queued a retry. Popping
+        the dead entry, ensuring the host reconnect watcher is alive, and
+        scheduling the profile-scoped reconnect puts it back on the retry
+        loop. Returns True when an escalation was queued.
+        """
+        profile_map = getattr(self, "_profile_adapters", {}).get(profile_name)
+        if not isinstance(profile_map, dict):
+            return False
+        adapter = profile_map.get(platform)
+        if adapter is None:
+            # Already popped: make sure a retry is still queued when the
+            # failure was retryable, otherwise the profile stays dark.
+            pending = getattr(self, "_profile_failed_platforms", {}).get(profile_name, {})
+            if platform in pending:
+                try:
+                    self._ensure_reconnect_watcher_running()
+                except Exception:
+                    pass
+                return True
+            return False
+        if getattr(adapter, "_running", True):
+            if not (getattr(adapter, "has_fatal_error", False)
+                    and getattr(adapter, "fatal_error_retryable", False)):
+                return False
+        if not getattr(adapter, "has_fatal_error", False):
+            try:
+                adapter._set_fatal_error(
+                    "transport_disconnected",
+                    "Transport closed; escalated to background reconnection",
+                    retryable=True,
+                )
+            except Exception:
+                pass
+        if not getattr(adapter, "fatal_error_retryable", False):
+            return False
+        profile_map.pop(platform, None)
+        try:
+            self._ensure_reconnect_watcher_running()
+        except Exception:
+            pass
+        self._schedule_secondary_profile_reconnect(profile_name, platform, adapter)
+        return True
+
     async def _handle_profile_adapter_fatal_error(
         self, profile_name: str, platform: Platform, adapter: BasePlatformAdapter
     ) -> None:
@@ -1625,6 +1710,13 @@ class GatewayAdapterLifecycleMixin:
         if not self._running:
             return
         self._schedule_secondary_profile_reconnect(profile_name, platform, adapter)
+        # Host-watcher backstop: a dead secondary must never rely solely on its
+        # profile task. If that task dies before queueing, the host watcher is
+        # the only retry owner left.
+        try:
+            self._ensure_reconnect_watcher_running()
+        except Exception:
+            pass
         logger.error(
             "Fatal %s adapter error for multiplexed profile %s (%s)", platform.value, profile_name,
             adapter.fatal_error_code or "unknown",

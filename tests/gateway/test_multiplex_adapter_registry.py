@@ -1255,3 +1255,76 @@ class TestSecondarySkipsCredentiallessPlatforms:
         assert connected == 1
         assert created == [(Platform.SLACK, profile_cfg.platforms[Platform.SLACK])]
         assert Platform.SLACK in runner._profile_adapters["profile-b"]
+
+
+class TestSecondaryStartupLoadDeadline:
+    """A secondary profile that never settles hits the load deadline instead of
+    wedging multiplex startup: loud PluginLoadTimeout, profile left unserved
+    (retryable on the next reconcile tick), and the loop stays responsive."""
+
+    @pytest.mark.asyncio
+    async def test_hung_profile_hits_deadline_and_stays_retryable(
+        self, monkeypatch, caplog
+    ):
+        from unittest.mock import MagicMock
+
+        from hermes_cli import plugins_loader as pl
+
+        monkeypatch.setattr(pl, "_resolve_plugin_load_timeout", lambda: 0.2)
+        saved_ledger = list(pl._ABANDONED_LOADERS)
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = GatewayConfig(multiplex_profiles=True)
+        runner.adapters = {}
+        runner._profile_adapters = {}
+        runner.pairing_stores = {
+            "default": MagicMock(),
+            "slow": MagicMock(),
+        }
+        runner.pairing_store = runner.pairing_stores["default"]
+
+        async def fake_slow_start_one(profile_name, profile_home, claimed):
+            await asyncio.sleep(30.0)
+            return 99  # never reached: the deadline fires first
+
+        monkeypatch.setattr(
+            "hermes_cli.profiles.profiles_to_serve",
+            lambda multiplex, **kw: [
+                ("default", Path("/tmp/default")),
+                ("slow", Path("/tmp/slow")),
+            ],
+        )
+        monkeypatch.setattr(
+            "hermes_cli.profiles.get_active_profile_name",
+            lambda: "default",
+        )
+        monkeypatch.setattr(runner, "_start_one_profile_adapters", fake_slow_start_one)
+        monkeypatch.setattr(
+            "gateway.status.publish_runtime_status",
+            lambda **kwargs: None,
+        )
+
+        ticks: list[float] = []
+        stop = asyncio.Event()
+
+        async def _heartbeat():
+            while not stop.is_set():
+                ticks.append(asyncio.get_running_loop().time())
+                await asyncio.sleep(0.02)
+
+        hb = asyncio.create_task(_heartbeat())
+        try:
+            caplog.set_level(logging.ERROR, logger="gateway.run_adapters")
+            connected = await runner._start_secondary_profile_adapters()
+        finally:
+            stop.set()
+            await hb
+            with pl._ABANDONED_LOADERS_LOCK:
+                pl._ABANDONED_LOADERS[:] = saved_ledger
+
+        assert connected == 0
+        assert "slow" not in runner._served_profile_signatures, (
+            "a timed-out profile must stay unserved so the reconcile watcher retries it"
+        )
+        assert "Failed to start adapters for profile 'slow'" in caplog.text
+        assert len(ticks) >= 3, "the loop must stay responsive during the 200ms stall"

@@ -2229,6 +2229,18 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
         self._missed_message_backfill_task = None
         self._release_platform_lock()
         logger.info("[%s] Disconnected", self.name)
+        # Backstop: an in-place (discord.py-level) reconnect that ends here
+        # with a retryable fatal but without a delivered notification leaves
+        # the profile offline indefinitely. Re-notify best-effort so the host
+        # escalates to background reconnection; a gateway that already popped
+        # this adapter treats the duplicate as stale (no-op).
+        try:
+            if (getattr(self, "has_fatal_error", False)
+                    and getattr(self, "fatal_error_retryable", False)
+                    and getattr(self, "_fatal_error_handler", None) is not None):
+                asyncio.create_task(self._notify_fatal_error())
+        except Exception:
+            pass
 
     def _command_sync_state_path(self) -> _Path:
         from hermes_constants import get_hermes_home

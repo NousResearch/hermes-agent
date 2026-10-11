@@ -252,7 +252,7 @@ class PluginContext:
         ``requires_plugins``, #64165). Matches on registry key or manifest name."""
         return any(
             loaded.enabled and (key == plugin_id or loaded.manifest.name == plugin_id)
-            for key, loaded in self._manager._plugins.items()
+            for key, loaded in list(self._manager._plugins.items())
         )
 
     def _segments(self, key: str) -> tuple[str, ...]:
@@ -1291,7 +1291,8 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
                 return
             # ``on_plugin_loaded`` reports the plugins this sweep loads that the process did not have before
             # (boot: everything; a mid-run install/enable: just the newcomer), keyed on the pre-sweep set.
-            loaded_before = frozenset(k for k, p in self._plugins.items() if not p.error and not p.deferred)
+            # Snapshot: concurrent multiplex startup may mutate the registry mid-sweep.
+            loaded_before = frozenset(k for k, p in list(self._plugins.items()) if not p.error and not p.deferred)
             if force:
                 self.unload()  # the ledger owns teardown of process-global registries
             if env_var_enabled("HERMES_SAFE_MODE"):
@@ -1426,7 +1427,7 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
             self._load_plugin(manifest)
         if manifests:
             logger.info("Plugin discovery complete: %d found, %d enabled", len(self._plugins),
-                        sum(1 for p in self._plugins.values() if p.enabled))
+                        sum(1 for p in list(self._plugins.values()) if p.enabled))
 
     def _gate_manifest(
         self, manifest: PluginManifest, disabled: set[str], enabled: Optional[set[str]],
@@ -1539,7 +1540,7 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
                 "source": p.manifest.source, "enabled": p.enabled, "tools": len(p.tools_registered),
                 "hooks": len(p.hooks_registered), "middleware": len(p.middleware_registered),
                 "commands": len(p.commands_registered), "error": p.error,
-            } for _key, p in sorted(self._plugins.items())
+            } for _key, p in sorted(list(self._plugins.items()))
         ]
 
     def find_plugin_skill(self, qualified_name: str) -> Optional[Path]:

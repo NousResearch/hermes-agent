@@ -1831,7 +1831,7 @@ def delete_profile(name: str, yes: bool = False) -> Path:
         raise ValueError("Cannot delete the default profile (~/.hermes).\nTo remove everything, use: hermes uninstall")
     canon, profile_dir = _existing_profile_dir(canon)
     gw_running = _check_gateway_running(profile_dir)
-    wrapper_path = _get_wrapper_dir() / canon
+    wrapper_path = _wrapper_path(canon)
     has_wrapper = wrapper_path.exists()
     _print_delete_summary(canon, profile_dir, gw_running, wrapper_path if has_wrapper else None)
     if not yes:

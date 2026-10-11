@@ -638,7 +638,7 @@ def _check_memory_provider(should_fix: bool, f: Finding) -> None:
 
 @doctor_check("")  # best-effort: profile enumeration must never break doctor
 def _check_profiles(should_fix: bool, f: Finding) -> None:
-    from hermes_cli.profiles import list_profiles, _get_wrapper_dir, profile_exists
+    from hermes_cli.profiles import list_profiles, _get_wrapper_dir, _wrapper_path, profile_exists
     import re as _re
     named_profiles = [p for p in list_profiles() if not p.is_default]
     if not named_profiles:
@@ -650,7 +650,7 @@ def _check_profiles(should_fix: bool, f: Finding) -> None:
         parts = [text for cond, text in (
             (p.gateway_running, "gateway running"), (p.model, (p.model or "")[:30]),
             (not (p.path / "config.yaml").exists(), "⚠ missing config"), (not (p.path / ".env").exists(), "no .env"),
-            (not (wrapper_dir / p.name).exists(), "no alias")) if cond]
+            (not _wrapper_path(p.name).exists(), "no alias")) if cond]
         check_ok(f"  {p.name}: {', '.join(parts) if parts else 'configured'}")
     # Orphan wrappers
     if wrapper_dir.is_dir():

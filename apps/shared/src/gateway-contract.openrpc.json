@@ -21594,6 +21594,18 @@
             ],
             "default": null,
             "title": "Spritesheetrevision"
+          },
+          "terminalEnabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Terminalenabled"
           }
         },
         "required": [

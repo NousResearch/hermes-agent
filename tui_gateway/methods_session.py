@@ -1543,8 +1543,10 @@ def _(rid, params: dict) -> dict:
     if (active := _active_pet()) is None:
         return _ok(rid, {"enabled": False})
     pet, scale = active
+    pet_cfg = _pet_display_cfg()
     return _ok(rid, {"enabled": True, "slug": pet.slug, "displayName": pet.display_name, "scale": scale,
-                     "spritesheetRevision": _pet_sheet_revision(pet.spritesheet)})
+                     "spritesheetRevision": _pet_sheet_revision(pet.spritesheet),
+                     "terminalEnabled": is_truthy_value(pet_cfg.get("terminal_enabled"), default=True)})
 
 
 def _pet_kitty_cells(pet, pet_cfg: dict, state: str, scale: float) -> dict | None:
@@ -1567,12 +1569,18 @@ def _pet_kitty_cells(pet, pet_cfg: dict, state: str, scale: float) -> dict | Non
 
 @_pet_method("pet.cells", fail_open=_PET_OFF)
 def _(rid, params: dict) -> dict:
-    """Half-block cell frames (``[tr,tg,tb,ta, br,bg,bb,ba]``) for one pet ``state``; ``cols``, ``graphics``."""
+    """Half-block cell frames (``[tr,tg,tb,ta, br,bg,bb,ba]``) for one pet ``state``; ``cols``, ``graphics``.
+
+    Terminal-surface renderer (Ink TUI + legacy CLI pane); the desktop draws native sprites
+    via ``pet.info`` instead, so ``display.pet.terminal_enabled`` gates this method only — a
+    user who hides the pixelated terminal pet keeps the desktop mascot.
+    """
     from agent.pet import constants, store
     from agent.pet.render import PetRenderer
     pet_cfg = _pet_display_cfg()
     pet = None
-    if is_truthy_value(pet_cfg.get("enabled"), default=False):
+    if is_truthy_value(pet_cfg.get("enabled"), default=False) and is_truthy_value(
+        pet_cfg.get("terminal_enabled"), default=True):
         pet = store.resolve_active_pet(str(pet_cfg.get("slug", "") or ""))
     if pet is None or not pet.exists:
         return _ok(rid, {"enabled": False})

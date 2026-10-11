@@ -103,8 +103,11 @@ def test_claim_flags_remove_exactly_the_jobs_the_gate_expects_skipped():
     from scripts.releases.stable import SKIPPED_BY
 
     jobs = workflow("stable-release.yml")["jobs"]
-    outputs = {"skipTests": "needs.admit.outputs.skip-tests",
-               "skipBundles": "needs.admit.outputs.skip-bundles"}
+    # A skip flag removes a job when it is true; an opt-in flag when it is not.
+    outputs = {"skipTests": "needs.admit.outputs.skip-tests != 'true'",
+               "skipBundles": "needs.admit.outputs.skip-bundles != 'true'",
+               "excludeMacosIntel": "needs.admit.outputs.include-macos-intel == 'true'",
+               "excludeTermux": "needs.admit.outputs.include-termux == 'true'"}
 
     def needs_of(name):
         needs = jobs[name].get("needs", [])
@@ -112,7 +115,7 @@ def test_claim_flags_remove_exactly_the_jobs_the_gate_expects_skipped():
 
     def removed_by(name, flag):
         condition = str(jobs[name].get("if", ""))
-        if f"{outputs[flag]} != 'true'" in condition:
+        if outputs[flag] in condition:
             return True
         # Without a status function a job skips when any job it needs skipped.
         return ("always()" not in condition and "!cancelled()" not in condition
@@ -128,12 +131,15 @@ def test_claim_flags_remove_exactly_the_jobs_the_gate_expects_skipped():
     for name in ("docker", "candidates-darwin-arm64", "candidates-darwin-x64", "candidates-win32-arm64",
                  "candidates-win32-x64", "candidates-win32-bundle", "candidates-termux"):
         assert jobs[name]["with"]["skip-tests"] == "${{ needs.admit.outputs.skip-tests == 'true' }}"
-    assert {"skip-bundles", "skip-tests"} <= set(jobs["admit"]["outputs"])
+    assert {"skip-bundles", "skip-tests", "include-macos-intel", "include-termux"} <= \
+        set(jobs["admit"]["outputs"])
     for name in ("acceptance", "publication", "complete"):
         gate = next(step for step in jobs[name]["steps"]
                     if "scripts.releases.stable gate" in step.get("run", ""))
         assert gate["env"]["SKIP_BUNDLES"] == "${{ needs.admit.outputs.skip-bundles }}"
         assert gate["env"]["SKIP_TESTS"] == "${{ needs.admit.outputs.skip-tests }}"
+        assert gate["env"]["INCLUDE_MACOS_INTEL"] == "${{ needs.admit.outputs.include-macos-intel }}"
+        assert gate["env"]["INCLUDE_TERMUX"] == "${{ needs.admit.outputs.include-termux }}"
         gated = gate["run"].split(" gate ", 1)[1].split()
         assert set(gated) <= set(needs_of(name)), name
 

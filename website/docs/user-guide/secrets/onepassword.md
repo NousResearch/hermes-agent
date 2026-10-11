@@ -31,7 +31,7 @@ When you authenticate with a **service-account token**, that token is itself the
    chmod 600 ~/.hermes/.op.env
    ```
 
-   Hermes auto-loads `.op.env` at startup, **after** `.env`, and **never** overrides a token already present in the environment. `.op.env` is gitignored so the token never enters a committed file.
+   Hermes auto-loads `.op.env` at startup, **after** `.env`, and **never** overrides a token already present in the environment. `.op.env` is gitignored so the token never enters a committed file. It is protected like `.env`: the agent's file tools cannot read or write it, chat file delivery never sends it, the dashboard Files tab does not list it, and a terminal command that writes to it needs approval.
 
 3. **Via systemd `EnvironmentFile` (Linux gateway).** If you run the gateway under systemd, you can inject the token directly into the service environment:
 

@@ -392,6 +392,9 @@ _DID_SUFFIX = (
 # bws_cache.json / op_cache.json are the Bitwarden / 1Password disk caches: plaintext secret values.
 SECRET_STORE_FILES = (
     "auth.json", "auth.lock", ".anthropic_oauth.json", ".env", "webhook_subscriptions.json",
+    # 1Password bootstrap env (OP_SERVICE_ACCOUNT_TOKEN) that load_hermes_dotenv() reads after .env:
+    # the token resolves every op:// reference the service account can read, so it is worth more than op_cache.json.
+    ".op.env",
     os.path.join("auth", "google_oauth.json"),
     os.path.join("cache", "bws_cache.json"), os.path.join("cache", "bws_cache.enc.json"),
     os.path.join("cache", "op_cache.json"),

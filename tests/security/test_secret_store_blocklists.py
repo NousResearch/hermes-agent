@@ -14,6 +14,25 @@ from pathlib import Path
 import pytest
 
 
+def _dotenv_files_read(home: Path) -> list[Path]:
+    """The env files ``load_hermes_dotenv()`` reads from a home (``.env`` and the 1Password
+    ``.op.env`` bootstrap), asked of the loader itself with every candidate present."""
+    from unittest.mock import patch
+
+    from hermes_cli import env_loader
+
+    read: list[Path] = []
+    real_exists = Path.exists
+    with (patch.dict(os.environ, {}),
+          patch.object(Path, "exists", lambda p: p.parent == home or real_exists(p)),
+          patch.object(env_loader, "_load_dotenv_with_fallback", lambda path, **_: read.append(path)),
+          patch.object(env_loader, "_sanitize_env_file_if_needed", lambda path: None),
+          patch.object(env_loader, "_clear_known_keys_missing_from_dotenv", lambda path: None)):
+        os.environ.pop("OP_SERVICE_ACCOUNT_TOKEN", None)
+        env_loader.load_hermes_dotenv(hermes_home=home, load_external_secrets=False)
+    return read
+
+
 def _written_secret_stores(home: Path) -> list[tuple[Path, Path]]:
     """``(store file, store root)``: the root is the file itself for an exact-file store, else
     the store directory holding it."""
@@ -42,6 +61,7 @@ def _written_secret_stores(home: Path) -> list[tuple[Path, Path]]:
         google_chat_oauth._token_path(),
         google_chat_oauth._client_secret_path(),
         weixin._account_dir(str(home)) / "fake-account.json",
+        *_dotenv_files_read(home),
     ]
     # The same stores in a sibling profile.
     stores += [home / "profiles" / "beta" / p.relative_to(home) for p in stores]

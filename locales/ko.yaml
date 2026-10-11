@@ -2488,6 +2488,8 @@ cli:
     column_preview: "미리보기"
     column_last_active: "마지막 활동"
     column_id: "ID"
+    column_directory: "작업 디렉터리"
+    directory_not_recorded: "(기록되지 않음)"
     resume_usage: "계속하려면 /resume <number>, /resume <session id> 또는 /resume <session title>을 사용하세요."
     resume_example: "예시: /resume 2"
     history_empty: "(._.) 아직 대화 기록이 없어요."

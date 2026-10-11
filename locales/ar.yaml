@@ -2488,6 +2488,8 @@ cli:
     column_preview: "المعاينة"
     column_last_active: "آخر نشاط"
     column_id: "المعرّف"
+    column_directory: "دليل العمل"
+    directory_not_recorded: "(غير مسجل)"
     resume_usage: "استخدم /resume <number> أو /resume <session id> أو /resume <session title> للمتابعة."
     resume_example: "مثال: /resume 2"
     history_empty: "(._.) لا يوجد سجل محادثة بعد."

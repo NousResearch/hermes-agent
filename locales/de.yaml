@@ -2488,6 +2488,8 @@ cli:
     column_preview: "Vorschau"
     column_last_active: "Zuletzt aktiv"
     column_id: "ID"
+    column_directory: "Arbeitsverzeichnis"
+    directory_not_recorded: "(nicht erfasst)"
     resume_usage: "Verwenden Sie /resume <Nummer>, /resume <Sitzungs-ID> oder /resume <Sitzungstitel> zum Fortsetzen."
     resume_example: "Beispiel: /resume 2"
     history_empty: "(._.) Noch kein Konversationsverlauf."

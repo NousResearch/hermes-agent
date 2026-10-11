@@ -2488,6 +2488,8 @@ cli:
     column_preview: "Voorskou"
     column_last_active: "Laas Aktief"
     column_id: "ID"
+    column_directory: "Werksgids"
+    directory_not_recorded: "(nie aangeteken nie)"
     resume_usage: "Gebruik /resume <nommer>, /resume <sessie-id> of /resume <sessietitel> om voort te gaan."
     resume_example: "Voorbeeld: /resume 2"
     history_empty: "(._.) Nog geen gesprekgeskiedenis nie."

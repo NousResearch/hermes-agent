@@ -2488,6 +2488,8 @@ cli:
     column_preview: "Vista previa"
     column_last_active: "Última actividad"
     column_id: "ID"
+    column_directory: "Directorio de trabajo"
+    directory_not_recorded: "(no registrado)"
     resume_usage: "Usa /resume <número>, /resume <id de sesión> o /resume <título de sesión> para continuar."
     resume_example: "Ejemplo: /resume 2"
     history_empty: "(._.) Aún no hay historial de conversación."

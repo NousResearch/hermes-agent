@@ -2488,6 +2488,8 @@ cli:
     column_preview: "Önizleme"
     column_last_active: "Son Etkinlik"
     column_id: "Kimlik"
+    column_directory: "Çalışma dizini"
+    directory_not_recorded: "(kaydedilmedi)"
     resume_usage: "Devam etmek için /resume <numara>, /resume <oturum kimliği> veya /resume <oturum başlığı> kullanın."
     resume_example: "Örnek: /resume 2"
     history_empty: "(._.) Henüz konuşma geçmişi yok."

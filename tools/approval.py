@@ -1110,12 +1110,26 @@ def request_tool_approval(tool_name: str, reason: str, *, rule_key: str = "", ap
     if not rule_key:
         rule_key = f"{tool_name}:{hashlib.sha256(description.encode('utf-8')).hexdigest()[:12]}"
     subject = f"Tool '{tool_name}' requires approval ({description})"
+    # Unattended deny wording is plugin-contextual: the escalation means "this decision needs a
+    # human", so the message names the rule and offers neither the approvals.*_mode: approve
+    # switch (unattended advice gets executed, and the agent must not switch the gate off itself),
+    # any other policy-editing route, nor an alternative approach. It points the agent at the
+    # user instead — the only party that can change the policy (#132507). ``rule_key``
+    # interpolates AFTER the empty-key derivation above — the same identity ``pattern_key``
+    # carries, so message and allowlist grain name one rule.
+    plugin_deny_message = (
+        f"BLOCKED: plugin rule '{rule_key}' flagged this action for human approval and no "
+        "approver is available in this unattended run. The block stands. Do not retry this "
+        "action by another route; ask the user how to proceed when they are available."
+    )
     return _run_approval_gate(
         # Namespaced so plugin-rule approvals share the allowlist machinery without ever colliding with a real
         # command pattern key; the display target is a synthetic label for the display/allowlist layer.
         pattern_key=f"plugin_rule:{rule_key}", description=description,
         display_target=f"<{tool_name}> (plugin approval rule)", approval_callback=approval_callback,
         subject=subject, advice="Find an alternative approach.",
+        single_query_deny_message=plugin_deny_message, cron_deny_message=plugin_deny_message,
+        unattended_deny_message=plugin_deny_message,
         autoapprove_log_prefix=f"plugin-escalated tool call '{tool_name}' in non-interactive non-gateway context",
         fail_closed_when_no_human=True,
         no_human_block_message=(f"BLOCKED: {subject} but no interactive user or gateway is present "

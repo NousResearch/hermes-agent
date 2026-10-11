@@ -108,7 +108,7 @@ def get_pending_for_session(session_key: str, *, include_choice_prompts: bool = 
     with _lock:
         for cid in _session_index.get(session_key) or []:
             entry = _entries.get(cid)
-            if entry is not None and (include_choice_prompts or entry.awaiting_text):
+            if entry is not None and not entry.event.is_set() and (include_choice_prompts or entry.awaiting_text):
                 return entry
         return None
 
@@ -212,15 +212,29 @@ def _coerce_multi_select_text(entry: _ClarifyEntry, text: str) -> Optional[str]:
 
 def attempt_text_response_for_session(session_key: str, response: str) -> str:
     """Try to resolve the oldest pending clarify from typed text; returns a TEXT_* outcome."""
-    entry = get_pending_for_session(session_key, include_choice_prompts=True)
-    if entry is None:
-        return TEXT_NO_PENDING
-    coerced, reason = _coerce_text_response_detailed(entry, response)
-    if coerced is None:
-        return TEXT_REJECTED_SELECTION if reason == "invalid_selection" else TEXT_REJECTED_PROSE
-    if resolve_gateway_clarify(entry.clarify_id, coerced):
-        return TEXT_RESOLVED
-    return TEXT_NO_PENDING  # lost a race with a button/callback resolution — no work left
+    return attempt_text_response_for_session_detailed(session_key, response)[0]
+
+
+def attempt_text_response_for_session_detailed(
+    session_key: str, response: str,
+) -> tuple[str, Optional[_ClarifyEntry]]:
+    """Atomically classify/resolve a typed reply and return its actual target.
+
+    The returned entry lets callers retire or cancel that prompt, even if an
+    earlier snapshot became stale while they awaited transcription. Completed
+    entries remain registered until their worker collects the response.
+    """
+    with _lock:
+        entry = get_pending_for_session(session_key, include_choice_prompts=True)
+        if entry is None:
+            return TEXT_NO_PENDING, None
+        coerced, reason = _coerce_text_response_detailed(entry, response)
+        if coerced is None:
+            outcome = TEXT_REJECTED_SELECTION if reason == "invalid_selection" else TEXT_REJECTED_PROSE
+            return outcome, entry
+        if resolve_gateway_clarify(entry.clarify_id, coerced):
+            return TEXT_RESOLVED, entry
+        return TEXT_NO_PENDING, None
 
 
 def resolve_text_response_for_session(session_key: str, response: str) -> bool:
@@ -239,8 +253,7 @@ def mark_awaiting_text(clarify_id: str) -> bool:
 
 def has_pending(session_key: str) -> bool:
     """True when this session has at least one pending clarify entry."""
-    with _lock:
-        return any(_entries.get(cid) is not None for cid in _session_index.get(session_key) or [])
+    return get_pending_for_session(session_key, include_choice_prompts=True) is not None
 
 
 def clear_session(session_key: str) -> int:

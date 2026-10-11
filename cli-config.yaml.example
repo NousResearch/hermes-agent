@@ -61,6 +61,8 @@ attachments:
 # Plugin Installation
 # =============================================================================
 plugins:
+  # Security scanning for plugin installs and updates. Keep enabled for untrusted sources.
+  scan_on_install: true
   # Deadline for each Git clone, fetch or checkout during plugin install. Default: 300
   # seconds. Subdirectory installs download only that folder.
   # Raise this for large repositories or slow connections. Maximum: 3600.

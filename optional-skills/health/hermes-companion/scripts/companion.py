@@ -2407,12 +2407,19 @@ def dispatch_pending_once(args: argparse.Namespace, now: datetime, threads_dir: 
 
 
 def command_dispatch_pending(args: argparse.Namespace, now: datetime) -> int:
-    """Transient one-shot sweep, for a manual run or a cron entry."""
+    """Transient one-shot sweep, for a manual run or a cron entry.
+
+    Always exits 0: a reply count is not an error code, and launchd/cron read a nonzero
+    exit as a failed job.
+    """
     try:
         threads_dir = get_threads_dir(args.icloud_dir)
         if not threads_dir:
             return 0
-        return dispatch_pending_once(args, now, threads_dir)
+        written = dispatch_pending_once(args, now, threads_dir)
+        if written:
+            log("INFO", f"one-shot sweep wrote {written} agent reply(ies)")
+        return 0
     except Exception as exc:
         log("ERROR", f"unexpected error during command_dispatch_pending: {exc}\n{traceback.format_exc()}")
         return 0

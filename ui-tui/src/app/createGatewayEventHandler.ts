@@ -444,7 +444,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
   const { gw, rpc } = ctx.gateway
   const { STARTUP_RESUME_ID, newSession, recoverSidRef, resumeById, setCatalog } = ctx.session
-  const { bellOnComplete, bellOnPrompt, stdout, sys } = ctx.system
+  const { bellOnComplete, bellOnPrompt, notifyOnComplete, stdout, sys } = ctx.system
 
   // display.bell_on_prompt — BEL whenever a blocking prompt modal opens
   // (same mechanism as bell_on_complete; works over SSH, triggers tmux bell-action).
@@ -1562,7 +1562,11 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           flashPet(isTodoDone(getTurnState().todos) ? 'jump' : 'wave')
 
           if (bellOnComplete && stdout?.isTTY) {
-            stdout.write('\x07')
+            if (notifyOnComplete) {
+              notifyOnComplete()
+            } else {
+              stdout.write('\x07')
+            }
           }
         }
 

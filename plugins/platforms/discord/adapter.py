@@ -6636,8 +6636,12 @@ def _define_discord_view_classes() -> None:
                 interaction, color,
                 t("platform.discord.approval.by_user", label=t(label_key), user=interaction.user.display_name))
             try:
-                from hermes_constants import get_hermes_home
-                response_path = get_hermes_home() / ".update_response"
+                # get_process_hermes_home(): the detached `hermes update --gateway` polls the LAUNCH
+                # home's `.update_response`. A secondary-profile button callback runs under a
+                # context-local HERMES_HOME override, so get_hermes_home() wrote the answer to the
+                # profile dir and the update fell through to its 300s default.
+                from hermes_constants import get_process_hermes_home
+                response_path = get_process_hermes_home() / ".update_response"
                 tmp = response_path.with_suffix(".tmp")
                 tmp.write_text(answer, encoding="utf-8")
                 tmp.replace(response_path)

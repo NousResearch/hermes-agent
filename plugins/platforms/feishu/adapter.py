@@ -1856,7 +1856,12 @@ class FeishuAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _write_update_prompt_response(answer: str) -> None:
-        response_path = get_hermes_home() / ".update_response"
+        # get_process_hermes_home(): the detached `hermes update --gateway` polls the LAUNCH
+        # home's `.update_response`. A secondary-profile card callback runs under a
+        # context-local HERMES_HOME override, so get_hermes_home() here wrote the answer to the
+        # profile dir and the update fell through to its 300s default.
+        from hermes_constants import get_process_hermes_home
+        response_path = get_process_hermes_home() / ".update_response"
         tmp_path = response_path.with_suffix(".tmp")
         tmp_path.write_text(answer, encoding="utf-8")
         tmp_path.replace(response_path)

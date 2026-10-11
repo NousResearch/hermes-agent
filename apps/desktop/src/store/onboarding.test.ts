@@ -643,6 +643,87 @@ describe('OAuth onboarding', () => {
     expect(state.flow.status === 'error' ? state.flow.message : '').toContain('Confirm this expensive model.')
     expect(requestGatewayMock).not.toHaveBeenCalledWith('setup.runtime_check', expect.anything())
   })
+
+  it('preserves the configured model when reauthenticating its provider', async () => {
+    // The #68144 repro: a Nous Portal grant expired and the device-code
+    // re-login completed; the completion path then persisted the curated
+    // recommended default over the user's configured model. Re-auth of the
+    // provider already assigned must keep that assignment — even when the
+    // configured model is no longer in the curated options list (the
+    // keep-guard inside fetchProviderDefaultModel only holds while it is).
+    const configuredModel = 'anthropic/claude-sonnet-5'
+    const recommendedModel = 'anthropic/claude-fable-5'
+    const calls: { body?: unknown; path: string }[] = []
+
+    installApiMock(async ({ body, path }: { body?: unknown; path: string }) => {
+      calls.push({ body, path })
+
+      if (path === '/api/providers/oauth/nous/submit') {
+        return { ok: true, status: 'approved' }
+      }
+
+      if (path === '/api/model/info') {
+        return { model: configuredModel, provider: 'nous' }
+      }
+
+      if (path.startsWith('/api/model/options')) {
+        // The curated list no longer contains the configured model — the
+        // fetchProviderDefaultModel keep-guard fails on this list.
+        return {
+          providers: [{ name: 'Nous Portal', slug: 'nous', models: [recommendedModel] }]
+        }
+      }
+
+      throw new Error(`unexpected api path: ${path}`)
+    })
+
+    const requestGateway: OnboardingContext['requestGateway'] = async (method, params) => {
+      if (method === 'reload.env') {
+        return {} as never
+      }
+
+      if (method === 'setup.status') {
+        return { provider_configured: true } as never
+      }
+
+      if (method === 'setup.runtime_check') {
+        expect(params).toEqual({ provider: 'nous' })
+
+        return { ok: true } as never
+      }
+
+      throw new Error(`unexpected gateway method: ${method}`)
+    }
+
+    $desktopOnboarding.set(
+      baseState({
+        flow: {
+          status: 'awaiting_user',
+          provider: makeOAuthProvider('nous', 'Nous Portal'),
+          start: {
+            auth_url: 'https://portal.example/auth',
+            expires_in: 600,
+            flow: 'pkce',
+            session_id: 'reauth-session'
+          },
+          code: 'fresh-code'
+        },
+        requested: true
+      })
+    )
+
+    await submitOnboardingCode(onboardingContext(requestGateway))
+
+    const state = $desktopOnboarding.get()
+    expect(state.flow.status).toBe('confirming_model')
+
+    if (state.flow.status === 'confirming_model') {
+      expect(state.flow.currentModel).toBe(configuredModel)
+      expect(state.flow.providerSlug).toBe('nous')
+    }
+
+    expect(calls.some(call => call.path === '/api/model/set')).toBe(false)
+  })
 })
 
 describe('saveOnboardingLocalEndpoint', () => {

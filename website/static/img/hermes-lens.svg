@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="900" viewBox="0 0 1500 900" role="img" aria-labelledby="title desc">
+<title id="title">Hermes Lens — From scattered tabs to grounded decisions</title>
+<desc id="desc">Pin readable webpage blocks to a local board, refresh open sources to see changes, and send selected evidence to a Hermes chat draft. Designed for Windows and macOS.</desc>
+<defs>
+<linearGradient id="bg" x2="1" y2="1"><stop stop-color="#0b1423"/><stop offset="1" stop-color="#152b34"/></linearGradient>
+<linearGradient id="accent"><stop stop-color="#75edcf"/><stop offset="1" stop-color="#aabaff"/></linearGradient>
+<filter id="shadow"><feDropShadow dx="0" dy="12" stdDeviation="20" flood-opacity=".2"/></filter>
+</defs>
+<rect width="1500" height="900" rx="28" fill="url(#bg)"/>
+<g font-family="Inter,Segoe UI,Arial,sans-serif">
+<circle cx="105" cy="102" r="29" fill="none" stroke="#75edcf" stroke-width="4"/><circle cx="105" cy="102" r="15" fill="none" stroke="#aabaff" stroke-width="3"/><path d="M127 124l16 16" stroke="#75edcf" stroke-width="5" stroke-linecap="round"/>
+<text x="165" y="119" font-size="47" font-weight="700" fill="#f4f8ff">Hermes Lens</text>
+<rect x="1180" y="78" width="238" height="42" rx="21" fill="#233b46"/><text x="1299" y="105" text-anchor="middle" font-size="17" fill="#9cf1dd">Windows + macOS</text>
+<text x="80" y="214" font-size="48" font-weight="650" fill="#f4f8ff">Scattered tabs. Connected evidence.</text>
+<text x="82" y="257" font-size="22" fill="#aec0d2">A popup in your browser. Pin evidence, revisit sources, and ask Hermes.</text>
+<path d="M480 448h60m400 0h60" stroke="#75edcf" stroke-width="3" stroke-dasharray="5 6"/><path d="m531 440 9 8-9 8m460-16 9 8-9 8" fill="none" stroke="#75edcf" stroke-width="3"/>
+<g filter="url(#shadow)">
+<rect x="80" y="310" width="400" height="366" rx="20" fill="#172638" stroke="#2b3e52"/>
+<rect x="550" y="310" width="400" height="366" rx="20" fill="#172638" stroke="#2b3e52"/>
+<rect x="1020" y="310" width="400" height="366" rx="20" fill="#172638" stroke="#2b3e52"/>
+</g>
+<g fill="#75edcf" font-size="15" font-weight="700" letter-spacing="2"><text x="107" y="351">01 / CAPTURE</text><text x="577" y="351">02 / REVISIT</text><text x="1047" y="351">03 / INVESTIGATE</text></g>
+<rect x="106" y="380" width="348" height="164" rx="10" fill="#0e1c2c"/>
+<circle cx="125" cy="399" r="4" fill="#6d8198"/><circle cx="140" cy="399" r="4" fill="#6d8198"/><circle cx="155" cy="399" r="4" fill="#6d8198"/>
+<text x="126" y="436" fill="#f4f8ff" font-size="20" font-weight="600">Harbour Studio</text>
+<rect x="122" y="449" width="205" height="31" rx="5" fill="#214f50"/>
+<text x="130" y="470" fill="#9cf1dd" font-size="17">Monthly price: $240</text>
+<path d="M126 499h281m-281 17h211" stroke="#385069" stroke-width="6" stroke-linecap="round"/>
+<text x="107" y="589" fill="#f4f8ff" font-size="25" font-weight="600">Pin a block or page</text>
+<text x="107" y="624" fill="#aec0d2" font-size="17">Keep readable text, its URL, and notes.</text>
+<rect x="576" y="380" width="348" height="164" rx="10" fill="#0e1c2c"/>
+<text x="598" y="413" fill="#f4f8ff" font-size="18" font-weight="600">Harbour Studio</text>
+<text x="598" y="449" fill="#859bb2" font-size="23">$240</text><path d="M596 441h57" stroke="#859bb2" stroke-width="2"/>
+<text x="679" y="449" fill="#75edcf" font-size="27" font-weight="700">$210</text>
+<rect x="598" y="470" width="143" height="27" rx="13" fill="#214f50"/><text x="669" y="489" text-anchor="middle" fill="#9cf1dd" font-size="13">Source changed</text>
+<text x="598" y="524" fill="#aec0d2" font-size="14">Previous capture stays available</text>
+<text x="577" y="589" fill="#f4f8ff" font-size="25" font-weight="600">See what changed</text>
+<text x="577" y="624" fill="#aec0d2" font-size="17">Refresh an open source, retain evidence.</text>
+<rect x="1046" y="380" width="348" height="164" rx="10" fill="#0e1c2c"/>
+<g fill="none" stroke="#75edcf" stroke-width="2"><rect x="1068" y="401" width="15" height="15" rx="3"/><path d="m1071 408 4 4 6-8"/><rect x="1068" y="432" width="15" height="15" rx="3"/><path d="m1071 439 4 4 6-8"/></g>
+<text x="1094" y="414" fill="#dbe6f2" font-size="15">Harbour Studio</text><text x="1094" y="445" fill="#dbe6f2" font-size="15">Garden Workspace</text>
+<rect x="1067" y="473" width="305" height="47" rx="8" fill="url(#accent)"/><text x="1219" y="503" text-anchor="middle" fill="#0e2631" font-size="17" font-weight="700">Ask Hermes → chat draft</text>
+<text x="1047" y="589" fill="#f4f8ff" font-size="25" font-weight="600">Compare with context</text>
+<text x="1047" y="624" fill="#aec0d2" font-size="17">Choose your sources. Review before send.</text>
+<path d="M80 727h1340" stroke="#2b3e52"/>
+<g fill="#dbe6f2" font-size="18"><text x="82" y="774">Source-linked cards</text><text x="445" y="774">Workspace isolation</text><text x="811" y="774">Local persistence</text><text x="1155" y="774">Your choice to share</text></g>
+<text x="82" y="837" fill="#8299af" font-size="16">Feature overview · Illustrative content · Text captures up to 6,000 characters · Refresh requires an open source</text>
+</g></svg>

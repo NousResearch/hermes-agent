@@ -144,7 +144,7 @@ def _(rid, params: dict) -> dict:
         if db is None:
             return _ok(rid, {"projects": [], "active_id": None, "scoped_session_ids": []})
         tree, active_id = _stamped_project_tree(
-            db, params, preview_limit=int(params.get("preview_limit") or 3), hydrate=False,
+            db, params, preview_limit=_int_param(params, "preview_limit", 3), hydrate=False,
             session_limit=int(params.get("session_limit") or 2000), include_discovered=True)
         return _ok(rid, {"projects": tree["projects"], "active_id": active_id,
                          "scoped_session_ids": tree["scoped_session_ids"]})

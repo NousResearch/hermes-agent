@@ -123,7 +123,7 @@ policy; `client-local (cli_only)` commands are terminal/UI features of a client.
 | `/usage` | read (bare only (`reset` refused)) | slash.exec + last-turn receipt | canonical route | slash.exec | refused |  |
 | `/verbose` | refused | refused: not available yet | config.set | unavailable: terminal | refused | port: per-session setting |
 | `/version` (/v) | read | slash.exec | slash.exec | slash.exec | refused |  |
-| `/voice` | refused | refused: not available yet | sidecar: voice.toggle | unavailable: composer-voice | refused | port: per-session setting |
+| `/voice` | refused | refused: not available yet | sidecar: voice.toggle; `tts` refused | unavailable: composer-voice | refused | port: per-session setting |
 | `/wake` | refused | refused: not available yet | local | action: wake | refused | client-local (cli_only) |
 | `/whoami` | read | slash.exec | slash.exec | slash.exec | refused |  |
 | `/worktree` | refused | refused: not available yet | slash.exec: refused | slash.exec: refused | refused | client-local (cli_only) |

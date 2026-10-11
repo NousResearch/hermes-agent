@@ -113,6 +113,11 @@ def ink_cell(cmd, gateway, ink, served):
         return "slash.exec" if gateway != "refused" else "slash.exec: refused"
     _, block = entry
     methods = set(re.findall(r"(?:rpc|request)(?:<[^>]*>)?\(\s*'([a-z_]+\.[a-z_.]+)'", block))
+    refused = re.findall(r"notAvailable', '([\w-]+) ([\w-]+)'\)", block)
+    if refused and "canonical.controls.notAvailable" not in re.sub(r"notAvailable', '[\w-]+ [\w-]+'\)", "", block):
+        # Only named subcommands are refused (``/voice tts``); the rest of the command keeps its route.
+        cell = _rpc_cell(methods, served) if methods else "local"
+        return cell + "; " + ", ".join(f"`{sub}` refused" for _, sub in refused)
     if "canonical.controls.notAvailable" in block:
         # The shared gateway refuses it in the client (no owner verb yet), whatever it calls on a
         # standalone backend; never reported as a working route. A bare form that still reads the

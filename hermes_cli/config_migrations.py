@@ -702,6 +702,41 @@ def _migrate_to_50(results: dict[str, Any], quiet: bool) -> None:
             "  ✓ Removed security.tirith_* — the tirith scanner is no longer bundled with Hermes.")
 
 
+def _migrate_to_51(results: dict[str, Any], quiet: bool) -> None:
+    # 50 → 51: re-baseline stale seeded defaults on installs created before save_config() stopped
+    # persisting DEFAULT_CONFIG. Those config.yaml files carry the whole default set of their
+    # install era as literals, so every default change since is invisible to them (a present key
+    # reads as a deliberate user choice, #136754). Only the old default is rewritten; an explicit
+    # user value survives, and a missing key keeps inheriting the current default at read time.
+    # approvals.mode is deliberately NOT rewritten: manual→smart flips a security posture, so a
+    # one-time notice below points at the unset command instead of silently approving more.
+    for section, key, old, new, what in (
+        ("approvals", "timeout", 60, 300,
+         "60→300 (the 60s prompt expired before Telegram/Discord users reached their phone)"),
+        ("agent", "clarify_timeout", 600, 3600, "600→3600"),
+        ("agent", "restart_drain_timeout", 180, 0,
+         "180→0 (a restart waits for the drain instead of force-killing after 3 minutes)"),
+        ("compression", "hygiene_hard_message_limit", 400, 5000, "400→5000"),
+        ("delegation", "child_timeout_seconds", 600, 0,
+         "600→0 (long delegated tasks are no longer cut off after 10 minutes)"),
+        ("curator", "prune_builtins", True, False,
+         "true→false (the curator no longer prunes built-in skills)"),
+        ("updates", "pre_update_backup", False, "quick",
+         "false→quick (a quick pre-update backup is taken again)"),
+    ):
+        _rewrite_stale_default(
+            section=section, key=key, old=old, new=new,
+            added=f"{section}.{key} {old!r}→{new!r} (stale seeded default)",
+            message=f"  ✓ Updated {section}.{key}: {what}. Set it back to override.")(results, quiet)
+
+    approvals = read_raw_config().get("approvals")
+    if isinstance(approvals, dict) and _lower_is("manual")(approvals.get("mode")) and not quiet:
+        print(
+            "  ⚠ approvals.mode is still \"manual\" — the default is now \"smart\" (low-risk "
+            "commands are auto-approved). If manual was the old seeded default rather than your "
+            "choice, run: hermes config unset approvals.mode")
+
+
 MIGRATIONS: tuple[tuple[int, Callable[[dict[str, Any], bool], None]], ...] = (
     (12, _migrate_to_12),
     (13, _migrate_to_13),
@@ -835,6 +870,10 @@ MIGRATIONS: tuple[tuple[int, Callable[[dict[str, Any], bool], None]], ...] = (
     (49, _migrate_to_49),
     # 49 → 50: security.tirith_* dropped; the bundled scanner is gone (see _migrate_to_50).
     (50, _migrate_to_50),
+    # 50 → 51: stale seeded defaults from pre-stripping installs re-baselined to the current
+    # ones; approvals.mode: manual gets a one-time notice instead of a silent flip (see
+    # _migrate_to_51).
+    (51, _migrate_to_51),
 )
 
 #: Steps triggered by a legacy key or identifier (a renamed or retired key, a removed plugin or

@@ -9,6 +9,8 @@ bytes, so that is what these tests pin.
 
 import sys
 import types
+from collections import UserDict
+import json
 
 sys.modules.setdefault("fire", types.SimpleNamespace(Fire=lambda *a, **k: None))
 sys.modules.setdefault("firecrawl", types.SimpleNamespace(Firecrawl=object))
@@ -89,6 +91,19 @@ def test_bulk_fields_ride_in_extra_body_and_the_wire_bytes_are_identical():
     assert moved["extra_body"]["tools"] == body["tools"]
     assert moved["extra_body"]["reasoning"] == body["extra_body"]["reasoning"]
     assert recorder.send(moved) == recorder.send(dict(body))
+
+
+def test_mapping_extra_body_preserves_bound_reasoning_in_sdk_wire_payload():
+    recorder = _Recorder()
+    body = _wire_body()
+    body["extra_body"] = UserDict(body["extra_body"])
+
+    moved = bypass_chat_sdk_request_transform(dict(body), recorder.client)
+
+    assert moved["extra_body"]["reasoning"] == {"effort": "high"}
+    wire = recorder.send(moved)
+    assert wire == recorder.send(dict(body))
+    assert json.loads(wire)["reasoning"]["effort"] == "high"
 
 
 def test_escape_hatch_and_non_sdk_facades_keep_the_typed_path(monkeypatch):

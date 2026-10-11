@@ -1048,7 +1048,8 @@ class SearchMixin:
             cmd_parts.extend(["--glob", self._escape_shell_arg(file_glob)])
         if output_mode in _OUTPUT_MODE_FLAGS:
             cmd_parts.append(_OUTPUT_MODE_FLAGS[output_mode])
-        cmd_parts.append(self._escape_shell_arg(pattern, translate_path=False))
+        # Explicit --regexp so a leading-dash pattern is data, never an rg flag.
+        cmd_parts.extend(["--regexp", self._escape_shell_arg(pattern, translate_path=False)])
         # rg is a native Windows binary (winget/cargo/choco): needs C:/... not MSYS /c/...
         cmd_parts.append(self._escape_native_tool_arg(path))
         ml_note = (
@@ -1067,7 +1068,8 @@ class SearchMixin:
             parts.extend(["--include", self._escape_shell_arg(file_glob)])
         if output_mode in _OUTPUT_MODE_FLAGS:
             parts.append(_OUTPUT_MODE_FLAGS[output_mode])
-        parts.append(self._escape_shell_arg(pattern, translate_path=False))
+        # Explicit -e so a leading-dash pattern is data, never a grep flag.
+        parts.extend(["-e", self._escape_shell_arg(pattern, translate_path=False)])
         return parts
 
     def _search_with_grep(self, pattern: str, path: str, file_glob: Optional[str],

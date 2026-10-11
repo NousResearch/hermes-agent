@@ -23,6 +23,13 @@ let reconcileQueued = false
  * the edit ~80ms after it opened (#112935). */
 const inInlineEdit = (el: Element | null) => Boolean(el?.closest(EDIT_COMPOSER_ROOT))
 
+/** The native overflow menu (⋮ → Download, Playback speed) of an inline
+ * <audio controls>/<video controls> lives in the element's user-agent shadow
+ * root, so its focus is retargeted to the AUDIO/VIDEO host. Redirecting that
+ * focus to the pane composer — on focusin or on the next pointermove — made
+ * Chromium close the menu the instant it opened (#135225). */
+const inNativeMediaControls = (el: Element | null) => Boolean(el?.closest('audio[controls], video[controls]'))
+
 /** A caret the user placed in a live text-entry surface outside every composer
  * — the clarify answer box, the transcript find bar, a dialog field — is their
  * own focus, exactly like the inline edit: moving the pointer must not hand the
@@ -30,7 +37,9 @@ const inInlineEdit = (el: Element | null) => Boolean(el?.closest(EDIT_COMPOSER_R
  * element's focusin visible to React. Composer editors are excluded, so
  * hover-switching between panes keeps behaving as before (#114245). */
 const keepsOwnFocus = (el: Element | null) =>
-  inInlineEdit(el) || (isEditableTarget(el) && !el?.closest('[data-slot="composer-rich-input"]'))
+  inNativeMediaControls(el) ||
+  inInlineEdit(el) ||
+  (isEditableTarget(el) && !el?.closest('[data-slot="composer-rich-input"]'))
 
 /** Focus inside an open floating layer — a popover, menu, listbox or dialog
  * portaled over the transcript — is the user's own as well. Radix moves focus

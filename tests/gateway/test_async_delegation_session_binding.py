@@ -96,6 +96,47 @@ class TestGatewayPinningFailsClosed:
         runner.session_store.switch_session.assert_not_called()
         runner.session_store.advance_compression_session.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_subagent_child_session_never_takes_the_chat_route(self):
+        """A completion pinned to a SUBAGENT (child) session must NOT hand the chat's routing key
+        to that child.
+
+        A subagent's background-process / watch completions carry the PARENT chat's ``session_key``
+        alongside the CHILD's ``parent_session_id``. Without this guard the resolver ``switch_session``s
+        the chat route onto the child, ending the real chat session and turning the subagent transcript
+        into the chat's main session — the gateway crosstalk bug (the subagent then holds the durable
+        turn lease the chat turn waits on, and ``agent/turn_facade_lease.py`` spams the chat with
+        "Another Hermes process is using this session" every 15s).
+
+        ``created_source`` is the load-bearing signal: it survives later surface flips, so the row is
+        still identifiable as a subagent child even after the gateway stamped the parent platform onto
+        ``source``.
+        """
+        current = self._entry("sess_main")
+        runner = self._make_runner(
+            {"sub_agent": {"id": "sub_agent", "ended_at": None, "created_source": "subagent"}},
+            switched_entry=self._entry("sub_agent"),
+        )
+
+        resolved = await runner._resolve_async_delegation_session(current, "sub_agent")
+
+        assert resolved is None
+        self._assert_no_route_change(runner)
+
+    @pytest.mark.asyncio
+    async def test_subagent_child_identified_by_source_never_takes_the_chat_route(self):
+        """The ``source`` column alone is enough to refuse a subagent child (created_source absent)."""
+        current = self._entry("sess_main")
+        runner = self._make_runner(
+            {"sub_agent": {"id": "sub_agent", "ended_at": None, "source": "subagent"}},
+            switched_entry=self._entry("sub_agent"),
+        )
+
+        resolved = await runner._resolve_async_delegation_session(current, "sub_agent")
+
+        assert resolved is None
+        self._assert_no_route_change(runner)
+
 
     @pytest.mark.asyncio
     async def test_live_spawning_session_rebinds_from_different_route(self):

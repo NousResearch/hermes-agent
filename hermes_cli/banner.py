@@ -44,6 +44,11 @@ def _quiet(fn, default=None):
         return default
 
 
+# Any CSI/OSC-ish escape sequence, for stripping colour back out of an
+# already-rendered ANSI string.
+_ANSI_ESCAPE_RE = re.compile(r"\x1b(?:\[[0-9;?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-Z\\-_])")
+
+
 def cprint(text: str):
     """Print ANSI-colored text through prompt_toolkit's renderer."""
     from prompt_toolkit import print_formatted_text as _pt_print
@@ -51,7 +56,11 @@ def cprint(text: str):
     # prompt_toolkit needs a real console: on Windows a redirected/absent stdout raises
     # NoConsoleScreenBufferError, and display helpers must never crash the caller over that.
     if _quiet(lambda: _pt_print(_PT_ANSI(text)) or True) is None:
-        print(text)
+        # The fallback must NOT emit raw ANSI: under patch_stdout sys.stdout is a StdoutProxy whose
+        # Vt100_Output.write() replaces every ESC with "?", so the string lands as `?[1;33m…` (#87444).
+        # This is the likely branch exactly when prompt_toolkit cannot build an output; colour is
+        # the expendable part, legibility is not.
+        print(_ANSI_ESCAPE_RE.sub("", text))
 
 
 def _active_skin():
@@ -344,7 +353,10 @@ def _render_markup_to_ansi(markup: str) -> str:
     from io import StringIO
     from rich.console import Console as _Console
     buf = StringIO()
-    _Console(file=buf, force_terminal=True, color_system="truecolor", highlight=False).print(markup)
+    # soft_wrap: the buffer is not a terminal, so rich would wrap at its 80-column default and fold
+    # a one-line notice through the middle of the command it tells you to run.
+    _Console(file=buf, force_terminal=True, color_system="truecolor",
+             highlight=False).print(markup, soft_wrap=True)
     return buf.getvalue().rstrip("\n")
 
 

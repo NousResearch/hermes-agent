@@ -303,6 +303,71 @@ class NtfyAdapter(BasePlatformAdapter):
         return _build_auth_header(self._token)
 
 
+# -- Interactive setup -------------------------------------------------------
+
+
+_NTFY_SETUP_PROMPTS = (
+    ("NTFY_TOPIC", "ntfy subscribe topic (e.g. hermes-myname-2026)", False),
+    ("NTFY_ALLOWED_USERS", "Topic names allowed to talk to the bot (blank = the subscribe topic)", False),
+    ("NTFY_SERVER_URL", "ntfy server URL (blank = https://ntfy.sh)", False),
+    ("NTFY_TOKEN", "ntfy auth token or user:pass for private topics (blank = none)", True),
+    ("NTFY_PUBLISH_TOPIC", "Topic for outgoing replies (blank = the subscribe topic)", False),
+    ("NTFY_MARKDOWN", "Send replies with markdown? (true/false, blank = off)", False),
+    ("NTFY_HOME_CHANNEL", "Home channel topic for cron/notifications (blank = the subscribe topic)", False),
+)
+
+
+def interactive_setup() -> None:
+    """``hermes gateway setup`` → ntfy wizard (writes ``~/.hermes/.env``); CLI helpers are lazy-imported."""
+    from hermes_cli.config import get_env_value, save_env_value
+    from hermes_cli.cli_output import print_header, print_info, prompt
+    from hermes_cli.setup_platforms import declines_reconfigure
+    print_header("ntfy")
+    if declines_reconfigure("ntfy", "Reconfigure ntfy?", "NTFY_TOPIC"):
+        return
+    for line in ("Requirements:",
+                 "  1. A unique topic name — e.g. hermes-myname-2026.",
+                 "  2. The ntfy app subscribed to that topic (https://ntfy.sh/app)."):
+        print_info(line)
+    # Remember the topic the derived values were last seeded from: NTFY_ALLOWED_USERS and
+    # NTFY_HOME_CHANNEL default to the subscribe topic, so on a re-run a value equal to the
+    # old topic is a derived one (a hand-set value is not) and has to follow a topic change.
+    previous_topic = (get_env_value("NTFY_TOPIC") or "").strip()
+    for var, question, secret in _NTFY_SETUP_PROMPTS:
+        current = get_env_value(var)
+        if not current:
+            suffix = ""
+        elif secret:
+            suffix = " [keep current]"  # never echo a secret back into the prompt
+        else:
+            # Show the stored value: a bare "[keep current]" reads as "blank = the subscribe
+            # topic" even when what is kept is a different, previous topic.
+            suffix = f" [keep current: {current}]"
+        value = prompt(f"{question}{suffix}", password=secret)
+        if value:
+            save_env_value(var, value)
+    # The topic is the channel's identity (ntfy carries no authenticated user id), so a
+    # single-entry allowlist gates the whole channel instead of leaving it open to anyone
+    # who guesses the topic — the baseline the docs recommend. NTFY_HOME_CHANNEL is what
+    # `deliver: ntfy` cron jobs publish to, so it has to follow the topic as well.
+    topic = (get_env_value("NTFY_TOPIC") or "").strip()
+    if topic:
+        for var in ("NTFY_ALLOWED_USERS", "NTFY_HOME_CHANNEL"):
+            current = (get_env_value(var) or "").strip()
+            # Seed when unset, and re-derive when the value is still the topic it came from:
+            # a rotated topic otherwise leaves the allowlist on the abandoned one, where
+            # `user_id == topic` no longer authorizes and unauthorized DMs default to
+            # "ignore" — a silently dead channel — while cron keeps publishing to the old topic.
+            if current != topic and (not current or current == previous_topic):
+                save_env_value(var, topic)
+        # An explicit publish topic that mirrored the old subscribe topic follows it too;
+        # blank stays blank (the adapter falls back to the subscribe topic at runtime).
+        publish_topic = (get_env_value("NTFY_PUBLISH_TOPIC") or "").strip()
+        if publish_topic and publish_topic != topic and publish_topic == previous_topic:
+            save_env_value("NTFY_PUBLISH_TOPIC", topic)
+    print_info("Done. Make sure the ntfy app is subscribed to that topic before starting the gateway.")
+
+
 # -- Plugin registration -----------------------------------------------------
 
 
@@ -360,6 +425,7 @@ def register(ctx) -> None:
         name="ntfy", label="ntfy", adapter_factory=lambda cfg: NtfyAdapter(cfg),
         check_fn=check_requirements, validate_config=validate_config, is_connected=is_connected,
         required_env=["NTFY_TOPIC"], install_hint="pip install httpx   # already a Hermes dependency",
+        setup_fn=interactive_setup,  # surfaces the guided wizard in `hermes gateway setup`
         env_enablement_fn=_env_enablement,  # env-only setups show in `gateway status`
         cron_deliver_env_var="NTFY_HOME_CHANNEL",
         standalone_sender_fn=_standalone_send,  # out-of-process cron delivery

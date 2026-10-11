@@ -188,6 +188,7 @@ hermes skills uninstall <skill-name>
 | [**pytorch-fsdp**](../user-guide/skills/optional/mlops/mlops-pytorch-fsdp.md) | Fully sharded data-parallel training for large models. |
 | [**pytorch-lightning**](../user-guide/skills/optional/mlops/mlops-pytorch-lightning.md) | Clean training loops with built-in distributed support. |
 | [**qdrant**](../user-guide/skills/optional/mlops/mlops-qdrant.md) | Vector search engine for production RAG systems. |
+| [**runpod**](../user-guide/skills/optional/mlops/mlops-runpod.md) | Rent RunPod GPU pods with a reusable model volume. |
 | [**saelens**](../user-guide/skills/optional/mlops/mlops-saelens.md) | Train sparse autoencoders to interpret model features. |
 | [**segment-anything-model**](../user-guide/skills/optional/mlops/mlops-models-segment-anything-model.md) | SAM: zero-shot image segmentation via points, boxes, masks. |
 | [**serving-llms-vllm**](../user-guide/skills/optional/mlops/mlops-inference-serving-llms-vllm.md) | vLLM: high-throughput LLM serving, OpenAI API, quantization. |

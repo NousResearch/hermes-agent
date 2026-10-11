@@ -525,6 +525,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/optional/mlops/mlops-pytorch-fsdp',
                     'user-guide/skills/optional/mlops/mlops-pytorch-lightning',
                     'user-guide/skills/optional/mlops/mlops-qdrant',
+                    'user-guide/skills/optional/mlops/mlops-runpod',
                     'user-guide/skills/optional/mlops/mlops-saelens',
                     'user-guide/skills/optional/mlops/mlops-models-segment-anything-model',
                     'user-guide/skills/optional/mlops/mlops-inference-serving-llms-vllm',

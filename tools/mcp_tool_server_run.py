@@ -4,6 +4,7 @@ and tool deregistration. Origin state and patchable helpers are read through ``_
 ``mock.patch("tools.mcp_tool.X")`` keeps working."""
 
 import asyncio
+import hashlib
 import logging
 import time
 from dataclasses import dataclass
@@ -14,6 +15,17 @@ from tools import mcp_tool_registration as _registration
 from tools import mcp_tool_sampling as _sampling
 
 logger = logging.getLogger("tools.mcp_tool")
+
+
+_MCP_KEEPALIVE_MAX_JITTER_SECONDS = 15.0
+
+
+def _mcp_keepalive_jitter_seconds(server_name: str) -> float:
+    """Spread probes after laptop wake without randomizing each interval."""
+    digest = hashlib.blake2s(
+        server_name.encode("utf-8", errors="replace"), digest_size=4,
+    ).digest()
+    return int.from_bytes(digest, "big") / 0xFFFFFFFF * _MCP_KEEPALIVE_MAX_JITTER_SECONDS
 
 
 @dataclass
@@ -84,7 +96,10 @@ class MCPServerRunMixin:
             while True:
                 if self._recycle_if_due():
                     return "recycle"
-                timeout = keepalive_interval
+                phase_jitter = (min(_mcp_keepalive_jitter_seconds(self.name), keepalive_interval)
+                                if keepalive_interval is not None else 0.0)
+                timeout = (keepalive_interval - phase_jitter
+                           if keepalive_interval is not None else None)
                 if timeout is None and not self._session_proven and proof_at is not None:
                     timeout = max(0.0, proof_at - time.monotonic())
                 recycle_deadline = self._next_stdio_recycle_deadline()
@@ -125,6 +140,22 @@ class MCPServerRunMixin:
                             break
                         self._mark_session_proven()
                     continue
+                # Split the interval so timers that expired during suspend spread
+                # their probes after wake, without lengthening the normal cadence.
+                if phase_jitter > 0:
+                    if recycle_deadline is not None:
+                        phase_jitter = max(0.0, min(
+                            phase_jitter, recycle_deadline - time.monotonic()))
+                    done, _pending = await asyncio.wait(
+                        waiters, timeout=phase_jitter,
+                        return_when=asyncio.FIRST_COMPLETED)
+                    if shutdown_task in done or reconnect_task in done:
+                        break
+                    if rpc_idle_task in done:
+                        rpc_idle_task = None
+                        continue
+                    if self._recycle_if_due():
+                        return "recycle"
                 # Timeout: probe for a stale session — NEVER while an RPC is in flight (a
                 # concurrent ping can wedge the stdio stream; a busy server is alive anyway).
                 # Timeout — no lifecycle event fired. See #48069.

@@ -101,12 +101,16 @@ class TestKeepaliveProbe:
             )
 
         import tools.mcp_tool as mcp_mod
+        import tools.mcp_tool_server_run as run_mod
+        orig_jitter = run_mod._mcp_keepalive_jitter_seconds
+        run_mod._mcp_keepalive_jitter_seconds = lambda _name: 0.0
         orig = mcp_mod.asyncio.wait
         mcp_mod.asyncio.wait = fake_wait
         try:
             return await task._wait_for_lifecycle_event()
         finally:
             mcp_mod.asyncio.wait = orig
+            run_mod._mcp_keepalive_jitter_seconds = orig_jitter
 
     async def test_keepalive_uses_ping_for_prompt_only_server(self):
         task = MCPServerTask("test")
@@ -172,6 +176,8 @@ class TestKeepaliveInterval:
 
         import tools.mcp_tool as mcp_mod
         import tools.mcp_tool_server_run as run_mod
+        orig_jitter = run_mod._mcp_keepalive_jitter_seconds
+        run_mod._mcp_keepalive_jitter_seconds = lambda _name: 0.0
         orig, orig_time = mcp_mod.asyncio.wait, run_mod.time
         mcp_mod.asyncio.wait = fake_wait
         run_mod.time = SimpleNamespace(monotonic=lambda: orig_time.monotonic() + elapsed[0])
@@ -179,6 +185,7 @@ class TestKeepaliveInterval:
             assert await task._wait_for_lifecycle_event() == "shutdown"
         finally:
             mcp_mod.asyncio.wait, run_mod.time = orig, orig_time
+            run_mod._mcp_keepalive_jitter_seconds = orig_jitter
         return task, timeouts
 
     async def _captured_interval(self, config):

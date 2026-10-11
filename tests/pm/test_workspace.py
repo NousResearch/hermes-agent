@@ -144,3 +144,33 @@ def test_staging_root_and_env_are_honored_without_live_mutation(layout, monkeypa
         assert kwargs["env"]["UV_PROJECT_ENVIRONMENT"] == str(environment.destination)
         assert kwargs["env"]["UV_PYTHON"] == str(environment.python)
     assert os.environ["PM_WORKSPACE_TEST_SENTINEL"] == "live"
+
+
+def test_telegram_webhook_exemptions_reach_plugin_workspace(tmp_path):
+    """Undated mirrors must keep the webhook SDK's transitive resolver exemptions."""
+    import tomllib
+    from packaging.requirements import Requirement
+
+    repository = Path(__file__).resolve().parents[2]
+    source = tmp_path / "core"
+    source.mkdir()
+    for filename in ("pyproject.toml", "uv.lock"):
+        shutil.copy2(repository / filename, source / filename)
+    plugin = tmp_path / "plugin"
+    plugin.mkdir()
+    (plugin / "pyproject.toml").write_text(
+        '[project]\nname="webhook-policy-plugin"\nversion="1"\n'
+        '[tool.uv]\npackage=false\n', encoding="utf-8",
+    )
+    workspace = tmp_path / "workspace"
+    ws._generate_pyproject([plugin], workspace, source=source)
+    manifest = tomllib.loads((source / "pyproject.toml").read_text())
+    lock = tomllib.loads((source / "uv.lock").read_text())
+    sdk = next(req for req in map(Requirement, manifest["project"]["optional-dependencies"]["telegram"])
+               if "webhooks" in req.extras)
+    locked_sdk = next(row for row in lock["package"] if row["name"] == sdk.name)
+    assert sdk.specifier.contains(locked_sdk["version"])
+    transitives = {row["name"] for row in locked_sdk["optional-dependencies"]["webhooks"]}
+    policy = tomllib.loads((workspace / "pyproject.toml").read_text())["tool"]["uv"]
+    assert "exclude-newer" not in policy
+    assert all(policy["exclude-newer-package"].get(name) is False for name in transitives)

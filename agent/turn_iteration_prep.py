@@ -44,6 +44,25 @@ ITERATION_BUDGET_WARNING_TEMPLATE = (
     "solely because of this warning."
 )
 
+# A delegated child returns exactly once and cannot resume after this call, so it needs to be
+# told to checkpoint artifacts and finish its summary now rather than "continue the task".
+ITERATION_BUDGET_WARNING_CHILD_TEMPLATE = (
+    "[SYSTEM NOTICE — iteration budget checkpoint] You have used {used} of {maximum} "
+    "iterations. You will not get another turn after the budget runs out, so write any durable "
+    "artifacts to disk now and make sure the summary you return is complete; do not stop solely "
+    "because of this warning."
+)
+
+
+def _is_delegated_child_agent(agent: Any) -> bool:
+    """True for a delegate_task child, via the execution ContextVar with the agent's platform
+    stamp as a fallback for callers that bypass it (same pattern as chat_completion_helpers.py)."""
+    with suppress(Exception):
+        from agent.delegation_context import is_delegated_child_context
+        if is_delegated_child_context():
+            return True
+    return getattr(agent, "platform", None) == "subagent"
+
 
 def _maybe_inject_iteration_budget_warning(agent: Any, messages: Any) -> bool:
     """Append the opt-in one-shot warning to the newest tool result."""
@@ -72,9 +91,13 @@ def _maybe_inject_iteration_budget_warning(agent: Any, messages: Any) -> bool:
         or budget.used < min(ratio * budget.max_total, budget.max_total - 1)
     ):
         return False
-    notice = ITERATION_BUDGET_WARNING_TEMPLATE.format(
-        used=budget.used, maximum=budget.max_total
+    # kanban_worker and a delegated child are mutually exclusive (is_dispatcher_owned_worker_context()
+    # is false for a delegated child), so this never picks the child wording for a kanban worker.
+    template = (
+        ITERATION_BUDGET_WARNING_CHILD_TEMPLATE if _is_delegated_child_agent(agent)
+        else ITERATION_BUDGET_WARNING_TEMPLATE
     )
+    notice = template.format(used=budget.used, maximum=budget.max_total)
     if kanban_worker:
         notice += (
             " While tools are still available, call kanban_complete only if all task "

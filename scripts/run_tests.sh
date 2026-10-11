@@ -93,12 +93,38 @@ fi
 # These are location variables, not
 # credentials, so forwarding them keeps the isolation intent intact. Each is
 # only forwarded when actually set, so POSIX runs are byte-for-byte unchanged.
+#
+# Under MSYS, TEMP/TMP cross in Windows form, because every native child reads
+# them through GetTempPath2W (Rust's temp_dir(), C libraries, daemons a test
+# starts). Spelled `/tmp`, they resolve through Git for Windows' `usertemp`
+# mount, which the first MSYS process of a session fixes once with GetTempPathW.
+# A session begun by a process without TMP, TEMP and USERPROFILE maps /tmp to
+# the Windows directory: unwritable for a user, littered by an administrator.
+# That is GetTempPath's last resort, never a directory anyone chose, so it
+# becomes the per-user default instead.
+_windows_temp_dir() {
+  local dir found windows
+  dir="$(cygpath -w "$1")"
+  if [ -n "${SYSTEMROOT:-}" ] && [ -n "${LOCALAPPDATA:-}" ]; then
+    found="${dir%\\}"
+    windows="$(cygpath -w "$SYSTEMROOT")"
+    windows="${windows%\\}"
+    if [ "${found,,}" = "${windows,,}" ]; then
+      dir="$(cygpath -w "$LOCALAPPDATA")\\Temp"
+    fi
+  fi
+  printf '%s\n' "$dir"
+}
+_cygpath="$(command -v cygpath 2>/dev/null || :)"
 WIN_ENV=()
 for _win_var in USERPROFILE HOMEDRIVE HOMEPATH LOCALAPPDATA APPDATA SYSTEMROOT TEMP TMP \
     ComSpec PATHEXT PROGRAMFILES ProgramFiles PROGRAMDATA ProgramData; do
-  if [ -n "${!_win_var:-}" ]; then
-    WIN_ENV+=("$_win_var=${!_win_var}")
-  fi
+  _value="${!_win_var:-}"
+  [ -n "$_value" ] || continue
+  case "$_win_var" in
+    TEMP|TMP) [ -z "$_cygpath" ] || _value="$(_windows_temp_dir "$_value")" ;;
+  esac
+  WIN_ENV+=("$_win_var=$_value")
 done
 # Native build toolchain (Windows arm64 has no wheels for every pinned C extension, so
 # `uv sync` inside a PM test compiles ruamel-yaml-clib and friends). The MSVC developer

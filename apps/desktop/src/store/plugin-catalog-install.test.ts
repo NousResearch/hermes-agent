@@ -58,6 +58,13 @@ describe('requestPluginCatalogInstallFromDeepLink', () => {
     expect(toasts[0]?.message).toContain(fragment)
   })
 
+  it('fetches the catalog feed from the CORS-enabled final host, not the redirecting origin', () => {
+    // Regression for #136483: CATALOG_ORIGIN answers /docs/api/plugins.json with a 301
+    // that carries no Access-Control-Allow-Origin, so a renderer fetch() rejects with
+    // "Failed to fetch" before following it and every catalog deep link fails.
+    expect(PLUGIN_CATALOG_URL).toBe('https://nousresearch.github.io/hermes-agent/docs/api/plugins.json')
+  })
+
   it('resolves against the live catalog feed by default and rejects unknown names', async () => {
     const feed = JSON.stringify([
       { name: 'weather', repo: 'https://github.com/x/weather', sha: 'a'.repeat(40), subdir: '' }

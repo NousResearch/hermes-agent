@@ -14,7 +14,11 @@
 
 export const CATALOG_ORIGIN = 'https://hermes-agent.nousresearch.com'
 export const CATALOG_PICKER_URL = `${CATALOG_ORIGIN}/docs/plugins?embed=picker`
-export const PLUGIN_CATALOG_URL = `${CATALOG_ORIGIN}/docs/api/plugins.json`
+// CATALOG_ORIGIN serves this JSON path as a 301 to the GitHub Pages build without an
+// Access-Control-Allow-Origin header, so a renderer fetch() rejects before following
+// the redirect. The picker page itself still serves 200 there, so only the JSON URL
+// points at the CORS-enabled final host (issue #136483).
+export const PLUGIN_CATALOG_URL = 'https://nousresearch.github.io/hermes-agent/docs/api/plugins.json'
 
 /** Catalog names are directory names under `plugin-catalog/`; anything else is not a lookup key. */
 export const PLUGIN_CATALOG_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/

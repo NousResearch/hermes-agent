@@ -508,6 +508,7 @@ class TestBuildContextFilesPrompt:
         assert "From uppercase" in result
         assert "From lowercase" not in result
 
+    @pytest.mark.require_symlinks
     @pytest.mark.parametrize("rel", [".hermes.md", "AGENTS.md", "CLAUDE.md", ".cursorrules", ".cursor/rules/team.mdc"])
     def test_context_file_loads_only_when_it_resolves_inside_the_project(self, tmp_path, rel):
         outside = tmp_path / "outside.txt"
@@ -521,9 +522,10 @@ class TestBuildContextFilesPrompt:
 
         link.symlink_to(outside)
         assert "OUTSIDE-MARKER" not in build_context_files_prompt(cwd=str(project), skip_soul=True)
-        # The /context manifest shares the discovery walk and must not report the skipped file as loaded.
+        # The /context manifest shares the discovery walk and reports the refusal, not a read failure.
         from agent.context_file_sources import list_context_file_sources
-        assert not any(s["loaded"] for s in list_context_file_sources(cwd=str(project), skip_soul=True))
+        sources = list_context_file_sources(cwd=str(project), skip_soul=True)
+        assert sources and {(s["status"], s["loaded"]) for s in sources} == {("skipped", False)}
         link.unlink()
         link.symlink_to(project / "docs" / "shared.md")
         assert "INSIDE-MARKER" in build_context_files_prompt(cwd=str(project), skip_soul=True)
@@ -531,6 +533,7 @@ class TestBuildContextFilesPrompt:
         link.write_text("REGULAR-MARKER")
         assert "REGULAR-MARKER" in build_context_files_prompt(cwd=str(project), skip_soul=True)
 
+    @pytest.mark.require_symlinks
     @pytest.mark.parametrize("loader", ["startup", "subdirectory_hint"])
     def test_home_or_above_is_never_the_containment_root(self, tmp_path, monkeypatch, loader):
         """A dotfiles repo at $HOME (startup context) or a session rooted at $HOME (subdirectory hints) would

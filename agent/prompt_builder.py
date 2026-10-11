@@ -1594,11 +1594,12 @@ def load_soul_md(context_length: Optional[int] = None, home_override: "Path | No
         return None
 
 
-def _read_context_file(path: Path, root: Optional[Path] = None) -> str:
+def _read_context_file(path: Path, root: Optional[Path] = None) -> Optional[str]:
     """Stripped text of *path*; "" when missing, empty or unreadable (logged at debug).
 
     With *root* (the resolved project root the file was discovered under), a file whose resolved target
-    leaves *root* or hits the read deny-list is skipped as well: the policy subdirectory hints apply."""
+    leaves *root* or hits the read deny-list is skipped: the policy subdirectory hints apply. That refusal
+    returns None, so ``/context`` can tell it apart from a read failure."""
     if not path.exists():
         return ""
     if root is not None:
@@ -1606,7 +1607,7 @@ def _read_context_file(path: Path, root: Optional[Path] = None) -> str:
         target = _resolved_hint_target(path, root)
         if target is None:
             logger.warning("Skipping context file %s: it resolves outside %s or to a protected file", path, root)
-            return ""
+            return None
         path = target  # read the vetted target, not the link, so a swap between check and read is harmless
     try:
         return (_read_text_with_timeout(path) or "").strip()
@@ -1704,7 +1705,7 @@ _CONTEXT_FILE_CANDIDATES = {
 
 def discover_context_files(cwd_path: Path) -> list[tuple[str, str, Path, str]]:
     """Every project-context file on disk as ``(kind, label, path, content)`` in priority order.
-    ``content == ""`` means empty or unreadable — such a file is never loaded."""
+    ``content == ""`` means empty or unreadable, ``None`` refused by containment; neither is ever loaded."""
     return [(kind, label, path, content)
             for kind, finder in _CONTEXT_FILE_CANDIDATES.items() for label, path, content in finder(cwd_path)]
 

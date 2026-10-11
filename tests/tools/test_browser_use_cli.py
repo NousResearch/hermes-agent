@@ -546,8 +546,34 @@ class TestBackendCdpResolution:
             lambda key: (_ for _ in ()).throw(AssertionError("must skip provider")),
         )
         monkeypatch.setattr(bu_cli, "_read_browser_cfg", lambda: {"cloud_provider": "browser-use"})
+        monkeypatch.setenv("BROWSER_USE_API_KEY", "bu-key")
         env = {}
         assert bu_cli._resolve_backend_cdp(env, "t1", session_name="r7k2") is None
+        assert "BU_CDP_WS" not in env and "BU_CDP_URL" not in env
+
+    def test_direct_api_without_key_errors_instead_of_dropping_cdp(self, monkeypatch):
+        """cloud_provider browser-use with no API key must not return None.
+
+        None is the autospawn signal, and autospawn only runs when the key is
+        set. Without the key the harness used to hunt an installed Chrome for
+        DevToolsActivePort and never started the bundled Chromium.
+        """
+
+        class _BUProvider:
+            name = "browser-use"
+
+        monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override", lambda: "")
+        monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: _BUProvider())
+        monkeypatch.setattr(
+            bt_session, "_get_session_info",
+            lambda key: (_ for _ in ()).throw(AssertionError("must skip provider")),
+        )
+        monkeypatch.setattr(bu_cli, "_read_browser_cfg", lambda: {"cloud_provider": "browser-use"})
+        monkeypatch.delenv("BROWSER_USE_API_KEY", raising=False)
+        env = {}
+        err = bu_cli._resolve_backend_cdp(env, "t1", session_name="r7k2")
+        assert isinstance(err, str) and "BROWSER_USE_API_KEY" in err
+        assert "hermes tools" in err
         assert "BU_CDP_WS" not in env and "BU_CDP_URL" not in env
 
     def test_picker_managed_selection_resolves_gateway_provider(self, monkeypatch):

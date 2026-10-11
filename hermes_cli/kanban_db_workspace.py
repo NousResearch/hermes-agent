@@ -796,6 +796,10 @@ def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
     (raises if unset rather than guessing). Persist via ``set_workspace_path``.
     """
     kind = task.workspace_kind or "scratch"
+    # Legacy alias: 'git_worktree' was an early name for 'worktree' in some
+    # externally-created tasks. Treat it as 'worktree' instead of raising.
+    if kind == "git_worktree":
+        kind = "worktree"
     if kind == "worktree":
         return _resolve_worktree_workspace(task, board=board)[0]
     if kind == "scratch" and not task.workspace_path:

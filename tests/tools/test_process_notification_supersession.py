@@ -53,5 +53,3 @@ def test_watch_notification_carries_supersession_context(monkeypatch):
     assert text is not None
     assert "this process started 5m ago" in text
     assert "newer user instructions take precedence" in text
-
-

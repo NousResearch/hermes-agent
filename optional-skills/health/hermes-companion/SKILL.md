@@ -129,6 +129,7 @@ The sweep never skips a letter silently. Its heartbeat carries what it saw (`hea
 | Both | `companion.py --context` | the two blocks together |
 | Check Hermes Post / Inbox | `companion.py --inbox --pending` | `thread_count`, `thread_id`, `subject`, `status` |
 | Read/reply to thread | `companion.py --thread ID` / `--reply ID` | chronological messages, `body`, `updated_at` |
+| Archive/delete thread | `companion.py --archive ID` / `--delete-thread ID` | `thread_id`, status confirmation |
 
 `movement_reason` is why the phone accepted the last write: `moved`, `distance`, or `no_motion_reading`. `absent` means an older file from before that field existed.
 
@@ -157,6 +158,7 @@ This file is English because the model reads it. The user never sees it.
    - Read full thread chronology: `companion.py --thread <thread_id>`.
    - Post an agent reply letter back to the user's inbox: `companion.py --reply <thread_id> --message "..."`.
    - Compose a new letter from the agent: `companion.py --new-post --to-profile <name> --subject "..." --message "..."`.
+   - Archive or delete a thread: `companion.py --archive <thread_id>`, `companion.py --delete-thread <thread_id>`.
    - Style: Compose thoughtful, clear letters or memos matching the agent's persona.
 
 ## Place and Motion Rules

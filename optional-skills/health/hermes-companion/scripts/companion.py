@@ -2039,6 +2039,58 @@ def command_unarchive_thread(args: argparse.Namespace, now: datetime) -> int:
     return 0
 
 
+def delete_dispatch_thread(
+    threads_dir: Path,
+    thread_id: str,
+    now: Optional[datetime] = None,
+) -> bool:
+    """Delete a thread: permanently remove folder from Documents/threads/{id} and/or Documents/archive/{id}."""
+    archive_dir = threads_dir.parent / "archive"
+    source = threads_dir / thread_id
+    arch_source = archive_dir / thread_id
+
+    deleted = False
+    if safe_is_dir(source):
+        shutil.rmtree(source, ignore_errors=True)
+        deleted = True
+    if safe_is_dir(arch_source):
+        shutil.rmtree(arch_source, ignore_errors=True)
+        deleted = True
+
+    _DISPATCH_THREAD_CACHE.pop(str((source / "meta.json").resolve()), None)
+    _DISPATCH_THREAD_CACHE.pop(str((arch_source / "meta.json").resolve()), None)
+
+    if deleted:
+        moment = now or utcnow()
+        touch_sync_marker(threads_dir, thread_id, now=moment)
+
+    return deleted
+
+
+def command_delete_thread(args: argparse.Namespace, now: datetime) -> int:
+    threads_dir = get_threads_dir(args.icloud_dir)
+    if not threads_dir:
+        log("ERROR", "cannot resolve iCloud threads directory")
+        return 1
+
+    thread_id = getattr(args, "delete_thread", None)
+    if not thread_id:
+        log("ERROR", "no thread ID provided to delete")
+        return 1
+
+    success = delete_dispatch_thread(threads_dir, thread_id, now=now)
+    if not success:
+        log("ERROR", f"thread {thread_id} not found")
+        return 1
+
+    if getattr(args, "json", False):
+        print(json.dumps({"deleted": True, "thread_id": thread_id}, indent=2))
+        return 0
+
+    print(f"Deleted thread [{thread_id}] and removed from disk")
+    return 0
+
+
 def command_threads(args: argparse.Namespace) -> int:
     threads_dir = get_threads_dir(args.icloud_dir)
     if not threads_dir or not threads_dir.is_dir():
@@ -2871,6 +2923,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--archive", metavar="ID", help="Archive a dispatch thread and move to Documents/archive/")
     parser.add_argument("--unarchive", metavar="ID", help="Unarchive a dispatch thread and move to Documents/threads/")
     parser.add_argument("--archived", action="store_true", help="List archived dispatch threads from Documents/archive/")
+    parser.add_argument("--delete-thread", "--delete", metavar="ID", dest="delete_thread", help="Permanently delete a dispatch thread from Documents/threads/ and Documents/archive/")
     parser.add_argument("--new-thread", "--new-post", action="store_true", dest="new_thread", help="Create a new post/thread")
     parser.add_argument("--subject", help="Subject for new dispatch thread")
     parser.add_argument("--message", help="Message body for reply or new thread")
@@ -2948,6 +3001,8 @@ def main(argv: Optional[Sequence[str]] = None, now: Optional[datetime] = None) -
         return command_archive_thread(args, moment)
     if args.unarchive:
         return command_unarchive_thread(args, moment)
+    if getattr(args, "delete_thread", None):
+        return command_delete_thread(args, moment)
     if args.thread:
         return command_thread_detail(args)
     if args.reply:

@@ -793,6 +793,47 @@ def test_archived_threads_segregation_and_migration() -> None:
         check("t1 now back in active scan", tid1 in res_ids and tid2 in res_ids)
 
 
+def test_delete_dispatch_thread() -> None:
+    companion.reset_dispatch_cache()
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        threads_dir = tmp_path / "threads"
+        threads_dir.mkdir(parents=True)
+        archive_dir = tmp_path / "archive"
+        archive_dir.mkdir(parents=True)
+
+        moment = datetime(2026, 10, 11, 14, 0, 0, tzinfo=timezone.utc)
+        t1 = companion.create_dispatch_thread(threads_dir, "Thread to archive then delete", "Letter 1", now=moment)
+        t2 = companion.create_dispatch_thread(threads_dir, "Thread to delete directly", "Letter 2", now=moment)
+        tid1 = t1["thread_id"]
+        tid2 = t2["thread_id"]
+
+        # Archive tid1
+        companion.archive_dispatch_thread(threads_dir, tid1, now=moment)
+        check("tid1 in archive", (archive_dir / tid1).is_dir())
+        check("tid2 in threads", (threads_dir / tid2).is_dir())
+
+        # 1. Delete active thread tid2
+        del_res2 = companion.delete_dispatch_thread(threads_dir, tid2, now=moment)
+        check("delete active thread returns True", del_res2 is True)
+        check("tid2 removed from threads_dir", not (threads_dir / tid2).exists())
+        scan_after_del = companion.scan_dispatch_threads(threads_dir)
+        active_ids = [t["thread_id"] for t in scan_after_del["threads"]]
+        check("active scan does not include deleted tid2", tid2 not in active_ids)
+
+        # 2. Delete archived thread tid1
+        del_res1 = companion.delete_dispatch_thread(threads_dir, tid1, now=moment)
+        check("delete archived thread returns True", del_res1 is True)
+        check("tid1 removed from archive_dir", not (archive_dir / tid1).exists())
+        archived_list = companion.list_dispatch_threads(archive_dir)
+        archived_ids = [t["thread_id"] for t in archived_list]
+        check("archived list does not include deleted tid1", tid1 not in archived_ids)
+
+        # 3. Non-existent thread returns False
+        del_nonexistent = companion.delete_dispatch_thread(threads_dir, "th_does_not_exist", now=moment)
+        check("delete nonexistent thread returns False", del_nonexistent is False)
+
+
 def main() -> int:
     test_still_home_after_hours()
     test_walking_at_home()
@@ -824,6 +865,7 @@ def main() -> int:
     test_skip_log_is_throttled()
     test_sync_marker_gated_sweeps_and_cache()
     test_archived_threads_segregation_and_migration()
+    test_delete_dispatch_thread()
     print("ok")
     return 0
 

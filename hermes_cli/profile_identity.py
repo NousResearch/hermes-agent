@@ -17,13 +17,18 @@ control verb and the delete to the delete-only ``purge-profile-identity`` verb. 
 ``_unserve_profile()``: that hook fires for every name leaving the served set, and a rename's old
 name leaves it exactly like a deleted one, so identity must survive it for the rekey that follows.
 With no live multiplexer nothing else holds the store and the durable rewrite is safe here.
-Checkpoint project state has no live in-memory owner and is rekeyed locally after the directory move.
+Checkpoint project state has no live in-memory owner and is rekeyed locally after the directory move;
+so are absolute paths under the old directory in ``projects.db`` and ``sessions.cwd``/``git_repo_root``
+(``profile_path_rebase``), which the routing index does not cache.
 """
 from __future__ import annotations
 
 import contextlib
+import logging
 import sys
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 def migrate_profile_identity(old_name: str, new_name: str) -> bool:
@@ -182,6 +187,58 @@ def _migrate_checkpoint_identity(old_canon: str, new_canon: str) -> bool:
     return False
 
 
+def _rebase_state_db(db_path: Path, pairs) -> int:
+    """Rebase session paths in one state.db through the shared registry handle."""
+    from hermes_state_registry import acquire, release_or_close
+
+    db = acquire(db_path)
+    try:
+        return db.rebase_session_paths(pairs)
+    finally:
+        with contextlib.suppress(Exception):
+            release_or_close(db)
+
+
+def _migrate_profile_paths(old_canon: str, new_canon: str) -> bool:
+    """Rebase absolute paths under ``profiles/<old>`` in projects.db and state.db (root + profile).
+
+    Never fatal: the directory has already moved, so a failing store is reported with the retry
+    command and the remaining stores and rename steps still run. Refuses when a live profile has
+    reused the old name, because ``profiles/<old>/`` paths then belong to that profile.
+    """
+    from hermes_cli.profile_path_rebase import prefix_pairs, rebase_projects_db
+    from hermes_cli.profiles import get_profile_dir, profile_exists
+    from hermes_constants import get_default_hermes_root
+
+    old_dir, new_dir = get_profile_dir(old_canon), get_profile_dir(new_canon)
+    if profile_exists(old_canon):
+        print(f"⚠ Skipped path migration: a profile named '{old_canon}' exists again, so paths under "
+              f"{old_dir} belong to it. Update '{new_canon}' project folders by hand if they still "
+              "point there.", file=sys.stderr)
+        return False
+    root, pairs = get_default_hermes_root(), prefix_pairs(old_dir, new_dir)
+    stores = [("project", root / "projects.db", rebase_projects_db),
+              ("project", new_dir / "projects.db", rebase_projects_db),
+              ("session", root / "state.db", _rebase_state_db),
+              ("session", new_dir / "state.db", _rebase_state_db)]
+    ok, changed = True, 0
+    for kind, db_path, rebase in stores:
+        if not db_path.exists():
+            continue
+        try:
+            changed += rebase(db_path, pairs)
+        except Exception as exc:  # never fatal to a rename that has already moved the directory
+            ok = False
+            logger.warning("Profile path migration failed for %s", db_path, exc_info=True)
+            print(f"⚠ Profile was renamed, but {kind} paths in {db_path} could not be updated: "
+                  f"{type(exc).__name__}: {exc}", file=sys.stderr)
+    if changed:
+        print(f"✓ Paths updated: {changed} project/session record(s)")
+    if not ok:
+        print(f"    Retry with: hermes profile migrate-identity {old_canon} {new_canon}", file=sys.stderr)
+    return ok
+
+
 def _migrate_profile_identity(old_canon: str, new_canon: str, live_mux: bool) -> bool:
     """Rekey renamed-profile identity without racing a live gateway's in-memory routing index.
 
@@ -190,7 +247,8 @@ def _migrate_profile_identity(old_canon: str, new_canon: str, live_mux: bool) ->
     project identity is always durable-only. Never fatal to the rename, which has already happened
     by this point.
     """
-    checkpoint_migrated = _migrate_checkpoint_identity(old_canon, new_canon)
+    durable_migrated = _migrate_checkpoint_identity(old_canon, new_canon)
+    durable_migrated = _migrate_profile_paths(old_canon, new_canon) and durable_migrated
 
     if live_mux:
         from hermes_constants import get_default_hermes_root
@@ -202,7 +260,7 @@ def _migrate_profile_identity(old_canon: str, new_canon: str, live_mux: bool) ->
             reason = f"{type(exc).__name__}: {exc}"
         else:
             if isinstance(answer, dict) and answer.get("ok") is True:
-                return checkpoint_migrated
+                return durable_migrated
             reason = _control_answer_failure(answer)
             if answer is None and _gateway_accepts_profile_identity_verb(root):
                 reason += (" — the gateway is running but does not implement "
@@ -218,7 +276,7 @@ def _migrate_profile_identity(old_canon: str, new_canon: str, live_mux: bool) ->
     from hermes_state_registry import acquire, release_or_close
     from hermes_constants import get_default_hermes_root
     root = get_default_hermes_root()
-    migrated = checkpoint_migrated
+    migrated = durable_migrated
     for db_path in (root / "state.db", get_profile_dir(new_canon) / "state.db"):
         if not db_path.exists():
             continue

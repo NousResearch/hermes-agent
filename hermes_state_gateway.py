@@ -730,6 +730,46 @@ class SessionGatewayMixin:
         self._execute_write(_do)
         return counts
 
+    def rebase_session_paths(self, pairs) -> int:
+        """Rebase session paths under a renamed profile directory.
+
+        Rewrites the ``cwd``/``git_repo_root`` columns and ACP's ``model_config.cwd``, which the ACP
+        adapter reads on list/resume instead of the column. *pairs* are ``(old_prefix, new_prefix)``
+        from ``profile_path_rebase.prefix_pairs``; only whole path components match, so a sibling
+        ``profiles/<old>2`` is untouched. Returns the number of sessions changed. Idempotent, so safe
+        under ``_execute_write``'s retry.
+        """
+        from hermes_cli.profile_path_rebase import rebase_path
+
+        def _rebase_model_config(raw):
+            if not raw or "cwd" not in raw:
+                return None
+            try:
+                payload = json.loads(raw)
+            except (ValueError, TypeError):
+                return None
+            new_cwd = rebase_path(payload.get("cwd"), pairs) if isinstance(payload, dict) else None
+            if new_cwd is None:
+                return None
+            payload["cwd"] = new_cwd
+            return json.dumps(payload, ensure_ascii=False)
+
+        def _do(conn) -> int:
+            changed = 0
+            for session_id, cwd, repo_root, model_config in conn.execute(
+                    "SELECT id, cwd, git_repo_root, model_config FROM sessions "
+                    "WHERE cwd IS NOT NULL OR git_repo_root IS NOT NULL OR model_config IS NOT NULL").fetchall():
+                new_cwd, new_root = rebase_path(cwd, pairs), rebase_path(repo_root, pairs)
+                new_config = _rebase_model_config(model_config)
+                if new_cwd is None and new_root is None and new_config is None:
+                    continue
+                conn.execute("UPDATE sessions SET cwd = ?, git_repo_root = ?, model_config = ? WHERE id = ?",
+                             (new_cwd or cwd, new_root or repo_root, new_config or model_config, session_id))
+                changed += 1
+            return changed
+
+        return self._execute_write(_do)
+
     def purge_profile_state(self, profile: str) -> dict[str, int]:
         """Delete exact profile identity from this state database (#111926, delete side).
 

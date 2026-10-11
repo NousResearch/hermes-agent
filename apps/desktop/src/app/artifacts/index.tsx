@@ -139,11 +139,15 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       const sessions = (await listAllProfileSessions(30, 1)).sessions
 
       const { artifacts: nextArtifacts, failures } = await loadArtifactsForSessions(sessions, (session, page) =>
-        getSessionMessages(session.id, session.profile, {
-          ...page,
-          includeCompacted: true,
-          order: 'oldest'
-        })
+        getSessionMessages(
+          session.id,
+          session.connection_id ? { connectionId: session.connection_id, profile: session.profile } : session.profile,
+          {
+            ...page,
+            includeCompacted: true,
+            order: 'oldest'
+          }
+        )
       )
 
       if (failures.length > 0) {

@@ -37,6 +37,7 @@ import tempfile
 import time
 import traceback
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import (
@@ -242,6 +243,28 @@ class DispatchThreadMeta(TypedDict, total=False):
     last_error: Optional[str]
     dispatch_retries: Optional[int]
     failed_at: Optional[str]
+
+
+@dataclass(frozen=True)
+class JsonRead:
+    """Outcome of reading a JSON object from the container. Immutable.
+
+    `reason` is empty when the object was read, and otherwise names the failure:
+    missing, empty, invalid JSON, not a JSON object, or unreadable with the OS error.
+    """
+    data: Optional[dict[str, object]]
+    reason: str
+
+
+class ThreadScan(TypedDict):
+    threads: List[DispatchThreadMeta]
+    unreadable: List[str]
+
+
+class SweepReport(TypedDict):
+    replies: int
+    pending: int
+    unreadable: int
 
 
 class DispatchMessageRecord(TypedDict):
@@ -1318,38 +1341,62 @@ def warn_once(path: Path, message: str) -> None:
     log("WARN", message)
 
 
-def safe_read_json(path: Path, retries: int = 4) -> Optional[dict[str, object]]:
+def log_skip_throttled(key: str, level: str, message: str) -> bool:
+    """Log a recurring condition at most once per SKIP_LOG_INTERVAL_SECONDS. Returns True when logged.
+
+    A sweep runs every few seconds: an unreadable meta, or a thread whose newest readable
+    letter is the agent's own, would otherwise repeat the same line twenty times a minute.
+    """
+    now_mono = time.monotonic()
+    last = _SKIP_LOG_AT.get(key)
+    if last is not None and now_mono - last < SKIP_LOG_INTERVAL_SECONDS:
+        return False
+    _SKIP_LOG_AT[key] = now_mono
+    log(level, message)
+    return True
+
+
+def read_json_checked(path: Path, retries: int = 4) -> JsonRead:
+    """Read a JSON object from the container, reporting why it could not be read.
+
+    The reason is the point. A meta.json whose *content* CloudDocs has not materialised yet
+    reads as an ordinary failure, and for thirty minutes a pending letter was invisible to a
+    sweep that kept cycling because nothing recorded that it had skipped it.
+    """
+    last_reason = "unreadable"
     for attempt in range(retries):
+        if not safe_is_file(path):
+            return JsonRead(None, "missing")
         try:
-            if not safe_is_file(path):
-                return None
             content = path.read_text(encoding="utf-8")
+        except OSError as exc:
+            # Darwin EDEADLK (Resource deadlock avoided), EAGAIN, mid-sync EIO, permissions.
+            last_reason = f"unreadable ({exc.strerror or exc})"
+        except Exception as exc:
+            last_reason = f"unreadable ({exc})"
+        else:
             if not content.strip():
-                if attempt < retries - 1:
-                    time.sleep(0.15 * (attempt + 1))
-                    continue
-                warn_once(path, f"{path.name} is empty after {retries} attempts; skipping")
-                return None
-            try:
-                return json.loads(content)
-            except json.JSONDecodeError as exc:
-                if attempt < retries - 1:
-                    time.sleep(0.15 * (attempt + 1))
-                    continue
-                warn_once(path, f"{path.name} is not valid JSON ({exc}); skipping")
-                return None
-        except OSError:
-            # Handles Darwin EDEADLK (Resource deadlock avoided), EAGAIN, etc. during iCloud sync
-            if attempt < retries - 1:
-                time.sleep(0.15 * (attempt + 1))
-                continue
-            return None
-        except Exception:
-            if attempt < retries - 1:
-                time.sleep(0.1 * (attempt + 1))
-                continue
-            return None
-    return None
+                last_reason = "empty"
+            else:
+                try:
+                    parsed = json.loads(content)
+                except json.JSONDecodeError as exc:
+                    last_reason = f"invalid JSON ({exc})"
+                else:
+                    if isinstance(parsed, dict):
+                        return JsonRead(cast(dict[str, object], parsed), "")
+                    last_reason = "not a JSON object"
+
+        if attempt < retries - 1:
+            time.sleep(0.15 * (attempt + 1))
+            continue
+        return JsonRead(None, last_reason)
+    return JsonRead(None, last_reason)
+
+
+def safe_read_json(path: Path, retries: int = 4) -> Optional[dict[str, object]]:
+    """Value or None. Use read_json_checked when the reason matters."""
+    return read_json_checked(path, retries).data
 
 
 def safe_write_text(path: Path, content: str, retries: int = 4) -> bool:
@@ -1422,15 +1469,23 @@ def trigger_icloud_download(path: Path) -> None:
         pass
 
 
-def list_dispatch_threads(threads_dir: Path) -> List[DispatchThreadMeta]:
+def scan_dispatch_threads(threads_dir: Path) -> ThreadScan:
+    """Read every thread's meta.json, naming the ones that could not be read.
+
+    A meta that exists but cannot be read — CloudDocs has not materialised its content, or
+    Darwin hands us EDEADLK mid-sync — is a pending letter nobody can see. It is reported,
+    its download is requested, and it is never silently dropped.
+    """
+    blank: ThreadScan = {"threads": [], "unreadable": []}
     if not safe_is_dir(threads_dir):
-        return []
-    results: List[DispatchThreadMeta] = []
+        return blank
     try:
         entries = list(threads_dir.iterdir())
     except (OSError, Exception):
-        return []
+        return blank
 
+    results: List[DispatchThreadMeta] = []
+    unreadable: List[str] = []
     needs_cooldown = False
     for entry in entries:
         try:
@@ -1442,9 +1497,17 @@ def list_dispatch_threads(threads_dir: Path) -> List[DispatchThreadMeta]:
                 trigger_icloud_download(icloud_meta)
                 needs_cooldown = True
 
-            data = safe_read_json(meta_file)
-            if data:
-                results.append(cast(DispatchThreadMeta, data))
+            read = read_json_checked(meta_file)
+            if read.data:
+                results.append(cast(DispatchThreadMeta, read.data))
+            elif read.reason != "missing":
+                unreadable.append(entry.name)
+                if log_skip_throttled(
+                    f"meta:{meta_file}",
+                    "WARN",
+                    f"thread '{entry.name}' meta.json is {read.reason}; asked iCloud for it and skipped this sweep",
+                ):
+                    trigger_icloud_download(meta_file)
         except (OSError, Exception):
             continue
 
@@ -1461,7 +1524,15 @@ def list_dispatch_threads(threads_dir: Path) -> List[DispatchThreadMeta]:
             except Exception:
                 continue
 
-    return sorted(results, key=lambda t: str(t.get("updated_at", "")), reverse=True)
+    return {
+        "threads": sorted(results, key=lambda t: str(t.get("updated_at", "")), reverse=True),
+        "unreadable": unreadable,
+    }
+
+
+def list_dispatch_threads(threads_dir: Path) -> List[DispatchThreadMeta]:
+    """Threads whose metadata could be read. For callers that do not track skipped ones."""
+    return scan_dispatch_threads(threads_dir)["threads"]
 
 
 def list_thread_messages(threads_dir: Path, thread_id: str) -> List[DispatchMessageRecord]:
@@ -1483,9 +1554,16 @@ def list_thread_messages(threads_dir: Path, thread_id: str) -> List[DispatchMess
         return []
     messages: List[DispatchMessageRecord] = []
     for file in files:
-        data = safe_read_json(file)
-        if data:
-            messages.append(cast(DispatchMessageRecord, data))
+        read = read_json_checked(file)
+        if read.data:
+            messages.append(cast(DispatchMessageRecord, read.data))
+        elif read.reason != "missing":
+            if log_skip_throttled(
+                f"message:{file}",
+                "WARN",
+                f"letter file {file.name} in thread '{thread_id}' is {read.reason}; asked iCloud for it and skipped it",
+            ):
+                trigger_icloud_download(file)
     return sorted(messages, key=lambda m: str(m.get("timestamp", "")))
 
 
@@ -1900,6 +1978,8 @@ DAEMON_MIN_INTERVAL: Final[float] = 0.1
 DAEMON_HEARTBEAT_SECONDS: Final[float] = 300.0
 _STOP_REQUESTED: bool = False
 _WARNED_PATHS: set[str] = set()
+_SKIP_LOG_AT: dict[str, float] = {}
+SKIP_LOG_INTERVAL_SECONDS: Final[float] = 300.0
 
 
 def get_dispatch_lock_path() -> Path:
@@ -2274,29 +2354,34 @@ def get_physical_context_summary(
     return "\n\n".join(parts)
 
 
-def dispatch_pending_once(args: argparse.Namespace, now: datetime, threads_dir: Path) -> int:
-    """One sweep: answer every letter waiting for the agent. Returns replies written.
+def dispatch_pending_once(args: argparse.Namespace, now: datetime, threads_dir: Path) -> SweepReport:
+    """One sweep: answer every letter waiting for the agent. Reports what it did.
 
-    Every phase is guarded: a dataless CloudDocs placeholder, a corrupt payload, a busy
-    session or a timed-out agent must cost that one thread, never the sweep.
+    Every phase is guarded: a dataless CloudDocs placeholder, an unreadable meta, a corrupt
+    payload, a busy session or a timed-out agent must cost that one thread, never the sweep.
+    A sweep that saw a pending letter and wrote nothing says why, at least once every
+    SKIP_LOG_INTERVAL_SECONDS.
     """
+    zero: SweepReport = {"replies": 0, "pending": 0, "unreadable": 0}
     try:
-        pending = [t for t in list_dispatch_threads(threads_dir) if t.get("status") == "pending_agent"]
+        scan = scan_dispatch_threads(threads_dir)
+        pending = [t for t in scan["threads"] if t.get("status") == "pending_agent"]
+        report: SweepReport = {"replies": 0, "pending": len(pending), "unreadable": len(scan["unreadable"])}
         if not pending:
             # Zero cost / zero tokens / zero CPU
-            return 0
+            return report
 
         hermes_bin = find_hermes_executable()
         if not hermes_bin:
             log("WARN", "hermes executable not found, cannot auto-dispatch pending letters")
-            return 1
+            return report
 
         lock_file = get_dispatch_lock_path()
         if not acquire_dispatch_lock(lock_file):
-            return 0
+            log_skip_throttled("lock-busy", "INFO", f"another run holds {lock_file}; skipping this sweep")
+            return report
 
         try:
-            dispatched_count = 0
             for thread in pending:
                 thread_id = thread["thread_id"]
                 target_profile = (thread.get("target_profile") or "default").strip()
@@ -2304,10 +2389,20 @@ def dispatch_pending_once(args: argparse.Namespace, now: datetime, threads_dir: 
 
                 messages = list_thread_messages(threads_dir, thread_id)
                 if not messages:
+                    log_skip_throttled(
+                        f"nomsg:{thread_id}",
+                        "WARN",
+                        f"thread '{thread_id}' is pending but no readable letter was found in it",
+                    )
                     continue
 
                 last_msg = messages[-1]
                 if last_msg.get("sender") != "user":
+                    log_skip_throttled(
+                        f"agentlast:{thread_id}",
+                        "INFO",
+                        f"thread '{thread_id}' is pending but its newest readable letter is the agent's; waiting for the rest to sync",
+                    )
                     continue
 
                 # Check if this is the initial letter or a follow-up ("repregunta")
@@ -2368,13 +2463,13 @@ def dispatch_pending_once(args: argparse.Namespace, now: datetime, threads_dir: 
                         if fallback_proc.returncode == 0 and cleaned_fallback:
                             reply_to_thread(threads_dir, thread_id, cleaned_fallback, sender="agent", now=now)
                             log("INFO", f"successfully auto-replied to thread '{thread_id}' via fallback session")
-                            dispatched_count += 1
+                            report["replies"] += 1
                             continue
 
                     if proc.returncode == 0 and cleaned_reply:
                         reply_to_thread(threads_dir, thread_id, cleaned_reply, sender="agent", now=now)
                         log("INFO", f"answered thread '{thread_id}' in {time.monotonic() - started:.1f}s (letter was {letter_age} old when the sweep started)")
-                        dispatched_count += 1
+                        report["replies"] += 1
                     else:
                         err = proc.stderr.strip() or f"exit code {proc.returncode}"
                         log("ERROR", f"hermes exit {proc.returncode} for thread '{thread_id}'; stderr tail: {err[-500:]}")
@@ -2400,12 +2495,12 @@ def dispatch_pending_once(args: argparse.Namespace, now: datetime, threads_dir: 
                     else:
                         mark_thread_failed(threads_dir, thread_id, f"Execution error: {str(exc)[:140]}", now=now)
 
-            return dispatched_count
+            return report
         finally:
             release_dispatch_lock(lock_file)
     except Exception as exc:
         log("ERROR", f"unexpected error during dispatch sweep: {exc}\n{traceback.format_exc()}")
-        return 0
+        return zero
 
 
 def command_dispatch_pending(args: argparse.Namespace, now: datetime) -> int:
@@ -2418,9 +2513,11 @@ def command_dispatch_pending(args: argparse.Namespace, now: datetime) -> int:
         threads_dir = get_threads_dir(args.icloud_dir)
         if not threads_dir:
             return 0
-        written = dispatch_pending_once(args, now, threads_dir)
-        if written:
-            log("INFO", f"one-shot sweep wrote {written} agent reply(ies)")
+        report = dispatch_pending_once(args, now, threads_dir)
+        if report["replies"]:
+            log("INFO", f"one-shot sweep wrote {report['replies']} agent reply(ies)")
+        if report["unreadable"]:
+            log("WARN", f"one-shot sweep could not read {report['unreadable']} thread meta(s)")
         return 0
     except Exception as exc:
         log("ERROR", f"unexpected error during command_dispatch_pending: {exc}\n{traceback.format_exc()}")
@@ -2443,22 +2540,26 @@ def command_daemon(args: argparse.Namespace) -> int:
     log("INFO", f"dispatch daemon online (pid {os.getpid()}, interval {interval:g}s, script {os.path.abspath(__file__)})")
     cycles = 0
     last_heartbeat = time.monotonic()
+    last_report: SweepReport = {"replies": 0, "pending": 0, "unreadable": 0}
     while not daemon_stop_requested():
         cycles += 1
         began = time.monotonic()
         try:
             threads_dir = get_threads_dir(args.icloud_dir)
             if threads_dir:
-                written = dispatch_pending_once(args, utcnow(), threads_dir)
-                if written:
-                    log("INFO", f"cycle {cycles}: wrote {written} agent reply(ies)")
+                report = dispatch_pending_once(args, utcnow(), threads_dir)
+                last_report = report
+                if report["replies"]:
+                    log("INFO", f"cycle {cycles}: wrote {report['replies']} agent reply(ies)")
         except Exception as exc:
             log("ERROR", f"cycle {cycles} failed: {exc}\n{traceback.format_exc()}")
 
         moment = time.monotonic()
         if moment - last_heartbeat >= DAEMON_HEARTBEAT_SECONDS:
             last_heartbeat = moment
-            log("INFO", f"heartbeat: {cycles} cycles, last sweep took {moment - began:.2f}s")
+            unreadable_note = f", {last_report['unreadable']} unreadable" if last_report["unreadable"] else ""
+            pending_note = f", {last_report['pending']} pending" if last_report["pending"] else ""
+            log("INFO", f"heartbeat: {cycles} cycles, last sweep took {moment - began:.2f}s{unreadable_note}{pending_note}")
 
         if max_cycles is not None and cycles >= max_cycles:
             log("INFO", f"daemon reached --max-cycles {max_cycles}; exiting")

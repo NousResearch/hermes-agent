@@ -513,7 +513,8 @@ def test_corrupt_payload_is_skipped_once() -> None:
         payload = Path(tmpdir) / "meta.json"
         payload.write_text("{not json", encoding="utf-8")
         check("corrupt payload reads as None", companion.safe_read_json(payload) is None)
-        check("corrupt payload warned once", str(payload) in companion._WARNED_PATHS)
+        check("corrupt payload names the reason", "invalid JSON" in companion.read_json_checked(payload).reason)
+        check("missing payload names the reason", companion.read_json_checked(Path(tmpdir) / "nope.json").reason == "missing")
 
 
 def test_city_fallback_without_placemark() -> None:
@@ -603,6 +604,46 @@ def test_daemon_loop_is_bounded() -> None:
 
 
 
+def test_unreadable_meta_is_reported() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_path = Path(tmpdir)
+        threads_dir = tmp_path / "threads"
+        threads_dir.mkdir(parents=True, exist_ok=True)
+        moment = datetime(2026, 10, 9, 14, 0, 0, tzinfo=timezone.utc)
+
+        good = companion.create_dispatch_thread(
+            threads_dir, "Good", "body", target_profile="default", sender="user", now=moment
+        )
+        good_id = good["thread_id"]
+        companion.reply_to_thread(threads_dir, good_id, "answered", sender="agent", now=moment)
+
+        blocked_dir = threads_dir / "th_blocked"
+        (blocked_dir / "messages").mkdir(parents=True, exist_ok=True)
+        blocked_meta = blocked_dir / "meta.json"
+        blocked_meta.write_text(json.dumps({"thread_id": "th_blocked", "status": "pending_agent"}), encoding="utf-8")
+        blocked_meta.chmod(0o000)
+        try:
+            scan = companion.scan_dispatch_threads(threads_dir)
+            check("readable thread still returned by the scan", any(t.get("thread_id") == good_id for t in scan["threads"]))
+            check("unreadable meta is named by the scan", scan["unreadable"] == ["th_blocked"])
+            check("unreadable reason names the cause", "unreadable" in companion.read_json_checked(blocked_meta).reason)
+            check("list_dispatch_threads still returns the readable ones", len(companion.list_dispatch_threads(threads_dir)) == 1)
+
+            args = companion.build_parser().parse_args(["--dispatch-pending", "--icloud-dir", str(tmp_path)])
+            report = companion.dispatch_pending_once(args, moment, threads_dir)
+            check("sweep reports no replies for an unreadable thread", report["replies"] == 0)
+            check("sweep counts the unreadable thread", report["unreadable"] == 1)
+            check("sweep reports no pending letter it could act on", report["pending"] == 0)
+        finally:
+            blocked_meta.chmod(0o600)
+
+
+def test_skip_log_is_throttled() -> None:
+    key = "unit-test:throttle"
+    check("first skip is logged", companion.log_skip_throttled(key, "INFO", "unit test skip"))
+    check("repeat skip is throttled", not companion.log_skip_throttled(key, "INFO", "unit test skip"))
+
+
 def main() -> int:
     test_still_home_after_hours()
     test_walking_at_home()
@@ -630,6 +671,8 @@ def main() -> int:
     test_failed_at_recorded_and_cleared()
     test_render_launch_agent_plist()
     test_daemon_loop_is_bounded()
+    test_unreadable_meta_is_reported()
+    test_skip_log_is_throttled()
     print("ok")
     return 0
 

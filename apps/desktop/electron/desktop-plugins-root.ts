@@ -181,6 +181,25 @@ async function sameFile(a: string, b: string): Promise<boolean> {
   }
 }
 
+/** Whether the root copy still matches its source. An installed package orders
+ *  copies by mtime. A linked dev checkout compares bytes: mtime alone misses a
+ *  `cp -p` / `git stash pop` that lands an older timestamp. An epoch mtime
+ *  (tarball extraction, `SOURCE_DATE_EPOCH` builds) orders nothing, so it
+ *  compares bytes too instead of skipping every update as `0 >= 0`. */
+async function copyIsCurrent(
+  existing: DesktopHalfMarker,
+  linked: boolean,
+  sourceMtimeMs: number,
+  copyEntry: string,
+  sourceEntry: string
+): Promise<boolean> {
+  if (linked || existing.sourceMtimeMs <= 0 || sourceMtimeMs <= 0) {
+    return sameFile(copyEntry, sourceEntry)
+  }
+
+  return existing.sourceMtimeMs >= sourceMtimeMs
+}
+
 /** Write the marker into a desktop-half folder. The one place that serializes
  *  it, so the git installer and this reconcile cannot drift. */
 export async function writeDesktopHalfMarker(dir: string, marker: DesktopHalfMarker): Promise<void> {
@@ -254,14 +273,11 @@ export async function materializeDesktopHalf(
       }
     }
 
-    // An installed package re-copies when its source is newer. A linked dev
-    // checkout compares bytes: mtime alone misses a `cp -p` / `git stash pop`
-    // that lands an older timestamp, and the copy would stay stale silently.
     if (
       existing &&
       existing.source === sourceDir &&
       Boolean(existing.linked) === linked &&
-      (linked ? await sameFile(path.join(target, 'plugin.js'), entry) : existing.sourceMtimeMs >= stat.mtimeMs)
+      (await copyIsCurrent(existing, linked, stat.mtimeMs, path.join(target, 'plugin.js'), entry))
     ) {
       return null
     }

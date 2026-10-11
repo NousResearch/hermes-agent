@@ -1045,6 +1045,8 @@ export interface CronJobCreatePayload {
   provider?: string
   repeat?: number
   schedule: string
+  no_agent?: boolean
+  script?: string | null
 }
 
 export interface CronJobSchedule {
@@ -1061,6 +1063,8 @@ export interface CronJobUpdates {
   prompt?: string
   provider?: null | string
   schedule?: string
+  no_agent?: boolean
+  script?: string | null
 }
 
 // A cron delivery target from GET /api/cron/delivery-targets — the single

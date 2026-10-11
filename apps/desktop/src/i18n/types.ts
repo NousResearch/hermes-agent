@@ -2747,6 +2747,9 @@ export interface Translations extends NoticeTranslations {
     scriptBadge: string
     promptPlaceholder: string
     frequencyLabel: string
+    modeAgent: string
+    modeScript: string
+    typeLabel: string
     deliverLabel: string
     deliverNeedsHomeChannel: string
     modelLabel: string
@@ -2759,6 +2762,9 @@ export interface Translations extends NoticeTranslations {
     promptScheduleRequired: string
     scheduleRequired: string
     scriptOnlyEditHint: string
+    scriptPathLabel: string
+    scriptPathPlaceholder: string
+    scriptPathRequired: string
     saveChanges: string
     createAction: string
     tabs: {

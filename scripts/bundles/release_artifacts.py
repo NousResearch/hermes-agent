@@ -14,6 +14,7 @@ import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path, PureWindowsPath
 
+from scripts.releases import optional_platforms
 from scripts.releases.stable import read_admitted_candidate, accepted_smoke_results, validate_candidates
 
 
@@ -160,8 +161,7 @@ def validate_windows_bundle(bundle: Path, windows: list[dict]) -> None:
 
 
 ALL_HANDOFFS = ("win32-x64", "win32-arm64", "darwin-x64", "darwin-arm64", "termux", "windows-universal")
-# The opt-in handoffs and the manifest target each one produces.
-OPTIONAL_HANDOFFS = {"darwin-x64": "macos/x64", "termux": "termux/aarch64"}
+OPTIONAL_HANDOFFS = optional_platforms.HANDOFFS  # opt-in handoff -> manifest target
 
 
 def assemble(root: Path, tag: str, commit: str, public_base: str, out: Path,

@@ -975,8 +975,8 @@ def _staged_receipt(tmp_path, r2_server, https_origin, monkeypatch, receipt):
     https_origin.store = r2_server.store
     built = tmp_path / "built"
     built.mkdir(exist_ok=True)
-    if receipt == "darwin-arm64":
-        _stage_darwin_handoff(built, "arm64")
+    if receipt in ("darwin-arm64", "darwin-x64"):
+        _stage_darwin_handoff(built, receipt.split("-")[1])
     elif receipt == "win32-bundle":
         _stage_windows_handoff(built, "x64")
         _stage_windows_handoff(built, "arm64")
@@ -1027,6 +1027,29 @@ def test_transitions_from_the_bundle_receipt_emit_two_windows_rows(tmp_path, r2_
     windows = json.loads(emitted["windows"])
     assert [row["arch"] for row in windows["include"]] == ["x64", "arm64"]
     assert macos["include"] == []
+
+
+def test_an_intel_receipt_upgrades_only_from_a_baseline_that_built_intel(tmp_path, r2_server, https_origin,
+                                                                         monkeypatch):
+    """Opting macOS Intel back in after a release that left it out has no OLD Intel package."""
+    from scripts.releases import stable
+
+    url, digest = _staged_receipt(tmp_path, r2_server, https_origin, monkeypatch, "darwin-x64")
+    full = _local_baseline(https_origin.base)
+    lean = dict(full, packages=[row for row in full["packages"]
+                                if (row["platform"], row["arch"]) != ("macos", "x64")],
+                smoke_results={**full["smoke_results"], "smoke-darwin-x64": {"result": "skipped"}})
+    monkeypatch.setattr(stable, "output", lambda argv: json.dumps(
+        {"tagName": full["tag"], "isDraft": False, "isPrerelease": False}))
+    for baseline, arches, planned in ((lean, [], "none"), (full, ["x64"], "published")):
+        https_origin.store["baseline.json"] = (json.dumps(baseline).encode(), '"e"')
+        (tmp_path / "output").unlink(missing_ok=True)
+        stable.main(["transitions"], _transitions_env(tmp_path, https_origin.base, "darwin-x64", url, digest))
+        emitted = dict(line.split("=", 1)
+                       for line in (tmp_path / "output").read_text(encoding="utf-8").splitlines())
+        assert emitted["baseline"] == planned
+        assert [row["arch"] for row in json.loads(emitted["macos"])["include"]] == arches
+        assert json.loads(emitted["windows"]) == {"include": []}
 
 
 def test_missing_baseline_plans_no_upgrade_arm_but_a_missing_supplied_one_blocks(

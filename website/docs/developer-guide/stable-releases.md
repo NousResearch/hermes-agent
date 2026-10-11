@@ -174,12 +174,24 @@ requires an opted-out job to report `skipped`, and `--skip-bundles` /
 `--skip-tests` still remove these jobs when the platform is opted in.
 
 When a platform is left out, its rows are absent from the candidate manifest,
-the release body's downloads table and the downloads page, and its channel
-stays on the previous release that built it: the macOS feed then lists only the
-arm64 leg, the protected R2 head carries three native packages, and the APT
-indexes are not rewritten. A release that opts macOS Intel back in after one
-that left it out has no published Intel baseline, so its Intel upgrade arm is
-skipped like a first release.
+the release body's downloads table and the downloads page. The two channels
+behave differently:
+
+- **macOS Intel:** there is one macOS stable feed
+  (`releases/darwin/stable/stable-mac.yml`), and `promote` replaces it with
+  the arm64 leg alone. Intel Macs on that feed get no update until a release is
+  cut with `--include-macos-intel`. The protected R2 head carries three native
+  packages, and a preview channel that ships macOS Intel cannot be retired into
+  a stable head without it.
+- **Termux:** the APT indexes are not rewritten, so the APT channel stays on
+  its previous release.
+
+A release that opts macOS Intel back in after one that left it out has no
+published Intel baseline, so its Intel upgrade arm is skipped like a first
+release.
+
+The claim flags, the jobs they remove, the handoffs, targets and smoke jobs for
+both platforms are defined once in `scripts/releases/optional_platforms.py`.
 
 The claim push is the atomic version lock. Two callers may derive the same next
 version, but only one push wins; the loser reports the winning tagger, time, and

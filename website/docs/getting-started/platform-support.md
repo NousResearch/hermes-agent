@@ -40,9 +40,11 @@ PRs will be accepted to fix issues with them, but they will take precedence belo
 Stable releases build the macOS desktop bundle for Apple Silicon (`arm64`) only.
 The Intel macOS (`x64`) bundle and the Termux APT package are **not built by
 default**: a release includes them only when it is cut with
-`release.py release --include-macos-intel` or `--include-termux`. Releases
-without them leave the Intel macOS update feed and the Termux APT channel on
-the last release that built them.
+`release.py release --include-macos-intel` or `--include-termux`. A release
+without macOS Intel replaces the one shared macOS stable update feed with an
+arm64-only feed, so Intel Macs installed from a desktop bundle get no update
+until a release is cut with `--include-macos-intel`. A release without Termux
+leaves the Termux APT channel on its previous release.
 The `Hermes-Setup.dmg` bootstrap installer is built for Apple Silicon only, so
 on an Intel Mac it reports "not supported on this Mac". Intel Macs can install
 the [CLI](./installation.md#linux--macos--wsl2--android-termux) and run

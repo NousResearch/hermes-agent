@@ -14,7 +14,7 @@ from hermes_cli.release_channels import (
     ChannelError, build_prefix, canonical_json, validate_identity,
 )
 from scripts.bundles.channel_artifacts import assemble
-from scripts.releases import handoff, r2, stable
+from scripts.releases import handoff, optional_platforms, r2, stable
 from scripts.releases.channels import ChannelPublisher, R2ChannelStore
 from scripts.releases.versioning import parse_attempt_ref
 
@@ -53,9 +53,10 @@ def product_identity(tag: str, run=subprocess.check_output) -> dict:
     return validate_identity(identity)
 
 
-# Stable builds macOS Intel only when the claim opts in; the other legs are
-# in every bundle release.
-OPTIONAL_NATIVE_LEGS = {"darwin-x64": ("macos", "x64")}
+# Stable builds these native legs only when the claim opts in; the other legs
+# are in every bundle release.
+OPTIONAL_NATIVE_LEGS = {p.handoff: tuple(p.target.split("/")) for p in optional_platforms.PLATFORMS
+                        if p.handoff in NATIVE_LEGS}
 
 
 def native_legs(accepted: dict | None) -> tuple[str, ...]:

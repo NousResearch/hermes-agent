@@ -15,6 +15,7 @@ import tempfile
 import time
 from pathlib import Path
 
+from scripts.releases import optional_platforms
 from scripts.releases.draft_warning import draft_body
 from scripts.releases.versioning import (
     SEED, attempt_ref, derive_next_version, marker_ref, next_attempt,
@@ -477,13 +478,11 @@ def next_steps(result: dict, *, bold: bool = False) -> str:
         lines.append("Bundles are skipped. Only the tag, the GitHub release and the Docker image "
                      "ship; the desktop, Termux and Store channels stay on the previous release.")
     else:
-        left_out = [(name, flag) for name, flag, on in (
-            ("macOS Intel", "--include-macos-intel", result.get("include_macos_intel")),
-            ("Termux", "--include-termux", result.get("include_termux"))) if not on]
+        left_out = optional_platforms.excluded(result)
         if left_out:
-            lines.append(f"Not built: {' and '.join(name for name, _ in left_out)} (opt in with "
-                         f"{' / '.join(flag for _, flag in left_out)}). "
-                         "Those channels stay on their previous release.")
+            effects = "; ".join(p.left_out for p in left_out)
+            lines.append(f"Not built: {' and '.join(p.label for p in left_out)} (opt in with "
+                         f"{' / '.join(p.option for p in left_out)}). {effects[0].upper()}{effects[1:]}.")
     if result["skip_tests"]:
         warning = "Tests are skipped, since you passed --skip-tests"
         lines.append(f"\033[1m{warning}\033[0m" if bold else warning)

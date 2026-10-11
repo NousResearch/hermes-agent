@@ -26,6 +26,7 @@ from gateway.status_inline_source import (
     inline_bootstrap_argv,
     inline_source_flag_index,
 )
+from gateway.status_lock_reclaim import reclaim_stale_scoped_lock, unopenable_runtime_lock_may_be_held
 from hermes_constants import _get_platform_default_hermes_home, get_hermes_home, get_process_hermes_home
 from hermes_cli._subprocess_compat import pid_exists_stdlib
 from utils import atomic_json_write
@@ -983,8 +984,9 @@ def acquire_gateway_runtime_lock() -> bool:
     try:
         handle = open(path, "a+", encoding="utf-8")
     except PermissionError:
-        # Stale root-owned lock (launchd session that ran as root): the directory owner can
-        # unlink it; retry once with a fresh file.
+        # Root-owned lock (#42685): the directory owner can replace a leftover, never a live one.
+        if unopenable_runtime_lock_may_be_held(path):
+            return False
         try:
             path.unlink()
             handle = open(path, "a+", encoding="utf-8")
@@ -1596,13 +1598,10 @@ def acquire_scoped_lock(
             return True, existing
         if not _scoped_lock_record_is_stale(existing, existing_pid):
             return False, existing
-        # Rename to a tombstone instead of unlink(): with unlink()+O_EXCL two racing starters
-        # could both win. os.replace() lets exactly one claim it; a failed replace means another
-        # racer claimed it and O_EXCL below decides.
-        with contextlib.suppress(OSError):
-            tombstone = lock_path.with_name(lock_path.name + ".stale")
-            os.replace(lock_path, tombstone)
-            _unlink_quietly(tombstone)
+        # Never unlink()+O_EXCL (two racing starters could both win); the reclaim also refuses a
+        # live lock a racer installed after our read.
+        if not reclaim_stale_scoped_lock(lock_path):
+            return False, _read_json_file(lock_path)
     try:
         _write_json_excl(lock_path, record)
     except FileExistsError:

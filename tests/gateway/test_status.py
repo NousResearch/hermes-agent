@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from gateway import status
+from gateway.status_lock_reclaim import LOCK_WRITE_GRACE_S
 from datetime import UTC
 
 
@@ -964,6 +965,33 @@ class TestScopedLocks:
         # The winner's fresh lock must be untouched on disk.
         assert json.loads(lock_path.read_text())["pid"] == 424242
 
+    def test_acquire_scoped_lock_keeps_a_lock_installed_after_the_staleness_read(
+        self, tmp_path, monkeypatch
+    ):
+        """A racer reclaims the stale file and installs its own lock between our staleness read
+        and our rename. Our rename must not take the racer's live lock with it: both starters
+        would then own the token."""
+        monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
+        lock_path = tmp_path / "locks" / "telegram-bot-token-2bb80d537b1da3e3.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.write_text(json.dumps({"pid": 99999, "start_time": 123, "kind": "hermes-gateway"}))
+        winner_record = {"pid": 424242, "start_time": 456, "kind": "hermes-gateway", "scope": "telegram-bot-token"}
+
+        def racing_is_stale(record, pid):
+            if pid == 99999 and json.loads(lock_path.read_text())["pid"] == 99999:
+                lock_path.unlink()
+                lock_path.write_text(json.dumps(winner_record))
+            return pid == 99999
+
+        monkeypatch.setattr(status, "_scoped_lock_record_is_stale", racing_is_stale)
+
+        acquired, existing = status.acquire_scoped_lock("telegram-bot-token", "secret", metadata={"platform": "telegram"})
+
+        assert acquired is False
+        assert existing is not None and existing["pid"] == 424242
+        assert json.loads(lock_path.read_text())["pid"] == 424242
+        assert sorted(p.name for p in lock_path.parent.iterdir()) == [lock_path.name]
+
 
     def test_acquire_scoped_lock_replaces_stale_record(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
@@ -1572,6 +1600,8 @@ class TestPermissionErrorOnLockFile:
         lock_path = status._get_gateway_lock_path()
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         lock_path.write_text("stale", encoding="utf-8")
+        old = time.time() - LOCK_WRITE_GRACE_S - 5  # a leftover, not a writer mid-dump
+        os.utime(lock_path, (old, old))
 
         real_open = open
 
@@ -1593,6 +1623,41 @@ class TestPermissionErrorOnLockFile:
             assert status.acquire_gateway_runtime_lock() is True
         finally:
             status.release_gateway_runtime_lock()
+
+    @pytest.mark.parametrize("contents", ["live-owner", "young-unreadable"])
+    def test_acquire_gateway_runtime_lock_never_replaces_a_possibly_live_root_lock(
+        self, tmp_path, monkeypatch, contents
+    ):
+        """A root-owned lock whose recorded owner is alive, or an unreadable one young enough to
+        be mid-write, may be a running gateway's: replacing it would start a second gateway."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        lock_path = status._get_gateway_lock_path()
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        if contents == "live-owner":
+            original = json.dumps({"pid": 424242, "start_time": 456, "kind": "hermes-gateway"})
+            monkeypatch.setattr(status, "_pid_exists", lambda pid: pid == 424242)
+            monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 456)
+            old = time.time() - LOCK_WRITE_GRACE_S - 5
+            lock_path.write_text(original, encoding="utf-8")
+            os.utime(lock_path, (old, old))
+        else:
+            original = "stale"
+            lock_path.write_text(original, encoding="utf-8")
+
+        real_open = open
+
+        def deny_write(path, *args, **kwargs):
+            if str(path) == str(lock_path) and lock_path.exists() and lock_path.read_text(encoding="utf-8") == original:
+                raise PermissionError(13, "Permission denied", str(path))
+            return real_open(path, *args, **kwargs)
+
+        monkeypatch.setattr("builtins.open", deny_write)
+
+        try:
+            assert status.acquire_gateway_runtime_lock() is False
+        finally:
+            status.release_gateway_runtime_lock()
+        assert lock_path.read_text(encoding="utf-8") == original
 
 
 class TestNormalizeUpdatedAt:

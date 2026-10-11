@@ -474,15 +474,19 @@ import { PrimaryProfilePin, resolveLaunchProfile } from './primary-profile-pin'
 import { applyDesktopIdentity, PRODUCT_IDENTITY } from './product-identity'
 import {
   assertLocalProfileCanStart,
-  decideProfileDeleteAction,
   dispatchConnectionScopedProfileDelete,
   localProfilePoolKeys,
+  prepareLocalProfileDelete,
   ProfileDeletionGate,
   profileNameFromDeleteRequest,
   resolveRouteProfile
 } from './profile-delete-routing'
 import { migrateActiveProfileIfMissing as migrateActiveProfileIfMissingPure } from './profile-migration'
-import { prepareProfileRenameLifecycle, profileRenameFromRequest } from './profile-rename-routing'
+import {
+  dispatchConnectionScopedProfileRename,
+  prepareProfileRenameLifecycle,
+  profileRenameFromRequest
+} from './profile-rename-routing'
 import {
   applyRemoteProfileSessionOutcomes,
   assembleSidebarSessionSlices,
@@ -12555,55 +12559,27 @@ async function exitAfterBackendShutdown(code) {
   app.exit(code)
 }
 
-// Returns the profile name whose backend was torn down, or null when the
-// request is not a profile-delete.  The caller uses this to skip ensureBackend
-// for the just-torn-down profile — otherwise ensureBackend respawns a pool
-// backend whose ensure_hermes_home() recreates the deleted profile directory.
-//
-// The routing *decision* (which branch fires, what profile name gets
-// returned) lives in the pure decideProfileDeleteAction() in
-// profile-delete-routing.ts; this function only performs the side effects
-// that decision calls for.
-async function prepareProfileDeleteRequest(request) {
-  const profile = profileNameFromDeleteRequest(request)
-
-  const decision = decideProfileDeleteAction(profile, {
-    isDefaultProfile: p => p === 'default',
-    isValidProfileName: p => PROFILE_NAME_RE.test(p),
-    primaryProfileKey
+// The profile whose backends were torn down, or null; see prepareLocalProfileDelete.
+function prepareProfileDeleteRequest(request) {
+  return prepareLocalProfileDelete(request, {
+    isDefaultProfile: profile => profile === 'default',
+    isValidProfileName: profile => PROFILE_NAME_RE.test(profile),
+    primaryProfileKey,
+    teardownPoolBackendAndWait,
+    teardownPrimaryBackendAndWait,
+    writeActiveDesktopProfile
   })
-
-  if (decision.action === 'noop') {
-    return null
-  }
-
-  if (decision.action === 'teardown-primary') {
-    writeActiveDesktopProfile('default')
-    await Promise.all([teardownPrimaryBackendAndWait(), teardownPoolBackendAndWait(decision.profile)])
-
-    return decision.profile
-  }
-
-  await teardownPoolBackendAndWait(decision.profile)
-
-  return decision.profile
 }
 
-async function prepareProfileRenameRequest(request) {
+function prepareProfileRenameRequest(request) {
   return prepareProfileRenameLifecycle(request, {
     isValidProfileName: profile => PROFILE_NAME_RE.test(profile),
     primaryProfileKey,
-    reloadPrimaryWindow: () => {
-      mainWindow?.reload()
-    },
-    restartPrimaryBackend: async () => {
-      await startHermes()
-    },
+    reloadPrimaryWindow: () => mainWindow?.reload(),
+    restartPrimaryBackend: () => startHermes().then(() => undefined),
     teardownPoolBackendAndWait,
     teardownPrimaryBackendAndWait,
-    writeActiveDesktopProfile: profile => {
-      writeActiveDesktopProfile(profile)
-    }
+    writeActiveDesktopProfile
   })
 }
 
@@ -17471,7 +17447,7 @@ async function pooledRegistrySessionSources(includeLocal = false): Promise<Regis
   return sources
 }
 
-async function dispatchRegistryApiRequest(
+async function fetchRegistryApiRequest(
   request,
   registryConnectionId,
   routeProfile = request?.profile,
@@ -17499,6 +17475,13 @@ async function dispatchRegistryApiRequest(
     upload: request?.upload,
     timeoutMs: resolveTimeoutMs(request?.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
   })
+
+  return { connection, requestPath, response }
+}
+
+async function dispatchRegistryApiRequest(...args: Parameters<typeof fetchRegistryApiRequest>) {
+  const [request, registryConnectionId] = args
+  const { connection, requestPath, response } = await fetchRegistryApiRequest(...args)
 
   desktopProfilePreferences.afterProfileRequest(registryConnectionId, request, response, connection.mode)
 
@@ -17665,6 +17648,23 @@ ipcMain.handle('hermes:api', async (_event, request) => {
         prepareLocal: localRequest => prepareProfileDeleteRequest(localRequest).then(() => undefined),
         teardownConnection: (connectionId, profile) => teardownConnectionScopedProfileBackend(connectionId, profile)
       })
+    }
+
+    // Registry-pinned rename: its own lifecycle, dispatched without dialling the gated old name.
+    if (mutatingProfile && registryConnectionId) {
+      const { response } = await dispatchConnectionScopedProfileRename(request, {
+        acquire: profile => profileDeletionGate.acquire(profile),
+        afterResponse: ({ connection, response }) =>
+          desktopProfilePreferences.afterProfileRequest(registryConnectionId, request, response, connection.mode),
+        connectionKind: connectionId => registryConnectionKind(connectionId),
+        dispatch: (routeProfile: null) => fetchRegistryApiRequest(request, registryConnectionId, routeProfile),
+        isValidProfileName: profile => PROFILE_NAME_RE.test(profile),
+        logRollbackError: error => rememberLog(`Failed to restore primary profile after rename error: ${error}`),
+        prepareLocal: prepareProfileRenameRequest,
+        teardownConnection: teardownConnectionScopedProfileBackend
+      })
+
+      return response
     }
 
     if (!mutatingProfile) {

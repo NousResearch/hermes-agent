@@ -407,6 +407,7 @@ def _assistant_message_item(
 def _replay_reasoning_items(
     msg: dict[str, Any], *, seen_item_ids: set, current_issuer_kind: Optional[str],
     current_issuer_model: Optional[str] = None, native_compaction_eligible: bool,
+    require_reasoning_text_echo: bool = False,
 ) -> list[dict[str, Any]]:
     """Replay persisted encrypted reasoning/compaction items for one assistant turn. Skips duplicate
     ids, ``compaction`` checkpoints unless THIS request carries ``context_management`` (else a persisted
@@ -439,7 +440,10 @@ def _replay_reasoning_items(
                 )
                 _CROSS_ISSUER_WARN_EMITTED = True
             continue
-        replayed.append({k: v for k, v in ri.items() if k not in ("id", "_issuer_kind", "_issuer_model")})
+        replayed_item = {k: v for k, v in ri.items() if k not in ("id", "_issuer_kind", "_issuer_model")}
+        if require_reasoning_text_echo and replayed_item.get("type") == "reasoning":
+            replayed_item.setdefault("content", [{"type": "reasoning_text", "text": " "}])
+        replayed.append(replayed_item)
         if item_id:
             seen_item_ids.add(item_id)
     return replayed
@@ -553,6 +557,7 @@ def _chat_messages_to_responses_input(
     messages: list[dict[str, Any]], *, is_xai_responses: bool = False, is_github_responses: bool = False,
     replay_encrypted_reasoning: bool = True, current_issuer_kind: Optional[str] = None,
     current_issuer_model: Optional[str] = None, native_compaction_eligible: bool = False,
+    require_reasoning_text_echo: bool = False,
 ) -> list[dict[str, Any]]:
     """Convert internal chat-style messages to Responses input items.
 
@@ -632,6 +637,7 @@ def _chat_messages_to_responses_input(
         reasoning_items = [] if not replay_encrypted_reasoning else _replay_reasoning_items(
             msg, seen_item_ids=seen_item_ids, current_issuer_kind=current_issuer_kind,
             current_issuer_model=current_issuer_model, native_compaction_eligible=native_compaction_eligible,
+            require_reasoning_text_echo=require_reasoning_text_echo,
         )
         emit(reasoning_items, msg)
         message_items = _replay_message_items(
@@ -713,6 +719,7 @@ def _native_responses_replay_items(
         return None
     # The wire model may be rewritten per request (fast mode); provenance must match what the transport stamps.
     effective_model = effective_request_overrides(agent).get("model", getattr(agent, "model", None))
+    from agent.message_sanitization import needs_reasoning_echo
     try:
         items = _chat_messages_to_responses_input(
             messages, is_xai_responses=route["is_xai_responses"], is_github_responses=route["is_github_responses"],
@@ -720,6 +727,7 @@ def _native_responses_replay_items(
             current_issuer_kind=_classify_responses_issuer(base_url=getattr(agent, "base_url", None), **route),
             current_issuer_model=_wire_model_identity(effective_model),
             native_compaction_eligible=True,
+            require_reasoning_text_echo=needs_reasoning_echo(None, None, getattr(agent, "base_url", None)),
         )
     except Exception:
         logger.debug(
@@ -813,10 +821,21 @@ def _preflight_encrypted(item: dict[str, Any], idx: int, ctx: _PreflightCtx) -> 
             return None
         ctx.seen_ids.add(item_id)
     summary = _as_list(item.get("summary"))
-    return {
+    normalized = {
         "type": "reasoning", "encrypted_content": encrypted,
         "summary": _neutralize_harmony_structure(summary) if ctx.sanitize_harmony_tokens else summary,
     }
+    content = item.get("content")
+    if isinstance(content, list):
+        reasoning_text = [
+            {"type": "reasoning_text", "text": ctx.sanitize_text(part["text"])}
+            for part in content
+            if isinstance(part, dict) and part.get("type") == "reasoning_text"
+            and isinstance(part.get("text"), str) and part["text"]
+        ]
+        if reasoning_text:
+            normalized["content"] = reasoning_text
+    return normalized
 
 
 def _preflight_message(item: dict[str, Any], idx: int, ctx: _PreflightCtx) -> dict[str, Any]:

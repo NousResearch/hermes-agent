@@ -252,6 +252,20 @@ class TestKillStaleDashboardPosix:
 class TestKillStaleDashboardWindows:
     """Kill path on Windows: taskkill /F."""
 
+    @staticmethod
+    def _ledger_entry(pid, *, registered_at, create_time=None, port=9120):
+        return {
+            "pid": pid,
+            "purpose": "dashboard",
+            "create_time": float(registered_at if create_time is None else create_time),
+            "registered_at": registered_at,
+            "hermes_home": "C:/hermes",
+            "host": "127.0.0.1",
+            "port": port,
+            "profile": "",
+            "isolated": False,
+        }
+
     @pytest.mark.platforms("windows")
     def test_taskkill_invoked_for_each_pid(self, capsys):
         """``platforms("windows")``: ``taskkill.exe`` only exists on Windows, and the
@@ -278,6 +292,63 @@ class TestKillStaleDashboardWindows:
         assert len(taskkill_calls) == 2
         assert ["taskkill", "/PID", "12345", "/F"] in [c.args[0] for c in taskkill_calls]
         assert ["taskkill", "/PID", "12346", "/F"] in [c.args[0] for c in taskkill_calls]
+
+    @pytest.mark.platforms("windows")
+    def test_verified_scheduled_task_successor_recovers_stopped_dashboard(self, capsys):
+        """A task-owned replacement clears only the stopped incarnation it proves it replaced."""
+        old = self._ledger_entry(412, registered_at=100.0)
+        successor = self._ledger_entry(413, registered_at=101.0)
+        ledger_reads = iter([[old], [successor]])
+
+        with patch("hermes_cli.main_dashboard._find_stale_dashboard_pids", return_value=[412]), \
+             patch("hermes_cli.process_identity.ledger_entries", side_effect=lambda **_: next(ledger_reads)), \
+             patch("hermes_cli.dashboard_procs._kill_pids_windows", side_effect=lambda p, k, f: k.extend(p)), \
+             patch("hermes_cli.dashboard_procs._windows_dashboard_successor_ready", return_value=True), \
+             patch("hermes_cli.dashboard_procs.time.time", return_value=100.5):
+            result = _kill_stale_dashboard_processes(restart_managed=True)
+
+        assert result["killed"] == [412]
+        assert result["unrecovered"] == []
+        assert "Restart anything not auto-restarted" not in capsys.readouterr().out
+
+    @pytest.mark.platforms("windows")
+    @pytest.mark.parametrize(
+        "initial, candidate, ready",
+        [
+            pytest.param(
+                lambda self: self._ledger_entry(412, registered_at=100.0),
+                lambda self: self._ledger_entry(413, registered_at=100.25, create_time=100.25),
+                True,
+                id="preexisting-duplicate",
+            ),
+            pytest.param(
+                lambda self: self._ledger_entry(412, registered_at=100.0),
+                lambda self: self._ledger_entry(413, registered_at=101.0),
+                False,
+                id="unready-successor",
+            ),
+            pytest.param(
+                lambda self: {"pid": 412, "purpose": "dashboard"},
+                lambda self: {"pid": 413, "purpose": "dashboard"},
+                True,
+                id="malformed-ledger",
+            ),
+        ],
+    )
+    def test_unverified_windows_successor_stays_unrecovered(self, initial, candidate, ready, monkeypatch):
+        """A listener or ledger row without readiness proof cannot make update succeed."""
+        ledger_reads = iter([[initial(self)], [candidate(self)]])
+        monkeypatch.setattr(dashboard_procs, "_WINDOWS_SUCCESSOR_GRACE_SECONDS", 0)
+
+        with patch("hermes_cli.main_dashboard._find_stale_dashboard_pids", return_value=[412]), \
+             patch("hermes_cli.process_identity.ledger_entries", side_effect=lambda **_: next(ledger_reads)), \
+             patch("hermes_cli.dashboard_procs._kill_pids_windows", side_effect=lambda p, k, f: k.extend(p)), \
+             patch("hermes_cli.dashboard_procs._windows_dashboard_successor_ready", return_value=ready), \
+             patch("hermes_cli.dashboard_procs.time.time", return_value=100.5):
+            result = _kill_stale_dashboard_processes(restart_managed=True)
+
+        assert result["killed"] == [412]
+        assert result["unrecovered"] == [412]
 
 
 

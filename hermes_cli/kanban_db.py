@@ -3143,7 +3143,8 @@ def edit_task(
 def block_task(
     conn: sqlite3.Connection, task_id: str, *, reason: Optional[str] = None,
     kind: Optional[str] = None, expected_run_id: Optional[int] = None,
-) -> bool:
+    with_reason: bool = False,
+):
     """``running``/``ready`` -> ``blocked`` (or ``todo`` / ``triage``, see
     :func:`_route_block`). ``kind='dependency'`` with no incomplete parent is
     re-kinded to ``needs_input`` (sticky) so ``recompute_ready`` cannot
@@ -3157,15 +3158,22 @@ def block_task(
     audit event is appended, while status, failure evidence and the terminal
     runs stay exactly as the breaker left them. A typed block, a card with a
     live run, or a kind-less call on a blocked card are still refused.
+    Returns ``bool``, or ``(ok, reason)`` with ``with_reason`` — the reason
+    names the refusing branch instead of leaving callers to guess between an
+    unknown id, a stale run and a wrong status (mirrors :func:`request_review`).
     """
+    def _ret(ok: bool, fail: Optional[str] = None):
+        return (ok, fail) if with_reason else ok
+
     if kind is not None and kind not in VALID_BLOCK_KINDS:
         raise ValueError(f"block kind must be one of {sorted(VALID_BLOCK_KINDS)} or None")
     with write_txn(conn):
         cur_row = conn.execute(
-            "SELECT status, block_kind, block_recurrences FROM tasks WHERE id = ?", (task_id,),
+            "SELECT status, block_kind, block_recurrences, current_run_id FROM tasks WHERE id = ?",
+            (task_id,),
         ).fetchone()
         if cur_row is None:
-            return False
+            return _ret(False, "task not found")
         # The breaker (``_record_task_failure``) parks cards ``blocked`` with no
         # ``block_kind`` and no ``blocked`` event -- the policy is the
         # supervisor's, not the kernel's -- but the transition guard below only
@@ -3175,7 +3183,13 @@ def block_task(
         # card -- its run is over -- so it is refused like any stale worker.
         if cur_row["status"] == "blocked":
             if kind is None or expected_run_id is not None or _row_get(cur_row, "block_kind") is not None:
-                return False
+                return _ret(
+                    False,
+                    "task is already 'blocked' "
+                    f"(block_kind={_row_get(cur_row, 'block_kind')!r}); in-place "
+                    "classification of a parked card needs kind set, no expected_run_id, "
+                    "and block_kind still NULL",
+                )
             classified = conn.execute(
                 "UPDATE tasks SET block_kind = ?, block_recurrences = 1 "
                 "WHERE id = ? AND status = 'blocked' AND block_kind IS NULL "
@@ -3183,11 +3197,11 @@ def block_task(
                 (kind, task_id),
             ).rowcount
             if classified != 1:
-                return False
+                return _ret(False, "the blocked card changed while classifying it; retry")
             _append_event(conn, task_id, "blocked", {
                 "kind": kind, "reason": reason, "classified_in_place": True,
             })
-            return True
+            return _ret(True)
         source_status = _retry_status_for_run(conn, task_id) if cur_row["status"] == "running" else "ready"
         requested_kind = kind
         rekind_reason = None
@@ -3220,7 +3234,7 @@ def block_task(
             sql += " AND current_run_id = ?"
             params = (*params, int(expected_run_id))
         if conn.execute(sql, params).rowcount != 1:
-            return False
+            return _ret(False, _block_cas_refusal(cur_row, expected_run_id))
         run_id = _end_or_synthesize_run(
             conn, task_id, outcome="blocked", status="blocked", summary=reason, synthesize=bool(reason),
         )
@@ -3229,9 +3243,22 @@ def block_task(
         if kind == "dependency":
             # Historical ordering: the dependency lane fires inside the txn.
             _fire_task_hook("kanban_task_blocked", blocked_task, task_id, run_id, reason=reason)
-            return True
+            return _ret(True)
     _fire_task_hook("kanban_task_blocked", blocked_task, task_id, run_id, reason=reason)
-    return True
+    return _ret(True)
+
+
+def _block_cas_refusal(cur_row: Any, expected_run_id: Optional[int]) -> str:
+    """Why the run-guarded UPDATE in :func:`block_task` matched no row: the
+    caller is a stale worker whose run no longer holds the card, or the card
+    sits in a status the transition does not serve (#133358)."""
+    if expected_run_id is not None and cur_row["current_run_id"] != int(expected_run_id):
+        return (
+            f"stale run: this worker's run {int(expected_run_id)} no longer holds "
+            f"the card (current run: {cur_row['current_run_id'] or 'none'}; task "
+            f"status {cur_row['status']!r})"
+        )
+    return f"task status is {cur_row['status']!r}, not running/ready"
 
 
 def _route_block(

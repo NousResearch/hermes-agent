@@ -223,6 +223,7 @@ class _TurnCallbacks:
     reasoning_cb: Any = None
     step_cb: Any = None
     stream_delta_cb: Any = None
+    interim_assistant_cb: Any = None
     approval_cb: Any = None
     edit_approval_requester: Any = None
     streamed: bool = False
@@ -924,6 +925,17 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
                 message_cb(text)
 
             cbs.stream_delta_cb = stream_delta_cb
+
+            def interim_assistant_cb(text: str, *, already_streamed: bool = False) -> None:
+                # A completed commentary message is its own ACP reply, not a chunk of
+                # the later final answer. Text already sent through stream_delta_cb
+                # only needs its message id closed, not another copy on the wire.
+                message_cb(None)
+                if not already_streamed:
+                    message_cb(text)
+                    message_cb(None)
+
+            cbs.interim_assistant_cb = interim_assistant_cb
             # Closes the synthetic permission-request bubble once the user has answered.
             send_update = lambda update: _send_update(conn, session_id, loop, update)
             cbs.approval_cb = make_approval_callback(conn.request_permission, loop, session_id, send_update=send_update)
@@ -943,6 +955,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         agent.thinking_callback = None
         agent.reasoning_callback, agent.step_callback = cbs.reasoning_cb, cbs.step_cb
         agent.stream_delta_callback = cbs.stream_delta_cb
+        agent.interim_assistant_callback = cbs.interim_assistant_cb
         return cbs
 
     async def _finish_turn(

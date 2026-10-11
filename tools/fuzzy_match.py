@@ -14,6 +14,8 @@ import re
 from difflib import SequenceMatcher
 from typing import Callable, Optional
 
+from utils import split_lf_lines
+
 Span = tuple[int, int]
 
 IDENTICAL_STRINGS_ERROR = (
@@ -614,8 +616,8 @@ def find_closest_lines(old_string: str, content: str, context_lines: int = 2, ma
     """Numbered snippets of the lines most similar to old_string's anchor line, or ''."""
     if not old_string or not content:
         return ""
-    old_lines = old_string.splitlines()
-    content_lines = content.splitlines()
+    old_lines = split_lf_lines(old_string, keepends=False)
+    content_lines = split_lf_lines(content, keepends=False)
     if not old_lines or not content_lines:
         return ""
 

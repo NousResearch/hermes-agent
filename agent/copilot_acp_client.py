@@ -32,6 +32,7 @@ from agent.file_safety import (
     get_nt_namespace_error, get_read_block_error, get_write_denied_error, is_write_approval_required)
 from agent.redact import redact_sensitive_text
 from tools.environments.local import hermes_subprocess_env
+from utils import split_lf_lines
 
 ACP_MARKER_BASE_URL = "acp://copilot"
 logger = logging.getLogger(__name__)
@@ -258,7 +259,7 @@ def _fs_read_text_file(params: dict[str, Any], cwd: str) -> Any:
     line, limit = params.get("line"), params.get("limit")
     if isinstance(line, int) and line > 1:
         end = line - 1 + limit if isinstance(limit, int) and limit > 0 else None
-        content = "".join(content.splitlines(keepends=True)[line - 1:end])
+        content = "".join(split_lf_lines(content)[line - 1:end])
     return {"content": redact_sensitive_text(content, force=True) if content else content}
 
 

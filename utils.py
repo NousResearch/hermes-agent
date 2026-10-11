@@ -587,6 +587,21 @@ def atomic_roundtrip_yaml_save(path: str | Path, new_state: dict, *,
     _roundtrip_dump(path, yaml_rt, existing, extra_content=extra_content_on_create if creating else None)
 
 
+def split_lf_lines(text: str, keepends: bool = True) -> list[str]:
+    """``text.splitlines(keepends)`` that breaks on ``\\n`` only (a ``\\r\\n`` pair is one break).
+
+    ``read_file`` (sed/byte paging) and the edit tools count a line as ``\\n``-terminated, but
+    ``str.splitlines`` also breaks on form feed, vertical tab, ``\\x1c``-``\\x1e``, ``\\x85``,
+    U+2028/U+2029 and a lone ``\\r``; a diff or "did you mean" numbered that way drifts past the
+    first such character and points the model at the wrong line.
+    """
+    if not keepends:
+        return [line.removesuffix("\r\n").removesuffix("\n") for line in split_lf_lines(text)]
+    lines = [line + "\n" for line in text.split("\n")]
+    lines[-1] = lines[-1][:-1]
+    return lines if lines[-1] else lines[:-1]
+
+
 def safe_json_loads(text: str, default: Any = None) -> Any:
     """Parse JSON, returning *default* on any parse error."""
     try:

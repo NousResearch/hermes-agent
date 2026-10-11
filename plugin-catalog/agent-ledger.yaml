@@ -1,7 +1,7 @@
 name: agent-ledger
 repo: https://github.com/ZidoCode/agent-ledger
-sha: dd90932640e2423fbbfa142794e03b6a1386aa92
-description: Write-ahead ledger for agent side effects. Catches tool calls issued but never confirmed (e.g. lost to a compaction turn teardown), injects a verification prompt so the agent checks real state, and scores the agent's activity against the OWASP Top 10 for Agentic Applications 2026 (ASI02/05/08/10/11) with a daily posture audit.
+sha: 5683205da43c10093b8f9803072fabe4e8793eb4
+description: "Write-ahead ledger for agent side effects — records the arguments (up to 4000 chars: terminal commands, file contents, MCP args) and a 300-char result digest of every state-changing tool call in a local plaintext SQLite ledger under HERMES_HOME/plugin-data/agent-ledger/ that is never pruned; injects a session-scoped warning listing unconfirmed calls into the next turn's context; includes an OWASP Agentic Top 10 posture scorer. The optional posture_daily.py Telegram report is a standalone script you schedule yourself with its own bot token."
 maintainer: ZidoCode
 tier: community
 requires_hermes: ">=0.19"

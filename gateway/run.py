@@ -296,6 +296,18 @@ def hygiene_wait_should_extend(
     return not fence_cancelled and idle < timeout and waited < ceiling
 
 
+def hygiene_noop_should_cool(*, aborted: bool, recovered: bool) -> bool:
+    """True when a hygiene run neither aborted nor recovered (#21301).
+
+    Degenerate path: compression ran to completion but persisted nothing
+    ("did not rotate or compact in place"), so the transcript is unchanged.
+    Because the summary did not abort, the abort-only cooldown never fires and
+    hygiene re-runs on every pass forever. Extracted so the decision is
+    unit-testable rather than pinned by a source-reading test.
+    """
+    return (not aborted) and (not recovered)
+
+
 def _record_hygiene_cooldown(
     gateway, session_id: str, cooldown_seconds: float, error: Optional[str] = None) -> None:
     """Persist a session-hygiene compression-failure cooldown to the state DB (survives restarts).

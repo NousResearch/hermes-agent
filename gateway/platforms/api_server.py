@@ -2151,12 +2151,37 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         return result
 
     @staticmethod
-    def _normalize_session_source(value: Any) -> str:
-        text = str(value or "").strip().lower()
-        allowed = {"api_server", "hermes_browser", "browser", "cli", "telegram", "discord", "slack", "desktop", "dashboard"}
-        if text not in allowed:
-            return "api_server"
-        return "hermes_browser" if text == "browser" else text
+    def _normalize_session_source(
+        value: Any,
+        *,
+        default: str = "api_server",
+        session_id: str = "",
+    ) -> str:
+        """Accept the small public source taxonomy used by first-party clients.
+
+        Known sources pass through; an explicit unknown source normalizes to
+        an empty string so callers can reject it (or pass ``default`` to
+        coerce). When ``value`` is None, first-party sources are inferred
+        from the session-id prefix (``hermes-web-*`` / ``hermes-browser-*``)
+        so stale clients that predate explicit ``source`` still group
+        correctly; otherwise *default* is returned.
+        """
+        if value is None:
+            normalized_id = str(session_id or "").strip().lower()
+            if normalized_id.startswith("hermes-web-"):
+                return "hermes_web"
+            if normalized_id.startswith("hermes-browser-"):
+                return "hermes_browser"
+            return default
+        text = str(value).strip().lower()
+        # Extension-internal tags (bot mode, /bg background tasks) are Browser Extension sessions.
+        if text in {"browser", "hermes_bot_mode", "hermes_browser_bg"}:
+            return "hermes_browser"
+        allowed = {"api_server", "hermes_browser", "hermes_web", "hermes_mobile",
+                   "cli", "telegram", "discord", "slack", "desktop", "dashboard"}
+        if text in allowed:
+            return text
+        return ""
 
     def _session_model_override_for(self, session_key: Optional[str]) -> Optional[dict[str, Any]]:
         """The gateway's per-session ``/model`` override for *session_key*, if any — a
@@ -3137,7 +3162,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         system_prompt = body.get("system_prompt")
         if system_prompt is not None and not isinstance(system_prompt, str):
             return _error_response("system_prompt must be a string", 400, code="invalid_system_prompt")
-        source = self._normalize_session_source(body.get("source") or "api_server")
+        # Unknown create-time sources coerce to api_server (pre-existing client contract); only PATCH rejects.
+        source = self._normalize_session_source(body.get("source"), session_id=session_id) or "api_server"
         runtime_request = self._session_runtime_request_from_body(body)
         lock_error = self._runtime_lock_error(runtime_request)
         if lock_error is not None:
@@ -3204,7 +3230,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         if err:
             return err
         # pinned/archived/unread are durable desktop-sidebar flags.
-        unknown = sorted(set(body) - {"title", "end_reason", "pinned", "archived", "hidden", "unread"})
+        unknown = sorted(set(body) - {"title", "end_reason", "source", "pinned", "archived", "hidden", "unread"})
         if unknown:
             return _error_response(
                 f"Unsupported session fields: {', '.join(unknown)}", 400, code="unsupported_session_field")
@@ -3214,6 +3240,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         db = await self._ensure_session_db_async()
         if db is None:
             return self._session_db_unavailable()
+        if "source" in body:
+            source = self._normalize_session_source(body["source"], default="")
+            if not source:
+                return _error_response("Invalid session source", 400, code="invalid_session_source")
+            await asyncio.to_thread(db.set_session_source, session_id, source)
         if "title" in body:
             try:
                 await asyncio.to_thread(
@@ -3324,8 +3355,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         # ``_branched_from`` is the durable branch marker (same as CLI /branch): with the child created
         # first, the timestamp fallback in _BRANCH_CHILD_SQL (child.started_at >= parent.ended_at) no
         # longer holds, and an unmarked child would vanish from default session listings.
+        fork_source = self._normalize_session_source(source.get("source")) or "api_server"
         await asyncio.to_thread(
-            db.create_session, fork_id, "api_server", model=source.get("model"),
+            db.create_session, fork_id, fork_source, model=source.get("model"),
             system_prompt=source.get("system_prompt"), parent_session_id=source_id,
             model_config={"_branched_from": source_id})
         await asyncio.to_thread(db.end_session, source_id, "branched")

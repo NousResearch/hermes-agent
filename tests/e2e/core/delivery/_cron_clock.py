@@ -106,7 +106,7 @@ class Control:
         self.replica = self.root / "replica"
         self.claims = self.root / "claims.jsonl"
 
-    def ensure(self) -> "Control":
+    def ensure(self) -> Control:
         for d in (self.root, self.gates, self.child, self.replica):
             d.mkdir(parents=True, exist_ok=True)
         if not self.behaviors.exists():

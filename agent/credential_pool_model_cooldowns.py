@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 MODEL_ENTITLEMENT_BENCH_SECONDS = 365 * 24 * 60 * 60
 
 
-def model_cooldown_until(entry: "PooledCredential", model: Optional[str]) -> Optional[float]:
+def model_cooldown_until(entry: PooledCredential, model: Optional[str]) -> Optional[float]:
     """Active cooldown blocking *entry* for *model*, or ``None``.
 
     Callers that do not know the model stay conservative: any active model
@@ -75,7 +75,7 @@ class CredentialPoolModelCooldownMixin:
         )
 
     def _cool_down_model(
-        self, entry: "PooledCredential", model: str, error_context: Optional[dict[str, Any]],
+        self, entry: PooledCredential, model: str, error_context: Optional[dict[str, Any]],
         failure_reason: Optional[str] = None,
     ) -> None:
         """Record a cooldown for *model* on *entry* and every sibling sharing its key.

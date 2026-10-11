@@ -3456,9 +3456,10 @@ def rewrite_skill_refs(
     """Rewrite cron job skill references after a curator consolidation pass (a job listing a
     consolidated/pruned skill would otherwise run without it). Consolidated names map to their
     umbrella target without duplication, pruned names are dropped, ordering is preserved, and the
-    legacy ``skill`` field is realigned. Returns ``{"rewrites": [{job_id, job_name, before,
-    after, mapped, dropped}, ...], "jobs_updated": N, "jobs_scanned": M}``. Load/save exceptions
-    propagate."""
+    legacy ``skill`` field is realigned. A job may list a skill category-qualified
+    (``category/name``); such refs are matched on their bare segment too, since the curator's maps
+    are keyed by bare names. Returns ``{"rewrites": [{job_id, job_name, before, after, mapped,
+    dropped}, ...], "jobs_updated": N, "jobs_scanned": M}``. Load/save exceptions propagate."""
     consolidated = dict(consolidated or {})
     # A skill listed in both wins as "consolidated" — it has a target, the more useful outcome.
     pruned_set = set(pruned or []) - set(consolidated.keys())
@@ -3476,12 +3477,17 @@ def rewrite_skill_refs(
             dropped: list[str] = []
             new_skills: list[str] = []
             for name in skills_before:
-                if name in consolidated:
-                    target = consolidated[name]
+                # The curator maps/prunes bare names, but a job may list the skill
+                # category-qualified (the form skill_view() accepts), so fall back
+                # to the bare segment when the full form has no entry.
+                bare = name.rsplit("/", 1)[-1]
+                key = name if name in consolidated else bare
+                if key in consolidated:
+                    target = consolidated[key]
                     mapped[name] = target
                     if target and target not in new_skills:
                         new_skills.append(target)
-                elif name in pruned_set:
+                elif name in pruned_set or bare in pruned_set:
                     dropped.append(name)
                 elif name not in new_skills:
                     new_skills.append(name)

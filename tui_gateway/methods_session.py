@@ -335,6 +335,18 @@ def _seed_row(record: dict) -> None:
         logger.debug("seeded-session title write failed for %s; pending_title stays queued", key, exc_info=True)
 
 
+def _live_running(sid: str, session: dict) -> bool:
+    """Liveness for a reply built straight from a ``_sessions`` record (``session.create`` /
+    ``branch_stored``, live-unpersisted resume). Clients gate their turn controls on the key — a reply
+    that omits it reads as "this gateway cannot report liveness" (Conduit banners the chat and hides
+    send/stop on it) — so the create and warm-reattach replies must carry it like every other attach
+    path does. Mirrors ``_resume_reuse_live_locked``: the record's own flag, plus the child-run registry
+    for an agent-less (watch) session, which never owns a run loop of its own."""
+    if session.get("running"):
+        return True
+    return session.get("agent") is None and _child_run_active(sid, session.get("profile_home"))
+
+
 def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> dict:
     """``session.create``; ``copy_parent_history`` (``session.branch_stored``) reads the parent's
     transcript server-side and omits it from the reply."""
@@ -375,6 +387,7 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
                         "message_count": len(history),
                         **({"messages_omitted": True} if copy_parent_history
                            else {"messages": _history_to_messages(history, profile_home=session.get("profile_home"))}),
+                        "running": _live_running(existing_sid, session),
                         "info": {**_lazy_info_route(session, override), "tools": {}, "skills": {}, "cwd": session["cwd"], "branch": git_probe.branch(session["cwd"]),
                                  "project": _project_info_for_cwd(session["cwd"]), "lazy": True,
                                  "desktop_contract": DESKTOP_BACKEND_CONTRACT,
@@ -484,6 +497,9 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
     return _ok(rid, {
         "session_id": sid, "stored_session_id": key, "message_count": len(messages),
         **({"messages_omitted": True} if copy_parent_history else {"messages": messages}),
+        # Fresh mint: not running yet (the agent builds after this reply), and the client needs to be told
+        # so rather than inferring "too old to say" from an absent key.
+        "running": _live_running(sid, _sessions[sid]),
         "info": {**_lazy_info_route(_sessions[sid], override), "tools": {}, "skills": {}, "cwd": cwd, "branch": git_probe.branch(cwd),
                  "project": _project_info_for_cwd(cwd), "lazy": True, "desktop_contract": DESKTOP_BACKEND_CONTRACT,
                  "profile_name": _response_profile_name(profile)}})
@@ -741,6 +757,10 @@ def _resume_live_unpersisted(ctx: _Resume, live_sid: str, live: dict) -> dict:
     return _ok(ctx.rid, _attach_todo_state({
         "session_id": live_sid, "stored_session_id": str(live.get("session_key") or ""),
         "message_count": len(messages), "messages": messages,
+        # This is the ONE reply a brand-new chat gets: create leaves an empty draft unpersisted, so the
+        # client re-attaches here. Without the key it cannot tell "idle draft" from "cannot say" and
+        # disables the composer (Conduit's "Update this Hermes gateway" banner).
+        "running": _live_running(live_sid, live),
         "info": {"model": model, "provider": provider, "lazy": True,
                  "desktop_contract": DESKTOP_BACKEND_CONTRACT,
                  "profile_name": profile_name_for_home(live.get("profile_home")) or _response_profile_name(ctx.profile)}}, live))

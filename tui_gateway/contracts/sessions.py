@@ -146,6 +146,10 @@ class SessionCreateResult(Result):
     message_count: int
     messages: list[TranscriptMessage]
     info: SessionLiveInfo
+    # Every other attach reply reports liveness (``LiveSessionSnapshot.running``); a client that gates its
+    # turn controls on it (absent = "this gateway is too old to say") banners the freshly minted chat and
+    # hides send/stop. Optional so an older client's decoder stays happy.
+    running: bool | None = None
 
 
 method("session.create", params=SessionCreateParams, result=SessionCreateResult,
@@ -169,6 +173,9 @@ class SessionBranchStoredResult(Result):
     message_count: int
     messages_omitted: bool
     info: SessionLiveInfo
+    # Minted by the same reply builder as ``session.create`` (a branch of an idle parent is never
+    # running), so the key the create path now reports must be declared here too.
+    running: bool | None = None
 
 
 method("session.branch_stored", params=SessionBranchStoredParams, result=SessionBranchStoredResult,

@@ -196,6 +196,23 @@ def assemble_api_request(
     # they crash json.dumps() inside the OpenAI SDK and trigger the 3-retry cycle.
     _sanitize_messages_surrogates(api_messages)
 
+    # Guarantee the outbound payload opens with a genuine user turn — the last
+    # structure-settling mutation, after prefill insertion, thinking-only drops
+    # and sanitization have decided the leading shape, and before the cache plan
+    # freezes the prefix. A lineage whose history lost its opening user row
+    # (#131382: in-memory history after a mid-chat model switch) or whose
+    # persisted opening is a compaction summary merged into a leading
+    # assistant(tool_calls) turn otherwise trips OpenAI-compatible Qwen-derived
+    # chat templates (LM Studio: "No user query found in messages.") and
+    # Anthropic's non-user-leading rejection. No-op on well-formed payloads.
+    from agent.agent_runtime_leading_user import ensure_user_leads_api_messages
+
+    if ensure_user_leads_api_messages(api_messages):
+        logger.info(
+            "Inserted leading user bridge to keep the payload well-formed (session=%s)",
+            getattr(agent, "session_id", None) or "-",
+        )
+
     # No send-time pad loop here: ``repair_empty_non_final_messages`` (inside
     # ``_sanitize_api_messages``) is the single owner of empty-turn repair.
 

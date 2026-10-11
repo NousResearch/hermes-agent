@@ -20,6 +20,8 @@ OPERATIONS = {
     'never-active': lambda db, s0, s1: db.prune_never_active_keyed_sessions(older_than_days=30),
     'prune-child': lambda db, s0, s1: db.prune_sessions(older_than_days=30, started_before=time.time() - 30 * 86400),
     'prune-all': lambda db, s0, s1: db.prune_sessions(older_than_days=None, last_active_before=time.time() + 60),
+    # The empty-session sweep shares retire_prunable: an ended, still-empty reset tip is not an empty chat.
+    'prune-empty': lambda db, s0, s1: db.delete_empty_sessions(),
 }
 
 

@@ -242,6 +242,14 @@ export interface Translations {
     totalSessions: string;
     apiCalls: string;
     dailyTokenUsage: string;
+    inputTokensPerDay: string;
+    outputTokensPerDay: string;
+    inputOutputRatio: string;
+    ratioValue: string;
+    ratioAverage: string;
+    dailyTokensByModel: string;
+    otherModels: string;
+    unknownModel: string;
     dailyBreakdown: string;
     perModelBreakdown: string;
     topSkills: string;

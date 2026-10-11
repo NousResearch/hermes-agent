@@ -39,7 +39,7 @@ Whichever provider a job resolves to, its provider-specific request settings (e.
 :::
 
 :::warning
-Cron-run sessions cannot recursively create more cron jobs. Hermes disables cron management tools inside cron executions to prevent runaway scheduling loops.
+By default, cron-run sessions cannot recursively create more cron jobs: Hermes disables the `cronjob` toolset inside cron executions to prevent runaway scheduling loops. This block is loop prevention, not a security boundary — [agent-managed scheduling](#agent-managed-scheduling-cron-jobs-that-manage-cron-jobs) (`cron.allow_agent_scheduling: true`) lifts exactly this `cronjob` block and nothing else; toolsets disabled via `agent.disabled_toolsets` stay disabled either way.
 :::
 
 ## Creating scheduled tasks
@@ -958,7 +958,7 @@ See the [Script-Only Cron Jobs guide](../../guides/cron-script-only.md) for work
 
 ## Chaining jobs with `context_from`
 
-Cron jobs run in isolated sessions with no memory of previous runs. But sometimes one job's output is exactly what the next job needs. The `context_from` parameter wires that connection automatically — Job B's prompt gets Job A's most recent output prepended as context at runtime.
+Cron jobs run in isolated sessions with no memory of previous runs. But sometimes one job's output is exactly what the next job needs. The `context_from` parameter wires that connection automatically — Job B's prompt gets Job A's most recent usable archived output prepended as context at runtime.
 
 ```python
 # Job 1: Collect raw data
@@ -991,7 +991,7 @@ cronjob(
 
 **How it works:**
 
-- When Job 2 fires, Hermes reads Job 1's most recent output from `~/.hermes/cron/output/{job1_id}/*.md`
+- When Job 2 fires, Hermes reads Job 1's most recent usable archived output from `~/.hermes/cron/output/{job1_id}/*.md`
 - That output is prepended to Job 2's prompt automatically
 - Job 2 doesn't need to hardcode "read this file" — it receives the content as context
 - The chain can be any length: Job 1 → Job 2 → Job 3 → ...
@@ -1004,6 +1004,14 @@ cronjob(
 | Multiple job IDs (list) | `context_from=["job_a", "job_b"]` |
 
 Outputs are concatenated in the order listed.
+
+**The chaining contract** — the [reference section](#chaining-jobs-context_from) below states the same rules:
+
+- The injected context is the upstream job's **most recent usable archived output** — not necessarily its most recent *successful* run. Silent monitor ticks (`no_change`), empty output, and `wakeAgent=false` audit records are skipped, and error documents remain eligible as recovery context — the same selection rules the `continuity` setting uses (explained in the section below). There is no built-in maximum age.
+- **No wait, no barrier.** Chaining reads what is already archived: it does not wait for upstream jobs still running in the same tick, and a staggered schedule is a convention, not a completion dependency or a freshness guarantee — if Job 1's tick is late, skipped, or still running, Job 2 receives Job 1's previous output.
+- **Missing or unusable sources are skipped.** An upstream entry with no usable archive at all (the job never ran, or every archive was silent) contributes nothing, and the run proceeds without it.
+
+**When freshness or upstream success matters, make it an application-owned contract.** The scheduler does not stamp outputs with freshness or success metadata, so if a consumer must not treat stale or failed data as fresh successful input, have the producer carry its own markers — end each report with an observation timestamp and an explicit status (for example `OBSERVED 2026-10-08T07:00:05Z STATUS ok`) — and have the consumer validate them: refuse context that is older than the consumer's tolerance or whose status is not `ok`. Those markers are a convention in your prompts' output; they are not native cron fields and add no scheduler guarantee.
 
 **Continuity: carry the previous run's output**
 
@@ -1346,7 +1354,7 @@ Credit: this recipe set was prompted by @iankar8's exploration in [#2654](https:
 
 ### Chaining jobs: `context_from`
 
-A cron job can consume the most recent successful output of one or more other jobs by listing their names (or IDs) in `context_from`:
+A cron job can consume the most recent usable archived output of one or more other jobs by listing their names (or IDs) in `context_from`:
 
 ```text
 cronjob(action="create", name="daily-digest",
@@ -1355,7 +1363,7 @@ cronjob(action="create", name="daily-digest",
         prompt="Write the daily digest using the outputs above.")
 ```
 
-The referenced jobs' most recent completed outputs are injected above the prompt as context for this run. Each upstream entry must be a valid job ID or name (see `cronjob action="list"`). Note: chaining reads the *most recent completed* output — it does not wait for upstream jobs that are running in the same tick.
+The referenced jobs' most recent usable archived outputs are injected above the prompt as context for this run. Each upstream entry must be a valid job ID or name (see `cronjob action="list"`). Chaining follows the contract described under [Chaining jobs with `context_from`](#chaining-jobs-with-context_from): it reads the most recent *usable* archive — it does not wait for upstream jobs that are running in the same tick, makes no freshness guarantee (there is no maximum age), and error documents remain eligible while silent/empty runs are skipped.
 
 ## Job storage
 

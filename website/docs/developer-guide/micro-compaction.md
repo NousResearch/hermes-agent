@@ -222,7 +222,7 @@ onward — so with micro-compaction on, you break the cache *every turn* instead
 of once per batch compaction.
 
 This is the same cost the proactive prune deliberately avoids. That path gates
-itself behind `compression.proactive_prune_min_reclaim_tokens` (4096 by
+itself behind `compression.proactive_prune_min_reclaim_tokens` (64000 by
 default) precisely so its rewrites stay, in the words of the config comment,
 "one big episodic break instead of a tiny break every tool iteration."
 

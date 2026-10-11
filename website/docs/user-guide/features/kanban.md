@@ -452,7 +452,33 @@ prompt cache. `agent.disabled_toolsets` remains authoritative. Legacy top-level
 saved; `all` alone is not a Kanban opt-in.
 
 Dispatcher-owned workers receive their task lifecycle tools automatically.
-`delegate_task` children do not gain permission to mutate the board.
+`delegate_task` children do not gain permission to mutate the board. Workers
+assigned to the root board's `kanban.orchestrator_profile` run in the planning
+lane: their CLI toolsets are pinned to `kanban` and their shell hooks, outbound
+webhooks and user plugins are skipped. `kanban_attach_url` is absent from their
+schema; a stale/direct call is refused before HTTP. Other worker profiles retain
+URL attachments. Planning workers can create child cards with stable
+`idempotency_key` values, link dependencies, comment, inspect their own task,
+and complete/block/heartbeat their own run; other Kanban tools are hidden and
+refuse direct calls. They cannot `kanban_unblock` or access terminal, file,
+browser, web or connection tools.
+A missing, unreadable or malformed root `~/.hermes/config.yaml`, or one
+without an explicit valid `kanban.orchestrator_profile`, cannot identify the
+planner. "Valid" means a *named* profile that **exists on disk and is live**
+(not tombstoned): a typo, a renamed planner or a deleted one names nothing, and
+so does the `default` alias, which is your own main profile rather than a named
+planner. In every such case **every newly spawned worker** uses the restricted
+planning lane, including otherwise ordinary implementers, until the root
+policy is repaired (for example `kanban: {orchestrator_profile: planner}`,
+where `planner` is a real profile you created with `hermes profile create
+planner` - renaming or deleting it puts the policy back in this state, and
+`hermes logs` names the rejected value). The dispatcher's authorization check
+uses the raw root value, not merged configuration defaults or a profile's own
+config. With a valid root value, only the named profile is restricted; other
+profiles retain their tools.
+This is tool isolation, not an OS network sandbox; application/provider
+traffic remains necessary for the model, and workers already running before
+an edit are not retroactively confined.
 
 ## How workers interact with the board
 
@@ -510,7 +536,7 @@ kanban_create(
 kanban_complete(summary="decomposed into 2 research tasks + 1 writer; linked dependencies")
 ```
 
-The "(Orchestrators)" tools — `kanban_list`, `kanban_create`, `kanban_link`, `kanban_unblock`, and `kanban_comment` on foreign tasks — are available through the same toolset; the convention (encoded in the auto-injected kanban guidance) is that worker profiles don't fan out or route unrelated work, and orchestrator profiles don't execute implementation work. Dispatcher-spawned workers are still task-scoped for destructive lifecycle operations and cannot mutate unrelated tasks.
+The "(Orchestrators)" tools — `kanban_list`, `kanban_create`, `kanban_link`, `kanban_unblock`, and `kanban_comment` on foreign tasks — are available to regular chats whose profile enables the Kanban toolset. The dispatcher planning lane described above is narrower: it can create/link/comment but cannot list or unblock. Other dispatcher workers keep their task-scoped lifecycle tools and cannot mutate unrelated tasks.
 
 ### Why tools instead of shelling to `hermes kanban`
 

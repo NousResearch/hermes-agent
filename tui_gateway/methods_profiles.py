@@ -503,8 +503,11 @@ def _mirror_voice_sections(path) -> bool:
 
 
 def _inherit_launch_model(path) -> bool:
-    """Inherit launch model.provider/default when the new profile has none. Gate on the MODEL
-    SECTION, not config.yaml existing: voice mirroring creates the file first."""
+    """Report launch-model inheritance when the new profile has no explicit model override.
+
+    Named profiles inherit the launch configuration, so persisting the selected model (or its
+    custom provider) here would turn an inherited setting into a stale child override.
+    """
     # Gate on the MODEL SECTION being absent, not on config.yaml existing — earlier mirroring steps (voice
     # sections, #85755) legitimately create the file first, and a file-existence gate silently skipped
     # inheritance for every non-clone bot ("No inference provider configured" on first message, tester
@@ -518,18 +521,9 @@ def _inherit_launch_model(path) -> bool:
     model_cfg = launch_cfg.get("model") or {}
     if not (model_cfg.get("provider") and model_cfg.get("default")):
         return False
-    # A custom `providers:` gateway travels with the model it backs (same seed as the CLI path). It is
-    # written BEFORE the pin: the pin validates the pick inside the new profile, and an empty profile
-    # rejects a provider it has not been told about ("Unknown provider").
-    # Seeded from the RAW launch file so a ${VAR} api_key travels as the ref, not its value.
-    custom = _lazy("hermes_cli.profiles", "launch_model_seed")(read_user_config_raw()).get("providers")
-    if custom:
-        from hermes_cli.config import load_config, save_config
-        with _hermes_home_scope(path):
-            cfg = load_config()
-            cfg["providers"] = {**(cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {}), **custom}
-            save_config(cfg)
-    _pin_profile_model(path, str(model_cfg["provider"]), str(model_cfg["default"]))
+    # The model and its custom provider resolve through the profile's parent config.  Do not call
+    # ``_pin_profile_model``: it writes derived ``model`` fields and would stop future launch-model
+    # changes from propagating to this otherwise unmodified profile.
     return True
 
 

@@ -11,6 +11,7 @@ import hermes_yaml as yaml
 
 from hermes_cli.config import (
     DEFAULT_CONFIG,
+    FailedConfigRead,
     InvalidUserConfigError,
     check_config_version,
     get_hermes_home,
@@ -19,6 +20,7 @@ from hermes_cli.config import (
     _normalize_max_turns_config,
     is_provider_enabled,
     load_config,
+    load_config_readonly,
     load_env,
     migrate_config,
     read_raw_config,
@@ -132,6 +134,201 @@ class TestLoadConfigDefaults:
             config = load_config()
             assert config["agent"]["max_turns"] == 42
             assert "max_turns" not in config
+
+
+class TestProfileConfigInheritance:
+    def test_named_profile_inherits_default_config_and_keeps_its_overrides(self, tmp_path):
+        """Named profiles may store only deltas; their own values still win at every depth."""
+        root = tmp_path / "hermes"
+        profile = root / "profiles" / "work"
+        profile.mkdir(parents=True)
+        (root / "config.yaml").write_text(
+            "model:\n  default: default/model\n  provider: default-provider\n"
+            "terminal:\n  timeout: 90\n",
+            encoding="utf-8",
+        )
+        (profile / "config.yaml").write_text(
+            "model:\n  default: work/model\nterminal:\n  backend: docker\n",
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(profile)}):
+            from hermes_cli import config as cfg_mod
+
+            cfg_mod._LOAD_CONFIG_CACHE.clear()
+            loaded = load_config()
+
+        assert loaded["model"] == {"default": "work/model", "provider": "default-provider"}
+        assert loaded["terminal"]["backend"] == "docker"
+        assert loaded["terminal"]["timeout"] == 90
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(profile)}):
+            save_config(loaded)
+
+        persisted = yaml.safe_load((profile / "config.yaml").read_text(encoding="utf-8"))
+        assert persisted["model"] == {"default": "work/model"}
+        assert persisted["terminal"] == {"backend": "docker"}
+
+    def test_default_profile_does_not_inherit_from_a_named_profile(self, tmp_path):
+        """The root profile remains the inheritance root, never a consumer of sibling settings."""
+        root = tmp_path / "hermes"
+        profile = root / "profiles" / "work"
+        profile.mkdir(parents=True)
+        (root / "config.yaml").write_text("display:\n  skin: default-skin\n", encoding="utf-8")
+        (profile / "config.yaml").write_text("display:\n  personality: pirate\n", encoding="utf-8")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(root)}):
+            from hermes_cli import config as cfg_mod
+
+            cfg_mod._LOAD_CONFIG_CACHE.clear()
+            loaded = load_config()
+
+        assert loaded["display"]["skin"] == "default-skin"
+        assert loaded["display"].get("personality") != "pirate"
+
+    def test_save_keeps_an_inherited_env_template_out_of_the_profile_file(self, tmp_path):
+        """Saving an unrelated override must not materialize an inherited secret."""
+        root = tmp_path / "hermes"
+        profile = root / "profiles" / "work"
+        profile.mkdir(parents=True)
+        (root / "config.yaml").write_text(
+            "model:\n  api_key: ${TEST_SHARED_KEY}\n",
+            encoding="utf-8",
+        )
+        (profile / "config.yaml").write_text(
+            "display:\n  skin: original\n",
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(profile), "TEST_SHARED_KEY": "first-secret"}):
+            from hermes_cli import config as cfg_mod
+
+            cfg_mod._LOAD_CONFIG_CACHE.clear()
+            loaded = load_config()
+            loaded["display"]["skin"] = "changed"
+            save_config(loaded)
+
+            persisted = (profile / "config.yaml").read_text(encoding="utf-8")
+            assert "first-secret" not in persisted
+            assert "api_key" not in persisted
+
+            os.environ["TEST_SHARED_KEY"] = "rotated-secret"
+            cfg_mod._LOAD_CONFIG_CACHE.clear()
+            assert load_config()["model"]["api_key"] == "rotated-secret"
+
+    def test_save_refuses_to_pin_values_when_the_inheritance_base_is_malformed(self, tmp_path):
+        """A broken base makes a derived save fail before it changes the child file."""
+        root = tmp_path / "hermes"
+        profile = root / "profiles" / "work"
+        profile.mkdir(parents=True)
+        base_path = root / "config.yaml"
+        base_path.write_text("model:\n  provider: shared\n", encoding="utf-8")
+        child_path = profile / "config.yaml"
+        child_path.write_text("display:\n  skin: original\n", encoding="utf-8")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(profile)}):
+            from hermes_cli import config as cfg_mod
+
+            cfg_mod._LOAD_CONFIG_CACHE.clear()
+            loaded = load_config()
+            base_path.write_text("model: [unterminated\n", encoding="utf-8")
+            original_bytes = child_path.read_bytes()
+            loaded["display"]["skin"] = "changed"
+
+            with pytest.raises(RuntimeError):
+                save_config(loaded)
+
+        assert child_path.read_bytes() == original_bytes
+
+    def test_named_profile_cache_hits_until_its_inheritance_base_changes(self, tmp_path):
+        """The added base signature keeps fast hits and invalidates them when the base changes."""
+        root = tmp_path / "hermes"
+        profile = root / "profiles" / "work"
+        profile.mkdir(parents=True)
+        base_path = root / "config.yaml"
+        base_path.write_text("model:\n  provider: first\n", encoding="utf-8")
+        (profile / "config.yaml").write_text("display:\n  skin: work\n", encoding="utf-8")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(profile)}):
+            from hermes_cli import config as cfg_mod
+
+            cfg_mod._LOAD_CONFIG_CACHE.clear()
+            first = load_config_readonly()
+            assert load_config_readonly() is first
+
+            base_path.write_text("model:\n  provider: second-value\n", encoding="utf-8")
+            assert load_config_readonly()["model"]["provider"] == "second-value"
+
+    def test_broken_inheritance_base_recovers_its_own_backup_after_restart(self, tmp_path):
+        """A cold process keeps inherited deny rules when the base is temporarily malformed."""
+        root = tmp_path / "hermes"
+        profile = root / "profiles" / "work"
+        profile.mkdir(parents=True)
+        base_path = root / "config.yaml"
+        base_path.write_text(
+            "approvals:\n  deny:\n    - rm -rf *\n",
+            encoding="utf-8",
+        )
+        (profile / "config.yaml").write_text("display:\n  skin: work\n", encoding="utf-8")
+
+        from hermes_cli import config as cfg_mod
+        from hermes_cli import config_effective
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(root)}):
+            cfg_mod._LOAD_CONFIG_CACHE.clear()
+            load_config()  # Writes the root's good backup before the simulated restart.
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(profile)}):
+            cfg_mod._LOAD_CONFIG_CACHE.clear()
+            config_effective._EFFECTIVE_CACHE.clear()
+            config_effective._LAST_GOOD_EFFECTIVE.clear()
+            base_path.write_text("approvals: [unterminated\n", encoding="utf-8")
+
+            loaded = load_config()
+            effective = config_effective.load_user_config_effective(profile / "config.yaml")
+
+        assert isinstance(loaded, FailedConfigRead)
+        assert loaded["approvals"]["deny"] == ["rm -rf *"]
+        assert loaded["display"]["skin"] == "work"
+        assert isinstance(effective, FailedConfigRead)
+        assert effective["approvals"]["deny"] == ["rm -rf *"]
+        assert effective["display"]["skin"] == "work"
+
+    def test_parent_moa_presets_remain_authoritative_for_a_named_profile(self, tmp_path):
+        """A parent may intentionally remove built-in presets for every inheriting profile."""
+        root = tmp_path / "hermes"
+        profile = root / "profiles" / "work"
+        profile.mkdir(parents=True)
+        (root / "config.yaml").write_text(
+            "moa:\n  presets:\n    council: {}\n",
+            encoding="utf-8",
+        )
+        (profile / "config.yaml").write_text("display:\n  skin: work\n", encoding="utf-8")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(profile)}):
+            from hermes_cli import config as cfg_mod
+
+            cfg_mod._LOAD_CONFIG_CACHE.clear()
+            loaded = load_config()
+
+        assert set(loaded["moa"]["presets"]) == {"council"}
+
+    def test_broken_inheritance_base_without_a_backup_returns_a_marked_child_fallback(self, tmp_path):
+        """Non-strict reads keep their fail-open contract even before the base has a backup."""
+        root = tmp_path / "hermes"
+        profile = root / "profiles" / "work"
+        profile.mkdir(parents=True)
+        (root / "config.yaml").write_text("model: [unterminated\n", encoding="utf-8")
+        (profile / "config.yaml").write_text("display:\n  skin: work\n", encoding="utf-8")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(profile)}):
+            from hermes_cli import config as cfg_mod
+
+            cfg_mod._LOAD_CONFIG_CACHE.clear()
+            loaded = load_config()
+
+        assert isinstance(loaded, FailedConfigRead)
+        assert loaded["display"]["skin"] == "work"
 
 
 class TestLoadConfigParseFailure:

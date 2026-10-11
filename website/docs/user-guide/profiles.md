@@ -4,11 +4,26 @@ sidebar_position: 2
 
 # Profiles: Running Multiple Agents
 
-Run multiple independent Hermes agents on the same machine — each with its own config, API keys, memory, sessions, skills, and gateway state.
+Run multiple Hermes agents on the same machine — each with its own API keys, memory, sessions, skills, and gateway state. Named profiles can keep configuration as small overrides of the default profile's config.
 
 ## What are profiles?
 
-A profile is a separate Hermes home directory. Each profile gets its own directory containing its own `config.yaml`, `.env`, `SOUL.md`, memories, sessions, skills, cron jobs, and state database. Hermes recognises a directory under `~/.hermes/profiles/` as a profile only when it carries one of those identity files (`config.yaml`, `.env`, `SOUL.md`, `profile.yaml`, `auth.json`, `state.db`); a bare directory left behind by logging or cron is ignored by `profile list`, gateways and `-p`. Profiles let you run separate agents for different purposes — a coding assistant, a personal bot, a research agent — without mixing up Hermes state.
+A profile is a separate Hermes home directory. Each profile gets its own directory containing `config.yaml`, `.env`, `SOUL.md`, memories, sessions, skills, cron jobs, and state database. Hermes recognises a directory under `~/.hermes/profiles/` as a profile only when it carries one of those identity files (`config.yaml`, `.env`, `SOUL.md`, `profile.yaml`, `auth.json`, `state.db`); a bare directory left behind by logging or cron is ignored by `profile list`, gateways and `-p`. Profiles let you run separate agents for different purposes — a coding assistant, a personal bot, a research agent — without mixing up their state.
+
+### Configuration inheritance
+
+For a named profile, Hermes resolves `config.yaml` in this order:
+
+1. built-in defaults;
+2. the default profile's `~/.hermes/config.yaml`;
+3. the named profile's `~/.hermes/profiles/<name>/config.yaml`;
+4. managed configuration, where applicable.
+
+The named profile wins only for the keys it explicitly sets, so its file can contain just the differences. The default profile never reads settings from named profiles, and named profiles do not read one another. `.env`, `SOUL.md`, memories, sessions, skills, gateway state, and other profile data remain separate.
+
+When Hermes saves a named profile after changing a setting, it writes only that profile's overrides. Inherited `${VAR}` references remain in the default profile rather than being expanded and copied into the child file, so changing the environment value continues to affect every inheriting profile. A malformed or unreadable default `config.yaml` blocks a derived save instead of turning previously inherited values into permanent child overrides; repair the default configuration first.
+
+Inheritance does not add a deletion convention. In particular, do not rely on `null`, an empty list, `false`, or `0` to mean “remove the inherited key”; those values retain their existing YAML meanings.
 
 :::caution Give every agent its own profile
 Never point two agent processes at the same profile (the same Hermes home). Both write memory automatically, and each loads the other's writes into its system prompt at session start — so two writers on one home compound each other's state until it stops being anything you configured. Profiles exist exactly to prevent this; agents that need shared memory should use an [external memory provider](./features/memory-providers.md) instead.
@@ -91,7 +106,7 @@ hermes profile create work --clone --sync-imports
 hermes -p work import-agent --sync        # pulls changes from the same ~/.claude / ~/.codex
 ```
 
-This is explicit, opt-in and one-directional, and it links the clone to the **external agent trees only** — never to the source profile. Both profiles stay independent islands: editing the source's `config.yaml`, `SOUL.md` or skills afterwards never reaches the clone. `--clone-all` copies the manifest as part of the full copy.
+This is explicit, opt-in and one-directional, and it links the clone to the **external agent trees only** — never to the source profile. `SOUL.md`, skills, memories and all other profile state remain independent; a named clone's `config.yaml` also follows the configuration inheritance contract above. `--clone-all` copies the manifest as part of the full copy.
 
 ### Clone everything (`--clone-all`)
 

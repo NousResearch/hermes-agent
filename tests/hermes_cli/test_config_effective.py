@@ -30,6 +30,7 @@ def _reset_caches():
     cfg._RAW_CONFIG_CACHE.clear()
     config_effective._EFFECTIVE_CACHE.clear()
     config_effective._LAST_GOOD_USER_RAW.clear()
+    config_effective._LAST_GOOD_EFFECTIVE.clear()
     managed_scope.invalidate_managed_cache()
 
 
@@ -77,6 +78,108 @@ def test_effective_is_user_plus_managed_plus_env_with_no_defaults(homes):
         },
         "display": {"skin": "managed-skin"},
     }
+
+
+def test_effective_named_profile_inherits_default_raw_config(homes):
+    """Defaults-free readers see the same named-profile inheritance as load_config()."""
+    from hermes_cli.config_effective import load_user_config_effective
+
+    home, _ = homes
+    profile = home / "profiles" / "work"
+    profile.mkdir(parents=True)
+    _write(home / "config.yaml", """
+        model:
+          default: default/model
+        display:
+          skin: default-skin
+        """)
+    _write(profile / "config.yaml", """
+        model:
+          provider: work-provider
+        """)
+
+    effective = load_user_config_effective(profile / "config.yaml")
+
+    assert effective == {
+        "model": {"default": "default/model", "provider": "work-provider"},
+        "display": {"skin": "default-skin"},
+    }
+
+
+def test_effective_fail_closed_rejects_a_malformed_inheritance_base(homes):
+    """Strict readers must not treat a corrupt base as an empty inheritance layer."""
+    from hermes_cli.config_effective import load_user_config_effective
+
+    home, _ = homes
+    profile = home / "profiles" / "work"
+    profile.mkdir(parents=True)
+    _write(home / "config.yaml", "model:\n  provider: shared\n")
+    _write(profile / "config.yaml", "display:\n  skin: work\n")
+    assert load_user_config_effective(profile / "config.yaml")["model"]["provider"] == "shared"
+
+    _write(home / "config.yaml", "model: [unterminated\n")
+    with pytest.raises(yaml.YAMLError):
+        load_user_config_effective(profile / "config.yaml", fail_closed=True)
+
+
+def test_effective_recovers_a_broken_inheritance_base_from_its_own_backup(homes):
+    """A cold effective reader reconstructs inherited policy from the base's good backup."""
+    from hermes_cli import config as cfg
+    from hermes_cli import config_effective
+    from hermes_cli.config_backups import backup_config
+    from hermes_cli.config_read_errors import FailedConfigRead
+    from hermes_cli.config_effective import load_user_config_effective
+
+    home, _ = homes
+    profile = home / "profiles" / "work"
+    profile.mkdir(parents=True)
+    _write(home / "config.yaml", "approvals:\n  deny:\n    - rm -rf *\n")
+    backup_config(home / "config.yaml", "good")
+    _write(profile / "config.yaml", "display:\n  skin: work\n")
+    _write(home / "config.yaml", "approvals: [unterminated\n")
+    cfg._LOAD_CONFIG_CACHE.clear()
+    config_effective._EFFECTIVE_CACHE.clear()
+    config_effective._LAST_GOOD_EFFECTIVE.clear()
+
+    recovered = load_user_config_effective(profile / "config.yaml")
+
+    assert isinstance(recovered, FailedConfigRead)
+    assert recovered["approvals"]["deny"] == ["rm -rf *"]
+    assert recovered["display"]["skin"] == "work"
+
+
+def test_effective_broken_inheritance_base_without_a_backup_returns_a_marked_child_fallback(homes):
+    """Non-strict effective reads remain safe before a base backup has been created."""
+    from hermes_cli import config as cfg
+    from hermes_cli.config_read_errors import FailedConfigRead
+    from hermes_cli.config_effective import load_user_config_effective
+
+    home, _ = homes
+    profile = home / "profiles" / "work"
+    profile.mkdir(parents=True)
+    _write(home / "config.yaml", "model: [unterminated\n")
+    _write(profile / "config.yaml", "display:\n  skin: work\n")
+    cfg._LOAD_CONFIG_CACHE.clear()
+
+    recovered = load_user_config_effective(profile / "config.yaml")
+
+    assert isinstance(recovered, FailedConfigRead)
+    assert recovered["display"]["skin"] == "work"
+
+
+def test_effective_child_moa_presets_override_the_parent_mapping(homes):
+    """Defaults-free readers share load_config's nearest-explicit MoA preset contract."""
+    from hermes_cli.config_effective import load_user_config_effective
+
+    home, _ = homes
+    profile = home / "profiles" / "work"
+    profile.mkdir(parents=True)
+    _write(home / "config.yaml", "moa:\n  presets:\n    council: {}\n")
+    _write(profile / "config.yaml", "moa:\n  presets:\n    work: {}\n")
+
+    effective = load_user_config_effective(profile / "config.yaml")
+
+    assert set(effective["moa"]["presets"]) == {"work"}
 
 
 def test_broken_yaml_serves_last_good_and_fail_closed_raises(homes):

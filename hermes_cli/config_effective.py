@@ -26,6 +26,9 @@ from utils import fast_safe_load
 # path -> raw user mapping from the last successful parse in this process; served (through the
 # normal pipeline) when the file is later found mid-edit as broken YAML.
 _LAST_GOOD_USER_RAW: dict[str, dict[str, Any]] = {}
+# A corrupt inheritance base cannot be safely rebuilt from a child's raw config alone. Keep the
+# last complete effective result, marked as failed so no caller can accidentally persist it.
+_LAST_GOOD_EFFECTIVE: dict[str, dict[str, Any]] = {}
 # path -> (*user_signature, *managed_signature, effective, env_snapshot); see utils.file_signature.
 _EFFECTIVE_CACHE: dict[str, tuple[Any, ...]] = {}
 
@@ -66,9 +69,10 @@ def load_user_config_effective(config_path: Optional[Path] = None, *, fail_close
     with _config._CONFIG_LOCK:
         user_sig, cache_sig = _config._load_config_cache_sig(config_path)
         cached = _EFFECTIVE_CACHE.get(path_key)
-        if cached is not None and cache_sig is not None and cached[:8] == cache_sig:
-            if all(_config._env_ref_lookup(k) == v for k, v in cached[9].items()):
-                return copy.deepcopy(cached[8])
+        cache_len = len(cache_sig) if cache_sig is not None else 0
+        if cached is not None and cache_sig is not None and cached[:cache_len] == cache_sig:
+            if all(_config._env_ref_lookup(k) == v for k, v in cached[cache_len + 1].items()):
+                return copy.deepcopy(cached[cache_len])
 
         raw: dict[str, Any] = {}
         recovered = False
@@ -95,11 +99,32 @@ def load_user_config_effective(config_path: Optional[Path] = None, *, fail_close
                     from hermes_cli.config_backups import backup_config
                     backup_config(config_path, "good")
 
+        try:
+            inheritance_raw = _config._read_profile_default_raw(config_path)
+        except Exception as exc:
+            if fail_closed:
+                raise
+            fallback = _LAST_GOOD_EFFECTIVE.get(path_key)
+            if fallback is None:
+                inheritance_raw = _config._load_profile_default_backup(config_path)
+                recovered_raw = _config._deep_merge(inheritance_raw or {}, raw)
+                from hermes_cli.moa_config import apply_user_moa_presets
+                apply_user_moa_presets(
+                    recovered_raw, _config._profile_moa_preset_source(inheritance_raw or {}, raw))
+                fallback = _effective(recovered_raw)
+            return _config.FailedConfigRead(copy.deepcopy(fallback), error=exc)
+
+        child_raw = raw
+        raw = _config._deep_merge(inheritance_raw, child_raw)
+        from hermes_cli.moa_config import apply_user_moa_presets
+        apply_user_moa_presets(raw, _config._profile_moa_preset_source(inheritance_raw, child_raw))
+
         env_snapshot = _config._env_ref_snapshot(raw)
         managed = managed_scope.load_managed_config()
         if managed:
             _config._env_ref_snapshot(managed, env_snapshot)
         effective = _effective(raw)
+        _LAST_GOOD_EFFECTIVE[path_key] = copy.deepcopy(effective)
         # A recovered result is never cached under the corrupt file's signature: a later
         # ``fail_closed`` caller must still see the parse error, not a cache hit.
         if cache_sig is not None and not recovered:

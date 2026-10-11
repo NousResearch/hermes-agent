@@ -165,7 +165,7 @@ _CONFIG_LOCK = threading.RLock()
 # path -> last successfully loaded (expanded) config; served after a parse failure so a
 # mid-edit broken YAML never silently drops user overrides (e.g. approvals.deny rules).
 _LAST_EXPANDED_CONFIG_BY_PATH: dict[str, Any] = {}
-# path -> (user_mtime_ns, user_size, managed_mtime_ns, managed_size, merged, env_ref_snapshot).
+# path -> (user signature, managed signature, inherited-default signature, merged, env snapshot).
 # load_config() returns a deepcopy of the cached value while the signature matches (skips
 # safe_load + merge + normalize + expand, ~13 ms). Writers use the config writer seam (fresh inode
 # -> new mtime_ns) so no explicit invalidation is needed. The managed-file signature is folded
@@ -2202,10 +2202,97 @@ def apply_terminal_config_to_env(
     return target
 
 
+def _profile_default_config_path(config_path: Path) -> Optional[Path]:
+    """Return the root profile config for a named profile, never for the root itself."""
+    profile_home = config_path.parent
+    profiles_dir = profile_home.parent
+    if config_path.name != "config.yaml" or profiles_dir.name != "profiles":
+        return None
+    return profiles_dir.parent / "config.yaml"
+
+
+def _read_profile_default_raw(config_path: Path) -> Dict[str, Any]:
+    """Read a named profile's inheritance base, refusing to disguise a bad base as empty."""
+    default_path = _profile_default_config_path(config_path)
+    if default_path is None:
+        return {}
+    try:
+        with open(default_path, encoding="utf-8-sig") as f:
+            data = fast_safe_load(f) or {}
+    except FileNotFoundError:
+        return {}
+    except Exception as exc:
+        _warn_config_parse_failure(default_path, exc)
+        raise
+    if isinstance(data, dict):
+        return data
+    exc = TypeError(f"top-level YAML must be a mapping, got {type(data).__name__}")
+    _warn_config_parse_failure(default_path, exc)
+    raise exc
+
+
+def _require_readable_profile_default_before_write(config_path: Path) -> dict[str, Any]:
+    """Return a profile's inheritance base or refuse a save that would pin its stale values."""
+    try:
+        return _read_profile_default_raw(config_path)
+    except Exception as exc:
+        raise _refuse_overwrite(
+            config_path,
+            "inherits from a default profile config that cannot be read",
+            exc,
+            _FIX_YAML.format(backups=_backups_dir_display()),
+        ) from exc
+
+
+def _profile_moa_preset_source(*layers: dict[str, Any]) -> dict[str, Any]:
+    """Return the closest raw layer that explicitly owns ``moa.presets``."""
+    for layer in reversed(layers):
+        moa = layer.get("moa") if isinstance(layer, dict) else None
+        if isinstance(moa, dict) and "presets" in moa:
+            return layer
+    return {}
+
+
+def _load_profile_default_backup(config_path: Path) -> Optional[dict[str, Any]]:
+    """Return the inheritance base's own last-known-good raw mapping, if it has one."""
+    default_path = _profile_default_config_path(config_path)
+    if default_path is None:
+        return None
+    from hermes_cli.config_backups import load_newest_good_backup
+    raw = load_newest_good_backup(default_path)
+    return raw if isinstance(raw, dict) else None
+
+
+def _inherited_last_known_good_fallback(
+    config_path: Path, path_key: str, cache_sig: Any, exc: Exception,
+) -> Optional[dict[str, Any]]:
+    """Serve a marked complete profile result when its inheritance base is temporarily broken."""
+    lkg = _LAST_EXPANDED_CONFIG_BY_PATH.get(path_key)
+    fallback = "last-known-good"
+    if lkg is None:
+        inheritance_raw = _load_profile_default_backup(config_path) or {}
+        try:
+            child_raw = read_user_config_raw(config_path)
+        except Exception:
+            from hermes_cli.config_backups import load_newest_good_backup
+            child_raw = load_newest_good_backup(config_path) or {}
+        rebuilt = _deep_merge(copy.deepcopy(DEFAULT_CONFIG), inheritance_raw)
+        rebuilt = _deep_merge(rebuilt, child_raw)
+        from hermes_cli.moa_config import apply_user_moa_presets
+        apply_user_moa_presets(rebuilt, _profile_moa_preset_source(inheritance_raw, child_raw))
+        lkg, _ = _merge_managed_overlay(_expand_env_vars(_canonicalize_config(rebuilt)))
+        fallback = "last-known-good-backup"
+    _warn_config_parse_failure(config_path, exc, fallback=fallback)
+    failed = FailedConfigRead(_expand_env_vars(copy.deepcopy(lkg)), error=exc)
+    if cache_sig is not None:
+        _LOAD_CONFIG_CACHE[path_key] = (*cache_sig, failed, {})
+    return failed
+
+
 def _load_config_cache_sig(config_path: Path) -> tuple[Optional[tuple[int, int, int, int]], Optional[tuple[int, ...]]]:
     """Return ``(user_sig, cache_sig)`` for ``_LOAD_CONFIG_CACHE``.
-    The managed config file's signature is folded in ((0, 0, 0, 0) = none) so editing it invalidates
-    the merged result. ``cache_sig`` is None only when neither file exists (nothing to cache on)."""
+    Managed and inherited-default signatures are folded in ((0, 0, 0, 0) = none), so editing
+    either invalidates the merged result. ``cache_sig`` is None only when neither file exists."""
     try:
         st = config_path.stat()
         user_sig: Optional[tuple[int, int, int, int]] = file_signature(st)
@@ -2217,9 +2304,15 @@ def _load_config_cache_sig(config_path: Path) -> tuple[Optional[tuple[int, int, 
         managed_sig = file_signature(mst) if mst else (0, 0, 0, 0)
     except OSError:
         managed_sig = (0, 0, 0, 0)
-    if user_sig is None and managed_sig == (0, 0, 0, 0):
+    default_path = _profile_default_config_path(config_path)
+    try:
+        dst = default_path.stat() if default_path else None
+        default_sig = file_signature(dst) if dst else (0, 0, 0, 0)
+    except OSError:
+        default_sig = (0, 0, 0, 0)
+    if user_sig is None and managed_sig == (0, 0, 0, 0) and default_sig == (0, 0, 0, 0):
         return None, None
-    return user_sig, (*(user_sig or (0, 0, 0, 0)), *managed_sig)
+    return user_sig, (*(user_sig or (0, 0, 0, 0)), *managed_sig, *default_sig)
 
 
 def _last_known_good_fallback(config_path: Path, path_key: str, cache_sig, exc: Exception) -> Optional[dict[str, Any]]:
@@ -2288,9 +2381,10 @@ def _load_config_cache_hit(path_key: str, cache_sig: Any) -> Optional[dict[str, 
     pin unexpanded literals (e.g. auxiliary.<task>.api_key) for the process lifetime (#58514).
     Shared by the lock-free fast path and the locked re-check of ``_load_config_impl``."""
     cached = _LOAD_CONFIG_CACHE.get(path_key)
-    if cached is None or cache_sig is None or cached[:8] != cache_sig:
+    cache_len = len(cache_sig) if cache_sig is not None else 0
+    if cached is None or cache_sig is None or cached[:cache_len] != cache_sig:
         return None
-    hit = cached[8]
+    hit = cached[cache_len]
     if isinstance(hit, FailedConfigRead) and isinstance(hit.read_error, OSError):
         # A read error (EMFILE/EIO/sharing violation) can clear without touching the file's
         # signature: serve the fallback only while the file still cannot be read.
@@ -2300,7 +2394,7 @@ def _load_config_cache_hit(path_key: str, cache_sig: Any) -> Optional[dict[str, 
             return None
         except OSError:
             return hit
-    env_snapshot = cached[9] if len(cached) > 9 else {}
+    env_snapshot = cached[cache_len + 1] if len(cached) > cache_len + 1 else {}
     if all(_env_ref_lookup(k) == v for k, v in env_snapshot.items()):
         return hit
     return None
@@ -2335,7 +2429,13 @@ def _load_config_impl(*, want_deepcopy: bool) -> dict[str, Any]:
         if hit is not None:
             return copy.deepcopy(hit) if want_deepcopy else hit
 
-        config = copy.deepcopy(DEFAULT_CONFIG)
+        try:
+            inheritance_raw = _read_profile_default_raw(config_path)
+        except Exception as exc:
+            lkg_copy = _inherited_last_known_good_fallback(config_path, path_key, cache_sig, exc)
+            return copy.deepcopy(lkg_copy) if want_deepcopy else lkg_copy
+
+        config = _deep_merge(copy.deepcopy(DEFAULT_CONFIG), inheritance_raw)
 
         if user_sig is not None:
             try:
@@ -2352,7 +2452,7 @@ def _load_config_impl(*, want_deepcopy: bool) -> dict[str, Any]:
 
                 config = _deep_merge(config, user_config)
                 from hermes_cli.moa_config import apply_user_moa_presets
-                apply_user_moa_presets(config, user_config)
+                apply_user_moa_presets(config, _profile_moa_preset_source(inheritance_raw, user_config))
                 # A copy of the file that just parsed is what a FRESH process falls back to when the
                 # next edit breaks the YAML (see _last_known_good_fallback). backup_config() skips
                 # byte-identical repeats and keeps a bounded count, so steady-state loads cost one stat.
@@ -2477,20 +2577,25 @@ def save_config(
         # swallows transient stat/open errors into ``{}``, and a ``{}`` at this point makes the
         # strip pass drop every user section whose value matches a default (#113301).
         _raw_for_paths = require_readable_config_before_write(config_path)
+        inheritance_raw = _require_readable_profile_default_before_write(config_path)
         if merge_existing and _raw_for_paths:
             config = _merge_partial_save(_raw_for_paths, config)
 
         current_normalized = _canonicalize_config(config)
         normalized = current_normalized
-        if _raw_for_paths:
+        template_source = _deep_merge(inheritance_raw, _raw_for_paths)
+        if template_source:
             normalized = _preserve_env_ref_templates(
-                normalized, _canonicalize_config(_raw_for_paths),
+                normalized, _canonicalize_config(template_source),
                 _LAST_EXPANDED_CONFIG_BY_PATH.get(str(config_path)))
 
         if strip_defaults:
             # ``_strip_default_values`` always preserves ``_config_version`` itself.
             effective_preserve_keys = _explicit_config_paths(_raw_for_paths) | set(preserve_keys or ())
-            normalized = _strip_default_values(normalized, DEFAULT_CONFIG, preserve_keys=effective_preserve_keys)
+            persistence_defaults = _deep_merge(
+                copy.deepcopy(DEFAULT_CONFIG), inheritance_raw)
+            normalized = _strip_default_values(
+                normalized, persistence_defaults, preserve_keys=effective_preserve_keys)
 
         atomic_config_replace(config_path, normalized, extra_content_on_create=_commented_sections_for_save(normalized))
         _secure_file(config_path)

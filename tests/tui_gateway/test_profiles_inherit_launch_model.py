@@ -1,16 +1,13 @@
-"""profiles.create inherits the launch profile's model together with the custom gateway backing it.
+"""profiles.create exposes the launch profile's model and custom gateway through inheritance.
 
-``_inherit_launch_model`` pins the launch ``model`` into the new profile through the same
-validated path as ``/api/model/set``, and that validation runs inside the new profile's home. A
-launch model on a custom ``providers:`` gateway is therefore only valid once the gateway
-definition is already in the profile — writing it after the pin never ran (#101885 / #94071).
+The profile owns only its overrides.  The effective configuration must still expose the launch
+model and its custom provider, without persisting an expanded launch secret into the child.
 """
 
 from __future__ import annotations
 
-import hermes_yaml as yaml
-
 import tui_gateway.server as srv
+from hermes_cli.config import load_config, read_user_config_raw
 
 
 def test_inherit_launch_model_carries_a_custom_provider_gateway(monkeypatch, tmp_path):
@@ -27,8 +24,14 @@ def test_inherit_launch_model_carries_a_custom_provider_gateway(monkeypatch, tmp
 
     assert srv._inherit_launch_model(profile) is True
 
-    cfg = yaml.safe_load((profile / "config.yaml").read_text())
+    with srv._hermes_home_scope(profile):
+        cfg = load_config()
+        child_raw = read_user_config_raw() or {}
     assert (cfg["model"]["provider"], cfg["model"]["default"]) == ("my-gateway", "my-finetune")
-    assert set(cfg["providers"]) == {"my-gateway"}
-    # The gateway travels as the launch file wrote it: the ref, never the launch secret.
+    assert "my-gateway" in cfg["providers"]
     assert cfg["providers"]["my-gateway"]["api_key"] == "${FAKE_GW_TOKEN}"
+    # The child is a delta: the launch template stays in the parent and its resolved secret is
+    # never persisted into the child.
+    assert "my-gateway" not in child_raw.get("providers", {})
+    assert "model" not in child_raw
+    assert not (profile / "config.yaml").exists()

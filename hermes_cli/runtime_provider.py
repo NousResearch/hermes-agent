@@ -506,6 +506,7 @@ from hermes_cli.runtime_provider_custom import (
     _get_named_custom_provider, _lift_common_custom_fields, _lift_extra_headers,
     _lift_model_capabilities, _normalize_base_url_for_match, _normalize_custom_provider_name, _resolve_named_custom_runtime,
     _try_resolve_from_custom_pool, canonical_custom_identity, codex_model_provider_id, expand_direct_api_alias,
+    find_custom_provider_entry,
     find_custom_provider_identity,
     find_custom_provider_identity_by_model, has_named_custom_provider, is_routable_provider,
 )
@@ -991,6 +992,23 @@ def _openrouter_fallback(requested_provider, explicit_api_key, explicit_base_url
                                             explicit_base_url=explicit_base_url), requested_provider)
 
 
+def _lift_matching_custom_request_overrides(runtime: dict[str, Any]) -> None:
+    """A runtime resolved by a NON-custom rung whose endpoint equals a configured named custom
+    provider's base_url (``model.provider: openai-api`` pointing at the entry, the local-endpoint
+    bypass) must still carry the entry's ``extra_body`` — those rungs never read the entry, so e.g.
+    ``max_tokens`` silently reverted to the server default. Only ``request_overrides`` is lifted:
+    model/capabilities stay rung-owned and ``extra_headers`` may carry credentials — never re-applied
+    here. A runtime that already carries ``extra_body`` (the named-custom rung applied it) wins:
+    present key means no double-apply."""
+    overrides = runtime.get("request_overrides")
+    if isinstance(overrides, dict) and "extra_body" in overrides:
+        return
+    entry = find_custom_provider_entry(str(runtime.get("base_url") or ""))
+    entry_overrides = _custom_provider_request_overrides(entry) if entry else {}
+    if entry_overrides:
+        runtime["request_overrides"] = {**(overrides or {}), **entry_overrides}
+
+
 def resolve_runtime_provider(*, requested: Optional[str] = None, explicit_api_key: Optional[str] = None,
                              explicit_base_url: Optional[str] = None, target_model: Optional[str] = None) -> dict[str, Any]:
     """Resolve runtime provider credentials for agent execution. Ladder (order is behavior — each
@@ -1030,6 +1048,7 @@ def resolve_runtime_provider(*, requested: Optional[str] = None, explicit_api_ke
         logger.info("model.openai_runtime=codex_app_server overrides the %s runtime (source=%s); its credential/endpoint "
                     "is not used — the app-server authenticates with its own login", runtime.get("provider"), runtime.get("source"))
     runtime["api_mode"] = api_mode
+    _lift_matching_custom_request_overrides(runtime)
     return runtime
 
 

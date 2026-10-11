@@ -206,6 +206,35 @@ class TestShouldExclude:
         # Other .bak files are user data and stay.
         assert not _should_exclude(Path("config.yaml.bak"))
 
+    def test_walk_skips_kanban_scratch_workspaces_but_keeps_boards(self, tmp_path):
+        """Kanban scratch workspaces (default board ``kanban/workspaces/`` and every named
+        board's ``kanban/boards/<slug>/workspaces/``) hold per-task clones the dispatcher
+        creates and GC deletes; the quick snapshot already skips them as regenerable. The
+        full walk must prune them too, while keeping the board DBs, attachments, and any
+        unrelated dir that merely shares the name."""
+        from hermes_cli.backup import _iter_backup_files
+
+        root = tmp_path / ".hermes"
+        keep = [
+            "kanban.db",
+            "kanban/boards/ops/kanban.db",
+            "kanban/boards/ops/board.json",
+            "kanban/attachments/t_1/report.pdf",
+            "kanban/boards/ops/attachments/t_2/log.txt",
+            "skills/demo/workspaces/notes.md",
+        ]
+        skip = [
+            "kanban/workspaces/t_1/repo/src/big.py",
+            "kanban/boards/ops/workspaces/t_2/repo/README.md",
+        ]
+        for rel in keep + skip:
+            (root / rel).parent.mkdir(parents=True, exist_ok=True)
+            (root / rel).write_text("x", encoding="utf-8")
+
+        got = {rel.as_posix() for _abs, rel in _iter_backup_files(root, tmp_path / "out.zip")}
+        assert set(keep) <= got
+        assert not got & set(skip)
+
 
 # ---------------------------------------------------------------------------
 # _iter_backup_files tests

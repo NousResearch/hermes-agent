@@ -106,12 +106,22 @@ _KEPT_CACHE_SUBDIRS = {
     "images", "audio", "videos", "documents", "screenshots", "citations", GENERATED_SUBDIR}
 
 
+def _in_kanban_scratch_workspaces(parts: tuple[str, ...]) -> bool:
+    """``kanban/workspaces/`` (default board) or ``kanban/boards/<slug>/workspaces/``: per-task
+    scratch checkouts the dispatcher creates and GC deletes. The board is shared at the root home
+    (``kanban_home()``), so only root-anchored paths match; the quick snapshot skips the same trees."""
+    return (parts[:2] == ("kanban", "workspaces")
+            or (len(parts) >= 4 and parts[:2] == ("kanban", "boards") and parts[3] == "workspaces"))
+
+
 def _in_excluded_root_dir(rel_path: Path) -> bool:
     """True when *rel_path* is inside a regenerable tree at a profile-home root."""
     root_entry = profile_root_entry(rel_path.parts)
     if root_entry in _EXCLUDED_ROOT_DIRS or root_entry in _EXCLUDED_BACKUP_ROOT_DIRS:
         return True
     parts = rel_path.parts
+    if _in_kanban_scratch_workspaces(parts):
+        return True
     if len(parts) >= 3 and parts[0] == "profiles":
         parts = parts[2:]
     return len(parts) >= 2 and parts[0] == "cache" and parts[1] not in _KEPT_CACHE_SUBDIRS

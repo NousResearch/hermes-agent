@@ -1566,6 +1566,10 @@ class GatewayStartupMixin:
         "_loop_wakeup_watcher", "_profile_reconcile_watcher",
     )
 
+    async def _background_typing_watcher(self) -> None:
+        from gateway.background_typing import background_typing_loop
+        await background_typing_loop(self)
+
     def _start_spawn_background_watchers(self) -> None:
         """Spawn the long-lived supervised background watchers."""
         for method in self._PRE_RECONNECT_WATCHERS:

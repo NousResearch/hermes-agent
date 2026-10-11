@@ -17,3 +17,14 @@ def set_typing_paused(adapter, chat_id, *, paused, metadata=None):
     params = inspect.signature(method).parameters
     supports_metadata = "metadata" in params or any(p.kind == p.VAR_KEYWORD for p in params.values())
     method(chat_id, **({"metadata": metadata} if supports_metadata else {}))
+
+
+class TypingPauseMixin:
+    def pause_typing_for_chat(self, chat_id: str, metadata=None) -> None:
+        """Pause a Telegram topic (or a whole chat when no topic is supplied)."""
+        self._typing_paused.add(typing_scope(self.platform, chat_id, metadata))
+
+    def resume_typing_for_chat(self, chat_id: str, metadata=None) -> None:
+        """Resume the matching scope without unpausing another task's prompt."""
+        self._typing_paused.discard(typing_scope(self.platform, chat_id, metadata))
+

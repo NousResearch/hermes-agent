@@ -18,6 +18,7 @@ import time
 import uuid
 import weakref
 from abc import ABC, abstractmethod
+from gateway.platforms.typing_scope import TypingPauseMixin
 from urllib.parse import urlsplit
 
 from utils import normalize_proxy_url
@@ -1914,7 +1915,7 @@ def _lazy_attr(obj: Any, name: str, factory: Callable[[], Any]) -> Any:
 _strip_media_directives = _strip_media_tag_directives
 
 
-class BasePlatformAdapter(ABC):
+class BasePlatformAdapter(TypingPauseMixin, ABC):
     """Base class for platform adapters: connect/auth, receive, send, handle media."""
 
     # ``format_message`` renders ``` fences as real code blocks (tool-progress then sends a bare
@@ -3464,16 +3465,6 @@ class BasePlatformAdapter(ABC):
         """Best-effort platform stop_typing; adapter errors are swallowed."""
         with contextlib.suppress(Exception):
             await self._stop_typing_with_metadata(chat_id, metadata)
-
-    def pause_typing_for_chat(self, chat_id: str, metadata=None) -> None:
-        """Pause a Telegram topic (or a whole chat when no topic is supplied)."""
-        from gateway.platforms.typing_scope import typing_scope
-        self._typing_paused.add(typing_scope(self.platform, chat_id, metadata))
-
-    def resume_typing_for_chat(self, chat_id: str, metadata=None) -> None:
-        """Resume the matching scope without unpausing another task's prompt."""
-        from gateway.platforms.typing_scope import typing_scope
-        self._typing_paused.discard(typing_scope(self.platform, chat_id, metadata))
 
     async def interrupt_session_activity(self, session_key: str, chat_id: str, metadata=None) -> None:
         """Signal the active session loop to stop and clear typing immediately."""

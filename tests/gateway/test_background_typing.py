@@ -32,7 +32,7 @@ def runner_for(source):
 @pytest.mark.asyncio
 async def test_real_process_keeps_typing_until_exit_without_tracking_daemons():
     source = SessionSource(platform=Platform.TELEGRAM, chat_id="123", chat_type="dm", thread_id="10")
-    runner, adapter, bot = runner_for(source)
+    runner, _adapter, bot = runner_for(source)
     command = f'{shlex.quote(sys.executable)} -c "import time; time.sleep(60)"'
     processes = [process_registry.spawn_local(command, session_key="owner") for _ in range(2)]
     try:
@@ -66,20 +66,16 @@ async def test_background_presence_respects_owner_lifecycle(monkeypatch, blocked
     runner, adapter, bot = runner_for(source)
     record = {"session_key": "owner", "parent_session_id": "parent", "status": "running"}
     monkeypatch.setattr(async_delegation, "list_async_delegations", lambda: [record])
-    if blocked == "foreground":
-        adapter._active_sessions["owner"] = asyncio.Event()
-    elif blocked == "prompt":
-        adapter.pause_typing_for_chat("123", metadata={"thread_id": "10"})
-    elif blocked == "closed":
-        runner._session_db.get_session.return_value = {"ended_at": 1, "end_reason": "user_reset"}
-        # Use the real set of user-boundary reasons rather than assuming the reset spelling.
-        from gateway.run import _USER_BOUNDARY_END_REASONS
-        runner._session_db.get_session.return_value["end_reason"] = next(iter(_USER_BOUNDARY_END_REASONS))
-    elif blocked == "disabled":
-        adapter.config.typing_indicator = False
-    elif blocked == "draining":
-        runner._draining = True
-    else:
-        record["status"] = "completed"
+    from gateway.run import _USER_BOUNDARY_END_REASONS
+    configure = {
+        "foreground": lambda: adapter._active_sessions.update({"owner": asyncio.Event()}),
+        "prompt": lambda: adapter.pause_typing_for_chat("123", metadata={"thread_id": "10"}),
+        "closed": lambda: setattr(runner._session_db.get_session, "return_value",
+                                  {"ended_at": 1, "end_reason": next(iter(_USER_BOUNDARY_END_REASONS))}),
+        "disabled": lambda: setattr(adapter.config, "typing_indicator", False),
+        "draining": lambda: setattr(runner, "_draining", True),
+        "completed": lambda: record.update(status="completed"),
+    }
+    configure[blocked]()
     await refresh_background_typing(runner)
     bot.send_chat_action.assert_not_awaited()

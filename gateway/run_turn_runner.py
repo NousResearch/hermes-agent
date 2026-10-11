@@ -8,6 +8,7 @@ keeps intercepting them at call time.
 from __future__ import annotations
 
 from gateway.platforms.typing_scope import set_typing_paused
+from gateway.run_clarify import clarify_expired_notice
 
 import asyncio
 import dataclasses
@@ -59,12 +60,6 @@ def _renders_exec_approval_buttons(adapter_cls: type) -> bool:
     if callable(probe) and issubclass(adapter_cls, BasePlatformAdapter):
         return bool(probe())
     return getattr(adapter_cls, "send_exec_approval", None) is not None
-
-
-# Rendered on a native clarify card whose wait ended without a click (mirrors the notice the
-# Slack click handler shows on a dead entry).
-def _clarify_expired_notice() -> str:
-    return t("gateway.clarify.expired")
 
 
 class _ExecApprovalDeclined(RuntimeError):
@@ -1436,7 +1431,7 @@ class TurnRunner:
             retire = getattr(type(ctx._status_adapter), "retire_clarify_card", None)
             if callable(retire):
                 self._schedule(
-                    retire(ctx._status_adapter, clarify_id, _clarify_expired_notice()),
+                    retire(ctx._status_adapter, clarify_id, clarify_expired_notice()),
                     "Clarify card retire failed to schedule")
         elif rearm:
             # Reopen typing IMMEDIATELY, not on the LLM's first post-answer token (native streaming

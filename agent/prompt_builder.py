@@ -552,6 +552,11 @@ GOOGLE_MODEL_OPERATIONAL_GUIDANCE = (
     "package.json, requirements.txt, Cargo.toml, etc. before importing.\n"
     "- **Conciseness:** Keep explanatory text brief — a few sentences, not "
     "paragraphs. Focus on actions and results over narration.\n"
+    # The negative constraint is upstream OpenCode text and must stay next to Conciseness:
+    # without it Gemini reads that bullet as a mandate to open every action with an English
+    # preamble/step header in message content (#136497), which gateways cannot suppress.
+    "- **No chitchat:** Avoid conversational filler, preambles (\"Okay, I will now...\"), or "
+    "postambles (\"I have finished the changes...\"). Get straight to the action or answer.\n"
     # No parallel-tool-call bullet here: PARALLEL_TOOL_CALL_GUIDANCE already carries it for all models.
     "- **Non-interactive commands:** Use flags like -y, --yes, --non-interactive to prevent CLI tools from hanging on "
     "prompts.\n"

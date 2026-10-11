@@ -1180,7 +1180,14 @@ export function botHandle(name: string, bot?: Partial<RosterRow> | null): string
  *  reduces to the mention charset two ways: slugified ("Research Buddy" →
  *  research-buddy, the form autocomplete inserts) and collapsed
  *  (researchbuddy). Reserved tokens are dropped so a bot renamed "Hermes"
- *  can never hijack the primary profile's @hermes alias. */
+ *  can never hijack the primary profile's @hermes alias.
+ *
+ *  CJK is welcome: a Bot Mode title of "画师" yields slug "画师" plus collapsed
+ *  "画师", so `@画师` routes to the bot that owns it. The character classes are
+ *  Unicode-aware (`\p{L}` = any letter, `\p{N}` = any number) because the
+ *  previous ASCII-only ones were correct for Latin slugs but silently dropped
+ *  every CJK mention, making Chinese-named bots untaggable (#110200 follow-up).
+ *  The reserved-token guard and its case-insensitivity are unchanged. */
 export function mentionNameForms(value: null | string | undefined): string[] {
   const name = String(value || '')
     .trim()
@@ -1190,11 +1197,17 @@ export function mentionNameForms(value: null | string | undefined): string[] {
     return []
   }
 
-  const slug = name.replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '')
-  const collapsed = name.replace(/[^a-z0-9_-]+/g, '')
+  const slug = name
+    .replace(/[^\p{L}\p{N}_-]+/gu, '-')
+    .replace(/^-+|-+$/gu, '')
+
+  const collapsed = name.replace(/[^\p{L}\p{N}_-]+/gu, '')
 
   return [...new Set([slug, collapsed])].filter(
-    form => /^[a-z0-9][a-z0-9_-]*$/.test(form) && !['all', 'everyone', 'user', 'default', 'hermes'].includes(form)
+    form =>
+      form.length > 0 &&
+      /^[a-z0-9\p{L}\p{N}][\p{L}\p{N}_-]*$/u.test(form) &&
+      !['all', 'everyone', 'user', 'default', 'hermes'].includes(form)
   )
 }
 
@@ -1410,7 +1423,7 @@ export function resolveRosterMentions(
   // `@tag@connection` is the form the picker inserts when a bare tag is
   // ambiguous (two remote defaults both titled "CoS Bot"): the suffix pins
   // the row to one connection, so a colliding tag still resolves exactly.
-  for (const match of prose.matchAll(/(^|\s)@([a-z0-9][a-z0-9_-]*)(?:@([a-z0-9][a-z0-9_-]*))?/gi)) {
+  for (const match of prose.matchAll(/(^|\s)@([a-z0-9\p{L}\p{N}][\p{L}\p{N}_-]*)(?:@([a-z0-9\p{L}\p{N}][\p{L}\p{N}_-]*))?/giu)) {
     let token = match[2].toLowerCase()
     const connection = (match[3] || '').toLowerCase()
 

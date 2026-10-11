@@ -14,7 +14,12 @@ async def prepare_model(authority, live, payload, prepared):
     old = restore_policy(prepared['snapshot']['receipt']['policy'])
     config = old.config(authority)
     _, runtime = authority.runner._resolve_session_agent_runtime(source=live.source, session_key=live.route)
-    result = await asyncio.to_thread(switch_model, raw_input=payload['model'],
+
+    def switch(**kwargs):
+        # The alias table switch_model resolved against, read in the same call (process-global).
+        result = switch_model(**kwargs)
+        return result, _alias_credential(result)
+    result, alias_credential = await asyncio.to_thread(switch, raw_input=payload['model'],
         current_provider=old.provider, current_model=old.model, current_base_url=old.base_url or '',
         current_api_key=runtime.get('api_key') or '', explicit_provider=payload.get('provider', ''),
         is_global=False, user_providers=config.get('providers'),
@@ -29,12 +34,22 @@ async def prepare_model(authority, live, payload, prepared):
     # and the endpoint-bound credential fields (inline key, key_env/api_key_env) drop on a route change.
     # Off-loop: the context-pin check can do cold-start disk I/O.
     frozen['model'] = await asyncio.to_thread(apply_model_selection, frozen.get('model'), result)
+    # A direct alias's own credential is part of the selection (never ``result.api_key``, which the
+    # switch resolved for its probe): its env pointer is committed and re-read every turn; a literal
+    # key becomes a private config secret, a null in the durable receipt like build_policy's.
+    key_env, alias_key = alias_credential
+    if key_env:
+        frozen['model']['key_env'] = key_env
+    if alias_key:
+        frozen['model']['api_key'] = None
     # Creation identity (request_json) remains immutable; runtime selection lives in the policy.
     policy = replace(old, model=result.new_model, config_json=json.dumps(frozen))
     secrets = recover_config_secrets(authority, old) if old.config_secret_ref else {}
     # A cleared field's private value must not be re-hydrated into the new route by config().
     secrets = {path: value for path, value in secrets.items()
                if not (len(path) == 2 and path[0] == 'model' and path[1] not in frozen['model'])}
+    if alias_key:
+        secrets[('model', 'api_key')] = alias_key
     # Re-fingerprint frozen config references because policy identity includes model.
     # An explicit launch key belongs to the endpoint it authenticated, not to a provider name:
     # custom -> custom on another base_url must not carry it (same route identity as config keys).
@@ -46,6 +61,17 @@ async def prepare_model(authority, live, payload, prepared):
     policy = bind_launch_key(authority, prepared['snapshot']['receipt']['session_id'], policy, key,
                              config_secrets=secrets)
     return dict(prepared, policy=asdict(policy))
+
+
+def _alias_credential(result):
+    """``(key_env, literal_key)`` the direct alias a switch resolved declares for its own endpoint
+    (``api_key: "${VAR}"`` is the pointer ``VAR``); ``(None, None)`` when it declares none."""
+    from hermes_cli.model_switch import DIRECT_ALIASES
+    alias = DIRECT_ALIASES.get(result.resolved_via_alias or '') if result.success else None
+    raw = (alias.api_key or '').strip() if alias is not None else ''
+    if raw.startswith('${') and raw.endswith('}'):
+        return raw[2:-1].strip() or None, None
+    return ((alias.key_env or '').strip() or None) if alias is not None and not raw else None, raw or None
 
 
 def _persisted_selection_context(authority, snapshot, old):

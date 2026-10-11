@@ -48,8 +48,6 @@ class FailoverReason(enum.Enum):
     image_too_large = "image_too_large"   # Native image part exceeds provider's per-image limit — shrink and retry
     image_corrupt = "image_corrupt"       # Provider can't decode image bytes — strip and retry (shrinking won't help)
     too_many_images = "too_many_images"   # Provider rejects more than N images in one prompt — strip oldest and retry
-
-    # Model / provider policy
     model_not_found = "model_not_found"  # 404 or invalid model — fallback to different model
     provider_policy_blocked = "provider_policy_blocked"  # Aggregator account data/privacy policy excluded the only endpoint
     content_policy_blocked = "content_policy_blocked"  # Provider safety filter rejected this prompt — deterministic per-request, don't retry unchanged
@@ -481,7 +479,9 @@ _V_CONTEXT_OVERFLOW = _v(_R.context_overflow, should_compress=True)
 _V_PAYLOAD_TOO_LARGE = _v(_R.payload_too_large, should_compress=True)
 _V_OVERLOADED, _V_SERVER_ERROR, _V_TIMEOUT, _V_UNKNOWN = map(_v, (_R.overloaded, _R.server_error, _R.timeout, _R.unknown))
 _V_IMAGE_TOO_LARGE, _V_IMAGE_CORRUPT = _v(_R.image_too_large), _v(_R.image_corrupt)
-_V_TOO_MANY_IMAGES = _v(_R.too_many_images)
+# Terminal once the one-shot strip recovery has run or declined: resending the same images fails the
+# same way, so a configured fallback is the only thing left that can answer.
+_V_TOO_MANY_IMAGES = _v(_R.too_many_images, **_ABORT_FALLBACK)
 _V_MULTIMODAL, _V_INVALID_ENCRYPTED = _v(_R.multimodal_tool_content_unsupported), _v(_R.invalid_encrypted_content)
 _V_REASONING_MANDATORY = _v(_R.reasoning_mandatory, should_compress=False, should_fallback=False)
 # Same recovery hints as format_error: consumers without a merge-and-retry step (the main loop
@@ -1206,9 +1206,7 @@ def _classify_400(c: _Ctx) -> Verdict:
     # 400 whose wording a proxy stripped would fall through to format_error.
     if code in _MEMORY_CEILING_ERROR_CODES:
         return _V_OVERLOADED
-    # Image-count limit from 400 (vLLM's ``--limit-mm-per-prompt``). Checked
-    # before context_overflow so the count-limit 400 is not mis-routed into
-    # the compression loop.
+    # Image-count ceiling before the overflow tail: compression cannot lower an image count.
     if _is_image_count_limit(msg):
         return _V_TOO_MANY_IMAGES
     verdict = _first_match(msg, _400_TAIL_RULES)
@@ -1325,11 +1323,16 @@ def _is_image_count_limit(error_msg: str) -> bool:
       vLLM:   ``"At most 2 image(s) may be provided in one prompt."``
       Ollama: contains ``"too many"`` + ``"image"``
       SGLang: ``"Image count 5 exceeds limit 2 per request."``
+    Confirmed hosted wordings: DeepInfra / OpenAI-compatible gateways ``"Too many images in
+    request: 11 > 8"``, Fireworks ``"Too many images were provided ... to 60"``, DashScope
+    ``"Exceeded limit on max data-uri per request: 250"``.
 
     ``error_msg`` is lowercased upstream — match accordingly.  The
     ``"image"`` gate keeps this from firing on non-image count limits
     (e.g. a max-tool-calls ceiling that happens to use the same phrasing).
     """
+    if "data-uri per request" in error_msg:  # DashScope counts data-URIs and never says "image"
+        return True
     if "image" not in error_msg:
         return False
     return any(
@@ -1394,7 +1397,6 @@ def _build_error_msg(error: Exception, body: Any) -> str:
     (OpenAI SDK's APIStatusError.__str__ omits the body, so it is appended)."""
     raw_msg = str(error).lower()
     body_msg = metadata_msg = ""
-
     if isinstance(body, dict):
         err_obj = _error_obj(body)
         body_msg = str(err_obj.get("message") or "").lower() or str(body.get("message") or "").lower()
@@ -1424,7 +1426,6 @@ def _body_message_candidates(body: dict) -> Iterator[Any]:
 
 def _from_cause_chain(error: Exception, pick: Callable[[Any], Any], default: Any) -> Any:
     """First non-None ``pick(exc)`` over the error and its __cause__/__context__ chain (max 5 deep)."""
-
     current = error
     for _ in range(5):
         found = pick(current)

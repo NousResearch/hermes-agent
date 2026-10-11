@@ -232,6 +232,28 @@ def _strip_request_images_and_retry(agent: Any, api_messages: Any) -> bool:
     return False
 
 
+def _recover_image_payload_rejection(
+    agent: Any, api_error: Exception, classified: Any, _retry: TurnRetryState, api_messages: Any
+) -> bool:
+    """Corrupt-image and image-COUNT rejections: strip from the per-call copy only (history keeps
+    the images), retry. Corrupt bytes lose every image; a count ceiling is learned per route and only
+    the oldest images go, on this attempt and on every later request (``agent.image_count_limit``)."""
+    if classified.reason == FailoverReason.image_corrupt:
+        if _strip_request_images_and_retry(agent, api_messages):
+            return True
+        logger.info("image-corrupt recovery: no image parts found to strip; surfacing original error.")
+    elif classified.reason == FailoverReason.too_many_images and not _retry.too_many_images_retry_attempted:
+        _retry.too_many_images_retry_attempted = True
+        from agent.image_count_limit import learn_image_count_limit
+
+        removed, limit = learn_image_count_limit(agent, api_error, api_messages)
+        if removed:
+            _vlines(agent, f"📐 Provider accepts at most {limit} images per request — omitted {removed} older image(s) and retrying...")
+            return True
+        logger.info("too-many-images recovery: nothing older to retire; surfacing original error.")
+    return False
+
+
 def recover_before_classification(
     agent: Any, api_error: Exception, *, messages: list[dict[str, Any]], api_messages: Any,
     api_kwargs: Any, active_system_prompt: Any,
@@ -739,41 +761,8 @@ def recover_after_classification(
             logger.warning("%sReasoning-disable recovery: dropping reasoning disable for %s", agent.log_prefix, agent.model)
         return True, recovered_with_pool
 
-    # Provider rejected the image bytes; shrinking can't help, so strip image parts.
-    # Strip ONLY the per-call copy: replacing msg["content"] on the shallow api_messages
-    # rows keeps canonical history's images (transient rejection must not erase history).
-    if classified.reason == FailoverReason.image_corrupt:
-        if _strip_request_images_and_retry(agent, api_messages):
-            return True, recovered_with_pool
-        logger.info("image-corrupt recovery: no image parts found to strip; surfacing original error.")
-
-    # Local engine per-prompt image count limit (vLLM --limit-mm-per-prompt, SGLang
-    # limit_mm_data_per_request, Ollama).  Strip oldest images to fit the reported
-    # ceiling and retry once.  Gated to local endpoints: we only have confirmed
-    # error-message patterns for local engines.
-    if (
-        classified.reason == FailoverReason.too_many_images
-        and not _retry.too_many_images_retry_attempted
-    ):
-        from agent.model_metadata import is_local_endpoint
-        from agent.error_surface import _is_custom_endpoint
-        _base_url = getattr(agent, "base_url", "") or ""
-        _provider = getattr(agent, "provider", "") or ""
-        if is_local_endpoint(_base_url) or _is_custom_endpoint(_provider):
-            _retry.too_many_images_retry_attempted = True
-            from agent.conversation_loop import _image_error_max_count
-            from agent.context_compressor import strip_images_to_count_limit
-            _limit = _image_error_max_count(api_error)
-            if isinstance(api_messages, list):
-                _stripped = strip_images_to_count_limit(api_messages, _limit)
-                if _stripped > 0:
-                    _vlines(agent, f"⚠️  Provider image limit ({_limit or 'default'}) — stripped {_stripped} image(s) and retrying...")
-                    logger.warning(
-                        "%stoo-many-images recovery: stripped %d image(s) to limit %s",
-                        agent.log_prefix, _stripped, _limit,
-                    )
-                    return True, recovered_with_pool
-            logger.info("too-many-images recovery: no image parts to strip; surfacing original error.")
+    if _recover_image_payload_rejection(agent, api_error, classified, _retry, api_messages):
+        return True, recovered_with_pool
 
     # Anthropic OAuth subscription rejected the 1M-context beta: disable it for this
     # session, rebuild the client, retry once. Reactive so capable subscriptions keep 1M.
@@ -997,6 +986,8 @@ _NONRETRYABLE_LABELS = {
     FailoverReason.ssl_cert_verification: "The provider's security certificate could not be verified",
     # Only reached after the one-shot image shrink ran (recover_after_classification sets the flag first).
     FailoverReason.image_too_large: "Request still exceeded the provider's size limit after shrinking images",
+    # Only reached once retiring older images could not help: the newest message alone is over the ceiling.
+    FailoverReason.too_many_images: "The provider accepts fewer images per request than this message carries",
 }
 
 

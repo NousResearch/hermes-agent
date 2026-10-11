@@ -90,6 +90,8 @@ export const slashCmdSessionEn = {
       // {0}=plan name, {1}=renewal date display
       planRenews: (plan: string, renews: string) => `Plan: ${plan} · renews ${renews}`,
       rowApiCalls: 'API calls',
+      rowCacheReadTokens: 'Cache read tokens',
+      rowCacheWriteTokens: 'Cache write tokens',
       rowInputTokens: 'Input tokens',
       rowModel: 'Model',
       rowOutputTokens: 'Output tokens',

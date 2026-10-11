@@ -273,6 +273,79 @@ class TestOutboundRedaction:
         assert security.redact_outbound(text) == text
 
 
+def _fake_ghp() -> str:
+    """A ghp_-shaped token assembled at runtime.
+
+    Built rather than written literally: a real-looking secret in the source would
+    (correctly) trip the repo's gitleaks pre-commit hook, and weakening that hook to
+    land a security fix would be self-defeating.
+    """
+    return "gh" + "p_" + "33" * 18
+
+
+class TestPersistedRedaction:
+    """The transcript and audit log are durable plaintext on disk and are read back
+    later (``load_conversation`` even replays them to the peer). Persisted text is
+    therefore held to the same standard as the wire, in BOTH directions.
+
+    Regression: an inbound peer pasted a credential in a task body; the value was
+    redacted on egress but written verbatim to the transcript + audit log, leaving
+    N durable copies across profiles. Redaction now lives at the persist chokepoint
+    so no call site can forget it.
+    """
+
+    def test_inbound_credential_not_persisted(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        token = _fake_ghp()
+        protocol.persist_message("ctx-inbound", "user", f"here is the token {token}", "t1")
+        raw = (tmp_path / "a2a_conversations" / "ctx-inbound.jsonl").read_text()
+        assert token not in raw
+
+    def test_outbound_credential_not_persisted(self, monkeypatch, tmp_path):
+        """Symmetry matters: a future call site that persists an unredacted agent reply
+        must still be scrubbed — that is why this is a chokepoint, not a call-site fix."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        token = _fake_ghp()
+        protocol.persist_message("ctx-outbound", "agent", f"the token is {token}", "t1")
+        raw = (tmp_path / "a2a_conversations" / "ctx-outbound.jsonl").read_text()
+        assert token not in raw
+
+    def test_audit_summary_is_redacted(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        token = _fake_ghp()
+        security.audit("inbound", "peer-z", "task-9", f"peer sent {token} in the body")
+        rec = json.loads((tmp_path / "a2a_audit.jsonl").read_text().strip().splitlines()[-1])
+        assert token not in rec["summary"]
+        assert rec["direction"] == "inbound" and rec["peer"] == "peer-z"
+
+    def test_redact_for_persist_keeps_plain_text_and_email(self):
+        """Unlike redact_outbound, the audit log keeps peer identity readable for operators;
+        only credentials are scrubbed."""
+        text = "peer alice@example.com completed the task in 42s"
+        assert security.redact_for_persist(text) == text
+
+    def test_bare_opaque_secret_is_the_known_residual_gap(self):
+        """Characterisation test — do NOT read this as approval.
+
+        A bare high-entropy string with no vendor prefix and no assignment shape
+        (e.g. a generated web password quoted in prose) passes every pattern in
+        the shared egress scrub, so it is persisted in the clear. Closing this
+        needs entropy/provenance detection, which the canonical scrub deliberately
+        does not do. The test exists so the limit is visible and this incident is
+        not mistaken for "fixed" by the two tests above.
+        """
+        bare = "".join(["7fK2", "mQ9p", "Lx4R", "t8Vn", "3ZbW"])  # same shape as a leaked generated password
+        assert security.redact_for_persist(f"the gitea web password is {bare}") == \
+            f"the gitea web password is {bare}", (
+                "if this now fails, the canonical scrub grew entropy detection — "
+                "congratulate it and delete this test")
+        # What it DOES catch, for contrast (shaped secrets). Note the canonical scrub
+        # elides the middle and keeps prefix+tail, so assert on the FULL value.
+        assert _fake_ghp() not in security.redact_for_persist(f"token {_fake_ghp()}")
+        pw = "hunt" + "er2" * 3
+        assert pw not in security.redact_for_persist(f"PASSWORD={pw}")
+
+
 class TestAudit:
     def test_audit_writes_jsonl(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

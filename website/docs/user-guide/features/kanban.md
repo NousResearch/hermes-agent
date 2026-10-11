@@ -964,7 +964,7 @@ hermes kanban schedule <id> --at <ISO8601>             # set/clear a task's sche
 hermes kanban diagnostics [--json]                     # board health snapshot (alias: diag)
 hermes kanban link <parent_id> <child_id>
 hermes kanban unlink <parent_id> <child_id>
-hermes kanban claim <id> [--ttl SECONDS]
+hermes kanban claim <id> [--ttl SECONDS] [--allow-session]
 hermes kanban comment <id> "<text>" [--author NAME]
 
 # Bulk verbs — accept multiple ids:
@@ -1386,6 +1386,8 @@ Runs are exposed on the dashboard (Run History section in the drawer, one colour
 **Dependency refusal on complete names the parents.** `kanban_complete` / `hermes kanban complete` / the dashboard's "mark done" and "request review" actions (single and bulk) on a card whose direct parent is not `done`/`archived` (a parent reopened mid-run, or an edge that predates the running-child refusal) reports `unsatisfied parent dependencies: t_… (todo)` instead of the generic "unknown id, stale run, or already terminal" text; the card stays in-flight. `kanban_show` lists the same parents under `unsatisfied_parents`, and `hermes kanban show` / `hermes kanban diagnostics` / the dashboard raise a `running_with_open_parents` warning on a running card in that state. Finish the parent or `hermes kanban unlink <parent> <child>`; there is no force path through the dependency gate.
 
 **Live-claim guard on complete.** A `running` task whose worker holds a live claim is only completed by that worker (`kanban_complete` from inside the run) or by an explicit operator override: `hermes kanban complete <id> --force` and the dashboard's "mark done" action. A claim-less `hermes kanban complete <id>` or an orchestrator session's `kanban_complete` is refused with a pointer to `--force` / `hermes kanban reclaim`, so a second session can no longer close a live worker's run underneath it. Completing `ready`, `blocked` or `review` cards without a claim is unchanged.
+
+**Session claims of dispatcher-managed cards are refused.** `hermes kanban claim` from a session context (no `HERMES_KANBAN_RUN_ID`) is declined when the card is dispatcher-managed - its assignee is a real profile, or it is unassigned and `kanban.default_assignee` routes it - because a session claim has no heartbeat and cannot be terminated on reclaim, so a TTL expiry would respawn the card into the same workspace while the session is still writing (#83736). Dispatcher-owned workers bypass the gate automatically; `--allow-session` opts in explicitly for short tasks that finish inside the lease. Control-plane lanes (assignees that are not profiles, pulled by terminals by design) and plain unassigned cards stay claimable.
 
 **Reclaimed runs from status changes.** If you drag a running task off `running` in the dashboard (back to `ready`, or straight to `todo`), or archive a task that was still running, the in-flight run closes with `outcome='reclaimed'` rather than being orphaned. The `task_runs` row is always in a terminal state when `tasks.current_run_id` is `NULL`, and vice versa — that invariant holds across CLI, dashboard, dispatcher, and notifier.
 

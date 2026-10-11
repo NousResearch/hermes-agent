@@ -793,6 +793,7 @@ class TestTerminalToolGatewayLifecycleGuard:
 
         assert result["exit_code"] == 1
 
+    @pytest.mark.platforms("posix")
     def test_non_regular_referenced_script_fails_closed(self, monkeypatch, tmp_path):
         import tools.terminal_tool as tt
 

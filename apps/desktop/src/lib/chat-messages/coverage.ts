@@ -6,18 +6,23 @@ function sameOccurrencePart(stored: ChatMessagePart, local: ChatMessagePart): bo
     return Boolean(stored.toolCallId) && stored.toolCallId === local.toolCallId
   }
 
-  if ((stored.type === 'text' || stored.type === 'reasoning') && local.type === stored.type) {
-    return normalizedText(stored.text) === normalizedText(local.text)
-  }
-
-  return false
+  return stored.type === 'text' && local.type === 'text' && normalizedText(stored.text) === normalizedText(local.text)
 }
 
 /** Subtract an ordered, tool-anchored prefix within an already matched user
  * interval. Hydration can fold several live bubbles into one durable row;
  * bubble ordinals and equal text alone cannot establish that coverage. */
 export function withoutCoveredAssistantPrefix(stored: ChatMessage[], local: ChatMessage[]): ChatMessage[] {
-  const parts = stored.flatMap(message => (message.role === 'assistant' ? message.parts : []))
+  // Narration is not an occurrence, on either side. A window that attached
+  // mid-turn holds the answer text but never saw the `reasoning.delta` frames,
+  // and a live row can lead with reasoning the durable row never received
+  // (`appendReasoningDelta`'s replace branch attaches it before any text).
+  // Either asymmetry would stall the walk before the shared tool anchor and
+  // leave the live bubble of an already-covered answer on screen.
+  const parts = stored
+    .flatMap(message => (message.role === 'assistant' ? message.parts : []))
+    .filter(part => part.type !== 'reasoning')
+
   let cursor = 0
   let anchored = false
   let stopped = false
@@ -31,9 +36,27 @@ export function withoutCoveredAssistantPrefix(stored: ChatMessage[], local: Chat
       continue
     }
 
-    let consumed = 0
+    const walkable = message.parts.filter(part => part.type !== 'reasoning')
 
-    for (const part of message.parts) {
+    // A row that is nothing but narration has no occurrence to prove coverage
+    // with — it is never folded.
+    if (!walkable.length) {
+      stopped = true
+      remaining.push(message)
+
+      continue
+    }
+
+    let consumed = 0
+    let sliceFrom = 0
+
+    for (let index = 0; index < message.parts.length; index += 1) {
+      const part = message.parts[index]
+
+      if (part.type === 'reasoning') {
+        continue
+      }
+
       if (!parts[cursor] || !sameOccurrencePart(parts[cursor], part)) {
         break
       }
@@ -41,11 +64,12 @@ export function withoutCoveredAssistantPrefix(stored: ChatMessage[], local: Chat
       anchored ||= part.type === 'tool-call'
       cursor += 1
       consumed += 1
+      sliceFrom = index + 1
     }
 
-    if (consumed < message.parts.length) {
+    if (consumed < walkable.length) {
       stopped = true
-      remaining.push(consumed ? { ...message, parts: message.parts.slice(consumed) } : message)
+      remaining.push(consumed ? { ...message, parts: message.parts.slice(sliceFrom) } : message)
     }
   }
 

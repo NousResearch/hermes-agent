@@ -310,7 +310,10 @@ class CodexAppServerSession:
         carries the CURRENT prompt composition and provider (accepted by the resume schema, codex 0.147)."""
         assert self._client is not None
         try:
-            result = self._client.request("thread/resume", {"threadId": wanted, **params}, timeout=15)
+            # We only consume the thread id, never the returned historical turns. A long Goal's
+            # rollout can be tens of MB; keep its on-disk context without rehydrating that RPC.
+            result = self._client.request("thread/resume", {"threadId": wanted, "excludeTurns": True, **params},
+                                          timeout=90)
         except CodexAppServerError as exc:
             raise CodexThreadResumeError(wanted, exc.message) from exc
         thread_id = _extract_thread_id(result)

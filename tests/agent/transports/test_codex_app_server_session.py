@@ -247,7 +247,7 @@ class TestLifecycle:
         s = make_session(client, resume_thread_id="stored-1", developer_instructions="SOUL")
         assert s.ensure_started() == s.ensure_started() == "stored-1"
         assert [m for m, _ in client.requests] == ["thread/resume"]
-        assert client.requests[0][1] == {"threadId": "stored-1", "cwd": "/tmp", "personality": "none", "developerInstructions": "SOUL"}
+        assert client.requests[0][1] == {"threadId": "stored-1", "excludeTurns": True, "cwd": "/tmp", "personality": "none", "developerInstructions": "SOUL"}
 
         def refuse(method, params):
             if method == "thread/resume":

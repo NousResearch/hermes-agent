@@ -60,6 +60,37 @@ def _next_turn(session, result, *, idle_timeout, control):
     return None
 
 
+def _attach_native_goal(session, state, objective, *, initial_turn):
+    """Resume/revise a bound ledger, or explicitly replace a finished/cleared Goal."""
+    existing = _native_request(session, "thread/goal/get")
+    if initial_turn is not None:
+        native = existing  # Already started by the model: no duplicate kickoff or set.
+    elif state.native_goal is not None:
+        previous = state.native_goal
+        if existing is None or existing.get("objective") != previous.get("objective"):
+            raise RuntimeError("Bound native Goal changed or disappeared; refusing to reset its ledger")
+        if existing.get("tokenBudget") != state.token_budget:
+            raise RuntimeError("Native Goal budget changed; refusing an implicit budget override")
+        budget = existing.get("tokenBudget")
+        if (existing.get("status") in {"budgetLimited", "usageLimited"}
+                or (budget is not None and existing.get("tokensUsed", 0) >= budget)):
+            return existing
+        params = {"status": "active"}
+        if existing["objective"] != objective:
+            params["objective"] = objective  # Text revision only; native usage stays cumulative.
+        native = _native_request(session, "thread/goal/set", **params)
+    else:
+        if existing is not None:
+            if existing.get("status") == "active":
+                raise RuntimeError("Another native Goal is active; refusing to replace it")
+            _native_request(session, "thread/goal/clear")
+        native = _native_request(session, "thread/goal/set", status="active",
+                                 objective=objective, tokenBudget=state.token_budget)
+    if native is None or native.get("objective") != objective:
+        raise RuntimeError("Native Goal changed before its continuation was attached")
+    return native
+
+
 def run_native_goal(session, user_input, *, session_id, state, on_turn=None, interrupt_requested=None,
                     initial_turn=None, **options):
     from agent.transports.codex_app_server_session import TurnResult
@@ -68,24 +99,16 @@ def run_native_goal(session, user_input, *, session_id, state, on_turn=None, int
     objective = native_objective(state)
     if state.native_goal and state.native_goal.get("threadId") != aggregate.thread_id:
         raise RuntimeError("Native Goal belongs to a different thread; refusing to reset progress or budget")
-    params = {"status": "active"}
-    existing = _native_request(session, "thread/goal/get")
-    if existing is None:
-        params.update(objective=objective, tokenBudget=state.token_budget)
-    elif existing["objective"] != objective:
-        if existing.get("status") == "active":
-            raise RuntimeError("Another native Goal is active; refusing to replace it")
-        params.update(objective=objective, tokenBudget=state.token_budget)
-    elif state.native_goal is None:
-        # A newly authorized goal may intentionally repeat an old objective, but do not
-        # silently inherit a completed/budget-limited goal and report it as new work.
-        _native_request(session, "thread/goal/clear")
-        params.update(objective=objective, tokenBudget=state.token_budget)
-    # A model-created Goal has already started its first turn. Do not send a second
-    # kickoff, clear the Goal, or replenish its cumulative usage when adopting it.
-    native = existing if initial_turn is not None else _native_request(session, "thread/goal/set", **params)
-    if native is None or native.get("objective") != objective:
-        raise RuntimeError("Native Goal changed before its continuation was attached")
+    native = _attach_native_goal(session, state, objective, initial_turn=initial_turn)
+    budget = native.get("tokenBudget")
+    exhausted = budget is not None and native.get("tokensUsed", 0) >= budget
+    if initial_turn is None and (native.get("status") in {"budgetLimited", "usageLimited"} or exhausted):
+        reason = (f"Codex Goal {native['status']}: tokens {native.get('tokensUsed', 0)}/{budget}; "
+                  "no work started and no budget reset; explicit budget authorization is required")
+        pause_native_goal(session_id, goal_id, reason)
+        record_native_goal(session_id, goal_id, native)
+        aggregate.error, aggregate.interrupted, aggregate.should_retire = reason, True, True
+        return aggregate
     record_native_goal(session_id, goal_id, native)
 
     def control():
@@ -105,10 +128,14 @@ def run_native_goal(session, user_input, *, session_id, state, on_turn=None, int
         aggregate.submitted_user_text = turn.submitted_user_text
         while True:
             native = _native_request(session, "thread/goal/get")
+            if not turn.projected_messages and not turn.error and not turn.interrupted:
+                turn.error = "Codex native Goal returned no transcript; task incomplete"
             if on_turn is not None:
                 continuing = native["status"] == "active" and bool(turn.tool_iterations) and not turn.error and not turn.interrupted
                 on_turn(turn, continuing)
             _merge_result(aggregate, turn)
+            if turn.error or turn.interrupted:
+                pause_native_goal(session_id, goal_id, turn.error or "Codex turn interrupted; task incomplete")
             mirror = record_native_goal(session_id, goal_id, native, completed_turn=not turn.error and not turn.interrupted)
             if turn.error or turn.interrupted or mirror is None or mirror.status != "active":
                 break

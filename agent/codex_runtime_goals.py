@@ -42,6 +42,8 @@ def run_app_server_work(agent, user_message, *, messages, **wire_options):
     from agent.transports.codex_app_server_goals import run_native_goal
 
     def commit_turn(turn, continuing):
+        if not turn.projected_messages:
+            return  # No rows to persist; native terminal/error classification owns this outcome.
         if not _persist_projected_messages(agent, turn, messages):
             raise RuntimeError("Native Goal turn was not durably mirrored; pausing instead of continuing")
         _store_codex_thread_id(agent, turn.thread_id)

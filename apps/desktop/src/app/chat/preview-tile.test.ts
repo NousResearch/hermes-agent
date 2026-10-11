@@ -72,10 +72,18 @@ describe('browserTabExternalUrl', () => {
     expect(browserTabExternalUrl(openBrowser('about:blank'))).toBeNull()
   })
 
-  it('is null for a file peek', () => {
-    openPreview(fileTarget('/tmp/a.ts'))
+  it('hands only an Electron-confirmed local file peek to the audited system-app bridge', () => {
+    openPreview({ ...fileTarget('/tmp/a.ts'), localFile: true }, 'file-browser')
+    const tabId = $previewTabs.get().find(tab => tab.target.path === '/tmp/a.ts')!.id
 
-    expect(browserTabExternalUrl('file:/tmp/a.ts')).toBeNull()
+    expect(browserTabExternalUrl(tabId)).toBe('/tmp/a.ts')
+  })
+
+  it('does not expose a system-app route for an unverified file peek', () => {
+    openPreview(fileTarget('/srv/a.ts'), 'remote-session')
+    const tabId = $previewTabs.get().find(tab => tab.target.path === '/srv/a.ts')!.id
+
+    expect(browserTabExternalUrl(tabId)).toBeNull()
   })
 })
 

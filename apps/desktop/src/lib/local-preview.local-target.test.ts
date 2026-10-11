@@ -69,6 +69,36 @@ describe('normalizeOrLocalPreviewTarget non-previewable results', () => {
     await expect(normalizeOrLocalPreviewTarget('/work/nope.md')).resolves.toBeNull()
   })
 
+  it('marks a normal Electron-confirmed local file for the system-app route', async () => {
+    stubNormalization({
+      kind: 'file',
+      label: 'report.docx',
+      path: '/work/report.docx',
+      previewKind: 'binary',
+      source: '/work/report.docx',
+      url: 'file:///work/report.docx'
+    })
+
+    await expect(normalizeOrLocalPreviewTarget('/work/report.docx')).resolves.toMatchObject({
+      localFile: true,
+      path: '/work/report.docx'
+    })
+  })
+
+  it('does not grant system-app provenance to a remote gateway path', async () => {
+    isDesktopFsRemoteMode.mockReturnValue(true)
+    stubNormalization({
+      kind: 'file',
+      label: 'report.docx',
+      path: '/srv/report.docx',
+      previewKind: 'binary',
+      source: '/srv/report.docx',
+      url: 'file:///srv/report.docx'
+    })
+
+    await expect(normalizeOrLocalPreviewTarget('/srv/report.docx')).resolves.not.toMatchObject({ localFile: true })
+  })
+
   it('keeps the gateway-backed fallback for remote-backend directories', async () => {
     isDesktopFsRemoteMode.mockReturnValue(true)
     stubNormalization({

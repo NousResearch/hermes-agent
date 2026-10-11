@@ -22,6 +22,7 @@ describe('MarkdownLink filesystem hrefs', () => {
     // that's the view-time door, not a dead <a>.
     await screen.findByText('report.md')
     expect(screen.getByRole('button', { name: 'Open preview' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Open with system app' })).toBeTruthy()
     expect(document.querySelector('a[href="/home/user/report.md"]')).toBeNull()
   })
 

@@ -447,7 +447,7 @@ def _list_projects(
     try:
         res = subprocess.run(
             [str(binary), "project", "list", "--output", "json"],
-            env=env, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=15)
+            env=env, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=15, check=False)
     except (OSError, subprocess.TimeoutExpired) as exc:
         console.print(f"  [red]Couldn't list projects: {exc}[/red]")
         return None

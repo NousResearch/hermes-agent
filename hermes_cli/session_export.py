@@ -7,7 +7,7 @@ only loads sessions and writes bytes.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from html import escape as html_escape
 import json
 from typing import Any, Dict, Iterable, Iterator, List, Literal, Optional, Tuple
@@ -163,11 +163,11 @@ def _format_timestamp(value: Any, session_id: Optional[str] = None) -> Optional[
     if value is None:
         return None
     if isinstance(value, datetime):
-        dt = (value if value.tzinfo else value.replace(tzinfo=timezone.utc)).astimezone(timezone.utc)
+        dt = (value if value.tzinfo else value.replace(tzinfo=UTC)).astimezone(UTC)
     elif (ts := coerce_epoch(value, session_id=session_id)) is None:
         return str(value)  # corrupt cell: odd-looking date, not an aborted export
     else:
-        dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+        dt = datetime.fromtimestamp(ts, tz=UTC)
     return dt.isoformat(timespec="seconds").replace("+00:00", "Z")
 
 

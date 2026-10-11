@@ -581,7 +581,7 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
 
 def _new_file_handler(
     path: Path, *, level: int, max_bytes: int, backup_count: int, formatter
-) -> "_ManagedRotatingFileHandler":
+) -> _ManagedRotatingFileHandler:
     """Create the ``logs/`` directory and a configured ``_ManagedRotatingFileHandler``."""
     mkdir_under_hermes_home(path.parent)
     if _WINDOWS_CLH_FALLBACK:
@@ -722,7 +722,7 @@ class _ProfileRoutingFileHandler(logging.Handler):
 # drops WebSocket clients. Every file handler is therefore driven by a single
 # QueueListener thread; loggers only do a non-blocking enqueue.
 
-_log_queue: "Optional[queue.SimpleQueue]" = None
+_log_queue: Optional[queue.SimpleQueue] = None
 _queue_listener: Optional[QueueListener] = None
 _queued_file_handlers: list = []
 _queue_atexit_registered = False

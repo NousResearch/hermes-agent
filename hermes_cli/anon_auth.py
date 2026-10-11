@@ -28,7 +28,7 @@ import math
 import os
 import time
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from typing import Any, Callable, Dict, Optional
 
 from agent.retry_utils import parse_retry_after_seconds
@@ -394,10 +394,10 @@ def apply_exchange_to_state(state: dict[str, Any], exchanged: dict[str, Any]) ->
     from hermes_cli.auth_nous import _validate_nous_inference_url_from_network
     access_token = exchanged["access_token"]
     claims = _decode_jwt_claims(access_token)
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     exp = claims.get("exp")
     if isinstance(exp, (int, float)):
-        expires_at = datetime.fromtimestamp(float(exp), tz=timezone.utc)
+        expires_at = datetime.fromtimestamp(float(exp), tz=UTC)
     else:
         expires_at = now + timedelta(seconds=int(exchanged.get("expires_in") or 900))
     # NAS names the welcome host on every exchange; absent (older NAS) or outside the allowlist
@@ -1019,7 +1019,7 @@ def _account_state_from_token(
     """The ``providers.nous`` shape for the signed-in account (same fields the device-code login writes)."""
     from hermes_cli.auth import PROVIDER_REGISTRY, _coerce_ttl_seconds, _optional_base_url, _tls_state_from_verify
     from hermes_cli.auth_nous import _NOUS_EMPTY_AGENT_KEY_FIELDS, _iso_after, refresh_nous_oauth_from_state
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     ttl = _coerce_ttl_seconds(token_data.get("expires_in", 0))
     inference_url = (
         _optional_base_url(token_data.get("inference_base_url"))
@@ -1104,48 +1104,48 @@ def persist_nous_credentials(*args, **kwargs):
 # Public sign-in imports remain here for existing callers and module-attribute patches.
 # The flow imports this module only inside calls, so either module can be imported first.
 from hermes_cli.anon_sign_in import (
-    AlreadySignedIn as AlreadySignedIn,
-    Code as Code,
-    Completed as Completed,
-    Declined as Declined,
-    FREE_TIER_RATE_LIMIT_CARD as FREE_TIER_RATE_LIMIT_CARD,
-    FREE_TIER_RATE_LIMIT_CHAT as FREE_TIER_RATE_LIMIT_CHAT,
-    Failed as Failed,
-    LOGIN_BUSY_ELSEWHERE as LOGIN_BUSY_ELSEWHERE,
-    LOGIN_COMMAND as LOGIN_COMMAND,
-    LOGIN_DM_ONLY as LOGIN_DM_ONLY,
-    LOGIN_NOT_ALLOWED as LOGIN_NOT_ALLOWED,
-    LOGIN_STARTING as LOGIN_STARTING,
-    Retired as Retired,
-    SignInState as SignInState,
-    Superseded as Superseded,
-    TimedOut as TimedOut,
-    UPGRADE_ALREADY_SIGNED_IN as UPGRADE_ALREADY_SIGNED_IN,
-    UPGRADE_CANCELLED as UPGRADE_CANCELLED,
-    UPGRADE_DO_NOT_SHARE as UPGRADE_DO_NOT_SHARE,
-    UPGRADE_NOT_COMPLETED as UPGRADE_NOT_COMPLETED,
-    UPGRADE_NO_DEFAULT_CHAT as UPGRADE_NO_DEFAULT_CHAT,
-    UPGRADE_NO_DEFAULT_TERMINAL as UPGRADE_NO_DEFAULT_TERMINAL,
-    UPGRADE_REASON_COPY as UPGRADE_REASON_COPY,
-    UPGRADE_START as UPGRADE_START,
-    UPGRADE_TIMED_OUT as UPGRADE_TIMED_OUT,
-    UPGRADE_UNAVAILABLE as UPGRADE_UNAVAILABLE,
-    UPGRADE_UNAVAILABLE_CHAT as UPGRADE_UNAVAILABLE_CHAT,
-    UPGRADE_WAITING as UPGRADE_WAITING,
-    UPGRADE_WAITING_UP_TO as UPGRADE_WAITING_UP_TO,
-    Unavailable as Unavailable,
-    Waiting as Waiting,
-    _RETIRED_REASONS as _RETIRED_REASONS,
-    _default_persist_guard as _default_persist_guard,
-    _outcome_state as _outcome_state,
-    format_wait_line as format_wait_line,
-    run_sign_in as run_sign_in,
+    AlreadySignedIn,
+    Code,
+    Completed,
+    Declined,
+    FREE_TIER_RATE_LIMIT_CARD,
+    FREE_TIER_RATE_LIMIT_CHAT,
+    Failed,
+    LOGIN_BUSY_ELSEWHERE,
+    LOGIN_COMMAND,
+    LOGIN_DM_ONLY,
+    LOGIN_NOT_ALLOWED,
+    LOGIN_STARTING,
+    Retired,
+    SignInState,
+    Superseded,
+    TimedOut,
+    UPGRADE_ALREADY_SIGNED_IN,
+    UPGRADE_CANCELLED,
+    UPGRADE_DO_NOT_SHARE,
+    UPGRADE_NOT_COMPLETED,
+    UPGRADE_NO_DEFAULT_CHAT,
+    UPGRADE_NO_DEFAULT_TERMINAL,
+    UPGRADE_REASON_COPY,
+    UPGRADE_START,
+    UPGRADE_TIMED_OUT,
+    UPGRADE_UNAVAILABLE,
+    UPGRADE_UNAVAILABLE_CHAT,
+    UPGRADE_WAITING,
+    UPGRADE_WAITING_UP_TO,
+    Unavailable,
+    Waiting,
+    _RETIRED_REASONS,
+    _default_persist_guard,
+    _outcome_state,
+    format_wait_line,
+    run_sign_in,
 )
 from hermes_cli.anon_sign_in_cli import (
-    drain_sign_in_copy as drain_sign_in_copy,
-    render_sign_in_cli as render_sign_in_cli,
-    render_sign_in_cli_code as render_sign_in_cli_code,
-    upgrade_guest as upgrade_guest,
+    drain_sign_in_copy,
+    render_sign_in_cli,
+    render_sign_in_cli_code,
+    upgrade_guest,
 )
 
 FREE_TIER_STATUS_LINE = f"{FREE_TIER_LABEL} \u00b7 {GUEST_MODEL} \u00b7 {LOGIN_COMMAND} to sign in"

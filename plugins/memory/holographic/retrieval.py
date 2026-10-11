@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -208,8 +208,8 @@ class FactRetriever:
         if not self.half_life or not timestamp_str:
             return 1.0
         try:
-            ts = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00")) if isinstance(timestamp_str, str) else timestamp_str
-            age_days = (datetime.now(timezone.utc) - (ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc))).total_seconds() / 86400
+            ts = datetime.fromisoformat(timestamp_str) if isinstance(timestamp_str, str) else timestamp_str
+            age_days = (datetime.now(UTC) - (ts if ts.tzinfo else ts.replace(tzinfo=UTC))).total_seconds() / 86400
             return 1.0 if age_days < 0 else math.pow(0.5, age_days / self.half_life)
         except (ValueError, TypeError):
             return 1.0

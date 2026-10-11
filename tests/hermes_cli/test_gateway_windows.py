@@ -69,12 +69,13 @@ def test_exec_schtasks_round_trips_non_ascii_task_argument_live(monkeypatch):
     created = subprocess.run(
         ["schtasks", "/Create", "/F", "/TN", task, "/SC", "ONLOGON", "/TR", f'wscript.exe //B "C:\\{marker}\\x.vbs"'],
         capture_output=True, timeout=30,
+        check=False,
     )
     assert created.returncode == 0, created.stderr
     try:
         code, out, _err = gateway_windows._exec_schtasks(["/Query", "/TN", task, "/XML"])
     finally:
-        subprocess.run(["schtasks", "/Delete", "/F", "/TN", task], capture_output=True, timeout=30)
+        subprocess.run(["schtasks", "/Delete", "/F", "/TN", task], capture_output=True, timeout=30, check=False)
     assert code == 0
     assert marker in out, out
 

@@ -291,7 +291,7 @@ def _misfire_grace_minutes() -> float:
 
 
 def fire_overdue_jobs(
-    provider: "CronScheduler", *, adapters: Any = None, loop: Any = None, now: Any = None,
+    provider: CronScheduler, *, adapters: Any = None, loop: Any = None, now: Any = None,
 ) -> int:
     """Misfire backstop (gateway housekeeping loop): fire jobs whose external HTTP fire never
     arrived, else ``next_run_at`` stays parked in the past forever. No-op for the built-in (its tick
@@ -384,7 +384,7 @@ def fire_overdue_jobs(
     return fired
 
 
-def resolve_cron_scheduler() -> "CronScheduler":
+def resolve_cron_scheduler() -> CronScheduler:
     """Resolve ``cron.provider``; missing/failing/unavailable providers fall back to the built-in
     with a warning — cron must never be left without a trigger."""
     name = ""
@@ -414,8 +414,8 @@ def resolve_cron_scheduler() -> "CronScheduler":
 
 
 def scheduler_for_profile_mode(
-    provider: "CronScheduler", *, multiplex_profiles: bool
-) -> "CronScheduler":
+    provider: CronScheduler, *, multiplex_profiles: bool
+) -> CronScheduler:
     """External providers own one unscoped remote registry and cannot reconcile several profile
     stores: fail closed to the built-in multiplex ticker until the API carries profile identity."""
     if not multiplex_profiles or isinstance(provider, InProcessCronScheduler):

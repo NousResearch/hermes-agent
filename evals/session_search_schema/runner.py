@@ -62,6 +62,7 @@ def extract_arm(ref: str, workdir: Path, name: str) -> Path:
     out = subprocess.run(
         ["git", "show", f"{ref}:tools/session_search_tool.py"],
         cwd=REPO_ROOT, capture_output=True, text=True,
+        check=False,
     )
     if out.returncode != 0:
         raise SystemExit(f"git show {ref}: {out.stderr.strip()}")

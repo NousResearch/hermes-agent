@@ -172,6 +172,7 @@ class TestSignalHelpers:
                  "-i", "anullsrc=r=44100:cl=mono", "-t", "0.5",
                  "-c:a", "aac", "-f", "adts", adts_path],
                 capture_output=True, timeout=30,
+                check=False,
             )
             if gen.returncode != 0:
                 import pytest

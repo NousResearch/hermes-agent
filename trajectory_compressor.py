@@ -599,7 +599,7 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
                     run.skipped += bool(metrics.skipped_under_target)
                     run.finish()
                 return processed_entry, metrics
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 self.logger.warning("Timeout processing entry from %s:%s (>%ss)", file_path, entry_idx, self.config.per_trajectory_timeout)
                 async with run.lock:
                     self.aggregate_metrics.trajectories_failed += 1
@@ -668,7 +668,7 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
         self._print_summary()
         if self.config.metrics_enabled:
             metrics_path = output_dir / self.config.metrics_output_file
-            with open(metrics_path, 'w', encoding="utf-8") as f:
+            with open(metrics_path, 'w', encoding="utf-8") as f:  # noqa: ASYNC230 -- small local write; a local open() is non-blocking in practice
                 json.dump(self.aggregate_metrics.to_dict(), f, indent=2)
             console.print(f"\n💾 Metrics saved to {metrics_path}")
 

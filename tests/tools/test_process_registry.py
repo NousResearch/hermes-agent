@@ -495,7 +495,7 @@ class TestOrphanedPipeReconciliation:
             ["sh", "-c", "exec 1>&2; ( sleep 30 ) & disown; exit 0"],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            preexec_fn=os.setsid,
+            start_new_session=True,
         )
 
         s = _make_session(sid="proc_orphan_test")
@@ -535,7 +535,7 @@ class TestOrphanedPipeReconciliation:
             ["sh", "-c", "( sleep 30 ) & disown; exit 0"],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            preexec_fn=os.setsid,
+            start_new_session=True,
         )
 
         s = _make_session(sid="proc_wait_orphan")
@@ -1022,6 +1022,7 @@ class TestEnvPollerIncrementalRead:
             out = subprocess.run(
                 ["sh", "-c", ProcessRegistry._log_delta_command(quoted, 0)],
                 capture_output=True, timeout=30,
+                check=False,
             ).stdout
             header, _, delta = out.partition(b"\n")
             size, _offset = map(int, header.split())
@@ -2044,7 +2045,7 @@ class TestReaderLoopOrphanedPipe:
             text=True,
             encoding="utf-8",
             errors="replace",
-            preexec_fn=os.setsid,
+            start_new_session=True,
         )
         s = _make_session(sid="proc_orphan_reader")
         s.process = proc
@@ -2088,7 +2089,7 @@ class TestReaderLoopOrphanedPipe:
             text=True,
             encoding="utf-8",
             errors="replace",
-            preexec_fn=os.setsid,
+            start_new_session=True,
         )
         s = _make_session(sid="proc_orphan_notify")
         s.process = proc

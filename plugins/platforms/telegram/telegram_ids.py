@@ -10,7 +10,7 @@ from typing import Any, Union
 _TELEGRAM_USERNAME_RE = re.compile(r"@[A-Za-z0-9_]{4,32}")
 
 
-def normalize_telegram_chat_id(chat_id: Any) -> Union[int, str]:
+def normalize_telegram_chat_id(chat_id: Any) -> int | str:
     """Bot API-compatible chat_id: numeric values (incl. negative channel IDs) as ``int``, anything
     else (e.g. ``@username``) as a stripped string; never raises."""
     chat_id_str = str(chat_id).strip()
@@ -25,7 +25,7 @@ def looks_like_telegram_username(chat_id: Any) -> bool:
     return bool(_TELEGRAM_USERNAME_RE.fullmatch(str(chat_id).strip()))
 
 
-def parse_telegram_username_target(target_ref: Any) -> Union[str, None]:
+def parse_telegram_username_target(target_ref: Any) -> str | None:
     """Return the value when it is an ``@username`` target, else ``None``."""
     value = str(target_ref).strip()
     return value if looks_like_telegram_username(value) else None

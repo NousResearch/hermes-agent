@@ -33,7 +33,7 @@ assert facts.path.is_file()
 print(root)
 """
     result = subprocess.run([sys.executable, "-S", "-c", script], cwd=stage, env=env,
-                            capture_output=True, text=True, timeout=15)
+                            capture_output=True, text=True, timeout=15, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
     assert Path(result.stdout.strip()) == store
 
@@ -52,7 +52,7 @@ assert callable(sign_managed_python)
 """
     result = subprocess.run([sys.executable, "-S", "-c", script], cwd=repo,
                             env=dict(os.environ, HERMES_HOME=str(tmp_path / "home")),
-                            capture_output=True, text=True, timeout=15)
+                            capture_output=True, text=True, timeout=15, check=False)
     assert result.returncode == 0, result.stderr
 
 
@@ -81,5 +81,5 @@ assert result.returncode == 0, result
 """
     result = subprocess.run([sys.executable, "-S", "-c", script], cwd=repo,
                             env=dict(os.environ, HERMES_HOME=str(tmp_path / "home")),
-                            capture_output=True, text=True, timeout=60)
+                            capture_output=True, text=True, timeout=60, check=False)
     assert result.returncode == 0, result.stdout + result.stderr

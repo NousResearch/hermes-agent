@@ -59,7 +59,7 @@ _HINT_RE = re.compile(r'@@\s*(.+?)\s*@@')
 def parse_v4a_patch(patch_content: str) -> tuple[list[PatchOperation], Optional[str]]:
     """-> ``(operations, None)`` (empty patch = ``[]``, no error) or ``([], "Parse error: …")``."""
     # Tolerate CRLF: a stray ``\r`` would land in every HunkLine.content and defeat the markers.
-    lines = [ln[:-1] if ln.endswith('\r') else ln for ln in patch_content.split('\n')]
+    lines = [ln.removesuffix('\r') for ln in patch_content.split('\n')]
     start_idx = -1  # parse from the top when no Begin marker is present
     end_idx = len(lines)
     for i, line in enumerate(lines):

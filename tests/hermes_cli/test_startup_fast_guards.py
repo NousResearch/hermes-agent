@@ -62,7 +62,7 @@ def test_cli_starts_from_a_deleted_cwd(tmp_path):
         result = subprocess.run(
             [sys.executable, "-m", "hermes_cli.main", "--version"],
             capture_output=True, text=True, timeout=60, env=env,
-            cwd=REPO_ROOT, preexec_fn=lambda: os.fchdir(fd))
+            cwd=REPO_ROOT, preexec_fn=lambda: os.fchdir(fd), check=False)
     finally:
         os.close(fd)
     assert result.returncode == 0, result.stderr
@@ -83,6 +83,7 @@ def test_startup_fast_import_weight():
         text=True,
         timeout=30,
         cwd=REPO_ROOT,
+        check=False,
     )
     assert result.returncode == 0, result.stderr
     loaded = set(json.loads(result.stdout))
@@ -103,6 +104,7 @@ def _run_version(env_overrides: dict) -> subprocess.CompletedProcess:
         timeout=60,
         cwd=REPO_ROOT,
         env=env,
+        check=False,
     )
 
 
@@ -146,6 +148,7 @@ def test_literal_tilde_hermes_home_expands_before_any_reader(tmp_path):
     result = subprocess.run(
         [sys.executable, "-m", "hermes_cli.main", "config", "path"],
         capture_output=True, text=True, timeout=120, cwd=cwd, env=env,
+        check=False,
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == str(fake_home / ".x" / "config.yaml")
@@ -157,6 +160,7 @@ def test_literal_tilde_hermes_home_expands_before_any_reader(tmp_path):
     probe = subprocess.run(
         [sys.executable, "-c", "import hermes_cli.main, os; print(os.environ['HERMES_HOME'])"],
         capture_output=True, text=True, timeout=120, cwd=cwd, env=env,
+        check=False,
     )
     assert probe.returncode == 0, probe.stderr
     assert probe.stdout.strip() == str(fake_home / ".x")
@@ -200,6 +204,7 @@ def test_bootstrap_preserves_live_cwd_and_recovers_deleted_cwd(tmp_path, remove_
         [sys.executable, "-c", probe, str(cwd), "deleted" if remove_cwd else "live"],
         stdin=subprocess.DEVNULL, capture_output=True, text=True,
         timeout=60, cwd=REPO_ROOT, env=env,
+        check=False,
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == str(REPO_ROOT if remove_cwd else cwd)

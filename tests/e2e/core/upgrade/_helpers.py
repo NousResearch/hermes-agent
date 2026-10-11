@@ -43,6 +43,7 @@ def _bwrap_usable() -> bool:
         r = subprocess.run(
             [exe, "--dev-bind", "/", "/", "--unshare-pid", "--proc", "/proc", "--die-with-parent", "true"],
             capture_output=True, timeout=30,
+            check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
         return False

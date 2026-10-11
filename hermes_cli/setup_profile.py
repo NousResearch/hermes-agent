@@ -5,7 +5,7 @@ import logging
 import os
 import random
 import shutil
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Callable, NamedTuple, Optional
 
@@ -201,7 +201,7 @@ def mark_intro_seen() -> dict:
 
 
 def mark_completed() -> dict:
-    completed_at = datetime.now(timezone.utc).isoformat()
+    completed_at = datetime.now(UTC).isoformat()
     return _change_state(lambda state: {**state, "intro": "seen", "completed_at": completed_at})
 
 

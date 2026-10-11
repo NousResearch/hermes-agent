@@ -9,7 +9,7 @@ from __future__ import annotations
 import hashlib
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -170,7 +170,7 @@ def record_consent(plugin_id: str, granted: Iterable[str], declared: Iterable[st
     entry[GRANTED_KEY] = sorted(_known(c for c in merged if isinstance(c, str)))
     entry[CONSENT_KEY] = {
         "hash": capability_set_hash(_known(declared)),
-        "granted_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "granted_at": datetime.now(UTC).isoformat(timespec="seconds"),
     }
     # Bridge: mirror each grant into its legacy gate (enforcement sites still read allow_*).
     for cap in entry[GRANTED_KEY]:

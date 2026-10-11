@@ -386,7 +386,7 @@ async def auth_callback(
 _PW_RATE_MAX_ATTEMPTS = 10
 _PW_RATE_WINDOW_SEC = 60.0
 _PW_RATE_MAX_BUCKETS = 4096
-_pw_attempts: "OrderedDict[str, deque[float]]" = OrderedDict()
+_pw_attempts: OrderedDict[str, deque[float]] = OrderedDict()
 _pw_attempts_lock = threading.Lock()
 
 

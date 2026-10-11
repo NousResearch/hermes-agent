@@ -96,7 +96,6 @@ def _apply_live_compression_config(agent: Any, cfg: dict | None) -> None:
     """
     cfg = cfg if isinstance(cfg, dict) else {}
     compression = cfg.get("compression") if isinstance(cfg.get("compression"), dict) else {}
-    model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
     from agent.agent_init import config_context_length_for_runtime, set_config_context_length
     enabled_raw = compression.get("enabled", True)
     agent.compression_enabled = enabled_raw if isinstance(enabled_raw, bool) else str(enabled_raw).lower() in {"true", "1", "yes"}

@@ -896,7 +896,7 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
 
     # Seeded -q first message (see _should_seed_interactive); run() re-creates
     # _pending_input, so it is enqueued only after the fresh queue exists.
-    _seeded_first_message: Optional["_SeededQueryMessage"] = None
+    _seeded_first_message: Optional[_SeededQueryMessage] = None
     # Inspection surfaces (banner, /tools, status line) read this on partially built instances too.
     disabled_toolsets: Optional[list[str]] = None
 
@@ -1258,7 +1258,8 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
             result = subprocess.run(
                 exec_cmd, shell=True, capture_output=True, text=True, encoding="utf-8", errors="replace",
                 timeout=30, env=build_subprocess_env(),
-                creationflags=windows_hide_flags(),  # no console flash on Windows (#56747)
+                creationflags=windows_hide_flags(),  # no console flash on Windows (#56747),
+                check=False,
             )
             # See #56747.
             output = result.stdout.strip() or result.stderr.strip()

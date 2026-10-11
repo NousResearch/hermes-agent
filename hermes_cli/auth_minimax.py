@@ -12,7 +12,7 @@ import hashlib
 import json
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from typing import Any, Callable, Dict, Optional, TYPE_CHECKING
 from hermes_cli.auth_constants import (
     AuthError, MINIMAX_OAUTH_GRANT_TYPE, MINIMAX_OAUTH_REFRESH_SKEW_SECONDS, MINIMAX_OAUTH_SCOPE,
@@ -105,11 +105,11 @@ def _minimax_resolve_token_expiry_unix(expired_in: int, *, now: datetime) -> flo
 
 def _minimax_expiry_fields(expired_in: Any) -> dict[str, Any]:
     """``obtained_at`` / ``expires_at`` / ``expires_in`` derived from a MiniMax ``expired_in``."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     expires_at_unix = _minimax_resolve_token_expiry_unix(int(expired_in), now=now)
     return {
         "obtained_at": now.isoformat(),
-        "expires_at": datetime.fromtimestamp(expires_at_unix, tz=timezone.utc).isoformat(),
+        "expires_at": datetime.fromtimestamp(expires_at_unix, tz=UTC).isoformat(),
         "expires_in": max(0, int(expires_at_unix - now.timestamp())),
     }
 
@@ -119,7 +119,7 @@ def _minimax_poll_token(
     user_code: str, code_verifier: str, expired_in: int, interval_ms: Optional[int],
 ) -> dict[str, Any]:
     # expired_in is a unix-ms timestamp upstream (OpenClaw) but small values are TTL seconds.
-    deadline = _minimax_resolve_token_expiry_unix(expired_in, now=datetime.now(timezone.utc))
+    deadline = _minimax_resolve_token_expiry_unix(expired_in, now=datetime.now(UTC))
     interval = max(2.0, (interval_ms or 2000) / 1000.0)
 
     while time.time() < deadline:

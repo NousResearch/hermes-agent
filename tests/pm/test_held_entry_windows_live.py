@@ -15,8 +15,8 @@ from pathlib import Path
 import pytest
 
 from pm.lock import Facts
-from tests.pm.test_pm_core import pm_env as pm_env
-from tests.pm._fixtures import served as served
+from tests.pm.test_pm_core import pm_env as pm_env  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
+from tests.pm._fixtures import served as served  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
 
 
 @pytest.mark.platforms("windows")

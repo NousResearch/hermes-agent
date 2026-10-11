@@ -61,7 +61,7 @@ def discover_cron_schedulers() -> list[tuple[str, str, bool]]:
             for name, child in _iter_provider_dirs()]
 
 
-def load_cron_scheduler(name: str) -> Optional["CronScheduler"]:
+def load_cron_scheduler(name: str) -> Optional[CronScheduler]:
     """Load a CronScheduler instance by name; None if not found or it fails to load."""
     provider_dir = find_provider_dir(name)
     if not provider_dir:
@@ -72,7 +72,7 @@ def load_cron_scheduler(name: str) -> Optional["CronScheduler"]:
         kind="Cron provider", noun="provider", logger=logger)
 
 
-def _load_provider_from_dir(provider_dir: Path) -> Optional["CronScheduler"]:
+def _load_provider_from_dir(provider_dir: Path) -> Optional[CronScheduler]:
     """Import a provider module and extract its CronScheduler (register(ctx) or subclass)."""
     from cron.scheduler_provider import CronScheduler
     name = provider_dir.name

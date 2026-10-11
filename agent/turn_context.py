@@ -22,6 +22,7 @@ from agent.iteration_budget import IterationBudget
 from agent.memory_manager import build_memory_context_block
 from agent.memory_provider import is_trivial_prompt
 from agent.message_content import flatten_message_text
+from agent.skills_index_delta import stage_skills_index_note
 from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS, append_message, stamp_message_timestamp
 from agent.model_metadata import (
     estimate_messages_tokens_rough,
@@ -169,6 +170,11 @@ def consume_surface_switch_note(agent: Any) -> str:
     """Pop the surface-switch note staged by the system-prompt restore (#104414); rides the same
     user-message channel as the gateway notes, behind the cached prefix."""
     return _pop_turn_note(agent, "_surface_switch_note")
+
+
+def consume_skills_index_note(agent: Any) -> str:
+    """Pop the skills-index delta staged by the system-prompt restore; same channel as above."""
+    return _pop_turn_note(agent, "_skills_index_note")
 
 
 def append_notes_to_multimodal_content(content: Any, notes: Optional[str]) -> bool:
@@ -850,7 +856,8 @@ def _merge_gateway_notes(
     append a durable text part instead."""
     _turn_notes = "\n\n".join(
         part for part in (consume_gateway_turn_context_notes(agent),
-                          consume_surface_switch_note(agent)) if part
+                          consume_surface_switch_note(agent),
+                          consume_skills_index_note(agent)) if part
     )
     if not _turn_notes:
         return plugin_user_context
@@ -1167,6 +1174,9 @@ def build_turn_context(
         original_user_message=original_user_message, messages=messages,
         conversation_history=conversation_history,
     )
+    # Every turn, not only on a prompt restore: a long-lived agent (CLI, TUI, Desktop) keeps its
+    # prompt in memory for the whole conversation and would never re-check its skills index.
+    stage_skills_index_note(agent, active_system_prompt, messages)
     plugin_user_context = _merge_gateway_notes(
         agent, messages, current_turn_user_idx, plugin_user_context
     )

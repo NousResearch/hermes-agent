@@ -49,7 +49,7 @@ def _creation_time(pid: int) -> str:
 
 def _alive(pid: int) -> bool:
     return str(pid) in subprocess.run(['tasklist', '/FI', f'PID eq {pid}', '/NH'],
-                                      capture_output=True, text=True).stdout
+                                      capture_output=True, text=True, check=False).stdout
 
 
 def _dead_pid() -> int:
@@ -73,7 +73,7 @@ def _finish(proc: subprocess.Popen, timeout: int = 120) -> tuple[int, str]:
     try:
         out, _ = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
-        subprocess.run(['taskkill', '/T', '/F', '/PID', str(proc.pid)], capture_output=True)
+        subprocess.run(['taskkill', '/T', '/F', '/PID', str(proc.pid)], capture_output=True, check=False)
         out, _ = proc.communicate()
         pytest.fail(f'hand-off did not finish within {timeout}s: {out}')
     return proc.returncode, out
@@ -83,7 +83,7 @@ def _op(home: Path, *args: str) -> tuple[int, str, str]:
     proc = subprocess.run(
         [POWERSHELL, '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', str(SCRIPT),
          '-InstallRoot', str(home / 'hermes-agent'), *args],
-        cwd=home, env=_env(home), capture_output=True, text=True, timeout=120)
+        cwd=home, env=_env(home), capture_output=True, text=True, timeout=120, check=False)
     return proc.returncode, proc.stdout, proc.stderr
 
 

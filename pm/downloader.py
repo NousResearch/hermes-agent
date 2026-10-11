@@ -28,6 +28,7 @@ import os
 import re
 import shutil
 import logging
+import socket
 import ssl
 import threading
 import time
@@ -130,8 +131,11 @@ class DownloadTransportError(DownloadError):
     def __init__(self, url: str, cause: Exception):
         self.url = url
         self.status = cause.code if isinstance(cause, urllib.error.HTTPError) else None
+        # A host that does not resolve is not worth a retry, but the pinned
+        # mirror is a different host and the hash still guards the bytes.
+        unresolved = isinstance(getattr(cause, "reason", cause), socket.gaierror)
         self.fallback_allowed = (
-            self.status in (401, 403, 404, 410) or is_transient(cause)
+            self.status in (401, 403, 404, 410) or unresolved or is_transient(cause)
         )
         reason = f"{cause}; the host refused access" if self.status in (401, 403) else str(cause)
         super().__init__(f"download failed from {url}: {reason}")
@@ -217,7 +221,7 @@ def replace_when_released(tmp: Path, dest: Path, *, timeout: float = _RELEASE_WA
             delay = min(delay * 2, 2.0)
 
 
-def _existing_dest_ok(source: "Source") -> bool:
+def _existing_dest_ok(source: Source) -> bool:
     """Pinned destinations are rehashed; unpinned model files are accepted as-is.
 
     Catalog policy does not supply their expected hash or stable length.

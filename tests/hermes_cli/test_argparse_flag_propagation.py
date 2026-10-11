@@ -126,6 +126,7 @@ print(json.dumps(results))
             capture_output=True,
             text=True,
             timeout=180,
+            check=False,
         )
         assert result.returncode == 0, (
             f"driver failed rc={result.returncode}\n"

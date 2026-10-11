@@ -175,7 +175,7 @@ def _log_exit(reason: str) -> None:
     print(f"[gateway-exit] {reason}", file=sys.stderr, flush=True)
 
 
-def wait_for_mcp_discovery(timeout: "float | None" = None) -> None:
+def wait_for_mcp_discovery(timeout: float | None = None) -> None:
     """Block until background MCP discovery finishes, up to the resolved bound (config
     ``mcp_discovery_timeout``; ``timeout`` overrides). The agent snapshots its tool list ONCE
     at build time, so this bounded join lets already-spawning servers land."""

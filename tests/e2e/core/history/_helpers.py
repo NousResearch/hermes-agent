@@ -247,9 +247,9 @@ def tools_diff(a: Any, b: Any) -> str:
     bn = {t["function"]["name"]: canon(t) for t in b or ()}
     if list(an) != list(bn):
         return f"names/order differ: -{sorted(set(an) - set(bn))} +{sorted(set(bn) - set(an))}"
-    for name in an:
-        if an[name] != bn[name]:
-            return f"tool {name!r}: {first_divergence(an[name], bn[name])}"
+    for name, a_tool in an.items():
+        if a_tool != bn[name]:
+            return f"tool {name!r}: {first_divergence(a_tool, bn[name])}"
     return "?"
 
 
@@ -395,7 +395,7 @@ class TuiGateway:
         self._wlock = threading.Lock()
         self.stored: dict[str, str] = {}
 
-    def __enter__(self) -> "TuiGateway":
+    def __enter__(self) -> TuiGateway:
         self.proc = self.spawned.add(subprocess.Popen(
             [sys.executable, "-m", "tui_gateway.entry"], cwd=self.cwd, env={**self.env, "PWD": self.cwd},
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,

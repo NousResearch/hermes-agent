@@ -60,7 +60,7 @@ class _ConsentRefusal(str):
     """A refusal reason (user-facing text) carrying its closed extension-install ``failure_class``,
     so publication classifies the refusal without matching the copy."""
 
-    def __new__(cls, text: str, failure_class: str) -> "_ConsentRefusal":
+    def __new__(cls, text: str, failure_class: str) -> _ConsentRefusal:
         refusal = super().__new__(cls, text)
         refusal.failure_class = failure_class
         return refusal
@@ -385,6 +385,15 @@ def _install_plugin_core(
         manifest = _read_manifest_for_install(tmp_target)
         plugin_name = manifest.get("name") or (
             subdir.rstrip("/").rsplit("/", 1)[-1] if subdir else _pc()._repo_name_from_url(git_url))
+        link = plugins_dir / str(plugin_name)
+        from pm.filesystem import is_junction
+        if "/" not in str(plugin_name) and (link.is_symlink() or is_junction(link)):
+            # A provider's own installer (e.g. `mnemosyne-hermes install`) links its package here; the
+            # name is fine, the slot is taken. Say so instead of blaming the manifest.
+            raise _pc().PluginOperationError(
+                f"Plugin '{plugin_name}' is already installed outside the catalog: {link} is a link to "
+                f"{os.path.realpath(link)}. Delete that link to install the catalog version.",
+                failure_class="already_installed")
         try:
             target = _pc()._sanitize_plugin_name(plugin_name, plugins_dir)
         except ValueError as e:
@@ -663,6 +672,9 @@ def cmd_install(
             f"[dim]Plugin installed but not enabled. "
             f"Run `hermes plugins enable {installed_name}` to activate.[/dim]")
 
+    from hermes_cli.plugin_provider_requests import requires_auth_notice
+    if notice := requires_auth_notice(installed_manifest):
+        console.print(f"[yellow]{notice}[/yellow]")
     # Non-interactive installs and declines leave declared capabilities ungranted (fail closed).
     declared_caps = _pc()._declared_capabilities_from_manifest(installed_manifest, installed_name)
     if declared_caps:

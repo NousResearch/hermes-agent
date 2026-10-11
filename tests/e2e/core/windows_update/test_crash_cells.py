@@ -266,7 +266,7 @@ def _tree(machine, label: str) -> dict:
     def git(*args: str) -> tuple[int, str]:
         res = subprocess.run([REAL_GIT, "--no-optional-locks", "-c", "safe.directory=*",
                               "-C", str(machine.install_dir), *args],
-                             env=machine.env(), capture_output=True, timeout=300)
+                             env=machine.env(), capture_output=True, timeout=300, check=False)
         return res.returncode, (_decode(res.stdout) + _decode(res.stderr)).strip()
 
     rc_head, head = git("rev-parse", "HEAD")
@@ -578,7 +578,7 @@ def _orphan(machine, srv, label: str) -> dict:
         marker_at_kill = _read_marker(machine)
         # No /T: the script alone dies; its update child (in the script's job, which has
         # no KILL_ON_JOB_CLOSE) keeps running.
-        subprocess.run(["taskkill", "/PID", str(proc.pid), "/F"], capture_output=True, timeout=60)
+        subprocess.run(["taskkill", "/PID", str(proc.pid), "/F"], capture_output=True, timeout=60, check=False)
         proc.wait(timeout=60)
         killed_at = time.monotonic()
         dead_while_running = None

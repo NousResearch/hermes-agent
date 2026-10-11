@@ -31,7 +31,7 @@ import re
 import subprocess
 import sys
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -335,7 +335,7 @@ def main(catalog_dir: Path = DEFAULT_CATALOG_DIR, output_dir: Path = DEFAULT_OUT
     by_tier = Counter(e["tier"] for e in entries)
     by_category = Counter(e["category"] for e in entries)
     meta = {
-        "generatedAt": datetime.now(timezone.utc).isoformat(),
+        "generatedAt": datetime.now(UTC).isoformat(),
         "total": len(entries),
         "byTier": {tier: by_tier.get(tier, 0) for tier in CATALOG_TIERS},
         "byCategory": {c: by_category.get(c, 0) for c in CATALOG_CATEGORIES if by_category.get(c)},

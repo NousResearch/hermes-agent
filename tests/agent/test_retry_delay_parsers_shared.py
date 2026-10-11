@@ -4,7 +4,7 @@ Cluster: every consumer of ``Retry-After`` / free-text reset grammars goes throu
 so an HTTP-date header or a "resets in 2 hours 5 minutes" body yields the same wait everywhere.
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from email.utils import format_datetime
 from types import SimpleNamespace
 
@@ -14,7 +14,7 @@ from agent.retry_utils import parse_retry_after_seconds, reset_delay_from_messag
 
 
 def _http_date(seconds_ahead: int) -> str:
-    return format_datetime(datetime.now(timezone.utc) + timedelta(seconds=seconds_ahead), usegmt=True)
+    return format_datetime(datetime.now(UTC) + timedelta(seconds=seconds_ahead), usegmt=True)
 
 
 class TestRetryAfterHeaderOneParser:

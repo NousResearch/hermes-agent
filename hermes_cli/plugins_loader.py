@@ -48,7 +48,7 @@ _LOADER_THREAD_PREFIX = "plugin-load:"  # names each deadline-bounded load worke
 _ABANDONED_LOADERS: list[threading.Thread] = []
 _ABANDONED_LOADERS_LOCK = threading.Lock()
 # PluginContexts of the outermost deadline-bounded load; set only inside its worker.
-_IN_PLUGIN_LOAD: contextvars.ContextVar[Optional[list["PluginContext"]]] = contextvars.ContextVar(
+_IN_PLUGIN_LOAD: contextvars.ContextVar[Optional[list[PluginContext]]] = contextvars.ContextVar(
     "hermes_plugin_load_scope", default=None,
 )
 
@@ -101,7 +101,7 @@ def _reserve_abandoned_loader_slot() -> None:
     )
 
 
-def run_with_load_deadline(plugin_key: str, ctx: "PluginContext", fn: Callable[[], Any]) -> Any:
+def run_with_load_deadline(plugin_key: str, ctx: PluginContext, fn: Callable[[], Any]) -> Any:
     """Run ``fn`` (a plugin's import + ``register()``) under the per-plugin deadline.
 
     The worker inherits the caller's context (the Hermes-home override is a ContextVar). On timeout the
@@ -732,7 +732,7 @@ class PluginLoaderMixin:
             raise
         return module
 
-    def _load_entrypoint_module(self, manifest: PluginManifest) -> Union[types.ModuleType, Callable[..., Any]]:
+    def _load_entrypoint_module(self, manifest: PluginManifest) -> types.ModuleType | Callable[..., Any]:
         """Load a pip-installed plugin via its entry-point reference: the module for a bare ``module`` target,
         the referenced attribute (normally ``register``) for the ``module:function`` form."""
         for ep in _select_entry_point_group(importlib.metadata.entry_points(), ENTRY_POINTS_GROUP):

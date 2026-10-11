@@ -71,7 +71,7 @@ class OptionalSkillSource(SkillSource):
         return self._meta(rel_dir, rel_dir.rsplit("/", 1)[-1], desc, [])
 
     @staticmethod
-    def _bundle(rel_id: str, files: dict[str, Union[str, bytes]], **kwargs) -> SkillBundle:
+    def _bundle(rel_id: str, files: dict[str, str | bytes], **kwargs) -> SkillBundle:
         return SkillBundle(name=rel_id.rsplit("/", 1)[-1], files=files, source="official",
                            identifier=f"official/{rel_id}", trust_level="builtin", **kwargs)
 
@@ -123,7 +123,7 @@ class OptionalSkillSource(SkillSource):
         upstream = None if skill_md is None else self._upstream_pointer_from_content(skill_md)
         if upstream is not None:
             return self._fetch_from_upstream(upstream, rel_id)
-        files: dict[str, Union[str, bytes]] = {}
+        files: dict[str, str | bytes] = {}
         for f in skill_dir.rglob("*"):
             if f.is_file() and not _skip_bundle_file(f.relative_to(skill_dir).as_posix()):
                 try:
@@ -174,7 +174,7 @@ class OptionalSkillSource(SkillSource):
         tree = github._get_repo_tree(self.OFFICIAL_REPO)
         if tree is None:
             return None
-        files: dict[str, Union[str, bytes]] = {}
+        files: dict[str, str | bytes] = {}
         for rel_file, item_path, regular in _tree_members(tree[1], f"{self.OPTIONAL_SKILLS_PREFIX}/{rel}/"):
             if not regular or _skip_bundle_file(rel_file):
                 continue
@@ -216,7 +216,7 @@ class OptionalSkillSource(SkillSource):
                                        valid=lambda c: isinstance(c, dict) and bool(c)) or {}
         return self._remote_dirs
 
-    def _upstream_pointer_from_content(self, content: Union[str, bytes]) -> Optional[dict[str, str]]:
+    def _upstream_pointer_from_content(self, content: str | bytes) -> Optional[dict[str, str]]:
         """Parse ``metadata.hermes.upstream: {repo: owner/name, path: ...}`` out of SKILL.md content
         (a catalog stub); None for vendored skills."""
         if isinstance(content, bytes):

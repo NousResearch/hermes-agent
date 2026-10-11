@@ -36,6 +36,7 @@ if ($ChannelRequest) { $identityArgs += @('--channel-request', $ChannelRequest) 
 $Expected = (Run-Node (@($Metadata, 'identity') + $identityArgs)) | ConvertFrom-Json
 Run-Node @($Metadata, 'prepare', '--work', $Work, '--out', $Out)
 . (Join-Path $Assets 'windows-bundle-metadata.ps1')
+. (Join-Path $Assets 'windows-bundle-plugin-smoke.ps1')
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $HomeDir = Join-Path $Work 'home'
 $UserData = Join-Path $Work 'user-data'
@@ -92,6 +93,8 @@ try {
         Run-Node @((Join-Path $Assets 'desktop-smoke.ts'), '--exe', $exe, '--root', $root, '--origin', 'bundled',
             '--home', $HomeDir, '--user-data', $UserData, '--out', $Out, '--phase', 'installed', '--expect-commit', $Commit)
     } finally { Pop-Location }
+    # Plugins whose Python dependencies PM builds must work inside the package (#135236).
+    Test-BundlePluginInstall $root $Out
 } catch {
     $failed = $true
     $_ | Out-String | Set-Content -LiteralPath (Join-Path $Out 'native-install-error.txt')

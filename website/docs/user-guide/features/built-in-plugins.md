@@ -247,6 +247,10 @@ model_name = "unknown"
 output_directory = "/home/you/.hermes/telemetry/nemo-relay/atif"
 filename_template = "trajectory-{session_id}.json"
 
+[components.config.opentelemetry]
+enabled = false
+endpoints = []
+
 [components.config.policy]
 unknown_component = "warn"
 unknown_field = "warn"

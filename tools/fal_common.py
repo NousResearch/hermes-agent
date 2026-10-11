@@ -188,7 +188,7 @@ class _ManagedFalSyncClient:
     def submit(
         self, application: str, arguments: dict[str, Any], *, path: str = "",
         hint: Optional[str] = None, webhook_url: Optional[str] = None, priority: Any = None,
-        headers: Optional[dict[str, str]] = None, start_timeout: Optional[Union[int, float]] = None,
+        headers: Optional[dict[str, str]] = None, start_timeout: Optional[int | float] = None,
     ):
         url = self._queue_url_format + application
         if path:

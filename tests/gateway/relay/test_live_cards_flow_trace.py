@@ -70,7 +70,7 @@ def test_trace_multisegment_draft_flow():
         )
         return r3
 
-    r3 = loop.run_until_complete(turn())
+    loop.run_until_complete(turn())
     print("\n--- OP TIMELINE ---")
     for i, op in enumerate(t.ops):
         print(f"{i:2d} {op['op']:<16} final={op.get('final')} draft_id={op.get('draft_id')} "

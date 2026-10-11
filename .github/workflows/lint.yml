@@ -145,7 +145,7 @@ jobs:
         with:
           command: python -m scripts.ci.python_packages "$(python -m scripts.code_health --print-pins)"
 
-      - name: ruff check .
+      - name: ruff check  .
         # No --exit-zero, no || true. Exit code propagates to the job,
         # which propagates to the required-check gate.
         run: |

@@ -137,7 +137,7 @@ class Footgun:
     # if the match is a REAL footgun (not a false positive). Use this when
     # the regex can't fully distinguish (e.g. open() where mode may contain
     # "b" for binary, or the line may have `encoding=` elsewhere).
-    post_filter: "Callable[..., Any] | None" = None
+    post_filter: Callable[..., Any] | None = None
 
 
 FOOTGUNS: list[Footgun] = [
@@ -646,7 +646,7 @@ def _call_closes_on_line(line: str, open_paren_end: int) -> bool:
     return False
 
 
-def _looks_like_string_literal(line: str, match: "re.Match") -> bool:
+def _looks_like_string_literal(line: str, match: re.Match) -> bool:
     """Heuristic: is the ``text=True`` match inside a string literal?
 
     Catches the common case of docstrings/comments that mention ``text=True``
@@ -776,7 +776,6 @@ def scan_file(path: Path, footguns: list[Footgun]) -> list[tuple[int, str, Footg
                 continue
         # Now check for docstring-open in the (possibly after-triple) portion.
         # Scan for the first unescaped '''/""" in the current code_for_scan.
-        stripped = code_for_scan.strip()
         for delim in ('"""', "'''"):
             if delim in code_for_scan:
                 # Count occurrences — even count means single-line docstring,

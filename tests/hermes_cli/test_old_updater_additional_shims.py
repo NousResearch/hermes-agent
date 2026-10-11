@@ -10,8 +10,8 @@ from types import SimpleNamespace
 import pytest
 
 from tests.compat.old_updater_support import (
-    fresh_child as fresh_child,
-    no_external_work as no_external_work,
+    fresh_child as fresh_child,  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
+    no_external_work as no_external_work,  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
 )
 
 

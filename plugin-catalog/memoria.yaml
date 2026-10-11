@@ -1,0 +1,29 @@
+name: memoria
+repo: https://github.com/matrixorigin/memoria
+sha: 3a5c5065b2820d56dd3d8ac8bb259a9424b1476e
+subdir: plugins/hermes
+description: >-
+  Memoria Cloud memory provider with scoped recall, explicit memory tools and opt-in background capture.
+  Disclosure — sends recall queries and explicit memory operations to api.thememoria.ai by default
+  (or a configured self-hosted origin). When enabled, auto capture uploads completed user/assistant text
+  for fact extraction, excluding tool results and media. A local SQLite outbox stores pending text;
+  credentials are resolved through the active Hermes profile's MEMORIA_API_KEY secret.
+maintainer: matrixorigin
+tier: community
+category: memory
+requires_hermes: ">=0.21.5"
+version: "0.1.1"
+docs_url: https://github.com/matrixorigin/memoria/blob/3a5c5065b2820d56dd3d8ac8bb259a9424b1476e/plugins/hermes/README.md
+readme: true
+platforms: [linux, macos]
+known_issues:
+  - "Development preview: local CLI acceptance passed; Desktop has not been validated and gateway platforms are disabled."
+  - "Auto capture is off by default. One-shot CLI exit can interrupt an in-flight capture, leaving an uncertain event requiring manual inspection."
+  - "Explicit-write exclusions apply to the current turn only. Auto capture can retain paraphrases, recalled facts from later turns, transient results or operation requests; global semantic deduplication is not guaranteed."
+  - "Ambiguous write outcomes are not automatically retried; this plugin does not provide exactly-once capture."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - MEMORIA_API_KEY

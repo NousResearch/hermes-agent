@@ -108,7 +108,7 @@ def _lazy_ensure_quietly(extra: str) -> None:
         pass
 
 
-def _process_error_detail(exc: "subprocess.CalledProcessError") -> str:
+def _process_error_detail(exc: subprocess.CalledProcessError) -> str:
     """stderr > stdout > str(exc) for a failed helper binary."""
     for output in (exc.stderr, exc.stdout):
         if isinstance(output, bytes):

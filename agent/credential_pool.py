@@ -13,7 +13,7 @@ import time
 import uuid
 import re
 from dataclasses import dataclass, fields, replace
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 
@@ -251,7 +251,7 @@ class PooledCredential:
         raise AttributeError(f"'{type(self).__name__}' object has no attribute {name!r}")
 
     @classmethod
-    def from_dict(cls, provider: str, payload: dict[str, Any]) -> "PooledCredential":
+    def from_dict(cls, provider: str, payload: dict[str, Any]) -> PooledCredential:
         field_names = {f.name for f in fields(cls) if f.name != "provider"}
         data = {k: payload.get(k) for k in field_names if k in payload}
         # Rehydrated last_status_at may be an ISO string from to_dict() — normalize to float epoch
@@ -419,13 +419,13 @@ def _parse_absolute_timestamp(value: Any) -> Optional[float]:
         except ValueError:
             pass
         try:
-            return datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
+            return datetime.fromisoformat(raw).timestamp()
         except ValueError:
             return None
     return None
 
 
-def _singleton_predates_entry(state: Any, entry: "PooledCredential") -> bool:
+def _singleton_predates_entry(state: Any, entry: PooledCredential) -> bool:
     """True only when the auth.json singleton is PROVABLY older than *entry*.
 
     Both sides stamp ``last_refresh`` on every successful rotation. When
@@ -819,7 +819,7 @@ def _write_through_provider_state_to_global_root(
         logger.debug("%s pool refresh: write-through to global root failed: %s", provider_id, exc)
 
 
-def _singleton_target_for_entry(pool: "CredentialPool", entry: "PooledCredential") -> Optional[Path]:
+def _singleton_target_for_entry(pool: CredentialPool, entry: PooledCredential) -> Optional[Path]:
     """Root ``.anthropic_oauth.json`` when *entry* is a borrowed hermes_pkce row, else None."""
     if entry.source != "hermes_pkce" or entry.id not in getattr(pool, "_borrowed_root_ids", ()):
         return None
@@ -999,7 +999,7 @@ _RESYNC_SOURCE = {
 class _RefreshDone(Exception):
     """Raised inside a provider refresher to short-circuit ``_refresh_entry_impl`` with ``result``."""
 
-    def __init__(self, result: Optional["PooledCredential"]):
+    def __init__(self, result: Optional[PooledCredential]):
         super().__init__()
         self.result = result
 
@@ -1912,7 +1912,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                             "message": str(exc),
                             "reason": "credential_pool_refresh_failure",
                             "relogin_required": True,
-                            "at": datetime.now(timezone.utc).isoformat(),
+                            "at": datetime.now(UTC).isoformat(),
                         }
                         _save_provider_state(auth_store, self.provider, state)
                         _save_auth_store(auth_store)

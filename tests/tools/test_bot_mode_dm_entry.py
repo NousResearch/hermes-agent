@@ -72,7 +72,7 @@ def _commit(home, venv):
 
 def _run(argv, env):
     return subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                          env=env, cwd=str(REPO.parent), timeout=120)
+                          env=env, cwd=str(REPO.parent), timeout=120, check=False)
 
 
 def test_delivery_runner_admits_through_dependencies_it_activates(tmp_path, committed_home):

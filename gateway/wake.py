@@ -247,7 +247,7 @@ async def _self_post_chat_completion(adapter: Any, *, text: str, session_id: str
                     await resp.read()
                     logger.info("wake self-post delivered for session %s (attempt %d)", session_id, attempt + 1)
                     return
-        except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as exc:
+        except (TimeoutError, aiohttp.ClientError, OSError) as exc:
             last_err = exc
             logger.warning("wake self-post transient failure for session %s (attempt %d/%d): %s",
                            session_id, attempt + 1, attempts, exc)

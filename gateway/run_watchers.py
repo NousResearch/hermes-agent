@@ -199,7 +199,7 @@ class GatewaySessionWatchersMixin:
             # Adapters often return SendResult(success=False) instead of raising.
             if result is not None and getattr(result, "success", True) is False:
                 raise RuntimeError(getattr(result, "error", "send returned success=False"))
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning(
                 "Session stall notify send timed out after %.0fs for %s; will retry next tick",
                 _STALL_NOTIFY_SEND_TIMEOUT_SECONDS, session_key,

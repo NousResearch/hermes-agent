@@ -21,7 +21,7 @@ concurrency:
   cancel-in-progress: ${{ github.ref_type != 'tag' }}
 
 jobs:
-  hadolint:
+  lint-docker-and-shell:
     name: Lint Dockerfile (hadolint)
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -29,29 +29,21 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
 
-      - name: hadolint
+      - name: Lint Dockerfile (hadolint)
         uses: hadolint/hadolint-action@54c9adbab1582c2ef04b2016b760714a4bfde3cf # v3.1.0
         with:
           dockerfile: Dockerfile
           config: .hadolint.yaml
           failure-threshold: warning
 
-      - name: hadolint (sandbox desktop image)
+      - name: Lint Dockerfile (hadolint, sandbox desktop image)
         uses: hadolint/hadolint-action@54c9adbab1582c2ef04b2016b760714a4bfde3cf # v3.1.0
         with:
           dockerfile: docker/sandbox-desktop.Dockerfile
           config: .hadolint.yaml
           failure-threshold: warning
 
-  shellcheck:
-    name: Lint docker/ shell scripts (shellcheck)
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
-
-      - name: shellcheck
+      - name: Lint shell scripts (shellcheck)
         uses: ludeeus/action-shellcheck@00cae500b08a931fb5698e11e79bfbd38e612a38 # v2.0.0
         env:
           # Severity = error: SC1091 (can't follow sourced script) is info-

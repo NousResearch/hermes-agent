@@ -86,7 +86,7 @@ else:
         calls.unlink(missing_ok=True)
         result = subprocess.run([sys.executable, '-I', '-S', str(driver), str(repo), *args],
                                 cwd=repo, env={**env, **(extra or {})}, capture_output=True,
-                                text=True, encoding='utf-8', timeout=45)
+                                text=True, encoding='utf-8', timeout=45, check=False)
         recorded = [json.loads(line) for line in calls.read_text(encoding='utf-8').splitlines()] if calls.exists() else []
         return result, recorded
 

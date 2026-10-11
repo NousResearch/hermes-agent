@@ -66,7 +66,7 @@ _TABLE_RULE_RE = re.compile(r"^\s*\|?(?:\s*:?-{3,}:?\s*\|)+\s*:?-{3,}:?\s*\|?\s*
 _FENCE_RE = re.compile(r"^```([^\n`]*)\s*$")
 
 
-def _is_stale_session_ret(ret: "Optional[int]", errcode: "Optional[int]", errmsg: "Optional[str]") -> bool:
+def _is_stale_session_ret(ret: Optional[int], errcode: Optional[int], errmsg: Optional[str]) -> bool:
     """Recognize stale-session variants of iLink's ``-2`` response, not real rate limits."""
     return (ret == RATE_LIMIT_ERRCODE or errcode == RATE_LIMIT_ERRCODE) and (errmsg or "").lower() in {
         "unknown error",
@@ -88,7 +88,7 @@ def _session_not_ready_error(ret: Any, errcode: Any, errmsg: Any) -> RuntimeErro
         " — the user must send the bot a message first (or re-pair)")
 
 
-def _make_ssl_connector() -> Optional["aiohttp.TCPConnector"]:
+def _make_ssl_connector() -> Optional[aiohttp.TCPConnector]:
     """TCPConnector with certifi's CA bundle (``ilinkai.weixin.qq.com`` fails some system stores, e.g. Homebrew
     OpenSSL); None without certifi so aiohttp's default (honors ``SSL_CERT_FILE`` under trust_env) applies.
     ``keepalive_timeout=2`` + ``enable_cleanup_closed`` drain idle CLOSE_WAIT sockets behind proxies like Warp.
@@ -108,7 +108,7 @@ def _make_ssl_connector() -> Optional["aiohttp.TCPConnector"]:
     return aiohttp.TCPConnector(ssl=ssl.create_default_context(cafile=certifi.where()), keepalive_timeout=2, enable_cleanup_closed=True)
 
 
-def _new_session(**kwargs: Any) -> "aiohttp.ClientSession":
+def _new_session(**kwargs: Any) -> aiohttp.ClientSession:
     return aiohttp.ClientSession(trust_env=gateway_trust_env(), connector=_make_ssl_connector(), **kwargs)
 
 
@@ -264,7 +264,7 @@ def _guess_chat_type(message: dict[str, Any], account_id: str) -> tuple[str, str
 # HTTP helpers enforce timeouts via asyncio.wait_for(), not aiohttp ClientTimeout, which raises
 # "Timeout context manager should be used inside a task" under run_coroutine_threadsafe() from cron.
 async def _api_request(
-    session: "aiohttp.ClientSession", method: str, *, base_url: str, endpoint: str, headers: dict[str, str], timeout_ms: int, body: Optional[str] = None,
+    session: aiohttp.ClientSession, method: str, *, base_url: str, endpoint: str, headers: dict[str, str], timeout_ms: int, body: Optional[str] = None,
 ) -> dict[str, Any]:
     async def _do() -> dict[str, Any]:
         kwargs = {"data": body} if body is not None else {}
@@ -277,26 +277,26 @@ async def _api_request(
 
 
 async def _api_post(
-    session: "aiohttp.ClientSession", *, base_url: str, endpoint: str, payload: dict[str, Any], token: Optional[str], timeout_ms: int,
+    session: aiohttp.ClientSession, *, base_url: str, endpoint: str, payload: dict[str, Any], token: Optional[str], timeout_ms: int,
 ) -> dict[str, Any]:
     body = json.dumps({**payload, "base_info": {"channel_version": CHANNEL_VERSION}}, ensure_ascii=False, separators=(",", ":"))
     return await _api_request(session, "POST", base_url=base_url, endpoint=endpoint, headers=_headers(token, body), timeout_ms=timeout_ms, body=body)
 
 
-async def _api_get(session: "aiohttp.ClientSession", *, base_url: str, endpoint: str, timeout_ms: int) -> dict[str, Any]:
+async def _api_get(session: aiohttp.ClientSession, *, base_url: str, endpoint: str, timeout_ms: int) -> dict[str, Any]:
     headers = {"iLink-App-Id": ILINK_APP_ID, "iLink-App-ClientVersion": str(ILINK_APP_CLIENT_VERSION)}
     return await _api_request(session, "GET", base_url=base_url, endpoint=endpoint, headers=headers, timeout_ms=timeout_ms)
 
 
-async def _get_updates(session: "aiohttp.ClientSession", *, base_url: str, token: str, sync_buf: str, timeout_ms: int) -> dict[str, Any]:
+async def _get_updates(session: aiohttp.ClientSession, *, base_url: str, token: str, sync_buf: str, timeout_ms: int) -> dict[str, Any]:
     try:
         return await _api_post(session, base_url=base_url, endpoint=EP_GET_UPDATES, payload={"get_updates_buf": sync_buf}, token=token, timeout_ms=timeout_ms)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         return {"ret": 0, "msgs": [], "get_updates_buf": sync_buf}
 
 
 async def _send_items(
-    session: "aiohttp.ClientSession", *, base_url: str, token: str, to: str, item_list: list[dict[str, Any]], context_token: Optional[str], client_id: str,
+    session: aiohttp.ClientSession, *, base_url: str, token: str, to: str, item_list: list[dict[str, Any]], context_token: Optional[str], client_id: str,
 ) -> dict[str, Any]:
     message: dict[str, Any] = {
         "from_user_id": "", "to_user_id": to, "client_id": client_id, "message_type": MSG_TYPE_BOT, "message_state": MSG_STATE_FINISH,
@@ -307,7 +307,7 @@ async def _send_items(
 
 
 async def _send_message(
-    session: "aiohttp.ClientSession", *, base_url: str, token: str, to: str, text: str, context_token: Optional[str], client_id: str,
+    session: aiohttp.ClientSession, *, base_url: str, token: str, to: str, text: str, context_token: Optional[str], client_id: str,
 ) -> dict[str, Any]:
     if not text or not text.strip():
         raise ValueError("_send_message: text must not be empty")
@@ -315,7 +315,7 @@ async def _send_message(
     return await _send_items(session, base_url=base_url, token=token, to=to, item_list=item_list, context_token=context_token, client_id=client_id)
 
 
-async def _get_config(session: "aiohttp.ClientSession", *, base_url: str, token: str, user_id: str, context_token: Optional[str]) -> dict[str, Any]:
+async def _get_config(session: aiohttp.ClientSession, *, base_url: str, token: str, user_id: str, context_token: Optional[str]) -> dict[str, Any]:
     payload: dict[str, Any] = {"ilink_user_id": user_id}
     if context_token:
         payload["context_token"] = context_token
@@ -323,7 +323,7 @@ async def _get_config(session: "aiohttp.ClientSession", *, base_url: str, token:
 
 
 async def _get_upload_url(
-    session: "aiohttp.ClientSession", *, base_url: str, token: str, to_user_id: str, media_type: int, filekey: str, rawsize: int,
+    session: aiohttp.ClientSession, *, base_url: str, token: str, to_user_id: str, media_type: int, filekey: str, rawsize: int,
     rawfilemd5: str, filesize: int, aeskey_hex: str,
 ) -> dict[str, Any]:
     payload = {
@@ -332,7 +332,7 @@ async def _get_upload_url(
     return await _api_post(session, base_url=base_url, endpoint=EP_GET_UPLOAD_URL, payload=payload, token=token, timeout_ms=API_TIMEOUT_MS)
 
 
-async def _upload_ciphertext(session: "aiohttp.ClientSession", *, ciphertext: bytes, upload_url: str) -> str:
+async def _upload_ciphertext(session: aiohttp.ClientSession, *, ciphertext: bytes, upload_url: str) -> str:
     async def _do() -> str:
         async with session.post(upload_url, data=ciphertext, headers={"Content-Type": "application/octet-stream"}) as response:
             encrypted_param = response.headers.get("x-encrypted-param") if response.status == 200 else None
@@ -344,7 +344,7 @@ async def _upload_ciphertext(session: "aiohttp.ClientSession", *, ciphertext: by
     return await asyncio.wait_for(_do(), timeout=120)
 
 
-async def _download_bytes(session: "aiohttp.ClientSession", *, url: str, timeout_seconds: float = 60.0) -> bytes:
+async def _download_bytes(session: aiohttp.ClientSession, *, url: str, timeout_seconds: float = 60.0) -> bytes:
     async def _do() -> bytes:
         async with session.get(url) as response:
             response.raise_for_status()
@@ -369,7 +369,7 @@ def _assert_weixin_cdn_url(url: str) -> None:
 
 
 async def _download_and_decrypt_media(
-    session: "aiohttp.ClientSession", *, cdn_base_url: str, encrypted_query_param: Optional[str], aes_key_b64: Optional[str],
+    session: aiohttp.ClientSession, *, cdn_base_url: str, encrypted_query_param: Optional[str], aes_key_b64: Optional[str],
     full_url: Optional[str], timeout_seconds: float,
 ) -> bytes:
     if encrypted_query_param:
@@ -571,7 +571,7 @@ def _save_sync_buf(hermes_home: str, account_id: str, sync_buf: str) -> None:
     atomic_json_write(_account_dir(hermes_home) / f"{account_id}.sync.json", {"get_updates_buf": sync_buf})
 
 
-async def _fetch_qr(session: "aiohttp.ClientSession", bot_type: str) -> tuple[str, str]:
+async def _fetch_qr(session: aiohttp.ClientSession, bot_type: str) -> tuple[str, str]:
     qr_resp = await _api_get(session, base_url=ILINK_BASE_URL, endpoint=f"{EP_GET_BOT_QR}?bot_type={bot_type}", timeout_ms=QR_TIMEOUT_MS)
     return str(qr_resp.get("qrcode") or ""), str(qr_resp.get("qrcode_img_content") or "")
 

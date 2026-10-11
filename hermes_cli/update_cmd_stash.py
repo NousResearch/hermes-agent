@@ -7,7 +7,7 @@ Origin helpers are imported lazily per function (no cycle; test patches on the o
 import logging
 import re
 import subprocess
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from pathlib import Path
 from typing import Optional
 
@@ -111,7 +111,7 @@ def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path, *, checkout_mo
         if add.returncode != 0:
             _print_nonempty(add.stderr)
 
-    stash_name = datetime.now(timezone.utc).strftime(f"{_AUTOSTASH_NAME_PREFIX}%Y%m%d-%H%M%S")
+    stash_name = datetime.now(UTC).strftime(f"{_AUTOSTASH_NAME_PREFIX}%Y%m%d-%H%M%S")
     print("→ Local changes detected — stashing before update...")
     prev_stash = _git_run(git_cmd, ["rev-parse", "--verify", "refs/stash"], cwd).stdout.strip()
     with (checkout_move or _no_move)(revert=True):  # push and reset put every tracked change back to HEAD
@@ -202,7 +202,7 @@ def _warn_orphaned_update_autostashes(git_cmd: list[str], cwd: Path) -> int:
         stash_list = _git_run(git_cmd, ["stash", "list", "--format=%gd %s"], cwd)
         if stash_list.returncode != 0:
             return 0
-        cutoff = datetime.now(timezone.utc) - timedelta(days=_AUTOSTASH_WARN_AGE_DAYS)
+        cutoff = datetime.now(UTC) - timedelta(days=_AUTOSTASH_WARN_AGE_DAYS)
         stale: list[tuple[str, str]] = []
         for line in stash_list.stdout.splitlines():
             selector, _, subject = line.strip().partition(" ")
@@ -211,7 +211,7 @@ def _warn_orphaned_update_autostashes(git_cmd: list[str], cwd: Path) -> int:
                 continue
             stamp = subject[pos + len(_AUTOSTASH_NAME_PREFIX):][:15]  # "YYYYMMDD-HHMMSS"
             try:
-                stash_time = datetime.strptime(stamp, "%Y%m%d-%H%M%S").replace(tzinfo=timezone.utc)
+                stash_time = datetime.strptime(stamp, "%Y%m%d-%H%M%S").replace(tzinfo=UTC)
             except ValueError:
                 continue  # age unknown — leave it alone rather than guess
             if stash_time < cutoff:

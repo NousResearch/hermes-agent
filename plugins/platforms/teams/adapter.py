@@ -21,6 +21,7 @@ import re
 import sys
 from collections import deque
 from contextlib import contextmanager, suppress
+from pathlib import Path
 from typing import Any, Dict, Iterator, Optional
 from urllib.parse import urlparse
 
@@ -119,12 +120,12 @@ class _AiohttpBridgeAdapter:
     """HttpServerAdapter bridging SDK route registrations into our aiohttp app; without it
     ``App()`` unconditionally imports fastapi/uvicorn and allocates a ``FastAPI()``."""
 
-    def __init__(self, aiohttp_app: "web.Application"):
+    def __init__(self, aiohttp_app: web.Application):
         self._aiohttp_app = aiohttp_app
 
-    def register_route(self, method: "HttpMethod", path: str, handler: "HttpRouteHandler") -> None:
-        async def _aiohttp_handler(request: "web.Request") -> "web.Response":
-            result: "HttpResponse" = await handler(HttpRequest(body=await request.json(), headers=dict(request.headers)))
+    def register_route(self, method: HttpMethod, path: str, handler: HttpRouteHandler) -> None:
+        async def _aiohttp_handler(request: web.Request) -> web.Response:
+            result: HttpResponse = await handler(HttpRequest(body=await request.json(), headers=dict(request.headers)))
             status = result.get("status", 200)
             resp_body = result.get("body")
             if resp_body is not None:
@@ -366,8 +367,8 @@ class TeamsAdapter(BasePlatformAdapter):
         self._port = coerce_port(self._extra.get("port") or _get_scoped_secret("TEAMS_PORT", str(_DEFAULT_PORT)), _DEFAULT_PORT)
         _raw_host = self._extra.get("host") or _get_scoped_secret("TEAMS_HOST", "") or _DEFAULT_HOST  # falsy → dual-stack None
         self._host: Optional[str] = str(_raw_host) if _raw_host else None
-        self._app: Optional["App"] = None
-        self._runner: Optional["web.AppRunner"] = None
+        self._app: Optional[App] = None
+        self._runner: Optional[web.AppRunner] = None
         self._dedup = MessageDeduplicator(max_size=1000)
         # chat_id → ConversationReference so proactive cards use the right conversation type.
         self._conv_refs: dict[str, Any] = {}
@@ -600,7 +601,7 @@ class TeamsAdapter(BasePlatformAdapter):
                 logger.warning("[teams] Failed to cache attachment '%s' (%s): %s", att_name or content_url, content_type, e)
         return None
 
-    async def _send_card(self, chat_id: str, card: "AdaptiveCard") -> "Any":
+    async def _send_card(self, chat_id: str, card: AdaptiveCard) -> Any:
         """Send an AdaptiveCard, using a stored ConversationReference when available."""
         from microsoft_teams.api import MessageActivityInput
         if not self._app:
@@ -624,17 +625,17 @@ class TeamsAdapter(BasePlatformAdapter):
             self._sent_ids.append(sent_id)
 
     @staticmethod
-    def _invoke_message(text: str) -> "InvokeResponse[AdaptiveCardActionMessageResponse]":
+    def _invoke_message(text: str) -> InvokeResponse[AdaptiveCardActionMessageResponse]:
         return InvokeResponse(status=200, body=AdaptiveCardActionMessageResponse(value=text))
 
     @staticmethod
-    def _invoke_card(body: list) -> "InvokeResponse[AdaptiveCardActionMessageResponse]":
+    def _invoke_card(body: list) -> InvokeResponse[AdaptiveCardActionMessageResponse]:
         card = AdaptiveCard().with_version("1.4").with_body(body)
         return InvokeResponse(status=200, body=AdaptiveCardActionCardResponse(value=card))
 
     async def _on_card_action(
-        self, ctx: "ActivityContext[AdaptiveCardInvokeActivity]"
-    ) -> "InvokeResponse[AdaptiveCardActionMessageResponse]":
+        self, ctx: ActivityContext[AdaptiveCardInvokeActivity]
+    ) -> InvokeResponse[AdaptiveCardActionMessageResponse]:
         from tools.approval import resolve_gateway_approval, has_blocking_approval
 
         data = ctx.activity.value.action.data or {}
@@ -751,8 +752,8 @@ class TeamsAdapter(BasePlatformAdapter):
             else:
                 path = source.removeprefix("file://")
                 mime_type = mimetypes.guess_type(path)[0] or default_mime
-                with open(path, "rb") as f:
-                    content_url = f"data:{mime_type};base64,{base64.b64encode(f.read()).decode()}"
+                data = await asyncio.to_thread(Path(path).read_bytes)
+                content_url = f"data:{mime_type};base64,{base64.b64encode(data).decode()}"
             activity = MessageActivityInput().add_attachments(Attachment(content_type=mime_type, content_url=content_url))
             if caption:
                 activity = activity.add_text(caption)

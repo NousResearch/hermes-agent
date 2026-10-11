@@ -183,7 +183,7 @@ def _credential_pool_is_usable(provider: str, *, raw_pool_present: bool = False,
     return raw_pool_present
 
 
-def prewarm_picker_cache_async() -> Optional["_threading.Thread"]:
+def prewarm_picker_cache_async() -> Optional[_threading.Thread]:
     """Warm ``provider_models_cache.json`` in a daemon thread by running the picker path once.
 
     The first ``/model`` open (or the first after the 1h TTL) otherwise blocks ~1-2s on serial

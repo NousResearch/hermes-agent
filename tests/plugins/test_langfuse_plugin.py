@@ -376,7 +376,7 @@ class _FakeLangfuse:
     can fire.  Patching ``plugin.Langfuse`` with this class lets the
     placeholder validator exercise its full code path."""
 
-    instances: list["_FakeLangfuse"] = []
+    instances: list[_FakeLangfuse] = []
 
     def __init__(self, **kwargs):
         self.kwargs = kwargs

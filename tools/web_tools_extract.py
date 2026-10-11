@@ -164,7 +164,7 @@ async def _dispatch_extract(provider, fetch_urls: list[str], format: Optional[st
             results = await asyncio.wait_for(coro, timeout=timeout)
         else:
             results = await coro
-    except asyncio.TimeoutError as exc:  # hanging backend — bounded, never a stalled tool call
+    except TimeoutError:  # hanging backend — bounded, never a stalled tool call
         logger.warning("web_extract provider '%s' timed out after %.0fs for %d URL(s)",
                        provider.name, timeout, len(fetch_urls))
         failed = [_result_entry(u, f"Extract timed out after {timeout:.0f}s via {provider.name}")

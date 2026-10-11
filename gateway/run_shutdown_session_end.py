@@ -54,7 +54,7 @@ class GatewaySessionEndMixin:
                 self._run_housekeeping_in_executor(self._run_release_in_profile_scope, _call, (), session_key),
                 timeout=self._FINALIZE_TIMEOUT_S,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning(
                 "Session finalize hooks (%s, reason=%s) exceeded %ss; proceeding without blocking the event loop "
                 "(the worker thread is left to finish on its own).", session_id, reason, self._FINALIZE_TIMEOUT_S,

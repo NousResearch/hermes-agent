@@ -105,7 +105,7 @@ def test_termux_commit_args_reach_prerequisite_checks_without_mutation(tmp_path)
         if script.name == "build_deb.sh":
             args += ["--payload", str(tmp_path / "absent")]
         result = subprocess.run([_BASH, str(script), *args], env=env, cwd=tmp_path,
-                                capture_output=True, text=True, timeout=30)
+                                capture_output=True, text=True, timeout=30, check=False)
         assert result.returncode == 1, result.stdout + result.stderr
         assert "usage:" not in result.stderr
         assert not out.exists()

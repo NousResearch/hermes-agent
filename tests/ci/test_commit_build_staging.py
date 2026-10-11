@@ -59,7 +59,7 @@ def shell_step(tmp_path, r2_server, job, name, env, *, script=None):
     environment = _child_env(**env)
     environment['PATH'] = str(helper) + os.pathsep + environment['PATH']
     return subprocess.run([_BASH, '-e', '-o', 'pipefail', str(script_file)], cwd=tmp_path,
-                          env=environment, capture_output=True, text=True, encoding='utf-8', timeout=60)
+                          env=environment, capture_output=True, text=True, encoding='utf-8', timeout=60, check=False)
 
 
 @pytest.mark.parametrize("has_download", [True, False])

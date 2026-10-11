@@ -202,8 +202,7 @@ def _parse_provider_sse_events(text: str) -> list[dict]:
             current["fields"][field.strip().lower()] = ""
             continue
         field = field.strip().lower()
-        if value.startswith(" "):
-            value = value[1:]
+        value = value.removeprefix(" ")
         if field == "event":
             current["event"] = value.strip()
         elif field == "data":
@@ -487,7 +486,7 @@ def _provider_preferences_for_agent(agent) -> dict[str, Any]:
     return {key: value for key, value in merged.items() if value}
 
 
-def _prompt_cache_scope_for_agent(agent) -> "str | None":
+def _prompt_cache_scope_for_agent(agent) -> str | None:
     """Rotation-stable logical cache scope for *agent*, or None (transports then
     fall back to the physical session_id, so a failure never blocks the build)."""
     try:
@@ -619,7 +618,7 @@ def _check_stale_giveup(agent) -> None:
         )
 
 
-def _stream_env_stale_base() -> "tuple[float, bool]":
+def _stream_env_stale_base() -> tuple[float, bool]:
     """(HERMES_STREAM_STALE_TIMEOUT or the implicit 180s, explicit) — like
     ``AIAgent._resolved_api_call_stale_timeout_base``; an explicit env value is the
     user's deadline, so it is never capped to the run budget."""
@@ -701,7 +700,7 @@ def _cloud_stale_timeout_for(agent, api_kwargs: dict) -> float:
     return timeout if explicit_env else cap_to_run_budget(agent, timeout)
 
 
-def _bedrock_reasoning_stale_floor(model_id: object) -> "float | None":
+def _bedrock_reasoning_stale_floor(model_id: object) -> float | None:
     """Map a Bedrock inference-profile id to its reasoning stale-timeout floor.
 
     ``us.anthropic.claude-opus-4-6-v1:0`` -> strip the region prefix, then try the
@@ -832,7 +831,7 @@ def should_use_direct_api_call(agent) -> bool:
 _DIRECT_API_ACTIVITY_HEARTBEAT_SECONDS = 15.0
 
 
-def _managed_local_load_notice(agent, api_kwargs: dict) -> "Optional[str]":
+def _managed_local_load_notice(agent, api_kwargs: dict) -> Optional[str]:
     """Live phase notice ("⏳ loading <model> into memory — N%" / "⚙ processing
     prompt — P%") while the managed local server works before the first token;
     None when neither applies. Otherwise a cold load reads as a generic stall."""
@@ -1825,7 +1824,7 @@ _FALLBACK_REASON_LABELS = {
 }
 
 
-def _fallback_reason_text(reason: "FailoverReason | None") -> str:
+def _fallback_reason_text(reason: FailoverReason | None) -> str:
     """Return a concise operator-facing explanation for a fallback switch."""
     label = _FALLBACK_REASON_LABELS.get(reason)
     return label or str(getattr(reason, "value", None) or reason or "provider failure").replace("_", " ")
@@ -1931,7 +1930,7 @@ def _log_fallback_activated(agent, reason, old_model, old_provider, fb_model, fb
     )
 
 
-def _fallback_chain_exhausted(agent, reason: "FailoverReason | None") -> bool:
+def _fallback_chain_exhausted(agent, reason: FailoverReason | None) -> bool:
     """Chain exhausted (always False). A non-empty chain walked on a non-rate-limit failure arms a
     short cooldown so next turn's restore_primary_runtime stays gated instead of replaying the whole
     context across every provider again."""
@@ -2070,7 +2069,7 @@ def _buffer_fallback_notice(agent, notice: str) -> None:
         agent._pending_fallback_notice = [str(pending), notice] if pending else [notice]
 
 
-def try_activate_fallback(agent, reason: "FailoverReason | None" = None, reset_at=None) -> bool:
+def try_activate_fallback(agent, reason: FailoverReason | None = None, reset_at=None) -> bool:
     """Switch to the next fallback model/provider in the chain; False when exhausted. Swaps client,
     model slug and provider in place so the retry loop continues on the new backend; client
     construction goes through resolve_provider_client (no duplicated provider→key mappings)."""

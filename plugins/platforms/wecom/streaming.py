@@ -119,7 +119,7 @@ class WeComStreamMixin:
             return {"errcode": 0, "errmsg": "sent_nonblocking"}
         try:
             return await asyncio.wait_for(future, timeout=self._REPLY_ACK_TIMEOUT)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             # Bytes went out, ack is late — WeCom already rendered it; raising caused duplicates.
             logger.warning("[%s] Final frame ack timeout (req_id=%s) — treating as delivered (matches official wecom-openclaw-plugin behaviour). No fallback send.", self.name, normalized)
             return {"errcode": 0, "errmsg": "ack_timeout_assumed_delivered", "ack_pending": True}
@@ -133,7 +133,7 @@ class WeComStreamMixin:
         logger.debug("[%s] _send_reply_queued: final waiting for pending ack drain — req_id=%s pending_stream_id=%s pending_finish=%s pending_sent_at=%.1fs_ago", *pending_desc, _elapsed(pending_frame.sent_at))
         try:
             await asyncio.wait_for(asyncio.shield(pending_frame.future), timeout=self._REPLY_ACK_TIMEOUT)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning(
                 "[%s] Reply ack timeout waiting for pending (req_id=%s) — pending_stream_id=%s pending_finish=%s elapsed=%.1fs. Possible causes: ack cmd filtered, ack req_id mismatch, or WeCom did not ack.",
                 *pending_desc, _elapsed(pending_frame.sent_at),

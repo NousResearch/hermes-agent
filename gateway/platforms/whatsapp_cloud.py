@@ -205,18 +205,18 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self._group_allow_from: set[str] = self._normalize_allow_ids(self._coerce_allow_list(raw_groups))
         self._mention_patterns = self._compile_mention_patterns()
         # Webhook dedup state (in-memory, FIFO-evicted) and counters.
-        self._seen_wamids: "OrderedDict[str, bool]" = OrderedDict()
+        self._seen_wamids: OrderedDict[str, bool] = OrderedDict()
         self._duplicate_count = self._accepted_count = self._rejected_signature_count = 0
         self._warned_no_ffmpeg: bool = False
         # Latest inbound wamid per chat: Meta's typing/read-receipt API needs a
         # message_id to attach to, and the base send_typing contract has none.
-        self._last_inbound_wamid_by_chat: "OrderedDict[str, str]" = OrderedDict()
+        self._last_inbound_wamid_by_chat: OrderedDict[str, str] = OrderedDict()
         # Interactive-button state: short id (in the button payload) → session_key for
         # the gateway resolver. Popped on tap; FIFO-capped via bounded_put so ignored
         # prompts don't accumulate (an evicted tap degrades to text fallback).
-        self._clarify_state: "OrderedDict[str, str]" = OrderedDict()
-        self._exec_approval_state: "OrderedDict[str, str]" = OrderedDict()
-        self._slash_confirm_state: "OrderedDict[str, str]" = OrderedDict()
+        self._clarify_state: OrderedDict[str, str] = OrderedDict()
+        self._exec_approval_state: OrderedDict[str, str] = OrderedDict()
+        self._slash_confirm_state: OrderedDict[str, str] = OrderedDict()
         self._runner = self._http_client = None
 
     # ------------------------------------------------------------------ helpers
@@ -417,7 +417,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     # ------------------------------------------------------------------ interactive messages
     async def _send_interactive(
         self, chat_id: str, interactive: dict[str, Any], metadata: Optional[dict[str, Any]],
-        state: "OrderedDict[str, str]", state_id: str, session_key: str,
+        state: OrderedDict[str, str], state_id: str, session_key: str,
     ) -> SendResult:
         """POST an ``interactive`` message (caller supplies ``type``/``body``/``action``) and, on
         success, remember ``state_id → session_key`` for the tap. Free-form interactives need no
@@ -535,7 +535,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return None, f"File {os.path.basename(file_path)} is {size} bytes; Cloud API {media_kind} cap is {cap} bytes"
         mime_type = mime_type or mimetypes.guess_type(file_path)[0] or _DEFAULT_MIME.get(media_kind, "application/octet-stream")
         try:
-            with open(file_path, "rb") as fh:
+            with open(file_path, "rb") as fh:  # noqa: ASYNC230 -- file handle is streamed to the upload; a local open() is non-blocking in practice
                 files = {"file": (os.path.basename(file_path), fh, mime_type), "messaging_product": (None, "whatsapp"), "type": (None, mime_type)}
                 resp = await self._http_client.post(self._graph_url("media"), headers=self._auth_headers(json_body=False), files=files)
         except Exception as exc:
@@ -692,7 +692,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         return str(out_path), mime or None
 
     # ------------------------------------------------------------------ inbound
-    async def _handle_health(self, request: "web.Request") -> "web.Response":
+    async def _handle_health(self, request: web.Request) -> web.Response:
         return web.json_response({
             "status": "ok", "platform": self.platform.value, "phone_number_id": self._phone_number_id,
             "webhook_path": self._webhook_path, "verify_token_configured": bool(self._verify_token),
@@ -701,7 +701,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             "rejected_signature": self._rejected_signature_count,
         })
 
-    async def _handle_verify(self, request: "web.Request") -> "web.Response":
+    async def _handle_verify(self, request: web.Request) -> web.Response:
         """Meta subscription handshake: echo ``hub.challenge`` iff mode is
         ``subscribe`` and ``hub.verify_token`` matches (constant-time)."""
         if not self._verify_token:
@@ -717,7 +717,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return web.Response(status=400, text="missing challenge")
         return web.Response(text=q["hub.challenge"], content_type="text/plain")
 
-    async def _handle_webhook(self, request: "web.Request") -> "web.Response":
+    async def _handle_webhook(self, request: web.Request) -> web.Response:
         """Inbound webhook POST: raw bytes → HMAC verify → JSON → dispatch. Signature is over
         the raw body, so JSON parsing must come after verification. Always 200 once a valid
         request is ack'd — Meta retries non-200 for up to 7 days and would multiply agent work."""
@@ -855,7 +855,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
     @staticmethod
     def _pop_tap_state(
-        state: "OrderedDict[str, str]", key: str, stale_log: str, choice: str = "", valid: tuple = (),
+        state: OrderedDict[str, str], key: str, stale_log: str, choice: str = "", valid: tuple = (),
     ) -> Optional[str]:
         """Pop the session_key for a tapped prompt. None (info-logged) when nothing is live — likely
         a stale tap; an unrecognised ``choice`` keeps the prompt live and also yields None."""

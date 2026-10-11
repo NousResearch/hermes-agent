@@ -44,7 +44,7 @@ from tools.memory_tool_store import (
     ENTRY_DELIMITER, FAILURE_CLASS, MEMORY_BLOCK_HEADERS, MemoryStore, _scan_memory_content)
 
 
-def load_on_disk_store() -> "MemoryStore":
+def load_on_disk_store() -> MemoryStore:
     """Fresh on-disk MemoryStore with configured limits/flags for contexts with no live
     agent (gateway, Desktop, ``/memory``) so approvals enforce the SAME caps as
     ``agent_init``. Falls back to defaults if config can't load; never raises."""
@@ -61,7 +61,7 @@ def load_on_disk_store() -> "MemoryStore":
     return store
 
 
-def _pin_matched_entries(store: "MemoryStore", payload: dict[str, Any]) -> Optional[str]:
+def _pin_matched_entries(store: MemoryStore, payload: dict[str, Any]) -> Optional[str]:
     """Record on each staged replace/remove the FULL entry its old_text selects now. Approval
     then applies to exactly the entry the approver reviewed and refuses if it changed:
     re-running the old_text search at approve time could hit a newer entry that still
@@ -81,7 +81,7 @@ def _pin_matched_entries(store: "MemoryStore", payload: dict[str, Any]) -> Optio
     return None if result.get("success") else json.dumps(result, ensure_ascii=False)
 
 
-def _gate_or_stage(store: "MemoryStore", summary: str, detail: str, payload: dict[str, Any]) -> Optional[str]:
+def _gate_or_stage(store: MemoryStore, summary: str, detail: str, payload: dict[str, Any]) -> Optional[str]:
     """JSON tool-result string when the write must NOT proceed (blocked or staged
     for approval), None to proceed. Fails open if the gate module can't load."""
     try:
@@ -123,7 +123,7 @@ def _batch_op_line(op: dict[str, Any]) -> str:
             else f"- {act}: {content}")
 
 
-def _apply_write_gate(store: "MemoryStore", action: str, target: str, content: Optional[str],
+def _apply_write_gate(store: MemoryStore, action: str, target: str, content: Optional[str],
                       old_text: Optional[str], operations: Optional[list[dict[str, Any]]] = None) -> Optional[str]:
     """Gate one mutating op, or (``operations`` set) a whole batch as a single unit."""
     label = "user profile" if target == "user" else "memory"
@@ -309,7 +309,7 @@ def check_memory_requirements() -> bool:
     return flags[0] or flags[1]
 
 
-def _memory_target_error(store: "MemoryStore", target: str) -> Optional[dict[str, Any]]:
+def _memory_target_error(store: MemoryStore, target: str) -> Optional[dict[str, Any]]:
     """Return a shared validation error for an invalid or disabled target."""
     if target not in {"memory", "user"}:
         from tools.registry import _bound_error_text
@@ -323,7 +323,7 @@ def _memory_target_error(store: "MemoryStore", target: str) -> Optional[dict[str
     return {"success": False, "error": f"Built-in {label} writes are disabled in memory config.", "target": target}
 
 
-def apply_memory_pending(payload: dict[str, Any], store: "MemoryStore") -> dict[str, Any]:
+def apply_memory_pending(payload: dict[str, Any], store: MemoryStore) -> dict[str, Any]:
     """Replay a staged write against the store, bypassing the gate (/memory approve). A
     replace/remove applies to exactly its pinned ``matched_entry`` or is refused; a record
     staged before pinning has no verifiable target, so it is refused rather than replayed by

@@ -68,7 +68,7 @@ def _spawn(ph: ParityHome, argv: list[str], log_name: str, extra_env: dict[str, 
     return proc
 
 
-def _stdout_pump(proc: subprocess.Popen) -> "queue.Queue[str | None]":
+def _stdout_pump(proc: subprocess.Popen) -> queue.Queue[str | None]:
     lines: queue.Queue[str | None] = queue.Queue()
 
     def pump() -> None:
@@ -108,6 +108,7 @@ def _stop(ph: ParityHome, proc: subprocess.Popen) -> bool:
                  str(proc.pid)],
                 cwd=ph.project, env=ph.env(), capture_output=True, text=True, timeout=60,
                 stdin=subprocess.DEVNULL,
+                check=False,
             )
             assert marker.returncode == 0, f"planned-stop marker write failed: {marker.stderr[-1000:]}"
             marker_path = Path(marker.stdout.strip().splitlines()[-1])

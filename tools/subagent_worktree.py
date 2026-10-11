@@ -31,7 +31,7 @@ def _run_git(args, cwd: str, timeout: int = _GIT_TIMEOUT, env=None):
     """
     return subprocess.run(["git", *harden_git_argv(args)], cwd=cwd, capture_output=True,
                           text=True, encoding="utf-8", errors="replace", timeout=timeout,
-                          stdin=subprocess.DEVNULL, env=env or noninteractive_git_env())
+                          stdin=subprocess.DEVNULL, env=env or noninteractive_git_env(), check=False)
 
 
 def local_backend_active() -> bool:

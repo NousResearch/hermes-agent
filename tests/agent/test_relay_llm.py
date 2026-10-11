@@ -414,7 +414,10 @@ def test_stream_uses_rewritten_request_and_post_intercept_chunks(relay_turn):
             annotated,
         )
 
-    def rewrite_stream(request, next_call):
+    def rewrite_stream(name, request, context, next_call):
+        assert name == "test-provider"
+        assert context.response_codec is None
+
         async def generate():
             upstream = await next_call(request)
             async for chunk in upstream:
@@ -830,7 +833,7 @@ def test_logical_close_skips_pop_under_concurrent_turn_scope(relay_turn):
     observe_top = lambda: lease.host.run_in_session(
         lease.session, relay_runtime._current_top, relay
     )
-    top_before_sibling = observe_top()
+    observe_top()
 
     # A concurrent turn's live scope sits above ours.
     sibling_handle = lease.host.run_in_session(
@@ -1522,7 +1525,7 @@ def test_stream_current_unwraps_completed_response_with_real_interceptor(relay_t
     relay, _turn = relay_turn
     completed = _completed_response()
 
-    async def identity_stream(request, next_call):
+    async def identity_stream(_name, request, _context, next_call):
         return await next_call(request)
 
     relay.intercepts.register_llm_stream_execution(
@@ -1551,7 +1554,7 @@ def test_stream_current_preserves_real_relay_interceptor_chunks(relay_turn):
     """Priming a real managed pipeline must retain its transformed first chunk."""
     relay, _turn = relay_turn
 
-    def rewrite_stream(request, next_call):
+    def rewrite_stream(_name, request, _context, next_call):
         async def generate():
             upstream = await next_call(request)
             async for chunk in upstream:

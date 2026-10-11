@@ -180,18 +180,22 @@ def test_uv_refuses_discovery_when_pm_python_is_missing(installed_uv, monkeypatc
     assert not list(entry.iterdir())
 
 
-def test_bundled_uv_builds_on_the_shipped_python_and_writes_nothing(installed_uv, monkeypatch):
-    """A sealed payload's venvs are built on its own interpreter, never a writable copy:
-    the venvs are entered through ``venv_command``, so no redirector needs an outside target."""
+@pytest.mark.platforms("windows")
+def test_bundled_uv_uses_a_verified_writable_python_without_changing_runtime(installed_uv, monkeypatch):
     from pm import paths
     from pm import registry
     from pm.store import Store, tree_digest
 
     root, uv_binary, facts, target, digest = installed_uv
+    ensure = importlib.import_module("pm.install")
     shipped = uv_binary.parent.parent
     writable = root / "writable-tools"
     monkeypatch.setattr(paths, "writable_store_root", lambda: writable)
     (shipped.parent / "manifest.json").write_text("{}", encoding="utf-8")
+
+    class FixturePython(Python):
+        def verify(self, entry, target):
+            return "" if self.binary(entry, target).read_bytes() == b"pinned interpreter" else "damaged Python"
 
     class FixtureUv(Uv):
         emulated_arch_targets = {target}
@@ -199,23 +203,51 @@ def test_bundled_uv_builds_on_the_shipped_python_and_writes_nothing(installed_uv
     monkeypatch.setitem(registry._packages, "uv", FixtureUv())
     facts.record("uv", "test", uv_binary.parent.name, {}, shipped,
                  target=target, artifacts=[digest], digest=tree_digest(uv_binary.parent))
-    python = Python()
+    python = FixturePython()
     monkeypatch.setitem(registry._packages, "python", python)
     entry = shipped / python.store_entry("test", target)
-    binary = python.binary(entry, target)
-    binary.parent.mkdir(parents=True)
+    entry.mkdir()
+    binary = entry / "python.exe"
     binary.write_bytes(b"pinned interpreter")
-    binary.chmod(0o755)
+    (entry / "python.dll").write_bytes(b"pinned runtime")
     facts.record("python", "test", entry.name, python.env(entry, target), shipped,
                  target=target, artifacts=[digest], digest=tree_digest(entry))
     before = facts.path.read_bytes()
-    monkeypatch.setattr(Store, "fetch_many", lambda *a, **k: pytest.fail("the shipped Python must not be fetched"))
-    monkeypatch.setattr(shutil, "copytree", lambda *a, **k: pytest.fail("the shipped Python must not be copied"))
+    shipped_digest = tree_digest(entry)
+    monkeypatch.setattr(ensure, "lazy_installs_allowed", lambda: False)
 
-    assert _toolchain(realize=False) == (uv_binary, binary)
-    assert _toolchain(explicit=True) == (uv_binary, binary)
+    def no_download(*args, **kwargs):
+        raise AssertionError("the verified Python must be copied without downloading")
+
+    monkeypatch.setattr(Store, "fetch_many", no_download)
+    assert _toolchain(realize=False) is None
     assert not writable.exists()
+    with pytest.raises(InstallError, match="lazy installs are disabled"):
+        _toolchain()
+    assert not writable.exists()
+
+    resolved_uv, python = _toolchain(explicit=True)
+    copied = writable / entry.name
+    assert resolved_uv == uv_binary
+    assert python == copied / "python.exe"
+    assert tree_digest(copied) == shipped_digest
+    copied_fact = Facts(writable / "facts.json").get("python")
+    assert copied_fact["digest"] == shipped_digest
+    assert copied_fact["artifacts"] == [digest]
+    assert copied_fact["target"] == target
+    assert ensure.installed_package("python").binary == binary
+    assert str(copied) not in ensure.env_for("python")["PATH"]
+
+    def no_copy(*args, **kwargs):
+        raise AssertionError("a matching copy must be reused")
+
+    with monkeypatch.context() as reuse:
+        reuse.setattr(shutil, "copytree", no_copy)
+        assert _toolchain(realize=False)[1] == python
+        assert _toolchain()[1] == python
+
     assert facts.path.read_bytes() == before
+    assert tree_digest(entry) == shipped_digest
 
 
 @pytest.mark.parametrize("damage", [None, "source", "copy", "publication"])

@@ -2,4 +2,34 @@ pre-commit:
   jobs:
     - name: lint python
       glob: "*.py" # glob filter
-      run: ruff check --config ./ruff.strict.toml {staged_files}
+      run: ruff check --config ./ruff.pre-commit.toml {staged_files}
+
+    - name: lint web
+      root: web/
+      glob: "*.{js,ts,tsx}"
+      run: npx eslint {staged_files}
+
+    - name: lint bootstrap installer
+      root: apps/bootstrap-installer/
+      glob: "*.{js,ts,tsx}"
+      run: npx eslint {staged_files}
+
+    - name: lint desktop app
+      root: apps/desktop/
+      glob: "*.{js,ts,tsx}"
+      run: npx eslint {staged_files}
+
+    - name: lint tui
+      root: ui-tui/
+      glob: "*.{js,ts,tsx}"
+      run: npx eslint {staged_files}
+
+    - name: lint shared
+      root: apps/shared/
+      glob: "*.{js,ts,tsx}"
+      run: npx eslint {staged_files}
+
+    - name: lint tests
+      root: tests-js/
+      glob: "*.{js,ts,tsx}"
+      run: npx eslint {staged_files}

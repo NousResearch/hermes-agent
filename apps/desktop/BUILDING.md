@@ -319,15 +319,17 @@ relaunch waiter is registered before the install request. Unknown checks,
 cancellation and request failures do not count as successful updates. Native
 acceptance requires a Store-acquired package or flight, not a sideloaded MSIX.
 
-On Windows bundles, every dependency generation is built on the bundled Python
-and nothing runs a venv's own executables. A venv's `Scripts\python.exe` is a
-redirector outside the package that starts the packaged interpreter, which
-Windows refuses (WinError 5) to a process without package identity. The app and
-execution aliases keep their signed bundled launchers, and children that need a
+On Windows bundles, PM builds dependency generations on a verified writable
+copy of the bundled Python in its user store. A venv's `Scripts\python.exe` is a
+redirector outside the package. Windows refuses it (WinError 5) when it starts the
+packaged interpreter, and uv runs that redirector during every lock, sync and
+`pip check`. Hermes never runs a venv's own executables. The app and execution
+aliases keep their signed bundled launchers, and children that need a
 generation's packages start through `pm.environments.venv_command`: the bundled
 Python with `-S` plus `pm/_venv_entry.py`, which attaches the generation's
-site-packages. The new venv's generated console scripts must not replace the
-launchers, and are kept off `PATH`.
+site-packages. Processes started from the bundled Python keep package access to
+the bundled git, rg and the PM worker. The new venv's generated console scripts
+must not replace the launchers, and are kept off `PATH`.
 
 Sideload stable versions are `X.Y.Z.0`. Canary revisions derive from elapsed
 minutes after the stable baseline. The release script rejects ambiguous or

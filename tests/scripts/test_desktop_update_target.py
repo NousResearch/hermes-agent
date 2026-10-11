@@ -127,6 +127,7 @@ def _run_handoff(tmp_path, target, *, windows=False, inherited_home=True, modern
         text=True,
         encoding="utf-8",
         timeout=90,
+        check=False,
     )
     calls = (
         [json.loads(line) for line in capture.read_text(encoding="utf-8").splitlines()]

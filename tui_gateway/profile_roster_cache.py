@@ -62,7 +62,7 @@ def _cached(cache: dict, key: str, signature: Optional[tuple], compute: Callable
     return fields
 
 
-def store_signature(profile_path: "str | Path") -> Optional[tuple]:
+def store_signature(profile_path: str | Path) -> Optional[tuple]:
     """``(name, mtime_ns, size)`` per session-store file, or None when the profile has no store.
 
     The pair the change watcher already trusts for ``sessions.changed``.
@@ -74,17 +74,17 @@ def store_signature(profile_path: "str | Path") -> Optional[tuple]:
     return tuple(p for p in parts if not (p[0].endswith("-wal") and p[2] == 0)) or None
 
 
-def profile_yaml_signature(profile_dir: "str | Path") -> Optional[tuple]:
+def profile_yaml_signature(profile_dir: str | Path) -> Optional[tuple]:
     """``(name, mtime_ns, size, inode)`` of the profile's ``profile.yaml``, or None when absent."""
     return _file_parts(Path(profile_dir) / "profile.yaml", with_inode=True)
 
 
-def cached_session_fields(profile_path: "str | Path", compute: Callable[[], dict]) -> dict[str, Any]:
+def cached_session_fields(profile_path: str | Path, compute: Callable[[], dict]) -> dict[str, Any]:
     """``compute()``'s fields, reused while the profile's session store has not moved."""
     return _cached(_SESSION_CACHE, str(profile_path), store_signature(profile_path), compute, dict)
 
 
-def cached_ui_meta_fields(profile_dir: "str | Path", compute: Callable[[], dict]) -> dict[str, Any]:
+def cached_ui_meta_fields(profile_dir: str | Path, compute: Callable[[], dict]) -> dict[str, Any]:
     """``compute()``'s fields, reused while the profile's ``profile.yaml`` has not changed.
 
     Copied deeply: ``ui_meta`` is a nested mapping the caller hands to a client.
@@ -93,7 +93,7 @@ def cached_ui_meta_fields(profile_dir: "str | Path", compute: Callable[[], dict]
                    compute, copy.deepcopy)
 
 
-def invalidate(profile_path: "str | Path | None" = None) -> None:
+def invalidate(profile_path: str | Path | None = None) -> None:
     """Drop one profile's memos, or all of them. For tests and for a caller that knows better."""
     for cache in (_SESSION_CACHE, _UI_META_CACHE):
         if profile_path is None:

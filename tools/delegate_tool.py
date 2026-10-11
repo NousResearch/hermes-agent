@@ -154,7 +154,7 @@ def _apply_child_cache_ttl(child) -> None:
 _CHILD_CAP_MIN = 16_000  # below this a child compresses on every call; treat as a config error
 
 
-def _child_compression_cap_tokens(raw) -> "int | None":
+def _child_compression_cap_tokens(raw) -> int | None:
     """Validated ``delegation.compression_threshold_tokens``: an int >= 16000, or None for "no cap".
 
     Unset / ``0`` / ``false`` / ``null`` mean no subagent-specific cap: the child compacts at the

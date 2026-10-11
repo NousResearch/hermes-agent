@@ -69,12 +69,12 @@ def _prepare_connection_retirement():
 # at a new inode (the very replacement this probe detects) the stale fd is RETIRED, never closed
 # — closing it would cancel the live connection's locks.  Replacements are rare and halt writes.
 _HEADER_PROBE_LOCK = threading.Lock()
-_HEADER_PROBE_FDS: "dict[str, tuple[int, int, int]]" = {}  # key -> (fd, dev, ino)
-_RETIRED_HEADER_PROBE_FDS: "list[int]" = []  # intentionally never closed
+_HEADER_PROBE_FDS: dict[str, tuple[int, int, int]] = {}  # key -> (fd, dev, ino)
+_RETIRED_HEADER_PROBE_FDS: list[int] = []  # intentionally never closed
 _FTS_TABLE_NAMES = ("messages_fts", "messages_fts_trigram", "messages_fts_cjk")
 
 
-def _pread_db_range(db_path: Path, offset: int, length: int) -> "Optional[bytes]":
+def _pread_db_range(db_path: Path, offset: int, length: int) -> Optional[bytes]:
     """Lock-safe raw read of a possibly-live SQLite database: POSIX preads from a cached,
     never-closed fd (rebound when the path names a new inode); Windows reads plainly, since
     advisory-lock cancellation is a POSIX-only hazard."""
@@ -111,12 +111,12 @@ def _pread_db_range(db_path: Path, offset: int, length: int) -> "Optional[bytes]
     return None
 
 
-def _pread_db_header(db_path: Path, length: int) -> "Optional[bytes]":
+def _pread_db_header(db_path: Path, length: int) -> Optional[bytes]:
     """Lock-safe raw header read of a possibly-live SQLite database (see :func:`_pread_db_range`)."""
     return _pread_db_range(db_path, 0, length)
 
 
-def _read_sqlite_application_id(db_path: Path) -> "Optional[int]":
+def _read_sqlite_application_id(db_path: Path) -> Optional[int]:
     """application_id from the SQLite header, via the lock-safe :func:`_pread_db_header`."""
     from hermes_state_errors import _STATE_DB_APPLICATION_ID_OFFSET
     end = _STATE_DB_APPLICATION_ID_OFFSET + 4
@@ -156,7 +156,7 @@ def _watched_sqlite_sidecar_paths(db_path) -> dict[str, str]:
     return watched
 
 
-def _identity_is_truly_unlinked(identity: "tuple[int, int]", watched_path: str) -> bool:
+def _identity_is_truly_unlinked(identity: tuple[int, int], watched_path: str) -> bool:
     """The shared verdict: does ``(st_dev, st_ino)`` name a generation the watched path no longer
     holds?  See :func:`_fd_is_truly_unlinked` for why the test is identity and never link count."""
     try:
@@ -432,7 +432,7 @@ def _fsync_path(path: Path) -> None:
         os.close(fd)
 
 
-def _own_descriptor_for_identity(identity) -> "Optional[int]":
+def _own_descriptor_for_identity(identity) -> Optional[int]:
     """This process's open descriptor for the inode ``(st_dev, st_ino)``, or None.
 
     Exact-generation qualified: pathnames are never consulted. The descriptor stays owned by

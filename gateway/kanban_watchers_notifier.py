@@ -326,7 +326,6 @@ class _Collector:
         """Claim events on one board, appending delivery dicts to ``deliveries``."""
         if not self._board_has_subs(slug):
             return
-        kb = self.kb
         try:
             conn = _kbc().connect(board=slug)
         except Exception as exc:
@@ -470,7 +469,7 @@ def _fmt_timed_out(ev, n) -> tuple:
 # archived / unblocked are claimed (so the cursor advances past them) but
 # intentionally silent (no formatter), and excluded from _WAKE_KINDS so they
 # never wake the creator.
-_EVENT_FORMATTERS: dict[str, Callable[[Any, "_KanbanNotification"], tuple]] = {
+_EVENT_FORMATTERS: dict[str, Callable[[Any, _KanbanNotification], tuple]] = {
     "completed": _fmt_completed,
     "blocked": lambda ev, n: (
         t("gateway.kanban.ping.blocked", head=n.head, reason=_clip(ev, "reason", "gateway.kanban.ping.reason_suffix", 160)),
@@ -791,7 +790,7 @@ class _KanbanNotification:
                 if self.wake_kinds:
                     wake_payloads.append((self.synth, self.wake_diagnostic, self.wake_kinds))
             self.d = {**self.d, "events": original_events}
-        wake_kinds, is_push = self.wake_kinds, self.is_push_adapter
+        is_push = self.is_push_adapter
         from gateway.wake import WakeNotAccepted
 
         # A requested wake is required even when its passive ping already landed.

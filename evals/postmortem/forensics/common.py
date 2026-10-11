@@ -67,12 +67,12 @@ class Run:
         return ap
 
     @classmethod
-    def from_args(cls, argv: Optional[list[str]] = None, description: str = "") -> "Run":
+    def from_args(cls, argv: Optional[list[str]] = None, description: str = "") -> Run:
         a = cls.parser(description).parse_args(argv)
         return cls.open(a.db, root=a.root, out=a.out)
 
     @classmethod
-    def open(cls, db: str, *, root: Optional[str] = None, out: str = "postmortem_out") -> "Run":
+    def open(cls, db: str, *, root: Optional[str] = None, out: str = "postmortem_out") -> Run:
         conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
         conn.row_factory = sqlite3.Row
         sessions = {r["id"]: dict(r) for r in conn.execute("SELECT * FROM sessions")}

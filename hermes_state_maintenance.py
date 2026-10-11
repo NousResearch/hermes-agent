@@ -110,7 +110,7 @@ def _not_pinned_sql(alias: str = "s") -> str:
 class SessionMaintenanceMixin:
     """Retention pruning, stale-session archiving and VACUUM policy for SessionDB."""
 
-    def prune_empty_ghost_sessions(self, sessions_dir: "Optional[Path]" = None) -> int:
+    def prune_empty_ghost_sessions(self, sessions_dir: Optional[Path] = None) -> int:
         """Remove empty TUI ghost sessions (no messages, no title, >24hr old)."""
         cutoff = time.time() - 86400
         def _do(conn):
@@ -223,7 +223,7 @@ class SessionMaintenanceMixin:
         unknown = set(filters) - _PRUNE_FILTER_NAMES
         if unknown:
             raise TypeError("SessionMaintenanceMixin._prune_filter_where() got an unexpected "
-                            f"keyword argument {sorted(unknown)[0]!r}")
+                            f"keyword argument {min(unknown)!r}")
         clauses = ["s.ended_at IS NOT NULL"]
         if lineage_tips_only:
             clauses.append("COALESCE(s.end_reason, '') <> 'compression'")

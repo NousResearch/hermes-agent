@@ -244,7 +244,7 @@ def _cron_job_last_run_timestamp(job: Optional[dict[str, Any]]) -> Optional[floa
         if not text:
             return None
         try:
-            return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
+            return datetime.fromisoformat(text).timestamp()
         except ValueError:
             return None
     return None
@@ -282,7 +282,7 @@ def _iso_to_epoch(text: Any) -> Optional[float]:
     if not isinstance(text, str) or not text.strip():
         return None
     try:
-        return datetime.fromisoformat(text.strip().replace("Z", "+00:00")).timestamp()
+        return datetime.fromisoformat(text.strip()).timestamp()
     except ValueError:
         return None
 

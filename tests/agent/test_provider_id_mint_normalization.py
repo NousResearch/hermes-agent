@@ -13,7 +13,7 @@ from run_agent import AIAgent
 def _tool_call(raw_id, n, **extra):
     return SimpleNamespace(
         id=raw_id, type="function",
-        function=SimpleNamespace(name="read_file", arguments='{"path": "%s"}' % n), **extra,
+        function=SimpleNamespace(name="read_file", arguments=f'{{"path": "{n}"}}'), **extra,
     )
 
 

@@ -129,7 +129,6 @@ def test_get_status_does_not_block_event_loop():
     import httpx
 
     results: dict[str, float] = {}
-    errors: list[str] = []
 
     async def _run():
         transport = httpx.ASGITransport(app=web_server_mod.app)

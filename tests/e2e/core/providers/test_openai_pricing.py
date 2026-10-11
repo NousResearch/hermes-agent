@@ -100,7 +100,7 @@ class FakeCatalog:
         self._httpd = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
         self._thread = threading.Thread(target=self._httpd.serve_forever, daemon=True)
 
-    def __enter__(self) -> "FakeCatalog":
+    def __enter__(self) -> FakeCatalog:
         self._thread.start()
         return self
 

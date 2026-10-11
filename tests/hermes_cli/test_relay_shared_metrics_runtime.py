@@ -6,7 +6,7 @@ import contextvars
 import json
 import sqlite3
 import threading
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from types import SimpleNamespace
 from typing import Any
 
@@ -668,7 +668,7 @@ def test_real_binding_drives_lifecycle_aggregation_export_and_snapshot(
     _join_export_workers()
     root = tmp_path / "hermes-home" / "telemetry" / "shared_metrics"
     store = SharedMetricsStore(root / "metrics.sqlite3", root / "outbox")
-    tomorrow = datetime.now(timezone.utc) + timedelta(days=1)
+    tomorrow = datetime.now(UTC) + timedelta(days=1)
     monkeypatch.setattr(
         "hermes_cli.observability.shared_metrics._utc_now",
         lambda: tomorrow,
@@ -2460,7 +2460,7 @@ def test_task_retry_count_survives_provider_fallback_ordinal_reset(direct_runtim
 def test_failed_flush_keeps_daily_export_open_for_later_task(
     direct_runtime, tmp_path, monkeypatch, caplog
 ):
-    current_time = datetime(2026, 7, 28, 9, tzinfo=timezone.utc)
+    current_time = datetime(2026, 7, 28, 9, tzinfo=UTC)
     monkeypatch.setattr(
         "hermes_cli.observability.shared_metrics._utc_now",
         lambda: current_time,
@@ -2532,7 +2532,7 @@ def parked_flush(direct_runtime, monkeypatch):
     """A flush that blocks like the real barrier does while another session's tool runs."""
     monkeypatch.setattr(
         "hermes_cli.observability.shared_metrics._utc_now",
-        lambda: datetime(2026, 7, 28, 9, tzinfo=timezone.utc),
+        lambda: datetime(2026, 7, 28, 9, tzinfo=UTC),
     )
     state = SimpleNamespace(attempts=0, entered=threading.Event(), release=threading.Event())
 

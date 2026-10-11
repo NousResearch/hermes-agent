@@ -71,7 +71,7 @@ class Target:
 class ConnectionOperation:
     # The gateway installs its ``connection.update`` emitter here once; pure data otherwise.
     on_change: ClassVar[
-        Optional[Callable[["ConnectionOperation", Optional[dict[str, Any]], dict[str, Any]], None]]
+        Optional[Callable[[ConnectionOperation, Optional[dict[str, Any]], dict[str, Any]], None]]
     ] = None
 
     targets: list[Target]

@@ -42,8 +42,8 @@ def _write_platform_plugin(
     platform: str,
     *,
     with_tools_module: bool,
-    declares_provides_tools: "bool | None" = None,
-) -> "object":
+    declares_provides_tools: bool | None = None,
+) -> object:
     """Create a bundled-style platform plugin and return its manifest.
 
     The adapter import is the expensive thing we must NOT trigger: it is

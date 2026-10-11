@@ -19,7 +19,7 @@ import platform
 import re
 import shutil
 import threading
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone, UTC
 from typing import Any
 
 from . import shared_metrics_contract as contract
@@ -44,7 +44,7 @@ _daily: dict[tuple[str, str, str], int] = {}
 
 
 def _utc_day() -> str:
-    return datetime.now(timezone.utc).date().isoformat()
+    return datetime.now(UTC).date().isoformat()
 
 
 def _home() -> str:

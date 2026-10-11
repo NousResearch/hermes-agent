@@ -85,6 +85,7 @@ def test_cli_stdin_exit_codes_and_output(tmp_path, release, results, code, repor
         [sys.executable, str(SCRIPT), *(["--release"] if release else [])],
         input=json.dumps(needs), capture_output=True, text=True, timeout=30,
         env={**os.environ, "GITHUB_OUTPUT": str(output)},
+        check=False,
     )
     assert child.returncode == code, child.stderr
     assert report in child.stdout

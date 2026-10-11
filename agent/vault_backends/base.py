@@ -20,7 +20,7 @@ from agent.vault_store import VaultItemMeta
 class UnlockRequired(Exception):
     """The backend is locked for this session; the surface must prompt for the master password."""
 
-    def __init__(self, backend: "LoginBackend"):
+    def __init__(self, backend: LoginBackend):
         super().__init__(f"{backend.display_name} is locked")
         self.backend = backend
 
@@ -65,7 +65,7 @@ def run_with_stdin_secret(argv: Sequence[str], *, env: dict[str, str], secret: s
     try:
         return subprocess.run(
             list(argv), env=env, input=secret + "\n", capture_output=True, text=True,
-            encoding="utf-8", errors="replace", timeout=timeout)
+            encoding="utf-8", errors="replace", timeout=timeout, check=False)
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError(f"{label} unlock timed out after {timeout:.0f}s") from exc
     except OSError as exc:
@@ -81,7 +81,7 @@ def run_with_secret_env(argv: Sequence[str], *, env: dict[str, str], secret_env:
     try:
         return subprocess.run(
             list(argv), env=child_env, stdin=subprocess.DEVNULL, capture_output=True, text=True,
-            encoding="utf-8", errors="replace", timeout=timeout)
+            encoding="utf-8", errors="replace", timeout=timeout, check=False)
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError(f"{label} unlock timed out after {timeout:.0f}s") from exc
     except OSError as exc:

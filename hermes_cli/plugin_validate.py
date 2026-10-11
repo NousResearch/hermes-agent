@@ -353,6 +353,7 @@ def _run_capability_probe(
                 text=True, encoding="utf-8", errors="replace",
                 timeout=_PROBE_TIMEOUT,
                 env=env,
+                check=False,
             )
         except subprocess.TimeoutExpired:
             return None, f"capability probe timed out after {_PROBE_TIMEOUT}s"

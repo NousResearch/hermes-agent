@@ -21,11 +21,13 @@ def test_assembly_publishes_facts_as_termux_uid_and_returns_host_owned_output(tm
         pytest.skip("Docker is required for the bind-mount ownership regression")
     available = subprocess.run(
         ["docker", "info"], capture_output=True, timeout=15,
+        check=False,
     )
     if available.returncode:
         pytest.skip("Docker daemon is unavailable")
     image = subprocess.run(
         ["docker", "image", "inspect", IMAGE], capture_output=True, timeout=15,
+        check=False,
     )
     if image.returncode:
         pytest.skip(f"Pre-pull the native Linux test image: docker pull {IMAGE}")
@@ -62,6 +64,7 @@ docker run --rm --user 1000:1000 --network none \
     ' sh "$4"
 ''', "assembly-permissions-test", IMAGE, str(payload), str(ROOT), str(build_exit)],
         cwd=ROOT, capture_output=True, text=True, timeout=90,
+        check=False,
     )
     assert result.returncode == build_exit, result.stdout + result.stderr
     assembly, = payload.glob(".environments-*")

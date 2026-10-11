@@ -718,7 +718,7 @@ class AmbiguousAliasError(Exception):
         super().__init__(f"alias {alias!r} matches {len(candidates)} models on {provider}")
 
 
-def _ambiguous_alias_message(err: "AmbiguousAliasError") -> str:
+def _ambiguous_alias_message(err: AmbiguousAliasError) -> str:
     """User-facing disambiguation list for an ambiguous alias."""
     shown = err.candidates[:10]
     lines = "\n".join(f"  {i}. {m}" for i, m in enumerate(shown, 1))
@@ -981,7 +981,7 @@ def _duplicates_configured_row(
                  if identity == row or (provider_key == row_slug.lower() and identity[1:3] == row[1:3])), None)
 
 
-def _current_provider_match(st: "_Switch", cfg_matches: dict[str, str]) -> Optional[str]:
+def _current_provider_match(st: _Switch, cfg_matches: dict[str, str]) -> Optional[str]:
     """The slug in *cfg_matches* the session already runs on: an exact hit, or — for a session on
     the compat projection slug (``custom:relay``) of ``providers.relay`` — that row's slug, so a
     same-provider switch keeps the caller's slug instead of flipping it (#112788)."""
@@ -1105,7 +1105,7 @@ def _config_declares_model(
     return False
 
 
-def _apply_direct_alias_endpoint(st: "_Switch", da: DirectAlias) -> None:
+def _apply_direct_alias_endpoint(st: _Switch, da: DirectAlias) -> None:
     """Route a direct alias to its own base_url and decide its credential (mutates ``st``).
 
     Credentials were resolved against the DEFAULT provider; carrying that key onto the alias

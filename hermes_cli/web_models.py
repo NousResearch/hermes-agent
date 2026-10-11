@@ -318,7 +318,7 @@ class CronJobCreate(BaseModel):
     # same user-facing strings the CLI accepts ('forever'/'once'/'3'). Normalization and
     # validation happen in cron.jobs.create_job via normalize_repeat_value — the shared
     # chokepoint with the CLI and update paths — so an unparseable value 400s there.
-    repeat: Optional[Union[int, str]] = None
+    repeat: Optional[int | str] = None
     skills: Optional[list[str]] = None
     model: Optional[str] = None
     provider: Optional[str] = None
@@ -444,7 +444,7 @@ class ProfileCreate(BaseModel):
     provider: Optional[str] = None
     model: Optional[str] = None
     # Profile-builder additions, applied best-effort AFTER the profile dir exists (a hiccup never 500s).
-    mcp_servers: list["MCPServerCreate"] = []
+    mcp_servers: list[MCPServerCreate] = []
     keep_skills: list[str] = []  # skills to KEEP: non-empty = replace semantics (unlisted seeded ones disabled)
     # Installed async via `hermes -p <name> skills install` (skills_hub.SKILLS_DIR is import-time-bound,
     # so HERMES_HOME can't redirect it); PIDs go back for the UI to poll.

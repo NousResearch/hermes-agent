@@ -220,7 +220,7 @@ def _serve_http(server) -> None:
             await asyncio.sleep(0.01)
         if port_file:
             tmp = port_file + ".tmp"
-            with open(tmp, "w", encoding="utf-8") as fh:
+            with open(tmp, "w", encoding="utf-8") as fh:  # noqa: ASYNC230 -- small local write; a local open() is non-blocking in practice
                 fh.write(f"{port} {os.getpid()}")
             os.replace(tmp, port_file)
         await task

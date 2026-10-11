@@ -106,7 +106,7 @@ def harness_git(*args: str, cwd: Path | None = None, env: dict[str, str] | None 
     base = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
     base.update(env or {})
     res = subprocess.run([REAL_GIT, "-c", "safe.directory=*", *args], cwd=cwd, env=base,
-                         capture_output=True, timeout=timeout)
+                         capture_output=True, timeout=timeout, check=False)
     out, err = _decode(res.stdout), _decode(res.stderr)
     if res.returncode:
         raise RuntimeError(f"harness git {' '.join(args)} failed rc={res.returncode}: {err[-2000:]}")
@@ -345,7 +345,7 @@ class Machine:
             code = proc.wait(timeout=timeout)
             self.timings.append((label, round(time.monotonic() - started, 1)))
         except subprocess.TimeoutExpired:
-            subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, timeout=60)
+            subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, timeout=60, check=False)
             proc.wait(timeout=60)
             reader.join(timeout=10)
             raise AssertionError(
@@ -367,9 +367,15 @@ class Machine:
         shutil.copyfile(REPO_ROOT / "scripts" / "install.ps1", script)
         cwd = self.root / "install-cwd"
         cwd.mkdir(parents=True, exist_ok=True)
-        return self._run_logged(
+        run = self._run_logged(
             ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script), "-NonInteractive"],
             "install", timeout=INSTALL_TIMEOUT, cwd=cwd)
+        if run.returncode == 0 and self.hermes_exe.is_file():
+            # advance() lands NEXT on main and publishes no release: follow main, not the stable
+            # default an official-origin checkout gets (channel resolution has its own suites).
+            pin = self.hermes("update", "--set-channel", "main", label="pin-main-channel")
+            assert pin.returncode == 0, f"could not pin the main channel\n{self.evidence()}"
+        return run
 
     def hermes(self, *args: str, label: str | None = None, timeout: float = CMD_TIMEOUT,
                env_extra: dict[str, str] | None = None) -> Run:
@@ -514,7 +520,7 @@ class Machine:
         kill_tree(self.owned_processes())
         for proc in self._spawned:
             if proc.poll() is None:
-                subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, timeout=60)
+                subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, timeout=60, check=False)
 
     def teardown(self) -> None:
         self.kill_owned()
@@ -649,4 +655,4 @@ def taskkill_tree(pid: int) -> subprocess.CompletedProcess:
 
     rc 0 means every process in the tree was terminated. rc 128 can still mean ``pid`` itself was
     killed (a job member died with it mid-walk): read stdout, see ``_kill_delivered``."""
-    return subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, timeout=60)
+    return subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, timeout=60, check=False)

@@ -57,7 +57,7 @@ class ToolSearchConfig:
         return _DEFAULT_DEFERRED_TOOLS if self.defer_tools is None else self.defer_tools
 
     @classmethod
-    def from_raw(cls, raw: Any) -> "ToolSearchConfig":
+    def from_raw(cls, raw: Any) -> ToolSearchConfig:
         """Build from a raw dict / legacy bool / None; every field is clamped and unknown
         values fall back to safe defaults — a config typo must not break the agent."""
         if not isinstance(raw, dict):  # legacy bool / None

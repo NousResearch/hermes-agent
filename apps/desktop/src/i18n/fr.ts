@@ -9,6 +9,7 @@ import { frNotices } from './fr_notices'
 import { frOnboarding } from './fr_onboarding'
 import { frProjects } from './fr_projects'
 import { frSharedMetrics } from './fr_shared_metrics'
+import { frUpdateChannel } from './fr_update_channel'
 import { introFr } from './intro-fr'
 
 export const frOverrides = {
@@ -1565,9 +1566,7 @@ export const frOverrides = {
       screenRecording: "Enregistrement de l'écran",
       driverHealth: 'État du pilote'
     },
-    about: {
-      updates: 'Mises à jour'
-    },
+    about: { updates: 'Mises à jour', channel: frUpdateChannel },
     config: {
       minimizeToTrayTitle: 'Réduire dans la barre d’état',
       minimizeToTrayDesc:
@@ -4009,12 +4008,6 @@ export const frOverrides = {
     editingQueuedInComposer: "Modification du tour en file d'attente dans le compositeur",
     restoredDraftNotice: 'Votre message non envoyé a été restauré',
     restoredDraftUndo: 'Annuler',
-    localSetup: {
-      title: 'Ceci pourrait tourner sur votre ordinateur',
-      text: (model: string) =>
-        `${model} tient sur cette machine. Gratuit, et les conversations restent sur votre ordinateur.`,
-      action: 'Montrez-moi'
-    },
     queueEdit: 'Modifier',
     queueExpand: 'Déplier',
     queueCollapse: 'Replier',

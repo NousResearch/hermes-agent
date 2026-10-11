@@ -9,7 +9,7 @@ coarse numbers (MB), enums and booleans.  A missing/corrupt file degrades to
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -44,7 +44,7 @@ def _parse_iso(value: Any) -> Optional[datetime]:
         parsed = datetime.fromisoformat(value) if isinstance(value, str) and value else None
     except ValueError:
         return None
-    return parsed.replace(tzinfo=timezone.utc) if parsed is not None and parsed.tzinfo is None else parsed
+    return parsed.replace(tzinfo=UTC) if parsed is not None and parsed.tzinfo is None else parsed
 
 
 def classify_pressure(available_kib: Any, total_kib: Any) -> str:
@@ -79,7 +79,7 @@ def collect_memory_status(
     """``memory`` block for ``/api/status``; ``home`` scopes to a profile (``None`` =
     active), ``now`` is injectable.  Never raises — a down gateway or corrupt files
     yield ``pressure="unknown"`` plus whatever fields could be recovered."""
-    moment = now or datetime.now(timezone.utc)
+    moment = now or datetime.now(UTC)
     status: dict[str, Any] = {
         "pressure": "unknown", "gateway_rss_mb": None, "system_total_mb": None, "system_available_mb": None,
         "swap_used_mb": None, "sampled_at": None, "last_boot_unclean": False, "last_boot_suspected_oom": False,

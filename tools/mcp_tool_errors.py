@@ -284,7 +284,7 @@ def _apply_identity_header(server_name: str, config: dict, headers: dict) -> dic
 
 
 def _make_redirect_header_stripper(httpx_mod, original_url, *, strict: bool = False,
-                                   configured_header_names: "set[str] | frozenset[str]" = frozenset()):
+                                   configured_header_names: set[str] | frozenset[str] = frozenset()):
     """Client factory enforcing the redirect credential boundary: on a cross-origin redirect
     follow-up it strips ``Authorization``; with *strict* (Agent Plugins v1 ``strict_redirect_headers``)
     every configured header (lowercase names in *configured_header_names*) is stripped too — v1 forbids

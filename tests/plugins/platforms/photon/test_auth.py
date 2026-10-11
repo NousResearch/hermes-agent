@@ -198,7 +198,7 @@ def test_request_device_code_uses_photon_cli(monkeypatch: pytest.MonkeyPatch) ->
     assert captured["body"]["scope"] == "openid profile email"
 
 
-def _device_code() -> "photon_auth.DeviceCode":
+def _device_code() -> photon_auth.DeviceCode:
     return photon_auth.DeviceCode(
         device_code="d", user_code="u",
         verification_uri="https://x", verification_uri_complete=None,

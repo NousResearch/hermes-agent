@@ -9,7 +9,7 @@ from unittest.mock import Mock
 import pytest
 
 from hermes_cli import main, update_cmd, update_cmd_windows
-from tests.compat.old_updater_support import fresh_child as fresh_child, no_external_work as no_external_work
+from tests.compat.old_updater_support import fresh_child as fresh_child, no_external_work as no_external_work  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
 
 
 @pytest.mark.real_concurrent_gate

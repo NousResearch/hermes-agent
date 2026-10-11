@@ -5,6 +5,7 @@ import asyncio
 import json
 import logging
 import os
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from agent.i18n import t
@@ -293,8 +294,7 @@ class DiscordMediaMixin:
             if rejected is not None:
                 return rejected
             reference = self._reply_reference_for_send(reply_to, channel)
-            with open(audio_path, "rb") as f:
-                file_data = f.read()
+            file_data = await asyncio.to_thread(Path(audio_path).read_bytes)
             # Forum channels reject POST /messages (native voice path too); create a thread post instead.
             if self._is_forum_parent(channel):
                 forum_file = discord.File(io.BytesIO(file_data), filename=filename)

@@ -61,7 +61,7 @@ class Finding:
     detail: str
     action: Optional[str] = None      # what --apply does; None = report only
     reason: Optional[str] = None      # why it is report only
-    _fix: Optional[Callable[["_Session"], dict[str, int]]] = field(default=None, repr=False, compare=False)
+    _fix: Optional[Callable[[_Session], dict[str, int]]] = field(default=None, repr=False, compare=False)
 
     @property
     def repairable(self) -> bool:
@@ -167,7 +167,7 @@ class RepairPlan:
         self.legacy_main = legacy_main
         self.multiplexes = _gateway_multiplexes(self.routing_store.home) if self.routing_store else False
         self.findings: list[Finding] = []
-        self._moves: dict[tuple[Path, Path], "_MoveBatch"] = {}
+        self._moves: dict[tuple[Path, Path], _MoveBatch] = {}
 
     # -- helpers --
     def _add(self, finding: Finding) -> None:
@@ -178,7 +178,7 @@ class RepairPlan:
         return [f for f in self.findings if f.repairable]
 
     # -- scan --
-    def scan(self, session: _Session) -> "RepairPlan":
+    def scan(self, session: _Session) -> RepairPlan:
         for store in self.stores:
             self._scan_sessions(session, store)
             self._scan_topics(session, store)
@@ -249,7 +249,7 @@ class RepairPlan:
                 reason="either a standalone gateway's own history (--legacy-main rekey) or a default "
                        "chat that leaked in (--legacy-main move); the row cannot say which"))
 
-    def _move_batch(self, src: Store, dst: Store) -> "_MoveBatch":
+    def _move_batch(self, src: Store, dst: Store) -> _MoveBatch:
         return self._moves.setdefault((src.db_path, dst.db_path), _MoveBatch(src, dst))
 
     def _scan_topics(self, session: _Session, store: Store) -> None:

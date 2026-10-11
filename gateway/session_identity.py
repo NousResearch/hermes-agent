@@ -111,7 +111,7 @@ def transport_profile_of(source: Any) -> Optional[str]:
     return identity.transport_profile if identity is not None and identity.multiplexed else None
 
 
-def replace_source(source: "SessionSource", **changes: Any) -> "SessionSource":
+def replace_source(source: SessionSource, **changes: Any) -> SessionSource:
     """:func:`dataclasses.replace` that keeps the wire-invisible provenance (transport ref,
     authorization home, identity). A plain ``replace`` silently produces a source the runner
     can only route through heuristics."""
@@ -129,7 +129,7 @@ def _name(value: Any) -> Optional[str]:
 
 
 def canonical_identity(
-    source: "SessionSource", *, runner: Any, adapter: Any = None,
+    source: SessionSource, *, runner: Any, adapter: Any = None,
     transport_profile: Optional[str] = None, primary_home: Optional[Path] = None,
 ) -> Optional[RoutingIdentity]:
     """The identity already pinned on *source*, else :func:`resolve_identity` — the one call every
@@ -149,7 +149,7 @@ def canonical_identity(
 
 
 def restore_identity(
-    source: "SessionSource", *, runner: Any, transport_profile: Optional[str],
+    source: SessionSource, *, runner: Any, transport_profile: Optional[str],
 ) -> Optional[RoutingIdentity]:
     """Pin the identity of a source rebuilt from durable state (``SessionEntry.origin``, a
     ``sessions`` row, a cached copy) — no live adapter, so ``transport=None``: the restored row of the
@@ -189,7 +189,7 @@ def restore_identity(
 
 
 def resolve_identity(
-    source: "SessionSource", *, runner: Any, adapter: Any = None,
+    source: SessionSource, *, runner: Any, adapter: Any = None,
     transport_profile: Optional[str] = None, primary_home: Optional[Path] = None,
 ) -> RoutingIdentity:
     """Resolve and pin the :class:`RoutingIdentity` of an inbound *source*.

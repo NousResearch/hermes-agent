@@ -11,8 +11,8 @@ from types import SimpleNamespace
 import pytest
 
 from tests.compat.old_updater_support import (
-    fresh_child as fresh_child,
-    no_external_work as no_external_work,
+    fresh_child as fresh_child,  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
+    no_external_work as no_external_work,  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
 )
 
 
@@ -181,7 +181,7 @@ def test_ensure_uv_stops_both_historical_return_contracts(unpack, status, fresh_
         else:
             uv = ensure_uv()
         # A falsy result is NOT inert: old callers install through pip instead.
-        subprocess.run([uv, "pip", "install"] if uv else [sys.executable, "-m", "pip", "install"])
+        subprocess.run([uv, "pip", "install"] if uv else [sys.executable, "-m", "pip", "install"], check=False)
 
 
 def test_retired_probes_and_refreshes_do_no_work(no_external_work, tmp_path):

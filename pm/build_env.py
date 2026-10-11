@@ -7,6 +7,33 @@ from pathlib import Path
 import sys
 
 
+def _record_selection(source: Path, extras: list[str]) -> None:
+    """Publish the built extras as the store's venv selection, as a bundle build does.
+
+    A sync that finds no runtime selection starts from this one, so the first opt-in
+    extra installed on use extends the shipped environment instead of replacing it
+    with a generation that carries only that extra. The frozen build installed exactly
+    this list from the lock, so it is recorded as given; an anchor inventory
+    (``installed_extras``) misses meta extras such as ``all`` and claims extras whose
+    anchors other packages happen to provide.
+    """
+    from pm.lock import Facts
+    from pm.packages import Venv
+    from pm.paths import facts_path
+
+    selected = sorted(set(extras))
+    stamp = Venv(source.resolve()).expected_stamp(selected, plugin_dirs=[])
+    Facts(facts_path()).record_state("venv", stamp, selected)
+
+
+def _check_record_selection(parser: argparse.ArgumentParser, args: argparse.Namespace, *,
+                            build: bool, requirements: list[str]) -> None:
+    """Only a project build from an explicit --extra list has a selection to record."""
+    if args.record_selection and (not build or requirements or args.manager_runtime
+                                  or args.all_extras or args.groups or not args.extras):
+        parser.error("--record-selection records the --extra list of a project environment build")
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     import pm
 
@@ -35,6 +62,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--sealed", action="store_true")
     parser.add_argument("--offline", action="store_true")
     parser.add_argument("--explicit", action="store_true", help="CLI builds are always explicit requests")
+    parser.add_argument("--record-selection", action="store_true",
+                        help="record the --extra list as this install's baseline dependency selection")
     parser.add_argument("--wheelhouse", type=Path)
     parser.add_argument("--requirements", type=Path)
     parser.add_argument("--requirement", action="append", default=[])
@@ -61,6 +90,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error("--out is required when building an environment")
     if args.manager_runtime and args.python is None:
         parser.error("--manager-runtime requires the target --python")
+    _check_record_selection(parser, args, build=build, requirements=requirements)
     try:
         if args.exact_lock:
             from pm.uv_cache_prune import prune_uv_cache_to_lock
@@ -99,6 +129,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 no_install_project=args.no_install_project, frozen=not args.resolve,
                 sealed=args.sealed, offline=args.offline, explicit=True,
             )
+            if args.record_selection:
+                _record_selection(args.source, args.extras)
     except (pm.InstallError, OSError, ValueError) as exc:
         print(f"python environment: {exc}", file=sys.stderr)
         return 1

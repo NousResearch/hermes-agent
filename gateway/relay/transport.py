@@ -42,7 +42,7 @@ class RelayTransport(Protocol):
     def set_inbound_handler(self, handler: InboundHandler) -> None:
         ...
 
-    def set_passthrough_handler(self, handler: "PassthroughHandler") -> None:
+    def set_passthrough_handler(self, handler: PassthroughHandler) -> None:
         """Register the callback for each forwarded passthrough request (§5.1).
 
         The connector answers the provider's edge ACK itself, then forwards the real

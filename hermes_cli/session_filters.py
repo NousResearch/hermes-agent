@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from typing import Any, Dict, Optional
 
 from hermes_cli.timefmt import coerce_epoch
@@ -49,7 +49,7 @@ def parse_point_in_time(value: str, flag: str) -> float:
             f"'30m', '2d', '1w', a bare number of days, or an ISO timestamp "
             f"like '2026-07-05' or '2026-07-05 14:30'."
         ) from None
-    return dt.timestamp() if dt.tzinfo is None else dt.astimezone(timezone.utc).timestamp()
+    return dt.timestamp() if dt.tzinfo is None else dt.astimezone(UTC).timestamp()
 
 
 def format_epoch(ts: Optional[float]) -> str:

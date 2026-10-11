@@ -62,7 +62,7 @@ def _payload(root: Path, python: str) -> Path:
 
 def _run(command: list[str], cwd: Path) -> list:
     result = subprocess.run(command, cwd=cwd, capture_output=True, text=True, timeout=60,
-                            env={k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "PYTHONHOME")})
+                            env={k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "PYTHONHOME")}, check=False)
     assert result.returncode == 0, result.stderr
     return json.loads(result.stdout)
 

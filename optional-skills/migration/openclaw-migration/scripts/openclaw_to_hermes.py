@@ -534,7 +534,7 @@ def _case_preserving_replacement(replacement: str):
     ``~/.hermes/config.yaml`` (the real Hermes home) instead of the broken
     ``~/.Hermes/config.yaml``.
     """
-    def _sub(match: "re.Match[str]") -> str:
+    def _sub(match: re.Match[str]) -> str:
         matched = match.group(0)
         if matched and matched.islower():
             return replacement.lower()
@@ -2364,7 +2364,6 @@ class Migrator:
         entries = plugins.get("entries") or {}
         for plugin_name, plugin_cfg in entries.items():
             if isinstance(plugin_cfg, dict):
-                env_vars = plugin_cfg.get("env") or {}
                 api_key = plugin_cfg.get("apiKey")
                 if api_key and self.migrate_secrets:
                     env_key = f"PLUGIN_{plugin_name.upper().replace('-', '_')}_API_KEY"

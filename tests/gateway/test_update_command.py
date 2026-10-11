@@ -71,7 +71,6 @@ class TestHandleUpdateCommand:
             # Since Path(__file__) resolves to the real gateway/run.py,
             # project_root will be the real hermes-agent dir (which HAS .git).
             # Patch Path to control this.
-            original_path = Path
 
             class FakePath(type(Path())):
                 pass
@@ -141,7 +140,7 @@ class TestHandleUpdateCommand:
              patch("hermes_cli.config.detect_install_method", return_value="git"), \
              patch("shutil.which", side_effect=lambda x: "/usr/bin/hermes" if x == "hermes" else "/usr/bin/setsid"), \
              patch("subprocess.Popen"):
-            result = await runner._handle_update_command(event)
+            await runner._handle_update_command(event)
 
         pending_path = hermes_home / ".update_pending.json"
         assert pending_path.exists()

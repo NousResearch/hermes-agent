@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from agent.ssl_verify import resolve_httpx_verify
+from datetime import UTC
 
 
 @pytest.fixture
@@ -84,7 +85,7 @@ import httpx
 with httpx.Client(verify=resolve_httpx_verify()) as client:
     ctx = client._transport._pool._ssl_context
     assert ctx.verify_mode == ssl.CERT_REQUIRED and ctx.check_hostname
-"""], capture_output=True, text=True, timeout=30)
+"""], capture_output=True, text=True, timeout=30, check=False)
     assert child.returncode == 0, child.stderr
     assert "truststore unavailable" in child.stderr
 
@@ -107,7 +108,7 @@ def test_explicit_provider_ca_replaces_platform_trust_on_real_https(tmp_path):
 
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Private provider")])
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     cert = (x509.CertificateBuilder().subject_name(subject).issuer_name(subject)
             .public_key(key.public_key()).serial_number(x509.random_serial_number())
             .not_valid_before(now - timedelta(days=1)).not_valid_after(now + timedelta(days=1))
@@ -183,5 +184,5 @@ ctx = resolve_httpx_verify(ca_bundle=certifi.where())
 assert isinstance(ctx, ssl.SSLContext), ctx
 assert ctx.verify_mode == ssl.CERT_REQUIRED and ctx.check_hostname
 assert ctx.cert_store_stats()['x509_ca'] > 0
-"""], capture_output=True, text=True, timeout=30)
+"""], capture_output=True, text=True, timeout=30, check=False)
     assert child.returncode == 0, child.stderr

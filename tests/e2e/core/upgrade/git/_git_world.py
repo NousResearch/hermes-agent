@@ -198,7 +198,7 @@ class World:
 def _preclone(sb: I.Sandbox, args: list[str], env: dict[str, str]) -> None:
     sb.hermes_home.mkdir(parents=True, exist_ok=True)
     cp = subprocess.run(["git", "clone", "-q", *args, "--branch", "main", I.OFFICIAL_HTTPS, str(sb.checkout)],
-                        capture_output=True, text=True, env=env, timeout=900)
+                        capture_output=True, text=True, env=env, timeout=900, check=False)
     assert cp.returncode == 0, f"pre-clone {args} failed: {cp.stderr[-2000:]}"
 
 

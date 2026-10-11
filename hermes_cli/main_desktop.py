@@ -607,7 +607,7 @@ def _desktop_macos_local_signing_identity() -> Optional[str]:
 
 
 def _codesign_verify(codesign: str, app: Path, **kwargs) -> subprocess.CompletedProcess:
-    return subprocess.run(
+    return subprocess.run(  # noqa: PLW1510 -- forwarding wrapper: callers pass subprocess kwargs via **kwargs (check may arrive through it); an explicit check=False would raise TypeError
         [codesign, "--verify", "--deep", "--strict", str(app)], capture_output=True, **kwargs)
 
 
@@ -1288,7 +1288,7 @@ def _detect_linux_password_store() -> str | None:
                 "org.freedesktop.DBus.Peer.Ping",
             ],
             capture_output=True,
-            timeout=5)
+            timeout=5, check=False)
         if result.returncode == 0:
             return "gnome-libsecret"
     return None

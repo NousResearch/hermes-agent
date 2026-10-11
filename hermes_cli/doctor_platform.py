@@ -221,7 +221,7 @@ def _report_host_gateway_slot(mgr, issues: list[str]) -> None:
                       "hermes --profile default gateway migrate --multiplex")
 
 
-def check_certificates(should_fix: bool = False, issues: "list | None" = None) -> None:
+def check_certificates(should_fix: bool = False, issues: list | None = None) -> None:
     """Verify the actual TLS policy is usable before the first HTTPS call tracebacks.
 
     The policy is ``agent.ssl_verify``: the platform verifier (truststore) is
@@ -330,7 +330,7 @@ def _macos_desktop_dr(app: Path) -> str | None:
     """Return the bundle's designated requirement string, or None on failure (a hanging codesign must never abort doctor)."""
     codesign = shutil.which("codesign")
     try:
-        proc = subprocess.run([codesign, "-d", "--requirements", "-", str(app)], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15) if codesign else None
+        proc = subprocess.run([codesign, "-d", "--requirements", "-", str(app)], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15, check=False) if codesign else None
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return None
     return None if proc is None or proc.returncode != 0 else (proc.stdout or "") + (proc.stderr or "")
@@ -405,7 +405,7 @@ def _check_security_advisories(should_fix: bool, f: Finding) -> None:
             check_warn(f"{h.package}=={h.installed_version} still installed (advisory {h.advisory.id} acknowledged)")
 
 
-def _staged_venv_dir() -> "Path | None":
+def _staged_venv_dir() -> Path | None:
     """pm's provisioned runtime venv, or None when nothing is staged.
 
     ``pm.packages.Venv().venv_dir()`` is pm's public authority for where
@@ -549,6 +549,7 @@ def _check_web_dashboard_import(should_fix: bool, f: Finding) -> None:
             timeout=120,
             cwd=str(PROJECT_ROOT),
             env=env,
+            check=False,
         )
     except subprocess.TimeoutExpired:
         _fail_and_issue(

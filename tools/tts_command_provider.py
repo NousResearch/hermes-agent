@@ -106,7 +106,7 @@ def terminate_command_process_tree(proc: subprocess.Popen) -> None:
             from hermes_cli._subprocess_compat import windows_hide_flags
             subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], stdout=subprocess.DEVNULL,
                            stderr=subprocess.DEVNULL, timeout=5, stdin=subprocess.DEVNULL,
-                           creationflags=windows_hide_flags())
+                           creationflags=windows_hide_flags(), check=False)
         except Exception:
             proc.kill()
         return
@@ -180,7 +180,7 @@ def run_command_provider(
     proc = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             text=True, encoding="utf-8", errors="replace", env=delegated_child_subprocess_env(scrubbed),
                             stdin=subprocess.DEVNULL, **group)
-    output_queue: "queue.Queue[tuple[str, Optional[str]]]" = queue.Queue()
+    output_queue: queue.Queue[tuple[str, Optional[str]]] = queue.Queue()
     chunks: dict[str, list[str]] = {"stdout": [], "stderr": []}
     open_streams = {"stdout", "stderr"}
 

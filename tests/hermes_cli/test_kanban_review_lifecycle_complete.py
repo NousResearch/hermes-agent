@@ -418,7 +418,7 @@ def test_review_escalation_unblocks_back_to_review(conn) -> None:
     blocked_event = _event(kb.list_events(conn, task_id), "blocked")
     assert blocked_event.payload is not None
     assert blocked_event.payload["source_status"] == "review"
-    assert kb.unblock_task(conn, task_id)
+    assert kb.unblock_task(conn, task_id, confirmed_human=True)
     resumed = kb.get_task(conn, task_id)
     assert resumed is not None
     assert resumed.status == "review"

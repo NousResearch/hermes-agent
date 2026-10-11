@@ -331,6 +331,8 @@ _SPECS = [
     _cmd("unblock", [
         _reason("Optional reason/note — recorded as a comment before unblocking. Quote multi-word reasons."),
         _TASK_IDS,
+        _arg("--confirm-human", action="store_true",
+             help="Explicitly confirm the human decision required by a needs_input block."),
     ], help="Return blocked/scheduled tasks to ready, or todo while parents remain open"),
     _cmd("request-review", [
         _TASK_ID,

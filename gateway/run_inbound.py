@@ -25,6 +25,7 @@ from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run_busy import approval_input_words
 from gateway.run_common import _UNSET
+from gateway.run_inbound_turn_context import prepend_turn_context_note
 from gateway.run_inbound_media import rehome_inbound_media
 from gateway.run_plugin_injection import GatewayPluginInjectionMixin
 from gateway.run_inbound_unauthorized import (
@@ -54,16 +55,24 @@ def discord_triggering_note(message_id: Any) -> str:
     )
 
 
-def strip_discord_triggering_note(event: Any, message_text: Any) -> Any:
-    """Authored text for the durable user row: peel off exactly the note
-    ``_prepend_inbound_reply_context`` added for THIS event, if present. The note is a
-    model instruction, not something the user wrote — persisted as ``content`` it renders
-    verbatim in every transcript surface and pollutes FTS/memory (#71304, #114719). It
-    keeps riding ``message_text`` (and the replay-only ``api_content`` sidecar)."""
-    message_id = getattr(event, "message_id", None)
-    if not message_id or not isinstance(message_text, str):
+def matrix_source_note(permalink: str) -> str:
+    return f"[Matrix source: {permalink}]"
+
+
+def strip_inbound_source_note(event: Any, message_text: Any) -> Any:
+    """Remove the transport note from the durable user row."""
+    if not getattr(event, "message_id", None) or not isinstance(message_text, str):
         return message_text
-    prefix = f"{discord_triggering_note(message_id)}\n\n"
+
+    source = getattr(event, "source", None)
+    if getattr(source, "platform", None) == Platform.DISCORD:
+        note = discord_triggering_note(event.message_id)
+    elif getattr(source, "platform", None) == Platform.MATRIX and source.source_permalink:
+        note = matrix_source_note(source.source_permalink)
+    else:
+        return message_text
+
+    prefix = f"{note}\n\n"
     return message_text.removeprefix(prefix)
 
 
@@ -1591,21 +1600,39 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
         return message_text
 
     @staticmethod
-    def _prepend_inbound_reply_context(event: MessageEvent, source: SessionSource, message_text: str) -> str:
-        """Prepend the reply-to pointer, then the Discord triggering-message note (outermost)."""
+    def _prepend_inbound_reply_context(
+        event: MessageEvent, source: SessionSource, message_text: str, *, redact_pii: bool = False,
+    ) -> str:
+        """Prepend the reply-to pointer and any per-turn platform source note."""
         if getattr(event, "reply_to_text", None) and event.reply_to_message_id:
             # Always inject the reply-to pointer even when the quoted text is already in history:
             # it's disambiguation (*which* prior message), not deduplication.
             # Adapters resolve the original message (or the user's native partial quote).
             # A preview here silently loses later list items and code; keep that context intact.
             reply_text = event.reply_to_text
-            _who = " your previous message" if getattr(event, "reply_to_is_own_message", False) else ""
-            message_text = f'[Replying to{_who}: "{reply_text}"]\n\n{message_text}'
+            if getattr(event, "reply_to_is_own_message", False):
+                pointer = "Replying to your previous message: "
+            elif event.reply_to_author_authorized is None:
+                # Some adapters fill reply_to_author_id with a phone number. Identify the author
+                # only when the adapter has checked their authorisation, and hash a bare ID
+                # under redact_pii.
+                pointer = "Replying to: "
+            else:
+                from gateway.session import _hash_sender_id, _should_redact_pii, neutralize_untrusted_inline_text
 
-        # Discord: the triggering message id goes on the per-turn user message, never the cached
-        # system prompt — it changes every turn and would bust the agent-cache signature. It is
-        # the OUTERMOST prefix so strip_discord_triggering_note can peel exactly it off the
-        # persisted transcript row without touching the reply pointer.
+                trust = "[unverified] " if event.reply_to_author_authorized is False else ""
+                author = event.reply_to_author_name
+                if not author and event.reply_to_author_id:
+                    author = event.reply_to_author_id
+                    if _should_redact_pii(source.platform, redact_pii):
+                        author = _hash_sender_id(author)
+                pointer = (
+                    f"Replying to {trust}{neutralize_untrusted_inline_text(author)}: " if author
+                    else f"Replying to: {trust}"
+                )
+            message_text = f'[{pointer}"{reply_text}"]\n\n{message_text}'
+
+        # Keep the source notes outermost because strip_inbound_source_note removes them by prefix match.
         if (
             source is not None
             and getattr(source, "platform", None) == Platform.DISCORD
@@ -1614,6 +1641,18 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
             from gateway.session import _discord_tools_loaded as _disc_tools_loaded
             if _disc_tools_loaded():
                 message_text = f"{discord_triggering_note(event.message_id)}\n\n{message_text}"
+        if (
+            source is not None
+            and source.platform == Platform.MATRIX
+            and getattr(event, "message_id", None)
+            and source.source_permalink
+        ):
+            from gateway.run import _load_gateway_config
+            from gateway.session import _should_redact_pii
+
+            redact_pii = bool((_load_gateway_config().get("privacy") or {}).get("redact_pii", False))
+            if not _should_redact_pii(Platform.MATRIX, redact_pii):
+                message_text = f"{matrix_source_note(source.source_permalink)}\n\n{message_text}"
         return message_text
 
     async def _inbound_model_context_length(self, source: SessionSource, session_key: str) -> int:
@@ -1737,7 +1776,17 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
                 return None
         # After expansion: the quoted reply is someone else's text and stays literal — an
         # ``@file:`` inside it must never read a local file on the replier's behalf.
-        return self._prepend_inbound_reply_context(event, source, message_text)
+        redact_pii = False
+        if event.reply_to_text:
+            from gateway.run import _load_gateway_config
+
+            with suppress(Exception):
+                redact_pii = bool((_load_gateway_config().get("privacy") or {}).get("redact_pii", False))
+        message_text = self._prepend_inbound_reply_context(event, source, message_text, redact_pii=redact_pii)
+        return await prepend_turn_context_note(
+            self, event=event, source=source, session_key=session_key, history=history,
+            message_text=message_text,
+        )
 
     async def _prepare_profile_scoped_inbound_message_text(
         self, *, event: MessageEvent, source: SessionSource, history: list[dict[str, Any]],

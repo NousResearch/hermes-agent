@@ -122,7 +122,7 @@ class TestResolveAutoMainFirst:
 
             from agent.auxiliary_client import _resolve_auto_route
 
-            client, model, _provider = _resolve_auto_route(
+            client, _model, _provider = _resolve_auto_route(
                 main_runtime={
                     "provider": "moa",
                     "model": "opus-gpt",
@@ -541,7 +541,7 @@ class TestResolveVisionCustomProvider:
 
             from agent.auxiliary_client import resolve_vision_provider_client
 
-            provider, client, model = resolve_vision_provider_client()
+            provider, client, _model = resolve_vision_provider_client()
 
         assert provider == "custom:copilot-gateway"
         assert client is mock_client
@@ -576,7 +576,7 @@ class TestResolveVisionCustomProvider:
 
             from agent.auxiliary_client import resolve_vision_provider_client
 
-            provider, client, model = resolve_vision_provider_client()
+            _provider, client, _model = resolve_vision_provider_client()
 
         assert client is mock_client
         kwargs = mock_resolve.call_args.kwargs

@@ -64,6 +64,7 @@ function mountActions() {
       navigate,
       requestGateway,
       resetViewSync: vi.fn(),
+      routedSessionId: null,
       runtimeIdByStoredSessionIdRef: ref(new Map()),
       selectedStoredSessionId: null,
       selectedStoredSessionIdRef: ref<string | null>(null),

@@ -44,7 +44,7 @@ _ONESHOT_INSTRUCTIONS = (
 _ROLE_LABELS = {"user": "USER", "assistant": "ASSISTANT", "tool": "TOOL RESULT"}
 
 
-def trim_snapshot_for_fork(history: Optional[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+def trim_snapshot_for_fork(history: Optional[list[dict[str, Any]]]) -> list[dict[str, Any]]:
     """Drop trailing messages until the snapshot ends with a completed assistant text.
 
     A mid-turn tail (unresolved ``tool_calls``, tool result, in-flight user message) breaks
@@ -59,10 +59,10 @@ def trim_snapshot_for_fork(history: Optional[List[Dict[str, Any]]]) -> List[Dict
     return msgs
 
 
-def render_history_for_side_question(history: Optional[List[Dict[str, Any]]], char_budget: int = _TRANSCRIPT_CHAR_BUDGET) -> str:
+def render_history_for_side_question(history: Optional[list[dict[str, Any]]], char_budget: int = _TRANSCRIPT_CHAR_BUDGET) -> str:
     """Plain-text transcript for the fallback path: newest-biased fit to ``char_budget``,
     tool calls summarized by name, tool results truncated, system prompt skipped."""
-    lines: List[str] = []
+    lines: list[str] = []
     for msg in history or []:
         if not isinstance(msg, dict):
             continue
@@ -75,7 +75,7 @@ def render_history_for_side_question(history: Optional[List[Dict[str, Any]]], ch
         if label and text:
             lines.append(f"{label}: {text[:_PER_MESSAGE_CHAR_CAP]}")
 
-    kept: List[str] = []
+    kept: list[str] = []
     used = 0
     for line in reversed(lines):
         if used + len(line) + 1 > char_budget and kept:
@@ -88,7 +88,7 @@ def render_history_for_side_question(history: Optional[List[Dict[str, Any]]], ch
     return prefix + "\n".join(reversed(kept))
 
 
-def _side_question_task_config() -> Dict[str, Any]:
+def _side_question_task_config() -> dict[str, Any]:
     """Return ``auxiliary.side_question`` from config (or ``{}``)."""
     try:
         from hermes_cli.config import load_config_readonly
@@ -99,7 +99,7 @@ def _side_question_task_config() -> Dict[str, Any]:
     return task if isinstance(task, dict) else {}
 
 
-def _answer_via_fork(parent_agent: Any, question: str, history: Optional[List[Dict[str, Any]]]) -> str:
+def _answer_via_fork(parent_agent: Any, question: str, history: Optional[list[dict[str, Any]]]) -> str:
     """Answer via a cache-parity fork of ``parent_agent`` on the calling thread.
 
     An empty thread-scoped tool whitelist denies every tool call at dispatch: ``tools[]``
@@ -134,7 +134,7 @@ def _answer_via_fork(parent_agent: Any, question: str, history: Optional[List[Di
                 pass
 
 
-def _answer_via_oneshot(question: str, history: Optional[List[Dict[str, Any]]], **run_kwargs: Any) -> str:
+def _answer_via_oneshot(question: str, history: Optional[list[dict[str, Any]]], **run_kwargs: Any) -> str:
     """Fallback: answer from a rendered transcript digest in one aux call."""
     from agent.oneshot import run_oneshot
 
@@ -146,8 +146,8 @@ def _answer_via_oneshot(question: str, history: Optional[List[Dict[str, Any]]], 
 
 
 def answer_side_question(
-    question: str, history: Optional[List[Dict[str, Any]]], *, parent_agent: Any = None,
-    main_runtime: Optional[Dict[str, Any]] = None, max_tokens: int = 2048, temperature: Optional[float] = 0.3,
+    question: str, history: Optional[list[dict[str, Any]]], *, parent_agent: Any = None,
+    main_runtime: Optional[dict[str, Any]] = None, max_tokens: int = 2048, temperature: Optional[float] = 0.3,
     timeout: float = 180.0,
 ) -> str:
     """Fork when ``parent_agent`` is live, else (or on empty answer / failure) the one-shot

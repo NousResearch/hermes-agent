@@ -9,14 +9,16 @@ wrappers (git/gh can block).
 import asyncio
 import shutil
 import time
+from functools import partial
+from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 
 from hermes_cli import web_git as _web_git
 from hermes_cli._subprocess_compat import bounded_probe_run
 from hermes_cli.web_deps import late
-from hermes_cli.web_server_files import _fs_path
+from hermes_cli.web_server_files import _fs_path, _hosted_fs_path_allowed, _hosted_fs_read_guard
 from hermes_cli.web_models import (
     GitBranchSwitchBody,
     GitCommitBody,
@@ -127,19 +129,29 @@ async def git_review_list_route(path: str, scope: str = "uncommitted", base: Opt
 
 @router.get("/api/git/review/diff")
 async def git_review_diff_route(
-    path: str, file: str, scope: str = "uncommitted", base: Optional[str] = None, staged: bool = False
+    path: str, file: str, request: Request,
+    scope: str = "uncommitted", base: Optional[str] = None, staged: bool = False
 ):
-    return {"diff": await _git_op(_web_git.review_diff, _git_path(path), file, scope, base, staged)}
+    cwd = _git_path(path)
+    target = _fs_path(file, cwd=cwd)
+    _hosted_fs_read_guard(target, request)
+    return {"diff": await _git_op(_web_git.review_diff, cwd, str(target), scope, base, staged)}
 
 
 @router.get("/api/git/file-diff")
-async def git_file_diff_route(path: str, file: str):
-    return {"diff": await _git_op(_web_git.file_diff_vs_head, _git_path(path), file)}
+async def git_file_diff_route(path: str, file: str, request: Request):
+    cwd = _git_path(path)
+    target = _fs_path(file, cwd=cwd)
+    _hosted_fs_read_guard(target, request)
+    return {"diff": await _git_op(_web_git.file_diff_vs_head, cwd, str(target))}
 
 
 @router.get("/api/git/review/commit-context")
-async def git_commit_context_route(path: str):
-    return await _git_op(_web_git.review_commit_context, _git_path(path))
+async def git_commit_context_route(path: str, request: Request):
+    cwd = _git_path(path)
+    root = _hosted_fs_read_guard(Path(cwd), request)
+    allowed = partial(_hosted_fs_path_allowed, root) if root is not None else None
+    return await _git_op(_web_git.review_commit_context, cwd, allowed)
 
 
 @router.get("/api/git/review/rev-parse")

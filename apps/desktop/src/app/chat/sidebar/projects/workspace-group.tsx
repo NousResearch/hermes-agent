@@ -11,7 +11,7 @@ import { useStoreSelector } from '@/lib/use-session-slice'
 import { $sidebarShowAllSessions, setWorkspaceNodeOpen } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
 import { newSessionInProfile, pinNewChatProfile, selectProfile } from '@/store/profile'
-import { switchBranchInRepo } from '@/store/projects'
+import { listRepoBranches, switchBranchInRepo } from '@/store/projects'
 import { $sessionProfilesUsage } from '@/store/session'
 import { $sidebarSessionRankIds } from '@/store/sidebar-sort'
 
@@ -19,7 +19,7 @@ import { SidebarGroupRow, SidebarRowLead, SidebarRowLink, SidebarRowStack } from
 import { rankSessions } from '../order'
 
 import { PROJECT_PREVIEW_COUNT, SIDEBAR_GROUP_PAGE, useRevealedRows, useWorkspaceNodeOpen } from './model'
-import type { SidebarSessionGroup } from './workspace-groups'
+import { laneSwitchTarget, type SidebarSessionGroup } from './workspace-groups'
 import {
   WorkspaceAddButton,
   WorkspaceContextMenu,
@@ -106,10 +106,15 @@ export function SidebarWorkspaceGroup({
     // currently sits on (`test0`, etc.), so explicitly switch first. A NON-GIT
     // lane (the backend heuristic's folder lane) has no branch to switch — `git
     // switch` there dies with "fatal: not a git repository" (#61362) — so the
-    // new session just lands in the folder as-is.
+    // new session just lands in the folder as-is. Nor does a label git doesn't
+    // know: the `main` fallback for rows with no recorded branch (#108694).
     if (group.isMain && group.isGit !== false && group.path && group.label) {
       try {
-        await switchBranchInRepo(group.path, group.label)
+        const branch = laneSwitchTarget(group, await listRepoBranches(group.path))
+
+        if (branch) {
+          await switchBranchInRepo(group.path, branch)
+        }
       } catch (err) {
         notifyError(err, t.statusStack.coding.switchFailed(group.label))
 

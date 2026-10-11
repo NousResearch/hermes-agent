@@ -10,7 +10,7 @@
 
 import { atom } from 'nanostores'
 
-export const $zoomPercent = atom<number>(110)
+export const $zoomPercent = atom<number>(100)
 
 export function setZoomPercent(percent: number): void {
   window.hermesDesktop?.zoom?.setPercent(percent)

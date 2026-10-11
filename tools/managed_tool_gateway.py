@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from dataclasses import dataclass
 from typing import Callable, Optional
 
@@ -69,12 +69,12 @@ def _parse_timestamp(value: object) -> Optional[datetime]:
         parsed = datetime.fromisoformat(normalized[:-1] + "+00:00" if normalized.endswith("Z") else normalized)
     except ValueError:
         return None
-    return (parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)).astimezone(timezone.utc)
+    return (parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)).astimezone(UTC)
 
 
 def _access_token_is_expiring(expires_at: object, skew_seconds: int) -> bool:
     expires = _parse_timestamp(expires_at)
-    return expires is None or (expires - datetime.now(timezone.utc)).total_seconds() <= max(0, int(skew_seconds))
+    return expires is None or (expires - datetime.now(UTC)).total_seconds() <= max(0, int(skew_seconds))
 
 
 def _read_user_token_override() -> Optional[str]:
@@ -162,17 +162,29 @@ def build_vendor_gateway_url(vendor: str) -> str:
     return f"{get_tool_gateway_scheme()}://{vendor}-gateway.{shared_domain}"
 
 
-def resolve_managed_tool_gateway(
-    vendor: str, gateway_builder: Optional[Callable[[str], str]] = None,
-    token_reader: Optional[Callable[[], Optional[str]]] = None) -> Optional[ManagedToolGatewayConfig]:
-    """Resolve shared managed-tool gateway config for a vendor."""
-    if not managed_nous_tools_enabled():
-        return None
+def _vendor_gateway(vendor: str, gateway_builder, token_reader) -> Optional[ManagedToolGatewayConfig]:
     gateway_origin = (gateway_builder or build_vendor_gateway_url)(vendor)
     nous_user_token = (token_reader or read_nous_access_token)()
     if not gateway_origin or not nous_user_token:
         return None
     return ManagedToolGatewayConfig(vendor=vendor, gateway_origin=gateway_origin, nous_user_token=nous_user_token, managed_mode=True)
+
+
+def resolve_managed_tool_gateway(
+    vendor: str, gateway_builder: Optional[Callable[[str], str]] = None,
+    token_reader: Optional[Callable[[], Optional[str]]] = None) -> Optional[ManagedToolGatewayConfig]:
+    """Resolve shared managed-tool gateway config for a vendor (entitled accounts only)."""
+    if not managed_nous_tools_enabled():
+        return None
+    return _vendor_gateway(vendor, gateway_builder, token_reader)
+
+
+def resolve_free_search_gateway(token_reader: Optional[Callable[[], Optional[str]]] = None) -> Optional[ManagedToolGatewayConfig]:
+    """Perplexity ``search_type: "fast"`` is served to every Nous identity with no funding check, the
+    anonymous guest tier included, so it needs a token this profile may use (guest-disabled and refresh
+    rules live in the reader), not paid entitlement or a registered account. Search only: every other
+    vendor route goes through :func:`resolve_managed_tool_gateway`."""
+    return _vendor_gateway("perplexity", None, token_reader)
 
 
 def is_managed_tool_gateway_ready(

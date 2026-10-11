@@ -951,7 +951,7 @@ class TestParseTargetRef:
             ("email", "user@.com"),
         ]
         for platform, target in cases:
-            chat_id, _, is_explicit = _parse_target_ref(platform, target)
+            _chat_id, _, is_explicit = _parse_target_ref(platform, target)
             assert is_explicit is False, f"{platform}:{target}"
 
     def test_prefixes_and_suffixes_are_platform_scoped(self):
@@ -1300,7 +1300,6 @@ class TestSendDiscordForumMedia:
         session.post = MagicMock(return_value=thread_resp)
 
         post_calls = []
-        orig_post = session.post
 
         def track_post(url, **kwargs):
             post_calls.append({"url": url, "kwargs": kwargs})

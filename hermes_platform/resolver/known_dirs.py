@@ -41,3 +41,16 @@ def windows_user_program_dirs() -> tuple[str, ...]:
         "%USERPROFILE%/scoop/shims",
         "%LOCALAPPDATA%/Microsoft/WinGet/Links",
     )
+
+
+def mac_application_dirs() -> tuple[str, ...]:
+    return ("/Applications", "~/Applications") if sys.platform == "darwin" else ()
+
+
+def flatpak_export_dirs() -> tuple[str, ...]:
+    """Where flatpak links each installed app's launcher, named by its app id (system, then per-user)."""
+    return ("/var/lib/flatpak/exports/bin", "~/.local/share/flatpak/exports/bin") if sys.platform.startswith("linux") else ()
+
+
+def snap_bin_dirs() -> tuple[str, ...]:
+    return ("/snap/bin",) if sys.platform.startswith("linux") else ()

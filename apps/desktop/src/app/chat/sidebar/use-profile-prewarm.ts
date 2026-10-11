@@ -9,7 +9,9 @@ export const PREWARM_DWELL_MS = 120
 
 /**
  * pointerenter/pointerleave/pointermove handlers that pre-warm `profile`'s
- * pool backend after a short hover dwell (see prewarmProfileBackend).
+ * pool backend after a short hover dwell (see prewarmProfileBackend). Rows
+ * that pick a profile on the current source pass prewarmProfilePick, so the
+ * warm follows the same route as the click.
  *
  * `pointerenter` alone is not intent: virtualized session lists and running-arc
  * re-renders fire it when a *stationary* cursor sits over the sidebar and a
@@ -17,11 +19,16 @@ export const PREWARM_DWELL_MS = 120
  * start the dwell only after a real pointermove on that visit, cancel on leave.
  * Consumers merge these with their own pointer handlers.
  */
-export function useProfilePrewarm(profile: string | null | undefined) {
+export function useProfilePrewarm(
+  profile: string | null | undefined,
+  warm: (profile: string) => void = prewarmProfileBackend
+) {
   const timer = useRef<null | number>(null)
   const armed = useRef(false)
   const profileRef = useRef(profile)
   profileRef.current = profile
+  const warmRef = useRef(warm)
+  warmRef.current = warm
 
   const cancelPrewarm = useCallback(() => {
     armed.current = false
@@ -47,7 +54,7 @@ export function useProfilePrewarm(profile: string | null | undefined) {
     timer.current = window.setTimeout(() => {
       timer.current = null
       armed.current = false
-      prewarmProfileBackend(profileRef.current || 'default')
+      warmRef.current(profileRef.current || 'default')
     }, PREWARM_DWELL_MS)
   }, [])
 

@@ -23,6 +23,7 @@ describe('video playback speed preference', () => {
     const video = container.querySelector('video')!
 
     expect(video.playbackRate).toBe(1)
+    expect(video.preload).toBe('none')
 
     // The user picks 2x in the native controls' rate menu.
     video.playbackRate = 2

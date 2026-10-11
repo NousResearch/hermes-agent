@@ -44,16 +44,21 @@ class OAuthPKCEConfig:
     client_id: str
     authorize_url: str
     token_url: str
-    scopes: Tuple[str, ...] = ()
+    scopes: tuple[str, ...] = ()
     redirect_port: int = 0  # 0 = OS-assigned; pin it when the IdP allowlists an exact redirect URI
     redirect_path: str = "/callback"
     audience: Optional[str] = None
     extra_authorize_params: Mapping[str, str] = field(default_factory=dict)
     extra_token_params: Mapping[str, str] = field(default_factory=dict)
     # Hosts the token endpoint may live on; default = the authorize URL's host (and its subdomains).
-    allowed_hosts: Tuple[str, ...] = ()
+    allowed_hosts: tuple[str, ...] = ()
     timeout_seconds: float = 180.0
     label: str = ""
+    # Confidential client behind a broker: called with the grant fields (``grant_type``, ``code`` /
+    # ``refresh_token``, ``redirect_uri``, ``code_verifier``) INSTEAD of POSTing ``token_url``; returns
+    # the token-endpoint JSON or raises ``AuthError``. The broker holds the client secret, so the
+    # plugin owns that transport and ``token_url`` is unused.
+    token_request: Optional[Callable[[dict[str, str]], Mapping[str, Any]]] = None
 
 
 def _err(provider: str, message: str, code: str):
@@ -62,7 +67,7 @@ def _err(provider: str, message: str, code: str):
     return AuthError(f"{provider}: {message}", provider=provider, code=code)
 
 
-def _host_allowed(host: str, allowlist: Tuple[str, ...]) -> bool:
+def _host_allowed(host: str, allowlist: tuple[str, ...]) -> bool:
     return any(host == apex or host.endswith(f".{apex}") for apex in allowlist)
 
 
@@ -78,6 +83,8 @@ def _endpoint_host(provider: str, name: str, url: str) -> str:
 
 def validate_config(provider: str, cfg: OAuthPKCEConfig) -> None:
     """Refuse a misdeclared config before any network request (login AND refresh call this)."""
+    if cfg.token_request is not None:
+        return  # brokered: no client or token endpoint of our own to check
     if not str(cfg.client_id or "").strip():
         raise _err(provider, "OAuth client_id is missing.", "oauth_client_id_missing")
     authorize_host = _endpoint_host(provider, "authorize_url", cfg.authorize_url)
@@ -90,11 +97,14 @@ def validate_config(provider: str, cfg: OAuthPKCEConfig) -> None:
         raise _err(provider, "OAuth redirect_port must be within 0..65535.", "oauth_redirect_invalid")
 
 
-def _post_token(provider: str, cfg: OAuthPKCEConfig, data: Dict[str, str], *, code: str) -> Dict[str, Any]:
-    """POST the token endpoint and return the rotated pool fields; the payload is never logged."""
-    from hermes_cli.auth import _coerce_ttl_seconds, _default_verify, _utc_now_z
+def _post_token(provider: str, cfg: OAuthPKCEConfig, data: dict[str, str], *, code: str) -> dict[str, Any]:
+    """POST the token endpoint (or the plugin's broker) and return the rotated pool fields; the payload
+    is never logged."""
+    from hermes_cli.auth import _default_verify
     from hermes_cli.auth_constants import httpx
 
+    if cfg.token_request is not None:
+        return _token_fields(provider, cfg.token_request(dict(data)), data, code)
     body = {**cfg.extra_token_params, **data, "client_id": cfg.client_id}
     if cfg.audience:
         body.setdefault("audience", cfg.audience)
@@ -105,7 +115,13 @@ def _post_token(provider: str, cfg: OAuthPKCEConfig, data: Dict[str, str], *, co
         raise _err(provider, f"OAuth token request failed: {type(exc).__name__}", code) from exc
     if response.status_code >= 400:
         raise _token_http_error(provider, response, code)
-    payload = response.json()
+    return _token_fields(provider, response.json(), data, code)
+
+
+def _token_fields(provider: str, payload: Mapping[str, Any], data: dict[str, str], code: str) -> dict[str, Any]:
+    """Pool fields from a token-endpoint payload; a response without ``refresh_token`` keeps the old one."""
+    from hermes_cli.auth import _coerce_ttl_seconds, _utc_now_z
+
     access_token = str(payload.get("access_token") or "").strip()
     if not access_token:
         raise _err(provider, "OAuth token response carried no access_token.", code)
@@ -144,7 +160,7 @@ def _pool_provider(args: Any) -> str:
     return profile.name if profile is not None else raw
 
 
-def login(provider: str, cfg: OAuthPKCEConfig, *, open_browser: bool = True) -> Dict[str, Any]:
+def login(provider: str, cfg: OAuthPKCEConfig, *, open_browser: bool = True) -> dict[str, Any]:
     """Run the browser Authorization-Code + PKCE flow; returns the pool fields for the new grant."""
     from hermes_cli.auth_device_flow import (
         _bind_loopback_callback_server, _can_open_graphical_browser, _make_loopback_callback_handler,
@@ -152,7 +168,7 @@ def login(provider: str, cfg: OAuthPKCEConfig, *, open_browser: bool = True) -> 
 
     validate_config(provider, cfg)
     path = cfg.redirect_path if cfg.redirect_path.startswith("/") else f"/{cfg.redirect_path}"
-    err = lambda message, code: _err(provider, message, code)  # noqa: E731
+    err = lambda message, code: _err(provider, message, code)
     handler_cls, result = _make_loopback_callback_handler(path, display_name=cfg.label or provider)
     server = _bind_loopback_callback_server(
         "127.0.0.1", int(cfg.redirect_port), handler_cls, err=err, bind_failed_code="oauth_callback_bind_failed")

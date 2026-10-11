@@ -17,7 +17,7 @@ import urllib.parse
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _http import get_json  # noqa: E402
+from _http import get_json
 
 BASE = "https://www.courtlistener.com/api/rest/v4/search/"
 
@@ -71,7 +71,7 @@ def fetch(
     while next_url and len(rows) < limit:
         try:
             payload = get_json(next_url, headers=headers)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             print(f"CourtListener error: {e}", file=sys.stderr)
             break
         if not isinstance(payload, dict):

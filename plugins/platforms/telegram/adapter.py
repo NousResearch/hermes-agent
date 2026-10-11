@@ -2621,6 +2621,12 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
     async def _setup_dm_topics(self) -> None:
         """Load or create configured DM topics: ``extra['dm_topics']`` is ``[{"chat_id", "topics": [{"name",
         "icon_color", "thread_id"?, "skill"?}]}]``; persisted thread_ids are cached without an API call."""
+        # A rebuilt adapter is constructed from the gateway's startup-time platform config snapshot, which
+        # predates any thread_id this process persisted after creating the topics: without a re-read the
+        # rebuild would create a duplicate topic set and orphan it (#132522). config.yaml on disk is the
+        # durable source of truth here, and the load cache is keyed on the file signature, so a config the
+        # user hand-edited since startup is picked up too.
+        self._reload_dm_topics_from_config()
         for chat_entry in self._dm_topics_config or ():
             chat_id = chat_entry.get("chat_id")
             topics = chat_entry.get("topics", [])

@@ -274,6 +274,8 @@ Current schema version: **31**
 
 The `schema_version` table stores a single integer. Simple column additions are handled declaratively by `_reconcile_columns()` (which diffs live columns against `SCHEMA_SQL` and ADDs any missing ones). The version-gated chain is reserved for data migrations and index/FTS changes that can't be expressed declaratively:
 
+Because the chain stamps `schema_version` whether or not each best-effort backfill actually ran, those backfills (v16/v18/v20/v25) also record their outcome in `state_meta` — `done`, or `skipped` when a sibling process held the write lock. A `skipped` backfill is retried on the next open even though the version has moved on, so lock contention cannot drop it permanently. See `SessionSchemaMixin._data_migration_owed`.
+
 | Version | Change |
 |---------|--------|
 | 1 | Initial schema (sessions, messages, FTS5) |

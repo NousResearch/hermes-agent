@@ -168,6 +168,8 @@ END;
 
 `schema_version` 表存储单个整数。简单的列添加由 `_reconcile_columns()` 声明式处理（对比实时列与 `SCHEMA_SQL` 并 ADD 缺失列）。版本门控链保留用于无法声明式表达的数据迁移及索引/FTS 变更：
 
+由于该链无论各个尽力而为的回填是否真正执行都会写入 `schema_version`，这些回填（v16/v18/v20/v25）还会把各自的结果记录到 `state_meta` —— 成功为 `done`，因同级进程持有写锁而被跳过则为 `skipped`。即使版本号已经推进，被标记为 `skipped` 的回填仍会在下次打开时重试，因此锁竞争不会永久丢失它们。参见 `SessionSchemaMixin._data_migration_owed`。
+
 | 版本 | 变更 |
 |------|------|
 | 1 | 初始 schema（sessions、messages、FTS5） |

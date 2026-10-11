@@ -1632,6 +1632,8 @@ class SessionDB(
         """Read state_meta[key] on self._lock (not _read_ctx): fts_rebuild_step reads progress before its
         write transaction and a WAL reader would not see it."""
         with self._lock:
+            if self._conn is None:  # close() raced this reader
+                self._reopen_after_close_locked(context="meta read")
             row = self._conn.execute("SELECT value FROM state_meta WHERE key = ?", (key,)).fetchone()
         return None if row is None else row[0]
 

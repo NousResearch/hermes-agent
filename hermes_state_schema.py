@@ -51,6 +51,13 @@ _MESSAGE_UID_BACKFILL_CURSOR = "message_uid_backfill_id"
 _MESSAGE_UID_BACKFILL_CHUNK = 2000
 _MESSAGE_UID_BACKFILL_BUDGET_S = 1.0
 
+# Per-backfill outcome markers in state_meta ('done' / 'skipped'). See
+# SessionSchemaMixin._data_migration_owed for why schema_version alone cannot carry this.
+_DATA_MIGRATION_V16_DELEGATE_TAGGING = "data_migration_v16_delegate_tagging"
+_DATA_MIGRATION_V18_GATEWAY_METADATA = "data_migration_v18_gateway_metadata"
+_DATA_MIGRATION_V20_USAGE_SEED = "data_migration_v20_usage_seed"
+_DATA_MIGRATION_V25_PROMPT_DEDUPE = "data_migration_v25_prompt_dedupe"
+
 
 def _holder_cmdline(pid: int) -> str:
     argv = _read_proc_argv(pid)
@@ -185,15 +192,20 @@ def schema_read_probe_statements() -> tuple:
 class SessionSchemaMixin:
     """See module docstring — mixin for SessionDB (Schema cluster)."""
 
-    def _dedupe_legacy_system_prompts(self, cursor: sqlite3.Cursor) -> None:
+    def _dedupe_legacy_system_prompts(self, cursor: sqlite3.Cursor) -> Optional[BaseException]:
         """Move inline prompt snapshots into the shared content-addressed table. Any
         ``OperationalError`` mid-loop returns instead of raising: partial migration is safe
         (the legacy column stays a read fallback; next init resumes), whereas propagating
-        left the version below 25 and re-ran this on every open (gateway crash loop)."""
+        left the version below 25 and re-ran this on every open (gateway crash loop).
+
+        Returns the contention that paused the backfill, or None when it ran to completion, so
+        the caller can record the outcome. The resume the warning below promises needs that
+        record: ``schema_version`` advances past 25 regardless, so without it the next init
+        would not re-enter this at all (see ``_settle_data_migration``)."""
         try:
             rows = cursor.execute("SELECT id, system_prompt FROM sessions WHERE system_prompt IS NOT NULL").fetchall()
-        except sqlite3.OperationalError:
-            return
+        except sqlite3.OperationalError as exc:
+            return exc
         for session_id, prompt in rows:
             try:
                 prompt_hash = self._store_system_prompt(cursor, prompt)
@@ -207,7 +219,71 @@ class SessionSchemaMixin:
                     "unmigrated rows keep the legacy inline prompt and the next schema init resumes the migration.",
                     exc,
                 )
-                return
+                return exc
+        return None
+
+    def _data_migration_status(self, cursor: sqlite3.Cursor, key: str) -> Optional[str]:
+        row = cursor.execute(
+            "SELECT value FROM state_meta WHERE key = ? LIMIT 1", (key,)
+        ).fetchone()
+        return None if row is None else row[0]
+
+    def _data_migration_owed(
+        self, cursor: sqlite3.Cursor, key: str, current_version: int, version: int
+    ) -> bool:
+        """True when a best-effort DATA backfill still has work to do.
+
+        ``_run_data_migrations`` stamps ``schema_version`` at the end whether or not these
+        backfills ran, so a ``current_version < N`` gate alone runs each of them exactly once:
+        when a sibling process held the write lock at that instant (schema init runs on a
+        1s-timeout connection and gives up) the backfill was skipped and the version moved on,
+        dropping it for the life of the database. The marker records the outcome per backfill:
+
+        - ``done``    — settled. From here the version gate alone decides.
+        - ``skipped`` — contention only. RETRIED on the next open even though the version moved on.
+        - absent      — no record (any store predating these markers); the version gate rules, so
+          a store that migrated cleanly years ago is not re-run by this patch.
+        """
+        status = self._data_migration_status(cursor, key)
+        if status == "done":
+            return False
+        if status == "skipped":
+            return True
+        return current_version < version
+
+    def _settle_data_migration(
+        self,
+        cursor: sqlite3.Cursor,
+        key: str,
+        deferred: Optional[BaseException],
+    ) -> None:
+        """Record how a best-effort DATA backfill ended (see ``_data_migration_owed``).
+
+        ``deferred`` is the exception that aborted the backfill, or None when it ran to
+        completion. Contention is recorded as ``skipped`` so the next open retries it — the
+        resume-the-remainder contract ``_dedupe_legacy_system_prompts`` relies on, which the
+        version stamp alone cannot deliver. Everything else is ``done``: a capability this
+        SQLite build lacks (no JSON1 ``json_set``) can never succeed here, and re-attempting it
+        on every open would buy nothing.
+        """
+        status = "done"
+        if deferred is not None:
+            if is_sqlite_lock_error(deferred):
+                status = "skipped"
+                logger.warning(
+                    "Data migration %s deferred after contention (%s); a sibling process held "
+                    "the state.db write lock, so it is NOT marked complete and retries on the "
+                    "next schema init.",
+                    key,
+                    deferred,
+                )
+            else:
+                logger.debug("Data migration %s skipped on this runtime: %s", key, deferred)
+        cursor.execute(
+            "INSERT INTO state_meta (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, status),
+        )
 
     def _sqlite_supports_fts5(self, cursor: sqlite3.Cursor) -> bool:
         try:
@@ -1006,7 +1082,12 @@ class SessionSchemaMixin:
 
     def _run_data_migrations(self, cursor: sqlite3.Cursor, current_version: int, fts5_available: bool) -> None:
         """Version-gated chain for DATA migrations only (row backfills); column additions never
-        belong here. Advances schema_version at the end unless FTS5 is unavailable."""
+        belong here. Advances schema_version at the end unless FTS5 is unavailable.
+
+        The best-effort backfills (v16/v18/v20/v25) additionally record their outcome per
+        backfill in ``state_meta``, because this method stamps ``schema_version`` whether or not
+        they ran — a skip caused by a sibling process holding the write lock would otherwise be
+        permanent. See ``_data_migration_owed``."""
         # Renew the lease: the chain can rewrite whole tables on large DBs.
         report_startup_progress(600.0, phase="state_db_data_migrations")
         # (v10 trigram backfill and v11 inline FTS re-index were superseded by v23 and removed.)
@@ -1015,9 +1096,12 @@ class SessionSchemaMixin:
         # inline backfill first would only burn startup time and WAL space before v23 throws the work away —
         # and its inline INSERT shape no longer matches the current external-content FTS_SQL anyway. Kept
         # only for source archaeology; unreachable while SCHEMA_VERSION >= 23.
-        if current_version < 16:
+        # Best-effort DATA backfills keep their ``current_version < N`` gate AND carry a per-backfill
+        # outcome marker, so a contention skip stays recoverable across the version stamp below.
+        if self._data_migration_owed(cursor, _DATA_MIGRATION_V16_DELEGATE_TAGGING, current_version, 16):
             # v16: tag delegate subagent rows so pickers stay clean after parent deletes orphan them.
-            with contextlib.suppress(sqlite3.OperationalError):
+            deferred: Optional[BaseException] = None
+            try:
                 cursor.execute(
                     "UPDATE sessions SET model_config = json_set("
                     "COALESCE(model_config, '{}'), '$._delegate_from', parent_session_id) "
@@ -1035,18 +1119,27 @@ class SessionSchemaMixin:
                     "AND NOT EXISTS (SELECT 1 FROM sessions ch "
                     "                WHERE ch.parent_session_id = sessions.id)"
                 )
-        if current_version < 18:
+            except sqlite3.OperationalError as exc:
+                deferred = exc
+            self._settle_data_migration(cursor, _DATA_MIGRATION_V16_DELEGATE_TAGGING, deferred)
+        if self._data_migration_owed(cursor, _DATA_MIGRATION_V18_GATEWAY_METADATA, current_version, 18):
             # v18: best-effort gateway metadata backfill from sessions.json.
+            # Backfill display_name / origin_json / expiry_finalized from sessions.json so pre-migration
+            # gateway sessions are discoverable from state.db without the JSON index. See #9006.
+            deferred = None
             try:
-                # Backfill display_name / origin_json / expiry_finalized from sessions.json so pre-migration
-                # gateway sessions are discoverable from state.db without the JSON index. See #9006.
                 self._backfill_gateway_metadata_from_sessions_json(cursor)
             except Exception as exc:
-                logger.debug("v18 gateway metadata backfill skipped: %s", exc)
-        if current_version < 20:
+                deferred = exc
+            self._settle_data_migration(cursor, _DATA_MIGRATION_V18_GATEWAY_METADATA, deferred)
+        if self._data_migration_owed(cursor, _DATA_MIGRATION_V20_USAGE_SEED, current_version, 20):
             # v20: seed session_model_usage from sessions aggregates (OR IGNORE: newer rows win).
-            with contextlib.suppress(sqlite3.OperationalError):
+            deferred = None
+            try:
                 cursor.execute(_SESSION_MODEL_USAGE_V20_SEED_SQL)
+            except sqlite3.OperationalError as exc:
+                deferred = exc
+            self._settle_data_migration(cursor, _DATA_MIGRATION_V20_USAGE_SEED, deferred)
         if current_version < 22:
             self._migrate_v22_session_model_usage(cursor)
         # v23: FTS storage redesign (external-content tables). OPT-IN, NOT AUTOMATIC: the
@@ -1056,9 +1149,11 @@ class SessionSchemaMixin:
         # schema_version still advances for legacy-FTS users.
         if current_version < 23 and fts5_available and self._db_needs_fts_storage_upgrade(cursor):
             self.set_meta("fts_optimize_available", "1", cursor=cursor)
-        if current_version < 25:
+        if self._data_migration_owed(cursor, _DATA_MIGRATION_V25_PROMPT_DEDUPE, current_version, 25):
             # v25: de-duplicate system prompt snapshots (old column stays a read fallback).
-            self._dedupe_legacy_system_prompts(cursor)
+            self._settle_data_migration(
+                cursor, _DATA_MIGRATION_V25_PROMPT_DEDUPE, self._dedupe_legacy_system_prompts(cursor)
+            )
         self._advance_message_uid_backfill(cursor)
         fts_migrations_complete = True
         if current_version < 30 and fts5_available:

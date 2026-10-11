@@ -610,6 +610,49 @@ async def test_startup_auto_resume_skips_unauthorized_owner():
 
 
 @pytest.mark.asyncio
+async def test_startup_auto_resume_skips_group_and_channel_sessions():
+    """Auto-resume dispatches a synthesized turn straight to the session, past the
+    adapter's inbound gates — group allowlists, mention-only and listen-only modes.
+    In a multi-party chat those gates are what keep the agent quiet, so a restart
+    must not make it post unprompted there. The session stays ``resume_pending``:
+    the next real message, which passes the gates, resumes it as usual. DMs in the
+    same pass are still resumed.
+    """
+    runner, adapter = make_restart_runner()
+    runner._persist_active_agents = MagicMock()
+    entries = {}
+    for chat_type in ("group", "channel", "dm"):
+        source = SessionSource(
+            platform=Platform.TELEGRAM, chat_id=f"{chat_type}-chat", chat_type=chat_type, user_id="u1"
+        )
+        entry = SessionEntry(
+            session_key=f"agent:main:telegram:{chat_type}:{chat_type}-chat",
+            session_id=f"sid-{chat_type}",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+            origin=source,
+            platform=Platform.TELEGRAM,
+            chat_type=chat_type,
+            resume_pending=True,
+            resume_reason="restart_interrupted",
+            last_resume_marked_at=datetime.now(),
+        )
+        entries[chat_type] = entry
+    runner.session_store._entries = {e.session_key: e for e in entries.values()}
+    adapter.handle_message = AsyncMock()
+
+    scheduled = runner._schedule_resume_pending_sessions()
+    await asyncio.sleep(0)
+
+    assert scheduled == 1
+    adapter.handle_message.assert_awaited_once()
+    assert adapter.handle_message.await_args.args[0].source.chat_type == "dm"
+    for chat_type in ("group", "channel"):
+        assert entries[chat_type].session_key not in runner._running_agents
+        assert entries[chat_type].resume_pending is True
+
+
+@pytest.mark.asyncio
 async def test_reconnect_reschedule_is_platform_scoped():
     """The platform filter limits the pass to that platform's sessions, so
     reconnecting one platform never resumes another's pending session."""

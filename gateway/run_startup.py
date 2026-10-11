@@ -618,6 +618,12 @@ class GatewayStartupMixin:
             if self._is_session_running(entry.session_key):
                 continue
             source = self._restored_source(entry)
+            # The synthesized turn bypasses the adapter's inbound gates (group allowlists,
+            # mention-only and listen-only modes), which are what keep the agent quiet in a
+            # multi-party chat. Leave it resume_pending: the next gated message resumes it.
+            if source.chat_type in ("group", "channel"):
+                logger.info("Skipping auto-resume for %s: %s chat", entry.session_key, source.chat_type)
+                continue
             adapter = self._delivery_adapter_for(source)
             if adapter is None:
                 logger.debug(

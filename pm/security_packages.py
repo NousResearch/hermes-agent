@@ -87,6 +87,8 @@ class _SignedBinary(BinaryPackage):
 class IronProxy(_SignedBinary):
     name = "iron-proxy"
     binary_rel = {"posix": "iron-proxy"}
+    # Explicit release exception: never infer unsigned policy from a failed download.
+    _unsigned_versions = frozenset({"0.50.0"})
     # The release omits its public key asset; pin the key from its source commit.
     signing_key_url = "https://raw.githubusercontent.com/paradigmxyz/iron-proxy/be5f255d0d9d10d8573bd65f480dd48a07772bf1/public-key.asc"
 
@@ -106,18 +108,28 @@ class IronProxy(_SignedBinary):
     def fetch_urls(self, version: str, target: str) -> list[str]:
         archive = self.fetch_url(version, target)
         base = archive.rsplit("/", 1)[0]
-        return [archive, f"{base}/checksums.txt", f"{base}/checksums.txt.asc", self.signing_key_url]
+        artifacts = [archive, f"{base}/checksums.txt"]
+        if version not in self._unsigned_versions:
+            artifacts.append(f"{base}/checksums.txt.asc")
+        return [*artifacts, self.signing_key_url]
 
     def verify_provenance(self, directory: Path) -> None:
         # Keep package provenance inside PM rather than calling a private
         # helper in the running proxy (which also owns runtime subprocesses).
+        signature = directory / "checksums.txt.asc"
+        version = Lockfile(paths.lockfile_path()).version(self.name)
+        if not signature.is_file() and version in self._unsigned_versions:
+            logging.getLogger(__name__).warning(
+                "iron-proxy v%s does not publish a checksum signature; skipping GPG verification "
+                "(PM-pinned SHA-256 checks remain enforced)", version,
+            )
+            return
         gpg = shutil.which("gpg")
         if not gpg:
             logging.getLogger(__name__).warning("gpg unavailable; iron-proxy archive checksum remains enforced")
             return
         with tempfile.TemporaryDirectory(prefix="hermes-iron-signature-") as home:
             args = [gpg, "--homedir", home, "--batch", "--no-tty"]
-            signature = directory / "checksums.txt.asc"
             key = directory / "public-key.asc"
             if not signature.is_file() or not key.is_file():
                 raise InstallError(self.name, "pinned signature assets missing")

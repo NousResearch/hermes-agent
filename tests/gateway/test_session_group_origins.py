@@ -19,6 +19,7 @@ import pytest
 import gateway.session as gateway_session
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
+from gateway.platforms.base_session_groups import group_turn_lock_for
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import GatewayRunner
 from gateway.session import SessionEntry, SessionSource, SessionStore, build_session_key, key_source_for
@@ -83,7 +84,7 @@ def test_no_group_keeps_every_key_and_row_unchanged(tmp_path):
         assert entry.key_source is None and "key_source" not in entry.to_dict()
         assert db.get_session(entry.session_id)["source"] == "discord"
     event = MessageEvent(text="hi", message_type=MessageType.TEXT, source=tg_src)
-    assert tg._group_turn_lock(event, "k") is None
+    assert group_turn_lock_for(event, "k") is None
 
 
 def test_only_a_live_source_of_its_own_platform_joins_a_group(grouped):

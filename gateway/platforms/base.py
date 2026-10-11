@@ -28,16 +28,6 @@ from agent.proxy_bypass import first_proxy_env_value, should_bypass_proxy as _sh
 logger = logging.getLogger(__name__)
 
 
-def _consume_detached_handler_exception(task: "asyncio.Task") -> None:
-    """Done-callback for a detached fatal-error handler task (carrier cancelled in
-    ``_notify_fatal_error``): retrieve its exception so asyncio never logs "never retrieved"."""
-    if task.cancelled():
-        return
-    exc = task.exception()
-    if exc is not None:
-        logger.error("Detached fatal-error handler task failed: %s", exc, exc_info=exc)
-
-
 # Audio exts for native audio delivery; Telegram's narrower sets stay separate (.m2a is audio to
 # Hermes but not to sendAudio).
 _AUDIO_MIME_TYPES = {
@@ -93,8 +83,6 @@ _HISTORY_MEDIA_LOOKUP_TIMEOUT_SECONDS = 5.0
 # can't exhaust the shared executor.
 _HISTORY_MEDIA_LOOKUP_MAX_WORKERS = 2
 _HISTORY_MEDIA_LOOKUP_ADMISSION = threading.BoundedSemaphore(_HISTORY_MEDIA_LOOKUP_MAX_WORKERS)
-# Session groups (#79198): one turn lock per shared key across all adapters; held by live turns only.
-_GROUP_TURN_LOCKS: "weakref.WeakValueDictionary[str, asyncio.Lock]" = weakref.WeakValueDictionary()
 
 
 def _platform_name(platform) -> str:
@@ -426,7 +414,8 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Any, Callable, Awaitable
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.helpers import fence_state_after
+from gateway.platforms.helpers import consume_detached_handler_exception, fence_state_after
+from gateway.platforms.base_session_groups import acquire_group_turn, defer_to_group_turn
 from gateway.platforms.base_exec_approval import (
     approval_timeout_seconds, ea_action_labels, ea_default_reason_text, ea_header_text,
     ea_reason_label_text, ea_smart_deny_line_text, format_approval_deadline_line)
@@ -2250,7 +2239,7 @@ class BasePlatformAdapter(ABC):
             except asyncio.CancelledError:
                 # Carrier cancelled (our own teardown inside the handler): let it finish detached.
                 if not task.done():
-                    task.add_done_callback(_consume_detached_handler_exception)
+                    task.add_done_callback(consume_detached_handler_exception)
                 raise
 
     def _acquire_platform_lock(self, scope: str, identity: str, resource_desc: str) -> bool:
@@ -4076,15 +4065,8 @@ class BasePlatformAdapter(ABC):
         if session_key in self._active_sessions:
             await self._handle_message_while_active(event, session_key)
             return
-        group_turn_lock = self._group_turn_lock(event, session_key)
-        if group_turn_lock is not None and group_turn_lock.locked():
-            # Another chat in the session group owns the key: commands and clarify answers act
-            # now, anything else queues as this chat's own next turn (behind the lock).
-            await self._handle_message_while_active(event, session_key)
-            queued = None if session_key in self._active_sessions else self.get_pending_message(session_key)
-            if queued is not None:
-                self._start_session_processing(queued, session_key)
-            return
+        if await defer_to_group_turn(self, event, session_key):
+            return  # another chat in the session group (#79198) owns the key
         # Guard installed synchronously BEFORE the task spawns so a second message can't race in.
         event._gateway_accepted = self._start_session_processing(event, session_key)
 
@@ -4570,22 +4552,10 @@ class BasePlatformAdapter(ABC):
         elif current_task is not None and self._session_tasks.get(session_key) is current_task:
             self._cleanup_finished_session_task(session_key, interrupt_event)
 
-    def _group_turn_lock(self, event: MessageEvent, session_key: str) -> Optional[asyncio.Lock]:
-        """The per-key turn lock for a session-group event (#79198), else None. Chats on different
-        adapters that share one key take turns under it in arrival order, each holding it through
-        its own delivery, so no turn runs or replies while another chat's turn owns the key."""
-        source = getattr(event, "source", None)
-        if source is None or key_source_for(source) is source:
-            return None
-        lock = _GROUP_TURN_LOCKS.get(session_key)
-        if lock is None:
-            lock = _GROUP_TURN_LOCKS[session_key] = asyncio.Lock()
-        return lock
-
     async def _process_message_background(self, event: MessageEvent, session_key: str) -> None:
         """Background task that actually processes the message."""
         delivery_attempted = delivery_succeeded = False  # feeds the processing-complete hook
-        group_turn_lock, group_turn_locked = self._group_turn_lock(event, session_key), False
+        group_turn = None  # session-group turn lock (#79198), held through delivery
 
         def _record_delivery(result):
             nonlocal delivery_attempted, delivery_succeeded
@@ -4599,9 +4569,7 @@ class BasePlatformAdapter(ABC):
         typing_task = self._start_typing_refresh(event, interrupt_event, _thread_metadata)
         try:
             await self._run_processing_hook("on_processing_start", event)
-            if group_turn_lock is not None:
-                await group_turn_lock.acquire()
-                group_turn_locked = True
+            group_turn = await acquire_group_turn(event, session_key)
             event._turn_marker_handoff = self.gateway_runner is not None  # it can release the marker
             response = await self._message_handler(event)
             # A muted diagnostic wake ran for the session; its reply is not presented. The
@@ -4711,11 +4679,9 @@ class BasePlatformAdapter(ABC):
                 # Flush any timer that missed the in-band drain, then reconcile ownership.
                 await self._flush_text_debounce_now(session_key)
                 self._finish_session_task(session_key, interrupt_event)
-            finally:
-                # Released even if cleanup above raises or is cancelled, so a failed tail can't
-                # deadlock the shared key for every chat in the group.
-                if group_turn_locked:
-                    group_turn_lock.release()
+            finally:  # release even when cleanup raises, so the group key never stays locked
+                if group_turn is not None:
+                    group_turn.release()
 
     _REQUEUE_BACKOFF_INITIAL_SECONDS = 0.25
     # Kept at 1s: nothing wakes the back-off sleep, so a genuine message merged into the slot

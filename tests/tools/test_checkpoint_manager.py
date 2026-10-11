@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -737,6 +738,56 @@ class TestErrorResilience:
         monkeypatch.setattr("shutil.which", lambda *args, **kwargs: None)
         mgr.new_turn()
         assert mgr.ensure_checkpoint(str(work_dir), "test") is False
+
+    def test_run_git_skips_inaccessible_workdir_quietly(
+        self, tmp_path, monkeypatch, caplog,
+    ):
+        """An existing-but-untraversable working dir is skipped, not logged.
+
+        ``subprocess.run(cwd=...)`` raises ``PermissionError`` before git is
+        exec'd when the dir exists and is a directory but the process cannot
+        traverse it (e.g. a root-owned 0700 ``/root`` while the gateway runs as
+        another user).  That used to surface as an ERROR "Unexpected git error"
+        traceback on every snapshot.
+        """
+        store = tmp_path / "store"
+        work = tmp_path / "work"
+        work.mkdir()
+
+        real_access = os.access
+        # Only the target dir is made untraversable, so the test does not
+        # disturb unrelated ``os.access`` calls (root ignores real modes).
+        monkeypatch.setattr(
+            "tools.checkpoint_manager.os.access",
+            lambda p, mode, **kw: False if str(p) == str(work) else real_access(p, mode, **kw),
+        )
+
+        with caplog.at_level("ERROR", logger="tools.checkpoint_manager"):
+            ok, _out, err = _run_git(["add", "-A"], store, str(work))
+
+        assert ok is False
+        assert "not accessible" in err
+        assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+
+    def test_run_git_handles_permission_error_from_launch(
+        self, tmp_path, monkeypatch, caplog,
+    ):
+        """A launch-time ``PermissionError`` is a quiet skip, not a traceback."""
+        store = tmp_path / "store"
+        work = tmp_path / "work"
+        work.mkdir()
+
+        def boom(*args, **kwargs):
+            raise PermissionError(13, "Permission denied", str(work))
+
+        monkeypatch.setattr("tools.checkpoint_manager.subprocess.run", boom)
+
+        with caplog.at_level("ERROR", logger="tools.checkpoint_manager"):
+            ok, _out, err = _run_git(["add", "-A"], store, str(work))
+
+        assert ok is False
+        assert "not accessible" in err
+        assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
 
 
 class TestTouchProjectMalformedMeta:

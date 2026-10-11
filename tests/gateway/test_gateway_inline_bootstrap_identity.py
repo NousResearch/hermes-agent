@@ -50,6 +50,43 @@ def test_bootstrap_launched_gateway_is_a_gateway(form: str, join: str) -> None:
     assert _hermes_holder_subcommand(command_line) == "gateway"
 
 
+def test_spaced_venv_reentry_requires_argv_boundary_preservation() -> None:
+    """The actual venv-sync ``-I -c`` re-entry must survive a spaced interpreter path."""
+    spaced_py = Path("/opt/Hermes Agent/hermes/tools/python-3.14.7-x86_64/python.exe")
+    argv = [
+        str(token)
+        for token in venv_sync.relaunch_command(
+            spaced_py,
+            ROOT,
+            [str(ROOT / "hermes_cli" / "main.py"), "gateway", "run"],
+            ["/old/python", "-m", "hermes_cli.main", "gateway", "run"],
+            "hermes_cli.main",
+        )
+    ]
+    old_reader = " ".join(argv)
+    new_reader = subprocess.list2cmdline(argv)
+
+    assert not looks_like_gateway_command_line(old_reader)
+    assert _hermes_holder_subcommand(old_reader) != "gateway"
+    assert looks_like_gateway_command_line(new_reader)
+    assert _hermes_holder_subcommand(new_reader) == "gateway"
+
+    # A space-free interpreter remains valid with either representation.
+    space_free_argv = [
+        str(token)
+        for token in venv_sync.relaunch_command(
+            Path(PY),
+            ROOT,
+            [str(ROOT / "hermes_cli" / "main.py"), "gateway", "run"],
+            ["/old/python", "-m", "hermes_cli.main", "gateway", "run"],
+            "hermes_cli.main",
+        )
+    ]
+    for reader in (" ".join(space_free_argv), subprocess.list2cmdline(space_free_argv)):
+        assert looks_like_gateway_command_line(reader)
+        assert _hermes_holder_subcommand(reader) == "gateway"
+
+
 @pytest.mark.parametrize("join", _JOINS)
 def test_bootstrap_argv_is_identity_only_for_the_process_running_it(join: str) -> None:
     store = [str(t) for t in _launchers.runtime_command(ROOT, ["gateway", "run"], python=Path(PY))]

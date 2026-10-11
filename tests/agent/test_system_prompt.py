@@ -981,3 +981,36 @@ class TestConversationStartedTwoLine:
         vol = self._volatile(agent)
         assert "Conversation started:" not in vol
         assert "as of the last context rebuild" not in vol
+
+
+def test_kanban_guidance_routes_waits_away_from_untyped_blocks():
+    """Peer-output/review/time waits must use the non-counting paths (#135293).
+
+    An untyped ``kanban_block(reason=...)`` for a peer-output wait counts toward
+    BLOCK_RECURRENCE_LIMIT (un-typed None == prior un-typed) and routes the card
+    to triage on the second wait; a ``kind="dependency"`` block linked to an open
+    parent never counts. The prompt must teach the link-then-block order, because
+    a dependency block filed before the parent link is re-kinded to a sticky
+    needs_input and never released.
+    """
+    from agent.prompt_builder import KANBAN_GUIDANCE
+
+    assert "peer output you need first), call `kanban_block(reason=" not in KANBAN_GUIDANCE
+    assert "`kanban_link(parent_id=<its id>, child_id=<your task>)`" in KANBAN_GUIDANCE
+    assert 'then call `kanban_block(kind="dependency")`' in KANBAN_GUIDANCE
+    assert "`kanban_request_review`, which never counts toward unblock-loop detection" in KANBAN_GUIDANCE
+    assert "`kanban_schedule`" in KANBAN_GUIDANCE
+
+
+def test_kanban_schedule_schema_drops_unread_wake_marker_hint():
+    """No core reader consumes a SCHEDULED_UNTIL marker (#124395, #135293).
+
+    The schema used to suggest putting ``SCHEDULED_UNTIL=<ISO8601>`` in the
+    schedule reason; nothing reads it, so workers following the hint parked cards
+    only a human could wake.
+    """
+    from tools.kanban_tools_schemas import KANBAN_SCHEDULE_SCHEMA
+
+    dumped = json.dumps(KANBAN_SCHEDULE_SCHEMA)
+    assert "SCHEDULED_UNTIL" not in dumped
+    assert "wake-up marker" not in dumped

@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { createPortal } from "react-dom";
-import { Check } from "lucide-react";
+import { Check, Languages } from "lucide-react";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { BottomSheet } from "@nous-research/ui/ui/components/bottom-sheet";
 import { Typography } from "@nous-research/ui/ui/components/typography/index";
@@ -77,6 +77,7 @@ export function LanguageSwitcher({ collapsed = false, dropUp = false }: Language
         )}
       >
         <span className="inline-flex items-center gap-1.5">
+          <Languages className="h-3.5 w-3.5" />
           <Typography
             className="hidden sm:inline text-display tracking-wide text-xs"
           >

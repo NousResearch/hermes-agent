@@ -400,7 +400,14 @@ def _kb_poll_board(_kb, slug: str, session_key: str) -> list:
                 continue
             sub_ident = dict(task_id=sub["task_id"], platform=sub["platform"], chat_id=sub["chat_id"],
                              thread_id=sub.get("thread_id") or "")
-            _old, _new, events = _kbn.claim_unseen_events_for_sub(conn, kinds=_KANBAN_NOTIFY_KINDS, **sub_ident)
+            # Claim every unseen event before applying the subscription's
+            # delivery allowlist. Otherwise an excluded completion would keep
+            # the cursor behind it and be reconsidered on every poll.
+            _old, _new, events = _kbn.claim_unseen_events_for_sub(conn, **sub_ident)
+            allowed_kinds = sub.get("event_kinds") or _KANBAN_NOTIFY_KINDS
+            events = [event for event in events if event.kind in allowed_kinds]
+            if sub.get("event_kinds") == list(_kbn.FAILURE_ALERT_EVENT_KINDS):
+                events = _kbn.coalesce_failure_alert_events(events)
             if not events:
                 continue
             task = _kb.get_task(conn, sub["task_id"])

@@ -381,8 +381,9 @@ class GatewaySlashCommandsMixin(
         return output or t("gateway.kanban.no_output")
 
     async def _kanban_auto_subscribe(self, event: MessageEvent, task_id: str, requested_board) -> bool:
-        """Subscribe the event's chat to *task_id* notifications (notify+wake). False when the
-        source has no platform/chat to route back to."""
+        """Subscribe the event's chat to *task_id* notifications (notify+wake), limited to
+        ``kanban.auto_subscribe_events`` when set. False when the source has no platform/chat
+        to route back to."""
         source = event.source
 
         def _field(name: str) -> Optional[str]:
@@ -402,6 +403,8 @@ class GatewaySlashCommandsMixin(
             from hermes_cli import kanban_db_notify as _kbn
             conn = _kbc.connect(board=requested_board)
             try:
+                from hermes_cli.config import load_config
+                event_kinds = _kbn.auto_subscribe_event_kinds(load_config())
                 _kbn.add_notify_sub(
                     conn, task_id=task_id, platform=platform_str, chat_id=chat_id, chat_type=chat_type,
                     thread_id=_field("thread_id"), user_id=_field("user_id"),
@@ -411,7 +414,9 @@ class GatewaySlashCommandsMixin(
                     user_id_alt=_field("user_id_alt"),
                     notifier_profile=_field("profile") or getattr(self, "_kanban_notifier_profile", None) or self._active_profile_name(),
                     # Subscribing from chat: deliver the passive message and wake the destination agent.
-                    delivery_mode="notify+wake", delivery_metadata=delivery_metadata)
+                    delivery_mode="notify+wake",
+                    event_kinds=event_kinds,
+                    delivery_metadata=delivery_metadata)
             finally:
                 conn.close()
         await asyncio.to_thread(_sub)

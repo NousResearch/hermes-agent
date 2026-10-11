@@ -893,6 +893,9 @@ _NOTIFY_SUB_COLUMNS = (
     ("last_ping_event_id", "last_ping_event_id INTEGER NOT NULL DEFAULT 0"),
     ("notifier_profile", "notifier_profile TEXT"),
     ("delivery_mode", "delivery_mode TEXT NOT NULL DEFAULT 'notify'"),
+    # NULL retains the historic all-terminal-events policy. A JSON list limits
+    # a subscription to selected event kinds (used by automatic failure alerts).
+    ("event_kinds", "event_kinds TEXT"),
     ("chat_type", "chat_type TEXT"),
     # Platform-specific stable alt ID (Signal UUID, Feishu union_id, ...)
     # so an active-wake replay reconstructs the SAME ``build_session_key``
@@ -1097,6 +1100,7 @@ _REBUILD_SPECS = {
         " thread_id TEXT NOT NULL DEFAULT '', user_id TEXT, user_id_alt TEXT,"
         " chat_type TEXT,"
         " notifier_profile TEXT, delivery_mode TEXT NOT NULL DEFAULT 'notify',"
+        " event_kinds TEXT,"
         " delivery_metadata TEXT, created_at INTEGER NOT NULL,"
         " last_event_id INTEGER NOT NULL DEFAULT 0,"
         " last_ping_event_id INTEGER NOT NULL DEFAULT 0,"

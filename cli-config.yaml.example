@@ -401,6 +401,9 @@ model:
 # Disable this only when every review is performed manually from the dashboard.
 kanban:
   review_dispatch: true
+  # Terminal event kinds an automatic (auto_subscribe_on_create) subscription delivers; unset = all.
+  # Failure-only alerts: [blocked, block_loop_detected, gave_up, timed_out, crashed]
+  # auto_subscribe_events: [blocked, block_loop_detected, gave_up, timed_out, crashed]
 
 # =============================================================================
 # Terminal Tool Configuration

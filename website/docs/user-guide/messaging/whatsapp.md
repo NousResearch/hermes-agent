@@ -249,6 +249,10 @@ A captionless voice note can only match them with `voice_mention_patterns: true`
 voice note first (off by default: every unaddressed voice note then goes to your speech-to-text provider; the
 turn reuses that transcript).
 
+:::note Silence markers in groups
+When the bot answers a human message with only a [silence token](index.md#intentional-silence-tokens), Hermes normally posts a short notice instead so a question never goes unanswered. In a WhatsApp group the token is allowed to stand for chatter that is not addressed to the bot: a statement with no question mark, a message that opens by @mentioning another member, or a reply quoting another member's message. A DM, a mention of or reply to the bot, a `mention_patterns` match, a `/command`, a bare question, or a message where the bot's own identity or the quoted author is unknown still gets the notice.
+:::
+
 Then start the gateway:
 
 ```bash

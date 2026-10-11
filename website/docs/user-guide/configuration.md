@@ -1288,6 +1288,7 @@ When a standing goal is active, Hermes judges whether each assistant response sa
 ```yaml
 goals:
   max_turns: 20   # Max continuation turns before Hermes auto-pauses the goal (default: 20)
+  blocked_action: pause   # pause (default) | continue — what a judge "blocked" verdict does
 ```
 
 `max_turns` caps how many continuation turns a goal can drive before Hermes auto-pauses it and asks the user to `/goal resume`. It protects against judge false negatives (goal actually done but judge says continue) and unbounded model spend on fuzzy or unachievable goals. See [Goals](./features/goals.md) for the full feature.

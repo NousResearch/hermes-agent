@@ -130,11 +130,11 @@ def _coerce_route_id(value: Any) -> Optional[str]:
     return str(value)
 
 
-def parse_profile_routes(raw: Optional[List[Dict[str, Any]]]) -> List[ProfileRoute]:
+def parse_profile_routes(raw: Optional[list[dict[str, Any]]]) -> list[ProfileRoute]:
     """Parse profile_routes from config.yaml, sorted most-specific-first."""
     if not raw:
         return []
-    routes: List[ProfileRoute] = []
+    routes: list[ProfileRoute] = []
     for entry in raw:
         if not isinstance(entry, dict):
             continue
@@ -172,7 +172,7 @@ def parse_profile_routes(raw: Optional[List[Dict[str, Any]]]) -> List[ProfileRou
 
 
 def match_profile_route(
-    routes: List[ProfileRoute], platform: str, guild_id: Optional[str] = None, chat_id: Optional[str] = None,
+    routes: list[ProfileRoute], platform: str, guild_id: Optional[str] = None, chat_id: Optional[str] = None,
     thread_id: Optional[str] = None, parent_chat_id: Optional[str] = None,
     adapter_profile: Optional[str] = None, user_id: Optional[str] = None,
 ) -> Optional[ProfileRoute]:

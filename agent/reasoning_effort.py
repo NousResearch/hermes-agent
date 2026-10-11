@@ -153,21 +153,29 @@ def clamp_effort(
     return max(below, key=EFFORT_LADDER.index) if below else min(candidates, key=EFFORT_LADDER.index)
 
 
-def route_supported_efforts(provider: Optional[str], model: Optional[str]) -> tuple[str, ...]:
+def route_supported_efforts(
+    provider: Optional[str], model: Optional[str], api_mode: Optional[str] = None,
+) -> tuple[str, ...]:
     """Levels the (provider, model) route's ENTRY clamp accepts: the Codex/OpenAI Responses set per
     model generation, else the widest OpenAI-compatible vocabulary (narrower providers clamp again
-    downstream, never upward)."""
+    downstream, never upward). On the Codex app-server runtime ``ultra`` is codex's own harness mode,
+    accepted wherever the model's ladder reaches ``max`` (codex runs it at ``max``; a model without
+    ``max`` rejects it), so it is sent verbatim there."""
     if (provider or "").strip().lower() == "openai-codex":
-        return codex_supported_efforts(model)
+        supported = codex_supported_efforts(model)
+        return (*supported, "ultra") if api_mode == "codex_app_server" and "max" in supported else supported
     return OPENAI_COMPAT_WIRE_EFFORTS
 
 
-def effort_display_label(effort: Optional[str], provider: Optional[str] = None, model: Optional[str] = None) -> str:
+def effort_display_label(
+    effort: Optional[str], provider: Optional[str] = None, model: Optional[str] = None,
+    api_mode: Optional[str] = None,
+) -> str:
     """Picker / ``/reasoning`` status label for a ladder level: the level itself when the route sends
     it verbatim, else ``"<level> (sends <clamped> on this route)"`` so a Hermes-internal step such as
     ``ultra`` (#61634) is never presented as a distinct wire level the route does not have."""
     requested = str(effort or "").strip().lower()
-    clamped = clamp_effort(requested, route_supported_efforts(provider, model))
+    clamped = clamp_effort(requested, route_supported_efforts(provider, model, api_mode))
     return requested if not requested or clamped == requested else f"{requested} (sends {clamped} on this route)"
 
 
@@ -177,6 +185,26 @@ def requested_effort(reasoning_config: Optional[dict]) -> Optional[str]:
     if not isinstance(reasoning_config, dict) or reasoning_config.get("enabled") is False:
         return None
     return str(reasoning_config.get("effort") or "").strip().lower() or None
+
+
+def tokenhub_effort(requested: Optional[str]) -> str:
+    """TokenHub's top-level ``reasoning_effort``: ``high`` when no level was chosen, else the
+    request clamped to low/medium/high. Shared by the tencent-tokenhub profile and the host-based
+    branch base_url-only agents take; callers handle thinking-off themselves."""
+    return "high" if requested is None else clamp_effort(requested, TOKENHUB_EFFORTS)
+
+
+def generic_nested_reasoning(reasoning_config: Optional[dict]) -> dict:
+    """The OpenAI-compatible ``extra_body`` fallback for a route whose profile declares no
+    reasoning shape: ``{}`` with no config, ``{"reasoning": {"enabled": False}}`` when disabled,
+    else ``{"reasoning": {"enabled": True, "effort": <effort or medium>}}``. Used by auxiliary
+    calls, and by a profile hook that wants that fallback (``handles_reasoning`` skips it for any
+    profile overriding ``build_api_kwargs_extras``)."""
+    if not reasoning_config or not isinstance(reasoning_config, dict):
+        return {}
+    if reasoning_config.get("enabled") is False:
+        return {"reasoning": {"enabled": False}}
+    return {"reasoning": {"enabled": True, "effort": reasoning_config.get("effort") or "medium"}}
 
 
 def clamp_reasoning_config(reasoning_config: Optional[dict], supported: Sequence[str] = OPENAI_COMPAT_WIRE_EFFORTS) -> Optional[dict]:
@@ -217,6 +245,23 @@ def thinking_toggle_extras(
     if clamped in efforts:
         return ({"thinking": {"type": "enabled"}} if always_emit_toggle else {}), {"reasoning_effort": clamped}
     return {"thinking": {"type": "enabled"}}, {}
+
+
+# DashScope documents ``preserve_thinking`` (Qwen3.6+ and the Kimi K2.6/K2.7 it hosts) and a
+# top-level ``clear_thinking`` (its GLM-5.x) as the switches that make the server KEEP replayed
+# prior-turn ``reasoning_content``; without them the replay is accepted and dropped.
+# https://www.alibabacloud.com/help/en/model-studio/deep-thinking
+_DASHSCOPE_PRESERVE_MODELS = ("qwen3.6", "qwen3.7", "qwen3.8", "kimi-k2.6", "kimi-k2.7")
+
+
+def dashscope_preserve_thinking_extras(model: Optional[str]) -> dict:
+    """``extra_body`` keys that keep replayed reasoning on a DashScope-hosted model, else ``{}``."""
+    m = (model or "").strip().lower()
+    if any(token in m for token in _DASHSCOPE_PRESERVE_MODELS):
+        return {"preserve_thinking": True}
+    if m.startswith("glm-5"):
+        return {"clear_thinking": False}
+    return {}
 
 
 def ox_alpha_reasoning_extras(reasoning_config: Optional[dict], model: Optional[str]) -> tuple[dict, dict]:

@@ -28,7 +28,15 @@ export function isFileEditTool(toolName: string): boolean {
 //
 // Everything else is ephemeral activity — reads, searches, commands — which is
 // what a run summarizes and what the live ticker cycles through.
-const CARD_TOOL_NAMES = ['clarify', 'delegate_task', 'image_generate', 'manage_catalog', 'manage_connections'] as const
+const CARD_TOOL_NAMES = [
+  'clarify',
+  'delegate_task',
+  'image_generate',
+  'manage_catalog',
+  'manage_connections',
+  'setup_choose',
+  'start_chat'
+] as const
 
 export type CardToolName = (typeof CARD_TOOL_NAMES)[number]
 

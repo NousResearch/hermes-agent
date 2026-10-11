@@ -24,7 +24,6 @@ if _spec is None or _spec.loader is None:
 _mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_mod)
 classify = _mod.classify
-ci_review_files = _mod.ci_review_files
 pull_request_changed_files = _mod.pull_request_changed_files
 pull_request_labels = _mod.pull_request_labels
 main = _mod.main
@@ -48,14 +47,12 @@ DEFAULT = {
     "bootstrap": True,
     "desktop_updater": True,
     "rust": True,
-    "mcp_catalog": False,
-    "ci_review": True,
 }
 
 SLOW_LANES = {"docker", "nix", "e2e", "e2e_upgrade", "e2e_desktop_core", "e2e_desktop_update"}
 
 
-def _lanes(python=False, frontend=False, site=False, scan=False, deps=False, uv_lock=False, npm_lock=False, bootstrap=False, desktop_updater=False, rust=False, mcp_catalog=False, docker_meta=False, ci_review=False, python_prod=None, nix=False, docker=None, e2e=False, e2e_upgrade=False, e2e_desktop_core=False, e2e_desktop_update=False) -> dict[str, bool]:
+def _lanes(python=False, frontend=False, site=False, scan=False, deps=False, uv_lock=False, npm_lock=False, bootstrap=False, desktop_updater=False, rust=False, docker_meta=False, python_prod=None, nix=False, docker=None, e2e=False, e2e_upgrade=False, e2e_desktop_core=False, e2e_desktop_update=False) -> dict[str, bool]:
     # python_prod tracks python except for tests-only diffs; default it to
     # python so the majority of cases don't need to spell it out.
     #
@@ -83,13 +80,16 @@ def _lanes(python=False, frontend=False, site=False, scan=False, deps=False, uv_
         "bootstrap": bootstrap,
         "desktop_updater": desktop_updater,
         "rust": rust,
-        "mcp_catalog": mcp_catalog,
-        "ci_review": ci_review,
     }
 
 
 CASES = {
-    "shared JS builder → frontend": (["scripts/build/web.mjs"], _lanes(python=True, frontend=True)),
+    # source_build runs it on every source update, and the Desktop build steps
+    # through the same compilers (tests/ci/test_update_ci_routing.py).
+    "shared JS builder → frontend + both update suites": (
+        ["scripts/build/web.mjs"],
+        _lanes(python=True, frontend=True, e2e_upgrade=True, e2e_desktop_update=True),
+    ),
     "root JS tests → frontend": (["tests-js/product-builders.test.mjs"], _lanes(python=True, frontend=True)),
     "docs-only → nothing heavy": (["README.md", "docs/guide.md"], _lanes()),
     "python source → python": (["run_agent.py"], _lanes(python=True, scan=True)),
@@ -180,16 +180,18 @@ CASES = {
     # The Windows desktop-update hand-off is a PowerShell integration surface:
     # its tests spawn the real script and poll its loopback server. They run
     # when the script, the Electron side that launches it, or their own test
-    # files change — not on every hermes_state.py PR.
+    # files change — not on every hermes_state.py PR. The script runs a real
+    # `hermes update`, and the Windows crash cells that kill it mid-run live in
+    # the install + update journey, so it starts e2e_upgrade as well.
     "windows.ps1 → desktop_updater": (
         ["scripts/desktop-update/windows.ps1"],
-        _lanes(python=True, desktop_updater=True, e2e_desktop_update=True),
+        _lanes(python=True, desktop_updater=True, e2e_upgrade=True, e2e_desktop_update=True),
     ),
     # The shipped updater page is exercised by the desktop Electron suite;
     # a page-only change must run that suite as well as the server tests.
     "updater ui.html → frontend + desktop_updater": (
         ["scripts/desktop-update/ui.html"],
-        _lanes(python=True, frontend=True, desktop_updater=True, e2e_desktop_update=True),
+        _lanes(python=True, frontend=True, desktop_updater=True, e2e_upgrade=True, e2e_desktop_update=True),
     ),
     "desktop-update test → desktop_updater": (
         ["tests/scripts/desktop_update/test_desktop_update_windows_progress.py"],
@@ -256,44 +258,44 @@ CASES = {
     # Supply-chain lanes
     ".pth file → scan": (["evil.pth"], _lanes(python=True, scan=True)),
     "setup.py → scan": (["setup.py"], _lanes(python=True, scan=True, docker=True, nix=True, e2e_upgrade=True)),
-    "mcp catalog manifest → mcp_catalog": (
+    # Files CODEOWNERS owns carry no lane of their own: they only route as code.
+    "mcp catalog manifest → python only": (
         ["optional-mcps/foo/manifest.yaml"],
-        _lanes(python=True, mcp_catalog=True),
+        _lanes(python=True),
     ),
-    "mcp_catalog.py → mcp_catalog": (
+    "mcp_catalog.py → python + scan": (
         ["hermes_cli/mcp_catalog.py"],
-        _lanes(python=True, scan=True, mcp_catalog=True),
+        _lanes(python=True, scan=True),
     ),
-    # CI-sensitive files require explicit review label.
-    "eslint config → ci_review": (
+    "eslint config → frontend": (
         ["apps/desktop/eslint.config.mjs"],
-        _lanes(frontend=True, ci_review=True),
+        _lanes(frontend=True),
     ),
-    "shared eslint config → ci_review": (
+    "shared eslint config → python": (
         ["eslint.config.shared.mjs"],
-        _lanes(python=True, ci_review=True),
+        _lanes(python=True),
     ),
-    "ui-tui eslint config → ci_review": (
+    "ui-tui eslint config → frontend": (
         ["ui-tui/eslint.config.mjs"],
-        _lanes(frontend=True, ci_review=True),
+        _lanes(frontend=True),
     ),
-    "web eslint config → ci_review": (
+    "web eslint config → frontend": (
         ["web/eslint.config.js"],
-        _lanes(frontend=True, ci_review=True),
+        _lanes(frontend=True),
     ),
-    "shared package eslint config → ci_review": (
+    "shared package eslint config → frontend": (
         ["apps/shared/eslint.config.mjs"],
-        _lanes(frontend=True, ci_review=True),
+        _lanes(frontend=True),
     ),
-    "bootstrap-installer eslint config → ci_review": (
+    "bootstrap-installer eslint config → frontend + bootstrap": (
         ["apps/bootstrap-installer/eslint.config.mjs"],
-        _lanes(frontend=True, bootstrap=True, ci_review=True),
+        _lanes(frontend=True, bootstrap=True),
     ),
-    "prettier config → ci_review": (
+    "prettier config → python": (
         [".prettierrc"],
-        _lanes(python=True, ci_review=True),
+        _lanes(python=True),
     ),
-    "workflow yml → ci_review (also fail-open all)": (
+    "workflow yml → fail-open all": (
         [".github/workflows/typecheck.yml"],
         DEFAULT,
     ),
@@ -311,12 +313,11 @@ CASES = {
         ["apps/bootstrap-installer/src-tauri/src/lib.rs"],
         _lanes(frontend=True, bootstrap=True, rust=True),
     ),
-    "composite action → ci_review (also fail-open all)": (
+    "composite action → fail-open all": (
         [".github/actions/retry/action.yml"],
         DEFAULT,
     ),
-    # Normal desktop source doesn't trigger ci_review.
-    "desktop src → no ci_review": (
+    "desktop src → frontend only": (
         ["apps/desktop/src/app.tsx"],
         _lanes(frontend=True),
     ),
@@ -338,12 +339,39 @@ CASES = {
         _lanes(python=True, scan=True, e2e_upgrade=True, e2e_desktop_update=True),
     ),
     "PM → e2e_upgrade + docker": (["pm/environments.py"], _lanes(python=True, scan=True, e2e_upgrade=True, docker=True)),
+    # The update pipeline lives beyond the update_* family too: the entry
+    # point, launch-time recovery, the gateway restart/pause surface.
+    # main.py is also `hermes desktop --build-only`, the update's Desktop rebuild.
+    "cmd_update entry → both update suites": (
+        ["hermes_cli/main.py"], _lanes(python=True, scan=True, e2e_upgrade=True, e2e_desktop_update=True),
+    ),
+    "gateway status stamp → e2e_upgrade": (["gateway/status.py"], _lanes(python=True, scan=True, e2e_upgrade=True)),
+    "desktop verify → desktop_updater + both update suites": (
+        ["hermes_cli/desktop_update_verify.py"],
+        _lanes(python=True, scan=True, desktop_updater=True, e2e_upgrade=True, e2e_desktop_update=True),
+    ),
+    "electron main → desktop update": (
+        ["apps/desktop/electron/main.ts"],
+        _lanes(frontend=True, e2e_desktop_update=True),
+    ),
+    "handoff result reader → desktop_updater + desktop update": (
+        ["apps/desktop/electron/handoff-result.ts"],
+        _lanes(frontend=True, desktop_updater=True, e2e_desktop_update=True),
+    ),
     "desktop backend spawn → desktop core": (
         ["apps/desktop/electron/backend-child.ts"],
         _lanes(frontend=True, e2e_desktop_core=True),
     ),
+    "desktop session resume → desktop core": (
+        ["apps/desktop/src/app/session/hooks/use-session-actions/index.ts"],
+        _lanes(frontend=True, e2e_desktop_core=True),
+    ),
     "desktop core spec → desktop core": (
         ["apps/desktop/e2e/core/transcript-integrity.spec.ts"],
+        _lanes(frontend=True, e2e_desktop_core=True),
+    ),
+    "desktop profile rail → desktop core": (
+        ["apps/desktop/src/app/chat/sidebar/profile-switcher.tsx"],
         _lanes(frontend=True, e2e_desktop_core=True),
     ),
     "desktop update spec → desktop update, not core": (
@@ -403,12 +431,77 @@ def test_every_slow_lane_path_matches_a_tracked_file():
     assert dead == set()
 
 
+# Every file the `hermes update` pipeline runs on the update path (the step
+# tables of the updater audit's cli-update and desktop-update code maps). A
+# PR that edits only one of these must start the real-update suite that would
+# catch the regression; before, main.py / _early_recovery.py / relaunch.py /
+# gateway/ / hermes_bootstrap.py skipped both the Linux and Windows journeys.
+_UPDATE_PATH_FILES = (
+    "hermes_cli/main.py",
+    "hermes_cli/main_dashboard.py",
+    "hermes_cli/main_desktop.py",
+    "hermes_cli/_early_recovery.py",
+    "hermes_cli/venv_sync.py",
+    "hermes_cli/update_lock.py",
+    "hermes_cli/update_cmd.py",
+    "hermes_cli/update_completion.py",
+    "hermes_cli/update_cmd_windows.py",
+    "hermes_cli/update_cmd_zip.py",
+    "hermes_cli/_update_takeover.py",
+    "hermes_cli/source_completion.py",
+    "hermes_cli/source_build.py",
+    "hermes_cli/source_releases.py",
+    "hermes_cli/_launchers.py",
+    "hermes_cli/gitlock.py",
+    "hermes_cli/process_identity.py",
+    "hermes_cli/relaunch.py",
+    "hermes_cli/gateway.py",
+    "hermes_cli/gateway_windows.py",
+    "hermes_cli/gateway_migrate.py",
+    "hermes_cli/desktop_update_verify.py",
+    "hermes_bootstrap.py",
+    "hermes_constants.py",
+    "gateway/status.py",
+    "gateway/control_socket.py",
+    "gateway/code_skew.py",
+    "scripts/desktop-update/windows.ps1",
+    "scripts/desktop-update/posix.sh",
+)
+_DESKTOP_UPDATE_PATH_FILES = (
+    "apps/desktop/electron/main.ts",
+    "apps/desktop/electron/update-marker.ts",
+    "apps/desktop/electron/update-gate.ts",
+    "apps/desktop/electron/updater-process.ts",
+    "apps/desktop/electron/updater/checkout.ts",
+    "apps/desktop/electron/handoff-result.ts",
+    "apps/desktop/electron/desktop-installation.ts",
+    "apps/desktop/electron/backend-discovery.ts",
+    "apps/desktop/electron/host-backend-attach.ts",
+    "scripts/desktop-update/windows.ps1",
+    "scripts/desktop-update/posix.sh",
+    "hermes_cli/desktop_update_verify.py",
+    "hermes_cli/main_desktop.py",
+)
+
+
+@pytest.mark.parametrize("path", _UPDATE_PATH_FILES)
+def test_every_update_path_file_starts_the_real_update_suite(path):
+    assert (_REPO / path).is_file(), f"{path} moved: update the classifier and this table"
+    assert classify([path])["e2e_upgrade"], path
+
+
+@pytest.mark.parametrize("path", _DESKTOP_UPDATE_PATH_FILES)
+def test_every_desktop_update_path_file_starts_the_desktop_update_suite(path):
+    assert (_REPO / path).is_file(), f"{path} moved: update the classifier and this table"
+    assert classify([path])["e2e_desktop_update"], path
+
+
 _REPO = Path(__file__).resolve().parents[2]
 
 
 def _yaml(rel: str) -> dict:
     yaml = pytest.importorskip("hermes_yaml")
-    return yaml.safe_load((_REPO / rel).read_text(encoding="utf-8"))
+    return yaml.safe_load((_REPO / rel).read_text(encoding="utf-8-sig"))
 
 
 def test_every_lane_reaches_the_composite_action():
@@ -457,16 +550,42 @@ def _iter_if_expressions(job: object):
             yield cond
 
 
-def test_ci_review_files_returns_only_sensitive_paths_sorted_and_unique():
-    assert ci_review_files([
-        "apps/desktop/src/app.tsx",
-        ".github/workflows/ci.yml",
-        "apps/desktop/eslint.config.mjs",
-        ".github/workflows/ci.yml",
-    ]) == [
-        ".github/workflows/ci.yml",
-        "apps/desktop/eslint.config.mjs",
-    ]
+# (caller workflow, job, called workflow, lane input) for every real-update
+# suite: each runs on a PR exactly when its lane fires and then gates the merge.
+_REAL_UPDATE_LANES = (
+    ("ci.yaml", "tests", "tests.yml", "e2e_upgrade"),
+    ("ci.yaml", "tests-os", "tests-os.yml", "e2e_upgrade"),
+    ("ci.yaml", "e2e-desktop-update", "e2e-desktop-update.yml", "e2e_desktop_update"),
+    ("tests-os.yml", "install-update-e2e", "windows-install-update-e2e.yml", "e2e_upgrade"),
+)
+
+
+@pytest.mark.parametrize("caller,job,called,lane", _REAL_UPDATE_LANES)
+def test_real_update_suites_gate_the_merge_when_their_lane_fires(caller, job, called, lane):
+    """A real-update suite that runs but cannot fail the merge is decoration.
+
+    Each one must reach ``all-checks-pass`` (directly, or through the
+    reusable workflow that calls it), be gated on its lane, and never be
+    ``continue-on-error``: a red shard has to block the PR it ran for.
+    """
+    ci = _yaml(".github/workflows/ci.yaml")
+    caller_jobs = _yaml(f".github/workflows/{caller}")["jobs"]
+    assert caller_jobs[job]["uses"] == f"./.github/workflows/{called}"
+    gate = caller_jobs[job].get("if", "") + json.dumps(caller_jobs[job].get("with") or {})
+    assert lane in gate, f"{caller}::{job} is not gated on {lane}"
+    root = job if caller == "ci.yaml" else "tests-os"
+    assert root in ci["jobs"]["all-checks-pass"]["needs"]
+    for name, body in _yaml(f".github/workflows/{called}")["jobs"].items():
+        assert not body.get("continue-on-error"), f"{called}::{name} cannot fail the merge"
+
+
+def test_windows_venv_e2e_runs_only_test_files_that_exist():
+    """``run_tests.sh`` drops a missing path (or a ``::node`` selector) without
+    a word, so a stale entry silently stops running on every wine2e push."""
+    text = (_REPO / ".github/workflows/windows-venv-e2e.yml").read_text(encoding="utf-8-sig")
+    paths = re.findall(r"(tests/[\w/.:-]+)", text)
+    assert paths
+    assert [p for p in paths if "::" in p or not (_REPO / p).is_file()] == []
 
 
 def _write_event(tmp_path, number: int | None = 88442) -> Path:
@@ -521,8 +640,8 @@ def test_pull_request_changed_files_returns_empty_when_gh_fails(tmp_path, monkey
     assert pull_request_changed_files() == []
 
 
-def test_main_recovers_pr_files_instead_of_fail_open_ci_review(monkeypatch, capsys):
-    """A fork compare 404 must not demand ci-reviewed for a CLI-only install."""
+def test_main_recovers_pr_files_instead_of_fail_open(monkeypatch, capsys):
+    """A fork compare 404 must not turn every lane on for a CLI-only install."""
     monkeypatch.setattr(
         _mod,
         "pull_request_changed_files",
@@ -533,23 +652,23 @@ def test_main_recovers_pr_files_instead_of_fail_open_ci_review(monkeypatch, caps
 
     assert main() == 0
     out = capsys.readouterr().out
-    assert "ci_review=false" in out
+    assert "frontend=false" in out
     assert "python=true" in out
     assert "python_prod=true" in out
 
 
 def test_main_still_fail_opens_when_recovery_is_empty(monkeypatch, capsys):
-    monkeypatch.setattr(_mod, "pull_request_changed_files", lambda: [])
+    monkeypatch.setattr(_mod, "pull_request_changed_files", list)
     monkeypatch.setattr(sys, "stdin", io.StringIO(""))
     monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
 
     assert main() == 0
     out = capsys.readouterr().out
-    assert "ci_review=true" in out
+    assert "frontend=true" in out
 
 
 def test_main_reads_the_run_e2e_label(monkeypatch, capsys):
-    monkeypatch.setattr(_mod, "pull_request_labels", lambda: ["ci-reviewed", _mod.RUN_E2E_LABEL])
+    monkeypatch.setattr(_mod, "pull_request_labels", lambda: [_mod.RUN_E2E_LABEL])
     monkeypatch.setattr(sys, "stdin", io.StringIO("gateway/run.py\n"))
     monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
 

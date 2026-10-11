@@ -8,7 +8,7 @@ import threading
 import time
 import urllib.request
 from dataclasses import dataclass, field, fields
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from typing import Any, Literal, Optional
 
 
@@ -20,7 +20,7 @@ NousAccountInfoSource = Literal["jwt", "account_api", "inference_key", "none", "
 TOOL_COVERAGE_CATEGORIES = ("firecrawl", "fal", "fal-video", "openai-audio", "browser-use", "modal")
 
 _ACCOUNT_INFO_CACHE_TTL = 60
-_account_info_cache: tuple[str, float, "NousPortalAccountInfo"] | None = None
+_account_info_cache: tuple[str, float, NousPortalAccountInfo] | None = None
 _ACCOUNT_INFO_CACHE_LOCK = threading.Lock()
 
 
@@ -73,7 +73,7 @@ FREE_TIER_NEEDS_ACCOUNT = "This needs a Nous account. Run `hermes auth upgrade`.
 FREE_TIER_NEEDS_ACCOUNT_CHAT = "This needs a Nous account. Use /login to sign in."
 
 
-def _is_anonymous_tier(account_info: Optional["NousPortalAccountInfo"]) -> bool:
+def _is_anonymous_tier(account_info: Optional[NousPortalAccountInfo]) -> bool:
     return account_info is not None and account_info.is_anonymous_tier
 
 
@@ -518,7 +518,7 @@ def _info_from_valid_jwt(
         inference_base_url=_coerce_str(state.get("inference_base_url")),
         inference_credential_present=True,
         credential_source=_coerce_str(state.get("credential_source")) or "auth_store",
-        expires_at=datetime.fromtimestamp(exp, tz=timezone.utc),
+        expires_at=datetime.fromtimestamp(exp, tz=UTC),
         paid_service_access=paid_access, paid_service_access_info=access_info,
         tool_access=_tool_access_from_value(claims.get("tool_access")),
         raw_claims=dict(claims),
@@ -584,7 +584,8 @@ def _error_info(
     raw_account: Optional[dict[str, Any]] = None, account_tier: Optional[str] = None,
 ) -> NousPortalAccountInfo:
     """A failed-lookup snapshot. ``account_tier`` is carried through when the caller still holds the
-    stored state: without it a guest whose lookup failed reads as a registered identity."""
+    stored state, so a guest whose lookup failed still gets the "needs a Nous account" copy rather
+    than billing or re-login guidance."""
     return NousPortalAccountInfo(
         logged_in=logged_in, source="error", fresh=False, portal_base_url=portal_base_url,
         raw_account=raw_account, error=str(error), account_tier=account_tier,

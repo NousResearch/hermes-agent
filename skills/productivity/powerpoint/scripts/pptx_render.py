@@ -50,7 +50,7 @@ def render(pptx_path, out_dir, prefix, dpi):
             [soffice, "--headless", "--convert-to", "pdf",
              "--outdir", tmp, pptx_path],
             capture_output=True, text=True, encoding="utf-8",
-            errors="replace", timeout=300)
+            errors="replace", timeout=300, check=False)
         pdfs = glob.glob(os.path.join(tmp, "*.pdf"))
         if proc.returncode != 0 or not pdfs:
             raise SystemExit(f"soffice PDF conversion failed: {proc.stderr}")
@@ -59,7 +59,7 @@ def render(pptx_path, out_dir, prefix, dpi):
         proc = subprocess.run(
             [splitter, "-png", "-r", str(dpi), pdf, out_prefix],
             capture_output=True, text=True, encoding="utf-8",
-            errors="replace", timeout=300)
+            errors="replace", timeout=300, check=False)
         if proc.returncode != 0:
             raise SystemExit(f"{os.path.basename(splitter)} failed: "
                              f"{proc.stderr}")

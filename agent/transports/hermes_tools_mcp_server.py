@@ -12,7 +12,7 @@ from __future__ import annotations
 # bootstrap's scratch/TMPDIR exports must not fire in those library importers.
 if __name__ == "__main__":
     try:
-        import hermes_bootstrap  # noqa: F401
+        import hermes_bootstrap
     except ModuleNotFoundError:
         pass  # a partial ``hermes update`` can leave the bootstrap unregistered
 

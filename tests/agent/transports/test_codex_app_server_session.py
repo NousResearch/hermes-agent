@@ -186,14 +186,14 @@ class TestLifecycle:
         client = FakeClient()
         s = make_session(client, permission_profile="workspace-write", developer_instructions="SOUL: be terse")
         s.ensure_started()
-        method, params = next(r for r in client.requests if r[0] == "thread/start")
+        _method, params = next(r for r in client.requests if r[0] == "thread/start")
         assert params == {"cwd": "/tmp", "developerInstructions": "SOUL: be terse", "personality": "none"}
 
     def test_thread_start_omits_developer_instructions_when_prompt_empty(self):
         """No prompt (or a blank one) never sends an empty developerInstructions field."""
         client = FakeClient()
         make_session(client, developer_instructions="   ").ensure_started()
-        method, params = next(r for r in client.requests if r[0] == "thread/start")
+        _method, params = next(r for r in client.requests if r[0] == "thread/start")
         assert "developerInstructions" not in params
         assert params["personality"] == "none"
 
@@ -394,6 +394,55 @@ class TestRunTurn:
         ]
 
 
+
+    def test_turn_start_includes_runtime_overrides(self):
+        client = FakeClient()
+        client.queue_notification(
+            "turn/completed",
+            threadId="t",
+            turn={"id": "tu1", "status": "completed", "error": None},
+        )
+        s = make_session(client)
+
+        s.run_turn(
+            "hi",
+            model="gpt-5.4",
+            reasoning_effort="high",
+            service_tier="fast",
+            turn_timeout=2.0,
+        )
+
+        _, params = next(req for req in client.requests if req[0] == "turn/start")
+        assert params["model"] == "gpt-5.4"
+        assert params["effort"] == "high"
+        assert params["serviceTier"] == "fast"
+
+    def test_service_tier_is_sent_only_when_it_changes(self):
+        """codex's own configured tier is left alone until Hermes selects one; ``/fast off`` afterwards sends
+        an explicit null to clear it, and an unchanged tier is not re-sent."""
+        client = FakeClient()
+        for _ in range(4):
+            client.queue_notification("turn/completed", threadId="t",
+                                      turn={"id": "turn-fake-001", "status": "completed", "error": None})
+        s = make_session(client)
+        for tier in (None, "fast", "fast", None):
+            s.run_turn("hi", service_tier=tier, turn_timeout=2.0)
+        sent = [p for (m, p) in client.requests if m == "turn/start"]
+        assert ["serviceTier" in p for p in sent] == [False, True, False, True]
+        assert [p.get("serviceTier") for p in sent if "serviceTier" in p] == ["fast", None]
+
+    def test_resumed_thread_receives_the_hermes_tier_even_when_it_is_null(self):
+        """CLI ``/fast`` rebuilds the agent, so ``/fast off`` reaches a resumed thread that may still carry the
+        earlier tier: its first turn sends Hermes' tier, a clearing null included."""
+        client = FakeClient()
+        client.queue_notification("turn/completed", threadId="t",
+                                  turn={"id": "turn-fake-001", "status": "completed", "error": None})
+        client._request_handler = lambda method, params: (
+            {"thread": {"id": params["threadId"]}} if method == "thread/resume" else {"turn": {"id": "turn-fake-001"}})
+        s = make_session(client, resume_thread_id="stored-1")
+        s.run_turn("hi", service_tier=None, turn_timeout=2.0)
+        (_, params), = [r for r in client.requests if r[0] == "turn/start"]
+        assert "serviceTier" in params and params["serviceTier"] is None
 
     def test_tool_iteration_counter_ticks(self):
         client = FakeClient()

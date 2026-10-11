@@ -955,6 +955,11 @@ export function useTerminalSession({
               // false — running closeTerminal here would wipe the persisted tabs
               // right before relaunch restores them.
               if (!disposed && !appTearingDown) {
+                // Release the main-side session explicitly instead of relying
+                // on the unmount cleanup's timing — the exit→unmount hop is
+                // async, and a teardown in between would skip dispose and leak
+                // the PTY (#128942). The cleanup's later dispose is a no-op.
+                void terminalApi.dispose(session.id)
                 closeTerminal(id)
               }
             })

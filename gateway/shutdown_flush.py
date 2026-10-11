@@ -89,18 +89,34 @@ def _flush_value(flush_dir: Path, kind: str, session_key: str, value: Any, **ext
 
 
 def _recoverable_key(value: Any, slot_key: str,
-                     session_key_for: Optional[Callable[[Any], Any]] = None) -> str:
-    """The key to record for *value*: the store key of its source, else the slot key.
+                     session_key_for: Optional[Callable[[Any], Any]] = None,
+                     slot_key_routes: Optional[Callable[[str], bool]] = None) -> str:
+    """The key to record for *value*: the slot key when the store routes it, else its store key.
 
     Slots are keyed by the adapter's own isolation flags (``PlatformConfig.extra``), which may
     differ from the gateway-wide ones ``SessionStore`` routes by: an operator can override
     ``group_sessions_per_user`` / ``thread_sessions_per_user`` on one platform. Recovery resolves
     a key through the store only (routing map, then the durable row under the exact key), so a
-    slot key written verbatim matches neither and the message strands in the spool forever.
-    ``session_key_for`` is the store's key derivation (``SessionStore._generate_session_key``,
-    or ``GatewayRunner._session_key_for_source``); a value without a ``source`` (a raw str slot,
-    an agent-history payload) and any derivation failure keep the slot key unchanged.
+    slot key that matches neither strands the message in the spool forever. That is the only case
+    in which ``session_key_for`` replaces it: the store's key derivation
+    (``SessionStore._generate_session_key``, or ``GatewayRunner._session_key_for_source``).
+
+    A slot key the store *can* route is recorded unchanged. It is the key the producing adapter
+    queued the value under and the key its live drain re-dispatches it with, so it is the
+    payload's established owner; re-deriving can lose that owner, because a synthetic producer
+    (a recall notice written straight into the slot) may carry a partial ``source`` whose own
+    derivation drops the participant the slot key holds — the notice then strands on a key no
+    session was ever created under. ``slot_key_routes`` is the store's exact-key resolver; a
+    value without a ``source`` (a raw str slot, an agent-history payload) and any derivation
+    failure keep the slot key unchanged.
     """
+    if callable(slot_key_routes):
+        try:
+            if slot_key_routes(slot_key):
+                return slot_key
+        except Exception:  # a routability check must never cost the payload its key
+            logger.debug("Could not check whether %s is routable; deriving its store key",
+                         slot_key, exc_info=True)
     source = getattr(value, "source", None)
     if source is None or not callable(session_key_for):
         return slot_key
@@ -123,20 +139,68 @@ def adapter_store_key_for(adapter: Any) -> Optional[Callable[[Any], Any]]:
     return derive if callable(derive) else None
 
 
+def store_slot_key_routes(store: Any) -> Optional[Callable[[str], bool]]:
+    """``slot_key_routes`` for *store*: does its own exact-key resolver land this key?
+
+    The resolver is the one ``recover_pending_to_db`` hands payloads to (routing map first, then
+    the durable row under the exact key), so a slot key it cannot land is a slot key recovery
+    would strand — the only case the flush re-keys. ``None`` (no store, or one without the
+    resolver) leaves every key as its derivation gives it, the head's behaviour.
+    """
+    resolve = getattr(store, "resolve_session_id_for_key", None)
+    if not callable(resolve):
+        return None
+
+    def routes(session_key: str) -> bool:
+        try:
+            return bool(resolve(session_key))
+        except Exception:  # a profile lookup can fail; an unconfirmed key is not worth recording
+            logger.debug("Could not ask the store whether %s routes; deriving its store key",
+                         session_key, exc_info=True)
+            return False
+
+    return routes
+
+
+def adapter_flush_keying(adapter: Any) -> dict[str, Any]:
+    """The keying kwargs for an adapter's shutdown flush.
+
+    Bundled as the gateway's other ``**_kwargs`` builders are, and because both flush call sites
+    live in files the repo's file-length ratchet already holds over target (``base.py``,
+    ``run_shutdown.py``): the bundle keeps each call site at its current line count.
+    """
+    store = getattr(adapter, "_session_store", None)
+    return {"session_key_for": adapter_store_key_for(adapter),
+            "slot_key_routes": store_slot_key_routes(store)}
+
+
+def runner_flush_keying(runner: Any) -> dict[str, Any]:
+    """The keying kwargs for the runner's own flush (queue head and overflow tail).
+
+    Same bundle, same reason; the derivation is the runner's own
+    (``GatewayRunner._session_key_for_source``), which falls back to the config when no store is
+    wired.
+    """
+    return {"session_key_for": getattr(runner, "_session_key_for_source", None),
+            "slot_key_routes": store_slot_key_routes(getattr(runner, "session_store", None))}
+
+
 def flush_pending_to_file(pending: dict[str, Any], *, reason: str = "shutdown",
-                          session_key_for: Optional[Callable[[Any], Any]] = None) -> int:
+                          session_key_for: Optional[Callable[[Any], Any]] = None,
+                          slot_key_routes: Optional[Callable[[str], bool]] = None) -> int:
     """Serialise non-empty ``_pending_messages`` slots (``MessageEvent`` or str); return count.
 
     ``session_key_for`` maps a slot's ``source`` to the key the session store routes it by, so
     the payload replays after a restart even when the adapter that queued it derived a different
-    key (see :func:`_recoverable_key`).
+    key; ``slot_key_routes`` says whether the slot key itself is one recovery can resolve, in
+    which case it is recorded as it stands (see :func:`_recoverable_key`).
     """
     if not pending:
         return 0
     flush_dir, ts, flushed = _get_flush_dir(), int(time.time()), 0
     for session_key, value in list(pending.items()):
         if value is not None:
-            key = _recoverable_key(value, session_key, session_key_for)
+            key = _recoverable_key(value, session_key, session_key_for, slot_key_routes)
             flushed += _flush_value(flush_dir, "pending", key, value, reason=reason, ts=ts)
     if flushed:
         logger.info("Flushed %d pending message(s) to %s (reason=%s)", flushed, flush_dir, reason)
@@ -144,13 +208,15 @@ def flush_pending_to_file(pending: dict[str, Any], *, reason: str = "shutdown",
 
 
 def flush_overflow_to_file(overflow_by_session: dict[str, Any], *, reason: str = "shutdown",
-                           session_key_for: Optional[Callable[[Any], Any]] = None) -> int:
+                           session_key_for: Optional[Callable[[Any], Any]] = None,
+                           slot_key_routes: Optional[Callable[[str], bool]] = None) -> int:
     """Serialise the FIFO overflow tails (``queued_events``) to disk; return events flushed.
 
     The adapter slot holds the queue head and ``SessionState.conversation.queued_events`` the
     tail; both must survive restart. Each event is its own payload in the slot-flush shape so
     ``recover_pending_to_db`` replays them unchanged; ``seq`` preserves arrival order per session.
-    ``session_key_for`` canonicalises each event's key exactly as in :func:`flush_pending_to_file`.
+    ``session_key_for`` and ``slot_key_routes`` key each event exactly as in
+    :func:`flush_pending_to_file`.
     """
     if not overflow_by_session:
         return 0
@@ -160,7 +226,7 @@ def flush_overflow_to_file(overflow_by_session: dict[str, Any], *, reason: str =
             continue
         for seq, value in enumerate(list(events)):
             if value is not None:
-                key = _recoverable_key(value, session_key, session_key_for)
+                key = _recoverable_key(value, session_key, session_key_for, slot_key_routes)
                 flushed += _flush_value(flush_dir, "overflow", key, value, reason=reason,
                                         ts=ts, seq=seq)
     if flushed:

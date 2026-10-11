@@ -521,6 +521,12 @@ function ArtifactImageCard({ artifact, failedImage, onImageError, onOpenChat }: 
             src={src}
           />
         )}
+        {failedImage && (
+          <div className="flex flex-col items-center gap-1.5 text-(--ui-text-tertiary)">
+            <FileImage className="size-6" />
+            <span className="text-[0.625rem]">{t.artifactPreview.missingTitle}</span>
+          </div>
+        )}
       </div>
 
       <div className="space-y-1.5 p-2">

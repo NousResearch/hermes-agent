@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { MemoryRouter } from 'react-router'
 import { afterEach, expect, it, vi } from 'vitest'
 
+import type * as HermesClient from '@/hermes'
 import { $connection } from '@/store/session'
 
 import { ArtifactsView } from './index'
@@ -19,12 +20,11 @@ const paths = vi.hoisted(() => [
 ])
 
 const getSessionMessages = vi.hoisted(() => vi.fn())
+const listAllProfileSessions = vi.hoisted(() => vi.fn())
 
 vi.mock('@/hermes', async () => ({
   ...(await vi.importActual('@/hermes')),
-  listAllProfileSessions: async () => ({
-    sessions: [{ id: 'artifact-session', title: 'Fixture', profile: 'origin-profile' }]
-  }),
+  listAllProfileSessions,
   getSessionMessages
 }))
 afterEach(() => {
@@ -35,6 +35,9 @@ afterEach(() => {
 })
 
 it('keeps discovered file paths and originating session scope intact through remote opening', async () => {
+  listAllProfileSessions.mockResolvedValue({
+    sessions: [{ id: 'artifact-session', title: 'Fixture', profile: 'origin-profile' }]
+  })
   getSessionMessages.mockResolvedValue({
     messages: [
       {
@@ -96,6 +99,39 @@ it('keeps discovered file paths and originating session scope intact through rem
     includeCompacted: true,
     limit: expect.any(Number),
     offset: 0,
+    order: 'oldest'
+  })
+})
+
+it('reads a registry-owned session through its owning connection', async () => {
+  listAllProfileSessions.mockResolvedValueOnce({
+    sessions: [{ id: 'voyo-session', title: 'Remote', profile: 'default', connection_id: 'voyo' }]
+  })
+  const client = await vi.importActual<typeof HermesClient>('@/hermes')
+  const api = vi.fn().mockResolvedValue({ messages: [], session_id: 'voyo-session' })
+  vi.stubGlobal('hermesDesktop', { api })
+  getSessionMessages.mockImplementation(client.getSessionMessages)
+  render(
+    <MemoryRouter>
+      <ArtifactsView />
+    </MemoryRouter>
+  )
+
+  await waitFor(() =>
+    expect(getSessionMessages).toHaveBeenCalledWith(
+      'voyo-session',
+      { connectionId: 'voyo', profile: 'default' },
+      expect.objectContaining({ includeCompacted: true, offset: 0, order: 'oldest' })
+    )
+  )
+
+  expect(api).toHaveBeenCalledWith(expect.objectContaining({ connectionId: 'voyo', profile: 'default' }))
+  const path = new URL(api.mock.calls[0][0].path, 'http://localhost')
+  expect(path.pathname).toBe('/api/sessions/voyo-session/messages')
+  expect(Object.fromEntries(path.searchParams)).toMatchObject({
+    profile: 'default',
+    include_compacted: 'true',
+    offset: '0',
     order: 'oldest'
   })
 })

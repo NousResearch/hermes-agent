@@ -27,6 +27,7 @@ from acp.schema import (
 from acp_adapter.auth import TERMINAL_SETUP_AUTH_METHOD_ID, build_auth_methods, detect_provider
 from acp_adapter.commands import SlashCommandsMixin, _estimate_tokens
 from acp_adapter.content import PromptBlock, _content_blocks_to_openai_user_content, _extract_text
+from acp_adapter.elicitation import client_supports_form_elicitation, make_clarify_callback
 from acp_adapter.events import (
     AssistantMessageIdAllocator, _build_plan_update_from_todo_result, _send_update, flush_open_tool_calls,
     make_message_cb, make_step_cb, make_thinking_cb, make_tool_progress_cb,
@@ -225,6 +226,7 @@ class _TurnCallbacks:
     stream_delta_cb: Any = None
     approval_cb: Any = None
     edit_approval_requester: Any = None
+    clarify_cb: Any = None
     streamed: bool = False
     tool_call_ids: Any = None
     tool_call_meta: Any = None
@@ -255,13 +257,27 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         super().__init__()
         self.session_manager = session_manager or SessionManager()
         self._conn: Optional[acp.Client] = None
+        self._client_form_elicitation = False
 
     # ---- Connection lifecycle -----------------------------------------------
 
     def on_connect(self, conn: acp.Client) -> None:
         """Store the client connection for sending session updates."""
         self._conn = conn
+        add_observer = getattr(getattr(conn, "_conn", None), "add_observer", None)
+        if callable(add_observer):
+            add_observer(self._observe_client_message)
         logger.info("ACP client connected")
+
+    def _observe_client_message(self, event: Any) -> None:
+        """Read ``initialize``'s raw capabilities, which the SDK's typed model drops. Observers run
+        before dispatch, so the flag is set before ``initialize`` returns and any session exists."""
+        message = getattr(event, "message", None)
+        if getattr(event, "direction", None) != "incoming" or not isinstance(message, dict) \
+                or message.get("method") != "initialize":
+            return
+        self._client_form_elicitation = client_supports_form_elicitation(message.get("params"))
+        self.session_manager.clarify_via_elicitation = self._client_form_elicitation
 
     async def _send(self, session_id: str, update: Any, *, fail_msg: str, level: int = logging.WARNING) -> bool:
         """``session_update`` that logs instead of raising; False on failure."""
@@ -936,8 +952,12 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
                 )
             except Exception:
                 logger.debug("Could not create ACP edit approval requester", exc_info=True)
+            if self._client_form_elicitation:
+                cbs.clarify_cb = make_clarify_callback(conn, loop, session_id)
 
         agent = state.agent
+        if cbs.clarify_cb is not None:
+            agent.clarify_callback = cbs.clarify_cb
         agent.tool_progress_callback = cbs.tool_progress_cb
         # Thought panes get provider reasoning only — no local status updates, no fake accordion.
         agent.thinking_callback = None

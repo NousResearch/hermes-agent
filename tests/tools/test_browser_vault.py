@@ -45,6 +45,11 @@ def store(tmp_path):
     return VaultStore(base_dir=tmp_path / "vault")
 
 
+# Synthetic extension IDs (32 chars from a-p), not real extensions.
+_EXT_A = "abcdefghijklmnop" * 2
+_EXT_B = "ponmlkjihgfedcba" * 2
+
+
 def _add_login(store, origin="https://example.com", password="s3cret-pw"):
     return store.add_item(
         kind="login",
@@ -143,6 +148,33 @@ class TestVaultStore:
         assert normalize_origin("http://site.test:80") == "http://site.test"
         with pytest.raises(VaultError):
             normalize_origin("example.com")
+
+    def test_normalize_origin_chrome_extension_exact_id_only(self):
+        assert normalize_origin(f"chrome-extension://{_EXT_A}") == f"chrome-extension://{_EXT_A}"
+        assert normalize_origin(f"chrome-extension://{_EXT_A}/popup/index.html#/lock") == f"chrome-extension://{_EXT_A}"
+        for bad in (
+            f"chrome-extension://{_EXT_A.upper()}",       # uppercase
+            f"chrome-extension://{_EXT_A[:31]}",          # too short
+            f"chrome-extension://{_EXT_A}a",              # too long
+            f"chrome-extension://{_EXT_A[:31]}q",         # outside a-p
+            f"chrome-extension://{_EXT_A[:31]}1",
+            f"chrome-extension://user@{_EXT_A}",          # userinfo
+            f"chrome-extension://{_EXT_A}@{_EXT_B}",
+            f"chrome-extension://{_EXT_A}:443",           # port
+            f"chrome-extension://%61{_EXT_A[1:]}",        # percent-encoding
+            f"chrome-extension://{_EXT_A[:16]}\t{_EXT_A[16:]}",  # urlsplit would silently drop the tab
+            f"chrome-extension://{_EXT_A}\x00",
+            f"chrome-extension://{_EXT_A}/x\x7f",
+            f"chrome-extension:///{_EXT_A}",              # empty host
+            f"chrome-extension://{_EXT_A}\\{_EXT_B}",
+            "chrome-extension://",
+        ):
+            with pytest.raises(VaultError):
+                normalize_origin(bad)
+
+    def test_login_bound_to_extension_origin_is_stored_exactly(self, store):
+        meta = _add_login(store, origin=f"chrome-extension://{_EXT_A}/popup/index.html")
+        assert meta.origin == f"chrome-extension://{_EXT_A}"
 
     def test_scrub_secret_from_text(self):
         secret = {"password": "hunter22x", "identifier": "me@x.io"}
@@ -590,6 +622,147 @@ class TestBrowserVaultTools:
             assert _CARD["card_number"] not in redact.redact_sensitive_text(f"dom says {_CARD['card_number']}")
         finally:
             redact.clear_vault_redaction_values()
+
+
+# ---------------------------------------------------------------------------
+# Extension-origin tab focus (supervisor.focus_page with a fake CDP, no browser)
+# ---------------------------------------------------------------------------
+
+_EXT_A_PAGE = f"chrome-extension://{_EXT_A}/popup/index.html#/lock"
+_TABS = [
+    {"targetId": "newtab", "type": "page", "url": "chrome://newtab/"},  # the supervisor's first tab
+    {"targetId": "web", "type": "page", "url": "https://example.com/login"},
+    {"targetId": "ext-b", "type": "page", "url": f"chrome-extension://{_EXT_B}/popup/index.html#/lock"},
+    {"targetId": "ext-a-sw", "type": "service_worker", "url": f"chrome-extension://{_EXT_A}/background.js"},
+    {"targetId": "ext-a-frame", "type": "iframe", "url": f"chrome-extension://{_EXT_A}/overlay.html"},
+    {"targetId": "ext-a", "type": "page", "url": _EXT_A_PAGE},
+]
+
+
+@pytest.fixture()
+def fake_supervisor():
+    """A real CDPSupervisor on a live loop whose CDP transport is faked: every page has a login form."""
+    import asyncio
+    import threading
+
+    from tools.browser_supervisor import CDPSupervisor
+
+    sup = CDPSupervisor(task_id="vault-focus-test", cdp_url="ws://127.0.0.1:1")
+    sup.attached = []
+    sup.tabs = list(_TABS)
+
+    async def cdp(method, params=None, *, session_id=None, timeout=10.0):
+        if method == "Target.getTargets":
+            return {"result": {"targetInfos": sup.tabs}}
+        if method == "Target.attachToTarget":
+            sup.attached.append(params["targetId"])
+            return {"result": {"sessionId": f"s-{params['targetId']}"}}
+        if method == "Runtime.evaluate":
+            return {"result": {"result": {"type": "boolean", "value": True}}}
+        return {"result": {}}
+
+    async def noop(*_a, **_k):
+        return None
+
+    sup._cdp = cdp
+    sup._enable_page_domains = noop
+    sup._install_dialog_bridge = noop
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever, daemon=True)
+    thread.start()
+    sup._loop = loop
+    try:
+        yield sup
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=5)
+        loop.close()
+
+
+class TestExtensionOriginFocus:
+    def test_exact_extension_origin_focuses_only_that_extensions_page(self, fake_supervisor):
+        out = fake_supervisor.focus_page(f"chrome-extension://{_EXT_A}", accept="probe")
+        assert out == {"ok": True, "url": _EXT_A_PAGE}
+        # never the https tab, extension B, or extension A's worker/iframe targets
+        assert fake_supervisor.attached == ["ext-a"]
+        assert fake_supervisor._page_session_id == "s-ext-a"
+
+    def test_origin_free_discovery_never_returns_an_extension_page(self, fake_supervisor):
+        assert fake_supervisor.focus_page("", accept="probe") == {"ok": True, "url": "https://example.com/login"}
+        fake_supervisor.attached.clear()
+        fake_supervisor.tabs = [t for t in _TABS if t["targetId"] != "web"]
+        assert fake_supervisor.focus_page("", accept="probe")["ok"] is False
+        assert fake_supervisor.attached == []
+
+    def test_web_origin_focus_never_considers_extension_pages(self, fake_supervisor):
+        assert fake_supervisor.focus_page("https://example.com", accept="probe")["url"] == "https://example.com/login"
+        assert fake_supervisor.attached == ["web"]
+
+    @pytest.mark.parametrize("origin", [
+        f"chrome-extension://{_EXT_A.upper()}",
+        f"chrome-extension://{_EXT_A}/popup/index.html",  # a URL, not an exact origin
+        f"chrome-extension://{_EXT_A[:31]}",
+        f"chrome-extension:{_EXT_A}",
+    ])
+    def test_inexact_extension_origin_is_refused_before_any_attach(self, fake_supervisor, origin):
+        out = fake_supervisor.focus_page(origin, accept="probe")
+        assert out["ok"] is False and "chrome-extension origin" in out["error"]
+        assert fake_supervisor.attached == []
+
+    @staticmethod
+    def _fill(store, fake_supervisor, *, secret_result):
+        from tools import browser_vault_tool
+
+        meta = _add_login(store, origin=f"chrome-extension://{_EXT_A}")
+        controls = [{"autocomplete": "current-password", "formIndex": 0, "index": 0, "label": "",
+                     "name": "masterPassword", "type": "password"}]
+        secret_exprs = []
+
+        def fake_eval(task_id, expression):
+            if "location.href" in expression:  # only reached if focusing the bound tab failed
+                return {"success": True, "result": "chrome://newtab/"}
+            return {"success": True, "result": json.dumps(controls)}
+
+        def fake_eval_secret(task_id, expression):
+            secret_exprs.append(expression)
+            return {"success": True, "result": json.dumps(secret_result)}
+
+        with patch("agent.vault_store.get_vault_store", return_value=store), \
+             patch.object(browser_vault_tool, "_ensure_supervisor", return_value=fake_supervisor), \
+             patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
+             patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_eval_secret):
+            raw = browser_vault_tool.browser_vault_fill(meta.id)
+        return raw, secret_exprs
+
+    def test_fill_bound_to_extension_focuses_its_tab_from_another_first_tab(self, store, fake_supervisor):
+        raw, secret_exprs = self._fill(store, fake_supervisor, secret_result={"filled": 1})
+        out = json.loads(raw)
+        assert out["success"] is True and out["filled_fields"] == 1
+        assert out["origin"] == f"chrome-extension://{_EXT_A}"
+        assert fake_supervisor.attached == ["ext-a"]
+        # the in-page pre-write check is pinned to the exact extension origin
+        assert f'"chrome-extension://{_EXT_A}"' in secret_exprs[0]
+        assert "s3cret-pw" not in raw
+
+    def test_fill_bound_to_extension_refused_when_page_origin_changes_before_write(self, store, fake_supervisor):
+        raw, _ = self._fill(store, fake_supervisor,
+                            secret_result={"refused": "origin_changed", "found": f"chrome-extension://{_EXT_B}"})
+        out = json.loads(raw)
+        assert out["success"] is False and out["error_type"] == "origin_changed"
+        assert "s3cret-pw" not in raw
+
+    def test_fill_bound_to_extension_refused_on_another_extension(self, store, fake_supervisor):
+        from tools import browser_vault_tool
+
+        fake_supervisor.tabs = [t for t in _TABS if t["targetId"] != "ext-a"]
+        meta = _add_login(store, origin=f"chrome-extension://{_EXT_A}")
+        with patch("agent.vault_store.get_vault_store", return_value=store), \
+             patch.object(browser_vault_tool, "_ensure_supervisor", return_value=fake_supervisor), \
+             patch.object(browser_vault_tool, "_current_page_origin", return_value=f"chrome-extension://{_EXT_B}"), \
+             patch.object(browser_vault_tool, "_eval_js_secret") as secret_eval:
+            out = json.loads(browser_vault_tool.browser_vault_fill(meta.id))
+        assert out["success"] is False and out["error_type"] == "origin_mismatch"
+        assert fake_supervisor.attached == [] and not secret_eval.called
 
 
 class TestVaultHardening:

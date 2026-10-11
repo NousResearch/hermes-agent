@@ -12,6 +12,7 @@ import os
 import shutil
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Any, NoReturn, Optional
 
@@ -859,6 +860,24 @@ def _scan_level(base: Path, source: str, skip_names: set, prefix: str, depth: in
         seen[key] = (name, version, description, src_label, d, key)
 
 
+def _sweep_stale_staging(plugins_dir: Path) -> None:
+    """Remove .install-* staging dirs abandoned by a crashed or killed install (a failed install's
+    own clone is removed by ``_cleanup_staging``; these are the ones that never got the chance).
+    The fixed 24h grace stands in for a liveness handshake: a live install's staging dir is
+    minutes old, so only a >24h-hung install could ever be reaped."""
+    grace_seconds = 24 * 3600
+    from pm.filesystem import remove_tree
+    for child in plugins_dir.glob(".install-*"):
+        if not child.is_dir():  # .install-metadata.json lives here too; files are never staging
+            continue
+        try:
+            if time.time() - child.stat().st_mtime < grace_seconds:
+                continue
+            remove_tree(child)
+        except OSError as exc:
+            logger.warning("Could not remove stale plugin staging directory %s: %s", child, exc)
+
+
 def _discover_all_plugins() -> list:
     """``(name, version, description, source, dir_path, key)`` for every plugin the loader sees,
     in ``PluginManager.discover_and_load`` order: bundled, user, then entry points — which never
@@ -871,6 +890,8 @@ def _discover_all_plugins() -> list:
         (get_bundled_plugins_dir(), "bundled", {"memory", "context_engine", "computer_use", "model-providers"}),
         (_plugins_dir(), "user", set()),
     ):
+        if source == "user":
+            _sweep_stale_staging(base)
         _scan_level(base, source, skip, "", 0, seen)
     # Entry-point plugins are installed as Python packages, so they have no plugin directory.
     for m in discover_entrypoint_manifests():

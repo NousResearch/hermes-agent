@@ -295,6 +295,20 @@ def _ensure_tree_readable(root: Path, plugins_dir: Path) -> None:
             ) from exc
 
 
+def _cleanup_staging(tmp: Path) -> None:
+    """Remove the .install-* staging clone on every exit path. A plain ``TemporaryDirectory``
+    cleanup is a bare Windows rmtree over freshly cloned files: a held handle or a surviving
+    read-only bit fails it partway and the dir leaks into the plugins dir, warning at every
+    boot. ``pm.filesystem`` retries held handles and clears read-only bits; a residual failure
+    is a warning so it can never mask the install's own result."""
+    from pm.filesystem import remove_tree, retry_held
+
+    try:
+        retry_held(lambda: remove_tree(tmp))
+    except OSError as exc:
+        logger.warning("Could not remove plugin staging directory %s: %s", tmp, exc)
+
+
 def _refuse_unavailable_portable_plugin(plugin_name: str, tree: Path) -> None:
     if not (tree / "plugin.json").is_file():
         return
@@ -374,8 +388,9 @@ def _install_plugin_core(
         if len(pins) == 1 and isinstance(pins[0].get("revision"), str):
             requested_revision = _pc()._normalize_exact_revision(pins[0]["revision"])
 
-    with tempfile.TemporaryDirectory(prefix=".install-", dir=plugins_dir) as tmp:
-        tmp_clone = Path(tmp) / "plugin"
+    tmp = Path(tempfile.mkdtemp(prefix=".install-", dir=plugins_dir))
+    try:
+        tmp_clone = tmp / "plugin"
         installed_revision = _pc()._clone_plugin_repo(tmp_clone, git_url, requested_revision, subdir)
         git_exe = _pc()._resolve_git_executable()
         at_reviewed_pin = bool(reviewed_pin) and installed_revision == (
@@ -483,6 +498,9 @@ def _install_plugin_core(
         except Exception as exc:
             raise _pc().PluginOperationError(f"Plugin '{plugin_name}' was not published: {exc}",
                                              failure_class=_publish_failure_class(exc)) from exc
+
+    finally:
+        _cleanup_staging(tmp)
 
     if not _pc()._looks_like_plugin_dir(target):
         logger.warning("%s has no plugin.yaml / __init__.py; may not be a valid plugin", plugin_name)

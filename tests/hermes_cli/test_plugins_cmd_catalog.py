@@ -538,3 +538,44 @@ def test_catalog_rows_maps_resolves_the_live_catalog_once(monkeypatch):
 
     monkeypatch.setattr(cat, "load_catalog_live", boom)
     assert cat.catalog_rows_maps() == ({}, {}, {})
+
+
+def test_staging_cleanup_rides_out_a_transient_hold(tmp_path, monkeypatch):
+    """A transient Windows hold (EACCES) while removing the .install-* staging clone is retried
+    through pm.filesystem: the dir is fully removed instead of leaking into the plugins dir."""
+    from hermes_cli.plugins_cmd_install import _cleanup_staging
+
+    staging = tmp_path / ".install-abc"
+    (staging / "sub").mkdir(parents=True)
+    (staging / "sub" / "f").write_text("x")
+    real_rmdir = os.rmdir
+    state = {"struck": False}
+
+    def flaky_rmdir(path, *args, **kwargs):
+        if Path(path) == staging and not state["struck"]:
+            state["struck"] = True
+            raise PermissionError(13, "Access is denied")
+        return real_rmdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "rmdir", flaky_rmdir)
+    _cleanup_staging(staging)
+    assert not staging.exists()
+    assert state["struck"]  # the hold was actually exercised, not skipped
+
+
+def test_discovery_sweeps_stale_staging_dirs_but_not_live_ones(world, tmp_path):
+    """A .install-* dir abandoned by a crashed install is reaped at discovery after a generous
+    grace period; a fresh one (a live install's staging clone) is never touched."""
+    import time
+
+    plugins_dir = world["plugins_dir"]
+    stale = plugins_dir / ".install-stale"
+    stale.mkdir()
+    (stale / "junk").write_text("x")
+    old = time.time() - 25 * 3600
+    os.utime(stale, (old, old))
+    fresh = plugins_dir / ".install-fresh"
+    fresh.mkdir()
+    pc._discover_all_plugins()
+    assert not stale.exists()
+    assert fresh.exists()

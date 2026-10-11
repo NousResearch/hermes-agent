@@ -159,12 +159,19 @@ source: https://github.com/sweetrb/apple-notes-mcp
 # apple-mail pin carries the same fix via 2.19.20.) Same validation, run
 # against both 2.9.31 and 2.9.32: 83 tools, all described, all 20
 # default_enabled entries resolve.
-# Declined, newest first: 2.10.0-2.14.0 add tools and options outside
-# default_enabled (`query-notes` facets, HTML vector drawings, a permissions
-# CLI, a template editor CLI, paragraph anchors); 2.9.35 is an
-# `add-attachment` verification fix; 2.9.34 is dev-toolchain only; 2.9.33
-# moves the bundled MCP SDK 1.30.0 -> 1.30.1 (Dependabot). None fixes a
-# defect in a default_enabled tool.
+# Declined, newest first: 2.15.0 adds an opt-in signed permission broker
+# (`setup --broker`) that changes nothing unless installed, so the default
+# in-process surface is untouched (validated: 88 tools, all 20
+# default_enabled entries still resolve); 2.14.3/2.14.2 fix verification bugs
+# in `append-to-note`/`append-native`, outside default_enabled; 2.14.1 bumps
+# the bundled SDK for an OAuth-client advisory not reachable from this
+# stdio-only bundle, plus a dev-only `source-map-js` floor; 2.10.0-2.14.0 add
+# tools and options outside default_enabled (`query-notes` facets, HTML
+# vector drawings, a permissions CLI, a template editor CLI, paragraph
+# anchors); 2.9.35 is an `add-attachment` verification fix; 2.9.34 is
+# dev-toolchain only; 2.9.33 moves the bundled MCP SDK 1.30.0 -> 1.30.1
+# (Dependabot). None fixes a defect in a default_enabled tool or ships a
+# security fix reachable regardless of default_enabled.
 transport:
   type: stdio
   command: "npx"

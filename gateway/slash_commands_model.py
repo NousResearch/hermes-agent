@@ -451,6 +451,27 @@ class GatewayModelCommandsMixin:
         )
         return bool(result.success)
 
+    async def _resolve_display_provider(self, profile_home) -> str:
+        """Provider the ``/model`` listing should mark current when config.yaml has no ``model.provider``.
+
+        The runtime resolver's auto-detect answer (env keys can out-rank a logged-in OAuth provider,
+        #29285), never a placeholder: a funded OAuth login next to a dry API key must not display
+        as the current route while the gateway bills the dry key (#136801). Off-loop — the detect
+        reads config/env/auth store; under multiplex it runs inside the profile's scope so the
+        env-key tier sees that profile's credentials."""
+        from hermes_cli.auth import resolve_provider
+
+        def _detect() -> str:
+            if profile_home is None:
+                return resolve_provider("auto")
+            from gateway.run import _profile_runtime_scope
+            with _profile_runtime_scope(profile_home):
+                return resolve_provider("auto")
+
+        with contextlib.suppress(Exception):
+            return await asyncio.to_thread(_detect)
+        return ""
+
     async def _model_listing_reply(
         self, event: MessageEvent, ctx: _ModelSwitchContext, profile_home
     ) -> Optional[str]:
@@ -458,8 +479,13 @@ class GatewayModelCommandsMixin:
         from hermes_cli.model_switch import list_authenticated_providers
         from hermes_cli.providers import get_label
 
+        # Unset ``model.provider``: ``ctx.current_provider`` still holds the ``openrouter``
+        # placeholder — display the provider the resolver actually routes through instead.
+        display_provider = ctx.current_provider
+        if ctx.route_provider is None:
+            display_provider = await self._resolve_display_provider(profile_home) or display_provider
         listing_kwargs = dict(
-            current_provider=ctx.current_provider, current_base_url=ctx.current_base_url,
+            current_provider=display_provider, current_base_url=ctx.current_base_url,
             current_model=ctx.current_model, user_providers=ctx.user_provs,
             custom_providers=ctx.custom_provs, excluded_providers=ctx.excluded_provs,
             # Chat `/model` is a read path: catalogs come from the disk cache and stale ones warm
@@ -487,7 +513,7 @@ class GatewayModelCommandsMixin:
                 return None  # Picker sent — adapter handles the response
 
         lines = [t("gateway.model.current_label", model=ctx.current_model or t("gateway.shared.unknown_value"),
-                   provider=get_label(ctx.current_provider)), ""]
+                   provider=get_label(display_provider)), ""]
         try:  # off-loop: listing still reads config/disk cache synchronously (#41289)
             providers = await asyncio.to_thread(list_authenticated_providers, max_models=_TEXT_LISTING_MODELS, **listing_kwargs)
             lines.extend(_model_provider_listing_lines(providers))

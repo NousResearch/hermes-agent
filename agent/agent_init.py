@@ -150,10 +150,23 @@ def _context_route_mismatch(
         # Named/custom providers have no catalog default routes: an empty configured URL
         # with a matching provider identity is the same route (gateway display paths
         # compare the raw empty model.base_url and must not drop model.context_length).
-        return not (active_provider and configured_provider == active_provider)
+        return not (active_provider and _same_custom_runtime_provider(configured_provider, active_provider))
     return bool(
-        configured_provider and active_provider and configured_provider != active_provider
+        configured_provider
+        and active_provider
+        and not _same_custom_runtime_provider(configured_provider, active_provider)
     )
+
+
+def _same_custom_runtime_provider(configured: str, active: str) -> bool:
+    """Whether two provider ids denote the same route once runtime flattens a named custom
+    provider (``custom:<name>``) to plain ``custom`` — the name is not carried on the wire,
+    so ``custom:litellm`` configured and ``custom`` running is the same route, while two
+    different named providers are still different routes."""
+    if configured == active:
+        return True
+    named = {p for p in (configured, active) if p.startswith("custom:") and len(p) > len("custom:")}
+    return bool(named) and "custom" in (configured, active)
 
 
 def _normalize_custom_provider_name(value: Any) -> str:

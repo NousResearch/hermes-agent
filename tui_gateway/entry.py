@@ -279,6 +279,12 @@ def main():
         logger.warning("TUI message injector did not install", exc_info=True)
     _close_rpc_stdin_on_exec()
     _install_sidecar_publisher()
+    # Provenance for the TUI policy-write gate (#104697): register the stdio RPC
+    # transport ONLY here, after the sidecar publisher may have swapped it for the
+    # Tee wrapper, so `_tui_policy_write`'s membership check accepts this process's
+    # real dispatch channel and refuses everything a worker could bind itself.
+    from tui_gateway.transport import _POLICY_WRITE_TRANSPORTS
+    _POLICY_WRITE_TRANSPORTS.add(server._stdio_transport)
     from hermes_cli.observability.shared_metrics_process import begin_process
 
     begin_process("tui")

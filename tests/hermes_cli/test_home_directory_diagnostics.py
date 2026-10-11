@@ -1,5 +1,6 @@
 """Home initialization must respect operator-owned links and diagnose storage."""
 import stat
+import sys
 from pathlib import Path
 
 import pytest
@@ -127,3 +128,46 @@ def test_aliased_parent_still_leaves_an_operator_home_link_alone(tmp_path, monke
     assert home.is_symlink() and home.readlink() == shared
     assert stat.S_IMODE(shared.stat().st_mode) == 0o750
     assert stat.S_IMODE((shared / "curator").stat().st_mode) == 0o750
+
+
+def test_initialization_refuses_the_callers_account_home(tmp_path, monkeypatch):
+    """A HERMES_HOME that IS the account root must fail loudly, never chmod it."""
+    import os
+
+    from hermes_cli import config_home
+
+    account_root = tmp_path / "acct"
+    account_root.mkdir(mode=0o755)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: account_root))
+    monkeypatch.setattr(config, "is_managed", lambda: False)
+    config._HERMES_HOME_ENSURED.discard(str(account_root))
+
+    with pytest.raises(config_home.HomeInitializationError, match="account root"):
+        config_home.initialize_home(
+            account_root, config._HERMES_HOME_SUBDIRS, config._HERMES_HOME_ENSURED
+        )
+
+    assert not (account_root / "SOUL.md").exists()
+    assert not any((account_root / name).exists() for name in config._HERMES_HOME_SUBDIRS)
+    assert str(account_root) not in config._HERMES_HOME_ENSURED
+    if os.name == "posix":
+        assert account_root.stat().st_mode & 0o777 == 0o755
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX account-root layout")
+@pytest.mark.parametrize(
+    "bad_home",
+    ("/", "/Users", "/Users/other-acct", "/home/other-acct", "/root", "/var/root"),
+)
+def test_other_account_home_roots_are_refused(bad_home):
+    from hermes_cli.config_home import _is_account_home_root
+
+    assert _is_account_home_root(Path(bad_home))
+
+
+def test_dedicated_home_directories_are_allowed(tmp_path):
+    from hermes_cli.config_home import _is_account_home_root
+
+    assert not _is_account_home_root(tmp_path / "hermes")
+    assert not _is_account_home_root(Path.home() / ".hermes")
+    assert not _is_account_home_root(Path.home() / "hermes-tenant")

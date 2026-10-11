@@ -1,7 +1,7 @@
 ---
 sidebar_position: 4
-title: "Provider Runtime Resolution"
-description: "How Hermes resolves providers, credentials, API modes, and auxiliary models at runtime"
+title: 'Provider Runtime Resolution'
+description: 'How Hermes resolves providers, credentials, API modes, and auxiliary models at runtime'
 ---
 
 # Provider Runtime Resolution
@@ -99,6 +99,12 @@ The runtime resolver returns data such as:
 - `api_key`
 - `source`
 - provider-specific metadata like expiry/refresh info
+
+Named custom routes retain their requested config-key identity when session state is
+saved. A shared URL or model does not identify a route: peers may use different wire
+protocols or credentials. Persistence verifies the requested entry against its current
+endpoint without reading credentials; legacy bare `custom` rows retain endpoint-based
+recovery. During voice turns, the session view uses the main route's snapshot.
 
 ## Why this matters
 

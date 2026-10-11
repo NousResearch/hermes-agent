@@ -51,6 +51,7 @@ from hermes_cli.config_read_errors import (
     _CONFIG_PARSE_FAILURES, _FIX_PERMS, _FIX_YAML, FailedConfigRead, _backups_dir_display,
     _refuse_failed_read, _refuse_overwrite, _warn_config_parse_failure, _yaml_error_details,
     _yaml_error_location)
+from hermes_cli.config_key_paths import _set_nested
 
 logger = logging.getLogger(__name__)
 
@@ -701,67 +702,6 @@ def _phantom_sibling(container: dict, part: str) -> Optional[str]:
         return None
     prefix = part + "."
     return next((k for k in container if isinstance(k, str) and k.startswith(prefix)), None)
-
-
-def _set_nested(config, dotted_key: str, value):
-    """Set a value at a dotted key path, creating intermediate dicts on demand.
-    Numeric segments index lists; the index must already exist (lists are never grown).
-
-    Guards against #17876: before this fix the code unconditionally replaced any non-dict value (including
-    lists) with ``{}``, silently destroying list-typed config like ``custom_providers`` whenever a caller
-    used an indexed path.
-    Dotted key names (#84064 family): when navigating an existing mapping, an existing literal key equal to
-    the dot-join of the next N segments is preferred over blind splitting (see ``_greedy_literal_match``),
-    so ``models.grok-4.6.supports_vision`` lands on the real ``grok-4.6`` entry. And when a write WOULD
-    create a new intermediate mapping that shadows an existing dotted sibling (``grok-4`` beside
-    ``grok-4.5``), it raises ``ValueError`` instead of silently writing a phantom the runtime never reads.
-    """
-    parts = _split_key_path(dotted_key)
-    current = config
-    i = 0
-    while i < len(parts):
-        remaining = parts[i:]
-        at_leaf = len(remaining) == 1
-        if isinstance(current, list):
-            part = remaining[0]
-            if at_leaf:
-                current[int(part)] = value
-                return
-            try:
-                current = current[int(part)]
-            except (TypeError, ValueError):
-                raise TypeError(
-                    f"Cannot navigate into list at key {dotted_key!r}: "
-                    f"segment {part!r} is not a numeric index")
-            i += 1
-        elif isinstance(current, dict):
-            match = _greedy_literal_match(current, remaining)
-            if match is not None:
-                key, consumed = match
-                if i + consumed == len(parts):
-                    current[key] = value
-                    return
-                # Preserve dicts and lists; replace scalar with a fresh dict.
-                if not isinstance(current.get(key), (dict, list)):
-                    current[key] = {}
-                current = current[key]
-                i += consumed
-                continue
-            part = remaining[0]
-            if at_leaf:
-                current[part] = value
-                return
-            shadowed = _phantom_sibling(current, part)
-            if shadowed is not None:
-                escaped = shadowed.replace(".", "\\.")
-                raise ValueError(
-                    f"Refusing to create nested key {part!r} in {dotted_key!r}: the mapping "
-                    f"already contains a literal key {shadowed!r} that contains a dot. If you "
-                    f"meant that key, escape its dots with a backslash (e.g. {escaped}).")
-            current = current.setdefault(part, {})
-            i += 1
-        else:
-            raise TypeError(f"Cannot navigate into {type(current).__name__} at key {dotted_key!r}")
 
 
 def clear_model_endpoint_credentials(

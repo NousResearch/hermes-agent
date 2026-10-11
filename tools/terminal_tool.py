@@ -943,6 +943,29 @@ def _resolve_command_cwd(
     if workdir:
         return coerce_ssh_remote_cwd(_container_visible_cwd(workdir, env_type, env), env_type)
     recorded = get_session_cwd(session_key)
+    if (
+        recorded
+        and env_type == "local"
+        and not os.path.isdir(recorded)
+        and os.path.isdir(default_cwd)
+    ):
+        # A local session's recorded cwd can vanish mid-session: an unmounted
+        # drive, a removed mount point, a deleted directory. The session
+        # wrapper runs ``builtin cd -- <cwd> || exit 126``, so every later
+        # command would abort before it ran and the session would look wedged
+        # until the gateway restarted. Fall back to ``default_cwd`` so the
+        # session self-heals — but only when ``default_cwd`` is itself a
+        # directory: swapping one missing path for another still aborts at the
+        # wrapper's ``cd``, and the resolver stays a pure function of its
+        # inputs for callers that pass synthetic paths. Only ``local`` is
+        # checked: a recorded remote path (ssh) must not be probed against the
+        # host filesystem.
+        logger.info(
+            "Ignoring recorded session cwd %r (no longer a directory). "
+            "Using %r instead.",
+            recorded, default_cwd,
+        )
+        return default_cwd
     if recorded and _is_container_backend(env_type) and _is_unusable_container_cwd(
         recorded, mounted_host=mounted_host
     ):
@@ -1064,6 +1087,10 @@ class _ExecPlan:
     # Set when a foreground call asked for more than FOREGROUND_MAX_TIMEOUT and was promoted to a
     # tracked background process instead of being refused (the requested seconds, for the note).
     promoted_from_foreground_timeout: Optional[int] = None
+    # The local session cwd record that was discarded because the directory is
+    # gone (``None`` when nothing was discarded). Reported in the tool result so
+    # relative commands do not silently run in an unexpected directory.
+    cwd_fallback_from: Optional[str] = None
 
 
 _PROMOTED_NOTE = (
@@ -1114,8 +1141,33 @@ def _plan_execution(
     overrides = resolve_task_overrides(task_id)
     image = _select_image(env_type, overrides, config)
 
-    cwd = coerce_ssh_remote_cwd(
-        overrides.get("cwd") or get_session_cwd(task_id) or config["cwd"], env_type)
+    # The configured/task default and the session's own recorded cwd are two
+    # different things, and only the first is documented to be a usable
+    # directory. A LOCAL session's record can outlive the directory it names
+    # (an unmounted drive, a deleted scratch dir), and resolving that record
+    # into ``plan.cwd`` made it its own fallback: ``_run_foreground`` passes
+    # ``plan.cwd`` to ``_resolve_command_cwd`` as ``default_cwd``, so the
+    # stale-record guard there returned the very path that is gone and the
+    # wrapper's ``builtin cd -- <cwd> || exit 126`` kept aborting every
+    # command -- the session stayed wedged until the gateway restarted.
+    # Validate the record HERE, at the planner boundary, and keep the
+    # configured default for what its name says. Only ``local`` is checked:
+    # a recorded remote path (ssh) must not be probed against the host
+    # filesystem.
+    configured_cwd = overrides.get("cwd") or config["cwd"]
+    recorded_cwd = get_session_cwd(task_id)
+    cwd = coerce_ssh_remote_cwd(recorded_cwd or configured_cwd, env_type)
+    cwd_fallback_from = None
+    if env_type == "local" and recorded_cwd and not os.path.isdir(cwd):
+        fallback = coerce_ssh_remote_cwd(configured_cwd, env_type)
+        if os.path.isdir(fallback):
+            logger.info(
+                "Ignoring recorded session cwd %r (no longer a directory). "
+                "Using %r instead.",
+                recorded_cwd, fallback,
+            )
+            cwd = fallback
+            cwd_fallback_from = recorded_cwd
     host_cwd = _resolve_task_host_cwd(config, task_id)
     # config["cwd"] was sanitized for container backends in _get_env_config
     # but an override / session record is raw: a host path would reach
@@ -1156,6 +1208,7 @@ def _plan_execution(
         config=config, env_type=env_type, effective_task_id=effective_task_id,
         image=image, cwd=cwd, host_cwd=host_cwd, effective_timeout=timeout or config["timeout"],
         promoted_from_foreground_timeout=promoted,
+        cwd_fallback_from=cwd_fallback_from,
     )
 
 
@@ -1302,6 +1355,7 @@ def _run_foreground(
         command=command, result=result, env=env, env_type=env_type, effective_task_id=eff,
         task_id=task_id, session_id=session_id, session_key=session_key, workdir=workdir,
         command_cwd=command_cwd, approval_note=approval_note,
+        cwd_fallback_from=plan.cwd_fallback_from,
     )
 
 

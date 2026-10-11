@@ -9,7 +9,6 @@ from gateway.config import Platform, load_gateway_config
 from gateway.run import GatewayRunner
 from gateway.pairing import PairingStore
 from hermes_cli.env_loader import load_hermes_dotenv
-from tests.fakes.fake_llm_provider import write_hermes_home
 from tests.integration.matrix_live import conftest as live_fixtures
 from tests.integration.matrix_live import test_room_instructions as room_instructions
 from tests.integration.matrix_live import test_reaction_menu as reaction_menu
@@ -32,7 +31,7 @@ def test_room_configuration_authorizes_only_its_observer_before_connection(
         live_fixtures.GatewaySettings(), room.room_id, "interrupt",
         inspect.unwrap(room_instructions.gateway_extra_config)(room),
     )
-    write_hermes_home(tmp_path, "http://127.0.0.1:1/v1", extra_config=configuration)
+    live_fixtures._write_gateway_home(tmp_path, "http://127.0.0.1:1/v1", configuration)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.delenv("MATRIX_ALLOWED_USERS", raising=False)
     config = load_gateway_config()
@@ -67,7 +66,7 @@ def test_menu_configuration_uses_its_script_and_yaml_allowlist(
         live_fixtures.MatrixFeedbackSettings(), live_fixtures.GatewaySettings(),
         "!menu:matrix.test", "interrupt", "",
     )
-    write_hermes_home(tmp_path, "http://127.0.0.1:1/v1", extra_config=configuration)
+    live_fixtures._write_gateway_home(tmp_path, "http://127.0.0.1:1/v1", configuration)
     (tmp_path / ".env").write_text(
         "MATRIX_ALLOWED_USERS=@alice:matrix.test\nMATRIX_AUTO_THREAD=false\n",
         encoding="utf-8",

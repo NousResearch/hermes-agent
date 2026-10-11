@@ -621,10 +621,19 @@ def _gateway_yaml_config(
         enabled = document.setdefault("plugins", {}).setdefault("enabled", [])
         if plugin not in enabled:
             enabled.append(plugin)
-    native_images = mode in {"pause-image-context", "pause-image-conversion", "image-packs"}
-    return ("  image_input_mode: native\n" if native_images else "") + yaml.safe_dump(
-        document, sort_keys=False,
+    if mode in {"pause-image-context", "pause-image-conversion", "image-packs"}:
+        document.setdefault("agent", {})["image_input_mode"] = "native"
+    return yaml.safe_dump(document, sort_keys=False)
+
+
+def _write_gateway_home(home: Path, base_url: str, config: str) -> None:
+    write_hermes_home(home, base_url)
+    config_path = home / "config.yaml"
+    document = _deep_merge(
+        yaml.safe_load(config_path.read_text(encoding="utf-8")),
+        yaml.safe_load(config),
     )
+    config_path.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
 
 
 @pytest.fixture
@@ -668,10 +677,10 @@ def gateway(
     with FakeLLMServer(
         script, bind_host=route.bind_host, default_text=settings.reply if mode == "inspection" else "ok",
     ) as model:
-        write_hermes_home(
+        _write_gateway_home(
             home,
             f"http://host.docker.internal:{model.port}/v1",
-            extra_config=_gateway_yaml_config(
+            _gateway_yaml_config(
                 gateway_config, matrix_feedback, settings, room_id,
                 gateway_busy_input_mode, gateway_extra_config,
             ),

@@ -6,10 +6,11 @@ from pathlib import Path
 import pytest
 
 import hermes_yaml as yaml
+from agent.image_routing import decide_image_input_mode
 from gateway.config import Platform, load_gateway_config
 from gateway.config_loader import read_yaml_layers
+from hermes_cli.observability.shared_metrics_consent import OFFER_VERSION
 from plugins.platforms.matrix.adapter_feedback import MatrixFeedbackPolicy, ReadReceiptMode
-from tests.fakes.fake_llm_provider import write_hermes_home
 from tests.integration.matrix_live import conftest as live_fixtures
 
 
@@ -40,7 +41,10 @@ from tests.integration.matrix_live import conftest as live_fixtures
         MatrixFeedbackPolicy(ReadReceiptMode.IMMEDIATE, False), id="extra-overrides-module",
     ),
 ])
-@pytest.mark.parametrize("mode", ["pause-queued-context", "pause-edit-followups", "pause-edit-default"])
+@pytest.mark.parametrize("mode", [
+    "pause-queued-context", "pause-edit-followups", "pause-edit-default",
+    "pause-image-context", "pause-image-conversion", "image-packs",
+])
 def test_queued_context_receives_feedback_defaults(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     feedback: live_fixtures.MatrixFeedbackSettings,
@@ -72,7 +76,7 @@ def test_queued_context_receives_feedback_defaults(
         live_fixtures.GatewaySettings(mode=mode),
         "!feedback:matrix.test", "interrupt", yaml.safe_dump(extra),
     )
-    write_hermes_home(tmp_path, "http://127.0.0.1:1/v1", extra_config=composed)
+    live_fixtures._write_gateway_home(tmp_path, "http://127.0.0.1:1/v1", composed)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     raw = read_yaml_layers(tmp_path)
     config = load_gateway_config()
@@ -90,6 +94,18 @@ def test_queued_context_receives_feedback_defaults(
             "background_review": {"enabled": False},
             "title_generation": {"enabled": False, "model_upgrade_enabled": False},
         }
+    if mode in {"pause-image-context", "image-packs"}:
+        expected_auxiliary = {
+            "background_review": {"enabled": False},
+            "title_generation": {"enabled": False, "model_upgrade_enabled": False},
+        }
+    expected_agent = {"api_max_retries": 1}
+    if mode in {"pause-image-context", "pause-image-conversion", "image-packs"}:
+        expected_agent["image_input_mode"] = "native"
+    expected_plugins = {"enabled": ["module-plugin", "matrix-live-context"],
+                        "directory": "module-plugins"}
+    if mode == "image-packs":
+        expected_plugins["enabled"] = ["module-plugin"]
     expected_display = {
         "status": "compact", "busy_input_mode": "interrupt", "busy_text_mode": "interrupt",
     }
@@ -97,6 +113,9 @@ def test_queued_context_receives_feedback_defaults(
         expected_display.update({"busy_input_mode": "queue", "busy_ack_enabled": False})
 
     assert {
+        "agent": raw["agent"],
+        "telemetry": raw["telemetry"],
+        "image_route": decide_image_input_mode("custom", "fake-model", raw),
         "platforms": raw["platforms"],
         "display": raw["display"],
         "plugins": raw["plugins"],
@@ -108,10 +127,14 @@ def test_queued_context_receives_feedback_defaults(
         "platform_toolsets": raw["platform_toolsets"],
         "matrix": raw["matrix"],
     } == {
+        "agent": expected_agent,
+        "telemetry": {"shared_metrics": {
+            "enabled": False, "send": False, "offer_version": OFFER_VERSION,
+        }},
+        "image_route": "native" if "image_input_mode" in expected_agent else "text",
         "platforms": {"matrix": expected_matrix},
         "display": expected_display,
-        "plugins": {"enabled": ["module-plugin", "matrix-live-context"],
-                    "directory": "module-plugins"},
+        "plugins": expected_plugins,
         "auxiliary": expected_auxiliary,
         "approvals": {"mode": "manual", "timeout": 15},
         "updates": authored_config["updates"],

@@ -289,3 +289,84 @@ def test_curated_openrouter_row_keeps_free_tail_past_max_models(monkeypatch):
 
     assert rows["openrouter"]["models"] == [mid for mid, _ in curated]
     assert len(rows["deepseek"]["models"]) == 50
+
+@pytest.mark.parametrize("provider,model", [
+    ("openai-codex", "claude-sonnet-5"),
+    ("openai-codex", "anthropic/claude-opus-5"),
+    ("anthropic", "gpt-5.3-codex"),
+    ("anthropic", "openai/gpt-5.4"),
+])
+def test_picker_does_not_inject_clearly_foreign_native_model(provider, model):
+    catalog = {"openai-codex": "gpt-5.6", "anthropic": "claude-sonnet-5"}[provider]
+    row = _make_provider(provider, models=[catalog], is_current=True)
+    result = model_switch_providers._finalize_picker_rows([row], {}, model)[0]
+    assert result["models"] == [catalog]
+    assert result["total_models"] == 1
+
+
+@pytest.mark.parametrize("provider,model,user_defined", [
+    ("openai-codex", "gpt-6-codex", False),
+    ("anthropic", "claude-sonnet-6", False),
+    ("openrouter", "anthropic/claude-sonnet-5", False),
+    ("custom:relay", "claude-sonnet-5", True),
+])
+def test_picker_keeps_new_or_custom_provider_model(provider, model, user_defined):
+    row = _make_provider(provider, models=["existing"], is_current=True,
+                         is_user_defined=user_defined, api_url="http://localhost/v1" if user_defined else None)
+    result = model_switch_providers._finalize_picker_rows([row], {}, model)[0]
+    assert result["models"] == [model, "existing"]
+    assert result["total_models"] == 2
+
+
+@pytest.mark.parametrize("provider,catalog,foreign", [
+    ("openai-codex", "gpt-5.6", "gemini-3.5-flash"),
+    ("openai-codex", "gpt-5.6", "glm-5.3"),
+    ("anthropic", "claude-sonnet-5", "grok-4.6"),
+    ("anthropic", "claude-sonnet-5", "deepseek-v4-pro"),
+    ("gemini", "gemini-3.5-flash", "claude-sonnet-5"),
+])
+def test_picker_does_not_inject_other_detectable_vendor(provider, catalog, foreign):
+    row = _make_provider(provider, models=[catalog], is_current=True)
+    result = model_switch_providers._finalize_picker_rows([row], {}, foreign)[0]
+    assert result["models"] == [catalog]
+    assert result["total_models"] == 1
+
+
+def test_picker_keeps_uncurated_same_family_model():
+    row = _make_provider("openai-codex", models=["gpt-5.6"], is_current=True)
+    result = model_switch_providers._finalize_picker_rows([row], {}, "gpt-5.7-preview")[0]
+    assert result["models"] == ["gpt-5.7-preview", "gpt-5.6"]
+
+
+def test_picker_keeps_vendorless_local_model():
+    row = _make_provider("openai-codex", models=["gpt-5.6"], is_current=True)
+    result = model_switch_providers._finalize_picker_rows([row], {}, "local-custom-x")[0]
+    assert result["models"][0] == "local-custom-x"
+
+
+def test_picker_keeps_multi_family_catalog():
+    row = _make_provider("copilot", models=["gpt-5.6", "claude-sonnet-5", "gemini-3.5-flash"],
+                         is_current=True)
+    result = model_switch_providers._finalize_picker_rows([row], {}, "claude-sonnet-6")[0]
+    assert result["models"][0] == "claude-sonnet-6"
+
+
+@pytest.mark.parametrize("provider", ["openrouter", "opencode-zen"])
+def test_picker_keeps_reseller_model_outside_catalog(provider):
+    row = _make_provider(provider, models=["gpt-5.6"], is_current=True)
+    result = model_switch_providers._finalize_picker_rows([row], {}, "claude-sonnet-6")[0]
+    assert result["models"][0] == "claude-sonnet-6"
+
+
+def test_capped_multi_family_catalog_does_not_veto_valid_saved_model():
+    """A display cap can omit Copilot's Claude models without changing its support."""
+    row = _make_provider("copilot", models=["gpt-5.4"], is_current=True)
+    row["total_models"] = 17
+    result = model_switch_providers._finalize_picker_rows([row], {}, "claude-sonnet-5")[0]
+    assert result["models"][0] == "claude-sonnet-5"
+
+
+def test_uncapped_catalog_still_rejects_foreign_model():
+    row = _make_provider("openai-codex", models=["gpt-5.6"], is_current=True)
+    result = model_switch_providers._finalize_picker_rows([row], {}, "claude-sonnet-5")[0]
+    assert result["models"] == ["gpt-5.6"]

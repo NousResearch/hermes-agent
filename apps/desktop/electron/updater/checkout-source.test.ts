@@ -11,7 +11,7 @@ import { expect, it, vi } from 'vitest'
 import * as updaterProcess from '../updater-process'
 
 import { type CheckoutStrategyDeps, createCheckoutStrategy } from './checkout'
-import { readSourceUpdate, sourceUpdateEnvironment, type SourceUpdate } from './checkout-source'
+import { readSourceUpdate, type SourceUpdate } from './checkout-source'
 
 const execute: typeof execFile.__promisify__ = promisify(execFile)
 const repository: string = path.resolve(import.meta.dirname, '../../../..')

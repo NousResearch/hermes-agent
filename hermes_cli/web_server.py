@@ -1448,11 +1448,15 @@ def _on_server_started(
     # ACTUAL port — what lets `hermes update` relaunch a manually-started serve
     # on its real endpoint (#63206).
     def _register_identity() -> None:
+        from hermes_constants import hermes_home_key, profile_name_for_home
         from hermes_cli.process_identity import attach_self_to_kill_on_close_job, register_self
 
+        # initial_profile selects the UI; record the owner of the same home
+        # that register_self writes to the process ledger instead.
+        owner_profile = profile_name_for_home(hermes_home_key()) or ""
         register_self(
             "serve" if headless else "dashboard",
-            detail={"host": host, "port": actual_port, "profile": initial_profile or "", "isolated": isolated},
+            detail={"host": host, "port": actual_port, "profile": owner_profile, "isolated": isolated},
         )
         attach_self_to_kill_on_close_job()
 

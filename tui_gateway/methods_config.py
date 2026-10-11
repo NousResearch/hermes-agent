@@ -5,6 +5,9 @@
 import atexit
 import concurrent.futures
 import threading
+import logging
+
+logger = logging.getLogger(__name__)
 
 from .method_ctx import HandlerRegistry, bind_module
 from ._env import env_int
@@ -255,8 +258,38 @@ def _cfg_get_mtime(params):
     return {"mtime": mtime, "mcp_rev": _compute_mcp_rev()}
 
 
+def _cfg_get_visible_models(params: dict) -> dict:
+    """``display.visible_models``: the ``provider::model`` keys a picker may show.
+
+    Model visibility used to live only in the Desktop renderer's localStorage, which
+    kept every other surface (phone, a second client, a TUI on the same backend) on
+    its own disjoint default view. Exposing it via config.get / config.set makes one
+    choice apply everywhere.
+
+    Returns ``{"value": null}`` when uncustomised (clients fall back to their own
+    default-visible rules); a list of ``"provider::model"`` keys once the operator has
+    saved a choice (even if empty — an empty list means "hide everything").
+    """
+    raw = (_load_cfg().get("display") or {}).get("visible_models")
+    if raw is None:
+        return {"value": None}
+    if not isinstance(raw, list):
+        return {"value": None}
+    seen: set[str] = set()
+    keys: list[str] = []
+    for entry in raw:
+        if not isinstance(entry, str):
+            logger.debug("display.visible_models contains non-string entry %r; dropping", entry)
+            continue
+        item = entry.strip()
+        if item and item not in seen:
+            seen.add(item)
+            keys.append(item)
+    return {"value": keys}
+
 # key -> getter(params); bind_module rebinds the table's functions onto server.py's globals.
 _CONFIG_GETTERS = {
+    "visible_models": _cfg_get_visible_models,
     "provider": _cfg_get_provider,
     "profile": lambda params: {"home": str(_hermes_home), "display": _display_hermes_home()},
     "project": _cfg_get_project,

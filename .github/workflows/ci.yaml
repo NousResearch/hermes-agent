@@ -80,6 +80,7 @@ jobs:
       bootstrap: ${{ steps.gate-lanes.outputs.bootstrap }}
       desktop_updater: ${{ steps.gate-lanes.outputs.desktop_updater }}
       rust: ${{ steps.gate-lanes.outputs.rust }}
+      remote_backends: ${{ steps.gate-lanes.outputs.remote_backends }}
       docker_meta: ${{ steps.gate-lanes.outputs.docker_meta }}
       e2e: ${{ steps.gate-lanes.outputs.e2e }}
       e2e_upgrade: ${{ steps.gate-lanes.outputs.e2e_upgrade }}
@@ -184,6 +185,16 @@ jobs:
     # changes used to run the TypeScript matrix and nothing that compiles them.
     if: needs.detect.outputs.rust == 'true'
     uses: ./.github/workflows/rust-tests.yml
+
+  remote-backends:
+    name: Remote terminal backends
+    needs: detect
+    # The SSH and Docker terminal backends against a real sshd container and the
+    # runner's Docker daemon. Only PRs that touch the backends / terminal tool /
+    # their real tests start it (and every push to main); it runs in parallel with
+    # the other lanes and is required whenever detect selects it.
+    if: needs.detect.outputs.remote_backends == 'true'
+    uses: ./.github/workflows/remote-backends.yml
 
   bootstrap-installer:
     name: Bootstrap installer
@@ -351,6 +362,7 @@ jobs:
       - lint
       - js-tests
       - rust-tests
+      - remote-backends
       - bootstrap-installer
       - e2e-desktop
       - e2e-desktop-core

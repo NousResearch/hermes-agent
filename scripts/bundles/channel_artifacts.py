@@ -10,11 +10,21 @@ from hermes_cli.release_channels import ChannelError, build_prefix, canonical_js
 from scripts.bundles.release_artifacts import single, validate_windows_bundle, write_appinstaller
 
 
-def assemble(request: dict, native: dict, root: Path, *, artifact_prefix: str) -> tuple[dict, list[Path]]:
+ALL_TARGETS = tuple((platform, arch) for platform in ("macos", "windows") for arch in ("arm64", "x64"))
+
+
+def assemble(request: dict, native: dict, root: Path, *, artifact_prefix: str,
+             targets=ALL_TARGETS) -> tuple[dict, list[Path]]:
+    """``targets`` defaults to every native target. A stable release that did not
+    opt into macOS Intel passes the three it built; arm64 macOS and both Windows
+    arches are always required."""
     files = native["files"]
     rows = native["packages"]
-    if sorted((row["platform"], row["arch"]) for row in rows) != [
-            (platform, arch) for platform in ("macos", "windows") for arch in ("arm64", "x64")]:
+    targets = sorted(targets)
+    if not {("macos", "arm64"), ("windows", "arm64"), ("windows", "x64")} <= set(targets) \
+            or not set(targets) <= set(ALL_TARGETS):
+        raise ChannelError("Native targets must include macOS arm64 and both Windows architectures")
+    if sorted((row["platform"], row["arch"]) for row in rows) != targets:
         raise ChannelError("Native metadata must cover both platforms and architectures")
     prefix = build_prefix(request["buildId"])
     base = request["publicBase"]

@@ -4407,8 +4407,22 @@ Write only the summary body. Do not include any preamble or prefix."""
         # display_kind rows (internal notifications, hidden scaffolding) are not human input
         # and must not anchor the tail or seed auto-focus. Mirrors is_user_originated_turn.
         # A /steer row is typed for the renderer and the alternation repair, but it IS human input.
+        # Skill invocations and automation continuations drive the model, so they anchor
+        # like human input even though they carry a kind (#127973). A hidden
+        # in-flight replay is the restated active request itself, so it anchors
+        # too; other hidden scaffolding (todo snapshots, continuation markers,
+        # recovery nudges) never does.
         display_kind = message.get("display_kind")
-        if (display_kind and display_kind != STEER_DISPLAY_KIND) or cls._is_context_summary_message(message):
+        if display_kind in (STEER_DISPLAY_KIND, "skill_invocation", "goal_continuation", "loop_wakeup"):
+            return not cls._is_blank_user_turn(message)
+        if display_kind == "hidden":
+            try:
+                if _INFLIGHT_TASK_REPLAY_HEADER in _content_text_for_contains(message.get("content")):
+                    return not cls._is_blank_user_turn(message)
+            except Exception:
+                pass
+            return False
+        if display_kind or cls._is_context_summary_message(message):
             return False
         return not cls._is_blank_user_turn(message)
 
@@ -4944,6 +4958,8 @@ Write only the summary body. Do not include any preamble or prefix."""
                 prepend=True,
             )
         drop_stale_api_content(replay)
+        # Model-only restatement after the handoff boundary: never a user bubble.
+        replay["display_kind"] = "hidden"
 
         # The replay is a replacement for the in-flight row, not an additional
         # occurrence of it. When the original survived in the protected head,
@@ -4999,6 +5015,9 @@ Write only the summary body. Do not include any preamble or prefix."""
                 "\n\n" + _INFLIGHT_TASK_REPLAY_HEADER + "\n" + task_text,
             )
             drop_stale_api_content(carrier)
+            # Merged restatement rides on the handoff carrier: the carrier itself
+            # is the hidden handoff, so keep it hidden.
+            carrier.setdefault("display_kind", "hidden")
             # The carrier absorbed a durable user turn: record its uid (merge witness).
             record_absorbed_message(carrier, inflight)
             return compressed
@@ -5744,7 +5763,7 @@ def split_user_originated_turn(message: Any) -> tuple[Optional[dict[str, Any]], 
         candidate = None if display_kind and display_kind != "hidden" else ContextCompressor._strip_context_summary_handoff_message(message)
         if candidate is None:
             return handoff, None
-    elif message.get("display_kind") and message.get("display_kind") != STEER_DISPLAY_KIND:
+    elif message.get("display_kind") and message.get("display_kind") not in (STEER_DISPLAY_KIND, "skill_invocation"):
         return None, None
     else:
         candidate = message.copy()  # includes a typed /steer row: full user authority

@@ -419,12 +419,13 @@ def _after_complete_turn(sid: str, session: dict, st: _TurnRun, raw: Any) -> Non
 
 
 def _dispatch_followup_turn(rid, sid: str, session: dict, prompt: Any, what: str, *,
-                            on_done=None, on_error=None) -> None:
+                            on_done=None, on_error=None, display_kind: str | None = None) -> None:
     """Chain one follow-up turn (caller set ``running``); on failure run ``on_error``, log,
     release ``running``."""
     try:
         _emit("message.start", sid)
-        _run_prompt_submit(rid, sid, session, prompt)
+        _run_prompt_submit(rid, sid, session, prompt,
+                           **({"display_kind": display_kind} if display_kind else {}))
         if on_done is not None:
             on_done()
     except Exception as exc:
@@ -454,7 +455,8 @@ def _run_post_turn_followups(
             if session.get("_turn_cancel_requested"):
                 return  # the user pressed Stop; the goal resumes after their next prompt
             session["running"] = True
-        _dispatch_followup_turn(rid, sid, session, goal_followup, "goal continuation dispatch")
+        _dispatch_followup_turn(rid, sid, session, goal_followup, "goal continuation dispatch",
+                                display_kind="goal_continuation")
     # Safety net for completion events that arrived mid-turn.  Ownership is positive-proof
     # and compression-chain aware (same fail-closed gate as the poller): session B must
     # not consume session A's event.  Unclaimable events are requeued for the poller.
@@ -781,6 +783,18 @@ def _invoke_agent(
         "stream_callback": _stream,
         "persist_user_message": (
             _build_persist_user_message(prompt, images, run_message) if images else prompt)}
+    # Skill scaffolds: the model receives the expanded body (run_message) while
+    # the transcript persists the typed invocation; the flush stores the body
+    # as the api_content sidecar via the persist override.
+    if not images and isinstance(prompt, str):
+        try:
+            from tui_gateway.methods_tools import _skill_persist_fields as _invoke_skill_fields
+            if (skill_fields := _invoke_skill_fields(prompt)) is not None:
+                run_kwargs["persist_user_message"] = skill_fields[0]
+                if not display_kind:
+                    display_kind = skill_fields[2]
+        except Exception:
+            pass
     try:
         run_params = inspect.signature(agent.run_conversation).parameters
     except (TypeError, ValueError):
@@ -1144,6 +1158,15 @@ def _run_prompt_submit(
         muted = diagnostic_turn_muted(display_metadata, "tui", notification_config)
     if muted:
         display_kind = "hidden"
+    if not muted and not display_kind and isinstance(text, str):
+        # Skill scaffolds persist the typed invocation with the body as the
+        # api_content sidecar (see methods_tools._skill_persist_fields).
+        try:
+            from tui_gateway.methods_tools import _skill_persist_fields as _submit_skill_fields
+            if (_submit_skill_fields(text) is not None):
+                display_kind = "skill_invocation"
+        except Exception:
+            pass
     # The ONE INFO record proving a prompt was accepted by THIS process; ties ui sid,
     # session_key and the agent's live session_id together.  No prompt content is logged.
     _turn_started_monotonic = time.monotonic()

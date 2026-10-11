@@ -335,6 +335,21 @@ _PASSWORD_KEY_RE = re.compile(r"passwd|password|pass|pw", re.IGNORECASE)
 # A leading ``$(`` is a command substitution (``SSH_AUTH_SOCK=$(gpgconf --list-dirs
 # agent-ssh-socket)``): the value token stops at whitespace, so only ``$(gpgconf`` is seen.
 _SHELL_VAR_REF = r"\$(?:\{[A-Za-z_]\w*[^}]*\}|[A-Za-z_]\w*)"
+# Recognize complete, non-nested reference expressions, including their spaces.
+# Do not exempt arbitrary '$'-led values: password hashes also start with '$'.
+_CLI_REFERENCE_EXPR = r"(?:\$\{\{[^{}\r\n]*\}\}|\$\([^()\r\n]*\))"
+_CLI_REFERENCE_RE = re.compile(
+    rf"(?:{_SHELL_VAR_REF}|\$[0-9]+|\$env:[A-Za-z_]\w*|{_CLI_REFERENCE_EXPR})",
+    re.IGNORECASE,
+)
+# Keep backslashes inside opaque values, but leave the entire escape run before
+# a closing double quote intact (including multiply JSON-encoded output).
+_CLI_SECRET_FLAG_RE = re.compile(
+    r'''(?<![\w-])(--(?:api-key|token|password))([ \t]+|=)'''
+    r'''(\\"(?:(?!\\")[^\r\n])*\\"|"(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*'|'''
+    rf'''(?:{_CLI_REFERENCE_EXPR}|[^\s"'`;|&<>\\]|\\+(?![\\"]))+)''',
+    re.IGNORECASE,
+)
 _PATH_OR_VAR_VALUE_RE = re.compile(rf"^(?:{_SHELL_VAR_REF}|\$\(|~|/)(?:[\w./:-]|{_SHELL_VAR_REF})*$")
 # ``$VAR`` / ``$(cmd`` are unambiguous references. A ``/``- or ``~``-led value is a path only
 # while every segment reads like one: a 16+ char segment mixing case and digits with no ``.``
@@ -814,6 +829,27 @@ def _assignment_sub(render, *, check_keyword: bool):
     return _sub
 
 
+def _redact_cli_secret_flags(text: str, *, file_read: bool = False) -> str:
+    """Opaque credentials in argv/command output lack a vendor prefix or assignment."""
+    def replace(match):
+        raw = match.group(3)
+        quote = '\\"' if raw.startswith('\\"') and raw.endswith('\\"') else (
+            raw[0] if raw[:1] in {'"', "'"} else '')
+        value = raw[len(quote):-len(quote)] if quote else raw
+        sentinel = re.match(r'«redacted[^»]*»', value)
+        if (not value or value == '***' or (sentinel and sentinel.end() == len(value))
+                # A whole expression can itself contain a credential flag. Mask
+                # that whole value rather than hiding the inner flag from re.sub.
+                or (_CLI_REFERENCE_RE.fullmatch(value) and not _CLI_SECRET_FLAG_RE.search(value))
+                or (not quote and value.startswith('--'))):
+            return match.group(0)
+        # A prior prefix pass may mask only the start of a quoted credential.
+        # Keep its sentinel label, but mask the rest of the credential too.
+        masked = (sentinel.group() if sentinel else _mask_token_nonreusable(value)) if file_read else '***'
+        return match.group(1) + match.group(2) + quote + masked + quote
+    return _CLI_SECRET_FLAG_RE.sub(replace, text)
+
+
 def _redact_assignments(text: str, *, mask_nonreusable: bool = False) -> str:
     """ENV / config / JSON / YAML assignment passes (skipped for code files). Passes
     that would match ``token=``/``key=`` URL params skip ``://`` text (web-URL query
@@ -950,6 +986,12 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     if "." in text:
         _zhipu_sub = _mask_token_nonreusable if file_read else _mask_token
         text = _ZHIPU_API_KEY_RE.sub(lambda m: _zhipu_sub(m.group(1)), text)
+
+    # Join control-split known tokens first, before a whitespace-delimited flag
+    # match could consume their prefix and leave the continuation unrecognized.
+    # ps output is code_file=True and opaque CLI values have no known prefix.
+    if '--' in text:
+        text = _redact_cli_secret_flags(text, file_read=file_read)
 
     if not code_file:
         text = _redact_assignments(text, mask_nonreusable=file_read)

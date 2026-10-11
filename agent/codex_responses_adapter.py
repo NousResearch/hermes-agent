@@ -86,42 +86,28 @@ def _model_can_read_blob(issuer_kind: Optional[str], item_model: Any, current_mo
     return family is not None and family == openai_reasoning_family(item_model) and _is_openai_api_issuer(issuer_kind)
 
 
-# Responses hosts whose models render replayed reasoning from EARLIER user turns by default: xAI (LIVE: input
-# grows by the turn-1 reasoning-token count; behavioural recall) and Meta ("Both modes preserve chain of thought
-# across turns", dev.meta.ai/docs/protocols/responses). api.openai.com qualifies per model family (all_turns).
-_PRIOR_TURN_REASONING_HOSTS = frozenset({"api.x.ai", "api.meta.ai"})
-
-
-def route_reads_prior_turn_reasoning(route: Any) -> bool:
-    """True when earlier-turn ``codex_reasoning_items`` are continuity the model on ``route`` (agent or compressor:
-    ``api_mode``/``provider``/``model``/``base_url``) actually reads, so compaction must keep them. The ChatGPT
-    Codex backend stays False until its ``reasoning.context`` is probed."""
-    from utils import base_url_hostname
-
-    if getattr(route, "api_mode", None) != "codex_responses":
-        return False
-    host = base_url_hostname(str(getattr(route, "base_url", "") or "")).lower()
-    if host == "api.openai.com":
-        return openai_reasoning_family(_wire_model_identity(getattr(route, "model", None))) is not None
-    return host in _PRIOR_TURN_REASONING_HOSTS or getattr(route, "provider", None) in {"xai", "xai-oauth"}
-
-
 def strip_unverified_reasoning_items(
     messages: Any, *, issuer_kind: Optional[str], issuer_model: Optional[str],
 ) -> int:
-    """First ``invalid_encrypted_content`` rung: drop only reasoning items NOT stamped by exactly this issuer AND
-    model (unstamped legacy blobs, sibling-variant blobs) from assistant rows, keeping the session's own
-    continuity. Consumes its own precondition (a second call removes nothing), so recovery cannot loop.
+    """First ``invalid_encrypted_content`` rung: drop the items the failing request REPLAYED without an exact
+    issuer+model stamp (unstamped legacy blobs, sibling-variant blobs). Items another issuer or model minted
+    were never sent (``_replay_reasoning_items`` skips them) and stay in history for a switch back.
+    Consumes its own precondition (a second call removes nothing), so recovery cannot loop.
     Rebinds the filtered list, never mutates a shared one; returns the number of items removed."""
+    def unverified_but_sent(item: Any) -> bool:
+        if not isinstance(item, dict) or item.get("type") == "compaction":
+            return False
+        kind, model = _canonical_issuer_kind(item.get("_issuer_kind")), item.get("_issuer_model")
+        if kind == issuer_kind and model == issuer_model:
+            return False
+        return (kind is None or kind == issuer_kind) and _model_can_read_blob(issuer_kind, model, issuer_model)
+
     removed = 0
     for msg in messages if isinstance(messages, list) else []:
         items = msg.get("codex_reasoning_items") if isinstance(msg, dict) and msg.get("role") == "assistant" else None
         if not isinstance(items, list) or not items:
             continue
-        kept = [
-            i for i in items if isinstance(i, dict)
-            and _canonical_issuer_kind(i.get("_issuer_kind")) == issuer_kind and i.get("_issuer_model") == issuer_model
-        ]
+        kept = [i for i in items if not unverified_but_sent(i)]
         removed += len(items) - len(kept)
         if kept:
             msg["codex_reasoning_items"] = kept

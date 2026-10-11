@@ -479,36 +479,20 @@ def drop_shadowed_checkpoints(
     return rewritten
 
 
-def _prune_stale_reasoning_replay(messages: list[dict[str, Any]], *, keep_prior_turns: bool = False) -> int:
-    """Strip stale ``codex_reasoning_items`` from assistant turns older than the active one.
-    Boundary is the last USER message (a turn spans several assistant rows): the Responses API replays a
-    turn's bridging reasoning items together, so cutting at the last ASSISTANT would strip mid-chain.
-    Only the NEWEST ``type: "compaction"`` checkpoint survives (``drop_shadowed_checkpoints``): a shadowed
-    one was still copied into the compacted transcript and every child session built from it (#102374).
-    ``keep_prior_turns`` (``route_reads_prior_turn_reasoning``) applies only that checkpoint rule.
-    Filter items, never pop the key on the carrier. In place; returns pruned message count."""
+def _prune_stale_reasoning_replay(messages: list[dict[str, Any]]) -> int:
+    """Drop shadowed ``type: "compaction"`` checkpoints from assistant turns older than the active one; only the
+    NEWEST survives (``drop_shadowed_checkpoints``): a shadowed one was still copied into the compacted transcript
+    and every child session built from it (#102374). Per-turn ``codex_reasoning_items`` are never pruned: the
+    compacted list becomes canonical history, the wire builder already filters per issuer/model, and a later
+    switch to a route that reads earlier-turn reasoning needs them. In place; returns pruned message count."""
     # Active turn = everything after the last real user message; synthetic
     # continuation rows and tool results never mark a turn boundary.
     last_user_idx = _last_index_with_role(messages, "user")
     if last_user_idx < 0:
-        # No user boundary: prune nothing (fail open toward correctness).
         return 0
-
     pruned = set()
     for key in _STALE_REPLAY_PRUNE_KEYS:
         pruned.update(drop_shadowed_checkpoints(messages, key, before=last_user_idx))
-        for i in range(0 if keep_prior_turns else last_user_idx):
-            msg = messages[i]
-            if not isinstance(msg, dict) or msg.get("role") != "assistant":
-                continue
-            items = msg.get(key)
-            if not isinstance(items, list) or not items:
-                continue
-            kept = [item for item in items if _is_checkpoint_item(item)]
-            if len(kept) == len(items):
-                continue  # nothing stale in this sidecar
-            _set_sidecar(msg, key, kept)
-            pruned.add(i)
     return len(pruned)
 
 
@@ -573,11 +557,9 @@ def _salvage_reduce_todo_snapshot(out: list[dict[str, Any]]) -> None:
 
 def salvage_grown_transcript(
     original: list[dict[str, Any]], candidate: list[dict[str, Any]], budget: Optional[int] = None,
-    *, route: Any = None,
 ) -> Optional[list[dict[str, Any]]]:
     """Mechanically shrink a compression candidate (copies, cheapest loss first); ``None`` unless strictly smaller.
-    Never strips reasoning text: the result becomes canonical history that replay reads on every retained turn.
-    ``codex_reasoning_items`` follow ``compress()``'s rule (``route_reads_prior_turn_reasoning(route)``)."""
+    Never strips reasoning (text or encrypted items): the result becomes canonical history replay reads."""
     if not candidate or not original:
         return None
     if budget is None:
@@ -602,8 +584,7 @@ def salvage_grown_transcript(
             and _looks_like_compaction_summary(msg, content)
         ):
             msg["content"] = elide(content, _SALVAGE_SUMMARY_MAX_CHARS) + "\n\n" + _SUMMARY_END_MARKER
-    from agent.codex_responses_adapter import route_reads_prior_turn_reasoning
-    _prune_stale_reasoning_replay(out, keep_prior_turns=route is not None and route_reads_prior_turn_reasoning(route))
+    _prune_stale_reasoning_replay(out)
     if estimate_messages_tokens_rough(out) >= budget:
         _salvage_reduce_todo_snapshot(out)
     has_user = any(isinstance(message, dict) and message.get("role") == "user" for message in out)
@@ -1291,7 +1272,7 @@ _REPLAY_BUDGET_KEYS = "reasoning", "reasoning_content", "codex_reasoning_items",
 _ALWAYS_REPLAYED_BUDGET_KEYS = "codex_reasoning_items", "codex_message_items"
 _NEWEST_TURN_ONLY_BUDGET_KEYS = "reasoning", "reasoning_content"
 
-# Stripped from stale turns only on routes that ignore earlier-turn reasoning; cache prefix already broken.
+# Sidecars whose shadowed compaction checkpoints are dropped from stale turns.
 _STALE_REPLAY_PRUNE_KEYS = "codex_reasoning_items",
 
 
@@ -5526,9 +5507,7 @@ Write only the summary body. Do not include any preamble or prefix."""
 
         # Invariant (#57491): no compacted message leaves compress() with a persistence marker.
         _strip_persistence_markers(compressed)
-        # Prior-turn codex_reasoning_items: dead weight on current_turn routes (#71058), continuity elsewhere.
-        from agent.codex_responses_adapter import route_reads_prior_turn_reasoning as _reads_prior
-        _pruned_replay = _prune_stale_reasoning_replay(compressed, keep_prior_turns=_reads_prior(self))
+        _pruned_replay = _prune_stale_reasoning_replay(compressed)
         if _pruned_replay and not self.quiet_mode:
             logger.info("Pruned stale replay items from %d assistant message(s) during compaction", _pruned_replay)
         self._record_compression_effect(n_messages, compressed, pre_estimate, pruned_count, _pruned_replay)

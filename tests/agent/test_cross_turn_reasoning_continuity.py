@@ -62,20 +62,10 @@ def test_sibling_variant_blob_replays_on_openai_only():
     assert not any(i.get("type") == "reasoning" for i in cross_family["input"])
 
 
-def test_compaction_keeps_prior_turn_reasoning_only_when_the_route_reads_it():
-    from types import SimpleNamespace as Route
-    from agent.codex_responses_adapter import route_reads_prior_turn_reasoning as reads
-
-    def route(provider, model, base_url):
-        return Route(api_mode="codex_responses", provider=provider, model=model, base_url=base_url)
-    assert reads(route("xai", "grok-4.3", "https://api.x.ai/v1"))
-    assert reads(route("openai-api", "gpt-5.5", _OPENAI))
-    assert not reads(route("openai-api", "o4-mini", _OPENAI))
-    assert not reads(route("openai-codex", "gpt-5.5", "https://chatgpt.com/backend-api/codex"))
-    kept, pruned = _history("grok-4.3"), _history("o4-mini")
-    assert _prune_stale_reasoning_replay(kept, keep_prior_turns=True) == 0
+def test_compaction_keeps_prior_turn_reasoning_on_every_route():
+    kept = _history("o4-mini")
+    assert _prune_stale_reasoning_replay(kept) == 0
     assert kept[1]["codex_reasoning_items"][0]["encrypted_content"] == "BLOB-1"
-    assert _prune_stale_reasoning_replay(pruned) == 1 and "codex_reasoning_items" not in pruned[1]
 
 
 def test_first_invalid_encrypted_rejection_drops_only_unverified_items():
@@ -86,3 +76,20 @@ def test_first_invalid_encrypted_rejection_drops_only_unverified_items():
     assert transport.drop_unverified_replay(messages) == 1
     assert messages[0]["codex_reasoning_items"] == [own]
     assert transport.drop_unverified_replay(messages) == 0  # escalation path takes over next time
+
+
+def test_encrypted_rejection_rung_keeps_items_the_request_never_sent():
+    """The first invalid_encrypted_content rung strips only blobs the failing request replayed without an exact
+    stamp; another issuer's or model family's items were never sent and stay for a switch back."""
+    from agent.codex_responses_adapter import strip_unverified_reasoning_items
+
+    own = f"other:{_OPENAI}"
+    items = [
+        {"type": "reasoning", "encrypted_content": "OWN", "_issuer_kind": own, "_issuer_model": "gpt-5.5"},
+        {"type": "reasoning", "encrypted_content": "LEGACY"},
+        {"type": "reasoning", "encrypted_content": "XAI", "_issuer_kind": "xai:https://api.x.ai/v1", "_issuer_model": "grok-4.3"},
+        {"type": "reasoning", "encrypted_content": "O4", "_issuer_kind": own, "_issuer_model": "o4-mini"},
+    ]
+    history = [{"role": "user", "content": "q"}, {"role": "assistant", "content": "a", "codex_reasoning_items": items}]
+    assert strip_unverified_reasoning_items(history, issuer_kind=own, issuer_model="gpt-5.5") == 1
+    assert [i["encrypted_content"] for i in history[1]["codex_reasoning_items"]] == ["OWN", "XAI", "O4"]

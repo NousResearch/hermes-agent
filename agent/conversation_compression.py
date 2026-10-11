@@ -3211,7 +3211,7 @@ def _salvage_or_refuse_grown_transcript(
         # Todo refresh and user-turn anchoring run after the compressor's own size check
         # and can tip a break-even candidate; give it one mechanical salvage pass.
         from agent.context_compressor import salvage_grown_transcript
-        _salvaged = salvage_grown_transcript(original_messages, compressed, budget=_rough_in, route=agent)
+        _salvaged = salvage_grown_transcript(original_messages, compressed, budget=_rough_in)
         if _salvaged is not None:
             _salv_est = estimate_messages_tokens_rough(_salvaged)
             if _salv_est < _rough_in:

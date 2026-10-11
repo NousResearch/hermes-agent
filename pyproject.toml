@@ -457,7 +457,7 @@ dingtalk = [
   "alibabacloud-dingtalk==2.2.42",
   "qrcode==7.4.2",
 ]
-feishu = ["lark-oapi==1.6.8", "qrcode==7.4.2"]
+feishu = ["lark-oapi==1.7.3", "qrcode==7.4.2"]
 google = [
   # Required by the google-workspace skill (Gmail, Calendar, Drive, Contacts,
   # Sheets, Docs). Declared here so PM environments and independent

@@ -140,6 +140,7 @@ from gateway.platforms import api_server_room_grants as _room_grants
 from gateway.platforms import api_server_runs as _api_runs
 from gateway.platforms.api_server_openai_routes import OpenAICompatRoutesMixin
 from gateway.platforms.api_server_memory_sessions import ApiServerMemorySessions
+from gateway.platforms.api_server_turn_runtime import TurnRuntimeMixin
 from gateway.platforms.base import (
     MEDIA_TAG_CLEANUP_RE, BasePlatformAdapter, SendResult, _terminal_sentinel_start, is_network_accessible,
     validate_media_delivery_path)
@@ -1169,7 +1170,7 @@ def _run_route_delegate(name: str):
     return _handler
 
 
-class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
+class APIServerAdapter(OpenAICompatRoutesMixin, TurnRuntimeMixin, BasePlatformAdapter):
     """aiohttp server routing OpenAI-format requests through hermes-agent's AIAgent."""
 
     # Stateless request/response (``send()`` is a stub): async-delivery tools must not promise
@@ -3423,36 +3424,6 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             headers["X-Hermes-Session-Key"] = gateway_session_key
         return headers
 
-    def _effective_turn_runtime(self, runtime_request: dict[str, Any], result: Any, usage: Any) -> dict[str, Any]:
-        """Sanitized runtime metadata for a finished session-chat turn."""
-        runtime = self._result_runtime(result, usage)
-        return self._sanitize_runtime_metadata(
-            # Same shared ladder /api/status uses. Before this was unified, the two endpoints disagreed on
-            # the same page load — the sidebar strip read "running" (it probed GATEWAY_HEALTH_URL and scoped
-            # to the requested profile) while the Channels page rendered "The gateway is not running" (it
-            # did neither). Cross-container, profile-scoped, and launch-service-managed deployments each hit
-            # that split. profile_home is passed when the request was scoped to a named profile:
-            # gateway/status readers resolve process-level paths and do NOT follow the HERMES_HOME
-            # contextvar override (#56986 / #69143), so the profile's directory has to be handed over
-            # explicitly or messaging silently reports another profile's gateway (#71211).
-            runtime=runtime,
-            requested_runtime=runtime_request.get("requested"),
-            route_source=runtime_request.get("route_source") or "global",
-            model_lock=self._model_lock_state(runtime_request, runtime))
-
-    @staticmethod
-    def _result_runtime(result: Any, usage: Any) -> dict[str, Any]:
-        """Runtime metadata from the result dict, falling back to the usage dict."""
-        runtime = (result.get("runtime") or {}) if isinstance(result, dict) else {}
-        return runtime or ((usage.get("runtime") or {}) if isinstance(usage, dict) else {})
-
-    @staticmethod
-    def _model_lock_state(runtime_request: dict[str, Any], runtime: Any) -> str:
-        """``confirmed`` once a runtime was observed under a lock, ``accepted`` before, else ``""``."""
-        if not runtime_request.get("require_model_lock"):
-            return ""
-        return "confirmed" if runtime else "accepted"
-
     async def _admit_to_live_bot_chat(
         self, session_id: str, message: Any, author: Optional[dict[str, Any]],
     ) -> Optional[tuple[Path, dict[str, Any]]]:
@@ -3604,12 +3575,22 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         final_response = _resolve_media_to_data_urls(
             result.get("final_response", "") if is_dict else "")
         headers = self._session_headers(effective_session_id or session_id, gateway_session_key)
-        return web.json_response(
-            {"object": "hermes.session.chat.completion",
-             "session_id": effective_session_id or session_id,
-             "message": {"role": "assistant", "content": final_response}, "usage": usage,
-             "runtime": self._effective_turn_runtime(ctx["runtime_request"], result, usage)},
-            headers=headers)
+        payload = {"object": "hermes.session.chat.completion",
+                   "session_id": effective_session_id or session_id,
+                   "message": {"role": "assistant", "content": final_response}, "usage": usage,
+                   "runtime": self._effective_turn_runtime(ctx["runtime_request"], result, usage)}
+        if is_dict and result.get("failed"):
+            # The turn ran and failed (quota, auth, overflow…) after the message was delivered, so
+            # the response stays a served 200 completion — a non-2xx would break this endpoint's
+            # other consumers — but the additive failed/error/failure_reason keys (the same verdict
+            # result_retry_action reads one branch up) let a caller tell a failed turn from an
+            # answered one, which ``hermes peer dm`` turns into exit 1 (#136472).
+            payload["failed"] = True
+            if result.get("error"):
+                payload["error"] = result["error"]
+            if result.get("failure_reason"):
+                payload["failure_reason"] = result["failure_reason"]
+        return web.json_response(payload, headers=headers)
 
     @_admit_api_agent_request
     async def _handle_session_chat_stream(self, request: web.Request) -> web.StreamResponse:

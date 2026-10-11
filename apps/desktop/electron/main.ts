@@ -17715,7 +17715,7 @@ const nativeNotifications = registerNativeNotifications({
 
 // Data-URL file load cap (composer attach + local previews). Main owns the
 // persisted MB value so every IPC read honours Settings → Chat without the
-// renderer having to pass maxBytes on each call. Default is 16 MB; clamp
+// renderer having to pass maxBytes on each call. Default is 25 MB; clamp
 // lives in hardening.ts.
 const DATA_URL_READ_MAX_CONFIG_PATH = path.join(app.getPath('userData'), 'data-url-read-max.json')
 

@@ -197,6 +197,40 @@ class TestMcpRegistrationE2E:
 
 
 
+    @pytest.mark.asyncio
+    async def test_mcp_refresh_keeps_named_memory_tools_deferred(self, acp_agent, mock_manager):
+        """The ACP refresh re-injects memory-provider tools after assembly; names in defer stay deferred (#110341)."""
+        from agent.memory_manager import MemoryManager
+
+        provider = MagicMock()
+        provider.name = "stub"
+        provider.get_tool_schemas.return_value = [
+            {"name": "stub_memory_search", "description": "Search memory", "parameters": {"type": "object"}},
+            {"name": "stub_memory_note", "description": "Note memory", "parameters": {"type": "object"}},
+        ]
+        manager = MemoryManager()
+        manager.add_provider(provider)
+
+        create_resp = await acp_agent.new_session(cwd="/tmp")
+        state = mock_manager.get_session(create_resp.session_id)
+        state.agent.enabled_toolsets = ["hermes-acp"]
+        state.agent.disabled_toolsets = None
+        state.agent._memory_manager = manager
+
+        config = {"tools": {"tool_search": {"enabled": "on", "defer": ["stub_memory_search"]}}}
+        servers = [McpServerStdio(name="srv", command="/bin/test", args=[], env=[])]
+        with patch("tools.mcp_tool_discovery.register_mcp_servers", return_value=[]), \
+             patch("model_tools.get_tool_definitions", return_value=[{"function": {"name": "terminal"}}]), \
+             patch("hermes_cli.config.load_config", return_value=config), \
+             patch("hermes_cli.config.load_config_readonly", return_value=config):
+            await acp_agent.load_session(cwd="/tmp", session_id=create_resp.session_id, mcp_servers=servers)
+
+        names = {t["function"]["name"] for t in state.agent.tools}
+        assert "stub_memory_search" not in names and "stub_memory_note" in names
+        assert "stub_memory_search" not in state.agent.valid_tool_names
+        assert [t["function"]["name"] for t in state.agent._deferred_post_build_tools] == ["stub_memory_search"]
+
+
 class TestSessionLifecycleMcpE2E:
     """Verify MCP servers are registered on all session lifecycle methods."""
 

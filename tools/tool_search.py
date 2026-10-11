@@ -20,7 +20,7 @@ from hermes_cli.config_defaults import DEFAULT_CONFIG
 from tools.registry import tool_error
 from toolsets import CLIENT_SURFACE_TOOLSETS, TOOLSET_SESSION_PLATFORMS
 from tools.tool_search_catalog import (
-    BRIDGE_TOOL_NAMES, CHARS_PER_TOKEN, TOOL_CALL_NAME, TOOL_DESCRIBE_NAME, TOOL_SEARCH_NAME,
+    BRIDGE_TOOL_NAMES, CHARS_PER_TOKEN, SOURCE_NAME_KEY, TOOL_CALL_NAME, TOOL_DESCRIBE_NAME, TOOL_SEARCH_NAME,
     CatalogEntry, _fn, _listing_group_label, _registry_entry, _registry_toolset,
     build_catalog, build_catalog_listing_with_form, search_catalog)
 from tools.tool_search_validation import (
@@ -539,6 +539,44 @@ def scoped_deferrable_names(tool_defs: list[dict[str, Any]]) -> frozenset[str]:
                      if n and is_deferrable_tool_name(n, defer_tools))
 
 
+def post_build_tool_sources(agent: Any, engine_names: Iterable[str]) -> Dict[str, str]:
+    """Owning plugin name per memory-provider / context-engine tool, for catalog grouping."""
+    owner_names = getattr(getattr(agent, "_memory_manager", None), "get_tool_owner_names", None)
+    sources = owner_names() if callable(owner_names) else {}
+    engine = getattr(getattr(agent, "context_compressor", None), "name", "")
+    return {**sources, **{name: engine for name in engine_names if isinstance(engine, str) and engine}}
+
+
+def defer_post_build_tools(tool_defs: List[Dict[str, Any]], *,
+                           enabled_toolsets: Optional[List[str]] = None,
+                           disabled_toolsets: Optional[List[str]] = None,
+                           sources: Optional[Dict[str, str]] = None) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Fold non-registry tools named in ``defer`` into the Tool Search bridge (#110341).
+    ``sources`` names each tool's plugin so the catalog groups it there, not under ``other``."""
+    config = load_config()
+    if config.enabled == "off":
+        return tool_defs, []
+    deferred = [td for td in tool_defs
+                if (name := _fn(td).get("name", "")) not in BRIDGE_TOOL_NAMES
+                and _registry_entry(name) is None
+                and is_deferrable_tool_name(name, config.effective_defer_tools)]
+    if not deferred:
+        return tool_defs, []
+    kept = [td for td in tool_defs if td not in deferred and _fn(td).get("name", "") not in BRIDGE_TOOL_NAMES]
+    owners = sources or {}
+    deferred = [{**td, SOURCE_NAME_KEY: owners[name]} if (name := _fn(td).get("name", "")) in owners else td
+                for td in deferred]
+    import model_tools
+    raw = model_tools.get_tool_definitions(
+        enabled_toolsets=enabled_toolsets, disabled_toolsets=disabled_toolsets,
+        quiet_mode=True, skip_tool_search_assembly=True) or []
+    registry_deferred = classify_tools(raw, config.effective_defer_tools)[1]
+    assembly = assemble_tool_defs(
+        kept + registry_deferred + deferred,
+        context_length=model_tools._resolve_active_context_length(), config=config)
+    return assembly.tool_defs, deferred
+
+
 def out_of_scope_reason(name: str) -> Optional[str]:
     """Fail-fast reason for a registered session-gated GUI tool outside this session's
     scope (#120413). The generic scope block ("not available ... Use tool_search") sends
@@ -600,6 +638,7 @@ __all__ = [
     "build_catalog",
     "build_catalog_listing_with_form",
     "classify_tools",
+    "defer_post_build_tools",
     "dispatch_tool_describe",
     "dispatch_tool_search",
     "estimate_tokens_from_schemas",

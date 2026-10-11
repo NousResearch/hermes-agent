@@ -100,3 +100,15 @@ def test_live_owner_recent_claim_not_recovered(monkeypatch, timeout):
     else:
         assert executions_mod._live_owner_stale_after_seconds() is None
         assert recovered == 0 and _status(ancient) == "running"
+
+
+def test_unlimited_script_timeout_never_reclaims_live_owners(monkeypatch):
+    """With the script deadline disabled (0, #100943) a live owner can legitimately run a script
+    for any length of time, so no stale bound exists and an old live-owned claim stays."""
+    monkeypatch.setenv("HERMES_CRON_TIMEOUT", "600")
+    monkeypatch.setenv("HERMES_CRON_SCRIPT_TIMEOUT", "0")
+    ancient = _seed_running("job-long-script", age_seconds=30 * 24 * 3600)
+
+    assert executions_mod._live_owner_stale_after_seconds() is None
+    assert recover_interrupted_executions() == 0
+    assert _status(ancient) == "running"

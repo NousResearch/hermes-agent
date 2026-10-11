@@ -854,6 +854,14 @@ cron:
 
 Or set the `HERMES_CRON_SCRIPT_TIMEOUT` environment variable. The resolution order is: env var → config.yaml → 3600s default.
 
+Set `script_timeout_seconds: 0` for a script that manages its own run time: it then has no deadline, but losing the run's ownership or shutting down still stops it. Negative, boolean or invalid values fall back to the 3600s default. YAML `false`, `off` and `no` are booleans, not unlimited timeouts.
+
+:::warning Unlimited scripts and recovery
+An unlimited script occupies a worker until it finishes or is cancelled. If `cron.max_parallel_jobs` limits the pool, other jobs can wait for a free slot; with a limit of `1`, they all wait behind that script. Queued jobs can already appear as in-flight in job details.
+
+This setting also disables automatic age-based recovery of wedged **live** execution owners for every job in this profile, including jobs without scripts. Recovery of proven-dead owners still works. Keep a positive timeout when you need automatic live-owner recovery.
+:::
+
 Cron also bounds post-run session and agent-resource cleanup. This happens after the LLM turn returns, so it is separate from the inactivity timeout. The default is 10 seconds per cleanup operation. If a storage or client finalizer stops returning, the scheduler logs an error, releases the job's in-flight guard, and allows later runs to dispatch instead of skipping that job forever.
 
 ```yaml

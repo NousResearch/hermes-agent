@@ -155,7 +155,8 @@ def _live_owner_stale_after_seconds() -> Optional[float]:
     Derived from the existing knobs, never a bare wall-clock constant:
     ``max(3 × HERMES_CRON_TIMEOUT, cron script timeout, 7200)``. Returns ``None`` (never reclaim
     live owners — today's behaviour) when the inactivity timeout is 0/unlimited or not a finite
-    positive number: with no bound to derive from, fail closed.
+    positive number, or the script timeout is 0/unlimited: with no bound to derive from, fail
+    closed.
     """
     from cron.scheduler import _cron_inactivity_seconds
     from cron.scheduler_script import _get_script_timeout
@@ -163,9 +164,12 @@ def _live_owner_stale_after_seconds() -> Optional[float]:
     inactivity = float(_cron_inactivity_seconds())
     if not math.isfinite(inactivity) or inactivity <= 0:
         return None
+    script_timeout = _get_script_timeout()
+    if script_timeout is None:
+        return None
     return max(
         inactivity * CLAIM_TTL_INACTIVITY_HEADROOM,
-        float(_get_script_timeout()),
+        float(script_timeout),
         LIVE_OWNER_STALE_CLAIM_FLOOR_SECONDS,
     )
 

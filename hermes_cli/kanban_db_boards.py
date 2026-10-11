@@ -16,13 +16,77 @@ from typing import Optional
 from pathlib import Path
 
 
+def _legacy_db_holds_schema(d: Path) -> bool:
+    """Whether ``d/kanban.db`` carries the kanban schema (``tasks`` sentinel).
+
+    A pre-``board.json`` board (created before the metadata file existed)
+    has an initialized DB; the #43243 stub left by a stale ``connect()`` is a
+    zero-byte or schema-less file. The sentinel lookup mirrors
+    ``kanban_db_connect._schema_is_present`` — read-only, one page.
+    """
+    import sqlite3
+
+    try:
+        conn = sqlite3.connect(f"file:{d / 'kanban.db'}?mode=ro", uri=True)
+        try:
+            row = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='tasks' LIMIT 1"
+            ).fetchone()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return False
+    return row is not None
+
+
+def _backfill_legacy_board_metadata(d: Path) -> None:
+    """Write a minimal ``board.json`` for a schema-holding legacy board dir.
+
+    Runs once per legacy board: after the first discovery the metadata file
+    exists and the normal identity path takes over. Best-effort by design —
+    a fenced delegated-child context (dashboard/poller read paths call
+    ``list_boards``) must not crash or mutate: the board stays visible and
+    the write lands on the next unfenced discovery.
+    """
+    try:
+        _kb._assert_not_delegated_child_mutation(d)
+    except PermissionError:
+        return
+    try:
+        slug = d.name
+        meta = {
+            "slug": slug,
+            "name": _default_board_display_name(slug),
+            "description": "",
+            "icon": "",
+            "color": "",
+            "default_workdir": None,
+            "project_id": None,
+            "created_at": time.time(),
+            "archived": False,
+        }
+        (d / "board.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    except OSError:
+        pass
+
+
 def _dir_holds_board(d: Path) -> bool:
     # ``board.json`` is the identity marker: archive/hard-delete both leave the
     # directory without it, and a stale ``connect(board=slug)`` used to leave a
     # ``kanban.db``-only stub that resurfaced in the board list as an empty
     # active board (#43243). Discovery must therefore require the metadata
     # file; a DB-only directory is a stub to ignore, never a board.
-    return (d / "board.json").exists()
+    if (d / "board.json").exists():
+        return True
+    # Exception: a legacy board created before ``board.json`` existed holds a
+    # real, schema-initialized kanban.db. Commit 63e5656409's identity rule
+    # made those invisible with no migration path (#135556), so discovery
+    # backfills the marker once and treats the directory as a board again.
+    # The #43243 stub has no schema and stays ignored.
+    if (d / "kanban.db").is_file() and _legacy_db_holds_schema(d):
+        _backfill_legacy_board_metadata(d)
+        return True
+    return False
 
 
 def board_metadata_path(board: Optional[str] = None) -> Path:

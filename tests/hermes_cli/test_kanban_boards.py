@@ -430,3 +430,43 @@ class TestBoardResurrection:
         assert meta["name"] == "My Board"
         assert "keepname" in [b["slug"] for b in kb.list_boards(include_archived=True)]
         assert "keepname" not in [b["slug"] for b in kb.list_boards(include_archived=False)]
+
+
+# ---------------------------------------------------------------------------
+# Legacy board self-migration (#135556)
+# ---------------------------------------------------------------------------
+
+class TestLegacyBoardMigration:
+    """A pre-``board.json`` board directory holds a real kanban.db but no
+    metadata file. Discovery must migrate it on first sight (backfill a
+    minimal ``board.json``) instead of making it invisible, while the
+    #43243 DB-only stub (no kanban schema) stays ignored.
+    """
+
+    def _legacy_dir(self, slug: str) -> Path:
+        # Pre-metadata board: initialized kanban.db (schema present), no board.json.
+        legacy = kb.board_dir(slug)
+        legacy.mkdir(parents=True)
+        kbc.init_db(db_path=legacy / "kanban.db")
+        assert not (legacy / "board.json").exists()
+        return legacy
+
+    def test_legacy_board_is_listed_and_exists(self, fresh_home):
+        self._legacy_dir("ancient")
+        assert "ancient" in [b["slug"] for b in kb.list_boards()]
+        assert kb.board_exists("ancient")
+
+    def test_legacy_board_migration_writes_minimal_board_json(self, fresh_home):
+        self._legacy_dir("relic")
+        kb.list_boards()  # discovery migrates
+        meta = kb.read_board_metadata("relic")
+        assert meta["slug"] == "relic"
+        assert (kb.board_dir("relic") / "board.json").is_file()
+
+    def test_db_only_stub_still_ignored(self, fresh_home):
+        # #43243 stub: kanban.db without the schema must NOT resurface.
+        stub = kb.board_dir("ghost2")
+        stub.mkdir(parents=True)
+        (stub / "kanban.db").touch()
+        assert "ghost2" not in [b["slug"] for b in kb.list_boards()]
+        assert not kb.board_exists("ghost2")

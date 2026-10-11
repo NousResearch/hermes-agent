@@ -464,7 +464,15 @@ class GatewayStartupMixin:
                 continue
             content = row["content"]
             if row.get("needs_marker"):
-                content = row.get("marker", RECOVERED_MARKER) + content
+                # A flush can land a stale backlog AFTER newer live messages, so every redelivery states
+                # when it was originally due: the recipient rebuilds the true order from the messages
+                # themselves instead of from arrival time (the ledger's own history needed that).
+                created_at = row.get("created_at")
+                stamp = ""
+                if created_at:
+                    when = time.strftime("%m-%d %H:%M", time.localtime(created_at))
+                    stamp = t("gateway.redelivered_due", when=when) + "\n"
+                content = stamp + row.get("marker", RECOVERED_MARKER) + content
             metadata = {"thread_id": row["thread_id"]} if row.get("thread_id") else None
             try:
                 result = await adapter.send(chat_id=row["chat_id"], content=content, metadata=metadata)

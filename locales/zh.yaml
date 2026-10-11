@@ -42,6 +42,7 @@ approval:
     second_one: "{count} 秒"
     second_other: "{count} 秒"
 gateway:
+  redelivered_due: "[补发 · 原定时间 {when}]"
   approval_expired: "⚠️ 批准已过期（代理不再等待）。请让代理重试。"
   draining: "⏳ 正在等待 {count} 个活跃代理结束后重启..."
   goal_cleared: "✓ 目标已清除。"

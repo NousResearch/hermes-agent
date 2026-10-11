@@ -1,0 +1,21 @@
+name: index-search
+repo: https://github.com/TakeshiTGAL/hermes-plugin-index-search
+sha: 8373e84f734ba0f5eeb2d448ad0b654230a2d767
+description: "Search one index you run and watch one saved query, with index_search, index_health and index_watch. Disclosure — Sends MEILI_API_KEY as a Bearer token to your MEILI_HOST. Over plain http that key travels unencrypted, and a master or admin key is sent as given, so use a search-only key. The tools are on for every surface, including gateways: anyone you allow on your Hermes gateway can search with your key and approve a watch. Turn a surface off with hermes tools. index_watch schedule creates one cron job that runs a model turn every 15 minutes (two or more model requests when it calls the tool) with no daily cap, and it watches only the first 20 hits. The job stays after uninstall until you run hermes cron remove, with -p and the profile name when the profile is not default. Scheduling and unscheduling ask for Hermes approval every time and are refused under cron, yolo, approvals off, unattended sessions and plugins.isolation: host, where the watch only posts a notice that it cannot run, on every run. Answering \"always\" adds an unused line to config.yaml. The watch relies on private parts of Hermes, so an update can stop it."
+maintainer: TakeshiTGAL
+tier: community
+category: tools
+docs_url: https://github.com/TakeshiTGAL/hermes-plugin-index-search#readme
+version: "0.1.0"
+requires_hermes: ">=0.21.4"
+platforms: []
+capabilities:
+  provides_tools:
+  - index_search
+  - index_health
+  - index_watch
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - MEILI_HOST
+  - MEILI_API_KEY

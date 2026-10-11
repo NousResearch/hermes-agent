@@ -19,7 +19,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
-from hermes_constants import get_default_hermes_root, get_hermes_home, named_profile_is_live
+from hermes_constants import (
+    get_default_hermes_root,
+    get_hermes_home,
+    mkdir_under_hermes_home,
+    named_profile_is_live,
+)
 from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
@@ -206,7 +211,11 @@ class _FileLock:
         self._fh = None
 
     def __enter__(self):
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        # A profile delete leaves a tombstone beside its removed home, and a background
+        # caller can still hold that dead home as its registry_home. A bare mkdir here
+        # re-creates the shell before the registry write below can refuse it, leaving a
+        # profile-shaped directory that never gains an active_sessions.json.
+        mkdir_under_hermes_home(self.path.parent)
         self._fh = open(self.path, "a+b")
         try:
             _flock(self._fh, lock=True)

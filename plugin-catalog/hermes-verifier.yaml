@@ -1,6 +1,6 @@
 name: hermes-verifier
 repo: https://github.com/am423/hermes-verifier
-sha: 112f0e9fdf49e03998317f62986f14021c76d958
+sha: 0dd661a366b5f0640c3bf457125eefe9e5f36eb4
 description: >-
   Attach an independent verifier (advisor) model to your Hermes session: it reviews each
   primary-agent turn delta, raises findings (note / caution / blocker), and can steer a

@@ -16,7 +16,7 @@ from hermes_constants import apply_scratch_tmp_env, get_scratch_dir, prune_scrat
 
 def test_scratch_env_follows_home_and_respects_user_tmpdir(tmp_path):
     """Unset temp vars → scratch of env HERMES_HOME; a Hermes-exported value re-derives for a routed
-    home; a user/OS-set value (macOS ``/var/folders``, ``%TEMP%``) is never touched."""
+    home; a user-set value is never touched."""
     home_a, home_b = tmp_path / "a", tmp_path / "b"
     env = {"HERMES_HOME": str(home_a)}
     assert apply_scratch_tmp_env(env) is True
@@ -28,10 +28,86 @@ def test_scratch_env_follows_home_and_respects_user_tmpdir(tmp_path):
     assert apply_scratch_tmp_env(env) is True
     assert env["TMPDIR"] == str(home_b / "cache" / "scratch")
 
-    user_env = {"HERMES_HOME": str(home_a), "TMPDIR": "/var/folders/zz"}
+    user_env = {"HERMES_HOME": str(home_a), "TMPDIR": "/Users/me/tmp"}
     assert apply_scratch_tmp_env(user_env) is False
-    assert user_env["TMPDIR"] == "/var/folders/zz" and "HERMES_SCRATCH_DIR" not in user_env
+    assert user_env["TMPDIR"] == "/Users/me/tmp" and "HERMES_SCRATCH_DIR" not in user_env
     assert "TMP" not in user_env  # a partially user-set triple is left exactly as found
+
+
+_LAUNCHD_TMPDIR = "/var/folders/h6/45kn0pkj14nb4jdw5mjh7fzr0000gn/T/"
+
+
+@pytest.mark.parametrize("launchd", [_LAUNCHD_TMPDIR, _LAUNCHD_TMPDIR.rstrip("/"),
+                                     "/private" + _LAUNCHD_TMPDIR])
+def test_macos_launchd_default_tmpdir_is_rerouted_to_scratch(tmp_path, monkeypatch, launchd):
+    """macOS launchd gives every login session ``TMPDIR=/var/folders/<xx>/<id>/T/``. That is the OS
+    default, not a user choice: respecting it sent every Hermes worker's clones outside the pruned
+    scratch dir. It is treated as unset and re-pointed at the profile's scratch."""
+    monkeypatch.setattr(sys, "platform", "darwin")
+    env = {"HERMES_HOME": str(tmp_path), "TMPDIR": launchd}
+    assert apply_scratch_tmp_env(env) is True
+    scratch = str(tmp_path / "cache" / "scratch")
+    assert env["TMPDIR"] == env["TMP"] == env["TEMP"] == env["HERMES_SCRATCH_DIR"] == scratch
+
+
+@pytest.mark.parametrize("platform,env_extra", [
+    ("darwin", {"TMPDIR": "/Users/me/tmp"}),                      # real user override on macOS
+    ("darwin", {"TMPDIR": "/var/folders/h6/abc/T/mine"}),         # user subdir of the OS default
+    ("darwin", {"TMPDIR": _LAUNCHD_TMPDIR, "TMP": "/Users/me/t"}),  # user TMP beside OS TMPDIR
+    ("linux", {"TMPDIR": _LAUNCHD_TMPDIR}),                       # only macOS launchd is exempt
+    ("linux", {"TMPDIR": "/scratch/me"}),
+    ("win32", {"TEMP": "C:\\Users\\me\\AppData\\Local\\Temp"}),
+])
+def test_explicit_temp_override_is_respected(tmp_path, monkeypatch, platform, env_extra):
+    monkeypatch.setattr(sys, "platform", platform)
+    env = {"HERMES_HOME": str(tmp_path), **env_extra}
+    assert apply_scratch_tmp_env(env) is False
+    assert env == {"HERMES_HOME": str(tmp_path), **env_extra}
+
+
+def test_macos_launchd_tmpdir_multiplex_handoff_and_subprocess_surfaces(tmp_path, monkeypatch):
+    """A gateway launched with the launchd TMPDIR serving another profile: the terminal tool,
+    served-profile workers (``hermes -p X`` / Codex app-server) and execute_code children all get
+    the SERVED profile's scratch dir, not the OS temp dir nor the launch profile's scratch."""
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.code_execution_env import _build_child_env
+    from tools.environments.local import _make_run_env, hermes_subprocess_env, served_profile_child_env
+
+    monkeypatch.setattr(sys, "platform", "darwin")
+    launch, served = tmp_path / "launch", tmp_path / "profiles" / "served"
+    monkeypatch.setenv("HERMES_HOME", str(launch))
+    monkeypatch.setenv("TMPDIR", _LAUNCHD_TMPDIR)
+    for key in ("TMP", "TEMP", "HERMES_SCRATCH_DIR"):
+        monkeypatch.delenv(key, raising=False)
+    expected = str(served / "cache" / "scratch")
+    token = set_hermes_home_override(str(served))
+    try:
+        envs = {
+            "terminal": _make_run_env({}),
+            "served_worker": served_profile_child_env(base={"HERMES_HOME": str(launch), "TMPDIR": _LAUNCHD_TMPDIR}),
+            "codex": hermes_subprocess_env(inherit_credentials=True),
+            "execute_code": _build_child_env(rpc_endpoint="x", rpc_token="y", tmpdir=str(tmp_path),
+                                             child_python=sys.executable),
+        }
+    finally:
+        reset_hermes_home_override(token)
+    for name, env in envs.items():
+        assert (env["HERMES_HOME"], env["TMPDIR"], env.get("HERMES_SCRATCH_DIR")) == (
+            str(served), expected, expected), name
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="real launchd TMPDIR only exists on macOS")
+def test_real_macos_process_and_shell_child_land_in_scratch(tmp_path):
+    """End to end on the real interpreter: a process started with the launchd TMPDIR, after
+    ``import hermes_bootstrap``, puts tempfile AND a shell child's ``$TMPDIR`` in scratch."""
+    env = {k: v for k, v in os.environ.items() if k not in ("TMP", "TEMP", "HERMES_SCRATCH_DIR")}
+    env["TMPDIR"], env["HERMES_HOME"] = _LAUNCHD_TMPDIR, str(tmp_path)
+    code = ("import tempfile, subprocess; import hermes_bootstrap; print(tempfile.gettempdir()); "
+            "print(subprocess.run(['/bin/sh', '-c', 'echo $TMPDIR'], capture_output=True, text=True).stdout.strip())")
+    out = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True, encoding="utf-8",
+                         cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))), check=True)
+    expected = str(tmp_path / "cache" / "scratch")
+    assert out.stdout.split() == [expected, expected]
 
 
 def test_bootstrap_import_exports_scratch_to_process_and_children(tmp_path):

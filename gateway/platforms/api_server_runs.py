@@ -553,7 +553,8 @@ async def _resolve_live_session_id(self, session_id: str) -> str:
 
 
 async def run_internal_session_turn(self, *, session_id: str, text: str, profile: str,
-                                notification_category: str = "result", _api_server) -> None:
+                                notification_category: str = "result",
+                                idempotency_key: Optional[str] = None, _api_server) -> Optional[bool]:
     """Run one background wake turn against a raw session id IN-PROCESS (no HTTP, no API key).
 
     The HTTP wake self-post cannot serve a multiplexed *served* profile: ``/p/<profile>/`` on
@@ -566,55 +567,86 @@ async def run_internal_session_turn(self, *, session_id: str, text: str, profile
     Raises on failure so the caller can rewind its cursor: a draining gateway fails at once
     (the HTTP self-post's 503) while a saturated concurrent-run cap is retried with the same
     backoff the HTTP self-post uses for a 429.
+
+    Returns the turn's persistence result — True (messages committed), False (flush failed) or
+    None (no flush ran) — so a durable wake caller (``deliver_wake(require_persist_ack=True)``)
+    gates its cursor advance on a real commit rather than on the turn merely running (the
+    in-process twin of the default-profile HTTP path's ``X-Hermes-Turn-Persisted`` ack). When
+    ``idempotency_key`` is set the turn runs under an opt-in, profile-scoped, persisted-result
+    de-dup — the in-process mirror of the HTTP ``_IdempotencyCache`` ``cache_if``: a PERSISTED
+    same-key retry returns the cached ack WITHOUT re-running the turn, while an UNPERSISTED one
+    re-runs until it commits, so a redelivered durable wake never double-executes a turn that
+    already persisted.
     """
     from gateway.wake import _RETRY_DELAYS_SECONDS
     profile = (profile or "").strip()
     if not profile:
         raise ValueError("run_internal_session_turn requires the owning profile")
-    token = _api_server._api_request_profile.set(profile)
-    attempts = 1 + len(_RETRY_DELAYS_SECONDS)
-    last_err: Optional[BaseException] = None
-    try:
-        for attempt in range(attempts):
-            if attempt:
-                await asyncio.sleep(_RETRY_DELAYS_SECONDS[attempt - 1])
-            if self._draining_response() is not None:
-                raise RuntimeError(
-                    f"internal wake refused for session {session_id}: the gateway is draining")
-            # Transient: the cap clears on its own, exactly as the HTTP self-post's 429 does.
-            if self._concurrency_limited_response() is not None:
-                last_err = RuntimeError(
-                    "internal wake deferred: the API server is at its concurrent-run cap")
-                logger.warning("%s; attempt %d/%d", last_err, attempt + 1, attempts)
-                continue
-            # #98619/#13437: adopt the live continuation tip first, the same canonical
-            # resolution the HTTP self-post consumes — a compressed origin must be woken on the
-            # transcript that is actually live, never the retired parent slice.
-            resolved = await _resolve_live_session_id(self, session_id)
-            session, err = await self._get_existing_session_or_404(resolved)
-            if err is not None or not session:
-                raise RuntimeError(
-                    f"internal wake target session {resolved!r} is not in the active profile store")
-            history = await self._conversation_history_for_session(resolved)
-            # Same route resolution as the HTTP self-post (/v1/chat/completions): a model_routes
-            # alias for the virtual model applies to the wake turn too.
-            route, overrides, err = self._select_request_route(
-                {"model": self._model_name}, session_id=resolved, gateway_session_key=None,
-                model_alias=self._model_name)
-            if err is not None:
-                raise RuntimeError(f"internal wake route conflict for session {resolved!r}")
-            await self._run_agent(
-                user_message=text, conversation_history=history, session_id=resolved,
-                gateway_session_key=None, **overrides, route=route, requested_runtime={},
-                route_source="global", session_history_delivery="1",
-                notification_category=notification_category,
-            )
-            return
-        raise RuntimeError(
-            f"internal wake gave up for session {session_id} after {attempts} attempts: {last_err}")
-    finally:
-        if token is not None:
-            _api_server._api_request_profile.reset(token)
+
+    async def _run_once_persist() -> Optional[bool]:
+        token = _api_server._api_request_profile.set(profile)
+        attempts = 1 + len(_RETRY_DELAYS_SECONDS)
+        last_err: Optional[BaseException] = None
+        try:
+            for attempt in range(attempts):
+                if attempt:
+                    await asyncio.sleep(_RETRY_DELAYS_SECONDS[attempt - 1])
+                if self._draining_response() is not None:
+                    raise RuntimeError(
+                        f"internal wake refused for session {session_id}: the gateway is draining")
+                # Transient: the cap clears on its own, exactly as the HTTP self-post's 429 does.
+                if self._concurrency_limited_response() is not None:
+                    last_err = RuntimeError(
+                        "internal wake deferred: the API server is at its concurrent-run cap")
+                    logger.warning("%s; attempt %d/%d", last_err, attempt + 1, attempts)
+                    continue
+                # #98619/#13437: adopt the live continuation tip first, the same canonical
+                # resolution the HTTP self-post consumes — a compressed origin must be woken on the
+                # transcript that is actually live, never the retired parent slice.
+                resolved = await _resolve_live_session_id(self, session_id)
+                session, err = await self._get_existing_session_or_404(resolved)
+                if err is not None or not session:
+                    raise RuntimeError(
+                        f"internal wake target session {resolved!r} is not in the active profile store")
+                history = await self._conversation_history_for_session(resolved)
+                # Same route resolution as the HTTP self-post (/v1/chat/completions): a model_routes
+                # alias for the virtual model applies to the wake turn too.
+                route, overrides, err = self._select_request_route(
+                    {"model": self._model_name}, session_id=resolved, gateway_session_key=None,
+                    model_alias=self._model_name)
+                if err is not None:
+                    raise RuntimeError(f"internal wake route conflict for session {resolved!r}")
+                result, _usage = await self._run_agent(
+                    user_message=text, conversation_history=history, session_id=resolved,
+                    gateway_session_key=None, **overrides, route=route, requested_runtime={},
+                    route_source="global", session_history_delivery="1",
+                    notification_category=notification_category,
+                )
+                # A durable caller gates its cursor advance on this receipt (see gateway/wake.py).
+                return result.get("turn_persisted") if isinstance(result, dict) else None
+            raise RuntimeError(
+                f"internal wake gave up for session {session_id} after {attempts} attempts: {last_err}")
+        finally:
+            if token is not None:
+                _api_server._api_request_profile.reset(token)
+
+    if idempotency_key:
+        # Opt-in, profile-scoped, persisted-result de-dup — the in-process mirror of the HTTP
+        # path's ``_IdempotencyCache`` ``cache_if``. The key is namespaced disjoint from the HTTP
+        # scoped keys so an in-process wake and an HTTP turn never collide; only a persisted
+        # result is cached, so an unpersisted same-key retry re-runs until the turn commits.
+        from gateway.platforms.api_server import _idem_cache, _make_request_fingerprint
+        scoped_key = f"in-process-wake\0{profile}\0{session_id}\0{idempotency_key}"
+        # Fingerprint the wake content so a same-key reuse with different text is a conflict/re-run,
+        # not a silent serve of the earlier wake's receipt — the in-process mirror of the HTTP
+        # path's body fingerprint.
+        fingerprint = _make_request_fingerprint(
+            {"text": text, "notification_category": notification_category},
+            keys=["text", "notification_category"])
+        return await _idem_cache.get_or_set(
+            scoped_key, fingerprint, _run_once_persist,
+            cache_if=lambda r: r is True)
+    return await _run_once_persist()
 
 
 async def _handle_runs(self, request: web.Request, *, _api_server) -> web.Response:

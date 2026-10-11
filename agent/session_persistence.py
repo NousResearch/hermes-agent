@@ -447,7 +447,11 @@ class SessionPersistenceMixin:
             # the reason to record.
             self._drop_trailing_empty_response_scaffolding(messages)
             self._session_messages = messages
-            self._flush_messages_to_session_db(messages, conversation_history)
+            committed = self._flush_messages_to_session_db(messages, conversation_history)
+            # A chat-completions 200 is emitted even when this flush returns False, so a wake caller
+            # that must know the turn is durable (X-Hermes-Turn-Persisted) reads this receipt instead
+            # of trusting the 200.
+            self._last_turn_persisted = bool(committed)
             # Drain async token-accounting deltas at every persist point; cheap no-op when nothing queued.
             if self._session_db is not None:
                 self._session_db.flush_token_counts()

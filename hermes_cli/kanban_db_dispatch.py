@@ -2307,21 +2307,6 @@ def _any_spawnable_review(
     return False
 
 
-def _resolve_default_assignee(default_assignee: Optional[str]) -> Optional[str]:
-    """``kanban.default_assignee`` when it names a real profile this home may
-    claim (``kanban.dispatch_profiles`` gated, same predicate as the spawn
-    gate). Otherwise ``None`` so an unassigned shared-board card is never
-    written to. When the profiles module isn't importable trust the
-    operator's config: the downstream check still buckets a missing profile
-    as nonspawnable."""
-    name = (default_assignee or "").strip() or None
-    if name:
-        profile_exists = _profile_exists_fn()
-        if profile_exists is not None and not profile_exists(name):
-            return None
-    return name
-
-
 # The dispatch lock has been released here. Fire the tick observer strictly OUTSIDE the single-writer
 # critical section (#56066 sweeper finding / #64231 disposition): a slow subscriber must never extend the
 # lock hold and stall a sibling dispatcher's tick.
@@ -2395,7 +2380,7 @@ def _dispatch_once_locked(
         failure_limit=failure_limit, spawn_fn=spawn_fn,
         per_profile_cap=per_profile_cap, per_profile_running=per_profile_running,
     )
-    default_assignee = _resolve_default_assignee(default_assignee)
+    default_assignee = _resolve_default_assignee(default_assignee, board=board)
     spawned = 0
     for row in ready_rows:
         if ready_budget is not None and spawned >= ready_budget:
@@ -3036,3 +3021,4 @@ def run_daemon(
 from hermes_cli import kanban_db as _kb
 from hermes_cli import kanban_db_connect as _kbc
 from hermes_cli import kanban_db_workspace as _kbw
+from hermes_cli.kanban_db_dispatch_assignee import resolve_default_assignee as _resolve_default_assignee

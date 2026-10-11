@@ -1912,16 +1912,15 @@ DEFAULT_CONFIG = {
         # Assignee when the orchestrator can't match one to an installed profile; "" = default
         # profile. A task never ends up with assignee=None.
         "default_assignee": "",
+        # Per-board overrides for the two orchestration knobs above, keyed by board slug:
+        # kanban.boards.<slug>.{orchestrator_profile,default_assignee}. Resolution is board
+        # override -> global key -> built-in fallback; an unset/empty board key changes
+        # nothing. Free-form mapping (like `providers`), so `hermes config set` accepts any
+        # sub-key; an invalid slug or non-string value is ignored with a warning.
+        "boards": {},
         # Global cap: positive int = the HOST never has more than N tasks 'running' across all
         # boards and both dispatch lanes. None = ~MemTotal / 512 MiB clamped to [2, 8]; where
-        # MemTotal is unreadable (macOS/Windows) None means no cap.
-        # Global concurrency cap (#33488): when set to a positive int, the HOST never has more than N tasks
-        # in 'running' at once — counted across every active board and across both the ready and review
-        # dispatch lanes (workers are OS processes sharing one machine's memory, so the cap bounds the
-        # machine, not each board; OOF-30). Unset (None) means "derive from system memory" (OOF-30/OOF-77):
-        # the dispatcher caps concurrency at roughly MemTotal / 512 MiB, clamped to [2, 8] — e.g. 2 workers
-        # on a 1 GiB VM. On hosts where total memory can't be read (macOS/Windows), unset falls back to no
-        # cap. Set an explicit value to override the derived default in either direction.
+        # MemTotal is unreadable (macOS/Windows) None means no cap (OOF-30/OOF-77).
         "max_in_progress": None,
         # Per-profile cap: positive int = no single profile runs more than N workers even if the
         # global caps allow; blocked tasks defer to the next tick. None = no per-profile cap. Useful

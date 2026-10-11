@@ -375,6 +375,16 @@ def _peer_dm(args, message: str, peer_name: str, profile: str | None, base: str,
                       f"{queued_in}) and is answered there. The reply cannot come back on this call. Do NOT resend."])
     msg = result.get("message")
     reply = str(msg.get("content") or "") if isinstance(msg, dict) else ""
+    if result.get("failed") is True:
+        if getattr(args, "json", False):
+            print(json.dumps({"peer": peer_name, "profile": profile,
+                              "session_id": result.get("session_id") or session_id,
+                              "reply": reply, "failed": True, "error": result.get("error"),
+                              "failure_reason": result.get("failure_reason")}))
+        else:
+            detail = reply or result.get("error") or result.get("failure_reason") or "No failure detail returned"
+            print(f"Peer '{peer_name}' accepted the message but its agent failed: {detail}", file=sys.stderr)
+        return 1
     # A successful bare silence marker is a delivery decision, not a message:
     # the turn stays in the peer's own transcript, the sending agent never
     # sees NO_REPLY/[SILENT] as a real reply. Same rule as the gateway's live

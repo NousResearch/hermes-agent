@@ -99,7 +99,7 @@ def audit_log(event: AuditEvent, **fields: Any) -> None:
     but never raise — auth must not fail because the audit logger broke."""
     try:
         entry = {
-            "ts": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+            "ts": _dt.datetime.now(_dt.UTC).isoformat(),
             "event": event.value,
             **{k: _bounded_value(v) for k, v in fields.items() if k not in _REDACTED_FIELDS}}
         line = json.dumps(entry, separators=(",", ":")) + "\n"

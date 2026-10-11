@@ -1235,7 +1235,7 @@ class TestConnectSmtp(unittest.TestCase):
 
         adapter = self._make_adapter("587")
 
-        with patch("smtplib.SMTP", side_effect=_socket.timeout("timed out")), \
+        with patch("smtplib.SMTP", side_effect=TimeoutError("timed out")), \
              patch.object(email_mod, "_IPv4SMTP") as mock_ipv4_smtp:
             mock_server = MagicMock()
             mock_ipv4_smtp.return_value = mock_server
@@ -1253,7 +1253,7 @@ class TestConnectSmtp(unittest.TestCase):
 
         adapter = self._make_adapter("465")
 
-        with patch("smtplib.SMTP_SSL", side_effect=_socket.timeout("timed out")), \
+        with patch("smtplib.SMTP_SSL", side_effect=TimeoutError("timed out")), \
              patch.object(email_mod, "_IPv4SMTP_SSL") as mock_ipv4_smtp_ssl:
             mock_server = MagicMock()
             mock_ipv4_smtp_ssl.return_value = mock_server

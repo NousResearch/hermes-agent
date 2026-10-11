@@ -266,7 +266,12 @@ it('carries each install channel from Python publication checks into the source 
       responses.set(`/repos/NousResearch/hermes-agent/commits/${tags[channel]}`, { sha })
     }
 
-    responses.set('/releases/stable/release-candidates.json', { tag: tags.stable, commit: commits[1] })
+    // Stable IS the latest published GitHub release; no R2 record is consulted for it.
+    responses.set('/repos/NousResearch/hermes-agent/releases/latest', {
+      tag_name: tags.stable,
+      draft: false,
+      prerelease: false
+    })
     // The 'main' subscription is a source-branch channel record under the R2 protocol.
     responses.set(
       '/releases/channels/main.json',
@@ -301,25 +306,32 @@ sys.path.append(${JSON.stringify(repository)})
 assert not os.environ.get('HERMES_RUNTIME_DIR')
 import urllib.request
 from urllib.parse import urlsplit
-original_build = urllib.request.build_opener
-passthrough = original_build().open
-def local(request, *args, **kwargs):
-    parsed = urlsplit(request.full_url if isinstance(request, urllib.request.Request) else request)
-    assert parsed.hostname in ('hermes-assets.nousresearch.com', 'api.github.com')
-    url = 'http://127.0.0.1:${address.port}' + parsed.path + ('?' + parsed.query if parsed.query else '')
-    # ChannelReader compares response.geturl() against the ORIGINAL request url:
-    # wrap so the redirect detector still sees the un-rewritten authority.
-    response = passthrough(url, *args, **kwargs)
-    original_url = request.full_url if isinstance(request, urllib.request.Request) else request
-    response.geturl = lambda: original_url
-    return response
-urllib.request.urlopen = local
-def local_build(*args, **kwargs):
-    # ChannelReader resolves through build_opener().open, not module urlopen.
-    opener = original_build(*args, **kwargs)
-    opener.open = local
-    return opener
-urllib.request.build_opener = local_build
+# source_check.py runs this on import, and is imported twice (the CLI entry, then the module
+# source_releases reads GitHub through): install the redirect once, or the second copy wraps the
+# first and sees the already-rewritten loopback URL.
+def install():
+    original_build = urllib.request.build_opener
+    passthrough = original_build().open
+    def local(request, *args, **kwargs):
+        parsed = urlsplit(request.full_url if isinstance(request, urllib.request.Request) else request)
+        assert parsed.hostname in ('hermes-assets.nousresearch.com', 'api.github.com')
+        url = 'http://127.0.0.1:${address.port}' + parsed.path + ('?' + parsed.query if parsed.query else '')
+        # ChannelReader compares response.geturl() against the ORIGINAL request url:
+        # wrap so the redirect detector still sees the un-rewritten authority.
+        response = passthrough(url, *args, **kwargs)
+        original_url = request.full_url if isinstance(request, urllib.request.Request) else request
+        response.geturl = lambda: original_url
+        return response
+    urllib.request.urlopen = local
+    def local_build(*args, **kwargs):
+        # ChannelReader resolves through build_opener().open, not module urlopen.
+        opener = original_build(*args, **kwargs)
+        opener.open = local
+        return opener
+    urllib.request.build_opener = local_build
+if not getattr(urllib.request, '_hermes_loopback', False):
+    urllib.request._hermes_loopback = True
+    install()
 `
     )
     vi.stubEnv('HERMES_MANAGED', '')

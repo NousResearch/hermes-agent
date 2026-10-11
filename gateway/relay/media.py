@@ -44,8 +44,7 @@ def media_base_url(relay_dial_url: str) -> str:
         raw = "http://" + raw[len("ws://") :]
     elif raw.startswith("wss://"):
         raw = "https://" + raw[len("wss://") :]
-    if raw.endswith("/relay"):
-        raw = raw[: -len("/relay")]
+    raw = raw.removesuffix("/relay")
     return raw
 
 

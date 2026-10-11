@@ -8,7 +8,7 @@ if unset). The bridge owns Raft message cursors/bodies; the agent uses the Raft 
 from __future__ import annotations
 
 from collections import deque
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 import functools
 import hmac
 import json
@@ -65,7 +65,7 @@ _MAX_SCALAR_LENGTH = 120
 _ACTIVITY_ALLOWED_FIELDS = set(
     "schema eventId sessionId hookEventName status occurredAt toolName toolInput toolOutput "
     "toolInputTruncated toolOutputTruncated truncated errorClass durationMs".split())
-_ACTIVE_ADAPTERS: "weakref.WeakSet[RaftAdapter]" = weakref.WeakSet()
+_ACTIVE_ADAPTERS: weakref.WeakSet[RaftAdapter] = weakref.WeakSet()
 _ACTIVE_ADAPTERS_LOCK = threading.Lock()
 _RAFT_CONTEXT_LOCK = threading.Lock()
 _RAFT_SESSION_IDS: set[str] = set()
@@ -124,7 +124,7 @@ def _make_activity_event(*, hook_event_name: str, session_id: Any, status: str =
     event: dict[str, Any] = {"schema": ACTIVITY_EVENT_SCHEMA, "eventId": f"hermes-{uuid.uuid4()}",
                              "sessionId": _safe_scalar(session_id, "unknown") or "unknown",
                              "hookEventName": hook_event_name, "status": "error" if status == "error" else "ok",
-                             "occurredAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")}
+                             "occurredAt": datetime.now(UTC).isoformat().replace("+00:00", "Z")}
     for key, raw in (("toolName", tool_name), ("errorClass", error_class)):
         if safe := _safe_scalar(raw):
             event[key] = safe
@@ -150,7 +150,7 @@ def _validate_activity_event(value: Any) -> dict[str, Any]:
     if value.get("schema") != ACTIVITY_EVENT_SCHEMA:
         raise ValueError("unsupported activity event schema")
     if unknown := set(value) - _ACTIVITY_ALLOWED_FIELDS:
-        raise ValueError(f"activity event field {sorted(unknown)[0]} is not allowed")
+        raise ValueError(f"activity event field {min(unknown)} is not allowed")
     for key in ("eventId", "sessionId", "hookEventName", "occurredAt"):
         if not _safe_scalar(value.get(key)):
             raise ValueError(f"activity event {key} must be a safe non-empty string")
@@ -299,7 +299,7 @@ def _on_session_finalize(**kwargs: Any) -> None:
     _forget_raft_context(kwargs.get("session_id"), kwargs.get("turn_id"), forget_session=True)
 
 
-def _error_response(error: str, status: int) -> "web.Response":
+def _error_response(error: str, status: int) -> web.Response:
     return web.json_response({"ok": False, "error": error}, status=status)
 
 
@@ -408,17 +408,17 @@ class RaftAdapter(BasePlatformAdapter):
     async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         return {"name": f"raft/{chat_id}", "type": "raft"}
 
-    async def _handle_health(self, request: "web.Request") -> "web.Response":
+    async def _handle_health(self, request: web.Request) -> web.Response:
         activity = {"queueSize": self._activity_queue.size, "endpoint": "/activity", "drainEndpoint": "/activity/drain"}
         return web.json_response(
             {"status": "ok", "platform": "raft", "runtimeSession": self._runtime_session, "activity": activity})
 
-    def _authorized(self, request: "web.Request") -> bool:
+    def _authorized(self, request: web.Request) -> bool:
         token = request.headers.get(BRIDGE_TOKEN_HEADER, "")
         # Compare as bytes: compare_digest raises TypeError on a non-ASCII str header.
         return bool(self._bridge_token and token) and hmac.compare_digest(token.encode(), self._bridge_token.encode())
 
-    async def _read_bridge_body(self, request: "web.Request", *, text: bool) -> tuple[Any, Optional["web.Response"]]:
+    async def _read_bridge_body(self, request: web.Request, *, text: bool) -> tuple[Any, Optional[web.Response]]:
         """Auth + size-capped body read for wake/activity -> ``(body, None)`` or ``(None, error)``.
         ``text=True``: ``request.text()``, utf-8 length check, exception text in the 400 body; else raw bytes."""
         if not self._authorized(request):
@@ -437,7 +437,7 @@ class RaftAdapter(BasePlatformAdapter):
             return None, _error_response("payload_too_large", 413)
         return body, None
 
-    async def _handle_wake(self, request: "web.Request") -> "web.Response":
+    async def _handle_wake(self, request: web.Request) -> web.Response:
         raw_body, error = await self._read_bridge_body(request, text=False)
         if error is not None:
             return error
@@ -468,7 +468,7 @@ class RaftAdapter(BasePlatformAdapter):
             return web.json_response(not_ready, status=503)
         return web.json_response({"ok": True, "runtimeSession": self._runtime_session}, status=202)
 
-    async def _handle_activity(self, request: "web.Request") -> "web.Response":
+    async def _handle_activity(self, request: web.Request) -> web.Response:
         raw_text, error = await self._read_bridge_body(request, text=True)
         if error is not None:
             return error
@@ -480,7 +480,7 @@ class RaftAdapter(BasePlatformAdapter):
             return _error_response(str(exc), 400)
         return web.json_response({"ok": True}, status=202)
 
-    async def _handle_activity_drain(self, request: "web.Request") -> "web.Response":
+    async def _handle_activity_drain(self, request: web.Request) -> web.Response:
         if not self._authorized(request):
             return _error_response("unauthorized", 401)
         max_events = coerce_port(request.query.get("max", "200"), 200)  # int-or-default

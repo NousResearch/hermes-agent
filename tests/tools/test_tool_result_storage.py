@@ -55,7 +55,7 @@ class TestWriteToSandbox:
             # pattern-matched.
             def _bash(cmd, timeout=None, stdin_data=None, **_kw):
                 r = subprocess.run(["bash", "-c", cmd], input=stdin_data or "",
-                                   capture_output=True, text=True, timeout=timeout)
+                                   capture_output=True, text=True, timeout=timeout, check=False)
                 return {"output": r.stdout + r.stderr, "returncode": r.returncode}
             env.execute.side_effect = _bash
         result = _write_to_sandbox("hello world", remote, env)

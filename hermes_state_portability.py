@@ -9,7 +9,7 @@ import json
 import math
 import time
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from typing import Any, Dict, List, Optional
 
 from agent.skill_commands import AUTO_LOAD_SCAFFOLD_SQL_LIKE, SKILL_SCAFFOLD_SQL_LIKE
@@ -109,7 +109,7 @@ def _export_timings(messages: list[dict[str, Any]], session_id: Optional[str] = 
         "from_role": prev.get("role"), "to_role": nxt.get("role"),
         "gap_ms": max(0, round((nxt_ts - prev_ts) * 1000)),
     } for (prev, prev_ts), (nxt, nxt_ts) in itertools.pairwise(timestamped)]
-    iso = lambda ts: datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+    iso = lambda ts: datetime.fromtimestamp(ts, tz=UTC).isoformat()
     first_ts, last_ts = (timestamped[0][1], timestamped[-1][1]) if timestamped else (None, None)
     return {
         "source": "message_timestamps",

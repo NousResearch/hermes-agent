@@ -16,7 +16,7 @@ import logging
 import time
 from contextvars import ContextVar
 from contextlib import ExitStack, contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 from urllib.parse import urljoin
@@ -322,7 +322,7 @@ class HubLockFile(_JsonStateFile):
         safe_name = _validate_skill_name(name)
         safe_install_path = _normalize_lock_install_path(install_path, safe_name)
         data = self.load()
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         data["installed"][safe_name] = {
             "source": source,
             "identifier": identifier,
@@ -388,7 +388,7 @@ def append_audit_log(action: str, skill_name: str, source: str,
     """Append one space-separated line to the audit log (best-effort)."""
     audit_log = _audit_log()
     audit_log.parent.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    timestamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     parts = [timestamp, action, skill_name, f"{source}:{trust_level}", verdict]
     if extra:
         parts.append(extra)

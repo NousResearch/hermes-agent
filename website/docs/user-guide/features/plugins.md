@@ -539,8 +539,8 @@ gracefully.
 granted, `hermes plugins update` surfaces the additions and asks again. New
 capabilities stay off until you consent — a plugin update can never silently
 widen its access. Catalog re-pins go one step further: when the new pin adds
-tools, hooks, Python dependencies, host capabilities or a Desktop UI half the
-installed version did not have, the CLI shows the delta and asks `y/N` before
+tools, hooks, Python dependencies, host capabilities, a provider sign-in
+(`requires_auth`) or a Desktop UI half the installed version did not have, the CLI shows the delta and asks `y/N` before
 anything moves, and the Desktop / dashboard **Update** button opens the same
 confirmation. Declining (or a non-interactive session) leaves the plugin at
 the old pin.

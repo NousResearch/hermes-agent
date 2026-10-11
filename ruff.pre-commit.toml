@@ -2,8 +2,9 @@
 line-length = 88
 indent-width = 4
 
-# Assume Python 3.14
-target-version = "py314"
+# The oldest Python we support (requires-python): quote-stripping (UP037) and every other
+# version-gated fix must stay valid where annotations are evaluated eagerly (< 3.14).
+target-version = "py311"
 
 [format]
 # Like Black, use double quotes for strings.
@@ -54,11 +55,11 @@ select = [
   "ASYNC115",
   "ASYNC116",
   "ASYNC210",
-  #  "ASYNC220",
-  #  "ASYNC221",
+  "ASYNC220",
+  "ASYNC221",
   "ASYNC222",
-  #  "ASYNC230",
-  #  "ASYNC251",
+  "ASYNC230",
+  "ASYNC251",
   #  "S102",
   #  "S110",
   #  "S112",
@@ -275,7 +276,7 @@ select = [
   #  "F821",
   "F822",
   "F823",
-  #  "F841",
+  "F841",
   "F842",
   "F901",
   "PGH005",
@@ -283,9 +284,9 @@ select = [
   "PLC0131",
   "PLC0132",
   "PLC0205",
-  #  "PLC0206",
+  "PLC0206",
   "PLC0208",
-  #  "PLC0414",
+  "PLC0414",
   "PLC3002",
   "PLE0100",
   "PLE0101",
@@ -350,49 +351,49 @@ select = [
   "PLW1501",
   "PLW1507",
   #  "PLW1508",
-  #  "PLW1509",
-  #  "PLW1510",
-  #  "PLW2101",
+  "PLW1509",
+  "PLW1510",
+  "PLW2101",
   "UP001",
   "UP003",
   "UP004",
   "UP005",
   "UP006",
-  #  "UP007",
+  "UP007",
   "UP008",
   "UP009",
   "UP010",
   "UP011",
   "UP012",
   "UP014",
-  #  "UP017",
+  "UP017",
   "UP018",
   "UP019",
   "UP020",
   "UP021",
-  #  "UP022",
+  "UP022",
   "UP023",
   "UP024",
   "UP025",
   "UP026",
-  #  "UP028",
+  "UP028",
   "UP029",
   "UP030",
-  #  "UP031",
+  "UP031",
   "UP032",
   "UP033",
   "UP034",
   #  "UP035",
   "UP036",
-  #  "UP037",
+  "UP037",
   "UP039",
   "UP040",
-  #  "UP041",
+  "UP041",
   "UP043",
   "UP044",
-  #  "UP045",
-  #  "UP046",
-  #  "UP047",
+  #"UP045",
+  #  "UP046",  # deferred: fix is PEP 695 class syntax (3.12+), project floor is py3.11
+  #  "UP047",  # deferred: fix is PEP 695 generic-callable syntax (3.12+), project floor is py3.11
   "UP049",
   "UP050",
   "FURB105",
@@ -402,7 +403,7 @@ select = [
   "FURB136",
   "FURB157",
   "FURB161",
-  #  "FURB162",
+  "FURB162",
   "FURB163",
   "FURB166",
   "FURB167",
@@ -410,8 +411,8 @@ select = [
   "FURB169",
   "FURB177",
   "FURB181",
-  #  "FURB188",
-  #  "FURB192",
+  "FURB188",
+  "FURB192",
   "RUF007",
   "RUF008",
   "RUF009",
@@ -453,7 +454,21 @@ select = [
   #  "TRY201",
   #  "TRY203",
   #  "TRY401",
+  "TID251"
 ]
+
+[lint.flake8-tidy-imports.banned-api]
+"pm.uv".msg = "Use PM's semantic Python operations, not an installer executable."
+"pm.client.uv".msg = "Use PM's semantic Python operations."
+"pm.install.uv".msg = "The raw uv bridge was removed; use PM operations."
+"pm._uv".msg = "Tool acquisition is private to PM."
+"pm.environment".msg = "The environment engine is private; use PM operations."
+"pm.runtime_stage".msg = "PM stages its own worker runtime; consumers call pm operations."
+
+[lint.per-file-ignores]
+"apps/desktop/electron/fixtures/**" = ["TID251"]
+"pm/**" = ["TID251"]
+"tests/pm/**" = ["TID251"]
 
 [lint.mccabe]
 max-complexity = 20

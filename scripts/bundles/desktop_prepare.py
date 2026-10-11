@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 import hashlib
 import json
 import re
@@ -150,7 +150,7 @@ class BuildRequest:
             canary = re.fullmatch(r"v\d+\.\d+\.\d+\+canary\.(20\d{6}T\d{6}Z)", tag)
             if canary:
                 release_epoch = int(datetime.strptime(canary.group(1), "%Y%m%dT%H%M%SZ")
-                                    .replace(tzinfo=timezone.utc).timestamp())
+                                    .replace(tzinfo=UTC).timestamp())
             else:
                 claim_tag = os.environ.get("RELEASE_CLAIM_TAG", "")
                 # The payload version stays plain; the claim must name the same

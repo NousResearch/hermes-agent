@@ -227,6 +227,39 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
 
 export const KEYBIND_ACTION_IDS: readonly string[] = KEYBIND_ACTIONS.map(action => action.id)
 
+// The built-in actions a plugin may run by id (`ctx.runAction`, see
+// plugin-actions.ts): view / navigation only. Nothing destructive, nothing
+// that switches profile / model, spawns a shell, or opens native dialogs.
+export const PLUGIN_APP_ACTIONS = [
+  // Panels and layout
+  'view.showBrowser',
+  'view.showFiles',
+  'view.toggleSidebar',
+  'view.toggleRightSidebar',
+  'view.toggleReview',
+  'view.toggleStatusbar',
+  'view.findInPage',
+  // Composer and chat
+  'composer.focus',
+  'session.new',
+  'session.focusSearch',
+  'conversation.scrollPageUp',
+  'conversation.scrollPageDown',
+  // Navigation
+  'nav.commandPalette',
+  'nav.settings',
+  'nav.profiles',
+  'nav.capabilities',
+  'nav.messaging',
+  'nav.artifacts',
+  'nav.cron',
+  'nav.agents',
+  'keybinds.openPanel'
+] as const
+
+/** An app action id a plugin may run with `ctx.runAction`. */
+export type PluginAppActionId = (typeof PLUGIN_APP_ACTIONS)[number]
+
 const ACTION_BY_ID = new Map(KEYBIND_ACTIONS.map(action => [action.id, action]))
 
 // ── Contributed actions — the `keybinds` registry area ──────────────────────

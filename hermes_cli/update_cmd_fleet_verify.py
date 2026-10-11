@@ -216,7 +216,7 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
     # pre-update sys.modules graph — and its cron ticker keeps firing agent jobs that ImportError on every
     # symbol added in the pulled range. The rows also feed the plan-vs-execution reconciliation below, so a
     # survivor is escalated (an owed gateway_restart follow-up) instead of merely printed.
-    _stale_serve_rows: "list | None" = None
+    _stale_serve_rows: list | None = None
     with _best_effort('Failed to check for surviving serve runtimes: %s'):
         _stale_serve_rows = _surviving_pre_update_serve_runtimes(_pre_update_plan)
         if _stale_serve_rows:

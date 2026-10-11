@@ -319,8 +319,7 @@ class TestRateGuardStateEncoding:
         # which is what this guards against.
         with open(path, "w", encoding="utf-8") as f:
             f.write(
-                '{"reset_at": %d, "provider": "中文", "recorded_at": 0}'
-                % (int(time.time()) + 3600)
+                f'{{"reset_at": {int(time.time()) + 3600:d}, "provider": "中文", "recorded_at": 0}}'
             )
 
         real_open = builtins.open

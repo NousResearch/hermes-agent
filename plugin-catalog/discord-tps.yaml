@@ -1,18 +1,18 @@
 name: discord-tps
 repo: https://github.com/tuancookiez-hub/hermes-discord-tokenpersec
-sha: 6f84f9eb5d3d8cae01bf95ea02f628a818ad39ad
+sha: 056fcd331d9be03c287f293854b715b17b637203
 subdir: discord-tps
-version: "1.0.2"
-requires_hermes: ">=0.21"
+version: "1.0.3"
+requires_hermes: ">=0.21.4"
 description: "Show live tokens-per-second and the active model on your Discord bot's presence. Disclosure — Replaces the Discord bot's public presence with the live tok/s figure and the model name of the most recent API call in this gateway (any platform or chat), visible to anyone who can see the bot; updates at most every interval seconds (minimum 10) over the gateway's existing Discord connection. Reads no credentials and makes no network calls of its own."
-maintainer: TunaCookie
+maintainer: tuancookiez-hub
 tier: community
 category: platform
-docs_url: https://github.com/tuancookiez-hub/hermes-discord-tokenpersec/blob/6f84f9eb5d3d8cae01bf95ea02f628a818ad39ad/discord-tps/README.md
+docs_url: https://github.com/tuancookiez-hub/hermes-discord-tokenpersec/blob/056fcd331d9be03c287f293854b715b17b637203/discord-tps/README.md
 readme: true
-image: https://raw.githubusercontent.com/tuancookiez-hub/hermes-discord-tokenpersec/6f84f9eb5d3d8cae01bf95ea02f628a818ad39ad/assets/banner.png
+image: https://raw.githubusercontent.com/tuancookiez-hub/hermes-discord-tokenpersec/056fcd331d9be03c287f293854b715b17b637203/assets/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-discord-tokenpersec/6f84f9eb5d3d8cae01bf95ea02f628a818ad39ad/assets/presence-screenshot.png
+  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-discord-tokenpersec/056fcd331d9be03c287f293854b715b17b637203/assets/presence-screenshot.png
 capabilities:
   provides_tools: []
   provides_hooks:

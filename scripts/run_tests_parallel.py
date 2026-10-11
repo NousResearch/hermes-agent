@@ -402,7 +402,7 @@ def _discover_files(roots: list[Path]) -> list[Path]:
     return sorted(out)
 
 
-def _kill_tree(proc: "subprocess.Popen", pgid: int | None = None) -> None:
+def _kill_tree(proc: subprocess.Popen, pgid: int | None = None) -> None:
     """Kill the pytest subprocess and every descendant it spawned.
 
     A test run can spin up uvicorn servers, async runtimes, or other
@@ -440,6 +440,7 @@ def _kill_tree(proc: "subprocess.Popen", pgid: int | None = None) -> None:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 timeout=10,
+                check=False,
             )  # windows-footgun: ok
         except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
             pass
@@ -921,7 +922,7 @@ def _load_durations(repo_root: Path) -> dict[str, float]:
         return {}
     try:
         return json.loads(path.read_text(encoding="utf-8-sig"))
-    except (json.JSONDecodeError, OSError) as e:
+    except (json.JSONDecodeError, OSError):
         print("[ERROR] Failed to load json durations file! {e}")
         return {}
 
@@ -1410,7 +1411,7 @@ def main() -> int:
     files_crashed = 0
     lock = threading.Lock()
 
-    def _on_done(file: Path, started_at: float, fut: "Future[tuple[Path, int, str, dict[str, int], float]]") -> None:
+    def _on_done(file: Path, started_at: float, fut: Future[tuple[Path, int, str, dict[str, int], float]]) -> None:
         nonlocal files_done, tests_done, pass_count, fail_count, tests_passed, tests_failed, tests_skipped
         nonlocal tests_collected, files_crashed
         n_tests = test_counts.get(file, 0)

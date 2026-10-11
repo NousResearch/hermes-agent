@@ -225,6 +225,7 @@ def test_hermes_exported_scratch_tmp_is_not_the_test_temp_root(tmp_path):
     result = subprocess.run(
         [sys.executable, "-m", "pytest", "-p", "tests.conftest", "-p", "no:cacheprovider", "-q", str(probe)],
         cwd=PROJECT_ROOT, env=env, capture_output=True, text=True, timeout=120,
+        check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "1 passed" in result.stdout

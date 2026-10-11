@@ -19,7 +19,7 @@ from pm.lock import Facts, Lockfile
 from pm.package import InstallError, compose_env
 from pm.packages import BinaryPackage, Venv
 from pm.store import Store, current_target
-from tests.pm._fixtures import make_tar, served as served
+from tests.pm._fixtures import make_tar, served as served  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
 
 
 class FakeTool(BinaryPackage):

@@ -449,8 +449,17 @@ class MemoryManager:
         schemas = list(provider.get_tool_schemas())
 
         if provider.name != "builtin":
+            from hermes_cli.config import load_config
+
+            # Recall is provider-ranked: keep it whole unless this profile opts in.
+            # Snapshot both gates at registration, never re-read them mid-conversation.
+            memory = load_config().get("memory", {})
+            spill_config = get_spill_config()
+            if not (isinstance(memory, dict) and memory.get("prefetch_spill_enabled", False) is True):
+                # Off by default, but keep a ceiling so a runaway provider can't overflow the context.
+                spill_config["max_chars"] = max(spill_config["max_chars"] * 10, 100_000)
+            self._external_prefetch_spill_config = spill_config
             self._has_external = True
-            self._external_prefetch_spill_config = get_spill_config()
 
         self._providers.append(provider)
 
@@ -548,8 +557,8 @@ class MemoryManager:
             raise result_box["error"]
         result = result_box.get("value", "")
         if result and result.strip():
-            # Prefetch is stamped into the user turn's api_content and replayed every later turn;
-            # spill oversized results like plugin hook output so one provider can't inflate the prefix.
+            # Opt-in spill limits recall replayed with the user turn's api_content;
+            # the registration snapshot leaves provider-ranked results intact by default.
             result = spill_if_oversized(
                 result, session_id=session_id, source=f"{provider.name} memory prefetch",
                 config=self._external_prefetch_spill_config,

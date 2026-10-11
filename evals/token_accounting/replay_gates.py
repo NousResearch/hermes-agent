@@ -276,7 +276,7 @@ def main() -> int:
     tmp = Path(tempfile.mkdtemp(prefix="ab-token-accounting-"))
     os.environ["HERMES_HOME"] = str(tmp / "home")
     (tmp / "home").mkdir(parents=True)
-    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace").stdout.strip()
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False).stdout.strip()
     wire = _FakeChat()
     result: dict = {"checkout": str(ROOT), "head": head,
                     "compressor_sha256": hashlib.sha256(

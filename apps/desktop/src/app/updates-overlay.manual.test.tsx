@@ -121,3 +121,60 @@ it('keeps the client title for a command-less client manual stage', async (): Pr
   expect(screen.getByText(en.updates.manualTitle)).toBeTruthy()
   expect(screen.queryByText(en.updates.manualUnavailableTitle)).toBeNull()
 })
+
+it('keeps the install actions in a non-scrolling footer below the changelog scroll area', async (): Promise<void> => {
+  const commits = Array.from({ length: 3 }, (_, index) => ({
+    sha: `000000000000000000000000000000000000000${index}`.slice(-40),
+    summary: `fix(desktop): changelog row ${index} for a pending list`,
+    author: 'hermes',
+    at: 1_759_200_000 + index * 60
+  }))
+
+  $updateOverlayTarget.set('client')
+  $updateOverlayOpen.set(true)
+  $updateStatus.set({
+    supported: true,
+    updateAvailable: true,
+    behind: commits.length + 6,
+    commits,
+    branch: 'main'
+  })
+  await act(async (): Promise<void> => {
+    render(
+      <I18nProvider configClient={null} initialLocale="en">
+        <UpdatesOverlay />
+      </I18nProvider>
+    )
+  })
+
+  // The dialog renders through a portal, so query from the dialog element
+  // itself rather than the render container.
+  const overlay = screen.getByRole('dialog')
+  const scrollArea = overlay.querySelector('[data-slot="update-scroll-area"]')
+  expect(scrollArea).toBeTruthy()
+  expect(scrollArea?.className).toContain('overflow-y-auto')
+
+  // The footer's pinning rests on utility classes across three elements, and the
+  // footer only holds if the merged body class actually resolves to a flex column —
+  // tailwind-merge lets the shell's `grid` win when the override drops `flex`. Assert
+  // the merged class strings (jsdom has no layout engine, so these are the honest
+  // ceiling): the body must be a flex column, and both the wrapper and the scroll
+  // area must carry `flex-1`, or the footer has no flex context to divide (#128170).
+  const body = overlay.firstElementChild as HTMLElement
+  expect(body.className).toContain('flex')
+  expect(body.className).toContain('flex-col')
+  expect(body.className).not.toContain('grid ')
+  const wrapper = scrollArea?.parentElement as HTMLElement
+  expect(wrapper.className).toContain('flex-1')
+  expect(scrollArea?.className).toContain('flex-1')
+
+  // The actions sit in their own pinned footer, outside the scrolling box, so
+  // a long changelog can never push them below the fold (#128170).
+  const footer = overlay.querySelector('[data-slot="update-actions"]')
+  expect(footer).toBeTruthy()
+  expect(footer?.className).toContain('shrink-0')
+  expect(scrollArea?.contains(footer as Node)).toBe(false)
+  expect(footer?.contains(screen.getByRole('button', { name: en.updates.updateNow }))).toBe(true)
+  expect(footer?.contains(screen.getByRole('button', { name: en.updates.maybeLater }))).toBe(true)
+  expect(footer?.contains(screen.getByText(en.updates.moreChanges(6)))).toBe(true)
+})

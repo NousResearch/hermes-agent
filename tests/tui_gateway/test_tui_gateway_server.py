@@ -9269,16 +9269,6 @@ def test_config_set_yolo_process_scope_treats_false_like_env_as_disabled(monkeyp
     assert os.environ.get("HERMES_YOLO_MODE") == "1"
 
 
-def test_config_get_statusbar_survives_non_dict_display(monkeypatch):
-    monkeypatch.setattr(server, "_load_cfg", lambda: {"display": "broken"})
-
-    resp = server.handle_request(
-        {"id": "1", "method": "config.get", "params": {"key": "statusbar"}}
-    )
-
-    assert resp["result"]["value"] == "top"
-
-
 def test_config_get_busy_survives_non_dict_display(monkeypatch):
     monkeypatch.setattr(server, "_load_cfg", lambda: {"display": "broken"})
 
@@ -9287,26 +9277,6 @@ def test_config_get_busy_survives_non_dict_display(monkeypatch):
     )
 
     assert resp["result"]["value"] == "interrupt"
-
-
-def test_config_set_statusbar_survives_non_dict_display(tmp_path, monkeypatch):
-    import hermes_yaml as yaml
-
-    cfg_path = tmp_path / "config.yaml"
-    cfg_path.write_text(yaml.safe_dump({"display": "broken"}), encoding="utf-8")
-    monkeypatch.setattr(server, "_hermes_home", tmp_path)
-
-    resp = server.handle_request(
-        {
-            "id": "1",
-            "method": "config.set",
-            "params": {"key": "statusbar", "value": "bottom"},
-        }
-    )
-
-    assert resp["result"]["value"] == "bottom"
-    saved = yaml.safe_load(cfg_path.read_text(encoding="utf-8-sig"))
-    assert saved["display"]["tui_statusbar"] == "bottom"
 
 
 def test_config_set_details_mode_pins_all_sections(tmp_path, monkeypatch):

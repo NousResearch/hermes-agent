@@ -17,6 +17,27 @@ method = _registry.method
 _profile_scoped = _registry.profile_scoped
 
 
+_STATUSBAR_MODES = frozenset({"off", "top", "bottom"})
+_STATUSBAR_HIDDEN_ALIASES = frozenset({"0", "false", "hidden", "no", "off"})
+
+
+def _coerce_statusbar(raw) -> str:
+    if raw is False:
+        return "off"
+    if not isinstance(raw, str):
+        return "top"
+    value = raw.strip().lower()
+    if value in _STATUSBAR_HIDDEN_ALIASES:
+        return "off"
+    return "top" if value == "on" else value if value in _STATUSBAR_MODES else "top"
+
+
+def _effective_statusbar_raw():
+    """Canonical statusbar wins when present; legacy TUI key remains a fallback."""
+    display = _display_cfg()
+    return display["statusbar"] if "statusbar" in display else display.get("tui_statusbar", "top")
+
+
 # ── setup readiness single-flight (#65151) ─────────────────────────────────
 #
 # Readiness probes are Desktop-polled and execute on the shared RPC pool via
@@ -276,7 +297,7 @@ _CONFIG_GETTERS = {
     "thinking_mode": _cfg_get_thinking_mode,
     "density": lambda params: {"value": "on" if bool(_display_raw().get("tui_compact", False)) else "off"},
     "theme": lambda params: {"value": _display_word("tui_theme", "auto", {"auto", "light", "dark"})},
-    "statusbar": lambda params: {"value": _coerce_statusbar(_display_cfg().get("tui_statusbar", "top"))},
+    "statusbar": lambda params: {"value": _coerce_statusbar(_effective_statusbar_raw())},
     "focus": lambda params: {"value": "on" if bool(_display_cfg().get("focus_view", False)) else "off",
                              "tool_progress": _load_tool_progress_mode()},
     "mouse": lambda params: {"value": _display_mouse_tracking(_load_cfg().get("display"))},

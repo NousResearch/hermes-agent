@@ -10,7 +10,6 @@ from hermes_cli.stale_modules import drop_stale_root_modules
 drop_stale_root_modules()
 
 import copy
-import difflib
 import json
 import logging
 import os
@@ -3240,11 +3239,6 @@ def _known_top_level_keys() -> set[str]:
     return set(DEFAULT_CONFIG) | _EXTRA_KNOWN_ROOT_KEYS | _OPEN_SUBKEY_TOP_LEVEL_KEYS
 
 
-def _suggest_closest_key(key: str, candidates: set[str], cutoff: float = 0.6) -> Optional[str]:
-    """Closest candidate key name for a typo'd ``key``, or None."""
-    return next(iter(difflib.get_close_matches(key, sorted(candidates), n=1, cutoff=cutoff)), None)
-
-
 def _validate_config_key(key: str) -> tuple[bool, Optional[str]]:
     """Validate a dotted config-key path against the known schema -> ``(is_known, suggestion)``.
 
@@ -3254,8 +3248,9 @@ def _validate_config_key(key: str) -> tuple[bool, Optional[str]]:
     ``discord.gateway_restart_notification`` (platform configs live at the top level, not under a
     ``platforms`` namespace).
     """
-    if not key:
-        return False, None
+    from hermes_cli.config_key_schema import UNSEEDED_RUNTIME_CONFIG_KEYS, suggest_closest_key
+    if not key or key in UNSEEDED_RUNTIME_CONFIG_KEYS:
+        return bool(key), None
 
     segments = _split_key_path(key)
     top = segments[0]
@@ -3267,7 +3262,7 @@ def _validate_config_key(key: str) -> tuple[bool, Optional[str]]:
 
     known = _known_top_level_keys()
     if top not in known:
-        suggestion = _suggest_closest_key(top, known)
+        suggestion = suggest_closest_key(top, known)
         if suggestion is None:
             return False, None
         rest = ".".join(segments[1:])
@@ -3301,7 +3296,7 @@ def _validate_config_key(key: str) -> tuple[bool, Optional[str]]:
                 and _validate_config_key(rest)[0]
             ):
                 return False, rest
-            sibling = _suggest_closest_key(seg, set(node.keys()))
+            sibling = suggest_closest_key(seg, set(node.keys()))
             if sibling is not None:
                 return False, ".".join(consumed + [sibling])
             return False, None

@@ -1883,7 +1883,6 @@ def _write_config_key(key_path: str, value):
     _save_cfg(cfg)
 
 
-_STATUSBAR_MODES = frozenset({"off", "top", "bottom"})
 _APPROVAL_MODES = frozenset({"manual", "smart", "off"})
 
 # Appearance switches the renderer owns but the AGENT must see (each gates a tool's `check_fn`). `config.set`
@@ -1900,12 +1899,6 @@ def _load_approval_mode() -> str:
     from tools.approval_context import _get_approval_mode
     mode = _get_approval_mode()
     return mode if mode in _APPROVAL_MODES else "manual"
-
-
-def _coerce_statusbar(raw) -> str:
-    if raw is False:
-        return "off"
-    return s if isinstance(raw, str) and (s := raw.strip().lower()) in _STATUSBAR_MODES else "top"
 
 
 _MOUSE_TRACKING_ALIASES = {

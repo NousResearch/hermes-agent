@@ -79,6 +79,22 @@ describe('busy input renders inside the live turn (#136670)', () => {
     expect(getTurnState().streamSegments).toEqual([])
   })
 
+  it('routes the user row into the turn during the first thinking phase', async () => {
+    // Before any tool or text: reasoning alone is live-area content, so a send
+    // mid-thinking must land inside the turn, not in history above it.
+    patchTurnState({ reasoningActive: true, reasoning: 'hmm…' })
+
+    const deps = makeDeps()
+    submitPrompt('also write BANANE', deps)
+    await flushMicrotasks()
+
+    expect(deps.appendMessage).not.toHaveBeenCalled()
+
+    const userRow = getTurnState().streamSegments.find(msg => msg.role === 'user')
+
+    expect(userRow?.text).toBe('also write BANANE')
+  })
+
   it('flushes the streaming tail before the user row so the send order survives', () => {
     turnController.bufRef = 'mid-turn narration'
     turnController.pushUserSegment('steer')

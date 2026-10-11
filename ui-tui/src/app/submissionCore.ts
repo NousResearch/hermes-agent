@@ -97,7 +97,16 @@ export function submitPrompt(
       // below the transcript tail anyway, so it keeps the plain append.
       const liveTurn = getTurnState()
 
-      if (liveTurn.streamSegments.length || liveTurn.tools.length || liveTurn.streaming) {
+      if (
+        liveTurn.streamSegments.length ||
+        liveTurn.tools.length ||
+        liveTurn.streaming ||
+        // A turn still in its first thinking phase has no segments or tools
+        // yet, but its reasoning renders in the live area, so the row belongs
+        // there too (``busy`` can't gate this: markSubmitting sets it first).
+        liveTurn.reasoning ||
+        liveTurn.reasoningActive
+      ) {
         turnController.pushUserSegment(displayOverride || displayText)
       } else {
         deps.appendMessage({ role: 'user', text: displayOverride || displayText })

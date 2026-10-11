@@ -471,6 +471,14 @@ class TurnController {
   // segment then commits with the turn on message.complete / interrupt.
   // `recordError` salvages it, since the row is the user's own message, not
   // the agent's failed output.
+  // Placement caveat, deliberate: the gateway may demote the submit to a queue
+  // instead of interrupting (`_handle_busy_submit` in tui_gateway: compression
+  // in flight, media payloads, agents without redirect support). Nothing
+  // interrupts the running turn then, so the row renders inside turn N, above
+  // an answer that never saw it, while the message actually runs as turn N+1.
+  // Showing it at its send point is still the honest choice — the user typed
+  // it mid-turn and saw it land — so don't "fix" this into waiting for the
+  // queue to start.
   pushUserSegment(text: string) {
     this.flushStreamingSegment()
     this.segmentMessages = [...this.segmentMessages, { role: 'user', text }]

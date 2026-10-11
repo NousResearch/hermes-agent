@@ -116,7 +116,7 @@ def _ensure_supervisor(task_id: str):
         return None
 
 
-def _eval_js_secret(task_id: str, expression: str) -> dict[str, Any]:
+def _eval_js_secret(task_id: str, expression: str, *, route: Optional[dict[str, str]] = None) -> dict[str, Any]:
     """Evaluate a SECRET-BEARING JS expression. Supervisor CDP-WS only.
 
     Fails closed: there is deliberately NO fallback to the agent-browser CLI
@@ -155,7 +155,7 @@ def _eval_js_secret(task_id: str, expression: str) -> dict[str, Any]:
         except _bd_lease.HumanHasControl as exc:
             return {"success": False, "error_type": "human_has_control", "error": str(exc)}
 
-    sup = supervisor.evaluate_runtime(expression)
+    sup = supervisor.evaluate_runtime(expression, route=route)
     if sup.get("ok"):
         return {"success": True, "result": sup.get("result")}
     return {
@@ -199,18 +199,72 @@ _TAB_PROBES = {
 }
 
 
-def _focus_bound_origin(task_id: str, origin: str, kind: str) -> Optional[str]:
+def _focus_bound_origin(task_id: str, origin: str, kind: str) -> Optional[tuple[str, str, Optional[Dict[str, str]]]]:
     """Point the supervisor's page session at the open tab on ``origin`` that holds a ``kind`` form
     (browser_exec sessions open their own tabs, so the tab the supervisor attached to first is rarely the
-    login page). Returns the origin when a tab was focused, else None (caller falls back to the current page)."""
+    login page). Returns ``(top_level_origin, evaluation_origin)`` when a tab
+    or one of its eligible OOPIFs was focused, else None (caller falls back to
+    the current page). The first element remains the vault binding; the second
+    is only the frame origin asserted synchronously before a write."""
     try:
         supervisor = _ensure_supervisor(task_id)
     except Exception:
         supervisor = None
     if supervisor is None:
         return None
-    focused = supervisor.focus_page(origin, accept=_TAB_PROBES.get(kind))
-    return (origin or focused.get("url")) if focused.get("ok") else None
+    # Only login fills have a narrowly-authorized cross-origin use case.
+    # Checkout discovery must remain in the top-level document: a matching
+    # card or address field in an embedded origin is never transfer authority.
+    focus_top_level = getattr(supervisor, "focus_top_level_page", None)
+    if kind != "login" and callable(focus_top_level):
+        focused = focus_top_level(origin, accept=_TAB_PROBES.get(kind))
+    else:
+        focused = supervisor.focus_page(origin, accept=_TAB_PROBES.get(kind))
+    if not focused.get("ok"):
+        return None
+    from agent.vault_store import VaultError, normalize_origin
+
+    top_level_origin = origin
+    if not top_level_origin:
+        try:
+            top_level_origin = normalize_origin(str(focused.get("url") or ""))
+        except (VaultError, ValueError):
+            return None
+    from urllib.parse import urlsplit
+
+    # An explicit empty/opaque child is a refusal, not a request to use the
+    # top-level origin or fall back to another document.
+    raw_child_origin = str(focused.get("frame_origin", top_level_origin))
+    child_origin = normalize_origin(raw_child_origin)
+    parsed_child = urlsplit(raw_child_origin)
+    if (parsed_child.scheme.lower() not in {"http", "https"}
+            or parsed_child.username is not None or parsed_child.password is not None
+            or any(c.isspace() or c == "\\" for c in raw_child_origin)
+            or parsed_child.path not in {"", "/"} or parsed_child.query or parsed_child.fragment):
+        raise VaultError("child frame requires a valid HTTP(S) origin")
+    # Origin equality removes cross-origin consent, not document routing.
+    route = focused.get("route")
+    if route is not None and not isinstance(route, dict):
+        return None
+    return top_level_origin, child_origin, route
+
+
+def _focus_allowed_origin(task_id: str, allowed: list[str], kind: str):
+    """Select one document; a selected invalid origin aborts the search."""
+    for candidate in allowed:
+        focused = _focus_bound_origin(task_id, candidate, kind)
+        if focused:
+            return focused
+    return None
+
+
+def _eval_js_in_route(task_id: str, expression: str, route: Dict[str, str]) -> Dict[str, Any]:
+    """Evaluate non-secret setup code through the same route validation as the write."""
+    supervisor = _ensure_supervisor(task_id)
+    if supervisor is None:
+        return {"success": False, "error": "supervisor required"}
+    result = supervisor.evaluate_runtime(expression, route=route)
+    return {"success": bool(result.get("ok")), "result": result.get("result"), "error": result.get("error")}
 
 
 # ---------------------------------------------------------------------------
@@ -292,13 +346,20 @@ def browser_vault_save_login(label: str = "", task_id: Optional[str] = None) -> 
     """Ask the user (masked prompt on their surface) for the login of the CURRENT page, store it in the local
     vault bound to that origin, and fill the password at once. The values never enter the conversation."""
     from agent.vault_backends.unlock import can_prompt_here, get_save_login_prompt_callback
-    from agent.vault_store import get_vault_store
+    from agent.vault_store import VaultError, get_vault_store
 
     effective_task_id = task_id or "default"
     # The supervisor's default page session is whatever tab it attached to first (on Browser Use that is
     # the daemon's blank tab); the login form lives in the tab with a password field, so focus that one.
-    _focus_bound_origin(effective_task_id, "", "login")
-    origin = _current_page_origin(effective_task_id)
+    try:
+        focused = _focus_bound_origin(effective_task_id, "", "login")
+    except (VaultError, ValueError):
+        return json.dumps({"success": False, "error_type": "invalid_frame_origin",
+                           "error": "Refused: the selected frame has no valid HTTP(S) origin."})
+    # When the form is in an OOPIF, the active CDP session is the child so a
+    # location read would name the identity provider. A login saved from that
+    # form belongs to the selected top-level site instead.
+    origin = focused[0] if focused else _current_page_origin(effective_task_id)
     if not origin:
         return json.dumps({"success": False, "error": "Open the site's login page first; the login is saved for that page's origin."})
     prompt = get_save_login_prompt_callback()
@@ -417,7 +478,7 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
         select_password_fill,
     )
     from agent.vault_backends import UnlockRequired, backend_for_handle
-    from agent.vault_store import ADDRESS_FIELDS, PAYMENT_FIELDS, scrub_secret_from_text
+    from agent.vault_store import ADDRESS_FIELDS, PAYMENT_FIELDS, VaultError, scrub_secret_from_text
 
     effective_task_id = task_id or "default"
     backend = backend_for_handle(handle)
@@ -456,11 +517,16 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
     # nothing wildcard/parent-domain is ever inferred.
     allowed = list(meta.allowed_origins) or ([str(meta.origin)] if meta.origin else [])
     page_origin = None
-    for candidate in allowed:
-        page_origin = _focus_bound_origin(effective_task_id, candidate, meta.kind)
-        if page_origin:
-            break
+    fill_origin = None
+    frame_route = None
+    try:
+        focused = _focus_allowed_origin(effective_task_id, allowed, meta.kind)
+    except (VaultError, ValueError):
+        return json.dumps({"success": False, "error_type": "invalid_frame_origin",
+                           "error": "Refused: the selected frame has no valid HTTP(S) origin. Nothing was resolved or written."})
+    page_origin, fill_origin, frame_route = focused or (None, None, None)
     page_origin = page_origin or _current_page_origin(effective_task_id)
+    fill_origin = fill_origin or page_origin
     if not page_origin:
         return json.dumps(
             {"success": False, "error": "Could not determine the current page origin. Navigate to the login page first."}
@@ -478,9 +544,17 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
             }
         )
 
+    # Discovery establishes a route, not cross-origin credential authority.
+    from tools.browser_vault_origin_policy import fill_origin_refusal
+
+    refusal = fill_origin_refusal(meta.kind, page_origin, fill_origin, frame_route)
+    if refusal is not None:
+        return json.dumps(refusal)
+
     # ── Inspect + classify page controls ────────────────────────────────────
     nonce = secrets.token_hex(8)  # binds this fill to THIS inspection's stamps
-    inspect = _eval_js(effective_task_id, build_inspection_js(nonce))
+    inspect = (_eval_js_in_route(effective_task_id, build_inspection_js(nonce), frame_route)
+               if frame_route is not None else _eval_js(effective_task_id, build_inspection_js(nonce)))
     if not inspect.get("success"):
         return json.dumps(
             {"success": False, "error": f"Could not inspect page inputs: {inspect.get('error', 'eval failed')}"}
@@ -526,9 +600,12 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
         register_vault_redaction_value(value)
 
     try:
-        fill_result = _eval_js_secret(
-            effective_task_id, build_fill_js(fills, expected_origin=page_origin, nonce=nonce)
+        expression = build_fill_js(
+            fills, expected_origin=fill_origin, nonce=nonce,
+            expected_top_level_origin=page_origin if frame_route is not None else None,
         )
+        fill_result = (_eval_js_secret(effective_task_id, expression, route=frame_route)
+                       if frame_route is not None else _eval_js_secret(effective_task_id, expression))
     except Exception as exc:
         # Strip any secret material from exception text before surfacing.
         return json.dumps(
@@ -544,11 +621,11 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
     parsed = _parse_json_result(fill_result.get("result"))
     if isinstance(parsed, str):
         parsed = _parse_json_result(parsed)
-    if isinstance(parsed, dict) and parsed.get("refused") == "origin_changed":
+    if isinstance(parsed, dict) and parsed.get("refused") in {"origin_changed", "top_level_origin_changed"}:
         return json.dumps(
             {
                 "success": False,
-                "error_type": "origin_changed",
+                "error_type": str(parsed.get("refused")),
                 "error": (
                     "Refused: the page navigated away from the bound origin "
                     f"({page_origin}) before the fill could run "

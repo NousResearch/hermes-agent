@@ -18,6 +18,8 @@ import re
 import os
 import stat
 import sys
+import asyncio
+import threading
 from pathlib import Path
 from unittest.mock import patch
 
@@ -255,6 +257,264 @@ class TestClassifier:
 # ---------------------------------------------------------------------------
 
 class TestBrowserVaultTools:
+    @pytest.mark.parametrize("child_origin", [
+        "null", "", "not-an-origin", "file://host", "ftp://idp.test", "https://idp.test:bad",
+        "https://", "https://user@idp.test", "https://idp.test/path", "https://idp.test?x=1",
+        "https://idp.test#fragment", "https://idp.test\\evil", "https://idp. test",
+    ])
+    def test_invalid_child_origin_refuses_before_consent_or_resolution(self, store, child_origin):
+        from tools import browser_vault_tool
+        from unittest.mock import Mock
+
+        meta = _add_login(store)
+        backend = Mock(needs_unlock=False)
+        backend.get_meta.return_value = meta
+        supervisor = Mock()
+        supervisor.focus_page.return_value = {
+            "ok": True, "url": "https://example.com/login", "frame_origin": child_origin,
+            "route": {"page_session_id": "top", "frame_id": "child", "frame_session_id": "child-session"},
+        }
+        with patch("agent.vault_backends.backend_for_handle", return_value=backend), \
+             patch.object(browser_vault_tool, "_ensure_supervisor", return_value=supervisor), \
+             patch.object(browser_vault_tool, "_current_page_origin") as fallback, \
+             patch("tools.approval_prompt.request_elicitation_consent", return_value="accept") as consent, \
+             patch.object(browser_vault_tool, "_eval_js_in_route") as inspect, \
+             patch.object(browser_vault_tool, "_eval_js_secret") as fill:
+            result = json.loads(browser_vault_tool.browser_vault_fill(meta.id))
+
+        assert result["error_type"] == "invalid_frame_origin"
+        backend.resolve_password.assert_not_called()
+        consent.assert_not_called()
+        inspect.assert_not_called()
+        fill.assert_not_called()
+        fallback.assert_not_called()
+
+    @pytest.mark.parametrize(("kind", "secret"), [
+        ("payment", _CARD),
+        ("address", _ADDRESS),
+    ])
+    def test_non_login_cross_origin_frame_refuses_before_secret_resolution(self, store, kind, secret):
+        """Checkout items must never inherit the login-only OOPIF authority.
+
+        Finding a matching payment or address form in a cross-origin child
+        frame is not authority to resolve its values or try another frame.
+        """
+        from tools import browser_vault_tool
+
+        meta = store.add_item(kind=kind, label=kind.title(), origin="https://shop.test", secret=secret)
+        resolved = False
+
+        class _Backend:
+            name, display_name, needs_unlock = "local", "Local", False
+
+            def is_unlocked(self):
+                return True
+
+            def get_meta(self, handle):
+                return meta if handle == meta.id else None
+
+            def resolve_secret(self, handle):
+                nonlocal resolved
+                resolved = True
+                return secret
+
+        calls = []
+
+        class _Supervisor:
+            def focus_top_level_page(self, origin, *, accept=None):
+                calls.append((origin, accept))
+                assert accept == browser_vault_tool._TAB_PROBES[kind]
+                return {
+                    "ok": True,
+                    "url": "https://shop.test/checkout",
+                    "frame_origin": "https://checkout-provider.example",
+                    "route": {"page_session_id": "top", "frame_id": "payment", "frame_session_id": "frame"},
+                }
+
+            def focus_page(self, *_args, **_kwargs):
+                raise AssertionError("non-login fill must not enable OOPIF discovery")
+
+        with patch("agent.vault_backends.backend_for_handle", return_value=_Backend()), \
+             patch.object(browser_vault_tool, "_ensure_supervisor", return_value=_Supervisor()), \
+             patch.object(browser_vault_tool, "_confirm_payment_fill", return_value=True), \
+             patch.object(browser_vault_tool, "_eval_js") as inspect, \
+             patch.object(browser_vault_tool, "_eval_js_secret") as fill:
+            out = json.loads(browser_vault_tool.browser_vault_fill(meta.id))
+
+        assert out["success"] is False
+        assert out["error_type"] == "cross_origin_non_login_refused"
+        assert calls == [("https://shop.test", browser_vault_tool._TAB_PROBES[kind])]
+        assert resolved is False
+        inspect.assert_not_called()
+        fill.assert_not_called()
+
+    def test_cross_origin_login_requires_exact_pair_consent_before_password_resolution(self, store):
+        """Discovering an in-tree OOPIF is not authority to resolve a login secret.
+
+        The first password frame may be an ad/attacker sibling.  A declined
+        one-shot consent must stop before both password resolution and the
+        secret-bearing CDP evaluation; it must not probe a different frame.
+        """
+        from tools import browser_vault_tool
+
+        meta = _add_login(store, origin="https://www.espn.com")
+        resolved = False
+
+        class _Backend:
+            name, display_name, needs_unlock = "local", "Local", False
+
+            def is_unlocked(self):
+                return True
+
+            def get_meta(self, handle):
+                return meta if handle == meta.id else None
+
+            def resolve_password(self, handle):
+                nonlocal resolved
+                resolved = True
+                return "s3cret-pw"
+
+        class _Supervisor:
+            def focus_page(self, origin, *, accept=None):
+                return {
+                    "ok": True,
+                    "url": "https://www.espn.com/login",
+                    "frame_origin": "https://evil.example",
+                    "route": {"page_session_id": "top", "frame_id": "evil", "frame_session_id": "evil-session"},
+                }
+
+        with patch("agent.vault_backends.backend_for_handle", return_value=_Backend()), \
+             patch.object(browser_vault_tool, "_ensure_supervisor", return_value=_Supervisor()), \
+             patch("tools.approval_prompt.request_elicitation_consent", return_value="decline") as consent, \
+             patch.object(browser_vault_tool, "_eval_js") as inspect, \
+             patch.object(browser_vault_tool, "_eval_js_secret") as fill:
+            out = json.loads(browser_vault_tool.browser_vault_fill(meta.id))
+
+        assert out["success"] is False
+        assert out["error_type"] == "cross_origin_declined"
+        assert resolved is False
+        inspect.assert_not_called()
+        fill.assert_not_called()
+        assert consent.call_count == 1
+        prompt = consent.call_args.args
+        assert "https://www.espn.com" in prompt[0]
+        assert "https://evil.example" in prompt[0]
+
+    @pytest.mark.parametrize(("child_origin", "probe_failure"), [
+        ("https://login.example", None), ("null", None), ("", None), ("", "world"), ("", "probe"),
+    ])
+    def test_supervisor_focuses_only_an_oopif_owned_by_the_selected_page(self, monkeypatch, child_origin, probe_failure):
+        """The OOPIF probe must use the selected page's frame tree, not every
+        attached iframe session in the browser."""
+        from tools import browser_supervisor
+        from tools.browser_supervisor_frames import FrameInfo
+
+        supervisor = object.__new__(browser_supervisor.CDPSupervisor)
+        supervisor._loop = type("Loop", (), {"is_running": lambda self: True})()
+        supervisor._state_lock = threading.Lock()
+        supervisor._page_session_id = None
+        supervisor._frames = {
+            "child-frame": FrameInfo("child-frame", "https://login.example/form",
+                                      "https://login.example", "top-frame", True, "child-session"),
+            # This session has a password too, but is not in the selected
+            # page's frame tree and therefore must never be probed.
+            "other-frame": FrameInfo("other-frame", "https://evil.example/form",
+                                      "https://evil.example", "other-top", True, "other-session"),
+            # Even a valid sibling in THIS page must not become fallback
+            # authority after the first matching child reports an empty origin.
+            "valid-sibling": FrameInfo("valid-sibling", "https://idp.test/form",
+                                        "https://idp.test", "top-frame", True, "sibling-session"),
+        }
+        supervisor._frames["child-frame"].loader_id = "child-document"
+
+        async def fake_cdp(method, params=None, *, session_id=None, timeout=10.0):
+            if method == "Target.getTargets":
+                return {"result": {"targetInfos": [{"type": "page", "targetId": "page", "url": "https://www.espn.com/login"}]}}
+            if method == "Target.attachToTarget":
+                return {"result": {"sessionId": "top-session"}}
+            if method == "Page.getFrameTree":
+                if session_id == "child-session":
+                    return {"result": {"frameTree": {"frame": {
+                        "id": "child-frame", "loaderId": "child-document", "securityOrigin": child_origin,
+                    }}}}
+                return {"result": {"frameTree": {"frame": {"id": "top-frame"}, "childFrames": [
+                    {"frame": {"id": "child-frame"}},
+                ]}}}
+            if method == "Runtime.evaluate" and session_id == "top-session":
+                return {"result": {"result": {"value": False}}}
+            if method == "Runtime.evaluate" and session_id == "child-session":
+                if params["expression"] == "self.origin":
+                    assert params["contextId"] == 7
+                    if probe_failure == "probe":
+                        raise RuntimeError("origin context disappeared")
+                    return {"result": {"result": {"value": child_origin}}}
+                return {"result": {"result": {"value": True}}}
+            if method == "Page.createIsolatedWorld" and session_id == "child-session":
+                assert params["frameId"] == "child-frame"
+                assert not params.get("grantUniveralAccess", False)
+                if probe_failure == "world":
+                    return {"error": {"message": "context unavailable"}}
+                return {"result": {"executionContextId": 7}}
+            raise AssertionError((method, params, session_id))
+
+        supervisor._cdp = fake_cdp
+        supervisor._enable_page_domains = lambda *_args, **_kwargs: asyncio.sleep(0)
+        supervisor._install_dialog_bridge = lambda *_args, **_kwargs: asyncio.sleep(0)
+        monkeypatch.setattr(browser_supervisor, "_schedule", lambda coro, _loop, timeout: asyncio.run(coro))
+
+        result = supervisor.focus_page("https://www.espn.com", accept="hasPassword")
+        assert result["ok"] is True
+        assert result["frame_origin"] == child_origin
+        assert result["route"] == {"page_session_id": "top-session", "frame_id": "child-frame",
+                                   "frame_session_id": "child-session", "frame_loader_id": "child-document"}
+        # The persistent page session remains the selected relying party.
+        assert supervisor._page_session_id == "top-session"
+
+    def test_supervisor_rejects_a_stale_cross_origin_frame_route(self):
+        """A detached/replaced OOPIF cannot reuse a former consent route."""
+        from tools import browser_supervisor
+        from tools.browser_supervisor_frames import FrameInfo
+
+        supervisor = object.__new__(browser_supervisor.CDPSupervisor)
+        supervisor._loop = type("Loop", (), {"is_running": lambda self: True})()
+        supervisor._state_lock = threading.Lock()
+        supervisor._active = True
+        supervisor._page_session_id = "top-session"
+        supervisor._frames = {
+            # Same frame id but a new child session means its old document is gone.
+            "child-frame": FrameInfo("child-frame", "https://login.example/next",
+                                      "https://login.example", "top-frame", True, "new-child-session"),
+        }
+        result = supervisor.evaluate_runtime(
+            "window.location.origin",
+            route={"page_session_id": "top-session", "frame_id": "child-frame",
+                   "frame_session_id": "old-child-session"},
+        )
+        assert result["ok"] is False
+        assert "no longer attached" in result["error"]
+
+    def test_supervisor_rejects_same_session_after_child_document_replacement(self):
+        """A reload can retain the OOPIF CDP session, but not its authority."""
+        from tools import browser_supervisor
+        from tools.browser_supervisor_frames import FrameInfo
+
+        supervisor = object.__new__(browser_supervisor.CDPSupervisor)
+        supervisor._loop = type("Loop", (), {"is_running": lambda self: True})()
+        supervisor._state_lock = threading.Lock()
+        supervisor._active = True
+        supervisor._page_session_id = "top-session"
+        child = FrameInfo("child-frame", "https://idp.test/login", "https://idp.test",
+                          "top-frame", True, "child-session")
+        child.loader_id = "new-document"
+        supervisor._frames = {"child-frame": child}
+        supervisor._cdp = lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not evaluate"))
+        result = supervisor.evaluate_runtime(
+            "window.location.origin",
+            route={"page_session_id": "top-session", "frame_id": "child-frame",
+                   "frame_session_id": "child-session", "frame_loader_id": "old-document"},
+        )
+        assert result == {"ok": False, "error": "vault frame route is no longer attached"}
+
     def test_check_fn_follows_the_browser_not_the_item_count(self, tmp_path):
         """The vault tools ride with the browser toolset: an empty vault must still expose
         browser_vault_save_login (that is how the first login gets saved), and no browser means no tools."""
@@ -290,6 +550,7 @@ class TestBrowserVaultTools:
 
         meta = _add_login(store, origin="https://example.com")
         with patch("agent.vault_store.get_vault_store", return_value=store), \
+             patch.object(browser_vault_tool, "_ensure_supervisor", return_value=None), \
              patch.object(browser_vault_tool, "_current_page_origin", return_value="https://evil.com"):
             out = json.loads(browser_vault_tool.browser_vault_fill(meta.id))
         assert out["success"] is False
@@ -332,14 +593,15 @@ class TestBrowserVaultTools:
         ]
         secret_exprs = []
 
-        def fake_eval(task_id, expression):
+        def fake_eval(task_id, expression, *_route):
             return {"success": True, "result": json.dumps(controls)}
 
-        def fake_eval_secret(task_id, expression):
+        def fake_eval_secret(task_id, expression, **_route):
             secret_exprs.append(expression)
             return {"success": True, "result": json.dumps({"filled": 1})}
 
         with patch("agent.vault_backends.backend_for_handle", return_value=_ManagerBackend()), \
+             patch.object(browser_vault_tool, "_ensure_supervisor", return_value=None), \
              patch.object(browser_vault_tool, "_current_page_origin", return_value="https://www.amazon.co.uk"), \
              patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
              patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_eval_secret):
@@ -351,6 +613,118 @@ class TestBrowserVaultTools:
         assert "https://www.amazon.co.uk" in secret_exprs[0]
         assert "s3cret-pw" not in raw
         assert out["filled_fields"] == 1
+
+    @pytest.mark.parametrize(("child_origin", "expected_origin"), [
+        ("https://cdn.registerdisney.go.com", "https://cdn.registerdisney.go.com"),
+        ("HTTPS://CDN.RegisterDisney.Go.Com:443", "https://cdn.registerdisney.go.com"),
+        ("https://[::1]:8443", "https://[::1]:8443"),
+    ])
+    def test_fill_routes_a_bound_top_level_login_to_its_oopif(self, store, child_origin, expected_origin):
+        """A password field in a cross-origin OOPIF is inspected and written
+        through that frame's CDP session, while the vault binding remains the
+        exact top-level site that embedded it."""
+        from tools import browser_vault_tool
+
+        meta = _add_login(store, origin="https://www.espn.com")
+        controls = [
+            {"autocomplete": "current-password", "formIndex": 0, "index": 0,
+             "label": "", "name": "pw", "type": "password"},
+        ]
+        secret_exprs = []
+
+        class _Supervisor:
+            def focus_page(self, origin, *, accept=None):
+                assert origin == "https://www.espn.com"
+                assert accept == browser_vault_tool._TAB_PROBES["login"]
+                return {"ok": True, "url": "https://www.espn.com/login/",
+                        "frame_origin": child_origin,
+                        "route": {"page_session_id": "top", "frame_id": "idp", "frame_session_id": "idp-session"}}
+
+        def fake_eval(task_id, expression, *_route):
+            return {"success": True, "result": json.dumps(controls)}
+
+        def fake_eval_secret(task_id, expression, **_route):
+            secret_exprs.append(expression)
+            return {"success": True, "result": json.dumps({"filled": 1})}
+
+        with patch("agent.vault_store.get_vault_store", return_value=store), \
+             patch.object(browser_vault_tool, "_ensure_supervisor", return_value=_Supervisor()), \
+             patch.object(browser_vault_tool, "_eval_js_in_route", side_effect=fake_eval), \
+             patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_eval_secret), \
+             patch("tools.approval_prompt.request_elicitation_consent", return_value="accept"):
+            raw = browser_vault_tool.browser_vault_fill(meta.id)
+        out = json.loads(raw)
+        assert out["success"] is True
+        assert out["origin"] == "https://www.espn.com"
+        assert json.dumps(expected_origin) in secret_exprs[0]
+        assert '"https://www.espn.com"' in secret_exprs[0]
+        assert "s3cret-pw" not in raw
+
+    def test_fill_keeps_same_origin_login_on_the_bound_origin(self, store):
+        """The OOPIF path does not change the existing top-level write fence."""
+        from tools import browser_vault_tool
+
+        meta = _add_login(store, origin="https://example.com")
+        controls = [{"autocomplete": "current-password", "formIndex": 0, "index": 0,
+                     "label": "", "name": "pw", "type": "password"}]
+        secret_exprs = []
+
+        class _Supervisor:
+            def focus_page(self, origin, *, accept=None):
+                return {"ok": True, "url": "https://example.com/login"}
+
+        with patch("agent.vault_store.get_vault_store", return_value=store), \
+             patch.object(browser_vault_tool, "_ensure_supervisor", return_value=_Supervisor()), \
+             patch.object(browser_vault_tool, "_eval_js", return_value={"success": True, "result": json.dumps(controls)}), \
+             patch.object(browser_vault_tool, "_eval_js_secret", side_effect=lambda _task, expr: (
+                 secret_exprs.append(expr) or {"success": True, "result": json.dumps({"filled": 1})}
+             )):
+            out = json.loads(browser_vault_tool.browser_vault_fill(meta.id))
+        assert out["success"] is True
+        assert '"https://example.com"' in secret_exprs[0]
+
+    def test_save_login_binds_an_oopif_form_to_its_top_level_origin(self, store):
+        """Saving from a routed OOPIF must not create a Disney/IdP-bound item."""
+        from agent.vault_backends import unlock as unlock_mod
+        from tools import browser_vault_tool
+
+        class _Supervisor:
+            def focus_page(self, origin, *, accept=None):
+                assert origin == ""
+                return {"ok": True, "url": "https://www.espn.com/login/",
+                        "frame_origin": "https://cdn.registerdisney.go.com"}
+
+        unlock_mod.set_save_login_prompt_callback(lambda origin, _site: {
+            "identifier": "viewer@example.com", "password": "s3cret-pw",
+        })
+        try:
+            with patch("agent.vault_store.get_vault_store", return_value=store), \
+                 patch.object(browser_vault_tool, "_ensure_supervisor", return_value=_Supervisor()), \
+                 patch.object(browser_vault_tool, "browser_vault_fill", return_value=json.dumps({"success": True})), \
+                 patch("agent.vault_backends.unlock.can_prompt_here", return_value=True):
+                out = json.loads(browser_vault_tool.browser_vault_save_login(task_id="oopif-save"))
+        finally:
+            unlock_mod.set_save_login_prompt_callback(None)
+        assert out["success"] is True
+        assert out["origin"] == "https://www.espn.com"
+        assert store.list_items()[0].origin == "https://www.espn.com"
+
+    def test_fill_rejects_an_unrelated_oopif_even_if_it_has_a_password(self, store):
+        """A child frame from another tab must not turn into a vault target."""
+        from tools import browser_vault_tool
+
+        meta = _add_login(store, origin="https://www.espn.com")
+        with patch("agent.vault_store.get_vault_store", return_value=store), \
+             patch.object(browser_vault_tool, "_ensure_supervisor", return_value=type("S", (), {
+                 "focus_page": lambda *_args, **_kwargs: {"ok": False, "error": "no matching frame"},
+             })()), \
+             patch.object(browser_vault_tool, "_current_page_origin", return_value="https://evil.example"), \
+             patch.object(browser_vault_tool, "_eval_js") as inspect, \
+             patch.object(browser_vault_tool, "_eval_js_secret") as fill:
+            out = json.loads(browser_vault_tool.browser_vault_fill(meta.id))
+        assert out["error_type"] == "origin_mismatch"
+        inspect.assert_not_called()
+        fill.assert_not_called()
 
     def test_fill_still_refused_on_origin_not_saved_on_the_item(self):
         """Multi-website items widen nothing: an unsaved origin — even a sibling
@@ -372,6 +746,7 @@ class TestBrowserVaultTools:
                 return "s3cret-pw"
 
         with patch("agent.vault_backends.backend_for_handle", return_value=_ManagerBackend()), \
+             patch.object(browser_vault_tool, "_ensure_supervisor", return_value=None), \
              patch.object(browser_vault_tool, "_current_page_origin", return_value="https://payments.amazon.co.uk"):
             out = json.loads(browser_vault_tool.browser_vault_fill("op:multi"))
         assert out["success"] is False
@@ -406,6 +781,7 @@ class TestBrowserVaultTools:
             return {"success": True, "result": json.dumps({"filled": 1})}
 
         with patch("agent.vault_store.get_vault_store", return_value=store), \
+             patch.object(browser_vault_tool, "_ensure_supervisor", return_value=None), \
              patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
              patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_eval_secret):
             raw = browser_vault_tool.browser_vault_fill(meta.id)
@@ -458,6 +834,7 @@ class TestBrowserVaultTools:
             }
 
         with patch("agent.vault_store.get_vault_store", return_value=store), \
+             patch.object(browser_vault_tool, "_ensure_supervisor", return_value=None), \
              patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
              patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_eval_secret):
             raw = browser_vault_tool.browser_vault_fill(meta.id)
@@ -521,6 +898,7 @@ class TestBrowserVaultTools:
 
         try:
             with patch("agent.vault_store.get_vault_store", return_value=store), \
+                 patch.object(browser_vault_tool, "_ensure_supervisor", return_value=None), \
                  patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
                  patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_eval_secret):
                 out = json.loads(browser_vault_tool.browser_vault_fill(meta.id))
@@ -570,6 +948,7 @@ class TestBrowserVaultTools:
 
         try:
             with patch("agent.vault_store.get_vault_store", return_value=store), \
+                 patch.object(browser_vault_tool, "_ensure_supervisor", return_value=None), \
                  patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
                  patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_eval_secret), \
                  patch("tools.approval_prompt.request_elicitation_consent", return_value="decline"):
@@ -578,6 +957,7 @@ class TestBrowserVaultTools:
             assert secret_exprs == []
 
             with patch("agent.vault_store.get_vault_store", return_value=store), \
+                 patch.object(browser_vault_tool, "_ensure_supervisor", return_value=None), \
                  patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
                  patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_eval_secret), \
                  patch("tools.approval_prompt.request_elicitation_consent", return_value="accept"):
@@ -669,6 +1049,7 @@ class TestSaveLoginPrompt:
             return {"identifier": "tek@acme.test", "password": "hunter2-very-secret"}
 
         unlock_mod.set_save_login_prompt_callback(prompt)
+        monkeypatch.setattr(browser_vault_tool, "_ensure_supervisor", lambda _task_id: None)
         monkeypatch.setattr(browser_vault_tool, "_current_page_origin", lambda task_id: "https://acme.test")
         monkeypatch.setattr(browser_vault_tool, "browser_vault_fill",
                             lambda handle, task_id=None: json.dumps({"success": True, "filled_fields": 1}))
@@ -687,6 +1068,7 @@ class TestSaveLoginPrompt:
         from agent.vault_backends import unlock as unlock_mod
         from tools import browser_vault_tool
 
+        monkeypatch.setattr(browser_vault_tool, "_ensure_supervisor", lambda _task_id: None)
         monkeypatch.setattr(browser_vault_tool, "_current_page_origin", lambda task_id: "https://acme.test")
         with patch("agent.vault_store.get_vault_store", return_value=store):
             unlock_mod.set_save_login_prompt_callback(lambda origin, site: None)

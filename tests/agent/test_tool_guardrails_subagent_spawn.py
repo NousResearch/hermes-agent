@@ -202,14 +202,14 @@ def test_web_search_cap_still_works():
 
 def test_commit_returns_correct_charged_count():
     """Reservation commit returns the number actually charged."""
-    ctrl = _controller(3)
+    _controller(3)
     assert _commit(1) == 1
     assert _commit(5) == 2  # only 2 remaining
 
 
 def test_return_value_allows_caller_to_trim_tasks():
     """The caller can use the return value to skip excess child construction."""
-    ctrl = _controller(2)
+    _controller(2)
     task_list = list(range(5))
     with reserve_subagent_spawns(len(task_list)) as reservation:
         charged = reservation.count

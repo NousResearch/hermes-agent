@@ -1,8 +1,148 @@
-"""Shell-script hooks bridge: ``hooks:`` config → first-use consent per ``(event, command)`` →
-callbacks on the plugin hook manager, so every ``invoke_hook()`` site dispatches to the scripts.
-Wire: stdin JSON ``{hook_event_name, tool_name, tool_input, session_id, cwd, extra}``; optional stdout
-JSON ``{"decision"|"action": "block"|"modify", ...}`` / ``{"context": ...}`` via ``_parse_response``.
-Exit code 2 blocks a ``pre_tool_call`` even without JSON (Claude-Code / Cursor). Fail open unless ``fail_closed``."""
+"""
+Shell-script hooks bridge.
+
+Reads the ``hooks:`` block from ``cli-config.yaml``, prompts the user for
+consent on first use of each ``(event, command)`` pair, and registers
+callbacks on the existing plugin hook manager so every existing
+``invoke_hook()`` site dispatches to the configured shell scripts — with
+zero changes to call sites.
+
+Design notes
+------------
+* Python plugins and shell hooks compose naturally: both flow through
+  :func:`hermes_cli.plugins.invoke_hook` and its aggregators.  Python
+  plugins are registered first (via ``discover_and_load()``) so their
+  block decisions win ties over shell-hook blocks.
+* Subprocess execution uses ``shlex.split(os.path.expanduser(command))``
+  with ``shell=False`` — no shell injection footguns.  Users that need
+  pipes/redirection wrap their logic in a script.
+* First-use consent is gated by the allowlist under
+  ``~/.hermes/shell-hooks-allowlist.json``.  Non-TTY callers must pass
+  ``accept_hooks=True`` (resolved from ``--accept-hooks``,
+  ``HERMES_ACCEPT_HOOKS``, or ``hooks_auto_accept: true`` in config)
+  for registration to succeed without a prompt.
+* Registration is idempotent — safe to invoke from both the CLI entry
+  point (``hermes_cli/main.py``) and the gateway entry point
+  (``gateway/run.py``).
+
+Wire protocol
+-------------
+**stdin** (JSON, piped to the script)::
+
+    {
+        "hook_event_name": "pre_tool_call",
+        "tool_name":       "terminal",
+        "tool_input":      {"command": "rm -rf /"},
+        "session_id":      "sess_abc123",
+        "cwd":             "/home/user/project",
+        "extra":           {...}   # event-specific kwargs
+    }
+
+**stdout** (JSON, optional — anything else is ignored)::
+
+    # Block a pre_tool_call (either shape accepted; normalised internally):
+    {"decision": "block", "reason":  "Forbidden command"}   # Claude-Code-style
+    {"action":   "block", "message": "Forbidden command"}   # Hermes-canonical
+
+    # Inject context for pre_llm_call:
+    {"context": "Today is Friday"}
+
+    # Modify tool input for pre_tool_call (Hermes-canonical):
+    {"action": "modify", "args": {"new_string": "fixed content"}}
+
+    # Modify tool input for pre_tool_call (Claude-Code-style):
+    {"decision": "modify", "tool_input": {"new_string": "fixed content"}}
+
+    # Silent no-op:
+    <empty or any non-matching JSON object>
+
+**exit codes**
+
+Exit code 2 from a ``pre_tool_call`` hook blocks the tool call even when
+stdout carries no block JSON (Claude-Code / Cursor compatible).  The block
+message is taken from the stdout block JSON when present, then the first
+400 characters of stderr, then a generic default.  For events whose block
+directive is not honored, exit 2 is logged at warning like any other
+non-zero exit.  All other non-zero exits log a warning and stdout is still
+parsed normally.
+
+**failure semantics**
+
+Hooks fail *open* by default: a spawn error, timeout, or unparseable
+stdout logs a warning and contributes nothing.  A ``pre_tool_call`` entry
+can opt into fail-*closed* semantics with ``fail_closed: true``
+(``failClosed`` also accepted for Cursor/Claude-Code config compat) —
+spawn errors, timeouts, and malformed stdout then BLOCK the tool call
+with ``hook <command> failed closed: <reason>``.  Use this for
+security-gating hooks (secret scanners, policy checks) where a crashed
+hook must not silently allow the action.  On non-blocking events
+``fail_closed`` is ignored with a warning.
+
+Per-event ``extra`` keys
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+The ``extra`` object contains every kwarg that is **not** one of the
+top-level payload keys (``tool_name``, ``args``, ``session_id``,
+``parent_session_id``).  The tables below list the ``extra`` keys
+emitted by each built-in hook site.
+
+``post_tool_call`` (emitted from ``model_tools.py``)::
+
+    result          – tool return value (serialised string)
+    status          – "ok" | "error" | "blocked"
+    error_type      – error category (e.g. "ValueError"), or None
+    error_message   – human-readable error text, or None
+    duration_ms     – wall-clock time in milliseconds
+    task_id         – current task id (empty string if none)
+    tool_call_id    – provider tool-call id
+    turn_id         – current turn id
+    api_request_id  – current API request id
+    middleware_trace – list of dicts from tool middleware chain
+
+``pre_tool_call`` (emitted from ``model_tools.py``)::
+
+    task_id         – current task id (empty string if none)
+    tool_call_id    – provider tool-call id
+    turn_id         – current turn id
+    api_request_id  – current API request id
+    middleware_trace – list of dicts from tool middleware chain
+
+``on_session_start`` (emitted from ``agent/conversation_loop.py``)::
+
+    model           – model name (e.g. "claude-sonnet-4-20250514")
+    platform        – platform identifier (e.g. "cli", "whatsapp")
+
+``on_session_end`` (emitted from ``agent/turn_finalizer.py``)::
+
+    task_id         – current task id
+    turn_id         – current turn id
+    completed       – bool, True when the turn produced a final response
+    interrupted     – bool, True when the user interrupted
+    model           – model name
+    platform        – platform identifier
+
+``subagent_stop`` (emitted from ``tools/delegate_tool.py``)::
+
+    parent_turn_id  – parent agent's current turn id
+    child_session_id – child (subagent) session id
+    child_role      – role string of the child agent
+    child_summary   – summary of the child's work
+    child_status    – exit status string (e.g. "success", "error")
+    tool_call_history – redacted tool name/input summary/byte counts/status list
+    duration_ms     – wall-clock time of the child run in milliseconds
+
+``guardrail_block`` / ``guardrail_halt`` (emitted from
+``agent/tool_guardrails.py`` when the per-turn tool-call guardrail records
+a turn-stopping decision)::
+
+    tool_name       – the tool whose call was stopped
+    code            – decision code (e.g. "repeated_exact_failure_block",
+                      "idempotent_no_progress_block", "same_tool_failure_halt",
+                      "loop_web_search_cap", "loop_subagent_cap")
+    count           – streak/counter value behind the decision
+    action          – "block" | "halt"
+    message         – human-readable guidance text
+"""
 
 from __future__ import annotations
 

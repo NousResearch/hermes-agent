@@ -129,7 +129,12 @@ VALID_HOOKS: set[str] = {
     # "should_rotate_credential"/"should_fallback": bool, "message": str, "error_context": dict}.
     # Run-all-then-pick-first (see get_plugin_error_classification). Privacy: error_message/
     # error_body may be unredacted.
-    "transform_api_error_classification", "on_session_start", "on_session_end",
+    # guardrail_block/guardrail_halt: fired by agent.tool_guardrails when the per-turn controller
+    # records a turn-stopping decision — "guardrail_block" for action="block" (repeated exact
+    # failure, idempotent no-progress, loop caps) and "guardrail_halt" for action="halt"
+    # (same-tool failure streak). Observer-only. Kwargs: tool_name, code, count, action, message.
+    "guardrail_block", "guardrail_halt",
+        "transform_api_error_classification", "on_session_start", "on_session_end",
     "on_session_finalize", "on_session_reset",
     # on_skill_lifecycle: successful skill lifecycle facts (local skill name visible to plugins).
     "on_skill_lifecycle", "subagent_start", "subagent_stop",

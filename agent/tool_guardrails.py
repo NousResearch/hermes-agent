@@ -9,12 +9,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from collections import deque
 from dataclasses import asdict, dataclass, field, fields
 from typing import Any, Mapping
 
 from utils import safe_json_loads
 from agent.tool_result_classification import file_mutation_result_landed, is_guardrail_refusal
+
+logger = logging.getLogger(__name__)
 
 
 IDEMPOTENT_TOOL_NAMES = frozenset({
@@ -304,6 +307,33 @@ _LOOP_CAPS: dict[str, tuple[str, str, str]] = {
 }
 
 
+def _emit_guardrail_hook(decision: "ToolGuardrailDecision") -> None:
+    """Fire the ``guardrail_block`` / ``guardrail_halt`` lifecycle hook.
+
+    Notify-only and failure-safe, matching how other ``invoke_hook`` call
+    sites guard: the import is lazy (this module must stay importable
+    without ``hermes_cli``), emission is gated on ``has_hook`` so the common
+    no-hooks case costs one lookup, and any failure is logged and swallowed
+    — a hook can never break the agent loop.
+    """
+    event = "guardrail_halt" if decision.action == "halt" else "guardrail_block"
+    try:
+        from hermes_cli import lifecycle
+
+        if not lifecycle.has_hook(event):
+            return
+        lifecycle.invoke_hook(
+            event,
+            tool_name=decision.tool_name,
+            code=decision.code,
+            count=decision.count,
+            action=decision.action,
+            message=decision.message,
+        )
+    except Exception:
+        logger.debug("guardrail hook emission failed (%s)", event, exc_info=True)
+
+
 class ToolCallGuardrailController:
     """Per-turn controller for repeated failed/non-progressing tool calls."""
 
@@ -352,6 +382,8 @@ class ToolCallGuardrailController:
         decision = ToolGuardrailDecision(action, code, message, tool_name, count, signature)
         if decision.should_halt:
             self._halt_decision = decision
+        if decision.action in ("block", "halt"):
+            _emit_guardrail_hook(decision)
         return decision
 
     def before_call(self, tool_name: str, args: Mapping[str, Any] | None) -> ToolGuardrailDecision:

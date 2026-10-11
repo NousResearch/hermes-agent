@@ -1,0 +1,6 @@
+name: lazy-modules
+version: "0.1.0"
+description: "Trigger-based module loading for oversized AGENTS.md/context files. Split the aggregated context file into manifest groups; a small catalogue rides in the system prompt while group bodies are injected once per session via pre_llm_call into the current-turn user message (system prompt stays byte-stable, prompt caching intact). Each injected blob is budgeted against hooks.output_spill.max_chars so nothing silently degrades to a spill pointer. Pure plugin — no core changes."
+author: "Nous Research (design validated in #110868 by @KeyArgo)"
+hooks:
+  - pre_llm_call

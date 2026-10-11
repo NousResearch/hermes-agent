@@ -744,6 +744,7 @@ gateway:
     already_paused: "⏸️ Tá Hermes ar sos cheana féin{suffix}. Úsáid `/pause off` chun atosú."
     paused: "⏸️ Ar sos{suffix}. Tá obair nua cron/kanban/gateway ar fionraí; críochnaíonn obair atá ar siúl mar is gnách. Úsáid `/pause off` chun atosú."
   queue:
+    full: "Tá an scuaine feithimh lán. Níor cuireadh an teachtaireacht seo sa scuaine. Fan go gcríochnóidh seal sa scuaine, ansin seol arís í."
     usage: "Úsáid: /queue <leid>"
     queued: "Curtha i scuaine don chéad seal eile."
     queued_depth: " ({depth} i scuaine)"

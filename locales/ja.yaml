@@ -744,6 +744,7 @@ gateway:
     already_paused: "⏸️ Hermes はすでに一時停止しています{suffix}。再開するには `/pause off` を使ってください。"
     paused: "⏸️ 一時停止しました{suffix}。新しい cron/kanban/ゲートウェイの作業は保留され、進行中の作業は通常どおり完了します。再開するには `/pause off` を使ってください。"
   queue:
+    full: "待機キューが満杯です。このメッセージはキューに追加されませんでした。キュー内のターンが完了してから、再送してください。"
     usage: "使い方: /queue <プロンプト>"
     queued: "次のターンにキューしました。"
     queued_depth: " ({depth} 件キュー中)"

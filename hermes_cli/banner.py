@@ -65,6 +65,14 @@ def _skin_color(key: str, fallback: str) -> str:
     return _quiet(lambda: _active_skin().get_color(key, fallback), fallback)
 
 
+def _adapt_default_art(markup: str) -> str:
+    """Pass the built-in gold art through the light-mode remap (its hexes bypass get_color)."""
+    def _remap(text: str) -> str:
+        from cli import _maybe_remap_for_light_mode
+        return re.sub(r"#[0-9A-Fa-f]{6}", lambda m: _maybe_remap_for_light_mode(m.group(0)), text)
+    return _quiet(lambda: _remap(markup), markup)
+
+
 # === ASCII Art & Branding ===
 
 from hermes_cli import __release_date__ as RELEASE_DATE
@@ -711,7 +719,7 @@ def build_welcome_banner(
     text = _skin_color("banner_text", "#FFF8DC")
     # Use skin's custom caduceus art if provided
     _bskin = _quiet(_active_skin)
-    left_lines = ["", getattr(_bskin, "banner_hero", None) or HERMES_CADUCEUS, ""]
+    left_lines = ["", getattr(_bskin, "banner_hero", None) or _adapt_default_art(HERMES_CADUCEUS), ""]
     left_lines += _banner_left_lines(model, cwd, session_id, context_length, provider, accent=accent, dim=dim,
                                      context_pinned=context_pinned)
     right_lines = _banner_tool_lines(
@@ -773,6 +781,6 @@ def build_welcome_banner(
         border_style=_skin_color("banner_border", "#CD7F32"), padding=(0, 2))
     console.print()
     if shutil.get_terminal_size().columns >= 95:
-        console.print(getattr(_bskin, "banner_logo", None) or HERMES_AGENT_LOGO)
+        console.print(getattr(_bskin, "banner_logo", None) or _adapt_default_art(HERMES_AGENT_LOGO))
         console.print()
     console.print(outer_panel)

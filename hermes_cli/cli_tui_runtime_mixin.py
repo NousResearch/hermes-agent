@@ -438,8 +438,8 @@ class CLITuiRuntimeMixin:
         return True
 
     def _tui_shutdown(self):
-        """Teardown after the app exits: interrupt agent, stop voice/pet, persist + close session, cleanup, exit summary."""
-        from cli import _DIM, _RST, _cprint, _invoke_interrupted_session_end, _run_cleanup, set_approval_callback, set_secret_capture_callback, set_sudo_password_callback
+        """Teardown after the app exits: interrupt agent, stop voice/pet, persist + close session, exit summary, cleanup."""
+        from cli import _DIM, _RST, _cprint, _invoke_interrupted_session_end, set_approval_callback, set_secret_capture_callback, set_sudo_password_callback
         self._should_exit = True
         self._pet_stop_anim()
         # Without this line the terminal sits silent through the whole cleanup window.
@@ -488,6 +488,4 @@ class CLITuiRuntimeMixin:
         # run_conversation() fires on_session_end on normal completion; only fire here mid-turn.
         if self.agent and self._agent_running:
             _invoke_interrupted_session_end(self.agent, self.agent.session_id, "shutdown")
-        _run_cleanup()
-        self._print_exit_summary()
-        self._release_active_session()
+        self._finish_interactive_exit(release_session=True)

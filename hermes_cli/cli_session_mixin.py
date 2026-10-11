@@ -1156,3 +1156,30 @@ class CLISessionMixin:
             print(t("cli.session.exit_label_title", title=session_title))
         print(t("cli.session.exit_label_duration", duration=duration_str))
         print(t("cli.session.exit_label_messages", count=msg_count, user=user_msgs, tool_calls=tool_calls))
+
+    def _finish_interactive_exit(self, *, release_session: bool = False) -> None:
+        """Interactive exit epilogue: print the exit summary BEFORE cleanup.
+
+        ``_run_cleanup`` arms the exit watchdog, which force-exits the process if
+        a cleanup step (memory-provider ``on_session_end``, MCP server shutdown)
+        wedges past its leash. Anything ordered AFTER ``_run_cleanup`` is
+        therefore silently discarded — which is exactly what used to happen to the
+        cost report and ``--resume`` hint emitted by ``_print_exit_summary``.
+        Printing the summary first guarantees it reaches the user regardless of how
+        long cleanup then takes. The lease release, when requested, follows
+        cleanup. Shared by both interactive exit sites so the ordering can't drift
+        apart between them again.
+        """
+        from cli import _run_cleanup
+        # The print step runs in a try/finally around cleanup: printing FIRST
+        # must not come at the cost of cleanup (and the watchdog arm inside
+        # it) becoming conditional on the print succeeding. ``print()`` can
+        # raise on a broken stdout pipe (BrokenPipeError piping to e.g.
+        # ``head``); skipping cleanup then would trade the original
+        # swallowed-summary bug for a worse never-cleaned-up one.
+        try:
+            self._print_exit_summary()
+        finally:
+            _run_cleanup()
+            if release_session:
+                self._release_active_session()

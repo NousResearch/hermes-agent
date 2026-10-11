@@ -1862,7 +1862,10 @@ class SessionMessagesMixin:
             ids = [r[0] for r in conn.execute("SELECT id FROM messages WHERE session_id = ? AND id >= ? AND active = 1",
                                              (session_id, target_message_id)).fetchall()]
             if ids:
-                conn.execute(f"UPDATE messages SET active = 0 WHERE id IN ({_placeholders(ids)})", ids)
+                conn.execute(
+                    "UPDATE messages SET active = 0 WHERE session_id = ? AND id >= ? AND active = 1",
+                    (session_id, target_message_id),
+                )
             if replacement is not None:
                 self._insert_message_rows(conn, session_id, [replacement])  # stamps _row_id and message_uid
             conn.execute(

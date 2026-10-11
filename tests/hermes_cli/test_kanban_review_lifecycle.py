@@ -1022,6 +1022,67 @@ def test_active_pr_handoff_still_lifts_own_pr_guard_and_ignores_foreign_noise(
         assert kbd.check_respawn_guard(conn, child_id) == "active_pr"
 
 
+def test_active_pr_guard_holds_open_own_pr_published_after_old_comment_handoff(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A handoff that follows only the old PR COMMENT does not lift ``active_pr``
+    when the card's own run published the OPEN PR after that handoff: the
+    publication is newer than the handoff, and a fresh native read decides."""
+    import time
+
+    seen = _mock_github(monkeypatch, {OWN_PR: _pull(OWN_PR, "open")})
+    t100 = int(time.time()) - 600
+    t110, t120 = t100 + 10, t100 + 20
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="published after handoff", assignee="dev")
+        kb.add_comment(conn, tid, author="dev", body=f"Opened {OWN_PR} for review.")
+        assert kb.assign_task(conn, tid, "closer") is True
+        _complete_local(conn, tid, OWN_PR)
+        _requeue_completed(conn, tid, aged=False, native_event=True)
+        with kb.write_txn(conn):
+            conn.execute("UPDATE task_comments SET created_at = ? WHERE task_id = ?", (t100, tid))
+            conn.execute(
+                "UPDATE task_events SET created_at = ? WHERE task_id = ? AND kind = 'assigned'",
+                (t110, tid),
+            )
+            conn.execute(
+                "UPDATE task_events SET created_at = ? WHERE task_id = ? AND kind = 'status'",
+                (t120, tid),
+            )
+            conn.execute(
+                "UPDATE task_runs SET started_at = ?, ended_at = ? WHERE task_id = ?",
+                (t110, t120, tid),
+            )
+
+        assert kbd.check_respawn_guard(conn, tid) == "active_pr"
+    assert ("repos/example/repo/pulls/902", "/profiles/closer") in seen.reads
+
+
+def test_active_pr_guard_fails_closed_without_ambient_read_for_unassigned_own_pr(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unassigned card has no profile to read its own PR as. The guard must
+    stay ``active_pr`` and make NO native read: ``_assignee_profile_home(None)``
+    returns None, and a None ``profile_home`` would be an ambient-credential
+    call. The mocked read says MERGED, so an ambient call would lift the guard."""
+    reads: list = []
+    monkeypatch.setattr(kpa, "_assignee_profile_home", lambda assignee: None)
+    monkeypatch.setattr(
+        kpa, "_api",
+        lambda endpoint, **kw: reads.append((endpoint, kw.get("profile_home")))
+        or _pull(OWN_PR, "closed", True),
+    )
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="unassigned own pr", assignee="dev")
+        _complete_local(conn, tid, OWN_PR)
+        assert kb.assign_task(conn, tid, None) is True
+        _requeue_completed(conn, tid, aged=True, native_event=True)
+        assert kb.get_task(conn, tid).assignee is None
+
+        assert kbd.check_respawn_guard(conn, tid) == "active_pr"
+    assert reads == []
+
+
 def test_dispatch_json_exposes_suppression_reasons(
     kanban_home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

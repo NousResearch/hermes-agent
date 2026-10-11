@@ -12,7 +12,10 @@ from typing import Any
 
 from hermes_cli.timefmt import EPOCH_MAX, EPOCH_MIN
 from hermes_state_pidns import persistent_record_pidns_checkable, pid_namespace_id
-from agent.skill_commands import AUTO_LOAD_SCAFFOLD_SQL_LIKE, SKILL_EXCERPT_JOINT, SKILL_SCAFFOLD_SQL_LIKE, describe_skill_invocation
+from agent.skill_commands import (AUTO_LOAD_SCAFFOLD_SQL_LIKE, SKILL_EXCERPT_JOINT,
+    SKILL_SCAFFOLD_SQL_LIKE, _SINGLE_SKILL_INSTRUCTION, describe_skill_invocation)
+from agent.system_wrappers import (BOT_CHAT_DELIVERY_PREFIX, CRON_HINT_PREFIX,
+    SYSTEM_WRAPPER_PREFIXES, WRAPPER_END_FLATTENED, strip_system_wrappers)
 from agent.context_compressor import (LEGACY_SUMMARY_PREFIX, SUMMARY_PREFIX, _MERGED_PRIOR_CONTEXT_HEADER,
     _MERGED_SUMMARY_DELIMITER, _SUMMARY_END_MARKER)
 
@@ -125,6 +128,34 @@ _PREVIEW_MERGED_PRIOR_UNWRAPPED_SQL = (f"CASE WHEN SUBSTR({_PREVIEW_MERGED_PRIOR
     f" ELSE {_PREVIEW_MERGED_PRIOR_SQL} END")
 _PREVIEW_FORCE_USER_REMAINDER_SQL = _sql_after_marker(_SUMMARY_END_MARKER)
 
+# Machine-authored wrappers (the cron run hint, the bot-chat delivery banner) are system
+# scaffolding the receiving model needs but the user never wrote: the preview cuts past the
+# wrapper paragraph. The terminator is the flattened ``]\n\n`` (two spaces after
+# ``_PREVIEW_CONTENT_SQL`` flattening); the first ``]`` would land mid-wrapper because the cron
+# hint quotes ``[SILENT]``/``[CRON_FAILURE]`` inside itself.
+_PREVIEW_WRAPPED_SQL = _sql_starts_with("m.content", SYSTEM_WRAPPER_PREFIXES)
+
+
+def _sql_strip_wrapper(expression: str) -> str:
+    """``expression`` with a leading flattened wrapper paragraph cut off; unchanged when the
+    terminator is absent (a truncated excerpt or a reworded build site — never guess)."""
+    term = _sql_literal(WRAPPER_END_FLATTENED)
+    cut = f"SUBSTR({expression}, INSTR({expression}, {term}) + {len(WRAPPER_END_FLATTENED)})"
+    return f"(CASE WHEN INSTR({expression}, {term}) > 0 THEN {cut} ELSE {expression} END)"
+
+
+# A cron job with skills embeds the volatile prompt (cron hint + job prompt) after the skill body
+# behind ``_SINGLE_SKILL_INSTRUCTION``; without this cut the 63-char head window only ever reaches
+# the skill body and the row previews as the bare ``/skill`` slug. Cut to the instruction, then
+# strip the cron hint that leads it. Scoped to rows carrying the cron hint so interactive ``/skill``
+# sessions keep their existing ``/work — typed instruction`` preview.
+_PREVIEW_CRON_SKILL_SQL = (f"(m.content LIKE '{SKILL_SCAFFOLD_SQL_LIKE}'"
+    f" AND INSTR(m.content, {_sql_literal(CRON_HINT_PREFIX)}) > 0"
+    f" AND INSTR(m.content, {_sql_literal(_SINGLE_SKILL_INSTRUCTION)}) > 0)")
+_PREVIEW_CRON_SKILL_CUT_SQL = _sql_strip_wrapper(
+    f"SUBSTR({_PREVIEW_CONTENT_SQL}, INSTR({_PREVIEW_CONTENT_SQL},"
+    f" {_sql_literal(_SINGLE_SKILL_INSTRUCTION)}) + {len(_SINGLE_SKILL_INSTRUCTION)})")
+
 # Pure compaction rows are ineligible; force-user-leading and merged carriers only when authentic content survives.
 # A display_kind="hidden" row is model-facing scaffolding the gateway never paints; the preview must not paint it either.
 _PREVIEW_ELIGIBLE_SQL = (f"(COALESCE(m.display_kind, '') <> 'hidden'"
@@ -135,9 +166,12 @@ _PREVIEW_ELIGIBLE_SQL = (f"(COALESCE(m.display_kind, '') <> 'hidden'"
     f" AND LENGTH({_sql_trim_whitespace(_PREVIEW_MERGED_PRIOR_UNWRAPPED_SQL)}) > 0)))")
 
 # ``_preview_raw`` SELECT for every listing query (scaffolded rows: head + tail around SKILL_EXCERPT_JOINT).
+# Cron-skill rows cut to the job prompt BEFORE the window; wrapped rows cut their wrapper paragraph.
 _PREVIEW_RAW_SELECT = (
     f"CASE WHEN {_PREVIEW_STANDALONE_SUMMARY_SQL} THEN {_PREVIEW_FORCE_USER_REMAINDER_SQL}"
     f" WHEN {_PREVIEW_MERGED_SUMMARY_SQL} THEN {_PREVIEW_MERGED_PRIOR_UNWRAPPED_SQL}"
+    f" WHEN {_PREVIEW_CRON_SKILL_SQL} THEN SUBSTR({_PREVIEW_CRON_SKILL_CUT_SQL}, 1, {_PREVIEW_HEAD_CHARS})"
+    f" WHEN {_PREVIEW_WRAPPED_SQL} THEN SUBSTR({_sql_strip_wrapper(_PREVIEW_CONTENT_SQL)}, 1, {_PREVIEW_HEAD_CHARS})"
     f" WHEN {_PREVIEW_SCAFFOLDED_SQL} AND LENGTH(m.content) > {_PREVIEW_SCAFFOLD_WINDOW * 2}"
     f" THEN SUBSTR({_PREVIEW_CONTENT_SQL}, 1, {_PREVIEW_SCAFFOLD_WINDOW}) || '{SKILL_EXCERPT_JOINT}'"
     f" || SUBSTR({_PREVIEW_CONTENT_SQL}, -{_PREVIEW_SCAFFOLD_WINDOW})"
@@ -153,6 +187,9 @@ def _shape_preview(raw: Any) -> str:
     text = text.replace("\n", " ").replace("\r", " ")
     described = describe_skill_invocation(text)
     text = described if described is not None else text.split(SKILL_EXCERPT_JOINT)[0]
+    # Safety net for surfaces whose query has no SQL-side cut (and for excerpts the SQL branch
+    # could not terminate): a wrapper paragraph never belongs in a user-facing preview.
+    text = strip_system_wrappers(text)
     return text[:_PREVIEW_MAX_CHARS] + "..." if len(text) > _PREVIEW_MAX_CHARS else text
 
 

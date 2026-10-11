@@ -4384,6 +4384,8 @@ def _data_url_mime(header: str, default: str = "image/jpeg") -> str:
     return default
 
 
+
+
 def _decode_pixels(data_url: str) -> Optional[tuple]:
     """``(width, height)`` of a base64 data URL; None when Pillow is missing or the payload is corrupt."""
     try:
@@ -4470,11 +4472,18 @@ def _write_data_url_to_source(source: dict, data_url: str) -> dict:
     return {**source, "type": "base64", "media_type": _data_url_mime(header), "data": data}
 
 
-def try_shrink_image_parts_in_messages(api_messages: list, *, max_dimension: int = 8000) -> bool:
+def try_shrink_image_parts_in_messages(
+    api_messages: list,
+    *,
+    max_dimension: int = 8000,
+    max_pixels: Optional[int] = None,
+) -> bool:
     """Re-encode oversized native image parts to recover from image-too-large errors.
     Mutates ``api_messages`` in place. Returns True if any part was replaced, False if nothing to shrink or
-    Pillow could not help. Targets data-URL parts over 4 MB or ``max_dimension`` (Anthropic's per-side pixel
-    cap, parsed from the rejection by the caller); http(s) image URLs are left untouched."""
+    Pillow could not help. Targets data-URL parts over 4 MB, over ``max_dimension`` (Anthropic's per-side
+    pixel cap, parsed from the rejection by the caller), or over ``max_pixels`` (the provider's total-pixel
+    budget, e.g. Qwen2.5/3-VL's default 1,505,280 px — a 5120x1440 screenshot is under both the byte and
+    per-side caps yet over it, #76505); http(s) image URLs are left untouched."""
     if not api_messages:
         return False
     try:
@@ -4487,8 +4496,92 @@ def try_shrink_image_parts_in_messages(api_messages: list, *, max_dimension: int
     # re-sends the same payload and wastes the single retry budget.
     unshrinkable_oversized = 0
 
+    def _shrink_data_url(
+        url: str, *, max_dimension: int, max_pixels: Optional[int], resize_fn: Any
+    ) -> tuple:
+        """Return ``(resized_url, unshrinkable)`` for a data URL.
+
+        ``resized_url`` is None when no rewrite applied. ``unshrinkable`` is True only when the image
+        violated a constraint and resizing failed to satisfy that same constraint, so the caller knows a
+        retry is pointless. The accept gate MUST use the axis that triggered the shrink: a pixel downscale
+        can re-encode to MORE bytes (PNG non-monotonic); a byte-only reject wedges.
+        """
+        target_bytes = _IMAGE_SHRINK_TARGET_BYTES
+        if not isinstance(url, str) or not url.startswith("data:"):
+            return None, False
+        triggered_by = "bytes" if len(url) > target_bytes else None  # over byte budget
+        if triggered_by is None:
+            # Bytes fine; check pixels against the provider cap (tiny bytes, huge pixels). The
+            # per-side cap AND (when present) the total-pixel budget both bind: a wide-but-short
+            # image can be under the per-side cap yet over the pixel budget (5120x1440 is under
+            # 8000px/side yet carries 7.4M px vs Qwen's 1,505,280 — #76505).
+            dims = _decode_pixels(url)
+            if dims is None:
+                return None, False
+            within_dim = max(dims) <= max_dimension
+            within_pixels = max_pixels is None or dims[0] * dims[1] <= max_pixels
+            if within_dim and within_pixels:
+                return None, False  # bytes, per-side and pixel budget all OK
+            triggered_by = "dimension" if not within_dim else "pixels"
+        try:
+            header, _, data = url.partition(",")
+            mime = _data_url_mime(header)
+            import base64 as _b64
+            raw = _b64.b64decode(data)
+            tmp = tempfile.NamedTemporaryFile(
+                prefix="hermes_shrink_", suffix=_IMAGE_SUFFIX_BY_MIME.get(mime, ".jpg"), delete=False
+            )
+            try:
+                tmp.write(raw)
+                tmp.close()
+                resized = resize_fn(
+                    Path(tmp.name),
+                    mime_type=mime,
+                    max_base64_bytes=target_bytes,
+                    max_dimension=max_dimension,
+                    max_pixels=max_pixels,
+                )
+            finally:
+                with contextlib.suppress(Exception):
+                    Path(tmp.name).unlink(missing_ok=True)
+            if not resized:
+                return None, True  # Pillow couldn't help
+
+            def _within_limits(dims: tuple) -> bool:
+                """True when a decoded (w, h) satisfies every active pixel constraint."""
+                w, h = dims
+                if max(w, h) > max_dimension:
+                    return False
+                if max_pixels is not None and w * h > max_pixels:
+                    return False
+                return True
+
+            new_dims = _decode_pixels(resized)
+            if triggered_by == "bytes":
+                # Byte budget is binding — bytes must shrink; and the resizer may return an
+                # over-cap blob (long side freezes at the 64px short-side floor) → still 400.
+                if len(resized) >= len(url):
+                    return None, True  # re-encode made it bigger
+                # Pixel constraints are also active on this request; an over-cap output would
+                # re-400 on retry. Skip when dims can't be decoded (historical byte-only gate).
+                if new_dims is not None and not _within_limits(new_dims):
+                    return None, True
+                return resized, False
+            # "dimension" or "pixels" is binding: the re-encode may have grown in bytes; accept
+            # a byte-larger re-encode if now within every pixel cap.
+            if new_dims is not None:
+                return (resized, False) if _within_limits(new_dims) else (None, True)
+            # Can't verify dimensions: fall back to the bytes-must-shrink gate so we never
+            # accept an unverifiable byte-larger blob.
+            return (resized, False) if len(resized) < len(url) else (None, True)
+        except Exception as exc:
+            logger.warning("image-shrink recovery: re-encode failed — %s", exc)
+            return None, triggered_by is not None
+
     def _shrink(url: Any) -> tuple:
-        return _shrink_data_url(url, max_dimension=max_dimension, resize_fn=_resize_image_for_vision)
+        return _shrink_data_url(
+            url, max_dimension=max_dimension, max_pixels=max_pixels, resize_fn=_resize_image_for_vision
+        )
 
     for msg in api_messages:
         if not isinstance(msg, dict):

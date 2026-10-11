@@ -262,6 +262,6 @@ def test_real_user_systemd_scope_preserves_worker_context(
                        env=process_registry.systemd_user_bus_env())
         state = subprocess.run(["systemctl", "--user", "show", unit, "--property=ActiveState", "--value"],
                                stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10,
-                               env=process_registry.systemd_user_bus_env())
+                               env=process_registry.systemd_user_bus_env(), check=False)
         assert state.stdout.strip() in ('inactive', 'failed'), state.stdout + state.stderr
     print(json.dumps({'worker': payload, 'scope_after_cleanup': state.stdout.strip()}))

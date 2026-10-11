@@ -154,7 +154,7 @@ def test_ordinary_worker_binding_freezes_readers_but_keeps_customizations(tmp_pa
     env = {**child_env(), **{k: os.environ[k] for k in ('TIRITH_ENABLED',) if k in os.environ}}
     env.update(HOME=str(tmp_path), USERPROFILE=str(tmp_path), HERMES_HOME=str(home), PYTHONPATH=str(root))
     result = subprocess.run([sys.executable, str(script)], cwd=root, env=env, stdin=subprocess.DEVNULL,
-                            capture_output=True, text=True, timeout=90)
+                            capture_output=True, text=True, timeout=90, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
     receipt = json.loads(result.stdout.strip().splitlines()[-1])
     assert receipt == {'safe': False, 'turns': [7, 7, 7], 'mcp': 'FROZEN_A', 'plugin': True}, receipt

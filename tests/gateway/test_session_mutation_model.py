@@ -95,7 +95,7 @@ def test_model_receipt_changes_next_wire_and_branch_keeps_independent_history(tm
             return params, result
     try:
         with daemon(root, home, env, barrier=False) as (_, desc):
-            params, result = asyncio.run(run(desc))
+            params, _result = asyncio.run(run(desc))
         async def retry(desc):
             async with websocket(home, desc) as ws:
                 info = await rpc(ws, 'session.info', session_id=params['session_id'])

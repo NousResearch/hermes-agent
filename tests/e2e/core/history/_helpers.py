@@ -401,7 +401,7 @@ class TuiGateway:
         # the owner first so each "gw" hop is still a fresh process on the same durable store.
         subprocess.run([sys.executable, "-m", "hermes_cli.main", "gateway", "stop"], cwd=self.cwd,
                        env={**self.env, "PWD": self.cwd}, stdin=subprocess.DEVNULL,
-                       capture_output=True, text=True, encoding="utf-8", timeout=120)
+                       capture_output=True, text=True, encoding="utf-8", timeout=120, check=False)
         self.proc = self.spawned.add(subprocess.Popen(
             [sys.executable, "-m", "tui_gateway.entry"], cwd=self.cwd, env={**self.env, "PWD": self.cwd},
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,

@@ -12,7 +12,7 @@ import pytest
 @pytest.mark.platforms("linux")
 @pytest.mark.parametrize('partial_start', [False, True])
 def test_live_runtime_writers_prevent_final_lock_release(tmp_path, monkeypatch, partial_start):
-    import gateway.run as run
+    from gateway import run
     from gateway.run_bootstrap import _start_gateway_start_cron_and_housekeeping
     from gateway.status import acquire_gateway_runtime_lock, release_gateway_runtime_lock
     from cron import scheduler_provider
@@ -58,7 +58,7 @@ if claimed:
 
     def contender():
         result = subprocess.run([sys.executable, '-c', probe], env=os.environ.copy(),
-                                stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=15)
+                                stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=15, check=False)
         assert result.returncode == 0, result.stderr
         return result.stdout.strip()
 

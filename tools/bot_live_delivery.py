@@ -264,7 +264,7 @@ def claim_pending_delivery(profile_home, owner):
     Keep this refusal until the legacy notification poller's call site is removed.
     A previously claimed record can still publish its terminal receipt below.
     """
-    return None
+    return
 
 
 def complete_delivery(

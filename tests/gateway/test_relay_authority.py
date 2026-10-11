@@ -15,7 +15,7 @@ import time
 def test_authenticated_relay_uses_canonical_admission(tmp_path):
     env = dict(os.environ, HOME=str(tmp_path), HERMES_HOME=str(tmp_path), PYTHONUNBUFFERED='1')
     result = subprocess.run([sys.executable, __file__, 'peer'], env=env,
-                            capture_output=True, text=True, timeout=100)
+                            capture_output=True, text=True, timeout=100, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
     receipt = json.loads((tmp_path / 'relay-receipt.json').read_text())
     assert receipt['same_agent'] and receipt['negative_controls']

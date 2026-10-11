@@ -116,7 +116,7 @@ def test_launch_policy_reaches_real_turn_runner(tmp_path):
     env = child_env()
     env.update(HOME=str(home), USERPROFILE=str(home), HERMES_HOME=str(state), PYTHONPATH=str(repo))
     result = subprocess.run([sys.executable, str(Path(__file__).parent / 'fixtures' / 'session_policy_peer.py')],
-                            cwd=repo, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=130)
+                            cwd=repo, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=130, check=False)
     assert result.returncode == 0, result.stdout + '\n' + result.stderr
     receipt = json.loads((state / 'policy-receipt.json').read_text())
     assert receipt['cwd_effects'] and receipt['same_agents'] and receipt['no_spill']
@@ -199,7 +199,7 @@ def test_ordinary_daemon_cli_launch_policy(tmp_path):
         'import json,sys; from pathlib import Path; '
         'from tests.gateway.fixtures.cli_launch_policy_probe import probe; '
         'print(json.dumps(probe(Path(sys.argv[1]))))', str(tmp_path)], cwd=root,
-        stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=180)
+        stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=180, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
     print(json.dumps(json.loads(result.stdout.splitlines()[-1])))
 

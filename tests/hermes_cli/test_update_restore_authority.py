@@ -65,7 +65,7 @@ def test_restore_refuses_live_authority_without_changing_data(tmp_path):
             return snapshot
 
     try:
-        with daemon(root, home, env, barrier=False) as (proc, desc):
+        with daemon(root, home, env, barrier=False) as (_proc, desc):
             snapshot = asyncio.run(exercise(desc))
             old_epoch = desc['authority_epoch']
         peer.release.set()
@@ -168,7 +168,7 @@ def test_update_restore_excludes_startup_until_publication(tmp_path, monkeypatch
         contender = subprocess.run([sys.executable, '-c',
             "import logging, runpy; logging.basicConfig(level=logging.INFO); runpy.run_module('gateway.run', run_name='__main__')"],
             cwd=root, env=env, stdin=subprocess.DEVNULL, capture_output=True,
-            text=True, encoding='utf-8', timeout=25)
+            text=True, encoding='utf-8', timeout=25, check=False)
         assert 'already owns profile' in contender.stdout + contender.stderr, contender
         assert (destination.read_bytes(), source.read_bytes()) == before
     finally:

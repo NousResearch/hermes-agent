@@ -20,7 +20,7 @@ async def test_managed_claims_participate_in_zero_and_nonzero_drain(tmp_path):
         's': SimpleNamespace(control=lambda frame: stopped.append(frame), closed=threading.Event())})
     runner = SimpleNamespace(session_authority=authority, _running_agents={},
         _running_agent_count=lambda: 0, _active_cron_job_count=lambda: 0, _active_api_run_count=lambda: 0,
-        _active_deferred_agent_worker_count=lambda: 0, _snapshot_running_agents=lambda: {},
+        _active_deferred_agent_worker_count=lambda: 0, _snapshot_running_agents=dict,
         _update_runtime_status=lambda *a: None)
     runner._drain_work_counts = GatewayShutdownMixin._drain_work_counts.__get__(runner)
     authority.runner = runner

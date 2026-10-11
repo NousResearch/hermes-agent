@@ -11,7 +11,7 @@ import sys
 
 def test_signed_webhook_storage_failure_is_retryable(tmp_path):
     result = subprocess.run([sys.executable, __file__],
-        env=dict(os.environ, HERMES_HOME=str(tmp_path)), capture_output=True, text=True, timeout=90)
+        env=dict(os.environ, HERMES_HOME=str(tmp_path)), capture_output=True, text=True, timeout=90, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
     print((tmp_path / 'webhook-receipt.json').read_text())
 

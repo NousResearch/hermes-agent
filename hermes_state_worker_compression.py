@@ -209,7 +209,7 @@ def archive_on_connection(db, conn, session_id: str, compacted_messages: list[di
         tail_count=tail_count, carried_messages=carried_messages, covered_ids=covered_ids,
         unresolved_held=unresolved_held)
 
-def publish_on_connection(db, conn, *, parent_session_id: str, child_session_id: str, source: str, messages: list[dict[str, Any]], model: str=None, model_config: dict[str, Any]=None, system_prompt: str=None, cwd: str=None, profile_name: str=None, compression_lock_holder: str=None, require_compression_lease: bool=True, require_lease_refresh: bool=False, lease_ttl_seconds: float=300.0, watermark: Optional[int]=None, watermark_ceiling: Optional[int]=None):
+def publish_on_connection(db, conn, *, parent_session_id: str, child_session_id: str, source: str, messages: list[dict[str, Any]], model: str | None=None, model_config: dict[str, Any] | None=None, system_prompt: str | None=None, cwd: str | None=None, profile_name: str | None=None, compression_lock_holder: str | None=None, require_compression_lease: bool=True, require_lease_refresh: bool=False, lease_ttl_seconds: float=300.0, watermark: Optional[int]=None, watermark_ceiling: Optional[int]=None):
     # The owner's rotation body (lease, closure, child row, timestamps, tail clone, local target,
     # auto-archive lift) on this receipt's connection, so the two paths cannot drift.
     db._publish_compression_child_on_conn(conn, parent_session_id=parent_session_id,

@@ -8,6 +8,7 @@ import time
 
 from hermes_state_local import POLICY_PREFIX
 from hermes_state_runtime import RuntimeStoreError, _epoch, _json
+import itertools
 
 
 def validate_local_lineage(conn, receipt):
@@ -22,7 +23,7 @@ def validate_local_lineage(conn, receipt):
     if (not isinstance(lineage, list) or not lineage or len(set(lineage)) != len(lineage)
             or lineage[0] != root or lineage[-1] != receipt['entry']['session_id']):
         raise RuntimeStoreError('storage_unavailable')
-    for parent_id, child_id in zip(lineage, lineage[1:]):
+    for parent_id, child_id in itertools.pairwise(lineage):
         parent = conn.execute('SELECT end_reason FROM sessions WHERE id=?', (parent_id,)).fetchone()
         child = conn.execute('SELECT parent_session_id,model_config FROM sessions WHERE id=?', (child_id,)).fetchone()
         if parent is None or child is None or child['parent_session_id'] != parent_id:

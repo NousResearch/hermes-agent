@@ -58,7 +58,7 @@ async def _restarted_owner_with_unknown_head(tmp_path, monkeypatch, executed):
 @pytest.mark.asyncio
 async def test_resolve_unknown_releases_the_paused_follower_exactly_once(tmp_path, monkeypatch):
     executed = []
-    store, authority, ref, unknown, follower = await _restarted_owner_with_unknown_head(tmp_path, monkeypatch, executed)
+    store, authority, _ref, unknown, follower = await _restarted_owner_with_unknown_head(tmp_path, monkeypatch, executed)
     peer = Peer()
     viewer = AuthorityConnection(authority, peer, {'user_id': 'human'})
     try:
@@ -97,7 +97,7 @@ async def test_resolve_unknown_releases_the_paused_follower_exactly_once(tmp_pat
 @pytest.mark.asyncio
 async def test_resolve_unknown_is_fenced_by_generation_and_capability(tmp_path, monkeypatch):
     executed = []
-    store, authority, ref, unknown, follower = await _restarted_owner_with_unknown_head(tmp_path, monkeypatch, executed)
+    store, authority, _ref, unknown, follower = await _restarted_owner_with_unknown_head(tmp_path, monkeypatch, executed)
     owner = AuthorityConnection(authority, Peer(), {'user_id': 'human'})
     reader = AuthorityConnection(authority, Peer(), {'user_id': 'human', 'capabilities': ['session:read', 'session:submit']})
     try:
@@ -127,7 +127,7 @@ async def test_discard_and_its_transcript_boundary_commit_atomically_on_the_phys
     """R1: a failure writing the boundary must not leave the lost admission terminal (its exact
     Discard retry refused, the follower claimable onto an open user tail). The boundary lands on
     the rotated physical transcript, not the logical owner."""
-    store, authority, ref, unknown, follower = await _restarted_owner_with_unknown_head(tmp_path, monkeypatch, [])
+    store, authority, _ref, unknown, follower = await _restarted_owner_with_unknown_head(tmp_path, monkeypatch, [])
     db = authority.db
     db.create_session('s-tip', source='telegram', parent_session_id='s')
     db.end_session('s', 'compression')
@@ -165,7 +165,7 @@ async def test_discarded_lost_turn_is_closed_and_never_merged_into_the_follower_
     from tests.acp_adapter.test_failed_turn_closure import _LoopbackProvider
     monkeypatch.setenv('HERMES_DISABLE_PLUGINS', '1')
     monkeypatch.setenv('NO_PROXY', '127.0.0.1,localhost')
-    store, authority, ref, unknown, follower = await _restarted_owner_with_unknown_head(tmp_path, monkeypatch, [])
+    store, authority, _ref, unknown, _follower = await _restarted_owner_with_unknown_head(tmp_path, monkeypatch, [])
     db = authority.db
     db.append_message('s', 'user', 'HEAD lost in restart')  # the lost turn's turn-start flush
     viewer = AuthorityConnection(authority, Peer(), {'user_id': 'human'})

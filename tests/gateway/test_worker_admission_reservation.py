@@ -57,7 +57,7 @@ async def test_reserved_process_uses_existing_authenticated_adoption_and_persist
     from gateway.session_worker import worker_request
     from gateway.session_worker_reservation import reserve_admission_worker
     db = SessionDB(tmp_path / 'state.db')
-    process = subprocess.Popen([sys.executable, '-c', 'import sys; sys.stdin.read()'], stdin=subprocess.PIPE,
+    process = subprocess.Popen([sys.executable, '-c', 'import sys; sys.stdin.read()'], stdin=subprocess.PIPE,  # noqa: ASYNC220 -- Popen returns immediately; the test drives the child through its handle
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
         db.create_session('owned', 'cli')
@@ -113,7 +113,7 @@ async def test_input_queued_behind_a_live_worker_is_released_then_runs_when_it_f
         ran.append(row['admission_id'])
         return 'answered'
     monkeypatch.setattr(session_finite, 'execute_finite_admission', execute)
-    process = subprocess.Popen([sys.executable, '-c', 'import sys; sys.stdin.read()'], stdin=subprocess.PIPE,
+    process = subprocess.Popen([sys.executable, '-c', 'import sys; sys.stdin.read()'], stdin=subprocess.PIPE,  # noqa: ASYNC220 -- Popen returns immediately; the test drives the child through its handle
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     actor = Principal('human', 'p', frozenset({'session:submit', 'session:control', 'worker:adopt'}), 't')
     connection = SimpleNamespace(authority=authority, actor=actor)

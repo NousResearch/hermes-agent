@@ -9,7 +9,7 @@ import sys
 
 def test_graph_boundary_commits_only_valid_notifications(tmp_path):
     result = subprocess.run([sys.executable, __file__], env=dict(os.environ, HERMES_HOME=str(tmp_path)),
-                            capture_output=True, text=True, timeout=90)
+                            capture_output=True, text=True, timeout=90, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
     print((tmp_path / 'graph-receipt.json').read_text())
 

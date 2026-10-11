@@ -37,7 +37,7 @@ async def _legacy_ws_snapshot(root, home, env, requests):
     legacy_env = {**env, 'HERMES_HOME': str(legacy_home),
                   'HERMES_DASHBOARD_SESSION_TOKEN': 'disposable-discovery-token'}
     with (home.parent / 'legacy-serve.log').open('w+') as log:
-        process = subprocess.Popen([sys.executable, '-m', 'hermes_cli.main', 'serve',
+        process = subprocess.Popen([sys.executable, '-m', 'hermes_cli.main', 'serve',  # noqa: ASYNC220 -- Popen returns immediately; the test drives the child through its handle
                                     '--host', '127.0.0.1', '--port', '0', '--skip-build', '--isolated'],
                                    cwd=root, env=legacy_env, stdin=subprocess.DEVNULL,
                                    stdout=log, stderr=subprocess.STDOUT)
@@ -159,7 +159,7 @@ sys.__stdout__.write(json.dumps(results) + '\\n')
             # Ordinary startup syncs bundled skills; compare both transports on that same snapshot.
             legacy = subprocess.run([sys.executable, '-c', legacy_code, json.dumps(requests)],
                                     cwd=root, env=env, stdin=subprocess.DEVNULL,
-                                    capture_output=True, text=True, timeout=45)
+                                    capture_output=True, text=True, timeout=45, check=False)
             assert legacy.returncode == 0, legacy.stderr
             expected = json.loads(legacy.stdout.splitlines()[-1])
             pairs = dict(expected[0]['pairs'])

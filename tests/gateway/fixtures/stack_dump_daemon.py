@@ -17,7 +17,7 @@ import time
 path = Path(os.environ['HERMES_HOME']) / 'logs' / 'stacks.txt'
 path.parent.mkdir(parents=True, exist_ok=True)
 delay = float(os.environ.get('UGW_STACK_DUMP_AFTER', '60'))
-_sink = open(path, "w", encoding="utf-8")  # noqa: SIM115 - must outlive the dump
+_sink = open(path, "w", encoding="utf-8")
 faulthandler.dump_traceback_later(delay, repeat=True, file=_sink)
 _real_run = asyncio.run
 
@@ -39,7 +39,7 @@ def _describe(sink):
                        f'draining={attrs.get("_draining")} descriptor={json.dumps(descriptor, default=str)}\n')
     sink.write(f'pipe={windows_pipe_name(Path(os.environ["HERMES_HOME"]))}\n')
     for obj in gc.get_objects():
-        if type(obj) is GatewayControlServer:  # noqa: E721 - never isinstance over arbitrary gc objects
+        if type(obj) is GatewayControlServer:
             reply = obj.handle_request_line(b'{"protocol":1,"id":1,"verb":"identify"}', 'local')
             sink.write(f'control_server home={obj._home} handlers={sorted(obj._handlers)} '
                        f'pipe_server={obj._pipe_server!r} error={getattr(obj._pipe_server, "_error", None)!r}\n'

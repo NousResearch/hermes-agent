@@ -25,7 +25,7 @@ def _parse_absolute_timestamp(value: Any) -> Optional[float]:
         except ValueError:
             pass
         try:
-            return datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
+            return datetime.fromisoformat(raw).timestamp()
         except ValueError:
             return None
     return None

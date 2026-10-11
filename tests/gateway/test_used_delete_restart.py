@@ -106,13 +106,13 @@ def test_used_api_and_native_delete_restart_exact_retry(tmp_path):
                 assert db.execute("SELECT 1 FROM session_admissions WHERE request_id='busy-once'").fetchone()
 
     try:
-        with daemon(root, home, env, barrier=True) as (proc, desc):
+        with daemon(root, home, env, barrier=True) as (_proc, desc):
             first = asyncio.run(api_request())
             native_sid = asyncio.run(native_turn(desc))
             asyncio.run(busy_delete_refused(desc))
             delete(desc, 'used-api'); delete(desc, native_sid)
             before = len(peer.requests)
-        with daemon(root, home, env, barrier=False) as (proc, desc):
+        with daemon(root, home, env, barrier=False) as (_proc, desc):
             with httpx.Client(base_url=desc['api_origin'], trust_env=False) as client:
                 for sid, (params, receipt) in receipts.items():
                     path = '/api/sessions/' + sid

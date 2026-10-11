@@ -297,7 +297,7 @@ class SessionUsageMixin:
         self._execute_write(lambda conn: self._update_token_counts_in_transaction(conn, session_id, **values))
 
     def _update_token_counts_in_transaction(
-        self, conn, session_id: str, input_tokens: int=0, output_tokens: int=0, model: str=None, cache_read_tokens: int=0,
+        self, conn, session_id: str, input_tokens: int=0, output_tokens: int=0, model: str | None=None, cache_read_tokens: int=0,
         cache_write_tokens: int=0, reasoning_tokens: int=0, estimated_cost_usd: Optional[float]=None,
         actual_cost_usd: Optional[float]=None, cost_status: Optional[str]=None, cost_source: Optional[str]=None,
         pricing_version: Optional[str]=None, billing_provider: Optional[str]=None, billing_base_url: Optional[str]=None,

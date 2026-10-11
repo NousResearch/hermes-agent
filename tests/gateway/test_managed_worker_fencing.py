@@ -60,7 +60,7 @@ async def test_late_bootstrap_handshake_cannot_rearm_a_recovered_admission(tmp_p
         lost = admit_session_input(db, epoch=epoch, principal_id='human', session_id='owned', request_id='lost', payload={})
         row = claim_session_input(db, epoch=epoch, session_id='owned')
         follower = admit_session_input(db, epoch=epoch, principal_id='human', session_id='owned', request_id='next', payload={})
-        child = subprocess.Popen([sys.executable, '-c', 'import sys; sys.stdin.read()'],
+        child = subprocess.Popen([sys.executable, '-c', 'import sys; sys.stdin.read()'],  # noqa: ASYNC220 -- Popen returns immediately; the test drives the child through its handle
             stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         try:
             scope = reserve_admission_worker(authority, admission_id=row['admission_id'], process=child,

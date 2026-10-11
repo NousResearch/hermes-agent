@@ -64,7 +64,7 @@ def _run(command, cwd):
     try:
         result = subprocess.run(command, cwd=cwd, shell=True, env=env, capture_output=True,
                                 text=True, encoding='utf-8', errors='replace', timeout=TIMEOUT_SECONDS,
-                                stdin=subprocess.DEVNULL, creationflags=windows_hide_flags())
+                                stdin=subprocess.DEVNULL, creationflags=windows_hide_flags(), check=False)
     except subprocess.TimeoutExpired:
         raise RuntimeStoreError('command_timeout') from None
     except OSError:

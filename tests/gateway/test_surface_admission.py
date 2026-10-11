@@ -155,7 +155,7 @@ def test_real_daemon_accepts_hud_and_voice_live_submits_and_notes_the_model(tmp_
             return replies
 
     try:
-        with daemon(root, home, env, barrier=False) as (proc, desc):
+        with daemon(root, home, env, barrier=False) as (_proc, desc):
             replies = asyncio.run(drive(desc))
     finally:
         model.release.set()
@@ -221,7 +221,7 @@ def test_managed_worker_turn_carries_the_committed_surface_to_the_model(tmp_path
                 await asyncio.to_thread(_wait_for, lambda: _admissions(home).get(name) == 'terminal')
 
     try:
-        with daemon(root, home, env, barrier=False) as (proc, desc):
+        with daemon(root, home, env, barrier=False) as (_proc, desc):
             asyncio.run(drive(desc))
     finally:
         model.release.set()

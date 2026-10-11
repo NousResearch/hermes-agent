@@ -16,7 +16,7 @@ def probe(tmp_path, mode):
     env.update(HOME=str(user), USERPROFILE=str(user), HERMES_HOME=str(home),
                PYTHONPATH=str(root), PYTHONUNBUFFERED='1')
     result = subprocess.run([sys.executable, str(root / 'tests/gateway/fixtures/ancillary_reads_peer.py'), mode],
-                            cwd=root, env=env, capture_output=True, text=True, timeout=90)
+                            cwd=root, env=env, capture_output=True, text=True, timeout=90, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
     receipt = json.loads((home / 'receipt.json').read_text())
     assert receipt['mode'] == mode and receipt['authenticated_ws']

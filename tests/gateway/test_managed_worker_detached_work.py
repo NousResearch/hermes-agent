@@ -82,7 +82,7 @@ def test_managed_turn_runs_detachable_work_inline_and_leaves_no_orphan(tmp_path)
                OPENAI_API_KEY='loopback-only', OPENAI_BASE_URL=url)
     created = subprocess.run([sys.executable, '-c', 'import json; from cron.jobs import create_job; '
                               'print(json.dumps(create_job("CRON_CHILD_GOAL", "every 1h", name="inline", deliver="local")["id"]))'],
-                             env=env, cwd=root, capture_output=True, text=True, timeout=60)
+                             env=env, cwd=root, capture_output=True, text=True, timeout=60, check=False)
     peer.job_id = json.loads(created.stdout.strip().splitlines()[-1])
 
     def rows(sql):

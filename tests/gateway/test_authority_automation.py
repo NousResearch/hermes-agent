@@ -11,7 +11,7 @@ def _probe(tmp_path, mode):
     env['PYTHONPATH'] = str(root)
     result = subprocess.run([sys.executable, str(root / 'tests/gateway/fixtures/automation_peer.py'),
                              str(tmp_path), mode], env=env, cwd=root, stdin=subprocess.DEVNULL,
-                            capture_output=True, text=True, timeout=200)
+                            capture_output=True, text=True, timeout=200, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
     print(result.stdout)
 

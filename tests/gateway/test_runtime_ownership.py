@@ -31,7 +31,7 @@ print('CLAIMED', result)
     witness = tmp_path / 'witness'
     try:
         result = subprocess.run([sys.executable, '-c', code], env={**os.environ, 'WITNESS': str(witness)},
-                                stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30)
+                                stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30, check=False)
         assert result.returncode == 0, result.stderr
         assert not witness.exists(), result.stdout + result.stderr
         assert 'CLAIMED False' in result.stdout

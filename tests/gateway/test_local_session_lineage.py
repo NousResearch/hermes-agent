@@ -17,7 +17,7 @@ async def test_local_lineage_transitions_preserve_owner_or_roll_back(tmp_path, m
     from hermes_state_runtime import (RuntimeStoreError, admit_session_input, claim_session_input,
                                       get_session_admission, list_session_admissions)
 
-    monkeypatch.setattr(run, '_load_gateway_config', lambda: {})
+    monkeypatch.setattr(run, '_load_gateway_config', dict)
     def runner():
         store = SessionStore(tmp_path / 'sessions', GatewayConfig())
         return SimpleNamespace(session_store=store, _session_db=store._db,

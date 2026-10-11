@@ -74,7 +74,7 @@ async def standalone_lifespan(app: "FastAPI"):
     # contended state.db migration, so keep it off the pre-yield path: Group
     # Chat must degrade on its own rather than block every Desktop feature.
     from tui_gateway import methods_groups as _hosted_groups
-    import tui_gateway.server  # noqa: F401
+    import tui_gateway.server
 
     try:
         tui_gateway.server.install_tui_message_injector()
@@ -103,8 +103,8 @@ async def standalone_lifespan(app: "FastAPI"):
     # gateway running the scheduler. Server `hermes dashboard` is unaffected —
     # it relies on its own gateway.
     from hermes_cli.process_identity import is_desktop_owned_backend
-    cron_stop: "threading.Event | None" = None
-    cron_thread: "threading.Thread | None" = None
+    cron_stop: threading.Event | None = None
+    cron_thread: threading.Thread | None = None
     desktop_owned = is_desktop_owned_backend()
     if desktop_owned:
         # Reap an orphaned gateway from an abnormal previous exit (reparented to
@@ -147,7 +147,7 @@ async def standalone_lifespan(app: "FastAPI"):
             from hermes_cli.local_runtime.bootstrap import ensure_local_runtime
 
             ensure_local_runtime(load_config())
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logging.getLogger(__name__).warning("local runtime boot failed: %s", exc)
 
     threading.Thread(target=_boot_local_runtime, daemon=True, name="local-runtime-boot").start()

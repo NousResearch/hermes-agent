@@ -275,7 +275,7 @@ class A2AAdapter(BasePlatformAdapter):
         # Request ownership outlives reply Futures and also covers synchronous profile forwards.
         self._active_tasks: set[str] = set()
         # Admission ids this process already forwarded; a resend of one is a retry, not a new turn.
-        self._forwarded_inputs: "OrderedDict[str, None]" = OrderedDict()
+        self._forwarded_inputs: OrderedDict[str, None] = OrderedDict()
         self._pending_lock = threading.Lock()
 
     @property

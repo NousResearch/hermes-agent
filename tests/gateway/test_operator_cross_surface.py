@@ -21,7 +21,7 @@ def test_operator_cross_surface_real_auth_fifo_and_attribution(tmp_path, creator
                PYTHONPATH=str(root), PYTHONUNBUFFERED='1')
     result = subprocess.run(
         [sys.executable, str(root / 'tests/gateway/fixtures/operator_cross_surface_peer.py'), creator],
-        cwd=root, env=env, capture_output=True, text=True, timeout=150)
+        cwd=root, env=env, capture_output=True, text=True, timeout=150, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
     receipt = json.loads((home / 'operator-receipt.json').read_text())
     assert receipt['creator'] == creator

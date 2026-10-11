@@ -40,7 +40,7 @@ def test_continue_latest_footer_and_tool_listing(tmp_path):
 
     def hermes(*args, cwd, module="hermes_cli.main"):
         result = subprocess.run([sys.executable, "-m", module, *args], cwd=cwd, env=env,
-                                stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=120)
+                                stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=120, check=False)
         sid = next((line.split("Session: ", 1)[1].strip() for line in result.stderr.splitlines()
                     if line.startswith("Session: ")), None)
         return result, sid

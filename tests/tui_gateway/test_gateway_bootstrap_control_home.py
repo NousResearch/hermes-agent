@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
-import hermes_cli.gateway_runtime as gateway_runtime
+from hermes_cli import gateway_runtime
 import hermes_constants
 
 

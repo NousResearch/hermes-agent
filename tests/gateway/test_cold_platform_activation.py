@@ -43,7 +43,7 @@ def _load(tmp_path, *, config_yaml="", env=None, dotenv=""):
                  if k in {"PATH", "LANG", "TZ", "HERMES_RUNTIME_DIR", "TMPDIR", "SYSTEMROOT"}}
     child_env.update(HOME=str(tmp_path), HERMES_HOME=str(home), PYTHONPATH=str(REPO), **(env or {}))
     out = subprocess.run([sys.executable, "-c", _PROBE], cwd=str(REPO), env=child_env,
-                         capture_output=True, text=True, timeout=120)
+                         capture_output=True, text=True, timeout=120, check=False)
     assert out.returncode == 0, out.stderr[-2000:]
     return json.loads(out.stdout.strip().splitlines()[-1])
 

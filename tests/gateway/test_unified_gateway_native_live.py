@@ -12,7 +12,7 @@ No POSIX-only primitive is used (no AF_UNIX at import, no SIGKILL, no pty).
 """
 import asyncio
 from contextlib import closing, contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
@@ -146,7 +146,7 @@ def planned_stop(home, proc, desc):
     the Popen handle: a Windows uv venv ``python.exe`` is a trampoline whose pid differs."""
     pid = desc['pid']
     marker = {'target_pid': pid, 'target_start_time': process_start_time(pid),
-              'stopper_pid': os.getpid(), 'written_at': datetime.now(timezone.utc).isoformat()}
+              'stopper_pid': os.getpid(), 'written_at': datetime.now(UTC).isoformat()}
     (home / '.gateway-planned-stop.json').write_text(json.dumps(marker), encoding='utf-8')
     try:
         return proc.wait(timeout=90)

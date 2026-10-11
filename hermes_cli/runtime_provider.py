@@ -39,11 +39,11 @@ from utils import base_url_host_matches, base_url_hostname, base_url_path, env_i
 
 
 # A frozen session route's config (``frozen_runtime_config``); None = the live profile config.
-_FROZEN_RUNTIME_CONFIG: ContextVar[Optional[Dict[str, Any]]] = ContextVar("_FROZEN_RUNTIME_CONFIG", default=None)
+_FROZEN_RUNTIME_CONFIG: ContextVar[Optional[dict[str, Any]]] = ContextVar("_FROZEN_RUNTIME_CONFIG", default=None)
 
 
 @contextmanager
-def frozen_runtime_config(config: Dict[str, Any]):
+def frozen_runtime_config(config: dict[str, Any]):
     """Resolve against a session's frozen config instead of the live config.yaml.
 
     Every rung reads its endpoint through ``load_config``/``_get_model_config``, so a frozen route's

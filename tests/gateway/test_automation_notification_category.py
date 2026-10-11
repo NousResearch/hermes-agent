@@ -42,7 +42,7 @@ async def test_bot_category_is_committed_restored_and_part_of_retry_identity(tmp
     from gateway.session_local import create_local_session
     from gateway.session_local_title import title_new_session
     from gateway.session_automation import restore_local_automation
-    runner, authority = await _authority(tmp_path, monkeypatch)
+    _runner, authority = await _authority(tmp_path, monkeypatch)
     actor = Principal('test-owner', 'default', frozenset({'session:create', 'session:submit', 'session:read'}), 'fixture')
     try:
         ref = create_local_session(authority, actor, dict(request_id='bot', source='gui', model='fixture', toolsets=[]))
@@ -84,7 +84,7 @@ async def test_bot_category_is_committed_restored_and_part_of_retry_identity(tmp
 @pytest.mark.parametrize('category', [None, [], {}, 'other'])
 async def test_bot_invalid_category_refuses_before_admission(tmp_path, monkeypatch, category):
     from gateway.session_bot import deliver
-    runner, authority = await _authority(tmp_path, monkeypatch)
+    _runner, authority = await _authority(tmp_path, monkeypatch)
     actor = Principal('test-owner', 'default', frozenset({'session:submit'}), 'fixture')
     try:
         with pytest.raises(RuntimeStoreError, match='invalid_params'):

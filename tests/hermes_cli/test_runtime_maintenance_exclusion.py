@@ -74,7 +74,7 @@ def test_restore_refuses_live_authority_without_changing_data(tmp_path):
             return snapshot
 
     try:
-        with daemon(root, home, env, barrier=False) as (proc, desc):
+        with daemon(root, home, env, barrier=False) as (_proc, desc):
             snapshot = asyncio.run(exercise(desc))
             old_epoch = desc['authority_epoch']
         peer.release.set()
@@ -138,7 +138,7 @@ def test_import_and_startup_exclude_each_other_before_publication(tmp_path, monk
         env.update(HOME=str(tmp_path / 'user'), HERMES_HOME=str(home), PYTHONPATH=str(root))
         contender = subprocess.run([sys.executable, '-c',
             "import logging, runpy; logging.basicConfig(level=logging.INFO); runpy.run_module('gateway.run', run_name='__main__')"], cwd=root, env=env,
-                                   stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=25)
+                                   stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=25, check=False)
         assert 'already owns profile' in contender.stdout + contender.stderr, contender
         assert not (home / 'state.db').exists()
     finally:

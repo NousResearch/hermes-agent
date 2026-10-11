@@ -155,7 +155,7 @@ def test_profile_created_under_live_multiplexer_is_served_and_owned(mux):
         assert served_homes(desc) == {root.resolve(), mux['boot'].resolve()}
         # ``hermes profile create`` under the multiplexer's root: the CLI signals the control socket.
         created = subprocess.run([sys.executable, '-m', 'hermes_cli.main', 'profile', 'create', 'fresh'],
-                                 cwd=ROOT, env=env, capture_output=True, text=True, timeout=120)
+                                 cwd=ROOT, env=env, capture_output=True, text=True, timeout=120, check=False)
         assert created.returncode == 0, (created.stdout, created.stderr)
         fresh = root / 'profiles' / 'fresh'
         assert fresh.is_dir()
@@ -173,7 +173,7 @@ def test_profile_created_under_live_multiplexer_is_served_and_owned(mux):
             assert db.execute('SELECT 1 FROM sessions WHERE id=?', (sid,)).fetchone()
         # ``hermes -p fresh`` resolves to the multiplexer instead of spawning a daemon of its own.
         ensured = subprocess.run([sys.executable, '-m', 'hermes_cli.main', '-p', 'fresh', 'gateway', 'ensure',
-                                  '--timeout', '15'], cwd=ROOT, env=env, capture_output=True, text=True, timeout=60)
+                                  '--timeout', '15'], cwd=ROOT, env=env, capture_output=True, text=True, timeout=60, check=False)
         payload = json.loads(ensured.stdout.strip().splitlines()[-1])
         assert payload['state'] == 'ready' and payload['endpoint']['instance_id'] == desc['instance_id'], (payload, ensured.stderr)
         assert not (fresh / 'gateway.pid').exists()
@@ -214,7 +214,7 @@ def test_named_profile_ensure_during_multiplexer_downtime_starts_the_multiplexer
     assert recorded_served(root) == ['default', 'boot']
     try:
         ensured = subprocess.run([sys.executable, '-m', 'hermes_cli.main', '-p', 'boot', 'gateway', 'ensure',
-                                  '--json', '--timeout', '90'], cwd=ROOT, env=env, capture_output=True, text=True, timeout=120)
+                                  '--json', '--timeout', '90'], cwd=ROOT, env=env, capture_output=True, text=True, timeout=120, check=False)
         payload = json.loads(ensured.stdout.strip().splitlines()[-1])
         assert payload['state'] == 'ready', (payload, ensured.stderr)
         # The answering owner is the multiplexer at the root, serving boot as a secondary.
@@ -253,7 +253,7 @@ def test_broken_secondary_state_db_parks_only_that_profile(mux):
         started = time.monotonic()
         ensured = subprocess.run([sys.executable, '-m', 'hermes_cli.main', '-p', 'broken', 'gateway', 'ensure',
                                   '--json', '--timeout', '30'], cwd=ROOT, env=mux['env'], capture_output=True,
-                                 text=True, timeout=60)
+                                 text=True, timeout=60, check=False)
         payload = json.loads(ensured.stdout.strip().splitlines()[-1])
         assert (payload['state'], payload['reason_code']) == ('inaccessible', 'profile_parked'), (payload, ensured.stderr)
         assert 'unusable' in (payload.get('detail') or ''), payload

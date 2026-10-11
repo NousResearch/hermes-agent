@@ -134,7 +134,7 @@ def run():
         def grant():
             result = subprocess.run([sys.executable, str(ROOT / 'ui-tui/scripts/gateway_bootstrap.py')],
                                     cwd=ROOT, env=env, stdin=subprocess.DEVNULL,
-                                    capture_output=True, text=True, timeout=10)
+                                    capture_output=True, text=True, timeout=10, check=False)
             assert result.returncode == 0, result.stderr
             return json.loads(result.stdout)
 

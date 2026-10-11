@@ -86,7 +86,7 @@ async def test_initialization_failure_is_a_failed_receipt_not_completed(api, own
 async def test_run_sse_carries_controls_tool_payloads_and_authoritative_cancellation(api, owner):
     from tools import clarify_gateway
     admitted = admit_api_turn(api, session_id='sse', user_message='hello', conversation_history=[])
-    _, ref, row = admitted
+    _, ref, _row = admitted
     launch, queue = _launch(api, admitted)
     tool_payloads = []
 
@@ -228,8 +228,8 @@ async def test_room_grant_answers_the_clarify_prompt_its_run_raised(api, owner, 
     headers = {'Authorization': f'HermesRoom {grant}'}
     admitted = admit_api_turn(api, session_id='room-clarify', request_id='run_room', user_message='hello',
                               conversation_history=[])
-    _, ref, row = admitted
-    launch, queue = _launch(api, admitted, run_id='run_room')
+    _, ref, _row = admitted
+    launch, _queue = _launch(api, admitted, run_id='run_room')
     scope_request = SimpleNamespace(headers=headers, path='/v1/runs/run_room/clarify', method='POST')
     api._run_owners['run_room'] = api._run_idempotency_scope(scope_request)
 

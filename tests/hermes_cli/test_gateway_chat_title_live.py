@@ -46,7 +46,7 @@ finally:
 
     def chat(*args):
         result = subprocess.run([sys.executable, str(wrapper), "--cli", "chat", *args, "-Q"], env=env,
-                                cwd=tmp_path, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=90)
+                                cwd=tmp_path, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=90, check=False)
         assert json.loads(witness.read_text(encoding="utf-8")) == [], witness.read_text(encoding="utf-8")
         sid = next((line.split("Session: ", 1)[1].strip() for line in result.stderr.splitlines()
                     if "Session: " in line), None)

@@ -29,7 +29,7 @@ _session_yolo(SimpleNamespace(runner=SimpleNamespace(session_store=store)),
 assert not is_session_yolo_enabled(entry.session_key), 'revoked launch was re-enabled'
 '''
     result = subprocess.run([sys.executable, '-c', probe, str(tmp_path), entry.session_key],
-                            capture_output=True, text=True, timeout=30)
+                            capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
 
 

@@ -30,7 +30,7 @@ def probe(base, legacy_root, owner_root=None):
     def cli(checkout, *args):
         result = subprocess.run([sys.executable, '-m', 'hermes_cli.main', 'chat', *args],
             cwd=checkout, env={**env, 'PYTHONPATH': str(checkout)}, stdin=subprocess.DEVNULL,
-            capture_output=True, text=True, timeout=120)
+            capture_output=True, text=True, timeout=120, check=False)
         (home / ('cli-' + str(len(list(home.glob('cli-*')))) + '.log')).write_text(result.stdout + result.stderr)
         assert result.returncode == 0, result.stdout + result.stderr
         return result.stdout

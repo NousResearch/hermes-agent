@@ -19,7 +19,7 @@ from tests.gateway.restart_test_helpers import make_restart_runner
 async def test_drain_counts_managed_turns_and_the_timeout_path_stops_them(tmp_path):
     from gateway.session_managed_worker import ManagedWorker
     seen = tmp_path / 'controls'
-    child = subprocess.Popen([sys.executable, '-c', 'import sys; open(sys.argv[1], "wb").write(sys.stdin.buffer.readline())',
+    child = subprocess.Popen([sys.executable, '-c', 'import sys; open(sys.argv[1], "wb").write(sys.stdin.buffer.readline())',  # noqa: ASYNC220 -- Popen returns immediately; the test drives the child through its handle
                               str(seen)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     worker = ManagedWorker(child)
     worker.writer.start()

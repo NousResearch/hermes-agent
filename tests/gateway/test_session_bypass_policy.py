@@ -37,7 +37,7 @@ def test_bypass_session_freezes_code_defaults_without_reading_profile(tmp_path, 
     from types import SimpleNamespace
     from gateway.session_local import _bypass_policy
     from hermes_cli.config_defaults import DEFAULT_CONFIG
-    import gateway.session_policy, hermes_cli.tools_config, toolsets, tools.terminal_scope  # noqa: F401,E401
+    import gateway.session_policy, hermes_cli.tools_config, toolsets, tools.terminal_scope
     from hermes_cli.plugins import discover_plugins
 
     home = tmp_path / 'home'

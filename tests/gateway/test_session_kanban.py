@@ -32,7 +32,7 @@ def test_claim_freezes_task_policy_and_rejects_forgery(tmp_path, monkeypatch):
     params = dict(board='owned', task_id=task.id, run_id=task.current_run_id, claim_lock=task.claim_lock)
     from gateway.session_kanban import build_kanban_policy
     config = {'model': {'default': 'loop-model', 'provider': 'custom'}, 'platform_toolsets': {'cli': ['terminal', 'file']}}
-    policy, secrets = build_kanban_policy(connection, params, config)
+    policy, _secrets = build_kanban_policy(connection, params, config)
     context = json.loads(policy.kanban_json)
     assert policy.source == 'kanban' and policy.cwd == str(workspace)
     assert policy.model == task.model_override and policy.provider == task.provider_override
@@ -62,7 +62,7 @@ def test_real_dispatcher_lifecycle(tmp_path, mode):
     env = child_env()
     env.update(HOME=str(tmp_path / 'home'), USERPROFILE=str(tmp_path / 'home'), HERMES_HOME=str(tmp_path / 'state'), PYTHONPATH=str(repo), KANBAN_PROBE_MODE=mode)
     result = subprocess.run([sys.executable, str(Path(__file__).parent / 'fixtures' / 'kanban_owner_probe.py')],
-        env=env, cwd=repo, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=150)
+        env=env, cwd=repo, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=150, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
     receipt = json.loads((tmp_path / 'state' / 'receipt.json').read_text())
     print(json.dumps(receipt))

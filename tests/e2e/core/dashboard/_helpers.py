@@ -175,7 +175,7 @@ class Sandbox:
                 with contextlib.suppress(Exception):
                     subprocess.run([sys.executable, "-m", "hermes_cli.main", "gateway", "stop"],
                                    env=self.env({"HERMES_HOME": str(home)}), cwd=str(self.home),
-                                   capture_output=True, timeout=60)
+                                   capture_output=True, timeout=60, check=False)
 
 
 class SandboxLeak(AssertionError):

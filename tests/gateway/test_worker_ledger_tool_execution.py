@@ -80,7 +80,7 @@ def test_real_tool_enabled_worker_never_opens_canonical_database(tmp_path):
             worker = subprocess.run([sys.executable, str(root / 'tests/gateway/fixtures/ledger_tool_worker.py')],
                 cwd=root, env=env, input=json.dumps({'home': str(home), 'url': url, 'session_id': sid,
                                                    'receipt': str(receipt)}) + '\n',
-                text=True, capture_output=True, timeout=90)
+                text=True, capture_output=True, timeout=90, check=False)
             assert worker.returncode == 0, worker.stdout + worker.stderr
             proof = json.loads(receipt.read_text())
             assert not proof['failed'] and proof['result'] == 'WORKER_TOOL_LEDGER_OK', proof

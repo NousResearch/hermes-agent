@@ -16,8 +16,8 @@ import time
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO))
-from evals.desktop_gateway_ticket_native.run import stop_owned  # noqa: E402
-from hermes_cli.gateway_runtime_discovery import query_identify  # noqa: E402
+from evals.desktop_gateway_ticket_native.run import stop_owned
+from hermes_cli.gateway_runtime_discovery import query_identify
 
 logger = logging.getLogger(__name__)
 

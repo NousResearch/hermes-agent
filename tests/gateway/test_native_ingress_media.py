@@ -42,7 +42,7 @@ def test_accepted_media_survives_mutation_cleanup_and_owner_kill(tmp_path):
     for calls in (1, 0):
         command[-1] = 'recover'
         result = subprocess.run(command, cwd=repo, env=env, stdin=subprocess.DEVNULL,
-                                capture_output=True, text=True, timeout=60)
+                                capture_output=True, text=True, timeout=60, check=False)
         assert result.returncode == 0, result.stdout + result.stderr
         receipt = json.loads((state / 'recovered.json').read_text())
         assert receipt['model_calls'] == calls, receipt
@@ -52,6 +52,6 @@ def test_accepted_media_survives_mutation_cleanup_and_owner_kill(tmp_path):
 def test_native_context_never_upgrades_metadata_or_transport_trust(tmp_path):
     command, env, repo, state = _peer(tmp_path, 'guards')
     result = subprocess.run(command, cwd=repo, env=env, stdin=subprocess.DEVNULL,
-                            capture_output=True, text=True, timeout=45)
+                            capture_output=True, text=True, timeout=45, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
     print((state / 'guards.json').read_text())

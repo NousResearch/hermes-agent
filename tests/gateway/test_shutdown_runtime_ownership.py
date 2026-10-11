@@ -11,7 +11,7 @@ import pytest
 @pytest.mark.platforms("linux")
 @pytest.mark.parametrize('timed_out', [False, True])
 def test_exit_state_keeps_runtime_reserved_until_final_cleanup(tmp_path, monkeypatch, timed_out):
-    import gateway.run as run
+    from gateway import run
     from gateway.run_shutdown import GatewayShutdownMixin
     from gateway.status import acquire_gateway_runtime_lock, release_gateway_runtime_lock, write_pid_file, remove_pid_file
 
@@ -37,7 +37,7 @@ if claimed:
     def contender():
         result = subprocess.run(
             [sys.executable, '-c', probe], cwd=os.getcwd(), env=os.environ.copy(),
-            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=15,
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=15, check=False
         )
         assert result.returncode == 0, result.stderr
         return result.stdout.strip()

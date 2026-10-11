@@ -47,7 +47,7 @@ async def test_completion_after_compression_admits_to_the_logical_root(tmp_path,
     event = dict(pending(key, 'after-compression'), parent_session_id=child)
     assert await runner._deliver_async_delegation_group([event]) is True
     rows = list_session_admissions(db, session_id=root, pending_only=False)
-    assert [r['request_id'] for r in rows][0] == 'human' and len(rows) == 2, rows
+    assert next(r['request_id'] for r in rows) == 'human' and len(rows) == 2, rows
     assert 'after-compression' in rows[-1]['payload']['text']
     assert list_session_admissions(db, session_id=child, pending_only=False) == []
     # A lost-ACK redelivery is the same admission, found under the root's ledger.

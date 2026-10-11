@@ -40,7 +40,7 @@ def test_worker_spawned_process_output_and_exit_survive_the_spawner(tmp_path):
         print(json.dumps(session.id), flush=True)
         os._exit(0)
     ''')
-    out = subprocess.run([sys.executable, '-c', spawner], env=env, cwd=ROOT, capture_output=True, text=True, encoding='utf-8', timeout=60)
+    out = subprocess.run([sys.executable, '-c', spawner], env=env, cwd=ROOT, capture_output=True, text=True, encoding='utf-8', timeout=60, check=False)
     session_id = json.loads(out.stdout.strip().splitlines()[-1])
     adopter = textwrap.dedent(f'''
         import json
@@ -49,7 +49,7 @@ def test_worker_spawned_process_output_and_exit_survive_the_spawner(tmp_path):
         registry.recover_from_checkpoint()
         print(json.dumps(registry.wait({session_id!r}, timeout=30)))
     ''')
-    out = subprocess.run([sys.executable, '-c', adopter], env=env, cwd=ROOT, capture_output=True, text=True, encoding='utf-8', timeout=60)
+    out = subprocess.run([sys.executable, '-c', adopter], env=env, cwd=ROOT, capture_output=True, text=True, encoding='utf-8', timeout=60, check=False)
     result = json.loads(out.stdout.strip().splitlines()[-1])
     assert result['status'] == 'exited', (result, out.stderr[-2000:])
     assert result['exit_code'] == 7 and result['output'] == 'FIRST_42\nSECOND_42\n', result
@@ -72,7 +72,7 @@ class Model(BaseHTTPRequestHandler):
                                                   'arguments': {'action': 'wait', 'session_id': proc, 'timeout': 30}}]}
         else:
             name, args = None, {}
-        message = ({'role': 'assistant', 'content': None, 'tool_calls': [{'id': 'c%d' % len(messages), 'index': 0,
+        message = ({'role': 'assistant', 'content': None, 'tool_calls': [{'id': f'c{len(messages)}', 'index': 0,
                     'type': 'function', 'function': {'name': name, 'arguments': json.dumps(args)}}]}
                    if name else {'role': 'assistant', 'content': 'OK'})
         choice = {'index': 0, 'delta': message, 'finish_reason': 'tool_calls' if name else 'stop'}

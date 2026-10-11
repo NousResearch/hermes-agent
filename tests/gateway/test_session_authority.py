@@ -23,7 +23,7 @@ def test_messaging_then_authenticated_ws_reuses_live_agent(tmp_path):
                PYTHONPATH=str(repo), PYTHONUNBUFFERED="1")
     result = subprocess.run(
         [sys.executable, str(Path(__file__).parent / "fixtures" / "shared_authority_peer.py")],
-        cwd=repo, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=100,
+        cwd=repo, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=100, check=False
     )
     assert result.returncode == 0, result.stdout + "\n" + result.stderr
     receipt = json.loads((state / "receipt.json").read_text())
@@ -63,7 +63,7 @@ def test_native_queue_survives_owner_kill_without_replaying_unknown(tmp_path):
     env['AUTHORITY_PROBE_MODE'] = 'recover'
     for expected_calls in (1, 0):
         result = subprocess.run(command, cwd=repo, env=env, stdin=subprocess.DEVNULL,
-                                capture_output=True, text=True, timeout=70)
+                                capture_output=True, text=True, timeout=70, check=False)
         assert result.returncode == 0, result.stdout + '\n' + result.stderr
         receipt = json.loads((state / 'recovery-receipt.json').read_text())
         assert receipt['model_calls'] == expected_calls, receipt

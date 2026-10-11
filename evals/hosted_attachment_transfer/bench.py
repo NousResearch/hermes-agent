@@ -32,7 +32,7 @@ TMP = Path(tempfile.mkdtemp(prefix='hosted-attachment-bench-'))
 os.environ['HOME'] = str(TMP)
 os.environ['HERMES_HOME'] = str(TMP / '.hermes')
 
-from pytest import MonkeyPatch  # noqa: E402
+from pytest import MonkeyPatch
 
 
 class SourceMeter:

@@ -39,7 +39,7 @@ async def test_worker_waits_out_a_draining_owner_and_submits_once(monkeypatch, t
     submitted = []
     monkeypatch.setattr(gateway_client, "connect_gateway", _owner(["draining", "starting"], submitted))
     monkeypatch.setattr(kanban_worker_client.asyncio, "sleep", _no_sleep)
-    import gateway.session_kanban as session_kanban
+    from gateway import session_kanban
     monkeypatch.setattr(session_kanban, "worker_result", lambda *_: {"exit_code": 0, "last_output": "card closed"})
     monkeypatch.delenv("HERMES_TUI_GATEWAY_URL", raising=False)
 

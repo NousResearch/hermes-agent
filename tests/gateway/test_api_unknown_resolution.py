@@ -251,7 +251,7 @@ async def test_http_resolve_unknown_refuses_stale_or_foreign_admission(
 async def test_fresh_adapter_recovers_non_idempotent_owner_but_refuses_other_credential(
     tmp_path, monkeypatch
 ):
-    client, adapters, store, owner, unknown, follower, executed, tasks = (
+    client, adapters, store, _owner, unknown, _follower, _executed, tasks = (
         await _restarted_api_runs(tmp_path, monkeypatch, idempotent=False)
     )
     try:

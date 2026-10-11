@@ -19,7 +19,7 @@ def test_headless_first_run_exits_with_setup_guidance_before_gateway(tmp_path, a
                PYTHONPATH=str(root), PYTHONUNBUFFERED="1")
     result = subprocess.run(
         [sys.executable, "-m", "hermes_cli.main", *argv], cwd=tmp_path, env=env,
-        stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=40,
+        stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=40, check=False
     )
     assert result.returncode == 1, (result.stdout, result.stderr)
     assert "hermes config set model.provider custom" in result.stdout

@@ -72,7 +72,7 @@ def main():
                        'PYTHONDONTWRITEBYTECODE': '1'}
                 proc = subprocess.run([sys.executable, str(Path(__file__).resolve()), '--child', str(repo),
                                        '--case', case, '--account', tmp], cwd=repo, env=env,
-                                      stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=45)
+                                      stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=45, check=False)
                 if proc.returncode:
                     raise RuntimeError(f'{label}/{case} failed: {proc.stderr}')
                 row = json.loads(proc.stdout.strip().splitlines()[-1])

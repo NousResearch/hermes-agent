@@ -35,6 +35,7 @@ from gateway.relay.egress import (
 )
 from gateway.relay.media import RelayMediaClient
 from gateway.relay.transport import RelayTransport
+from datetime import UTC
 
 logger = logging.getLogger(__name__)
 
@@ -895,7 +896,7 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
             from gateway.platforms.webhook_ingress import admit_producer
             # The connector does not transmit a provider timestamp. Local arrival
             # time must not change the fingerprint of a retried provider identity.
-            event.timestamp = datetime.fromtimestamp(0, timezone.utc)
+            event.timestamp = datetime.fromtimestamp(0, UTC)
             # Wait only for the SQLite receipt, never inference or outbound ACKs
             # (those need this same WS reader). Exceptions deliberately suppress ACK.
             if await admit_producer(self, event) is None and getattr(event, '_consumer_reply', None):

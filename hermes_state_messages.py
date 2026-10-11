@@ -1023,12 +1023,12 @@ class SessionMessagesMixin:
             carried_messages=carried_messages, covered_ids=covered_ids, unresolved_held=unresolved_held), compacted_messages)
 
     def _archive_and_compact_on_conn(
-            self, conn, session_id: str, compacted_messages: List[Dict[str, Any]], *,
-            model_config_patch: Optional[Dict[str, Any]] = None, watermark: Optional[int] = None,
+            self, conn, session_id: str, compacted_messages: list[dict[str, Any]], *,
+            model_config_patch: Optional[dict[str, Any]] = None, watermark: Optional[int] = None,
             lock_holder: Optional[str] = None, tail_count: int = 0,
-            carried_messages: Optional[List[Dict[str, Any]]] = None,
-            covered_ids: Optional[List[int]] = None,
-            unresolved_held: Optional[List[Dict[str, Any]]] = None) -> int:
+            carried_messages: Optional[list[dict[str, Any]]] = None,
+            covered_ids: Optional[list[int]] = None,
+            unresolved_held: Optional[list[dict[str, Any]]] = None) -> int:
         """:meth:`archive_and_compact` on the caller's write transaction (never commits). The owner
         and the worker/canonical-mutation verbs share this one body so they cannot drift."""
         from hermes_state import SessionCompressionInProgressError

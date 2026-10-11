@@ -63,7 +63,7 @@ finally:
 
     def tmux(*args):
         return subprocess.run(["tmux", "-L", tmux_name, *args], env=env,
-                              stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10)
+                              stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10, check=False)
 
     def screen():
         result = tmux("capture-pane", "-p", "-S", "-1000", "-t", "chat")

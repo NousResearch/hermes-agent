@@ -25,6 +25,7 @@ from gateway.platforms.base import (
     BasePlatformAdapter, SendResult, is_network_accessible,
 )
 from gateway.platforms.event import MessageEvent, MessageType
+from datetime import UTC
 
 logger = logging.getLogger(__name__)
 
@@ -341,7 +342,7 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
             source = event.source.to_dict()
             source['is_bot'] = event.source.is_bot
             envelope = {'source': source, 'route': route, 'provenance': provenance,
-                'timestamp': datetime.fromtimestamp(0, timezone.utc).isoformat(),
+                'timestamp': datetime.fromtimestamp(0, UTC).isoformat(),
                 'event': {'message_id': event.message_id},
                 'automation': {'identity': event.message_id, 'owner': ref.session_id}}
             row = admit_session_input(authority.db, epoch=authority.epoch,

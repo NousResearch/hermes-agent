@@ -45,7 +45,7 @@ def main():
         store.update_system_prompt(scope['session_id'], 'BYTE_STABLE_PREFIX')
         agent._session_db_created = True
         before = agent.session_id
-        compressed, prompt = agent._compress_context(messages, 'BYTE_STABLE_PREFIX', force=True, approx_tokens=30000)
+        compressed, _prompt = agent._compress_context(messages, 'BYTE_STABLE_PREFIX', force=True, approx_tokens=30000)
         assert len(compressed) < len(messages), (len(compressed), len(messages), [
             dict(operation=e['operation'], keys=[list(m) for m in e['payload'].get('messages', [])])
             for e in store.journal['pending']])

@@ -85,10 +85,10 @@ def test_terminal_commit_before_publication_survives_kill(tmp_path):
             assert snapshot()[1] == saved
 
     try:
-        with daemon(root, home, env, barrier=True, fixture='terminal_commit_daemon.py') as (proc, desc):
+        with daemon(root, home, env, barrier=True, fixture='terminal_commit_daemon.py') as (proc, _desc):
             pids.append(proc.pid)
             saved, follower = asyncio.run(first(proc))
-        with daemon(root, home, env, barrier=False) as (proc, desc):
+        with daemon(root, home, env, barrier=False) as (proc, _desc):
             pids.append(proc.pid)
             asyncio.run(restart(saved, follower))
         texts = [next(m.get('content', '') for m in reversed(r['messages']) if m['role'] == 'user') for r in peer.requests]

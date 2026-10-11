@@ -12,7 +12,7 @@ async def test_forwarded_identity_survives_reconnect_without_policy_override(tmp
     from gateway.config import GatewayConfig
     from gateway.session import SessionStore
     from gateway.session_authority import initialize_session_authority
-    import gateway.run as run
+    from gateway import run
     from gateway.session_policy import build_policy
     from hermes_state_runtime import RuntimeStoreError
 
@@ -67,7 +67,7 @@ async def test_forwarding_does_not_merge_lossy_context_or_peer_identity(tmp_path
     from gateway.config import GatewayConfig
     from gateway.session import SessionStore
     from gateway.session_authority import initialize_session_authority
-    import gateway.run as run
+    from gateway import run
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'model': {'default': 'fixture'}, 'platform_toolsets': {'cli': []}})
@@ -123,7 +123,7 @@ async def test_forwarded_turns_are_authored_by_the_peer_for_memory_attribution(t
     from gateway.session_ingress import row_turn_author
     from agent.turn_author import a2a_key
     from hermes_state_runtime import list_session_admissions
-    import gateway.run as run
+    from gateway import run
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'model': {'default': 'fixture'}, 'platform_toolsets': {'cli': []}})
@@ -166,8 +166,8 @@ async def test_forward_wakes_on_the_completion_frame_instead_of_a_fixed_100ms_po
     import asyncio
     import time
     from websockets.asyncio.server import serve
-    import hermes_cli.gateway_client as gateway_client
-    import hermes_cli.gateway_runtime as gateway_runtime
+    from hermes_cli import gateway_client
+    from hermes_cli import gateway_runtime
     from gateway.session_a2a import forward_to_owner
 
     calls = []

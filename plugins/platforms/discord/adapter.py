@@ -1200,7 +1200,7 @@ class VoiceReceiver:
         )
 
 
-from plugins.platforms.discord.adapter_config_readers import (  # noqa: F401 - re-exported for callers/tests
+from plugins.platforms.discord.adapter_config_readers import (
     _DISCORD_PROMPT_TIMEOUT_DEFAULT, _DISCORD_PROMPT_TIMEOUT_MIN, _read_discord_prompt_timeout, _read_dm_role_auth_guild)
 
 

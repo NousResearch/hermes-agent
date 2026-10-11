@@ -24,8 +24,8 @@ class GatewayInboundHooksMixin:
     """Hook, quick-command and plugin-command dispatch for ``GatewayInboundMixin``."""
 
     async def _hm_post_admission_consume(
-        self, event: "MessageEvent", source: SessionSource, session_key: str
-    ) -> Tuple[bool, Optional[str]]:
+        self, event: MessageEvent, source: SessionSource, session_key: str
+    ) -> tuple[bool, Optional[str]]:
         """``post_gateway_admission`` exactly once per inbound message: ``(consumed, reply)``.
 
         Never while an admitted row EXECUTES (first run or restart replay): the authority path
@@ -38,8 +38,8 @@ class GatewayInboundHooksMixin:
         return await run_post_admission_hook(self, event, source, session_key)
 
     async def _hm_pre_gateway_dispatch_hook(
-        self, event: "MessageEvent", source: SessionSource
-    ) -> Optional["MessageEvent"]:
+        self, event: MessageEvent, source: SessionSource
+    ) -> Optional[MessageEvent]:
         """Run the ``pre_gateway_dispatch`` plugin hook; None = drop, else the (maybe rewritten) event.
         Results: ``{"action": "skip"}`` → drop; ``{"action": "rewrite", "text"}`` → replace ``event.text``;
         ``allow``/None → normal dispatch. Runs BEFORE auth so plugins can handle unauthorized senders."""
@@ -81,7 +81,7 @@ class GatewayInboundHooksMixin:
         return qc if isinstance(qc, dict) else {}
 
     @staticmethod
-    def _hm_expand_alias_quick_command(event: "MessageEvent", qcmd: dict) -> Optional[str]:
+    def _hm_expand_alias_quick_command(event: MessageEvent, qcmd: dict) -> Optional[str]:
         """Rewrite ``event.text`` to an alias quick command's target; returns the new command name."""
         target = (qcmd.get("target") or "").strip()
         if not target:
@@ -92,8 +92,8 @@ class GatewayInboundHooksMixin:
         return target_command.split()[0] if target_command else target_command
 
     async def _hm_command_hooks(
-        self, event: "MessageEvent", source: SessionSource, _quick_key: str, command: str, canonical: str
-    ) -> Tuple[bool, Optional[str], Optional[str]]:
+        self, event: MessageEvent, source: SessionSource, _quick_key: str, command: str, canonical: str
+    ) -> tuple[bool, Optional[str], Optional[str]]:
         """Fire ``pre_command`` (observer) and ``command:<canonical>`` (interceptor) hooks →
         ``(handled, result, new_command)`` (``new_command`` set when a handler rewrote the command).
         The running-agent path deliberately does NOT fire these — a slow or hostile plugin must not
@@ -159,8 +159,8 @@ class GatewayInboundHooksMixin:
             return t("gateway.quick_command.error", error=e)
 
     async def _hm_dispatch_quick_and_plugin_commands(
-        self, event: "MessageEvent", source: SessionSource, command: Optional[str]
-    ) -> Tuple[bool, Optional[str], Optional[str]]:
+        self, event: MessageEvent, source: SessionSource, command: Optional[str]
+    ) -> tuple[bool, Optional[str], Optional[str]]:
         """Drain gate, user-defined quick commands (exec/alias) and plugin slash commands →
         ``(handled, result, command)``; an alias quick command rewrites ``command``."""
         if self._draining:

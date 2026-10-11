@@ -41,7 +41,7 @@ def test_classic_view_title_undo_retry_new_usage_tools_and_reads(tmp_path):
 
     def tmux(*args):
         return subprocess.run(["tmux", "-L", tmux_name, *args], env=env, stdin=subprocess.DEVNULL,
-                              capture_output=True, text=True, timeout=10)
+                              capture_output=True, text=True, timeout=10, check=False)
 
     def screen():
         return tmux("capture-pane", "-p", "-J", "-S", "-3000", "-t", "chat").stdout

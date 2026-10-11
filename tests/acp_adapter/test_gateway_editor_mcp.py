@@ -149,7 +149,7 @@ async def test_native_cold_editor_rebind_refuses_changed_secret(daemon, specs, t
     os.kill(owned.pid, signal.SIGINT)
     await asyncio.to_thread(owned.wait, 20)
     with (tmp_path / 'cold.log').open('w') as log:
-        process = subprocess.Popen([sys.executable, '-m', 'gateway.run'], cwd=root, env=env,
+        process = subprocess.Popen([sys.executable, '-m', 'gateway.run'], cwd=root, env=env,  # noqa: ASYNC220 -- Popen returns immediately; the test drives the child through its handle
             stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
         try:
             deadline = time.monotonic() + 40

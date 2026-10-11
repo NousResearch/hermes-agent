@@ -228,7 +228,7 @@ def test_pre_lock_decision_never_publishes_a_rival_gateway_owner(tmp_path):
     """)
 
     def rival() -> list:
-        out = subprocess.run([sys.executable, "-c", probe], env=env, text=True, capture_output=True, timeout=60)
+        out = subprocess.run([sys.executable, "-c", probe], env=env, text=True, capture_output=True, timeout=60, check=False)
         assert out.returncode == 0, out.stderr
         return json.loads(out.stdout)
     try:

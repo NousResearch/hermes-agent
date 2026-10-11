@@ -21,6 +21,6 @@ def test_owner_board_recovery(tmp_path, mode):
                PYTHONPATH=str(repo), KANBAN_RECOVERY_MODE=mode)
     result = subprocess.run([sys.executable, str(repo / 'tests/gateway/fixtures/kanban_recovery_probe.py')],
                             cwd=repo, env=env, stdin=subprocess.DEVNULL,
-                            capture_output=True, text=True, timeout=180)
+                            capture_output=True, text=True, timeout=180, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
     print(json.dumps(json.loads((tmp_path / 'state/receipt.json').read_text())))

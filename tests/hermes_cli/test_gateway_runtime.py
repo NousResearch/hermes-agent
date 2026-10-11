@@ -94,7 +94,7 @@ def test_fifo_control_pointer_is_rejected_without_a_writer(tmp_path):
         result = subprocess.run(
             [sys.executable, '-c', code, str(home)],
             cwd=Path(__file__).resolve().parents[2], stdin=subprocess.DEVNULL,
-            capture_output=True, text=True, timeout=3,
+            capture_output=True, text=True, timeout=3, check=False
         )
     except subprocess.TimeoutExpired:
         pytest.fail('discovery blocked on a FIFO instead of rejecting its file type')

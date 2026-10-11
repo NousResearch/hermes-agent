@@ -82,7 +82,7 @@ def test_session_listener_serves_native_ws_before_importing_the_dashboard(tmp_pa
     env = {k: v for k, v in os.environ.items() if k in {"PATH", "LANG", "TZ", "HERMES_RUNTIME_DIR", "TMPDIR"}}
     env.update(HOME=str(tmp_path), HERMES_HOME=str(home), PYTHONPATH=str(REPO))
     proc = subprocess.run([sys.executable, "-c", _PROBE, str(home)], cwd=str(REPO), env=env,
-                          capture_output=True, text=True, timeout=120)
+                          capture_output=True, text=True, timeout=120, check=False)
     lines = [ln for ln in (proc.stdout + proc.stderr).splitlines() if ln.startswith("RESULT ")]
     assert proc.returncode == 0 and lines, proc.stderr[-3000:]
     out = json.loads(lines[-1][len("RESULT "):])

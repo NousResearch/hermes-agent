@@ -34,8 +34,8 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from utils import base_url_hostname
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
-    from gateway.run import GatewayRunner  # noqa: F401
-    from gateway.run_turn_runner import TurnRunner  # noqa: F401
+    from gateway.run import GatewayRunner
+    from gateway.run_turn_runner import TurnRunner
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")

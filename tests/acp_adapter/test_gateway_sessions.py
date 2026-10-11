@@ -61,7 +61,7 @@ async def editor(daemon, tmp_path):
             process.stdin.close()
             try:
                 await asyncio.wait_for(process.wait(), 5)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 process.kill()
                 await process.wait()
             await peer.reader

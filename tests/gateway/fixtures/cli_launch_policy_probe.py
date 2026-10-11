@@ -106,7 +106,7 @@ def probe(tmp_path):
                         base_url=origin + '/' + side + '/v1', reasoning='high' if side == 'left' else 'low',
                         max_turns=1 if side == 'left' else 3, ignore_rules=side == 'left', toolsets='terminal')
         result = subprocess.run([sys.executable, '-c', 'import cli; cli.main(**' + repr(args) + ')'],
-            cwd=cwd, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=70)
+            cwd=cwd, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=70, check=False)
         # A budget run stops at --max-turns with the work unfinished: `chat -Q` exits 1 (documented
         # contract, same as the in-process CLI), never 0.
         assert result.returncode == (1 if budget else 0), result.stdout + result.stderr
@@ -156,11 +156,11 @@ def probe(tmp_path):
             config.write_text(json.dumps(cfg))
             for side in keys:
                 assert 'LAUNCH_POLICY_OK' in cli(side, sessions[side])
-            for side in keys:
+            for side, key in keys.items():
                 captured = [x for x in peer.requests if x['body']['model'] == 'gpt-5-' + side]
                 assert len(captured) == 2, captured
                 assert all(x['path'] == '/' + side + '/v1/chat/completions' for x in captured)
-                assert all(x['auth'] == 'Bearer ' + keys[side] for x in captured)
+                assert all(x['auth'] == 'Bearer ' + key for x in captured)
                 bodies = [x['body'] for x in captured]
                 assert all(b.get('reasoning_effort') == ('high' if side == 'left' else 'low') for b in bodies), bodies
                 systems = [[m for m in b['messages'] if m['role'] in {'system', 'developer'}] for b in bodies]

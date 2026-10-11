@@ -23,7 +23,7 @@ class Model(BaseHTTPRequestHandler):
         body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
         last = (body.get('messages') or [{'role': 'system'}])[-1]
         if last['role'] == 'user':
-            message = {'role': 'assistant', 'content': None, 'tool_calls': [{'id': 'call-%d' % len(body['messages']),
+            message = {'role': 'assistant', 'content': None, 'tool_calls': [{'id': f"call-{len(body['messages'])}",
                 'type': 'function', 'function': {'name': 'terminal',
                 'arguments': json.dumps({'command': self.server.command, 'timeout': 10})}}]}
         else:

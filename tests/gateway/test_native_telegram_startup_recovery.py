@@ -14,6 +14,7 @@ import importlib.machinery
 import pytest
 
 from tests.gateway.fixtures.local_recovery_probe import Model, child_env, daemon
+import itertools
 
 
 class BotAPI(BaseHTTPRequestHandler):
@@ -165,7 +166,7 @@ def test_telegram_fifo_unknown_and_current_authorization_survive_sigkill(tmp_pat
         observed = [next((marker for marker in markers if marker in text), text) for text in texts]
         assert observed == markers, observed
         assert len(set(b['pid'] for b in boots)) == len(boots)
-        assert all(b['epoch'] > a['epoch'] for a, b in zip(boots, boots[1:]))
+        assert all(b['epoch'] > a['epoch'] for a, b in itertools.pairwise(boots))
         assert 'getUpdates' in bot.calls and bot.sent
         print(json.dumps({'boots': boots, 'model_inputs': observed, 'final_rows': rows()}))
     finally:

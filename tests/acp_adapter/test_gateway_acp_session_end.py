@@ -51,7 +51,7 @@ async def test_last_viewer_or_shutdown_ends_only_idle_acp_sessions(tmp_path, mon
         acp, acp_row = create('acp', 'editor')
         gui, gui_row = create('gui', 'desktop')
         busy, busy_row = create('acp', 'busy-editor')
-        unseen, unseen_row = create('acp', 'unseen-editor')
+        _unseen, unseen_row = create('acp', 'unseen-editor')
         first, second = viewer(), viewer()
         for connection in (first, second):
             await resume(connection, acp)

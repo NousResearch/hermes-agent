@@ -20,7 +20,7 @@ from . import (
     tools_commands,
     tools_mcp_plugins,
 )
-from . import canonical  # noqa: F401,E402  (last: authority-only verbs reuse the topic models above)
+from . import canonical
 from .base import JsonValue, Params, Payload, Result, WireEnum
 from .registry import CANONICAL_METHODS, EVENTS, METHODS, SERVER_REQUESTS
 

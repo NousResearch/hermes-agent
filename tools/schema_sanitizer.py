@@ -166,7 +166,12 @@ def strip_nullable_unions(schema: Any, *, keep_nullable_hint: bool = True) -> An
                 if keep_nullable_hint:
                     replacement.setdefault("nullable", True)
                 _carry_union_meta(stripped, replacement, skip_default_on_ref=True)
-                return _rewrite(replacement, collapse)  # the survivor may itself be a union
+                # No re-walk: _rewrite normalizes a node's children before this callback sees
+                # it, so the survivor is already normalized (``collapse_const_unions`` below
+                # returns the same way). Re-walking it once per enclosing union made a nested
+                # nullable chain quadratic in depth — 13,255 walker calls for 64 levels
+                # (#133466).
+                return replacement
         return stripped
     return _rewrite(schema, collapse)
 

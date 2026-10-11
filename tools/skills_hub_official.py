@@ -97,6 +97,12 @@ class OptionalSkillSource(SkillSource):
 
     def fetch(self, identifier: str) -> Optional[SkillBundle]:
         # identifier format: "official/category/skill" or "official/skill"
+        if not identifier.startswith("official/"):
+            # A qualified identifier addressed to another registry (skills-sh/owner/repo/skill,
+            # github/owner/repo/skill, owner/repo/skills/skill) must not fall through to a
+            # same-named optional skill: this source is first in the router, so the fallback
+            # would silently substitute the official skill for the one the user asked for.
+            return None
         rel = self._rel(identifier)
         # Guard against path traversal (e.g. "official/../../etc")
         try:
@@ -133,6 +139,8 @@ class OptionalSkillSource(SkillSource):
         return self._bundle(rel_id, files) if files else None
 
     def inspect(self, identifier: str) -> Optional[SkillMeta]:
+        if not identifier.startswith("official/"):
+            return None  # same gate as fetch: another registry's identifier, not ours
         skill_name = self._rel(identifier).rsplit("/", 1)[-1]
         for meta in self._scan_all():
             if meta.name == skill_name:

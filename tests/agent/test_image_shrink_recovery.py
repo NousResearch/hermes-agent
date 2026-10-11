@@ -153,6 +153,32 @@ class TestImageTooLargeClassification:
                 assert classify_api_error(err, provider="custom", model="x").reason == expected, str(err)[:120]
 
 
+class TestWrappedImageLimit:
+    def test_wrapped_limits_match_the_provider_ceiling(self):
+        """Recovery must use the same inner error as classification (#53884)."""
+        cases = [
+            ("image dimensions exceed max allowed size for many-image requests: 2000 pixels", 2000),
+            ("image dimensions exceed max allowed size: 1536 pixels", 1536),
+            ("The image requires 33174 patches after processing, exceeding the limit of 30000.", 5536),
+        ]
+        for message, ceiling in cases:
+            inner = _FakeApiError(400, message)
+            for chain in ("__cause__", "__context__"):
+                wrapped = RuntimeError("upstream provider request failed")
+                setattr(wrapped, chain, inner)
+                assert classify_api_error(wrapped).reason == FailoverReason.image_too_large
+                assert _image_error_max_dimension(wrapped) == ceiling
+
+    def test_trigger_terms_split_across_chain_do_not_match(self):
+        """An image wrapper cannot turn unrelated dimension metadata into a limit."""
+        inner = _FakeApiError(
+            400, "request dimension metadata invalid; max allowed size: 2000 pixels",
+        )
+        wrapped = RuntimeError("image upload failed")
+        wrapped.__cause__ = inner
+        assert _image_error_max_dimension(wrapped) is None
+
+
 class TestSpentShrinkFallsBack:
     """``image_too_large`` is retryable so the shrink can run once; after the one shrink attempt was
     spent without recovering, the loop must not re-send the byte-identical oversized body

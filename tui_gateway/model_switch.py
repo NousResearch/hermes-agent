@@ -17,9 +17,13 @@ _RUNTIME_KEYS = ("model", "provider", "api_key", "base_url", "api_mode")
 
 def _snapshot_agent_model_runtime(agent) -> dict:
     """Capture the current agent model runtime for a one-turn restore."""
+    from tui_gateway.fallback_recovery import recovery_state
     return {**{k: getattr(agent, k, "") for k in _RUNTIME_KEYS},
             "reasoning_config": copy.deepcopy(getattr(agent, "reasoning_config", None)),
-            "primary_runtime": copy.deepcopy(getattr(agent, "_primary_runtime", None))}
+            "primary_runtime": copy.deepcopy(getattr(agent, "_primary_runtime", None)),
+            "fallback_chain": copy.deepcopy(getattr(agent, "_fallback_chain", None)),
+            "tui_profile_intent": copy.deepcopy(getattr(agent, "_tui_profile_intent", None)),
+            "tui_fallback_recovery": recovery_state(agent)}
 
 
 def _restore_agent_model_runtime(agent, snapshot: dict | None) -> None:
@@ -30,13 +34,17 @@ def _restore_agent_model_runtime(agent, snapshot: dict | None) -> None:
     # runtime restore paths below (primary_runtime may predate a session /reasoning change).
     if "reasoning_config" in snapshot:
         agent.reasoning_config = snapshot["reasoning_config"]
+    agent._tui_fallback_recovery = copy.deepcopy(snapshot.get("tui_fallback_recovery"))
     primary = snapshot.get("primary_runtime")
-    if primary and hasattr(agent, "_restore_primary_runtime"):
+    # A one-turn detour must not zero a fallback's cooldown. Restore its active
+    # route below, then let normal admission recover the original primary.
+    if primary and not agent._tui_fallback_recovery and hasattr(agent, "_restore_primary_runtime"):
         try:
             agent._primary_runtime = copy.deepcopy(primary)
             agent._fallback_activated = True
             agent._rate_limited_until = 0
             if agent._restore_primary_runtime():
+                agent._tui_profile_intent = copy.deepcopy(snapshot.get("tui_profile_intent"))
                 if "reasoning_config" in snapshot:
                     agent.reasoning_config = snapshot["reasoning_config"]
                 return
@@ -47,8 +55,13 @@ def _restore_agent_model_runtime(agent, snapshot: dict | None) -> None:
         agent.switch_model(
             new_model=model, new_provider=provider, api_key=api_key, base_url=base_url,
             api_mode=api_mode, capabilities=snapshot.get("capabilities"))
+        agent._tui_profile_intent = copy.deepcopy(snapshot.get("tui_profile_intent"))
         if "reasoning_config" in snapshot:
             agent.reasoning_config = snapshot["reasoning_config"]
+    if snapshot.get("tui_fallback_recovery") and isinstance(chain := snapshot.get("fallback_chain"), list):
+        # Leaving fallback for ONE turn is not a permanent provider rejection.
+        agent._fallback_chain = copy.deepcopy(chain)
+        agent._fallback_model = agent._fallback_chain[0] if chain else None
 
 
 def _profile_runtime_scope_tokens(profile_home, *, hydrate_secrets: bool = True) -> _TurnScopes:
@@ -277,7 +290,8 @@ def _expensive_model_confirm(result, current_base_url: str, current_api_key, age
     return {"value": result.new_model, "warning": msg, "confirm_required": True, "confirm_message": msg}
 
 
-def _commit_agent_switch(sid: str, session: dict, agent, result, current_model: str, snapshot):
+def _commit_agent_switch(sid: str, session: dict, agent, result, current_model: str, snapshot,
+                         adopted_profile_intent: dict | None = None):
     """Swap the live agent in place, then restart/persist/mark/announce; a failed swap aborts."""
     try:
         agent.switch_model(
@@ -294,6 +308,11 @@ def _commit_agent_switch(sid: str, session: dict, agent, result, current_model: 
         logger.warning("In-place model switch failed for TUI agent: %s", exc)
         raise ValueError(f"Model switch to {result.new_model} failed ({exc}); "
                          f"staying on {getattr(agent, 'model', current_model)}.") from exc
+    # Publish only after the primary swap succeeds, before persisting it. Manual
+    # picks have no owning-profile provenance; --once restores the prior snapshot.
+    agent._tui_profile_intent = copy.deepcopy(adopted_profile_intent)
+    # An explicit/config switch supersedes deferred construction-time recovery.
+    agent._tui_fallback_recovery = None
     _restart_slash_worker(sid, session)
     _persist_live_session_runtime(session)
     _persist_live_session_system_prompt(session)
@@ -308,7 +327,8 @@ def _commit_agent_switch(sid: str, session: dict, agent, result, current_model: 
 def _apply_model_switch(
     sid: str, session: dict, raw_input: str, *, confirm_expensive_model: bool = False,
     pin_session_override: bool = True, parsed_flags: Any | None = None,
-    persist_override: bool | None = None, count_switch: bool = True) -> dict:
+    persist_override: bool | None = None, count_switch: bool = True,
+    adopted_profile_intent: dict | None = None) -> dict:
     """``count_switch=False``: an internal swap (config adoption, MoA one-shot and its restore), not a
     user's /model pick, so it stays out of the shared-metrics switch count."""
     from hermes_cli.model_switch import switch_model
@@ -353,7 +373,8 @@ def _apply_model_switch(
     try:
         if agent:
             # Provenance must exist before this transaction persists the switched runtime.
-            _commit_agent_switch(sid, session, agent, result, current_model, restore_snapshot)
+            _commit_agent_switch(sid, session, agent, result, current_model, restore_snapshot,
+                                 adopted_profile_intent)
     except Exception:
         if records_composer_override:
             if had_composer_profile:
@@ -475,10 +496,21 @@ def _sync_agent_model_with_config(sid: str, session: dict) -> None:
     # Record first so a broken config gets one attempt per edit, not per turn.
     session["config_model_seen"] = target
     model, provider = target
+    from tui_gateway.fallback_recovery import profile_intent
+    intended_profile = profile_intent(_load_cfg())  # before any fallible provider resolution
     # Already on the configured model (resumed before first sync, or a config revert after
     # a failed switch): adopt without switching.
-    if model == getattr(agent, "model", "") and (not provider or provider == getattr(agent, "provider", "")):
-        if superseded_pin is not None:
+    if (model == getattr(agent, "model", "")
+            and (not provider or provider == getattr(agent, "provider", ""))
+            and not getattr(agent, "_fallback_activated", False)):
+        # Adopting the observed fallback is a deliberate config choice, not a
+        # reason to restore its obsolete primary immediately after this sync.
+        recovery = getattr(agent, "_tui_fallback_recovery", None)
+        if recovery:
+            agent._tui_fallback_recovery = None
+            agent._pending_fallback_notice = None
+        agent._tui_profile_intent = intended_profile
+        if superseded_pin is not None or recovery:
             _persist_live_session_runtime(session)
         return
     raw = f"{model} --provider {provider}" if provider else model
@@ -487,7 +519,7 @@ def _sync_agent_model_with_config(sid: str, session: dict) -> None:
         # how `hermes --tui -m` once leaked into config.yaml).
         _apply_model_switch(
             sid, session, raw, confirm_expensive_model=True, pin_session_override=False,
-            persist_override=False, count_switch=False)
+            persist_override=False, count_switch=False, adopted_profile_intent=intended_profile)
     except Exception as e:
         logger.warning("Configured model %s could not be adopted for session %s: %s", model, sid, e)
         from gateway.warning_notifications import render_notification

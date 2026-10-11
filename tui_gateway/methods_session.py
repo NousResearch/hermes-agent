@@ -657,6 +657,9 @@ class _Resume:
             close_on_disconnect=_flag(self.params, "close_on_disconnect"),
             profile_home=self.profile_home, explicit_cwd=bool(self.profile_resume_cwd), **extra)
         if follows_profile:
+            if not model_config.get("composer_override_profile"):
+                # Recovery is a build input, never a permanent canonical-chat pin.
+                record["model_override"] = None
             record.update(
                 follow_profile_config=True,
                 composer_override_profile=(model_config.get("composer_override_profile")
@@ -1021,6 +1024,8 @@ def _resume_eager(ctx: _Resume) -> dict:
             with _profile_build_scope(ctx.profile_home):
                 _init_session(sid, ctx.target, agent, history, cols=ctx.cols, cwd=ctx.profile_resume_cwd,
                               session_db=ctx.db, source=source, explicit_cwd=bool(ctx.profile_resume_cwd))
+                if session := _sessions.get(sid):
+                    session["config_model_seen"] = _config_model_target()
                 # Ownership TRANSFER: the agent holds the handle for life (AIAgent.close() releases it). The
                 # owns_db drop is UNCONDITIONAL — the session is registered against the handle, so the finally
                 # must not close it even if the transfer was refused (a leak beats "closed database" every
@@ -1034,6 +1039,8 @@ def _resume_eager(ctx: _Resume) -> dict:
                 model_config = _parse_model_config(ctx.found.get("model_config"), quiet=True)
                 if _row_follows_profile(ctx.found):
                     session["follow_profile_config"] = True
+                    if not model_config.get("composer_override_profile"):
+                        session["model_override"] = None
                     session["composer_override_profile"] = (
                         model_config.get("composer_override_profile")
                         if stored_runtime_overrides.get("model_override") else None)

@@ -151,6 +151,7 @@ class SessionState:
     # Per-session allocator for ACP assistant messageIds (lazily created by
     # the server so streamed chunks group into distinct assistant replies).
     message_ids: Any = None
+    subagent_progress: Any = None
 
 
 class SessionManager:

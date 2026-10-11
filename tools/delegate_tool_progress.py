@@ -410,6 +410,11 @@ class _ChildProgressRelay:
                 self._flush()
 
     def __call__(self, event_type, tool_name: str | None = None, preview: str | None = None, args=None, **kwargs):
+        # A grandchild already has an identity. Forward it without attributing its
+        # output/tools to this relay's child or batching away its identity.
+        if isinstance(event_type, str) and event_type.startswith("subagent.") and kwargs.get("subagent_id") not in (None, self.subagent_id):
+            _safe_progress(self.parent_cb, event_type, tool_name, preview, args, **kwargs)
+            return
         key = _normalize_event(event_type)
         method = None if key is None else _EVENT_HANDLERS.get(key, "_on_tool_started")
         if method is not None:

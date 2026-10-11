@@ -42,6 +42,7 @@ approval:
     second_one: "{count}초"
     second_other: "{count}초"
 gateway:
+  redelivered_due: "[재전송 · 원래 예정 시각 {when}]"
   approval_expired: "⚠️ 승인이 만료되었습니다 (에이전트가 더 이상 대기하지 않습니다). 에이전트에게 다시 시도하도록 요청하세요."
   draining: "⏳ 재시작 전에 활성 에이전트 {count}명을 정리하는 중..."
   goal_cleared: "✓ 목표가 삭제되었습니다."

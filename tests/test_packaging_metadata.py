@@ -1,4 +1,5 @@
 """Independent core/optional dependency and reviewed CVE policies."""
+import re
 import tomllib
 from pathlib import Path
 
@@ -6,6 +7,44 @@ from packaging.requirements import Requirement
 from packaging.version import Version
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _canonical(name):
+    # PEP 503 normalisation, matching how uv keys exclude-newer-package.
+    return re.sub(r"[-_.]+", "-", name.lower())
+
+
+def _exact_pinned_names(requirements):
+    pinned = set()
+    for requirement in map(Requirement, requirements):
+        specs = list(requirement.specifier)
+        if any(spec.operator == "==" for spec in specs):
+            pinned.add(_canonical(requirement.name))
+    return pinned
+
+
+def test_build_system_requires_exempt_from_exclude_newer():
+    # uv applies exclude-newer to build-system.requires too, so a resolver
+    # that cannot see an upload date filters the pinned setuptools/wheel and
+    # the package cannot even build (#78227, #75992, #76020, #96488).
+    manifest = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    exempt = {_canonical(name) for name in manifest["tool"]["uv"]["exclude-newer-package"]}
+    assert _exact_pinned_names(manifest["build-system"]["requires"]) <= exempt
+
+
+def test_exact_pinned_deps_exempt_from_exclude_newer():
+    # An exact pin cannot float, so the exclude-newer quarantine adds zero
+    # supply-chain protection for it — while indexes whose PEP 691 simple API
+    # omits per-file upload-time (e.g. the Tsinghua mirror) treat the pin as
+    # newer than the cutoff and brick resolution outright (#132558).
+    manifest = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    exempt = {_canonical(name) for name in manifest["tool"]["uv"]["exclude-newer-package"]}
+    pinned = _exact_pinned_names(manifest["project"]["dependencies"])
+    for specs in manifest["project"].get("optional-dependencies", {}).values():
+        pinned |= _exact_pinned_names(specs)
+    for specs in manifest.get("dependency-groups", {}).values():
+        pinned |= _exact_pinned_names(specs)
+    assert pinned <= exempt
 
 
 def test_test_dependencies_are_group_only_in_manifest_and_lock():

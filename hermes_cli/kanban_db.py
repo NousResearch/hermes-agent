@@ -3,10 +3,7 @@
 Lives under the shared Hermes root: ``default`` board DB at ``<root>/kanban.db`` (pre-boards
 back-compat), other boards at ``<root>/kanban/boards/<slug>/``; a worker on one board never sees
 another. Board resolution: ``board=`` arg > ``HERMES_KANBAN_BOARD`` > ``HERMES_KANBAN_DB`` (pins the
-file path) > ``<root>/kanban/current`` > ``default`` — but only for unfenced callers; the dispatcher
-injects these into workers, and dispatched workers (``HERMES_KANBAN_TASK``), delegated children and
-board-enumerating machine flows (gateway notifier/watcher/dispatcher, ``pin_first_board_resolution``)
-always resolve through the pin, so workers physically cannot see other boards.
+file path) > ``<root>/kanban/current`` > ``default``; the dispatcher injects these into workers.
 Concurrency: WAL + ``BEGIN IMMEDIATE`` + compare-and-swap on ``tasks.status``/``claim_lock`` —
 SQLite serializes writers so one claimer wins, losers see zero rows (no retries, no distributed
 locks). Schema: tasks, task_links, task_comments, task_events, task_runs, attachments, notify subs.
@@ -358,32 +355,6 @@ DEFAULT_BOARD = "default"
 _CURRENT_BOARD_OVERRIDE: ContextVar[str | None] = ContextVar(
     "hermes_kanban_current_board_override", default=None,
 )
-# Machine flows that enumerate boards (gateway notifier / watcher / dispatcher
-# ticks) resolve board paths env-pin-first — see pin_first_board_resolution().
-_PIN_FIRST_BOARD_RESOLUTION: ContextVar[bool] = ContextVar(
-    "hermes_kanban_pin_first_board_resolution", default=False,
-)
-
-
-@contextlib.contextmanager
-def pin_first_board_resolution():
-    """Resolve board paths env-pin-first for machine flows that enumerate boards.
-
-    The gateway notifier, per-subscription cursor writes and the embedded
-    dispatcher poll every board slug from ``list_boards()`` — the slug is not
-    caller intent, it is an iteration variable. On a box whose environment pins
-    ``HERMES_KANBAN_DB`` (the dispatcher default) every slug must map to that
-    one pinned file: the notifier dedupes resolved DB paths, and per-slug
-    paths read empty boards nobody writes, silently killing wake
-    notifications. Explicit cross-board intent (CLI ``--board``, a model
-    tool's ``board=``) is a USER property and must never run inside this
-    context; with no pin set this context changes nothing.
-    """
-    token = _PIN_FIRST_BOARD_RESOLUTION.set(True)
-    try:
-        yield
-    finally:
-        _PIN_FIRST_BOARD_RESOLUTION.reset(token)
 
 
 @contextlib.contextmanager
@@ -527,59 +498,16 @@ def board_exists(board: Optional[str] = None) -> bool:
 
 
 
-def _explicit_board_slug(board: Optional[str]) -> Optional[str]:
-    """Explicit caller intent: a direct ``board=`` argument, else the scoped
-    ``--board`` context (CLI ``hermes kanban --board``, dashboard plugin_api);
-    ``None`` when the caller expressed neither."""
-    if board is not None:
-        return _normalize_board_slug(board)
-    # A caller-scoped board (CLI `hermes kanban --board B ...`, dashboard
-    # plugin_api) is explicit intent just like a direct board= argument —
-    # without this a worker-pinned HERMES_KANBAN_DB silently outranks --board
-    # (os-reviewer P1 on PR#107195 / t_11c4afd8).
-    ctx = (_CURRENT_BOARD_OVERRIDE.get() or "").strip()
-    if ctx:
-        try:
-            return _normalize_board_slug(ctx)
-        except ValueError:
-            return None
-    return None
-
-
-def _explicit_board_intent_pinned() -> bool:
-    """Whether an explicit ``board=`` (or scoped ``--board``) must still resolve
-    through the ``HERMES_KANBAN_DB``-style env pins instead of its own board dir.
-
-    True for machine flows wrapped in :func:`pin_first_board_resolution` and
-    for every execution the dispatcher fences: its own workers (they carry
-    ``HERMES_KANBAN_TASK``) and delegated children / descendants (the
-    ``HERMES_DELEGATED_CHILD_CONTEXT`` marker). The pins ARE the "workers
-    physically cannot see other boards" isolation (5ec6baa), and
-    ``agent.delegation_context.kanban_path_is_fenced`` checks the pinned path /
-    fenced root — an explicit board that resolved elsewhere would also escape
-    that fence."""
-    if _PIN_FIRST_BOARD_RESOLUTION.get():
-        return True
-    from agent.delegation_context import explicit_board_intent_is_pinned
-    return explicit_board_intent_is_pinned()
-
-
 def _board_path(
     env_var: Optional[str], board: Optional[str], default_parts: tuple[str, ...], leaf: str,
 ) -> Path:
-    """Shared resolver. An explicit ``board=`` argument — or the scoped
-    ``--board`` context (:func:`scoped_current_board`) — outranks the ``env_var``
-    pin ONLY where no fence applies (see :func:`_explicit_board_intent_pinned`):
-    user-facing cross-board intent (CLI ``--board``, a model tool's ``board=``)
-    is honored, but machine flows that enumerate boards (gateway notifier /
-    watcher / dispatcher ticks) and dispatched or delegated workers keep
-    resolving through the pin. Without explicit intent the ``env_var`` override
-    pins the file, else legacy ``<root>/<default_parts>`` for the ``default``
-    board, else ``board_dir(slug)/leaf``."""
-    pin = os.environ.get(env_var, "").strip() if env_var else ""
-    slug = _explicit_board_slug(board)
-    if pin and (slug is None or _explicit_board_intent_pinned()):
-        return Path(pin).expanduser()
+    """Shared resolver: ``env_var`` override, else legacy ``<root>/<default_parts>``
+    for the ``default`` board, else ``board_dir(slug)/leaf``."""
+    if env_var:
+        override = os.environ.get(env_var, "").strip()
+        if override:
+            return Path(override).expanduser()
+    slug = _normalize_board_slug(board)
     if slug is None:
         slug = get_current_board()
     if slug == DEFAULT_BOARD:
@@ -3427,12 +3355,57 @@ def _nonblank_str(value: Any) -> Optional[str]:
     return value if isinstance(value, str) and value.strip() else None
 
 
+def _prior_implementer_from_parents(conn: sqlite3.Connection, task_id: str) -> Optional[str]:
+    """Nearest writer ancestor of ``task_id``, used when a reviewer run was
+    claimed straight from ``ready`` and never went through a review handoff.
+
+    A pipeline dispatches every stage straight to ``running`` — no ``review``
+    column, no ``review_requested`` event — so a stage that judges an *attempt*
+    (S4a review, S5 acceptance) can reach ``request_changes`` without the
+    provenance the review lane records. Returning the closest ancestor that is
+    not the reviewer itself keeps the return path pointed at a writer instead of
+    guessing; ``None`` means there is no such ancestor, and the caller then
+    refuses rather than reassigning to whoever happens to hold the card.
+    """
+    me = conn.execute("SELECT assignee FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    reviewer = _canonical_assignee(_nonblank_str(_row_get(me, "assignee")) if me else None)
+    frontier = [str(r["parent_id"]) for r in conn.execute(
+        "SELECT parent_id FROM task_links WHERE child_id = ?", (task_id,),
+    ).fetchall()]
+    seen: set[str] = set()
+    while frontier:
+        nxt: list[str] = []
+        for pid in frontier:
+            if pid in seen:
+                continue
+            seen.add(pid)
+            row = conn.execute("SELECT assignee FROM tasks WHERE id = ?", (pid,)).fetchone()
+            if row is None:
+                continue
+            candidate = _canonical_assignee(_nonblank_str(_row_get(row, "assignee")))
+            if candidate and candidate != reviewer:
+                return candidate
+            nxt.extend(str(r["parent_id"]) for r in conn.execute(
+                "SELECT parent_id FROM task_links WHERE child_id = ?", (pid,),
+            ).fetchall())
+        frontier = nxt
+    return None
+
+
 def request_changes(
     conn: sqlite3.Connection, task_id: str, *, reason: str, expected_run_id: Optional[int] = None,
 ) -> tuple[bool, Optional[str]]:
-    """Close an active reviewer run (claimed from ``review``) and hand the task
-    back to the implementer from the latest ``review_requested`` event, parent
-    gating reapplied. Returns ``(ok, implementer | reason)``."""
+    """Close an active reviewer run and hand the task back to the implementer,
+    parent gating reapplied. Returns ``(ok, implementer | reason)``.
+
+    The reviewer run may be claimed from the ``review`` lane (the handoff path,
+    which records ``review_requested`` provenance) or straight from ``ready``
+    (a pipeline stage dispatched straight to ``running``). Both are legitimate:
+    what makes a rejection safe is that it names a real writer to return to, not
+    which column the reviewer was claimed from. The lane still takes precedence
+    for provenance; the parent walk is the fallback for pipelines that have no
+    review lane at all.
+    """
     reason = str(redact_review_value(reason or "")).strip()
     if not reason:
         return False, "reason is required"
@@ -3451,14 +3424,31 @@ def request_changes(
 
         claimed_event = _latest_event(conn, task_id, "claimed", current_run_id)
         claimed_payload = _json_dict(_row_get(claimed_event, "payload"))
-        if claimed_payload.get("source_status") != "review":
-            return False, "active run was not claimed from review"
+        from_review_lane = claimed_payload.get("source_status") == "review"
 
         requested_event = _latest_event(conn, task_id, "review_requested")
-        if requested_event is None:
-            return False, "no prior review_requested event"
-        implementer = _nonblank_str(_json_dict(requested_event["payload"]).get("implementer"))
-        if implementer is None:
+        implementer = None
+        if requested_event is not None:
+            implementer = _nonblank_str(_json_dict(requested_event["payload"]).get("implementer"))
+        if not from_review_lane:
+            # Claimed straight from ``ready``: a stage dispatched without a review
+            # lane. The handoff provenance does not exist, so fall back to the
+            # parent walk — but still refuse when that finds no writer, rather
+            # than handing the card to the reviewer that just rejected it.
+            fallback = _prior_implementer_from_parents(conn, task_id)
+            if implementer is None:
+                implementer = fallback
+            elif fallback and fallback != implementer:
+                # Provenance and graph disagree; the graph is the live truth.
+                implementer = fallback
+            if implementer is None:
+                return False, "review handoff has no valid implementer provenance"
+        elif implementer is None:
+            # The review lane recorded a handoff with no implementer (the card was
+            # already assigned to its own reviewer). That is absent provenance, and
+            # the parent walk is NOT a substitute here: inside the lane the
+            # reviewer is legitimately an ancestor's peer, so walking would name
+            # whoever happens to be upstream and misroute the rejection.
             return False, "review handoff has no valid implementer provenance"
         reviewer = _canonical_assignee(_nonblank_str(task_row["assignee"]))
 

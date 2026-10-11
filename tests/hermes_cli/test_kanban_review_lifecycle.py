@@ -928,3 +928,54 @@ def test_synthesized_run_for_unassigned_card_keeps_null_profile(kanban_home: Pat
             "SELECT profile, outcome FROM task_runs WHERE task_id = ? ORDER BY id DESC LIMIT 1", (tid,),
         ).fetchone()
         assert (run["outcome"], run["profile"]) == ("blocked", None)
+
+
+def test_request_changes_routes_back_to_writer_when_reviewer_claimed_from_ready(
+    kanban_home: Path,
+) -> None:
+    """A pipeline stage claimed straight from ``ready`` can still reject.
+
+    Staged pipelines dispatch every stage ``blocked -> ready -> running``: there
+    is no ``review`` column and no ``review_requested`` event, so the original
+    guard refused every REQUEST_CHANGES and the graph could only travel forward —
+    a gate that can only approve is an annotation. The card must instead go back
+    to its writer ancestor, found through ``task_links``.
+    """
+    with kbc.connect() as conn:
+        s3 = kb.create_task(conn, title="S3 implement", assignee="coder")
+        s4a = kb.create_task(conn, title="S4a review", assignee="reviewer")
+        kb.link_tasks(conn, s3, s4a)
+        # The writer finishes; completing it re-gates the S4a card to ``ready``.
+        # No review handoff exists anywhere in this history — the staged-pipeline
+        # shape that used to make every REQUEST_CHANGES unappliable.
+        assert kb.claim_task(conn, s3) is not None
+        assert kb.complete_task(conn, s3, summary="wrote the fix") is True
+        assert kb.get_task(conn, s4a).status == "ready"
+
+        run = kb.claim_task(conn, s4a)
+        assert run is not None, "the S4a card must be claimable from ready"
+
+        ok, implementer = kb.request_changes(
+            conn, s4a, reason="contract regression", expected_run_id=run.current_run_id,
+        )
+        assert (ok, implementer) == (True, "coder")
+        task = kb.get_task(conn, s4a)
+        assert task.assignee == "coder", "the card returns to the writer, not the reviewer"
+        assert task.status == "ready"
+
+
+def test_request_changes_refuses_when_no_writer_ancestor_exists(kanban_home: Path) -> None:
+    """Widening the accepted origin must not invent a destination.
+
+    A card claimed from ``ready`` with no parent has nothing to hand back to.
+    The fallback walks the graph and, finding no writer, refuses — it does not
+    reassign the card to the reviewer that just rejected it, which would create
+    an infinite self-review loop.
+    """
+    with kbc.connect() as conn:
+        lonely = kb.create_task(conn, title="orphan S4a", assignee="reviewer")
+        run = kb.claim_task(conn, lonely)
+        assert run is not None
+        ok, reason = kb.request_changes(conn, lonely, reason="no writer")
+        assert ok is False
+        assert "implementer provenance" in (reason or "")

@@ -98,3 +98,36 @@ def test_standalone_telegram_sender_logs_proxy_without_credentials(monkeypatch, 
         send_message_senders._telegram_bot("123456:TOKEN")
     assert seen and seen[0]["request"].proxy == PROXY
     _assert_host_logged_without_secret(caplog)
+
+
+SOCKS_PROXY = "socks5://alice:S3cretPass@127.0.0.1:1080"
+
+
+def _assert_socks_warning_without_secret(caplog):
+    lines = [r.getMessage() for r in caplog.records if "SOCKS proxy" in r.getMessage()]
+    assert lines, "the missing-aiohttp_socks warning must still fire"
+    assert all(SECRET not in line and "alice" not in line for line in lines), lines
+    assert any("127.0.0.1:1080" in line for line in lines), lines
+
+
+def test_shared_socks_connector_warning_logs_proxy_without_credentials(monkeypatch, caplog):
+    import sys
+
+    from gateway.platforms import base as gw_base
+
+    monkeypatch.setitem(sys.modules, "aiohttp_socks", None)  # import raises ImportError
+    with caplog.at_level(logging.WARNING):
+        assert gw_base._aiohttp_socks_connector(SOCKS_PROXY) is None
+    _assert_socks_warning_without_secret(caplog)
+
+
+def test_matrix_socks_session_warning_logs_proxy_without_credentials(monkeypatch, caplog):
+    import sys
+
+    from plugins.platforms.matrix import adapter as matrix_adapter
+
+    monkeypatch.setitem(sys.modules, "aiohttp_socks", None)
+    monkeypatch.setitem(sys.modules, "aiohttp", types.SimpleNamespace(ClientSession=lambda **kw: kw))
+    with caplog.at_level(logging.WARNING):
+        matrix_adapter._create_matrix_session(SOCKS_PROXY)
+    _assert_socks_warning_without_secret(caplog)

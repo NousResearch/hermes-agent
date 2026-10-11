@@ -104,26 +104,30 @@ def yaml_load(content: str):
 
 def _json_safe_frontmatter(value: Any) -> Any:
     """YAML resolves unquoted dates/times (``updated: 2025-12-01``) to ``datetime`` objects,
-    and skill metadata ends in ``json.dumps`` (skill_view), so they are kept as ISO text."""
+    and skill metadata ends in ``json.dumps`` (skill_view), so they are kept as ISO text;
+    ``!!set`` becomes a list and any other non-JSON scalar (``!!binary``) its ``str()``."""
     if isinstance(value, dict):
         return {_json_safe_frontmatter(k): _json_safe_frontmatter(v) for k, v in value.items()}
-    if isinstance(value, list):
+    if isinstance(value, (list, tuple, set, frozenset)):
         return [_json_safe_frontmatter(v) for v in value]
     if isinstance(value, (datetime.date, datetime.time)):
         return value.isoformat()
-    return value
+    if value is None or isinstance(value, (str, int, float)):
+        return value
+    return str(value)
 
 
 def _coerce_identity_fields(frontmatter: Dict[str, Any]) -> None:
     """Every consumer treats ``name``/``description`` as text (sliced, slugified, compared to
-    the looked-up name), so a bare ``name:`` or ``name: 2048`` must not silently drop the
-    skill from listings and slash commands. Blank values fall back to the consumer's default."""
+    the looked-up name), so a bare ``name:``, ``name: 2048`` or ``name: [a, b]`` must not
+    silently drop the skill from listings and slash commands. Blank and non-scalar values fall
+    back to the consumer's default."""
     for key in ("name", "description"):
         value = frontmatter.get(key)
-        if value is None or (isinstance(value, str) and not value.strip()):
-            frontmatter.pop(key, None)
-        elif isinstance(value, (int, float)):
+        if isinstance(value, (int, float)):
             frontmatter[key] = str(value)
+        elif not (isinstance(value, str) and value.strip()):
+            frontmatter.pop(key, None)
 
 
 def parse_frontmatter(content: str) -> Tuple[Dict[str, Any], str]:

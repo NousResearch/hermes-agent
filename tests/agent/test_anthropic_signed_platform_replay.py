@@ -96,3 +96,13 @@ def test_signed_thinking_replays_exactly_where_the_route_can_verify_it(case):
     if signed_route:
         assert stale_thinking_reaches_wire("anthropic_messages", "custom", model, base_url) is ("sig_prior" in expected)
     assert history == before
+
+
+def test_a_steer_merged_into_the_tool_result_turn_keeps_the_loop_thinking():
+    """/steer text lands in the tool_result user turn; it must not end the in-flight loop for
+    last-turn-only models (main kept the newest assistant's thinking there)."""
+    history = _history()
+    history.append({"role": "user", "content": "steer: also check b"})
+    _system, wire = AnthropicTransport().convert_messages(history, base_url=None, model="claude-sonnet-4-5")
+    sigs = [b.get("signature") for m in wire if m["role"] == "assistant" for b in m["content"] if b.get("type") == "thinking"]
+    assert sigs == LOOP

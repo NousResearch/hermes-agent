@@ -571,14 +571,15 @@ def _keep_valid_thinking(content: list[Any], signature_dead: bool) -> list[Any]:
 
 
 def _current_tool_loop_start(result: list[dict[str, Any]]) -> int:
-    """Index after the last user message that is not purely tool results: every assistant turn from
-    there on belongs to the in-flight tool loop, whose thinking Anthropic requires back."""
+    """Index after the last user message carrying no tool result: every assistant turn from there on belongs
+    to the in-flight tool loop, whose thinking Anthropic requires back. A steer merged into a tool_result
+    turn still continues the loop."""
     for i in range(len(result) - 1, -1, -1):
         m = result[i]
         if m.get("role") != "user":
             continue
         content = m.get("content")
-        if not (isinstance(content, list) and content and all(_block_type(b) == "tool_result" for b in content)):
+        if not (isinstance(content, list) and any(_block_type(b) == "tool_result" for b in content)):
             return i + 1
     return 0
 

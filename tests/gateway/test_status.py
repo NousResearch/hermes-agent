@@ -531,6 +531,7 @@ class TestGatewayRuntimeStatus:
             adapter = object.__new__(type("_Adapter", (BasePlatformAdapter,), {
                 m: (lambda *a, **k: None) for m in ("connect", "disconnect", "get_chat_info", "send")}))
             adapter._runtime_status_platform_key = "telegram"
+            adapter._runtime_status_owned = True
             adapter._fatal_error_code = adapter._fatal_error_message = None
             adapter._fatal_error_retryable = True
             adapter._mark_connected()

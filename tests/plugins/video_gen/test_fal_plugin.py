@@ -300,6 +300,24 @@ class TestFamilyKeyNormalization:
         assert _normalize_family_key("google/gemini-omni-flash") == "gemini-omni-flash"
         assert _normalize_family_key("blackforestlabs/flux-3") == "flux-3"
 
+    def test_grok_lite_resolves_apart_from_grok_1_5_and_shares_its_payload_shape(self):
+        """Lite's endpoints sit one segment under v1.5: the bare stem must keep resolving to the
+        full-quality family, the Lite stem/full path to Lite, and the Lite payload must carry only
+        the keys the shared xAI schema declares (int duration, resolution; aspect on t2v only, no seed)."""
+        from plugins.video_gen.fal import FAL_FAMILIES, _build_payload, _normalize_family_key
+
+        assert _normalize_family_key("xai/grok-imagine-video/v1.5") == "grok-imagine-1.5"
+        assert _normalize_family_key("xai/grok-imagine-video/v1.5/lite") == "grok-imagine-1.5-lite"
+        assert _normalize_family_key("xai/grok-imagine-video/v1.5/lite/image-to-video") == "grok-imagine-1.5-lite"
+        lite = FAL_FAMILIES["grok-imagine-1.5-lite"]
+        assert lite["tier"] == "cheap"
+        t2v = _build_payload(lite, prompt="p", image_url=None, duration=4, aspect_ratio="9:16", resolution="720p",
+                             negative_prompt="n", audio=True, seed=42)
+        i2v = _build_payload(lite, prompt="p", image_url="https://x/a.png", duration=4, aspect_ratio="9:16",
+                             resolution="720p", negative_prompt=None, audio=None, seed=None)
+        assert t2v == {"prompt": "p", "duration": 4, "aspect_ratio": "9:16", "resolution": "720p"}
+        assert i2v == {"prompt": "p", "image_url": "https://x/a.png", "duration": 4, "resolution": "720p"}
+
     def test_capabilities_span_longest_family_duration(self):
         """capabilities() is active-MODEL-aware (#95681 diet): it reports
         the resolved family's real window, so the schema doesn't overstate

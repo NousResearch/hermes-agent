@@ -3320,18 +3320,20 @@ class _StreamingCall(StreamingWaitMonitor):
         if finish_reason is None and not content_parts and not reasoning_parts and not refusal_parts and not tool_calls_acc:
             raise EmptyStreamError(
                 "Provider returned an empty stream with no finish_reason (possible upstream error or malformed SSE response).")
-        if has_truncated_tool_args and finish_reason is None:
-            # Partial args WITH finish_reason="length" is a real output cap; with NONE the
-            # upstream dropped mid tool-call, and stamping "length" burns 3 useless retries.
+        if has_truncated_tool_args and finish_reason != "length":
+            # Unrepairable args must never reach dispatch.  A provider-confirmed
+            # output cap is different: retain that response so the length recovery
+            # can retry the same tool call with a higher output budget.  Other
+            # terminal reasons (and a missing reason) cannot establish an output
+            # cap, so replace their calls with the non-executable stream stub.
             _dropped_names = [(tool_calls_acc[idx]["function"]["name"] or "?") for idx in sorted(tool_calls_acc)]
             logger.warning(
-                "Clean EOF, no finish_reason: server ended the stream (no transport exception) while a tool "
-                "call's arguments were still incomplete (tools=%s). The server or a proxy closed the stream "
-                "cleanly; not an output-length truncation.",
-                _dropped_names)
+                "Stream ended with incomplete or unrepairable tool call arguments "
+                "(finish_reason=%r, tools=%s); retrying without executing the incomplete calls.",
+                finish_reason, _dropped_names)
             return _build_partial_stream_stub(
                 role, full_content, full_reasoning, model_name, usage_obj, dropped_tool_names=_dropped_names or None,
-                clean_eof=True)
+                clean_eof=finish_reason is None)
         if finish_reason is None and (content_parts or reasoning_parts) and not tool_calls_acc and usage_obj is None:
             # Text-only (or reasoning-only) drop: otherwise the partial text is stamped "stop"
             # and the next step is lost — for reasoning-only, the clean-stop promotion in

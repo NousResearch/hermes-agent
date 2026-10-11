@@ -806,13 +806,51 @@ class SessionSessionsMixin:
     ):
         """SELECT + tolerant-parse + merge ``patch`` into model_config (the one place that keeps
         ``_branched_from``/``_delegate_from`` alive); ``None`` deletes a key. Returns serialized JSON
-        (``None`` when empty) or ``_MODEL_CONFIG_ROW_MISSING`` (``on_missing="raise"`` → ValueError)."""
+        (``None`` when empty) or ``_MODEL_CONFIG_ROW_MISSING`` (``on_missing="raise"`` → ValueError).
+
+        A non-empty stored value that does not decode to a dict (truncated JSON,
+        non-object JSON like ``'"5"'``/``'[1,2]'``) is preserved verbatim: merging
+        into ``{}`` would overwrite it with just the patch, permanently destroying
+        session lineage markers. Legal empty shapes (``None``, ``''``, ``'{}'``)
+        still merge normally."""
         row = conn.execute("SELECT model_config FROM sessions WHERE id = ?", (session_id,)).fetchone()
         if row is None:
             if on_missing == "raise":
                 raise ValueError(f"Session not found: {session_id}")
             return _MODEL_CONFIG_ROW_MISSING
-        config = _parse_model_config(row[0])
+        raw = row[0]
+        if raw is None or (isinstance(raw, str) and not raw.strip()):
+            config: Dict[str, Any] = {}
+        elif isinstance(raw, dict):
+            config = dict(raw)
+        elif isinstance(raw, str):
+            try:
+                decoded = json.loads(raw)
+            except (json.JSONDecodeError, TypeError, ValueError):
+                logger.error(
+                    "refusing to merge model_config patch for session %s: "
+                    "unparseable model_config preserved",
+                    session_id,
+                )
+                return row[0]
+            if not isinstance(decoded, dict):
+                logger.error(
+                    "refusing to merge model_config patch for session %s: "
+                    "non-dict model_config preserved",
+                    session_id,
+                )
+                return row[0]
+            config = dict(decoded)
+        else:
+            if not raw:
+                config = {}
+            else:
+                logger.error(
+                    "refusing to merge model_config patch for session %s: "
+                    "non-dict model_config preserved",
+                    session_id,
+                )
+                return row[0]
         for key, value in patch.items():
             if value is None:
                 config.pop(key, None)
@@ -1207,9 +1245,7 @@ class SessionSessionsMixin:
         compression_parent_edge = f"""
             parent.end_reason = 'compression'
             AND child.parent_session_id = parent.id
-            AND json_extract(
-                COALESCE(child.model_config, '{{}}'), '$._branched_from'
-            ) IS NULL
+            AND {_sql_json_extract('child.model_config', '$._branched_from')} IS NULL
             AND {_delegate_from_json('child.model_config')} IS NULL
             AND COALESCE(child.source, '') != 'tool'
         """

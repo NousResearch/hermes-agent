@@ -7,14 +7,33 @@ from __future__ import annotations
 import logging
 import json
 import math
+import os
 import threading
 from dataclasses import replace
 from datetime import datetime
 from gateway.config import Platform
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
 if TYPE_CHECKING:
     from gateway.session import SessionEntry, SessionSource
+
+logger = logging.getLogger(__name__)
+
+
+def _default_gateway_session_cwd() -> Optional[str]:
+    """Workspace stamped on gateway-created session rows (#93625): the launch config's resolved
+    ``TERMINAL_CWD`` (placeholders already resolved to ``$HOME`` — or dropped — by
+    ``gateway/run.py``'s startup bridge), else the user's home. Empty/whitespace never reaches the
+    INSERT so the column keeps its NULL-vs-'' contract (tui_gateway stamps the same tail at
+    ``_default_session_cwd``)."""
+    raw = (os.environ.get("TERMINAL_CWD") or "").strip()
+    if raw:
+        return raw
+    try:
+        return str(Path.home())
+    except Exception:  # unbeatable $HOME (no passwd entry): leave the column NULL, never guess
+        return None
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.session")
@@ -419,11 +438,16 @@ class SessionRecoveryMixin:
     ) -> dict[str, Any]:
         """kwargs for ``SessionDB.create_session``. Identity (origin_json) and lineage
         (parent/_reset_from) land atomically in the INSERT so a crash right after cannot strand the
-        row unroutable."""
+        row unroutable. ``cwd`` seeds the workspace column at creation (#93625): the desktop sidebar
+        groups rows by it, and a NULL cwd parks messaging-gateway sessions outside every project
+        lane. Mirrors ``tui_gateway``'s ``_default_session_cwd`` (``TERMINAL_CWD``, already resolved
+        by ``gateway/run.py`` at startup — placeholders became ``$HOME`` or were dropped), and the
+        upsert's keep-existing tail means a later explicit ``update_session_cwd`` still wins."""
         from gateway.session_identity import transport_profile_of
         return {
             "session_id": session_id,
             "source": source_value,
+            "cwd": _default_gateway_session_cwd(),
             "user_id": origin.user_id if origin else None,
             "session_key": session_key,
             "chat_id": origin.chat_id if origin else None,

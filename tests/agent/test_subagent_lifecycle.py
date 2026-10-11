@@ -401,3 +401,16 @@ def test_routing_provider_validation(routing_lifecycle, provider):
     assert str(exc.value) == "provider must be a non-empty string of at most 64 characters."
     build.assert_not_called()
     resolve.assert_not_called()
+
+
+def test_plugin_toolsets_are_known_toolsets(lifecycle, monkeypatch):
+    monkeypatch.setattr("toolsets._get_plugin_toolset_names", lambda: {"plugin-tools"})
+    parent = SimpleNamespace(session_id="parent-plugin", enabled_toolsets=["file", "plugin-tools"])
+    service = SubagentLifecycleService(lambda: parent)
+    handle = service.launch(SubagentLaunchRequest(goal="use the plugin", allowed_toolsets=("plugin-tools",)))
+    assert service.wait(handle, timeout_seconds=2).state is SubagentState.SUCCEEDED
+    with pytest.raises(SubagentLifecycleError, match="Unknown toolsets: nope"):
+        service.launch(SubagentLaunchRequest(goal="use the plugin", allowed_toolsets=("nope",)))
+    narrow = SubagentLifecycleService(lambda: SimpleNamespace(session_id="parent-narrow", enabled_toolsets=["file"]))
+    with pytest.raises(SubagentLifecycleError, match="broaden"):
+        narrow.launch(SubagentLaunchRequest(goal="use the plugin", allowed_toolsets=("plugin-tools",)))

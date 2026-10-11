@@ -75,7 +75,7 @@ def _module_registers_tools(module_path: Path) -> bool:
         if "registry" not in source or "register" not in source:
             return False
         tree = ast.parse(source, filename=str(module_path))
-    except (OSError, SyntaxError):
+    except (OSError, SyntaxError, UnicodeDecodeError):
         return False
     # Table-driven modules register several tools from one loop, still at import time.
     return any(

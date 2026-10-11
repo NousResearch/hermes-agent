@@ -90,6 +90,16 @@ def _sql_json_extract(expression: str, path: str) -> str:
     return f"json_extract({safe_json}, {_sql_literal(path)})"
 
 
+# Immutable provenance survives the old gateway peer writer rewriting a child's mutable source.
+# The marker also covers a child whose row was first inserted by that writer before creation.
+_NOT_INTERNAL_DELEGATE_SQL = (
+    "(COALESCE({a}.created_source, '') NOT IN ('subagent', 'delegate') "
+    "AND COALESCE({a}.source, '') NOT IN ('subagent', 'delegate') "
+    f"AND NULLIF(TRIM(CAST({_sql_json_extract('{a}.model_config', '$._delegate_from')} "
+    "AS TEXT)), '') IS NULL)"
+)
+
+
 def _sql_ltrim_whitespace(expression: str) -> str:
     return f"LTRIM({expression}, {_SQL_WHITESPACE})"
 

@@ -36,7 +36,8 @@ class ProcessCheckpointMixin:
                     # Recovery uses command only for display (adoption re-validates the
                     # PID, never re-runs it), so masking is lossless.
                     # See #77484.
-                    entry["command"] = redact_sensitive_text(s.command, code_file=True)
+                    for key in ("command", "handoff_note"):
+                        entry[key] = redact_sensitive_text(entry[key], code_file=True)
                     entry["owner_task_id"] = s.owner_task_id or s.task_id
                     entries.append(entry)
                 if extra_entries:

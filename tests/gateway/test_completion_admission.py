@@ -14,9 +14,11 @@ from plugins.platforms.discord.adapter import DiscordAdapter
 from tools import async_delegation as delegation
 
 
-def pending(key, name):
+def pending(key, name, *, parent_session_id=None):
     evt = {"type": "async_delegation", "session_key": key, "delegation_id": name,
            "summary": name, "status": "completed", "dispatched_at": time.time()}
+    if parent_session_id is not None:
+        evt["parent_session_id"] = parent_session_id
     delegation._persist_dispatch(evt)
     delegation._persist_completion(evt, {"status": "completed", "summary": name})
     return evt
@@ -38,7 +40,8 @@ async def test_completion_ack_requires_admission_and_replay_never_repeats(tmp_pa
     runner.adapters = {Platform.DISCORD: adapter}
     source = SessionSource(platform=Platform.DISCORD, chat_type="dm", chat_id="42", user_id="42")
     key = build_session_key(source)
-    events = [pending(key, f"admission-{i}") for i in range(2)]
+    entry = runner.session_store.get_or_create_session(source)
+    events = [pending(key, f"admission-{i}", parent_session_id=entry.session_id) for i in range(2)]
     received = []
     release, started = asyncio.Event(), asyncio.Event()
 
@@ -72,10 +75,11 @@ async def test_completion_ack_requires_admission_and_replay_never_repeats(tmp_pa
         for event in events:
             row = delegation.get_durable_delegation(event["delegation_id"])
             assert (row["delivery_state"], row["delivery_attempts"]) == ("pending", 0)
-        # An explicitly mismatched adapter key must fail closed too.
+        # An invalid source/key pair is terminal: retry cannot establish its ownership.
         wrong = dict(events[0], session_key="agent:main:discord:dm:other",
                      platform="discord", chat_type="dm", chat_id="42")
-        assert await runner._inject_watch_notification("wrong-route", wrong) is False
+        assert await runner._inject_watch_notification("wrong-route", wrong) is None
+        assert adapter._pending_messages[key].text == "human-pending"
         runner._BUSY_QUEUE_MAX_PENDING = 4
         assert await runner._deliver_async_delegation_group(events) is True
         assert await runner._deliver_async_delegation_group(events) is None
@@ -85,7 +89,7 @@ async def test_completion_ack_requires_admission_and_replay_never_repeats(tmp_pa
         assert len(received) == 3 and all(event["summary"] in received[-1] for event in events)
         for event in events:
             assert delegation.get_durable_delegation(event["delegation_id"])["delivery_state"] == "delivered"
-        idle = pending(key, "idle-admitted")
+        idle = pending(key, "idle-admitted", parent_session_id=entry.session_id)
         assert await runner._deliver_async_delegation_group([idle]) is True
         await drain(adapter)
         assert len(received) == 4 and "idle-admitted" in received[-1]

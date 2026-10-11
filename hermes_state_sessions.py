@@ -17,7 +17,7 @@ from agent.session_activity import (
 from hermes_startup_watchdog import report_startup_progress
 from hermes_state_errors import SessionActiveWriteGuardError
 from hermes_state_common import (
-    _LISTABLE_CHILD_SQL, _RECOVERABLE_END_REASONS,
+    _LISTABLE_CHILD_SQL, _NOT_INTERNAL_DELEGATE_SQL, _RECOVERABLE_END_REASONS,
     _RECOVERABLE_END_REASONS_SQL, _RESET_CHILD_SQL, _RESET_END_REASONS, _legacy_reset_child_sql, _non_continuation_child_sql,
     _shape_preview, _sql_preview_raw, QUEUED_PROMPT_METADATA_KEY,
     _sql_in_window, _sql_json_extract, _sql_session_last_active, _sql_session_last_active_by_id,
@@ -488,6 +488,7 @@ class SessionSessionsMixin:
         query = """
             SELECT id, user_id, started_at FROM sessions
             WHERE LOWER(source) = LOWER(?)
+              AND """ + _NOT_INTERNAL_DELEGATE_SQL.format(a="sessions") + """
               AND session_key IS NOT NULL
               AND chat_id = ?
               AND ended_at IS NULL
@@ -559,12 +560,24 @@ class SessionSessionsMixin:
         return self._execute_write(
             lambda conn: self._retire_undrained_queue_rows_conn(conn, session_id))
 
-    def reopen_session(self, session_id: str) -> None:
+    def reopen_session(
+        self, session_id: str, *, expected_end_state: Optional[tuple[Optional[float], Optional[str]]] = None,
+    ) -> Optional[bool]:
         """Clear ended_at/end_reason so a session can be resumed; first freeze markerless legacy reset
         children, skipping explicit fork/delegate provenance and children that predate the parent itself.
         The guard compares against the parent's started_at, not its current ended_at: a parent that was
-        reopened and re-ended later still owns reset children from its earlier boundaries."""
+        reopened and re-ended later still owns reset children from its earlier boundaries.
+
+        Recovery can pass the end stamp from its ownership proof. Compare it under the writer
+        transaction BEFORE any mutation; False means a later lifecycle writer won. Unconditional
+        user-requested resumes keep their existing None return value.
+        """
         def _do(conn):
+            if expected_end_state is not None and conn.execute(
+                "SELECT 1 FROM sessions WHERE id = ? AND ended_at IS ? AND end_reason IS ?",
+                (session_id, *expected_end_state),
+            ).fetchone() is None:
+                return False
             self._retire_undrained_queue_rows_conn(conn, session_id)
             conn.execute(
                 "UPDATE sessions AS child SET model_config = json_set("
@@ -582,7 +595,8 @@ class SessionSessionsMixin:
             )
             # Resuming re-activates the chat: drop the idle sweep's archive (never a manual one).
             self._unarchive_auto_archived_lineage(conn, session_id)
-        self._execute_write(_do)
+            return True if expected_end_state is not None else None
+        return self._execute_write(_do)
 
     def promote_to_session_reset(self, session_id: str, reason: str = "session_reset") -> bool:
         """Durably mark an intentional reset boundary on live rows or rows with a *recoverable* accidental

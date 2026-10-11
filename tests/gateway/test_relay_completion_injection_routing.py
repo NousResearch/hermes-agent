@@ -16,13 +16,13 @@ test: the injection path (and by extension every completion delivered on a
 relay-plane deployment) must resolve through the shared resolver.
 """
 
-from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.config import Platform
+from gateway.config import GatewayConfig, Platform
 from gateway.run import GatewayRunner
+from gateway.session import SessionSource, SessionStore
 
 
 class _RelayAdapter:
@@ -42,22 +42,29 @@ class _RelayAdapter:
         return platform == Platform.SLACK
 
 
-def _runner_with_relay(adapter):
+def _runner_with_relay(adapter, tmp_path):
     runner = object.__new__(GatewayRunner)
     runner._running = True
     runner.adapters = {Platform.RELAY: adapter}
-    runner.config = SimpleNamespace(platforms={})
-    return runner
+    runner.config = GatewayConfig()
+    runner.session_store = SessionStore(tmp_path / "sessions", runner.config)
+    source = SessionSource(
+        platform=Platform.SLACK, chat_type="dm", chat_id="D0BJTDCSR7C",
+        thread_id="1786298425.877239",
+    )
+    return runner, runner.session_store.get_or_create_session(source)
 
 
-def _slack_async_event():
+def _slack_async_event(parent_session_id):
     return {
         "type": "async_delegation",
         "delegation_id": "deleg_relay_route",
         "session_key": "agent:main:slack:dm:D0BJTDCSR7C:1786298425.877239",
+        "parent_session_id": parent_session_id,
         "platform": "slack",
         "chat_type": "dm",
         "chat_id": "D0BJTDCSR7C",
+        "thread_id": "1786298425.877239",
         "status": "completed",
         "is_batch": True,
         "results": [{"goal": "g1", "status": "completed", "summary": "done"}],
@@ -65,15 +72,15 @@ def _slack_async_event():
 
 
 @pytest.mark.asyncio
-async def test_injection_resolves_relay_adapter_for_fronted_platform():
+async def test_injection_resolves_relay_adapter_for_fronted_platform(tmp_path):
     """A gateway whose only adapter is the relay (fronting slack) must
     deliver a slack-routed completion through it — not drop it as
     'no gateway route'."""
     adapter = _RelayAdapter()
-    runner = _runner_with_relay(adapter)
+    runner, entry = _runner_with_relay(adapter, tmp_path)
 
     result = await runner._inject_watch_notification(
-        "[delegation completed]", _slack_async_event()
+        "[delegation completed]", _slack_async_event(entry.session_id)
     )
 
     assert result is True, (
@@ -85,11 +92,11 @@ async def test_injection_resolves_relay_adapter_for_fronted_platform():
 
 
 @pytest.mark.asyncio
-async def test_injection_retries_when_platform_not_fronted():
+async def test_injection_retries_when_platform_not_fronted(tmp_path):
     """Unavailable transport stays retryable without letting relay hijack unrelated targets."""
     adapter = _RelayAdapter()  # fronts slack only
-    runner = _runner_with_relay(adapter)
-    evt = _slack_async_event()
+    runner, entry = _runner_with_relay(adapter, tmp_path)
+    evt = _slack_async_event(entry.session_id)
     evt["session_key"] = "agent:main:discord:dm:123:456"
     evt["platform"] = "discord"
 

@@ -68,6 +68,20 @@ _ROUTING_FIELDS = (
 )
 
 
+# Platforms whose channel route needs delegation-aware notification ownership.
+# The consumer verifies ownership; producer metadata must survive for handoff,
+# explicit child-notification opt-in, and unread-result accounting.
+# Discord-only by decision (2026-09-18): every other platform keeps today's behavior
+# until it is proven the same way.
+_ROUTE_GUARD_PLATFORMS = ("discord",)
+
+
+def is_route_guard_platform(platform: Any) -> bool:
+    """True when *platform* (Platform member or plain name) is a route-guard surface."""
+    name = getattr(platform, "value", platform)
+    return str(name or "").strip().lower() in _ROUTE_GUARD_PLATFORMS
+
+
 def _looks_like_homebrew_ci_poller(command: str) -> bool:
     has_gh = "gh pr view" in command or "gh pr checks" in command
     has_jq = " jq " in command or "| jq" in command or "$(jq" in command
@@ -194,14 +208,17 @@ def spawn_background_process(
             logger.warning("background proc %s: %s", proc_session.id, conflict_note)
             result_data["watch_patterns_ignored"] = conflict_note
         if notify_on_complete:
+            from agent.delegation_context import is_delegated_child_context
+            child_context = is_delegated_child_context()
+            # Suppression belongs to the consumer, where the live owner and profile
+            # policy are known. Clearing this flag loses unread results and opt-in.
             proc_session.notify_on_complete = True
             result_data["notify_on_complete"] = True
             if completion_output_chars:
                 proc_session.completion_output_chars = int(completion_output_chars)
             if proc_session.watcher_platform:
                 _register_completion_watcher(process_registry, proc_session, session_key)
-            from agent.delegation_context import is_delegated_child_context
-            if is_delegated_child_context():
+            if child_context:
                 result_data["notify_on_complete"] = False
                 result_data["subagent_note"] = _SUBAGENT_NOTIFY_NOTE
             elif heartbeat_seconds:
@@ -213,6 +230,8 @@ def spawn_background_process(
         if watch_patterns:
             proc_session.watch_patterns = list(watch_patterns)
             result_data["watch_patterns"] = proc_session.watch_patterns
+        # The launch checkpoint precedes routing and notification setup.
+        process_registry._write_checkpoint()
         return json.dumps(result_data, ensure_ascii=False)
     except Exception as e:
         return json.dumps({
@@ -222,7 +241,7 @@ def spawn_background_process(
 
 
 _SUBAGENT_NOTIFY_NOTE = (
-    "You are a subagent: this process's completion notice will NOT reach your parent, and the process is killed when "
+    "You are a subagent: by default this process's completion notice will NOT reach your parent, and the process is killed when "
     "you finish. Before you finish, either wait for it (process_manage wait), kill it, or hand it to your parent with "
     "process_manage(action='handoff', session_id=..., data='<purpose>') so the parent receives its completion. For CI "
     "watchers prefer returning the fact (PR number, SHA) and letting the parent watch."
@@ -255,6 +274,7 @@ def yield_to_background_handler(
             owner_task_id=task_id or effective_task_id, session_key=session_key,
             output_so_far=output_so_far)
         _stamp_routing_if_gateway(process_registry, session, session_key)
+        process_registry._write_checkpoint()
         logger.info("foreground command yielded to background as %s (pid %s)", session.id, session.pid)
         return {
             "output": output_so_far, "returncode": None, "yielded_session_id": session.id, "pid": session.pid,
@@ -271,3 +291,54 @@ def _stamp_routing_if_gateway(process_registry, session, session_key) -> None:
     _stamp_gateway_routing(session, get_session_env)
     if session.watcher_platform:
         _register_completion_watcher(process_registry, session, session_key)
+
+
+_MAX_HANDOFFS_PER_CHILD = 3
+
+
+def _handoff_process(session_id: str, args: dict, task_id: Optional[str]) -> dict:
+    """Subagent-only: transfer a running background process to the parent agent so its completion is delivered THERE
+    (child-owned process notices are suppressed and child teardown kills what it owns). Validated against the live spawn
+    tree: the caller must be a registered child and must own the process; anything else is an error, never a silent
+    no-op, so a PID mentioned in prose can't masquerade as a transfer."""
+    from tools.delegate_tool_registry import _active_subagents, _active_subagents_lock
+    from tools.process_registry import process_registry
+    from tools.terminal_tool import _resolve_container_task_id
+
+    with _active_subagents_lock:
+        record = _active_subagents.get(str(task_id or ""))
+    child = record.get("agent") if record else None
+    parent_ref = getattr(child, "_delegate_parent_ref", None)
+    parent = parent_ref() if callable(parent_ref) else None
+    if parent is None:
+        return {"error": "handoff is only available to a running subagent with a live parent; you are not one."}
+    parent_owner = str(getattr(parent, "_current_task_id", "") or getattr(parent, "session_id", "") or "")
+    if not parent_owner:
+        return {"error": "parent has no process owner id yet; retry after the parent's turn has started."}
+    handed = getattr(child, "_handed_off_processes", None)
+    if handed is None:
+        handed = child._handed_off_processes = []
+    if len(handed) >= _MAX_HANDOFFS_PER_CHILD:
+        return {"error": f"handoff cap reached ({_MAX_HANDOFFS_PER_CHILD} per subagent); wait on or kill the rest yourself."}
+    note = str(args.get("data") or "").strip()
+    if not note:
+        return {"error": "handoff requires `data`: one sentence saying what the process is for and what the parent should do with its result."}
+    parent_session_id = str(getattr(parent, "session_id", "") or "")
+    to_session_key = str(getattr(parent, "_gateway_session_key", None) or parent_session_id)
+    session = process_registry.transfer_ownership(
+        session_id, from_owner=str(task_id or ""), to_owner=parent_owner,
+        to_task_id=_resolve_container_task_id(parent_owner),
+        to_session_key=to_session_key, note=note, to_parent_session_id=parent_session_id)
+    if session is None:
+        return {"error": f"cannot hand off {session_id}: not a running process you own (already exited? read its result "
+                         "with poll/log and report it instead)."}
+    if session.notify_on_complete and session.watcher_platform and not session.watcher_interval:
+        _register_completion_watcher(process_registry, session, session.session_key)
+    # Persist after watcher arming too: restart must retain both the new owner
+    # and the descriptor needed to deliver its result.
+    process_registry._write_checkpoint()
+    handed.append({"session_id": session.id, "command": session.command, "note": note})
+    return {"status": "handed_off", "session_id": session.id, "command": session.command,
+            "note": "Your parent now owns this process and will receive its notifications; you will not. Mention the handoff "
+                    "in your final answer."}
+

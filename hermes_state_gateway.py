@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from hermes_state_common import (
-    _RECOVERABLE_END_REASONS_SQL, _RESET_CHILD_SQL, _RESET_END_REASONS_SQL, _sql_json_extract,
+    _NOT_INTERNAL_DELEGATE_SQL, _RECOVERABLE_END_REASONS_SQL, _RESET_CHILD_SQL, _RESET_END_REASONS_SQL, _sql_json_extract,
     _sql_session_last_active)
 
 # Log-record parity with the origin module (caplog tests pin "hermes_state").
@@ -59,12 +59,14 @@ _PEER_SELECT_HEAD = """
 _HANDOFF_OWNED_ROW_SQL = "(s.handoff_state = 'completed')"
 _PEER_BY_KEY_SQL = f"""{_PEER_SELECT_HEAD}                WHERE s.session_key = ?
                   AND s.source = ?
+                  AND {_NOT_INTERNAL_DELEGATE_SQL.format(a='s')}
                   AND (s.ended_at IS NULL OR s.end_reason IN ({_RECOVERABLE_END_REASONS_SQL})
                        OR {_HANDOFF_OWNED_ROW_SQL})
                   AND NOT EXISTS (
                       SELECT 1 FROM sessions b
                       WHERE b.session_key = s.session_key
                         AND b.source = s.source
+                        AND {_NOT_INTERNAL_DELEGATE_SQL.format(a='b')}
                         AND b.ended_at IS NOT NULL
                         AND b.end_reason IN ({_RESET_END_REASONS_SQL})
                         AND b.ended_at
@@ -75,6 +77,7 @@ _PEER_BY_KEY_SQL = f"""{_PEER_SELECT_HEAD}                WHERE s.session_key = 
                 LIMIT 1
                 """
 _PEER_BY_TUPLE_SQL = f"""{_PEER_SELECT_HEAD}                WHERE s.source = ?
+                  AND {_NOT_INTERNAL_DELEGATE_SQL.format(a='s')}
                   AND COALESCE(s.user_id, '') = COALESCE(?, '')
                   AND COALESCE(s.chat_id, '') = COALESCE(?, '')
                   AND COALESCE(s.chat_type, '') = COALESCE(?, '')
@@ -88,6 +91,7 @@ _PEER_BY_TUPLE_SQL = f"""{_PEER_SELECT_HEAD}                WHERE s.source = ?
                   AND NOT EXISTS (
                       SELECT 1 FROM sessions b
                       WHERE b.source = s.source
+                        AND {_NOT_INTERNAL_DELEGATE_SQL.format(a='b')}
                         AND COALESCE(b.user_id, '') = COALESCE(s.user_id, '')
                         AND COALESCE(b.chat_id, '') = COALESCE(s.chat_id, '')
                         AND COALESCE(b.chat_type, '') = COALESCE(s.chat_type, '')
@@ -255,6 +259,15 @@ class SessionGatewayMixin:
         ancestors = include_compression_ancestors
         query_params = [session_id, *identity] if ancestors else [*identity, session_id]
         def _do(conn):
+            # Guard the actual writer, not just its gateway caller: an old route index can still
+            # ask to refresh a child row. Keep the check and UPDATE in this write transaction.
+            existing = conn.execute("SELECT 1 FROM sessions WHERE id = ?", (session_id,)).fetchone()
+            if existing and not conn.execute(
+                f"SELECT 1 FROM sessions s WHERE s.id = ? AND {_NOT_INTERNAL_DELEGATE_SQL.format(a='s')}",
+                (session_id,),
+            ).fetchone():
+                logger.warning("Refusing gateway peer stamp on delegate session %s", session_id)
+                return
             conn.execute(
                 f"""{_COMPRESSION_LINEAGE_CTE if ancestors else ""}
                    UPDATE sessions
@@ -263,7 +276,8 @@ class SessionGatewayMixin:
                        display_name = COALESCE(?, display_name),
                        origin_json = COALESCE(?, origin_json),
                        transport_profile = COALESCE(?, transport_profile)
-                   {"WHERE id IN (SELECT id FROM compression_lineage)" if ancestors else "WHERE id = ?"}""",
+                   {"WHERE id IN (SELECT id FROM compression_lineage)" if ancestors else "WHERE id = ?"}
+                   AND {_NOT_INTERNAL_DELEGATE_SQL.format(a='sessions')}""",
                 query_params,
             )
             if ancestors:
@@ -285,13 +299,40 @@ class SessionGatewayMixin:
                                display_name = COALESCE(sessions.display_name, excluded.display_name),
                                origin_json = COALESCE(sessions.origin_json, excluded.origin_json),
                                transport_profile = COALESCE(sessions.transport_profile, excluded.transport_profile),
-                               created_source = COALESCE(sessions.created_source, excluded.created_source)""",
+                               created_source = COALESCE(sessions.created_source, excluded.created_source)
+                           WHERE """ + _NOT_INTERNAL_DELEGATE_SQL.format(a="sessions"),
                     # Same ownership stamp as _insert_session_row: an unowned (NULL) row
                     # vanishes from profile-keyed consumers.
                     (session_id, source, source, user_id, session_key, chat_id, chat_type, thread_id, display_name,
                      origin_json, self._own_profile_name(), transport_profile, time.time()),
                 )
         self._execute_write(_do)
+
+    def clear_poisoned_delegate_gateway_peer(self, session_id: str, session_key: str) -> bool:
+        """Remove an old gateway identity stamp from a proven internal delegate row.
+
+        This does not end, delete, or interrupt the child's execution. The immutable birth
+        source or delegation marker is checked in the same write transaction as the cleanup.
+        """
+        if not session_id or not session_key:
+            return False
+
+        def _do(conn):
+            changed = conn.execute(
+                f"""UPDATE sessions
+                    SET source = CASE
+                            WHEN created_source IN ('subagent', 'delegate') THEN created_source
+                            ELSE 'subagent' END,
+                        session_key = NULL, user_id = NULL, chat_id = NULL,
+                        chat_type = NULL, thread_id = NULL, display_name = NULL,
+                        origin_json = NULL
+                    WHERE id = ? AND session_key = ?
+                      AND NOT {_NOT_INTERNAL_DELEGATE_SQL.format(a='sessions')}""",
+                (session_id, session_key),
+            )
+            return changed.rowcount == 1
+
+        return bool(self._execute_write(_do))
 
     def save_gateway_routing_entry(self, session_key: str, entry_json: str, *, scope: str = "") -> None:
         """Upsert one gateway routing entry (session_key -> SessionEntry JSON); ``scope``

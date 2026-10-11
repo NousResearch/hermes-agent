@@ -896,6 +896,20 @@ export function excludeProjectSessions(
   }
 }
 
+/** Preserve backend ownership at every overlay boundary, including the leaf render overlay.
+ * Unclaimed rows keep the existing optimistic path-placement behavior. */
+export function liveSessionsForProject(
+  project: Pick<SidebarProjectTree, 'id'>,
+  live: SessionInfo[],
+  authoritativeOwners: ReadonlyMap<string, string> = NO_OWNERS
+): SessionInfo[] {
+  return live.filter(session => {
+    const owner = ownerOf(authoritativeOwners, session)
+
+    return !owner || owner === project.id
+  })
+}
+
 /** Project-level overlay: {@link overlayRepoLanes} across every repo subtree. */
 export function overlayLiveLanes(
   project: SidebarProjectTree,
@@ -909,11 +923,7 @@ export function overlayLiveLanes(
 
   let changed = false
 
-  const projectLive = live.filter(session => {
-    const owner = ownerOf(authoritativeOwners, session)
-
-    return !owner || owner === project.id
-  })
+  const projectLive = liveSessionsForProject(project, live, authoritativeOwners)
 
   const repos = project.repos.map(repo => {
     const next = overlayRepoLanes(repo, projectLive, removed)

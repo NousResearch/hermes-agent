@@ -800,12 +800,19 @@ class TestValidateCustomUnreachableFallback:
     def test_anthropic_messages_reachable_listing_without_slug_is_not_called_unimplemented(self):
         """A listing that answered 200 but lacks the slug must not be described as a proxy that
         'does not implement GET /v1/models'; it names the alias candidates instead (#111436)."""
-        result = self._validate("kimi-k3", "kimi-coding", models=["k3", "k3-turbo"], api_mode="anthropic_messages")
+        result = self._validate("k3-pro", "kimi-coding", models=["k3", "k3-turbo"], api_mode="anthropic_messages")
         assert (result["accepted"], result["persist"], result["recognized"]) == (True, True, False)
         assert "do not implement" not in result["message"]
         assert "`k3`" in result["message"]
         # Case-only spelling differences are a match, not a warning.
         assert self._validate("K3", "kimi-coding", models=["k3"], api_mode="anthropic_messages")["recognized"] is True
+
+    def test_anthropic_messages_known_alias_pair_is_recognized(self):
+        """``kimi-k3`` is the curated slug for the endpoint's bare ``k3`` (model_search alias table),
+        so the switch validates cleanly instead of warning on every /model (#134925)."""
+        result = self._validate("kimi-k3", "kimi-coding", models=["k3", "k3-turbo"], api_mode="anthropic_messages")
+        assert (result["accepted"], result["recognized"]) == (True, True)
+        assert "not named" not in (result.get("message") or "")
 
 
 # -- validate — profile-owned catalog is authoritative (#116667) ----------------

@@ -16,7 +16,7 @@ from typing import Any, Callable, Deque, Optional
 
 import acp
 from acp.schema import (
-    AgentCapabilities, AgentMessageChunk, AuthenticateResponse, ClientCapabilities, ForkSessionResponse,
+    AgentCapabilities, AgentMessageChunk, AuthenticateResponse, ClientCapabilities, Cost, ForkSessionResponse,
     Implementation, InitializeResponse, ListSessionsResponse, LoadSessionResponse, McpServerHttp, McpServerSse,
     McpServerStdio, ModelInfo, NewSessionResponse, PromptCapabilities, PromptResponse, ResumeSessionResponse,
     SessionCapabilities, SessionForkCapabilities, SessionInfo, SessionInfoUpdate, SessionListCapabilities,
@@ -366,7 +366,8 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
     @staticmethod
     def _build_usage_update(state: SessionState) -> UsageUpdate | None:
         """``usage_update`` for Zed's context indicator: ``size`` = context window, ``used`` =
-        estimated request pressure (system prompt + history + tool schemas)."""
+        estimated request pressure (system prompt + history + tool schemas), ``cost`` =
+        cumulative session cost per the stabilized Session Context Size and Cost RFD."""
         compressor = getattr(state.agent, "context_compressor", None)
         size = int(getattr(compressor, "context_length", 0) or 0)
         if size <= 0:
@@ -376,7 +377,17 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         except Exception:
             logger.debug("Could not estimate ACP native context usage", exc_info=True)
             used = int(getattr(compressor, "last_prompt_tokens", 0) or 0)
-        return UsageUpdate(session_update="usage_update", size=max(size, 0), used=max(used, 0))
+        update = UsageUpdate(session_update="usage_update", size=max(size, 0), used=max(used, 0))
+        # Optional cumulative session cost (RFD: stabilized June 2026). The agent tracks
+        # it per session; omit the field entirely when it is unknown (cost-free model,
+        # pricing lookup failed) rather than reporting a meaningless 0.
+        try:
+            cumulative = getattr(state.agent, "session_estimated_cost_usd", None)
+            if cumulative is not None and float(cumulative) > 0:
+                update.cost = Cost(amount=round(float(cumulative), 6), currency="USD")
+        except (TypeError, ValueError):
+            logger.debug("Could not attach session cost to ACP usage update", exc_info=True)
+        return update
 
     async def _send_usage_update(self, state: SessionState) -> None:
         if self._conn and (update := self._build_usage_update(state)) is not None:

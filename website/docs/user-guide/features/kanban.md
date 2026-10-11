@@ -959,6 +959,8 @@ hermes kanban assign <id> <profile>                    # or 'none' to unassign
 hermes kanban reassign <id>... <profile>               # bulk re-assign tasks to a profile
 hermes kanban edit <id> [--title ...] [--body ...]     # edit task title / body / priority in place
         [--priority N]
+hermes kanban bind-project <id> --project <id-or-slug> [--json]
+                                                        # bind an existing projectless task safely
 hermes kanban promote <id>...                          # move todo/blocked tasks to ready (recovery)
 hermes kanban schedule <id> --at <ISO8601>             # set/clear a task's scheduled_at start time
 hermes kanban diagnostics [--json]                     # board health snapshot (alias: diag)
@@ -1001,6 +1003,8 @@ hermes kanban specify [<id> | --all] [--tenant T]      # flesh out a triage-colu
 hermes kanban gc [--event-retention-days N]            # workspaces + old events + old logs
         [--log-retention-days N]                       #   (negative N is rejected; 0 disables that sweep)
 ```
+
+`bind-project` is a repair operation for an existing task with no project binding. It resolves the explicit `--project` value by ID or unique slug in the active profile, and honors the selected board and its project scope. The task must not be running or claimed. A `dir` workspace must already resolve to the target project's existing primary directory; no Git repository is required. A `worktree` workspace must already match the project's task worktree and branch. The command never creates or moves a workspace and changes no task fields except `project_id`; it records a `project_bound` event in the same transaction. Repeating the same binding is a no-op. Add `--json` for a structured success or error result.
 
 All commands are also available as a slash command in the interactive CLI and in the messaging gateway (see [`/kanban` slash command](#kanban-slash-command) below).
 

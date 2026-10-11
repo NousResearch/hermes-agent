@@ -210,7 +210,7 @@ _DELEGATED_CHILD_DENIED_ACTIONS: frozenset[str] = frozenset({
     "claim", "comment", "attach", "attach-rm", "complete", "edit", "block",
     "schedule", "unblock", "promote", "archive", "dispatch", "daemon", "repair",
     "heartbeat", "notify-subscribe", "notify-unsubscribe", "specify", "decompose",
-    "request-review", "request-changes", "reopen-review",
+    "request-review", "request-changes", "reopen-review", "bind-project",
     "gc",
 })
 
@@ -970,6 +970,34 @@ def _cmd_edit(args: argparse.Namespace) -> int:
     )
 
 
+def _cmd_bind_project(args: argparse.Namespace) -> int:
+    from hermes_cli.kanban_db_project_binding import bind_task_project
+
+    board = kb.get_current_board() or kb.DEFAULT_BOARD
+    try:
+        with kbc.connect_closing() as conn:
+            result = bind_task_project(
+                conn, args.task_id, args.project, board=board, actor=_profile_author(),
+            )
+    except (ValueError, RuntimeError, PermissionError, OSError) as exc:
+        if getattr(args, "json", False):
+            _print_json({
+                "ok": False, "result": "error", "changed": False,
+                "task_id": args.task_id, "project_id": None,
+                "project_slug": None, "board": board, "error": str(exc),
+            })
+            return 1
+        return _err(f"kanban bind-project: {exc}")
+
+    if getattr(args, "json", False):
+        _print_json(result)
+    elif result["changed"]:
+        print(f"Bound {args.task_id} to project {result['project_slug']} ({result['project_id']})")
+    else:
+        print(f"{args.task_id} is already bound to project {result['project_slug']} ({result['project_id']})")
+    return 0
+
+
 def _commented(conn, reason: Optional[str], author, prefix: str, op):
     """Wrap a per-task ``op`` so a ``reason`` is first recorded as a ``PREFIX: reason`` comment."""
     def run(tid):
@@ -1326,7 +1354,7 @@ _HANDLERS = {
     "link": _cmd_link, "unlink": _cmd_unlink, "claim": _cmd_claim,
     "comment": _cmd_comment, "attach": _cmd_attach,
     "attachments": _cmd_attachments, "attach-rm": _cmd_attach_rm,
-    "complete": _cmd_complete, "edit": _cmd_edit, "block": _cmd_block,
+    "complete": _cmd_complete, "edit": _cmd_edit, "bind-project": _cmd_bind_project, "block": _cmd_block,
     "schedule": _cmd_schedule, "unblock": _cmd_unblock,
     "request-review": _cmd_request_review, "request-changes": _cmd_request_changes,
     "reopen-review": _cmd_reopen_review, "promote": _cmd_promote,

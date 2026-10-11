@@ -47,10 +47,19 @@ def _run_chat(monkeypatch, argv, *, provider_configured):
     fake_cli = types.ModuleType("cli")
     fake_cli.main = classic_main
     monkeypatch.setitem(sys.modules, "cli", fake_cli)
+    from hermes_cli import gateway_chat
+
+    # The classic CLI rides the gateway client: it must still front the guard and never reach
+    # a session (no gateway, no admission) when no provider is configured.
+    monkeypatch.setattr(gateway_chat, "run_gateway_chat", lambda *_a, **_k: calls.append("gateway"))
+    monkeypatch.setattr(gateway_chat, "_register_terminal_process", lambda: None, raising=False)
     try:
         main_mod.cmd_chat(args)
     except _Launched:
         pass
+    except SystemExit as exc:
+        # launch_gateway_chat returns 0 after the guard; anything else is a refusal we did not expect.
+        assert exc.code == 0, f"cmd_chat exited {exc.code} after {calls}"
     return calls
 
 

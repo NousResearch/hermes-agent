@@ -14,11 +14,14 @@ import type {
   ToolsConfigureResponse
 } from '../../../gatewayTypes.js'
 import { t } from '../../../i18n/runtime.js'
+import { appendTranscriptMessage } from '../../../lib/messages.js'
 import type { PanelSection } from '../../../types.js'
 import { applyDelegationStatus, getDelegationState } from '../../delegationStore.js'
 import { patchOverlayState } from '../../overlayStore.js'
 import { getSpawnHistory, pushDiskSnapshot, setDiffPair, type SpawnSnapshot } from '../../spawnHistoryStore.js'
+import { turnController } from '../../turnController.js'
 import { noSkillsInstalled } from '../../userMessages.js'
+import { canonicalTools } from '../canonicalSessionCommands.js'
 import type { SlashCommand } from '../types.js'
 
 interface SkillInfo {
@@ -68,8 +71,20 @@ export const opsCommands: SlashCommand[] = [
     help: 'stop background processes',
     name: 'stop',
     run: (_arg, ctx) => {
+      // Registry busy policy `interrupt_then_dispatch` (classic /stop, Desktop /stop): end the
+      // running turn first, then stop this session's processes — session-scoped on the shared
+      // owner, never the legacy registry-wide kill_all (every chat's, every profile's).
+      if (ctx.gateway.gw?.isCanonical && ctx.ui.busy && ctx.sid) {
+        void turnController.interruptTurn({
+          appendMessage: msg => ctx.transcript.setHistoryItems(prev => appendTranscriptMessage(prev, msg)),
+          gw: ctx.gateway.gw,
+          sid: ctx.sid,
+          sys: ctx.transcript.sys
+        })
+      }
+
       ctx.gateway
-        .rpc<ProcessStopResponse>('process.stop', {})
+        .rpc<ProcessStopResponse>('process.stop', ctx.sid ? { session_id: ctx.sid } : {})
         .then(
           ctx.guarded<ProcessStopResponse>(r => {
             const killed = Number(r.killed ?? 0)
@@ -87,6 +102,12 @@ export const opsCommands: SlashCommand[] = [
     help: 'reload MCP servers in the live session (warns about prompt cache invalidation)',
     name: 'reload-mcp',
     run: (arg, ctx) => {
+      // A canonical session's MCP servers are frozen with its launch policy; the shared owner's
+      // pool is every chat's, so there is no per-session reload verb yet.
+      if (ctx.gateway.gw?.isCanonical) {
+        return ctx.transcript.sys(t('canonical.controls.notAvailable', 'reload-mcp'))
+      }
+
       // Parse arg: `now` / `always` skip the confirmation gate.
       // `always` additionally persists approvals.mcp_reload_confirm=false.
       const a = (arg || '').trim().toLowerCase()
@@ -131,6 +152,11 @@ export const opsCommands: SlashCommand[] = [
     help: 're-read ~/.hermes/.env into the running gateway (CLI parity)',
     name: 'reload',
     run: (_arg, ctx) => {
+      // The shared owner's environment is every profile's; it re-reads `.env` per turn itself.
+      if (ctx.gateway.gw?.isCanonical) {
+        return ctx.transcript.sys(t('canonical.controls.notAvailable', 'reload'))
+      }
+
       ctx.gateway
         .rpc<ReloadEnvResponse>('reload.env', {})
         .then(
@@ -225,6 +251,12 @@ export const opsCommands: SlashCommand[] = [
     run: (arg, ctx) => {
       if (!ctx.sid) {
         return ctx.transcript.sys(t('slashCmd.ops.rollback.noSession'))
+      }
+
+      // Checkpoints live in the legacy sidecar's per-session map, which never holds a
+      // shared-gateway session; the owner serves no rollback verb yet.
+      if (ctx.gateway.gw?.isCanonical) {
+        return ctx.transcript.sys(t('canonical.controls.notAvailable', 'rollback'))
       }
 
       const trimmed = arg.trim()
@@ -324,6 +356,11 @@ export const opsCommands: SlashCommand[] = [
       // explicit subcommands skip the overlay and act directly so scripts and
       // multi-step flows can drive it without entering interactive mode.
       if (sub === 'pause' || sub === 'resume' || sub === 'unpause') {
+        // The spawn gate is process-global: on the shared owner it would pause every chat.
+        if (ctx.gateway.gw?.isCanonical) {
+          return ctx.transcript.sys(t('canonical.controls.notAvailable', `agents ${sub}`))
+        }
+
         const paused = sub === 'pause'
         ctx.gateway.gw
           .request<DelegationPauseResponse>('delegation.pause', { paused })
@@ -751,6 +788,10 @@ export const opsCommands: SlashCommand[] = [
     help: 'enable or disable tools (client-side history reset on change)',
     name: 'tools',
     run: (arg, ctx, cmd) => {
+      if (ctx.sid && ctx.gateway.gw?.isCanonical) {
+        return canonicalTools(ctx)
+      }
+
       const [subcommand, ...names] = arg.trim().split(/\s+/).filter(Boolean)
 
       if (subcommand !== 'disable' && subcommand !== 'enable') {

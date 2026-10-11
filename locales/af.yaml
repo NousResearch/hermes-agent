@@ -1972,6 +1972,7 @@ cli:
     desc_switch_anyway: "Gebruik hierdie model vir die huidige Hermes-sessie."
     choice_cancel: "Kanselleer"
     desc_keep_current_model: "Behou die huidige model."
+    confirm_choice_prompt: "Keuse [1/2]: "
     switch_cancelled: "Modelverandering gekanselleer."
     selection_failed: "✗ Modelkeuse het misluk: {error}"
     switch_failed: "⚠ Modelverandering na {model} het misluk ({error}); bly op {old_model}."

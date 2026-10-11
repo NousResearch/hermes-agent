@@ -41,4 +41,9 @@ def is_attended(agent: Any) -> bool:
     platform = getattr(agent, "platform", None)
     if not platform or platform == "subagent":
         return False
+    # A gateway-admitted ``hermes chat -q`` / ``-z`` turn carries its one-shot fact on the admission,
+    # not in HERMES_SINGLE_QUERY_SESSION (the daemon never had that env).
+    from gateway.session_finite import finite_turn_required
+    if finite_turn_required() is True:
+        return False
     return session_source_for(platform) in ATTENDED_SOURCES

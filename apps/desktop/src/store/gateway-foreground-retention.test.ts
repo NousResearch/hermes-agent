@@ -70,8 +70,7 @@ function installDesktop(): void {
     getGatewayWsUrlFor: vi.fn(
       async ({ connectionId, profile }: { connectionId: string; profile: string }) =>
         `wss://${connectionId}.invalid/api/ws?profile=${profile}`
-    ),
-    touchBackend: vi.fn(async () => undefined)
+    )
   }
 }
 

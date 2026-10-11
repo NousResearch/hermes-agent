@@ -15,5 +15,9 @@ export const ruNotices = {
       privacy: 'Политикой конфиденциальности',
       after: '.'
     }
+  },
+  promptNotices: {
+    legacySendUnconfirmed:
+      'Этот сервер не смог подтвердить предыдущую отправку этого сообщения, поэтому оно, возможно, уже выполнено. Проверьте беседу, прежде чем отправлять его снова.'
   }
-} satisfies Pick<TranslationOverrides, 'remoteDisplayBanner' | 'butterbar'>
+} satisfies Pick<TranslationOverrides, 'remoteDisplayBanner' | 'butterbar' | 'promptNotices'>

@@ -40,24 +40,23 @@ class TestChatVerboseArg:
         chat_parser.set_defaults(func=main_mod.cmd_chat)
         args = parser.parse_args(["chat"])
         captured = {}
-        fake_cli = types.ModuleType("cli")
-
-        def fake_main(**kwargs):
-            captured.update(kwargs)
-
-        fake_cli.main = fake_main
+        def launch(args):
+            captured.update(vars(args))
+            return 0
         fake_banner = types.ModuleType("hermes_cli.banner")
         fake_banner.prefetch_update_check = lambda: None
         fake_skills_sync = types.ModuleType("tools.skills_sync")
         fake_skills_sync.sync_skills = lambda quiet=True: None
 
-        monkeypatch.setitem(sys.modules, "cli", fake_cli)
+        monkeypatch.setattr("hermes_cli.gateway_chat.launch_from_args", launch)
         monkeypatch.setitem(sys.modules, "hermes_cli.banner", fake_banner)
         monkeypatch.setitem(sys.modules, "tools.skills_sync", fake_skills_sync)
         monkeypatch.setattr(main_mod, "_has_any_provider_configured", lambda: True)
         monkeypatch.setattr(main_mod, "_pin_kanban_board_env", lambda: None)
 
-        main_mod.cmd_chat(args)
+        with pytest.raises(SystemExit) as result:
+            main_mod.cmd_chat(args)
+        assert result.value.code == 0
 
         assert captured["quiet"] is False
         assert "verbose" not in captured
@@ -207,3 +206,12 @@ class TestChatSubparserInheritedValueFlags:
             + "\n  ".join(f"{opts} dest={dest} default={d!r}"
                           for opts, dest, d in offenders)
         )
+
+
+@pytest.mark.parametrize("argv", [
+    ["--tui", "--checkpoints"], ["--checkpoints", "chat"], ["chat", "--tui", "--checkpoints"]])
+def test_checkpoints_parses_at_the_top_level_and_survives_chat(argv):
+    """`hermes --tui --checkpoints` is the TUI launch the docs and gateway refusals name; it was
+    declared only on `chat`, so the top-level form failed with "unrecognized arguments"."""
+    from hermes_cli._parser import build_top_level_parser
+    assert build_top_level_parser()[0].parse_args(argv).checkpoints is True

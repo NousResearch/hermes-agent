@@ -1972,6 +1972,7 @@ cli:
     desc_switch_anyway: "현재 Hermes 세션에서 이 모델을 사용해요."
     choice_cancel: "취소"
     desc_keep_current_model: "현재 모델을 유지해요."
+    confirm_choice_prompt: "선택 [1/2]: "
     switch_cancelled: "모델 전환이 취소됐어요."
     selection_failed: "✗ 모델 선택 실패: {error}"
     switch_failed: "⚠ {model}(으)로 모델 전환 실패 ({error}); {old_model}을(를) 계속 사용해요."

@@ -156,6 +156,10 @@ class PlatformRegistry:
         # A failed loader is no longer discoverable, but its identity remains
         # until ownership teardown can CAS-restore the displaced predecessor.
         self._consumed_loaders: dict[_LoadKey, _Loader] = {}
+        # Manifest-declared env names per deferred platform (``requires_env``), recorded without
+        # importing the adapter so ``gateway.platform_activation`` can tell a configured platform
+        # from an unconfigured one. A hint only: a stale entry costs one extra import, never a miss.
+        self._activation_env: dict[str, frozenset[str]] = {}
 
     @staticmethod
     def current_scope_key() -> str:
@@ -196,6 +200,16 @@ class PlatformRegistry:
             self._consumed_loaders.pop((scope, name), None)
             if name not in entries:
                 deferred[name] = loader
+
+    def note_activation_env(self, name: str, env_names) -> None:
+        """Record the env names a deferred platform's manifest declares (see ``_activation_env``)."""
+        names = frozenset(str(n).strip() for n in env_names or () if str(n).strip())
+        with self._lock:
+            self._activation_env[name] = self._activation_env.get(name, frozenset()) | names
+
+    def activation_env(self, name: str) -> frozenset[str]:
+        with self._lock:
+            return self._activation_env.get(name, frozenset())
 
     def snapshot_registration(
         self, name: str, *, scope: Optional[str] = None
@@ -289,10 +303,8 @@ class PlatformRegistry:
         with self._lock:
             return (scope, name) in self._cancelled_inflight
 
-    def _resolve_all(self) -> None:
-        """Run every pending deferred loader (only ``all_entries``/``plugin_entries`` call this;
-        CLI chat never iterates the full set)."""
-        active_scope = self.current_scope_key()
+    def _pending_names(self, active_scope: str) -> list[str]:
+        """Deferred (or in-flight) names for *active_scope*, scoped first, without loading them."""
         with self._lock:
             _entries, scoped_deferred = self._scope_maps(active_scope)
             scoped_names = set(scoped_deferred)
@@ -302,10 +314,37 @@ class PlatformRegistry:
                     scoped_names.add(name)
                 elif inflight_scope is None:
                     global_names.add(name)
+        return [*sorted(scoped_names), *sorted(global_names - scoped_names)]
+
+    def _resolve_all(self, wanted: Optional[Callable[[str], bool]] = None) -> None:
+        """Run every pending deferred loader, or only those *wanted* accepts (``all_entries`` /
+        ``plugin_entries`` / ``configured_entries``; CLI chat never iterates the full set)."""
+        active_scope = self.current_scope_key()
         # Load outside the registry lock; each name has an in-flight event so concurrent
         # readers wait for the same materialization.
-        for name in (*sorted(scoped_names), *sorted(global_names)):
-            self._resolve(name, active_scope)
+        for name in self._pending_names(active_scope):
+            if wanted is None or wanted(name):
+                self._resolve(name, active_scope)
+
+    def pending_names(self) -> list[str]:
+        """Names registered as deferred loaders that have not been imported yet (current scope)."""
+        return self._pending_names(self.current_scope_key())
+
+    def configured_entries(self, wanted: Callable[[str], bool]) -> list[PlatformEntry]:
+        """Loaded entries, after materializing only the deferred platforms *wanted* accepts.
+
+        The gateway's config/env passes need each platform's hooks only for platforms the profile
+        actually configures; importing every bundled adapter (~20 SDKs) just to read metadata cost
+        every cold start ~0.5 s. *wanted* is :func:`gateway.platform_activation.has_activation_evidence`
+        (or a test stub); entries that are already loaded are always returned."""
+        self._resolve_all(wanted)
+        with self._lock:
+            return list({**self._entries, **self._scoped_entries.get(self.current_scope_key(), {})}.values())
+
+    def loaded_entries(self) -> list[PlatformEntry]:
+        """Entries already materialized (never imports a deferred adapter)."""
+        with self._lock:
+            return list({**self._entries, **self._scoped_entries.get(self.current_scope_key(), {})}.values())
 
     def register(self, entry: PlatformEntry, *, scope: Optional[str] = None) -> None:
         """Register a platform adapter entry (last writer wins on name clash)."""

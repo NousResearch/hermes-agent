@@ -7,8 +7,11 @@ OpenRouter/bare-custom, Bedrock and external-process builders in
 
 from __future__ import annotations
 
+import copy
 import logging
 import re
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional
 
@@ -35,11 +38,32 @@ from hermes_cli.providers import determine_api_mode, get_provider, is_actual_rou
 from utils import base_url_host_matches, base_url_hostname, base_url_path, env_int
 
 
+# A frozen session route's config (``frozen_runtime_config``); None = the live profile config.
+_FROZEN_RUNTIME_CONFIG: ContextVar[Optional[dict[str, Any]]] = ContextVar("_FROZEN_RUNTIME_CONFIG", default=None)
+
+
+@contextmanager
+def frozen_runtime_config(config: dict[str, Any]):
+    """Resolve against a session's frozen config instead of the live config.yaml.
+
+    Every rung reads its endpoint through ``load_config``/``_get_model_config``, so a frozen route's
+    credential stays paired with the endpoint it was frozen with after a live ``model.base_url``
+    edit (R2-M2). The auth store (credential pool) is not config and still refreshes/rotates.
+    """
+    merged = _config_mod._deep_merge(copy.deepcopy(_config_mod.DEFAULT_CONFIG), config)
+    token = _FROZEN_RUNTIME_CONFIG.set(merged)
+    try:
+        yield
+    finally:
+        _FROZEN_RUNTIME_CONFIG.reset(token)
+
+
 # Late-bound delegates, deliberately NOT module-level from-imports: this module is often imported
 # lazily, so its first import can happen while a test has ``hermes_cli.config.load_config`` patched
 # — a from-import would bind the MagicMock permanently and poison every later caller.
 def load_config():
-    return _config_mod.load_config()
+    frozen = _FROZEN_RUNTIME_CONFIG.get()
+    return copy.deepcopy(frozen) if frozen is not None else _config_mod.load_config()
 
 
 def get_compatible_custom_providers(config=None):
@@ -878,7 +902,7 @@ _LOCAL_BYPASS_CLOUD_HOSTS = ("openrouter.ai", "anthropic.com", "openai.com")
 def _raise_if_provider_disabled(requested_provider: str) -> None:
     """Honour ``providers.<name>.enabled: false`` for built-ins too (the custom lookup gate only
     covers custom blocks); a typed error lets the fallback chain advance."""
-    full_cfg = _config_mod.load_config()
+    full_cfg = load_config()
     provs_cfg = full_cfg.get("providers") if isinstance(full_cfg, dict) else None
     block = provs_cfg.get(requested_provider) if isinstance(provs_cfg, dict) else None
     if isinstance(block, dict) and not _config_mod.is_provider_enabled(block):

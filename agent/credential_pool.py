@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from agent.credential_pool_admin import CredentialPoolAdminMixin
 from agent.credential_pool_model_cooldowns import CredentialPoolModelCooldownMixin, model_cooldown_until
+from agent.credential_pool_timestamps import _parse_absolute_timestamp
 
 import logging
 import os
@@ -400,31 +401,6 @@ def _exhausted_ttl(
     return base
 
 
-def _parse_absolute_timestamp(value: Any) -> Optional[float]:
-    """Best-effort parse of epoch seconds / epoch ms / ISO-8601 into epoch seconds."""
-    if value is None or value == "":
-        return None
-    if isinstance(value, (int, float)):
-        numeric = float(value)
-        if numeric <= 0:
-            return None
-        return numeric / 1000.0 if numeric > 1_000_000_000_000 else numeric
-    if isinstance(value, str):
-        raw = value.strip()
-        if not raw:
-            return None
-        try:
-            numeric = float(raw)
-            return numeric / 1000.0 if numeric > 1_000_000_000_000 else numeric
-        except ValueError:
-            pass
-        try:
-            return datetime.fromisoformat(raw).timestamp()
-        except ValueError:
-            return None
-    return None
-
-
 def _singleton_predates_entry(state: Any, entry: PooledCredential) -> bool:
     """True only when the auth.json singleton is PROVABLY older than *entry*.
 
@@ -540,16 +516,12 @@ def _pool_keys_for_custom_entry(norm_name: str, entry: dict[str, Any]) -> list[s
 
 
 def custom_provider_pool_key_candidates(
-    base_url: Optional[str],
-    provider_name: Optional[str] = None,
+    base_url: Optional[str], provider_name: Optional[str] = None, config: Optional[dict] = None,
 ) -> list[str]:
-    """Return pool keys to try for a custom endpoint.
-
-    ``hermes auth add <key>`` stores ``providers.<key>`` credentials under the
-    durable config slug; older rows and legacy ``custom_providers:`` entries
-    live under ``custom:<display-name>``. Try the slug first, then the legacy
-    namespace, so a populated pool is not skipped in favour of the
-    ``no-key-required`` placeholder.
+    """Return pool keys to try for a custom endpoint: the durable ``providers.<key>`` slug
+    (``hermes auth add <key>``), then legacy ``custom:<display-name>``, so a populated pool is not
+    skipped for the ``no-key-required`` placeholder. ``config`` is a frozen route's config: ITS
+    entry owns the endpoint, so a live edit of that entry's URL neither drops nor redirects the pool.
     """
     if not base_url:
         return []
@@ -557,11 +529,16 @@ def custom_provider_pool_key_candidates(
     requested_aliases = _requested_custom_name_aliases(provider_name) if provider_name else set()
 
     if requested_aliases:
-        for norm_name, entry in _iter_custom_providers():
+        for norm_name, entry in _iter_custom_providers(config):
             if requested_aliases & _custom_entry_name_aliases(norm_name, entry):
+                # A named pool holds credentials for its configured endpoint only: a launch-
+                # overridden base_url must not inherit them (R2-M1), nor borrow a sibling's by URL.
+                entry_url = _norm_url(entry.get("base_url"))
+                if entry_url and entry_url != normalized_url:
+                    return []
                 return _pool_keys_for_custom_entry(norm_name, entry)
 
-    for norm_name, entry in _iter_custom_providers():
+    for norm_name, entry in _iter_custom_providers(config):
         entry_url = _norm_url(entry.get("base_url"))
         if entry_url and entry_url == normalized_url:
             return _pool_keys_for_custom_entry(norm_name, entry)

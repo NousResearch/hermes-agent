@@ -1,4 +1,5 @@
 import { JsonRpcGatewayError } from '@hermes/shared'
+import type { GatewayEventName } from '@hermes/shared'
 import { act, cleanup, render, waitFor } from '@testing-library/react'
 import type { MutableRefObject } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -24,24 +25,25 @@ import {
   $messages,
   $sessions,
   $terminalBackend,
-  $turnStartedAt,
   setCurrentUsage,
   setMessages,
   setSessions
 } from '@/store/session'
 import { dropSessionState, publishSessionState } from '@/store/session-states'
 import { $wakeWord, resetWakeWordState } from '@/store/wake-word'
-import type { SessionInfo } from '@/types/hermes'
 
-import { actRender, Harness, type HarnessHandle, RUNTIME_SESSION_ID } from './prompt-actions-harness'
+import { actRender, Harness, type HarnessHandle, RUNTIME_SESSION_ID, sessionInfo } from './index-test-utils'
 import { clearSingleFlightSessionResumeState } from './single-flight-resume'
 import { SESSION_COMPRESS_TIMEOUT_MS } from './slash'
+
+import { uploadComposerAttachment } from '.'
 
 // Suites in this file reuse the same stored-id constants. The module-level
 // single-flight resume map (and drift-recovery cache) would otherwise leak a
 // never-settling in-flight promise from one test into the next.
 beforeEach(() => {
   clearSingleFlightSessionResumeState()
+  window.localStorage.removeItem('hermes.desktop.preparedSubmissions.v1')
   // Queue mutations build on the persisted map, not the atom — a queue an
   // earlier test left in storage would otherwise sit ahead of this test's send.
   window.localStorage.removeItem('hermes.desktop.composerQueue.v1')
@@ -63,32 +65,356 @@ vi.mock('@/store/gateway', async importOriginal => ({
   requestGatewayForAgent: vi.fn()
 }))
 
-// The active id the desktop holds is the *runtime* session id from
-// session.create — deliberately distinct from the stored DB id here, because
-// that mismatch is the bug: the REST renameSession endpoint resolves against
-// the stored sessions table and 404s on a runtime id. session.title accepts
-// the runtime id directly.
 // Every typed command also fires this (fire-and-forget); these tests assert the command's own traffic.
 const SLASH_METRIC = 'shared_metrics.slash_command'
 
-function sessionInfo(overrides: Partial<SessionInfo> = {}): SessionInfo {
-  return {
-    ended_at: null,
-    id: RUNTIME_SESSION_ID,
-    input_tokens: 0,
-    is_active: true,
-    last_active: 0,
-    message_count: 3,
-    model: null,
-    output_tokens: 0,
-    preview: null,
-    source: null,
-    started_at: 0,
-    title: 'Old title',
-    tool_call_count: 0,
-    ...overrides
-  }
-}
+describe('durable submit acknowledgement', () => {
+  it('retires the native private-file journal only after a matching canonical receipt', async () => {
+    const fs = await import('node:fs')
+    const os = await import('node:os')
+    const path = await import('node:path')
+    vi.doMock('electron', () => ({ app: {}, ipcMain: {} }))
+    // Exercise the native module at runtime without importing its separate,
+    // non-strict Electron project into the renderer's TypeScript project.
+    const nativeJournalModule = '../../../../../electron/prepared-submissions'
+    const { preparedJournal } = await import(nativeJournalModule)
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'desktop-retire-'))
+    const journal = preparedJournal(home, 'http://native-fixture')
+    const previous = window.hermesDesktop
+    window.hermesDesktop = { ...previous, preparedSubmissions: {
+      read: async () => JSON.stringify(journal.read()),
+      update: async (key, entry) => { journal.update(key, entry === null ? null : JSON.parse(entry)) }
+    } }
+    let accepted = false
+
+    const requestGateway = vi.fn(async (_method: string, params?: Record<string, unknown>) => {
+      expect(Object.values(journal.read())).toHaveLength(1)
+
+      return { admission_id: 'server-admission', submission_id: accepted ? params?.submission_id : 'other-input', session_id: params?.session_id, status: 'queued' } as never
+    })
+
+    try {
+      let handle: HarnessHandle | null = null
+      await actRender(<Harness onReady={h => (handle = h)} rawAdmissionReceipts refreshSessions={async () => undefined} requestGateway={requestGateway} />)
+      const options = { fromQueue: true, submission_id: 'private-file-input' }
+      expect(await handle!.submitText('native journal receipt', options)).toBe(false)
+      expect(Object.values(preparedJournal(home, 'http://native-fixture').read())).toHaveLength(1)
+      accepted = true
+      expect(await handle!.submitText('native journal receipt', options)).toBe(true)
+      expect(preparedJournal(home, 'http://native-fixture').read()).toEqual({})
+      expect(fs.readdirSync(home)).toHaveLength(1)
+    } finally {
+      window.hermesDesktop = previous
+      fs.rmSync(home, { recursive: true, force: true })
+      vi.doUnmock('electron')
+    }
+  })
+
+  it('a journal retirement that fails after admission still reports the delivered prompt and never reuses its identity', async () => {
+    const entries = new Map<string, string>()
+    const previous = window.hermesDesktop
+    // The private-file journal accepts the preparation write, then the disk fills before retirement.
+    window.hermesDesktop = { ...previous, preparedSubmissions: {
+      read: async () => JSON.stringify(Object.fromEntries([...entries].map(([key, entry]) => [key, JSON.parse(entry)]))),
+      update: async (key, entry) => {
+        if (entry === null) {throw Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' })}
+        entries.set(key, entry)
+      }
+    } }
+    const ids: unknown[] = []
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method !== 'prompt.submit') {return {} as never}
+      ids.push(params?.submission_id)
+
+      return { admission_id: params?.submission_id, status: 'started' } as never
+    })
+
+    try {
+      let handle: HarnessHandle | null = null
+      await actRender(<Harness onReady={h => (handle = h)} rawAdmissionReceipts refreshSessions={async () => undefined} requestGateway={requestGateway} />)
+      const accepted = vi.fn()
+      expect(await handle!.submitText('delivered once', { onAccepted: accepted })).toBe(true)
+      expect(accepted).toHaveBeenCalledTimes(1)
+      expect(handle!.state().messages.some(message => message.error)).toBe(false)
+      // A later identical send is a new turn, never deduplicated into the spent admission.
+      handle!.handleEvent({ type: 'message.complete', session_id: RUNTIME_SESSION_ID, payload: { text: 'done' } } as never)
+      expect(await handle!.submitText('delivered once')).toBe(true)
+      expect(ids).toHaveLength(2)
+      expect(ids[1]).not.toBe(ids[0])
+    } finally {
+      window.hermesDesktop = previous
+    }
+  })
+
+  it('retains a failed slash kickoff and forwards queued admission intent on retry', async () => {
+    $sessions.set([])
+    $connection.set(null)
+    $composerAttachments.set([])
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'slash.exec') {return { type: 'skill', name: 'private-skill', message: 'expanded skill' } as never}
+
+      return { admission_id: 'other-input', status: 'queued' } as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(<Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />)
+    expect(await handle!.submitText('/private-skill', { fromQueue: true, submission_id: 'queued-skill' })).toBe(false)
+    expect(requestGateway.mock.calls.find(call => call[0] === 'prompt.submit')?.[1]).toMatchObject({ queued: true, submission_id: 'queued-skill' })
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+  })
+
+  it.each([
+    [{}, false],
+    [{ admission_id: 'other', status: 'queued' }, false],
+    [{ admission_id: 'entry-id', status: 'queued' }, true],
+    [{ admission_id: 'entry-id', status: 'started' }, true],
+    [{ admission_id: 'entry-id', status: 'terminal' }, true],
+    [{ admission_id: 'canonical-admission', submission_id: 'entry-id', session_id: RUNTIME_SESSION_ID, status: 'queued' }, true],
+    [{ admission_id: 'canonical-admission', submission_id: 'entry-id', session_id: 'wrong-destination', status: 'queued' }, false],
+    // An exact retry of an admission the owner lost mid-turn: admitted, never replayed (Discard resolves it).
+    [{ admission_id: 'entry-id', status: 'unknown' }, true]
+  ])('requires the matching authoritative receipt: %j', async (receipt, accepted) => {
+    const requestGateway = vi.fn(async () => receipt as never)
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness onReady={h => (handle = h)} rawAdmissionReceipts refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+    const options = { fromQueue: true, submission_id: 'entry-id' }
+    expect(await handle!.submitText('keep this input', options)).toBe(accepted)
+    expect(requestGateway).toHaveBeenCalledWith(
+      'prompt.submit',
+      expect.objectContaining({ submission_id: 'entry-id', queued: true }),
+      expect.any(Number)
+    )
+  })
+
+  it('a legacy backend refusing submission_id as version skew (4000) gets one identityless retry', async () => {
+    // `hermes serve` validates params against a strict contract: an unknown key is refused
+    // as 4000 before any handler ran (surfaced by the remote-topology E2E as "Session unavailable").
+    const submits: Array<Record<string, unknown>> = []
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method !== 'prompt.submit') {return {} as never}
+      submits.push(params!)
+
+      if ('submission_id' in params!) {
+        throw Object.assign(new Error('invalid params for prompt.submit: submission_id: Extra inputs are not permitted — the client and the Hermes backend are out of sync (different versions)'), { code: 4000 })
+      }
+
+      return { status: 'streaming' } as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness onReady={h => (handle = h)} rawAdmissionReceipts refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+    expect(await handle!.submitText('hi remote')).toBe(true)
+    expect(submits).toHaveLength(2)
+    expect(submits[1]).not.toHaveProperty('submission_id')
+    expect(submits[1]).toMatchObject({ text: 'hi remote' })
+  })
+})
+
+describe('submit timeout admission fences', () => {
+  afterEach(cleanup)
+
+  it('does not replay an ambiguously accepted identityless send after timeout recovery', async () => {
+    const submits: Record<string, unknown>[] = []
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.resume') {return { session_id: RUNTIME_SESSION_ID } as never}
+
+      if (method !== 'prompt.submit') {return {} as never}
+      submits.push(params!)
+
+      if (submits.length === 1) {throw Object.assign(new Error('capability refused'), { code: 4094 })}
+
+      if (submits.length === 2) {throw new Error('request timed out: prompt.submit')}
+
+      return { admission_id: params?.submission_id, status: 'started' } as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(<Harness onReady={h => (handle = h)} rawAdmissionReceipts refreshSessions={async () => undefined} requestGateway={requestGateway} />)
+    const accepted = await handle!.submitText('legacy accepted before ACK loss', { submission_id: 'legacy-timeout' })
+    expect(submits.map(p => p.submission_id)).toEqual(['legacy-timeout', undefined])
+    expect(accepted).toBe(false)
+    expect(await handle!.submitText('legacy accepted before ACK loss', { submission_id: 'legacy-timeout' })).toBe(false)
+    expect(submits).toHaveLength(2)
+  })
+
+  // Adolanium 6055121721: after a lost identityless (legacy) ACK, Enter on that exact text did
+  // nothing forever. The explicit retry is refused once, visibly; a new send of the words is the
+  // user's informed new turn and goes out.
+  it('a lost legacy acknowledgement is surfaced once and never blocks sending the same text again', async () => {
+    const submits: Record<string, unknown>[] = []
+    clearNotifications()
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.resume') {return { session_id: RUNTIME_SESSION_ID } as never}
+
+      if (method !== 'prompt.submit') {return {} as never}
+      submits.push(params!)
+
+      // A legacy serve refuses every submission_id before admission.
+      if (params?.submission_id) {throw Object.assign(new Error('capability refused'), { code: 4094 })}
+
+      if (submits.length === 2) {throw new Error('request timed out: prompt.submit')}
+
+      return { ok: true } as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(<Harness onReady={h => (handle = h)} rawAdmissionReceipts refreshSessions={async () => undefined} requestGateway={requestGateway} />)
+    expect(await handle!.submitText('hello there', { submission_id: 'legacy-lost' })).toBe(false)
+    expect(await handle!.submitText('hello there', { submission_id: 'legacy-lost' })).toBe(false)
+    expect(submits).toHaveLength(2)
+    const shown = $notifications.get().map(n => n.message)
+    // The restored draft keeps its identity; pressing Enter again after the notice sends it.
+    expect(await handle!.submitText('hello there', { submission_id: 'legacy-lost' })).toBe(true)
+    expect(submits).toHaveLength(4)
+    expect(shown).toContain(en.promptNotices.legacySendUnconfirmed)
+  })
+
+  it('retries an identified timeout with the same admission identity after resume', async () => {
+    const submits: Record<string, unknown>[] = []
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.resume') {return { session_id: RUNTIME_SESSION_ID } as never}
+
+      if (method !== 'prompt.submit') {return {} as never}
+      submits.push(params!)
+
+      if (submits.length === 1) {throw new Error('request timed out: prompt.submit')}
+
+      return { admission_id: params?.submission_id, status: 'started' } as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(<Harness onReady={h => (handle = h)} rawAdmissionReceipts refreshSessions={async () => undefined} requestGateway={requestGateway} />)
+    expect(await handle!.submitText('safe identified retry', { submission_id: 'identified-timeout' })).toBe(true)
+    expect(submits.map(p => p.submission_id)).toEqual(['identified-timeout', 'identified-timeout'])
+    expect(requestGateway).toHaveBeenCalledWith('session.resume', expect.objectContaining({ session_id: RUNTIME_SESSION_ID }))
+  })
+})
+
+describe('terminal receipt settlement', () => {
+  afterEach(cleanup)
+
+  it('admits a native queued input without taking ownership of the running turn', async () => {
+    let handle: HarnessHandle | null = null
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method !== 'prompt.submit') { return {} as never }
+      expect(handle!.state()).toMatchObject({ busy: true, awaitingResponse: true, streamId: 'owner-stream', turnLive: true })
+
+      return { admission_id: 'server-queue', submission_id: params?.submission_id, session_id: RUNTIME_SESSION_ID, status: 'queued' } as never
+    })
+
+    await actRender(<Harness onReady={h => (handle = h)} rawAdmissionReceipts refreshSessions={async () => undefined} requestGateway={requestGateway} />)
+    Object.assign(handle!.state(), { busy: true, awaitingResponse: true, streamId: 'owner-stream', turnLive: true })
+    $connection.set({ wsUrl: 'ws://localhost/api/ws?native_dial=unminted', mode: 'local' } as never)
+
+    try {
+      expect(await handle!.submitText('next input', { fromQueue: true })).toBe(true)
+      expect(handle!.state()).toMatchObject({ busy: true, awaitingResponse: true, streamId: 'owner-stream', turnLive: true })
+      expect(JSON.parse(window.localStorage.getItem('hermes.desktop.preparedSubmissions.v1')!)).toEqual({})
+    } finally { $connection.set(null) }
+  })
+
+  it('settles a retained terminal retry without waiting for another lifecycle event', async () => {
+    let terminal = false
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.resume') {return { session_id: 'rt-terminal-recovered' } as never}
+
+      if (method !== 'prompt.submit') {return {} as never}
+
+      if (!terminal) {throw new Error('connection closed')}
+
+      if (params?.session_id === RUNTIME_SESSION_ID) {throw new Error('session not found')}
+
+      return { admission_id: params?.submission_id, status: 'terminal' } as never
+    })
+
+    let handle: HarnessHandle | null = null
+    let updatedRuntime: string | undefined
+    await actRender(<Harness onReady={h => (handle = h)} onUpdateState={id => { updatedRuntime = id }} rawAdmissionReceipts refreshSessions={async () => undefined} requestGateway={requestGateway} />)
+    expect(await handle!.submitText('already persisted', { submission_id: 'terminal-retry' })).toBe(false)
+    terminal = true
+    expect(await handle!.submitText('already persisted', { submission_id: 'terminal-retry' })).toBe(true)
+    expect(updatedRuntime).toBe('rt-terminal-recovered')
+    expect(handle!.state()).toMatchObject({ busy: false, awaitingResponse: false, turnStartedAt: null })
+    expect(handle!.state().messages.filter(m => m.id === 'user-terminal-retry')).toEqual([])
+    expect($busy.get()).toBe(false)
+  })
+
+  it('does not settle a newer external generation when an older terminal receipt arrives', async () => {
+    let finish!: (value: never) => void
+
+    const requestGateway = vi.fn(async (method: string) => method === 'prompt.submit'
+      ? new Promise<never>(resolve => { finish = resolve }) : {} as never)
+
+    let handle: HarnessHandle | null = null
+    await actRender(<Harness onReady={h => (handle = h)} rawAdmissionReceipts refreshSessions={async () => undefined} requestGateway={requestGateway} />)
+    let pending!: Promise<boolean>
+    act(() => { pending = handle!.submitTextRaw('old retry', { submission_id: 'old-terminal' }) })
+    await waitFor(() => expect(finish).toBeTypeOf('function'))
+    handle!.handleEvent({ type: 'message.start', session_id: RUNTIME_SESSION_ID, authority_epoch: 1, execution_generation: 2, payload: {} })
+    await act(async () => { finish({ admission_id: 'old-terminal', status: 'terminal' } as never); expect(await pending).toBe(true) })
+    expect(handle!.state()).toMatchObject({ busy: true, awaitingResponse: true, turnLive: true })
+    expect(handle!.state().messages.filter(m => m.id === 'user-old-terminal')).toEqual([])
+    handle!.handleEvent({ type: 'message.delta', session_id: RUNTIME_SESSION_ID, authority_epoch: 1, execution_generation: 2, payload: { text: 'new answer' } })
+    handle!.handleEvent({ type: 'message.complete', session_id: RUNTIME_SESSION_ID, authority_epoch: 1, execution_generation: 2, payload: { text: 'new answer' } })
+    expect(handle!.state().busy).toBe(false)
+    expect(handle!.state().messages.at(-1)?.parts).toContainEqual(expect.objectContaining({ text: 'new answer' }))
+  })
+})
+
+describe('Stop and shared-owner execution', () => {
+  afterEach(cleanup)
+
+  it.each([[1, 5], [2, 1]])('retires Stop only for a newer execution: %s/%s', async (epoch, generation) => {
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) =>
+      (method === 'prompt.submit' ? { admission_id: params?.submission_id, status: 'started' } : {}) as never)
+
+    let handle: HarnessHandle | null = null
+    await actRender(<Harness onReady={h => (handle = h)} rawAdmissionReceipts refreshSessions={async () => undefined} requestGateway={requestGateway} />)
+    await handle!.submitText('first turn')
+
+    const send = (type: GatewayEventName, authority_epoch = 1, execution_generation = 4, extra = {}) =>
+      handle!.handleEvent({ type, session_id: RUNTIME_SESSION_ID, authority_epoch, execution_generation, payload: extra })
+
+    send('message.start')
+    expect(handle!.state().busy).toBe(true)
+    await handle!.cancelRun()
+    expect(requestGateway).toHaveBeenCalledWith('session.interrupt', { session_id: RUNTIME_SESSION_ID })
+    send('message.start')
+    send('message.delta', 1, 4, { text: 'stopped tail' })
+    expect(handle!.state()).toMatchObject({ interrupted: true, busy: false })
+    send('message.complete')
+    send('session.info', 1, 4, { running: false })
+    send('message.start', epoch, generation)
+    send('session.info', epoch, generation, { running: true })
+    expect(handle!.state()).toMatchObject({ interrupted: false, busy: true, awaitingResponse: true })
+    send('message.delta', epoch, generation, { text: 'external answer' })
+    send('message.delta', 1, 4, { text: 'obsolete tail' })
+    send('message.interim', epoch, generation)
+    expect(handle!.state().messages.at(-1)?.parts).toContainEqual(expect.objectContaining({ text: 'external answer' }))
+    send('message.complete', 1, 4, { text: 'obsolete final' })
+    expect(handle!.state().busy).toBe(true)
+    send('message.complete', epoch, generation, { text: 'external answer' })
+    expect(handle!.state()).toMatchObject({ busy: false, awaitingResponse: false })
+    expect(handle!.state().messages.at(-1)?.parts).toContainEqual(expect.objectContaining({ text: 'external answer' }))
+    expect(JSON.stringify(handle!.state().messages)).not.toMatch(/stopped tail|obsolete/)
+  })
+})
 
 describe('usePromptActions /title', () => {
   beforeEach(() => {
@@ -242,7 +568,7 @@ describe('usePromptActions /stop', () => {
 
     expect(calls).toEqual([
       { method: 'session.interrupt', params: { session_id: 'rt-target-session' } },
-      { method: 'process.stop', params: {} }
+      { method: 'process.stop', params: { session_id: 'rt-target-session' } }
     ])
     expect(requestGateway).not.toHaveBeenCalledWith('slash.exec', expect.anything())
     expect(requestGateway).not.toHaveBeenCalledWith('command.dispatch', expect.anything())
@@ -269,7 +595,7 @@ describe('usePromptActions /stop', () => {
     await handle!.submitText('/stop')
 
     expect(requestGateway).toHaveBeenCalledWith('session.interrupt', { session_id: RUNTIME_SESSION_ID })
-    expect(requestGateway).toHaveBeenCalledWith('process.stop', {})
+    expect(requestGateway).toHaveBeenCalledWith('process.stop', { session_id: RUNTIME_SESSION_ID })
   })
 })
 
@@ -1189,7 +1515,7 @@ describe('usePromptActions exec fallback error reporting', () => {
 
     await handle!.submitText('/status')
 
-    expect(requestGateway).toHaveBeenCalledWith('session.status', expect.anything(), undefined)
+    expect(requestGateway).toHaveBeenCalledWith('session.status', expect.anything())
     expect(requestGateway).toHaveBeenCalledWith('slash.exec', expect.objectContaining({ command: 'status' }))
     expect(renderedSeedTexts(seeds).some(text => text.includes('session status from slash worker'))).toBe(true)
   })
@@ -1319,6 +1645,7 @@ describe('usePromptActions slash.exec dispatch payloads', () => {
     })
     expect(calls[1]?.params).toEqual({
       session_id: RUNTIME_SESSION_ID,
+      submission_id: expect.any(String),
       text: 'write the implementation plan'
     })
 
@@ -2018,7 +2345,7 @@ describe('usePromptActions submit / queue drain semantics', () => {
     expect(await handle!.submitText('continue remotely')).toBe(true)
     expect(ambientRequest).toHaveBeenCalledWith(
       'prompt.submit',
-      { session_id: 'runtime-remote', text: 'continue remotely' },
+      { submission_id: expect.any(String), session_id: 'runtime-remote', text: 'continue remotely' },
       1_800_000
     )
     expect(requestGatewayForAgent).not.toHaveBeenCalled()
@@ -2049,6 +2376,7 @@ describe('usePromptActions submit / queue drain semantics', () => {
       'prompt.submit',
       {
         session_id: RUNTIME_SESSION_ID,
+        submission_id: expect.any(String),
         text: 'hello after a stop'
       },
       1_800_000
@@ -2125,6 +2453,7 @@ describe('usePromptActions submit / queue drain semantics', () => {
       'prompt.submit',
       {
         session_id: RUNTIME_SESSION_ID,
+        submission_id: expect.any(String),
         text: 'stop! rude interruption',
         interrupted: true
       },
@@ -2136,6 +2465,7 @@ describe('usePromptActions submit / queue drain semantics', () => {
       'prompt.submit',
       {
         session_id: RUNTIME_SESSION_ID,
+        submission_id: expect.any(String),
         text: 'follow-up without a barge'
       },
       1_800_000
@@ -2166,6 +2496,7 @@ describe('usePromptActions submit / queue drain semantics', () => {
       {
         queued: true,
         session_id: RUNTIME_SESSION_ID,
+        submission_id: expect.any(String),
         text: 'queued message'
       },
       1_800_000
@@ -2203,6 +2534,7 @@ describe('usePromptActions submit / queue drain semantics', () => {
       {
         queued: true,
         session_id: 'rt-session-a',
+        submission_id: expect.any(String),
         text: 'queued for background session'
       },
       1_800_000
@@ -2258,6 +2590,7 @@ describe('usePromptActions submit / queue drain semantics', () => {
       {
         queued: true,
         session_id: 'rt-session-b',
+        submission_id: expect.any(String),
         text: 'queued for B mid-switch'
       },
       1_800_000
@@ -2393,6 +2726,7 @@ describe('usePromptActions submit / queue drain semantics', () => {
       {
         queued: true,
         session_id: 'rt-session-b-live',
+        submission_id: expect.any(String),
         text: 'queued for B, B already re-bound'
       },
       1_800_000
@@ -2435,6 +2769,7 @@ describe('usePromptActions submit / queue drain semantics', () => {
       'prompt.submit',
       {
         session_id: 'rt-tab',
+        submission_id: expect.any(String),
         text: 'kickoff for the tab'
       },
       1_800_000
@@ -2487,6 +2822,7 @@ describe('usePromptActions submit / queue drain semantics', () => {
       {
         queued: true,
         session_id: 'rt-session-a-rebound',
+        submission_id: expect.any(String),
         text: 'queued for background session'
       },
       1_800_000
@@ -2538,6 +2874,7 @@ describe('usePromptActions submit / queue drain semantics', () => {
       {
         queued: true,
         session_id: RUNTIME_SESSION_ID,
+        submission_id: expect.any(String),
         text: 'please send me'
       },
       1_800_000
@@ -2731,7 +3068,7 @@ describe('usePromptActions redirectPrompt', () => {
     }
   })
 
-  it('reports rejection without throwing when the redirect RPC errors', async () => {
+  it('surfaces redirect RPC errors instead of converting rejection to queue admission', async () => {
     const requestGateway = vi.fn(async () => {
       throw new Error('agent does not support redirect')
     })
@@ -2741,7 +3078,8 @@ describe('usePromptActions redirectPrompt', () => {
       <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
     )
 
-    expect(await handle!.redirectPrompt('boom')).toBe(false)
+    await expect(handle!.redirectPrompt('boom')).rejects.toThrow('agent does not support redirect')
+    expect($notifications.get().some(item => item.message?.includes('agent does not support redirect'))).toBe(true)
   })
 
   it('skips the RPC entirely for empty text', async () => {
@@ -3167,6 +3505,7 @@ describe('usePromptActions file attachment sync', () => {
     })
     expect(calls[1]?.params).toEqual({
       session_id: RUNTIME_SESSION_ID,
+      submission_id: expect.any(String),
       text: '@file:.hermes/desktop-attachments/report.txt\n\nconvert this to epub'
     })
   })
@@ -3221,7 +3560,11 @@ describe('usePromptActions file attachment sync', () => {
     })
     expect(calls[1]).toEqual({
       method: 'prompt.submit',
-      params: { session_id: RUNTIME_SESSION_ID, text: '@file:.hermes/desktop-attachments/report.txt\n\nsummarize' }
+      params: {
+        submission_id: expect.any(String),
+        session_id: RUNTIME_SESSION_ID,
+        text: '@file:.hermes/desktop-attachments/report.txt\n\nsummarize'
+      }
     })
   })
 
@@ -3559,7 +3902,11 @@ describe('usePromptActions file attachment sync', () => {
     expect(calls[0]?.params).not.toHaveProperty('data_url')
     expect(calls[1]).toEqual({
       method: 'prompt.submit',
-      params: { session_id: RUNTIME_SESSION_ID, text: '@file:data/report.txt\n\nsummarize' }
+      params: {
+        submission_id: expect.any(String),
+        session_id: RUNTIME_SESSION_ID,
+        text: '@file:data/report.txt\n\nsummarize'
+      }
     })
   })
 })
@@ -3627,819 +3974,6 @@ describe('usePromptActions eager-upload races', () => {
   })
 })
 
-describe('usePromptActions sleep/wake session recovery', () => {
-  const STORED_SESSION_ID = 'stored-db-xyz789'
-  const RECOVERED_SESSION_ID = 'rt-recovered-456'
-
-  afterEach(() => {
-    cleanup()
-    $turnStartedAt.set(null)
-    vi.restoreAllMocks()
-  })
-
-  it('resumes the stored session and retries once when prompt.submit reports "session not found"', async () => {
-    // After sleep/wake the gateway's in-memory session table is cleared, so the
-    // first prompt.submit with the stale runtime id fails. The hook resumes the
-    // durable stored id (which survives gateway restarts), gets a fresh live id,
-    // and retries the send transparently.
-    const calls: { method: string; params?: Record<string, unknown> }[] = []
-    let submitAttempts = 0
-
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-      calls.push({ method, params })
-
-      if (method === 'prompt.submit') {
-        submitAttempts += 1
-
-        if (submitAttempts === 1) {
-          throw new Error('session not found')
-        }
-
-        return {} as never
-      }
-
-      if (method === 'session.resume') {
-        return { session_id: RECOVERED_SESSION_ID } as never
-      }
-
-      return {} as never
-    })
-
-    let handle: HarnessHandle | null = null
-    await actRender(
-      <Harness
-        onReady={h => (handle = h)}
-        refreshSessions={async () => undefined}
-        requestGateway={requestGateway}
-        storedSessionId={STORED_SESSION_ID}
-      />
-    )
-
-    const ok = await handle!.submitText('message after wake')
-
-    expect(ok).toBe(true)
-    // First submit (stale id) → session.resume (stored id) → retry submit (fresh id).
-    expect(calls.map(c => c.method)).toEqual(['prompt.submit', 'session.resume', 'prompt.submit'])
-    expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID, source: 'desktop', omit_messages: true })
-    expect(calls[2]?.params).toEqual({ session_id: RECOVERED_SESSION_ID, text: 'message after wake' })
-  })
-
-  it('publishes the recovered runtime binding before retrying through the remote owner router', async () => {
-    const calls: { method: string; params?: Record<string, unknown> }[] = []
-    let bindingPublished = false
-    let submitAttempts = 0
-
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-      calls.push({ method, params })
-
-      if (method === 'prompt.submit') {
-        submitAttempts += 1
-
-        if (submitAttempts === 1) {
-          throw new JsonRpcGatewayError('session not found', { code: 4001 })
-        }
-
-        if (!bindingPublished) {
-          throw new JsonRpcGatewayError('session not found on ambient gateway', { code: 4001 })
-        }
-
-        return {} as never
-      }
-
-      if (method === 'session.resume') {
-        return { session_id: RECOVERED_SESSION_ID } as never
-      }
-
-      return {} as never
-    })
-
-    let handle: HarnessHandle | null = null
-    await actRender(
-      <Harness
-        onReady={h => (handle = h)}
-        onUpdateState={(runtimeId, storedId) => {
-          if (runtimeId === RECOVERED_SESSION_ID && storedId === STORED_SESSION_ID) {
-            bindingPublished = true
-          }
-        }}
-        refreshSessions={async () => undefined}
-        requestGateway={requestGateway}
-        storedSessionId={STORED_SESSION_ID}
-      />
-    )
-
-    expect(await handle!.submitText('remote follow-up after reap')).toBe(true)
-    expect(bindingPublished).toBe(true)
-    expect(calls.map(call => call.method)).toEqual(['prompt.submit', 'session.resume', 'prompt.submit'])
-    expect(calls[2]?.params).toEqual({ session_id: RECOVERED_SESSION_ID, text: 'remote follow-up after reap' })
-  })
-
-  it('resumes the stored session and retries once when reloadFromMessage (regenerate) reports "session not found"', async () => {
-    // reloadFromMessage builds its own prompt.submit call inline instead of
-    // going through the shared send() path submitText/redirectPrompt use, so
-    // it needs the same sleep/wake recovery independently — otherwise
-    // "Regenerate" on a stale session surfaces a raw error instead of
-    // silently resuming, same as the general submit case above.
-    //
-    // reloadFromMessage bails early on $busy — an earlier suite in this file
-    // can leave it true (see the stale-closure describe block's own note),
-    // so reset it defensively rather than relying on run order.
-    $busy.set(false)
-    setMessages([
-      { id: 'u1', parts: [textPart('original prompt')], role: 'user', timestamp: 0 },
-      { id: 'a1', parts: [textPart('reply')], role: 'assistant', timestamp: 1 }
-    ] as never)
-
-    const calls: { method: string; params?: Record<string, unknown> }[] = []
-    let submitAttempts = 0
-
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-      calls.push({ method, params })
-
-      if (method === 'prompt.submit') {
-        submitAttempts += 1
-
-        if (submitAttempts === 1) {
-          throw new Error('session not found')
-        }
-
-        return {} as never
-      }
-
-      if (method === 'session.resume') {
-        return { session_id: RECOVERED_SESSION_ID } as never
-      }
-
-      return {} as never
-    })
-
-    let handle: HarnessHandle | null = null
-    await actRender(
-      <Harness
-        onReady={h => (handle = h)}
-        refreshSessions={async () => undefined}
-        requestGateway={requestGateway}
-        storedSessionId={STORED_SESSION_ID}
-      />
-    )
-
-    await handle!.reloadFromMessage('u1')
-
-    // First submit (stale id) → session.resume (stored id) → retry submit (fresh id).
-    expect(calls.map(c => c.method)).toEqual(['prompt.submit', 'session.resume', 'prompt.submit'])
-    expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID, source: 'desktop', omit_messages: true })
-    expect(calls[2]?.params).toEqual(
-      expect.objectContaining({ session_id: RECOVERED_SESSION_ID, text: 'original prompt' })
-    )
-  })
-
-  // #67603 (second symptom): a recovery resume must re-register on the session's
-  // OWNING profile. Resuming on whichever profile is live forks the conversation
-  // into the wrong profile's DB — the session then appears under both profiles.
-  it('carries the owning profile from the cache into the recovery resume', async () => {
-    setSessions(() => [sessionInfo({ id: STORED_SESSION_ID, profile: 'work' })])
-
-    const calls: { method: string; params?: Record<string, unknown> }[] = []
-    let submitAttempts = 0
-
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-      calls.push({ method, params })
-
-      if (method === 'prompt.submit') {
-        submitAttempts += 1
-
-        if (submitAttempts === 1) {
-          throw new Error('session not found')
-        }
-
-        return {} as never
-      }
-
-      if (method === 'session.resume') {
-        return { session_id: RECOVERED_SESSION_ID } as never
-      }
-
-      return {} as never
-    })
-
-    let handle: HarnessHandle | null = null
-    await actRender(
-      <Harness
-        onReady={h => (handle = h)}
-        refreshSessions={async () => undefined}
-        requestGateway={requestGateway}
-        storedSessionId={STORED_SESSION_ID}
-      />
-    )
-
-    expect(await handle!.submitText('message after wake')).toBe(true)
-    expect(calls[1]?.params).toEqual({
-      session_id: STORED_SESSION_ID,
-      source: 'desktop',
-      omit_messages: true,
-      profile: 'work'
-    })
-
-    setSessions(() => [])
-  })
-
-  // The session lives on another profile and is outside the paginated sidebar
-  // cache: resolve it by id across profiles rather than resuming profile-blind.
-  it('resolves the owning profile across profiles when the session is not cached', async () => {
-    // module-factory vi.fn is not reset by restoreAllMocks — reset explicitly in
-    // the finally below so this resolved value never leaks into sibling tests.
-    setSessions(() => [])
-    vi.mocked(getSession).mockResolvedValue(sessionInfo({ id: STORED_SESSION_ID, profile: 'work' }))
-
-    const calls: { method: string; params?: Record<string, unknown> }[] = []
-    let submitAttempts = 0
-
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-      calls.push({ method, params })
-
-      if (method === 'prompt.submit') {
-        submitAttempts += 1
-
-        if (submitAttempts === 1) {
-          throw new Error('session not found')
-        }
-
-        return {} as never
-      }
-
-      if (method === 'session.resume') {
-        return { session_id: RECOVERED_SESSION_ID } as never
-      }
-
-      return {} as never
-    })
-
-    let handle: HarnessHandle | null = null
-    await actRender(
-      <Harness
-        onReady={h => (handle = h)}
-        refreshSessions={async () => undefined}
-        requestGateway={requestGateway}
-        storedSessionId={STORED_SESSION_ID}
-      />
-    )
-
-    expect(await handle!.submitText('message after wake')).toBe(true)
-    expect(calls[1]?.params).toEqual({
-      session_id: STORED_SESSION_ID,
-      source: 'desktop',
-      omit_messages: true,
-      profile: 'work'
-    })
-
-    vi.mocked(getSession).mockReset()
-    setSessions(() => [])
-  })
-
-  it('background queue resume uses the queued stored id and leaves foreground runtime selected', async () => {
-    const calls: { method: string; params?: Record<string, unknown> }[] = []
-    let submitAttempts = 0
-
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-      calls.push({ method, params })
-
-      if (method === 'prompt.submit') {
-        submitAttempts += 1
-
-        if (submitAttempts === 1) {
-          throw new Error('session not found')
-        }
-
-        return {} as never
-      }
-
-      if (method === 'session.resume') {
-        return { session_id: RECOVERED_SESSION_ID } as never
-      }
-
-      return {} as never
-    })
-
-    let handle: HarnessHandle | null = null
-    render(
-      <Harness
-        // The central binding is stale in lockstep with the caller here: the
-        // sleep/wake reaper only clears the GATEWAY's in-memory session, so
-        // client-side state still swears by the old runtime id. That is what
-        // routes this case to the reactive 404→resume→retry path instead of
-        // the proactive binding check (covered by the cross-session drain
-        // tests above).
-        getRuntimeIdForStoredSession={storedId => (storedId === STORED_SESSION_ID ? 'rt-background-stale' : null)}
-        onReady={h => (handle = h)}
-        refreshSessions={async () => undefined}
-        requestGateway={requestGateway}
-        storedSessionId="stored-foreground"
-      />
-    )
-    await waitFor(() => expect(handle).not.toBeNull())
-
-    const ok = await handle!.submitText('queued background message after wake', {
-      fromQueue: true,
-      sessionId: 'rt-background-stale',
-      storedSessionId: STORED_SESSION_ID
-    })
-
-    expect(ok).toBe(true)
-    expect(calls.map(c => c.method)).toEqual(['prompt.submit', 'session.resume', 'prompt.submit'])
-    expect(calls[0]?.params).toEqual({
-      queued: true,
-      session_id: 'rt-background-stale',
-      text: 'queued background message after wake'
-    })
-    expect(calls[1]?.params).toEqual({
-      session_id: STORED_SESSION_ID,
-      source: 'desktop',
-      omit_messages: true
-    })
-    expect(calls[2]?.params).toEqual({
-      queued: true,
-      session_id: RECOVERED_SESSION_ID,
-      text: 'queued background message after wake'
-    })
-    expect(handle!.activeSessionIdRef.current).toBe(RUNTIME_SESSION_ID)
-  })
-
-  it('resumes the stored session and retries once when session.interrupt reports "session not found"', async () => {
-    const calls: { method: string; params?: Record<string, unknown> }[] = []
-    let interruptAttempts = 0
-
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-      calls.push({ method, params })
-
-      if (method === 'session.interrupt') {
-        interruptAttempts += 1
-
-        if (interruptAttempts === 1) {
-          throw new Error('session not found')
-        }
-
-        return {} as never
-      }
-
-      if (method === 'session.resume') {
-        return { session_id: RECOVERED_SESSION_ID } as never
-      }
-
-      return {} as never
-    })
-
-    let handle: HarnessHandle | null = null
-    await actRender(
-      <Harness
-        onReady={h => (handle = h)}
-        refreshSessions={async () => undefined}
-        requestGateway={requestGateway}
-        storedSessionId={STORED_SESSION_ID}
-      />
-    )
-    await waitFor(() => expect(handle).not.toBeNull())
-
-    await handle!.cancelRun()
-
-    expect(calls.map(c => c.method)).toEqual(['session.interrupt', 'session.resume', 'session.interrupt'])
-    expect(calls[0]?.params).toEqual({ session_id: RUNTIME_SESSION_ID })
-    expect(calls[1]?.params).toEqual({
-      session_id: STORED_SESSION_ID,
-      source: 'desktop',
-      omit_messages: true
-    })
-    expect(calls[2]?.params).toEqual({ session_id: RECOVERED_SESSION_ID })
-  })
-
-  it('clears the active and cached turn clocks when stopping a turn', async () => {
-    const states: Record<string, unknown>[] = []
-    const requestGateway = vi.fn(async () => ({}) as never)
-    $turnStartedAt.set(1_700_000_000_000)
-
-    let handle: HarnessHandle | null = null
-    await actRender(
-      <Harness
-        onReady={h => (handle = h)}
-        onSeedState={state => states.push(state)}
-        refreshSessions={async () => undefined}
-        requestGateway={requestGateway}
-      />
-    )
-
-    await handle!.cancelRun()
-
-    expect($turnStartedAt.get()).toBeNull()
-    expect(states.at(-1)).toMatchObject({
-      awaitingResponse: false,
-      busy: false,
-      interrupted: true,
-      turnStartedAt: null
-    })
-  })
-
-  it('surfaces the original error (no resume) when the failure is not "session not found"', async () => {
-    const calls: string[] = []
-    const states: Record<string, unknown>[] = []
-
-    const requestGateway = vi.fn(async (method: string) => {
-      calls.push(method)
-
-      if (method === 'prompt.submit') {
-        throw new Error('gateway exploded')
-      }
-
-      return {} as never
-    })
-
-    let handle: HarnessHandle | null = null
-    await actRender(
-      <Harness
-        onReady={h => (handle = h)}
-        onSeedState={s => states.push(s)}
-        refreshSessions={async () => undefined}
-        requestGateway={requestGateway}
-        storedSessionId={STORED_SESSION_ID}
-      />
-    )
-
-    // submitText swallows the error into an inline bubble and returns false.
-    expect(await handle!.submitText('message')).toBe(false)
-    // No resume attempt for a non-recoverable error.
-    expect(calls).not.toContain('session.resume')
-  })
-
-  it('surfaces "session not found" (no resume) when there is no stored session id', async () => {
-    const calls: string[] = []
-
-    const requestGateway = vi.fn(async (method: string) => {
-      calls.push(method)
-
-      if (method === 'prompt.submit') {
-        throw new Error('session not found')
-      }
-
-      return {} as never
-    })
-
-    let handle: HarnessHandle | null = null
-    await actRender(
-      <Harness
-        onReady={h => (handle = h)}
-        refreshSessions={async () => undefined}
-        requestGateway={requestGateway}
-        storedSessionId={null}
-      />
-    )
-
-    // With a null stored ref, the `&& selectedStoredSessionIdRef.current` guard
-    // short-circuits — no resume is attempted and the error surfaces normally.
-    expect(await handle!.submitText('message')).toBe(false)
-    expect(calls).not.toContain('session.resume')
-  })
-
-  it('recovers via session.resume when prompt.submit TIMES OUT and a stored session is selected (#55578)', async () => {
-    // A starved gateway loop rejects with "request timed out: prompt.submit".
-    // With a stored session selected, that must recover exactly like
-    // "session not found" — resume + retry — not surface an error that leaves
-    // activeSessionId null and lets the next send mint a new session.
-    const calls: { method: string; params?: Record<string, unknown> }[] = []
-    let submitAttempts = 0
-
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-      calls.push({ method, params })
-
-      if (method === 'prompt.submit') {
-        submitAttempts += 1
-
-        if (submitAttempts === 1) {
-          throw new Error('request timed out: prompt.submit')
-        }
-
-        return {} as never
-      }
-
-      if (method === 'session.resume') {
-        return { session_id: RECOVERED_SESSION_ID } as never
-      }
-
-      return {} as never
-    })
-
-    let handle: HarnessHandle | null = null
-    await actRender(
-      <Harness
-        onReady={h => (handle = h)}
-        refreshSessions={async () => undefined}
-        requestGateway={requestGateway}
-        storedSessionId={STORED_SESSION_ID}
-      />
-    )
-
-    const ok = await handle!.submitText('message during starved loop')
-
-    expect(ok).toBe(true)
-    expect(calls.map(c => c.method)).toEqual(['prompt.submit', 'session.resume', 'prompt.submit'])
-    expect(calls[1]?.params).toEqual({
-      session_id: STORED_SESSION_ID,
-      source: 'desktop',
-      omit_messages: true
-    })
-    expect(calls[2]?.params).toEqual({
-      session_id: RECOVERED_SESSION_ID,
-      text: 'message during starved loop'
-    })
-  })
-
-  it('resumes the SELECTED stored session instead of minting a new one when activeSessionId is null (#55578 split)', async () => {
-    // The exact split path from #55578 symptom (b): the runtime binding is
-    // gone (orphan-reaped / cleared by a timeout) but a stored session is
-    // still selected in the sidebar. A follow-up submit must continue that
-    // conversation via session.resume — createBackendSessionForSend would
-    // silently fork the user's chat in two.
-    const calls: { method: string; params?: Record<string, unknown> }[] = []
-    const createBackendSessionForSend = vi.fn(async () => 'brand-new-session-WRONG')
-
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-      calls.push({ method, params })
-
-      if (method === 'session.resume') {
-        return { session_id: RECOVERED_SESSION_ID } as never
-      }
-
-      return {} as never
-    })
-
-    let handle: HarnessHandle | null = null
-    await actRender(
-      <Harness
-        activeSessionId={null}
-        createBackendSessionForSend={createBackendSessionForSend}
-        onReady={h => (handle = h)}
-        refreshSessions={async () => undefined}
-        requestGateway={requestGateway}
-        storedSessionId={STORED_SESSION_ID}
-      />
-    )
-
-    const ok = await handle!.submitText('follow-up in the selected chat')
-
-    expect(ok).toBe(true)
-    expect(createBackendSessionForSend).not.toHaveBeenCalled()
-    expect(calls.map(c => c.method)).toEqual(['session.resume', 'prompt.submit'])
-    expect(calls[0]?.params).toEqual({
-      session_id: STORED_SESSION_ID,
-      source: 'desktop',
-      omit_messages: true
-    })
-    expect(calls[1]?.params).toMatchObject({ session_id: RECOVERED_SESSION_ID })
-  })
-
-  it('never replaces a selected stored session when its direct runtime resume fails', async () => {
-    const activeSessionIdRef: MutableRefObject<string | null> = { current: null }
-    const busyRef: MutableRefObject<boolean> = { current: false }
-    const createBackendSessionForSend = vi.fn(async () => 'brand-new-session-WRONG')
-
-    const requestGateway = vi.fn(async (method: string) => {
-      if (method === 'session.resume') {
-        throw new Error('4007 session not found on the active profile')
-      }
-
-      return {} as never
-    })
-
-    let handle: HarnessHandle | null = null
-    await actRender(
-      <Harness
-        activeSessionId={null}
-        activeSessionIdRef={activeSessionIdRef}
-        busyRef={busyRef}
-        createBackendSessionForSend={createBackendSessionForSend}
-        onReady={h => (handle = h)}
-        refreshSessions={async () => undefined}
-        requestGateway={requestGateway}
-        storedSessionId={STORED_SESSION_ID}
-      />
-    )
-
-    expect(await handle!.submitText('keep me in the selected conversation')).toBe(false)
-    expect(busyRef.current).toBe(false)
-    expect(createBackendSessionForSend).not.toHaveBeenCalled()
-    expect(requestGateway).not.toHaveBeenCalledWith('prompt.submit', expect.anything(), expect.anything())
-  })
-
-  it('resumes the ROUTED stored session instead of minting a new one when profile switching cleared both session refs', async () => {
-    // A profile swap/reconnect can temporarily clear both volatile ids while
-    // the durable route still points at the conversation the user is viewing.
-    // Enter during that window must resume the routed chat, never create a
-    // contextless session (or create it against the transient wrong profile).
-    const activeSessionIdRef: MutableRefObject<string | null> = { current: 'rt-wrong-profile' }
-    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: null }
-    let boundRuntimeId: string | null = null
-    const createBackendSessionForSend = vi.fn(async () => 'brand-new-session-WRONG')
-    const requestGateway = vi.fn(async () => ({}) as never)
-
-    const resumeStoredSession = vi.fn(async (storedSessionId: string) => {
-      expect(storedSessionId).toBe(STORED_SESSION_ID)
-      selectedStoredSessionIdRef.current = STORED_SESSION_ID
-      activeSessionIdRef.current = RECOVERED_SESSION_ID
-      boundRuntimeId = RECOVERED_SESSION_ID
-    })
-
-    let handle: HarnessHandle | null = null
-    await actRender(
-      <Harness
-        activeSessionId="rt-wrong-profile"
-        activeSessionIdRef={activeSessionIdRef}
-        createBackendSessionForSend={createBackendSessionForSend}
-        getRoutedStoredSessionId={() => STORED_SESSION_ID}
-        getRuntimeIdForStoredSession={() => boundRuntimeId}
-        onReady={h => (handle = h)}
-        refreshSessions={async () => undefined}
-        requestGateway={requestGateway}
-        resumeStoredSession={resumeStoredSession}
-        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
-        storedSessionId={null}
-      />
-    )
-
-    expect(await handle!.submitText('follow-up while the profile route is rebinding')).toBe(true)
-    expect(resumeStoredSession).toHaveBeenCalledWith(STORED_SESSION_ID)
-    expect(createBackendSessionForSend).not.toHaveBeenCalled()
-    expect(requestGateway).toHaveBeenCalledWith(
-      'prompt.submit',
-      { session_id: RECOVERED_SESSION_ID, text: 'follow-up while the profile route is rebinding' },
-      1_800_000
-    )
-  })
-
-  it('lets the durable route replace a stale selected session and runtime before submit', async () => {
-    const activeSessionIdRef: MutableRefObject<string | null> = { current: 'rt-wrong-profile' }
-    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: 'stored-wrong-profile' }
-    let boundRuntimeId: string | null = null
-    const requestGateway = vi.fn(async () => ({}) as never)
-
-    const resumeStoredSession = vi.fn(async () => {
-      selectedStoredSessionIdRef.current = STORED_SESSION_ID
-      activeSessionIdRef.current = RECOVERED_SESSION_ID
-      boundRuntimeId = RECOVERED_SESSION_ID
-    })
-
-    let handle: HarnessHandle | null = null
-    await actRender(
-      <Harness
-        activeSessionId="rt-wrong-profile"
-        activeSessionIdRef={activeSessionIdRef}
-        getRoutedStoredSessionId={() => STORED_SESSION_ID}
-        getRuntimeIdForStoredSession={() => boundRuntimeId}
-        onReady={h => (handle = h)}
-        refreshSessions={async () => undefined}
-        requestGateway={requestGateway}
-        resumeStoredSession={resumeStoredSession}
-        runtimeIdByStoredSessionIdRef={{ current: new Map([[STORED_SESSION_ID, RECOVERED_SESSION_ID]]) }}
-        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
-        storedSessionId={STORED_SESSION_ID}
-      />
-    )
-
-    expect(await handle!.submitText('stay in the routed profile session')).toBe(true)
-    expect(resumeStoredSession).toHaveBeenCalledWith(STORED_SESSION_ID)
-    expect(requestGateway).toHaveBeenCalledWith(
-      'prompt.submit',
-      { session_id: RECOVERED_SESSION_ID, text: 'stay in the routed profile session' },
-      1_800_000
-    )
-  })
-
-  it('submits directly when the routed stored session already owns the live runtime', async () => {
-    const activeSessionIdRef: MutableRefObject<string | null> = { current: RECOVERED_SESSION_ID }
-    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: STORED_SESSION_ID }
-    const requestGateway = vi.fn(async () => ({}) as never)
-    const resumeStoredSession = vi.fn()
-
-    let handle: HarnessHandle | null = null
-    await actRender(
-      <Harness
-        activeSessionId={RECOVERED_SESSION_ID}
-        activeSessionIdRef={activeSessionIdRef}
-        getRoutedStoredSessionId={() => STORED_SESSION_ID}
-        getRuntimeIdForStoredSession={() => RECOVERED_SESSION_ID}
-        onReady={h => (handle = h)}
-        refreshSessions={async () => undefined}
-        requestGateway={requestGateway}
-        resumeStoredSession={resumeStoredSession}
-        runtimeIdByStoredSessionIdRef={{ current: new Map([[STORED_SESSION_ID, RECOVERED_SESSION_ID]]) }}
-        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
-        storedSessionId={STORED_SESSION_ID}
-      />
-    )
-
-    expect(await handle!.submitText('normal follow-up')).toBe(true)
-    expect(resumeStoredSession).not.toHaveBeenCalled()
-    expect(requestGateway).toHaveBeenCalledWith(
-      'prompt.submit',
-      { session_id: RECOVERED_SESSION_ID, text: 'normal follow-up' },
-      1_800_000
-    )
-  })
-
-  it('never falls through to session.create or a stale runtime when routed-session recovery fails', async () => {
-    const activeSessionIdRef: MutableRefObject<string | null> = { current: 'rt-wrong-profile' }
-    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: STORED_SESSION_ID }
-    const busyRef: MutableRefObject<boolean> = { current: false }
-    let recoverySucceeds = false
-    let boundRuntimeId: string | null = null
-
-    const createBackendSessionForSend = vi.fn(async () => 'brand-new-session-WRONG')
-    const requestGateway = vi.fn(async () => ({}) as never)
-
-    const resumeStoredSession = vi.fn(async () => {
-      if (!recoverySucceeds) {
-        return
-      }
-
-      activeSessionIdRef.current = RECOVERED_SESSION_ID
-      boundRuntimeId = RECOVERED_SESSION_ID
-    })
-
-    $messages.set([])
-
-    let handle: HarnessHandle | null = null
-    await actRender(
-      <Harness
-        activeSessionId="rt-wrong-profile"
-        activeSessionIdRef={activeSessionIdRef}
-        busyRef={busyRef}
-        createBackendSessionForSend={createBackendSessionForSend}
-        getRoutedStoredSessionId={() => STORED_SESSION_ID}
-        getRuntimeIdForStoredSession={() => boundRuntimeId}
-        onReady={h => (handle = h)}
-        refreshSessions={async () => undefined}
-        requestGateway={requestGateway}
-        resumeStoredSession={resumeStoredSession}
-        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
-        storedSessionId={STORED_SESSION_ID}
-      />
-    )
-
-    expect(await handle!.submitText('do not fork me')).toBe(false)
-    expect(busyRef.current).toBe(false)
-    expect($messages.get()).toEqual([])
-    expect(resumeStoredSession).toHaveBeenCalledWith(STORED_SESSION_ID)
-    expect(createBackendSessionForSend).not.toHaveBeenCalled()
-    expect(requestGateway).not.toHaveBeenCalledWith('prompt.submit', expect.anything(), expect.anything())
-
-    // Prove the failed attempt released the per-session submit lock. The next
-    // send can recover and submit instead of being silently rejected forever.
-    recoverySucceeds = true
-    expect(await handle!.submitText('retry after recovery')).toBe(true)
-    expect(requestGateway).toHaveBeenCalledWith(
-      'prompt.submit',
-      { session_id: RECOVERED_SESSION_ID, text: 'retry after recovery' },
-      1_800_000
-    )
-  })
-
-  it('still creates a new session for a genuine new-chat draft (no stored session selected)', async () => {
-    const activeSessionIdRef: MutableRefObject<string | null> = { current: null }
-
-    // Mirror the real createBackendSessionForSend: a successful create
-    // re-homes the active runtime ref to the session it minted BEFORE
-    // returning. An inert stub here is what let the new-chat drift-abort
-    // regression ship green.
-    const createBackendSessionForSend = vi.fn(async () => {
-      activeSessionIdRef.current = RUNTIME_SESSION_ID
-
-      return RUNTIME_SESSION_ID
-    })
-
-    const calls: string[] = []
-
-    const requestGateway = vi.fn(async (method: string) => {
-      calls.push(method)
-
-      return {} as never
-    })
-
-    let handle: HarnessHandle | null = null
-    await actRender(
-      <Harness
-        activeSessionId={null}
-        activeSessionIdRef={activeSessionIdRef}
-        createBackendSessionForSend={createBackendSessionForSend}
-        onReady={h => (handle = h)}
-        refreshSessions={async () => undefined}
-        requestGateway={requestGateway}
-        storedSessionId={null}
-      />
-    )
-
-    const ok = await handle!.submitText('first message of a new chat')
-
-    expect(ok).toBe(true)
-    expect(createBackendSessionForSend).toHaveBeenCalledTimes(1)
-    expect(calls).not.toContain('session.resume')
-  })
-})
 
 describe('usePromptActions submit session-context isolation (#54527)', () => {
   const STORED_SESSION_A = 'stored-project-a'
@@ -4869,7 +4403,7 @@ describe('usePromptActions new-chat first-send delivery (#63078)', () => {
     expect(calls).toEqual([
       {
         method: 'prompt.submit',
-        params: { session_id: NEW_RUNTIME_ID, text: 'first message of a new chat' }
+        params: { submission_id: expect.any(String), session_id: NEW_RUNTIME_ID, text: 'first message of a new chat' }
       }
     ])
   })
@@ -4927,6 +4461,7 @@ describe('usePromptActions new-chat first-send delivery (#63078)', () => {
       'prompt.submit',
       {
         session_id: NEW_RUNTIME_ID,
+        submission_id: expect.any(String),
         text: 'hello'
       },
       1_800_000
@@ -5222,7 +4757,11 @@ describe('usePromptActions busy-gateway churn tolerance (#64327)', () => {
       },
       {
         method: 'prompt.submit',
-        params: { session_id: RESUMED_RUNTIME_ID, text: 'deliver despite lagging local publication' }
+        params: {
+          submission_id: expect.any(String),
+          session_id: RESUMED_RUNTIME_ID,
+          text: 'deliver despite lagging local publication'
+        }
       }
     ])
   })
@@ -5301,7 +4840,12 @@ describe('usePromptActions busy-gateway churn tolerance (#64327)', () => {
       },
       {
         method: 'prompt.submit',
-        params: { session_id: QUEUED_RUNTIME_ID, text: 'queued prompt for C', queued: true }
+        params: {
+          submission_id: expect.any(String),
+          session_id: QUEUED_RUNTIME_ID,
+          text: 'queued prompt for C',
+          queued: true
+        }
       }
     ])
     // No prompt or state write ever touches B, and no foreground

@@ -497,7 +497,8 @@ def test_in_tool_stall_uses_higher_threshold(monkeypatch):
 
 
 def test_real_process_restart_restores_owned_completion_once(tmp_path):
-    """Real-import E2E: a fresh interpreter restores a prior process's result."""
+    """Real-import E2E: the owning runtime, in a fresh interpreter, restores a prior process's
+    result exactly once. Importing the tools graph alone restores nothing (client fence)."""
     repo = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
     env = {**os.environ, "HERMES_HOME": str(tmp_path), "PYTHONPATH": repo}
     producer = r'''
@@ -523,7 +524,9 @@ print(r["delegation_id"])
     consumer = r'''
 import json
 from tools.process_registry import process_registry
-process_registry.restore_completions()
+from tools.async_delegation import restore_undelivered_completions
+assert process_registry.completion_queue.empty(), "import must not restore"
+restore_undelivered_completions(process_registry.completion_queue)
 evt = process_registry.completion_queue.get_nowait()
 print(json.dumps(evt, sort_keys=True))
 '''

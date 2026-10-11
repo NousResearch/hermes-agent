@@ -9,6 +9,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -237,6 +238,25 @@ class TestSessionTokenInjection:
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture
+def mutation_owner(monkeypatch, _isolate_hermes_home):
+    from gateway.session_authority import SessionAuthority
+    from hermes_constants import get_hermes_home
+    from hermes_cli.web_server import app
+    from hermes_state import SessionDB
+    from hermes_state_runtime import begin_runtime_epoch
+
+    home = get_hermes_home()
+    db = SessionDB(db_path=home / 'state.db')
+    authority = SessionAuthority(SimpleNamespace(_draining=False), profile_id=str(home),
+        instance_id='test-owner', db=db, epoch=begin_runtime_epoch(db, instance_id='test-owner'))
+    monkeypatch.setattr(app.state, 'session_authority', authority, raising=False)
+    try:
+        yield authority
+    finally:
+        db.close()
+
+
 class TestWebServerEndpoints:
     """Test the FastAPI REST endpoints using Starlette TestClient."""
 
@@ -338,7 +358,8 @@ class TestWebServerEndpoints:
         assert self.client.get("/api/sessions?limit=1&offset=0").status_code == 500
 
 
-    def test_get_sessions_auto_archive_uses_maintenance_writer(self):
+    def test_get_sessions_leaves_auto_archive_to_owner(self):
+        from hermes_cli import web_server
         from hermes_cli.config import load_config, save_config
         from hermes_constants import get_hermes_home
         from hermes_state import SessionDB
@@ -369,25 +390,38 @@ class TestWebServerEndpoints:
         response = self.client.get("/api/sessions?limit=50&offset=0")
 
         assert response.status_code == 200
-        assert [row["id"] for row in response.json()["sessions"]] == ["fresh"]
+        assert {row["id"] for row in response.json()["sessions"]} == {"fresh", "stale"}
+        verify = SessionDB(db_path=db_path, read_only=True)
+        try:
+            assert verify.get_session("stale")["archived"] == 0
+            assert not verify.get_meta("last_auto_archive")
+        finally:
+            verify.close()
+
+        # The existing owner maintenance path still honors the configured sweep.
+        _web_server_sessions._maybe_auto_archive_for_profile(None)
         verify = SessionDB(db_path=db_path, read_only=True)
         try:
             assert verify.get_session("stale")["archived"] == 1
+            assert verify.get_session("fresh")["archived"] == 0
             assert verify.get_meta("last_auto_archive")
         finally:
             verify.close()
 
-    def test_get_sessions_fresh_store_returns_empty_list(self):
+    def test_get_sessions_missing_store_is_unavailable_without_creation(self):
+        from hermes_constants import get_hermes_home
+
+        before = set(get_hermes_home().glob("state.db*"))
         response = self.client.get("/api/sessions?limit=50&offset=0")
 
-        assert response.status_code == 200
-        assert response.json()["sessions"] == []
-        assert response.json()["total"] == 0
+        assert response.status_code == 503
+        assert "not initialized" in response.json()["detail"]
+        assert set(get_hermes_home().glob("state.db*")) == before
 
     @pytest.mark.parametrize(
         "missing_column", ["archived", "pinned", "last_activity_at"]
     )
-    def test_get_sessions_heals_stale_schema_store(self, missing_column):
+    def test_get_sessions_reports_stale_schema_without_healing(self, missing_column):
         import sqlite3
 
         from hermes_constants import get_hermes_home
@@ -410,12 +444,12 @@ class TestWebServerEndpoints:
         finally:
             legacy.close()
 
+        before = db_path.read_bytes()
         response = self.client.get("/api/sessions?limit=50&offset=0")
 
-        assert response.status_code == 200
-        assert [row["id"] for row in response.json()["sessions"]] == [
-            "stale-schema"
-        ]
+        assert response.status_code == 503
+        assert "schema" in response.json()["detail"]
+        assert db_path.read_bytes() == before
         healed = sqlite3.connect(str(db_path))
         try:
             columns = {
@@ -423,17 +457,10 @@ class TestWebServerEndpoints:
             }
         finally:
             healed.close()
-        assert missing_column in columns
+        assert missing_column not in columns
 
-    def test_profiles_sidebar_heals_stale_schema_store(self):
-        """The desktop's batched sidebar route must heal a stale store too.
-
-        The shipped regression (#72424 aftermath): a store predating
-        ``sessions.last_activity_at`` made every per-profile read raise
-        "no such column", which this endpoint swallowed into its ``errors``
-        array — the desktop rendered "No sessions yet" after `hermes update`
-        until the user's first message forced a writable open elsewhere.
-        """
+    def test_profiles_sidebar_reports_stale_schema_store(self):
+        """Aggregation reports unavailable profiles instead of healing their DBs."""
         import sqlite3
 
         from hermes_constants import get_hermes_home
@@ -461,20 +488,21 @@ class TestWebServerEndpoints:
 
         assert response.status_code == 200
         payload = response.json()
-        assert payload["errors"] == []
-        assert [row["id"] for row in payload["recents"]["sessions"]] == [
-            "sidebar-stale"
-        ]
+        assert payload["errors"]
+        assert "schema" in payload["errors"][0]["error"]
+        # A failed read is a retryable failed load, never an empty list.
+        assert "sessions" not in payload["recents"]
+        assert payload["recents"]["failed"] is True
 
     def test_startup_eager_reconcile_heals_stale_store(self):
-        """The lifespan's eager reconcile brings a stale store current.
+        """The OWNER's startup open brings a stale store current; the dashboard only reads.
 
         #79531/#80037: after `hermes update` an old-schema state.db used to
         stay stale until the first NEW session forced a writable open —
         every /api/sessions poll 500ed with "no such column" in between.
-        The lifespan now schedules one writable open at startup; this
-        exercises that worker directly against a store missing
-        sessions.last_read_at and asserts the schema is brought current.
+        Under the unified runtime the dashboard is a zero-writer view: its
+        eager probe must NOT heal (#107688 two-writer vector), and the
+        gateway owner's writable acquisition is what reconciles the schema.
         """
         import sqlite3
 
@@ -495,7 +523,21 @@ class TestWebServerEndpoints:
         finally:
             legacy.close()
 
+        # Dashboard probe: read-only, never heals (no writable open from a viewer).
         _web_server_lifecycle._eager_reconcile_own_session_db()
+        stale = sqlite3.connect(str(db_path))
+        try:
+            assert "last_read_at" not in {row[1] for row in stale.execute("PRAGMA table_info(sessions)")}
+        finally:
+            stale.close()
+
+        # Owner path: the gateway's writable acquisition reconciles the schema at startup.
+        from hermes_state_registry import acquire, release_or_close
+        owner = acquire(db_path)
+        try:
+            pass
+        finally:
+            release_or_close(owner)
 
         healed = sqlite3.connect(str(db_path))
         try:
@@ -551,70 +593,27 @@ class TestWebServerEndpoints:
             raise sqlite3_module.OperationalError("database is locked")
 
         monkeypatch.setattr(hermes_state, "SessionDB", boom)
-        # Must swallow — reads fall back to the per-poll probe heal.
+        # Must swallow — reads report unavailable until owner recovery.
         _web_server_lifecycle._eager_reconcile_own_session_db()
 
-    def test_heal_gives_up_when_reconcile_cannot_fix_the_store(self, monkeypatch):
-        """A probe failure reconciliation can't cure must not retry forever.
-
-        The writable heal is a full SessionDB init against a possibly-live
-        DB. If the store is STILL behind the probe afterwards (schema problem
-        ADD COLUMN can't express), retrying that init on every sidebar poll
-        would hammer the DB for nothing: serve reads probe-less instead, warn
-        once, and never pay the writable open for that store again.
-        """
+    def test_failed_schema_probes_never_escalate_reads(self, monkeypatch):
+        from fastapi import HTTPException
         from hermes_constants import get_hermes_home
         from hermes_state import SessionDB
 
         db_path = get_hermes_home() / "state.db"
         seed = SessionDB(db_path=db_path)
-        try:
-            seed.create_session("unfixable", source="cli")
-        finally:
-            seed.close()
-
-        # A column no SCHEMA_SQL declares: the heal's writable reconcile
-        # cannot add it, so the re-probe keeps failing.
+        seed.create_session("unfixable", source="cli")
+        seed.close()
         monkeypatch.setattr(
-            _web_server_sessions,
-            "_session_db_read_probe_statements",
-            lambda: ('SELECT "sessions"."not_a_real_column" FROM "sessions" LIMIT 0',),
-        )
-        monkeypatch.setattr(_web_server_sessions, "_session_db_heal_exhausted", set())
-        monkeypatch.setattr(_web_server_sessions, "_session_db_heal_warned", set())
-
-        writable_opens = []
-
-        import hermes_state
-
-        original_init = hermes_state.SessionDB.__init__
-
-        def counting_init(self, *args, **kwargs):
-            if not kwargs.get("read_only", False):
-                writable_opens.append(1)
-            return original_init(self, *args, **kwargs)
-
-        # web_server imports SessionDB inside the function body, so patching
-        # the class on hermes_state covers every open the helper makes.
-        monkeypatch.setattr(hermes_state.SessionDB, "__init__", counting_init)
-
-        # First open: probe fails -> one writable heal -> re-probe fails ->
-        # exhausted. Still returns a usable read-only handle.
-        db = _web_server_sessions._open_session_db_for_profile(None, read_only=True)
-        try:
-            assert db.list_sessions_rich(limit=10, compact_rows=True)
-        finally:
-            db.close()
-        assert len(writable_opens) == 1
-        assert str(db_path) in _web_server_sessions._session_db_heal_exhausted
-
-        # Second open: probe skipped, NO further writable opens.
-        db = _web_server_sessions._open_session_db_for_profile(None, read_only=True)
-        try:
-            assert db.list_sessions_rich(limit=10, compact_rows=True)
-        finally:
-            db.close()
-        assert len(writable_opens) == 1
+            _web_server_sessions, "_session_db_read_probe_statements",
+            lambda: ('SELECT "sessions"."not_a_real_column" FROM "sessions" LIMIT 0',))
+        before = db_path.read_bytes()
+        for _ in range(2):
+            with pytest.raises(HTTPException, match="schema") as caught:
+                _web_server_sessions._open_session_db_for_profile(None, read_only=True)
+            assert caught.value.status_code == 503
+            assert db_path.read_bytes() == before
 
     def test_generic_corruption_does_not_trigger_writable_heal(
         self, tmp_path, monkeypatch
@@ -634,41 +633,30 @@ class TestWebServerEndpoints:
 
         monkeypatch.setattr(hermes_state, "SessionDB", corrupt_open)
 
-        with pytest.raises(sqlite3.DatabaseError, match="disk image is malformed"):
+        from fastapi import HTTPException
+        with pytest.raises(HTTPException, match="corrupt"):
             _web_server_sessions._open_session_db_at_path(db_path, read_only=True)
 
         assert opens == [True]
 
-    def test_decode_error_triggers_writable_heal(self, tmp_path, monkeypatch):
-        """UnicodeDecodeError — pysqlite failing to decode SQLite's own error
-        message over corrupt file bytes (#98924) — must route through the
-        same one-writable-open heal as malformed schema."""
+    def test_decode_error_never_triggers_writable_heal(self, tmp_path, monkeypatch):
         import hermes_state
+        from fastapi import HTTPException
 
         db_path = tmp_path / "state.db"
         db_path.write_bytes(b"not-empty")
         opens = []
 
-        class _OkDB:
-            _conn = None
-
-            def close(self):
-                pass
-
-        def scripted_open(*_args, **kwargs):
+        def corrupt_open(*_args, **kwargs):
             opens.append(kwargs.get("read_only", False))
-            if opens == [True]:
-                raise UnicodeDecodeError("utf-8", b"\x81", 0, 1, "invalid start byte")
-            return _OkDB()
+            raise UnicodeDecodeError("utf-8", b"\x81", 0, 1, "invalid start byte")
 
-        monkeypatch.setattr(hermes_state, "SessionDB", scripted_open)
+        monkeypatch.setattr(hermes_state, "SessionDB", corrupt_open)
+        with pytest.raises(HTTPException, match="corrupt"):
+            _web_server_sessions._open_session_db_at_path(db_path, read_only=True)
+        assert opens == [True]
 
-        db = _web_server_sessions._open_session_db_at_path(db_path, read_only=True)
-
-        assert isinstance(db, _OkDB)
-        assert opens == [True, False, True]
-
-    def test_get_sessions_zero_byte_store_returns_empty_list(self):
+    def test_get_sessions_zero_byte_store_is_not_quarantined(self):
         from hermes_constants import get_hermes_home
 
         db_path = get_hermes_home() / "state.db"
@@ -677,11 +665,11 @@ class TestWebServerEndpoints:
 
         response = self.client.get("/api/sessions?limit=50&offset=0")
 
-        assert response.status_code == 200
-        assert response.json()["sessions"] == []
-        assert response.json()["total"] == 0
+        assert response.status_code == 503
+        assert db_path.read_bytes() == b""
+        assert set(db_path.parent.glob("state.db*")) == {db_path}
 
-    def test_concurrent_first_load_reads_all_succeed_on_fresh_store(self):
+    def test_concurrent_first_load_reads_report_uninitialized_store(self):
         from concurrent.futures import ThreadPoolExecutor
 
         paths = [
@@ -693,9 +681,7 @@ class TestWebServerEndpoints:
         with ThreadPoolExecutor(max_workers=8) as pool:
             responses = list(pool.map(self.client.get, paths))
 
-        assert [response.status_code for response in responses] == [
-            200
-        ] * len(paths)
+        assert [response.status_code for response in responses] == [503] * len(paths)
 
 
     def test_messaging_platforms_profile_scopes_gateway_reads(self, monkeypatch):
@@ -1218,7 +1204,7 @@ CONFIG_SCHEMA = ProviderConfigSchema(
     # ── Dashboard font override ─────────────────────────────────────────
 
 
-    def test_import_sessions_endpoint_imports_exported_json(self):
+    def test_import_sessions_endpoint_imports_exported_json(self, mutation_owner):
         from hermes_state import SessionDB
 
         payload = {
@@ -1234,7 +1220,7 @@ CONFIG_SCHEMA = ProviderConfigSchema(
             ],
         }
 
-        resp = self.client.post("/api/sessions/import", json={"sessions": [payload]})
+        resp = self.client.post("/api/sessions/import", json={"sessions": [payload], "request_id": "import-first", "expected_revision": 0})
         assert resp.status_code == 200
         data = resp.json()
         assert data["imported"] == 1
@@ -1252,7 +1238,7 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         finally:
             db.close()
 
-        duplicate = self.client.post("/api/sessions/import", json={"sessions": [payload]})
+        duplicate = self.client.post("/api/sessions/import", json={"sessions": [payload], "request_id": "import-second", "expected_revision": data["revision"]})
         assert duplicate.status_code == 200
         assert duplicate.json()["skipped_ids"] == ["imported-web-session"]
 
@@ -4428,29 +4414,54 @@ class TestDeleteSessionEndpoint:
         self.auth_client = TestClient(app)
         self.auth_client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
 
-    def test_delete_absent_session_is_idempotent(self):
-        # PREMISE / regression: deleting a row that no longer exists must NOT
-        # 404 — the desktop would resurrect the ghost row and show
-        # "session not found". DELETE's contract is "ensure it's gone".
-        resp = self.auth_client.delete("/api/sessions/never_existed")
-        assert resp.status_code == 200
-        assert resp.json().get("ok") is True
-
-    def test_delete_existing_session_scrubs_row_and_disk(self):
-        # The CLI delete path threads the sessions dir so transcript
-        # artifacts are removed with the row; the endpoint historically
-        # didn't, leaving secret-bearing session_<id>.json snapshots and
-        # request dumps orphaned on disk after a UI delete.
-        from hermes_constants import get_hermes_home
+    def _seed(self, ids):
         from hermes_state import SessionDB
 
-        db_path = get_hermes_home() / "state.db"
-        db = SessionDB(db_path=db_path)
+        db = SessionDB()
         try:
-            db.create_session("disk-scrub", source="cli")
+            for sid in ids:
+                db.create_session(session_id=sid, source="cli")
         finally:
             db.close()
 
+    def _exists(self, sid) -> bool:
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            return db.get_session(sid) is not None
+        finally:
+            db.close()
+
+
+    def test_delete_absent_session_is_idempotent(self, mutation_owner):
+        from gateway.session_authority import LiveSession
+        self._seed(['delete-retry'])
+        mutation_owner.sessions['delete-retry'] = LiveSession(None, 'route')
+        row = mutation_owner.db.get_session('delete-retry')
+        params = dict(request_id='delete-once', expected_revision=row['runtime_revision'],
+                      expected_generation=row['runtime_generation'])
+        first = self.auth_client.delete('/api/sessions/delete-retry', params=params)
+        assert first.status_code == 200, first.text
+        assert not self._exists('delete-retry')
+        retry = self.auth_client.delete('/api/sessions/delete-retry', params=params)
+        assert retry.status_code == 200, retry.text
+        assert retry.json() == first.json()
+
+    def _canonical_delete(self, owner, sid, **query):
+        from gateway.session_authority import LiveSession
+        owner.sessions[sid] = LiveSession(None, 'route')
+        row = owner.db.get_session(sid)
+        params = dict(request_id=f'scrub-{sid}', expected_revision=row['runtime_revision'],
+                      expected_generation=row['runtime_generation'], **query)
+        return self.auth_client.delete(f"/api/sessions/{sid}", params=params)
+
+    def test_delete_existing_session_scrubs_row_and_disk(self, mutation_owner):
+        # The canonical delete retires rows; the endpoint must also remove the secret-bearing
+        # session_<id>.json snapshots and request dumps the CLI delete path removes (#60207).
+        from hermes_constants import get_hermes_home
+
+        self._seed(["disk-scrub"])
         sessions_dir = get_hermes_home() / "sessions"
         sessions_dir.mkdir(parents=True, exist_ok=True)
         for name, body in (
@@ -4462,49 +4473,67 @@ class TestDeleteSessionEndpoint:
         # Another session's artifacts must survive.
         (sessions_dir / "session_disk-scrub-neighbour.json").write_text("{}", encoding="utf-8")
 
-        resp = self.auth_client.delete("/api/sessions/disk-scrub")
+        resp = self._canonical_delete(mutation_owner, "disk-scrub")
 
-        assert resp.status_code == 200
+        assert resp.status_code == 200, resp.text
         assert resp.json().get("ok") is True
-        db = SessionDB(db_path=db_path)
-        try:
-            assert db.get_session("disk-scrub") is None
-        finally:
-            db.close()
+        assert not self._exists("disk-scrub")
         assert not (sessions_dir / "session_disk-scrub.json").exists()
         assert not (sessions_dir / "disk-scrub.jsonl").exists()
         assert not (sessions_dir / "request_dump_disk-scrub_001.json").exists()
         assert (sessions_dir / "session_disk-scrub-neighbour.json").exists()
 
-    def test_delete_named_profile_session_scrubs_profile_disk(self):
+    def test_delete_named_profile_session_scrubs_profile_disk(self, monkeypatch):
+        from types import SimpleNamespace
+        from gateway.session_authority import SessionAuthority
         from hermes_cli import profiles as profiles_mod
+        from hermes_cli.web_server import app
         from hermes_state import SessionDB
+        from hermes_state_runtime import begin_runtime_epoch
 
         profile_home = profiles_mod.get_profile_dir("worker")
         profile_home.mkdir(parents=True)
         (profile_home / "config.yaml").touch()  # identity marker: bare dirs are not profiles
         sessions_dir = profile_home / "sessions"
         sessions_dir.mkdir(parents=True, exist_ok=True)
-        db_path = profile_home / "state.db"
-        db = SessionDB(db_path=db_path)
+        db = SessionDB(db_path=profile_home / "state.db")
+        # ?profile= is served by that home's own authority.
+        owner = SessionAuthority(SimpleNamespace(_draining=False), profile_id=str(profile_home),
+            instance_id='worker-owner', db=db, epoch=begin_runtime_epoch(db, instance_id='worker-owner'))
+        monkeypatch.setattr(app.state, 'session_authority', owner, raising=False)
         try:
             db.create_session("profile-scrub", source="cli")
-        finally:
-            db.close()
-        (sessions_dir / "session_profile-scrub.json").write_text(
-            '{"messages": [{"content": "secret-token"}]}', encoding="utf-8"
-        )
+            (sessions_dir / "session_profile-scrub.json").write_text(
+                '{"messages": [{"content": "secret-token"}]}', encoding="utf-8"
+            )
 
-        resp = self.auth_client.delete("/api/sessions/profile-scrub?profile=worker")
+            resp = self._canonical_delete(owner, "profile-scrub", profile="worker")
 
-        assert resp.status_code == 200
-        assert resp.json().get("ok") is True
-        db = SessionDB(db_path=db_path)
-        try:
+            assert resp.status_code == 200, resp.text
+            assert resp.json().get("ok") is True
             assert db.get_session("profile-scrub") is None
+            assert not (sessions_dir / "session_profile-scrub.json").exists()
         finally:
             db.close()
-        assert not (sessions_dir / "session_profile-scrub.json").exists()
+
+    @pytest.mark.parametrize("guard", ["turn_lease", "compression_lock"])
+    def test_delete_refused_by_live_write_guard_is_409(self, mutation_owner, guard):
+        # A live fallback turn lease / compression lock refuses deletion like a busy
+        # canonical admission does: a retryable 409 with the row intact, never a 500.
+        sid = f"guarded-{guard}"
+        self._seed([sid])
+        if guard == "turn_lease":
+            assert mutation_owner.db.try_acquire_session_turn_lease(sid, "foreign-turn")
+        else:
+            assert mutation_owner.db.try_acquire_compression_lock(sid, "foreign-compressor")
+        from starlette.testclient import TestClient
+        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+        client = TestClient(app, raise_server_exceptions=False)
+        client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+        self.auth_client = client
+        resp = self._canonical_delete(mutation_owner, sid)
+        assert resp.status_code == 409, resp.text
+        assert self._exists(sid)
 
 
 class TestBulkDeleteSessionsEndpoint:
@@ -5751,7 +5780,7 @@ class TestSessionPatchUnread:
     read/unread, and GET /api/sessions surfaces the derived flag."""
 
     @pytest.fixture(autouse=True)
-    def _setup_test_client(self, monkeypatch, _isolate_hermes_home):
+    def _setup_test_client(self, monkeypatch, _isolate_hermes_home, mutation_owner):
         try:
             from starlette.testclient import TestClient
         except ImportError:
@@ -5765,6 +5794,7 @@ class TestSessionPatchUnread:
             hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db"
         )
 
+        self.owner = mutation_owner
         self.client = TestClient(app)
         self.auth_client = TestClient(app)
         self.auth_client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
@@ -5779,8 +5809,17 @@ class TestSessionPatchUnread:
         finally:
             db.close()
 
+    def _patch(self, payload):
+        from uuid import uuid4
+        from gateway.session_authority import LiveSession
+        self.owner.sessions.setdefault('s1', LiveSession(None, 'route'))
+        row = self.owner.db.get_session('s1')
+        return self.auth_client.patch('/api/sessions/s1', json={
+            **payload, 'request_id': uuid4().hex, 'expected_revision': row['runtime_revision'],
+            'expected_generation': row['runtime_generation']})
+
     def test_patch_unread_true_marks_row_unread(self):
-        resp = self.auth_client.patch("/api/sessions/s1", json={"unread": True})
+        resp = self._patch({"unread": True})
         assert resp.status_code == 200
         assert resp.json()["unread"] is True
 
@@ -5788,8 +5827,8 @@ class TestSessionPatchUnread:
         assert next(s for s in rows if s["id"] == "s1")["unread"] is True
 
     def test_patch_unread_false_marks_row_read(self):
-        self.auth_client.patch("/api/sessions/s1", json={"unread": True})
-        resp = self.auth_client.patch("/api/sessions/s1", json={"unread": False})
+        self._patch({"unread": True})
+        resp = self._patch({"unread": False})
         assert resp.status_code == 200
         assert resp.json()["unread"] is False
 
@@ -5800,19 +5839,19 @@ class TestSessionPatchUnread:
     def test_patch_unread_rejects_non_bool(self):
         # NB: pydantic v2 coerces "yes"/"no"/"1"/"0"/"on"/"off" to bool, so use
         # a string outside the accepted set to prove validation rejects it.
-        resp = self.auth_client.patch("/api/sessions/s1", json={"unread": "maybe"})
+        resp = self._patch({"unread": "maybe"})
         assert resp.status_code == 422  # pydantic validation
 
     def test_patch_hidden_updates_persisted_session_without_live_runtime(self):
-        resp = self.auth_client.patch("/api/sessions/s1", json={"hidden": True})
+        resp = self._patch({"hidden": True})
         assert resp.status_code == 200
         assert resp.json()["hidden"] is True
 
         rows = self.auth_client.get("/api/sessions?limit=100").json()["sessions"]
         assert all(s["id"] != "s1" for s in rows)
 
-        restored = self.auth_client.patch(
-            "/api/sessions/s1", json={"hidden": False}
+        restored = self._patch(
+            {"hidden": False}
         )
         assert restored.status_code == 200
         rows = self.auth_client.get("/api/sessions?limit=100").json()["sessions"]
@@ -5871,133 +5910,3 @@ class TestSubmittedCustomEndpointSurvivesAssignment:
         assert applied["base_url"] == "https://api.anthropic.com"
         assert applied["api_mode"] == "anthropic_messages"
         assert applied["api_key"] == "submitted-key"
-
-
-
-class TestNousRecommendedDefaultCostSafePolicy:
-    """Paid-tier Nous recommended default must never land on an Anthropic frontier
-    tier (Opus / Fable) — the user gets no opt-out before it pins their main model
-    (#51491). Regression tests from PR #51493."""
-
-    def test_recommended_default_nous_paid_uses_curated_default(self, monkeypatch):
-        """A paid Nous user gets the cost-safe silent default from the list.
-
-        With no preferred catalog label present in the curated list and no
-        Anthropic frontier entries, the first curated entry is selected.
-        """
-        import hermes_cli.models as models_mod
-        from hermes_cli.web_routers.models import get_recommended_default_model
-
-        monkeypatch.setattr(models_mod, "get_curated_nous_model_ids", lambda: ["top/model", "other/model"])
-        import hermes_cli.models_pricing as mp
-        monkeypatch.setattr(mp, "get_pricing_for_provider", lambda provider: {})
-        monkeypatch.setattr(models_mod, "check_nous_free_tier", lambda *, force_fresh=False: False)
-        monkeypatch.setattr(
-            models_mod, "union_with_portal_paid_recommendations",
-            lambda ids, pricing, url: (ids, pricing),
-        )
-        # Keep the catalog preferred out of this list so we exercise the
-        # non-frontier fallback rather than the preferred-hit branch.
-        monkeypatch.setattr(
-            models_mod, "get_preferred_silent_default_model",
-            lambda provider="openrouter": "z-ai/glm-5.2",
-        )
-
-        result = get_recommended_default_model(provider="nous")
-        assert result["provider"] == "nous"
-        assert result["model"] == "top/model"
-        assert result["free_tier"] is False
-
-    @pytest.mark.parametrize(
-        "model_ordering, expected_model",
-        [
-            # Opus-first ordering (historical PR-branch catalog shape).
-            (
-                [
-                    "anthropic/claude-opus-4.8",
-                    "anthropic/claude-sonnet-5",
-                    "anthropic/claude-haiku-4.5",
-                ],
-                "anthropic/claude-sonnet-5",
-            ),
-            # Fable-first ordering (current origin/main catalog shape).
-            (
-                [
-                    "anthropic/claude-fable-5",
-                    "anthropic/claude-opus-4.8",
-                    "anthropic/claude-sonnet-5",
-                    "anthropic/claude-haiku-4.5",
-                ],
-                "anthropic/claude-sonnet-5",
-            ),
-            # Preferred silent default present in the list always wins,
-            # independent of relative ordering / frontiers.
-            (
-                [
-                    "anthropic/claude-fable-5",
-                    "anthropic/claude-opus-4.8",
-                    "z-ai/glm-5.2",
-                    "anthropic/claude-sonnet-5",
-                ],
-                "z-ai/glm-5.2",
-            ),
-        ],
-        ids=["opus_first", "fable_first_main", "override_beats_ordering"],
-    )
-    def test_recommended_default_nous_paid_cost_safe_policy(
-        self, monkeypatch, model_ordering, expected_model,
-    ):
-        """Regression for PR #51493 maintainer feedback (Teknium + DavidMetcalfe).
-
-        The interactive Nous recommended default must use the shared
-        cost-safe silent policy: preferred catalog label when present,
-        else first non-frontier (Opus / Fable) entry. Covers both the
-        current Fable-first catalog and a future Opus-first catalog.
-        """
-        import hermes_cli.models as models_mod
-        from hermes_cli.web_routers.models import get_recommended_default_model
-
-        monkeypatch.setattr(
-            models_mod, "get_curated_nous_model_ids", lambda: list(model_ordering),
-        )
-        import hermes_cli.models_pricing as mp
-        monkeypatch.setattr(mp, "get_pricing_for_provider", lambda provider: {})
-        monkeypatch.setattr(models_mod, "check_nous_free_tier", lambda *, force_fresh=False: False)
-        monkeypatch.setattr(
-            models_mod, "union_with_portal_paid_recommendations",
-            lambda ids, pricing, url: (ids, pricing),
-        )
-        monkeypatch.setattr(
-            models_mod, "get_preferred_silent_default_model",
-            lambda provider="openrouter": "z-ai/glm-5.2",
-        )
-
-        result = get_recommended_default_model(provider="nous")
-        assert result["provider"] == "nous"
-        assert result["model"] == expected_model
-        assert result["free_tier"] is False
-
-    def test_recommended_default_nous_paid_falls_back_when_all_frontier(self, monkeypatch):
-        """If every curated entry is a frontier tier (Opus / Fable), fall
-        back to the head of the list so the picker is never empty."""
-        import hermes_cli.models as models_mod
-        from hermes_cli.web_routers.models import get_recommended_default_model
-
-        monkeypatch.setattr(
-            models_mod, "get_curated_nous_model_ids",
-            lambda: ["anthropic/claude-fable-5", "anthropic/claude-opus-4.8"],
-        )
-        import hermes_cli.models_pricing as mp
-        monkeypatch.setattr(mp, "get_pricing_for_provider", lambda provider: {})
-        monkeypatch.setattr(models_mod, "check_nous_free_tier", lambda *, force_fresh=False: False)
-        monkeypatch.setattr(
-            models_mod, "union_with_portal_paid_recommendations",
-            lambda ids, pricing, url: (ids, pricing),
-        )
-        monkeypatch.setattr(
-            models_mod, "get_preferred_silent_default_model",
-            lambda provider="openrouter": "z-ai/glm-5.2",
-        )
-
-        result = get_recommended_default_model(provider="nous")
-        assert result["model"] == "anthropic/claude-fable-5"

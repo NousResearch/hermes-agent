@@ -290,17 +290,21 @@ def _config_profile_scope(profile: Optional[str]):
 
     Explicit names resolving to the process home retain current-profile semantics.
     Still enter the requested home so a nested scope cannot retain another profile.
+    None/""/"current" mean the request's EFFECTIVE home: a task-local override (a secondary
+    profile's native ticket, ``native_profile_scope``) is that profile, so it gets that profile's
+    secret scope rather than the launch profile's.
     """
     from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
     from hermes_cli.env_loader import hydrate_profile_secret_sources
+    from hermes_constants import get_hermes_home, get_hermes_home_override
     from tui_gateway.launch_profile_policy import activate_multi_profile_hosting, launch_secret_scope
 
     process_home = get_process_hermes_home()
     if _is_current_profile(profile):
-        profile_dir, scoped = None, None  # the dashboard's own profile: no home override
+        profile_dir = get_hermes_home() if get_hermes_home_override() else None
     else:
         profile_dir = _resolve_profile_dir(profile.strip())
-        scoped = None if profile_dir.resolve() == process_home.resolve() else profile_dir
+    scoped = None if profile_dir is None or profile_dir.resolve() == process_home.resolve() else profile_dir
     if scoped is not None:
         activate_multi_profile_hosting()
         hydrate_profile_secret_sources(scoped)  # first call may block on the source's fetch

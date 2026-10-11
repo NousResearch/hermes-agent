@@ -214,3 +214,33 @@ def test_seed_custom_pool_matches_legacy_named_pool(tmp_path, monkeypatch):
     seeded = [e for e in entries if getattr(e, "source", "") == "model_config"]
     assert seeded, "legacy-named pool must still seed model_config from model.api_key"
     assert getattr(seeded[0], "access_token", "") == "sk-model-config-key"
+
+
+def test_explicit_launch_key_wins_over_named_provider_pool(tmp_path, monkeypatch):
+    """R2-M1: a launch ``--api-key`` is the operator's credential for this route; a saved
+    ``providers.<key>`` pool must not silently replace it (live and frozen-config paths)."""
+    _write_keyed_provider_home(tmp_path, monkeypatch)
+
+    from hermes_cli import runtime_provider as rp
+    from hermes_cli.runtime_provider_custom import _resolve_named_custom_runtime
+
+    frozen = rp.load_config()
+    for resolved in (rp.resolve_runtime_provider(requested="b-ai", explicit_api_key="sk-launch-explicit"),
+                     _resolve_named_custom_runtime(requested_provider="b-ai", explicit_api_key="sk-launch-explicit",
+                                                   config=frozen)):
+        assert (resolved["base_url"], resolved["api_key"]) == (ENDPOINT, "sk-launch-explicit")
+
+
+def test_named_provider_pool_requires_matching_endpoint(tmp_path, monkeypatch):
+    """R2-M1: a named provider's pool is bound to its configured endpoint; a launch-overridden
+    base_url must never receive it (trailing slash is the same endpoint)."""
+    _write_keyed_provider_home(tmp_path, monkeypatch)
+
+    from agent.credential_pool import custom_provider_pool_key_candidates
+    from hermes_cli import runtime_provider as rp
+
+    assert custom_provider_pool_key_candidates("https://elsewhere.example/v1", "b-ai") == []
+    assert custom_provider_pool_key_candidates(ENDPOINT + "/", "b-ai")[0] == "b-ai"
+    resolved = rp.resolve_runtime_provider(requested="b-ai", explicit_base_url="https://elsewhere.example/v1")
+    assert resolved["base_url"] == "https://elsewhere.example/v1"
+    assert resolved["api_key"] != POOL_KEY

@@ -55,6 +55,9 @@ class GatewayReadyPayload(Payload):
     change_events: bool
     replay_epoch: str
     heartbeat: bool | None = None  # WebSocket transport only
+    # WebSocket transport bound to a session authority: session verbs speak the canonical wire
+    # (``runtime.describe`` / ``session.create source=…``), so an explicit attach must negotiate it.
+    session_authority: bool | None = None
 
 
 event("gateway.ready", GatewayReadyPayload,
@@ -184,6 +187,11 @@ class PersistedTurn(Payload):
     complete: bool
     user_row_id: int | None = None
     final_assistant_row_id: int | None = None
+    #: Every rendered user row of the turn in order (prompt, then steer/redirect rows); absent
+    #: unless all of them committed. Binds optimistic bubbles a submit receipt could not name.
+    user_row_ids: list[int] | None = None
+    #: The client submission the turn ran (session authority only; its ack precedes the user row).
+    submission_id: str | None = None
 
 
 class MessageCompletePayload(Payload):

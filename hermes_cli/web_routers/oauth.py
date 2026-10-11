@@ -6,6 +6,7 @@ Extracted from ``hermes_cli.web_server``; helpers/state that tests monkeypatch o
 
 import asyncio
 import contextlib
+import contextvars
 import logging
 import os
 import secrets
@@ -118,7 +119,11 @@ def _start_poller(target, sid: str, prefix: str = "oauth-poll") -> None:
             from hermes_cli.observability.shared_metrics_setup import settle_oauth_setup
             settle_oauth_setup(sess)
 
-    threading.Thread(target=run, daemon=True, name=f"{prefix}-{sid[:6]}").start()
+    # The poller saves credentials under ``_profile_scope(sess['profile'])``; an implicit
+    # selector (None) must resolve in the REQUEST's home (a secondary-profile native ticket's
+    # override), so the thread runs in a copy of the starting request's context.
+    context = contextvars.copy_context()
+    threading.Thread(target=context.run, args=(run,), daemon=True, name=f"{prefix}-{sid[:6]}").start()
 
 
 def _track_oauth_setup(flow, session_id: str) -> None:
@@ -159,7 +164,7 @@ async def _httpx_call(fn: Callable[[Any], Any], timeout: float = 15.0, **client_
         ) as client:
             return fn(client)
 
-    return await asyncio.get_running_loop().run_in_executor(None, _call)
+    return await asyncio.to_thread(_call)
 
 
 # OpenAI Codex device-code worker. Codex's own deviceauth/usercode (returns
@@ -826,7 +831,7 @@ async def start_oauth_login(provider_id: str, request: Request, profile: Optiona
         _log.exception("oauth/start %s failed", provider_id)
         raise HTTPException(status_code=500, detail=str(e))
     if flow is not None:
-        await asyncio.get_running_loop().run_in_executor(None, _track_oauth_setup, flow, body["session_id"])
+        await asyncio.to_thread(_track_oauth_setup, flow, body["session_id"])
     return body
 
 
@@ -839,7 +844,7 @@ async def _begin_oauth_setup_metric(provider_id: str, profile: Optional[str]):
         home = _resolve_profile_dir(profile_name) if profile_name else None
         if not collection_enabled(home):
             return None
-        return await asyncio.get_running_loop().run_in_executor(None, begin_oauth_setup, provider_id, home)
+        return await asyncio.to_thread(begin_oauth_setup, provider_id, home)
     except Exception:
         return None
 
@@ -853,7 +858,7 @@ async def _end_oauth_setup_metric(flow, exc: Exception) -> None:
         # provider not answering in time.
         status = exc.status_code if isinstance(exc, HTTPException) else None
         failure = {401: "auth", 403: "auth", 504: "network"}.get(status) or setup_failure_class(exc)
-        await asyncio.get_running_loop().run_in_executor(None, finish_provider_setup, flow, "failed", failure)
+        await asyncio.to_thread(finish_provider_setup, flow, "failed", failure)
 
 
 @router.post("/api/providers/oauth/{provider_id}/submit")
@@ -911,5 +916,5 @@ async def cancel_oauth_session(session_id: str, request: Request, profile: Optio
         return {"ok": False, "message": "session not found"}
     # Recorded now, not when the poller next wakes: a Nous/xAI poll can block for the code's lifetime.
     from hermes_cli.observability.shared_metrics_setup import settle_oauth_setup
-    await asyncio.get_running_loop().run_in_executor(None, settle_oauth_setup, sess)
+    await asyncio.to_thread(settle_oauth_setup, sess)
     return {"ok": True, "session_id": session_id}

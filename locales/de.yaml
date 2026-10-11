@@ -1972,6 +1972,7 @@ cli:
     desc_switch_anyway: "Dieses Modell für die aktuelle Hermes-Sitzung verwenden."
     choice_cancel: "Abbrechen"
     desc_keep_current_model: "Das aktuelle Modell beibehalten."
+    confirm_choice_prompt: "Auswahl [1/2]: "
     switch_cancelled: "Modellwechsel abgebrochen."
     selection_failed: "✗ Modellauswahl fehlgeschlagen: {error}"
     switch_failed: "⚠ Modellwechsel zu {model} fehlgeschlagen ({error}); {old_model} bleibt aktiv."

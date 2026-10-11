@@ -4427,6 +4427,570 @@ export interface OnboardingCatalogPlugin {
   app_state: CatalogAppState
   sentence: string
 }
+export interface CanonicalShellExecParams {
+  session_id: string
+  command: string
+  profile?: string | null
+}
+export interface PromptReceiptParams {
+  session_id: string
+  admission_id: string
+  include_result?: boolean | null
+}
+/** ``result`` / ``usage``: the structured turn result committed at settlement, only with ``include_result`` on a terminal admission that saved one. */
+export interface PromptReceiptResult {
+  admission_id: string
+  ref: CanonicalSessionRef
+  sequence: number
+  status: 'queued' | 'started' | 'unknown' | 'terminal'
+  outcome: string | null
+  authority_epoch: number
+  execution_generation: number | null
+  result?: unknown | null
+  usage?: Record<string, unknown> | null
+}
+export interface CanonicalSessionRef {
+  profile_id: string
+  session_id: string
+}
+export interface PromptCancelParams {
+  session_id: string
+  admission_id: string
+}
+/** ``gateway/session_contract.py::AdmissionReceipt`` as ``dataclasses.asdict`` sends it. */
+export interface AdmissionStatus {
+  admission_id: string
+  ref: CanonicalSessionRef
+  sequence: number
+  status: 'queued' | 'started' | 'unknown' | 'terminal'
+  outcome: string | null
+  authority_epoch: number
+  execution_generation: number | null
+}
+export interface PromptResolveUnknownParams {
+  session_id: string
+  admission_id: string
+  execution_generation: number
+}
+/** ``operation`` + ``payload`` are validated by ``hermes_state_mutations.validate_action``; ``expected_generation`` is required for delete/rewind/reset/branch/model/compress. */
+export interface SessionMutateParams {
+  session_id: string
+  request_id: string
+  expected_revision: number
+  operation: string
+  payload: Record<string, unknown>
+  expected_generation?: number | null
+}
+/** The committed mutation receipt plus the operation's projection (``title``, ``archived``, ``branched_session_id``, compress ``status``/``lines``, …). ``revision`` is absent only on a read-only compress preview. */
+export interface SessionMutateResult {
+  session_id: string
+  operation: string
+  revision?: number | null
+  [key: string]: unknown
+}
+/** Exactly one of ``filters`` (``SessionDB.prune_sessions`` keyword filters, as ``hermes sessions prune`` builds them) or ``never_active_days`` (``--never-active``). */
+export interface SessionPruneParams {
+  filters?: Record<string, unknown> | null
+  never_active_days?: number | null
+}
+export interface SessionPruneResult {
+  deleted: number
+  routing_deleted?: number | null
+  skipped?: number | null
+}
+export interface CanonicalSessionInfoParams {
+  session_id: string
+}
+/** ``gateway/session_local.py::local_session_info``. */
+export interface CanonicalSessionInfo {
+  source: string
+  model?: string | null
+  lazy: boolean
+  profile_id: string
+  desktop_protocol: string
+  profile_name: string
+  cwd?: string | null
+  launch_request?: Record<string, unknown> | null
+  [key: string]: unknown
+}
+export interface SessionDetachParams {
+  session_id: string
+  subscription_id: string
+}
+export interface SessionDetachResult {
+  session_id: string
+  subscription_id: string
+  detached: boolean
+}
+export type RuntimeDescribeParams = Record<string, never>
+export interface RuntimeDescribeResult {
+  instance_id: string
+  profile_id: string
+  authority_epoch: number
+  capabilities: string[]
+  session_create: SessionCreateDescriptor
+}
+export interface SessionCreateDescriptor {
+  sources: string[]
+  parameters: string[]
+}
+export interface ClarifyRespondParams {
+  session_id: string
+  execution_generation: number
+  prompt_id: string
+  answer: string
+}
+export interface PromptResponseResult {
+  status: 'resolved' | 'already_resolved'
+  prompt_id: string
+}
+export interface CronRunParams {
+  job_id: string
+  request_id: string
+  extra_prompt: string | null
+}
+export interface CronSubmitResult {
+  session_id: string
+  admission_id: string
+}
+/** ``result`` is the ``run_job`` tuple once terminal; ``recover`` adds the frozen ``job`` and answers ``status='missing'`` for a firing that was never admitted. */
+export interface CronStatusResult {
+  status: string
+  result: unknown[] | null
+  job_flags?: Record<string, unknown> | null
+  job?: Record<string, unknown> | null
+  [key: string]: unknown
+}
+export interface CronAdmissionParams {
+  session_id: string
+  admission_id: string
+}
+export interface CronCancelResult {
+  ok: boolean
+}
+export interface KanbanRunParams {
+  board: string
+  task_id: string
+  run_id: number
+  claim_lock: string
+  db?: string | null
+}
+export interface KanbanRunResult {
+  session_id: string
+  receipt: AdmissionStatus
+}
+export interface A2aForwardParams {
+  agent: string
+  tenant: string
+  peer: string
+  context_id: string
+  input_id: string
+  text: string
+}
+export interface A2aForwardResult {
+  admission_id: string
+  ref: CanonicalSessionRef
+  sequence: number
+  status: 'queued' | 'started' | 'unknown' | 'terminal'
+  outcome: string | null
+  authority_epoch: number
+  execution_generation: number | null
+  session_id: string
+  result: unknown | null
+}
+export interface WorkerRegisterParams {
+  profile_id: string
+  session_id: string
+  execution_id: string
+  generation: number
+  pid: number
+  birth: number
+  secret: string
+  kind: string
+}
+/** A ``worker_executions`` row without its adoption digest. */
+export interface WorkerExecution {
+  execution_id: string
+  session_id: string
+  kind: string
+  owner_epoch: number
+  generation: number
+  status: string
+  last_sequence: number
+  [key: string]: unknown
+}
+/** The producer claim every worker verb proves (``gateway/session_worker.py::_SCOPE``). */
+export interface WorkerScopeParams {
+  profile_id: string
+  session_id: string
+  execution_id: string
+  generation: number
+  pid: number
+  birth: number
+  secret: string
+}
+export interface WorkerPersistParams {
+  profile_id: string
+  session_id: string
+  execution_id: string
+  generation: number
+  pid: number
+  birth: number
+  secret: string
+  epoch: number
+  sequence: number
+  operation: string
+  payload: Record<string, unknown>
+}
+/** The operation's durable receipt (``message_id`` for an append, delegation results, …). */
+export type WorkerPersistResult = Record<string, unknown>
+export interface GroupsAttachmentUploadParams {
+  profile?: string | null
+  room_id: string
+  upload_id: string
+  kind: string
+  name: string
+  mime: string
+  data_base64: string
+}
+export interface RoomAttachment {
+  attachment_id: string
+  kind: string
+  name: string
+  size: number
+  mime: string
+  sha256: string
+  state: string
+  created_at: number
+  idempotent: boolean
+  event_id?: string | null
+  [key: string]: unknown
+}
+export interface GroupsAttachmentDownloadParams {
+  profile?: string | null
+  room_id: string
+  event_id: string
+  attachment_id: string
+}
+export interface RoomAttachmentBytes {
+  attachment_id: string
+  kind: string
+  name: string
+  size: number
+  mime: string
+  sha256: string
+  state: string
+  created_at: number
+  idempotent: boolean
+  event_id?: string | null
+  data_base64: string
+  [key: string]: unknown
+}
+export interface GroupsDiscardParams {
+  profile?: string | null
+  room_id: string
+  member_id: string
+  task_id: string
+  execution_generation: number
+}
+export interface GroupsDiscardResult {
+  discarded?: boolean
+  task: RoomTaskReceipt
+}
+export interface CanonicalCreateParams {
+  profile?: string | null
+  request_id?: string | null
+  source?: 'cli' | 'tui' | 'gui' | 'acp' | 'tool' | 'oneshot'
+  cwd?: string | null
+  model?: string | null
+  provider?: string | null
+  base_url?: string | null
+  api_key?: string | null
+  toolsets?: string[] | null
+  reasoning?: string | null
+  max_turns?: number | string | null
+  ignore_rules?: boolean
+  yolo?: boolean
+  safe_mode?: boolean
+  ignore_user_config?: boolean
+  skills?: string[] | null
+  checkpoints?: boolean
+  accept_hooks?: boolean
+  pass_session_id?: boolean
+  editor?: Record<string, unknown> | null
+  title?: string | null
+  hidden?: boolean
+  follow_profile_config?: boolean | null
+}
+export interface CanonicalSnapshot {
+  session_id: string
+  stored_session_id: string
+  messages: TranscriptMessage[]
+  message_count: number
+  running: boolean
+  authority_epoch: number
+  replay_epoch: string
+  last_sequence: number
+  subscription_id: string
+  revision: number
+  execution_generation: number
+  pending: CanonicalPendingAdmission[]
+  prompts: CanonicalPendingPrompt[]
+  info: CanonicalSnapshotInfo
+}
+export interface CanonicalPendingAdmission {
+  admission_id: string
+  ref: CanonicalSessionRef
+  sequence: number
+  status: 'queued' | 'started' | 'unknown' | 'terminal'
+  outcome: string | null
+  authority_epoch: number
+  execution_generation: number | null
+  input_id: string
+  text: string
+}
+export interface CanonicalPendingPrompt {
+  kind: 'approval' | 'clarify'
+  prompt_id: string
+  execution_generation: number
+  choices: string[]
+  command?: string | null
+  description?: string | null
+  edit?: Record<string, unknown> | null
+  question?: string | null
+  multi_select?: boolean | null
+}
+export interface CanonicalSnapshotInfo {
+  desktop_protocol: 'hermes-gateway-v1'
+  source?: string | null
+  model?: string | null
+  lazy?: boolean | null
+  profile_id?: string | null
+  profile_name?: string | null
+  cwd?: string | null
+  launch_request?: Record<string, unknown> | null
+}
+export interface CanonicalResumeParams {
+  profile?: string | null
+  session_id?: string
+  title?: string | null
+  latest?: 'cli' | 'tui' | null
+  workspace?: string | null
+  source?: string | null
+  editor?: Record<string, unknown> | null
+  api_key?: string | null
+  defer_history?: boolean
+  omit_messages?: boolean
+  cols?: number | null
+}
+export interface CanonicalListParams {
+  profile?: string | null
+  limit?: number
+  title?: string | null
+  include_hidden?: boolean
+}
+export interface CanonicalListResult {
+  sessions: CanonicalSessionListRow[]
+  scope: 'stored' | 'live'
+}
+export interface CanonicalSessionListRow {
+  session_id: string
+  id: string
+  title: string
+  source: string | null
+  started_at: number | null
+  message_count: number
+  running: boolean
+  resolved_id?: string | null
+  root_title?: string | null
+}
+export interface CanonicalControlParams {
+  profile?: string | null
+  session_id: string
+  execution_generation: number
+}
+export interface CanonicalSessionHandle {
+  ref: CanonicalSessionRef
+  instance_id: string
+  authority_epoch: number
+  revision: number
+  execution_generation: number
+  execution_state: 'idle' | 'running' | 'waiting' | 'unknown' | 'terminal'
+}
+export interface CanonicalCorrectionParams {
+  profile?: string | null
+  session_id: string
+  execution_generation: number
+  text: string
+}
+export interface CanonicalCorrectionResult {
+  status: 'queued' | 'redirected' | 'rejected'
+  text: string
+  execution_generation: number
+  authority_epoch: number
+}
+export interface CanonicalEventsParams {
+  profile?: string | null
+  session_id: string
+  last_sequence?: number
+  last_seen?: number
+  replay_epoch?: string | null
+}
+export interface CanonicalEventsResult {
+  events: CanonicalReplayEvent[]
+  latest_seq: number
+  last_sequence: number
+  epoch: string
+  replay_epoch: string
+  truncated: boolean
+  snapshot_required: boolean
+  count: number
+}
+export interface CanonicalReplayEvent {
+  type: string
+  session_id: string
+  payload: Record<string, unknown>
+  replay_epoch: string
+  seq: number
+  authority_epoch?: number | null
+  execution_generation?: number | null
+  admission_id?: string | null
+}
+export interface CanonicalSubmitParams {
+  profile?: string | null
+  session_id: string
+  text: string
+  submission_id?: string | null
+  input_id?: string | null
+  queued?: boolean
+  attachments?: CanonicalAttachment[] | null
+  finite?: boolean
+  unattended?: boolean
+  surface?: string | null
+  voice_context?: string | null
+  interrupted?: boolean
+  voice_turn?: boolean
+  display_kind?: 'hidden' | null
+  title_preview?: string | null
+}
+export interface CanonicalAttachment {
+  path: string
+  mime: string
+}
+export interface CanonicalApprovalParams {
+  profile?: string | null
+  session_id: string
+  execution_generation: number
+  prompt_id: string
+  choice: string
+}
+export interface CanonicalConfigGetResult {
+  value?: string | null
+  display?: string | null
+  tool_progress?: string | null
+  model?: string | null
+  provider?: string | null
+  providers?: ConfigProviderRef[] | null
+  home?: string | null
+  cwd?: string | null
+  branch?: string | null
+  config?: Record<string, unknown> | null
+  prompt?: string | null
+  mtime?: number | null
+  mcp_rev?: string | null
+  key?: string | null
+  scope?: string | null
+}
+/** ``model`` is recognised only to be refused with ``use_session_mutation_model``: a model pick is the revision-fenced ``session.mutate`` operation, never a config write. */
+export interface CanonicalConfigSetParams {
+  profile?: string | null
+  session_id: string
+  key: 'busy' | 'verbose' | 'yolo' | 'model'
+  value?: unknown
+  confirm_expensive_model?: boolean | null
+}
+export interface CanonicalProfilesParams {
+  profile?: string | null
+  include_sessions?: boolean
+}
+export interface CanonicalProfilesResult {
+  profiles: CanonicalProfileRow[]
+  bot_mode_protocol?: boolean
+  install_id?: string
+}
+export interface CanonicalProfileRow {
+  name: string
+  path: string
+  is_default?: boolean
+  model?: string | null
+  provider?: string | null
+  description?: string
+  display_name?: string
+  skill_count?: number
+  previous_names?: string[]
+  last_session?: ProfileCanonicalSession | null
+  worker_session?: ProfileWorkerSession | null
+  canonical_session?: ProfileCanonicalSession | null
+  ui_meta_revisions?: Record<string, number>
+  ui_meta?: Record<string, unknown> | null
+  has_avatar?: boolean
+}
+export interface CanonicalAttachedImageResult {
+  name?: string | null
+  width?: number | null
+  height?: number | null
+  token_estimate?: number | null
+  attached: boolean
+  path?: string | null
+  count?: number | null
+  remainder?: string | null
+  text?: string | null
+  bytes?: number | null
+  message?: string | null
+  mime: string
+}
+export interface CanonicalRoomAttemptParams {
+  profile?: string | null
+  room_id: string
+  member_id: string
+  task_id: string
+  execution_generation: number
+}
+export interface CanonicalRoomCreateParams {
+  profile?: string | null
+  room_id: string
+  name: string
+  members: RoomMemberInput[]
+}
+export interface CanonicalRoomApproveParams {
+  profile?: string | null
+  room_id: string
+  member_id: string
+  task_id: string
+  execution_generation: number
+  choice: 'once' | 'deny'
+  request_id: string
+}
+export interface CanonicalBotDeliverParams {
+  profile?: string | null
+  message: string
+  id: string
+  session_id?: string | null
+  author?: Record<string, unknown> | null
+  notification_category?: string | null
+}
+export interface CanonicalBotDeliverResult {
+  status: string
+  delivery_id: string
+  profile_home: string
+  session_id: string
+  admission_id: string
+  message: string
+  reply?: string | null
+  retry_admission_id?: string | null
+  error?: string | null
+  reason?: string | null
+}
 /** ``answers`` rides only on a reconnect replay (locks the server already accepted; null = skipped). */
 export interface ClarifyRequestParams {
   session_id: string
@@ -4621,6 +5185,7 @@ export interface GatewayReadyPayload {
   change_events: boolean
   replay_epoch: string
   heartbeat?: boolean | null
+  session_authority?: boolean | null
 }
 /** ``tui_gateway/change_watcher.py::resolve_skin`` — the resolved active skin (``HermesSkin``). ``{}`` when the skin engine failed to load. Colour maps are token → colour string. */
 export interface SkinPayload {
@@ -4717,6 +5282,8 @@ export interface PersistedTurn {
   complete: boolean
   user_row_id?: number | null
   final_assistant_row_id?: number | null
+  user_row_ids?: number[] | null
+  submission_id?: string | null
 }
 /** ``server._status_update`` and the direct emitters (goal / loop / heartbeat / process). */
 export interface StatusUpdatePayload {
@@ -5275,7 +5842,7 @@ export interface RpcMethods {
   'process.kill': { params: ProcessKillParams; result: ProcessKillResult }
   /** Background processes owned by the caller's session (desktop status stack poll). */
   'process.list': { params: ProcessListParams; result: ProcessListResult }
-  /** Kill every background process in the registry (``/stop``), answering the count killed. */
+  /** ``/stop``: on the shared owner, kill the background processes ``session_id`` owns (required); a standalone sidecar kills every process it holds. Answers the count killed. */
   'process.stop': { params: ProcessStopParams; result: ProcessStopResult }
   /** Editor Save: apply any subset of a profile's sections and report each one. */
   'profiles.configure': { params: ProfilesConfigureParams; result: ProfilesConfigureResult }
@@ -5772,6 +6339,113 @@ export const RPC_METHODS = [
   'wake.status',
   'wake.stop'
 ] as const satisfies readonly RpcMethod[]
+
+// ── Canonical (hermes-gateway-v1) methods only the session authority serves ──
+export interface CanonicalRpcMethods {
+  /** Forward one A2A input into the conversation its identity tuple names. */
+  'a2a.forward': { params: A2aForwardParams; result: A2aForwardResult }
+  'approval.respond': { params: CanonicalApprovalParams; result: PromptResponseResult }
+  'bot_relay.deliver': { params: CanonicalBotDeliverParams; result: CanonicalBotDeliverResult }
+  /** Generation-fenced answer to a pending clarify prompt (empty answer = skipped). */
+  'clarify.respond': { params: ClarifyRespondParams; result: PromptResponseResult }
+  'config.get': { params: ConfigGetParams; result: CanonicalConfigGetResult }
+  'config.set': { params: CanonicalConfigSetParams; result: ConfigSetResult }
+  /** Cancel a queued cron admission or latch cancellation on a started one. */
+  'cron.cancel': { params: CronAdmissionParams; result: CronCancelResult }
+  /** Re-observe a firing after a scheduler restart (same request identity). */
+  'cron.recover': { params: CronRunParams; result: CronStatusResult }
+  /** Status and, once terminal, the result of one cron admission. */
+  'cron.status': { params: CronAdmissionParams; result: CronStatusResult }
+  /** Admit one cron firing into the owning profile's durable FIFO. */
+  'cron.submit': { params: CronRunParams; result: CronSubmitResult }
+  'groups.approve': { params: CanonicalRoomApproveParams; result: GroupsApproveResult }
+  /** Read one committed attachment for a live room viewer. */
+  'groups.attachment.download': { params: GroupsAttachmentDownloadParams; result: RoomAttachmentBytes }
+  /** Store one attachment for a later groups.send manifest (idempotent per upload_id). */
+  'groups.attachment.upload': { params: GroupsAttachmentUploadParams; result: RoomAttachment }
+  'groups.create': { params: CanonicalRoomCreateParams; result: GroupsCreateResult }
+  /** Discard one indeterminate room task after explicit user confirmation. */
+  'groups.discard': { params: GroupsDiscardParams; result: GroupsDiscardResult }
+  'groups.retry': { params: CanonicalRoomAttemptParams; result: GroupsRetryResult }
+  'image.attach_bytes': { params: ImageAttachBytesParams; result: CanonicalAttachedImageResult }
+  /** Native-owner only: admit the dispatcher's current claim on a kanban task. */
+  'kanban.run': { params: KanbanRunParams; result: KanbanRunResult }
+  'profiles.list': { params: CanonicalProfilesParams; result: CanonicalProfilesResult }
+  /** Retire a still-queued admission; a started one is unaffected. */
+  'prompt.cancel': { params: PromptCancelParams; result: AdmissionStatus }
+  /** Current receipt of one admission the caller submitted (or controls). */
+  'prompt.receipt': { params: PromptReceiptParams; result: PromptReceiptResult }
+  /** Acknowledge a turn lost across an owner restart; the FIFO behind it resumes. Never requeues the lost input. */
+  'prompt.resolve_unknown': { params: PromptResolveUnknownParams; result: AdmissionStatus }
+  'prompt.submit': { params: CanonicalSubmitParams; result: AdmissionStatus }
+  /** Owner identity and the canonical capabilities a client may rely on. */
+  'runtime.describe': { params: RuntimeDescribeParams; result: RuntimeDescribeResult }
+  'session.create': { params: CanonicalCreateParams; result: CanonicalSnapshot }
+  /** Drop this connection's subscription; a stale subscription id answers detached=false. */
+  'session.detach': { params: SessionDetachParams; result: SessionDetachResult }
+  'session.events.since': { params: CanonicalEventsParams; result: CanonicalEventsResult }
+  /** Frozen launch policy projection of one local session. */
+  'session.info': { params: CanonicalSessionInfoParams; result: CanonicalSessionInfo }
+  'session.interrupt': { params: CanonicalControlParams; result: CanonicalSessionHandle }
+  'session.list': { params: CanonicalListParams; result: CanonicalListResult }
+  /** Revision-fenced, retry-idempotent session edit (rename, archive, sidebar, branch, delete, rewind, reset, model, compress, import). */
+  'session.mutate': { params: SessionMutateParams; result: SessionMutateResult }
+  /** Local operator only: the owner deletes the ended sessions `hermes sessions prune` selected, skipping busy sessions and retained reset owners. */
+  'session.prune': { params: SessionPruneParams; result: SessionPruneResult }
+  'session.redirect': { params: CanonicalCorrectionParams; result: CanonicalCorrectionResult }
+  'session.resume': { params: CanonicalResumeParams; result: CanonicalSnapshot }
+  'session.steer': { params: CanonicalCorrectionParams; result: CanonicalCorrectionResult }
+  /** Ink ``!cmd`` / ``{!cmd}`` on the shared owner: one safe command for a local session, in its frozen launch cwd (``gateway/session_shell.py``). */
+  'shell.exec': { params: CanonicalShellExecParams; result: ShellExecResult }
+  /** Adopt a registered execution after verifying the live producer claim. */
+  'worker.adopt': { params: WorkerScopeParams; result: WorkerExecution }
+  /** Sequence-fenced typed persistence write from an adopted worker. */
+  'worker.persist': { params: WorkerPersistParams; result: WorkerPersistResult }
+  /** Register a compute worker execution on an idle session. */
+  'worker.register': { params: WorkerRegisterParams; result: WorkerExecution }
+}
+export type CanonicalRpcMethod = keyof CanonicalRpcMethods
+export const CANONICAL_RPC_METHODS = [
+  'a2a.forward',
+  'approval.respond',
+  'bot_relay.deliver',
+  'clarify.respond',
+  'config.get',
+  'config.set',
+  'cron.cancel',
+  'cron.recover',
+  'cron.status',
+  'cron.submit',
+  'groups.approve',
+  'groups.attachment.download',
+  'groups.attachment.upload',
+  'groups.create',
+  'groups.discard',
+  'groups.retry',
+  'image.attach_bytes',
+  'kanban.run',
+  'profiles.list',
+  'prompt.cancel',
+  'prompt.receipt',
+  'prompt.resolve_unknown',
+  'prompt.submit',
+  'runtime.describe',
+  'session.create',
+  'session.detach',
+  'session.events.since',
+  'session.info',
+  'session.interrupt',
+  'session.list',
+  'session.mutate',
+  'session.prune',
+  'session.redirect',
+  'session.resume',
+  'session.steer',
+  'shell.exec',
+  'worker.adopt',
+  'worker.persist',
+  'worker.register'
+] as const satisfies readonly CanonicalRpcMethod[]
 
 // ── Server→client requests ──
 export interface ServerRequestMap {

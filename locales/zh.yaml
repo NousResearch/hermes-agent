@@ -1972,6 +1972,7 @@ cli:
     desc_switch_anyway: "在当前 Hermes 会话中使用此模型。"
     choice_cancel: "取消"
     desc_keep_current_model: "保留当前模型。"
+    confirm_choice_prompt: "选择 [1/2]： "
     switch_cancelled: "已取消切换模型。"
     selection_failed: "✗ 选择模型失败：{error}"
     switch_failed: "⚠ 切换到模型 {model} 失败（{error}）；继续使用 {old_model}。"

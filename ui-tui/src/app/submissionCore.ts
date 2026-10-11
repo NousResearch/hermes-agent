@@ -1,7 +1,14 @@
 import type { GatewayClient } from '../gatewayClient.js'
-import type { InputDetectDropResponse, PromptSubmitResponse } from '../gatewayTypes.js'
+import type { InputDetectDropResponse, PromptSubmitResponse, SessionActivateResponse } from '../gatewayTypes.js'
+import type { QueueItem } from '../hooks/useQueue.js'
+import { t } from '../i18n/runtime.js'
+import { stageImagePath } from '../lib/imageAttachments.js'
+import { pendingInputOwner, savePendingInput } from '../lib/pendingInputs.js'
 import type { Msg } from '../types.js'
 
+import { markBubbleShown } from './pendingBubbles.js'
+import { retireCanonicalControls } from './slash/canonicalSessionControls.js'
+import { captureDestination, isCurrentDestination, type SubmissionDestination } from './submissionDestination.js'
 import { turnController } from './turnController.js'
 import { getUiState, patchUiState } from './uiStore.js'
 
@@ -11,7 +18,7 @@ export const isSessionBusyError = (e: unknown) => e instanceof Error && SESSION_
 
 export interface SubmitPromptDeps {
   appendMessage: (msg: Msg) => void
-  enqueue: (text: string) => void
+  enqueue: (text: string, display?: string, destination?: SubmissionDestination) => void
   expand: (text: string) => string
   gw: GatewayClient
   setLastUserMsg: (value: string) => void
@@ -47,11 +54,223 @@ export function markNextSubmitVoice(text: string): void {
   pendingVoiceTranscript = text
 }
 
-function takeVoiceTurn(submitText: string): boolean {
-  const voice = pendingVoiceTranscript !== null && pendingVoiceTranscript === submitText.trim()
+function takeVoiceTranscript(): null | string {
+  const transcript = pendingVoiceTranscript
   pendingVoiceTranscript = null
 
-  return voice
+  return transcript
+}
+
+interface SubmitPromptOpts {
+  attachments?: Array<{ path: string; mime: string }>
+  skipDetectDrop?: boolean
+  destination?: SubmissionDestination
+  queueItem?: QueueItem
+  behindTurn?: boolean
+}
+
+type PendingOwner = ReturnType<typeof pendingInputOwner>
+
+function beginOwnedTurn(
+  deps: SubmitPromptDeps,
+  text: string,
+  displayOverride: string | undefined,
+  displayText: string,
+  show: boolean
+): void {
+  turnController.clearStatusTimer()
+  deps.setLastUserMsg(text)
+
+  if (show) {
+    deps.appendMessage({ role: 'user', text: displayOverride || displayText })
+  }
+
+  patchUiState({ busy: true, status: 'running…' })
+  turnController.bufRef = ''
+  turnController.interrupted = false
+}
+
+function prepareQueueItem(
+  item: QueueItem,
+  submitText: string,
+  opts: SubmitPromptOpts,
+  ownsTurn: () => boolean,
+  show: boolean
+): void {
+  item.preparedText ??= submitText
+
+  // Busy controls have no deduplication receipt: never replay after an ambiguous reply.
+  if (item.controlMethod) {
+    item.legacyAttempted = true
+  }
+
+  item.attachments ??= opts.attachments?.map(attachment => ({ ...attachment }))
+
+  if (opts.behindTurn) {
+    item.queued = true
+  }
+
+  if (ownsTurn() && show) {
+    markBubbleShown(item.submissionId)
+  }
+
+  savePendingInput(item)
+}
+
+function submitParams(
+  sid: string,
+  item: QueueItem | undefined,
+  submitText: string,
+  attachments: SubmitPromptOpts['attachments'],
+  voice: boolean
+) {
+  return {
+    session_id: sid,
+    text: item?.preparedText ?? submitText,
+    ...((item?.attachments ?? attachments)?.length ? { attachments: item?.attachments ?? attachments } : {}),
+    ...(item?.controlMethod ? { execution_generation: item.executionGeneration } : {}),
+    ...(item && !item.controlMethod ? { submission_id: item.submissionId, queued: item.queued !== false } : {}),
+    // A busy correction (steer/redirect) is not a turn: it never claims the voice route.
+    ...(!item?.controlMethod && voice && { voice_turn: true })
+  }
+}
+
+function settleControlReply(
+  item: QueueItem,
+  r: PromptSubmitResponse,
+  deps: SubmitPromptDeps,
+  focused: () => boolean
+): void {
+  const control = r as PromptSubmitResponse & { execution_generation?: number }
+
+  const accepted =
+    control.execution_generation === item.executionGeneration && ['queued', 'redirected'].includes(control.status ?? '')
+
+  item.settle?.(accepted)
+
+  if (focused()) {
+    deps.sys(accepted ? t('canonical.submit.correction', control.status) : t('canonical.submit.correctionRejected'))
+  }
+}
+
+interface AdmissionContext {
+  deps: SubmitPromptDeps
+  destination: SubmissionDestination
+  focused: () => boolean
+  owner: PendingOwner
+  sid: string
+}
+
+function settleAdmissionReply(item: QueueItem, r: PromptSubmitResponse, ctx: AdmissionContext): void {
+  const { deps, destination, focused } = ctx
+
+  const accepted =
+    (r?.input_id ?? r?.admission_id) === item.submissionId &&
+    Boolean(destination.storedSid) &&
+    r?.target_session_id === destination.storedSid &&
+    r?.target_profile_home === destination.profileHome &&
+    ['queued', 'started', 'terminal', 'unknown'].includes(r?.status ?? '')
+
+  item.settle?.(accepted)
+
+  // A replay receipt ends this admission, not necessarily the current
+  // execution. Refresh the same live attachment without its transcript.
+  if (accepted && focused() && ['terminal', 'unknown'].includes(r.status ?? '')) {
+    refreshExecutionStatus(ctx)
+  }
+
+  if (!accepted && focused()) {
+    deps.sys(t('canonical.submit.admissionNotConfirmed'))
+    patchUiState({ status: t('canonical.submit.statusAdmissionUnconfirmed') })
+  }
+}
+
+function refreshExecutionStatus({ deps, focused, owner, sid }: AdmissionContext): void {
+  const observed = getUiState().info
+
+  void deps.gw
+    .request<SessionActivateResponse>('session.activate', { session_id: sid, omit_messages: true })
+    .then(snapshot => {
+      const current = getUiState().info
+      const info = snapshot.info
+
+      // Push lifecycle events (including same-generation completion)
+      // win over an in-flight snapshot; attachment changes win too.
+      if (
+        !focused() ||
+        current !== observed ||
+        snapshot.session_id !== sid ||
+        (snapshot.session_key || info?.stored_session_id) !== owner.storedSid ||
+        typeof snapshot.running !== 'boolean' ||
+        (current?.execution_generation !== undefined &&
+          (info?.execution_epoch !== current.execution_epoch ||
+            !Number.isSafeInteger(info?.execution_generation) ||
+            (info?.execution_generation ?? -1) < current.execution_generation))
+      ) {
+        return
+      }
+
+      patchUiState({
+        busy: snapshot.running,
+        status: snapshot.running ? 'running…' : 'ready',
+        info: current && {
+          ...current,
+          execution_epoch: info?.execution_epoch ?? current.execution_epoch,
+          execution_generation: info?.execution_generation ?? current.execution_generation,
+          running: snapshot.running
+        }
+      })
+    })
+    .catch((error: Error) => {
+      if (focused()) {
+        deps.sys(t('canonical.submit.executionUnconfirmed', error.message))
+      }
+    })
+}
+
+async function submitLegacy(
+  item: QueueItem,
+  sid: string,
+  submitText: string,
+  deps: SubmitPromptDeps,
+  focused: () => boolean
+): Promise<void> {
+  if (focused()) {
+    deps.sys(t('canonical.submit.legacyDelivery'))
+  }
+
+  try {
+    item.legacyAttempted = true
+    savePendingInput(item)
+
+    const r = await deps.gw.request<PromptSubmitResponse>('prompt.submit', {
+      session_id: sid,
+      text: item.preparedText ?? submitText,
+      queued: item.queued !== false
+    })
+
+    const accepted = Boolean(
+      r?.voice_stopped || ['streaming', 'queued', 'steered', 'redirected'].includes(r?.status ?? '')
+    )
+
+    item.settle?.(accepted)
+
+    if (focused()) {
+      if (r?.voice_stopped) {
+        patchUiState({ busy: false, status: 'ready' })
+      } else if (!accepted) {
+        deps.sys(t('canonical.submit.legacyUnconfirmed'))
+        patchUiState({ status: t('canonical.submit.statusDeliveryUnconfirmed') })
+      }
+    }
+  } catch (error) {
+    item.settle?.(false)
+
+    if (focused()) {
+      deps.sys(t('canonical.submit.legacyUnconfirmedWith', error instanceof Error ? error.message : String(error)))
+      patchUiState({ status: t('canonical.submit.statusDeliveryUnconfirmed') })
+    }
+  }
 }
 
 // Submit a ready prompt (already resolved to be neither a slash command nor a
@@ -66,59 +285,128 @@ export function submitPrompt(
   deps: SubmitPromptDeps,
   showUserMessage = true,
   displayOverride?: string,
-  opts: { skipDetectDrop?: boolean } = {}
+  opts: SubmitPromptOpts = {}
 ): void {
-  const sid = getUiState().sid
+  // The voice marker belongs to the input submitted right after it, whatever happens to that input
+  // (busy correction, refusal): consumed here, so a later identical typed prompt never inherits it.
+  const voiceTranscript = takeVoiceTranscript()
+  const destination = opts.destination ?? captureDestination()
+  const owner = pendingInputOwner(opts.queueItem?.ownerDestination ?? destination)
+  const { sid } = owner
+  const focused = () => isCurrentDestination(owner)
+  // A busy-time admission joins the authority FIFO behind the running turn:
+  // it must not touch the in-flight stream buffer, status or transcript. Its
+  // user bubble is painted when the fanout reports the row started.
+  const ownsTurn = () => focused() && !opts.behindTurn
 
   if (!sid) {
     return deps.sys('session not ready yet')
   }
 
+  // An identityless write cannot be deduplicated, even after the owner upgrades.
+  if (opts.queueItem?.legacyAttempted) {
+    opts.queueItem.settle?.(false)
+
+    if (focused()) {
+      deps.sys(t('canonical.submit.deliveryNotResent'))
+      patchUiState({ status: t('canonical.submit.statusDeliveryUnconfirmed') })
+    }
+
+    return
+  }
+
   // Close the async-busy gap up front, before the detect_drop round-trip.
-  markSubmitting()
+  if (ownsTurn()) {
+    markSubmitting()
+  }
 
   const startSubmit = (displayText: string, submitText: string, show = true) => {
-    const liveSid = getUiState().sid
-
-    if (!liveSid) {
-      return deps.sys('session not ready yet')
+    if (ownsTurn()) {
+      beginOwnedTurn(deps, text, displayOverride, displayText, show)
     }
 
-    turnController.clearStatusTimer()
-    deps.setLastUserMsg(text)
+    const item = opts.queueItem
 
-    if (show) {
-      deps.appendMessage({ role: 'user', text: displayOverride || displayText })
+    if (item) {
+      prepareQueueItem(item, submitText, opts, ownsTurn, show)
     }
 
-    patchUiState({ busy: true, status: 'running…' })
-    turnController.bufRef = ''
-    turnController.interrupted = false
+    if (item?.controlMethod && item.attachments?.length) {
+      item.settle?.(false)
 
+      if (focused()) {
+        deps.sys(t('canonical.submit.busyTextOnly'))
+      }
+
+      return
+    }
+
+    retireCanonicalControls(deps.gw, sid)
     deps.gw
-      .request<PromptSubmitResponse>('prompt.submit', {
-        session_id: liveSid,
-        text: submitText,
-        ...(takeVoiceTurn(submitText) && { voice_turn: true })
-      })
+      .request<PromptSubmitResponse>(
+        item?.controlMethod ?? 'prompt.submit',
+        submitParams(sid, item, submitText, opts.attachments, voiceTranscript === submitText.trim())
+      )
       .then(r => {
+        if (item?.controlMethod) {
+          settleControlReply(item, r, deps, focused)
+
+          return
+        }
+
+        if (item) {
+          settleAdmissionReply(item, r, { deps, destination, focused, owner, sid })
+        }
+
         // The gateway consumed a typed voice stop phrase server-side (voice
         // chat ended, no turn started) — release the busy latch; the
         // voice.transcript {stop_phrase} event handles the mode flags + notice.
-        if (r?.voice_stopped) {
+        if (r?.voice_stopped && focused()) {
           patchUiState({ busy: false, status: 'ready' })
         }
       })
-      .catch((e: Error) => {
+      .catch(async (e: Error & { code?: number }) => {
+        // 4094 is a pre-admission refusal, not an ambiguous write; so is 4000 when the
+        // legacy `hermes serve` contract refuses `submission_id` as an unknown key. Special
+        // compute modes still support legacy submit; retry only these refusals,
+        // keeping the prepared payload, destination and queue mode unchanged.
+        const preAdmissionRefusal = e.code === 4094 || (e.code === 4000 && /submission_id/.test(e.message ?? ''))
+
+        if (item && preAdmissionRefusal && !deps.gw.isCanonical && !item.attachments?.length) {
+          await submitLegacy(item, sid, submitText, deps, focused)
+
+          return
+        }
+
+        if (item) {
+          item.settle?.(false)
+
+          if (focused()) {
+            deps.sys(t('canonical.submit.inputRetained', e.message))
+            patchUiState({ status: t('canonical.submit.statusAdmissionUnconfirmed') })
+          }
+
+          return
+        }
+
         // Defensive: prompt.submit no longer rejects a mid-turn send with
         // "session busy" (the gateway queues it and returns success), but keep
         // the re-queue path as a safety net for any future/legacy gateway that
         // still errors, so a message is never silently dropped.
         if (isSessionBusyError(e)) {
-          deps.enqueue(submitText)
+          deps.enqueue(submitText, displayOverride, destination)
+
+          if (!focused()) {
+            return
+          }
+
           patchUiState({ busy: true, status: 'queued for next turn' })
 
           return deps.sys(`queued: "${submitText.slice(0, 50)}${submitText.length > 50 ? '…' : ''}"`)
+        }
+
+        if (!focused()) {
+          return
         }
 
         deps.sys(`error: ${e.message}`)
@@ -135,7 +423,39 @@ export function submitPrompt(
   // shows as an `[[ Image N ]]` token, and a matched non-image path is rewritten
   // in place. Announcing it a second time above the status bar was the old
   // out-of-band attachment UI.
+  if (opts.queueItem?.preparedText !== undefined) {
+    return startSubmit(text, opts.queueItem.preparedText, showUserMessage)
+  }
+
   if (opts.skipDetectDrop) {
+    return startSubmit(text, deps.expand(text), showUserMessage)
+  }
+
+  if (deps.gw.isCanonical) {
+    if (
+      /^(?:["']?(?:[/.~]|[A-Za-z]:[/\\])|file:\/\/)/.test(text) &&
+      /\.(?:png|jpe?g|gif|webp)(?:["']?)(?:\s|$)/i.test(text)
+    ) {
+      void stageImagePath(text, deps.gw, destination)
+        .then(image => {
+          opts.attachments = [{ path: image.path, mime: image.mime }]
+          startSubmit(text, image.remainder || 'What do you see in this image?', showUserMessage)
+        })
+        .catch((error: Error) => {
+          opts.queueItem?.settle?.(false)
+
+          if (focused()) {
+            deps.sys(t('canonical.submit.imageNotSubmitted', error.message))
+
+            if (ownsTurn()) {
+              patchUiState({ busy: false, status: t('canonical.submit.statusImageNotSubmitted') })
+            }
+          }
+        })
+
+      return
+    }
+
     return startSubmit(text, deps.expand(text), showUserMessage)
   }
 

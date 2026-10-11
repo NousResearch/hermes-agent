@@ -25,6 +25,7 @@ from gateway.platforms.base import (
     BasePlatformAdapter, SendResult, is_network_accessible,
 )
 from gateway.platforms.event import MessageEvent, MessageType
+from datetime import UTC
 
 logger = logging.getLogger(__name__)
 
@@ -183,7 +184,7 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
             return web.Response(status=400)
         return web.Response(text=validation_token, content_type="text/plain")
 
-    def _ingest_notification(self, raw_notification: Any) -> str:
+    async def _ingest_notification(self, raw_notification: Any) -> str:
         """Classify + schedule one notification: 'accepted' | 'duplicate' | 'auth' | 'other'."""
         if not isinstance(raw_notification, dict):
             return "other"
@@ -195,12 +196,12 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
             # retrying; legitimate Graph retries carry a valid clientState → accepted/duplicate paths.
             return "auth"
         receipt_key = f"id:{explicit_id}" if (explicit_id := str(notification.get("id") or "").strip()) else None
+        if self._notification_scheduler is not None and receipt_key in self._seen_receipts:
+            return "duplicate"
+        await self._schedule_notification(notification, self._build_message_event(notification, receipt_key))
         if receipt_key is not None:
-            if receipt_key in self._seen_receipts:
-                return "duplicate"
             self._remember_receipt(receipt_key)
         self._accepted_count += 1
-        self._schedule_notification(notification, self._build_message_event(notification, receipt_key))
         return "accepted"
 
     async def _handle_notification(self, request: web.Request) -> web.Response:
@@ -214,7 +215,11 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
             return web.Response(status=status)
         counts = {"accepted": 0, "duplicate": 0, "auth": 0, "other": 0}
         for raw_notification in notifications:
-            counts[self._ingest_notification(raw_notification)] += 1
+            try:
+                counts[await self._ingest_notification(raw_notification)] += 1
+            except Exception:
+                logger.exception("[msgraph_webhook] Notification admission failed")
+                return web.Response(status=503)
         self._duplicate_count += counts["duplicate"]
         # Anything ingested OR deduped → 202 with empty body (Graph acks; no counter leak). Every item
         # failed auth → 403 so forged POSTs get a clear reject. Otherwise (malformed / not accepted) → 400.
@@ -304,14 +309,51 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
         rendered = json.dumps(notification, indent=2, sort_keys=True)[:4000]
         return f"Microsoft Graph change notification:\n\n```json\n{rendered}\n```"
 
-    def _schedule_notification(self, notification: dict[str, Any], event: MessageEvent) -> None:
+    async def _schedule_notification(self, notification: dict[str, Any], event: MessageEvent) -> None:
         scheduler = self._notification_scheduler
-        if scheduler is None:
-            coro = self.handle_message(event)
-        else:
-            coro = scheduler(notification, event)
-            if not asyncio.iscoroutine(coro):
-                return
-        task = asyncio.create_task(coro)
-        self._background_tasks.add(task)
-        task.add_done_callback(self._background_tasks.discard)
+        if scheduler is not None:
+            result = scheduler(notification, event)
+            if asyncio.iscoroutine(result):
+                await result
+            return  # Plugin-owned pipeline; never also start a gateway inference.
+        await self._admit_notification(event)
+
+    @property
+    def token(self):
+        return self._client_state
+
+    async def _admit_notification(self, event):
+        # Only _ingest_notification reaches this after resource + clientState gates;
+        # the HTTP handler additionally owns source-IP and body-size authorization.
+        # Reuse the existing private automation envelope: public native admission
+        # continues to reject internal events and arbitrary metadata.
+        from datetime import datetime, timezone
+        from gateway.platforms.webhook_ingress import producer_scope
+        from gateway.session_ingress_context import capture_provenance
+        from hermes_state_runtime import admit_session_input, RuntimeStoreError
+
+        async with producer_scope(self, event) as authority:
+            authority._require_admission_open()
+            provenance = capture_provenance(authority.runner, event)
+            if provenance is None:
+                raise RuntimeStoreError('permission_denied')
+            # The routing reservation writes too: off the owner loop like the admission below.
+            ref = authority._publish_route(event.source, *await asyncio.to_thread(authority._reserve_route, event.source))
+            route = authority.sessions[ref.session_id].route
+            source = event.source.to_dict()
+            source['is_bot'] = event.source.is_bot
+            envelope = {'source': source, 'route': route, 'provenance': provenance,
+                'timestamp': datetime.fromtimestamp(0, UTC).isoformat(),
+                'event': {'message_id': event.message_id},
+                'automation': {'identity': event.message_id, 'owner': ref.session_id}}
+            # Off the owner loop and in admission order (``tracked_write``), committed before the
+            # 202: a held SQLite writer must not freeze every session while Graph waits.
+            from functools import partial
+            from gateway.session_runtime_workers import tracked_write
+            return await tracked_write(authority, partial(
+                admit_session_input, authority.db, epoch=authority.epoch,
+                principal_id='msgraph:' + route, session_id=ref.session_id, request_id=event.message_id,
+                payload={'text': event.text, 'native_text_v1': envelope},
+                _authorize_write=authority._admission_gate()),
+                then=partial(authority._admitted, ref, event), ordered=True,
+                after=partial(authority._schedule_admitted, ref))

@@ -55,36 +55,3 @@ def test_passed_gate_tick_and_queued_job_remain_busy_until_real_worker_exit(tmp_
     assert scheduler.try_register_running_job("manual-late") is False
     assert fence.commit(token) == {"ok": True}
     assert scheduler.tick(verbose=False, sync=False) == 0
-
-
-def test_detached_cron_delivery_keeps_admission_after_its_tick_returns(tmp_path, monkeypatch):
-    from cron import bot_chat_delivery
-    from hermes_cli import backend_retirement
-    from hermes_constants import get_hermes_home
-
-    fence = backend_retirement.RetirementFence()
-    monkeypatch.setattr(backend_retirement, "retirement", fence)
-    root = get_hermes_home() / "cron" / "bot_chat_pending"
-    root.mkdir(parents=True)
-    entered, release = threading.Event(), threading.Event()
-
-    def drain(root):
-        entered.set()
-        assert release.wait(10)
-
-    monkeypatch.setattr(bot_chat_delivery, "_drain", drain)
-    try:
-        bot_chat_delivery.drain_in_background()
-        assert entered.wait(10)
-        assert fence.prepare() == {"ok": False, "idle": False}
-    finally:
-        release.set()
-        for thread in threading.enumerate():
-            if thread.name == "cron-bot-chat-drain":
-                thread.join(10)
-    token = fence.prepare()["token"]
-    entered.clear()
-    bot_chat_delivery.drain_in_background()
-    bot_chat_delivery.drain(root)
-    assert not entered.is_set()
-    assert fence.cancel(token) == {"ok": True}

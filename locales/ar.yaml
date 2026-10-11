@@ -1972,6 +1972,7 @@ cli:
     desc_switch_anyway: "استخدام هذا النموذج لجلسة Hermes الحالية."
     choice_cancel: "إلغاء"
     desc_keep_current_model: "الاحتفاظ بالنموذج الحالي."
+    confirm_choice_prompt: "الاختيار [1/2]: "
     switch_cancelled: "أُلغي تبديل النموذج."
     selection_failed: "✗ فشل اختيار النموذج: {error}"
     switch_failed: "⚠ فشل التبديل إلى النموذج {model} ({error})؛ البقاء على {old_model}."

@@ -1238,9 +1238,7 @@ export const frOverrides = {
         maxLines: 'Limite de pagination de fichier',
         maxLineLength: 'Limite de longueur de ligne'
       },
-      codeExecution: {
-        mode: "Mode d'exécution du code"
-      },
+      codeExecution: { mode: "Mode d'exécution du code" },
       approvals: {
         mode: "Mode d'approbation",
         timeout: "Délai d'expiration de l'approbation",
@@ -1512,12 +1510,6 @@ export const frOverrides = {
             'TOUT — l’interface de chat, l’agent Hermes et l’ensemble de votre configuration, de vos conversations, secrets et journaux'
         }
       }
-    },
-    poolLimits: {
-      warmBotBackendsAria: 'Backends de bots maintenus actifs',
-      warmBotBackendsTitle: 'Backends de bots actifs',
-      backendIdleTimeoutAria: "Délai d'inactivité du backend en millisecondes",
-      backendIdleTimeoutTitle: "Délai d'inactivité du backend"
     },
     customEndpoints: {
       active: 'Actif',
@@ -3867,6 +3859,7 @@ export const frOverrides = {
     openDirective: 'Ouvrir',
     queueMessage: "Mettre le message en file d'attente",
     steer: "Diriger l'exécution en cours",
+    redirect: "Rediriger l'exécution en cours",
     stop: 'Arrêter',
     send: 'Envoyer',
     speaking: 'Parle',
@@ -4017,6 +4010,12 @@ export const frOverrides = {
     queueDelete: 'Supprimer',
     queueResume: 'Reprendre',
     queueResumeTip: "Mis en pause par Arrêter — reprendre l'envoi des tours en file d'attente",
+    queueLostNote: 'Tour perdu pendant le redémarrage',
+    restoreImageDraft: "Restaurer le brouillon d'image",
+    queueCancelFailed: "Impossible de retirer le tour en file d'attente",
+    queueLostDiscard: 'Ignorer',
+    queueLostDiscardTip:
+      "La passerelle a redémarré en plein tour et ne peut pas le terminer. Ignorez-le pour que les tours en file d'attente derrière lui s'exécutent.",
     queueStuckTitle: "Message en file d'attente non envoyé",
     queueStuckBody:
       "Un tour en file d'attente a continué à échouer lors de l'envoi. Il est toujours en file d'attente — essayez de l'envoyer à nouveau.",

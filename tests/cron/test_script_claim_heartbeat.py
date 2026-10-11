@@ -114,7 +114,7 @@ def test_no_agent_forwards_cancel_event_to_script_runner(monkeypatch):
     ids=("script-only-job", "pre-agent-script"),
 )
 def test_long_running_script_refreshes_owned_claim_in_profile_store(
-    tmp_path, monkeypatch, no_agent, script_output
+    tmp_path, monkeypatch, no_agent, script_output, cron_owner
 ):
     """Both blocking script paths keep their one-shot claim alive.
 
@@ -130,6 +130,7 @@ def test_long_running_script_refreshes_owned_claim_in_profile_store(
     default_cron = tmp_path / "default" / "cron"
     default_cron.mkdir(parents=True)
     profile_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
 
     monkeypatch.setattr(jobs, "CRON_DIR", default_cron)
     monkeypatch.setattr(jobs, "JOBS_FILE", default_cron / "jobs.json")
@@ -194,7 +195,6 @@ def test_long_running_script_refreshes_owned_claim_in_profile_store(
 
     with (
         jobs.use_cron_store(profile_home),
-        patch("hermes_state_registry.acquire", return_value=MagicMock()),
     ):
         success, _doc, _response, error = scheduler.run_job(claimed_job)
         profile_claim = jobs.get_job("long-script")["run_claim"]
@@ -379,7 +379,20 @@ def _run_claimed_job_with_mid_run_action(
             raise crash
         return True, "saved output", "D1 is promoting", None
 
-    delivered = MagicMock(return_value=None)
+    # A completed agent run hands its notice to the durable delivery queue; a gateway drain that
+    # wins the race against the run's bookkeeping sends it through ``_deliver_result``. A crash
+    # alerts inline through the same stubbed door.
+    from cron import delivery_queue
+    monkeypatch.setattr(delivery_queue, "DELIVERY_DB", tmp_path / "cron" / "deliveries.db")
+    real_enqueue = delivery_queue.enqueue
+
+    def _enqueue_then_drain(*args, **kwargs):
+        queued = real_enqueue(*args, **kwargs)
+        assert scheduler.drain_delivery_queue({}, None) == 1
+        return queued
+
+    delivered = MagicMock(side_effect=_enqueue_then_drain)
+    monkeypatch.setattr(scheduler, "_deliver_result", MagicMock(return_value=None))
     finished = MagicMock()
     monkeypatch.setattr(scheduler, "_RUN_CLAIM_HEARTBEAT_SECONDS", 0.05)
     monkeypatch.setattr(scheduler, "run_job", _run_job)
@@ -388,7 +401,7 @@ def _run_claimed_job_with_mid_run_action(
     monkeypatch.setattr(scheduler, "finish_execution", finished)
     if stub_output:
         monkeypatch.setattr(scheduler, "save_job_output", lambda *_args: "output.md")
-    monkeypatch.setattr(scheduler, "_deliver_result", delivered)
+    monkeypatch.setattr("cron.delivery_queue.enqueue", delivered)
 
     with jobs.use_cron_store(tmp_path):
         job = jobs.create_job(

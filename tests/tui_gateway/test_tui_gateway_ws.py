@@ -1,8 +1,11 @@
 import asyncio
 import concurrent.futures
+import contextlib
 import datetime
 import json
 import threading
+
+import pytest
 
 from tui_gateway import server
 from tui_gateway import ws as ws_mod
@@ -399,3 +402,159 @@ def test_ws_transport_preserves_cross_batch_order():
     asyncio.run(scenario())
 
 
+_INTERACTIVE = frozenset({"session:create", "session:read", "session:submit", "session:control",
+                          "session:approve", "session:respond"})
+
+
+def _drive_authority_fallback(monkeypatch, *, capabilities, profile_id, method):
+    """One RPC through handle_ws on an authority connection whose dispatch answers -32601, so the
+    request takes the legacy-fallback branch (R2-M3). Returns the reply frame for id 1."""
+    from gateway import session_controls
+
+    class FakeConnection:
+        def __init__(self, authority, transport, identity, operator=False):
+            self.actor = type("Actor", (), {"capabilities": frozenset(capabilities), "profile_id": profile_id})()
+
+        async def dispatch(self, req):
+            return {"jsonrpc": "2.0", "id": req["id"], "error": {"code": -32601, "message": "unknown method"}}
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(session_controls, "AuthorityConnection", FakeConnection)
+    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0)
+    sent, inbound = [], [json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": {}})]
+
+    class FakeWS:
+        scope = {"hermes.session_authority": object()}
+
+        async def accept(self, **_kw):
+            pass
+
+        async def send_text(self, line):
+            sent.extend(json.loads(part) for part in line.splitlines() if part.strip())
+
+        async def receive_text(self):
+            if inbound:
+                return inbound.pop()
+            raise ws_mod._WebSocketDisconnect()
+
+        async def close(self, **_kw):
+            pass
+
+    asyncio.run(ws_mod.handle_ws(FakeWS(), auth_identity={"user_id": "u"}))
+    return next(frame for frame in sent if frame.get("id") == 1)
+
+
+def test_ready_frame_advertises_a_session_authority_only_when_one_is_bound(monkeypatch):
+    """An explicit TUI attach (HERMES_TUI_GATEWAY_URL) negotiates the canonical wire from this flag."""
+    from gateway import session_controls
+
+    class FakeConnection:
+        def __init__(self, authority, transport, identity, operator=False):
+            self.actor = type("Actor", (), {"capabilities": frozenset(), "profile_id": "p"})()
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(session_controls, "AuthorityConnection", FakeConnection)
+    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0)
+
+    def ready(scope):
+        sent = []
+
+        class FakeWS:
+            async def accept(self, **_kw):
+                pass
+
+            async def send_text(self, line):
+                sent.extend(json.loads(part) for part in line.splitlines() if part.strip())
+
+            async def receive_text(self):
+                raise ws_mod._WebSocketDisconnect()
+
+            async def close(self, **_kw):
+                pass
+
+        FakeWS.scope = scope
+        asyncio.run(ws_mod.handle_ws(FakeWS(), auth_identity={"user_id": "u"}))
+        return sent[0]["params"]["payload"]
+
+    assert ready({"hermes.session_authority": object()})["session_authority"] is True
+    assert "session_authority" not in ready({})
+
+
+def test_legacy_fallback_requires_the_interactive_grant(monkeypatch):
+    """A worker-adoption ticket (or any connection without the authority's interactive grant) must
+    not reach general legacy dispatch after an authority -32601; an interactive one still does."""
+    ran = []
+    monkeypatch.setitem(server._methods, "probe.legacy",
+                        lambda rid, params: ran.append(rid) or {"jsonrpc": "2.0", "id": rid, "result": {}})
+    launch = str(server._launch_home())
+    for restricted in ({"worker:adopt"}, set()):
+        reply = _drive_authority_fallback(monkeypatch, capabilities=restricted, profile_id=launch, method="probe.legacy")
+        assert reply["error"]["code"] == -32601 and ran == []
+    reply = _drive_authority_fallback(monkeypatch, capabilities=_INTERACTIVE, profile_id=launch, method="probe.legacy")
+    assert reply["result"] == {} and ran == [1]
+
+
+def test_legacy_fallback_keeps_the_ticket_profile_for_sessionless_scoped_handlers(monkeypatch, tmp_path):
+    """A secondary-profile ticket's sessionless ``@_profile_scoped`` legacy call runs in THAT profile's
+    home, not the launch profile's."""
+    from hermes_constants import get_hermes_home
+
+    secondary = tmp_path / "profiles" / "l106742sec"
+    secondary.mkdir(parents=True)
+    monkeypatch.setitem(server._methods, "probe.scoped", server._profile_scoped(
+        lambda rid, params: {"jsonrpc": "2.0", "id": rid, "result": {"home": str(get_hermes_home())}}))
+    reply = _drive_authority_fallback(monkeypatch, capabilities=_INTERACTIVE, profile_id=str(secondary),
+                                      method="probe.scoped")
+    assert reply["result"]["home"] == str(secondary)
+
+
+@pytest.mark.parametrize("method,params", [
+    ("session.delete", {"session_id": "owned"}),
+    ("session.archive", {"session_id": "owned", "archived": True}),
+])
+def test_legacy_fallback_never_writes_an_authority_owned_session(monkeypatch, tmp_path, method, params):
+    """A session write the authority answers -32601 for must not reach the legacy writer: it would
+    change the authority's state.db behind its receipts and revision fence (and a delete would leave
+    the authority holding a live session whose row is gone)."""
+    from types import SimpleNamespace
+    from gateway.session_authority import LiveSession, SessionAuthority
+    from hermes_state import SessionDB
+    from hermes_state_runtime import begin_runtime_epoch
+
+    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0)
+    with SessionDB(db_path=tmp_path / "state.db") as db:
+        db.create_session("owned", source="tui")
+        revision = db.get_session("owned")["runtime_revision"]
+        authority = SessionAuthority(SimpleNamespace(_draining=False), profile_id=str(tmp_path),
+                                     instance_id="current", db=db, epoch=begin_runtime_epoch(db, instance_id="current"))
+        authority.sessions["owned"] = LiveSession(None, "route")
+        monkeypatch.setattr(server, "_profile_db", lambda *_a, **_k: contextlib.nullcontext(db))
+        sent, inbound = [], [json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params})]
+
+        class FakeWS:
+            scope = {"hermes.session_authority": authority}
+
+            async def accept(self, **_kw):
+                pass
+
+            async def send_text(self, line):
+                sent.extend(json.loads(part) for part in line.splitlines() if part.strip())
+
+            async def receive_text(self):
+                if inbound:
+                    return inbound.pop()
+                raise ws_mod._WebSocketDisconnect()
+
+            async def close(self, **_kw):
+                pass
+
+        asyncio.run(ws_mod.handle_ws(FakeWS(), auth_identity={"user_id": "owner", "instance_id": "current"}))
+        reply = next(frame for frame in sent if frame.get("id") == 1)
+        assert reply["error"]["code"] == -32601, reply
+        row = db.get_session("owned")
+        assert row is not None and not row.get("archived") and row["runtime_revision"] == revision
+        assert "owned" in authority.sessions

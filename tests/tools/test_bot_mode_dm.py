@@ -236,6 +236,60 @@ def _capture_spawn(monkeypatch):
     return calls
 
 
+class _FakeAuthority:
+    """The target profile's canonical ``bot_relay.deliver`` door: one admission per
+    envelope id, exact retries inspect it, a changed payload conflicts."""
+
+    def __init__(self):
+        self.calls = []
+        self.records = {}
+
+    def __call__(self, home, params):
+        from tools import bot_live_delivery as live
+
+        self.calls.append((Path(home).resolve(), dict(params)))
+        record = self.records.get(params["id"])
+        if record is None:
+            record = self.records[params["id"]] = dict(
+                status="queued", delivery_id=params["id"], profile_home=str(Path(home).resolve()),
+                session_id="local-bot", message=params["message"], admission_id="adm-" + params["id"][:8],
+                reply="")
+            with live._locked(home) as root:
+                live._write(root / f"{params['id']}.json", record)
+        elif record["message"] != params["message"]:
+            raise ValueError("admission_conflict")
+        return {k: record[k] for k in ("status", "delivery_id", "profile_home", "session_id", "reply")}
+
+    def settle(self, delivery_id, **outcome):
+        """The owner settles the admission and republishes its receipt file (what waiters poll)."""
+        from tools import bot_live_delivery as live
+
+        record = self.records[delivery_id]
+        record.update(outcome)
+        with live._locked(record["profile_home"]) as root:
+            live._write(root / f"{delivery_id}.json", record)
+
+
+def _canonical_target(monkeypatch, *targets: Path) -> _FakeAuthority:
+    """Every ``targets`` profile home has a ready authority (its Bot Chat is admitted canonically);
+    any other home has none, so a DM there falls through to the runner hand-off."""
+    from tools import bot_live_delivery as live
+
+    homes = {t.resolve() for t in targets}
+
+    def owner_of(home):
+        home = Path(home).resolve()
+        if home not in homes:
+            return None
+        return dict(profile_home=str(home), session_id="local-bot", canonical=True,
+                    lease_id="authority-1", live_session_id="local-bot")
+
+    monkeypatch.setattr(live, "find_canonical_live_owner", owner_of)
+    authority = _FakeAuthority()
+    monkeypatch.setattr(live, "authority_delivery", authority)
+    return authority
+
+
 def _runner_parts(command):
     """(mode, dm_file, transport argv) of a runner command. The optional ``--author <json>`` pair is skipped."""
     parts = shlex.split(command)
@@ -243,9 +297,10 @@ def _runner_parts(command):
     if parts[marker + 1] == "--author":
         marker += 2
     argv = parts[marker + 3 :]
+    profile_home = None
     if argv[:1] == ["--profile-home"]:
-        argv = argv[2:]
-    return parts[marker + 1], parts[marker + 2], argv
+        profile_home, argv = argv[1], argv[2:]
+    return parts[marker + 1], parts[marker + 2], argv, profile_home
 
 
 def _runner_author(command):
@@ -257,12 +312,15 @@ def _runner_author(command):
     return json.loads(parts[marker + 2])
 
 
-def test_local_delivery_command_and_ack(tmp_path, monkeypatch):
+def test_local_delivery_admits_canonically_and_acks(tmp_path, monkeypatch):
     calls = _capture_spawn(monkeypatch)
     # These assertions target the -p/turn-args shape; pin the entrypoint resolution
     # so the test stays hermetic across venvs that do/don't expose a sibling script.
     monkeypatch.setattr(bot_relay, "_hermes_cli", lambda: "hermes")
     home = _managed_home(tmp_path, teammates=("researcher",))
+    target = home / "profiles" / "researcher"
+    authority = _canonical_target(monkeypatch, target)
+    monkeypatch.setattr(bot_mode_dm, "_dm_dir", lambda: tmp_path)
     agent = _FakeAgent(home, title="Bot Chat")
 
     result = json.loads(
@@ -279,6 +337,12 @@ def test_local_delivery_command_and_ack(tmp_path, monkeypatch):
     assert result["to"] == "@researcher"
     assert result["process_id"] == "proc_test1234"
 
+    # Exactly one canonical admission, on the target profile's own authority.
+    assert [h for h, _p in authority.calls] == [target.resolve()]
+    _home, params = authority.calls[0]
+    assert params["id"] == result["delivery_id"] and params["profile"] == "researcher"
+
+    # The background process only waits for the receipt: no model turn argv.
     assert len(calls) == 1
     call = calls[0]
     assert call["background"] is True
@@ -288,30 +352,21 @@ def test_local_delivery_command_and_ack(tmp_path, monkeypatch):
     assert call["_completion_output_chars"] > bot_mode_dm.MESSAGE_MAX_CHARS
     assert Path(call["workdir"]) == Path(bot_mode_dm.__file__).resolve().parent.parent
     command = call["command"]
-    mode, dm_file, transport_argv = _runner_parts(command)
+    mode, dm_file, transport_argv, profile_home = _runner_parts(command)
     assert mode == "query-file"
-    assert transport_argv == [
-        "hermes",
-        "-p",
-        "researcher",
-        "chat",
-        "--in",
-        "~",
-        "-c",
-        "Bot Chat",
-        "--create-if-missing",
-        "-Q",
-    ]
+    assert Path(profile_home) == target.resolve()
+    assert transport_argv[:3] == ["hermes", "-p", "researcher"]
     # message body rides the temp file, never the command line
     assert "PAYLOAD_SENTINEL_7A91" not in command
     assert "$(" not in command
     # the sender rides the runner argv as a stable id plus display handle
     assert _runner_author(command) == {"id": "bot:default", "name": "hermes", "is_bot": True}
 
-    # attribution prefix applied server-side; body verbatim inside the file
+    # attribution prefix applied server-side; body verbatim in the admitted message
     content = Path(dm_file).read_text(encoding="utf-8")
     assert content.startswith("Message from 🤖 hermes (@hermes): ")
     assert '$(and this is not shell)' in content
+    assert params["message"] == content
 
 
 
@@ -324,13 +379,15 @@ def test_cli_runner_ack_is_queued_with_the_runner_delivery_id(tmp_path, monkeypa
 
     calls = _capture_spawn(monkeypatch)
     home = _managed_home(tmp_path, teammates=("researcher",))
+    authority = _canonical_target(monkeypatch, home / "profiles" / "researcher")
     result = json.loads(bot_mode_dm.message_agent_tool(
         target="researcher", message="hi", agent=_FakeAgent(home, title="Bot Chat")))
 
     assert result["status"] == "queued"
     assert result["process_id"] == "proc_test1234"
-    _, dm_file, _ = _runner_parts(calls[0]["command"])
+    _, dm_file, _, _ = _runner_parts(calls[0]["command"])
     assert result["delivery_id"] == hashlib.sha256(str(Path(dm_file).resolve()).encode()).hexdigest()
+    assert authority.calls[0][1]["id"] == result["delivery_id"]
 
 
 def test_relay_ack_is_queued_with_the_envelope_id(tmp_path, monkeypatch):
@@ -367,13 +424,16 @@ def test_friendly_names_and_desktop_slugs_resolve_to_folder_ids(tmp_path, monkey
     _rename(home, "builder", display_name="Builder")
     expected = {"Scribe": "writer", "@scribe": "writer", "Dr. Foo": "foo", "dr-foo": "foo", "drfoo": "foo",
                 "Builder": "builder"}[target]
+    authority = _canonical_target(monkeypatch, *(home / "profiles" / name for name in ("writer", "foo", "builder")))
 
     result = json.loads(bot_mode_dm.message_agent_tool(target=target, message="ping", agent=_FakeAgent(home)))
 
     assert result["status"] == "queued", result
     assert result["to"] == f"@{expected}"
-    _mode, _dm_file, argv = _runner_parts(calls[0]["command"])
+    _mode, _dm_file, argv, profile_home = _runner_parts(calls[0]["command"])
     assert argv[1:3] == ["-p", expected]
+    assert Path(profile_home) == (home / "profiles" / expected).resolve()
+    assert authority.calls[0][1]["profile"] == expected
 
 
 @pytest.mark.parametrize(("target", "local_name", "relayed"), [
@@ -389,6 +449,7 @@ def test_connection_qualified_target_reaches_the_relay_not_a_look_alike_local_bo
     calls = _capture_spawn(monkeypatch)
     monkeypatch.setattr(bot_relay, "_hermes_cli", lambda: "hermes")
     home = _managed_home(tmp_path, teammates=("ops",))
+    _canonical_target(monkeypatch, home / "profiles" / "ops")  # the local bot's authority is up
     _rename(home, "ops", display_name=local_name)
     bot_relay.write_remote_roster(home, [
         {"profile": "default", "handle": "hermes", "connection_id": "mini", "connection_label": "Mini"},
@@ -411,6 +472,7 @@ def test_ambiguous_friendly_name_fails_closed(tmp_path, monkeypatch):
     reserved @hermes alias can never be hijacked by a rename."""
     calls = _capture_spawn(monkeypatch)
     home = _managed_home(tmp_path, teammates=("aaa", "bbb", "ops"))
+    _canonical_target(monkeypatch, home, *(home / "profiles" / name for name in ("aaa", "bbb", "ops")))
     _rename(home, "aaa", display_name="Scribe")
     _rename(home, "bbb", display_name="Scribe")
     _rename(home, "ops", display_name="Hermes")
@@ -447,7 +509,7 @@ def test_peer_delivery_command_pins_registry_profile_for_secondary_bots(
         bot_mode_dm.message_agent_tool(target="spark", message="ping", agent=agent)
     )
     assert result["status"] == "queued"
-    mode, _dm_file, transport_argv = _runner_parts(calls[0]["command"])
+    mode, _dm_file, transport_argv, _home = _runner_parts(calls[0]["command"])
     assert mode == "stdin"
     # The registry the tool validated against is the machine root's — the
     # default profile's home — so the CLI runs there, not in reviewer.
@@ -466,7 +528,7 @@ def test_peer_delivery_command(tmp_path, monkeypatch):
     )
     assert result["status"] == "queued"
     assert "spark" in result["to"]
-    mode, _dm_file, transport_argv = _runner_parts(calls[0]["command"])
+    mode, _dm_file, transport_argv, _home = _runner_parts(calls[0]["command"])
     assert mode == "stdin"
     assert transport_argv == ["hermes", "-p", "default", "peer", "dm", "spark/researcher"]
     # the peer child reads the author from its env and forwards it in the request body
@@ -477,7 +539,7 @@ def test_peer_delivery_command(tmp_path, monkeypatch):
         bot_mode_dm.message_agent_tool(target="spark", message="ping", agent=agent)
     )
     assert result2["status"] == "queued"
-    mode, _dm_file, transport_argv = _runner_parts(calls[1]["command"])
+    mode, _dm_file, transport_argv, _home = _runner_parts(calls[1]["command"])
     assert mode == "stdin"
     assert transport_argv == ["hermes", "-p", "default", "peer", "dm", "spark"]
 
@@ -499,25 +561,29 @@ def test_delivery_pins_the_hermes_entrypoint_beside_this_interpreter(tmp_path, m
 
     calls = _capture_spawn(monkeypatch)
     home = _managed_home(tmp_path, teammates=("researcher",), peers=("spark",))
+    _canonical_target(monkeypatch, home / "profiles" / "researcher")
     agent = _FakeAgent(home, title="Bot Chat")
 
+    # A local teammate is admitted through the profile authority (no inference child), but the
+    # runner argv still names the pinned entrypoint so its basename-matched helpers stay compatible.
     result = json.loads(
         bot_mode_dm.message_agent_tool(target="researcher", message="ping", agent=agent)
     )
     assert result["status"] == "queued"
-    mode, _dm_file, transport_argv = _runner_parts(calls[0]["command"])
+    mode, _dm_file, transport_argv, _profile_home = _runner_parts(calls[0]["command"])
     assert mode == "query-file"
-    assert transport_argv[0] == str(hermes_entry)
-    assert transport_argv[1:] == ["-p", "researcher", "chat", "--in", "~", "-c", "Bot Chat",
-                                  "--create-if-missing", "-Q"]
+    assert Path(transport_argv[0]) == hermes_entry
+    # Local delivery is admitted through the authority; the argv only names the profile.
+    assert transport_argv[1:] == ["-p", "researcher"]
 
     result2 = json.loads(
         bot_mode_dm.message_agent_tool(target="spark", message="ping", agent=agent)
     )
     assert result2["status"] == "queued"
-    mode, _dm_file, transport_argv = _runner_parts(calls[1]["command"])
+    mode, _dm_file, transport_argv, _profile_home = _runner_parts(calls[1]["command"])
     assert mode == "stdin"
-    assert transport_argv == [str(hermes_entry), "-p", "default", "peer", "dm", "spark"]
+    assert Path(transport_argv[0]) == hermes_entry
+    assert transport_argv[1:] == ["-p", "default", "peer", "dm", "spark"]
 
 
 def test_peer_delivery_author_carries_the_sender_hostname_and_local_stays_bare(tmp_path, monkeypatch):
@@ -526,6 +592,7 @@ def test_peer_delivery_author_carries_the_sender_hostname_and_local_stays_bare(t
     calls = _capture_spawn(monkeypatch)
     monkeypatch.setattr("socket.gethostname", lambda: " eri/mac\x00.local ")
     home = _managed_home(tmp_path, teammates=("researcher", "coder"), peers=("spark",))
+    _canonical_target(monkeypatch, home / "profiles" / "researcher")
     agent = _FakeAgent(home / "profiles" / "coder", title="Bot Chat")
 
     assert json.loads(bot_mode_dm.message_agent_tool(target="spark", message="ping", agent=agent))["status"] == "queued"
@@ -543,25 +610,26 @@ def test_renamed_primary_signs_with_its_friendly_name_and_is_reachable_by_it(tmp
     calls = _capture_spawn(monkeypatch)
     monkeypatch.setattr(bot_relay, "_hermes_cli", lambda: "hermes")
     home = _managed_home(tmp_path, teammates=("coder",))
+    _canonical_target(monkeypatch, home, home / "profiles" / "coder")
     (home / "profile.yaml").write_text("display_name: Maia\n", encoding="utf-8")
 
     result = json.loads(bot_mode_dm.message_agent_tool(target="coder", message="hi", agent=_FakeAgent(home)))
     assert result["status"] == "queued"
-    _mode, dm_file, _argv = _runner_parts(calls[0]["command"])
+    _mode, dm_file, _argv, _home = _runner_parts(calls[0]["command"])
     assert Path(dm_file).read_text(encoding="utf-8").startswith("Message from 🤖 Maia (@hermes): ")
 
     coder = _FakeAgent(home / "profiles" / "coder")
     for target in ("maia", "@maia", "@hermes"):
         result = json.loads(bot_mode_dm.message_agent_tool(target=target, message="pong", agent=coder))
         assert result["status"] == "queued", (target, result)
-        _mode, _dm_file, argv = _runner_parts(calls[-1]["command"])
+        _mode, _dm_file, argv, _home = _runner_parts(calls[-1]["command"])
         assert argv[1:3] == ["-p", "default"], (target, argv)
 
     (home / "profile.yaml").write_text(
         "display_name: Maia\nui_meta:\n  hermes-bots:\n    title: Maia Prime\n", encoding="utf-8"
     )
     json.loads(bot_mode_dm.message_agent_tool(target="coder", message="hi", agent=_FakeAgent(home)))
-    _mode, dm_file, _argv = _runner_parts(calls[-1]["command"])
+    _mode, dm_file, _argv, _home = _runner_parts(calls[-1]["command"])
     assert Path(dm_file).read_text(encoding="utf-8").startswith("Message from 🤖 Maia Prime (@hermes): ")
 
 
@@ -569,22 +637,65 @@ def test_named_profile_sender_prefix(tmp_path, monkeypatch):
     """A named-profile bot signs with its own handle, not @hermes."""
     calls = _capture_spawn(monkeypatch)
     home = _managed_home(tmp_path, teammates=("researcher", "coder"))
-    profile_home = home / "profiles" / "coder"
-    agent = _FakeAgent(profile_home, title="Bot Chat")
+    authority = _canonical_target(monkeypatch, home / "profiles" / "researcher")
+    monkeypatch.setattr(bot_mode_dm, "_dm_dir", lambda: tmp_path)
+    agent = _FakeAgent(home / "profiles" / "coder", title="Bot Chat")
 
     result = json.loads(
         bot_mode_dm.message_agent_tool(target="researcher", message="hi", agent=agent)
     )
     assert result["status"] == "queued"
-    _mode, dm_file, _transport_argv = _runner_parts(calls[0]["command"])
-    assert Path(dm_file).read_text(encoding="utf-8").startswith(
-        "Message from 🤖 coder (@coder): "
-    )
+    assert authority.calls[0][1]["message"].startswith("Message from 🤖 coder (@coder): ")
     assert _runner_author(calls[0]["command"]) == {"id": "bot:coder", "name": "coder", "is_bot": True}
 
 
+@pytest.mark.parametrize("lookup", ["not_ready", "no_owner"])
+def test_unavailable_authority_is_reported_never_worked_around(tmp_path, monkeypatch, lookup):
+    """No canonical target, found BEFORE any intent is pinned: nothing was admitted, so the sender
+    gets a definite, resendable ``runtime_unavailable`` refusal (never the ambiguous "do not
+    resend" state) and nothing else (no CLI, no background runner) is started."""
+    home = _managed_home(tmp_path)
+    agent = _FakeAgent(home, title="Bot Chat")
+    from tools import bot_live_delivery as live
+
+    def unavailable(home):  # "no_owner": discovery is ready but the profile has no store (None)
+        if lookup == "not_ready":
+            raise ValueError("profile authority is not ready")
+
+    monkeypatch.setattr(live, "find_canonical_live_owner", unavailable)
+    monkeypatch.setattr(bot_mode_dm, "_dm_dir", lambda: tmp_path)
+    import tools.terminal_tool as terminal_tool_module
+
+    monkeypatch.setattr(terminal_tool_module, "terminal_tool",
+                        lambda *a, **k: pytest.fail("no runner may start without admission"))
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("no CLI turn may start"))
+    result = json.loads(
+        bot_mode_dm.message_agent_tool(target="researcher", message="hi", agent=agent)
+    )
+    assert result["reason"] == "runtime_unavailable" and "status" not in result
+    assert "NOT sent" in result["error"] and "Do not resend" not in result["error"]
+    assert list(tmp_path.glob("*.live.json")) == []  # no intent: nothing can replay this DM
 
 
+def test_notification_spawn_failure_is_reported_after_admission(tmp_path, monkeypatch):
+    """The receipt waiter failing to start is a notification problem, surfaced
+    beside the (already committed) admission — never a reason to re-admit."""
+    home = _managed_home(tmp_path)
+    target = home / "profiles" / "researcher"
+    authority = _canonical_target(monkeypatch, target)
+    monkeypatch.setattr(bot_mode_dm, "_dm_dir", lambda: tmp_path)
+    import tools.terminal_tool as terminal_tool_module
+
+    def boom(command, **kwargs):
+        raise RuntimeError("spawn failed")
+
+    monkeypatch.setattr(terminal_tool_module, "terminal_tool", boom)
+    result = json.loads(
+        bot_mode_dm.message_agent_tool(target="researcher", message="hi", agent=_FakeAgent(home))
+    )
+    assert result["status"] == "queued"
+    assert "could not be started" in result["notification_error"]
+    assert len(authority.records) == 1
 
 
 def test_live_dm_admitted_before_waiter_failure(tmp_path, monkeypatch):
@@ -592,8 +703,7 @@ def test_live_dm_admitted_before_waiter_failure(tmp_path, monkeypatch):
 
     home = _managed_home(tmp_path)
     target = home / "profiles" / "researcher"
-    owner = dict(profile_home=str(target), session_id="bot", lease_id="lease", live_session_id="live")
-    monkeypatch.setattr(live, "find_canonical_live_owner", lambda h: owner if Path(h) == target else None)
+    authority = _canonical_target(monkeypatch, target)
     monkeypatch.setattr(bot_mode_dm, "_dm_dir", lambda: tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "wrong-home"))
     import tools.terminal_tool as terminal
@@ -603,227 +713,95 @@ def test_live_dm_admitted_before_waiter_failure(tmp_path, monkeypatch):
     assert result["status"] == "queued"
     record = live.read_delivery_result(target, result["delivery_id"])
     assert record is not None
-    assert record["owner"] == owner
-    assert record["message"] == "Message from 🤖 hermes (@hermes): hello"
-    assert record["author"] == {"id": "bot:default", "name": "hermes", "is_bot": True}
+    assert record["delivery_id"] == result["delivery_id"]
+    assert record["profile_home"] == str(target.resolve())
+    assert authority.records[result["delivery_id"]]["message"] == "Message from 🤖 hermes (@hermes): hello"
+    assert authority.calls[0][1]["author"] == {"id": "bot:default", "name": "hermes", "is_bot": True}
     assert "notification_error" in result
 
 
-def test_live_dm_runner_retry_never_reexecutes_failed_claim(tmp_path, monkeypatch, capsys):
-    from tools import bot_live_delivery as live
-
+def test_live_dm_runner_retry_never_reexecutes_failed_admission(tmp_path, monkeypatch, capsys):
     home = _managed_home(tmp_path)
     target = home / "profiles" / "researcher"
     monkeypatch.setenv("HERMES_HOME", str(home))
-    owner = dict(profile_home=str(target), session_id="bot", lease_id="lease", live_session_id="live")
-    live_owner = {"owner": owner}
-    monkeypatch.setattr(live, "find_canonical_live_owner", lambda h: live_owner["owner"])
+    authority = _canonical_target(monkeypatch, target)
+    # The authority still holds the admission, so the runner waits to its absolute deadline.
     monkeypatch.setattr(bot_mode_dm, "_LIVE_WAIT_SECONDS", 0.01)
-    monkeypatch.setattr(live, "_POLL_SECONDS", 0.01)
+    monkeypatch.setattr(bot_mode_dm, "_LIVE_WAIT_MAX_SECONDS", 0.05)
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("must not launch a model turn"))
     dm_file = tmp_path / "message.txt"
     dm_file.write_text("hello", encoding="utf-8")
     argv = ["hermes", "-p", "researcher"]
-    claims = []
-
-    def fail_later():
-        # Claim only once _run_delivery has queued the DM: a fixed sleep claimed too early on a
-        # loaded runner, got None, and the runner then waited forever on the still-live owner.
-        deadline = time.monotonic() + 10
-        while not claims and time.monotonic() < deadline:
-            claimed = live.claim_pending_delivery(target, owner)
-            if claimed is None:
-                time.sleep(0.01)
-            else:
-                claims.append(claimed)
-        if not claims:
-            live_owner["owner"] = None  # release the runner so the test fails instead of hanging
-            return
-        live.complete_delivery(target, claims[0]["delivery_id"], status="failed", error="HTTP 429 rate limit")
-
-    failing = threading.Thread(target=fail_later)
-    failing.start()
-    try:
-        assert bot_mode_dm._run_delivery(argv, str(dm_file), stdin_file=False) == 1
-    finally:
-        failing.join(timeout=12)
-    assert claims, "the queued DM was never claimable"
-    first = json.loads(capsys.readouterr().out)
-    assert first["status"] == "failed"
-    monkeypatch.setattr(live, "find_canonical_live_owner", lambda h: None)
+    assert bot_mode_dm._run_delivery(argv, str(dm_file), stdin_file=False) == 0
+    queued = json.loads(capsys.readouterr().out)
+    assert queued["status"] == "queued"
+    # The authority settles the admission as failed; a retry of the same runner
+    # reads that exact receipt (same id) and never admits or executes again.
+    authority.settle(queued["delivery_id"], status="failed")
+    from tools import bot_live_delivery as live
+    monkeypatch.setattr(live, "find_canonical_live_owner", lambda h: pytest.fail("intent is pinned"))
     assert bot_mode_dm._run_delivery(argv, str(dm_file), stdin_file=False) == 1
     failed = json.loads(capsys.readouterr().out)
     assert failed["status"] == "failed"
-    assert failed["delivery_id"] == first["delivery_id"]
+    assert failed["delivery_id"] == queued["delivery_id"]
+    assert len(authority.records) == 1
     assert dm_file.read_text(encoding="utf-8") == "hello"
 
 
-def test_live_dm_wait_reports_reply_after_initial_wait_budget(tmp_path, monkeypatch, capsys):
-    """A retained live receipt must still deliver its reply after the old 300 s boundary."""
+def _admitted_live_dm(tmp_path, monkeypatch, delivery_id):
+    """One DM admitted to a ready (fake) authority, with the wait loop sped up."""
     from tools import bot_live_delivery as live
 
-    owner = dict(profile_home=str(tmp_path), session_id="bot", lease_id="lease", live_session_id="live")
-    record = live.deliver_to_live_owner(tmp_path, owner, "ping", delivery_id="a" * 32)
+    authority = _canonical_target(monkeypatch, tmp_path)
+    owner = live.find_canonical_live_owner(tmp_path)
+    record = live.deliver_to_live_owner(tmp_path, owner, "ping", delivery_id=delivery_id)
     monkeypatch.setattr(bot_mode_dm, "_LIVE_WAIT_SECONDS", 0.01)
     monkeypatch.setattr(live, "_POLL_SECONDS", 0.01)
-    monkeypatch.setattr(live, "find_canonical_live_owner", lambda h: owner)
+    return live, authority, record
 
-    def settle_later():
-        time.sleep(0.05)
-        claimed = live.claim_pending_delivery(tmp_path, owner)
-        assert claimed is not None
-        live.complete_delivery(tmp_path, claimed["delivery_id"], status="settled", reply="PONG")
 
-    settling = threading.Thread(target=settle_later)
+def test_live_dm_wait_reports_reply_after_initial_wait_budget(tmp_path, monkeypatch, capsys):
+    """A retained admission still delivers its reply after the first wait window (main a94b9758313)."""
+    _live, authority, record = _admitted_live_dm(tmp_path, monkeypatch, "a" * 32)
+    settling = threading.Timer(0.05, lambda: authority.settle(record["delivery_id"], status="settled", reply="PONG"))
     settling.start()
     try:
         exit_code = bot_mode_dm._wait_live_dm(str(tmp_path), record["delivery_id"])
     finally:
         settling.join(timeout=2)
-
     notice = json.loads(capsys.readouterr().out)
     assert exit_code == 0
-    assert notice["status"] == "settled"
-    assert notice["reply"] == "PONG"
+    assert (notice["status"], notice["reply"]) == ("settled", "PONG")
 
 
-def test_live_dm_wait_releases_queued_runner_when_pinned_owner_is_gone(tmp_path, monkeypatch, capsys):
-    from tools import bot_live_delivery as live
-
-    owner = dict(profile_home=str(tmp_path), session_id="bot", lease_id="lease", live_session_id="live")
-    record = live.deliver_to_live_owner(tmp_path, owner, "ping", delivery_id="c" * 32)
-    monkeypatch.setattr(bot_mode_dm, "_LIVE_WAIT_SECONDS", 0.01)
-    monkeypatch.setattr(live, "_POLL_SECONDS", 0.01)
-    monkeypatch.setattr(live, "find_canonical_live_owner", lambda h: None)
-
-    assert bot_mode_dm._wait_live_dm(str(tmp_path), record["delivery_id"]) == 1
-    notice = json.loads(capsys.readouterr().out)
-    assert notice["status"] == "cancelled"
-    final = live.read_delivery_result(tmp_path, record["delivery_id"])
-    assert final is not None and final["status"] == "cancelled"
-
-
-def test_live_dm_wait_rechecks_receipt_when_owner_disappears_at_claim(tmp_path, monkeypatch, capsys):
-    from tools import bot_live_delivery as live
-
-    owner = dict(profile_home=str(tmp_path), session_id="bot", lease_id="lease", live_session_id="live")
-    record = live.deliver_to_live_owner(tmp_path, owner, "ping", delivery_id="f" * 32)
-    monkeypatch.setattr(bot_mode_dm, "_LIVE_WAIT_SECONDS", 0.01)
-    monkeypatch.setattr(live, "_POLL_SECONDS", 0.01)
-
-    def settle_during_owner_check(_home):
-        claimed = live.claim_pending_delivery(tmp_path, owner)
-        assert claimed is not None
-        live.complete_delivery(tmp_path, claimed["delivery_id"], status="settled", reply="PONG")
-
-    monkeypatch.setattr(live, "find_canonical_live_owner", settle_during_owner_check)
-    assert bot_mode_dm._wait_live_dm(str(tmp_path), record["delivery_id"]) == 0
-    notice = json.loads(capsys.readouterr().out)
-    assert notice["status"] == "settled"
-    assert notice["reply"] == "PONG"
-
-
-def test_live_dm_wait_keeps_claimed_turn_until_it_settles(tmp_path, monkeypatch, capsys):
-    """An owner gone after its claim still gets one more window to settle the in-flight turn."""
-    from tools import bot_live_delivery as live
-
-    owner = dict(profile_home=str(tmp_path), session_id="bot", lease_id="lease", live_session_id="live")
-    record = live.deliver_to_live_owner(tmp_path, owner, "ping", delivery_id="d" * 32)
-    assert live.claim_pending_delivery(tmp_path, owner) is not None
-    monkeypatch.setattr(bot_mode_dm, "_LIVE_WAIT_SECONDS", 0.5)
-    monkeypatch.setattr(live, "_POLL_SECONDS", 0.01)
-    settling = threading.Timer(0.02, lambda: live.complete_delivery(
-        tmp_path, record["delivery_id"], status="settled", reply="PONG"))
-
-    def owner_gone_then_settle(_home):
-        settling.start()
-
-    monkeypatch.setattr(live, "find_canonical_live_owner", owner_gone_then_settle)
-    try:
-        exit_code = bot_mode_dm._wait_live_dm(str(tmp_path), record["delivery_id"])
-    finally:
-        settling.join(timeout=2)
-
-    assert exit_code == 0
-    notice = json.loads(capsys.readouterr().out)
-    assert notice["status"] == "settled"
-    assert notice["reply"] == "PONG"
-
-
-def test_live_dm_wait_releases_claimed_runner_after_owner_is_gone(tmp_path, monkeypatch, capsys):
-    from tools import bot_live_delivery as live
-
-    owner = dict(profile_home=str(tmp_path), session_id="bot", lease_id="lease", live_session_id="live")
-    record = live.deliver_to_live_owner(tmp_path, owner, "ping", delivery_id="1" * 32)
-    assert live.claim_pending_delivery(tmp_path, owner) is not None
-    monkeypatch.setattr(bot_mode_dm, "_LIVE_WAIT_SECONDS", 0.01)
-    monkeypatch.setattr(live, "_POLL_SECONDS", 0.01)
-    monkeypatch.setattr(live, "find_canonical_live_owner", lambda h: None)
-
-    outcomes = []
-    waiting = threading.Thread(target=lambda: outcomes.append(bot_mode_dm._wait_live_dm(
-        str(tmp_path), record["delivery_id"])), daemon=True)
-    waiting.start()
-    waiting.join(timeout=1)
-    stopped_with_unknown_outcome = not waiting.is_alive()
-    if not stopped_with_unknown_outcome:
-        live.complete_delivery(tmp_path, record["delivery_id"], status="failed", error="test cleanup")
-        waiting.join(timeout=2)
-
-    assert stopped_with_unknown_outcome, "a vanished owner must not retain the runner indefinitely"
-    assert outcomes == [0]
-    notice = json.loads(capsys.readouterr().out)
-    assert notice["status"] == "claimed"
-    final = live.read_delivery_result(tmp_path, record["delivery_id"])
-    assert final is not None and final["status"] == "claimed"
-
-
-@pytest.mark.parametrize("status", ["queued", "claimed"])
-def test_live_dm_wait_releases_runner_when_owner_lookup_keeps_failing(tmp_path, monkeypatch, capsys, status):
-    """A lookup that always raises is an owner that cannot be confirmed: bounded, never cancelled."""
-    from tools import bot_live_delivery as live
-
-    owner = dict(profile_home=str(tmp_path), session_id="bot", lease_id="lease", live_session_id="live")
-    record = live.deliver_to_live_owner(tmp_path, owner, "ping", delivery_id="2" * 32)
-    if status == "claimed":
-        assert live.claim_pending_delivery(tmp_path, owner) is not None
-    monkeypatch.setattr(bot_mode_dm, "_LIVE_WAIT_SECONDS", 0.01)
-    monkeypatch.setattr(live, "_POLL_SECONDS", 0.01)
-
-    def lookup_fails(_home):
-        raise OSError("registry locked")
-
-    monkeypatch.setattr(live, "find_canonical_live_owner", lookup_fails)
-    assert bot_mode_dm._wait_live_dm(str(tmp_path), record["delivery_id"]) == 0
-    notice = json.loads(capsys.readouterr().out)
-    assert notice["status"] == status
-    assert "Do not resend" in notice["detail"]
-    assert live.read_delivery_result(tmp_path, record["delivery_id"])["status"] == status
-
-
-def test_live_dm_wait_stops_at_its_deadline_while_the_owner_holds_the_receipt(tmp_path, monkeypatch, capsys):
-    """A live owner that never claims (stalled consumer) or never settles still releases the runner."""
-    from tools import bot_live_delivery as live
-
-    owner = dict(profile_home=str(tmp_path), session_id="bot", lease_id="lease", live_session_id="live")
-    record = live.deliver_to_live_owner(tmp_path, owner, "ping", delivery_id="3" * 32)
-    monkeypatch.setattr(bot_mode_dm, "_LIVE_WAIT_SECONDS", 0.01)
+@pytest.mark.parametrize("lookup", ["raises", "holds"])
+def test_live_dm_wait_is_bounded_and_never_cancels_an_admission(tmp_path, monkeypatch, capsys, lookup):
+    """An authority that cannot be confirmed, or one that never settles, releases the runner with a
+    do-not-resend pending notice; the admitted receipt is never cancelled (main a6509d6b8fd)."""
+    live, _authority, record = _admitted_live_dm(tmp_path, monkeypatch, "2" * 32)
     monkeypatch.setattr(bot_mode_dm, "_LIVE_WAIT_MAX_SECONDS", 0.1)
-    monkeypatch.setattr(live, "_POLL_SECONDS", 0.01)
-    monkeypatch.setattr(live, "find_canonical_live_owner", lambda h: owner)
+    if lookup == "raises":
+        def lookup_fails(_home):
+            raise ValueError("profile authority is not ready")
 
+        monkeypatch.setattr(live, "find_canonical_live_owner", lookup_fails)
     assert bot_mode_dm._wait_live_dm(str(tmp_path), record["delivery_id"]) == 0
     notice = json.loads(capsys.readouterr().out)
     assert notice["status"] == "queued"
     assert "Do not resend" in notice["detail"]
+    assert live.read_delivery_result(tmp_path, record["delivery_id"])["status"] == "queued"
 
 
-# ── plaintext tempfile lifecycle ─────────────────────────────────────────────
+# ── plaintext tempfile lifecycle (peer stdin transport) ─────────────────────
 
 
-@pytest.mark.parametrize("stdin_file", [False, True])
 @pytest.mark.parametrize("encoding", ["utf-8", "utf-8-sig"])
-def test_delivery_runner_keeps_file_for_child_then_unlinks(tmp_path, stdin_file, encoding):
+def test_peer_delivery_runner_keeps_file_for_child_then_unlinks(tmp_path, encoding):
+    # Main 61dc26cd7d9 also ran the local query-file transport here; that lane has no local
+    # child any more (a local delivery without a canonical owner is refused and retained,
+    # see test_local_delivery_runner_surfaces_refusal_and_retains_payload), so only the peer
+    # stdin transport keeps the file for the child.
+    stdin_file = True
     dm_file = tmp_path / "message with spaces.txt"
     dm_file.write_bytes("secret λ $(not shell)".encode(encoding))
     observed = tmp_path / "observed.txt"
@@ -856,98 +834,43 @@ def test_delivery_runner_keeps_file_for_child_then_unlinks(tmp_path, stdin_file,
 
 
 
-def test_delivery_runner_preserves_child_failure_and_unlinks(tmp_path):
+def test_peer_delivery_runner_preserves_child_failure_and_unlinks(tmp_path):
     dm_file = tmp_path / "message.txt"
     dm_file.write_text("secret", encoding="utf-8")
     child = tmp_path / "fail.py"
     child.write_text(
-        "import pathlib, sys\n"
-        "assert pathlib.Path(sys.argv[-1]).read_text(encoding='utf-8') == 'secret'\n"
+        "import sys\n"
+        "assert sys.stdin.read() == 'secret'\n"
         "raise SystemExit(7)\n",
         encoding="utf-8",
     )
 
-    returncode = bot_mode_dm._run_delivery(
-        [sys.executable, str(child)], str(dm_file), stdin_file=False
-    )
+    returncode = bot_mode_dm._run_delivery([sys.executable, str(child)], str(dm_file), stdin_file=True)
 
     assert returncode == 7
     assert not dm_file.exists()
 
 
-def test_delivery_runner_surfaces_live_owner_refusal(tmp_path, capsys):
-    """#100523: the CLI's single-owner lease refusal is a delivery FAILURE the
-    sender can read, not a raw exit-1 with the payload silently gone."""
+def test_local_delivery_runner_surfaces_refusal_and_retains_payload(tmp_path, monkeypatch, capsys):
+    """A local delivery with no canonical authority is a FAILURE the sender can
+    read — typed reason, payload retained — never a CLI turn of its own."""
     dm_file = tmp_path / "message.txt"
     dm_file.write_text("hi", encoding="utf-8")
-    child = tmp_path / "owned.py"
-    child.write_text(
-        "import sys\n"
-        "print('Session abc already has a live owner (desktop, pid 1).', file=sys.stderr)\n"
-        "raise SystemExit(1)\n",
-        encoding="utf-8",
-    )
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("no local inference fallback"))
 
-    returncode = bot_mode_dm._run_delivery(
-        [sys.executable, str(child), "-p", "ops"], str(dm_file), stdin_file=False
-    )
+    returncode = bot_mode_dm._run_delivery(["hermes", "-p", "ops"], str(dm_file), stdin_file=False)
 
     assert returncode == 1
     payload = json.loads(capsys.readouterr().out)
-    assert payload["reason"] == "target_busy"
-
-
-def test_local_turn_reemits_empty_stdout_for_a_bare_silence_marker(tmp_path, capsys):
-    """#110782: the one-shot ``hermes chat -c "Bot Chat"`` transport applies the gateway's
-    silence rule — a successful bare marker reaches the sender as "", prose stays verbatim."""
-    dm_file = tmp_path / "message.txt"
-    dm_file.write_text("thanks, bye", encoding="utf-8")
-    child = tmp_path / "quiet.py"
-    child.write_text("import sys\nprint(sys.argv[1])\n", encoding="utf-8")
-
-    assert bot_mode_dm._run_local_turn([sys.executable, str(child), "NO_REPLY"], str(dm_file)) == 0
-    assert capsys.readouterr().out == ""
-
-    prose = "The NO_REPLY marker means do not answer."
-    assert bot_mode_dm._run_local_turn([sys.executable, str(child), prose], str(dm_file)) == 0
-    assert capsys.readouterr().out.strip() == prose
-
-
-def test_query_file_delivery_closes_stdin_for_initial_attempt_and_retry(
-    tmp_path, monkeypatch
-):
-    dm_file = tmp_path / "message.txt"
-    dm_file.write_text("secret", encoding="utf-8")
-    calls = []
-    responses = [
-        subprocess.CompletedProcess([], 1, stdout="", stderr="HTTP 429 rate limit"),
-        subprocess.CompletedProcess([], 0, stdout="", stderr=""),
-    ]
-
-    def fake_run(argv, **kwargs):
-        calls.append((argv, kwargs))
-        return responses.pop(0)
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
-
-    returncode = bot_mode_dm._run_delivery(
-        ["hermes", "-p", "researcher"], str(dm_file), stdin_file=False
-    )
-
-    assert returncode == 0
-    assert len(calls) == 2
-    assert [kwargs["stdin"] for _argv, kwargs in calls] == [
-        subprocess.DEVNULL,
-        subprocess.DEVNULL,
-    ]
-    assert not dm_file.exists()
+    assert payload["reason"] == "runtime_unavailable"
+    assert "retained" in payload["error"]
+    assert dm_file.read_text(encoding="utf-8") == "hi"
 
 
 @pytest.mark.parametrize("mode, author", [
     ("stdin", {"id": "bot:eri-mac.local/coder", "name": "coder", "is_bot": True}),
-    ("query-file", {"id": "bot:coder", "name": "coder", "is_bot": True}),
-    ("query-file", None),
-], ids=["stdin", "query-file", "no author"])
+    ("stdin", None),
+], ids=["author", "no author"])
 def test_delivery_main_child_env_carries_only_the_argv_author(tmp_path, monkeypatch, mode, author):
     """The ``--author`` payload becomes HERMES_TURN_AUTHOR on the child. Without it the runner drops the
     variable it inherited from the sending bot's own turn instead of passing it on as the recipient's author."""
@@ -977,6 +900,32 @@ def test_delivery_main_child_env_carries_only_the_argv_author(tmp_path, monkeypa
     assert not dm_file.exists()
 
 
+@pytest.mark.parametrize("author", [{"id": "bot:coder", "name": "coder", "is_bot": True}, None])
+def test_local_runner_sends_only_argv_author_to_authority(tmp_path, monkeypatch, author):
+    from agent.turn_author import TURN_AUTHOR_ENV
+
+    target = tmp_path / "profiles" / "researcher"
+    target.mkdir(parents=True)
+    authority = _canonical_target(monkeypatch, target)
+    dm_file = tmp_path / "message.txt"
+    dm_file.write_text("hello", encoding="utf-8")
+    monkeypatch.setenv(TURN_AUTHOR_ENV, json.dumps({"id": "bot:previous", "name": "previous", "is_bot": True}))
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("no local inference child"))
+    waited = []
+    monkeypatch.setattr(bot_mode_dm, "_wait_live_dm", lambda home, key, **_kw: waited.append((home, key)) or 0)
+    command = bot_mode_dm._delivery_command(
+        ["hermes", "-p", "researcher"], str(dm_file), stdin_file=False,
+        profile_home=target, author=author,
+    )
+    assert bot_mode_dm._delivery_main(shlex.split(command)[2:]) == 0
+    [(home, params)] = authority.calls
+    assert home == target.resolve()
+    assert params.get("author") == author
+    assert params["message"] == "hello"
+    assert waited == [(str(target.resolve()), params["id"])]
+    assert dm_file.exists(), "local admission retains its evidence, not peer-child cleanup"
+
+
 def test_real_delivery_command_round_trip_carries_author(tmp_path):
     """Through a real subprocess, the runner argv built by ``_delivery_command`` sets HERMES_TURN_AUTHOR on the child."""
     dm_file = tmp_path / "message.txt"
@@ -990,7 +939,7 @@ def test_real_delivery_command_round_trip_carries_author(tmp_path):
     )
     author = {"id": "bot:default", "name": "hermes", "is_bot": True}
     command = bot_mode_dm._delivery_command(
-        [sys.executable, str(child), str(observed)], str(dm_file), stdin_file=False, author=author
+        [sys.executable, str(child), str(observed)], str(dm_file), stdin_file=True, author=author
     )
 
     result = subprocess.run(shlex.split(command), check=False)
@@ -1012,46 +961,34 @@ def test_delivery_main_maps_launch_exception_to_one_and_unlinks(tmp_path, monkey
     monkeypatch.setattr(subprocess, "run", boom)
     assert (
         bot_mode_dm._delivery_main(
-            ["--run-delivery", "query-file", str(dm_file), "missing-transport"]
+            ["--run-delivery", "stdin", str(dm_file), "missing-transport"]
         )
         == 1
     )
     assert not dm_file.exists()
 
 
-def test_local_turn_decodes_utf8_reply_without_locale_default(tmp_path, monkeypatch, capsys):
-    child = tmp_path / "reply.py"
-    child.write_text(
-        "import sys\n"
-        "sys.stdout.buffer.write('réponse 世界'.encode('utf-8'))\n"
-        "sys.stderr.buffer.write('diagnostic café'.encode('utf-8'))\n",
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(subprocess, "_text_encoding", lambda: "ascii")
-    assert bot_mode_dm._run_local_turn([sys.executable, str(child)], str(tmp_path / "unused")) == 0
-    captured = capsys.readouterr()
-    assert captured.out == "réponse 世界"
-    assert captured.err == "diagnostic café"
+def test_delivery_main_local_refusal_retains_payload(tmp_path, monkeypatch, capsys):
+    dm_file = tmp_path / "message.txt"
+    dm_file.write_text("secret", encoding="utf-8")
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("no local inference fallback"))
+    assert bot_mode_dm._delivery_main(["--run-delivery", "query-file", str(dm_file), "hermes", "-p", "ghost"]) == 1
+    assert json.loads(capsys.readouterr().out)["reason"] == "runtime_unavailable"
+    assert dm_file.read_text(encoding="utf-8") == "secret"
 
 
-@pytest.mark.parametrize("stdin_file", [False, True])
-def test_real_delivery_command_round_trip(tmp_path, stdin_file):
+def test_real_peer_delivery_command_round_trip(tmp_path):
     dm_file = tmp_path / "message with spaces.txt"
     dm_file.write_text("secret λ\nsecond line", encoding="utf-8")
     observed = tmp_path / "observed with spaces.txt"
     child = tmp_path / "child with spaces.py"
     child.write_text(
         "import pathlib, sys\n"
-        "source = sys.stdin if sys.argv[1] == '-' else open(sys.argv[1], encoding='utf-8')\n"
-        "with source:\n"
-        "    pathlib.Path(sys.argv[2]).write_text(source.read(), encoding='utf-8')\n",
+        "pathlib.Path(sys.argv[1]).write_text(sys.stdin.read(), encoding='utf-8')\n",
         encoding="utf-8",
     )
-    source_arg = "-" if stdin_file else str(dm_file)
     command = bot_mode_dm._delivery_command(
-        [sys.executable, str(child), source_arg, str(observed)],
-        str(dm_file),
-        stdin_file=stdin_file,
+        [sys.executable, str(child), str(observed)], str(dm_file), stdin_file=True
     )
 
     result = subprocess.run(shlex.split(command), check=False)
@@ -1063,7 +1000,11 @@ def test_real_delivery_command_round_trip(tmp_path, stdin_file):
 
 @pytest.mark.platforms("windows")
 def test_delivery_command_round_trip_through_windows_local_shell(tmp_path):
-    """Native runner paths must survive the Git Bash process boundary."""
+    """Native runner paths must survive the Git Bash process boundary.
+
+    Peer (stdin) transport, like the Linux sibling: a local query-file delivery without a
+    canonical Bot Chat owner is refused with ``runtime_unavailable`` by design.
+    """
     from tools.environments.local import _find_shell
 
     dm_file = tmp_path / "message with spaces.txt"
@@ -1072,13 +1013,13 @@ def test_delivery_command_round_trip_through_windows_local_shell(tmp_path):
     child = tmp_path / "child with spaces.py"
     child.write_text(
         "import pathlib, sys\n"
-        "pathlib.Path(sys.argv[1]).write_text('started', encoding='utf-8')\n",
+        "pathlib.Path(sys.argv[1]).write_text(sys.stdin.read(), encoding='utf-8')\n",
         encoding="utf-8",
     )
     command = bot_mode_dm._delivery_command(
         [sys.executable, str(child), str(observed)],
         str(dm_file),
-        stdin_file=False,
+        stdin_file=True,
     )
 
     result = subprocess.run(
@@ -1089,7 +1030,7 @@ def test_delivery_command_round_trip_through_windows_local_shell(tmp_path):
     )
 
     assert result.returncode == 0, result.stderr or result.stdout
-    assert observed.read_text(encoding="utf-8") == "started"
+    assert observed.read_text(encoding="utf-8") == "secret"
     assert not dm_file.exists()
 
 
@@ -1231,17 +1172,11 @@ def test_cleanup_sweeps_stale_live_intents_and_keeps_fresh_ones(tmp_path, monkey
 
 
 def test_settled_live_wait_unlinks_the_intent_but_a_pending_one_keeps_it(tmp_path, monkeypatch, capsys):
-    from tools import bot_live_delivery as live
-
     dm_file = tmp_path / "dm-x.txt"
     dm_file.write_text("secret plaintext", encoding="utf-8")
     intent = tmp_path / "dm-x.txt.live.json"
     intent.write_text("{}", encoding="utf-8")
-    owner = dict(profile_home=str(tmp_path), session_id="bot", lease_id="lease", live_session_id="live")
-    record = live.deliver_to_live_owner(tmp_path, owner, "ping", delivery_id="b" * 32)
-    monkeypatch.setattr(bot_mode_dm, "_LIVE_WAIT_SECONDS", 0.01)
-    monkeypatch.setattr(live, "_POLL_SECONDS", 0.01)
-    monkeypatch.setattr(live, "find_canonical_live_owner", lambda h: owner)
+    _live, authority, record = _admitted_live_dm(tmp_path, monkeypatch, "b" * 32)
 
     outcomes = []
     waiting = threading.Thread(target=lambda: outcomes.append(bot_mode_dm._wait_live_dm(
@@ -1249,9 +1184,7 @@ def test_settled_live_wait_unlinks_the_intent_but_a_pending_one_keeps_it(tmp_pat
     waiting.start()
     time.sleep(0.05)
     pending_kept = waiting.is_alive() and intent.exists() and dm_file.exists()
-    claimed = live.claim_pending_delivery(tmp_path, owner)
-    assert claimed is not None
-    live.complete_delivery(tmp_path, claimed["delivery_id"], status="settled", reply="ok")
+    authority.settle(record["delivery_id"], status="settled", reply="ok")
     waiting.join(timeout=2)
 
     assert pending_kept, "a pending delivery keeps its intent while the runner waits"
@@ -1314,6 +1247,7 @@ def test_ack_names_poll_return_path_when_session_cannot_receive_completions(tmp_
         "output": "Background process started", "session_id": "proc_np1", "notify_on_complete": False,
         "notify_unsupported": "poll"}))
     home = _managed_home(tmp_path, teammates=("researcher",))
+    _canonical_target(monkeypatch, home / "profiles" / "researcher")
     result = json.loads(bot_mode_dm.message_agent_tool(
         target="researcher", message="hi", agent=_FakeAgent(home, title="Bot Chat")))
 
@@ -1326,13 +1260,11 @@ def test_live_owner_ack_carries_the_poll_return_path_when_session_cannot_receive
     """#101142 sibling: a live-owner (Desktop) target still runs the same tracked runner whose
     stdout carries the reply. On a non-push sender the live-owner ack must propagate
     ``reply_delivery="poll"`` and the wait instruction instead of 'finish your turn'."""
-    from tools import bot_live_delivery as live
     import tools.terminal_tool as terminal_tool_module
 
     home = _managed_home(tmp_path)
     target = home / "profiles" / "researcher"
-    owner = dict(profile_home=str(target), session_id="bot", lease_id="lease", live_session_id="live")
-    monkeypatch.setattr(live, "find_canonical_live_owner", lambda h: owner if Path(h) == target else None)
+    _canonical_target(monkeypatch, target)
     monkeypatch.setattr(bot_mode_dm, "_dm_dir", lambda: tmp_path)
     monkeypatch.setattr(terminal_tool_module, "terminal_tool", lambda command, **kw: json.dumps({
         "output": "Background process started", "session_id": "proc_np2", "notify_on_complete": False}))
@@ -1363,6 +1295,7 @@ def test_poll_reply_is_persisted_as_a_delivery_row_when_the_runner_exits(tmp_pat
 
     monkeypatch.setattr(terminal_tool_module, "terminal_tool", fake_terminal_tool)
     home = _managed_home(tmp_path, teammates=("researcher",))
+    _canonical_target(monkeypatch, home / "profiles" / "researcher")
     agent = _FakeAgent(home, title="Bot Chat")
     rows = []
     agent._session_db.append_message = lambda session_id, role, **kw: rows.append((session_id, role, kw)) or 1
@@ -1378,33 +1311,3 @@ def test_poll_reply_is_persisted_as_a_delivery_row_when_the_runner_exits(tmp_pat
     assert kw["display_kind"] == "process_complete"
     assert "PAYLOAD_SENTINEL_42" in kw["content"]
     assert procs[0].id in kw["content"]
-
-
-def test_local_turn_survives_undecodable_transport_output(tmp_path, capsys):
-    """A transport that exits 0 while printing a non-UTF-8 byte must still deliver.
-
-    A strict decode raised UnicodeDecodeError inside subprocess.run — a ValueError, so no
-    handler caught it and the delivery crashed instead of re-emitting the transport's
-    streams (stdout is the reply text the completion notification carries back).
-    """
-    dm_file = tmp_path / "dm.txt"
-    dm_file.write_text("hello", encoding="utf-8")
-    argv = [sys.executable, "-c", "import sys; sys.stdout.buffer.write(b'reply \\377')"]
-
-    assert bot_mode_dm._run_local_turn(argv, str(dm_file)) == 0
-    assert "reply" in capsys.readouterr().out
-
-
-def test_local_turn_relays_utf8_reply_under_a_gbk_default_codec(tmp_path, monkeypatch, capsys):
-    """#83851: the transport is a Hermes CLI child, which always writes UTF-8 stdio. Decoding it with
-    the host's default codec (cp936 on zh-CN Windows) crashed or garbled the reply; it must round-trip."""
-    dm_file = tmp_path / "dm.txt"
-    dm_file.write_text("hello", encoding="utf-8")
-    reply = "✅ 已完成…"
-    argv = [sys.executable, "-c", f"import sys; sys.stdout.buffer.write({reply.encode('utf-8')!r})"]
-    # subprocess resolves an unspecified text-mode codec through _text_encoding() → locale.getencoding();
-    # patch that seam since run_tests.sh's PYTHONUTF8=1 short-circuits the locale lookup.
-    monkeypatch.setattr(subprocess, "_text_encoding", lambda: "gbk")
-
-    assert bot_mode_dm._run_local_turn(argv, str(dm_file)) == 0
-    assert reply in capsys.readouterr().out

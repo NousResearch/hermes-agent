@@ -1687,7 +1687,7 @@ def main(
         q: Shorthand for --query
         oneshot: With -q: force the legacy answer-and-exit single-query mode
             even on a TTY.
-        image: Optional local image path to attach to a single query
+        image: Not on the gateway path (refused; attach in `hermes --tui` or Desktop)
         toolsets: Comma-separated list of toolsets to enable (e.g., "web,terminal")
         skills: Comma-separated or repeated list of skills to preload for the session
         model: Model to use (default: anthropic/claude-opus-4-20250514)
@@ -1696,25 +1696,30 @@ def main(
         api_key: API key for authentication
         base_url: Base URL for the API
         max_turns: Maximum tool-calling iterations (default: 60)
-        verbose: Enable verbose logging
-        compact: Use compact display mode
-        list_tools: List available tools and exit
-        list_toolsets: List available toolsets and exit
-        resume: Resume a previous session by its ID (e.g., 20260225_143052_a1b2c3)
-        worktree: Run in an isolated git worktree (for parallel agents). Alias: -w
+        verbose: Not on the gateway path (refused; `hermes logs --follow`)
+        compact: Not on the gateway path (refused; `display.compact: true`)
+        list_tools: List available tools and exit (no session, no gateway)
+        list_toolsets: List available toolsets and exit (no session, no gateway)
+        resume: Resume a previous session by id, title, or `latest`
+        worktree: Not on the gateway path (refused; `hermes --tui -w`). Alias: -w
         w: Shorthand for --worktree
-    
+
+    Every chat launch hands off to the shared gateway (hermes_cli/gateway_chat.py), which
+    owns the session; the refused options are listed in
+    website/docs/developer-guide/gateway-classic-cli.md.
+
     Examples:
         python cli.py                            # Start interactive mode
         python cli.py --toolsets web,terminal    # Use specific toolsets
-        python cli.py --skills hermes-agent-dev,github-auth
         python cli.py -q "What is Python?"       # Single query mode
-        python cli.py -q "Describe this" --image ~/storage/shared/Pictures/cat.png
         python cli.py --list-tools               # List tools and exit
-        python cli.py --resume 20260225_143052_a1b2c3  # Resume session
-        python cli.py -w                         # Start in isolated git worktree
-        python cli.py -w -q "Fix issue #123"     # Single query in worktree
+        python cli.py --resume latest            # Resume the most recent CLI session
+        python cli.py --resume local-<id>        # Resume a session by the id it printed
     """
+    if not gateway:
+        from hermes_cli.gateway_chat import launch_from_kwargs
+        sys.exit(launch_from_kwargs(locals()))
+
     # UTF-8 stdio on Windows before any print (Rich box-drawing would UnicodeEncodeError on cp1252).
     with suppress(Exception):
         from hermes_cli.stdio import configure_windows_stdio

@@ -16,10 +16,12 @@ import stat
 import sys
 import tempfile
 import zipfile
+from contextlib import closing, contextmanager
 from pathlib import Path
 from typing import List, Optional, Tuple
 
 from hermes_state_holders import read_only_db_uri
+from hermes_cli.backup_sqlite import _safe_copy_db
 from utils import (
     _preserve_file_mode, _preserve_file_owner, _restore_file_mode, _restore_file_owner, atomic_replace,
     mkstemp_beside,
@@ -156,6 +158,87 @@ def _restore_auth_json(src: Path, dst: Path) -> bool:
 
 
 def _safe_restore_db(src: Path, dst: Path) -> bool:
+    """Restore only while holding the destination authority's maintenance reservation.
+
+    Returns ``False``, without touching *dst*, when *src* fails the SQLite
+    integrity check, when the runtime owns the profile, or when a canonical
+    ``state.db`` epoch floor cannot be proven.
+    """
+    from gateway.runtime_ownership import OwnershipConflict, exclusive_maintenance
+    from hermes_cli.backup import verify_sqlite_integrity
+
+    # backup() copies pages without validating their contents; its fallback
+    # copies bytes even when SQLite rejected the source. Neither may touch the
+    # destination until the snapshot passes the existing bounded integrity policy.
+    source_check = verify_sqlite_integrity(src)
+    if not source_check["valid"]:
+        logger.error("Refusing SQLite restore from %s: %s", src, source_check["message"])
+        return False
+    try:
+        with exclusive_maintenance([dst.absolute().parent, dst.resolve().parent]):
+            with _restore_epoch_source(src, dst) as prepared:
+                return _restore_db_pages(prepared, dst)
+    except (OwnershipConflict, OSError, sqlite3.Error) as exc:
+        logger.error("%s", exc)
+        return False
+
+
+def _restore_epoch(path: Path) -> int:
+    if not path.exists():
+        return 0
+    with closing(sqlite3.connect(read_only_db_uri(path), uri=True)) as conn:
+        if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='runtime_epoch'").fetchone():
+            return 0
+        row = conn.execute("SELECT epoch FROM runtime_epoch WHERE singleton=1").fetchone()
+        return int(row[0]) if row else 0
+
+
+def _restore_destination_epoch(dst: Path) -> int:
+    try:
+        return _restore_epoch(dst)
+    except (OSError, sqlite3.Error, ValueError) as exc:
+        raise OSError(
+            f"Cannot read the canonical runtime epoch at {dst}; refusing in-place restore. "
+            "Use `hermes sessions recover --source <snapshot> --output <separate-path>` "
+            "to salvage transcripts into a separate output."
+        ) from exc
+
+
+@contextmanager
+def _restore_epoch_source(src: Path, dst: Path):
+    """Stage an epoch floor into the image BEFORE publishing it atomically.
+
+    Updating the destination after backup() would leave a crash window that
+    reuses an older worker epoch. Never modify the user's source snapshot.
+    Full restores retain all admissions/worker receipts; normal startup advances
+    this floor and reconciles started work to unknown, not replayable queued work.
+    An unreadable destination cannot prove its epoch floor: use transcript salvage
+    into a separate output rather than silently restoring with a recycled epoch.
+    """
+    if dst.name != 'state.db' and dst.resolve().name != 'state.db':
+        yield src
+        return
+    floor = _restore_destination_epoch(dst)
+    if floor <= _restore_epoch(src):
+        yield src
+        return
+    with tempfile.TemporaryDirectory(prefix='.restore-epoch-', dir=dst.parent) as work:
+        prepared = Path(work) / 'state.db'
+        if not _safe_copy_db(src, prepared):
+            raise OSError('Unable to stage a restore with a safe runtime epoch')
+        with closing(sqlite3.connect(prepared)) as conn:
+            conn.execute("""CREATE TABLE IF NOT EXISTS runtime_epoch (
+                singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                epoch INTEGER NOT NULL CHECK (epoch > 0), instance_id TEXT NOT NULL)""")
+            conn.execute("""INSERT INTO runtime_epoch VALUES(1,?, 'offline-restore')
+                ON CONFLICT(singleton) DO UPDATE SET epoch=excluded.epoch,
+                instance_id=excluded.instance_id""", (floor,))
+            conn.commit()
+        prepared.chmod(src.stat().st_mode)
+        yield prepared
+
+
+def _restore_db_pages(src: Path, dst: Path) -> bool:
     """Restore a SQLite database from snapshot *src* into live *dst*.
 
     Uses SQLite's backup() API to write snapshot pages into the live
@@ -181,19 +264,9 @@ def _safe_restore_db(src: Path, dst: Path) -> bool:
     process or in-process connection holds the file: replacing the inode
     under a live holder is the #90950 split-brain, so that branch fails
     closed (returns ``False``) and the caller reports the file as skipped.
-    It also returns ``False``, without touching *dst*, when *src* fails the
-    SQLite integrity check.
+    Callers go through ``_safe_restore_db``, which validates *src* and holds
+    the maintenance reservation and epoch floor around this publication.
     """
-    from hermes_cli.backup import verify_sqlite_integrity
-
-    # backup() copies pages without validating their contents; its fallback
-    # copies bytes even when SQLite rejected the source. Neither may touch the
-    # destination until the snapshot passes the existing bounded integrity policy.
-    source_check = verify_sqlite_integrity(src)
-    if not source_check["valid"]:
-        logger.error("Refusing SQLite restore from %s: %s", src, source_check["message"])
-        return False
-
     dst_conn: Optional[sqlite3.Connection] = None
     try:
         dst_conn = sqlite3.connect(str(dst))
@@ -201,8 +274,9 @@ def _safe_restore_db(src: Path, dst: Path) -> bool:
             # Force a WAL checkpoint so the backup starts from a clean
             # state rather than writing on top of a deep WAL.
             dst_conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        except Exception:
-            pass
+        except sqlite3.Error as exc:
+            # Optional: backup() still publishes over a deep WAL, just less tidily.
+            logger.debug("Pre-restore WAL checkpoint of %s skipped: %s", dst, exc)
         src_conn = sqlite3.connect(read_only_db_uri(src), uri=True)
         try:
             src_conn.backup(dst_conn)
@@ -213,10 +287,11 @@ def _safe_restore_db(src: Path, dst: Path) -> bool:
         try:
             mode = src.stat().st_mode
             dst.chmod(mode)
-        except Exception:
-            pass
+        except OSError as exc:
+            # The data is restored; only the snapshot's file mode could not be carried over.
+            logger.warning("Restored %s but could not apply the snapshot's file mode: %s", dst, exc)
         return True
-    except Exception as exc:
+    except (sqlite3.Error, OSError, ValueError) as exc:  # ValueError: an unrepresentable path
         logger.warning("SQLite safe restore failed for %s -> %s: %s", src, dst, exc)
         # Release our own handle on *dst* before the fallback: on Windows an
         # open connection blocks unlink() with WinError 32, which would make
@@ -224,8 +299,8 @@ def _safe_restore_db(src: Path, dst: Path) -> bool:
         if dst_conn is not None:
             try:
                 dst_conn.close()
-            except Exception:
-                pass
+            except sqlite3.Error as close_exc:
+                logger.debug("Closing %s before the fallback restore failed: %s", dst, close_exc)
         # Fallback: unlink+move (the old approach).  This still works for
         # the common case where no other process holds the DB open.
         from hermes_cli.sqlite_safe_read import (
@@ -285,7 +360,7 @@ def _safe_restore_db(src: Path, dst: Path) -> bool:
                 dst, exc2,
             )
             return False
-        except Exception as exc2:
+        except (OSError, ValueError) as exc2:  # ValueError: a path the OS cannot represent
             logger.error("Fallback restore also failed for %s -> %s: %s", src, dst, exc2)
             return False
 
@@ -489,6 +564,20 @@ def _count_session_rows(path: Path) -> Optional[tuple[int, int]]:
 
 
 def _import_db_member(
+    zf: zipfile.ZipFile,
+    member: str,
+    target: Path,
+    new_file_mode: Optional[int] = None,
+) -> None:
+    from gateway.runtime_ownership import OwnershipConflict, exclusive_maintenance
+    try:
+        with exclusive_maintenance([target.absolute().parent, target.resolve().parent]):
+            _import_db_member_exclusive(zf, member, target, new_file_mode)
+    except OwnershipConflict as exc:
+        raise OSError(str(exc)) from exc
+
+
+def _import_db_member_exclusive(
     zf: zipfile.ZipFile,
     member: str,
     target: Path,

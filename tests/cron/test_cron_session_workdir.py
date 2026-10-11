@@ -38,6 +38,19 @@ class _FakeCronAgent:
 
 
 def _run_job_with_real_db(job, db, tmp_path):
+    # Agent jobs run in-process only inside the owner's cron execution (gateway/session_cron);
+    # outside it run_job admits them to the running gateway. Bind that execution so the scheduler
+    # body that finalizes the cron session row runs here against ``db``.
+    from types import SimpleNamespace
+    from gateway import session_cron
+    token = session_cron._execution.set((SimpleNamespace(db=db), f"cron_{job['id']}_owned", job["id"], None))
+    try:
+        return _run_job_in_owner(job, db, tmp_path)
+    finally:
+        session_cron._execution.reset(token)
+
+
+def _run_job_in_owner(job, db, tmp_path):
     with patch("cron.scheduler._hermes_home", tmp_path), \
          patch("cron.scheduler_delivery._resolve_origin", return_value=None), \
          patch("hermes_cli.env_loader.load_hermes_dotenv"), \

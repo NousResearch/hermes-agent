@@ -1,21 +1,25 @@
 """Tests for kanban worker in-place turn recovery and the shared exit policy.
 
 Unit contracts first (retry authority, the live run/claim proof, the recovery
-loop), then call-site behaviour parametrized over the driver — production
-``chat -q`` and quiet ``-Q`` — so each behaviour is stated once, then the
-goal-mode veto as one table.
+loop), then call-site behaviour, then the goal-mode veto as one table.
 
-The exit mapping itself is main's ``cli._single_query_exit_code`` (pinned by
-``tests/hermes_cli/test_single_query_exit_contract.py``); only the stripped
-worker predicate this PR adds to it is pinned here.
+Under the unified gateway runtime a dispatcher-spawned worker no longer runs the
+agent: ``hermes_cli.kanban_worker_client`` submits the claim to the profile owner,
+and the owner runs the turns in ``gateway.session_kanban.run_worker_turns`` against
+the bound frame's db/run/claim carrier. The call-site tests therefore drive that
+real owner seam (real board, real claim, real lease proof) and read the outcome the
+dispatcher books — ``worker_exit_code`` — plus the client's exit/summary half. The
+exit mapping itself is ``hermes_cli.turn_exit.turn_exit_code`` (pinned row by row by
+``tests/gateway/test_kanban_result_exit.py``); the in-process one-shot mapper keeps
+its stripped worker predicate pinned here.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -35,15 +39,13 @@ from hermes_cli.kanban_db import KANBAN_RATE_LIMIT_EXIT_CODE
 
 KANBAN_ENV = (
     "HERMES_KANBAN_TASK",
+    "HERMES_KANBAN_GOAL_MODE",
     "HERMES_KANBAN_TURN_RECOVERY",
     "HERMES_KANBAN_RUN_ID",
     "HERMES_KANBAN_CLAIM_LOCK",
     "HERMES_KANBAN_DB",
     "HERMES_KANBAN_BOARD",
 )
-
-#: The two one-shot routes sharing the exit decision: production ``chat -q`` and quiet ``-Q``.
-DRIVERS = ("chat", "quiet")
 
 #: Any "live" lease for these tests (2100-01-01 UTC).
 _FAR_FUTURE_EXPIRY = 4_102_444_800
@@ -54,16 +56,6 @@ def clear_kanban_env(monkeypatch):
     for var in KANBAN_ENV:
         monkeypatch.delenv(var, raising=False)
     return monkeypatch
-
-
-def _worker_env(monkeypatch, *, task="t_probe", goal_mode=False, recovery=None):
-    """The environment a dispatcher-spawned worker sees (goal mode is its flag)."""
-    monkeypatch.setenv("HERMES_KANBAN_TASK", task)
-    monkeypatch.delenv("HERMES_KANBAN_GOAL_MODE", raising=False)
-    if goal_mode:
-        monkeypatch.setenv("HERMES_KANBAN_GOAL_MODE", "1")
-    if recovery is not None:
-        monkeypatch.setenv("HERMES_KANBAN_TURN_RECOVERY", str(recovery))
 
 
 def _failed(*, retryable: bool = True, reason: str = "timeout",
@@ -434,225 +426,227 @@ def test_exit_mapping_composes_with_the_stripped_worker_predicate(monkeypatch):
     assert _single_query_exit_code(_failed(reason="rate_limit")) == KANBAN_RATE_LIMIT_EXIT_CODE
 
 
-# ── call-site behaviour: one harness for both drivers ────────────────
+def test_explicit_blank_carrier_never_falls_back_to_the_env_pin(clear_kanban_env):
+    """Owner-side workers pass the bound frame's task id explicitly; a blank explicit id is
+    not a worker and must not be rescued by whatever ``HERMES_KANBAN_TASK`` the owner
+    process happens to carry."""
+    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_foreign")
+    assert should_recover_turn(_failed(), attempt=0, task_id="   ") is False
+    assert should_recover_turn(_failed(), attempt=0, task_id="  t_bound  ") is True
+
+
+# ── call-site behaviour: the owner-side worker seam ──────────────────
 
 
 @pytest.fixture
-def cli_harness(monkeypatch):
-    """Drive the real ``cli.main`` on either one-shot route through one fake CLI.
+def owner_worker(tmp_path, clear_kanban_env, monkeypatch):
+    """Run the real owner-side worker turns for one claimed task on a real board.
 
-    ``script`` is the sequence of settled turn results — or a callable returning one on
-    every call. Returns ``(cli_mod, entered, ui)``, where ``entered`` records the user
-    message of every model entry, so a test can prove how many turns were taken and what
-    the recovery nudge carried, and ``ui`` records non-turn route marks (the exit summary).
+    ``install(script, ...)`` claims a task, records this interpreter's ``worker_bound``
+    event (what ``bind_worker_context`` writes), and returns ``(run, entered, context)``:
+    ``run()`` executes ``session_kanban.run_worker_turns`` and returns the exit code the
+    dispatcher books (``worker_exit_code``); ``entered`` records every model entry's user
+    message. ``script`` is a list of settled turn results or a callable returning one.
+    The owner process deliberately carries a FOREIGN env carrier: the proof must come
+    from the frame, never from the owner's environment.
     """
+    import agent.kanban_turn_recovery as rec
+    from gateway import session_kanban
+    from hermes_cli import kanban_db as kb
+    from hermes_cli.kanban_db_connect import connect_closing
 
-    def _install(driver, script):
-        import cli as cli_mod
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    for key, value in (("HERMES_KANBAN_TASK", "t_foreign"), ("HERMES_KANBAN_DB", str(tmp_path / "nope.db")),
+                       ("HERMES_KANBAN_RUN_ID", "999"), ("HERMES_KANBAN_CLAIM_LOCK", "foreign")):
+        monkeypatch.setenv(key, value)
+    monkeypatch.setattr(rec, "RECOVERY_DELAYS_SECONDS", (0.0,))
+    monkeypatch.setattr("agent.skill_commands.build_preloaded_skills_prompt", lambda *a, **k: ("", [], []))
 
+    def install(script, *, goal_mode=False, expires=None, recovery=None):
+        if recovery is not None:
+            monkeypatch.setenv("HERMES_KANBAN_TURN_RECOVERY", str(recovery))
+        kb.init_db()
+        path = kb.kanban_db_path()
+        with connect_closing(path) as conn:
+            task_id = kb.create_task(conn, title="recover", assignee="default")
+            task = kb.claim_task(conn, task_id, claimer="private-host:owner")
+            assert task is not None
+            with kb.write_txn(conn):
+                kb._append_event(conn, task_id, "worker_bound",
+                                 {"pid": os.getpid(), "claim_lock": task.claim_lock}, run_id=task.current_run_id)
+                if expires is not None:  # status/run/lock all still match: only the lease moves
+                    conn.execute("UPDATE tasks SET claim_expires = ? WHERE id = ?", (expires, task_id))
+                    conn.execute("UPDATE task_runs SET claim_expires = ? WHERE id = ?",
+                                 (expires, task.current_run_id))
+        context = {"db": str(path), "task_id": task_id, "run_id": task.current_run_id,
+                   "claim_lock": task.claim_lock, "skills": [], "context": "", "goal_mode": goal_mode,
+                   "goal_text": "g", "goal_max_turns": 2}
         entered: list[str] = []
-        ui: list[str] = []
         seen = {"n": 0}
 
-        class _Feed:
-            """Superset of both routes' surfaces: ``chat -q`` drives ``chat()``, the quiet
-            route drives ``agent.run_conversation``."""
+        class _Agent:
+            session_id = "s1"
 
-            def __init__(self, **_kwargs):
-                self.console = SimpleNamespace(print=lambda *a, **k: None)
-                self.provider = "test-provider"
-                self.model = "test-model"
-                self.session_id = "single-query-session"
-                self.conversation_history = []
-                self._active_agent_route_signature = "same-route"
-                self.agent = SimpleNamespace(
-                    session_id="single-query-session", platform="cli", quiet_mode=False,
-                    suppress_status_output=False, stream_delta_callback=object(),
-                    tool_gen_callback=object(), run_conversation=self._run_conversation,
-                )
+            def __init__(self):
+                self._session_db = self
 
-            def _next(self):
+            def get_messages_as_conversation(self, _sid):
+                return [{"role": "user", "content": "from-store"}]
+
+            def run_conversation(self, message, conversation_history=None):
+                entered.append(message)
                 result = script() if callable(script) else script[seen["n"]]
                 seen["n"] += 1
                 return result
 
-            def _run_conversation(self, *, user_message, conversation_history):
-                entered.append(user_message)
-                return self._next()
+        frame = {"text": "work", "policy": {"kanban_json": json.dumps(context)}}
 
-            def chat(self, query, images=None):
-                entered.append(query)
-                result = self._next()
-                self._last_turn_result = result
-                # Mirror production: chat() returns the settled turn's rendered response —
-                # for a failed turn that IS the provider error text.
-                return result.get("final_response", "") if isinstance(result, dict) else ""
+        def run() -> int:
+            session_kanban.run_worker_turns(_Agent(), frame, [])
+            return session_kanban.worker_exit_code(path, context)
 
-            # route plumbing
-            def _claim_active_session(self, surface, *, stderr=False):
-                return True
+        return run, entered, context
 
-            def _ensure_runtime_credentials(self):
-                return True
-
-            def _resolve_turn_agent_config(self, effective_query):
-                return {"signature": "same-route", "model": None, "runtime": None,
-                        "request_overrides": None}
-
-            def _init_agent(self, **kwargs):
-                return True
-
-            def _show_security_advisories(self):
-                pass
-
-            def _print_exit_summary(self, clear_screen=True):
-                ui.append("summary")
-
-        monkeypatch.setattr(cli_mod, "HermesCLI", _Feed)
-        monkeypatch.setattr(cli_mod.atexit, "register", lambda *a, **k: None)
-        monkeypatch.setattr(cli_mod, "_finalize_single_query", lambda fake_cli: None)
-        monkeypatch.setattr(cli_mod, "_collect_query_images", lambda q, img: (q, []))
-        monkeypatch.setattr(cli_mod, "_collect_kanban_task_images", lambda imgs: [])
-        return cli_mod, entered, ui
-
-    return _install
+    return install
 
 
-def _drive(cli_mod, driver) -> int:
-    """Run one one-shot query on ``driver`` and return the exit code it raised."""
-    kwargs: dict = {"query": "hello", "toolsets": "terminal"}
-    if driver == "chat":
-        kwargs.update(quiet=False, oneshot=True)
-    else:
-        kwargs.update(quiet=True)
-    with pytest.raises(SystemExit) as exc_info:
-        cli_mod.main(**kwargs)
-    return exc_info.value.code
+def test_recovers_in_place(owner_worker):
+    run, entered, context = owner_worker([_failed(), _success()], recovery=2)
 
-
-@pytest.fixture
-def live_claim(monkeypatch):
-    """The board proof is a separate contract (unit-tested above); the call-site tests run
-    against a worker that owns its run unless the test overrides it."""
-    import agent.kanban_turn_recovery as rec
-
-    monkeypatch.setattr(rec, "worker_claim_is_live", lambda: True)
-    return rec
-
-
-@pytest.fixture
-def goal_spy(monkeypatch):
-    """Spy on BOTH goal continuation loops at the cli-module seam. The loops are
-    pre-existing (their status check sees only run identity, not the claim lease); the
-    invariant under test is the call-site veto this PR adds."""
-    import cli as cli_mod
-
-    calls: list = []
-    monkeypatch.setattr(cli_mod, "_run_kanban_goal_loop_q",
-                        lambda c, resp: calls.append((resp, "quiet")))
-    monkeypatch.setattr(cli_mod, "_run_kanban_goal_loop_chat",
-                        lambda c, resp: calls.append((resp, "chat")))
-    return calls
-
-
-@pytest.mark.parametrize("driver", DRIVERS)
-def test_recovers_in_place(driver, cli_harness, live_claim, monkeypatch):
-    import agent.kanban_turn_recovery as rec
-
-    _worker_env(monkeypatch, recovery=2)
-    monkeypatch.setattr(rec, "RECOVERY_DELAYS_SECONDS", (0.0,))
-    cli_mod, entered, _ui = cli_harness(driver, [_failed(), _success()])
-
-    assert _drive(cli_mod, driver) == 0  # settled successfully
+    assert run() == 0  # settled successfully
     assert len(entered) == 2  # the failed turn, then the recovery turn
     assert "Do NOT start over" in entered[1]
-    assert "t_probe" in entered[1]
+    assert context["task_id"] in entered[1] and "t_foreign" not in entered[1]
 
 
-@pytest.mark.parametrize("driver", DRIVERS)
-def test_budget_exhausted_stops_and_releases(driver, cli_harness, live_claim, monkeypatch):
+def test_budget_exhausted_stops_and_releases(owner_worker):
     """Bounded, then released: the loop stops at the cap, and the exhausted transient wall
     still reaches the dispatcher as the neutral code."""
-    import agent.kanban_turn_recovery as rec
+    run, entered, _ = owner_worker(_failed, recovery=1)  # never recovers
 
-    _worker_env(monkeypatch, recovery=1)
-    monkeypatch.setattr(rec, "RECOVERY_DELAYS_SECONDS", (0.0,))
-    cli_mod, entered, _ui = cli_harness(driver, _failed)  # never recovers
-
-    assert _drive(cli_mod, driver) == KANBAN_RATE_LIMIT_EXIT_CODE
+    assert run() == KANBAN_RATE_LIMIT_EXIT_CODE
     assert len(entered) == 2  # original + one recovery attempt
 
 
-def _single_turn_cases():
-    """One row per single-turn outcome on either route: ``(env, script, exit code)``. Every
-    row takes exactly ONE model turn, so what is under test is what the route does AFTER
-    that turn: the neutral release for a quota wall (#48000-class boundary, including the
-    aggregator's upstream 429) versus an honest 1 for a turn that is not retry authority
-    (partial / nothing-settled) or for a run that is not a worker at all."""
-    neutral = KANBAN_RATE_LIMIT_EXIT_CODE
-    return [
-        pytest.param({}, [None], 1, id="nothing-settled"),
-        pytest.param({}, [_partial()], 1, id="denial-unfinished-turn"),
-        pytest.param({}, [_failed(reason="rate_limit")], neutral, id="quota-wall"),
-        pytest.param({}, [_failed(reason="billing")], neutral, id="billing-wall"),
-        pytest.param({}, [_failed(reason="upstream_rate_limit")], neutral,
+@pytest.mark.parametrize(
+    ("script", "code"),
+    [
+        pytest.param([None], 1, id="nothing-settled"),
+        pytest.param([_partial()], 1, id="denial-unfinished-turn"),
+        pytest.param([_failed(reason="rate_limit")], KANBAN_RATE_LIMIT_EXIT_CODE, id="quota-wall"),
+        pytest.param([_failed(reason="billing")], KANBAN_RATE_LIMIT_EXIT_CODE, id="billing-wall"),
+        pytest.param([_failed(reason="upstream_rate_limit")], KANBAN_RATE_LIMIT_EXIT_CODE,
                      id="upstream-quota-wall"),
-        pytest.param({"task": "   "}, [_failed(reason="rate_limit")], 1,
-                     id="blank-task-id-is-not-a-worker"),
-        pytest.param({"task": None}, [_failed()], 1, id="non-worker-failed"),
-        pytest.param({"task": None}, [None], 1, id="non-worker-unsettled"),
-    ]
+    ],
+)
+def test_single_turn_route_outcomes(script, code, owner_worker):
+    """Every row takes exactly ONE model turn, so what is under test is what the worker does
+    AFTER that turn: the neutral release for a quota wall (#48000-class boundary, including
+    the aggregator's upstream 429) versus an honest 1 for a turn that is not retry authority
+    (partial / nothing-settled) rather than a silent rc=0."""
+    run, entered, _ = owner_worker(list(script))
 
-
-@pytest.mark.parametrize("driver", DRIVERS)
-@pytest.mark.parametrize(("env", "script", "code"), _single_turn_cases())
-def test_single_turn_route_outcomes(driver, env, script, code, cli_harness, live_claim,
-                                    monkeypatch):
-    """One representative end-to-end denial per driver, plus the quota-wall release and the
-    non-worker rows. An unfinished, non-failed turn is not retry authority (the unit table
-    above pins interrupt / terminal settlement / partial as well), so exactly one model turn
-    is taken and the exit is the honest code rather than a silent rc=0; ``task=None`` means
-    no worker env at all, and a blank id is not a worker either (its wall is NOT
-    neutralized into 75 — raw env truthiness would)."""
-    if "task" in env:
-        if env["task"] is None:
-            monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
-            monkeypatch.delenv("HERMES_KANBAN_GOAL_MODE", raising=False)
-        else:
-            _worker_env(monkeypatch, task=env["task"])
-    else:
-        _worker_env(monkeypatch)
-    cli_mod, entered, _ui = cli_harness(driver, list(script))
-
-    assert _drive(cli_mod, driver) == code
+    assert run() == code
     assert len(entered) == 1
 
 
-@pytest.mark.parametrize("driver", DRIVERS)
-def test_claim_denial_stops_before_model_reentry(driver, cli_harness, capsys, monkeypatch):
-    """A worker whose run/claim proof fails gets no recovery nudge, says so, and still
-    leaves the dispatcher its neutral release."""
-    import agent.kanban_turn_recovery as rec
+def test_non_worker_frame_is_never_recovered(clear_kanban_env, monkeypatch):
+    """A turn whose frame carries no kanban claim is not a worker, even inside an owner
+    process whose environment names a task: one model entry, result returned untouched."""
+    from gateway import session_kanban
 
-    _worker_env(monkeypatch)
-    monkeypatch.setattr(rec, "worker_claim_is_live", lambda: False)
-    cli_mod, entered, _ui = cli_harness(driver, [_failed()])
+    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_foreign")
+    entered: list[str] = []
+    failed = _failed()
 
-    assert _drive(cli_mod, driver) == KANBAN_RATE_LIMIT_EXIT_CODE
+    class _Agent:
+        def run_conversation(self, message, conversation_history=None):
+            entered.append(message)
+            return failed
+
+    frame = {"text": "hello", "policy": {}}
+    assert session_kanban.run_worker_turns(_Agent(), frame, []) is failed
+    assert entered == ["hello"]
+
+
+def test_claim_denial_stops_before_model_reentry(owner_worker, caplog):
+    """A worker whose run/claim proof fails (lease lapsed, not yet reaped) gets no recovery
+    nudge, says so, and still leaves the dispatcher its neutral release."""
+    import logging
+
+    run, entered, _ = owner_worker([_failed()], expires=1)
+    with caplog.at_level(logging.WARNING, logger="agent.kanban_turn_recovery"):
+        assert run() == KANBAN_RATE_LIMIT_EXIT_CODE
     assert len(entered) == 1
-    assert "no longer holds a live run/claim" in capsys.readouterr().err
+    assert "no longer holds a live run/claim" in caplog.text
 
 
-def test_non_quiet_route_prints_its_exit_summary(cli_harness, live_claim, monkeypatch):
-    """Smoke pin kept from the pre-trim file: a plain (non-worker) failed `chat -q` run still
-    prints its exit summary before exiting 1 — the non-quiet tail exits unconditionally, so
-    the summary has to be printed on the way out."""
-    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
-    cli_mod, entered, ui = cli_harness("chat", [_failed()])
+def test_worker_client_reports_the_owner_exit_and_reply(owner_worker, monkeypatch, capsys):
+    """The dispatcher-spawned process is the client half: it exits with the code the owner
+    booked for this exact attempt, ends its log with the attempt's reply, and writes the
+    exit trailer the dead-worker sweep reads — so an exhausted wall still releases as 75."""
+    from contextlib import asynccontextmanager
 
-    assert _drive(cli_mod, "chat") == 1
-    assert entered == ["hello"]  # no recovery outside a worker
-    assert "summary" in ui
+    from hermes_cli import gateway_client, kanban_worker_client
+    from hermes_cli.quiet_single_query import KANBAN_WORKER_EXIT_TRAILER
+
+    run, _entered, context = owner_worker(_failed, recovery=1)
+    assert run() == KANBAN_RATE_LIMIT_EXIT_CODE
+    submitted = []
+
+    class _Owner:
+        async def rpc(self, method, **params):
+            submitted.append(method)
+            assert method == "kanban.run" and params["task_id"] == context["task_id"]
+            return {"session_id": "s1", "receipt": {"status": "terminal", "admission_id": "a1"}}
+
+    @asynccontextmanager
+    async def _connect():
+        yield _Owner()
+
+    monkeypatch.setattr(gateway_client, "connect_gateway", _connect)
+    monkeypatch.delenv("HERMES_TUI_GATEWAY_URL", raising=False)
+    for key, value in (("HERMES_KANBAN_BOARD", "default"), ("HERMES_KANBAN_TASK", context["task_id"]),
+                       ("HERMES_KANBAN_RUN_ID", str(context["run_id"])),
+                       ("HERMES_KANBAN_CLAIM_LOCK", context["claim_lock"]),
+                       ("HERMES_KANBAN_DB", context["db"])):
+        monkeypatch.setenv(key, value)
+    capsys.readouterr()
+
+    assert kanban_worker_client.main() == KANBAN_RATE_LIMIT_EXIT_CODE
+    out, err = capsys.readouterr()
+    assert submitted == ["kanban.run"]  # the client never re-enters the model itself
+    assert "API call failed" in out
+    assert f"{KANBAN_WORKER_EXIT_TRAILER}{KANBAN_RATE_LIMIT_EXIT_CODE}" in err
+
+
+@pytest.mark.asyncio
+async def test_non_worker_one_shot_prints_its_exit_summary(capsys):
+    """Smoke pin kept from the pre-gateway file: a plain failed ``chat -q`` run exits 1 after
+    printing the turn's text and its stderr ``session_id`` summary, and takes exactly one
+    admission — recovery is never a client-side resubmit."""
+    import asyncio
+
+    from hermes_cli.gateway_chat_view import GatewayChatView
+
+    submitted = []
+
+    class _Owner:
+        events: asyncio.Queue = asyncio.Queue()
+
+        async def rpc(self, method, **params):
+            submitted.append(method)
+            self.events.put_nowait({"method": "event", "params": {
+                "type": "message.complete", "session_id": "stored", "admission_id": "mine",
+                "payload": {"text": "API call failed after 3 retries", "outcome": "failed"}}})
+            return {"admission_id": "mine"}
+
+    view = GatewayChatView(_Owner(), {"stored_session_id": "stored"}, quiet=True)
+    assert await asyncio.wait_for(view.run("hello", oneshot=True), 2) == 1
+    out, err = capsys.readouterr()
+    # One admission, never a resubmit; the settled-result read (prompt.receipt) is read-only.
+    assert submitted.count("prompt.submit") == 1 and set(submitted) <= {"prompt.submit", "prompt.receipt"}
+    assert "API call failed" in out and "session_id: stored" in err
 
 
 # ── goal mode: a refused recovery stops ALL model entry (one table) ──
@@ -660,12 +654,13 @@ def test_non_quiet_route_prints_its_exit_summary(cli_harness, live_claim, monkey
 
 def _goal_cases():
     """One row per way model entry can be refused while goal mode is ON:
-    ``(id, env setup, script, expected exit code, expected model entries)``. Each row
-    carries its own setup, because the refusal reason IS the setup."""
+    ``(id, setup, script, expected exit code, expected model entries)``. Each row carries
+    its own setup, because the refusal reason IS the setup."""
     neutral = KANBAN_RATE_LIMIT_EXIT_CODE
     return [
-        pytest.param("recovery-denied", {"live": False}, _failed, neutral, 1),
-        pytest.param("lease-expired-during-backoff", {"lease_expiry": True}, _failed, neutral, 1),
+        pytest.param("recovery-denied", {"expires": 1}, _failed, neutral, 1),
+        pytest.param("lease-expired-during-backoff", {"expires": 1_600, "clock": (1_000, 1_700)},
+                     _failed, neutral, 1),
         pytest.param("quota-wall-billing", {}, lambda: _failed(reason="billing"), neutral, 1),
         pytest.param("quota-wall-upstream", {}, lambda: _failed(reason="upstream_rate_limit"),
                      neutral, 1),
@@ -676,52 +671,42 @@ def _goal_cases():
     ]
 
 
-@pytest.mark.parametrize("driver", DRIVERS)
+@pytest.fixture
+def goal_spy(monkeypatch):
+    """Spy on the goal continuation loop the owner-side worker enters. The loop is
+    pre-existing (its status check sees only run identity, not the claim lease); the
+    invariant under test is the call-site veto."""
+    calls: list = []
+    monkeypatch.setattr("hermes_cli.goals.run_kanban_goal_loop", lambda **kw: calls.append(kw))
+    return calls
+
+
 @pytest.mark.parametrize(("case_id", "setup", "script", "code", "entries"), _goal_cases())
-def test_goal_mode_does_not_continue(
-    case_id, setup, script, code, entries, driver, clear_kanban_env, tmp_path, monkeypatch,
-    cli_harness, goal_spy,
-):
-    """With goal mode ON, every refusal path reaches the shared exit without a judge-driven
+def test_goal_mode_does_not_continue(case_id, setup, script, code, entries, owner_worker, goal_spy,
+                                     monkeypatch):
+    """With goal mode ON, every refusal path reaches the honest exit without a judge-driven
     continuation: the goal loop's own status check sees only run identity, not the claim
-    lease, so continuing would re-enter the model under an authority this process can no
+    lease, so continuing would re-enter the model under an authority this worker can no
     longer prove."""
     import agent.kanban_turn_recovery as rec
 
-    clear_kanban_env.setenv("HERMES_KANBAN_GOAL_MODE", "1")
-    monkeypatch.setattr(rec, "RECOVERY_DELAYS_SECONDS", (0.0,))
-    if setup.get("lease_expiry"):
-        db = _make_board(tmp_path, task_expires=1_600, run_expires=1_600)
-        _pin_carrier(clear_kanban_env, db, run_id="1", lock="lk")
-        clock = iter([1_000, 1_700])  # pre-backoff proof live; the re-proof is not
+    run, entered, _ = owner_worker(script, goal_mode=True, expires=setup.get("expires"),
+                                   recovery=setup.get("recovery"))
+    if setup.get("clock"):
+        clock = iter(setup["clock"])  # pre-backoff proof live; the re-proof is not
         monkeypatch.setattr(rec, "_now", lambda: next(clock))
-    else:
-        clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_probe")
-        monkeypatch.setattr(rec, "worker_claim_is_live", lambda: setup.get("live", True))
-    if setup.get("recovery") is not None:
-        clear_kanban_env.setenv("HERMES_KANBAN_TURN_RECOVERY", str(setup["recovery"]))
 
-    cli_mod, entered, _ui = cli_harness(driver, script)
-
-    assert _drive(cli_mod, driver) == code
+    assert run() == code
     assert len(entered) == entries
     assert goal_spy == []  # no continuation after a refused recovery
 
 
-@pytest.mark.parametrize("driver", DRIVERS)
-def test_goal_mode_continues_after_a_successful_authorized_recovery(
-    driver, cli_harness, live_claim, goal_spy, monkeypatch,
-):
-    """Positive control on both drivers: a settled, authorized recovery still continues in
-    goal mode — the veto must not swallow the happy path — and the judge receives the
-    RECOVERED response, not the initial provider error (re-review P2: the recovery
-    callback's return value carries through)."""
-    import agent.kanban_turn_recovery as rec
+def test_goal_mode_continues_after_a_successful_authorized_recovery(owner_worker, goal_spy):
+    """Positive control: a settled, authorized recovery still continues in goal mode — the
+    veto must not swallow the happy path — and the judge receives the RECOVERED response,
+    not the initial provider error."""
+    run, entered, _ = owner_worker([_failed(), _success()], goal_mode=True, recovery=2)
 
-    _worker_env(monkeypatch, goal_mode=True, recovery=2)
-    monkeypatch.setattr(rec, "RECOVERY_DELAYS_SECONDS", (0.0,))
-    cli_mod, entered, _ui = cli_harness(driver, [_failed(), _success()])
-
-    assert _drive(cli_mod, driver) == 0
+    assert run() == 0
     assert len(entered) == 2
-    assert goal_spy == [("done", driver)]
+    assert [call["first_response"] for call in goal_spy] == ["done"]

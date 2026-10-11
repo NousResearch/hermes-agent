@@ -11,6 +11,7 @@
 
 import { appEn } from './en/app.js'
 import { billingEn } from './en/billing.js'
+import { canonicalEn } from './en/canonical.js'
 import { chatBitsEn } from './en/chatBits.js'
 import { chromeEn } from './en/chrome.js'
 import { connectionEn } from './en/connection.js'
@@ -46,7 +47,8 @@ export const en = {
   ...chatBitsEn,
   ...billingEn,
   ...subscriptionEn,
-  ...connectionEn
+  ...connectionEn,
+  ...canonicalEn
 }
 
 /** The sibling catalogs `en` is composed from, for the disjointness test. */
@@ -68,5 +70,6 @@ export const EN_SIBLINGS: readonly Record<string, unknown>[] = [
   chatBitsEn,
   billingEn,
   subscriptionEn,
-  connectionEn
+  connectionEn,
+  canonicalEn
 ]

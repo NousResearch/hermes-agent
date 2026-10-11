@@ -1972,6 +1972,7 @@ cli:
     desc_switch_anyway: "Bu modeli geçerli Hermes oturumu için kullanın."
     choice_cancel: "İptal"
     desc_keep_current_model: "Geçerli modeli koruyun."
+    confirm_choice_prompt: "Seçim [1/2]: "
     switch_cancelled: "Model değişikliği iptal edildi."
     selection_failed: "✗ Model seçimi başarısız oldu: {error}"
     switch_failed: "⚠ {model} modeline geçiş başarısız oldu ({error}); {old_model} modelinde kalınıyor."

@@ -1972,6 +1972,7 @@ cli:
     desc_switch_anyway: "Úsáid an tsamhail seo don seisiún Hermes reatha."
     choice_cancel: "Cealaigh"
     desc_keep_current_model: "Coinnigh an tsamhail reatha."
+    confirm_choice_prompt: "Rogha [1/2]: "
     switch_cancelled: "Athrú samhla cealaithe."
     selection_failed: "✗ Theip ar roghnú samhla: {error}"
     switch_failed: "⚠ Theip ar athrú samhla go {model} ({error}); ag fanacht ar {old_model}."

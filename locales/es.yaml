@@ -1972,6 +1972,7 @@ cli:
     desc_switch_anyway: "Usar este modelo en la sesión actual de Hermes."
     choice_cancel: "Cancelar"
     desc_keep_current_model: "Mantener el modelo actual."
+    confirm_choice_prompt: "Opción [1/2]: "
     switch_cancelled: "Cambio de modelo cancelado."
     selection_failed: "✗ Falló la selección de modelo: {error}"
     switch_failed: "⚠ Falló el cambio al modelo {model} ({error}); se mantiene {old_model}."

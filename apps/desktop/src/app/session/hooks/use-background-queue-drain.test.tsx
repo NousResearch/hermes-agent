@@ -100,13 +100,14 @@ describe('useBackgroundQueueDrain', () => {
     const runtimeMap = { current: new Map([['stored-session-a', 'rt-session-a']]) }
     const submitText = vi.fn(async () => true)
 
-    enqueueQueuedPrompt('stored-session-a', { text: 'continue in the background', attachments: [] })
+    const entry = enqueueQueuedPrompt('stored-session-a', { text: 'continue in the background', attachments: [] })!
     clearAllSessionStates()
 
     render(<Harness runtimeMap={runtimeMap} submitText={submitText} />)
 
     await waitFor(() => {
       expect(submitText).toHaveBeenCalledWith('continue in the background', {
+        submission_id: entry.id,
         attachments: [],
         fromQueue: true,
         sessionId: 'rt-session-a',
@@ -181,6 +182,7 @@ describe('useBackgroundQueueDrain', () => {
         attachments: [],
         displayText: 'look at @terminal:`zsh:23-58`',
         fromQueue: true,
+        submission_id: expect.any(String),
         sessionId: 'rt-session-a',
         storedSessionId: 'stored-session-a'
       })
@@ -275,12 +277,13 @@ describe('useBackgroundQueueDrain', () => {
     const runtimeMap = { current: new Map<string, string>() }
     const submitText = vi.fn(async () => true)
 
-    enqueueQueuedPrompt('stored-session-a', { text: 'resume then send', attachments: [] })
+    const entry = enqueueQueuedPrompt('stored-session-a', { text: 'resume then send', attachments: [] })!
 
     render(<Harness runtimeMap={runtimeMap} submitText={submitText} />)
 
     await waitFor(() => {
       expect(submitText).toHaveBeenCalledWith('resume then send', {
+        submission_id: entry.id,
         attachments: [],
         fromQueue: true,
         sessionId: null,
@@ -344,19 +347,22 @@ describe('useBackgroundQueueDrain', () => {
 
     enqueueQueuedPrompt('stored-session-a', { text: 'send after load', attachments: [] })
 
+    const queuedId = getQueuedPrompts('stored-session-a')[0].id
+
     render(<Harness runtimeMap={runtimeMap} submitText={submitText} />)
 
     await new Promise(resolve => window.setTimeout(resolve, 0))
     expect(submitText).not.toHaveBeenCalled()
 
-    setSessionsLoading(false)
+    act(() => setSessionsLoading(false))
 
     await waitFor(() => {
       expect(submitText).toHaveBeenCalledWith('send after load', {
         attachments: [],
         fromQueue: true,
         sessionId: 'rt-session-a',
-        storedSessionId: 'stored-session-a'
+        storedSessionId: 'stored-session-a',
+        submission_id: queuedId
       })
     })
 

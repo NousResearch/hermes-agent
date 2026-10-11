@@ -15,5 +15,9 @@ export const enNotices = {
       privacy: 'Privacy Policy',
       after: '.'
     }
+  },
+  promptNotices: {
+    legacySendUnconfirmed:
+      'This server could not confirm the earlier send of this message, so it may already have run. Check the conversation before sending it again.'
   }
-} satisfies Pick<Translations, 'remoteDisplayBanner' | 'butterbar'>
+} satisfies Pick<Translations, 'remoteDisplayBanner' | 'butterbar' | 'promptNotices'>

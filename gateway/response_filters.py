@@ -28,10 +28,13 @@ _BRACKETED_SILENCE_MARKERS = tuple(
     sorted(m for m in LIVE_GATEWAY_SILENT_MARKERS if m.startswith("["))
 )
 
-# The persisted user-row kind of a self-injected MessageEvent(internal=True) turn — the only
-# machinery kind the gateway produces; only these may vanish on a bare silence marker.
+# The persisted user-row kind of a self-injected MessageEvent(internal=True) turn; only these
+# machinery kinds may vanish on a bare silence marker.
 INTERNAL_NOTIFICATION_DISPLAY_KIND = "internal_notification"
-MACHINERY_DISPLAY_KINDS = frozenset({INTERNAL_NOTIFICATION_DISPLAY_KIND})
+# Async-result cards a gateway producer may name on its own internal event (with a display_text),
+# the same rows the in-process TUI persisted. A closed set: never a client-chosen presentation.
+PRODUCER_NOTICE_DISPLAY_KINDS = frozenset({"process_complete"})
+MACHINERY_DISPLAY_KINDS = frozenset({INTERNAL_NOTIFICATION_DISPLAY_KIND, *PRODUCER_NOTICE_DISPLAY_KINDS})
 
 # Longer than any marker could plausibly be, even with stray punctuation.
 _MARKER_LENGTH_CAP = 64
@@ -108,9 +111,32 @@ def display_kind_for_event(event: Any) -> str | None:
     by the gateway poller, never inferred from inbound text), but it deliberately stays
     non-internal so authorization and the emergency stop still apply to it.
     """
+    from gateway.session_display import admission_display
+    if kind := admission_display(event).get("kind"):
+        # A canonical admission committed hidden (Desktop widget intent): never a user bubble.
+        return kind
+    if getattr(event, "internal", False) and _producer_card(event):
+        return event.metadata["display_kind"]
     if getattr(event, "internal", False) or getattr(event, "_heartbeat_session_id", None):
         return INTERNAL_NOTIFICATION_DISPLAY_KIND
     return None
+
+
+def _producer_card(event: Any) -> dict:
+    metadata = getattr(event, "metadata", None) or {}
+    text = metadata.get("display_text")
+    if (getattr(event, "internal", False) and metadata.get("display_kind") in PRODUCER_NOTICE_DISPLAY_KINDS
+            and isinstance(text, str) and text.strip()):
+        return {"display_text": text}
+    return {}
+
+
+def display_metadata_for_event(event: Any) -> dict:
+    """``{"display_text": ...}`` for an internal event whose producer named an async-result card, plus the
+    ``title_preview`` (titler-only) a canonical admission committed for this exact event."""
+    from gateway.session_display import admission_display
+    preview = admission_display(event).get("title_preview")
+    return {**_producer_card(event), **({"title_preview": preview} if preview else {})}
 
 
 def is_machinery_display_kind(display_kind: Any) -> bool:

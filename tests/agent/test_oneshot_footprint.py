@@ -63,3 +63,30 @@ def test_oneshot_delegation_budget_charges_total_children_then_refuses(oneshot, 
     # Interactive sessions are never charged, whatever the count.
     monkeypatch.delenv("HERMES_SINGLE_QUERY_SESSION")
     assert delegate_tool._oneshot_spawn_budget(parent, 50) is None
+
+
+def test_gateway_owned_oneshot_session_takes_its_footprint_from_the_frozen_policy(tmp_path, monkeypatch):
+    """The gateway daemon never has the client's HERMES_SINGLE_QUERY_SESSION: a `chat -q` session it owns is
+    one-shot by its frozen ``oneshot`` source, so it gets main's in-process -q shape (no skill_manage, no
+    authoring coaching). An interactive session's policy wins over a stray daemon env marker, keeping its
+    tools[] and system prompt (the prompt-cache prefix) unchanged."""
+    from gateway.session_policy import build_policy, policy_scope
+
+    monkeypatch.delenv("HERMES_SINGLE_QUERY_SESSION", raising=False)
+    skills = _skills_dir(tmp_path)
+
+    def shape(source):
+        with policy_scope(build_policy({"source": source, "cwd": str(tmp_path), "model": "m"}, {})):
+            names = {t["function"]["name"] for t in oneshot_footprint.prune_oneshot_tools(_tools("skill_manage", "skill_view"))}
+            prompt = build_skills_system_prompt(available_tools={"skill_view", "skills_list", "skill_manage"},
+                                                skills_dir_override=skills)
+        return names, prompt
+
+    names, prompt = shape("oneshot")
+    assert names == {"skill_view"}
+    assert prompt.startswith(oneshot_footprint.ONESHOT_SKILLS_LOAD_GUIDANCE) and "offer to save as a skill" not in prompt
+
+    interactive = build_skills_system_prompt(available_tools={"skill_view", "skills_list", "skill_manage"},
+                                             skills_dir_override=skills)
+    monkeypatch.setenv("HERMES_SINGLE_QUERY_SESSION", "1")  # inherited by a daemon a -q client auto-started
+    assert shape("cli") == ({"skill_manage", "skill_view"}, interactive)

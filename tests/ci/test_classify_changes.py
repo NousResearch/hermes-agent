@@ -476,7 +476,7 @@ _DESKTOP_UPDATE_PATH_FILES = (
     "apps/desktop/electron/handoff-result.ts",
     "apps/desktop/electron/desktop-installation.ts",
     "apps/desktop/electron/backend-discovery.ts",
-    "apps/desktop/electron/host-backend-attach.ts",
+    "apps/desktop/electron/local-gateway.ts",
     "scripts/desktop-update/windows.ps1",
     "scripts/desktop-update/posix.sh",
     "hermes_cli/desktop_update_verify.py",

@@ -188,12 +188,12 @@ def _match_legacy_custom_provider(requested_norm: str, custom_providers) -> Opti
     return None
 
 
-def _get_named_custom_provider(requested_provider: str) -> Optional[dict[str, Any]]:
+def _get_named_custom_provider(requested_provider: str, *, config=None) -> Optional[dict[str, Any]]:
     requested_norm = _normalize_custom_provider_name(requested_provider or "")
     if not requested_norm or requested_norm == "auto" or _shadowed_by_builtin(requested_norm):
         return None
     rp = _rp()
-    config = rp.load_config()
+    config = rp.load_config() if config is None else config
     providers = config.get("providers")
     found = _match_new_style_provider(requested_norm, providers) if isinstance(providers, dict) else None
     if found:
@@ -372,7 +372,10 @@ def _try_resolve_from_custom_pool(
     """Runtime dict from the first credential pool that owns this custom endpoint, else None."""
     rp = _rp()
     try:
-        raw_keys = list(rp.custom_provider_pool_key_candidates(base_url, provider_name))
+        # A frozen route's entry owns the pool, never the live one (a live URL edit would drop it).
+        frozen = rp._FROZEN_RUNTIME_CONFIG.get()
+        scope = {} if frozen is None else {"config": frozen}
+        raw_keys = list(rp.custom_provider_pool_key_candidates(base_url, provider_name, **scope))
     except Exception:
         raw_keys = []
     # Order-preserving dedupe of normalized keys.
@@ -487,8 +490,10 @@ def _resolve_direct_alias_runtime(requested_provider: str, explicit_api_key: Opt
     rp = _rp()
     base_url = explicit_base_url.strip().rstrip("/")
     # Pool first — mirrors the named-custom path so bare `provider: custom` with a configured
-    # custom_providers entry gets its api_key from the pool instead of env fallbacks.
-    pool_result = rp._try_resolve_from_custom_pool(base_url, "custom", None)
+    # custom_providers entry gets its api_key from the pool instead of env fallbacks. An explicit
+    # launch key still wins over the pool (R2-M1).
+    explicit_key = (explicit_api_key or "").strip()
+    pool_result = None if rp.has_usable_secret(explicit_key) else rp._try_resolve_from_custom_pool(base_url, "custom", None)
     if pool_result:
         pool_result["source"] = "direct-alias"
         return pool_result
@@ -521,7 +526,7 @@ def _opencode_family_for_custom(requested_provider: str, base_url: str) -> Optio
 
 def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: Optional[str] = None,
                                   explicit_base_url: Optional[str] = None,
-                                  target_model: Optional[str] = None) -> Optional[dict[str, Any]]:
+                                  target_model: Optional[str] = None, config=None) -> Optional[dict[str, Any]]:
     """Runtime for a llamacpp alias, a bare-custom direct alias, or a configured custom entry.
     Aliases resolving to "custom" (ollama, vllm, llamacpp, …) are treated like bare ``custom``. A
     llamacpp alias with no explicit base_url resolves to the managed server first; an explicit
@@ -542,13 +547,20 @@ def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: 
         requested_norm = "custom"
     if requested_norm == "custom" and explicit_base_url:
         return _resolve_direct_alias_runtime(requested_provider, explicit_api_key, explicit_base_url)
-    custom_provider = custom_provider or rp._get_named_custom_provider(requested_provider)
+    if custom_provider is None:
+        custom_provider = (rp._get_named_custom_provider(requested_provider) if config is None
+                           else _get_named_custom_provider(requested_provider, config=config))
     if not custom_provider:
         return None
     base_url = ((explicit_base_url or "").strip() or custom_provider.get("base_url", "")).rstrip("/")
     if not base_url:
         return None
-    pool_result = rp._try_resolve_from_custom_pool(
+    explicit_key = (explicit_api_key or "").strip()
+    # The credential pool is the profile's auth store (``hermes auth add``), not config: a frozen
+    # config snapshot still owes a pooled ``providers:`` entry its keys, or the turn ships the
+    # ``no-key-required`` placeholder to a host that wants one (C11 pool rows). An explicit launch
+    # key is the operator's credential for this route and wins over the pool (R2-M1).
+    pool_result = None if rp.has_usable_secret(explicit_key) else rp._try_resolve_from_custom_pool(
         base_url, "custom", custom_provider.get("api_mode"),
         provider_name=custom_provider.get("provider_key") or custom_provider.get("name"),
     )
@@ -556,7 +568,6 @@ def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: 
         # The pool doesn't know the custom_providers fields — propagate them here too.
         _apply_custom_provider_extras(custom_provider, target_model, pool_result)
         return pool_result
-    explicit_key = (explicit_api_key or "").strip()
     candidates = [
         explicit_key,
         _clean(custom_provider.get("api_key", "")),

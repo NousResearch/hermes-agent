@@ -710,12 +710,6 @@ export const zhHantSettings = {
         }
       }
     },
-    poolLimits: {
-      warmBotBackendsAria: '預熱機器人後端',
-      warmBotBackendsTitle: '預熱機器人後端',
-      backendIdleTimeoutAria: '後端閒置逾時（毫秒）',
-      backendIdleTimeoutTitle: '後端閒置逾時（毫秒）'
-    },
     customEndpoints: {
       active: '已啟用',
       apiKeySet: '已設定 API 金鑰',

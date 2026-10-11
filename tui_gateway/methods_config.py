@@ -84,10 +84,9 @@ def _reconcile_repo_discovery(pdb, conn, policy, policy_key):
 
 @_projects_handler("projects.discover_repos")
 def _(rid, params: dict) -> dict:
-    """Repos for the desktop overview: scanned-from-disk (cached) ∪ session-derived."""
+    """Repos for the desktop overview: scanned-from-disk (cached) ∪ session-derived. A profile whose
+    session store was never initialized still answers from its scan cache (``db`` is None then)."""
     with _profile_db(params) as db:
-        if db is None:
-            return _ok(rid, {"repos": []})
         from hermes_cli import projects_db as pdb
         policy = _repo_discovery_policy()
         with pdb.connect_closing() as conn:
@@ -123,7 +122,7 @@ def _(rid, params: dict) -> dict:
         elif not policy["enabled"]:
             pdb.clear_discovered_repos(conn, policy_key=policy_key)
     with _profile_db(params) as db:
-        repos = [] if db is None else _discover_repos_payload(db, include_cached=policy["enabled"])
+        repos = _discover_repos_payload(db, include_cached=policy["enabled"])
         return _ok(rid, {"repos": repos, "accepted": accepted, "discovery_policy": policy})
 
 

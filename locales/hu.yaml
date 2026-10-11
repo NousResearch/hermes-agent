@@ -1989,6 +1989,7 @@ cli:
     desc_switch_anyway: "Ennek a modellnek a használata a jelenlegi Hermes-munkamenetben."
     choice_cancel: "Mégse"
     desc_keep_current_model: "A jelenlegi modell megtartása."
+    confirm_choice_prompt: "Választás [1/2]: "
     switch_cancelled: "Modellváltás megszakítva."
     selection_failed: "✗ A modell kiválasztása nem sikerült: {error}"
     switch_failed: "⚠ Nem sikerült átváltani a(z) {model} modellre ({error}); marad: {old_model}."

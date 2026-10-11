@@ -140,6 +140,247 @@ describe('GatewayClient websocket attach mode', () => {
     }
   })
 
+  it('publishes canonical readiness once after discovery and arms the negotiated heartbeat', async () => {
+    vi.useFakeTimers()
+    delete process.env.HERMES_TUI_GATEWAY_URL
+    delete process.env.HERMES_TUI_SIDECAR_URL
+    const gw = new GatewayClient(async () => ({ url: 'ws://gateway.test/api/ws', protocols: [], instance_id: 'owner', profile_id: 'fixture' }))
+    const events: any[] = []
+    gw.on('event', event => events.push(event))
+
+    try {
+      gw.start()
+      gw.drain()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(FakeWebSocket.instances).toHaveLength(1)
+      const socket = FakeWebSocket.instances[0]!
+      socket.open()
+      socket.message(JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'gateway.ready', payload: { heartbeat: true } } }))
+      await vi.advanceTimersByTimeAsync(0)
+      expect(events.filter(event => event.type === 'gateway.ready')).toHaveLength(0)
+      // The wire's ready frame triggers the client.capabilities advertisement; discovery
+      // (runtime.describe) is the other frame and the one readiness waits on.
+      const sent = socket.sent.map(text => JSON.parse(text) as { id?: number; method: string })
+      expect(sent.map(frame => frame.method).sort()).toEqual(['client.capabilities', 'runtime.describe'])
+      const request = sent.find(frame => frame.method === 'runtime.describe')!
+      socket.message(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {
+        session_create: { sources: ['tui'], parameters: ['source', 'request_id'] }
+      } }))
+      await vi.advanceTimersByTimeAsync(0)
+      expect(events.filter(event => event.type === 'gateway.ready')).toHaveLength(1)
+
+      await vi.advanceTimersByTimeAsync(WS_HEARTBEAT_INTERVAL_MS)
+      expect(JSON.parse(socket.sent.at(-1) ?? '{}')).toMatchObject({ method: 'gateway.ping' })
+    } finally {
+      gw.kill()
+      expect(vi.getTimerCount()).toBe(0)
+      vi.useRealTimers()
+    }
+  })
+
+  it('re-reads a failed runtime.describe on the next session.create instead of bricking creation', async () => {
+    vi.useFakeTimers()
+    delete process.env.HERMES_TUI_GATEWAY_URL
+    delete process.env.HERMES_TUI_SIDECAR_URL
+    const gw = new GatewayClient(async () => ({ url: 'ws://gateway.test/api/ws', protocols: [], instance_id: 'owner', profile_id: 'fixture' }))
+    gw.on('event', () => undefined)
+
+    try {
+      gw.start(); gw.drain()
+      await vi.advanceTimersByTimeAsync(0)
+      const socket = FakeWebSocket.instances[0]!
+      socket.open()
+      await vi.advanceTimersByTimeAsync(0)
+      const frames = () => socket.sent.map(text => JSON.parse(text) as { id: number; method: string; params: any })
+      const first = frames().find(frame => frame.method === 'runtime.describe')!
+      socket.message(JSON.stringify({ jsonrpc: '2.0', id: first.id, error: { code: -32000, message: 'owner busy' } }))
+      await vi.advanceTimersByTimeAsync(0)
+
+      const created = gw.request<{ session_id: string }>('session.create', { model: 'm' })
+      await vi.advanceTimersByTimeAsync(0)
+      const retry = frames().filter(frame => frame.method === 'runtime.describe')
+      expect(retry).toHaveLength(2)
+      socket.message(JSON.stringify({ jsonrpc: '2.0', id: retry[1]!.id, result: {
+        session_create: { sources: ['tui'], parameters: ['source', 'request_id', 'model'] } } }))
+      await vi.advanceTimersByTimeAsync(0)
+      const create = frames().find(frame => frame.method === 'session.create')!
+      expect(create.params).toMatchObject({ source: 'tui', model: 'm' })
+      socket.message(JSON.stringify({ jsonrpc: '2.0', id: create.id, result: { session_id: 'fresh', info: {} } }))
+      await expect(created).resolves.toMatchObject({ session_id: 'fresh' })
+    } finally { gw.kill(); vi.useRealTimers() }
+  })
+
+  it('keeps discovery-only retries alive and delivers readiness to the mounted subscriber', async () => {
+    vi.useFakeTimers()
+    delete process.env.HERMES_TUI_GATEWAY_URL
+    const grant = { url: 'ws://gateway.test/api/ws', protocols: [], instance_id: 'owner', profile_id: 'fixture' }
+    const bootstrap = vi.fn().mockResolvedValueOnce(grant).mockRejectedValueOnce(new Error('owner stopped')).mockRejectedValueOnce(new Error('owner stopped')).mockResolvedValue(grant)
+    const gw = new GatewayClient(bootstrap)
+    const events: any[] = []
+    gw.on('event', event => events.push(event))
+
+    try {
+      gw.start(); gw.drain()
+      await vi.advanceTimersByTimeAsync(0)
+      FakeWebSocket.instances[0]!.open()
+      await vi.advanceTimersByTimeAsync(0)
+      FakeWebSocket.instances[0]!.close()
+      await vi.advanceTimersByTimeAsync(RECONNECT_MAX_MS * 4)
+      expect(bootstrap.mock.calls.map(args => args[0])).toEqual([true, false, false, false])
+      const socket = FakeWebSocket.instances.at(-1)!
+      socket.open()
+      await vi.advanceTimersByTimeAsync(0)
+      const request = JSON.parse(socket.sent[0]!)
+      socket.message(JSON.stringify({ id: request.id, result: { session_create: { sources: ['tui'], parameters: [] } } }))
+      await vi.advanceTimersByTimeAsync(0)
+      expect(events.some(event => event.type === 'gateway.ready')).toBe(true)
+    } finally { gw.kill(); vi.useRealTimers() }
+  })
+
+  it('pins the launcher tool-progress mode (hermes --tui -v) on the created session before returning it', async () => {
+    vi.useFakeTimers()
+    delete process.env.HERMES_TUI_GATEWAY_URL
+    vi.stubEnv('HERMES_TUI_TOOL_PROGRESS', 'verbose')
+    const gw = new GatewayClient(async () => ({ url: 'ws://gateway.test/api/ws', protocols: [], instance_id: 'owner', profile_id: 'fixture' }))
+    gw.on('event', () => undefined)
+
+    try {
+      gw.start(); gw.drain()
+      await vi.advanceTimersByTimeAsync(0)
+      const socket = FakeWebSocket.instances[0]!
+      socket.open()
+      await vi.advanceTimersByTimeAsync(0)
+      const frames = () => socket.sent.map(text => JSON.parse(text) as { id: number; method: string; params: any })
+
+      const reply = (method: string, result: unknown) => {
+        const frame = frames().filter(f => f.method === method).at(-1)!
+
+        socket.message(JSON.stringify({ jsonrpc: '2.0', id: frame.id, result }))
+      }
+
+      reply('runtime.describe', { session_create: { sources: ['tui'], parameters: ['source', 'request_id'] } })
+      await vi.advanceTimersByTimeAsync(0)
+      let settled = false
+
+      const created = gw.request<{ session_id: string }>('session.create', {}).then(r => {
+        settled = true
+
+        return r
+      })
+
+
+      await vi.advanceTimersByTimeAsync(0)
+      reply('session.create', { session_id: 'fresh', info: {} })
+      await vi.advanceTimersByTimeAsync(0)
+      expect(settled).toBe(false)
+      expect(frames().at(-1)).toMatchObject({ method: 'config.set', params: { key: 'verbose', session_id: 'fresh', value: 'verbose' } })
+      reply('config.set', { key: 'verbose', value: 'verbose', scope: 'session' })
+      await expect(created).resolves.toMatchObject({ session_id: 'fresh' })
+    } finally { gw.kill(); vi.unstubAllEnvs(); vi.useRealTimers() }
+  })
+
+  it('retries a create whose launch pin failed after the ACK under the same request_id (one session, pin reapplied)', async () => {
+    vi.useFakeTimers()
+    delete process.env.HERMES_TUI_GATEWAY_URL
+    vi.stubEnv('HERMES_TUI_TOOL_PROGRESS', 'verbose')
+    const gw = new GatewayClient(async () => ({ url: 'ws://gateway.test/api/ws', protocols: [], instance_id: 'owner', profile_id: 'fixture' }))
+    gw.on('event', () => undefined)
+
+    try {
+      gw.start(); gw.drain()
+      await vi.advanceTimersByTimeAsync(0)
+      const socket = FakeWebSocket.instances[0]!
+      socket.open()
+      await vi.advanceTimersByTimeAsync(0)
+      const frames = () => socket.sent.map(text => JSON.parse(text) as { id: number; method: string; params: any })
+      const last = (method: string) => frames().filter(f => f.method === method).at(-1)!
+      const answer = (method: string, body: object) => socket.message(JSON.stringify({ jsonrpc: '2.0', id: last(method).id, ...body }))
+      // The owner keys a local session by request_id, exactly like create_local_session.
+      const minted = new Map<string, string>()
+
+      const ack = () => {
+        const requestId = last('session.create').params.request_id as string
+        minted.set(requestId, minted.get(requestId) ?? `orphan-${minted.size + 1}`)
+        answer('session.create', { result: { session_id: minted.get(requestId), info: {} } })
+      }
+
+      answer('runtime.describe', { result: { session_create: { sources: ['tui'], parameters: ['source', 'request_id', 'model'] } } })
+      await vi.advanceTimersByTimeAsync(0)
+
+      // The caller (useSessionLifecycle) mints a fresh request_id on every attempt.
+      const first = gw.request('session.create', { request_id: 'attempt-1', model: 'm' })
+      const firstOutcome = first.catch((error: Error) => error)
+      await vi.advanceTimersByTimeAsync(0)
+      ack()
+      await vi.advanceTimersByTimeAsync(0)
+      answer('config.set', { error: { code: -32000, message: 'config refused' } })
+      expect(await firstOutcome).toMatchObject({ message: 'config refused' })
+
+      const retry = gw.request<{ session_id: string }>('session.create', { request_id: 'attempt-2', model: 'm' })
+      await vi.advanceTimersByTimeAsync(0)
+      ack()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(last('config.set').params).toMatchObject({ key: 'verbose', session_id: 'orphan-1', value: 'verbose' })
+      answer('config.set', { result: { key: 'verbose', value: 'verbose', scope: 'session' } })
+      await expect(retry).resolves.toMatchObject({ session_id: 'orphan-1' })
+      expect([...minted.values()]).toEqual(['orphan-1'])
+    } finally { gw.kill(); vi.unstubAllEnvs(); vi.useRealTimers() }
+  })
+
+  it('re-ensures a crashed owner on a bounded number of reconnects, then stays discovery-only', async () => {
+    vi.useFakeTimers()
+    delete process.env.HERMES_TUI_GATEWAY_URL
+    const grant = { url: 'ws://gateway.test/api/ws', protocols: [], instance_id: 'owner', profile_id: 'fixture' }
+    const bootstrap = vi.fn().mockResolvedValueOnce(grant).mockRejectedValue(new Error('gateway absent: not ready'))
+    const gw = new GatewayClient(bootstrap)
+
+    try {
+      gw.start(); gw.drain()
+      await vi.advanceTimersByTimeAsync(0)
+      FakeWebSocket.instances[0]!.open()
+      await vi.advanceTimersByTimeAsync(0)
+      FakeWebSocket.instances[0]!.close()
+      // Five reconnects inside one recovery window.
+      await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS * (1 + 2 + 4 + 8 + 16))
+      expect(bootstrap.mock.calls.map(([start, recover]) => [start, Boolean(recover)])).toEqual([
+        [true, false], [false, true], [false, true], [false, true], [false, false], [false, false]])
+    } finally { gw.kill(); vi.useRealTimers() }
+  })
+
+  it('negotiates the canonical wire on an explicit attach whose listener advertises a session authority', async () => {
+    process.env.HERMES_TUI_GATEWAY_URL = 'ws://gateway.test/api/ws?token=abc'
+    const gw = new GatewayClient()
+    const events: any[] = []
+
+    gw.on('event', event => events.push(event))
+    gw.start()
+    gw.drain()
+    const socket = FakeWebSocket.instances[0]!
+    const frames = () => socket.sent.map(text => JSON.parse(text) as { id: number; method: string; params: any })
+
+    socket.open()
+    socket.message(JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'gateway.ready',
+      payload: { skin: { name: 'mono' }, session_authority: true } } }))
+    await vi.waitFor(() => expect(frames().some(frame => frame.method === 'runtime.describe')).toBe(true))
+    expect(events.some(event => event.type === 'gateway.ready')).toBe(false)
+    socket.message(JSON.stringify({ jsonrpc: '2.0', id: frames().find(f => f.method === 'runtime.describe')!.id,
+      result: { session_create: { sources: ['tui'], parameters: ['source', 'request_id', 'model'] } } }))
+    await vi.waitFor(() => expect(events.filter(event => event.type === 'gateway.ready')).toHaveLength(1))
+    expect(events.find(event => event.type === 'gateway.ready').payload.skin).toEqual({ name: 'mono' })
+    expect(gw.isCanonical).toBe(true)
+
+    const created = gw.request<{ session_id: string }>('session.create', { cols: 80, model: 'm' })
+
+    await vi.waitFor(() => expect(frames().some(frame => frame.method === 'session.create')).toBe(true))
+    const create = frames().find(frame => frame.method === 'session.create')!
+
+    expect(create.params).toMatchObject({ source: 'tui', model: 'm' })
+    expect(create.params).not.toHaveProperty('cols')
+    socket.message(JSON.stringify({ jsonrpc: '2.0', id: create.id, result: { session_id: 'fresh', info: {} } }))
+    await expect(created).resolves.toMatchObject({ session_id: 'fresh' })
+    gw.kill()
+  })
+
   it('waits for websocket open and resolves RPC requests', async () => {
     process.env.HERMES_TUI_GATEWAY_URL = 'ws://gateway.test/api/ws?token=abc'
     const gw = new GatewayClient()

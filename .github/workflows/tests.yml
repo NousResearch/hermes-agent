@@ -179,6 +179,28 @@ jobs:
         run: |
           "$HERMES_PYTHON" -c "import sqlite3, hermes_state_wal as w; print('sqlite', sqlite3.sqlite_version); assert not w.is_sqlite_wal_reset_vulnerable()"
 
+      - name: Run messaging-gated gateway cases
+        # These gateway files drive the REAL Discord/Telegram SDKs and skip when the
+        # `messaging` extra is absent, which it is in the ordinary `test` slices; this is
+        # the only job that installs it. Whole files (run_tests.sh drops ::node selectors),
+        # and a skip here is a coverage hole, not a pass: fail on any.
+        run: |
+          set -o pipefail
+          log="$RUNNER_TEMP/messaging-gateway.log"
+          scripts/run_tests.sh -rs \
+            tests/gateway/test_native_role_reauthorization.py \
+            tests/gateway/test_native_telegram_startup_recovery.py \
+            tests/gateway/test_native_pause_notice.py \
+            tests/gateway/test_native_reply_crash_recovery.py | tee "$log"
+          summary=$(grep '^=== Summary:' "$log")
+          case "$summary" in
+            *skipped*) echo "::error::messaging-gated gateway cases skipped: $summary"; exit 1 ;;
+          esac
+        env:
+          OPENROUTER_API_KEY: ""
+          OPENAI_API_KEY: ""
+          NOUS_API_KEY: ""
+
       - name: Run e2e tests
         # One subprocess per file, in parallel: the core suites spawn real
         # processes (serve, gateway, tui_gateway, MCP servers, SQLite writers)

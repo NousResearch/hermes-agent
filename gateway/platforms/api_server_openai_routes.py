@@ -63,7 +63,7 @@ def _result_flags(result: Any) -> tuple:
     """``(completed, partial, failed, error)`` from an agent result dict (defaults if not a dict)."""
     if not isinstance(result, dict):
         return True, False, False, None
-    return (bool(result.get("completed", True)), bool(result.get("partial")),
+    return (bool(result.get("completed", True)) and not result.get('interrupted'), bool(result.get("partial")),
             bool(result.get("failed")), result.get("error"))
 
 
@@ -75,7 +75,42 @@ def _finish_reason(completed, is_partial, is_failed, err_msg, agent_error=None) 
         return "length"
     if agent_error is not None or is_failed or (not completed and err_msg):
         return "error"
-    return "stop"
+    return 'cancelled' if not completed else 'stop'
+
+
+_RESPONSES_FINGERPRINT_KEYS = (
+    "input", "instructions", "previous_response_id", "conversation", "conversation_history", "model",
+    "provider", "model_options", "tools",
+)
+
+
+def _settled(record):
+    """A stored idempotency record that carries its answer. A claim written without one (an
+    older release recorded the claim before the run) has an unknown outcome and never replays."""
+    return record is not None and record.get('response') is not None
+
+
+def _responses_fingerprint_keys(body):
+    """``truncation`` joins the fingerprint only when sent, so an exact retry of a request
+    recorded before it was fingerprinted keeps matching its stored key."""
+    return _RESPONSES_FINGERPRINT_KEYS + (("truncation",) if body.get("truncation") is not None else ())
+
+
+def _response_identity(store, durable_key):
+    if durable_key is not None:
+        from gateway.platforms.api_server_response_identity import durable_response_id
+        return durable_response_id(durable_key[0]), store.request_created_at(durable_key[0])
+    return f'resp_{uuid.uuid4().hex[:28]}', int(time.time())
+
+
+def _response_status(result):
+    if result.get('interrupted'):
+        return 'cancelled'
+    if result.get('failed') or result.get('error'):
+        return 'failed'
+    if result.get('completed') is False:
+        return 'incomplete'
+    return 'completed'
 
 
 def _hermes_extras(completed, is_partial, is_failed, err_msg, finish_reason: str) -> dict[str, Any]:
@@ -218,13 +253,16 @@ class _ResponsesStream:
 
     def __init__(self, adapter, response, *, response_id: str, model: str, created_at: int,
                  conversation_history: list[dict[str, str]], user_message: str,
-                 instructions: Optional[str], conversation: Optional[str], store: bool, session_id: str):
+                 instructions: Optional[str], conversation: Optional[str], store: bool, session_id: str,
+                 durable_key=None, terminal_replay=False):
         from gateway.platforms import api_server as api
         self._api = api
         self.adapter, self.response, self.response_id = adapter, response, response_id
         self.model, self.created_at, self.conversation_history = model, created_at, conversation_history
         self.user_message, self.instructions = user_message, instructions
         self.conversation, self.store, self.session_id = conversation, store, session_id
+        self.durable_key = durable_key
+        self.terminal_replay = terminal_replay
         # Resolved in the request's profile scope: a snapshot written after it (disconnect) must not follow another.
         self.response_store = adapter._current_response_store()
         self.final_text_parts: list[str] = []
@@ -233,7 +271,10 @@ class _ResponsesStream:
         self.output_index = 0
         self.call_counter = 0  # call_id fallback when the agent supplies no tool_call_id
         self.sequence_number = 0
-        self.message_item_id = f"msg_{uuid.uuid4().hex[:24]}"
+        self._identity_counts = {}
+        self._published_output_ids = []
+        self._suppress_incremental = False
+        self.message_item_id = self._item_id('message')
         self.message_output_index: Optional[int] = None
         self.message_opened = False
         self.reasoning_item: Optional[dict[str, Any]] = None  # open ``reasoning`` output item
@@ -242,16 +283,46 @@ class _ResponsesStream:
         self.agent_error: Optional[str] = None
         self.usage: dict[str, int] = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
         self.terminal_snapshot_persisted = False
+        self.recorded_events: list[tuple] = []  # (event_type, data) as written, for idempotent replay
         self.result: Any = None
         self._batch_buf: list[str] = []
         self._batch_timer: Optional[asyncio.Task] = None
         self._batch_lock = asyncio.Lock()
 
     async def write_event(self, event_type: str, data: dict[str, Any]) -> None:
+        if self.durable_key and 'output_index' in data:
+            if self._suppress_incremental:
+                return
+            index = data['output_index']
+            if event_type == 'response.output_item.added':
+                valid = index == len(self._published_output_ids)
+                if valid:
+                    self._published_output_ids.append(data['item']['id'])
+            else:
+                identity = data.get('item_id') or data.get('item', {}).get('id')
+                valid = 0 <= index < len(self._published_output_ids) and (
+                    identity is None or self._published_output_ids[index] == identity)
+            if not valid:
+                # A late/backpressured observer may miss a globally allocated prefix. Keep the
+                # prefix it already published; complete from the canonical terminal snapshot.
+                self._suppress_incremental = True
+                return
         if "sequence_number" not in data:
             data["sequence_number"] = self.sequence_number
         self.sequence_number += 1
+        self.recorded_events.append((event_type, data))
         await self.response.write(self._api._sse_frame(data, event=event_type))
+
+    def _item_id(self, kind, *, call_id=None, commentary=False):
+        from gateway.platforms.api_server_response_identity import next_item_id
+        return next_item_id(self.response_id, self._identity_counts, kind,
+                            call_id=call_id, commentary=commentary)
+
+    def _output_index(self, item_id):
+        index = (self.response_store.output_index(self.durable_key[0], item_id)
+                 if self.durable_key else self.output_index)
+        self.output_index = max(self.output_index, index + 1)
+        return index
 
     def envelope(self, status: str) -> dict[str, Any]:
         return {"id": self.response_id, "object": "response", "status": status,
@@ -262,7 +333,8 @@ class _ResponsesStream:
         env = self.envelope(status)
         env["output"] = output
         if error is not None:
-            env["error"] = {"message": error, "type": "server_error"}
+            env["error"] = ({"code": "agent_error", "message": error} if self.durable_key
+                            else {"message": error, "type": "server_error"})
         env["usage"] = self._api._responses_usage_payload(self.usage)
         return env
 
@@ -272,12 +344,16 @@ class _ResponsesStream:
     def persist_snapshot(self, response_env: dict[str, Any], *, history=None, session_id=None):
         if not self.store:
             return
+        if self.durable_key and _settled(self.response_store.get(self.durable_key[0])):
+            return  # A concurrent observer already committed the exact terminal envelope.
+        advance_conversation = self.conversation and (not self.terminal_replay
+            or self.response_store.get_conversation(self.conversation) in (None, self.response_id))
         self.response_store.put(self.response_id, {
             "response": response_env,
             "conversation_history": self._history_with_user() if history is None else history,
             "instructions": self.instructions,
             "session_id": session_id or self.session_id})
-        if self.conversation:
+        if advance_conversation:
             self.response_store.set_conversation(self.conversation, self.response_id)
 
     def persist_incomplete_if_needed(self) -> None:
@@ -297,21 +373,24 @@ class _ResponsesStream:
         env = self.envelope("in_progress")
         env["output"] = []
         await self.write_event("response.created", {"type": "response.created", "response": env})
-        self.persist_snapshot(env)
+        if not self.terminal_replay:
+            self.persist_snapshot(env)
 
     async def _open_message_item(self) -> None:
         """Emit output_item.added for the assistant message on the first text delta."""
         if self.message_opened:
             return
         self.message_opened = True
-        self.message_output_index = self.output_index
-        self.output_index += 1
+        self.message_output_index = self._output_index(self.message_item_id)
         await self.write_event("response.output_item.added", {
             "type": "response.output_item.added", "output_index": self.message_output_index,
             "item": {"id": self.message_item_id, "type": "message", "status": "in_progress",
                      "role": "assistant", "content": []}})
 
     async def emit_text_delta(self, delta_text: str) -> None:
+        if self.terminal_replay:
+            self.final_text_parts.append(delta_text)
+            return
         await self.close_reasoning_item()
         await self._open_message_item()
         self.final_text_parts.append(delta_text)
@@ -324,10 +403,9 @@ class _ResponsesStream:
         """Responses reasoning-summary family (#99552): one ``reasoning`` output item per
         thinking burst, closed before the next message/tool item opens."""
         if self.reasoning_item is None:
-            item = {"id": f"rs_{uuid.uuid4().hex[:24]}", "type": "reasoning", "status": "in_progress",
+            item = {"id": self._item_id('reasoning'), "type": "reasoning", "status": "in_progress",
                     "summary": []}
-            self.reasoning_item = {"item": item, "output_index": self.output_index, "parts": []}
-            self.output_index += 1
+            self.reasoning_item = {"item": item, "output_index": self._output_index(item['id']), "parts": []}
             await self.write_event("response.output_item.added", {
                 "type": "response.output_item.added",
                 "output_index": self.reasoning_item["output_index"], "item": item})
@@ -363,10 +441,9 @@ class _ResponsesStream:
         item stays clean (#67580). Closes any open reasoning item first so a reasoning item
         never straddles a message item."""
         await self.close_reasoning_item()
-        item = {"id": f"msg_{uuid.uuid4().hex[:24]}", "status": "completed", "phase": "commentary",
+        item = {"id": self._item_id('message', commentary=True), "status": "completed", "phase": "commentary",
                 **_message_item(text)}
-        idx = self.output_index
-        self.output_index += 1
+        idx = self._output_index(item['id'])
         self.emitted_items.append({"phase": "commentary", **_message_item(text)})
         for event in ("response.output_item.added", "response.output_item.done"):
             await self.write_event(event, {"type": event, "output_index": idx, "item": item})
@@ -379,10 +456,9 @@ class _ResponsesStream:
         args = payload.get("arguments", {})
         arguments_str = json.dumps(args) if isinstance(args, dict) else str(args)
         name = payload.get("name", "")
-        item = {"id": f"fc_{uuid.uuid4().hex[:24]}", "type": "function_call",
+        item = {"id": self._item_id('function_call', call_id=call_id), "type": "function_call",
                 "status": "in_progress", "name": name, "call_id": call_id, "arguments": arguments_str}
-        idx = self.output_index
-        self.output_index += 1
+        idx = self._output_index(item['id'])
         self.pending_tool_calls.append({
             "call_id": call_id, "name": name, "arguments": arguments_str, "item_id": item["id"],
             "output_index": idx})
@@ -407,10 +483,9 @@ class _ResponsesStream:
         result = payload.get("result", "")
         result_str = result if isinstance(result, str) else json.dumps(result)
         output_parts = [{"type": "input_text", "text": result_str}]
-        output_item = {"id": f"fco_{uuid.uuid4().hex[:24]}", "type": "function_call_output",
+        output_item = {"id": self._item_id('function_call_output', call_id=call_id), "type": "function_call_output",
                        "call_id": pending["call_id"], "output": output_parts, "status": "completed"}
-        idx = self.output_index
-        self.output_index += 1
+        idx = self._output_index(output_item['id'])
         self.emitted_items.append(
             {"type": "function_call_output", "call_id": pending["call_id"], "output": output_parts})
         for event in ("response.output_item.added", "response.output_item.done"):
@@ -432,6 +507,8 @@ class _ResponsesStream:
 
     async def dispatch(self, item: Any) -> None:
         """Route one queue item: tagged tuples emit immediately, strings are batched, others dropped."""
+        if self.terminal_replay:
+            return
         if isinstance(item, tuple) and len(item) == 2 and isinstance(item[0], str):
             tag, payload = item
             await self.flush_batch()
@@ -476,6 +553,13 @@ class _ResponsesStream:
             self.result = result
             self.usage = agent_usage or self.usage
             agent_final = result.get("final_response", "") if isinstance(result, dict) else ""
+            if self.terminal_replay:
+                # The receipt already contains the transformed final; it is not a raw provider
+                # stream onto which a verifier/footer transform should be applied a second time.
+                self.final_response_text = agent_final or self._api._redact_api_error_text(
+                    result.get('error', '(No response generated)'))
+                self.final_text_parts = [self.final_response_text]
+                return
             tail, appended = _post_stream_transform(result)
             if tail and self.final_text_parts:
                 if appended:
@@ -527,9 +611,17 @@ class _ResponsesStream:
         self.terminal_snapshot_persisted = True
         await self.write_event("response.failed", {"type": "response.failed", "response": env})
 
-    async def emit_completed(self) -> None:
-        env = self.terminal_envelope("completed", self._final_items())
+    async def emit_completed(self) -> dict[str, Any]:
         result = self.result
+        status = _response_status(result)
+        output = self._final_items()
+        if self.durable_key:
+            start = self.adapter._response_messages_turn_start_index(self.conversation_history, self.user_message, result)
+            output = self.adapter._extract_output_items(result, start_index=start, response_id=self.response_id)
+            output = self.response_store.order_output(self.durable_key[0], output)
+        env = self.terminal_envelope(status, output,
+            error=self._api._redact_api_error_text(result.get('error') or 'The admitted turn failed.')
+            if status == 'failed' else None)
         full_history = self.adapter._build_response_conversation_history(
             self.conversation_history, self.user_message, result, self.final_response_text,
             tool_output_max_chars=self.adapter._history_tool_output_max_chars)
@@ -539,13 +631,92 @@ class _ResponsesStream:
         self.persist_snapshot(
             env, history=full_history, session_id=sid if isinstance(sid, str) and sid else None)
         self.terminal_snapshot_persisted = True
+        if self.durable_key:
+            headers = {k: v for k, v in self.response.headers.items() if k.startswith('X-Hermes-')}
+            terminal_event = {'type': 'response.' + status, 'response': env, 'sequence_number': self.sequence_number}
+            self.response_store.put(self.durable_key[0], {
+                'fingerprint': self.durable_key[1], 'response': env, 'headers': headers,
+                'events': [*self.recorded_events, ('response.' + status, terminal_event)]})
+            stored = self.response_store.get(self.durable_key[0])
+            if _settled(stored):
+                env = stored['response']
+            status = env['status']
         await self.write_event(
-            "response.completed", {"type": "response.completed", "response": env})
+            'response.' + status, {'type': 'response.' + status, 'response': env})
+        return env
 
     async def emit_crash(self, exc: BaseException) -> None:
         error = self._api._redact_api_error_text(exc, limit=500)
         env = self.terminal_envelope("failed", list(self.emitted_items), error=error)
         await self.write_event("response.failed", {"type": "response.failed", "response": env})
+
+
+def _parse_chat_messages(messages: list[Any]) -> tuple:
+    """Chat ``messages`` -> ``(system_prompt, conversation_messages, error_response_or_None)``.
+
+    System messages -> ephemeral system prompt layered ON TOP of core, flattened to text
+    (Anthropic rejects images there, OpenAI text models ignore them)."""
+    from gateway.platforms.api_server import (
+        _multimodal_validation_error, _normalize_chat_content, _normalize_multimodal_content)
+    system_prompt = None
+    conversation_messages: list[dict[str, str]] = []
+    for idx, msg in enumerate(messages):
+        role = msg.get("role", "")
+        raw_content = msg.get("content", "")
+        if role == "system":
+            content = _normalize_chat_content(raw_content)
+            system_prompt = content if system_prompt is None else system_prompt + "\n" + content
+        elif role in {"user", "assistant"}:
+            try:
+                content = _normalize_multimodal_content(raw_content)
+            except ValueError as exc:
+                return None, None, _multimodal_validation_error(exc, param=f"messages[{idx}].content")
+            conversation_messages.append({"role": role, "content": content})
+    return system_prompt, conversation_messages, None
+
+
+def _parse_responses_input(raw_input: Any) -> tuple:
+    """Responses ``input`` (string or item array) -> ``(input_messages, error_response_or_None)``."""
+    from gateway.platforms.api_server import (
+        _error_response, _multimodal_validation_error, _normalize_multimodal_content)
+    input_messages: list[dict[str, Any]] = []
+    if isinstance(raw_input, str):
+        input_messages = [{"role": "user", "content": raw_input}]
+    elif isinstance(raw_input, list):
+        for idx, item in enumerate(raw_input):
+            if isinstance(item, str):
+                input_messages.append({"role": "user", "content": item})
+            elif _is_reasoning_input_item(item):
+                continue
+            elif isinstance(item, dict):
+                try:
+                    content = _normalize_multimodal_content(item.get("content", ""))
+                except ValueError as exc:
+                    return None, _multimodal_validation_error(exc, param=f"input[{idx}].content")
+                input_messages.append({"role": item.get("role", "user"), "content": content})
+    else:
+        return None, _error_response("'input' must be a string or array", 400)
+    return input_messages, None
+
+
+def _parse_conversation_history(raw_history: Any) -> tuple:
+    """Explicit Responses ``conversation_history`` -> ``(history, error_response_or_None)``."""
+    from gateway.platforms.api_server import (
+        _error_response, _multimodal_validation_error, _normalize_multimodal_content)
+    conversation_history: list[dict[str, Any]] = []
+    if not isinstance(raw_history, list):
+        return None, _error_response("'conversation_history' must be an array of message objects", 400)
+    for i, entry in enumerate(raw_history):
+        if _is_reasoning_input_item(entry):
+            continue
+        if not isinstance(entry, dict) or "role" not in entry or "content" not in entry:
+            return None, _error_response(f"conversation_history[{i}] must have 'role' and 'content' fields", 400)
+        try:
+            entry_content = _normalize_multimodal_content(entry["content"])
+        except ValueError as exc:
+            return None, _multimodal_validation_error(exc, param=f"conversation_history[{i}].content")
+        conversation_history.append({"role": str(entry["role"]), "content": entry_content})
+    return conversation_history, None
 
 
 class OpenAICompatRoutesMixin:
@@ -595,7 +766,7 @@ class OpenAICompatRoutesMixin:
             self._release_run_owner_if_forgotten(completion_id)
         return _approval_notify, _on_done
 
-    def _spawn_stream_agent(self, stream_q, *, on_done=None, **run_kwargs) -> tuple:
+    def _spawn_stream_agent(self, stream_q, *, on_done=None, run_agent=None, **run_kwargs) -> tuple:
         """Start ``_run_agent`` for an SSE writer -> ``(agent_task, agent_ref)``. ``agent_ref[0]``
         lets the writer interrupt on disconnect; the EOS sentinel is enqueued from the task's done
         callback so drain loops never race a polled ``agent_task.done()``. ``on_done(task)`` runs
@@ -619,7 +790,7 @@ class OpenAICompatRoutesMixin:
             if text:
                 stream_q.put_threadsafe(("__status__", {"kind": str(kind), "text": text}))
         agent_ref = [None]
-        agent_task = asyncio.ensure_future(self._run_agent(
+        agent_task = asyncio.ensure_future((run_agent or self._run_agent)(
             stream_delta_callback=_on_delta, reasoning_callback=_on_reasoning, status_callback=_on_status,
             agent_ref=agent_ref, **run_kwargs))
         def _done(fut):
@@ -638,7 +809,6 @@ class OpenAICompatRoutesMixin:
         from gateway.platforms.api_server import (
             ThreadSafeAsyncQueue, _api_request_profile, _chat_usage_payload, _coerce_request_bool,
             _content_has_visible_payload, _derive_chat_session_id, _error_response, _invalid_request,
-            _multimodal_validation_error, _normalize_chat_content, _normalize_multimodal_content,
             _openai_error, _redact_api_error_text, _resolve_media_to_data_urls)
         # Bound total in-flight agent runs (configurable; #7483).
         limited = self._concurrency_limited_response()
@@ -655,22 +825,9 @@ class OpenAICompatRoutesMixin:
             return _invalid_request("Missing or invalid 'messages' field")
         stream = _coerce_request_bool(body.get("stream"), default=False)
 
-        # System messages -> ephemeral system prompt layered ON TOP of core, flattened to text
-        # (Anthropic rejects images there, OpenAI text models ignore them).
-        system_prompt = None
-        conversation_messages: list[dict[str, str]] = []
-        for idx, msg in enumerate(messages):
-            role = msg.get("role", "")
-            raw_content = msg.get("content", "")
-            if role == "system":
-                content = _normalize_chat_content(raw_content)
-                system_prompt = content if system_prompt is None else system_prompt + "\n" + content
-            elif role in {"user", "assistant"}:
-                try:
-                    content = _normalize_multimodal_content(raw_content)
-                except ValueError as exc:
-                    return _multimodal_validation_error(exc, param=f"messages[{idx}].content")
-                conversation_messages.append({"role": role, "content": content})
+        system_prompt, conversation_messages, messages_err = _parse_chat_messages(messages)
+        if messages_err is not None:
+            return messages_err
         user_message: Any = (conversation_messages[-1].get("content", "") if conversation_messages else "")
         history = conversation_messages[:-1]
         if not _content_has_visible_payload(user_message):
@@ -738,6 +895,13 @@ class OpenAICompatRoutesMixin:
             # id from a header-less client is NOT: delegate_task keeps its forced-sync fallback
             # there — the wake would hard-fail or land in history that client never reloads.
             session_history_delivery=("1" if provided_session_id else ""))
+        if getattr(self.gateway_runner, 'session_authority', None) is not None:
+            key = request.headers.get('Idempotency-Key')
+            # The durable admission identity carries the authenticated namespace: a rotated
+            # API key (or another profile) reusing a client key is a new principal, not a retry.
+            run_kwargs.update(
+                request_id=f'chat:{self._run_idempotency_scope(request)}:{key}' if key else None,
+                history_from_session=bool(provided_session_id), run_owner_scope=self._run_idempotency_scope(request))
         # This is presentation only. The ordinary API-key/session authorization
         # above still applies; it grants no internal ingress or control authority.
         if provided_session_id and body.get("hermes_notification_category") == "diagnostic":
@@ -854,9 +1018,12 @@ class OpenAICompatRoutesMixin:
         route), folded into the key because the store keeps the fingerprint only as the slot's value.
         """
         from gateway.platforms.api_server import _error_response, _idem_cache, _make_request_fingerprint
+        from hermes_state_runtime import RuntimeStoreError
         idempotency_key = request.headers.get("Idempotency-Key")
         try:
-            if idempotency_key:
+            # Durable /v1/runs admissions own idempotency under session authority; the in-memory
+            # cache only serves the pre-authority path.
+            if idempotency_key and getattr(self.gateway_runner, 'session_authority', None) is None:
                 principal_scope = self._run_idempotency_scope(request)
                 scoped_key = f"{principal_scope}\0{route}\0{idempotency_key}"
                 fp = _make_request_fingerprint(body, keys=fingerprint_keys)
@@ -864,6 +1031,9 @@ class OpenAICompatRoutesMixin:
             else:
                 result, usage = await compute()
             return (result, usage), None
+        except RuntimeStoreError as exc:
+            from gateway.platforms.api_server import _openai_error
+            return None, web.json_response(_openai_error(exc.reason, code=exc.reason), status=409)
         except Exception as e:
             logger.error("Error running agent for %s: %s", log_label, e, exc_info=True)
             message = "" if getattr(e, "_notification_presentation_suppressed", False) is True else f"Internal server error: {e}"
@@ -978,7 +1148,7 @@ class OpenAICompatRoutesMixin:
         self, request: web.Request, response_id: str, model: str, created_at: int, stream_q,
         agent_task, agent_ref, conversation_history: list[dict[str, str]], user_message: str,
         instructions: Optional[str], conversation: Optional[str], store: bool, session_id: str,
-        gateway_session_key: Optional[str] = None) -> web.StreamResponse:
+        gateway_session_key: Optional[str] = None, durable_key=None, terminal_replay=False) -> web.StreamResponse:
         """Write the SSE stream for POST /v1/responses.
 
         Events: ``response.created`` -> ``output_text.delta/done`` + ``output_item.added/done``
@@ -986,13 +1156,16 @@ class OpenAICompatRoutesMixin:
         -> ``response.completed`` (non-streaming envelope)
         or ``response.failed``. On disconnect the agent is interrupted and, with ``store=True``,
         an ``incomplete`` snapshot replaces ``in_progress`` so GET / chaining still work.
+        ``durable_key`` (canonical Idempotency-Key record) is written only once the admitted turn
+        settled, so an exact retry replays this stream instead of admitting different history.
         """
         from gateway.platforms.api_server import _abandon_agent_task, _redact_api_error_text
         response = await self._prepare_sse_response(request, session_id, gateway_session_key)
         st = _ResponsesStream(
             self, response, response_id=response_id, model=model, created_at=created_at,
             conversation_history=conversation_history, user_message=user_message,
-            instructions=instructions, conversation=conversation, store=store, session_id=session_id)
+            instructions=instructions, conversation=conversation, store=store, session_id=session_id,
+            durable_key=durable_key, terminal_replay=terminal_replay)
         try:
             await st.emit_created()
             async for item in _iter_stream_items(stream_q, agent_task, response):
@@ -1004,7 +1177,7 @@ class OpenAICompatRoutesMixin:
             await st.flush_batch()
             await st.collect_result(agent_task)
             await st.close_message_item()
-            if st.agent_error:
+            if st.agent_error and not (durable_key and st.result):
                 await st.emit_failed()
             else:
                 await st.emit_completed()
@@ -1031,12 +1204,68 @@ class OpenAICompatRoutesMixin:
             logger.error("Agent crashed mid-stream for %s: %s", response_id, str(st.agent_error)[:300])
         return response
 
+    async def _replay_sse_responses(self, request: web.Request, replay: dict[str, Any]) -> web.StreamResponse:
+        """Re-emit a settled idempotent record as SSE. A record made by the streaming path replays
+        its exact frames; one made by the nonstreaming path gets ``created`` + its terminal event."""
+        from gateway.platforms.api_server import _sse_frame
+        headers = replay.get('headers') or {}
+        response = await self._prepare_sse_response(
+            request, headers.get('X-Hermes-Session-Id'), headers.get('X-Hermes-Session-Key'))
+        events = replay.get('events')
+        if not events:
+            env = replay['response']
+            created = {k: env[k] for k in ('id', 'object', 'created_at', 'model')}
+            created.update(status='in_progress', output=[])
+            events = [['response.created', {'type': 'response.created', 'response': created, 'sequence_number': 0}],
+                      ['response.' + env['status'], {'type': 'response.' + env['status'], 'response': env,
+                                                     'sequence_number': 1}]]
+        for event_type, data in events:
+            await response.write(_sse_frame(data, event=event_type))
+        return response
+
+    async def _responses_durable_replay(self, request: web.Request, body: dict[str, Any], stream: bool) -> tuple:
+        """Canonical Idempotency-Key record for POST /v1/responses ->
+        ``(durable_key, idempotency_scope, idempotency_key, replayed_response_or_None)``."""
+        durable_key = idempotency_scope = None
+        idempotency_key = request.headers.get('Idempotency-Key')
+        canonical = getattr(self.gateway_runner, 'session_authority', None) is not None
+        if canonical and idempotency_key:
+            # An exact retry replays the committed response BEFORE the conversation name is
+            # expanded: the first success already advanced the conversation, so re-expanding
+            # would build a different admission payload and refuse the retry as a conflict.
+            # Streaming and nonstreaming share the record: transport mode is not identity.
+            from gateway.platforms.api_server import _make_request_fingerprint
+            idempotency_scope = self._run_idempotency_scope(request)
+            durable_key = (f'idem:{idempotency_scope}:{idempotency_key}',
+                           _make_request_fingerprint(body, keys=_responses_fingerprint_keys(body)))
+            from gateway.platforms.api_server import _openai_error
+            from gateway.platforms.api_server_response_admissions import request_binding
+            response_store = self._current_response_store()
+            binding = request_binding(self, request, durable_key)
+            if not response_store.request_key_matches(durable_key[0], binding):
+                return durable_key, idempotency_scope, idempotency_key, web.json_response(
+                    _openai_error('admission_conflict', code='admission_conflict'), status=409)
+            replay = response_store.get(durable_key[0])
+            if replay is not None:
+                if replay.get('fingerprint') != durable_key[1]:
+                    return durable_key, idempotency_scope, idempotency_key, web.json_response(
+                        _openai_error('admission_conflict', code='admission_conflict'), status=409)
+                if not _settled(replay):
+                    # Never re-run a request whose earlier attempt may have executed.
+                    return durable_key, idempotency_scope, idempotency_key, web.json_response(
+                        _openai_error('unknown_execution', code='unknown_execution'), status=409)
+                if stream:
+                    return (durable_key, idempotency_scope, idempotency_key,
+                            await self._replay_sse_responses(request, replay))
+                return durable_key, idempotency_scope, idempotency_key, web.json_response(
+                    replay['response'], headers=replay.get('headers') or {})
+        return durable_key, idempotency_scope, idempotency_key, None
+
     async def _handle_responses(self, request: web.Request) -> web.Response:
         """POST /v1/responses — OpenAI Responses API format."""
         from gateway.platforms.api_server import (
-            ThreadSafeAsyncQueue, _auto_truncate_response_history, _coerce_request_bool,
-            _content_has_visible_payload, _error_response, _invalid_request,
-            _multimodal_validation_error, _normalize_multimodal_content, _redact_api_error_text,
+            ThreadSafeAsyncQueue, _coerce_request_bool,
+            _error_response, _invalid_request, _redact_api_error_text,
             _resolve_media_to_data_urls, _responses_usage_payload)
         # Bound total in-flight agent runs (configurable; #7483).
         limited = self._concurrency_limited_response()
@@ -1049,8 +1278,6 @@ class OpenAICompatRoutesMixin:
             body = await request.json()
         except Exception:
             return _invalid_request("Invalid JSON in request body")
-        from gateway.platforms.api_server import _request_relay_metadata
-        relay_metadata = _request_relay_metadata(body)
         raw_input = body.get("input")
         if raw_input is None:
             return _error_response("Missing 'input' field", 400)
@@ -1060,82 +1287,28 @@ class OpenAICompatRoutesMixin:
         store = _coerce_request_bool(body.get("store"), default=True)
         if conversation and previous_response_id:
             return _error_response("Cannot use both 'conversation' and 'previous_response_id'", 400)
-        if conversation:
-            # A conversation name resolves to its latest response_id (unknown = new conversation).
-            previous_response_id = self._current_response_store().get_conversation(conversation)
-
-        input_messages: list[dict[str, Any]] = []
-        if isinstance(raw_input, str):
-            input_messages = [{"role": "user", "content": raw_input}]
-        elif isinstance(raw_input, list):
-            for idx, item in enumerate(raw_input):
-                if isinstance(item, str):
-                    input_messages.append({"role": "user", "content": item})
-                elif _is_reasoning_input_item(item):
-                    continue
-                elif isinstance(item, dict):
-                    try:
-                        content = _normalize_multimodal_content(item.get("content", ""))
-                    except ValueError as exc:
-                        return _multimodal_validation_error(exc, param=f"input[{idx}].content")
-                    input_messages.append({"role": item.get("role", "user"), "content": content})
-        else:
-            return _error_response("'input' must be a string or array", 400)
-
-        # Explicit conversation_history (stateless clients) beats previous_response_id chaining.
-        conversation_history: list[dict[str, Any]] = []
-        raw_history = body.get("conversation_history")
-        if raw_history:
-            if not isinstance(raw_history, list):
-                return _error_response("'conversation_history' must be an array of message objects", 400)
-            for i, entry in enumerate(raw_history):
-                if _is_reasoning_input_item(entry):
-                    continue
-                if not isinstance(entry, dict) or "role" not in entry or "content" not in entry:
-                    return _error_response(f"conversation_history[{i}] must have 'role' and 'content' fields", 400)
-                try:
-                    entry_content = _normalize_multimodal_content(entry["content"])
-                except ValueError as exc:
-                    return _multimodal_validation_error(exc, param=f"conversation_history[{i}].content")
-                conversation_history.append({"role": str(entry["role"]), "content": entry_content})
-            if previous_response_id:
-                logger.debug("Both conversation_history and previous_response_id provided; using conversation_history")
-        stored_session_id = None
-        if not conversation_history and previous_response_id:
-            stored = self._current_response_store().get(previous_response_id)
-            if stored is None:
-                return _error_response(f"Previous response not found: {previous_response_id}", 404)
-            conversation_history = list(stored.get("conversation_history", []))
-            stored_session_id = stored.get("session_id")
-            if instructions is None:
-                instructions = stored.get("instructions")
-        # All input messages but the last become history; the last is the user message.
-        conversation_history.extend(input_messages[:-1])
-        user_message: Any = input_messages[-1].get("content", "") if input_messages else ""
-        if not _content_has_visible_payload(user_message):
-            return _error_response("No user message found in input", 400)
-        if body.get("truncation") == "auto":
-            conversation_history = _auto_truncate_response_history(conversation_history)
-
-        # Session precedence: previous_response_id chain > declared X-Hermes-Session-Key > fresh
-        # id. Binding the declared key follows the same precedence: a chain-selected session must
-        # not have its routing key rewritten to this header.
-        _declared_selected = not stored_session_id and bool(gateway_session_key)
-        session_id = (
-            stored_session_id
-            or await asyncio.to_thread(self._declared_conversation_session, gateway_session_key)
-            or str(uuid.uuid4()))
         stream = _coerce_request_bool(body.get("stream"), default=False)
-        route, agent_overrides, selection_error = self._select_request_route(
-            body, session_id=session_id, gateway_session_key=gateway_session_key,
-            model_alias=body.get("model"))
-        if selection_error is not None:
-            return selection_error
-        run_kwargs = dict(
-            user_message=user_message, conversation_history=conversation_history,
-            ephemeral_system_prompt=instructions, session_id=session_id,
-            gateway_session_key=gateway_session_key, bind_declared_conversation=_declared_selected,
-            **agent_overrides, route=route, relay_metadata=relay_metadata)
+        durable_key, idempotency_scope, idempotency_key, replayed = await self._responses_durable_replay(
+            request, body, stream)
+        if replayed is not None:
+            return replayed
+        from gateway.platforms.api_server_response_admissions import prepare_context
+        from hermes_state_runtime import RuntimeStoreError
+        try:
+            context, error = await prepare_context(
+                self, request, body, gateway_session_key, durable_key, idempotency_scope, idempotency_key)
+        except RuntimeStoreError as exc:
+            from gateway.platforms.api_server import _openai_error
+            return web.json_response(_openai_error(exc.reason, code=exc.reason), status=409)
+        if error is not None:
+            return error
+        session_id, user_message = context['session_id'], context['user_message']
+        conversation_history, instructions = context['conversation_history'], context['instructions']
+        run_kwargs, run_agent = context['run_kwargs'], context['run_agent']
+        response_id, created_at = _response_identity(self._current_response_store(), durable_key)
+        response_model = body.get('model', self._model_name)
+        if durable_key:
+            response_model = self._current_response_store().request_model(durable_key[0], response_model)
         if stream:
             _stream_q = ThreadSafeAsyncQueue()
 
@@ -1158,32 +1331,34 @@ class OpenAICompatRoutesMixin:
                 if not already_streamed and isinstance(text, str) and text.strip():
                     _stream_q.put_threadsafe(("__commentary__", {"text": text}))
             agent_task, agent_ref = self._spawn_stream_agent(
-                _stream_q, tool_progress_callback=_on_tool_progress,
+                _stream_q, run_agent=run_agent, tool_progress_callback=_on_tool_progress,
                 tool_start_callback=_on_tool_start, tool_complete_callback=_on_tool_complete,
                 interim_assistant_callback=_on_commentary, **run_kwargs)
             return await self._write_sse_responses(
-                request=request, response_id=f"resp_{uuid.uuid4().hex[:28]}",
-                model=body.get("model", self._model_name), created_at=int(time.time()),
+                request=request, response_id=response_id,
+                model=response_model, created_at=created_at,
                 stream_q=_stream_q, agent_task=agent_task, agent_ref=agent_ref,
                 conversation_history=conversation_history, user_message=user_message,
                 instructions=instructions, conversation=conversation, store=store,
-                session_id=session_id, gateway_session_key=gateway_session_key)
+                session_id=session_id, gateway_session_key=gateway_session_key,
+                durable_key=durable_key, terminal_replay=context.get('terminal_replay', False))
 
         async def _compute_response():
-            return await self._run_agent(**run_kwargs)
+            return await run_agent(**run_kwargs)
         outcome, err = await self._run_idempotent(
             request, body, _compute_response, log_label="responses",
-            fingerprint_keys=["input", "instructions", "previous_response_id", "conversation", "model", "provider", "model_options", "tools"],
-            route="responses",
+            fingerprint_keys=list(_responses_fingerprint_keys(body)), route="responses",
         )
         if err is not None:
             return err
+        if durable_key is not None:
+            replay = self._current_response_store().get(durable_key[0])
+            if _settled(replay):
+                return web.json_response(replay['response'], headers=replay.get('headers') or {})
         result, usage = outcome
         final_response = _resolve_media_to_data_urls(result.get("final_response", ""))
         if not final_response:
             final_response = _redact_api_error_text(result.get("error", "(No response generated)"))
-        response_id = f"resp_{uuid.uuid4().hex[:28]}"
-        created_at = int(time.time())
         full_history = self._build_response_conversation_history(
             conversation_history, user_message, result, final_response,
             tool_output_max_chars=self._history_tool_output_max_chars)
@@ -1197,20 +1372,31 @@ class OpenAICompatRoutesMixin:
         output_start_index = self._response_messages_turn_start_index(
             conversation_history, user_message, result)
         response_data = {
-            "id": response_id, "object": "response", "status": "completed",
-            "created_at": created_at, "model": body.get("model", self._model_name),
-            "output": self._extract_output_items(result, start_index=output_start_index),
+            "id": response_id, "object": "response", "status": _response_status(result),
+            "created_at": created_at, "model": response_model,
+            "output": self._extract_output_items(result, start_index=output_start_index,
+                **({'response_id': response_id} if durable_key else {})),
             "usage": _responses_usage_payload(usage)}
+        if durable_key:
+            response_data['output'] = self._current_response_store().order_output(durable_key[0], response_data['output'])
+        if response_data['status'] == 'failed':
+            response_data['error'] = {'code': 'agent_error', 'message': _redact_api_error_text(
+                result.get('error') or 'The admitted turn failed.')}
         if store:
             response_store = self._current_response_store()
+            advance_conversation = conversation and (not context.get('terminal_replay')
+                or response_store.get_conversation(conversation) in (None, response_id))
             response_store.put(response_id, {
                 "response": response_data, "conversation_history": full_history,
                 "instructions": instructions, "session_id": _effective_session_id})
-            if conversation:
+            if advance_conversation:
                 response_store.set_conversation(conversation, response_id)
         response_headers = {"X-Hermes-Session-Id": _effective_session_id}
         if gateway_session_key:
             response_headers["X-Hermes-Session-Key"] = gateway_session_key
+        if durable_key is not None:
+            self._current_response_store().put(durable_key[0], {
+                'fingerprint': durable_key[1], 'response': response_data, 'headers': response_headers})
         return web.json_response(response_data, headers=response_headers)
 
     async def _handle_get_response(self, request: web.Request) -> web.Response:
@@ -1300,7 +1486,7 @@ class OpenAICompatRoutesMixin:
         return out
 
     @staticmethod
-    def _extract_output_items(result: dict[str, Any], start_index: int = 0) -> list[dict[str, Any]]:
+    def _extract_output_items(result: dict[str, Any], start_index: int = 0, *, response_id=None) -> list[dict[str, Any]]:
         """Output items from ``result["messages"][start_index:]``: ``function_call`` per assistant
         tool_call, ``function_call_output`` per tool message, then the final ``message``."""
         from gateway.platforms.api_server import _redact_api_error_text
@@ -1333,4 +1519,7 @@ class OpenAICompatRoutesMixin:
         final = result.get("final_response", "") or _redact_api_error_text(
             result.get("error", "(No response generated)"))
         items.append(_message_item(final))
+        if response_id is not None:
+            from gateway.platforms.api_server_response_identity import identify_output
+            return identify_output(items, response_id)
         return items

@@ -19,12 +19,37 @@ import type { PanelSection } from '../../../types.js'
 import { applyConfiguredTuiTheme } from '../../createGatewayEventHandler.js'
 import { DEFAULT_INDICATOR_STYLE, INDICATOR_STYLES, type IndicatorStyle } from '../../interfaces.js'
 import { patchOverlayState } from '../../overlayStore.js'
-import { patchUiState } from '../../uiStore.js'
-import type { SlashCommand } from '../types.js'
+import { getUiState, patchUiState } from '../../uiStore.js'
+import { canonicalUsage } from '../canonicalSessionCommands.js'
+import { runCanonicalSessionControl } from '../canonicalSessionControls.js'
+import type { SlashCommand, SlashRunCtx } from '../types.js'
 
 const TUI_SESSION_MODEL_RE = new RegExp(`(?:^|\\s)${TUI_SESSION_MODEL_FLAG}(?:\\s|$)`)
 const REASONING_SESSION_FLAGS = new Set(['--session'])
 const REASONING_GLOBAL_FLAGS = new Set(['--global'])
+
+const COMPRESS_AUTHORITY_KEYS = [
+  'stored_session_id',
+  'execution_epoch',
+  'execution_generation',
+  'execution_state',
+  'running'
+] as const
+
+// Compression is not attachment: a delayed reply cannot replace a
+// newer turn/owner, nor replace its transcript with an old snapshot.
+function isStaleCompressReply(r: SessionCompressResponse, current: ReturnType<typeof getUiState>, ctx: SlashRunCtx) {
+  if (current.busy !== ctx.ui.busy || COMPRESS_AUTHORITY_KEYS.some(key => current.info?.[key] !== ctx.ui.info?.[key])) {
+    return true
+  }
+
+  return (
+    current.info?.execution_generation !== undefined &&
+    (r.info?.execution_epoch !== current.info.execution_epoch ||
+      !Number.isSafeInteger(r.info?.execution_generation) ||
+      (r.info?.execution_generation ?? -1) < current.info.execution_generation)
+  )
+}
 
 type FastModeWord = 'fast' | 'normal' | 'ultrafast'
 
@@ -91,6 +116,10 @@ export const sessionCommands: SlashCommand[] = [
         return ctx.transcript.sys(t('slashCmd.session.bg.usage'))
       }
 
+      if (ctx.gateway.gw?.isCanonical) {
+        return ctx.transcript.sys(t('canonical.controls.notAvailable', 'bg'))
+      }
+
       ctx.gateway.rpc<BackgroundStartResponse>('prompt.background', { session_id: ctx.sid, text: arg }).then(
         ctx.guarded<BackgroundStartResponse>(r => {
           if (!r.task_id) {
@@ -110,6 +139,10 @@ export const sessionCommands: SlashCommand[] = [
     run: (arg, ctx) => {
       if (!arg) {
         return ctx.transcript.sys(t('slashCmd.session.btw.usage'))
+      }
+
+      if (ctx.gateway.gw?.isCanonical) {
+        return ctx.transcript.sys(t('canonical.controls.notAvailable', 'btw'))
       }
 
       ctx.gateway.rpc<BackgroundStartResponse>('prompt.btw', { session_id: ctx.sid, text: arg }).then(
@@ -139,6 +172,10 @@ export const sessionCommands: SlashCommand[] = [
 
       if (arg.trim() === '--refresh') {
         return patchOverlayState({ modelPicker: { refresh: true } })
+      }
+
+      if (ctx.gateway.gw.isCanonical) {
+        return runCanonicalSessionControl('model', arg, ctx)
       }
 
       const switchModel = (confirmExpensiveModel = false) =>
@@ -231,6 +268,12 @@ export const sessionCommands: SlashCommand[] = [
         return
       }
 
+      // The shared owner serves this setting's read, not its write (a config.yaml / per-session
+      // setting it has no frozen-policy verb for yet): say so instead of a bare invalid_params.
+      if (ctx.gateway.gw?.isCanonical) {
+        return ctx.transcript.sys(t('canonical.controls.notAvailable', 'personality'))
+      }
+
       ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'personality', session_id: ctx.sid, value: arg }).then(
         ctx.guarded<ConfigSetResponse>(r => {
           if (r.history_reset) {
@@ -253,6 +296,10 @@ export const sessionCommands: SlashCommand[] = [
     help: 'compress transcript',
     name: 'compress',
     run: (arg, ctx) => {
+      if (ctx.gateway.gw.isCanonical) {
+        return runCanonicalSessionControl('compress', arg, ctx)
+      }
+
       ctx.gateway
         .rpc<SessionCompressResponse>('session.compress', {
           session_id: ctx.sid,
@@ -260,14 +307,22 @@ export const sessionCommands: SlashCommand[] = [
         })
         .then(
           ctx.guarded<SessionCompressResponse>(r => {
+            const current = getUiState()
+
+            if (isStaleCompressReply(r, current, ctx)) {
+              return
+            }
+
+            const info = r.info ? { ...current.info, ...r.info } : current.info
+
             if (Array.isArray(r.messages)) {
               const rows = toTranscriptMessages(r.messages)
 
-              ctx.transcript.setHistoryItems(r.info ? [introMsg(r.info), ...rows] : rows)
+              ctx.transcript.setHistoryItems(info ? [introMsg(info), ...rows] : rows)
             }
 
             if (r.info) {
-              patchUiState({ info: r.info })
+              patchUiState({ info })
             }
 
             if (r.usage) {
@@ -314,7 +369,9 @@ export const sessionCommands: SlashCommand[] = [
     help: 'branch the session',
     name: 'branch',
     run: (arg, ctx) => {
-      const prevSid = ctx.sid
+      if (ctx.gateway.gw.isCanonical) {
+        return runCanonicalSessionControl('branch', arg, ctx)
+      }
 
       ctx.gateway.rpc<SessionBranchResponse>('session.branch', { name: arg, session_id: ctx.sid }).then(
         ctx.guarded<SessionBranchResponse>(r => {
@@ -322,9 +379,9 @@ export const sessionCommands: SlashCommand[] = [
             return
           }
 
-          void ctx.session.closeSession(prevSid)
-          patchUiState({ sid: r.session_id })
-          ctx.session.setSessionStartedAt(Date.now())
+          // Resume hydrates destination authority/history before closing the
+          // source; changing only sid would inherit the source owner's epoch.
+          ctx.session.resumeById(r.session_id)
           ctx.transcript.sys(t('slashCmd.session.branch.branched', r.title ?? ''))
         })
       )
@@ -341,6 +398,12 @@ export const sessionCommands: SlashCommand[] = [
         normalized === 'on' || normalized === 'off' || normalized === 'tts' || normalized === 'status'
           ? normalized
           : 'status'
+
+      // Read-aloud ran in the sidecar's own turn; a shared-gateway turn runs on the owner, which
+      // never speaks a TUI reply, so the toggle would say "on" and stay silent.
+      if (action === 'tts' && ctx.gateway.gw?.isCanonical) {
+        return ctx.transcript.sys(t('canonical.controls.notAvailable', 'voice tts'))
+      }
 
       ctx.gateway.rpc<VoiceToggleResponse>('voice.toggle', { action }).then(
         ctx.guarded<VoiceToggleResponse>(r => {
@@ -473,6 +536,12 @@ export const sessionCommands: SlashCommand[] = [
         return ctx.transcript.sys(t('slashCmd.session.theme.usage'))
       }
 
+      // The shared owner serves this setting's read, not its write (a config.yaml / per-session
+      // setting it has no frozen-policy verb for yet): say so instead of a bare invalid_params.
+      if (ctx.gateway.gw?.isCanonical) {
+        return ctx.transcript.sys(t('canonical.controls.notAvailable', 'theme'))
+      }
+
       // Apply only after the write is confirmed (mirrors /indicator): a
       // failed config.set must not leave the session showing a theme that
       // reverts on restart. A few ms later than an optimistic flip, but the
@@ -507,6 +576,12 @@ export const sessionCommands: SlashCommand[] = [
           )
       }
 
+      // The shared owner serves this setting's read, not its write (a config.yaml / per-session
+      // setting it has no frozen-policy verb for yet): say so instead of a bare invalid_params.
+      if (ctx.gateway.gw?.isCanonical) {
+        return ctx.transcript.sys(t('canonical.controls.notAvailable', 'skin'))
+      }
+
       ctx.gateway
         .rpc<ConfigSetResponse>('config.set', { key: 'skin', value: arg })
         .then(
@@ -536,6 +611,12 @@ export const sessionCommands: SlashCommand[] = [
 
       if (!(INDICATOR_STYLES as readonly string[]).includes(value)) {
         return ctx.transcript.sys(t('slashCmd.session.indicator.usage', INDICATOR_STYLES.join('|')))
+      }
+
+      // The shared owner serves this setting's read, not its write (a config.yaml / per-session
+      // setting it has no frozen-policy verb for yet): say so instead of a bare invalid_params.
+      if (ctx.gateway.gw?.isCanonical) {
+        return ctx.transcript.sys(t('canonical.controls.notAvailable', 'indicator'))
       }
 
       ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'indicator', value }).then(
@@ -582,6 +663,12 @@ export const sessionCommands: SlashCommand[] = [
                 ctx.transcript.sys(t('slashCmd.session.reasoning.currentWithDisplay', r.value, r.display || 'hide'))
             )
           )
+      }
+
+      // The shared owner serves this setting's read, not its write (a config.yaml / per-session
+      // setting it has no frozen-policy verb for yet): say so instead of a bare invalid_params.
+      if (ctx.gateway.gw?.isCanonical) {
+        return ctx.transcript.sys(t('canonical.controls.notAvailable', 'reasoning'))
       }
 
       ctx.gateway.rpc<ConfigSetResponse>('config.set', reasoningConfigPayload(arg, ctx.sid ?? '')).then(
@@ -632,6 +719,12 @@ export const sessionCommands: SlashCommand[] = [
           .catch(ctx.guardedErr)
       }
 
+      // The shared owner serves this setting's read, not its write (a config.yaml / per-session
+      // setting it has no frozen-policy verb for yet): say so instead of a bare invalid_params.
+      if (ctx.gateway.gw?.isCanonical) {
+        return ctx.transcript.sys(t('canonical.controls.notAvailable', 'fast'))
+      }
+
       ctx.gateway
         .rpc<ConfigSetResponse>('config.set', { key: 'fast', session_id: ctx.sid, value: mode })
         .then(
@@ -667,7 +760,10 @@ export const sessionCommands: SlashCommand[] = [
 
       if (!mode || mode === 'status') {
         return ctx.gateway
-          .rpc<ConfigGetValueResponse>('config.get', { key: 'busy' })
+          .rpc<ConfigGetValueResponse>('config.get', {
+            key: 'busy',
+            ...(ctx.gateway.gw.isCanonical ? { session_id: ctx.sid } : {})
+          })
           .then(
             ctx.guarded<ConfigGetValueResponse>(r => {
               const current = r.value || 'interrupt'
@@ -678,10 +774,19 @@ export const sessionCommands: SlashCommand[] = [
       }
 
       ctx.gateway
-        .rpc<ConfigSetResponse>('config.set', { key: 'busy', value: mode })
+        .rpc<ConfigSetResponse>('config.set', {
+          key: 'busy',
+          value: mode,
+          ...(ctx.gateway.gw.isCanonical ? { session_id: ctx.sid } : {})
+        })
         .then(
           ctx.guarded<ConfigSetResponse>(r => {
             const next = r.value || mode
+
+            if (next === 'queue' || next === 'steer' || next === 'interrupt') {
+              patchUiState({ busyInputMode: next })
+            }
+
             ctx.transcript.sys(t('slashCmd.session.busy.mode', next))
           })
         )
@@ -707,6 +812,10 @@ export const sessionCommands: SlashCommand[] = [
     help: 'session usage + Nous credits',
     name: 'usage',
     run: (_arg, ctx) => {
+      if (ctx.sid && ctx.gateway.gw?.isCanonical) {
+        return canonicalUsage(ctx)
+      }
+
       ctx.gateway.rpc<SessionUsageResponse>('session.usage', { session_id: ctx.sid }).then(r => {
         if (ctx.stale()) {
           return

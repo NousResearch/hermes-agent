@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -87,8 +88,17 @@ def bind_gateway_runtime(gateway: Any) -> bool:
         adapter.set_notification_scheduler(_drop)
         return False
 
+    # Graph wants a prompt 202 once the work is durable: accept (persist the job) inside the request,
+    # run the fetch/transcript/summary pipeline detached. An accept failure still fails the request.
+    background = getattr(adapter, "_background_tasks", set())
+
     async def _schedule(notification: dict[str, Any], event: Any) -> None:
-        await runtime.run_notification(notification)
+        job = runtime.create_job_from_notification(notification)
+        if job.status != "received":  # duplicate of a running or finished job
+            return
+        task = asyncio.create_task(runtime.run_job(job.job_id))
+        background.add(task)
+        task.add_done_callback(background.discard)
     adapter.set_notification_scheduler(_schedule)
     gateway._teams_pipeline_runtime = runtime
     gateway._teams_pipeline_runtime_error = None

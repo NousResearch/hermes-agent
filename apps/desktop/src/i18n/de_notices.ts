@@ -15,5 +15,9 @@ export const deNotices = {
       privacy: 'Datenschutzerklärung',
       after: '.'
     }
+  },
+  promptNotices: {
+    legacySendUnconfirmed:
+      'Dieser Server konnte das frühere Senden dieser Nachricht nicht bestätigen; sie wurde möglicherweise bereits ausgeführt. Prüfe die Unterhaltung, bevor du sie erneut sendest.'
   }
-} satisfies Pick<TranslationOverrides, 'remoteDisplayBanner' | 'butterbar'>
+} satisfies Pick<TranslationOverrides, 'remoteDisplayBanner' | 'butterbar' | 'promptNotices'>

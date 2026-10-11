@@ -1,11 +1,37 @@
-import { useStore } from '@nanostores/react'
-import { useCallback, useMemo, useRef, useState } from 'react'
+import { randomUUID } from 'node:crypto'
 
-import { $uiState, getUiState } from '../app/uiStore.js'
+import { useStore } from '@nanostores/react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+
+import { isServerQueued } from '../app/pendingBubbles.js'
+import { captureDestination, type SubmissionDestination } from '../app/submissionDestination.js'
+import { $uiState, getUiState, patchUiState } from '../app/uiStore.js'
+import { t } from '../i18n/runtime.js'
+import {
+  loadPendingInputs,
+  pendingDestinationKey,
+  pendingInputOwner,
+  pendingInputRevision,
+  removePendingInput,
+  savePendingInput
+} from '../lib/pendingInputs.js'
 
 export interface QueueItem {
   display: string
   text: string
+  queued?: boolean
+  createdAt?: number
+  submissionId?: string
+  destination?: SubmissionDestination
+  ownerDestination?: SubmissionDestination
+  inFlight?: boolean
+  failed?: boolean
+  attachments?: Array<{ path: string; mime: string }>
+  controlMethod?: 'session.steer' | 'session.redirect'
+  executionGeneration?: number
+  preparedText?: string
+  legacyAttempted?: boolean
+  settle?: (accepted: boolean) => void
 }
 
 export const queueItem = (text: string, display = text): QueueItem => ({ display, text })
@@ -25,10 +51,25 @@ export function takeQueueItem(queue: QueueItem[], index: number, editedDisplay?:
     return item
   }
 
-  return {
-    display: editedDisplay,
-    text: editedDisplay.includes(item.display) ? editedDisplay.replace(item.display, item.text) : editedDisplay
+  const text = editedDisplay.includes(item.display) ? editedDisplay.replace(item.display, item.text) : editedDisplay
+
+  if (text === item.text) {
+    return { ...item, display: editedDisplay }
   }
+
+  // New text is a new submission (fresh id, no prior attempt), but the edit keeps what the
+  // user queued it with: attachments, destination and the busy-control intent.
+  const {
+    failed: _f,
+    inFlight: _i,
+    legacyAttempted: _l,
+    preparedText: _p,
+    settle: _s,
+    submissionId: _id,
+    ...kept
+  } = item
+
+  return { ...kept, display: editedDisplay, text }
 }
 
 // Mutates `arr` in place; returned reference is the same input array, kept
@@ -44,36 +85,86 @@ export function removeAtInPlace<T>(arr: T[], i: number): T[] {
 }
 
 interface PendingQueue {
+  revision?: number
+  destination?: SubmissionDestination
   edit: number | null
   items: QueueItem[]
 }
 
-export function useQueue() {
-  useStore($uiState)
+// `gw` owns server-queued rows: the authority's pending fanout is rendered
+// after this client's unconfirmed local items, and deleting/editing one goes
+// through `prompt.cancel` — the next fanout, not a local splice, retires it.
+export function useQueue(gw?: { request: (method: string, params: Record<string, unknown>) => Promise<unknown> }) {
+  const ui = useStore($uiState)
   const queues = useRef(new Map<string, PendingQueue>())
   const unbound = useRef<PendingQueue>({ edit: null, items: [] })
   const [, refresh] = useState(0)
 
-  const getQueue = useCallback(() => {
-    const { sid, info } = getUiState()
+  const getQueue = useCallback((destination = captureDestination()) => {
+    // Apply compression before resolving a queue, including through stale callbacks.
+    for (const [oldKey, source] of queues.current) {
+      const owner = pendingInputOwner(source.destination!)
+      const newKey = pendingDestinationKey(owner)
+
+      if (newKey === oldKey) {
+        continue
+      }
+
+      const target = queues.current.get(newKey) ?? { destination: owner, edit: null, items: [] }
+      const edited = source.edit === null ? undefined : source.items[source.edit]
+
+      for (const item of source.items) {
+        item.ownerDestination = owner
+
+        if (!item.inFlight && !item.failed) {
+          item.destination = owner
+        }
+      }
+
+      const retained = new Map([...target.items, ...source.items].map(item => [item.submissionId, item]))
+      target.items = loadPendingInputs(owner).map(item => retained.get(item.submissionId) ?? item)
+
+      if (edited) {
+        target.edit = target.items.indexOf(edited)
+      }
+
+      queues.current.delete(oldKey)
+      queues.current.set(newKey, target)
+    }
+
+    destination = pendingInputOwner(destination)
+    const { sid } = destination
 
     if (!sid) {
       return unbound.current
     }
 
-    const key = JSON.stringify([info?.profile_name || 'default', sid])
+    const key = pendingDestinationKey(destination)
     let queue = queues.current.get(key)
 
     if (!queue) {
-      queue = { edit: null, items: [] }
+      queue = { destination, edit: null, items: loadPendingInputs(destination) }
       queues.current.set(key, queue)
+    }
+
+    if (queue.revision !== pendingInputRevision) {
+      const retained = new Map(queue.items.map(item => [item.submissionId, item]))
+      const edited = queue.edit === null ? undefined : queue.items[queue.edit]
+      queue.items = loadPendingInputs(destination).map(item => retained.get(item.submissionId) ?? item)
+      queue.edit = edited ? queue.items.indexOf(edited) : null
+      queue.revision = pendingInputRevision
     }
 
     // Input typed before any session exists belongs to the next attachment,
     // unlike a bound session's queue, which must never migrate on navigation.
     if (unbound.current.items.length) {
       const offset = queue.items.length
-      queue.items.push(...unbound.current.items)
+
+      for (const item of unbound.current.items) {
+        item.destination = destination
+        savePendingInput(item)
+        queue.items.push(item)
+      }
 
       if (unbound.current.edit !== null) {
         queue.edit = offset + unbound.current.edit
@@ -108,7 +199,49 @@ export function useQueue() {
     [getQueue]
   )
 
-  const queuedDisplay = queueRef.current.map(item => item.display)
+  const serverRows = (ui.info?.pending_submissions ?? []).filter(isServerQueued)
+
+  const queuedDisplay = [
+    ...queueRef.current.map(item => `${item.failed ? t('canonical.queue.unconfirmedPrefix') : ''}${item.display}`),
+    ...serverRows.map(row => t('canonical.queue.serverRow', String(row.status), String(row.user)))
+  ]
+
+  // Indexes past the local items address server rows (read live, not from
+  // render state: key handlers run between renders).
+  const serverRowAt = useCallback(
+    (index: number) => {
+      const local = queueRef.current.length
+
+      return index >= local ? (getUiState().info?.pending_submissions ?? []).filter(isServerQueued)[index - local] : undefined
+    },
+    [queueRef]
+  )
+
+  const queueDraft = useCallback(
+    (index: number) => serverRowAt(index)?.user ?? queueRef.current[index]?.display ?? '',
+    [queueRef, serverRowAt]
+  )
+
+  // Resolves once the authority has retired the row; the rejection carries the
+  // store's refusal (stale_generation, …) so callers decide what the edited
+  // or deleted text becomes.
+  const cancelServerRow = useCallback(
+    (row: { admission_id: string; status?: string; execution_generation?: number | null }) => {
+      const session_id = getUiState().sid
+      const unknown = row.status === 'unknown'
+
+      return (gw?.request(unknown ? 'prompt.resolve_unknown' : 'prompt.cancel', {
+        session_id, admission_id: row.admission_id,
+        ...(unknown ? { execution_generation: row.execution_generation } : {})
+      }) ?? Promise.resolve()).catch((error: Error) => {
+        if (getUiState().sid === session_id) { patchUiState({ status: t('canonical.queue.discardFailed', error.message) }) }
+
+        throw error
+      })
+    },
+    [gw]
+  )
+
   const queueEditIdx = queueEditRef.current
   const syncQueue = useCallback(() => refresh(version => version + 1), [])
 
@@ -120,53 +253,248 @@ export function useQueue() {
     [queueEditRef, syncQueue]
   )
 
-  const enqueue = useCallback(
-    (text: string, display = text) => {
-      queueRef.current.push(queueItem(text, display))
-      syncQueue()
-    },
-    [queueRef, syncQueue]
-  )
+  const draft = useCallback(
+    (text: string, display: string, destination?: SubmissionDestination, attachments?: QueueItem['attachments']) => {
+      const owner = pendingInputOwner(destination ?? captureDestination())
+      const queue = getQueue(owner)
 
-  const prependQ = useCallback(
-    (item: QueueItem) => {
-      prependQueueItem(queueRef.current, item)
-      syncQueue()
-    },
-    [queueRef, syncQueue]
-  )
-
-  const dequeue = useCallback(() => {
-    const head = queueRef.current.shift()?.text
-    syncQueue()
-
-    return head
-  }, [queueRef, syncQueue])
-
-  const takeQ = useCallback(
-    (i: number, editedDisplay?: string) => {
-      const item = takeQueueItem(queueRef.current, i, editedDisplay)
-
-      if (item) {
-        syncQueue()
+      const item: QueueItem = {
+        ...queueItem(text, display),
+        ...(attachments?.length ? { attachments } : {}),
+        submissionId: randomUUID(),
+        destination: owner,
+        createdAt: Math.max(Date.now(), (queue.items.at(-1)?.createdAt ?? 0) + 1)
       }
+
+      return { queue, item }
+    },
+    [getQueue]
+  )
+
+  const enqueue = useCallback(
+    (text: string, display = text, destination?: SubmissionDestination, attachments?: QueueItem['attachments']) => {
+      const { queue, item } = draft(text, display, destination, attachments)
+      savePendingInput(item)
+      queue.items.push(item)
+      syncQueue()
 
       return item
     },
-    [queueRef, syncQueue]
+    [draft, syncQueue]
+  )
+
+  const prependQ = useCallback(
+    (item: QueueItem, destination?: SubmissionDestination) => {
+      const queue = getQueue(destination)
+      item.inFlight = false
+      item.submissionId ??= randomUUID()
+      item.destination ??= destination ?? captureDestination()
+      savePendingInput(item)
+
+      if (!queue.items.includes(item)) {
+        prependQueueItem(queue.items, item)
+      }
+
+      syncQueue()
+    },
+    [getQueue, syncQueue]
+  )
+
+  const claim = useCallback(
+    (queue: PendingQueue, item: QueueItem) => {
+      item.submissionId ??= randomUUID()
+      item.destination ??= captureDestination()
+      // Journal the attempt first: a failed write must leave the row claimable,
+      // not marked in flight with no settle to ever clear it.
+      savePendingInput({ ...item, inFlight: true, failed: false })
+      item.inFlight = true
+      item.failed = false
+      let confirmed = false
+
+      item.settle = accepted => {
+        if (confirmed) {
+          return
+        }
+
+        // Resolve migrations while the attempted state still protects the receipt target.
+        getQueue()
+        confirmed = accepted
+        item.inFlight = false
+        item.failed = !accepted
+
+        if (accepted) {
+          try { removePendingInput(item) } catch (error) {
+            patchUiState({ status: t('canonical.queue.journalCleanupFailed', (error as Error).message) })
+          }
+
+          for (const pending of queues.current.values()) {
+            removeAtInPlace(pending.items, pending.items.indexOf(item))
+          }
+
+          removeAtInPlace(queue.items, queue.items.indexOf(item))
+        } else {
+          savePendingInput(item)
+        }
+
+        syncQueue()
+      }
+
+      syncQueue()
+
+      return item
+    },
+    [getQueue, syncQueue]
+  )
+
+  useEffect(() => {
+    const queue = getQueue()
+
+    for (const receipt of getUiState().info?.pending_submissions ?? []) {
+      const item = queue.items.find(
+        item =>
+          item.submissionId === (receipt.input_id ?? receipt.admission_id) &&
+          Boolean(item.destination?.storedSid) &&
+          item.destination?.storedSid === receipt.target_session_id &&
+          item.destination?.profileHome === receipt.target_profile_home
+      )
+
+      if (!item) {
+        continue
+      }
+
+      if (item.settle) {
+        item.settle(true)
+      } else {
+        removePendingInput(item)
+        removeAtInPlace(queue.items, queue.items.indexOf(item))
+        syncQueue()
+      }
+    }
+  }, [ui.info, getQueue, syncQueue])
+
+  // One durable write: the row joins the queue only once its attempt is journaled,
+  // so a failed write leaves the composer as the draft's only copy.
+  const stage = useCallback(
+    (text: string, display = text, destination = captureDestination(), attachments?: QueueItem['attachments']) => {
+      const { queue, item } = draft(text, display, destination, attachments)
+      item.queued = false
+      claim(queue, item)
+      queue.items.push(item)
+      syncQueue()
+
+      return item
+    },
+    [draft, claim, syncQueue]
+  )
+
+  const dequeue = useCallback(
+    (retry = false) => {
+      if (getUiState().gatewayConnected === false) { return undefined }
+      const queue = getQueue()
+      const item = queue.items[0]
+
+      if (!item || item.inFlight || (item.failed && !retry)) {
+        return undefined
+      }
+
+      try {
+        return claim(queue, item)
+      } catch (error) {
+        patchUiState({ status: t('canonical.queue.notSavedQueueKept', (error as Error).message) })
+
+        return undefined
+      }
+    },
+    [getQueue, claim]
+  )
+
+  const takeQ = useCallback(
+    (i: number, editedDisplay?: string) => {
+      const queue = getQueue()
+      const server = serverRowAt(i)
+
+      // Editing a durable row re-admits the edited text as a new input once
+      // the authority has retired the original. Until then the edit is a
+      // durable local row; a refused retirement leaves it as an unconfirmed
+      // draft (Alt+K) instead of admitting a second copy behind the original.
+      if (server) {
+        if (server.status === 'unknown') {
+          patchUiState({ status: t('canonical.queue.unknownExecution') })
+
+          return undefined
+        }
+
+        const text = editedDisplay ?? server.user
+        const { item } = draft(text, text, queue.destination)
+        savePendingInput({ ...item, inFlight: true })
+        item.inFlight = true
+        queue.items.push(item)
+        syncQueue()
+
+        return cancelServerRow(server).then(
+          () => claim(queue, item),
+          () => {
+            item.inFlight = false
+            item.failed = true
+            savePendingInput(item)
+            syncQueue()
+
+            return undefined
+          })
+      }
+
+      if (queue.items[i]?.inFlight) {
+        return undefined
+      }
+
+      const previous = queue.items[i]
+      const item = takeQueueItem(queue.items, i, editedDisplay)
+
+      if (!item) {
+        return undefined
+      }
+
+      if (previous && previous.submissionId !== item.submissionId) {
+        removePendingInput(previous)
+      }
+
+      queue.items.splice(i, 0, item)
+
+      return claim(queue, item)
+    },
+    [getQueue, claim, cancelServerRow, draft, serverRowAt, syncQueue]
   )
 
   const removeQ = useCallback(
     (i: number) => {
-      takeQ(i)
+      const server = serverRowAt(i)
+
+      if (server) {
+        return void cancelServerRow(server).catch(() => undefined)
+      }
+
+      if (queueRef.current[i]?.inFlight) {
+        return
+      }
+
+      const item = queueRef.current[i]
+
+      if (item) {
+        removePendingInput(item)
+      }
+
+      removeAtInPlace(queueRef.current, i)
+      syncQueue()
     },
-    [takeQ]
+    [queueRef, syncQueue, cancelServerRow, serverRowAt]
   )
 
   return {
     dequeue,
+    stage,
     enqueue,
     prependQ,
+    queueDraft,
     queueEditIdx,
     queueEditRef,
     queueRef,

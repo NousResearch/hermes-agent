@@ -77,6 +77,21 @@ export function ClarifyToolPending({
   const [staged, setStaged] = useState<Record<string, { choices: string[]; draft: string }>>({})
   const [submitting, setSubmitting] = useState(false)
 
+  // A canonical gateway answers a batch one card at a time through the SAME
+  // mounted tool row: a new live request is a new card, so the previous card's
+  // submit latch and staged picks must not carry over (that left question 2
+  // disabled behind question 1's spinner).
+  const [cardRequestId, setCardRequestId] = useState(request?.requestId)
+
+  if (request?.requestId !== cardRequestId) {
+    setCardRequestId(request?.requestId)
+
+    if (request?.requestId) {
+      setSubmitting(false)
+      setStaged({})
+    }
+  }
+
   // Reconnect replay: answers the server already locked (an earlier window's
   // partial progress) pre-stage their questions so the restored card shows
   // them selected instead of blank.

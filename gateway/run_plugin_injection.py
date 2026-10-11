@@ -143,6 +143,11 @@ class GatewayPluginInjectionMixin:
             return False
 
         async with self._plugin_injection_scope(source):
+            admitted = await self._admit_plugin_injection(
+                adapter, source, session_key=session_key, session_id=entry.session_id,
+                content=content, plugin_id=plugin_id)
+            if admitted is not None:
+                return admitted
             await adapter.handle_message(MessageEvent(
                 text=content, message_type=MessageType.TEXT, source=source, internal=True,
                 allow_gateway_control=False,
@@ -231,6 +236,19 @@ class GatewayPluginInjectionMixin:
             return False
         session_key = self._session_key_for_source(source)
         async with self._plugin_injection_scope(source):
+            from gateway.session_authorities import active_authority
+            if active_authority(self) is not None:
+                # The FIFO admits a producer turn only into a session that already holds a
+                # committed human turn (its connector provenance is borrowed, never minted), so
+                # an origin with no session yet is refused rather than run outside the FIFO.
+                entry = await self.async_session_store.lookup_by_session_key(session_key)
+                if entry is None:
+                    logger.warning("Plugin message injection refused: plugin=%s %s has no session under "
+                                   "the session authority yet", plugin_id, target)
+                    return False
+                return await self._admit_plugin_injection(
+                    adapter, source, session_key=session_key, session_id=entry.session_id,
+                    content=content, plugin_id=plugin_id)
             await adapter.handle_message(MessageEvent(
                 text=content, message_type=MessageType.TEXT, source=source, internal=True,
                 allow_gateway_control=False,
@@ -241,4 +259,35 @@ class GatewayPluginInjectionMixin:
                 },
             ))
         logger.info("Plugin message injection dispatched: plugin=%s %s session=%s", plugin_id, target, session_key)
+        return True
+
+    async def _admit_plugin_injection(
+        self, adapter, source: SessionSource, *, session_key: str, session_id: str, content: str,
+        plugin_id: str,
+    ) -> Optional[bool]:
+        """Under a session authority, commit the plugin turn into the session's durable FIFO as a
+        trusted producer admission (the heartbeat / completion seam) instead of running it on the
+        in-process lane beside an admitted turn. ``None`` means no authority serves this scope and
+        the caller keeps the standalone adapter path; a refused admission is ``False``, logged."""
+        from gateway.session_authorities import active_authority
+        authority = active_authority(self)
+        if authority is None:
+            return None
+        import json
+        import uuid
+        from hermes_state_runtime import RuntimeStoreError
+        identity = json.dumps(["plugin", plugin_id, session_key, uuid.uuid4().hex], separators=(",", ":"))
+        event = MessageEvent(
+            text=content, message_type=MessageType.TEXT, source=source, internal=True,
+            allow_gateway_control=False, message_id=identity,
+            metadata={"gateway_session_key": session_key, "gateway_session_id": session_id},
+        )
+        try:
+            await authority.admit_automation(adapter, event, identity)
+        except RuntimeStoreError as exc:
+            logger.warning("Plugin message injection refused by the session authority: plugin=%s session=%s (%s)",
+                           plugin_id, session_key, exc.reason)
+            return False
+        logger.info("Plugin message injection admitted: plugin=%s session=%s session_id=%s",
+                    plugin_id, session_key, session_id)
         return True

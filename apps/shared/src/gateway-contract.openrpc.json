@@ -8599,6 +8599,18 @@
             "title": "Verbose",
             "type": "boolean"
           },
+          "cache_scope": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cache Scope"
+          },
           "client_env": {
             "anyOf": [
               {

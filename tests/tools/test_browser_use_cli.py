@@ -867,6 +867,44 @@ class TestNativeScreenshots:
         result = json.loads(bu_cli.browser_exec("print(1)"))
         assert "screenshot_path" not in result
 
+    def test_downscaled_native_screenshot_discloses_the_scale(self, tmp_path, monkeypatch):
+        """Regression for #134167: the embed is the halved image while click_at_xy takes
+        viewport coordinates, so the note must tell the model how to map back."""
+        shot = self._shot(tmp_path)
+
+        def fake_resize(p, *, scale_out=None, **kw):
+            if scale_out is not None:
+                scale_out.update(orig_width=1920, orig_height=993, new_width=960, new_height=496)
+            return "data:image/png;base64,QUJD"
+
+        monkeypatch.setattr(
+            "tools.vision_tools._should_use_native_vision_fast_path", lambda: True
+        )
+        monkeypatch.setattr("tools.vision_tools._resize_image_for_vision", fake_resize)
+
+        envelope = bu_cli._native_screenshot_result({"success": True}, shot)
+
+        assert envelope is not None and envelope["_multimodal"] is True
+        note = next(p["text"] for p in envelope["content"] if p["type"] == "text")
+        assert "downscaled from 1920x993 to 960x496" in note
+        assert "multiply" in note
+
+    def test_undownscaled_native_screenshot_has_no_scale_note(self, tmp_path, monkeypatch):
+        shot = self._shot(tmp_path)
+        monkeypatch.setattr(
+            "tools.vision_tools._should_use_native_vision_fast_path", lambda: True
+        )
+        monkeypatch.setattr(
+            "tools.vision_tools._resize_image_for_vision",
+            lambda p, *, scale_out=None, **kw: "data:image/png;base64,QUJD",
+        )
+
+        envelope = bu_cli._native_screenshot_result({"success": True}, shot)
+
+        assert envelope is not None
+        note = next(p["text"] for p in envelope["content"] if p["type"] == "text")
+        assert "downscaled" not in note
+
 
 class TestStepLabels:
     """browser_exec code leads with a `# …` comment (per the tool

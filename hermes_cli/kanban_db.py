@@ -15,6 +15,7 @@ locks). Schema: tasks, task_links, task_comments, task_events, task_runs, attach
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import os
 import re
@@ -1014,6 +1015,12 @@ def _new_task_id() -> str:
     """``t_`` + 4 hex bytes (collision ~1e-3 at 100k tasks; 2 bytes would hit 50%
     by 10k). Idempotency belongs to ``idempotency_key``, not id uniqueness."""
     return "t_" + secrets.token_hex(4)
+
+
+# task_events rows whose evidence is board-scoped rather than task-scoped
+# (retention GC evidence, #133284) carry this sentinel task_id: it cannot
+# collide with generated ids, which always start with ``t_``.
+BOARD_TASK_ID = "__board__"
 
 
 def _claimer_id() -> str:
@@ -4227,14 +4234,60 @@ def gc_events(conn: sqlite3.Connection, *, older_than_seconds: int = 30 * 24 * 3
 
     ``older_than_seconds=0`` means everything older than now; the CLI maps
     ``--event-retention-days 0`` to "disabled" before calling this.
+
+    Every sweep — including a zero-row one — appends one board-level
+    ``gc_pruned`` event (sentinel task_id ``BOARD_TASK_ID``) in the same
+    transaction as the DELETE, so an auditor can tell a recorded retention
+    prune from an unexplained deletion (#133284): every pruned event id must
+    fall inside a ``gc_pruned`` window whose count, predicate, and
+    ``deleted_ids_sha256`` fingerprint match. This is the only *retention*
+    deletion path on ``task_events``; deliberate hard deletes of individual
+    tasks (``delete_task`` / ``delete_archived_task``) remove a task's events
+    as part of that same explicit action and are out of scope here.
     """
     cutoff = int(time.time()) - _retention_seconds(older_than_seconds)
     with write_txn(conn):
+        window = _pruned_event_window(conn, cutoff)
         cur = conn.execute(
             "DELETE FROM task_events WHERE created_at < ? AND kind != 'decomposed' AND task_id IN "
             "(SELECT id FROM tasks WHERE status IN ('done', 'archived'))", (cutoff,),
         )
-    return int(cur.rowcount or 0)
+        deleted = int(cur.rowcount or 0)
+        _append_event(
+            conn, BOARD_TASK_ID, "gc_pruned",
+            {
+                "run_at": int(time.time()),
+                "cutoff": cutoff,
+                "retention_seconds": _retention_seconds(older_than_seconds),
+                "deleted_count": deleted,
+                "min_event_id": window[0],
+                "max_event_id": window[1],
+                "deleted_ids_sha256": window[2],
+            },
+        )
+    return deleted
+
+
+def _pruned_event_window(
+    conn: sqlite3.Connection, cutoff: int,
+) -> tuple[Optional[int], Optional[int], Optional[str]]:
+    """``(min_id, max_id, sha256(ids))`` of the events the gc predicate just
+    pruned, so the ``gc_pruned`` evidence row records a verifiable fingerprint
+    of exactly which ids it covered — not merely a bounding window — and
+    ``(None, None, None)`` when the sweep matched nothing. Must run inside the
+    gc transaction BEFORE the DELETE: within one transaction the SELECT sees
+    the same snapshot, so the pruned rows are already invisible after it."""
+    rows = conn.execute(
+        "SELECT id FROM task_events WHERE created_at < ? AND kind != 'decomposed' "
+        "AND task_id IN (SELECT id FROM tasks WHERE status IN ('done', 'archived')) "
+        "ORDER BY id ASC",
+        (cutoff,),
+    ).fetchall()
+    if not rows:
+        return (None, None, None)
+    ids = [r[0] for r in rows]
+    digest = hashlib.sha256(",".join(str(i) for i in ids).encode("utf-8")).hexdigest()
+    return (ids[0], ids[-1], digest)
 
 
 def gc_worker_logs(*, older_than_seconds: int = 30 * 24 * 3600, board: Optional[str] = None) -> int:

@@ -300,7 +300,7 @@ async def test_non_finite_fallback_discovery_timeout_uses_finite_default(monkeyp
         if getattr(getattr(awaitable, "cr_code", None), "co_name", "") == "stuck_discovery":
             assert timeout == 5.0
             awaitable.close()
-            raise asyncio.TimeoutError()
+            raise TimeoutError()
         return await original_deadline(awaitable, timeout, **_kwargs)
 
     monkeypatch.setattr(tg_adapter, "discover_fallback_ips", stuck_discovery)

@@ -318,7 +318,7 @@ class PythonEnvironment:
                     tail.close(result.returncode == 0)
                     return result
                 return subprocess.run(command, cwd=native(cwd), env=env, capture_output=True,
-                                      text=True, encoding="utf-8", errors="replace", timeout=timeout)
+                                      text=True, encoding="utf-8", errors="replace", timeout=timeout, check=False)
             except subprocess.TimeoutExpired as exc:
                 from pm.index_config import TIMEOUT_HINT
 

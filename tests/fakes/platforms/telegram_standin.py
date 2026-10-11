@@ -49,13 +49,13 @@ def mdv2_error(text: str) -> str | None:
         if text.startswith("```", i):
             end = text.find("```", i + 3)
             if end < 0:
-                return "Can't find end of Pre entity at byte offset %d" % i
+                return f"Can't find end of Pre entity at byte offset {i:d}"
             i = end + 3
             continue
         if ch == "`":
             end = text.find("`", i + 1)
             if end < 0:
-                return "Can't find end of Code entity at byte offset %d" % i
+                return f"Can't find end of Code entity at byte offset {i:d}"
             i = end + 1
             continue
         if ch == "[":
@@ -212,7 +212,7 @@ class TelegramStandin(StandinServer):
             self._update_event.clear()
             try:
                 await asyncio.wait_for(self._update_event.wait(), remaining)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 return []
 
     def _push(self, update: dict[str, Any], replay: bool = False) -> None:

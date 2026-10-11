@@ -116,6 +116,7 @@ def codex(args: list, prompt: str, timeout: int = 3600) -> str:
     proc = subprocess.run(
         ["codex", "exec", *args, "--skip-git-repo-check", prompt],
         cwd=str(WORKDIR), capture_output=True, text=True, timeout=timeout,
+        check=False,
     )
     return proc.stdout + proc.stderr
 

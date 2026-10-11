@@ -14,7 +14,7 @@ import threading
 import time
 import uuid
 from contextlib import contextmanager, suppress
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Dict, FrozenSet, List, Optional
 from urllib.parse import urlparse
@@ -67,7 +67,7 @@ def _oauth_trace(event: str, *, sequence_id: Optional[str] = None, **fields: Any
 
 def _iso_after(now: datetime, ttl_seconds: int) -> str:
     """ISO timestamp *ttl_seconds* after *now* (UTC)."""
-    return datetime.fromtimestamp(now.timestamp() + ttl_seconds, tz=timezone.utc).isoformat()
+    return datetime.fromtimestamp(now.timestamp() + ttl_seconds, tz=UTC).isoformat()
 
 
 # Nous agent-key slots; a fresh login persists them as None, quarantine strips them.
@@ -297,7 +297,7 @@ def _nous_jwt_expires_at(token: Any, fallback_expires_at: Any = None) -> Optiona
     exp = claims.get("exp")
     if isinstance(exp, (int, float)):
         with suppress(Exception):
-            return datetime.fromtimestamp(float(exp), tz=timezone.utc).isoformat()
+            return datetime.fromtimestamp(float(exp), tz=UTC).isoformat()
     return fallback_expires_at if isinstance(fallback_expires_at, str) else None
 
 
@@ -310,7 +310,7 @@ def _set_nous_agent_key_from_invoke_jwt(
     existing_obtained_at = state.get("agent_key_obtained_at")
     if not obtained_at:
         reuse = state.get("agent_key") == access_token and _nonempty_str(existing_obtained_at)
-        obtained_at = existing_obtained_at if reuse else datetime.now(timezone.utc).isoformat()
+        obtained_at = existing_obtained_at if reuse else datetime.now(UTC).isoformat()
     expires_at = _nous_jwt_expires_at(access_token, state.get("expires_at"))
     expires_in = _remaining_ttl(expires_at, state.get("expires_in"))
     if expires_at:
@@ -460,7 +460,7 @@ def _write_shared_nous_state(state: dict[str, Any]) -> None:
         return
     shared = {
         "_schema": 1, **_nous_shared_shape(state),
-        "updated_at": datetime.now(timezone.utc).isoformat()}
+        "updated_at": datetime.now(UTC).isoformat()}
     try:
         with _nous_shared_store_lock():
             path = _nous_shared_store_path()
@@ -536,8 +536,8 @@ def _quarantine_forensics(state: dict[str, Any], error: AuthError, reason: str) 
     if isinstance(expires_at_raw, str) and expires_at_raw:
         try:
             parsed = datetime.fromisoformat(expires_at_raw)
-            already_expired = (parsed.replace(tzinfo=parsed.tzinfo or timezone.utc)
-                               < datetime.now(timezone.utc))
+            already_expired = (parsed.replace(tzinfo=parsed.tzinfo or UTC)
+                               < datetime.now(UTC))
         except ValueError:
             already_expired = None
     forensic["token_already_expired"] = already_expired
@@ -706,7 +706,7 @@ def _apply_nous_refreshed_tokens(
     the rotated tokens (key order in auth.json is preserved from the original login shape).
     """
     from hermes_cli.auth import _coerce_ttl_seconds
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     access_ttl = _coerce_ttl_seconds(refreshed.get("expires_in"))
     state["access_token"] = refreshed["access_token"]
     state["refresh_token"] = refreshed.get("refresh_token") or refresh_token
@@ -1420,7 +1420,7 @@ def _nous_device_code_login(
             client=client, portal_base_url=portal_base_url, client_id=client_id,
             device_code=str(device_data["device_code"]), expires_in=expires_in,
             poll_interval=interval)
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     token_expires_in = _coerce_ttl_seconds(token_data.get("expires_in", 0))
     resolved_inference_url = (
         _optional_base_url(token_data.get("inference_base_url")) or requested_inference_url)

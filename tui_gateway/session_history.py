@@ -305,7 +305,9 @@ def _history_to_messages(history: list[dict], *, profile_home=None, image_urls: 
         if _is_display_hidden_marker(role, content_text):
             continue
         if role == "user":
-            content_text = _DISCORD_TRIGGERING_NOTE_RE.sub(r"\1", content_text)
+            # A setup handoff's first message carries the first-task skill after what the user sees.
+            from agent.first_task_prompt import visible_text
+            content_text = visible_text(_DISCORD_TRIGGERING_NOTE_RE.sub(r"\1", content_text))
         if role == "assistant" and m.get("tool_calls"):
             for tc in m["tool_calls"]:
                 fn, tc_id = tc.get("function", {}), tc.get("id", "")
@@ -526,8 +528,8 @@ def _turn_failure_detail(error: Any, reason: Any = None, prompt: Any = None) -> 
     message = _strip_prompt_echo(message, prompt)
     if len(message) > _TURN_FAILURE_DETAIL_LIMIT:
         message = message[:_TURN_FAILURE_DETAIL_LIMIT] + "\u2026"
-    out = " failure_reason=%s" % " ".join(reason_text.split()) if reason_text else ""
-    return out + (" cause=%r" % message if message else "")
+    out = " failure_reason={}".format(" ".join(reason_text.split())) if reason_text else ""
+    return out + (f" cause={message!r}" if message else "")
 
 
 def register(server) -> None:

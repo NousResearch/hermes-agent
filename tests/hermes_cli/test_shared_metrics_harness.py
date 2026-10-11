@@ -12,7 +12,7 @@ import pytest
 from hermes_cli.observability import relay_shared_metrics
 from hermes_cli.observability import shared_metrics_contract as contract
 from hermes_cli.observability import shared_metrics_harness as harness
-from tests.hermes_cli.test_relay_shared_metrics_runtime import (  # noqa: F401 - fixture
+from tests.hermes_cli.test_relay_shared_metrics_runtime import (
     _stored_values,
     direct_runtime,
 )
@@ -238,7 +238,7 @@ def test_every_primary_reply_counts_once_with_its_issue(direct_runtime, tmp_path
 
 
 def test_everything_is_a_no_op_while_disabled(direct_runtime, tmp_path, monkeypatch):
-    monkeypatch.setattr("hermes_cli.config.read_raw_config_readonly", lambda: {})
+    monkeypatch.setattr("hermes_cli.config.read_raw_config_readonly", dict)
     agent = _agent()
     harness.record_reply_finish(agent, object(), "length")
     _round(agent, ("terminal", True))
@@ -250,7 +250,7 @@ def test_everything_is_a_no_op_while_disabled(direct_runtime, tmp_path, monkeypa
 # ---- schema ------------------------------------------------------------------------------------
 
 def test_v3_schema_accepts_exactly_the_contract_values():
-    import hermes_cli.observability as observability
+    from hermes_cli import observability
 
     schema = json.loads((Path(observability.__file__).parent / "schemas/hermes.shared_metrics.v4.schema.json").read_text())
     by_name = {d["properties"]["name"]["const"]: d for d in schema["$defs"].values() if "properties" in d}

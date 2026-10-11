@@ -9,7 +9,7 @@ from pathlib import Path
 
 import hermes_yaml as yaml
 
-import tui_gateway.server as server
+from tui_gateway import server
 
 
 def _bind_homes(monkeypatch, tmp_path: Path) -> tuple[Path, Path]:
@@ -84,3 +84,19 @@ def test_only_the_first_run_answer_records_desktop_setup_completed(tmp_path, mon
     _call("shared_metrics.set", {"profile": "code", "enabled": True, "send": True})
 
     assert calls == [{"surface": "desktop", "provider": "nous"}]
+
+
+def test_an_opt_out_purges_receipts_kept_for_a_later_start(tmp_path, monkeypatch):
+    """A Desktop "No" must not leave an installer receipt or a parked update receipt for a later opt-in
+    to count; only the named profile is touched."""
+    launch, worker = _bind_homes(monkeypatch, tmp_path)
+    kept = [worker / "telemetry" / "shared_metrics" / name for name in ("pending_installs", "pending_updates")]
+    for directory in kept + [launch / "telemetry" / "shared_metrics" / "pending_installs"]:
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / f"{'a' * 32}.json").write_text("{}", encoding="utf-8")
+
+    _call("shared_metrics.set", {"profile": "code", "enabled": True, "send": False})
+    assert all(d.exists() for d in kept)
+    _call("shared_metrics.set", {"profile": "code", "enabled": False, "send": False})
+    assert not any(d.exists() for d in kept)
+    assert (launch / "telemetry" / "shared_metrics" / "pending_installs").exists()

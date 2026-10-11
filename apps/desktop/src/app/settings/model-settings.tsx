@@ -2,6 +2,7 @@ import type { ModelOptionProvider } from '@hermes/shared'
 import { DEFAULT_REASONING_EFFORT, REASONING_EFFORT_VALUES } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { Dispatch, SetStateAction } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -31,7 +32,7 @@ import { useI18n } from '@/i18n'
 import { isCodeSkewRestartRequired } from '@/lib/code-skew-error'
 import { AlertTriangle, Cpu, Loader2 } from '@/lib/icons'
 import { isSubmitEnter } from '@/lib/ime'
-import { findCatalogProvider } from '@/lib/model-options'
+import { catalogProviderMatches, findCatalogProvider } from '@/lib/model-options'
 import { composerServiceTier } from '@/lib/model-status-label'
 import { cn } from '@/lib/utils'
 import { $customModels, withCustomModels } from '@/store/custom-models'
@@ -103,6 +104,88 @@ function isProviderReady(p?: ModelOptionProvider): boolean {
 }
 
 const NO_PROVIDERS: readonly ModelOptionProvider[] = [{ name: '—', slug: '', models: [] }]
+
+// Options for the main provider Select: the full catalog, but a saved provider
+// missing from it stays visible (Radix renders a blank trigger when the
+// controlled value has no matching item) while remaining out of the real
+// inventory used for readiness/setup metadata.
+function mainProviderOptionsFor(providers: readonly ModelOptionProvider[], selectedProvider: string) {
+  const options = providers.length ? providers : NO_PROVIDERS
+
+  return selectedProvider && !findCatalogProvider(providers, selectedProvider)
+    ? [{ name: selectedProvider, slug: selectedProvider, models: [] as string[] }, ...providers]
+    : options
+}
+
+// True when the provider row is a configured endpoint the backend may know
+// more models for than the normal (non-refresh) options load probed: that
+// load probes only the CURRENT custom provider, so a named custom_providers
+// entry the user just switched to arrives empty until an explicit refresh.
+function mayDiscoverModels(row: ModelOptionProvider | undefined): boolean {
+  if (!row || row.authenticated === false || (row.models?.length ?? 0) > 0) {
+    return false
+  }
+
+  return !!row.api_url || row.source === 'model-config' || row.is_user_defined === true
+}
+
+// Switching to a configured endpoint whose models list is empty triggers one
+// refresh-scoped options fetch so the row populates without blocking the
+// switch (#59063). The normal (non-refresh) load probes only the CURRENT
+// custom provider, so a freshly-selected one arrives empty. On failure the
+// selection stays empty and the user can still type a custom model id in
+// ModelSelect.
+function refreshEmptyProviderModels(
+  slug: string,
+  providers: readonly ModelOptionProvider[],
+  scopeProfile: string | undefined,
+  isCurrentEpoch: () => boolean,
+  apply: (providers: ModelOptionProvider[]) => void
+): void {
+  if (!mayDiscoverModels(providers.find(p => catalogProviderMatches(p, slug)))) {
+    return
+  }
+
+  getGlobalModelOptions({ refresh: true }, scopeProfile)
+    .then(options => {
+      if (isCurrentEpoch()) {
+        apply(options.providers || [])
+      }
+    })
+    .catch(() => {})
+}
+
+// User-driven provider switch for the main picker: a provider's model list is
+// per-provider, so switching must not carry the previous provider's model
+// over — ModelSelect's withActive() would keep painting it as a selectable
+// row, and Apply would pin the new provider to the old provider's model
+// (#59063). Programmatic switches (initial load, profile switch,
+// activate-key auto-select) set state directly and keep their own model
+// restore semantics.
+function switchProviderFor(
+  providers: readonly ModelOptionProvider[],
+  scopeProfile: string | undefined,
+  profileEpoch: { current: number },
+  setCatalogProviders: (rows: ModelOptionProvider[]) => void,
+  setSelectedProvider: Dispatch<SetStateAction<string>>,
+  setSelectedModel: Dispatch<SetStateAction<string>>
+) {
+  return (slug: string) => {
+    const epoch = profileEpoch.current
+
+    setSelectedProvider((prev: string) => {
+      if (prev === slug) {
+        return prev
+      }
+
+      setSelectedModel('')
+
+      return slug
+    })
+
+    refreshEmptyProviderModels(slug, providers, scopeProfile, () => profileEpoch.current === epoch, setCatalogProviders)
+  }
+}
 
 // A slot is complete when both halves are chosen. Changing a slot's provider
 // intentionally clears its model (see updateMoaSlot), so every provider change
@@ -375,16 +458,20 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
   })
 
   const providerOptions = providers.length ? providers : NO_PROVIDERS
+  const mainProviderOptions = mainProviderOptionsFor(providers, selectedProvider)
 
-  // Radix renders a blank trigger when the controlled value has no matching
-  // item. Keep a missing saved provider visible in the main selector while
-  // leaving it out of the real inventory used for readiness/setup metadata.
-  const mainProviderOptions = useMemo(
+  // User-driven switch: never carries the old provider's model over (#59063).
+  const switchProvider = useMemo(
     () =>
-      selectedProvider && !findCatalogProvider(providers, selectedProvider)
-        ? [{ name: selectedProvider, slug: selectedProvider, models: [] }, ...providers]
-        : providerOptions,
-    [providerOptions, providers, selectedProvider]
+      switchProviderFor(
+        providers,
+        scopeProfile,
+        profileEpoch,
+        setCatalogProviders,
+        setSelectedProvider,
+        setSelectedModel
+      ),
+    [providers, scopeProfile]
   )
 
   // MoA reference/aggregator slots must never be the moa virtual provider —
@@ -689,7 +776,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
   // custom / local endpoint is NOT an OAuth provider, so it gets the dedicated
   // local-endpoint form (URL + optional API key) instead of being dead-ended
   // on the OAuth picker (the original "booted back to the first screen" loop).
-  const startProviderSetup = useCallback(() => {
+  const startProviderSetup = () => {
     const rowSlug = selectedProviderRow?.slug.trim() ?? ''
     const slug = rowSlug || selectedProvider.trim()
 
@@ -708,7 +795,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
       // provider picker instead of deep-linking an unknown or stale slug.
       startManualOnboarding(undefined, scopeProfile)
     }
-  }, [scopeProfile, selectedProvider, selectedProviderRow])
+  }
 
   const applyMainModel = useCallback(async () => {
     if (!selectedProvider || !selectedModel) {
@@ -911,7 +998,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
         <section>
           <p className="mb-3 text-xs text-muted-foreground">{m.appliesDesc}</p>
           <div className="flex flex-wrap items-center gap-2">
-            <Select onValueChange={setSelectedProvider} value={selectedProviderRow?.slug ?? selectedProvider}>
+            <Select onValueChange={switchProvider} value={selectedProviderRow?.slug ?? selectedProvider}>
               <SelectTrigger className={cn('min-w-40', CONTROL_TEXT)}>
                 <SelectValue placeholder={m.provider} />
               </SelectTrigger>

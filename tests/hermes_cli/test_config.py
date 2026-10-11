@@ -524,9 +524,9 @@ class TestSaveEnvValueSecure:
             second = (tmp_path / ".env").read_text(encoding="utf-8")
             assert first == second
             # One outer wrap layer only (escaped inner quotes, not nested wraps).
-            line = [
+            line = next(
                 ln for ln in first.splitlines() if ln.startswith("TERMINAL_SSH_KEY=")
-            ][0]
+            )
             assert line.startswith('TERMINAL_SSH_KEY="')
             assert line.endswith('"')
             assert line.count('TERMINAL_SSH_KEY="') == 1
@@ -739,8 +739,8 @@ class TestConfigMigrationSecretPrompts:
         monkeypatch.setattr(
             cfg_mod, "check_config_version", lambda **_kwargs: (999, 999)
         )
-        monkeypatch.setattr(cfg_mod, "get_missing_config_fields", lambda: [])
-        monkeypatch.setattr(cfg_mod, "get_missing_skill_config_vars", lambda: [])
+        monkeypatch.setattr(cfg_mod, "get_missing_config_fields", list)
+        monkeypatch.setattr(cfg_mod, "get_missing_skill_config_vars", list)
         monkeypatch.setattr(
             cfg_mod,
             "get_missing_env_vars",

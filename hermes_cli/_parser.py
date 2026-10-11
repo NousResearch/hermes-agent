@@ -334,6 +334,12 @@ def _plugin_command_install_hint(prog: str, value: str):
         return None
 
 
+def _moved_command_hint(prog: str, value: str) -> str:
+    """``hermes auth spotify`` / ``hermes spotify`` after Spotify left core: where the command went."""
+    from hermes_cli.left_core_migration import moved_command_hint
+    return moved_command_hint(prog, value)
+
+
 class HermesArgumentParser(argparse.ArgumentParser):
     """argparse parser whose unknown-subcommand error is three short lines, not a 70-name dump.
 
@@ -350,9 +356,12 @@ class HermesArgumentParser(argparse.ArgumentParser):
             lines = [f"{self.prog}: '{value}' is not a `{self.prog}` command."]
             close = difflib.get_close_matches(str(value), list(action.choices), n=3, cutoff=0.6)
             install = _plugin_command_install_hint(self.prog, str(value))
+            moved = "" if install else _moved_command_hint(self.prog, str(value))
             if install:
                 # A provider that left core (``hermes honcho``) registers its command only once installed.
                 lines.append(f"The '{value}' memory plugin is not installed. Install it with: {install}")
+            elif moved:
+                lines.append(moved)
             elif close:
                 lines.append(f"Did you mean: {', '.join(close)}?")
             lines.append(f"Run `{self.prog} --help` to see all commands.")

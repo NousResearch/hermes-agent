@@ -195,7 +195,7 @@ def reap_orphan_containers(
         return 0
 
     # Per-container inspect keeps the failure blast radius to one container.
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = datetime.datetime.now(datetime.UTC)
     removed = 0
     for cid in (ln.strip() for ln in listing.stdout.splitlines() if ln.strip()):
         finished_at = _container_finished_at(docker, cid)
@@ -642,14 +642,14 @@ class DockerEnvironment(BaseEnvironment):
         disk: int = 0,
         persistent_filesystem: bool = False,
         task_id: str = "default",
-        volumes: list = None,
+        volumes: list | None = None,
         forward_env: list[str] | None = None,
         env: dict | None = None,
         network: bool = True,
         host_cwd: Optional[str] = None,
         auto_mount_cwd: bool = False,
         run_as_host_user: bool = False,
-        extra_args: list = None,
+        extra_args: list | None = None,
         persist_across_processes: bool = True,
         shm_size: str = _DEFAULT_SHM_SIZE,
         shared_container_key: str = "",
@@ -1022,7 +1022,7 @@ class DockerEnvironment(BaseEnvironment):
             logger.warning("docker run failed for %s, cleaning up orphaned container: %s", container_name, e)
             subprocess.run(
                 [self._docker_exe, "rm", "-f", container_name],
-                capture_output=True, timeout=10, stdin=subprocess.DEVNULL)
+                capture_output=True, timeout=10, stdin=subprocess.DEVNULL, check=False)
             raise
         container_id = result.stdout.strip()
         logger.info("Started container %s (%s)", container_name, container_id[:12])
@@ -1185,7 +1185,7 @@ class DockerEnvironment(BaseEnvironment):
                 _storage_opt_ok = True
                 if probe.stdout.strip():
                     subprocess.run([docker, "rm", probe.stdout.strip()],
-                                   capture_output=True, timeout=5, stdin=subprocess.DEVNULL)
+                                   capture_output=True, timeout=5, stdin=subprocess.DEVNULL, check=False)
             elif "storage" in (probe.stderr or "").lower():
                 _storage_opt_ok = False  # daemon rejected --storage-opt: a host property
             # else: pull/daemon failure unrelated to storage-opt; not cached, retried next spawn
@@ -1288,7 +1288,7 @@ class DockerEnvironment(BaseEnvironment):
                 try:
                     subprocess.run(
                         [docker_exe, *argv, container_id],
-                        capture_output=True, timeout=30, stdin=subprocess.DEVNULL)
+                        capture_output=True, timeout=30, stdin=subprocess.DEVNULL, check=False)
                 except (subprocess.TimeoutExpired, OSError) as e:
                     logger.warning(fail_msg, log_id, e)
 

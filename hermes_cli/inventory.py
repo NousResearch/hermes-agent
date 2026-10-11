@@ -7,6 +7,7 @@ from contextvars import copy_context
 from dataclasses import dataclass, replace
 from threading import Lock, Thread, current_thread
 from typing import Any, Optional
+from datetime import UTC
 
 _pricing_prewarm_lock = Lock()
 _pricing_prewarm_threads: dict[tuple[str, tuple[tuple[str, str], ...]], Thread] = {}
@@ -27,7 +28,7 @@ class ConfigContext:
     def with_overrides(
         self, *, current_provider: Optional[str] = None, current_model: Optional[str] = None,
         current_base_url: Optional[str] = None,
-    ) -> "ConfigContext":
+    ) -> ConfigContext:
         """Copy with TRUTHY overrides applied: the TUI reads agent attributes that may be empty strings
         before an agent is spawned — empties must not clobber the disk-config values."""
         overrides = (("current_provider", current_provider), ("current_model", current_model),
@@ -265,7 +266,7 @@ def _apply_limits(rows: list[dict]) -> None:
     from hermes_cli.auth import read_credential_pool
 
     def iso(epoch: float) -> str:
-        return datetime.fromtimestamp(epoch, timezone.utc).isoformat()
+        return datetime.fromtimestamp(epoch, UTC).isoformat()
 
     pooled = {slug for slug, entries in read_credential_pool().items() if entries}
     for row in rows:
@@ -361,7 +362,7 @@ _EXHAUSTED_WINDOW_PERCENT = 100.0
 def _iso_from_epoch(epoch: float) -> str:
     from datetime import datetime, timezone
 
-    return datetime.fromtimestamp(float(epoch), timezone.utc).isoformat()
+    return datetime.fromtimestamp(float(epoch), UTC).isoformat()
 
 
 def _pool_usage_accounts(slug: str, wire_windows, account_resets_at,
@@ -692,15 +693,26 @@ def _append_unconfigured_rows(
     """Empty setup skeletons for canonical providers missing from ``rows`` — except the *current* one:
     if config.yaml still points at it but credentials are gone, keep a row carrying the saved model so
     GUI pickers don't silently snap to another provider."""
-    from hermes_cli.models import _model_requires_account_discovery
+    from hermes_cli.models import _PROVIDER_ALIASES, _model_requires_account_discovery
     from hermes_cli.models_catalog_static import listed_canonical_providers
 
     seen = {r["slug"].lower() for r in rows}
     cur = (ctx.current_provider or "").lower()
     cur_model = str(ctx.current_model or "").strip()
+    # Honor ``model_catalog.excluded_providers`` like ``list_authenticated_providers`` does — unconditionally,
+    # even for the current provider — or ``include_unconfigured`` pickers (TUI ``/model``) resurrect every
+    # excluded provider as a skeleton row (#68816). A slug is hidden when it or any alias is excluded, so an
+    # alias exclusion (``google`` → ``gemini``) can't leak the canonical row back.
+    excluded = {str(p).strip().lower() for p in (ctx.excluded_providers or []) if p}
+    names_for: dict[str, set[str]] = {}
+    for alias, canon in _PROVIDER_ALIASES.items():
+        names_for.setdefault(canon.lower(), {canon.lower()}).add(alias.lower())
     extras: list[dict] = []
     for entry in listed_canonical_providers():
-        if entry.slug.lower() in seen:
+        slug = entry.slug.lower()
+        if slug in seen:
+            continue
+        if names_for.get(slug, {slug}) & excluded:
             continue
         if current_only and entry.slug.lower() != cur:
             continue
@@ -944,7 +956,7 @@ def _apply_pricing(rows: list[dict], *, force_fresh_nous_tier: bool = False, cac
                 row["unavailable_models"] = []
 
 
-def _local_runtime_row(ctx: "ConfigContext") -> dict | None:
+def _local_runtime_row(ctx: ConfigContext) -> dict | None:
     """The ``llamacpp`` row from staged GGUFs (``None`` when none) — downloaded models must be selectable
     before the server runs (selection starts it via the runtime_provider seam). The row's id comes from
     the provider registry's own definition, never a local literal: a row the resolver can't resolve is

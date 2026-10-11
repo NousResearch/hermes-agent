@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import errno
 import hashlib
+import ntpath
 import os
 from pathlib import Path
 import shutil
@@ -19,8 +20,49 @@ _LOCK_POLL_SECONDS = 0.05
 
 
 def is_junction(path: Path) -> bool:
-    """Keep junctions opaque even before Python 3.12's Path.is_junction exists."""
-    return os.name == "nt" and path.lstat().st_reparse_tag == stat.IO_REPARSE_TAG_MOUNT_POINT
+    """Keep junctions opaque even before Python 3.12's Path.is_junction exists.
+
+    A path that cannot be stat'ed is not a junction, matching ``os.path.isjunction``: callers
+    probe slots that do not exist yet (a first plugin install) and must get False, not a crash.
+    POSIX stat results carry no reparse tag, which lands in the same False.
+    """
+    if os.name != "nt":
+        return False
+    try:
+        return path.lstat().st_reparse_tag == stat.IO_REPARSE_TAG_MOUNT_POINT
+    except (OSError, AttributeError):
+        return False
+
+
+_VERBATIM = "\\\\?\\"
+_VERBATIM_UNC = "\\\\?\\UNC\\"
+
+
+def _long_form(text: str) -> str:
+    if text.startswith(_VERBATIM):
+        return text
+    # Windows stops normalising a verbatim path, so it must already be absolute,
+    # backslashed and free of `..` before the prefix goes on.
+    text = ntpath.abspath(text)
+    if text.startswith("\\\\"):
+        return _VERBATIM_UNC + text[2:]
+    return _VERBATIM + text
+
+
+def long_root(path: Path) -> Path:
+    """Spell a PM-owned root so Windows file calls beneath it are not cut at
+    MAX_PATH when LongPathsEnabled is 0 (the default). Every path joined onto the
+    result inherits the spelling; relative paths and digests are unchanged."""
+    return Path(_long_form(os.fspath(path))) if os.name == "nt" else path
+
+
+def native(path: str | os.PathLike[str]) -> str:
+    """The ordinary spelling, for text that leaves PM's own file calls: argv, cwd,
+    environment values, hashed identities, records and messages."""
+    text = os.fspath(path)
+    if text.startswith(_VERBATIM_UNC):
+        return "\\\\" + text[len(_VERBATIM_UNC):]
+    return text.removeprefix(_VERBATIM)
 
 
 def lock_fd(fd: int, *, wait: bool, timeout: float | None = None) -> bool:

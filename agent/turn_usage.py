@@ -25,8 +25,8 @@ logger = logging.getLogger("agent.conversation_loop")
 def _agent_session_source(agent: Any) -> str:
     """The surface the agent's own row create would stamp (``_ensure_db_session``), so an
     accounting guard that wins the row-creation race never mints an anonymous session."""
-    from run_agent import _session_source_for_agent  # late: run_agent imports this module
-    return _session_source_for_agent(getattr(agent, "platform", None))
+    from agent.session_source import session_source_for
+    return session_source_for(getattr(agent, "platform", None))
 
 
 @dataclass
@@ -71,7 +71,7 @@ def _fold_moa_usage(agent, canonical_usage):
 
 
 def record_response_usage(
-    agent: Any, response: Any, *, messages: List[Dict[str, Any]], api_call_count: int,
+    agent: Any, response: Any, *, messages: list[dict[str, Any]], api_call_count: int,
     api_duration: float, compression_attempts: int, max_compression_attempts: int,
 ) -> ResponseUsageOutcome:
     """Fold ``response.usage`` into compressor, anchors, session counters, state.db
@@ -271,6 +271,7 @@ def record_response_usage(
                 if cost_result.status == "included" else None,
                 model=agent.model,
                 api_call_count=1,
+                task=getattr(agent, "_turn_route_task", "") or "",
             )
         except Exception as e:  # silent loss here undercounts analytics
             logger.debug(

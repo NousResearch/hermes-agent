@@ -30,9 +30,14 @@ from hermes_cli.dashboard_auth import (
     clear_providers,
     register_provider,
 )
+from hermes_cli.dashboard_auth import routes as auth_routes
 from hermes_cli.dashboard_auth.cookies import SESSION_AT_COOKIE, SESSION_RT_COOKIE
 from hermes_cli.dashboard_auth.login_page import render_login_html
-from hermes_cli.dashboard_auth.routes import _PW_RATE_MAX_ATTEMPTS, _reset_password_rate_limit
+from hermes_cli.dashboard_auth.routes import (
+    _PW_RATE_MAX_ATTEMPTS,
+    _PW_RATE_MAX_BUCKETS,
+    _reset_password_rate_limit,
+)
 from hermes_cli.web_server_lifecycle import _dashboard_forwarded_allow_ips
 from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
 
@@ -403,6 +408,34 @@ class TestRateLimit:
         )
         assert allowed.status_code == 200
 
+    def test_distinct_ip_buckets_are_capped(self, monkeypatch):
+        _reset_password_rate_limit()
+        monkeypatch.setattr(auth_routes, "_PW_RATE_MAX_BUCKETS", 3)
+
+        for i in range(5):
+            assert auth_routes._password_rate_limited(f"192.0.2.{i}") is False
+
+        assert list(auth_routes._pw_attempts.keys()) == [
+            "192.0.2.2",
+            "192.0.2.3",
+            "192.0.2.4",
+        ]
+
+    def test_expired_buckets_pruned_before_evicting_live_bucket(self, monkeypatch):
+        _reset_password_rate_limit()
+        monkeypatch.setattr(auth_routes, "_PW_RATE_MAX_BUCKETS", 2)
+        now = time.monotonic()
+        auth_routes._pw_attempts["expired"] = auth_routes.deque([
+            now - auth_routes._PW_RATE_WINDOW_SEC - 1,
+        ])
+        auth_routes._pw_attempts["live"] = auth_routes.deque([now])
+
+        assert auth_routes._password_rate_limited("192.0.2.99") is False
+
+        assert "expired" not in auth_routes._pw_attempts
+        assert "live" in auth_routes._pw_attempts
+        assert "192.0.2.99" in auth_routes._pw_attempts
+
 
 @pytest.mark.parametrize("peer", [("203.0.113.7", 12345), None])
 def test_client_ip_uses_asgi_peer_not_forwarded_header(peer: tuple[str, int] | None) -> None:
@@ -417,7 +450,6 @@ def test_client_ip_uses_asgi_peer_not_forwarded_header(peer: tuple[str, int] | N
         "headers": [(b"x-forwarded-for", b"198.51.100.1, 192.0.2.1")],
     })
     assert client_ip(request) == (peer[0] if peer else "")
-
 
 # ---------------------------------------------------------------------------
 # Login page rendering

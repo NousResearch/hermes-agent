@@ -107,7 +107,11 @@ export function statusBarGatewayHealth({
       ? copy.connecting
       : copy.offline
 
-  const detail = restarting ? copy.restarting : messagingDown && connectionOpen ? messagingDetail(copy, downNames) : connectionDetail
+  const detail = restarting
+    ? copy.restarting
+    : messagingDown && connectionOpen
+      ? messagingDetail(copy, downNames)
+      : connectionDetail
 
   return {
     degraded: Boolean(messagingDown && connectionOpen),

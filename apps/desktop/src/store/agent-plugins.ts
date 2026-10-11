@@ -251,6 +251,10 @@ export interface AgentPluginInstallResult {
   pluginName?: string
   warnings?: string[]
   missingEnv?: string[]
+  /** Whether the install turned the plugin on (`enabled` in the backend result). */
+  enabled?: boolean
+  /** The `<namespace>:<skill>` names the model can now load (`activation.live_now.skills`). */
+  skillIds?: string[]
   error?: string
   /** What became usable in open chats of the profile (`activation.live_now`). */
   live: AgentPluginLiveNow
@@ -299,6 +303,7 @@ export async function installAgentPlugin(
       plugin_name?: string
       warnings?: string[]
       missing_env?: string[]
+      enabled?: boolean
       activation?: {
         live_now?: {
           mcp_servers?: AgentPluginLiveServer[]
@@ -327,15 +332,19 @@ export async function installAgentPlugin(
       return { ok: false, error: result?.error || 'Install failed', live: NO_LIVE, nextChat: false }
     }
 
+    const liveSkills = result.activation?.live_now?.skills ?? []
+
     return {
       ok: true,
       pluginName: result.plugin_name,
       warnings: result.warnings,
       missingEnv: result.missing_env,
+      enabled: result.enabled,
+      skillIds: liveSkills.map(skill => skill.name),
       live: {
         mcpServers: result.activation?.live_now?.mcp_servers ?? [],
         // `<namespace>:<skill>` is what the model loads; the toast shows the skill's own name.
-        skills: (result.activation?.live_now?.skills ?? []).map(skill => skill.name.split(':').pop() ?? skill.name)
+        skills: liveSkills.map(skill => skill.name.split(':').pop() ?? skill.name)
       },
       nextChat: Object.keys(result.activation?.deferred ?? {}).length > 0
     }

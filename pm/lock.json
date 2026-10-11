@@ -132,8 +132,8 @@
           "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-08-31-13-27/ffmpeg-n9.0.1-11-ge47273f4d9-linuxarm64-gpl-9.0.tar.xz"
         },
         "linux-arm64-bionic": {
-          "sha256": "1ec37f4f092521cb785e0ccfa2d82cc4a79ec8d2a4864f5eefc50a314f2d5dec",
-          "url": "https://packages.termux.dev/apt/termux-main/pool/main/f/ffmpeg/ffmpeg_8.1.2-5_aarch64.deb"
+          "sha256": "07c8f7d6afb11396aab3a67564415658ad761b5a7d67a9bc598bc2c734651e0a",
+          "url": "https://packages.termux.dev/apt/termux-main/pool/main/f/ffmpeg/ffmpeg_8.1.3_aarch64.deb"
         },
         "linux-x64": {
           "sha256": "182c1b509720e939bb47bfb47dc29cc0c298640401128e3dce8627d10707eb5a",
@@ -608,101 +608,6 @@
       },
       "version": "sha256:c14ffb703abf44f2d3bf7fdffdcc50df7d1454d09c705be190e0342a0b47f303"
     },
-    "tirith": {
-      "artifacts": {
-        "darwin-arm64": [
-          {
-            "sha256": "551f9a6ebf58344e7d0aa06bcc78d7a4f2f7b44b8011be563e0a91976cc9c4df",
-            "url": "https://github.com/sheeki03/tirith/releases/download/v0.4.2/tirith-aarch64-apple-darwin.tar.gz"
-          },
-          {
-            "sha256": "bcbb3eeda0f9971db5d60d2eb512970c14601432092f596d7059e0141e272585",
-            "url": "https://github.com/sheeki03/tirith/releases/download/v0.4.2/checksums.txt"
-          },
-          {
-            "sha256": "8d069fa95606f59919a897ff0914b06600f3cede4a8e83a0c4b339d9188c42b0",
-            "url": "https://github.com/sheeki03/tirith/releases/download/v0.4.2/checksums.txt.sig"
-          },
-          {
-            "sha256": "1f39241c7a334e465f78794533675e94e424ed38e9aa1534b5d7c893bd4fb71c",
-            "url": "https://github.com/sheeki03/tirith/releases/download/v0.4.2/checksums.txt.pem"
-          }
-        ],
-        "darwin-x64": [
-          {
-            "sha256": "dda8a14df00a49c4b0f607c15a82259f96c94da91b09718a7ebbc34a831d6f54",
-            "url": "https://github.com/sheeki03/tirith/releases/download/v0.4.2/tirith-x86_64-apple-darwin.tar.gz"
-          },
-          {
-            "sha256": "bcbb3eeda0f9971db5d60d2eb512970c14601432092f596d7059e0141e272585",
-            "url": "https://github.com/sheeki03/tirith/releases/download/v0.4.2/checksums.txt"
-          },
-          {
-            "sha256": "8d069fa95606f59919a897ff0914b06600f3cede4a8e83a0c4b339d9188c42b0",
-            "url": "https://github.com/sheeki03/tirith/releases/download/v0.4.2/checksums.txt.sig"
-          },
-          {
-            "sha256": "1f39241c7a334e465f78794533675e94e424ed38e9aa1534b5d7c893bd4fb71c",
-            "url": "https://github.com/sheeki03/tirith/releases/download/v0.4.2/checksums.txt.pem"
-          }
-        ],
-        "linux-arm64": [
-          {
-            "sha256": "c550b1bfb0c8c872ab3421cd6ef756f260f7cf4981a18cedd49f141fa2d77569",
-            "url": "https://github.com/sheeki03/tirith/releases/download/v0.4.2/tirith-aarch64-unknown-linux-gnu.tar.gz"
-          },
-          {
-            "sha256": "bcbb3eeda0f9971db5d60d2eb512970c14601432092f596d7059e0141e272585",
-            "url": "https://github.com/sheeki03/tirith/releases/download/v0.4.2/checksums.txt"
-          },
-          {
-            "sha256": "8d069fa95606f59919a897ff0914b06600f3cede4a8e83a0c4b339d9188c42b0",
-            "url": "https://github.com/sheeki03/tirith/releases/download/v0.4.2/checksums.txt.sig"
-          },
-          {
-            "sha256": "1f39241c7a334e465f78794533675e94e424ed38e9aa1534b5d7c893bd4fb71c",
-            "url": "https://github.com/sheeki03/tirith/releases/download/v0.4.2/checksums.txt.pem"
-          }
-        ],
-        "linux-arm64-musl": [
-          {
-            "sha256": "9c86e81537dc7b7fe6655ea472728b5f7a0dbe93ebb68b95ca7601fb1aba0508",
-            "url": "https://github.com/sheeki03/tirith/releases/download/v0.4.2/tirith-aarch64-unknown-linux-musl.tar.gz"
-          },
-          {
-            "sha256": "bcbb3eeda0f9971db5d60d2eb512970c14601432092f596d7059e0141e272585",
-            "url": "https://github.com/sheeki03/tirith/releases/download/v0.4.2/checksums.txt"
-          },
-          {
-            "sha256": "8d069fa95606f59919a897ff0914b06600f3cede4a8e83a0c4b339d9188c42b0",
-            "url": "https://github.com/sheeki03/tirith/releases/download/v0.4.2/checksums.txt.sig"
-          },
-          {
-            "sha256": "1f39241c7a334e465f78794533675e94e424ed38e9aa1534b5d7c893bd4fb71c",
-            "url": "https://github.com/sheeki03/tirith/releases/download/v0.4.2/checksums.txt.pem"
-          }
-        ],
-        "linux-x64": [
-          {
-            "sha256": "efa6bf414a83dba385d4f13137e8677f850ced9102fe74ebb14c72f31df0dc77",
-            "url": "https://github.com/sheeki03/tirith/releases/download/v0.4.2/tirith-x86_64-unknown-linux-gnu.tar.gz"
-          },
-          {
-            "sha256": "bcbb3eeda0f9971db5d60d2eb512970c14601432092f596d7059e0141e272585",
-            "url": "https://github.com/sheeki03/tirith/releases/download/v0.4.2/checksums.txt"
-          },
-          {
-            "sha256": "8d069fa95606f59919a897ff0914b06600f3cede4a8e83a0c4b339d9188c42b0",
-            "url": "https://github.com/sheeki03/tirith/releases/download/v0.4.2/checksums.txt.sig"
-          },
-          {
-            "sha256": "1f39241c7a334e465f78794533675e94e424ed38e9aa1534b5d7c893bd4fb71c",
-            "url": "https://github.com/sheeki03/tirith/releases/download/v0.4.2/checksums.txt.pem"
-          }
-        ]
-      },
-      "version": "0.4.2"
-    },
     "uv": {
       "artifacts": {
         "darwin-arm64": {
@@ -718,8 +623,8 @@
           "url": "https://github.com/astral-sh/uv/releases/download/0.12.3/uv-aarch64-unknown-linux-gnu.tar.gz"
         },
         "linux-arm64-bionic": {
-          "sha256": "6bacc745de035ac87cb6948f495f8d82a0fe0c6e6ff2ca65e6ecf487973b09cd",
-          "url": "https://packages.termux.dev/apt/termux-main/pool/main/u/uv/uv_0.12.15_aarch64.deb"
+          "sha256": "d174f8397eeff5aefdf798add7abeee1294e1662eeb6d52b6b160ae0e47f7f43",
+          "url": "https://packages.termux.dev/apt/termux-main/pool/main/u/uv/uv_0.12.23_aarch64.deb"
         },
         "linux-arm64-musl": {
           "sha256": "fa513fca1eb2913334c944fe9adbdd410274a1cbe8dd05d03699a9eb85311d4e",

@@ -55,6 +55,12 @@ on:
         type: boolean
         required: false
         default: true
+      strict_acceptance:
+        description: >-
+          Acceptance runs only: known_failure owners whose gaps FAIL this run instead of xfailing ('upd-txn', a comma list, or '1' for every gap). Sets HERMES_E2E_STRICT_ACCEPTANCE for the E2E suites (tests/e2e/core/_pending_fixes.py).
+        type: string
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -197,6 +203,8 @@ jobs:
     name: Windows install + update E2E
     if: inputs.e2e_upgrade
     uses: ./.github/workflows/windows-install-update-e2e.yml
+    with:
+      strict_acceptance: ${{ inputs.strict_acceptance }}
 
   e2e-windows:
     # Real Hermes processes on a real Windows host (tests/e2e/core/windows): hermes.exe,
@@ -236,6 +244,7 @@ jobs:
           scripts/run_tests.sh tests/e2e/core/windows/ -- \
             -m "platforms and integration" -v --tb=short -rA
         env:
+          HERMES_E2E_STRICT_ACCEPTANCE: ${{ inputs.strict_acceptance }}
           HERMES_TEST_WORKERS: '6'
           HERMES_TEST_FILE_TIMEOUT: '900'
           HERMES_TEST_FILE_RETRIES: '0'

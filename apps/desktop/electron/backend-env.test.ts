@@ -326,7 +326,11 @@ test('the launch profile pooled backend keeps its TERMINAL_CWD', () => {
       platform: 'linux'
     })
 
-    assert.equal(env.TERMINAL_CWD, undefined, 'the pooled helper never carries the global pin; main.ts owns that decision')
+    assert.equal(
+      env.TERMINAL_CWD,
+      undefined,
+      'the pooled helper never carries the global pin; main.ts owns that decision'
+    )
     assert.equal(env.PATH, '/usr/bin')
   })
 })

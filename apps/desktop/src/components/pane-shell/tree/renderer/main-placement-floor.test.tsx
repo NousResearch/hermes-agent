@@ -99,10 +99,7 @@ describe('the main placement floor in the renderer', () => {
 
 describe('vertical sash vs leading-pane scrollbar (#99867)', () => {
   it('keeps the grab band entirely in the trailing pane', () => {
-    const tree = split('row', [
-      group(['sessions'], { id: 'grp-sessions' }),
-      group(['workspace'], { id: 'grp-main' })
-    ])
+    const tree = split('row', [group(['sessions'], { id: 'grp-sessions' }), group(['workspace'], { id: 'grp-main' })])
 
     $layoutTree.set(tree)
     render(<TreeSplit node={tree} root rootRow />)
@@ -110,6 +107,7 @@ describe('vertical sash vs leading-pane scrollbar (#99867)', () => {
     const sashes = document.querySelectorAll('[data-sash-overlap="trailing"]')
 
     expect(sashes.length).toBeGreaterThan(0)
+
     for (const sash of sashes) {
       expect(sash.className).toContain('w-[8px]')
       expect(sash.className).not.toContain('-translate-x-[1px]')

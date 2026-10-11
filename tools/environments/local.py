@@ -20,7 +20,7 @@ from hermes_constants import get_process_hermes_home
 from tools.environments.base import BaseEnvironment
 from tools.environments.base_output import _pipe_stdin
 from hermes_cli._subprocess_compat import windows_hide_flags
-from tools.environments.local_env_policy import (  # noqa: F401 — _HERMES_PROVIDER_ENV_BLOCKLIST stays importable from here
+from tools.environments.local_env_policy import (
     _ALWAYS_STRIP_FOLDED, _ALWAYS_STRIP_KEYS, _HERMES_PROVIDER_ENV_BLOCKLIST, _HERMES_PROVIDER_ENV_FORCE_PREFIX,
     _is_hermes_internal_secret, _is_provider_env_blocklisted, _is_terminal_first_party_env,
     _home_adapter_secret_env, _matches_terminal_first_party_prefix, _plugin_terminal_env_strip_keys,
@@ -48,7 +48,7 @@ _terminal_temp_pruned_once = False
 _BG_GROUP_RE = re.compile(r"^(hermes_bg_[A-Za-z0-9_-]+)\.(log|pid|exit)$")
 
 
-def _default_terminal_temp_dir() -> "Path | None":
+def _default_terminal_temp_dir() -> Path | None:
     """Return HERMES_HOME/cache/terminal, or None if unresolvable."""
     try:
         from hermes_constants import get_hermes_home
@@ -348,8 +348,8 @@ def _scrub_credentials(env: dict, *, inherit_credentials: bool) -> dict:
 
 
 def build_subprocess_env(
-    base: "Mapping[str, str] | None" = None, *, inherit_profile_home: bool = True,
-    scrub_secrets: bool = True, extra: "Mapping[str, str] | None" = None,
+    base: Mapping[str, str] | None = None, *, inherit_profile_home: bool = True,
+    scrub_secrets: bool = True, extra: Mapping[str, str] | None = None,
     strip_launch_profile: bool = False) -> dict[str, str]:
     """Single factory for child-process envs. ``base=None`` snapshots ``os.environ``.
     ``scrub_secrets=True`` -> :func:`_sanitize_subprocess_env` (profile home inherent,
@@ -384,7 +384,7 @@ def build_subprocess_env(
 
 
 def served_profile_child_env(
-    base: "Mapping[str, str] | None" = None, *, target_home: "str | Path | None" = None,
+    base: Mapping[str, str] | None = None, *, target_home: str | Path | None = None,
     inherit_credentials: bool = False,
 ) -> dict[str, str]:
     """Child env for a process that acts FOR the active (possibly served) profile: ``hermes -p X``
@@ -428,7 +428,7 @@ def served_profile_child_env(
 
 
 def host_gateway_child_env(
-    base: "Mapping[str, str] | None" = None,
+    base: Mapping[str, str] | None = None,
 ) -> dict[str, str]:
     """Child env for the host gateway: the default profile's secrets, never the launcher's.
 
@@ -442,7 +442,7 @@ def host_gateway_child_env(
     )
 
 
-def _is_routed_home(target_home: "str | Path") -> bool:
+def _is_routed_home(target_home: str | Path) -> bool:
     """True when ``target_home`` is not the process's own (launch) home.
 
     Same launch-home identity as ``agent.secret_scope.serves_routed_profile()``: under a host that
@@ -455,7 +455,7 @@ def _is_routed_home(target_home: "str | Path") -> bool:
         return True
 
 
-def strip_launch_profile_env(env: dict, target_home: "str | Path | None" = None) -> dict:
+def strip_launch_profile_env(env: dict, target_home: str | Path | None = None) -> dict:
     """Drop the LAUNCH profile's residue from a child env built for another served profile.
     ``os.environ`` holds the default profile's ``.env`` and its bridged ``TERMINAL_*`` settings;
     the secret scrub removes credentials but not settings (``HERMES_MODEL``, ``TERMINAL_ENV``,
@@ -527,7 +527,7 @@ def _find_bash() -> str:
     )
 
 
-_git_bash_bin_dirs_cache: "list[str] | None" = None
+_git_bash_bin_dirs_cache: list[str] | None = None
 
 
 def _git_bash_bin_dirs() -> list[str]:
@@ -595,17 +595,28 @@ _SANE_PATH = ("/opt/homebrew/bin:/opt/homebrew/sbin:"
 # Cached directory containing the ``hermes`` console-script.
 # ``_SENTINEL`` distinguishes "not resolved yet" from a resolved ``None``.
 _SENTINEL = object()
-_HERMES_BIN_DIR: "str | None | object" = _SENTINEL
+_HERMES_BIN_DIR: str | None | object = _SENTINEL
+# True when the cached dir is a sealed payload's own launcher dir (see below).
+_HERMES_BIN_DIR_IS_PAYLOAD = False
 
 
 def _resolve_hermes_bin_dir() -> str | None:
     """Directory holding the ``hermes`` console-script, or None (cached). A gateway
     launched by systemd/cron/a desktop launcher lacks the install dir on PATH and bare
-    ``hermes`` exits 127. Order: ``which``; absolute ``sys.argv[0]`` naming a real
-    hermes executable; ``sys.executable``'s dir if it holds the shim."""
-    global _HERMES_BIN_DIR
+    ``hermes`` exits 127. Order: a sealed payload's own launcher dir; ``which``; absolute
+    ``sys.argv[0]`` naming a real hermes executable; ``sys.executable``'s dir if it holds
+    the shim."""
+    global _HERMES_BIN_DIR, _HERMES_BIN_DIR_IS_PAYLOAD
     if _HERMES_BIN_DIR is not _SENTINEL:
         return _HERMES_BIN_DIR  # type: ignore[return-value]
+    from pm.environments import payload_command_dir
+
+    # A payload's venv also holds a `hermes`, but on Windows its redirector names the
+    # build machine's interpreter, so PATH order must not decide which copy children get.
+    payload_dir = payload_command_dir(Path(__file__).resolve().parents[2])
+    if payload_dir is not None and payload_dir.is_dir():
+        _HERMES_BIN_DIR, _HERMES_BIN_DIR_IS_PAYLOAD = str(payload_dir), True
+        return _HERMES_BIN_DIR
     which = shutil.which("hermes")
     argv0 = sys.argv[0] if sys.argv else ""
     base = os.path.basename(argv0).lower()
@@ -619,12 +630,18 @@ def _resolve_hermes_bin_dir() -> str | None:
     else:
         candidate = exe_dir if exe_dir and os.path.isfile(os.path.join(exe_dir, shim)) else None
     _HERMES_BIN_DIR = candidate if candidate and os.path.isdir(candidate) else None
+    _HERMES_BIN_DIR_IS_PAYLOAD = False
     return _HERMES_BIN_DIR
 
 
 def _prepend_hermes_bin_dir(existing_path: str) -> str:
-    """Prepend the hermes install dir to ``existing_path`` if missing."""
+    """Prepend the hermes install dir to ``existing_path`` if missing. A sealed payload's
+    launcher dir moves to the front even when already listed: a login PATH can list
+    another install's ``hermes`` ahead of it."""
     bin_dir = _resolve_hermes_bin_dir()
+    if bin_dir and _HERMES_BIN_DIR_IS_PAYLOAD:
+        rest = [entry for entry in existing_path.split(os.pathsep) if entry and entry != bin_dir]
+        return os.pathsep.join([bin_dir, *rest])
     return _prepend_missing_path_entries(existing_path, [bin_dir] if bin_dir else [])
 
 
@@ -857,7 +874,7 @@ def _leader_is_ours(pgid, expected_start) -> bool:
     from gateway.status import get_process_start_time, start_time_fingerprints_match
     try:
         current = get_process_start_time(pgid)
-    except Exception:  # noqa: BLE001 — the guard must never break signalling
+    except Exception:
         return True
     if current is None:
         # Unreadable while alive: best effort. Gone: POSIX never reuses a PGID while any
@@ -970,7 +987,7 @@ class LocalEnvironment(BaseEnvironment):
             name for name in merged
             if isinstance(name, str) and _matches_terminal_first_party_prefix(name)))
 
-    def __init__(self, cwd: str = "", timeout: int = 60, env: dict = None):
+    def __init__(self, cwd: str = "", timeout: int = 60, env: dict | None = None):
         super().__init__(cwd=_resolve_local_initial_cwd(cwd), timeout=timeout, env=env)
         self.init_session()
 

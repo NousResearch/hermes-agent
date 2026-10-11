@@ -20,12 +20,43 @@ from typing import Any, Dict, Optional
 
 from tools.transcription_audio import _find_whisper_binary, _prepare_local_audio, _run_quiet
 from tools.transcription_common import (
-    DEFAULT_LOCAL_MODEL, DEFAULT_LOCAL_STT_LANGUAGE, GROQ_MODELS, LOCAL_STT_COMMAND_ENV,
-    OPENAI_MODELS, _config_number, _error_result, _log_prompt_unsupported, _ok_result,
+    DEFAULT_LOCAL_MODEL, DEFAULT_LOCAL_STT_LANGUAGE, GROQ_MODELS, LOCAL_STT_COMMAND_ENV, RETIRED_GROQ_MODELS,
+    OPENAI_MODELS, STT_MODEL_CATALOG, _config_number, _error_result, _log_prompt_unsupported, _ok_result,
     _process_error_detail)
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("tools.transcription_tools")
+
+
+_LOCAL_LANGUAGE_ALIASES = {
+    "繁體中文": "zh",
+    "繁体中文": "zh",
+    "简体中文": "zh",
+    "簡體中文": "zh",
+}
+_THREE_LETTER_WHISPER_CODES = frozenset({"haw", "yue"})
+
+
+def _normalize_local_stt_language(
+    language: Optional[str], supported_languages: object = None
+) -> Optional[str]:
+    """Return a Whisper language code, or None so the caller can fall back safely."""
+    if not isinstance(language, str) or not language.strip():
+        return None
+    raw = language.strip()
+    folded = raw.casefold().replace("_", "-")
+    candidate = _LOCAL_LANGUAGE_ALIASES.get(raw, folded.split("-", 1)[0])
+    code_shape_is_valid = len(candidate) == 2 or candidate in _THREE_LETTER_WHISPER_CODES
+    if not (candidate.isascii() and candidate.isalpha() and code_shape_is_valid):
+        logger.warning("Local STT language %r is not a language code; using fallback", raw)
+        return None
+
+    if isinstance(supported_languages, (list, tuple, set, frozenset)):
+        supported_codes = {str(code).casefold() for code in supported_languages}
+        if candidate not in supported_codes:
+            logger.warning("Local STT language %r is unsupported; using fallback", raw)
+            return None
+    return candidate
 
 
 def _get_local_command_template() -> Optional[str]:
@@ -49,12 +80,12 @@ def _normalize_local_model(model_name: Optional[str]) -> str:
     """Return a valid faster-whisper size; cloud-only names (``whisper-1`` …) fall back to the default with a warning."""
     if not model_name:
         return DEFAULT_LOCAL_MODEL
-    if model_name in OPENAI_MODELS | GROQ_MODELS:
+    if model_name in OPENAI_MODELS | GROQ_MODELS | RETIRED_GROQ_MODELS:
         logger.warning(
             "STT model '%s' is a cloud-only name and cannot be used with the local "
             "provider. Falling back to '%s'. Set stt.local.model to a valid "
-            "faster-whisper size (tiny, base, small, medium, large-v3).",
-            model_name, DEFAULT_LOCAL_MODEL)
+            "faster-whisper size (%s).",
+            model_name, DEFAULT_LOCAL_MODEL, ", ".join(STT_MODEL_CATALOG["local"]))
         return DEFAULT_LOCAL_MODEL
     return model_name
 
@@ -121,7 +152,7 @@ def _should_force_faster_whisper_cpu() -> bool:
     return _sysctl_value("sysctl.proc_translated") == "1" or _sysctl_value("hw.optional.arm64") == "1"
 
 
-def _get_idle_unload_seconds(local_cfg: Dict[str, Any]) -> int:
+def _get_idle_unload_seconds(local_cfg: dict[str, Any]) -> int:
     """Resolve the idle unload timeout from config; 0 = never (default), negatives clamp to 0."""
     return max(_config_number(local_cfg, "unload_after_idle_seconds", 0, int), 0)
 
@@ -204,14 +235,14 @@ _NO_SPEECH_PROB_THRESHOLD_DEFAULT = 0.6
 _LOGPROB_THRESHOLD_DEFAULT = -1.0
 
 
-def build_local_transcribe_kwargs(stt_config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def build_local_transcribe_kwargs(stt_config: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     """Kwargs for EVERY local faster-whisper ``model.transcribe`` call — single owner of the anti-hallucination hardening."""
     from tools.transcription_tools import _load_stt_config, _resolve_stt_language
     stt_config = stt_config if isinstance(stt_config, dict) else _load_stt_config()
     local_cfg = stt_config.get("local") or {}
     # ``vad: null`` in YAML means "default on".
     vad_enabled = local_cfg.get("vad", True)
-    kwargs: Dict[str, Any] = {
+    kwargs: dict[str, Any] = {
         "beam_size": 5,
         "condition_on_previous_text": False,
         "vad_filter": vad_enabled is None or bool(vad_enabled)}
@@ -233,7 +264,7 @@ def build_local_transcribe_kwargs(stt_config: Optional[Dict[str, Any]] = None) -
     return kwargs
 
 
-def _confidence_thresholds(local_cfg: Dict[str, Any]) -> tuple[float, float]:
+def _confidence_thresholds(local_cfg: dict[str, Any]) -> tuple[float, float]:
     """Resolve (no_speech_prob, avg_logprob) gate thresholds from config."""
     return (_config_number(local_cfg, "no_speech_prob_threshold", _NO_SPEECH_PROB_THRESHOLD_DEFAULT),
             _config_number(local_cfg, "logprob_threshold", _LOGPROB_THRESHOLD_DEFAULT))
@@ -250,7 +281,7 @@ def _is_hallucinated_segment(segment: Any, no_speech_threshold: float, logprob_t
         return False
 
 
-def _join_confident_segments(segments: Any, local_cfg: Dict[str, Any]) -> str:
+def _join_confident_segments(segments: Any, local_cfg: dict[str, Any]) -> str:
     """Join segment texts, dropping probable silence hallucinations."""
     no_speech_threshold, logprob_threshold = _confidence_thresholds(local_cfg)
     kept: list[str] = []
@@ -266,7 +297,7 @@ def _join_confident_segments(segments: Any, local_cfg: Dict[str, Any]) -> str:
 
 def _transcribe_local_command(
     file_path: str, model_name: str, *, language: Optional[str] = None, prompt: Optional[str] = None
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Run the configured local STT command template and read back a .txt transcript."""
     from tools.transcription_tools import _resolve_stt_language
     if prompt:
@@ -275,7 +306,8 @@ def _transcribe_local_command(
     if not command_template:
         return _error_result(f"{LOCAL_STT_COMMAND_ENV} not configured and no local whisper binary was found")
     # Language: hook override > stt.local.language > stt.language > env > "en".
-    language = language or _resolve_stt_language("local") or DEFAULT_LOCAL_STT_LANGUAGE
+    configured_language = language or _resolve_stt_language("local")
+    language = _normalize_local_stt_language(configured_language) or DEFAULT_LOCAL_STT_LANGUAGE
     normalized_model = _normalize_local_model(model_name)
     try:
         if not os.getenv(LOCAL_STT_COMMAND_ENV, "").strip():

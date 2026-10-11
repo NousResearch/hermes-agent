@@ -18,8 +18,8 @@ class SessionCoverageMixin:
     """Coverage helpers for SessionDB; relies on SessionMessagesMixin's codec/identity helpers."""
 
     def _resolve_carried_row_ids(
-        self, conn, session_id: str, carried_messages: List[Dict[str, Any]],
-    ) -> List[int]:
+        self, conn, session_id: str, carried_messages: list[dict[str, Any]],
+    ) -> list[int]:
         """Resolve byte-identical carried-forward live dicts to their ACTIVE durable originals.
 
         _row_id is authoritative when the message carries it and the stored identity still matches.
@@ -29,7 +29,7 @@ class SessionCoverageMixin:
         """
         if not carried_messages:
             return []
-        carried: List[Tuple[Tuple[Any, ...], Any, Any]] = []
+        carried: list[tuple[tuple[Any, ...], Any, Any]] = []
         for message in carried_messages:
             if not isinstance(message, dict):
                 continue
@@ -41,9 +41,9 @@ class SessionCoverageMixin:
                 row_id = None
             carried.append((identity, row_id, message.get("timestamp")))
 
-        def _index(ids: Optional[List[int]]):
-            by_id: Dict[int, Tuple[Any, ...]] = {}
-            by_key: Dict[Tuple[Any, ...], List[int]] = {}
+        def _index(ids: Optional[list[int]]):
+            by_id: dict[int, tuple[Any, ...]] = {}
+            by_key: dict[tuple[Any, ...], list[int]] = {}
             narrow = f" AND id IN ({_placeholders(ids)})" if ids else ""
             for row in conn.execute(
                 "SELECT id, role, content, tool_call_id, tool_calls, timestamp FROM messages "
@@ -66,7 +66,7 @@ class SessionCoverageMixin:
         if len(row_ids) == len(carried) and any(by_id.get(rid) != ident for ident, rid, _ in carried):
             by_id, by_key = _index(None)
 
-        resolved: List[int] = []
+        resolved: list[int] = []
         for identity, row_id, raw_timestamp in carried:
             if row_id is not None and by_id.get(row_id) == identity:
                 resolved.append(row_id)
@@ -79,7 +79,7 @@ class SessionCoverageMixin:
                 resolved.append(matches[0])
         return list(dict.fromkeys(resolved))
 
-    def _matching_active_ids(self, conn, session_id: str, message: Dict[str, Any]) -> List[int]:
+    def _matching_active_ids(self, conn, session_id: str, message: dict[str, Any]) -> list[int]:
         """Active row ids whose stored role and content equal *message*. Empty when it was never persisted."""
         content = message.get("content")
         if not isinstance(content, str):
@@ -90,8 +90,8 @@ class SessionCoverageMixin:
             (session_id, message.get("role"), stored)).fetchall()]
 
     def _matching_retired_ids(
-        self, conn, session_id: str, retired: Dict[str, Any], watermark: Optional[int] = None,
-    ) -> List[int]:
+        self, conn, session_id: str, retired: dict[str, Any], watermark: Optional[int] = None,
+    ) -> list[int]:
         """Active rows equal to a row the alternation repair retired without an id.
 
         Matched on role, loaded-view content (an empty assistant stores ``None`` or ``""``), tool_call_id
@@ -120,8 +120,8 @@ class SessionCoverageMixin:
         return matches
 
     def _merged_user_run(
-        self, conn, session_id: str, message: Dict[str, Any], watermark: Optional[int] = None,
-    ) -> Optional[List[int]]:
+        self, conn, session_id: str, message: dict[str, Any], watermark: Optional[int] = None,
+    ) -> Optional[list[int]]:
         """Active rows an alternation repair merged into *message*: ``[]`` for none, None when ambiguous.
 
         A reload without row ids turns a durable ``user;user`` pair (a prompt that never got its reply)
@@ -158,11 +158,11 @@ class SessionCoverageMixin:
                 return None
             retired_ids.update(matches)
         rows = [row for row in rows if row[0] not in retired_ids]
-        runs: List[List[int]] = []
+        runs: list[list[int]] = []
         for start in range(len(rows)):
             merged = ""
             for end in range(start, len(rows)):
-                row_id, role, part = rows[end]
+                _row_id, role, part = rows[end]
                 if role != "user" or not isinstance(part, str):
                     break
                 merged = f"{merged}\n\n{part}" if merged and part else (merged or part)
@@ -177,9 +177,9 @@ class SessionCoverageMixin:
         return runs[0] if runs else []
 
     def _proved_coverage(
-        self, conn, session_id: str, covered_ids: Optional[List[int]],
-        unresolved_held: Optional[List[Dict[str, Any]]], watermark: Optional[int] = None,
-    ) -> Optional[Tuple[List[int], Set[int]]]:
+        self, conn, session_id: str, covered_ids: Optional[list[int]],
+        unresolved_held: Optional[list[dict[str, Any]]], watermark: Optional[int] = None,
+    ) -> Optional[tuple[list[int], set[int]]]:
         """``(ids safe to archive as summarized, ids merged into another held dict)``, or None when
         a durable held row cannot be named.
 
@@ -199,7 +199,7 @@ class SessionCoverageMixin:
             ABSORBED_ROW_IDS, MERGED_DURABLE_ROWS, OWN_ROW, RETIRED_DURABLE_ROWS, RETIRED_ROW)
 
         proved = [int(row_id) for row_id in covered_ids if isinstance(row_id, int) and row_id > 0]
-        merged_away: Set[int] = set()
+        merged_away: set[int] = set()
         for message in unresolved_held or ():
             if not isinstance(message, dict):
                 continue
@@ -232,7 +232,7 @@ class SessionCoverageMixin:
         return list(dict.fromkeys(proved)), merged_away
 
     @staticmethod
-    def _uncounted_merged_rows(tail: List[Dict[str, Any]]) -> int:
+    def _uncounted_merged_rows(tail: list[dict[str, Any]]) -> int:
         """Durable rows behind the carried *tail* beyond one per dict, for the positional rewind.
 
         The watermark path cannot name a merged dict's run, so it widens by the stamp, less the
@@ -243,7 +243,7 @@ class SessionCoverageMixin:
         """
         from agent.conversation_compression_archive import ABSORBED_ROW_IDS, MERGED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS
 
-        def behind(message: Dict[str, Any]) -> int:
+        def behind(message: dict[str, Any]) -> int:
             merged, unnamed = message.get(MERGED_DURABLE_ROWS), message.get(UNNAMED_DURABLE_ROWS)
             unlisted = merged - 1 - len(message.get(ABSORBED_ROW_IDS) or ()) if type(merged) is int else 0
             return max(0, unlisted) + (unnamed if type(unnamed) is int else 0)
@@ -253,7 +253,7 @@ class SessionCoverageMixin:
             if isinstance(message, dict) and not isinstance(message.get("_row_id"), int))
 
     @staticmethod
-    def _tail_originals(covered_active: List[int], tail_count: int, merged_away: Set[int]) -> List[int]:
+    def _tail_originals(covered_active: list[int], tail_count: int, merged_away: set[int]) -> list[int]:
         """Newest rows behind *tail_count* carried dicts; a dict that merged rows stands for each of them."""
         width = int(tail_count)
         while True:

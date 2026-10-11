@@ -13,6 +13,11 @@ export const esModelMenu = {
   cacheRead: 'lectura en caché',
   priceTitle: (input: string, output: string, cache: string) =>
     `Entrada ${input}/Mtok · Salida ${output}/Mtok` + (cache ? ` · Lectura en caché ${cache}/Mtok` : ''),
+  localSetup: {
+    title: 'Ejecutar en local · gratis, privado',
+    text: (model: string, size: string) => `${model} cabe en este equipo · descarga de ${size}`,
+    action: 'Configurar'
+  },
   limited: 'Limitado',
   limitedUntil: (time: string) => `Limitado hasta las ${time}`,
   limitedTip: (provider: string, time: null | string) =>

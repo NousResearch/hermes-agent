@@ -6,8 +6,8 @@ silently went missing from the GUI. ``auth_type`` / ``api_key_env_vars`` / ``bas
 come from :data:`hermes_cli.auth.PROVIDER_REGISTRY` (credential truth); ``display_name`` /
 ``description`` / ``signup_url`` from the provider's :class:`providers.base.ProviderProfile`, falling
 back to the ``CANONICAL_PROVIDERS`` entry's ``label`` / ``tui_desc`` and the ``OPTIONAL_ENV_VARS``
-signup URL (many profiles leave these blank, and lmstudio, openai-api, tencent-tokenhub, xai-oauth
-have no profile at all — the fallbacks are load-bearing).
+signup URL (many profiles leave these blank, and openai-api, tencent-tokenplan, xai-oauth have no
+profile at all — the fallbacks are load-bearing).
 """
 
 from __future__ import annotations

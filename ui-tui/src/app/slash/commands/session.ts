@@ -399,6 +399,12 @@ export const sessionCommands: SlashCommand[] = [
           ? normalized
           : 'status'
 
+      // Read-aloud ran in the sidecar's own turn; a shared-gateway turn runs on the owner, which
+      // never speaks a TUI reply, so the toggle would say "on" and stay silent.
+      if (action === 'tts' && ctx.gateway.gw?.isCanonical) {
+        return ctx.transcript.sys(t('canonical.controls.notAvailable', 'voice tts'))
+      }
+
       ctx.gateway.rpc<VoiceToggleResponse>('voice.toggle', { action }).then(
         ctx.guarded<VoiceToggleResponse>(r => {
           ctx.voice.setVoiceEnabled(!!r.enabled)

@@ -5,6 +5,7 @@ import React from 'react'
 import { afterEach, expect, it, vi } from 'vitest'
 
 import { applyAgentSnapshot } from '../app/agentRoster.js'
+import { createSlashHandler } from '../app/createSlashHandler.js'
 import { requestLiveSessions } from '../app/liveSessions.js'
 import { patchUiState, resetUiState } from '../app/uiStore.js'
 import { sendAgentSteer } from '../components/agentControls.js'
@@ -69,6 +70,26 @@ async function overlayKey(gw: GatewayClient, key: string) {
 }
 
 const SITES: [string, () => Promise<void>][] = [
+  [
+    'session.ts::/voice tts (read-aloud runs only in a sidecar turn)',
+    async () => {
+      patchUiState({ sid: 'owner' })
+      const { gw, request } = owner()
+      const sys = vi.fn()
+
+      createSlashHandler({
+        gateway: { gw, rpc: request },
+        local: { getHistoryItems: () => [], getLastUserMsg: () => '', maybeWarn: vi.fn() },
+        session: {},
+        slashFlightRef: { current: 0 },
+        transcript: { page: vi.fn(), panel: vi.fn(), send: vi.fn(), setHistoryItems: vi.fn(), sys },
+        voice: { setVoiceEnabled: vi.fn(), setVoiceRecordKey: vi.fn(), setVoiceTts: vi.fn() }
+      } as never)('/voice tts')
+      await new Promise(resolve => setImmediate(resolve))
+      expect(sys).toHaveBeenCalledWith('/voice tts is not available on the shared gateway yet')
+      expect(request.mock.calls.some(([method]) => method === 'voice.toggle')).toBe(false)
+    }
+  ],
   [
     'agentControls::sendAgentSteer',
     async () => {

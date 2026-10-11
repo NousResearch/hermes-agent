@@ -54,8 +54,14 @@ _NAMED_FUNCTION_BLOCK_PATTERN = re.compile(
     r'<function\b[^>]*\bname\s*=[^>]*>'
     r'(?:(?:(?!</function>).)*)</function>', re.DOTALL | re.IGNORECASE,
 )
+# Handle malformed reasoning openers at a line boundary (#136557). A model may glue
+# payload prose to the tag name without emitting `>` (`<thinkingBackup done...`).
+# Distinguish that from complete XML element names such as `<reasoningEffort>` or
+# `<thinkpad-model>`; stripping those would discard the rest of a legitimate answer.
+# Mid-line prose mentions remain untouched by the existing boundary requirement.
 _UNTERMINATED_REASONING_BLOCK_PATTERN = re.compile(
-    rf'(?:^|\n)[ \t]*<(?:{"|".join(THINK_TAG_NAMES)})\b[^>]*>.*$', re.DOTALL | re.IGNORECASE
+    rf'(?:^|\n)[ \t]*["\']?<(?:{"|".join(THINK_TAG_NAMES)})(?:\b[^>]*>|(?![\w.-]*>)\w).*$',
+    re.DOTALL | re.IGNORECASE,
 )
 _ORPHAN_REASONING_TAG_PATTERN = re.compile(
     rf'</?(?:{"|".join(THINK_TAG_NAMES)})>\s*', re.IGNORECASE

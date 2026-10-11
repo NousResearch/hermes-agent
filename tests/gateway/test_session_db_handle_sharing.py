@@ -78,6 +78,7 @@ def _runner_with(store) -> GatewayRunner:
     runner._session_db_handle_cache = RecoverableHandleCache(
         handles=runner._session_db_handles,
         lock=runner._session_db_handles_lock,
+        registry_backed=True,
     )
     runner._session_db_init_error = None
     return runner
@@ -136,6 +137,7 @@ def test_runner_without_a_session_store_still_opens_its_own(home):
     runner._session_db_handle_cache = RecoverableHandleCache(
         handles=runner._session_db_handles,
         lock=runner._session_db_handles_lock,
+        registry_backed=True,
     )
     runner._session_db_init_error = None
 
@@ -211,3 +213,111 @@ def test_api_server_profile_cache_reopens_a_handle_the_registry_tore_down(home):
         second.create_session("after-unserve", source="api_server")
     finally:
         registry.close_all_under(profile)
+
+
+def test_a_handle_the_registry_tears_down_mid_open_is_never_published(store, home, monkeypatch):
+    """``close_all_under`` can land between the store's ``acquire`` and the cache publishing the
+    handle (a profile unserve racing that profile's first routed turn). The publication then saw a
+    handle the registry no longer owned, filed it as a plain never-shared one, and every later read
+    served the closed connection without reopening.
+    """
+    import hermes_state_registry as registry
+
+    real_acquire = registry.acquire
+    opened: list = []
+
+    def acquire_then_unserve(db_path=None):
+        db = real_acquire(db_path)
+        opened.append(db)
+        if len(opened) == 1:
+            registry.close_all_under(home)  # the unserve lands before the cache publishes
+        return db
+
+    store.close_all_db_handles()  # the first ``_db`` read below must go through the opener
+    monkeypatch.setattr(registry, "acquire", acquire_then_unserve)
+
+    assert store._db is None, "the torn-down handle was published"
+    second = store._db
+
+    assert len(opened) == 2 and second is opened[1]
+    assert opened[0]._conn is None and second._conn is not None
+    second.create_session("after-unserve", source="telegram")
+    acquired = real_acquire(Path(second.db_path))
+    try:
+        assert acquired is second, "one file, one writer: the agent must share the store's handle"
+    finally:
+        registry.release(acquired)
+
+
+def test_a_wrapper_around_a_handle_torn_down_mid_open_is_never_published(store, home, monkeypatch):
+    """The same window one layer up: the runner borrows the store's handle, and the registry can
+    tear it down after the store published it but before the runner's cache publishes the wrapper."""
+    import hermes_state
+    import hermes_state_registry as registry
+
+    real_async = hermes_state.AsyncSessionDB
+    wrapped: list = []
+
+    def wrap_then_unserve(db):
+        wrapper = real_async(db)
+        wrapped.append(wrapper)
+        if len(wrapped) == 1:
+            registry.close_all_under(home)
+        return wrapper
+
+    monkeypatch.setattr(hermes_state, "AsyncSessionDB", wrap_then_unserve)
+    runner = _runner_with(store)
+    first_db = store._db
+
+    assert runner._open_session_db_for_active_scope() is None, "the torn-down wrapper was published"
+    second = runner._open_session_db_for_active_scope()
+
+    assert len(wrapped) == 2 and second is wrapped[1] and second._db is store._db
+    assert first_db._conn is None and second._db is not first_db and second._db._conn is not None
+
+
+def test_a_retired_retry_keeps_the_pending_recovery_and_a_later_live_open_completes_it(store, home, monkeypatch):
+    """Startup failed (``database is locked``), the retry's handle was retired before publication, the
+    third open is live. The recovery owed since the startup failure must still complete: the real
+    callback clears the startup error, so the pre-broadcast re-check sends no false outage warning."""
+    import asyncio
+
+    import hermes_state_registry as registry
+
+    runner = _runner_with(store)
+    runner.session_store = None
+    runner._session_db_init_error = "database is locked"
+    real_acquire = registry.acquire
+    calls = 0
+
+    def acquire(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("database is locked")
+        db = real_acquire(*args, **kwargs)
+        if calls == 2:
+            registry.close_all_under(home)  # the unserve lands before the cache publishes
+        return db
+
+    monkeypatch.setattr(registry, "acquire", acquire)
+    assert runner._open_session_db_for_active_scope() is None  # the startup failure
+    for state in runner._session_db_handle_cache._unavailable.values():
+        state.next_retry_at = 0  # past the backoff
+    assert runner._open_session_db_for_active_scope() is None  # retired before publication: not cached
+    healthy = runner._open_session_db_for_active_scope()  # no backoff owed after a retired retry
+    assert healthy is not None and calls == 3
+    healthy._db.create_session("healthy", source="telegram")
+    sent = []
+    runner._home_channel_transports = lambda: [("telegram", {}, "home", object())]
+
+    async def send(*args):
+        sent.append(args[3])
+
+    runner._send_home_channel_message = send
+    try:
+        asyncio.run(runner._send_session_db_warning_notifications())
+        assert runner._session_db_init_error is None, "the recovery owed to the startup failure was dropped"
+        assert sent == [], "a false outage warning went out after the database recovered"
+    finally:
+        runner.close_all_session_db_handles()

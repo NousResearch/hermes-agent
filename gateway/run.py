@@ -3648,7 +3648,7 @@ class GatewayRunner(
         self._session_db_handles_lock = threading.Lock()
         from gateway.session_db_recovery import RecoverableHandleCache
         self._session_db_handle_cache = RecoverableHandleCache(
-            handles=self._session_db_handles, lock=self._session_db_handles_lock)
+            handles=self._session_db_handles, lock=self._session_db_handles_lock, registry_backed=True)
         try:
             self._open_session_db_for_active_scope(raise_on_error=True)
         except Exception as e:
@@ -3734,7 +3734,7 @@ class GatewayRunner(
         if cache is None:
             # Test runners built with object.__new__ skip __init__.
             cache = RecoverableHandleCache(
-                handles=self._session_db_handles, lock=self._session_db_handles_lock)
+                handles=self._session_db_handles, lock=self._session_db_handles_lock, registry_backed=True)
             self._session_db_handle_cache = cache
 
         def _open():

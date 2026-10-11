@@ -43,12 +43,13 @@ def _publish_health(source: _HealthSource, path: Path, state: str) -> None:
         pass  # Runtime health is diagnostic only; persistence must not depend on it.
 
 
-def _registry_owned(handle: Any) -> bool:
-    """True while the process-wide registry owns *handle*; an ``AsyncSessionDB`` (the only handle
-    type with a ``_db``) is judged by the SessionDB it wraps. ``close_all`` / ``close_all_under``
-    clear the flag when they tear the generation down."""
+def _registry_tore_down(handle: Any) -> bool:
+    """True once the process-wide registry force-closed *handle* (``close_all`` / ``close_all_under``
+    clear ``_shared_registry_owned`` at teardown); an ``AsyncSessionDB`` (the only handle type with
+    a ``_db``) is judged by the SessionDB it wraps. Meaningful only for a handle that came from the
+    registry: a test double without the flag reads as live."""
     inner = getattr(handle, "_db", handle)
-    return getattr(inner, "_shared_registry_owned", None) is True
+    return getattr(inner, "_shared_registry_owned", True) is False
 
 
 class RecoverableHandleCache:
@@ -56,6 +57,13 @@ class RecoverableHandleCache:
 
     Opens run OUTSIDE ``lock`` (single-flight per path via ``in_flight``); ``close_all`` bumps
     ``_generation`` so a later-completing open is rejected instead of resurrecting the cache.
+
+    ``registry_backed`` declares that every handle ``opener`` returns came from
+    ``hermes_state_registry`` (directly or wrapped). The registry may force-close such a handle at
+    any time (profile unserve/delete), so a torn-down handle is never published and a cached one is
+    evicted on its next read. The owner declares the provenance instead of the cache sampling it from
+    the handle: a teardown that lands between the open and the publication has already cleared the
+    flag such a sample would read, and the dead handle would be filed as a never-shared one.
     """
 
     def __init__(
@@ -63,6 +71,7 @@ class RecoverableHandleCache:
         clock: Callable[[], float] = time.monotonic,
         initial_retry_delay: float = _INITIAL_RETRY_DELAY_SECONDS,
         max_retry_delay: float = _MAX_RETRY_DELAY_SECONDS,
+        registry_backed: bool = False,
     ) -> None:
         self.handles = handles if handles is not None else {}
         self.lock = lock if lock is not None else threading.Lock()
@@ -70,9 +79,7 @@ class RecoverableHandleCache:
         self._initial_retry_delay = max(0.0, float(initial_retry_delay))
         self._max_retry_delay = max(self._initial_retry_delay, float(max_retry_delay))
         self._unavailable: dict[Path, _Unavailable] = {}
-        # Paths whose cached handle the registry owned when it was cached: once the registry tears
-        # that generation down (profile unserve/delete), the entry is dead and must be reopened.
-        self._registry_backed: set[Path] = set()
+        self._registry_backed = registry_backed
         self._health_source = _HealthSource()
         self._generation = 0
         self._close_rejected: Callable[[Any], None] | None = None
@@ -93,13 +100,12 @@ class RecoverableHandleCache:
         with self.lock:
             if path in self.handles:
                 handle = self.handles[path]
-                if path not in self._registry_backed or _registry_owned(handle):
+                if not self._registry_backed or not _registry_tore_down(handle):
                     return handle
                 # The registry force-closed this generation. Serving it would let its self-heal reopen
                 # a writer the registry cannot see (a second writer beside the next ``acquire``), or keep
                 # raising StateDbReplacedError after a delete + recreate: reopen through the registry.
                 del self.handles[path]
-                self._registry_backed.discard(path)
             unavailable = self._unavailable.setdefault(path, _Unavailable())
             if unavailable.in_flight or self._clock() < unavailable.next_retry_at:
                 return None
@@ -132,18 +138,28 @@ class RecoverableHandleCache:
 
         with self.lock:
             stale = self._is_stale(path, unavailable, generation)
+            # The registry can tear the generation down between the open and this publication (a
+            # profile unserve racing that profile's first use). The handle is already closed, so
+            # caching it as a never-shared one would serve it on every later read; don't publish it.
+            # The slot stays in its failure state (a pending recovery is still owed to
+            # ``on_recovered``) with the in-flight flag and backoff released, so the next call
+            # reopens at once. This narrows the window, it cannot close it: teardown does not take
+            # ``lock``, so it can still land after this check or after the handle was returned.
+            retired = not stale and self._registry_backed and _registry_tore_down(handle)
             if not stale:
-                self.handles[path] = handle
-                if _registry_owned(handle):
-                    self._registry_backed.add(path)
+                if retired:
+                    unavailable.in_flight = False
+                    unavailable.next_retry_at = 0.0
                 else:
-                    self._registry_backed.discard(path)
-                self._unavailable.pop(path, None)
+                    self.handles[path] = handle
+                    self._unavailable.pop(path, None)
             close_rejected = self._close_rejected if stale else None
         if stale:
             if close_rejected is not None:
                 with contextlib.suppress(Exception):
                     close_rejected(handle)
+            return None
+        if retired:
             return None
         _publish_health(self._health_source, path, "ok")
         if was_unavailable and on_recovered is not None:
@@ -158,7 +174,6 @@ class RecoverableHandleCache:
             handles = list(self.handles.values())
             paths = set(self.handles) | set(self._unavailable)
             self.handles.clear()
-            self._registry_backed.clear()
             self._unavailable.clear()
         for handle in handles:
             with contextlib.suppress(Exception):

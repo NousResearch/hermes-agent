@@ -10,6 +10,7 @@ Operations (repeatable where noted, applied in the order listed below):
   --delete-cols IDX[:N]         delete N columns starting at column IDX
   --set CELL=VALUE              repeatable; type-inferred (int, float, bool,
                                 ISO date, else string). '=...' sets a formula.
+                                Non-finite numeric text stays a string.
   --append ROWJSON              repeatable; JSON array appended as a row
   --add-table NAME:RANGE[:STYLE]  create a native Excel table (ListObject)
   --table-append NAME=ROWJSON   append a row inside a table, auto-extending
@@ -45,6 +46,7 @@ import argparse
 import json
 import sys
 from datetime import date, datetime
+from math import isfinite
 
 from openpyxl import load_workbook
 from openpyxl.comments import Comment
@@ -62,7 +64,10 @@ def infer(text):
         return low == "true"
     for caster in (int, float):
         try:
-            return caster(text)
+            value = caster(text)
+            if isinstance(value, float) and not isfinite(value):
+                return text
+            return value
         except ValueError:
             pass
     for parser in (date.fromisoformat, datetime.fromisoformat):

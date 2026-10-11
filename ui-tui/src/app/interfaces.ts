@@ -371,6 +371,9 @@ export interface UiState {
   // rows, the same config key the classic CLI honors (#41531).
   timestamps: boolean
   usage: Usage
+  // `display.tui_widgets.order` — dock/rail placement rank for ambient
+  // widgets. null = user hasn't customized (launch order).
+  widgetOrder: null | readonly string[]
 }
 
 export interface VirtualHistoryState {

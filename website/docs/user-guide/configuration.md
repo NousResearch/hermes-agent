@@ -2215,6 +2215,8 @@ display:
     fields: ["model", "context_pct", "cwd"]
   status_bar:             # CLI/TUI: choose which status-bar fields are visible
     fields: []            # empty = show the default set; see below
+  tui_widgets:            # TUI: dock/rail order for widget apps (/<id> apps)
+    order: []             # listed ids render first, in list position
   file_mutation_verifier: true    # Append an advisory footer when write_file/patch calls failed this turn
   credits_notices: true   # Nous credits status-bar notices (usage bands, grant-spent, depleted). false = silence them; /usage still works
   cli_rebuild_scrollback_on_redraw: false  # Classic CLI: also wipe terminal scrollback (CSI 3J) on /redraw / Ctrl+L / width-change resize recovery. Enable when a terminal/tmux stack stamps stale prompt chrome into scrollback on maximize/restore.
@@ -2340,6 +2342,20 @@ Notes:
 - `battery` and `title` visibility here compose with their own toggles (`/battery`, `/title`) — both must be on for the segment to show.
 - The same key also filters the **Ink TUI** status rule (`hermes tui`), where `cache_hit`, `latency`, and `tps` render as width-budgeted tail segments (◎ / ◷ / ↑) on terminals ≥96/104/110 columns respectively.
 - Display-only: no effect on prompt caching or request payloads. Changes take effect on the next session start.
+
+### TUI widget dock order
+
+Ambient TUI widgets (`hermes --tui`, the `/<id>` dock apps from `~/.hermes/tui-widgets/`) render right-aligned in their dock in launch order by default. `display.tui_widgets.order` pins that order in config so files don't need numeric-prefix names (`01-grok.mjs`, `02-…`) that break the moment a widget is added or removed:
+
+```yaml
+display:
+  tui_widgets:
+    order: ["grok-usage", "codex-usage", "tavily-usage"]   # ids in dock/rail render order
+```
+
+- Listed ids render in list position (left→right in docks, top→bottom in rails).
+- Unlisted widgets keep their launch order after the listed ones.
+- Applies to user widgets and built-in widget apps alike; the file names and `/<id>` commands are untouched.
 
 ### Runtime-metadata footer (gateway only)
 

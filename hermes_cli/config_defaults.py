@@ -981,6 +981,13 @@ DEFAULT_CONFIG = {
         "status_bar": {
             "fields": [],
         },
+        # TUI dock/rail widget ordering. `order` lists widget app ids; listed
+        # apps render in list position (left→right in docks, top→bottom in
+        # rails), unlisted ones keep their launch order after them. Empty =
+        # launch order, which is what numeric filename prefixes used to force.
+        "tui_widgets": {
+            "order": [],
+        },
         "copy_shortcut": "auto",  # "auto" (platform default) | ctrl_c | ctrl_shift_c | disabled
         # Petdex animated mascot (github.com/crafter-station/petdex): cosmetic sprite across
         # CLI/TUI/desktop, managed with `hermes pets`. No effect on prompt caching.

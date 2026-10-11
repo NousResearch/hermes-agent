@@ -44,6 +44,24 @@ export const normalizeStatusBarFields = (raw: unknown): null | ReadonlySet<strin
   return cleaned.length ? new Set(cleaned) : null
 }
 
+// `display.tui_widgets.order` — widget app ids in dock/rail render order.
+// Missing/empty/malformed = null (user hasn't customized → launch order).
+// Only string entries survive: ids are case-sensitive (unlike status-bar
+// field names), and unknown ids pass through harmlessly — placement only
+// tests membership.
+export const normalizeWidgetOrder = (raw: unknown): null | readonly string[] => {
+  if (!Array.isArray(raw) || raw.length === 0) {
+    return null
+  }
+
+  const cleaned = raw
+    .filter((v): v is string => typeof v === 'string')
+    .map(v => v.trim())
+    .filter(Boolean)
+
+  return cleaned.length ? cleaned : null
+}
+
 const BUSY_MODES = new Set<BusyInputMode>(['interrupt', 'queue', 'steer'])
 
 // TUI defaults to `queue` even though the framework default
@@ -319,7 +337,8 @@ export const applyDisplay = (
     streaming: d.streaming !== false,
     // The SAME key that stamps [HH:MM] on classic-CLI labels (#41531) —
     // no separate TUI knob.
-    timestamps: d.timestamps === true
+    timestamps: d.timestamps === true,
+    widgetOrder: normalizeWidgetOrder(d.tui_widgets?.order)
   })
 }
 

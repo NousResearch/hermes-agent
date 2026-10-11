@@ -142,6 +142,11 @@ class CronScheduler(ABC):
     def name(self) -> str:
         """Short identifier, e.g. 'builtin', 'chronos'."""
 
+    # True when fires arrive as HTTP callbacks the dashboard forwards over loopback to the gateway's
+    # api_server (``/api/cron/fire``). The gateway then treats that listener as required
+    # infrastructure: it starts it even when the user disabled the API server platform.
+    fires_over_loopback: bool = False
+
     def is_available(self) -> bool:
         """Whether this provider can run here. MUST NOT make network calls; False → built-in."""
         return True

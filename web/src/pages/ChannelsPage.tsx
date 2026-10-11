@@ -608,6 +608,11 @@ export default function ChannelsPage() {
                           {platform.error_message}
                         </span>
                       )}
+                      {platform.required_reason && (
+                        <span className="text-xs text-muted-foreground">
+                          {platform.required_reason}
+                        </span>
+                      )}
                       {platform.ingress_url && (
                         <span className="text-xs text-muted-foreground break-all">
                           Callback URL (shared listener):{" "}
@@ -625,6 +630,7 @@ export default function ChannelsPage() {
                         <Switch
                           checked={platform.enabled}
                           onCheckedChange={() => void handleToggle(platform)}
+                          disabled={Boolean(platform.required_reason)}
                           aria-label={`Enable ${platform.name}`}
                         />
                       )}

@@ -42,8 +42,11 @@ import type { Attachment, GroupMember, GroupMessage } from './types'
 // router. Who speaks each round is a deterministic @mention parse since the
 // last user message (mentioned members only, else everyone); whether a member
 // actually speaks is its own turn's choice — replying with exactly "(pass)"
-// (or nothing, or failing) is silence. Hard caps end every turn; a round in
-// which everyone passed means the conversation settled. Each member runs its
+// (or nothing) is silence, but FAILING is not chosen silence: a crash is a
+// hole in the evidence, not an answer. Hard caps end every turn; a round in
+// which everyone passed with zero failed turns means the conversation
+// settled; the same quiet with crashed seats ends DEGRADED, never consensus.
+// Each member runs its
 // turn in its OWN persistent per-group Hermes session and is fed only the
 // room messages that are NEW since it last saw the room.
 
@@ -655,7 +658,16 @@ export async function runGroupChatRounds(
   // #94478: how this drive ended. 'settled' means quiet consensus (everyone
   // passed with nothing pending); 'capped' means a round/message/continuation
   // cap forced the exit — the activity feed must tell those apart.
-  let exitKind: 'capped' | 'settled' = 'settled'
+  // crash ≠ consensus: 'degraded' means the room went quiet with at least one
+  // member turn ending in FAILURE this drive (failedMembers is drive-scoped:
+  // seeded before each member turn runs, including the #93127 short-circuit —
+  // a seat parked on an earlier queued thread's failure never gets asked, so
+  // its silence here is crash-shaped absence, not a pass). A crashed seat is
+  // a hole in the evidence, not an answer, and cannot attest consensus
+  // (why 770). Held/timeout/double-pass do NOT degrade: holds are
+  // user-chosen quiet, timeouts surface their own row, and an addressed
+  // member that passed twice positively ANSWERED.
+  let exitKind: 'capped' | 'degraded' | 'settled' = 'settled'
 
   try {
     for (let round = 0; round < GROUP_CHAT_MAX_ROUNDS; round++) {
@@ -766,6 +778,14 @@ export async function runGroupChatRounds(
             (continuations > GROUP_CHAT_MAX_CONTINUATIONS || posted >= GROUP_CHAT_MAX_MESSAGES)
           ) {
             exitKind = 'capped'
+          } else if (failedMembers.size) {
+            // crash ≠ consensus: the quiet is only consensus if every seat
+            // POSITIVELY chose it. A member whose turn ended in failure this
+            // drive is a hole in the evidence, not a pass — its absence must
+            // not close the round (why 770: the settle decision needs
+            // positive evidence the absent seats had nothing to add). The
+            // feed says 'degraded', never the contentment of 'settled'.
+            exitKind = 'degraded'
           }
 
           return
@@ -781,7 +801,15 @@ export async function runGroupChatRounds(
       recordGroupActivity(group, {
         kind: exitKind,
         member: null,
-        thread
+        thread,
+        // The count of crashed seats is the actionable part of a degraded
+        // exit — 'who is missing from this consensus' without ledger
+        // archaeology (why 770). Capped/settled exits keep it blank.
+        ...(exitKind === 'degraded'
+          ? {
+              reason: `${failedMembers.size} seat${failedMembers.size === 1 ? '' : 's'} failed`
+            }
+          : {})
       })
       updateGroupChat(group, (r: GroupChatRoom) => {
         r.running = false

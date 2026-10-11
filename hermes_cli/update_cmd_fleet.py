@@ -904,17 +904,32 @@ def _restart_macos_launchd_gateways(
     must reload it or siblings stay on pre-update ``sys.modules`` (systemd parity).
     Invoking profile uses ``launchd_restart()``; siblings get the same drain-first
     sequence with their domain (``gui/<uid>`` vs ``user/<uid>``) resolved per label so
-    none is kickstarted in the wrong domain. ``TimeoutExpired`` is isolated per label.
+    none is kickstarted in the wrong domain. ``TimeoutExpired`` and ``OSError`` are
+    isolated per label.
 
     See #41403.
     The invoking profile keeps the existing ``launchd_restart()`` treatment (self-restart request → graceful
-    drain → kickstart). ``subprocess.TimeoutExpired`` is isolated per label so one wedged launchctl call
-    cannot leave the rest of the fleet on old code (#68523).
+    drain → kickstart). ``subprocess.TimeoutExpired`` and ``OSError`` (the refresh's plist file IO)
+    are isolated per label so one wedged launchctl call or unreadable plist cannot leave the rest
+    of the fleet on old code (#68523).
+    Siblings keep ``launchd_restart``'s two invariants too (#126883): the installed plist is
+    refreshed before anything touches the job (kickstart re-runs the definition launchd holds),
+    and a refresh that could not re-register the job routes to launchd_restart's bounded
+    bootstrap+kickstart revival — ``kickstart -k`` cannot work on an unregistered job; a refresh
+    that reloaded the job skips drain/kickstart (the bootout/bootstrap already brought up a
+    fresh gateway, and #88848's supervision check still gates it).
+    The drain targets the gateway the sibling's home declares on its control socket — the
+    plist's supervised process is the osascript wrapper, and SIGUSR1ing it orphans the gateway
+    on pre-update code holding the socket.
     """
     from hermes_cli.gateway import (
         get_launchd_label, get_launchd_plist_path, launchd_gateway_labels_for_install, legacy_launchd_labels_for_install,
         _graceful_restart_via_sigusr1, _launchd_kickstart,
         _locate_launchd_gateway_service, _wait_for_launchd_service_pid,
+        refresh_launchd_plist_for_label, launchd_job_drain_target,
+        REFRESH_PLIST_RELOADED, REFRESH_PLIST_NO_CHANGE,
+        REFRESH_PLIST_FAILED_TO_REGISTER,
+        launchd_reload_unregistered_job,
     )
     if require_supervision:
         listing = subprocess.run(["launchctl", "list"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10, check=False)
@@ -937,7 +952,9 @@ def _restart_macos_launchd_gateways(
     legacy_labels = legacy_launchd_labels_for_install(exclude=set(derived_labels) | {current_label})
     if legacy_labels:
         print(f"  ↻ legacy-labelled units of this install join the restart: {', '.join(legacy_labels)}")
-    from hermes_cli.update_fleet_scope import describe_skipped_runtime, launchd_label_foreign_home
+    from hermes_cli.update_fleet_scope import (
+        describe_skipped_runtime, launchd_label_foreign_home, launchd_label_pinned_home,
+    )
     for label in derived_labels + legacy_labels:
         if label == current_label or label in resumed:
             continue
@@ -949,19 +966,75 @@ def _restart_macos_launchd_gateways(
         try:
             # Locate = liveness + domain in one probe; kickstart and fresh-PID checks
             # reuse that domain so a sibling is never probed in one and restarted in another.
-            domain, old_pid = _locate_launchd_gateway_service(label)
+            domain, supervised_pid = _locate_launchd_gateway_service(label)
             if domain is None:
                 if require_supervision and get_launchd_plist_path().with_name(f"{label}.plist").exists():
                     failed_or_stale_units.append(label)
                 continue  # A profile without an installed job has no restart target.
+            # Same invariant as launchd_restart(): a kickstart re-runs the definition launchd
+            # holds, so rewrite a stale one first (#126883). The job's pinned home scopes the
+            # generated definition; a plist with no readable home gets the ordinary restart
+            # (refreshing against the wrong home would rewrite the wrong definition).
+            pinned = launchd_label_pinned_home(label)
+            sibling_home = Path(pinned) if pinned else None
+            refresh_outcome = (
+                refresh_launchd_plist_for_label(label, sibling_home, domain=domain)
+                if sibling_home is not None else REFRESH_PLIST_NO_CHANGE
+            )
+            if refresh_outcome == REFRESH_PLIST_RELOADED:
+                # The refresh bootout/bootstrapped the job onto the new definition (RunAtLoad
+                # starts a fresh gateway); draining or kickstarting it again would kill the
+                # replacement the refresh just brought up on new code. Verify supervision only.
+                if _wait_for_launchd_service_pid(label, old_pid=supervised_pid, timeout=15.0, domain=domain):
+                    restarted_services.append(label)
+                else:
+                    failed_or_stale_units.append(label)
+                    print(
+                        f"  ✗ {label} reloaded but launchd is not supervising a new process for it.\n"
+                        f"    Check logs, then: launchctl kickstart -k {domain}/{label}"
+                    )
+                continue
+            if refresh_outcome == REFRESH_PLIST_FAILED_TO_REGISTER:
+                # The other half of launchd_restart()'s refresh invariant (#126883, its stuck-
+                # unloaded class): the refresh rewrote the plist and booted the job out, but
+                # bootstrap never re-registered it. kickstart -k needs a REGISTERED job and
+                # would fail outright (draining nothing helps), so go to the bounded
+                # bootstrap+kickstart revival — and hint bootstrap, not kickstart, on failure.
+                print(f"  ↻ {label} was not re-registered by the plist refresh; reloading")
+                label_plist = get_launchd_plist_path().with_name(f"{label}.plist")
+                try:
+                    launchd_reload_unregistered_job(label, domain, label_plist)
+                except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as e:
+                    failed_or_stale_units.append(label)
+                    detail = (getattr(e, "stderr", "") or "").strip() or e
+                    print(
+                        f"  ⚠ Failed to reload {label} after the plist refresh: {detail}\n"
+                        f"    Recover manually: launchctl bootstrap {domain} {label_plist}"
+                    )
+                    continue
+                if _wait_for_launchd_service_pid(label, old_pid=supervised_pid, timeout=15.0, domain=domain):
+                    restarted_services.append(label)
+                else:
+                    failed_or_stale_units.append(label)
+                    print(
+                        f"  ✗ {label} failed to come back after the bootstrap revival.\n"
+                        f"    Check logs, then: launchctl kickstart -k {domain}/{label}"
+                    )
+                continue
+            # The supervised PID is the osascript wrapper under the current template; the
+            # drain must reach the gateway itself or it survives on pre-update code (#126883).
+            drain_pid = supervised_pid if sibling_home is None else launchd_job_drain_target(
+                sibling_home, supervised_pid)
             graceful_ok = False
-            if old_pid is not None and old_pid > 0:
+            if drain_pid is not None and drain_pid > 0:
                 print(f"  → {label}: draining (up to {drain_budget:.0f}s)...")
                 from hermes_cli.update_cmd_drain_report import drain_progress_reporter
                 graceful_ok = _graceful_restart_via_sigusr1(
-                    old_pid, drain_timeout=drain_budget,
-                    on_progress=drain_progress_reporter(_gateway_home_for_pid(old_pid), budget_s=drain_budget))
-            if graceful_ok and _wait_for_launchd_service_pid(label, old_pid=old_pid, timeout=10.0, domain=domain):
+                    drain_pid, drain_timeout=drain_budget,
+                    on_progress=drain_progress_reporter(_gateway_home_for_pid(drain_pid), budget_s=drain_budget))
+            # Fresh-PID checks stay on the SUPERVISED pid — that is the pid launchd swaps when
+            # the drained job exits, whatever process inside the job answered the signal.
+            if graceful_ok and _wait_for_launchd_service_pid(label, old_pid=supervised_pid, timeout=10.0, domain=domain):
                 # KeepAlive already respawned it on new code — a kickstart would kill it.
                 restarted_services.append(label)
                 continue
@@ -975,7 +1048,7 @@ def _restart_macos_launchd_gateways(
                     f"    Recover manually: launchctl kickstart -k {domain}/{label}"
                 )
                 continue
-            if _wait_for_launchd_service_pid(label, old_pid=old_pid, timeout=15.0, domain=domain):
+            if _wait_for_launchd_service_pid(label, old_pid=supervised_pid, timeout=15.0, domain=domain):
                 restarted_services.append(label)
             else:
                 failed_or_stale_units.append(label)
@@ -983,9 +1056,20 @@ def _restart_macos_launchd_gateways(
                     f"  ✗ {label} failed to come back after restart.\n"
                     f"    Check logs, then: launchctl kickstart -k {domain}/{label}"
                 )
-        except subprocess.TimeoutExpired:
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            # The plist refresh gave this loop first-ever in-process file IO (plist
+            # read, log-dir mkdir, plist write), so OSError joins TimeoutExpired: one
+            # sibling's PermissionError must be isolated exactly like a wedged
+            # launchctl call. An exception escaping one label aborts the whole loop
+            # into the outer recovery path and leaves EVERY remaining sibling on
+            # pre-update code (#68523).
             failed_or_stale_units.append(label)
-            print(f"  ⚠ launchctl timed out restarting {label}; continuing with remaining gateways")
+            print(
+                f"  ⚠ launchctl/file IO failed restarting {label}"
+                f" ({type(exc).__name__}: {exc}); continuing with remaining gateways.\n"
+                f"    Recover manually: launchctl bootstrap"
+                f" gui/$(id -u) {get_launchd_plist_path().with_name(f'{label}.plist')}"
+            )
 
 
 def _surviving_gateway_pids_after_failed_restart():

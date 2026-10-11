@@ -1,0 +1,21 @@
+name: hermes-artifacts
+repo: https://github.com/dmmeteo/hermes-artifacts
+sha: d058d743475c91f210fc7003f6f614f6fce60b16
+subdir: plugin
+title: Hermes Artifacts
+description: "Private library for the finished documents agents make (self-contained HTML, Markdown, SVG, PNG, WebP), with an Artifacts dashboard tab and explicit, expiring, revocable guest links for one artifact each. Early public preview. Disclosure — the plugin is a client of a separate Artifacts service you run yourself from the same repository (not installed by the plugin): six tools and the dashboard tab send artifact bytes and metadata to HERMES_ARTIFACTS_URL with the machine credential HERMES_ARTIFACTS_TOKEN, held server-side and never sent to the browser. artifact_publish reads any local file path the agent passes and artifact_download writes to a path it passes. Sharing creates a public bearer link on your service; revocation cannot recall copies. Stores no data and no credentials of its own; no hooks, background processes or telemetry."
+maintainer: dmmeteo
+tier: community
+category: tools
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/dmmeteo/hermes-artifacts/blob/d058d743475c91f210fc7003f6f614f6fce60b16/docs/hermes.md
+version: "0.1.0"
+readme: false
+platforms: []
+known_issues:
+  - "Needs the Hermes Artifacts service running separately (run from source; no package or image yet). Tested with Hermes 0.21.x and in Chromium only."
+capabilities:
+  provides_tools: [artifact_publish, artifact_list, artifact_get, artifact_download, artifact_share, artifact_revoke_share]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -224,6 +224,22 @@ providers:
 
 With discovery off, the model picker (`hermes model`, `/model`) shows the configured list instead of a live probe.
 
+**A dict `models:` entry does not disable discovery by itself.** A mapping like `{model_id: {context_length: N}}` is per-model *metadata* (used to annotate a model Hermes shows you), not an allowlist — so on a keyed endpoint, Hermes still queries `/models` and *merges* the live catalog in alongside your configured entry:
+
+```yaml
+providers:
+  my-gateway:
+    api: https://gateway.example.com/v1
+    api_key: sk-...
+    models:
+      my-endpoint-id:
+        context_length: 64000
+    # discover_models still defaults to true here — the picker will show
+    # my-endpoint-id AND every model the endpoint's /models listing returns.
+```
+
+If you want the picker to show *only* the model(s) you configured — e.g. a private resource-pack endpoint ID on a gateway whose `/models` listing returns an unrelated public catalog — set `discover_models: false` explicitly alongside `models:`. A plain list or string under `models:` is treated as an allowlist and has the same effect; a dict does not, because dict values carry metadata rather than acting as a narrowing filter.
+
 **`openai_native_compaction`** — set this capability to `true` only for an OpenAI-compatible endpoint that you trust with conversation content. Native compaction sends its payload to that provider's configured `base_url`:
 
 ```yaml

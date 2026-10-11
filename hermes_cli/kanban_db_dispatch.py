@@ -70,6 +70,13 @@ _RESPAWN_BLOCKER_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Quota subset of ``_RESPAWN_BLOCKER_RE``. The review-lane exemption below may
+# only absorb a QUOTA stamp inherited from a rate-limited run; a real auth
+# failure (401/403/expired key) must still park the card, so it is not exempt.
+_RESPAWN_QUOTA_RE = re.compile(
+    r"\b(quota|rate[\s_\-]?limit|429)\b", re.IGNORECASE,
+)
+
 # Within this window a completed run counts as "recent proof"; don't re-spawn.
 _RESPAWN_GUARD_SUCCESS_WINDOW = 3600  # 1 hour
 
@@ -1542,6 +1549,18 @@ def check_respawn_guard(
     PR). The review lane skips the last two: they are the *inputs* to a review
     handoff. Stale / dead claim locks are NOT a guard reason — the reclaim
     passes own those.
+
+    The ``rate_limit_cooldown`` exemption is NOT keyed on "the latest run is
+    ``rate_limited``" alone. ``request_review`` ends a NEW run as
+    ``review_requested`` while the reaper's quota stamp is still on
+    ``last_failure_error``, so a handoff right after a quota wall lost the
+    exemption and its inherited stamp matched ``blocker_auth`` — parking the
+    review lane forever, with ``consecutive_failures`` never rising to let the
+    breaker rescue it (#119070). The review lane therefore also exempts a QUOTA
+    stamp whose ``review_requested`` event is newer than both the rate-limited
+    run and the latest run, and defers with ``"rate_limit_cooldown"`` (bounded,
+    self-expiring) instead. The ``newer run`` clause is the clamp that keeps a
+    real post-handoff auth failure parking the card.
     """
     row = conn.execute(
         "SELECT last_failure_error FROM tasks WHERE id = ?",
@@ -1588,7 +1607,50 @@ def check_respawn_guard(
     # benign commands such as ``claude auth status`` (#117097).
     err = _kb._lossy_text(row["last_failure_error"])
     latest_outcome = latest_run["outcome"] if latest_run is not None else None
+    latest_ended_at = latest_run["ended_at"] if latest_run is not None else None
+    err_is_quota = bool(err) and _RESPAWN_QUOTA_RE.search(err) is not None
     if err and latest_outcome != "crashed" and _RESPAWN_BLOCKER_RE.search(err):
+        # #119070: a review handoff inherits the quota stamp, but check 1
+        # exempted it only while the LATEST run was ``rate_limited`` — and
+        # ``request_review`` ends a NEW run as ``review_requested``, so the
+        # exemption no longer applies and the inherited stamp parked the review
+        # lane as ``blocker_auth`` forever (``consecutive_failures`` never
+        # rises on that path, so no breaker ever rescued it). Exempt by
+        # PROVENANCE: a ``review_requested`` event newer than the rate-limited
+        # run proves the stamp predates the handoff, so defer with the
+        # rate-limit reason — bounded and self-expiring — instead of parking.
+        # The comparison is a deliberate CLAMP: a reviewer that fails AFTER the
+        # handoff ends a run newer than the event, is not exempt, and a real
+        # auth failure still parks the card.
+        if lane == "review" and latest_outcome == "review_requested" and err_is_quota:
+            handed_off_at = conn.execute(
+                "SELECT MAX(created_at) AS at FROM task_events "
+                "WHERE task_id = ? AND kind = 'review_requested'",
+                (task_id,),
+            ).fetchone()
+            rl_ended_at = conn.execute(
+                "SELECT MAX(ended_at) AS at FROM task_runs "
+                "WHERE task_id = ? AND outcome = 'rate_limited' AND ended_at IS NOT NULL",
+                (task_id,),
+            ).fetchone()
+            if (
+                handed_off_at is not None
+                and handed_off_at["at"] is not None
+                and rl_ended_at is not None
+                and rl_ended_at["at"] is not None
+                and int(rl_ended_at["at"]) <= int(handed_off_at["at"])
+                and (
+                    latest_ended_at is None
+                    or int(latest_ended_at) <= int(handed_off_at["at"])
+                )
+            ):
+                if rl_cooldown <= 0:
+                    return None
+                if (now - int(rl_ended_at["at"])) < rl_cooldown:
+                    return "rate_limit_cooldown"
+                # Cooldown elapsed — probe the reviewer; do not fall through to
+                # blocker_auth on the inherited stamp.
+                return None
         return "blocker_auth"
 
     # Review-lane spawns stop here: a recent completed run and a fresh PR URL

@@ -469,6 +469,177 @@ def test_respawn_guard_defers_rate_limited_within_cooldown(
         assert kbd.check_respawn_guard(conn, tid) is None
 
 
+# ---------------------------------------------------------------------------
+# #119070 - review handoff after a rate-limited run
+# ---------------------------------------------------------------------------
+
+
+def _seed_rate_limited_then_review(conn, monkeypatch, *, now=5_000_000):
+    """Reproduce the #119070 chain through the REAL transitions, one tick per
+    transition, so ``ended_at`` ordering matches production:
+
+    1. a claimed run reaped as ``rate_limited`` - the reaper stamps the quota
+       text on ``last_failure_error`` WITHOUT touching ``consecutive_failures``
+       (kanban_db_dispatch.py:1189-1198) and ends that run;
+    2. a retry run that calls ``request_review`` - which ends ITS run as
+       ``review_requested`` and appends the ``review_requested`` event.
+
+    So the card ends in the review lane with a ``rate_limited`` run *older* than
+    a ``review_requested`` run and the quota stamp still on the task row.
+    Returns the task id.
+    """
+    import hermes_cli.kanban_db as _kb
+
+    tid = kb.create_task(conn, title="rl-then-review", assignee="a")
+
+    monkeypatch.setattr(_kb.time, "time", lambda: now)
+    kb.claim_task(conn, tid)
+    rl_run = kb.get_task(conn, tid).current_run_id
+    conn.execute(
+        "UPDATE task_runs SET outcome='rate_limited', status='rate_limited', "
+        "ended_at=? WHERE id=?",
+        (now, rl_run),
+    )
+    conn.execute(
+        "UPDATE tasks SET last_failure_error=? WHERE id=?",
+        ("pid 1 exited rate-limited (quota wall) - requeued", tid),
+    )
+    conn.execute(
+        "UPDATE tasks SET status='ready', current_run_id=NULL WHERE id=?",
+        (tid,),
+    )
+    conn.commit()
+
+    # The retry run ends 60s later, as the real handoff does.
+    monkeypatch.setattr(_kb.time, "time", lambda: now + 60)
+    kb.claim_task(conn, tid)
+    handoff_run = kb.get_task(conn, tid).current_run_id
+    assert kb.request_review(
+        conn, tid, summary="ready for review", reviewer="r",
+        expected_run_id=handoff_run,
+    )
+    assert kb.get_task(conn, tid).status == "review"
+
+    # Guard the fixture itself: the bug is specifically "last run is
+    # review_requested while a rate_limited run and its stamp are older".
+    outcomes = [
+        r["outcome"] for r in conn.execute(
+            "SELECT outcome FROM task_runs WHERE task_id=? ORDER BY ended_at",
+            (tid,),
+        ).fetchall()
+    ]
+    assert outcomes == ["rate_limited", "review_requested"], outcomes
+    return tid
+
+
+@pytest.mark.parametrize(
+    "elapsed, expected",
+    [
+        (100, "rate_limit_cooldown"),  # inside the cooldown: defer, spaced
+        (400, None),  # cooldown elapsed: probe the reviewer, no infinite park
+    ],
+)
+def test_review_lane_after_rate_limited_defers_instead_of_blocking_auth(
+    kanban_home, monkeypatch, elapsed, expected,
+):
+    """#119070: ``request_review`` opens a NEW run (``review_requested``), so the
+    "latest run was rate_limited" exemption no longer applies and the inherited
+    quota stamp fell through to ``blocker_auth`` - forever, with
+    ``consecutive_failures`` never rising to trip the breaker. The review lane
+    must defer with the *rate-limit* reason, which expires on its own."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "300")
+    now = 5_000_000
+
+    with kbc.connect() as conn:
+        tid = _seed_rate_limited_then_review(conn, monkeypatch, now=now)
+        monkeypatch.setattr(_kb.time, "time", lambda: now + elapsed)
+        assert kbd.check_respawn_guard(conn, tid, lane="review") == expected
+
+
+def test_review_lane_rate_limit_exemption_does_not_regress_the_ready_lane(
+    kanban_home, monkeypatch,
+):
+    """The exemption is scoped to the review lane. The same card handed back to
+    the ready lane keeps the pre-existing ``blocker_auth`` verdict: the
+    exemption is about the handoff's provenance, not about quota text."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "300")
+
+    with kbc.connect() as conn:
+        tid = _seed_rate_limited_then_review(conn, monkeypatch)
+        monkeypatch.setattr(_kb.time, "time", lambda: 5_000_100)
+        assert kbd.check_respawn_guard(conn, tid) == "blocker_auth"
+
+
+def test_review_lane_rate_limit_exemption_stops_at_a_newer_auth_failure(
+    kanban_home, monkeypatch,
+):
+    """The CLAMP: the exemption only holds while no run newer than the
+    ``review_requested`` event exists. A reviewer that dies *after* the handoff
+    with a real 401 must be charged - otherwise the old quota run would exempt
+    every future failure on the card forever."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "300")
+
+    with kbc.connect() as conn:
+        tid = _seed_rate_limited_then_review(conn, monkeypatch)
+        # A reviewer run that starts and ends after the handoff. A reviewer
+        # that dies on a provider credential rejection exits
+        # KANBAN_TERMINAL_PROVIDER_EXIT_CODE and is booked as ``gave_up``
+        # (the breaker trips), not ``crashed`` - ``crashed`` is exempt from
+        # blocker_auth on purpose (#117097: a crash's error text is captured
+        # worker prose, not a diagnosis).
+        monkeypatch.setattr(_kb.time, "time", lambda: 5_000_400)
+        assert kb.claim_review_task(conn, tid, claimer="h:r0") is not None
+        review_run = kb.get_task(conn, tid).current_run_id
+        conn.execute(
+            "UPDATE task_runs SET outcome='gave_up', status='gave_up', ended_at=? "
+            "WHERE id=?",
+            (5_000_500, review_run),
+        )
+        conn.execute(
+            "UPDATE tasks SET status='review', current_run_id=NULL, claim_lock=NULL, "
+            "claim_expires=NULL, worker_pid=NULL, last_failure_error=? WHERE id=?",
+            ("reviewer exited 1: 401 unauthorized", tid),
+        )
+        conn.commit()
+        monkeypatch.setattr(_kb.time, "time", lambda: 5_000_600)
+        assert kbd.check_respawn_guard(conn, tid, lane="review") == "blocker_auth"
+
+
+def test_review_lane_new_auth_failure_is_not_exempt_without_a_rate_limit_run(
+    kanban_home, monkeypatch,
+):
+    """No rate-limited run at all: a review-lane auth failure is a real auth
+    failure and must park the card. The provenance exemption must not become a
+    hole in real auth protection."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "300")
+    now = 5_000_000
+
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="review-auth", assignee="a")
+        monkeypatch.setattr(_kb.time, "time", lambda: now)
+        kb.claim_task(conn, tid)
+        run_id = kb.get_task(conn, tid).current_run_id
+        monkeypatch.setattr(_kb.time, "time", lambda: now + 10)
+        assert kb.request_review(
+            conn, tid, summary="review me", reviewer="r", expected_run_id=run_id,
+        )
+        conn.execute(
+            "UPDATE tasks SET last_failure_error=? WHERE id=?",
+            ("reviewer exited 1: 401 unauthorized", tid),
+        )
+        conn.commit()
+        monkeypatch.setattr(_kb.time, "time", lambda: now + 20)
+        assert kbd.check_respawn_guard(conn, tid, lane="review") == "blocker_auth"
+
+
 @pytest.mark.parametrize(
     "error_text, expected",
     [
@@ -2084,3 +2255,4 @@ def test_archive_non_running_task_does_not_attempt_termination(kanban_home):
             (t,),
         ).fetchone()
         assert row is None
+

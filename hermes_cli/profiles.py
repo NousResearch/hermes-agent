@@ -1104,9 +1104,13 @@ def profile_is_standalone(home: Path) -> bool:
         return cached[1]
     value = None
     if signature is not None:
-        from hermes_cli.config import read_user_config_raw
+        # This reader also serves read-only control/status clients. Importing
+        # hermes_cli.config initializes provider/config state in the active home.
+        from utils import fast_safe_load
         try:
-            cfg = read_user_config_raw(cfg_path) or {}
+            with cfg_path.open(encoding="utf-8-sig") as stream:
+                raw = fast_safe_load(stream) or {}
+            cfg = raw if isinstance(raw, dict) else {}
         except (YAMLError, OSError, UnicodeError) as exc:
             if cached is None or cached[0] != signature:
                 logger.warning("Cannot read gateway.standalone from %s (%s); treating as not standalone",
@@ -1130,10 +1134,8 @@ def profile_is_standalone(home: Path) -> bool:
 def _standalone_truthy(value: object) -> bool:
     """``gateway.standalone`` truthiness via the shared bool parser; only the
     ``gateway:`` section's ``standalone`` key is read (no top-level alias)."""
-    from gateway.config import _bool_token
-    if isinstance(value, str):
-        return _bool_token(value) is True
-    return bool(value)
+    from utils import is_truthy_value
+    return is_truthy_value(value)
 
 
 def parked_marker_path(home: Path) -> Path:

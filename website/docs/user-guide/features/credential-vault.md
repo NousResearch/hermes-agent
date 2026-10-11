@@ -77,12 +77,40 @@ Headless sessions (cron, webhooks, the API server) cannot confirm and are
 refused, so a prompt injection that reaches a checkout page can ask, but it
 cannot spend. Address fills need no confirmation.
 
+To reuse a local card or address on another checkout, authorize that exact
+origin from the CLI without re-entering its fields:
+
+```bash
+hermes vault origins vault_HANDLE --add https://second-shop.example
+hermes vault origins vault_HANDLE
+hermes vault origins vault_HANDLE --remove https://second-shop.example
+```
+
+Use the item's handle from `hermes vault list`. Authorization accepts an
+HTTP(S) origin with an optional trailing `/`. Other paths, queries, fragments,
+userinfo and wildcards are rejected. Scheme, host and port must match exactly;
+default ports are normalized. Subdomains and redirects gain no authorization.
+The original primary origin cannot be removed. Adding an already authorized
+origin changes nothing; revocation takes effect on the next fill attempt.
+
+The origins command lists authorized sites and timestamped add/remove events.
+This metadata history stays inside the encrypted record and contains no card
+or address fields. It helps the owner review changes; it is not a tamper-evident
+audit ledger. Existing items work without migration. The command supports local
+payment and address items only; manager-backed logins keep their saved websites.
+The model has no tool to authorize or revoke origins.
+
+A payment prompt appears only after the page matches an authorized origin and
+names that matched origin. The fill script checks it again immediately before
+writing, so navigation during approval cannot send the card to another site.
+
 ## Managing what's saved
 
 - **Desktop → Settings → Passwords & Logins**: everything saved, the detected
   password managers with Unlock/Lock, Add, Remove.
 - **CLI**: `hermes vault list`, `hermes vault add`, `hermes vault rm <handle>`,
-  `hermes vault sources`.
+  `hermes vault origins <handle>`, `hermes vault sources`. The list shows all
+  authorized exact origins.
 
 Items live encrypted under `~/.hermes/vault/` (Fernet key + vault file, both
 `0600`), scoped to the profile. Labels, site origins and login identifiers are

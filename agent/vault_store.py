@@ -150,6 +150,23 @@ def normalize_origin(url_or_origin: str) -> str:
     return f"{scheme}://{host}:{port}"
 
 
+def normalize_authorized_origin(value: str) -> str:
+    """Accept an explicit HTTP(S) origin, never widen a URL's authorization scope."""
+    value = (value or "").strip()
+    message = "authorization requires an exact HTTP(S) origin without userinfo, path, query or fragment"
+    try:
+        parts = urlsplit(value)
+        if (parts.scheme.lower() not in _DEFAULT_PORTS or not parts.hostname
+                or parts.username is not None or parts.password is not None
+                or parts.path not in ("", "/") or "?" in value or "#" in value
+                or "*" in value or "\\" in value or any(c.isspace() for c in value)):
+            raise VaultError(message)
+        return normalize_origin(value)
+    except (ValueError, VaultError) as exc:
+        # Rejected input can contain embedded credentials. Never echo it in errors.
+        raise VaultError(message) from exc
+
+
 @dataclass(frozen=True)
 class VaultItemMeta:
     """Metadata-only view of a vault item. Never contains secret values.
@@ -167,8 +184,8 @@ class VaultItemMeta:
     identifier_type: Optional[str] = None
     identifier: Optional[str] = None
     has_otp: bool = False  # a TOTP seed is stored: 2FA codes can be minted without asking the user
-    # Every origin the password manager bound to this item (manager backends only;
-    # ``origin`` is the first/primary one). Fill matching stays exact-origin against
+    # Every origin explicitly bound to this item, with ``origin`` first/primary.
+    # Fill matching stays exact-origin against
     # this list — no wildcard or subdomain inference is ever derived from it.
     allowed_origins: tuple = ()
 
@@ -397,6 +414,53 @@ class VaultStore:
                     return self._meta(rec)
         return None
 
+    def authorize_origin(self, item_id: str, origin: str) -> VaultItemMeta:
+        """Authorize one exact origin for an existing local payment/address item."""
+        return self._change_origin(item_id, origin, "add")
+
+    def revoke_origin(self, item_id: str, origin: str) -> VaultItemMeta:
+        """Revoke a secondary origin; the primary origin cannot be removed."""
+        return self._change_origin(item_id, origin, "remove")
+
+    @staticmethod
+    def _origin_record(items: list[dict[str, Any]], item_id: str) -> dict[str, Any]:
+        record = next((rec for rec in items if rec.get("id") == item_id), None)
+        if record is None:
+            raise VaultError("no local vault item with that handle")
+        if record.get("kind") not in ("payment", "address") or not record.get("origin"):
+            raise VaultError("origin authorization requires a payment or address item with a primary origin")
+        return record
+
+    def _change_origin(self, item_id: str, origin: str, action: str) -> VaultItemMeta:
+        origin = normalize_authorized_origin(origin)
+        with self._locked():
+            items = self._read_all()
+            record = self._origin_record(items, item_id)
+            origins = list(self._meta(record).allowed_origins)
+            if action == "add":
+                if origin in origins:
+                    return self._meta(record)
+                origins.append(origin)
+            else:
+                if origin == record["origin"]:
+                    raise VaultError("the primary origin cannot be removed")
+                if origin not in origins:
+                    raise VaultError("that origin is not authorized")
+                origins.remove(origin)
+            record["allowed_origins"] = origins
+            record.setdefault("origin_events", []).append({
+                "timestamp": datetime.now(timezone.utc).isoformat(), "action": action, "origin": origin,
+            })
+            self._write_all(items)
+            return self._meta(record)
+
+    def origin_events(self, item_id: str) -> list[dict[str, str]]:
+        """Read metadata-only authorization history from the encrypted record."""
+        with self._locked():
+            record = self._origin_record(self._read_all(), item_id)
+            return [{key: event[key] for key in ("timestamp", "action", "origin")}
+                    for event in record.get("origin_events", [])]
+
     def resolve_secret(self, item_id: str) -> dict[str, Any]:
         """Resolve the decrypted secret payload for server-side use ONLY.
 
@@ -412,6 +476,7 @@ class VaultStore:
     @staticmethod
     def _meta(rec: dict[str, Any]) -> VaultItemMeta:
         identifier = rec.get("identifier")
+        origins = ([rec["origin"]] if rec.get("origin") else []) + list(rec.get("allowed_origins") or [])
         return VaultItemMeta(
             id=str(rec.get("id", "")),
             kind=str(rec.get("kind", "")),
@@ -421,6 +486,7 @@ class VaultStore:
             identifier_type=rec.get("identifier_type") if identifier else None,
             identifier=identifier or None,
             has_otp=bool((rec.get("secret") or {}).get("otp_secret")),
+            allowed_origins=tuple(dict.fromkeys(origins)),
         )
 
 

@@ -375,7 +375,7 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
         return None  # Developer checkouts and packaged runtimes retain their owner.
 
     import pm
-    from hermes_cli._launchers import resolve_store_python
+    from hermes_cli._launchers import _same_interpreter_file, resolve_store_python
     from hermes_cli.update_lock import UpdateLock, read_live_update
 
     current = pm.venv_is_current(project_root=root)
@@ -436,8 +436,10 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
     # HERMES_HOME (which may carry '..') while sys.executable arrives
     # normalized, so a raw compare re-execs every child forever (#122513). A
     # venv interpreter symlinked to the same binary is still a different
-    # interpreter (its own sys.prefix) and must re-exec once.
-    same = os.path.normcase(os.path.abspath(python)) == os.path.normcase(os.path.abspath(sys.executable))
+    # interpreter (its own sys.prefix) and must re-exec once. A per-task home
+    # whose tools link back (#123798) spells this same store file through the
+    # link; that is the same interpreter and must not re-exec (#136094).
+    same = _same_interpreter_file(python, Path(sys.executable))
     if not current or not same:
         publish_launchers(root)
         return python

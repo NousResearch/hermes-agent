@@ -318,3 +318,67 @@ class TestSymlinkSealedLaunchers:
         assert (link_dir / "hermes").read_text(encoding="utf-8-sig") == "#!/bin/sh\n# pipx launcher\n"
         assert os.readlink(link_dir / "hermes-agent") == str(other)
         assert sorted(result["written"]) == ["hermes-acp"]
+
+
+class TestWindowsUserBinPathRegistration:
+    """The User PATH is per-user shared state: only the install that owns the
+    checkout may register its bin. A launch that merely borrows the checkout
+    (a second checkout run under a foreign HERMES_HOME) still publishes the
+    borrower's own bin, but must leave the host's `hermes` resolution alone
+    (#135037)."""
+
+    @pytest.fixture
+    def borrowed_checkout(self, tmp_path, monkeypatch):
+        """An owner home that committed install state for the checkout, plus a
+        foreign active home borrowing it, with launcher publication stubbed and
+        the registry write spied."""
+        from pm.environments import install_key
+
+        owner_home = tmp_path / "owner-home"
+        root = owner_home / "hermes-agent"
+        root.mkdir(parents=True)
+        owner_state = owner_home / "installs" / install_key(root)
+        owner_state.mkdir(parents=True)
+        (owner_state / "facts.json").write_text("{}", encoding="utf-8")
+        borrower_home = tmp_path / "borrower-home"
+        borrower_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(borrower_home))
+        monkeypatch.setattr(
+            _launchers,
+            "ensure_install_launchers",
+            lambda _root, out: [
+                str(Path(out) / name) for name in _launchers.WINDOWS_BIN_LAUNCHERS
+            ],
+        )
+        registered = []
+        monkeypatch.setattr(
+            _launchers,
+            "_register_windows_user_path",
+            lambda entry: registered.append(Path(entry)) or "added",
+        )
+        return root, owner_home, borrower_home, registered
+
+    def test_a_borrowing_launch_never_registers_the_shared_user_path(
+        self, borrowed_checkout
+    ):
+        root, owner_home, borrower_home, registered = borrowed_checkout
+        result = _launchers._expose_windows_user_bin(root, create=True)
+        assert result == {
+            "ok": True,
+            "skipped": "borrowed-root",
+            "written": list(_launchers.WINDOWS_BIN_LAUNCHERS),
+        }
+        # the host's `hermes` resolution keeps pointing at the owner
+        assert registered == []
+        # the borrower's own bin is still published
+        assert (borrower_home / "bin").is_dir()
+
+    def test_the_owning_home_still_registers_its_bin(
+        self, borrowed_checkout, monkeypatch
+    ):
+        root, owner_home, borrower_home, registered = borrowed_checkout
+        # the owner runs under its own root
+        monkeypatch.setenv("HERMES_HOME", str(owner_home))
+        result = _launchers._expose_windows_user_bin(root, create=True)
+        assert result["path"] == "added"
+        assert registered == [owner_home / "bin"]

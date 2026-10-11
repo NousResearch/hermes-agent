@@ -34,7 +34,9 @@ Use any model you want — [Nous Portal](https://portal.nousresearch.com), OpenR
 
 ## Quick Install
 
-### Linux, macOS, WSL2
+The official install and docs host is `hermes-agent.nousresearch.com`. Lookalike domains on other TLDs are not official.
+
+### Linux, macOS, WSL2, Termux
 
 ```bash
 curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash

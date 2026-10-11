@@ -21,6 +21,12 @@ The security model has eight layers:
 7. **Cross-session isolation** — sessions cannot access each other's data or state; cron job storage paths are hardened against path traversal attacks
 8. **Input sanitization** — working directory parameters in terminal tool backends are validated against an allowlist to prevent shell injection
 
+## Official hosts
+
+### Official website and downloads
+
+Official Hermes Agent documentation and installers are hosted on `nousresearch.com` and its subdomains (for example `https://hermes-agent.nousresearch.com`). Download installers and documentation only from `hermes-agent.nousresearch.com` or the official GitHub repository [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent). Similarly named domains on other TLDs are not official and are not operated by Nous Research.
+
 ## Dangerous Command Approval
 
 Before executing any command, Hermes checks it against a curated list of dangerous patterns. If a match is found, the user must explicitly approve it.
@@ -562,7 +568,7 @@ Container resources are configurable in `~/.hermes/config.yaml`:
 ```yaml
 terminal:
   backend: docker
-  docker_image: "nousresearch/hermes-sandbox:desktop"
+  docker_image: "nikolaik/python-nodejs:python3.11-nodejs20"
   docker_forward_env: []  # Explicit allowlist only; empty keeps secrets out of the container
   container_cpu: 1        # CPU cores
   container_memory: 5120  # MB (default 5GB)
@@ -693,7 +699,7 @@ With the switch off Hermes never reads or refreshes those files: the `claude_cod
 - Credential files are mounted **read-only** into Docker containers
 - Skills Guard scans skill content for suspicious env access patterns before installation
 - Missing/unset vars are never registered (you can't leak what doesn't exist)
-- Hermes infrastructure secrets (provider API keys, gateway tokens) should never be added to `env_passthrough` — they have dedicated mechanisms. Such a name is refused when declared, and a declared name that a platform adapter claims later (a plugin adapter registering after the skill loaded) stops being forwarded from then on
+- Hermes infrastructure secrets (provider API keys, gateway tokens) should never be added to `env_passthrough` — they have dedicated mechanisms
 
 ## MCP Credential Handling
 

@@ -237,16 +237,27 @@ def offered_model_ids(models, provider: Optional[str], base_url: Optional[str] =
     return [model_id for model_id in ids if not (isinstance(model_id, str) and any(ch.isspace() for ch in model_id))]
 
 
+def offered_row_model_ids(row: dict, models=None) -> list:
+    """``offered_model_ids`` for a picker row. A user-defined ``providers:`` row carries its bare slug,
+    but the switch validates it as ``custom:<slug>`` — filter with that same token, else every spaced
+    id of a user endpoint on a public host is dropped."""
+    provider = row.get("slug")
+    if row.get("is_user_defined") and provider:
+        from hermes_cli.providers import custom_provider_slug
+
+        provider = custom_provider_slug("", str(provider))
+    base_url = row.get("api_url") or row.get("base_url")
+    return offered_model_ids(row.get("models") if models is None else models, provider, base_url)
+
+
 def drop_unofferable_model_ids(rows: list) -> None:
     """In-place: picker rows must not offer an id ``validate_requested_model`` will refuse for whitespace."""
     for row in rows:
         if not isinstance(row, dict):
             continue
-        provider = row.get("slug")
-        base_url = row.get("api_url") or row.get("base_url")
         models = row.get("models")
         if isinstance(models, list):
-            filtered = offered_model_ids(models, provider, base_url)
+            filtered = offered_row_model_ids(row, models)
             removed = len(models) - len(filtered)
             if removed:
                 row["models"] = filtered
@@ -255,7 +266,7 @@ def drop_unofferable_model_ids(rows: list) -> None:
                     row["total_models"] = max(0, total - removed)
         featured = row.get("featured_models")
         if isinstance(featured, list):
-            row["featured_models"] = offered_model_ids(featured, provider, base_url)
+            row["featured_models"] = offered_row_model_ids(row, featured)
 
 
 def _parse_openrouter_preset(req: _Request) -> Optional[dict[str, Any]]:

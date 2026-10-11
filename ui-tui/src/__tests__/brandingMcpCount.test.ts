@@ -51,10 +51,15 @@ const baseInfo = (mcp_servers: McpServerStatus[]): SessionInfo => ({
   tools: { file: ['read_file', 'write_file'] }
 })
 
-async function renderFooter(info: SessionInfo): Promise<string> {
+async function renderFooter(info: SessionInfo, t = DEFAULT_THEME): Promise<string> {
   const streams = makeStreams()
+  // SessionPanel reads its width from process.stdout (useStdout), not the render
+  // stream. Pin it to the stream's 100 columns so the layout doesn't depend on
+  // the terminal the tests run in.
+  const columns = Object.getOwnPropertyDescriptor(process.stdout, 'columns')
+  Object.defineProperty(process.stdout, 'columns', { configurable: true, value: 100 })
 
-  const instance = renderSync(React.createElement(SessionPanel, { info, sid: 'test', t: DEFAULT_THEME }), {
+  const instance = renderSync(React.createElement(SessionPanel, { info, sid: 'test', t }), {
     patchConsole: false,
     stderr: streams.stderr as NodeJS.WriteStream,
     stdin: streams.stdin as NodeJS.ReadStream,
@@ -70,6 +75,12 @@ async function renderFooter(info: SessionInfo): Promise<string> {
   } finally {
     instance.unmount()
     instance.cleanup()
+
+    if (columns) {
+      Object.defineProperty(process.stdout, 'columns', columns)
+    } else {
+      delete (process.stdout as { columns?: number }).columns
+    }
   }
 }
 
@@ -85,6 +96,21 @@ describe('branding MCP headline count', () => {
     // One connected server → "1 MCP", never "2 MCP".
     expect(frame).toContain(messages().chatBits.branding.mcpSummary(1))
     expect(frame).not.toContain(messages().chatBits.branding.mcpSummary(2))
+  })
+
+  it('uses one full-width metadata column when a skin suppresses the panel hero', async () => {
+    const frame = await renderFooter(baseInfo([]), { ...DEFAULT_THEME, bannerHero: ' ' })
+
+    expect(frame).toContain('test-model · Nous Research')
+    expect(frame).toContain(`${messages().chatBits.branding.sessionLabel}test`)
+  })
+
+  it('keeps a narrow hero from squeezing the model and session lines', async () => {
+    const frame = await renderFooter(baseInfo([]), { ...DEFAULT_THEME, bannerHero: '[#FFD700]★[/]' })
+
+    expect(frame).toContain('★')
+    expect(frame).toContain('test-model · Nous Research')
+    expect(frame).toContain(`${messages().chatBits.branding.sessionLabel}test`)
   })
 
   it('drops the MCP segment entirely when no server is connected', async () => {

@@ -348,3 +348,25 @@ def _resolve_node_runtime_npm() -> str | None:
 def _resolve_update_branch(args) -> str:
     """Normalize ``args.branch`` to a non-empty name (default ``main``; blank/whitespace = default)."""
     return (getattr(args, "branch", None) or "main").strip() or "main"
+
+
+def _clear_bytecode_cache(root: Path) -> int:
+    """Remove all __pycache__ dirs under *root* (stale .pyc → ImportError after updates).
+
+    Returns the number of directories removed.
+    """
+    removed = 0
+    for dirpath, dirnames, _ in os.walk(root):
+        dirnames[:] = [
+            d
+            for d in dirnames
+            if d not in {"venv", ".venv", "node_modules", ".git", ".worktrees"}
+        ]
+        if os.path.basename(dirpath) == "__pycache__":
+            try:
+                shutil.rmtree(dirpath)
+                removed += 1
+            except OSError:
+                pass
+            dirnames.clear()  # nothing left to recurse into
+    return removed

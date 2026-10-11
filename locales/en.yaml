@@ -2222,6 +2222,8 @@ cli:
     shutting_down: "Shutting down… (finalizing session)"
     session_deleted: "✓ Session {session_id} deleted"
     session_delete_missing: "✗ Session {session_id} not found for deletion"
+    provider_plugin_load_failed: "⚠ Provider plugin '{name}' ({source}) failed to load: {error}"
+    provider_plugin_load_failed_more: "…and {count} more (see agent.log)"
 
   voice:
     err_termux_app_missing: "Termux:API command package detected, but the Android app is missing.\nInstall/update the Termux:API Android app, then retry /voice on."

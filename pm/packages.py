@@ -910,6 +910,8 @@ class CuaDriver(BinaryPackage):
     optional = True
     # Computer use's only OS path, so the default install carries it.
     default = True
+    # cua-driver's anonymous PostHog telemetry gate ("0" disables; absent => ON upstream).
+    CUA_DRIVER_TELEMETRY_ENV_VAR = "CUA_DRIVER_RS_TELEMETRY_ENABLED"
     gaps = {**{target: "cua-driver does not publish a musl build" for target in MUSL_TARGETS},
             "linux-arm64-bionic": "cua-driver does not publish an Android build"}
     binary_rel = {
@@ -948,13 +950,32 @@ class CuaDriver(BinaryPackage):
             shutil.rmtree(sdk, ignore_errors=True)
 
     def _probe_env(self) -> dict:
-        """The probe IS a first run: it must not mint telemetry state."""
-        try:
-            from tools.computer_use.cua_backend import cua_driver_child_env
+        """The probe IS a first run: it must not mint telemetry state.
 
-            return cua_driver_child_env()
+        Build the child env here instead of importing
+        ``tools.computer_use.cua_backend``. That import pulls the application
+        graph into PM's process, and ``hermes_cli.config`` re-runs provider
+        plugin discovery at import time; a bundled provider plugin missing a
+        *runtime-only* dependency — ``solstice`` needs ``httpx``, which
+        pm/pyproject.toml deliberately does not carry — then raises inside
+        ``verify()`` and prints a ``Failed to load bundled provider plugin``
+        warning PM can do nothing about. ``load_config`` is unusable for the
+        same reason: it imports the provider registry too.
+
+        What is left here is the half that actually matters for a first run:
+        telemetry off, plus the profile's Bot Desktop seat when one is up.
+        """
+        env = dict(os.environ)
+        try:
+            from tools.bot_desktop.runtime import desktop_env
+
+            env = desktop_env(env)
         except Exception:
-            return dict(os.environ, CUA_DRIVER_RS_TELEMETRY_ENABLED="0")
+            # The screen is an optimization for the probe: a broken or
+            # unavailable Bot Desktop must not stop cua-driver from verifying.
+            LOG.debug("cua-driver probe: Bot Desktop env unavailable", exc_info=True)
+        env[self.CUA_DRIVER_TELEMETRY_ENV_VAR] = "0"
+        return env
 
 
 @register

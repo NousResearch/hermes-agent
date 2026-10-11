@@ -22,9 +22,10 @@ def _busy_kernel_lock(*args, **kwargs):
 
 
 def test_lock_timeout_names_the_lock_file_and_a_live_holder(tmp_path, monkeypatch):
-    from hermes_cli import auth
+    import hermes_cli.auth as auth
+    import hermes_cli.file_lock as file_lock
 
-    monkeypatch.setattr(auth, "_kernel_lock", _busy_kernel_lock)
+    monkeypatch.setattr(file_lock, "_kernel_lock", _busy_kernel_lock)
     holder_pid = os.getppid()  # the test runner's parent: a live foreign process by construction
     auth_path = tmp_path / "profiles" / "coder" / "auth.json"
     auth_path.parent.mkdir(parents=True, exist_ok=True)
@@ -41,9 +42,10 @@ def test_lock_timeout_names_the_lock_file_and_a_live_holder(tmp_path, monkeypatc
 
 
 def test_lock_timeout_without_a_holder_stays_silent_about_one(tmp_path, monkeypatch):
-    from hermes_cli import auth
+    import hermes_cli.auth as auth
+    import hermes_cli.file_lock as file_lock
 
-    monkeypatch.setattr(auth, "_kernel_lock", _busy_kernel_lock)
+    monkeypatch.setattr(file_lock, "_kernel_lock", _busy_kernel_lock)
     auth_path = tmp_path / "profiles" / "coder" / "auth.json"
 
     with pytest.raises(TimeoutError) as excinfo:
@@ -57,9 +59,10 @@ def test_lock_timeout_without_a_holder_stays_silent_about_one(tmp_path, monkeypa
 
 @pytest.mark.skipif(os.name != "posix", reason="holder liveness probe is POSIX-only (os.kill sig 0)")
 def test_lock_timeout_ignores_a_stale_pid_from_a_dead_holder(tmp_path, monkeypatch):
-    from hermes_cli import auth
+    import hermes_cli.auth as auth
+    import hermes_cli.file_lock as file_lock
 
-    monkeypatch.setattr(auth, "_kernel_lock", _busy_kernel_lock)
+    monkeypatch.setattr(file_lock, "_kernel_lock", _busy_kernel_lock)
     stale_pid = 2 ** 22  # far beyond any pid namespace: probe must report "no such process"
     real_kill = os.kill
 
@@ -81,12 +84,13 @@ def test_lock_timeout_ignores_a_stale_pid_from_a_dead_holder(tmp_path, monkeypat
 
 
 def test_permanent_lock_failure_propagates_instead_of_burning_the_deadline(tmp_path, monkeypatch):
-    from hermes_cli import auth
+    import hermes_cli.auth as auth
+    import hermes_cli.file_lock as file_lock
 
     def _unsupported(*args, **kwargs):
         raise OSError(errno.ENOSYS, "flock not supported on this filesystem")
 
-    monkeypatch.setattr(auth, "_kernel_lock", _unsupported)
+    monkeypatch.setattr(file_lock, "_kernel_lock", _unsupported)
     auth_path = tmp_path / "profiles" / "coder" / "auth.json"
 
     with pytest.raises(OSError) as excinfo:

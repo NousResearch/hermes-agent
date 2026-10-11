@@ -742,6 +742,7 @@ except Exception:
 
 # Centralized file logging for every subcommand (agent.log + errors.log).
 # Dashboard entrypoints use GUI mode so gui.log captures pre-dispatch failures.
+_replay_provider_failures = None
 try:
     from hermes_logging import setup_logging as _setup_logging
 
@@ -753,8 +754,20 @@ try:
             else "cli"
         )
     )
+
+    # Replay provider failures buffered before setup_logging(); every command
+    # surfaces them here, including agent.log (raw stderr stays clean pre-logging).
+    from hermes_cli.main_provider_replay import early_replay_provider_failures
+
+    _replay_provider_failures = early_replay_provider_failures()
 except Exception:
     pass  # best-effort — don't crash the CLI if logging setup fails
+
+# Binding independent of logging setup so the dispatch replay never hits
+# NameError when setup_logging() fails (failures stay buffered, stderr clean).
+from hermes_cli.main_provider_replay import bind_provider_replay
+
+_replay_provider_failures = bind_provider_replay(_replay_provider_failures)
 
 # Apply IPv4 preference before any HTTP client is created.
 if _FORCE_IPV4_EARLY:
@@ -868,6 +881,7 @@ from hermes_cli.old_updater_main import (
 from hermes_cli.main_install_repair import _cleanup_quarantined_exes, _recover_update_debts_on_startup
 from hermes_cli.main_install_repair import (  # frozen updater surface: update_cmd*.py resolve these via _m()
     _UPDATE_REEXEC_ENV,
+    _clear_bytecode_cache,
     _clear_lazy_refresh_incomplete_marker,
     _clear_marker_file,
     _clear_update_incomplete_marker,
@@ -2289,28 +2303,6 @@ def cmd_uninstall(args):
     run_uninstall(args)
 
 
-def _clear_bytecode_cache(root: Path) -> int:
-    """Remove all __pycache__ dirs under *root* (stale .pyc → ImportError after updates).
-
-    Returns the number of directories removed.
-    """
-    removed = 0
-    for dirpath, dirnames, _ in os.walk(root):
-        dirnames[:] = [
-            d
-            for d in dirnames
-            if d not in {"venv", ".venv", "node_modules", ".git", ".worktrees"}
-        ]
-        if os.path.basename(dirpath) == "__pycache__":
-            try:
-                shutil.rmtree(dirpath)
-                removed += 1
-            except OSError:
-                pass
-            dirnames.clear()  # nothing left to recurse into
-    return removed
-
-
 def _finalize_update_receipt(code: int, reason: str) -> None:
     """Best-effort receipt close at the command boundary; no-op if already finalized."""
     try:
@@ -3615,6 +3607,13 @@ def main():
     # (hooks list, cron list, gateway status, ...) pay no discovery cost and
     # trigger no consent prompts for hooks the user is still inspecting.
     _prepare_agent_startup(args)
+
+    # Second provider-failure replay: lazy discovery can buffer load failures
+    # after the import-time replay; flush only when logging is known ready
+    # (silent otherwise, so a setup failure never leaks via lastResort).
+    from hermes_cli.main_provider_replay import dispatch_replay_provider_failures
+
+    dispatch_replay_provider_failures(_replay_provider_failures)
 
     if getattr(args, "oneshot", None):
         _run_oneshot_from_args(args)

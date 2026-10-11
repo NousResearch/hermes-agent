@@ -15,8 +15,6 @@ from pathlib import Path
 from typing import Any, Union
 from urllib.parse import urlparse
 
-import hermes_yaml as yaml
-
 logger = logging.getLogger(__name__)
 
 
@@ -429,6 +427,8 @@ def warn_if_credential_file_broadly_readable(path: str | Path, *, label: str = "
 def atomic_yaml_write(path: str | Path, data: Any, *, default_flow_style: bool = False, sort_keys: bool = False,
                       extra_content: str | None = None, create_mode: int | None = None) -> None:
     """Write YAML to *path* atomically (temp file + fsync + replace)."""
+    import hermes_yaml as yaml
+
     path = Path(path)
 
     def _write(f) -> None:
@@ -442,6 +442,7 @@ def atomic_yaml_write(path: str | Path, data: Any, *, default_flow_style: bool =
 def _roundtrip_load(path: Path):
     """``(yaml_rt, CommentedMap)``: a ruamel round-trip loader keeping quotes/Unicode with 2-space
     indents, plus *path* loaded through it (empty map when missing/blank)."""
+    import hermes_yaml as yaml
     from ruamel.yaml.comments import CommentedMap
 
     yaml_rt = yaml.roundtrip_yaml()
@@ -597,6 +598,8 @@ def safe_json_loads(text: str, default: Any = None) -> Any:
 
 def fast_safe_load(stream: Any) -> Any:
     """Use the shared safe reader (which selects ruamel's C parser when available)."""
+    import hermes_yaml as yaml
+
     return yaml.safe_load(stream)
 
 

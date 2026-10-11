@@ -314,7 +314,11 @@ def _apply_tui_python_env(env: dict) -> None:
         env["HERMES_CWD"] = _safe_tui_cwd(env)
 
     python = str(env.get("HERMES_PYTHON") or "").strip()
-    if os.path.dirname(python):
+    if not python:
+        # Nothing advertised: ``shutil.which("")`` could never find it, but would
+        # stat every PATH directory on the way to saying so.
+        python_is_executable = False
+    elif os.path.dirname(python):
         python_path = Path(python)
         if not python_path.is_absolute():
             python_path = Path(env["HERMES_CWD"]) / python_path

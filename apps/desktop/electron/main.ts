@@ -528,6 +528,8 @@ import * as remoteLifecycle from './remote-lifecycle'
 import {
   attachPowerResumeRemoteRevalidation,
   ensureHealthyPooledRemoteBackendForDispatch,
+  POOLED_REMOTE_DISPATCH_PROBE_RETRY_DELAY_MS,
+  probeFailureDescription,
   REMOTE_POOLED_LIVENESS_FAILURE_WINDOW_MS,
   RemoteLivenessTracker,
   RemoteRevalidationCoordinator,
@@ -11254,6 +11256,7 @@ async function ensureRegistryBackend(
         currentConnectionPromise: () => backendPool.get(key)?.connectionPromise || null,
         probe: (connection, requestPath, options) => fetchJsonForBackend(connection, requestPath, options),
         reconnect: () => ensureRegistryBackend(id, profile, '', { passive }),
+        log: message => rememberLog(message),
         retire: async (error: any) => {
           // A late failure from an old descriptor must never tear down a newer
           // entry that another caller has already installed.
@@ -11262,7 +11265,7 @@ async function ensureRegistryBackend(
           }
 
           rememberLog(
-            `Pooled remote backend "${key}" failed its dispatch probe (${error?.message || error}); reconnecting on demand.`
+            `Pooled remote backend "${key}" failed its dispatch probe (${probeFailureDescription(error)}); reconnecting on demand.`
           )
           await stopPoolBackend(key)
 

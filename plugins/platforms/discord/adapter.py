@@ -1276,6 +1276,8 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
     # characters — without a cap the adapter posts every 2000-char chunk back-to-back and floods the channel
     # (the incident delivered 60,698 chars as 31 messages).
     MAX_SPLIT_MESSAGES = 8
+    # Bookkeeping cap for send_or_update_status() (same value as the Telegram/Slack adapters).
+    _STATUS_MESSAGE_IDS_MAX = 2000
 
     # Voice auto-disconnect after N idle seconds (discord.voice_channel_inactivity_timeout_seconds; 0 off).
     VOICE_TIMEOUT = 300
@@ -1388,6 +1390,9 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
         # Telegram #58563 fix.
         self._last_overflow_preview: dict[tuple, str] = {}
         self._warned_fail_closed_default = False
+        # send_or_update_status() bookkeeping: {(chat_id, status_key) -> bot message_id} so repeat
+        # status callbacks edit one bubble in place instead of appending (issue #134288, cf. #30045).
+        self._status_message_ids: Dict[tuple, str] = {}
 
     def _config_value(self, key: str, default: Any, *, env_key: Optional[str] = None) -> Any:
         """Resolve a liveness value from profile config, legacy env, or default."""
@@ -3529,6 +3534,41 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to edit Discord message %s: %s", self.name, message_id, e, exc_info=True)
             return SendResult(success=False, error=str(e))
+
+    async def send_or_update_status(
+        self, chat_id: str, status_key: str, content: str, *,
+        metadata: Optional[Dict[str, Any]] = None) -> SendResult:
+        """Send a status message, or edit the previous one with the same ``(chat_id, status_key)``; if the
+        edit fails (deleted, too old, …) the cached id is dropped and a fresh message is sent.
+
+        Issue #134288: the session-turn-lease wait loop posts a visible status every ~15s; without this
+        method the gateway's ``_send_or_update_status_coro`` fell back to ``send()`` and appended a fresh
+        bubble each tick, flooding the channel (same class of spam Telegram fixed in #30045 and Slack
+        mirrored). The first call sends and remembers the message id; subsequent calls with the same key
+        edit that message in place.
+        """
+        key = (str(chat_id), str(status_key))
+        cached_id = self._status_message_ids.get(key)
+        if cached_id is not None:
+            # A bubble sent into a thread must be edited in that thread: metadata thread_id wins over
+            # chat_id, mirroring send()'s channel resolution.
+            target_id = str((metadata or {}).get("thread_id") or chat_id)
+            result = await self.edit_message(target_id, cached_id, content, finalize=False, metadata=metadata)
+            if result.success:
+                # Only write back if nobody evicted/replaced this key during the await.
+                if result.message_id and self._status_message_ids.get(key) == cached_id:
+                    self._status_message_ids[key] = str(result.message_id)
+                return result
+            # Edit failed (deleted, permissions revoked, …): drop the cached id and send fresh.
+            self._status_message_ids.pop(key, None)
+        result = await self.send(chat_id, content, metadata=metadata)
+        if result.success and result.message_id:
+            if len(self._status_message_ids) >= self._STATUS_MESSAGE_IDS_MAX:
+                # FIFO trim: drop the oldest half to bound memory (mirrors the Telegram/Slack adapters).
+                for stale in list(self._status_message_ids)[: self._STATUS_MESSAGE_IDS_MAX // 2]:
+                    self._status_message_ids.pop(stale, None)
+            self._status_message_ids[key] = str(result.message_id)
+        return result
 
     @staticmethod
     def _is_reply_reference_rejected(err: Exception) -> bool:

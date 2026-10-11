@@ -1312,9 +1312,13 @@ def spawn_background_review_thread(
     memory operation set."""
     if task_cfg is None:
         task_cfg = _background_review_task_config()
-    # Per-agent overrides (agent._MEMORY_REVIEW_PROMPT etc.) keep working.
+    from agent.background_review_prompts import resolve_review_prompt
+
     name = _PROMPT_NAME_BY_SCOPE[(review_memory, review_skills)]
-    prompt = getattr(agent, name, globals()[name])
+    # A focused /refine is user-requested even where a surface omits ``explicit`` (gate parity).
+    prompt = resolve_review_prompt(agent, name, globals()[name], explicit or focus is not None)
+    if prompt is None:
+        return None, None  # Caller releases the run token without starting a thread.
     if focus := (focus or "").strip():
         prompt = (
             f"{prompt}\n\nThe user explicitly requested this review with the following "

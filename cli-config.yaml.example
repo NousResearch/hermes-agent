@@ -1163,6 +1163,12 @@ skills:
 # Agent Behavior
 # =============================================================================
 agent:
+  # Review user-message overrides: agent attr > inline > file > shipped default.
+  # Relative UTF-8 files (max 64 KiB) resolve from the profile home, read once per review.
+  # Invalid overrides skip automatic reviews with a warning; explicit reviews use defaults.
+  # Inline "" disables automatic reviews. Fork tools/approvals and foreground cache are unchanged.
+  # review_prompts: {memory: null, memory_file: "", skill: null, skill_file: prompts/skill.md,
+  #                  combined: null, combined_file: ""}
   # Maximum tool-calling iterations per conversation (default: 500)
   # Higher = more room for complex tasks, but costs more tokens
   # Recommended: 20-30 for focused tasks, 50-100 for open exploration

@@ -463,6 +463,18 @@ and tools not listed here remain denied. Keep the list narrow and prefer tools
 that stage a proposal for human review rather than applying external or
 destructive changes directly. The default is an empty list.
 
+### Custom review prompts
+
+Set `agent.review_prompts.{memory,skill,combined}` to inline text, or the matching
+`{memory,skill,combined}_file` to a regular UTF-8 file (maximum 64 KiB).
+Precedence: a programmatic agent override → inline text → file → shipped default.
+Relative files resolve from your profile home, never the working directory; each
+review snapshots the file, and edits apply to the next review. Inline `""` skips
+automatic reviews. Invalid overrides (including empty files) skip with a warning;
+reviews requested with `explicit=True` use the shipped default instead.
+Only the fork's user message changes; foreground prompt caching, tool restrictions,
+write approvals and protected-file boundaries stay unchanged.
+
 ### Local models: reviews wait for an idle GPU (`defer`)
 
 On a cloud provider the review finishes in seconds and runs alongside

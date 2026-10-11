@@ -806,6 +806,9 @@ class AIAgent(
                 self, messages_snapshot, review_memory=review_memory, review_skills=review_skills,
                 focus=focus, task_cfg=task_cfg, review_run=review_run, explicit=explicit,
             )
+            if target is None:
+                finish_background_review_run(self, review_run)
+                return
 
             def _target_with_requeue() -> None:
                 target()

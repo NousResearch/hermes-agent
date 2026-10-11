@@ -4,6 +4,7 @@ Pure-data leaf module — must not import from hermes_cli.config. Comments are t
 docs of config.yaml.
 """
 
+from hermes_cli.config_defaults_agent import AGENT_REVIEW_DEFAULTS
 
 #: Image every container terminal backend (docker/modal/daytona/singularity) uses unless the
 #: user pins one. LEGACY_SANDBOX_IMAGES are the plain defaults that preceded the desktop stack
@@ -286,12 +287,7 @@ DEFAULT_CONFIG = {
         # `reasoning_echo: true` on a `model:` or `fallback_providers:` entry for a custom gateway
         # proxying one of them. Strict providers (Mistral, Groq, Cerebras) never get the field.
         "reasoning_echo": False,
-        # Turn liveness watchdog: a turn with no observable progress for `timeout_s` seconds is
-        # logged, force-interrupted so the UI can retry, and its lease stops renewing so stale-turn
-        # cleanup can reclaim the session even if the interrupt can't unwind a wedged frame.
-        # timeout_s <= 0 disables; poll_s = sampling interval. Invalid values (NaN, Inf,
-        # non-positive poll) warn and fall back to defaults. See agent/turn_liveness.py.
-        "turn_liveness": {"timeout_s": 600.0, "poll_s": 15.0},
+        **AGENT_REVIEW_DEFAULTS,
     },
 
     "terminal": {

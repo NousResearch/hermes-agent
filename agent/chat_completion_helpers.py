@@ -3175,6 +3175,21 @@ class _StreamingCall(StreamingWaitMonitor):
             if isinstance(delta_refusal, str) and delta_refusal:
                 refusal_parts.append(delta_refusal)
 
+            # Tool calls are fed BEFORE the content guard: a delta that carries both a
+            # tool call and text shaped like an SSE control block (or its streaming
+            # prefix, e.g. "e" for "event") used to `continue` past the feed and the
+            # call was silently dropped with finish_reason="tool_calls" (#66452).
+            delta_tool_calls = getattr(delta, "tool_calls", None)
+            if delta_tool_calls:
+                _flush_pending_stream_text()
+                for tc_delta in delta_tool_calls:
+                    name = tool_calls.feed(tc_delta)
+                    if name is not None:
+                        self._emit_tool_started(name)
+                        # Lets the stub-builder warn if streaming dies before the args
+                        # complete instead of silently discarding the action.
+                        self.result["partial_tool_names"].append(name)
+
             # Text (list-of-blocks deltas flattened once); possible echoed SSE is
             # buffered until it can be judged.
             delta_content = flatten_message_text(getattr(delta, "content", None), sep="")
@@ -3196,17 +3211,6 @@ class _StreamingCall(StreamingWaitMonitor):
                     continue
                 else:
                     self._emit_text(delta_content)
-
-            delta_tool_calls = getattr(delta, "tool_calls", None)
-            if delta_tool_calls:
-                _flush_pending_stream_text()
-                for tc_delta in delta_tool_calls:
-                    name = tool_calls.feed(tc_delta)
-                    if name is not None:
-                        self._emit_tool_started(name)
-                        # Lets the stub-builder warn if streaming dies before the args
-                        # complete instead of silently discarding the action.
-                        self.result["partial_tool_names"].append(name)
 
         if runaway:
             _close_half_read_stream("runaway_stream_close_failed")

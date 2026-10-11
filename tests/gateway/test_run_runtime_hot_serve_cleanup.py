@@ -198,7 +198,7 @@ async def test_failed_hot_serve_with_a_live_writer_parks_without_aborting_or_re_
         live = SimpleNamespace(task=writer if name == "beta" else None, route=name,
                                event_stream=SimpleNamespace(execution={"execution_generation": 1}))
         authority = SimpleNamespace(runner=runner_, profile_id=str(home), sessions={"s": live},
-                                    pending_stops={}, retiring=False, hosted_room_service=None)
+                                    pending_stops={}, adopted={}, retiring=False, hosted_room_service=None)
         registry.add(home, authority, name=name)
         return authority
 

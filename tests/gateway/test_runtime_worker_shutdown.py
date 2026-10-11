@@ -25,6 +25,7 @@ async def test_managed_claims_participate_in_zero_and_nonzero_drain(tmp_path):
     runner._drain_work_counts = GatewayShutdownMixin._drain_work_counts.__get__(runner)
     authority.runner = runner
     authority.pending_stops = {}
+    authority.adopted = {}
     try:
         assert GatewayShutdownMixin._active_work_count(runner) == 1
         _, timed_out = await GatewayShutdownMixin._drain_active_agents(runner, timeout=0)
@@ -60,7 +61,7 @@ async def test_profile_timeout_keeps_authority_until_physical_worker_exits(tmp_p
     registry.add(launch, SimpleNamespace(profile_id=str(launch)))
     agent = SimpleNamespace(hard_interrupt=lambda message: stopped.set())
     live = SimpleNamespace(task=task, route='beta-route', event_stream=SimpleNamespace(execution={'execution_generation': 2}))
-    authority = SimpleNamespace(sessions={'s': live}, profile_id=str(beta), pending_stops={},
+    authority = SimpleNamespace(sessions={'s': live}, profile_id=str(beta), pending_stops={}, adopted={},
         waiters={}, native_waiters=set(), agent=lambda ref: agent, _turn_workers={1: (SimpleNamespace(worker_done=done), [agent])})
     registry.add(beta, authority, name='beta')
     runner = SimpleNamespace(session_authorities=registry, session_runtime_descriptor={},
@@ -95,7 +96,7 @@ async def test_whole_runtime_settle_logs_late_work_and_finishes_shutdown(monkeyp
     task = asyncio.create_task(late.wait())
     agent = SimpleNamespace(hard_interrupt=lambda message=None: None)
     live = SimpleNamespace(task=task, route='r', event_stream=SimpleNamespace(execution={}))
-    authority = SimpleNamespace(sessions={'s': live}, _managed_workers={}, pending_stops={}, profile_id='p',
+    authority = SimpleNamespace(sessions={'s': live}, _managed_workers={}, pending_stops={}, adopted={}, profile_id='p',
                                 _turn_workers={1: (SimpleNamespace(worker_done=wedged), [agent])})
     revoked, stopped = [], []
     runner = SimpleNamespace(session_authority=authority, _running_agents={},

@@ -62,6 +62,8 @@ def _verify(connection, ref, params, claim):
 
 
 async def worker_request(connection, ref, params, *, operation):
+    from gateway.session_authorities import require_serving
+    require_serving(connection.authority)  # adopt/persist would write with the released epoch
     if operation == "persist" and isinstance(params.get("operation"), str) and params["operation"].startswith("delegation."):
         from gateway.session_worker_delegation import worker_delegation_request
         return await worker_delegation_request(connection, ref, params)

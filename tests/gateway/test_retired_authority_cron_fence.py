@@ -32,7 +32,27 @@ def _outbox(home):
     (box / 'e1.json').write_text(json.dumps({'id': 'e1', 'created_at': 9e12, 'target_handle': 'x'}))
 
 
+async def _cancel_queued(authority, receipt):
+    await authority.cancel_queued(CRON, REF, receipt.admission_id)
+
+
+async def _submit_more(authority, receipt):
+    await authority.submit(CRON, Submission(request_id='cron:j:2', ref=REF, payload={'text': ''}, intent='queue'))
+
+
+async def _worker_adopt(authority, receipt):
+    from gateway.session_worker import worker_request
+    connection = SimpleNamespace(authority=authority, actor=CRON)
+    await worker_request(connection, REF, {}, operation='adopt')
+
+
 SITES = {
+    'authority.cancel_queued': (_cancel_queued, None, lambda db, home: list_session_admissions(
+        db, session_id='s', pending_only=False)[0]['status'] == 'queued'),
+    'authority.submit': (_submit_more, None, lambda db, home: len(list_session_admissions(
+        db, session_id='s', pending_only=False)) == 1),
+    'worker.adopt': (_worker_adopt, None, lambda db, home: list_session_admissions(
+        db, session_id='s', pending_only=False)[0]['status'] == 'queued'),
     'cron.cancel': (_cron_cancel, None, lambda db, home: list_session_admissions(
         db, session_id='s', pending_only=False)[0]['status'] == 'queued'),
     'bot_relay.outbox.drain': (_relay('outbox', {}), _outbox,

@@ -97,11 +97,14 @@ class SessionAuthority:
         self.cancel_obligations = set()
         # Set by profile retirement (unserve): the drain claims no successor after its running turn.
         self.retiring = False
+        self.retired = False
 
     def authorize(self, actor, ref, capability):
         """Every handler calls this first, so a later ``self.sessions[ref.session_id]`` is
         safe: a deleted/evicted live entry surfaces here as ``not_found``, not as a KeyError
         deeper in the handler."""
+        from gateway.session_authorities import require_serving
+        require_serving(self)
         if actor.profile_id != self.profile_id or ref.profile_id != self.profile_id:
             raise RuntimeStoreError('profile_mismatch')
         if capability not in actor.capabilities:

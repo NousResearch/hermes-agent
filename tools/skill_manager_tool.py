@@ -188,6 +188,37 @@ def _validate_content_size(content: str, label: str = "SKILL.md") -> Optional[st
     return None
 
 
+# Local patch (fryccer, re-port on upgrade): routing-layer placement guard for fat SKILL.md files.
+ROUTING_POINTER_ALLOWANCE = 400  # chars; one-line pointer/index entries stay allowed on fat skills
+
+
+def _routing_cap_chars() -> int:
+    """``skills.routing_cap_chars`` (default 20,000; <=0 disables the routing-layer guard)."""
+    try:
+        from hermes_cli.config import load_config
+        return int(cfg_get(load_config(), "skills", "routing_cap_chars", default=20000))
+    except Exception:
+        return 20000
+
+
+def _routing_layer_size_guard(name: str, current: str, new: str) -> Optional[str]:
+    """Local patch (fryccer, re-port on upgrade): a SKILL.md at/over the routing cap is a
+    routing document — refuse body growth beyond the pointer allowance; knowledge belongs in
+    references/. Shrinks and sub-cap writes are never affected. NOT wired into create: a new
+    skill is born under the plain MAX_SKILL_CONTENT_CHARS ceiling (create semantics unchanged)."""
+    cap = _routing_cap_chars()
+    if cap <= 0:
+        return None
+    allowed_max = max(cap, len(current)) + ROUTING_POINTER_ALLOWANCE
+    if len(new) <= allowed_max:
+        return None
+    return (f"SKILL.md of skill '{name}' is {len(current):,} chars (routing layer; "
+            f"skills.routing_cap_chars={cap:,}). Refusing body growth beyond +{ROUTING_POINTER_ALLOWANCE} chars: "
+            f"put the new rules into the most topical existing references/ file via "
+            f"write_file(file_path='references/<topic>.md') (extend an existing file before creating one), "
+            f"and add at most a one-line pointer entry to SKILL.md. Shrinking edits are always allowed.")
+
+
 def _description_preview(content: str) -> str:
     """First 120 chars of the frontmatter description; '' on any failure."""
     with suppress(Exception):
@@ -496,6 +527,12 @@ def _edit_skill(name: str, content: str) -> dict[str, Any]:
     if err := _validate_frontmatter(content) or _validate_content_size(content):
         return _err(err)
     skill_dir, guard = _locate_for_write(name, "edit")
+    # Local patch (fryccer): a fat SKILL.md is a routing layer — refuse body growth (see
+    # _routing_layer_size_guard). Runs after the format/size checks, before any write.
+    if skill_dir is not None:
+        current = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
+        if err := _routing_layer_size_guard(name, current, content):
+            return _err(err)
     # SKILL.md always exists here (_find_skill requires it), so a blocked scan restores it.
     if guard := guard or _guarded_write(name, skill_dir, skill_dir / "SKILL.md", "edit", "SKILL.md", content):
         return guard
@@ -543,6 +580,11 @@ def _patch_skill(name: str, old_string: str, new_string: str, file_path: str | N
         return _err(err)
     if not file_path and (err := _validate_frontmatter(new_content)):
         return _err(f"Patch would break SKILL.md structure: {err}")
+    # Local patch (fryccer): routing-layer guard for patches that grow SKILL.md (the default
+    # target, or file_path='SKILL.md'). Supporting files under references/ etc. are never affected.
+    if target == skill_dir / "SKILL.md":
+        if err := _routing_layer_size_guard(name, content, new_content):
+            return _err(err)
     if guard := _guarded_write(name, skill_dir, target, "patch", target_label, new_content):
         return guard
     result = {
@@ -613,6 +655,12 @@ def _write_file(name: str, file_path: str, file_content: str) -> dict[str, Any]:
     if guard:
         return guard
     target, err = _resolve_supporting_file(skill_dir, file_path)
+    # Local patch (fryccer): write_file('SKILL.md') clobbers the routing doc just like an edit —
+    # same routing-layer guard. Supporting files (references/ etc.) are never affected.
+    if target is not None and target == skill_dir / "SKILL.md" and target.exists():
+        current = target.read_text(encoding="utf-8")
+        if routing_err := _routing_layer_size_guard(name, current, file_content):
+            return _err(routing_err)
     if guard := err or _guarded_write(name, skill_dir, target, "write_file", file_path, file_content):
         return guard
     result = {"success": True, "message": f"File '{file_path}' written to skill '{name}'.", "path": str(target)}

@@ -1480,6 +1480,10 @@ DEFAULT_CONFIG = {
         # review fork. true = ALWAYS stage (SKILL.md too large for an inline prompt): /skills
         # pending, /skills diff <id>, /skills approve|reject <id>.
         "write_approval": False,
+        # Local patch (fryccer): a SKILL.md past this many chars is a routing layer — skill_manage
+        # refuses body growth beyond +400 chars on it (one-line pointer entries only) and steers
+        # new knowledge into references/. <=0 disables the guard.
+        "routing_cap_chars": 20000,
         # Audit ledger: every skill mutation appends to ~/.hermes/skills/.curator_ledger.jsonl with
         # before/after hashes (blobs under ~/.hermes/.curator_backups/blobs/); powers `hermes
         # curator ledger` / `rollback <entry-id>`. Never a gate — failures can't block.

@@ -78,6 +78,7 @@ import {
   friendlyRemoteAttachError,
   type GatewayRequest,
   inlineErrorMessage,
+  isGatewayPathUnresolvedAttachError,
   markSessionRecentlyInterrupted,
   readFileDataUrlForAttach,
   readImageForRemoteAttach,
@@ -173,12 +174,37 @@ export async function uploadComposerAttachment(
       }
     }
 
-    const result = await requestGateway<FileAttachResponse>('file.attach', {
-      name: label,
-      path,
-      session_id: liveSessionId,
-      ...(fileDataUrl ? { data_url: fileDataUrl } : {})
-    })
+    const attachFile = (dataUrl: string | null) =>
+      requestGateway<FileAttachResponse>('file.attach', {
+        name: label,
+        path,
+        session_id: liveSessionId,
+        ...(dataUrl ? { data_url: dataUrl } : {})
+      })
+
+    let result: FileAttachResponse
+
+    try {
+      result = await attachFile(fileDataUrl)
+    } catch (err) {
+      // A local path-only attach (no cross-filesystem boundary detected, so
+      // no bytes were read up front) can still fail gateway-side when the
+      // gateway runtime cannot stat a path the renderer can read. Cross the
+      // boundary once with the bytes instead of failing closed; when the
+      // renderer cannot read the path either, surface the gateway error with
+      // the file named so the toast is not path-blind (#135496).
+      if (fileDataUrl || !isGatewayPathUnresolvedAttachError(err)) {
+        throw err
+      }
+
+      fileDataUrl = await readFileDataUrlForAttach(path)
+
+      if (!fileDataUrl) {
+        throw new Error(`${err instanceof Error ? err.message : String(err)}: ${label || path}`)
+      }
+
+      result = await attachFile(fileDataUrl)
+    }
 
     if (!result.attached || !result.ref_text) {
       throw new Error(result.message || `Could not attach ${label}`)

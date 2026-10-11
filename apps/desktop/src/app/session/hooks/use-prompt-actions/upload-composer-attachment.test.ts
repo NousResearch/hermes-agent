@@ -1,3 +1,4 @@
+import { JsonRpcGatewayError } from '@hermes/shared'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { uploadComposerAttachment } from '.'
@@ -96,5 +97,98 @@ describe('uploadComposerAttachment image cache contract', () => {
       session_id: RUNTIME_SESSION_ID
     })
     expect(uploaded.path).toBe('/gw/images/shot.png')
+  })
+})
+
+describe('uploadComposerAttachment local path-only fallback', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('retries once with data_url when a local path-only attach is unresolved gateway-side', async () => {
+    // Local gateway, POSIX host path: attachmentPathNeedsUpload() is false, so
+    // the first file.attach carries the path only. When the gateway cannot
+    // stat that path (5028 "file not found on gateway"), the renderer still
+    // holding readable bytes must cross the boundary instead of failing the
+    // prompt (#135496).
+    const readFileDataUrl = vi.fn(async () => 'data:application/pdf;base64,ZnJhbWVk')
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { readFileDataUrl }
+    })
+
+    const requestGateway = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new JsonRpcGatewayError('file not found on gateway and no data_url provided', { code: 5028 })
+      )
+      .mockResolvedValueOnce({ attached: true, ref_text: '@file:attachments/report.pdf' } as never)
+
+    const uploaded = await uploadComposerAttachment(
+      { id: 'file:report', kind: 'file', label: 'report.pdf', path: '/tmp/export/report.pdf' },
+      { remote: false, requestGateway, sessionId: RUNTIME_SESSION_ID }
+    )
+
+    expect(requestGateway).toHaveBeenCalledTimes(2)
+    expect(requestGateway).toHaveBeenNthCalledWith(1, 'file.attach', {
+      name: 'report.pdf',
+      path: '/tmp/export/report.pdf',
+      session_id: RUNTIME_SESSION_ID
+    })
+    expect(requestGateway).toHaveBeenNthCalledWith(2, 'file.attach', {
+      name: 'report.pdf',
+      path: '/tmp/export/report.pdf',
+      session_id: RUNTIME_SESSION_ID,
+      data_url: 'data:application/pdf;base64,ZnJhbWVk'
+    })
+    expect(uploaded.refText).toBe('@file:attachments/report.pdf')
+  })
+
+  it('names the file when neither the gateway nor the renderer can read the path', async () => {
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: {
+        readFileDataUrl: vi.fn(async () => null)
+      }
+    })
+
+    const requestGateway = vi.fn(async () => {
+      throw new JsonRpcGatewayError('file not found on gateway and no data_url provided', { code: 5028 })
+    })
+
+    await expect(
+      uploadComposerAttachment(
+        { id: 'file:gone', kind: 'file', label: 'vanished.txt', path: '/tmp/export/vanished.txt' },
+        { remote: false, requestGateway, sessionId: RUNTIME_SESSION_ID }
+      )
+    ).rejects.toThrow(/file not found on gateway and no data_url provided: vanished\.txt/)
+
+    // No second round-trip: the renderer could not produce the bytes either.
+    expect(requestGateway).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not fall back for a 5028 that is not the unresolved-path failure', async () => {
+    // The same 5028 code also carries pdftoppm rendering failures; those are
+    // deterministic and replaying them with bytes would just re-run the
+    // renderer, so the error must surface as-is.
+    const readFileDataUrl = vi.fn(async () => 'data:application/pdf;base64,ZnJhbWVk')
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { readFileDataUrl }
+    })
+
+    const requestGateway = vi.fn(async () => {
+      throw new JsonRpcGatewayError('pdftoppm failed: syntax error', { code: 5028 })
+    })
+
+    await expect(
+      uploadComposerAttachment(
+        { id: 'file:broken', kind: 'file', label: 'broken.pdf', path: '/tmp/export/broken.pdf' },
+        { remote: false, requestGateway, sessionId: RUNTIME_SESSION_ID }
+      )
+    ).rejects.toThrow(/pdftoppm failed/)
+
+    expect(readFileDataUrl).not.toHaveBeenCalled()
+    expect(requestGateway).toHaveBeenCalledTimes(1)
   })
 })

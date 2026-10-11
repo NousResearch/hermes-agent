@@ -699,6 +699,29 @@ class TestSaveLoginPrompt:
         assert headless["error_type"] == "prompt_unavailable"
         assert store.list_items() == []
 
+    def test_surface_without_a_card_is_unavailable_not_declined(self, store, monkeypatch):
+        """A bridge whose renderer cannot show the card raises SaveLoginPromptUnavailable; the tool must
+        report prompt_unavailable with the workaround instead of "the user chose not to save" — the user
+        never saw a prompt to decline (#135420)."""
+        from agent.vault_backends import unlock as unlock_mod
+        from agent.vault_backends.unlock import SaveLoginPromptUnavailable
+        from tools import browser_vault_tool
+
+        def no_card(origin, site):
+            raise SaveLoginPromptUnavailable
+
+        unlock_mod.set_save_login_prompt_callback(no_card)
+        monkeypatch.setattr(browser_vault_tool, "_current_page_origin", lambda task_id: "https://acme.test")
+        with patch("agent.vault_store.get_vault_store", return_value=store), \
+             patch("agent.vault_backends.unlock.can_prompt_here", return_value=True):
+            out = json.loads(browser_vault_tool.browser_vault_save_login())
+        unlock_mod.set_save_login_prompt_callback(None)
+
+        assert out["success"] is False
+        assert out["error_type"] == "prompt_unavailable"
+        assert "vault add" in out["error"]
+        assert store.list_items() == []
+
 
 class TestManagerAutoDetection:
     def test_installed_manager_is_a_source_without_config_and_config_can_opt_out(self):

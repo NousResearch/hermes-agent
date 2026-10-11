@@ -53,6 +53,12 @@ def get_code_prompt_callback() -> Optional[CodePrompt]:
     return getattr(_callback_tls, "code", None)
 
 
+class SaveLoginPromptUnavailable(Exception):
+    """A save-login prompt raises this when no renderer could be asked at all (client build without the
+    save-login card, request cancelled before delivery). ``None`` stays "asked and declined" so the tool
+    never blames the user for a prompt they never saw."""
+
+
 def set_save_login_prompt_callback(cb: Optional[SaveLoginPrompt]) -> None:
     """Register the surface's "save this login" prompt (identifier + masked password), per thread."""
     _callback_tls.save_login = cb
